@@ -4173,7 +4173,7 @@
     var consumedRows = [];
     var watermarkRows = [];
     var bookkeepingCalls = 0;
-    var result = await getSync().settleLibraryExecuteEnvelope({
+    var settlementInput = {
       envelope: envelope,
       receipt: runtimeReceiptFor(domainId, envelope),
       dispatchResult: { ok: true, applied: true },
@@ -4187,16 +4187,24 @@
         bookkeepingCalls += 1;
         return { ok: true, row: { rowId: await runtimeHash('runtime-gate-binding-bookkeeping') }, blockers: [], warnings: [] };
       },
-      existingCatalogs: asArray(o.existingCatalogs),
-      existingBindings: asArray(o.existingBindings),
-      currentState: o.currentState,
-      expectedState: o.expectedState,
-      expectedTargetState: o.expectedTargetState,
-      cacheObservation: o.cacheObservation,
-      f5Review: o.f5Review,
-      bridgeContext: o.bridgeContext,
       observedAtIso: cleanString(o.observedAtIso) || nowIsoSeconds()
+    };
+    [
+      'existingCatalogs',
+      'existingBindings',
+      'currentState',
+      'expectedState',
+      'expectedTargetState',
+      'cacheObservation',
+      'f5Review',
+      'bridgeContext'
+    ].forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(o, key)) return;
+      settlementInput[key] = key === 'existingCatalogs' || key === 'existingBindings'
+        ? asArray(o[key])
+        : o[key];
     });
+    var result = await getSync().settleLibraryExecuteEnvelope(settlementInput);
     return {
       result: result,
       consumedCount: consumedRows.length,
