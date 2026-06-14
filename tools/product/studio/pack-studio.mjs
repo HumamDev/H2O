@@ -632,6 +632,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // storage, SQLite, Native/F5, publication, relay/outbox, watermark, or
   // consumed-op.
   "sync/library/library-performance-stress-proof.tauri.js",
+  // F19.1.a: Chrome/Desktop Library parity diagnostic. Shared read-only
+  // hash-only snapshot + comparison API for premium-sync closure. Does not
+  // import, export, settle, write SQLite/storage, call Native/F5, or change
+  // propagation behavior.
+  "sync/library/library-chrome-desktop-parity-diagnostic.js",
   // F15.10.a: Desktop/Tauri Library Sync operator status UI. Read-only
   // Settings-hosted proof/status panel. Proof APIs run only from explicit
   // operator actions. No proposal actions, execute dispatch, Native/F5
@@ -1252,6 +1257,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-conflict-runtime.tauri.js",
   "sync/library/library-multipeer-soak-proof.tauri.js",
   "sync/library/library-performance-stress-proof.tauri.js",
+  "sync/library/library-chrome-desktop-parity-diagnostic.js",
   "sync/library/library-sync-operator-ui.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
   "sync/library/library-folder-binding-migration-shadow.tauri.js",

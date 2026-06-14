@@ -1163,6 +1163,13 @@
        SQLite, Native/F5, publication, relay/outbox, watermark, or
        consumed-op state. -->
   <script src="./sync/library/library-performance-stress-proof.tauri.js"></script>
+  <!-- F19.1.a: Chrome/Desktop Library parity diagnostic.
+       Shared read-only diagnostic for premium-sync closure. Captures a
+       hash-only snapshot from the current Studio surface and compares it
+       with a caller-supplied peer snapshot. No import, export, settlement,
+       SQLite write, chrome.storage write, Native/F5 call, or propagation
+       behavior change. -->
+  <script src="./sync/library/library-chrome-desktop-parity-diagnostic.js"></script>
   <!-- F15.10.a: Desktop/Tauri Library Sync operator status UI.
        Read-only Settings-hosted proof/status panel for F15 Library Sync.
        Runs closure and end-to-end proofs only from explicit operator actions;
