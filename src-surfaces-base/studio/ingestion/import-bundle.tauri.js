@@ -520,6 +520,9 @@
   function allowsLibraryShimFallback(options) {
     return !(options && typeof options === 'object' && options.allowLibraryShimFallback === false);
   }
+  function shouldSkipExistingFolderMetadata(options) {
+    return !!(options && typeof options === 'object' && options.skipExistingFolderMetadata === true);
+  }
   function libraryBulkApi() {
     return H2O.Desktop && H2O.Desktop.Sync && H2O.Desktop.Sync.executeLibraryBulkMigration;
   }
@@ -724,7 +727,7 @@
     }
   }
 
-  async function importFolders(bundle, stores, result) {
+  async function importFolders(bundle, stores, result, options) {
     var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY];
     if (!fldData || !Array.isArray(fldData.folders)) return;
     var folderStore = stores.folders;
@@ -738,6 +741,10 @@
       if (!id) { result.warnings.push({ kind: 'folder', warn: 'missing id at index ' + i }); continue; }
       try {
         var existing = await folderStore.get(id);
+        if (existing && shouldSkipExistingFolderMetadata(options)) {
+          result.skipped.folders += 1;
+          continue;
+        }
         var incomingMeta = safeMeta(row && row.meta);
         var existingMeta = safeMeta(existing && existing.meta);
         var color = cleanString((row && (row.color || row.iconColor)) || (existing && existing.color) || existingMeta.color || existingMeta.iconColor);
@@ -1545,7 +1552,7 @@
         await importCategories(bundle, stores, result);
         await importLabels(bundle, stores, result);
       }
-      await importFolders(bundle, stores, result);
+      await importFolders(bundle, stores, result, options);
       await importChats(bundle, stores, result, chatStateIndex, libraryCatalogsHandled && wantsLibraryBulkMigration(options));
       await importSnapshots(bundle, stores, result, chatStateIndex);
       await importFolderBindings(bundle, stores, result, chatStateIndex);

@@ -1,13 +1,11 @@
 /* H2O Studio Sync — Desktop focus/visibility-triggered import (R3 Phase 2)
  *
- * Tauri/Desktop-only opt-in that runs H2O.Studio.sync.scanFolderOnce()
- * when the Studio window gains focus or becomes visible. The scan
- * recognizes `latest.json` (Desktop's own export), `chrome-latest.json`
- * (Chrome's R3-phase-1 export), and the legacy `h2o-studio-full-bundle*`
- * pattern; matching files import through the existing
- * H2O.Studio.sync.importFromFile → importBundle('merge') path. Ledger
- * dedup means re-firing on every focus event is safe — only files with
- * a new SHA-256 fingerprint actually hit the importer.
+ * Tauri/Desktop-only opt-in that imports the current `chrome-latest.json`
+ * when the Studio window gains focus or becomes visible. The F19 path
+ * routes through H2O.Studio.sync.importChromeLatestFromFolder(), which
+ * prunes unsupported Chrome fields, dedupes by SHA-256 fingerprint, and
+ * delegates supported rows into the existing guarded Desktop ingestion
+ * path. Older builds without that API fall back to scanFolderOnce().
  *
  * Sanctioned by R3 amendment §3 ("event-triggered import on the Desktop
  * side after explicit user opt-in") and §5 ("Manual scanNow is
@@ -161,7 +159,7 @@
    * itself routes each matched file through importFromFile → dryRun →
    * importBundle('merge'), with SHA-256 ledger dedup at the file level.
    * Re-runs are no-ops on identical fingerprints, so this trigger is
-   * safe to fire on every focus event. Returns the scan result for
+   * safe to fire on every focus event. Returns the import result for
    * diagnostics; never throws.
    *
    * After a successful scan that touched at least one new file, also
@@ -173,16 +171,23 @@
     state.lastTriggerReason = String(reason || 'unknown');
     state.triggerCount += 1;
     var sync = H2O.Studio && H2O.Studio.sync;
-    if (!sync || typeof sync.scanFolderOnce !== 'function') {
-      state.lastScanStatus = 'scanFolderOnce-unavailable';
-      state.lastScanError  = 'H2O.Studio.sync.scanFolderOnce is not available';
+    if (!sync || (typeof sync.importChromeLatestFromFolder !== 'function' && typeof sync.scanFolderOnce !== 'function')) {
+      state.lastScanStatus = 'sync-import-unavailable';
+      state.lastScanError  = 'H2O.Studio.sync import API is not available';
       return { ok: false, reason: state.lastTriggerReason, startedAt: startedAt, error: state.lastScanError };
     }
     var scanResult;
     try {
-      scanResult = await sync.scanFolderOnce();
+      if (typeof sync.importChromeLatestFromFolder === 'function') {
+        scanResult = await sync.importChromeLatestFromFolder(null, {
+          trigger: 'focus-import',
+          reason: state.lastTriggerReason
+        });
+      } else {
+        scanResult = await sync.scanFolderOnce();
+      }
     } catch (e) {
-      pushError('triggerScan:scanFolderOnce', e);
+      pushError('triggerScan:syncImport', e);
       state.lastScanStatus = 'error';
       state.lastScanError  = String((e && e.message) || e);
       return { ok: false, reason: state.lastTriggerReason, startedAt: startedAt, error: state.lastScanError };
@@ -193,14 +198,19 @@
     var skippedCount  = 0;
     try {
       if (scanResult && typeof scanResult === 'object') {
-        if (Array.isArray(scanResult.imported)) importedCount = scanResult.imported.length;
+        if (scanResult.schema === 'h2o.studio.sync.chrome-desktop-propagation.v1') {
+          importedCount = scanResult.ok && scanResult.status === 'imported' ? 1 : 0;
+          skippedCount = scanResult.status === 'already-imported' ? 1 : 0;
+        } else if (Array.isArray(scanResult.imported)) importedCount = scanResult.imported.length;
         else if (typeof scanResult.importedCount === 'number') importedCount = scanResult.importedCount;
-        if (Array.isArray(scanResult.skipped)) skippedCount = scanResult.skipped.length;
+        if (scanResult.schema !== 'h2o.studio.sync.chrome-desktop-propagation.v1' && Array.isArray(scanResult.skipped)) skippedCount = scanResult.skipped.length;
         else if (typeof scanResult.skippedCount === 'number') skippedCount = scanResult.skippedCount;
       }
     } catch (_) { /* visibility-only */ }
     state.lastScanAt        = startedAt;
-    state.lastScanStatus    = importedCount > 0 ? 'imported' : 'no-new-files';
+    state.lastScanStatus    = scanResult && scanResult.status
+      ? String(scanResult.status)
+      : (importedCount > 0 ? 'imported' : 'no-new-files');
     state.lastScanError     = '';
     state.lastImportedFiles = importedCount;
     state.lastSkippedFiles  = skippedCount;

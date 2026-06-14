@@ -56,6 +56,9 @@
   /* ── Constants ────────────────────────────────────────────────────── */
   var CONFIG_KEY = 'h2o:studio:sync:config:v1';
   var LEDGER_KEY = 'h2o:studio:sync:ledger:v1';
+  var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
+  var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
+  var F19_CHROME_DESKTOP_VERSION = '0.1.0-f19.2.b';
   var MAX_LEDGER_ENTRIES  = 100;
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
@@ -72,6 +75,22 @@
     /^h2o-studio-sync.*\.json$/i,
     /^chrome-latest\.json$/i,
   ];
+  var CHROME_LATEST_FILE = 'chrome-latest.json';
+  var CHROME_DESKTOP_SUPPORTED_FIELDS = [
+    'saved-chat-records',
+    'linked-chat-records',
+    'folder-metadata',
+    'category-metadata',
+    'chat-category-bindings'
+  ];
+  var CHROME_DESKTOP_DEFERRED_CODES = {
+    labels: 'library-propagation-labels-deferred',
+    tags: 'library-propagation-tags-deferred',
+    projects: 'library-propagation-projects-deferred',
+    folderBindings: 'library-propagation-chat-folder-bindings-deferred',
+    unsupportedStorage: 'library-propagation-unsupported-storage-deferred',
+    sourceMetadataMissing: 'library-propagation-source-metadata-missing'
+  };
   /* Browser partial-download suffixes to ignore until the rename completes. */
   var IGNORE_SUFFIXES = ['.crdownload', '.partial', '.download', '.tmp'];
 
@@ -525,6 +544,379 @@
     return false;
   }
 
+  function cloneJson(value) {
+    if (typeof value === 'undefined') return undefined;
+    try { return JSON.parse(JSON.stringify(value)); }
+    catch (_) { return null; }
+  }
+
+  function addUnique(list, code) {
+    var normalized = String(code || '').trim();
+    if (normalized && list.indexOf(normalized) === -1) list.push(normalized);
+  }
+
+  function hasAnyKeys(value, keys) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    for (var i = 0; i < keys.length; i += 1) {
+      if (Object.prototype.hasOwnProperty.call(value, keys[i])) return true;
+    }
+    return false;
+  }
+
+  function countSnapshots(chats) {
+    var total = 0;
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      total += Array.isArray(chat && chat.snapshots) ? chat.snapshots.length : 0;
+    });
+    return total;
+  }
+
+  function countChatViews(chats) {
+    var counts = { saved: 0, linked: 0, pinned: 0, archived: 0 };
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var view = String(index.view || index.kind || index.type || '').toLowerCase();
+      if (view === 'linked' || index.isLinked === true) counts.linked += 1;
+      else counts.saved += 1;
+      if (index.pinned === true || index.isPinned === true) counts.pinned += 1;
+      if (index.archived === true || index.isArchived === true) counts.archived += 1;
+    });
+    return counts;
+  }
+
+  function sanitizeChatForChromeDesktop(chat, warnings) {
+    var out = cloneJson(chat) || {};
+    var chatIndex = out.chatIndex && typeof out.chatIndex === 'object' && !Array.isArray(out.chatIndex)
+      ? out.chatIndex : null;
+    if (chatIndex) {
+      var org = chatIndex.organization && typeof chatIndex.organization === 'object' && !Array.isArray(chatIndex.organization)
+        ? chatIndex.organization : null;
+      if (org) {
+        if (hasAnyKeys(org, ['labels', 'labelIds'])) addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.labels);
+        if (hasAnyKeys(org, ['tags', 'tagIds'])) addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.tags);
+        if (hasAnyKeys(org, ['projectId', 'projectIds', 'projects', 'gizmoId', 'workspaceId'])) {
+          addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.projects);
+        }
+        var nextOrg = {};
+        if (typeof org.categoryId !== 'undefined') nextOrg.categoryId = org.categoryId;
+        if (typeof org.category_id !== 'undefined') nextOrg.category_id = org.category_id;
+        chatIndex.organization = nextOrg;
+      }
+    }
+    return out;
+  }
+
+  function folderStateForChromeDesktop(bundle, warnings) {
+    var source = bundle && bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY_LOCAL];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+    var folders = Array.isArray(source.folders) ? cloneJson(source.folders) : [];
+    var items = source.items && typeof source.items === 'object' && !Array.isArray(source.items) ? source.items : {};
+    var itemKeys = Object.keys(items);
+    for (var i = 0; i < itemKeys.length; i += 1) {
+      if (Array.isArray(items[itemKeys[i]]) && items[itemKeys[i]].length > 0) {
+        addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.folderBindings);
+        break;
+      }
+    }
+    return {
+      schemaVersion: Number(source.schemaVersion || source.version || 1) || 1,
+      exportedFrom: String(source.exportedFrom || source.source || 'chrome-studio'),
+      exportedAt: String(source.exportedAt || source.updatedAt || ''),
+      folders: folders,
+      items: {}
+    };
+  }
+
+  function buildChromeDesktopSupportedBundle(bundleInput) {
+    var warnings = [];
+    var blockers = [];
+    var bundle = bundleInput && typeof bundleInput === 'object' && !Array.isArray(bundleInput)
+      ? bundleInput : null;
+    if (!bundle) {
+      return { ok: false, blockers: ['library-propagation-bundle-invalid'], warnings: warnings };
+    }
+    if (String(bundle.schema || '').trim() !== FULL_BUNDLE_SCHEMA) {
+      return { ok: false, blockers: ['library-propagation-schema-invalid'], warnings: warnings };
+    }
+
+    var chatArchive = bundle.chatArchive && typeof bundle.chatArchive === 'object' && !Array.isArray(bundle.chatArchive)
+      ? bundle.chatArchive : {};
+    var sourceCatalogs = chatArchive.catalogs && typeof chatArchive.catalogs === 'object' && !Array.isArray(chatArchive.catalogs)
+      ? chatArchive.catalogs : {};
+    var sourceChats = Array.isArray(chatArchive.chats) ? chatArchive.chats : [];
+    var sourceCategories = Array.isArray(sourceCatalogs.categories) ? sourceCatalogs.categories : [];
+
+    if (Array.isArray(sourceCatalogs.labels) && sourceCatalogs.labels.length > 0) {
+      addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.labels);
+    }
+    if (Array.isArray(sourceCatalogs.tags) && sourceCatalogs.tags.length > 0) {
+      addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.tags);
+    }
+    if (Array.isArray(bundle.libraryKv) && bundle.libraryKv.length > 0) {
+      for (var kv = 0; kv < bundle.libraryKv.length; kv += 1) {
+        var key = String(bundle.libraryKv[kv] && bundle.libraryKv[kv].key || '');
+        if (key.indexOf(':labels:') !== -1) addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.labels);
+        else addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.unsupportedStorage);
+      }
+    }
+    if (bundle.chromeStorageLocal && typeof bundle.chromeStorageLocal === 'object' && !Array.isArray(bundle.chromeStorageLocal)) {
+      Object.keys(bundle.chromeStorageLocal).forEach(function (key) {
+        if (key !== FOLDER_STATE_KEY_LOCAL) addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.unsupportedStorage);
+      });
+    }
+    if (bundle.projects || bundle.projectCatalog || bundle.workspaceProjects) {
+      addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.projects);
+    }
+    if (!bundle.sourcePeerEnvelope && !bundle.sourceSyncPeerId) {
+      addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.sourceMetadataMissing);
+    }
+
+    var chats = sourceChats.map(function (chat) {
+      return sanitizeChatForChromeDesktop(chat, warnings);
+    });
+    var chatViewCounts = countChatViews(chats);
+    var categories = cloneJson(sourceCategories) || [];
+    var folderState = folderStateForChromeDesktop(bundle, warnings);
+    var chromeStorageLocal = {};
+    if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
+
+    var supported = {
+      schema: FULL_BUNDLE_SCHEMA,
+      exportedAt: String(bundle.exportedAt || ''),
+      exportId: String(bundle.exportId || ''),
+      sequenceNumber: typeof bundle.sequenceNumber === 'number' ? bundle.sequenceNumber : null,
+      previousExportId: bundle.previousExportId ? String(bundle.previousExportId) : null,
+      contentSha256: bundle.contentSha256 ? String(bundle.contentSha256) : '',
+      sourceSurfaceKind: String(bundle.sourceSurfaceKind || 'chrome-studio'),
+      sourceAppKind: String(bundle.sourceAppKind || ''),
+      sourceStoreKind: String(bundle.sourceStoreKind || ''),
+      sourcePeerEnvelope: bundle.sourcePeerEnvelope && typeof bundle.sourcePeerEnvelope === 'object'
+        ? cloneJson(bundle.sourcePeerEnvelope) : null,
+      chatArchive: {
+        schema: String(chatArchive.schema || 'h2o.chatArchive.bundle.v1'),
+        exportedAt: String(chatArchive.exportedAt || bundle.exportedAt || ''),
+        chats: chats,
+        catalogs: {
+          categories: categories,
+          labels: []
+        }
+      },
+      chromeStorageLocal: chromeStorageLocal,
+      libraryKv: []
+    };
+
+    return {
+      ok: true,
+      bundle: supported,
+      warnings: warnings,
+      blockers: blockers,
+      sourceSummary: {
+        schema: FULL_BUNDLE_SCHEMA,
+        direction: 'chrome-to-desktop',
+        transport: 'chrome-latest.json',
+        chatCount: chats.length,
+        savedCount: chatViewCounts.saved,
+        linkedCount: chatViewCounts.linked,
+        pinnedCount: chatViewCounts.pinned,
+        archivedCount: chatViewCounts.archived,
+        snapshotCount: countSnapshots(chats),
+        categoryCount: categories.length,
+        folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
+        hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
+        hasExportId: !!supported.exportId,
+        hasContentSha256: !!supported.contentSha256
+      }
+    };
+  }
+
+  function redactedImportSummary(result) {
+    var r = result && typeof result === 'object' ? result : {};
+    var written = r.written && typeof r.written === 'object' ? r.written : {};
+    var skipped = r.skipped && typeof r.skipped === 'object' ? r.skipped : {};
+    var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
+    return {
+      ok: r.ok !== false,
+      mode: String(r.mode || 'merge'),
+      destinationBackend: String(r.destinationBackend || ''),
+      written: {
+        chats: Number(written.chats || 0),
+        snapshots: Number(written.snapshots || 0),
+        categories: Number(written.categories || 0),
+        folders: Number(written.folders || 0),
+        folderBindings: Number(written.folderBindings || 0),
+        labelBindings: Number(written.labelBindings || 0),
+        tagBindings: Number(written.tagBindings || 0)
+      },
+      skipped: {
+        chats: Number(skipped.chats || 0),
+        snapshots: Number(skipped.snapshots || 0),
+        categories: Number(skipped.categories || 0),
+        folders: Number(skipped.folders || 0),
+        deniedStorageKeys: Number(denied.chromeStorageLocal || 0),
+        deniedKvKeys: Number(denied.libraryKv || 0)
+      },
+      warningsCount: Array.isArray(r.warnings) ? r.warnings.length : 0,
+      errorsCount: Array.isArray(r.errors) ? r.errors.length : 0,
+      libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
+        ? r.libraryBulkMigration.map(function (entry) {
+          return {
+            phase: String(entry && entry.phase || ''),
+            ok: !!(entry && entry.ok === true),
+            status: String(entry && entry.status || ''),
+            blockers: Array.isArray(entry && entry.blockers) ? entry.blockers.slice() : [],
+            warnings: Array.isArray(entry && entry.warnings) ? entry.warnings.slice() : []
+          };
+        }) : []
+    };
+  }
+
+  function propagationResult(ok, fields) {
+    var f = fields && typeof fields === 'object' ? fields : {};
+    var blockers = Array.isArray(f.blockers) ? f.blockers.slice() : [];
+    var warnings = Array.isArray(f.warnings) ? f.warnings.slice() : [];
+    var status = String(f.status || (ok ? 'imported' : 'blocked'));
+    return {
+      schema: PROPAGATION_SCHEMA,
+      version: F19_CHROME_DESKTOP_VERSION,
+      ok: ok === true && blockers.length === 0,
+      direction: 'chrome-to-desktop',
+      transport: 'chrome-latest.json',
+      status: status,
+      supportedFields: CHROME_DESKTOP_SUPPORTED_FIELDS.slice(),
+      deferredFields: warnings.filter(function (code) {
+        return code === CHROME_DESKTOP_DEFERRED_CODES.labels ||
+          code === CHROME_DESKTOP_DEFERRED_CODES.tags ||
+          code === CHROME_DESKTOP_DEFERRED_CODES.projects ||
+          code === CHROME_DESKTOP_DEFERRED_CODES.folderBindings;
+      }),
+      sourceSummary: f.sourceSummary || null,
+      importSummary: f.importSummary || null,
+      parity: f.parity || {
+        snapshotCaptured: false,
+        paritySnapshotHash: '',
+        parityDiagnosticReady: !!(H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.libraryParity)
+      },
+      idempotency: f.idempotency || {
+        fileFingerprintChecked: false,
+        mergeOnly: true,
+        existingRowsSkipped: true
+      },
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      },
+      sideEffects: {
+        chromeStorageWritten: false,
+        desktopSqliteMayWriteSupportedRows: ok === true && status !== 'already-imported',
+        nativeCalled: false,
+        f5Touched: false,
+        relayTouched: false,
+        outboxTouched: false
+      },
+      blockers: blockers,
+      warnings: warnings,
+      observedAt: new Date().toISOString()
+    };
+  }
+
+  async function captureParityAfterImport() {
+    try {
+      var parity = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.libraryParity;
+      if (!parity || typeof parity.captureSnapshot !== 'function') {
+        return { snapshotCaptured: false, paritySnapshotHash: '', parityDiagnosticReady: false };
+      }
+      var snapshot = await parity.captureSnapshot();
+      return {
+        snapshotCaptured: !!(snapshot && snapshot.schema),
+        paritySnapshotHash: await sha256Hex(JSON.stringify(snapshot || {})),
+        parityDiagnosticReady: true,
+        surface: String(snapshot && snapshot.surface || '')
+      };
+    } catch (e) {
+      return {
+        snapshotCaptured: false,
+        paritySnapshotHash: '',
+        parityDiagnosticReady: false,
+        warning: 'library-propagation-parity-snapshot-failed'
+      };
+    }
+  }
+
+  async function importChromeLatestBundle(bundleInput, options) {
+    var normalized = buildChromeDesktopSupportedBundle(bundleInput);
+    if (!normalized.ok) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: normalized.blockers || ['library-propagation-bundle-invalid'],
+        warnings: normalized.warnings || []
+      });
+    }
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || null;
+    if (!ingestion || typeof ingestion.importBundle !== 'function') {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-ingestion-unavailable'],
+        warnings: normalized.warnings,
+        sourceSummary: normalized.sourceSummary
+      });
+    }
+    var importOptions = Object.assign({}, options && typeof options === 'object' ? options : {}, {
+      sourceSurface: 'chrome-studio',
+      targetSurface: 'desktop-studio',
+      transport: 'chrome-latest.json',
+      f19ChromeDesktopPropagation: true,
+      allowLibraryShimFallback: false,
+      skipExistingFolderMetadata: true
+    });
+    var imported;
+    try {
+      imported = await ingestion.importBundle(normalized.bundle, 'merge', importOptions);
+    } catch (e) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-import-threw'],
+        warnings: normalized.warnings,
+        sourceSummary: normalized.sourceSummary,
+        importSummary: { ok: false, errorsCount: 1 }
+      });
+    }
+    var warnings = normalized.warnings.slice();
+    var importSummary = redactedImportSummary(imported);
+    if (!imported || imported.ok === false) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-import-failed'],
+        warnings: warnings,
+        sourceSummary: normalized.sourceSummary,
+        importSummary: importSummary
+      });
+    }
+    try {
+      if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
+        await H2O.LibraryIndex.refresh('f19-chrome-desktop-import');
+      }
+    } catch (_) {
+      addUnique(warnings, 'library-propagation-library-index-refresh-failed');
+    }
+    var parity = await captureParityAfterImport();
+    if (parity.warning) addUnique(warnings, parity.warning);
+    return propagationResult(true, {
+      status: 'imported',
+      warnings: warnings,
+      sourceSummary: normalized.sourceSummary,
+      importSummary: importSummary,
+      parity: parity,
+      idempotency: {
+        fileFingerprintChecked: false,
+        mergeOnly: true,
+        existingRowsSkipped: true,
+        protectedDomainFallbackDisabled: true
+      }
+    });
+  }
+
   /* ── importFromFile ───────────────────────────────────────────────── */
   /* Read + fingerprint + dedupe + dry-run + importBundle('merge') in one
    * call. Returns { ok, status: 'imported' | 'already-imported' | error,
@@ -536,7 +928,8 @@
    * chatArchive). Full bundles continue to dry-run + importBundle. The
    * result + ledger entry carry a `routedVia` field so diagnostics can
    * tell which path ran. */
-  async function importFromFile(filePathArg) {
+  async function importFromFile(filePathArg, options) {
+    var importOptions = (options && typeof options === 'object') ? options : {};
     var filePath = String(filePathArg || '').trim();
     if (!filePath) return { ok: false, error: 'path-required' };
 
@@ -594,8 +987,8 @@
     var result;
     try {
       result = folderOnly
-        ? await ingestion.importFolderStateOnly(bundle)
-        : await ingestion.importBundle(bundle, 'merge');
+        ? await ingestion.importFolderStateOnly(bundle, importOptions)
+        : await ingestion.importBundle(bundle, 'merge', importOptions);
     } catch (e) { return { ok: false, error: 'import-failed', detail: String((e && e.message) || e), routedVia: routedVia }; }
 
     state.lastImportAt = new Date().toISOString();
@@ -635,7 +1028,7 @@
       sizeBytes: sizeBytes,
       detectedAt: state.lastImportAt,
       importedAt: state.lastImportAt,
-      mode: 'manual',
+      mode: String(importOptions.mode || 'manual'),
       routedVia: routedVia,
       bundleExportedAt: (bundle && typeof bundle.exportedAt === 'string') ? bundle.exportedAt : '',
       resultSummary: result ? {
@@ -657,6 +1050,119 @@
       result: result,
       ledgerEntry: entry,
     };
+  }
+
+  async function importChromeLatestFromFile(filePathArg, options) {
+    var filePath = String(filePathArg || '').trim();
+    if (!filePath) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-path-required']
+      });
+    }
+    if (basename(filePath).toLowerCase() !== CHROME_LATEST_FILE) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-chrome-latest-filename-required']
+      });
+    }
+
+    var fileText;
+    try { fileText = await fsReadTextFile(filePath); }
+    catch (e) {
+      pushErr('importChromeLatest.readFile', e);
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-read-failed']
+      });
+    }
+
+    var sizeBytes = (typeof fileText === 'string') ? fileText.length : 0;
+    if (sizeBytes > MAX_FILE_SIZE_BYTES) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-file-too-large'],
+        sourceSummary: { sizeBytes: sizeBytes }
+      });
+    }
+
+    var fingerprint = '';
+    try { fingerprint = await sha256Hex(fileText); }
+    catch (e) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-fingerprint-failed']
+      });
+    }
+
+    var ledger = await getLedger();
+    var existing = ledger.entries.filter(function (le) { return le && le.fingerprint === fingerprint; })[0];
+    if (existing) {
+      return propagationResult(true, {
+        status: 'already-imported',
+        idempotency: {
+          fileFingerprintChecked: true,
+          alreadyImported: true,
+          mergeOnly: true,
+          existingRowsSkipped: true,
+          protectedDomainFallbackDisabled: true
+        }
+      });
+    }
+
+    var bundle;
+    try { bundle = JSON.parse(fileText); }
+    catch (e) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-json-parse-failed']
+      });
+    }
+
+    var result = await importChromeLatestBundle(bundle, Object.assign(
+      {},
+      options && typeof options === 'object' ? options : {},
+      { fileFingerprint: fingerprint, mode: 'f19-chrome-desktop' }
+    ));
+    result.idempotency = Object.assign({}, result.idempotency || {}, {
+      fileFingerprintChecked: true,
+      alreadyImported: false
+    });
+    if (result.ok) {
+      state.lastImportAt = new Date().toISOString();
+      await appendLedgerEntry({
+        fingerprint: fingerprint,
+        filename: CHROME_LATEST_FILE,
+        path: filePath,
+        sizeBytes: sizeBytes,
+        detectedAt: state.lastImportAt,
+        importedAt: state.lastImportAt,
+        mode: 'f19-chrome-desktop',
+        routedVia: 'importChromeLatestBundle',
+        bundleExportedAt: (bundle && typeof bundle.exportedAt === 'string') ? bundle.exportedAt : '',
+        resultSummary: {
+          ok: true,
+          status: result.status,
+          warningsCount: result.warnings.length,
+          blockersCount: result.blockers.length,
+          written: result.importSummary && result.importSummary.written ? result.importSummary.written : null,
+          skipped: result.importSummary && result.importSummary.skipped ? result.importSummary.skipped : null
+        }
+      });
+    }
+    return result;
+  }
+
+  async function importChromeLatestFromFolder(folderPathArg, options) {
+    var config = await getConfig();
+    var folderPath = String(folderPathArg || config.folderPath || '').trim();
+    if (!folderPath) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-folder-required']
+      });
+    }
+    return importChromeLatestFromFile(joinPath(folderPath, CHROME_LATEST_FILE), options);
   }
 
   /* ── M2d-1b: Polling watcher / Notify mode ───────────────────────── */
@@ -934,6 +1440,15 @@
       ignoreSuffixes: IGNORE_SUFFIXES.slice(),
       ingestionAvailable: !!(ingestion && typeof ingestion.importBundle === 'function'),
       folderOnlyApiAvailable: !!(ingestion && typeof ingestion.importFolderStateOnly === 'function'),
+      chromeDesktopPropagation: {
+        schema: PROPAGATION_SCHEMA,
+        version: F19_CHROME_DESKTOP_VERSION,
+        transport: CHROME_LATEST_FILE,
+        direction: 'chrome-to-desktop',
+        supportedFields: CHROME_DESKTOP_SUPPORTED_FIELDS.slice(),
+        deferredCodes: Object.assign({}, CHROME_DESKTOP_DEFERRED_CODES),
+        guardedImportAvailable: !!(ingestion && typeof ingestion.importBundle === 'function')
+      },
       state: {
         lastScanAt: state.lastScanAt,
         lastImportAt: state.lastImportAt,
@@ -975,6 +1490,11 @@
     clearLedger:     clearLedger,
     scanFolderOnce:  scanFolderOnce,
     importFromFile:  importFromFile,
+    importChromeLatestBundle:     importChromeLatestBundle,
+    importChromeLatestFromFile:   importChromeLatestFromFile,
+    importChromeLatestFromFolder: importChromeLatestFromFolder,
+    chromeDesktopPropagationSchema: PROPAGATION_SCHEMA,
+    chromeDesktopPropagationVersion: F19_CHROME_DESKTOP_VERSION,
     diagnose:        diagnose,
     /* M2d-1b polling watcher + Notify-mode API */
     startWatcher:         startWatcher,
