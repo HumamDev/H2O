@@ -587,9 +587,10 @@
       var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
       var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
       var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+      var hasSnapshots = chatSnapshots(chat).length > 0;
       if (view === 'saved' || index.isSaved === true || stateObj.isSaved === true) counts.saved += 1;
       else if (view === 'linked' || index.isLinked === true || stateObj.isLinked === true) counts.linked += 1;
-      else counts.saved += 1;
+      else if (hasSnapshots) counts.saved += 1;
       if (index.pinned === true || index.isPinned === true || stateObj.isPinned === true) counts.pinned += 1;
       if (index.archived === true || index.isArchived === true || stateObj.isArchived === true) counts.archived += 1;
     });
@@ -613,26 +614,36 @@
       : {};
   }
 
+  function desktopShellLinkTarget(chat, index) {
+    return cleanString(index && (index.href || index.normalizedHref || index.linkSourceHref)) ||
+      cleanString(chat && (chat.href || chat.normalizedHref || chat.linkSourceHref));
+  }
+
   function isDesktopShellLibraryRow(chat) {
     var chatId = cleanString(chat && chat.chatId);
     if (!chatId || chatSnapshots(chat).length > 0) return false;
     var index = chatIndexForRow(chat);
     var stateObj = chatIndexState(chat);
     var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+    var hasLinkTarget = !!desktopShellLinkTarget(chat, index);
     return index.f19MinimalLibraryIndexRow === true ||
       index.f19ChromeDesktopMinimalRow === true ||
       view === 'saved' ||
       view === 'linked' ||
+      view === 'imported' ||
       index.isSaved === true ||
       index.isLinked === true ||
+      index.isImported === true ||
       stateObj.isSaved === true ||
       stateObj.isLinked === true ||
+      stateObj.isImported === true ||
       stateObj.isPinned === true ||
-      stateObj.isArchived === true;
+      stateObj.isArchived === true ||
+      hasLinkTarget;
   }
 
   function desktopShellRowSummary(chats) {
-    var summary = { shellRowCount: 0, linkedOnlyCount: 0, savedShellCount: 0 };
+    var summary = { shellRowCount: 0, linkedOnlyCount: 0, savedShellCount: 0, importedShellCount: 0 };
     (Array.isArray(chats) ? chats : []).forEach(function (chat) {
       if (!isDesktopShellLibraryRow(chat)) return;
       summary.shellRowCount += 1;
@@ -641,8 +652,11 @@
       var view = cleanString(index.view || index.kind || index.type).toLowerCase();
       var isSaved = view === 'saved' || index.isSaved === true || stateObj.isSaved === true;
       var isLinked = view === 'linked' || index.isLinked === true || stateObj.isLinked === true;
+      var isImported = !isSaved && !isLinked &&
+        (view === 'imported' || index.isImported === true || stateObj.isImported === true || !!desktopShellLinkTarget(chat, index));
       if (isLinked && !isSaved) summary.linkedOnlyCount += 1;
       if (isSaved) summary.savedShellCount += 1;
+      if (isImported) summary.importedShellCount += 1;
     });
     return summary;
   }
@@ -785,6 +799,7 @@
         shellRowCount: shellSummary.shellRowCount,
         linkedOnlyCount: shellSummary.linkedOnlyCount,
         savedShellCount: shellSummary.savedShellCount,
+        importedShellCount: shellSummary.importedShellCount,
         snapshotCount: countSnapshots(chats),
         categoryCount: categories.length,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
@@ -856,7 +871,9 @@
     var view = cleanString(index.view || index.kind || index.type).toLowerCase();
     var saved = view === 'saved' || index.isSaved === true || stateObj.isSaved === true;
     var linked = view === 'linked' || index.isLinked === true || stateObj.isLinked === true;
-    var href = cleanString(index.href || chat.href || chat.normalizedHref || index.linkSourceHref || chat.linkSourceHref)
+    var imported = !saved && !linked &&
+      (view === 'imported' || index.isImported === true || stateObj.isImported === true || !!desktopShellLinkTarget(chat, index));
+    var href = desktopShellLinkTarget(chat, index)
       || ('https://chatgpt.com/c/' + chatId);
     var linkedAt = cleanString(index.linkedAt || chat.linkedAt);
     var now = nowIso();
@@ -890,7 +907,7 @@
       linkSourceHref: cleanString(index.linkSourceHref || chat.linkSourceHref) || href,
       quality: {
         confidence: 'sync-shell',
-        inferredFields: ['desktop-shell-row']
+        inferredFields: imported ? ['desktop-imported-shell-row'] : ['desktop-shell-row']
       }
     };
   }
@@ -995,8 +1012,13 @@
       categories: numberOrZero(source.categoryCount)
     };
     var mismatches = [];
-    Object.keys(expected).forEach(function (key) {
+    ['total', 'saved', 'linked', 'folders', 'categories'].forEach(function (key) {
       if (counts[key] !== expected[key]) {
+        mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
+      }
+    });
+    ['pinned', 'archived'].forEach(function (key) {
+      if (expected[key] > 0 && counts[key] < expected[key]) {
         mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
       }
     });

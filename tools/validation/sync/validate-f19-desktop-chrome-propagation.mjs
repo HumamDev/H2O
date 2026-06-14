@@ -101,6 +101,15 @@ function buildDesktopBundle() {
             organization: {}
           },
           snapshots: []
+        },
+        {
+          chatId: 'desktop-chat-id-3',
+          chatIndex: {
+            title: 'Private Desktop Imported Shell Title',
+            href: 'https://chatgpt.com/c/desktop-chat-id-3',
+            organization: {}
+          },
+          snapshots: []
         }
       ]
     },
@@ -226,7 +235,7 @@ function buildContext() {
       return {
         schema: 'h2o.studio.sync.library-parity-snapshot.v1',
         surface: 'chrome-studio',
-        counts: { total: 2, saved: 1, linked: 1, pinned: 1, archived: 0, folders: 1, categories: 1 },
+        counts: { total: 3, saved: 1, linked: 1, pinned: 1, archived: 0, folders: 1, categories: 1 },
         fingerprints: { chats: 'hash-only-fixture' }
       };
     }
@@ -254,14 +263,15 @@ async function runVmProof() {
   assert(result.transport === 'latest.json', 'transport mismatch');
   assert(result.ok === true, 'propagation proof should pass');
   assert(result.status === 'imported', 'propagation status should be imported');
-  assert(result.sourceSummary.chatCount === 2, 'source chat count mismatch');
+  assert(result.sourceSummary.chatCount === 3, 'source chat count mismatch');
   assert(result.sourceSummary.savedCount === 1, 'source saved count mismatch');
   assert(result.sourceSummary.linkedCount === 1, 'source linked count mismatch');
   assert(result.sourceSummary.pinnedCount === 1, 'source pinned count mismatch');
-  assert(result.sourceSummary.shellRowCount === 1, 'source shell row count mismatch');
+  assert(result.sourceSummary.shellRowCount === 2, 'source shell row count mismatch');
   assert(result.sourceSummary.linkedOnlyCount === 1, 'source linked-only shell count mismatch');
-  assert(result.importSummary.shellRowsIncoming === 1, 'shell row incoming count mismatch');
-  assert(result.importSummary.shellRowsMaterialized === 1, 'shell row materialized count mismatch');
+  assert(result.sourceSummary.importedShellCount === 1, 'source imported shell count mismatch');
+  assert(result.importSummary.shellRowsIncoming === 2, 'shell row incoming count mismatch');
+  assert(result.importSummary.shellRowsMaterialized === 2, 'shell row materialized count mismatch');
   assert(result.importSummary.shellRowsFailed === 0, 'shell row failure count mismatch');
   assert(result.convergence && result.convergence.ok === true, 'desktop-to-chrome convergence should be proven');
   assert(Array.isArray(result.redactedErrorCategories), 'redacted error categories missing');
@@ -288,6 +298,7 @@ async function runVmProof() {
   assert(result.sideEffects.nativeCalled === false, 'Native should not be called by propagation proof');
   assert(result.parity.snapshotCaptured === true, 'parity snapshot should be captured');
   assert(context.__registryRecords.has('desktop-chat-id-2'), 'Desktop shell row was not materialized into ChatRegistry');
+  assert(context.__registryRecords.has('desktop-chat-id-3'), 'Desktop imported shell row was not materialized into ChatRegistry');
 
   const approved = await api.importLatestBundle(buildDesktopBundle(), {
     fileFingerprint: 'sha256:test-fixture-approval',
@@ -306,7 +317,7 @@ async function runVmProof() {
   assert(importCall, 'importFullBundle was not called');
   const payload = importCall.message.req.payload;
   assert(payload.mode === 'merge', 'import mode must be merge');
-  assert(payload.bundle.chatArchive.chats.length === 2, 'chat count should be preserved');
+  assert(payload.bundle.chatArchive.chats.length === 3, 'chat count should be preserved');
   assert(payload.bundle.chatArchive.catalogs.categories.length === 1, 'category count should be preserved');
   assert(payload.bundle.chatArchive.catalogs.labels.length === 0, 'labels must be stripped');
   assert(payload.bundle.libraryKv.length === 0, 'libraryKv must be stripped');

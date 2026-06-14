@@ -239,13 +239,53 @@
     } catch (e) { err('readNativeChatRegistryRecords', e); return []; }
   }
 
-  // Linked-only records live in Chat Registry but have no archive snapshot.
-  // Delegated to the shared core; the projection enforces the strict filter
-  // (isLinked AND !isSaved AND !isDeleted) and sets view='linked' so the
-  // Saved/Pinned/Archive tabs naturally exclude them.
-  function normalizeLinkedOnlyRegistryRow(rec) {
+  // Zero-snapshot registry records live in Chat Registry but have no archive
+  // snapshot. Desktop -> Chrome propagation materializes Desktop shell rows
+  // here; saved/linked flags keep their normal meaning, while imported-only
+  // shell rows are visible total-only rows and do not increment saved/linked.
+  function normalizeRegistryShellRow(rec) {
     const c = ixCore();
-    return c ? c.normalizeLinkedOnlyProjection(rec) : null;
+    if (!c || !rec || typeof rec !== 'object') return null;
+    const chatId = String(rec.chatId || '').trim();
+    if (!chatId) return null;
+    const st = rec.state && typeof rec.state === 'object' ? rec.state : null;
+    if (!st || st.isDeleted) return null;
+    const isSaved = !!st.isSaved;
+    const isLinked = !!st.isLinked;
+    const isImported = !!st.isImported;
+    const href = String(rec.href || rec.normalizedHref || rec.linkSourceHref || '').trim();
+    if (!isSaved && !isLinked && !isImported && !st.isPinned && !st.isArchived && !href) return null;
+    return c.normalizeRowStudio({
+      chatId,
+      title: String(rec.title || chatId).trim(),
+      projectId: rec.project?.projectId,
+      folderId: rec.organization?.folderId,
+      categoryId: rec.organization?.categoryId,
+      view: isSaved ? 'saved' : (isLinked ? 'linked' : 'imported'),
+      tags: [],
+      labels: [],
+      updatedAt: String(rec.updatedAt || rec.lastSeenAt || rec.firstSeenAt || ''),
+      capturedAt: '',
+      state: {
+        isLinked,
+        isSaved,
+        isPinned: !!st.isPinned,
+        isArchived: !!st.isArchived,
+        isImported,
+        isDeleted: false,
+      },
+      linkedAt: String(rec.linkedAt || ''),
+      linkedFrom: String(rec.linkedFrom || ''),
+      linkSourceHref: String(rec.linkSourceHref || ''),
+      href,
+      normalizedHref: String(rec.normalizedHref || ''),
+    });
+  }
+
+  // Backward-compatible alias for older diagnostics and comments. This now
+  // accepts saved and imported shell rows in addition to linked-only rows.
+  function normalizeLinkedOnlyRegistryRow(rec) {
+    return normalizeRegistryShellRow(rec);
   }
 
   async function refreshFromArchive(reason = 'manual') {
@@ -285,6 +325,7 @@
           nativeLinkedRows: 0,
           fallbackRegistryRecords: 0,
           fallbackLinkedRows: 0,
+          fallbackRegistryShellRows: 0,
           linkedRows: 0,
           at: Date.now(),
         };
@@ -296,6 +337,7 @@
           let nativeLinkedRows = 0;
           let fallbackRecordsCount = 0;
           let fallbackLinkedRows = 0;
+          let fallbackRegistryShellRows = 0;
           for (const rec of nativeRecords) {
             if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
             const row = normalizeLinkedOnlyRegistryRow(rec);
@@ -323,6 +365,7 @@
               linkedRows.push(row);
               projectedIds.add(row.chatId);
               fallbackLinkedRows++;
+              fallbackRegistryShellRows++;
             }
           }
           state.lastRefreshSources = {
@@ -333,6 +376,7 @@
             nativeLinkedRows,
             fallbackRegistryRecords: fallbackRecordsCount,
             fallbackLinkedRows,
+            fallbackRegistryShellRows,
             linkedRows: linkedRows.length,
             at: Date.now(),
           };
