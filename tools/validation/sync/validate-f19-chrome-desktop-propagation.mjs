@@ -272,6 +272,25 @@ async function runVmProof() {
   assert(!Object.prototype.hasOwnProperty.call(org, 'projectId'), 'project must be stripped from chat organization');
   assert(context.__refreshReasons.includes('f19-chrome-desktop-import'), 'LibraryIndex refresh was not requested');
 
+  context.H2O.Studio.ingestion.importBundle = async function coveredMinimalImport(bundle, mode) {
+    return {
+      ok: false,
+      mode,
+      destinationBackend: 'sqlite-fixture',
+      written: { chats: 1, snapshots: 0, categories: 0, folders: 0 },
+      skipped: { chats: 1, snapshots: 0, categories: 0, folders: 0 },
+      warnings: [{ kind: 'chrome-minimal-row-materialized-via-shell-insert' }],
+      errors: [{ kind: 'chrome-minimal-row-import', code: 'sqlite-unavailable' }],
+      libraryBulkMigration: []
+    };
+  };
+  const covered = await api.importChromeLatestBundle(buildChromeBundle(), { proofMode: true });
+  assert(covered.ok === true, 'covered minimal row stale error should not block propagation');
+  assert(!covered.blockers.includes('chrome-minimal-row-import-unsupported'), 'covered minimal row should not emit unsupported blocker');
+  assert(covered.warnings.includes('chrome-minimal-row-stale-error-covered'), 'covered minimal row warning missing');
+  assert(covered.importSummary.staleMinimalRowErrorsCovered === true, 'covered minimal row summary marker missing');
+  assert(covered.importSummary.redactedErrorCategories.some((entry) => entry.code === 'sqlite-unavailable' && entry.count === 1), 'redacted error categories missing');
+
   const publicResult = JSON.stringify(result);
   for (const forbidden of [
     'raw-chat-id-1',
@@ -302,6 +321,8 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'importChromeLatestFromFolder', 'folder API');
   assertContains(folderSyncFile, 'allowLibraryShimFallback: false', 'guarded import fallback disable');
   assertContains(folderSyncFile, 'skipExistingFolderMetadata: true', 'folder overwrite guard');
+  assertContains(folderSyncFile, 'redactedErrorCategories', 'redacted import error categories');
+  assertContains(folderSyncFile, 'staleMinimalRowErrorsAreCovered', 'covered stale minimal-row helper');
   assertContains(folderSyncFile, 'library-propagation-labels-deferred', 'label deferred taxonomy');
   assertContains(folderSyncFile, 'library-propagation-chat-folder-bindings-deferred', 'folder binding deferred taxonomy');
   assertContains(folderSyncFile, 'fileFingerprintChecked: true', 'file idempotency marker');
