@@ -44,7 +44,10 @@
   var PHASE = 'R2C';
   var MODE = 'manual-sync-folder-import';
   var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
+  var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
+  var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var LATEST_FILE = 'latest.json';
+  var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
   var MSG_ARCHIVE = 'h2o-ext-archive:v1';
   var IDB_NAME = 'h2o.studio.sync.folder.mv3';
   var IDB_STORE = 'handles';
@@ -54,6 +57,23 @@
   var AUTO_SYNC_DELAY_MS = 1000;
   var AUTO_SYNC_BOOT_DELAY_MS = 1500;
   var MAX_ERRORS = 20;
+  var DESKTOP_CHROME_SUPPORTED_FIELDS = [
+    'saved-chat-records',
+    'linked-chat-records',
+    'folder-metadata',
+    'category-metadata',
+    'chat-category-bindings'
+  ];
+  var DESKTOP_CHROME_DEFERRED_CODES = {
+    labels: 'library-propagation-labels-deferred',
+    tags: 'library-propagation-tags-deferred',
+    projects: 'library-propagation-projects-deferred',
+    folderBindings: 'library-propagation-chat-folder-bindings-deferred',
+    tombstones: 'library-propagation-tombstones-deferred',
+    applyEvents: 'library-propagation-apply-events-deferred',
+    unsupportedStorage: 'library-propagation-unsupported-storage-deferred',
+    sourceMetadataMissing: 'library-propagation-source-metadata-missing'
+  };
 
   var state = {
     installedAt: Date.now(),
@@ -404,6 +424,378 @@
       throw new Error('missing chatArchive');
     }
     return bundle;
+  }
+
+  function cloneJson(value) {
+    if (typeof value === 'undefined') return undefined;
+    try { return JSON.parse(JSON.stringify(value)); }
+    catch (_) { return null; }
+  }
+
+  function addUnique(list, code) {
+    var normalized = cleanString(code);
+    if (normalized && list.indexOf(normalized) === -1) list.push(normalized);
+  }
+
+  function hasAnyKeys(value, keys) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    for (var i = 0; i < keys.length; i += 1) {
+      if (Object.prototype.hasOwnProperty.call(value, keys[i])) return true;
+    }
+    return false;
+  }
+
+  function countSnapshots(chats) {
+    var total = 0;
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      total += Array.isArray(chat && chat.snapshots) ? chat.snapshots.length : 0;
+    });
+    return total;
+  }
+
+  function countChatViews(chats) {
+    var counts = { saved: 0, linked: 0, pinned: 0, archived: 0 };
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
+      var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+      if (view === 'linked' || index.isLinked === true || stateObj.isLinked === true) counts.linked += 1;
+      else counts.saved += 1;
+      if (index.pinned === true || index.isPinned === true || stateObj.isPinned === true) counts.pinned += 1;
+      if (index.archived === true || index.isArchived === true || stateObj.isArchived === true) counts.archived += 1;
+    });
+    return counts;
+  }
+
+  function sanitizeChatForDesktopChrome(chat, warnings) {
+    var out = cloneJson(chat) || {};
+    var chatIndex = out.chatIndex && typeof out.chatIndex === 'object' && !Array.isArray(out.chatIndex)
+      ? out.chatIndex : null;
+    if (chatIndex) {
+      var org = chatIndex.organization && typeof chatIndex.organization === 'object' && !Array.isArray(chatIndex.organization)
+        ? chatIndex.organization : null;
+      if (org) {
+        if (hasAnyKeys(org, ['labels', 'labelIds'])) addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.labels);
+        if (hasAnyKeys(org, ['tags', 'tagIds'])) addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.tags);
+        if (hasAnyKeys(org, ['projectId', 'projectIds', 'projects', 'gizmoId', 'workspaceId'])) {
+          addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.projects);
+        }
+        if (hasAnyKeys(org, ['folderId', 'folderName', 'folder_id'])) {
+          addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.folderBindings);
+        }
+        var nextOrg = {};
+        if (typeof org.categoryId !== 'undefined') nextOrg.categoryId = org.categoryId;
+        if (typeof org.category_id !== 'undefined') nextOrg.category_id = org.category_id;
+        chatIndex.organization = nextOrg;
+      }
+    }
+    return out;
+  }
+
+  function folderStateForDesktopChrome(bundle, warnings) {
+    var source = bundle && bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY_LOCAL];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+    var folders = Array.isArray(source.folders) ? cloneJson(source.folders) : [];
+    var items = source.items && typeof source.items === 'object' && !Array.isArray(source.items) ? source.items : {};
+    var itemKeys = Object.keys(items);
+    for (var i = 0; i < itemKeys.length; i += 1) {
+      if (Array.isArray(items[itemKeys[i]]) && items[itemKeys[i]].length > 0) {
+        addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.folderBindings);
+        break;
+      }
+    }
+    return {
+      schemaVersion: Number(source.schemaVersion || source.version || 1) || 1,
+      exportedFrom: cleanString(source.exportedFrom || source.source || 'desktop-studio'),
+      exportedAt: cleanString(source.exportedAt || source.updatedAt),
+      folders: folders,
+      items: {}
+    };
+  }
+
+  function buildDesktopChromeSupportedBundle(bundleInput) {
+    var warnings = [];
+    var blockers = [];
+    var bundle = bundleInput && typeof bundleInput === 'object' && !Array.isArray(bundleInput)
+      ? bundleInput : null;
+    if (!bundle) return { ok: false, blockers: ['library-propagation-bundle-invalid'], warnings: warnings };
+    if (cleanString(bundle.schema) !== FULL_BUNDLE_SCHEMA) {
+      return { ok: false, blockers: ['library-propagation-schema-invalid'], warnings: warnings };
+    }
+    var chatArchive = bundle.chatArchive && typeof bundle.chatArchive === 'object' && !Array.isArray(bundle.chatArchive)
+      ? bundle.chatArchive : {};
+    var sourceCatalogs = chatArchive.catalogs && typeof chatArchive.catalogs === 'object' && !Array.isArray(chatArchive.catalogs)
+      ? chatArchive.catalogs : {};
+    var sourceChats = Array.isArray(chatArchive.chats) ? chatArchive.chats : [];
+    var sourceCategories = Array.isArray(sourceCatalogs.categories) ? sourceCatalogs.categories : [];
+    if (Array.isArray(sourceCatalogs.labels) && sourceCatalogs.labels.length > 0) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.labels);
+    }
+    if (Array.isArray(sourceCatalogs.tags) && sourceCatalogs.tags.length > 0) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.tags);
+    }
+    if (Array.isArray(bundle.libraryKv) && bundle.libraryKv.length > 0) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.labels);
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.unsupportedStorage);
+    }
+    if (Array.isArray(bundle.tombstones) && bundle.tombstones.length > 0) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.tombstones);
+    }
+    if (bundle.syncApplyEvents && Number(bundle.syncApplyEvents.total || 0) > 0) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.applyEvents);
+    }
+    if (bundle.chromeStorageLocal && typeof bundle.chromeStorageLocal === 'object' && !Array.isArray(bundle.chromeStorageLocal)) {
+      Object.keys(bundle.chromeStorageLocal).forEach(function (key) {
+        if (key !== FOLDER_STATE_KEY_LOCAL) addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.unsupportedStorage);
+      });
+    }
+    if (bundle.projects || bundle.projectCatalog || bundle.workspaceProjects) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.projects);
+    }
+    if (!bundle.sourcePeerEnvelope && !bundle.sourceSyncPeerId && !bundle.exportedFromSurface) {
+      addUnique(warnings, DESKTOP_CHROME_DEFERRED_CODES.sourceMetadataMissing);
+    }
+    var chats = sourceChats.map(function (chat) {
+      return sanitizeChatForDesktopChrome(chat, warnings);
+    });
+    var chatViewCounts = countChatViews(chats);
+    var categories = cloneJson(sourceCategories) || [];
+    var folderState = folderStateForDesktopChrome(bundle, warnings);
+    var chromeStorageLocal = {};
+    if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
+    var supported = {
+      schema: FULL_BUNDLE_SCHEMA,
+      exportedAt: cleanString(bundle.exportedAt),
+      exportId: cleanString(bundle.exportId),
+      sequenceNumber: typeof bundle.sequenceNumber === 'number' ? bundle.sequenceNumber : null,
+      previousExportId: bundle.previousExportId ? cleanString(bundle.previousExportId) : null,
+      contentSha256: cleanString(bundle.contentSha256),
+      sourceSurfaceKind: cleanString(bundle.sourceSurfaceKind || bundle.exportedFromSurface || 'desktop-studio'),
+      sourceAppKind: cleanString(bundle.sourceAppKind || bundle.exportedFromExtensionName),
+      sourceStoreKind: cleanString(bundle.sourceStoreKind || 'desktop-sqlite'),
+      sourcePeerEnvelope: bundle.sourcePeerEnvelope && typeof bundle.sourcePeerEnvelope === 'object'
+        ? cloneJson(bundle.sourcePeerEnvelope) : null,
+      chatArchive: {
+        schema: cleanString(chatArchive.schema || 'h2o.chatArchive.bundle.v1'),
+        exportedAt: cleanString(chatArchive.exportedAt || bundle.exportedAt),
+        chats: chats,
+        catalogs: {
+          categories: categories,
+          labels: []
+        }
+      },
+      chromeStorageLocal: chromeStorageLocal,
+      libraryKv: []
+    };
+    return {
+      ok: true,
+      bundle: supported,
+      warnings: warnings,
+      blockers: blockers,
+      sourceSummary: {
+        schema: FULL_BUNDLE_SCHEMA,
+        direction: 'desktop-to-chrome',
+        transport: 'latest.json',
+        chatCount: chats.length,
+        savedCount: chatViewCounts.saved,
+        linkedCount: chatViewCounts.linked,
+        pinnedCount: chatViewCounts.pinned,
+        archivedCount: chatViewCounts.archived,
+        snapshotCount: countSnapshots(chats),
+        categoryCount: categories.length,
+        folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
+        hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
+        hasExportId: !!supported.exportId,
+        hasContentSha256: !!supported.contentSha256
+      }
+    };
+  }
+
+  function redactedDryRunSummary(dryRun) {
+    var plan = safeObject(dryRun && dryRun.plan);
+    var chats = safeObject(plan.chats);
+    var storage = safeObject(plan.chromeStorageLocal);
+    var kv = safeObject(plan.libraryKv);
+    return {
+      ok: dryRun && dryRun.ok !== false,
+      incomingChats: numberOrZero(chats.incoming),
+      incomingSnapshots: numberOrZero(chats.incomingSnapshots),
+      willImportChats: numberOrZero(chats.willImport),
+      willSkipDuplicateChats: numberOrZero(chats.willSkipDuplicates),
+      storageKeysIncoming: numberOrZero(storage.incoming),
+      storageKeysWillImport: numberOrZero(storage.willImport),
+      storageKeysDeniedByPolicy: numberOrZero(storage.deniedByPolicy),
+      libraryKvIncoming: numberOrZero(kv.incoming),
+      libraryKvWillImport: numberOrZero(kv.willImport),
+      libraryKvDeniedByPolicy: numberOrZero(kv.deniedByPolicy)
+    };
+  }
+
+  function redactedChromeImportSummary(importResult, dryRun) {
+    var chats = safeObject(importResult && importResult.chats);
+    var storage = safeObject(importResult && importResult.chromeStorageLocal);
+    var kv = safeObject(importResult && importResult.libraryKv);
+    return {
+      ok: importResult && importResult.schema === FULL_BUNDLE_SCHEMA,
+      mode: cleanString(importResult && importResult.mode) || 'merge',
+      dryRun: redactedDryRunSummary(dryRun),
+      importedChats: numberOrZero(chats.importedChats),
+      importedSnapshots: numberOrZero(chats.importedSnapshots),
+      chromeStorageWritten: numberOrZero(storage.written || storage.writtenCount || storage.imported),
+      chromeStorageSkipped: numberOrZero(storage.skipped || storage.skippedCount),
+      libraryKvWritten: numberOrZero(kv.written || kv.writtenCount || kv.imported),
+      libraryKvSkipped: numberOrZero(kv.skipped || kv.skippedCount)
+    };
+  }
+
+  function propagationResult(ok, fields) {
+    var f = fields && typeof fields === 'object' ? fields : {};
+    var blockers = Array.isArray(f.blockers) ? f.blockers.slice() : [];
+    var warnings = Array.isArray(f.warnings) ? f.warnings.slice() : [];
+    var statusValue = cleanString(f.status || (ok ? 'imported' : 'blocked'));
+    return {
+      schema: PROPAGATION_SCHEMA,
+      version: F19_DESKTOP_CHROME_VERSION,
+      ok: ok === true && blockers.length === 0,
+      direction: 'desktop-to-chrome',
+      transport: 'latest.json',
+      status: statusValue,
+      supportedFields: DESKTOP_CHROME_SUPPORTED_FIELDS.slice(),
+      deferredFields: warnings.filter(function (code) {
+        return code === DESKTOP_CHROME_DEFERRED_CODES.labels ||
+          code === DESKTOP_CHROME_DEFERRED_CODES.tags ||
+          code === DESKTOP_CHROME_DEFERRED_CODES.projects ||
+          code === DESKTOP_CHROME_DEFERRED_CODES.folderBindings ||
+          code === DESKTOP_CHROME_DEFERRED_CODES.tombstones ||
+          code === DESKTOP_CHROME_DEFERRED_CODES.applyEvents;
+      }),
+      sourceSummary: f.sourceSummary || null,
+      importSummary: f.importSummary || null,
+      parity: f.parity || {
+        snapshotCaptured: false,
+        paritySnapshotHash: '',
+        parityDiagnosticReady: !!(H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.libraryParity)
+      },
+      idempotency: f.idempotency || {
+        fileFingerprintChecked: false,
+        mergeOnly: true,
+        existingRowsSkipped: true
+      },
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      },
+      sideEffects: {
+        chromeStorageMayWriteSupportedRows: ok === true && statusValue !== 'already-imported' && statusValue !== 'dry-run-ok',
+        desktopSqliteWritten: false,
+        nativeCalled: false,
+        f5Touched: false,
+        relayTouched: false,
+        outboxTouched: false
+      },
+      blockers: blockers,
+      warnings: warnings,
+      observedAt: nowIso()
+    };
+  }
+
+  async function captureParityAfterImport() {
+    try {
+      var parity = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.libraryParity;
+      if (!parity || typeof parity.captureSnapshot !== 'function') {
+        return { snapshotCaptured: false, paritySnapshotHash: '', parityDiagnosticReady: false };
+      }
+      var snapshot = await parity.captureSnapshot();
+      return {
+        snapshotCaptured: !!(snapshot && snapshot.schema),
+        paritySnapshotHash: await sha256Hex(JSON.stringify(snapshot || {})),
+        parityDiagnosticReady: true,
+        surface: cleanString(snapshot && snapshot.surface)
+      };
+    } catch (_) {
+      return {
+        snapshotCaptured: false,
+        paritySnapshotHash: '',
+        parityDiagnosticReady: false,
+        warning: 'library-propagation-parity-snapshot-failed'
+      };
+    }
+  }
+
+  async function importLatestBundle(bundleInput, options) {
+    var opts = safeObject(options);
+    var normalized = buildDesktopChromeSupportedBundle(bundleInput);
+    if (!normalized.ok) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: normalized.blockers || ['library-propagation-bundle-invalid'],
+        warnings: normalized.warnings || []
+      });
+    }
+    var warnings = normalized.warnings.slice();
+    var dryRun;
+    try {
+      dryRun = await callArchive('dryRunImportFullBundle', { bundle: normalized.bundle });
+    } catch (_) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-dry-run-failed'],
+        warnings: warnings,
+        sourceSummary: normalized.sourceSummary
+      });
+    }
+    if (opts.dryRunOnly === true || opts.proofMode === true) {
+      var dryParity = await captureParityAfterImport();
+      if (dryParity.warning) addUnique(warnings, dryParity.warning);
+      return propagationResult(true, {
+        status: 'dry-run-ok',
+        warnings: warnings,
+        sourceSummary: normalized.sourceSummary,
+        importSummary: { ok: true, mode: 'merge', dryRun: redactedDryRunSummary(dryRun), proofMode: opts.proofMode === true },
+        parity: dryParity,
+        idempotency: {
+          fileFingerprintChecked: opts.fileFingerprint ? true : false,
+          mergeOnly: true,
+          existingRowsSkipped: true,
+          dryRunOnly: true
+        }
+      });
+    }
+    var importResult;
+    try {
+      importResult = await callArchive('importFullBundle', { bundle: normalized.bundle, mode: 'merge' });
+    } catch (_) {
+      return propagationResult(false, {
+        status: 'blocked',
+        blockers: ['library-propagation-import-failed'],
+        warnings: warnings,
+        sourceSummary: normalized.sourceSummary,
+        importSummary: { ok: false, dryRun: redactedDryRunSummary(dryRun) }
+      });
+    }
+    await refreshLibraryIndex('desktop-chrome-propagation-import');
+    try {
+      global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
+        detail: { source: 'desktop-chrome-propagation', t: Date.now() },
+      }));
+    } catch (_) { /* ignore */ }
+    var parity = await captureParityAfterImport();
+    if (parity.warning) addUnique(warnings, parity.warning);
+    return propagationResult(true, {
+      status: 'imported',
+      warnings: warnings,
+      sourceSummary: normalized.sourceSummary,
+      importSummary: redactedChromeImportSummary(importResult, dryRun),
+      parity: parity,
+      idempotency: {
+        fileFingerprintChecked: opts.fileFingerprint ? true : false,
+        mergeOnly: true,
+        existingRowsSkipped: true,
+        protectedDomainFallbackDisabled: true
+      }
+    });
   }
 
   async function refreshLibraryIndex(reason) {
@@ -809,6 +1201,8 @@
       folderName: state.folderName,
       permission: state.permission,
       latestFile: LATEST_FILE,
+      desktopChromePropagationSchema: PROPAGATION_SCHEMA,
+      desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,
       /* F3.1: expose lastAppliedExportId so consumers can see which producer
        * export this peer most recently applied. The value is already read
        * from bundle.exportId at line ~969, persisted to chrome.storage.local
@@ -959,6 +1353,16 @@
       var signature = summarySignature(bundle);
       if (opts.autoSync && checksum && state.lastChecksum && state.lastChecksum === checksum) {
         var alreadyRowsAfter = await refreshLibraryIndex('sync-folder-auto-skip');
+        var alreadyPropagation = propagationResult(true, {
+          status: 'already-imported',
+          idempotency: {
+            fileFingerprintChecked: true,
+            alreadyImported: true,
+            mergeOnly: true,
+            existingRowsSkipped: true,
+            protectedDomainFallbackDisabled: true
+          }
+        });
         state.lastFileName = LATEST_FILE;
         state.lastFileLastModified = numberOrZero(file.lastModified);
         state.lastFileSize = numberOrZero(file.size);
@@ -988,6 +1392,7 @@
           importedSnapshots: 0,
           skipped: 0,
           rowsAfter: alreadyRowsAfter,
+          propagation: alreadyPropagation,
           autoSync: true,
           durationMs: Date.now() - startedAt,
           backgroundAutoImport: false,
@@ -996,7 +1401,12 @@
         };
       }
 
-      var dryRun = await callArchive('dryRunImportFullBundle', { bundle: bundle });
+      var propagation = await importLatestBundle(bundle, {
+        dryRunOnly: opts.dryRunOnly === true,
+        fileFingerprint: checksum,
+        reason: cleanString(opts.reason),
+        autoSync: !!opts.autoSync
+      });
       if (opts.dryRunOnly) {
         state.lastSyncStatus = 'sync-folder-dry-run-ok';
         state.lastSyncError = '';
@@ -1013,17 +1423,17 @@
           mode: MODE,
           path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
           schema: bundle.schema,
-          dryRun: dryRun,
+          propagation: propagation,
+          dryRun: propagation.importSummary && propagation.importSummary.dryRun ? propagation.importSummary.dryRun : null,
           checksum: checksum,
           status: 'sync-folder-dry-run-ok',
         };
       }
 
-      var importResult = await callArchive('importFullBundle', { bundle: bundle, mode: 'merge' });
       var rowsAfter = await refreshLibraryIndex('sync-folder-import');
       try {
         global.dispatchEvent(new CustomEvent('evt:h2o:data:backup:imported', {
-          detail: { source: 'sync-folder-import', result: importResult },
+          detail: { source: 'sync-folder-import', result: propagation },
         }));
       } catch (_) { /* ignore */ }
       try {
@@ -1032,7 +1442,8 @@
         }));
       } catch (_) { /* ignore */ }
 
-      var counts = importCounts(importResult, dryRun);
+      var importSummary = safeObject(propagation && propagation.importSummary);
+      var dryRunSummary = safeObject(importSummary.dryRun);
       state.lastFileName = LATEST_FILE;
       state.lastFileLastModified = numberOrZero(file.lastModified);
       state.lastFileSize = numberOrZero(file.size);
@@ -1040,23 +1451,22 @@
       state.lastAppliedAt = nowIso();
       state.lastChecksum = checksum || cleanString(bundle.checksum);
       state.lastSummarySignature = signature;
-      state.lastSyncStatus = 'sync-folder-imported';
-      state.lastSyncError = '';
-      state.lastSyncResult = importResult;
+      state.lastSyncStatus = propagation && propagation.ok ? 'sync-folder-imported' : 'sync-folder-import-blocked';
+      state.lastSyncError = propagation && propagation.ok ? '' : cleanString(propagation && propagation.blockers && propagation.blockers.join(','));
+      state.lastSyncResult = propagation;
       await persistState({
         lastAppliedExportId: state.lastAppliedExportId,
         lastAppliedAt: state.lastAppliedAt,
         lastChecksum: state.lastChecksum,
         lastSummarySignature: signature,
         lastSyncStatus: state.lastSyncStatus,
-        lastSyncError: '',
+        lastSyncError: state.lastSyncError,
         lastFileLastModified: state.lastFileLastModified,
         lastFileSize: state.lastFileSize,
       });
 
-      var tombstoneReviewIngest = await maybeIngestTombstoneReviews(bundle, opts);
       var result = {
-        ok: true,
+        ok: !!(propagation && propagation.ok),
         phase: PHASE,
         mode: MODE,
         path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
@@ -1067,20 +1477,23 @@
         fileLastModified: state.lastFileLastModified,
         fileSize: state.lastFileSize,
         summarySignature: signature,
-        importedChats: counts.importedChats,
-        importedSnapshots: counts.importedSnapshots,
-        skipped: counts.skipped,
-        skippedDetails: counts.skippedDetails,
+        importedChats: numberOrZero(importSummary.importedChats),
+        importedSnapshots: numberOrZero(importSummary.importedSnapshots),
+        skipped: numberOrZero(dryRunSummary.willSkipDuplicateChats),
+        skippedDetails: {
+          chats: numberOrZero(dryRunSummary.willSkipDuplicateChats),
+          chromeStorageLocal: numberOrZero(importSummary.chromeStorageSkipped),
+          libraryKv: numberOrZero(importSummary.libraryKvSkipped),
+        },
         rowsAfter: rowsAfter,
-        dryRun: dryRun,
-        importResult: importResult,
+        dryRun: dryRunSummary,
+        propagation: propagation,
         durationMs: Date.now() - startedAt,
         autoSync: !!opts.autoSync,
         backgroundAutoImport: false,
         chromeWritesSyncFolder: false,
-        status: 'sync-folder-imported',
+        status: propagation && propagation.ok ? 'sync-folder-imported' : 'sync-folder-import-blocked',
       };
-      if (tombstoneReviewIngest) result.tombstoneReviewIngest = tombstoneReviewIngest;
       return result;
     } catch (error) {
       state.lastSyncStatus = 'sync-folder-import-failed';
@@ -1121,6 +1534,15 @@
       chromeStorageAvailable: !!(storage && typeof storage.get === 'function' && typeof storage.set === 'function'),
       dryRunImportAvailable: true,
       mergeImportOnly: true,
+      desktopChromePropagation: {
+        schema: PROPAGATION_SCHEMA,
+        version: F19_DESKTOP_CHROME_VERSION,
+        transport: LATEST_FILE,
+        direction: 'desktop-to-chrome',
+        supportedFields: DESKTOP_CHROME_SUPPORTED_FIELDS.slice(),
+        deferredCodes: Object.assign({}, DESKTOP_CHROME_DEFERRED_CODES),
+        guardedImportAvailable: true
+      },
       automaticPolling: false,
       focusTriggerEnabled: !!state.autoSyncEnabled,
       visibilityTriggerEnabled: !!state.autoSyncEnabled,
@@ -1141,6 +1563,9 @@
     hasFolder: hasFolder,
     status: status,
     syncNow: syncNow,
+    importLatestBundle: importLatestBundle,
+    desktopChromePropagationSchema: PROPAGATION_SCHEMA,
+    desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,
     enableAutoSync: enableAutoSync,
     disableAutoSync: disableAutoSync,
     isAutoSyncEnabled: isAutoSyncEnabled,
