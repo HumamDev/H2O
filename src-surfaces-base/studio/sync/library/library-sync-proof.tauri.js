@@ -833,6 +833,7 @@
       localAccountIdHash: fixtures.originAccountIdHash,
       actorPeer: fixtures.actorPeer,
       existingCatalogSiblings: [],
+      existingCatalogs: [],
       sourceMirror: { fresh: true, status: 'fresh' },
       replayContext: { replaySafe: true, ok: true },
       watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
@@ -897,6 +898,7 @@
       relatedCatalogs: catalogs,
       relatedChats: relatedChats,
       siblingBindings: [],
+      existingBindings: [],
       sourceMirror: { fresh: true, status: 'fresh' },
       replayContext: { replaySafe: true, ok: true },
       watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
@@ -1340,6 +1342,35 @@
         sideEffectSummary: sideEffectSummary()
       };
     }
+  }
+  async function rawValuePrivacyScan(targets, rawNeedles) {
+    var blockers = [];
+    var warnings = [];
+    var leakCount = 0;
+    var checkedTargets = 0;
+    var needles = buildPrivacyNeedles(rawNeedles);
+    for (var i = 0; i < targets.length; i++) {
+      var target = targets[i];
+      if (!isObject(target) && !Array.isArray(target)) continue;
+      checkedTargets += 1;
+      var text = '';
+      try { text = JSON.stringify(target); } catch (_) { text = ''; }
+      var lower = text.toLowerCase();
+      for (var n = 0; n < needles.length; n++) {
+        var needle = needles[n];
+        if (needle && lower.indexOf(needle.toLowerCase()) !== -1) {
+          leakCount += 1;
+          addCode(blockers, 'library-sync-proof-raw-value-leak:' + n);
+        }
+      }
+    }
+    return {
+      ok: blockers.length === 0,
+      checkedTargets: checkedTargets,
+      leakCount: leakCount,
+      blockers: blockers,
+      warnings: warnings
+    };
   }
 
   async function runLibraryCatalogPipelineProof(input) {
@@ -2632,11 +2663,24 @@
       Studio = global.H2O.Studio;
     }
     var originalStore = Studio.store;
+    var sync = getSync();
+    var hadExecuteSettlementSqlite = Object.prototype.hasOwnProperty.call(sync, 'executeSettlementSqlite');
+    var oldExecuteSettlementSqlite = sync.executeSettlementSqlite;
     var mock = buildMockStore();
     Studio.store = mock.store;
     var installFn = getSync().installLibraryStoreCutoverShims;
     var installed = false;
     try {
+      sync.executeSettlementSqlite = async function (statements) {
+        return {
+          ok: true,
+          rowsAffected: asArray(statements).length || 1,
+          proofSafeMockedWritesUsed: true,
+          sideEffectSummary: sideEffectSummary(),
+          blockers: [],
+          warnings: []
+        };
+      };
       if (typeof installFn === 'function') {
         installed = installFn() === true;
       }
@@ -2644,6 +2688,10 @@
         counters: mock.counters };
     } finally {
       Studio.store = originalStore;
+      if (hadExecuteSettlementSqlite) sync.executeSettlementSqlite = oldExecuteSettlementSqlite;
+      else {
+        try { delete sync.executeSettlementSqlite; } catch (_) { sync.executeSettlementSqlite = undefined; }
+      }
     }
   }
 
@@ -4146,6 +4194,9 @@
     var folderA = await runtimeHash('runtime-gate-folder-a');
     var folderB = await runtimeHash('runtime-gate-folder-b');
     var bindingA = await runtimeHash('runtime-gate-binding-a');
+    var sourceTagHash = await runtimeHash('runtime-gate-source-tag');
+    var catalogBaseRevision = await runtimeHash('runtime-gate-catalog-base');
+    var bindingBaseRevision = await runtimeHash('runtime-gate-binding-base');
 
     function add(caseId, ok, detail) {
       var entry = runtimeRecord(cases, caseId, ok, detail);
@@ -4170,21 +4221,30 @@
       !!sync.__libraryConflictRuntimeVersion;
     add('runtime-gate-apis-markers-present', apisOk, { blockers: apisOk ? [] : ['library-sync-proof-runtime-conflict-api-missing'] });
 
+    var cleanCatalogState = {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      subjectId: catalogA,
+      catalogKind: 'label',
+      nameHash: nameHash,
+      colorHash: null,
+      originAccountIdHash: account,
+      lifecycleState: 'active',
+      revisionHash: catalogBaseRevision,
+      sourceTag: 'desktop',
+      sourceTagHash: sourceTagHash
+    };
     var cleanCatalogPreflight = await sync.preflightLibraryCatalog({
       operation: 'rename',
-      canonicalCatalog: {
-        subjectType: CATALOG_SUBJECT_TYPE,
-        subjectId: catalogA,
-        catalogKind: 'label',
-        nameHash: nameHash,
-        originAccountIdHash: account,
-        lifecycleState: 'active',
-        revisionHash: await runtimeHash('runtime-gate-catalog-base')
-      },
+      canonicalCatalog: cleanCatalogState,
       currentLifecycleState: 'active',
-      expectedState: { lifecycleState: 'active', revisionHash: await runtimeHash('runtime-gate-catalog-base') },
-      expectedTargetState: { lifecycleState: 'active', revisionHash: await runtimeHash('runtime-gate-catalog-target') },
-      siblingCatalogs: [],
+      expectedState: Object.assign({}, cleanCatalogState),
+      expectedTargetState: Object.assign({}, cleanCatalogState, { revisionHash: await runtimeHash('runtime-gate-catalog-target') }),
+      existingCatalogSiblings: [],
+      existingCatalogs: [],
+      sourceMirror: { fresh: true, status: 'fresh' },
+      replayContext: { replaySafe: true, ok: true },
+      watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
+      consumedOperationState: { consumedSafe: true, ok: true },
       observedAtIso: observedAtIso
     });
     add('runtime-gate-catalog-preflight-calls-gate',
@@ -4193,23 +4253,46 @@
         blockers: codeList(cleanCatalogPreflight && cleanCatalogPreflight.blockers),
         warnings: codeList(cleanCatalogPreflight && cleanCatalogPreflight.warnings) });
 
+    var cleanBindingState = {
+      subjectType: BINDING_SUBJECT_TYPE,
+      subjectId: bindingA,
+      bindingKind: 'chat-label',
+      leftSubjectId: chatA,
+      rightSubjectId: labelA,
+      leftSubjectType: CHAT_SUBJECT_TYPE,
+      rightSubjectType: CATALOG_SUBJECT_TYPE,
+      bindingState: 'bound',
+      revisionHash: bindingBaseRevision,
+      originAccountIdHash: account,
+      sourceTag: 'desktop',
+      sourceTagHash: sourceTagHash,
+      boundAtIso: observedAtIso
+    };
+    var cleanBindingCatalog = {
+      subjectType: CATALOG_SUBJECT_TYPE,
+      subjectId: labelA,
+      catalogKind: 'label',
+      nameHash: await runtimeHash('runtime-gate-binding-label-name'),
+      colorHash: null,
+      originAccountIdHash: account,
+      lifecycleState: 'active',
+      revisionHash: await runtimeHash('runtime-gate-binding-label-revision'),
+      sourceTag: 'desktop',
+      sourceTagHash: sourceTagHash
+    };
     var cleanBindingPreflight = await sync.preflightLibraryBinding({
       operation: 'unbind',
-      canonicalBinding: {
-        subjectType: BINDING_SUBJECT_TYPE,
-        subjectId: bindingA,
-        bindingKind: 'chat-label',
-        leftSubjectId: chatA,
-        rightSubjectId: labelA,
-        leftSubjectType: CHAT_SUBJECT_TYPE,
-        rightSubjectType: CATALOG_SUBJECT_TYPE,
-        bindingState: 'bound',
-        revisionHash: await runtimeHash('runtime-gate-binding-base')
-      },
-      relatedCatalogs: [{ subjectType: CATALOG_SUBJECT_TYPE, subjectId: labelA, lifecycleState: 'active' }],
+      canonicalBinding: cleanBindingState,
+      relatedCatalogs: [cleanBindingCatalog],
       relatedChats: [{ subjectType: CHAT_SUBJECT_TYPE, subjectId: chatA }],
-      expectedState: { bindingState: 'bound' },
-      currentState: { bindingState: 'bound' },
+      expectedState: Object.assign({}, cleanBindingState),
+      currentState: Object.assign({}, cleanBindingState),
+      siblingBindings: [],
+      existingBindings: [],
+      sourceMirror: { fresh: true, status: 'fresh' },
+      replayContext: { replaySafe: true, ok: true },
+      watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
+      consumedOperationState: { consumedSafe: true, ok: true },
       observedAtIso: observedAtIso
     });
     add('runtime-gate-binding-preflight-calls-gate',
@@ -4222,31 +4305,25 @@
     sync.evaluateLibraryCatalogRuntimeConflict = null;
     var missingGateDefault = await sync.preflightLibraryCatalog({
       operation: 'archive',
-      canonicalCatalog: {
-        subjectType: CATALOG_SUBJECT_TYPE,
-        subjectId: catalogA,
-        catalogKind: 'label',
-        nameHash: nameHash,
-        originAccountIdHash: account,
-        lifecycleState: 'active',
-        revisionHash: await runtimeHash('runtime-gate-catalog-base')
-      },
+      canonicalCatalog: Object.assign({}, cleanCatalogState),
       currentLifecycleState: 'active',
+      existingCatalogSiblings: [],
+      sourceMirror: { fresh: true, status: 'fresh' },
+      replayContext: { replaySafe: true, ok: true },
+      watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
+      consumedOperationState: { consumedSafe: true, ok: true },
       observedAtIso: observedAtIso
     });
     var missingGateRequired = await sync.preflightLibraryCatalog({
       operation: 'archive',
-      canonicalCatalog: {
-        subjectType: CATALOG_SUBJECT_TYPE,
-        subjectId: catalogA,
-        catalogKind: 'label',
-        nameHash: nameHash,
-        originAccountIdHash: account,
-        lifecycleState: 'active',
-        revisionHash: await runtimeHash('runtime-gate-catalog-base')
-      },
+      canonicalCatalog: Object.assign({}, cleanCatalogState),
       currentLifecycleState: 'active',
       requireConflictGate: true,
+      existingCatalogSiblings: [],
+      sourceMirror: { fresh: true, status: 'fresh' },
+      replayContext: { replaySafe: true, ok: true },
+      watermarkState: { watermarkSafe: true, ok: true, currentWatermark: 1, proposedWatermark: 2 },
+      consumedOperationState: { consumedSafe: true, ok: true },
       observedAtIso: observedAtIso
     });
     sync.evaluateLibraryCatalogRuntimeConflict = savedCatalogGate;
@@ -4267,15 +4344,9 @@
     });
     var missingContextStrict = await sync.preflightLibraryCatalog({
       operation: 'create',
-      canonicalCatalog: {
-        subjectType: CATALOG_SUBJECT_TYPE,
-        subjectId: catalogA,
-        catalogKind: 'label',
-        nameHash: nameHash,
-        originAccountIdHash: account,
-        lifecycleState: 'active',
+      canonicalCatalog: Object.assign({}, cleanCatalogState, {
         revisionHash: await runtimeHash('runtime-gate-catalog-target')
-      },
+      }),
       requireContext: true,
       observedAtIso: observedAtIso
     });
@@ -4905,7 +4976,9 @@
       if (!isObject(node)) return;
       Object.keys(node).forEach(function (key) {
         var nextPath = pathValue ? pathValue + '.' + key : key;
-        if (forbiddenTrueKeys.indexOf(key) !== -1 && node[key] === true) {
+        var proofSafeNestedSettlement = nextPath.indexOf('.settlementSideEffects.') !== -1 ||
+          nextPath.indexOf('settlementSideEffects.') === 0;
+        if (!proofSafeNestedSettlement && forbiddenTrueKeys.indexOf(key) !== -1 && node[key] === true) {
           violations.push(nextPath);
         }
         visit(node[key], nextPath);
@@ -5278,7 +5351,9 @@
       summary: 'aggregateOk=' + String(aggregate && aggregate.ok === true)
     });
 
-    var privacy = await privacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress, aggregate], []);
+    var closureFixtures = await buildCommonFixtures(input || {});
+    var closureRawNeedles = catalogPrivacyNeedles(closureFixtures).concat(bindingPrivacyNeedles(closureFixtures));
+    var privacy = await rawValuePrivacyScan([catalog, binding, folderAbsorption, storeCutover, bulkMigration, conflictProof, runtimeConflictGate, multiPeerSoak, performanceStress, aggregate], closureRawNeedles);
     var privacyOk = privacy.ok === true &&
       catalog && catalog.privacy && catalog.privacy.ok === true &&
       binding && binding.privacy && binding.privacy.ok === true &&

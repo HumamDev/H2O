@@ -335,14 +335,22 @@
       expectedTargetState: runtimeStateFromSettlement(envelope, args, 'expectedTargetState') || safeObject(args.targetState),
       localState: safeObject(args.localState),
       remoteState: safeObject(args.remoteState),
-      existingSubjects: asArray(args.existingSubjects),
-      existingBindings: asArray(args.existingBindings || args.siblingBindings),
-      existingCatalogs: asArray(args.existingCatalogs || args.siblingCatalogs),
       f5Review: safeObject(args.f5Review || args.f5ReviewState),
       cacheObservation: safeObject(args.cacheObservation || args.materializedCacheObservation),
       bridgeContext: safeObject(args.bridgeContext || args.f7BridgeContext),
       observedAtIso: cleanString(args.observedAtIso) || nowIsoSeconds()
     };
+    if (Object.prototype.hasOwnProperty.call(args, 'existingSubjects')) {
+      input.existingSubjects = asArray(args.existingSubjects);
+    }
+    if (Object.prototype.hasOwnProperty.call(args, 'existingBindings') ||
+        Object.prototype.hasOwnProperty.call(args, 'siblingBindings')) {
+      input.existingBindings = asArray(args.existingBindings || args.siblingBindings);
+    }
+    if (Object.prototype.hasOwnProperty.call(args, 'existingCatalogs') ||
+        Object.prototype.hasOwnProperty.call(args, 'siblingCatalogs')) {
+      input.existingCatalogs = asArray(args.existingCatalogs || args.siblingCatalogs);
+    }
     if (envelope.domainId === BINDING_DOMAIN && cleanString(settlement.bindingKind)) {
       input.bindingKind = cleanString(settlement.bindingKind);
       input.leftSubjectId = cleanLower(settlement.leftSubjectId);
