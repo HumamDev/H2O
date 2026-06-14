@@ -1252,6 +1252,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-conflict-runtime.tauri.js",
   "sync/library/library-multipeer-soak-proof.tauri.js",
   "sync/library/library-performance-stress-proof.tauri.js",
+  "sync/library/library-sync-operator-ui.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",
   "sync/library/library-folder-binding-migration-shadow.tauri.js",
   "sync/execute/execute-lane-ui.tauri.js",
@@ -1418,6 +1419,21 @@ function fileExists(filePath) {
   }
 }
 
+function assertArchiveWorkbenchPacklistParity() {
+  if (ARCHIVE_WORKBENCH_SOURCE_FILES.length !== ARCHIVE_WORKBENCH_OUT_FILES.length) {
+    throw new Error(
+      `archive workbench packlist mismatch: source=${ARCHIVE_WORKBENCH_SOURCE_FILES.length} out=${ARCHIVE_WORKBENCH_OUT_FILES.length}`,
+    );
+  }
+  for (let index = 0; index < ARCHIVE_WORKBENCH_SOURCE_FILES.length; index += 1) {
+    const sourceName = ARCHIVE_WORKBENCH_SOURCE_FILES[index];
+    const outName = ARCHIVE_WORKBENCH_OUT_FILES[index];
+    if (!sourceName || typeof sourceName !== "string" || !outName || typeof outName !== "string") {
+      throw new Error(`archive workbench packlist invalid at index ${index}: source=${sourceName} out=${outName}`);
+    }
+  }
+}
+
 function removeFileIfPresent(filePath) {
   try {
     fs.unlinkSync(filePath);
@@ -1505,11 +1521,13 @@ export function archiveWorkbenchOutDir(outDir) {
 }
 
 export function getArchiveWorkbenchPresence(outDir) {
+  assertArchiveWorkbenchPacklistParity();
   const dir = archiveWorkbenchOutDir(outDir);
   return ARCHIVE_WORKBENCH_OUT_FILES.filter((name) => fileExists(path.join(dir, name)));
 }
 
 export function compareArchiveWorkbenchToSource(srcRoot, outDir) {
+  assertArchiveWorkbenchPacklistParity();
   const sourceDir = archiveWorkbenchSourceDir(srcRoot);
   const outWorkbenchDir = archiveWorkbenchOutDir(outDir);
   const files = ARCHIVE_WORKBENCH_SOURCE_FILES.map((sourceName, index) => {
@@ -1540,6 +1558,7 @@ export function compareArchiveWorkbenchToSource(srcRoot, outDir) {
 }
 
 export function syncArchiveWorkbenchToOut(srcRoot, outDir) {
+  assertArchiveWorkbenchPacklistParity();
   const sourceDir = archiveWorkbenchSourceDir(srcRoot);
   const outWorkbenchDir = archiveWorkbenchOutDir(outDir);
   const missingSource = ARCHIVE_WORKBENCH_SOURCE_FILES.filter((name) => !fileExists(path.join(sourceDir, name)));
@@ -1567,6 +1586,7 @@ export function syncArchiveWorkbenchToOut(srcRoot, outDir) {
 }
 
 export function removeArchiveWorkbenchFromOut(outDir) {
+  assertArchiveWorkbenchPacklistParity();
   const outWorkbenchDir = archiveWorkbenchOutDir(outDir);
   const removed = [];
   for (const name of ARCHIVE_WORKBENCH_OUT_FILES) {
