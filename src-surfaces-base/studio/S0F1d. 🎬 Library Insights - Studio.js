@@ -458,6 +458,10 @@
       case 'permission-api-unavailable':
       case 'permission-check-failed':
         return 'Could not update from URL: permission denied';
+      case 'host-permission-missing':
+        return 'Could not update from URL: host permission missing';
+      case 'background-unavailable':
+        return 'Could not update from URL: background bridge unavailable';
       case 'cors-blocked':
         return 'Could not update from URL: CORS blocked';
       case 'source-unavailable':
@@ -491,7 +495,7 @@
         }, (response) => {
           try {
             if (chrome.runtime && chrome.runtime.lastError) {
-              resolve({ ok: false, reason: 'network-error' });
+              resolve({ ok: false, reason: 'background-unavailable' });
               return;
             }
           } catch {}
@@ -499,9 +503,19 @@
           resolve(result && typeof result === 'object' ? result : null);
         });
       } catch {
-        resolve({ ok: false, reason: 'network-error' });
+        resolve({ ok: false, reason: 'background-unavailable' });
       }
     });
+  }
+
+  function requiresBackgroundMetadataFetch(url) {
+    try {
+      const parsed = new URL(String(url || ''));
+      const host = parsed.hostname.toLowerCase();
+      return parsed.protocol === 'https:' && (host === 'chatgpt.com' || host.endsWith('.chatgpt.com'));
+    } catch {
+      return false;
+    }
   }
 
   function classifyDirectMetadataFetchError(error) {
@@ -524,7 +538,11 @@
       return { ok: false, reason: 'no-title-found', source: 'background' };
     }
     if (archiveResult && archiveResult.reason && archiveResult.reason !== 'permission-api-unavailable') {
-      return { ok: false, reason: archiveResult.reason, source: 'background' };
+      const reason = archiveResult.reason === 'permission-denied' ? 'host-permission-missing' : archiveResult.reason;
+      return { ok: false, reason, source: 'background' };
+    }
+    if (requiresBackgroundMetadataFetch(href)) {
+      return { ok: false, reason: archiveResult?.reason === 'permission-api-unavailable' ? 'host-permission-missing' : 'background-unavailable', source: 'background' };
     }
     try {
       const response = await fetch(href, { method: 'GET', credentials: 'omit', cache: 'no-store' });

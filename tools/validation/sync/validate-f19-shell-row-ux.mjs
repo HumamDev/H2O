@@ -96,7 +96,10 @@ const checks = [
       sources.insights.includes('function updateRowMetadataFromUrl') &&
       sources.insights.includes('function fetchTitleFromUrl') &&
       sources.insights.includes('fetchPageMetadata') &&
+      sources.insights.includes('requiresBackgroundMetadataFetch') &&
       sources.insights.includes('Could not update from URL: permission denied') &&
+      sources.insights.includes('Could not update from URL: host permission missing') &&
+      sources.insights.includes('Could not update from URL: background bridge unavailable') &&
       sources.insights.includes('Could not update from URL: CORS blocked') &&
       sources.insights.includes('Could not update from URL: no title found') &&
       sources.insights.includes('metadata-store-unavailable') &&
