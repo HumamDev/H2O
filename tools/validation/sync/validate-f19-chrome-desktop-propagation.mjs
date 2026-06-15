@@ -220,6 +220,12 @@ async function runVmProof() {
   assert(typeof api.importChromeLatestBundle === 'function', 'importChromeLatestBundle missing');
   assert(typeof api.importChromeLatestFromFile === 'function', 'importChromeLatestFromFile missing');
   assert(typeof api.importChromeLatestFromFolder === 'function', 'importChromeLatestFromFolder missing');
+  assert(api.folder && api.folder.__installed === true, 'Desktop folder facade missing');
+  assert(typeof api.folder.syncNow === 'function', 'Desktop folder.syncNow missing');
+  assert(typeof api.folder.importChromeFromSyncFolder === 'function', 'Desktop folder importChromeFromSyncFolder missing');
+  assert(typeof api.folder.importChromeLatestFromFolder === 'function', 'Desktop folder importChromeLatestFromFolder missing');
+  assert(api.folder.transport === 'chrome-latest.json', 'Desktop folder facade transport mismatch');
+  assert(api.folder.desktopReadsChromeLatestJson === true, 'Desktop folder facade read marker missing');
 
   const result = await api.importChromeLatestBundle(buildChromeBundle(), { proofMode: true });
   assert(result.schema === 'h2o.studio.sync.chrome-desktop-propagation.v1', 'result schema mismatch');
@@ -349,6 +355,11 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'importChromeLatestBundle', 'bundle API');
   assertContains(folderSyncFile, 'importChromeLatestFromFile', 'file API');
   assertContains(folderSyncFile, 'importChromeLatestFromFolder', 'folder API');
+  assertContains(folderSyncFile, 'var existingSync = H2O.Studio.sync', 'Desktop sync namespace merge');
+  assertContains(folderSyncFile, 'var folderApi = Object.assign', 'Desktop sync.folder facade');
+  assertContains(folderSyncFile, 'syncNow: folderSyncNow', 'Desktop folder syncNow facade');
+  assertContains(folderSyncFile, 'importChromeFromSyncFolder: importChromeLatestFromFolder', 'Desktop folder Chrome import alias');
+  assertContains(folderSyncFile, 'desktopReadsChromeLatestJson: true', 'Desktop chrome-latest read marker');
   assertContains(folderSyncFile, 'allowLibraryShimFallback: false', 'guarded import fallback disable');
   assertContains(folderSyncFile, 'skipExistingFolderMetadata: true', 'folder overwrite guard');
   assertContains(folderSyncFile, 'redactedErrorCategories', 'redacted import error categories');

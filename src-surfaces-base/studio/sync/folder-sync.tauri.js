@@ -1387,6 +1387,31 @@
     return importChromeLatestFromFile(joinPath(folderPath, CHROME_LATEST_FILE), options);
   }
 
+  async function folderSyncNow(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var direction = String(opts.direction || opts.syncDirection || 'chrome-to-desktop').trim().toLowerCase().replace(/_/g, '-');
+    if (!direction || direction === 'chrome-to-desktop' || direction === 'chrome-to-desktop-import') {
+      return importChromeLatestFromFolder(opts.folderPath || opts.path || null, Object.assign({}, opts, {
+        direction: 'chrome-to-desktop',
+        transport: CHROME_LATEST_FILE,
+        reason: String(opts.reason || 'desktop-folder-sync-now')
+      }));
+    }
+    return propagationResult(false, {
+      status: 'blocked',
+      blockers: ['library-propagation-direction-unsupported'],
+      warnings: [],
+      sourceSummary: {
+        direction: direction,
+        transport: direction === 'desktop-to-chrome' ? 'latest.json' : '',
+        supportedDirection: 'chrome-to-desktop',
+        apiHint: direction === 'desktop-to-chrome'
+          ? 'Use H2O.Studio.sync.autoExport for Desktop -> Chrome latest.json export.'
+          : 'Use H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" }).'
+      }
+    });
+  }
+
   /* ── M2d-1b: Polling watcher / Notify mode ───────────────────────── */
 
   function pushWatcherErr(op, e) {
@@ -1710,7 +1735,8 @@
   }
 
   /* ── Register ────────────────────────────────────────────────────── */
-  H2O.Studio.sync = {
+  var existingSync = H2O.Studio.sync && typeof H2O.Studio.sync === 'object' ? H2O.Studio.sync : {};
+  var desktopSyncApi = {
     __installed: true,
     __version: '0.2.0',
     /* M2d-1a manual API */
@@ -1735,6 +1761,38 @@
     getPendingCandidates: getPendingCandidates,
     dismissPending:       dismissPending,
   };
+
+  var folderApi = Object.assign({}, existingSync.folder && typeof existingSync.folder === 'object' ? existingSync.folder : {}, {
+    __installed: true,
+    __version: '0.1.0-f19.7.k',
+    direction: 'chrome-to-desktop',
+    transport: CHROME_LATEST_FILE,
+    chromeWritesSyncFolder: false,
+    desktopReadsChromeLatestJson: true,
+    getConfig: getConfig,
+    setConfig: setConfig,
+    getLedger: getLedger,
+    clearLedger: clearLedger,
+    scanFolderOnce: scanFolderOnce,
+    importFromFile: importFromFile,
+    importChromeLatestBundle: importChromeLatestBundle,
+    importChromeLatestFromFile: importChromeLatestFromFile,
+    importChromeLatestFromFolder: importChromeLatestFromFolder,
+    importChromeFromSyncFolder: importChromeLatestFromFolder,
+    importChromeLatestFromSyncFolder: importChromeLatestFromFolder,
+    syncNow: folderSyncNow,
+    diagnose: diagnose,
+    startWatcher: startWatcher,
+    stopWatcher: stopWatcher,
+    getWatcherState: getWatcherState,
+    subscribe: subscribe,
+    getPendingCandidates: getPendingCandidates,
+    dismissPending: dismissPending,
+  });
+
+  H2O.Studio.sync = Object.assign({}, existingSync, desktopSyncApi, {
+    folder: folderApi,
+  });
 
   /* Boot-time auto-start: if persisted config has mode ∈ {notify, auto}
    * AND folderPath set, kick the watcher after the platform/stores have
