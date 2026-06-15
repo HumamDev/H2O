@@ -64,14 +64,29 @@ const checks = [
   ),
   check(
     'library-index-url-only-source-saved-classifies-link',
-    sources.libraryIndex.includes('const displaySaved = !!(chat?.isSaved && hasOpenableTranscript);') &&
+    sources.libraryIndex.includes('function chatHasTranscriptEvidence') &&
+      sources.libraryIndex.includes('latestSnapshotByChatId') &&
+      sources.libraryIndex.includes('const displaySaved = !!(chat?.isSaved && hasTranscript);') &&
       sources.libraryIndex.includes("else if (displayLinked) view = 'linked';") &&
       sources.libraryIndex.includes('isSaved: displaySaved') &&
       sources.libraryIndex.includes('isLinked: displayLinked') &&
       sources.libraryIndex.includes('f19SourceWasSaved') &&
       sources.libraryIndex.includes('f19DisplayClassifiedAsLink'),
     FILES.libraryIndex,
-    'URL-only rows with historical saved/source state must project as Link, not Saved, unless they have an openable transcript snapshot.'
+    'URL-only rows with historical saved/source state must project as Link, while saved rows with snapshot/message evidence remain Saved even if lastSnapshotId is empty.'
+  ),
+  check(
+    'library-index-transcript-evidence-not-last-snapshot-only',
+    sources.libraryIndex.includes('numericCount(chat?.snapshotCount) > 0') &&
+      sources.libraryIndex.includes('numericCount(chat?.messageCount) > 0') &&
+      sources.libraryIndex.includes('numericCount(chat?.turnCount) > 0') &&
+      sources.libraryIndex.includes('numericCount(chat?.userTurnCount) > 0') &&
+      sources.libraryIndex.includes('numericCount(chat?.assistantTurnCount) > 0') &&
+      sources.libraryIndex.includes('snapshotCount: 0') &&
+      sources.libraryIndex.includes('messageCount: 0') &&
+      !sources.libraryIndex.includes('const hasOpenableTranscript = !!chat?.lastSnapshotId;'),
+    FILES.libraryIndex,
+    'Desktop LibraryIndex projection must not gate Saved classification solely on chats.last_snapshot_id, and shell rows must not inherit a fake transcript count.'
   ),
   check(
     'insights-imported-placeholder-clickable',
@@ -97,15 +112,30 @@ const checks = [
     'insights-link-badge-semantics',
     sources.insights.includes('function rowHasTranscriptContent') &&
       sources.insights.includes('function rowHasOpenableTranscriptContent') &&
+      sources.insights.includes('function resolveReaderSnapshotId') &&
       sources.insights.includes('function rowIsUrlOnlyLink') &&
       sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')") &&
+      sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'messageCount')") &&
+      sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'turnCount')") &&
+      sources.insights.includes('return rowHasTranscriptContent(row);') &&
       sources.insights.includes('row.isImported || raw.isImported') &&
       sources.insights.includes("if (opensReader && hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);") &&
       sources.insights.includes("else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);") &&
       sources.insights.includes("Pill({ label: 'Link'") &&
       !sources.insights.includes("else if (st.isLinked || opensLinkedDetails) chips.push(['Linked', 'wbRowChip--linked']);"),
     FILES.insights,
-    'Visible row badges must classify transcript-backed rows as Saved and URL-only shell rows as Link.'
+    'Visible row badges must classify transcript-backed rows as Saved and URL-only shell rows as Link, without depending only on lastSnapshotId.'
+  ),
+  check(
+    'insights-transcript-openability-fallback',
+    sources.insights.includes('async function resolveReaderSnapshotId') &&
+      sources.insights.includes("typeof snapshots.listByChat === 'function'") &&
+      sources.insights.includes("typeof chatList.listAll === 'function'") &&
+      sources.insights.includes('const opensReader = rowHasOpenableTranscriptContent(row) && !st.isDeleted;') &&
+      sources.insights.includes("sid ? `#/read/${encodeURIComponent(sid)}` : '#/library/explorer'") &&
+      sources.insights.includes('Promise.resolve(resolveReaderSnapshotId(row))'),
+    FILES.insights,
+    'Transcript-backed rows with counts but no denormalized snapshot id must resolve a reader snapshot at click time instead of opening placeholder details.'
   ),
   check(
     'insights-update-from-url-action',

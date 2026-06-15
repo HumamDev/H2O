@@ -252,6 +252,25 @@
     return value === true || value === 1 || value === '1' || value === 'true';
   }
 
+  function numericCount(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function chatHasTranscriptEvidence(chat, latestSnapshot) {
+    return !!(
+      chat?.lastSnapshotId
+      || chat?.snapshotId
+      || chat?.snapshot_id
+      || latestSnapshot?.snapshotId
+      || numericCount(chat?.snapshotCount) > 0
+      || numericCount(chat?.messageCount) > 0
+      || numericCount(chat?.turnCount) > 0
+      || numericCount(chat?.userTurnCount) > 0
+      || numericCount(chat?.assistantTurnCount) > 0
+    );
+  }
+
   async function readNativeChatRegistryRecords() {
     try {
       if (!W.chrome || !chrome.storage || !chrome.storage.local) return [];
@@ -522,6 +541,8 @@
       view: isSaved ? 'saved' : (isLinked ? 'linked' : 'imported'),
       tags: [],
       labels: [],
+      snapshotCount: 0,
+      messageCount: 0,
       updatedAt: String(rec.updatedAt || rec.lastSeenAt || rec.firstSeenAt || ''),
       capturedAt: '',
       state: {
@@ -784,15 +805,17 @@
     const labelInfos = (joins.labelsByChatId && joins.labelsByChatId[cid]) || [];
     const tagInfos = (joins.tagsByChatId && joins.tagsByChatId[cid]) || [];
     const catInfo = (joins.categoryByChatId && joins.categoryByChatId[cid]) || null;
+    const latestSnapshot = (joins.latestSnapshotByChatId && joins.latestSnapshotByChatId[cid]) || null;
     const href = chat?.href || chat?.linkSourceHref
       || (chat?.sourceId ? ('https://chatgpt.com/c/' + chat.sourceId) : '')
       || (cid ? ('https://chatgpt.com/c/' + cid) : '');
     const importedShell = !!(chat?.importBatchId || meta.f19ChromeDesktopMinimalRow || meta.f19ChromeDesktopMaterializedShell);
-    const snapshotCount = Number(chat?.snapshotCount || 0);
-    const messageCount = Number(chat?.messageCount || 0);
-    const hasOpenableTranscript = !!chat?.lastSnapshotId;
-    const displaySaved = !!(chat?.isSaved && hasOpenableTranscript);
-    const displayLinked = !!(chat?.isLinked || (!hasOpenableTranscript && href));
+    const snapshotCount = Math.max(numericCount(chat?.snapshotCount), latestSnapshot ? 1 : 0);
+    const messageCount = Math.max(numericCount(chat?.messageCount), numericCount(latestSnapshot?.messageCount));
+    const snapshotId = String(chat?.lastSnapshotId || chat?.snapshotId || chat?.snapshot_id || latestSnapshot?.snapshotId || '').trim();
+    const hasTranscript = chatHasTranscriptEvidence({ ...chat, snapshotCount, messageCount }, latestSnapshot);
+    const displaySaved = !!(chat?.isSaved && hasTranscript);
+    const displayLinked = !!(chat?.isLinked || (!hasTranscript && href));
     let view = 'all';
     if (chat?.isArchived) view = 'archived';
     else if (displaySaved) view = 'saved';
@@ -825,7 +848,7 @@
     ], cid, displayLinked && !displaySaved ? 'Link' : 'Imported chat');
     return {
       chatId: cid,
-      snapshotId: chat?.lastSnapshotId || null,
+      snapshotId: snapshotId || null,
       title,
       projectId: chat?.projectId || '',
       folderId: folderInfo ? folderInfo.folderId : '',
@@ -838,7 +861,7 @@
       snapshotCount,
       capturedAt: chat?.lastCapturedAt || null,
       updatedAt: chat?.updatedAt || 0,
-      messageCount: Number(chat?.messageCount || 0),
+      messageCount,
       pinned: !!chat?.isPinned,
       archived: !!chat?.isArchived,
       // Desktop-only enrichment — not part of the compact contract but the
@@ -874,10 +897,12 @@
     const labels = stores.labels;
     const tags = stores.tags;
     const categories = stores.categories;
+    const snapshots = stores.snapshots;
     const folderByChatId = Object.create(null);
     const labelsByChatId = Object.create(null);
     const tagsByChatId = Object.create(null);
     const categoryByChatId = Object.create(null);
+    const latestSnapshotByChatId = Object.create(null);
     await Promise.all((chatRows || []).map(async (chat) => {
       const cid = chat?.chatId;
       if (!cid) return;
@@ -905,8 +930,14 @@
           if (cat) categoryByChatId[cid] = cat;
         }
       } catch (e) { err('loadJoins.category', e); }
+      try {
+        if (snapshots && typeof snapshots.listByChat === 'function') {
+          const arr = await snapshots.listByChat(cid);
+          if (Array.isArray(arr) && arr.length > 0) latestSnapshotByChatId[cid] = arr[0];
+        }
+      } catch (e) { err('loadJoins.snapshots', e); }
     }));
-    return { folderByChatId, labelsByChatId, tagsByChatId, categoryByChatId };
+    return { folderByChatId, labelsByChatId, tagsByChatId, categoryByChatId, latestSnapshotByChatId };
   }
 
   async function refreshFromStores(reason = 'manual') {

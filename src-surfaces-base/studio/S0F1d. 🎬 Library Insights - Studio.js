@@ -258,12 +258,18 @@
     const raw = row.raw || {};
     return String(
       row.snapshotId
+      || row.lastSnapshotId
+      || row.latestSnapshotId
       || raw.snapshotId
+      || raw.lastSnapshotId
+      || raw.latestSnapshotId
       || raw.snapId
       || raw.snapshot_id
       || raw.snapshot?.id
       || raw.snapshot?.snapshotId
       || raw.meta?.snapshotId
+      || raw.meta?.lastSnapshotId
+      || raw.meta?.latestSnapshotId
       || ''
     ).trim();
   }
@@ -305,7 +311,7 @@
   }
 
   function isLinkedOnlyRow(row) {
-    if (!row || resolveSnapshotId(row)) return false;
+    if (!row || rowHasTranscriptContent(row)) return false;
     const raw = row.raw || {};
     const view = String(row.view || raw.view || '').toLowerCase();
     const st = getRowState(row);
@@ -317,20 +323,57 @@
     const raw = row.raw || {};
     if (resolveSnapshotId(row)) return true;
     const hasRawSnapshotCount = Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')
-      || Object.prototype.hasOwnProperty.call(raw, 'snapshotsCount');
+      || Object.prototype.hasOwnProperty.call(raw, 'snapshotsCount')
+      || (Array.isArray(raw.snapshots) && raw.snapshots.length > 0);
     const hasRawMessageCount = Object.prototype.hasOwnProperty.call(raw, 'messageCount')
-      || Object.prototype.hasOwnProperty.call(raw, 'turnCount');
+      || Object.prototype.hasOwnProperty.call(raw, 'turnCount')
+      || Object.prototype.hasOwnProperty.call(raw, 'userTurnCount')
+      || Object.prototype.hasOwnProperty.call(raw, 'assistantTurnCount');
     const snapshotCount = Number(hasRawSnapshotCount
-      ? (raw.snapshotCount ?? raw.snapshotsCount ?? 0)
+      ? (raw.snapshotCount ?? raw.snapshotsCount ?? raw.snapshots?.length ?? 0)
       : (row.snapshotCount ?? row.snapshotsCount ?? 0)) || 0;
     const messageCount = Number(hasRawMessageCount
-      ? (raw.messageCount ?? raw.turnCount ?? 0)
-      : (row.messageCount ?? row.turnCount ?? 0)) || 0;
+      ? (raw.messageCount ?? raw.turnCount ?? Math.max(Number(raw.userTurnCount) || 0, Number(raw.assistantTurnCount) || 0) ?? 0)
+      : (row.messageCount ?? row.turnCount ?? Math.max(Number(row.userTurnCount) || 0, Number(row.assistantTurnCount) || 0) ?? 0)) || 0;
+    const view = String(row.view || raw.view || '').toLowerCase();
+    const st = getRowState(row);
+    if (!st.isSaved && (view === 'linked' || view === 'imported' || st.isLinked || st.isImported) && resolveLinkedUrl(row) && messageCount <= 0) {
+      return false;
+    }
     return snapshotCount > 0 || messageCount > 0;
   }
 
   function rowHasOpenableTranscriptContent(row) {
-    return !!(resolveSnapshotId(row) && rowHasTranscriptContent(row));
+    return rowHasTranscriptContent(row);
+  }
+
+  async function resolveReaderSnapshotId(row) {
+    const direct = resolveSnapshotId(row);
+    if (direct) return direct;
+    const raw = row?.raw || {};
+    const chatId = String(row?.chatId || raw.chatId || '').trim();
+    if (!chatId) return '';
+    try {
+      const snapshots = H2O.Studio?.store?.snapshots || null;
+      if (snapshots && typeof snapshots.listByChat === 'function') {
+        const list = await snapshots.listByChat(chatId);
+        const first = Array.isArray(list) ? list.find((snap) => resolveSnapshotId(snap)) : null;
+        const sid = resolveSnapshotId(first);
+        if (sid) return sid;
+      }
+    } catch (e) { err('resolveReaderSnapshotId.snapshots', e); }
+    try {
+      const chatList = getCore()?.getService?.('chat-list') || null;
+      if (chatList && typeof chatList.listAll === 'function') {
+        const rows = await chatList.listAll();
+        const match = Array.isArray(rows)
+          ? rows.find((candidate) => String(candidate?.chatId || candidate?.id || '').trim() === chatId && resolveSnapshotId(candidate))
+          : null;
+        const sid = resolveSnapshotId(match);
+        if (sid) return sid;
+      }
+    } catch (e) { err('resolveReaderSnapshotId.chat-list', e); }
+    return '';
   }
 
   function rowIsUrlOnlyLink(row) {
@@ -355,7 +398,7 @@
   }
 
   function isImportedShellRow(row) {
-    if (!row || resolveSnapshotId(row)) return false;
+    if (!row || rowHasTranscriptContent(row)) return false;
     const raw = row.raw || {};
     const view = String(row.view || raw.view || '').toLowerCase();
     const st = getRowState(row);
@@ -804,7 +847,7 @@
     const opensLinkedDetails = !!placeholderKind;
     // Click target priority: saved+snapshot → Studio reader; linked/imported
     // metadata-only shell rows → in-page details; otherwise the row is inert.
-    const opensReader = !!sid && rowHasTranscriptContent(row) && !st.isDeleted;
+    const opensReader = rowHasOpenableTranscriptContent(row) && !st.isDeleted;
     const displayTitle = displayTitleForRow(row);
     const hasTranscript = rowHasOpenableTranscriptContent(row);
     const urlOnlyLink = rowIsUrlOnlyLink(row);
@@ -831,7 +874,7 @@
     // in new tab" stays inside Studio; for linked-only rows keep the primary
     // click in Studio and expose the native URL through the details panel.
     const anchorHref = opensReader
-      ? `#/read/${encodeURIComponent(sid)}`
+      ? (sid ? `#/read/${encodeURIComponent(sid)}` : '#/library/explorer')
       : (opensLinkedDetails ? '#/library/explorer' : '#');
     const inertAria = (opensReader || opensLinkedDetails) ? null : 'true';
 
@@ -905,21 +948,29 @@
         return;
       }
 
-      // Preserve modifier/middle-click semantics for saved rows: cmd-click
-      // opens the reader in a new tab.
-      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      // Preserve modifier/middle-click semantics when a concrete snapshot id is
+      // already present. Rows proven transcript-backed by counts can arrive
+      // before chats.last_snapshot_id is denormalized; those resolve the latest
+      // snapshot at click time and then use the same reader route.
+      if (sid && (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey)) return;
 
       // Saved path — identical to the prior implementation. Anchor's default
       // navigation sets location.hash; studio.js's hashchange listener calls
       // renderRoute → renderReader(snapshotId). Microtask poll force-sets
       // the hash if a future click-delegation handler suppresses the default.
-      const target = `#/read/${encodeURIComponent(sid)}`;
-      const before = W.location.hash;
-      W.queueMicrotask(() => {
-        if (W.location.hash === before && before !== target) {
-          W.location.hash = target;
-        }
-      });
+      ev.preventDefault();
+      Promise.resolve(resolveReaderSnapshotId(row)).then((resolvedSid) => {
+        if (!resolvedSid) return;
+        const target = `#/read/${encodeURIComponent(resolvedSid)}`;
+        const before = W.location.hash;
+        W.location.hash = target;
+        W.queueMicrotask(() => {
+          if (W.location.hash === before && before !== target) {
+            W.location.hash = target;
+          }
+        });
+      }).catch((e) => err('ChatRow.resolveReaderSnapshotId', e));
+      return;
     });
 
     return anchor;
