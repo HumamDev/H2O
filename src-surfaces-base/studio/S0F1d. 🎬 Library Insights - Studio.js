@@ -283,9 +283,12 @@
     const a = (row.state && typeof row.state === 'object') ? row.state : null;
     const b = (row.raw && row.raw.state && typeof row.raw.state === 'object') ? row.raw.state : null;
     const raw = row.raw || {};
+    const displayView = String(row.displayView || row.badgeKind || row.view || raw.displayView || raw.badgeKind || raw.view || '').toLowerCase();
+    const displayIsLink = displayView === 'link' || displayView === 'linked';
+    const displayIsSaved = displayView === 'saved';
     return {
       isLinked:   !!(a?.isLinked   || b?.isLinked   || row.isLinked   || raw.isLinked),
-      isSaved:    !!(a?.isSaved    || b?.isSaved    || row.isSaved    || raw.isSaved),
+      isSaved:    displayIsLink ? false : !!(displayIsSaved || a?.isSaved || b?.isSaved || row.isSaved || raw.isSaved),
       isImported: !!(a?.isImported || b?.isImported || row.isImported || raw.isImported),
     };
   }
@@ -313,9 +316,9 @@
   function isLinkedOnlyRow(row) {
     if (!row || rowHasTranscriptContent(row)) return false;
     const raw = row.raw || {};
-    const view = String(row.view || raw.view || '').toLowerCase();
+    const view = String(row.displayView || row.view || raw.displayView || raw.view || '').toLowerCase();
     const st = getRowState(row);
-    return view === 'linked' || !!st.isLinked;
+    return view === 'linked' || view === 'link' || !!st.isLinked || !!resolveLinkedUrl(row);
   }
 
   function rowHasTranscriptContent(row) {
@@ -339,7 +342,7 @@
     const messageCount = Number(hasRawMessageCount
       ? (raw.messageCount ?? raw.turnCount ?? Math.max(Number(raw.userTurnCount) || 0, Number(raw.assistantTurnCount) || 0) ?? 0)
       : (row.messageCount ?? row.turnCount ?? Math.max(Number(row.userTurnCount) || 0, Number(row.assistantTurnCount) || 0) ?? 0)) || 0;
-    const view = String(row.view || raw.view || '').toLowerCase();
+    const view = String(row.displayView || row.view || raw.displayView || raw.view || '').toLowerCase();
     const st = getRowState(row);
     if (!st.isSaved && (view === 'linked' || view === 'imported' || st.isLinked || st.isImported) && resolveLinkedUrl(row) && messageCount <= 0) {
       return false;
@@ -384,8 +387,8 @@
     if (!row || rowHasOpenableTranscriptContent(row)) return false;
     const raw = row.raw || {};
     const st = getRowState(row);
-    const view = String(row.view || raw.view || '').toLowerCase();
-    return !!resolveLinkedUrl(row) || view === 'linked' || !!st.isLinked || isImportedShellRow(row);
+    const view = String(row.displayView || row.view || raw.displayView || raw.view || '').toLowerCase();
+    return !!resolveLinkedUrl(row) || view === 'linked' || view === 'link' || !!st.isLinked || isImportedShellRow(row);
   }
 
   function looksLikeOpaqueTitle(value, row) {
@@ -404,7 +407,7 @@
   function isImportedShellRow(row) {
     if (!row || rowHasTranscriptContent(row)) return false;
     const raw = row.raw || {};
-    const view = String(row.view || raw.view || '').toLowerCase();
+    const view = String(row.displayView || row.view || raw.displayView || raw.view || '').toLowerCase();
     const st = getRowState(row);
     return view === 'imported' || !!st.isImported;
   }

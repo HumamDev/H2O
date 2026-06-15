@@ -85,7 +85,7 @@
 
   function normalizeRow(raw) {
     const c = ixCore();
-    if (c) return c.normalizeRowStudio(raw);
+    if (c) return applyDisplayClassification(c.normalizeRowStudio(raw));
     return null;
   }
 
@@ -268,6 +268,71 @@
       || numericCount(chat?.userTurnCount) > 0
       || numericCount(chat?.assistantTurnCount) > 0
     );
+  }
+
+  function rowLinkedUrl(row) {
+    const raw = row?.raw && typeof row.raw === 'object' ? row.raw : {};
+    return cleanString(
+      row?.href
+      || row?.url
+      || row?.sourceUrl
+      || row?.linkSourceHref
+      || row?.normalizedHref
+      || raw.href
+      || raw.url
+      || raw.sourceUrl
+      || raw.linkSourceHref
+      || raw.normalizedHref
+    );
+  }
+
+  function rowHasRealTranscriptEvidence(row) {
+    if (!row) return false;
+    const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
+    if (row.snapshotId || row.lastSnapshotId || row.latestSnapshotId || raw.snapshotId || raw.lastSnapshotId || raw.latestSnapshotId || raw.snapshot_id) return true;
+    if (numericCount(row.messageCount) > 0 || numericCount(row.turnCount) > 0 || numericCount(row.userTurnCount) > 0 || numericCount(row.assistantTurnCount) > 0) return true;
+    if (numericCount(raw.messageCount) > 0 || numericCount(raw.turnCount) > 0 || numericCount(raw.userTurnCount) > 0 || numericCount(raw.assistantTurnCount) > 0) return true;
+    if (Array.isArray(raw.snapshots)) {
+      return raw.snapshots.some((snap) => snap && typeof snap === 'object' && (
+        snap.snapshotId || snap.id || numericCount(snap.messageCount) > 0 || numericCount(snap.turnCount) > 0
+      ));
+    }
+    return false;
+  }
+
+  function applyDisplayClassification(row) {
+    if (!row || typeof row !== 'object') return row;
+    const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
+    const sourceView = cleanString(row.sourceView || row.originalView || row.rawView || row.view || raw.view).toLowerCase();
+    const href = rowLinkedUrl(row);
+    const hasTranscript = rowHasRealTranscriptEvidence(row);
+    if (sourceView && !row.sourceView) row.sourceView = sourceView;
+    if (sourceView && !row.originalView) row.originalView = sourceView;
+    if (sourceView && !row.rawView) row.rawView = sourceView;
+    if (hasTranscript) {
+      row.displayView = row.archived ? 'archived' : 'saved';
+      row.badgeKind = row.archived ? 'Archive' : 'Saved';
+      row.readerKind = 'reader';
+      return row;
+    }
+    if (href) {
+      row.sourceIsSaved = !!(row.sourceIsSaved || row.isSaved || row.state?.isSaved || raw.isSaved || sourceView === 'saved');
+      row.sourceIsLinked = !!(row.sourceIsLinked || row.isLinked || row.state?.isLinked || raw.isLinked || sourceView === 'linked' || sourceView === 'link');
+      row.view = 'link';
+      row.displayView = 'link';
+      row.badgeKind = 'Link';
+      row.badge = 'Link';
+      row.readerKind = 'placeholder';
+      row.isSaved = false;
+      if (row.state && typeof row.state === 'object') row.state = Object.assign({}, row.state, { isSaved: false });
+      if (raw && typeof raw === 'object') {
+        raw.sourceView = raw.sourceView || sourceView || '';
+        raw.sourceIsSaved = raw.sourceIsSaved || row.sourceIsSaved;
+        raw.sourceIsLinked = raw.sourceIsLinked || row.sourceIsLinked;
+        raw.isSaved = false;
+      }
+    }
+    return row;
   }
 
   async function readNativeChatRegistryRecords() {

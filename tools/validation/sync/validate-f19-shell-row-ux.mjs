@@ -65,6 +65,7 @@ const checks = [
   check(
     'library-index-url-only-source-saved-classifies-link',
     sources.libraryIndex.includes('function chatHasTranscriptEvidence') &&
+      sources.libraryIndex.includes('function applyDisplayClassification') &&
       sources.libraryIndex.includes('latestSnapshotByChatId') &&
       sources.libraryIndex.includes('const displaySaved = !!(chat?.isSaved && hasTranscript);') &&
       sources.libraryIndex.includes("else if (displayLinked) view = 'linked';") &&
@@ -74,6 +75,21 @@ const checks = [
       sources.libraryIndex.includes('f19DisplayClassifiedAsLink'),
     FILES.libraryIndex,
     'URL-only rows with historical saved/source state must project as Link, while saved rows with snapshot/message evidence remain Saved even if lastSnapshotId is empty.'
+  ),
+  check(
+    'library-index-source-view-display-split',
+    sources.libraryIndex.includes('row.sourceView = sourceView') &&
+      sources.libraryIndex.includes('row.originalView = sourceView') &&
+      sources.libraryIndex.includes('row.rawView = sourceView') &&
+      sources.libraryIndex.includes("row.view = 'link'") &&
+      sources.libraryIndex.includes("row.displayView = 'link'") &&
+      sources.libraryIndex.includes("row.badgeKind = 'Link'") &&
+      sources.libraryIndex.includes("row.readerKind = 'placeholder'") &&
+      sources.libraryIndex.includes('row.sourceIsSaved') &&
+      sources.libraryIndex.includes('raw.sourceView') &&
+      sources.libraryIndex.includes('raw.isSaved = false'),
+    FILES.libraryIndex,
+    'URL-only rows must preserve historical source view separately while exposing user-facing Link display classification.'
   ),
   check(
     'library-index-transcript-evidence-not-last-snapshot-only',
@@ -115,6 +131,9 @@ const checks = [
       sources.insights.includes('function rowHasOpenableTranscriptContent') &&
       sources.insights.includes('function resolveReaderSnapshotId') &&
       sources.insights.includes('function rowIsUrlOnlyLink') &&
+      sources.insights.includes("row.displayView || row.badgeKind || row.view") &&
+      sources.insights.includes("displayView === 'link' || displayView === 'linked'") &&
+      sources.insights.includes("view === 'linked' || view === 'link'") &&
       sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'messageCount')") &&
       sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'turnCount')") &&
       sources.insights.includes('const hasSnapshotArrayEvidence = Array.isArray(raw.snapshots)') &&
