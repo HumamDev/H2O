@@ -370,12 +370,46 @@
     return value === true || value === 1 || value === '1' || value === 'true';
   }
 
+  function numericCount(value) {
+    var n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }
+
+  function normalizeDisplayClass(value) {
+    var text = cleanString(value).toLowerCase();
+    if (!text) return '';
+    if (text === 'link' || text === 'linked') return 'link';
+    if (text === 'saved') return 'saved';
+    if (text === 'archive' || text === 'archived') return 'archived';
+    if (text === 'imported' || text === 'placeholder') return text;
+    return text;
+  }
+
+  function displayClass(row) {
+    var r = row && typeof row === 'object' ? row : {};
+    var badge = cleanString(r.badgeKind || r.badge || '');
+    var explicit = normalizeDisplayClass(r.displayView);
+    if (explicit) return explicit;
+    if (/^link$/i.test(badge)) return 'link';
+    if (/^saved$/i.test(badge)) return 'saved';
+    if (/^archive$/i.test(badge)) return 'archived';
+    return normalizeDisplayClass(r.view || r.status || r.kind || r.type);
+  }
+
   function rowView(row) {
-    return cleanString(row && (row.view || row.status || '')).toLowerCase();
+    return displayClass(row);
+  }
+
+  function extractChatGptConversationId(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var match = text.match(/(?:^|\/)c\/([^/?#]+)/i);
+    return match && match[1] ? cleanString(match[1]) : '';
   }
 
   function rowId(row) {
-    return cleanString(row && (row.chatId || row.id || row.externalId || row.conversationId));
+    return cleanString(row && (row.chatId || row.id || row.externalId || row.conversationId))
+      || extractChatGptConversationId(row && (row.href || row.url || row.sourceUrl || row.normalizedHref || row.linkSourceHref));
   }
 
   function addIdentityKey(keys, prefix, value) {
@@ -392,6 +426,13 @@
     addIdentityKey(keys, 'chat', row && row.conversationId);
     addIdentityKey(keys, 'snapshot', row && row.snapshotId);
     addIdentityKey(keys, 'snapshot', row && row.lastSnapshotId);
+    addIdentityKey(keys, 'snapshot', row && row.latestSnapshotId);
+    addIdentityKey(keys, 'snapshot', row && row.snapshot_id);
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(row && row.href));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(row && row.url));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(row && row.sourceUrl));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(row && row.normalizedHref));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(row && row.linkSourceHref));
     return Object.keys(keys);
   }
 
@@ -405,6 +446,16 @@
     addIdentityKey(keys, 'chat', index.conversationId);
     addIdentityKey(keys, 'snapshot', index.snapshotId);
     addIdentityKey(keys, 'snapshot', index.lastSnapshotId);
+    addIdentityKey(keys, 'snapshot', index.latestSnapshotId);
+    addIdentityKey(keys, 'snapshot', index.snapshot_id);
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(chat && chat.href));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(chat && chat.url));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(chat && chat.sourceUrl));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(index.href));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(index.url));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(index.sourceUrl));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(index.normalizedHref));
+    addIdentityKey(keys, 'chat', extractChatGptConversationId(index.linkSourceHref));
     (Array.isArray(chat && chat.snapshots) ? chat.snapshots : []).forEach(function (snapshot) {
       addIdentityKey(keys, 'chat', snapshot && snapshot.chatId);
       addIdentityKey(keys, 'snapshot', snapshot && (snapshot.snapshotId || snapshot.id));
@@ -414,12 +465,16 @@
 
   function isSavedRow(row) {
     var view = rowView(row);
-    return view === 'saved' || boolValue(row && (row.saved || row.isSaved));
+    if (view === 'saved') return true;
+    if (view === 'link' || view === 'linked' || view === 'imported' || view === 'placeholder') return false;
+    return boolValue(row && (row.saved || row.isSaved));
   }
 
   function isLinkedRow(row) {
     var view = rowView(row);
-    return view === 'linked' || boolValue(row && (row.linked || row.isLinked));
+    if (view === 'link' || view === 'linked') return true;
+    if (view === 'saved') return false;
+    return boolValue(row && (row.linked || row.isLinked));
   }
 
   function isArchivedRow(row) {
@@ -437,8 +492,16 @@
     return boolValue(row && (row.pinned || row.isPinned));
   }
 
+  function hasRealTranscriptEvidence(row) {
+    return !!cleanString(row && (row.lastSnapshotId || row.snapshotId || row.snapshot_id || row.latestSnapshotId))
+      || numericCount(row && row.messageCount) > 0
+      || numericCount(row && row.turnCount) > 0
+      || numericCount(row && row.userTurnCount) > 0
+      || numericCount(row && row.assistantTurnCount) > 0;
+  }
+
   function hasArchiveEvidence(row) {
-    return !!cleanString(row && row.snapshotId) || Number(row && row.snapshotCount) > 0;
+    return hasRealTranscriptEvidence(row);
   }
 
   function getLibraryIndexRows() {
@@ -472,10 +535,10 @@
     (Array.isArray(chats) ? chats : []).forEach(function (chat) {
       var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
       var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
-      var view = cleanString(index.view || index.kind || index.type).toLowerCase();
+      var view = normalizeDisplayClass(index.displayView || index.badgeKind || index.view || index.kind || index.type);
       var hasSnapshots = Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0;
-      var imported = view === 'imported' || stateObj.isImported === true || index.isImported === true;
-      if (view === 'linked' || stateObj.isLinked === true || index.isLinked === true) counts.linked += 1;
+      var imported = view === 'imported' || view === 'placeholder' || stateObj.isImported === true || index.isImported === true;
+      if (view === 'link' || view === 'linked' || stateObj.isLinked === true || index.isLinked === true) counts.linked += 1;
       else if (view === 'saved' || stateObj.isSaved === true || index.isSaved === true || (!imported && hasSnapshots)) counts.saved += 1;
       if (stateObj.isPinned === true || index.pinned === true || index.isPinned === true) counts.pinned += 1;
       if (stateObj.isArchived === true || index.archived === true || index.isArchived === true) counts.archived += 1;
@@ -516,6 +579,48 @@
     return out;
   }
 
+  function makeExportClassCounts(rows) {
+    var out = {
+      saved: 0,
+      link: 0,
+      imported: 0,
+      transcriptBacked: 0,
+      registryOnly: 0,
+      pinned: 0,
+      archived: 0
+    };
+    (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      if (isSavedRow(row)) out.saved += 1;
+      if (isLinkedRow(row)) out.link += 1;
+      if (isImportedRow(row)) out.imported += 1;
+      if (hasRealTranscriptEvidence(row)) out.transcriptBacked += 1;
+      else out.registryOnly += 1;
+      if (isPinnedRow(row)) out.pinned += 1;
+      if (isArchivedRow(row)) out.archived += 1;
+    });
+    return out;
+  }
+
+  function transcriptEvidenceFromLibraryRow(row) {
+    var snapshotId = cleanString(row && (row.lastSnapshotId || row.snapshotId || row.snapshot_id || row.latestSnapshotId));
+    var messageCount = numericCount(row && row.messageCount);
+    var turnCount = numericCount(row && row.turnCount);
+    var userTurnCount = numericCount(row && row.userTurnCount);
+    var assistantTurnCount = numericCount(row && row.assistantTurnCount);
+    var snapshotCount = snapshotId ? Math.max(numericCount(row && row.snapshotCount), 1) : (messageCount || turnCount || userTurnCount || assistantTurnCount ? numericCount(row && row.snapshotCount) : 0);
+    return {
+      snapshotId: snapshotId,
+      lastSnapshotId: snapshotId,
+      latestSnapshotId: snapshotId,
+      snapshotCount: snapshotCount,
+      messageCount: messageCount,
+      turnCount: turnCount,
+      userTurnCount: userTurnCount,
+      assistantTurnCount: assistantTurnCount,
+      answerCount: numericCount(row && row.answerCount)
+    };
+  }
+
   function buildMinimalChatFromLibraryRow(row) {
     var id = rowId(row);
     if (!id) return null;
@@ -528,11 +633,23 @@
     var href = cleanString(row && (row.href || row.linkSourceHref || row.normalizedHref))
       || ('https://chatgpt.com/c/' + id);
     var view = linked && !saved ? 'linked' : (archived ? 'archived' : (imported ? 'imported' : 'saved'));
+    var displayView = linked && !saved ? 'link' : view;
+    var evidence = transcriptEvidenceFromLibraryRow(row);
     return {
       chatId: id,
       bootMode: linked && !saved ? 'linked' : (imported ? 'imported' : 'saved'),
+      snapshotId: evidence.snapshotId,
+      lastSnapshotId: evidence.lastSnapshotId,
+      latestSnapshotId: evidence.latestSnapshotId,
+      snapshotCount: evidence.snapshotCount,
+      messageCount: evidence.messageCount,
+      turnCount: evidence.turnCount,
+      userTurnCount: evidence.userTurnCount,
+      assistantTurnCount: evidence.assistantTurnCount,
+      answerCount: evidence.answerCount,
       chatIndex: {
         id: id,
+        chatId: id,
         title: title,
         displayTitle: title,
         sourceTitle: title,
@@ -541,6 +658,23 @@
         originalTitle: title,
         href: href,
         view: view,
+        displayView: displayView,
+        badgeKind: saved ? 'Saved' : (linked ? 'Link' : (archived ? 'Archive' : 'Imported')),
+        readerKind: saved && hasRealTranscriptEvidence(row) ? 'reader' : 'placeholder',
+        sourceView: cleanString(row && (row.sourceView || row.originalView || row.rawView || row.view)),
+        originalView: cleanString(row && (row.originalView || row.sourceView || row.rawView || row.view)),
+        rawView: cleanString(row && (row.rawView || row.sourceView || row.originalView || row.view)),
+        sourceIsSaved: boolValue(row && (row.sourceIsSaved || row.isSaved)),
+        sourceIsLinked: boolValue(row && (row.sourceIsLinked || row.isLinked)),
+        snapshotId: evidence.snapshotId,
+        lastSnapshotId: evidence.lastSnapshotId,
+        latestSnapshotId: evidence.latestSnapshotId,
+        snapshotCount: evidence.snapshotCount,
+        messageCount: evidence.messageCount,
+        turnCount: evidence.turnCount,
+        userTurnCount: evidence.userTurnCount,
+        assistantTurnCount: evidence.assistantTurnCount,
+        answerCount: evidence.answerCount,
         state: {
           isSaved: saved,
           isLinked: linked,
@@ -550,7 +684,8 @@
           isDeleted: false
         },
         organization: {
-          categoryId: cleanString(row && row.categoryId)
+          categoryId: cleanString(row && row.categoryId),
+          folderId: cleanString(row && (row.folderId || row.folder_id))
         },
         linkSourceHref: cleanString(row && (row.linkSourceHref || row.normalizedHref || href)),
         linkedFrom: cleanString(row && row.linkedFrom),
@@ -562,7 +697,15 @@
           sourceTitle: title,
           pageTitle: title,
           chatTitle: title,
-          originalTitle: title
+          originalTitle: title,
+          snapshotId: evidence.snapshotId,
+          lastSnapshotId: evidence.lastSnapshotId,
+          snapshotCount: evidence.snapshotCount,
+          messageCount: evidence.messageCount,
+          turnCount: evidence.turnCount,
+          userTurnCount: evidence.userTurnCount,
+          assistantTurnCount: evidence.assistantTurnCount,
+          answerCount: evidence.answerCount
         }
       },
       migrated: false,
@@ -597,6 +740,9 @@
     var snapshotCounts = countSnapshotRows(snapshotRows);
     var bundleCounts = countBundleViews(bundleChats);
     var missingTypeCounts = makeMissingRowTypeCounts(missingRows);
+    var snapshotClassCounts = makeExportClassCounts(snapshotRows);
+    var addedMinimalClassCounts = makeExportClassCounts(addedRows);
+    var unexportableClassCounts = makeExportClassCounts(unexportableRows);
     var blockers = [];
     var warnings = [];
     if (addedRows.length > 0) warnings.push(EXPORT_COVERAGE_MINIMAL_ROWS);
@@ -628,6 +774,15 @@
       droppedArchiveRowCount: Number(droppedArchiveRowCount) || 0,
       unexportableRowCount: unexportableRows.length,
       missingRowTypeCounts: missingTypeCounts,
+      snapshotExportClassCounts: snapshotClassCounts,
+      addedMinimalRowTypeCounts: addedMinimalClassCounts,
+      unexportableRowTypeCounts: unexportableClassCounts,
+      supportedRowsRepresented: snapshotCounts.total === bundleChats.length,
+      supportedStateRepresented: snapshotCounts.saved === bundleCounts.saved
+        && snapshotCounts.linked === bundleCounts.linked
+        && snapshotCounts.pinned === bundleCounts.pinned
+        && snapshotCounts.archived === bundleCounts.archived,
+      coverageDecision: blockers.length === 0 ? 'allow-export' : 'block-export',
       blockers: blockers,
       warnings: warnings,
       privacy: {

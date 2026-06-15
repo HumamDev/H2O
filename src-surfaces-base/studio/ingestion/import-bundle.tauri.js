@@ -99,6 +99,11 @@
     return String(value == null ? '' : value).trim();
   }
 
+  function numericCount(value) {
+    var n = Number(value);
+    return isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }
+
   function looksLikeOpaqueTitle(value, id) {
     var text = cleanString(value);
     var chatId = cleanString(id);
@@ -550,6 +555,20 @@
     var hasSnapshots = snapshotsSortedDesc.length > 0;
     var latest = hasSnapshots ? snapshotsSortedDesc[0] : null;
     var latestMeta = (latest && latest.meta && typeof latest.meta === 'object') ? latest.meta : {};
+    var indexSnapshotId = cleanString(chatIndex.lastSnapshotId || chatIndex.snapshotId || chatIndex.snapshot_id || chatIndex.latestSnapshotId || chat && (chat.lastSnapshotId || chat.snapshotId || chat.latestSnapshotId));
+    var indexMessageCount = numericCount(chatIndex.messageCount || chat && chat.messageCount);
+    var indexTurnCount = numericCount(chatIndex.turnCount || chat && chat.turnCount);
+    var indexUserTurnCount = numericCount(chatIndex.userTurnCount || chat && chat.userTurnCount);
+    var indexAssistantTurnCount = numericCount(chatIndex.assistantTurnCount || chat && chat.assistantTurnCount);
+    var indexAnswerCount = numericCount(chatIndex.answerCount || chat && chat.answerCount);
+    var indexHasTranscriptEvidence = !!indexSnapshotId
+      || indexMessageCount > 0
+      || indexTurnCount > 0
+      || indexUserTurnCount > 0
+      || indexAssistantTurnCount > 0;
+    var indexSnapshotCount = indexSnapshotId
+      ? Math.max(numericCount(chatIndex.snapshotCount || chat && chat.snapshotCount), 1)
+      : (indexHasTranscriptEvidence ? numericCount(chatIndex.snapshotCount || chat && chat.snapshotCount) : 0);
 
     var title = friendlyShellTitle([
       latestMeta.title,
@@ -592,7 +611,7 @@
       chatSource.label,
     ], chatId, indexState.isLinked && !indexState.isSaved ? 'Link' : 'Imported chat');
     var href = chatIndex.href || ('https://chatgpt.com/c/' + chatId);
-    var isSaved = hasSnapshots || !!indexState.isSaved;
+    var isSaved = hasSnapshots || !!indexState.isSaved || (indexHasTranscriptEvidence && cleanString(chatIndex.displayView || chatIndex.view).toLowerCase() === 'saved');
     var isLinked = hasSnapshots || !!indexState.isLinked;
     var isMinimalLibraryIndexRow = isF19MinimalLibraryIndexChat(chat);
 
@@ -619,8 +638,13 @@
       isPinned: !!indexState.isPinned,
       isArchived: !!indexState.isArchived,
       isDeleted: !!indexState.isDeleted,
-      snapshotCount: snapshotsSortedDesc.length,
-      lastSnapshotId: latest ? (latest.snapshotId || null) : null,
+      snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
+      lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
+      messageCount: hasSnapshots ? 0 : indexMessageCount,
+      turnCount: hasSnapshots ? 0 : indexTurnCount,
+      userTurnCount: hasSnapshots ? 0 : indexUserTurnCount,
+      assistantTurnCount: hasSnapshots ? 0 : indexAssistantTurnCount,
+      answerCount: indexAnswerCount,
       lastCapturedAt: latest ? isoToEpochMs(latest.createdAt) : 0,
       categoryId: indexOrg.categoryId || '',
       linkSourceHref: chatIndex.linkSourceHref || '',
@@ -634,6 +658,14 @@
         pageTitle: title,
         chatTitle: title,
         originalTitle: title,
+        snapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
+        lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
+        snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
+        messageCount: hasSnapshots ? 0 : indexMessageCount,
+        turnCount: hasSnapshots ? 0 : indexTurnCount,
+        userTurnCount: hasSnapshots ? 0 : indexUserTurnCount,
+        assistantTurnCount: hasSnapshots ? 0 : indexAssistantTurnCount,
+        answerCount: indexAnswerCount,
         f19ChromeDesktopMinimalRow: isMinimalLibraryIndexRow,
         chatIndexMeta: chatIndexMeta,
       },
@@ -710,7 +742,7 @@
       ], chatId, 'Imported chat'),
       now,
       now,
-      0,
+      numericCount(patch && patch.messageCount),
       patch && patch.isPinned ? 1 : 0,
       patch && patch.isArchived ? 1 : 0,
       patch && patch.isDeleted ? 1 : 0,
@@ -718,7 +750,7 @@
       patch && patch.isLinked ? 1 : 0,
       href,
       cleanString(patch && patch.normalizedHref) || href,
-      0,
+      numericCount(patch && patch.snapshotCount),
       cleanString(patch && patch.linkSourceHref),
       cleanString(patch && patch.linkedFrom),
       Number((patch && patch.linkedAt) || 0) || 0,

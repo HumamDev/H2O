@@ -328,6 +328,14 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'chromeWritesSyncFolder: true', 'Chrome export write marker');
   assertContains(autoImportFile, 'chrome-to-desktop-exported', 'Chrome export success status');
   assertContains(autoImportFile, 'chromeExportCoverage', 'Chrome export coverage diagnostic');
+  assertContains(autoImportFile, 'function displayClass', 'display classification helper');
+  assertContains(autoImportFile, 'view === \'link\' || view === \'linked\'', 'Link display rows are exported as linked rows');
+  assertContains(autoImportFile, 'function hasRealTranscriptEvidence', 'real transcript evidence helper');
+  assertContains(autoImportFile, 'function transcriptEvidenceFromLibraryRow', 'LibraryIndex transcript evidence export helper');
+  assertContains(autoImportFile, 'messageCount: evidence.messageCount', 'message evidence carried into Chrome export');
+  assertContains(autoImportFile, 'turnCount: evidence.turnCount', 'turn evidence carried into Chrome export');
+  assertContains(autoImportFile, 'supportedRowsRepresented', 'coverage supported-row representation detail');
+  assertContains(autoImportFile, 'addedMinimalRowTypeCounts', 'coverage minimal-row class detail');
   assertContains(folderImportFile, 'var LATEST_FILE = \'latest.json\'', 'Desktop import transport constant');
   assertContains(folderImportFile, 'var CHROME_LATEST_FILE = \'chrome-latest.json\'', 'Chrome export transport constant');
   assertContains(folderImportFile, 'function exportChromeToSyncFolder', 'direction-specific Chrome export API');
@@ -357,6 +365,9 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'f15.bulk-migration', 'authorized bulk migration identity');
   assertContains(importBundleFile, 'chromeMinimalRows', 'minimal row importer summary');
   assertContains(importBundleFile, 'f19ChromeDesktopMaterializedShell', 'minimal row shell marker');
+  assertContains(importBundleFile, 'numericCount(patch && patch.messageCount)', 'minimal row message evidence materialization');
+  assertContains(importBundleFile, 'numericCount(patch && patch.snapshotCount)', 'minimal row snapshot evidence materialization');
+  assertContains(importBundleFile, 'indexHasTranscriptEvidence', 'bundle chatIndex transcript evidence normalization');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-writer-identity-missing', 'minimal row writer identity error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-column-mismatch', 'minimal row column mismatch taxonomy');
