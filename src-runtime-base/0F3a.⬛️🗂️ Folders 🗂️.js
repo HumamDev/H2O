@@ -3891,6 +3891,8 @@ ${CROW}[aria-current="true"]{
       };
       const failureMessage = (status) => {
         switch (String(status || '')) {
+          case 'extension-context-invalidated':
+            return API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE;
           case 'capture-requires-open-chat':
             return 'Open this chat first to capture transcript.';
           case 'capture-unavailable':
@@ -6853,6 +6855,52 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return !!API_captureSnapshotId(capture) || API_captureMessageCount(capture) > 0;
   }
 
+  const API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE = 'Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.';
+
+  function API_isExtensionContextInvalidated(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const text = String(src.message || src.error || src.bridgeError || value || '');
+    return src.extensionContextInvalidated === true
+      || String(src.status || src.reason || src.code || '') === 'extension-context-invalidated'
+      || /\bextension context invalidated\b/i.test(text)
+      || /\bcontext invalidated\b/i.test(text);
+  }
+
+  function API_extensionBridgeHealth() {
+    const archive = H2O.archiveBoot || {};
+    let health = null;
+    try {
+      if (typeof archive.getExtensionBridgeHealth === 'function') health = archive.getExtensionBridgeHealth();
+      else if (typeof archive._getExtensionBridge === 'function') {
+        const bridge = archive._getExtensionBridge();
+        if (bridge && typeof bridge.getHealth === 'function') health = bridge.getHealth();
+        else if (bridge && typeof bridge.getState === 'function') health = bridge.getState();
+      }
+    } catch (error) {
+      health = {
+        available: false,
+        lastErrorCode: 'bridge-health-threw',
+        lastErrorMessage: String(error && (error.message || error) || ''),
+      };
+    }
+    const raw = health && typeof health === 'object' ? health : {};
+    const invalidated = raw.extensionContextInvalidated === true
+      || raw.reloadRequired === true
+      || API_isExtensionContextInvalidated(raw);
+    return {
+      available: !!health,
+      extensionChecked: raw.extensionChecked === true,
+      extensionBacked: raw.extensionBacked === true,
+      bridgeSessionReady: raw.bridgeSessionReady === true,
+      extensionContextInvalidated: invalidated,
+      reloadRequired: invalidated || raw.reloadRequired === true,
+      lastErrorCode: String(raw.lastErrorCode || ''),
+      lastErrorMessage: invalidated ? API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE : String(raw.lastErrorMessage || ''),
+      lastErrorAt: Number(raw.lastErrorAt || 0) || 0,
+      lastErrorOp: String(raw.lastErrorOp || ''),
+    };
+  }
+
   function API_captureSummary(capture) {
     const snapshotId = API_captureSnapshotId(capture);
     const assistantTurnCount = API_captureAssistantTurnCount(capture);
@@ -6895,10 +6943,14 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     STATE.lastSaveToFolderSummary = {
       ok: out.ok === true,
       status: String(out.status || ''),
+      reason: String(out.reason || ''),
+      message: String(out.message || ''),
       chatId: String(out.chatId || ''),
+      title: String(out.title || ''),
       folderId: String(out.folderId || ''),
       captureOk: out.capture?.ok === undefined ? null : out.capture.ok !== false,
       captureSummary,
+      captureReadiness: out.captureReadiness && typeof out.captureReadiness === 'object' ? out.captureReadiness : null,
       registryUpsertFields: registryPatch && typeof registryPatch === 'object' ? Object.keys(registryPatch).sort() : [],
       registryEvidence,
       latestRowWouldBeExportSafe: !!(
@@ -6931,7 +6983,30 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       });
     } catch (error) {
       DIAG_err('capture-current-chat-for-folder', error);
+      if (API_isExtensionContextInvalidated(error)) {
+        return {
+          ok: false,
+          status: 'extension-context-invalidated',
+          reason: 'extension-context-invalidated',
+          message: API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE,
+          chatId: cid,
+          capture: null,
+          captureReadiness: API_captureReadiness({ includeCaptureDryRun: false }),
+        };
+      }
       return { ok: false, status: 'capture-failed', chatId: cid, capture: null, error: String(error && (error.message || error) || '') };
+    }
+
+    if (API_isExtensionContextInvalidated(capture)) {
+      return {
+        ok: false,
+        status: 'extension-context-invalidated',
+        reason: 'extension-context-invalidated',
+        message: API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE,
+        chatId: cid,
+        capture,
+        captureReadiness: API_captureReadiness({ includeCaptureDryRun: false }),
+      };
     }
 
     if (!capture || capture.ok === false) {
@@ -7012,6 +7087,23 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       title: preCaptureTitle,
     });
     const captureSummary = API_captureSummary(captured?.capture);
+    if (API_isExtensionContextInvalidated(captured) || API_isExtensionContextInvalidated(captured?.capture)) {
+      const result = {
+        ...(captured && typeof captured === 'object' ? captured : {}),
+        ok: false,
+        status: 'extension-context-invalidated',
+        reason: 'extension-context-invalidated',
+        message: API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE,
+        chatId: cid,
+        folderId: fid,
+        folderName: label,
+        title: preCaptureTitle,
+        captureSummary,
+        captureReadiness: captured?.captureReadiness || API_captureReadiness({ includeCaptureDryRun: false }),
+      };
+      API_recordLastSaveToFolderSummary(result, null, null);
+      return result;
+    }
     const hasTranscriptEvidence = API_captureHasRealTranscript(captured?.capture);
     if (!hasTranscriptEvidence) {
       const result = {
@@ -7686,6 +7778,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       F19_7_failClosed: true,
       F19_7b_transcriptRequired: true,
       F19_7d_buildTruthDiagnostic: true,
+      F19_7m_extensionContextInvalidatedFailClosed: true,
     };
   }
 
@@ -7724,6 +7817,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const visibleMessageCount = Number(visibleSummary.visibleMessageCount || 0);
     const visibleConversationTurnCount = Number(visibleSummary.visibleConversationTurnCount || visibleMessageCount || 0);
     const archiveCaptureNowCallable = typeof H2O.archiveBoot?.captureNow === 'function';
+    const extensionBridgeHealth = API_extensionBridgeHealth();
     const targetEqualsCurrent = selectedTargetChatId
       ? selectedTargetChatId === currentLoadedChatId
       : (currentUrlChatId ? currentUrlChatId === currentLoadedChatId : null);
@@ -7740,6 +7834,9 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       detectionSource: String(visibleSummary.source || ''),
       wouldHaveTranscriptEvidence: visibleSummary.wouldHaveTranscriptEvidence === true,
       archiveBootCaptureNowCallable: archiveCaptureNowCallable,
+      extensionBridgeHealth,
+      extensionContextInvalidated: extensionBridgeHealth.extensionContextInvalidated === true,
+      extensionContextReloadRequired: extensionBridgeHealth.reloadRequired === true,
       captureDryRunRequested: includeCaptureDryRun,
       includeCaptureDryRun: false,
       captureDryRunSafe: false,
@@ -7761,6 +7858,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       syncFolderBridgeExists,
       latestSaveWouldBeExportSafe: !!(
         captureReadiness?.archiveBootCaptureNowCallable &&
+        captureReadiness?.extensionContextInvalidated !== true &&
         Number(captureReadiness?.visibleMessageCount || 0) > 0 &&
         (captureReadiness?.selectedTargetEqualsCurrentLoadedChat !== false) &&
         typeof reg?.upsertRecord === 'function'
@@ -7775,10 +7873,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const nativeRuntimeMissing = false;
     const captureEngineMissing = !modulePresence.transcriptArchiveEngineLoaded;
     const saveHandlerStale = !handlerOwnership.currentHandlerMatchesPatchedApi;
+    const extensionContextInvalidated = captureReadiness.extensionContextInvalidated === true;
     const notCurrentLoadedChat = captureReadiness.selectedTargetEqualsCurrentLoadedChat === false;
     const noVisibleMessages = Number(captureReadiness.visibleMessageCount || 0) <= 0;
     const captureReturnedNoTranscript = null;
-    const registryWriteWouldBeLinkOnly = captureEngineMissing || notCurrentLoadedChat || noVisibleMessages || !registrySyncReadiness.chatRegistryUpsertCallable;
+    const registryWriteWouldBeLinkOnly = extensionContextInvalidated || captureEngineMissing || notCurrentLoadedChat || noVisibleMessages || !registrySyncReadiness.chatRegistryUpsertCallable;
     const syncBridgeMissing = !registrySyncReadiness.nativeToStudioBroadcastExists && !registrySyncReadiness.syncFolderBridgeExists;
     const failureReasons = {
       wrongExtension,
@@ -7786,6 +7885,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       nativeRuntimeMissing,
       captureEngineMissing,
       saveHandlerStale,
+      extensionContextInvalidated,
       notCurrentLoadedChat,
       noVisibleMessages,
       captureReturnedNoTranscript,

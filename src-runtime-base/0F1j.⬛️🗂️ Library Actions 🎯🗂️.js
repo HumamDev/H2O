@@ -600,7 +600,17 @@
             captureResult = { ok: cap && cap.ok !== false, status: cap?.status || '', chatId: ident.chatId, capture: cap };
           } catch (e) {
             pushError('saveToFolder:archiveBoot.captureNow', e);
-            captureResult = { ok: false, status: 'capture-threw', chatId: ident.chatId };
+            const msg = String(e?.message || e || '');
+            const invalidated = /\bextension context invalidated\b/i.test(msg) || /\bcontext invalidated\b/i.test(msg);
+            captureResult = {
+              ok: false,
+              status: invalidated ? 'extension-context-invalidated' : 'capture-threw',
+              reason: invalidated ? 'extension-context-invalidated' : 'capture-threw',
+              message: invalidated
+                ? 'Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.'
+                : '',
+              chatId: ident.chatId
+            };
           }
         } else {
           const out = { ok: false, chatId: ident.chatId, folderId: '', error: 'capture-unavailable' };

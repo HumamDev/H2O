@@ -344,6 +344,49 @@ const checks = [
     'Native Save to Folder diagnostics must derive current ChatGPT conversation ids from modern URL shapes and report visible transcript evidence from the same archive inspection path used by capture.'
   ),
   check(
+    'extension-bridge-context-invalidated-normalized',
+    sources.extensionBridge.includes('const EXTENSION_CONTEXT_INVALIDATED = "extension-context-invalidated"') &&
+      sources.extensionBridge.includes('function isExtensionContextInvalidatedError') &&
+      sources.extensionBridge.includes('function normalizeBridgeError') &&
+      sources.extensionBridge.includes('function recordBridgeError') &&
+      sources.extensionBridge.includes('extensionContextInvalidated: state.extensionContextInvalidated') &&
+      sources.extensionBridge.includes('reloadRequired: state.reloadRequired') &&
+      sources.extensionBridge.includes('getHealth'),
+    FILES.extensionBridge,
+    'Transcript extension bridge must normalize Extension context invalidated into redacted health state instead of leaking raw uncaught bridge failures.'
+  ),
+  check(
+    'archive-capture-context-invalidated-fails-closed',
+    sources.archiveEngine.includes('function isExtensionContextInvalidatedError') &&
+      sources.archiveEngine.includes('function extensionContextInvalidatedCaptureResult') &&
+      sources.archiveEngine.includes('status: "extension-context-invalidated"') &&
+      sources.archiveEngine.includes('captureSnapshot bridge invalidated; failing closed') &&
+      sources.archiveEngine.includes('archiveBoot.getExtensionBridgeHealth = () => getExtensionBridgeHealth();'),
+    FILES.archiveEngine,
+    'archiveBoot.captureNow must fail closed on invalidated extension context instead of falling back to local-only snapshots.'
+  ),
+  check(
+    'native-save-to-folder-context-invalidated-fails-closed',
+    sources.nativeFolders.includes('const API_EXTENSION_CONTEXT_INVALIDATED_MESSAGE') &&
+      sources.nativeFolders.includes('function API_isExtensionContextInvalidated') &&
+      sources.nativeFolders.includes('function API_extensionBridgeHealth') &&
+      sources.nativeFolders.includes('extensionBridgeHealth') &&
+      sources.nativeFolders.includes('extensionContextInvalidated') &&
+      sources.nativeFolders.includes("status: 'extension-context-invalidated'") &&
+      sources.nativeFolders.includes('Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.') &&
+      sources.nativeFolders.includes('F19_7m_extensionContextInvalidatedFailClosed'),
+    FILES.nativeFolders,
+    'Native Save to Folder must diagnose invalidated extension context and fail closed without creating folder-only or link-only records.'
+  ),
+  check(
+    'library-actions-context-invalidated-normalized',
+    sources.libraryActions.includes("status: invalidated ? 'extension-context-invalidated' : 'capture-threw'") &&
+      sources.libraryActions.includes("reason: invalidated ? 'extension-context-invalidated' : 'capture-threw'") &&
+      sources.libraryActions.includes('Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.'),
+    FILES.libraryActions,
+    'LibraryActions save fallback must preserve the extension-context-invalidated status instead of collapsing it to a generic capture failure.'
+  ),
+  check(
     'archive-engine-current-conversation-inspect-fallback',
     sources.archiveEngine?.includes('function normalizeChatIdFromUrl') &&
       sources.archiveEngine.includes('function collectNativeMessageNodesFallback') &&

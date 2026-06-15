@@ -25,6 +25,8 @@
   const RES = "h2o-ext-archive:v1:res";
   const SW = "h2o-ext-archive:v1";
   const BRIDGE_TIMEOUT_MS = 12000;
+  const EXTENSION_CONTEXT_INVALIDATED = "extension-context-invalidated";
+  const EXTENSION_CONTEXT_INVALIDATED_MESSAGE = "Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.";
 
   const state = {
     extensionChecked: false,
@@ -32,6 +34,12 @@
     bridgeClientId: "",
     bridgeSessionToken: "",
     bridgeSessionReady: false,
+    extensionContextInvalidated: false,
+    reloadRequired: false,
+    lastErrorCode: "",
+    lastErrorMessage: "",
+    lastErrorAt: 0,
+    lastErrorOp: "",
   };
 
   function warn(...args) {
@@ -48,6 +56,44 @@
 
   function makeBridgeClientId() {
     return `arch_client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function isExtensionContextInvalidatedError(error) {
+    const text = String(error?.message || error || "");
+    return /\bextension context invalidated\b/i.test(text)
+      || /\bcontext invalidated\b/i.test(text);
+  }
+
+  function normalizeBridgeError(error, op = "") {
+    const invalidated = isExtensionContextInvalidatedError(error);
+    const message = invalidated
+      ? EXTENSION_CONTEXT_INVALIDATED_MESSAGE
+      : String(error?.message || error || "bridge request failed");
+    const out = new Error(message);
+    out.originalMessage = String(error?.message || error || "");
+    out.code = invalidated ? EXTENSION_CONTEXT_INVALIDATED : "bridge-error";
+    out.status = invalidated ? EXTENSION_CONTEXT_INVALIDATED : "bridge-error";
+    out.reason = out.status;
+    out.op = String(op || "");
+    out.extensionContextInvalidated = invalidated;
+    return out;
+  }
+
+  function recordBridgeError(error, op = "") {
+    const normalized = normalizeBridgeError(error, op);
+    state.lastErrorCode = String(normalized.code || "");
+    state.lastErrorMessage = String(normalized.message || "");
+    state.lastErrorAt = Date.now();
+    state.lastErrorOp = String(op || "");
+    if (normalized.extensionContextInvalidated === true) {
+      state.extensionContextInvalidated = true;
+      state.reloadRequired = true;
+      state.extensionChecked = true;
+      state.extensionBacked = false;
+      state.bridgeSessionReady = false;
+      state.bridgeSessionToken = "";
+    }
+    return normalized;
   }
 
   function bridgeNeedsSession(opRaw) {
@@ -119,7 +165,8 @@
     } catch (e) {
       state.bridgeSessionToken = "";
       state.bridgeSessionReady = false;
-      warn("bridge session init failed", e);
+      const normalized = recordBridgeError(e, "initSession");
+      warn("bridge session init failed", normalized);
       return false;
     }
   }
@@ -168,9 +215,11 @@
             state.bridgeSessionReady = false;
             state.bridgeSessionToken = "";
           }
-          reject(new Error(msg));
+          reject(recordBridgeError(new Error(msg), req.op));
           return;
         }
+        state.lastErrorCode = "";
+        state.lastErrorMessage = "";
         resolve(data.result);
       };
 
@@ -182,7 +231,7 @@
         done = true;
         W.clearTimeout(timer);
         W.removeEventListener("message", onMsg, false);
-        reject(e);
+        reject(recordBridgeError(e, req.op));
       }
     });
   }
@@ -198,7 +247,8 @@
         state.bridgeSessionReady = false;
         state.bridgeSessionToken = "";
       }
-    } catch {
+    } catch (e) {
+      recordBridgeError(e, "ping");
       state.extensionBacked = false;
       state.bridgeSessionReady = false;
       state.bridgeSessionToken = "";
@@ -213,6 +263,27 @@
       bridgeClientId: state.bridgeClientId,
       bridgeSessionToken: state.bridgeSessionToken,
       bridgeSessionReady: state.bridgeSessionReady,
+      extensionContextInvalidated: state.extensionContextInvalidated,
+      reloadRequired: state.reloadRequired,
+      lastErrorCode: state.lastErrorCode,
+      lastErrorMessage: state.lastErrorMessage,
+      lastErrorAt: state.lastErrorAt,
+      lastErrorOp: state.lastErrorOp,
+    };
+  }
+
+  function getHealth() {
+    return {
+      available: true,
+      extensionChecked: state.extensionChecked,
+      extensionBacked: state.extensionBacked,
+      bridgeSessionReady: state.bridgeSessionReady,
+      extensionContextInvalidated: state.extensionContextInvalidated,
+      reloadRequired: state.reloadRequired,
+      lastErrorCode: state.lastErrorCode,
+      lastErrorMessage: state.lastErrorMessage,
+      lastErrorAt: state.lastErrorAt,
+      lastErrorOp: state.lastErrorOp,
     };
   }
 
@@ -222,12 +293,19 @@
     state.bridgeClientId = "";
     state.bridgeSessionToken = "";
     state.bridgeSessionReady = false;
+    state.extensionContextInvalidated = false;
+    state.reloadRequired = false;
+    state.lastErrorCode = "";
+    state.lastErrorMessage = "";
+    state.lastErrorAt = 0;
+    state.lastErrorOp = "";
   }
 
   const api = {
     MSG: { REQ, RES, SW },
     isAvailable,
     getState,
+    getHealth,
     reset,
     ensureSession,
     call,

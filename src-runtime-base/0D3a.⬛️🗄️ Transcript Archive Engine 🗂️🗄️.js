@@ -2494,6 +2494,59 @@
       bridgeClientId: "",
       bridgeSessionToken: "",
       bridgeSessionReady: false,
+      extensionContextInvalidated: false,
+      reloadRequired: false,
+      lastErrorCode: "",
+      lastErrorMessage: "",
+    };
+  }
+
+  function getExtensionBridgeHealth() {
+    const bridge = getExtensionBridge();
+    if (bridge && typeof bridge.getHealth === "function") return bridge.getHealth();
+    const state = getExtensionBridgeState();
+    return {
+      available: !!bridge,
+      extensionChecked: state.extensionChecked === true,
+      extensionBacked: state.extensionBacked === true,
+      bridgeSessionReady: state.bridgeSessionReady === true,
+      extensionContextInvalidated: state.extensionContextInvalidated === true,
+      reloadRequired: state.reloadRequired === true,
+      lastErrorCode: String(state.lastErrorCode || ""),
+      lastErrorMessage: String(state.lastErrorMessage || ""),
+      lastErrorAt: Number(state.lastErrorAt || 0) || 0,
+      lastErrorOp: String(state.lastErrorOp || ""),
+    };
+  }
+
+  function isExtensionContextInvalidatedError(error) {
+    const text = String(error?.message || error?.originalMessage || error || "");
+    return error?.extensionContextInvalidated === true
+      || String(error?.code || error?.status || error?.reason || "") === "extension-context-invalidated"
+      || /\bextension context invalidated\b/i.test(text)
+      || /\bcontext invalidated\b/i.test(text);
+  }
+
+  function extensionContextInvalidatedCaptureResult(chatId, error, captureSource) {
+    return {
+      ok: false,
+      status: "extension-context-invalidated",
+      reason: "extension-context-invalidated",
+      message: "Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.",
+      chatId,
+      captureSource: String(captureSource || ""),
+      storage: "extension",
+      workbenchVisible: false,
+      bridgeHealth: getExtensionBridgeHealth(),
+      bridgeError: String(error?.message || error?.originalMessage || error || ""),
+      snapshotId: "",
+      lastSnapshotId: "",
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      userTurnCount: 0,
+      assistantTurnCount: 0,
+      answerCount: 0,
     };
   }
 
@@ -2832,9 +2885,16 @@
         };
       } catch (e) {
         bridgeError = String(e && (e.message || e) || "");
+        if (isExtensionContextInvalidatedError(e)) {
+          warn("captureSnapshot bridge invalidated; failing closed", e);
+          return extensionContextInvalidatedCaptureResult(chatId, e, captureSource);
+        }
         warn("captureSnapshot bridge failed; falling back local", e);
         resetExtensionBridge();
       }
+    }
+    if (getExtensionBridgeHealth().extensionContextInvalidated === true) {
+      return extensionContextInvalidatedCaptureResult(chatId, getExtensionBridgeHealth().lastErrorMessage || "Extension context invalidated.", captureSource);
     }
     const out = await saveLegacyNormalized(chatId, messages, meta, {});
     const latest = state.latestByChat.get(chatId) || (await loadLatestSnapshotInternal(chatId));
@@ -4460,6 +4520,7 @@
   archiveBoot.ARCH_VIEW_REBUILD_FIRST = ARCH_VIEW_REBUILD_FIRST;
   archiveBoot.LOAD_STRATEGY_AUTO = LOAD_STRATEGY_AUTO;
   archiveBoot.isExtensionBacked = () => isExtensionBacked();
+  archiveBoot.getExtensionBridgeHealth = () => getExtensionBridgeHealth();
   archiveBoot.upsertLatestSnapshotMeta = (chatId, patch = {}, opts = {}) => upsertLatestSnapshotMetaInternal(chatId, patch, opts);
   archiveBoot.getPageMode = (chatId) => getPageMode(chatId);
   archiveBoot.setPageMode = (chatId, mode) => setPageMode(chatId, mode);
