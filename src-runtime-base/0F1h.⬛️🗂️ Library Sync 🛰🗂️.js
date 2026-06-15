@@ -118,6 +118,7 @@
     lastOutboundTransport: '',
     lastLinkedRecordsCount: 0,
     lastLinkedRecordsEligible: 0,
+    lastLinkedRecordsTranscriptEvidence: 0,
     lastLinkedRecordsCapped: false,
     lastProjectCatalogAvailable: false,
     lastProjectCatalogCount: 0,
@@ -501,17 +502,40 @@
       }
       const out = [];
       let eligible = 0;
+      let transcriptEvidence = 0;
       const records = reg.listRecords({ includeDeleted: false }) || [];
       for (const rec of records) {
         if (!rec || !rec.chatId || !rec.state) continue;
         if (!rec.state.isLinked) continue;
         eligible++;
+        const hasTranscriptEvidence = !!(
+          rec.snapshotId || rec.lastSnapshotId || rec.latestSnapshotId
+          || Number(rec.snapshotCount || 0) > 0
+          || Number(rec.messageCount || 0) > 0
+          || Number(rec.turnCount || 0) > 0
+          || Number(rec.userTurnCount || 0) > 0
+          || Number(rec.assistantTurnCount || 0) > 0
+        );
+        if (hasTranscriptEvidence) transcriptEvidence++;
         if (out.length < LINKED_SNAPSHOT_MAX) {
           out.push({
             chatId: rec.chatId,
             title: rec.title || '',
+            displayTitle: rec.displayTitle || rec.title || '',
+            sourceTitle: rec.sourceTitle || rec.title || '',
+            pageTitle: rec.pageTitle || rec.title || '',
+            originalTitle: rec.originalTitle || rec.title || '',
             href: rec.href || '',
             normalizedHref: rec.normalizedHref || '',
+            snapshotId: rec.snapshotId || rec.lastSnapshotId || rec.latestSnapshotId || '',
+            lastSnapshotId: rec.lastSnapshotId || rec.snapshotId || rec.latestSnapshotId || '',
+            latestSnapshotId: rec.latestSnapshotId || rec.lastSnapshotId || rec.snapshotId || '',
+            snapshotCount: Number(rec.snapshotCount || 0) || (rec.snapshotId || rec.lastSnapshotId || rec.latestSnapshotId ? 1 : 0),
+            messageCount: Number(rec.messageCount || 0) || 0,
+            turnCount: Number(rec.turnCount || 0) || 0,
+            userTurnCount: Number(rec.userTurnCount || 0) || 0,
+            assistantTurnCount: Number(rec.assistantTurnCount || 0) || 0,
+            answerCount: Number(rec.answerCount || 0) || 0,
             linkSourceHref: rec.linkSourceHref || '',
             linkedAt: rec.linkedAt || '',
             linkedFrom: rec.linkedFrom || '',
@@ -536,11 +560,13 @@
       }
       state.lastLinkedRecordsCount = out.length;
       state.lastLinkedRecordsEligible = eligible;
+      state.lastLinkedRecordsTranscriptEvidence = transcriptEvidence;
       state.lastLinkedRecordsCapped = out.length >= LINKED_SNAPSHOT_MAX;
       return out;
     } catch (e) {
       state.lastLinkedRecordsCount = 0;
       state.lastLinkedRecordsEligible = 0;
+      state.lastLinkedRecordsTranscriptEvidence = 0;
       state.lastLinkedRecordsCapped = false;
       err('snapshotLinkedRecords', e);
       return [];
@@ -1007,6 +1033,7 @@
           linkedRecords: {
             count: state.lastLinkedRecordsCount,
             eligibleCountSampled: state.lastLinkedRecordsEligible,
+            transcriptEvidenceCount: state.lastLinkedRecordsTranscriptEvidence,
             eligibleCountComplete: !state.lastLinkedRecordsCapped,
             capped: state.lastLinkedRecordsCapped,
             cap: LINKED_SNAPSHOT_MAX,

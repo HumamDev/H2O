@@ -12,10 +12,12 @@ const FILES = {
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
   runtimeRegistryCore: 'src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js',
+  studioRegistryCore: 'src-surfaces-base/studio/S0F0c. 🎬 Library Registry Core - Studio.js',
   extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
   archiveEngine: 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
+  nativeSync: 'src-runtime-base/0F1h.⬛️🗂️ Library Sync 🛰🗂️.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
 };
@@ -62,6 +64,12 @@ const checks = [
       sources.libraryIndex.includes('originalTitle') &&
       sources.libraryIndex.includes("linked && !saved ? 'Link' : 'Imported chat'") &&
       sources.libraryIndex.includes("isLinked && !isSaved ? 'Link' : 'Imported chat'") &&
+      sources.libraryIndex.includes("transcriptEvidenceSource = hasTranscript ? 'native-linked-record-broadcast' : ''") &&
+      sources.libraryIndex.includes('function mergeNativeTranscriptEvidenceIntoRow') &&
+      sources.libraryIndex.includes("transcriptEvidenceSource: 'native-linked-record-broadcast-merge'") &&
+      sources.libraryIndex.includes('nativeMergedTranscriptRows') &&
+      sources.libraryIndex.includes('nativeTranscriptRows') &&
+      sources.libraryIndex.includes('fallbackTranscriptRows') &&
       !sources.libraryIndex.includes('title: String(rec.title || chatId).trim()'),
     FILES.libraryIndex,
     'Durable shell-row rehydration must not restore raw IDs as titles and must carry shell state into the shared UI model.'
@@ -102,8 +110,10 @@ const checks = [
       sources.libraryIndex.includes('numericCount(chat?.userTurnCount) > 0') &&
       sources.libraryIndex.includes('numericCount(chat?.assistantTurnCount) > 0') &&
       sources.libraryIndex.includes('const snapshotCount = snapshotId ? Math.max(numericCount(chat?.snapshotCount), 1) : 0;') &&
-      sources.libraryIndex.includes('snapshotCount: 0') &&
-      sources.libraryIndex.includes('messageCount: 0') &&
+      sources.libraryIndex.includes('const snapshotCount = snapshotId ? Math.max(numericCount(rec.snapshotCount), 1) : 0;') &&
+      sources.libraryIndex.includes('const messageCount = numericCount(rec.messageCount);') &&
+      sources.libraryIndex.includes('row.snapshotCount = snapshotCount;') &&
+      sources.libraryIndex.includes('row.assistantTurnCount = assistantTurnCount;') &&
       !sources.libraryIndex.includes('|| numericCount(chat?.snapshotCount) > 0') &&
       !sources.libraryIndex.includes('const hasOpenableTranscript = !!chat?.lastSnapshotId;'),
     FILES.libraryIndex,
@@ -200,7 +210,9 @@ const checks = [
       sources.registryCore.includes('sourceTitle: sourceTitle || title') &&
       sources.registryCore.includes('pageTitle: pageTitle || title') &&
       sources.registryCore.includes('originalTitle: originalTitle || title') &&
-      sources.registryCore.includes("'displayTitle','sourceTitle','pageTitle','originalTitle'"),
+      sources.registryCore.includes("'displayTitle','sourceTitle','pageTitle','originalTitle'") &&
+      sources.studioRegistryCore.includes('displayTitle: displayTitle || title') &&
+      sources.studioRegistryCore.includes('originalTitle: originalTitle || title'),
     FILES.registryCore,
     'Registry merge must treat Imported chat/Link as placeholder titles and preserve safe title aliases across save/link/update/import flows.'
   ),
@@ -215,9 +227,26 @@ const checks = [
       sources.runtimeRegistryCore.includes('snapshotId: snapshotId || lastSnapshotId') &&
       sources.runtimeRegistryCore.includes('messageCount: isFiniteNumber(r.messageCount)') &&
       sources.runtimeRegistryCore.includes('assistantTurnCount: isFiniteNumber(r.assistantTurnCount)') &&
-      sources.runtimeRegistryCore.includes('const messageCount = options.fullScan === true ? (b.messageCount || 0) : (maxNum(a.messageCount, b.messageCount) || 0);'),
+      sources.runtimeRegistryCore.includes('const messageCount = options.fullScan === true ? (b.messageCount || 0) : (maxNum(a.messageCount, b.messageCount) || 0);') &&
+      sources.studioRegistryCore.includes('snapshotId: snapshotId || lastSnapshotId') &&
+      sources.studioRegistryCore.includes('messageCount: isFiniteNumber(r.messageCount)') &&
+      sources.studioRegistryCore.includes('assistantTurnCount: isFiniteNumber(r.assistantTurnCount)') &&
+      sources.studioRegistryCore.includes('const messageCount = options.fullScan === true ? (b.messageCount || 0) : (maxNum(a.messageCount, b.messageCount) || 0);'),
     FILES.registryCore,
     'ChatRegistry canonical schema must preserve snapshot/message/turn evidence so Save to Folder records remain transcript-backed in Studio.'
+  ),
+  check(
+    'native-sync-broadcast-preserves-save-to-folder-evidence',
+    sources.nativeSync.includes('function snapshotLinkedRecords') &&
+      sources.nativeSync.includes('snapshotId: rec.snapshotId || rec.lastSnapshotId || rec.latestSnapshotId ||') &&
+      sources.nativeSync.includes('lastSnapshotId: rec.lastSnapshotId || rec.snapshotId || rec.latestSnapshotId ||') &&
+      sources.nativeSync.includes('messageCount: Number(rec.messageCount || 0) || 0') &&
+      sources.nativeSync.includes('turnCount: Number(rec.turnCount || 0) || 0') &&
+      sources.nativeSync.includes('userTurnCount: Number(rec.userTurnCount || 0) || 0') &&
+      sources.nativeSync.includes('assistantTurnCount: Number(rec.assistantTurnCount || 0) || 0') &&
+      sources.nativeSync.includes('transcriptEvidenceCount: state.lastLinkedRecordsTranscriptEvidence'),
+    FILES.nativeSync,
+    'Native cross-surface linkedRecords broadcast must carry Save-to-Folder snapshot/message/turn evidence into Chrome Studio.'
   ),
   check(
     'library-actions-capture-source-title',

@@ -85,7 +85,18 @@
 
   function normalizeRow(raw) {
     const c = ixCore();
-    if (c) return applyDisplayClassification(c.normalizeRowStudio(raw));
+    if (c) {
+      const row = c.normalizeRowStudio(raw);
+      if (row && raw && typeof raw === 'object') {
+        row.lastSnapshotId = String(row.lastSnapshotId || raw.lastSnapshotId || raw.latestSnapshotId || row.snapshotId || raw.snapshotId || '').trim();
+        row.latestSnapshotId = String(row.latestSnapshotId || row.lastSnapshotId || raw.latestSnapshotId || raw.lastSnapshotId || row.snapshotId || raw.snapshotId || '').trim();
+        row.turnCount = numericCount(row.turnCount || raw.turnCount);
+        row.userTurnCount = numericCount(row.userTurnCount || raw.userTurnCount);
+        row.assistantTurnCount = numericCount(row.assistantTurnCount || raw.assistantTurnCount);
+        row.answerCount = numericCount(row.answerCount || raw.answerCount);
+      }
+      return applyDisplayClassification(row);
+    }
     return null;
   }
 
@@ -133,7 +144,11 @@
         categoryId: r.categoryId, categoryName: r.categoryName,
         view: r.view, tags: r.tags, labels: r.labels,
         snapshotCount: r.snapshotCount, capturedAt: r.capturedAt, updatedAt: r.updatedAt,
-        messageCount: r.messageCount, pinned: r.pinned, archived: r.archived,
+        lastSnapshotId: r.lastSnapshotId, latestSnapshotId: r.latestSnapshotId,
+        messageCount: r.messageCount, turnCount: r.turnCount,
+        userTurnCount: r.userTurnCount, assistantTurnCount: r.assistantTurnCount,
+        answerCount: r.answerCount, pinned: r.pinned, archived: r.archived,
+        displayView: r.displayView, badgeKind: r.badgeKind, readerKind: r.readerKind,
       }));
       const ts = Date.now();
       const snap = { rows: compact, ts };
@@ -580,8 +595,19 @@
     const isImported = !!st.isImported;
     const href = String(rec.href || rec.normalizedHref || rec.linkSourceHref || '').trim();
     if (!isSaved && !isLinked && !isImported && !st.isPinned && !st.isArchived && !href) return null;
-    return c.normalizeRowStudio({
+    const snapshotId = String(rec.lastSnapshotId || rec.snapshotId || rec.snapshot_id || rec.latestSnapshotId || '').trim();
+    const snapshotCount = snapshotId ? Math.max(numericCount(rec.snapshotCount), 1) : 0;
+    const messageCount = numericCount(rec.messageCount);
+    const turnCount = numericCount(rec.turnCount);
+    const userTurnCount = numericCount(rec.userTurnCount);
+    const assistantTurnCount = numericCount(rec.assistantTurnCount);
+    const answerCount = numericCount(rec.answerCount);
+    const hasTranscript = !!snapshotId || messageCount > 0 || turnCount > 0 || userTurnCount > 0 || assistantTurnCount > 0;
+    const row = c.normalizeRowStudio({
       chatId,
+      snapshotId: snapshotId || null,
+      lastSnapshotId: snapshotId || null,
+      latestSnapshotId: snapshotId || null,
       title: friendlyShellTitle([
         rec.title,
         rec.displayTitle,
@@ -602,11 +628,15 @@
       projectId: rec.project?.projectId,
       folderId: rec.organization?.folderId,
       categoryId: rec.organization?.categoryId,
-      view: isSaved ? 'saved' : (isLinked ? 'linked' : 'imported'),
+      view: isSaved && hasTranscript ? 'saved' : (isLinked ? 'linked' : 'imported'),
       tags: [],
       labels: [],
-      snapshotCount: 0,
-      messageCount: 0,
+      snapshotCount,
+      messageCount,
+      turnCount,
+      userTurnCount,
+      assistantTurnCount,
+      answerCount,
       updatedAt: String(rec.updatedAt || rec.lastSeenAt || rec.firstSeenAt || ''),
       capturedAt: '',
       state: {
@@ -623,12 +653,59 @@
       href,
       normalizedHref: String(rec.normalizedHref || ''),
     });
+    row.lastSnapshotId = snapshotId || '';
+    row.latestSnapshotId = snapshotId || '';
+    row.snapshotCount = snapshotCount;
+    row.messageCount = messageCount;
+    row.turnCount = turnCount;
+    row.userTurnCount = userTurnCount;
+    row.assistantTurnCount = assistantTurnCount;
+    row.answerCount = answerCount;
+    row.transcriptEvidenceSource = hasTranscript ? 'native-linked-record-broadcast' : '';
+    return applyDisplayClassification(row);
   }
 
   // Backward-compatible alias for older diagnostics and comments. This now
   // accepts saved and imported shell rows in addition to linked-only rows.
   function normalizeLinkedOnlyRegistryRow(rec) {
     return normalizeRegistryShellRow(rec);
+  }
+
+  function mergeNativeTranscriptEvidenceIntoRow(existing, incoming) {
+    if (!existing || !incoming || !rowHasRealTranscriptEvidence(incoming)) return existing;
+    const merged = Object.assign({}, existing, {
+      title: friendlyShellTitle([
+        incoming.title,
+        incoming.displayTitle,
+        incoming.sourceTitle,
+        incoming.pageTitle,
+        existing.title,
+        existing.displayTitle,
+        existing.name,
+      ], existing.chatId || incoming.chatId, existing.title || incoming.title || 'Imported chat'),
+      snapshotId: incoming.snapshotId || incoming.lastSnapshotId || existing.snapshotId || '',
+      lastSnapshotId: incoming.lastSnapshotId || incoming.snapshotId || existing.lastSnapshotId || existing.snapshotId || '',
+      latestSnapshotId: incoming.latestSnapshotId || incoming.lastSnapshotId || incoming.snapshotId || existing.latestSnapshotId || '',
+      snapshotCount: Math.max(numericCount(existing.snapshotCount), numericCount(incoming.snapshotCount), incoming.snapshotId || incoming.lastSnapshotId ? 1 : 0),
+      messageCount: Math.max(numericCount(existing.messageCount), numericCount(incoming.messageCount)),
+      turnCount: Math.max(numericCount(existing.turnCount), numericCount(incoming.turnCount)),
+      userTurnCount: Math.max(numericCount(existing.userTurnCount), numericCount(incoming.userTurnCount)),
+      assistantTurnCount: Math.max(numericCount(existing.assistantTurnCount), numericCount(incoming.assistantTurnCount)),
+      answerCount: Math.max(numericCount(existing.answerCount), numericCount(incoming.answerCount)),
+      folderId: incoming.folderId || existing.folderId || '',
+      categoryId: incoming.categoryId || existing.categoryId || '',
+      href: rowLinkedUrl(incoming) || rowLinkedUrl(existing),
+      normalizedHref: incoming.normalizedHref || existing.normalizedHref || '',
+      linkSourceHref: incoming.linkSourceHref || existing.linkSourceHref || '',
+      state: Object.assign({}, existing.state || {}, incoming.state || {}, {
+        isSaved: true,
+        isLinked: true,
+      }),
+      isSaved: true,
+      isLinked: true,
+      transcriptEvidenceSource: 'native-linked-record-broadcast-merge',
+    });
+    return applyDisplayClassification(merged);
   }
 
   async function refreshFromArchive(reason = 'manual') {
@@ -678,9 +755,12 @@
           const nativeRecordsCount = Array.isArray(nativeRecords) ? nativeRecords.length : 0;
           const projectedIds = new Set();
           let nativeLinkedRows = 0;
+          let nativeTranscriptRows = 0;
+          let nativeMergedTranscriptRows = 0;
           let fallbackRecordsCount = 0;
           let fallbackLinkedRows = 0;
           let fallbackRegistryShellRows = 0;
+          let fallbackTranscriptRows = 0;
           let durableBundleChatCount = 0;
           let durableBundleShellRecords = 0;
           let durableBundleShellRows = 0;
@@ -688,13 +768,29 @@
           let durableBundleShellRowsRehydrated = 0;
           let durableBundleShellRowsExisting = 0;
           let durableBundleShellRowsFailed = 0;
+          const archiveRowIndexById = new Map();
+          archiveRows.forEach((row, index) => {
+            if (row && row.chatId) archiveRowIndexById.set(row.chatId, index);
+          });
           for (const rec of nativeRecords) {
-            if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
+            if (!rec || !rec.chatId) continue;
             const row = normalizeLinkedOnlyRegistryRow(rec);
+            if (archiveIds.has(rec.chatId)) {
+              if (row && rowHasRealTranscriptEvidence(row)) {
+                const index = archiveRowIndexById.get(rec.chatId);
+                if (Number.isInteger(index) && index >= 0) {
+                  archiveRows[index] = mergeNativeTranscriptEvidenceIntoRow(archiveRows[index], row);
+                  nativeMergedTranscriptRows++;
+                  nativeTranscriptRows++;
+                }
+              }
+              continue;
+            }
             if (row && !projectedIds.has(row.chatId)) {
               linkedRows.push(row);
               projectedIds.add(row.chatId);
               nativeLinkedRows++;
+              if (rowHasRealTranscriptEvidence(row)) nativeTranscriptRows++;
             }
           }
           const durable = await readDurableBundleShellRows();
@@ -724,6 +820,7 @@
               projectedIds.add(row.chatId);
               fallbackLinkedRows++;
               fallbackRegistryShellRows++;
+              if (rowHasRealTranscriptEvidence(row)) fallbackTranscriptRows++;
             }
           }
           for (const row of durable.rows) {
@@ -738,9 +835,12 @@
             archiveRowsNormalized: archiveRows.length,
             nativeLinkedRecords: nativeRecordsCount,
             nativeLinkedRows,
+            nativeTranscriptRows,
+            nativeMergedTranscriptRows,
             fallbackRegistryRecords: fallbackRecordsCount,
             fallbackLinkedRows,
             fallbackRegistryShellRows,
+            fallbackTranscriptRows,
             durableBundleChatCount,
             durableBundleShellRecords,
             durableBundleShellRows,
