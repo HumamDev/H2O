@@ -991,9 +991,13 @@
       || (cid ? ('https://chatgpt.com/c/' + cid) : '');
     const importedShell = !!(chat?.importBatchId || meta.f19ChromeDesktopMinimalRow || meta.f19ChromeDesktopMaterializedShell);
     const messageCount = Math.max(numericCount(chat?.messageCount), numericCount(latestSnapshot?.messageCount));
+    const turnCount = Math.max(numericCount(chat?.turnCount), numericCount(meta.turnCount), numericCount(latestSnapshot?.turnCount));
+    const userTurnCount = Math.max(numericCount(chat?.userTurnCount), numericCount(meta.userTurnCount), numericCount(latestSnapshot?.userTurnCount));
+    const assistantTurnCount = Math.max(numericCount(chat?.assistantTurnCount), numericCount(meta.assistantTurnCount), numericCount(latestSnapshot?.assistantTurnCount));
+    const answerCount = Math.max(numericCount(chat?.answerCount), numericCount(meta.answerCount), numericCount(latestSnapshot?.answerCount));
     const snapshotId = String(chat?.lastSnapshotId || chat?.snapshotId || chat?.snapshot_id || latestSnapshot?.snapshotId || '').trim();
     const snapshotCount = snapshotId ? Math.max(numericCount(chat?.snapshotCount), 1) : 0;
-    const hasTranscript = chatHasTranscriptEvidence({ ...chat, snapshotCount, messageCount }, latestSnapshot);
+    const hasTranscript = chatHasTranscriptEvidence({ ...chat, snapshotCount, messageCount, turnCount, userTurnCount, assistantTurnCount }, latestSnapshot);
     const displaySaved = !!(chat?.isSaved && hasTranscript);
     const displayLinked = !!(chat?.isLinked || (!hasTranscript && href));
     let view = 'all';
@@ -1042,6 +1046,10 @@
       capturedAt: chat?.lastCapturedAt || null,
       updatedAt: chat?.updatedAt || 0,
       messageCount,
+      turnCount,
+      userTurnCount,
+      assistantTurnCount,
+      answerCount,
       pinned: !!chat?.isPinned,
       archived: !!chat?.isArchived,
       // Desktop-only enrichment — not part of the compact contract but the

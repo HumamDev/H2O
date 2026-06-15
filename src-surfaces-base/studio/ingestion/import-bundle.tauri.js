@@ -561,6 +561,7 @@
     var indexUserTurnCount = numericCount(chatIndex.userTurnCount || chat && chat.userTurnCount);
     var indexAssistantTurnCount = numericCount(chatIndex.assistantTurnCount || chat && chat.assistantTurnCount);
     var indexAnswerCount = numericCount(chatIndex.answerCount || chat && chat.answerCount);
+    var indexFolderId = cleanString(indexOrg.folderId || indexOrg.folder_id || chat && (chat.folderId || chat.folder_id));
     var indexHasTranscriptEvidence = !!indexSnapshotId
       || indexMessageCount > 0
       || indexTurnCount > 0
@@ -640,12 +641,13 @@
       isDeleted: !!indexState.isDeleted,
       snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
       lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
-      messageCount: hasSnapshots ? 0 : indexMessageCount,
-      turnCount: hasSnapshots ? 0 : indexTurnCount,
-      userTurnCount: hasSnapshots ? 0 : indexUserTurnCount,
-      assistantTurnCount: hasSnapshots ? 0 : indexAssistantTurnCount,
+      messageCount: indexMessageCount,
+      turnCount: indexTurnCount,
+      userTurnCount: indexUserTurnCount,
+      assistantTurnCount: indexAssistantTurnCount,
       answerCount: indexAnswerCount,
       lastCapturedAt: latest ? isoToEpochMs(latest.createdAt) : 0,
+      folderId: indexFolderId,
       categoryId: indexOrg.categoryId || '',
       linkSourceHref: chatIndex.linkSourceHref || '',
       linkedFrom: chatIndex.linkedFrom || '',
@@ -661,11 +663,12 @@
         snapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
         lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
         snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
-        messageCount: hasSnapshots ? 0 : indexMessageCount,
-        turnCount: hasSnapshots ? 0 : indexTurnCount,
-        userTurnCount: hasSnapshots ? 0 : indexUserTurnCount,
-        assistantTurnCount: hasSnapshots ? 0 : indexAssistantTurnCount,
+        messageCount: indexMessageCount,
+        turnCount: indexTurnCount,
+        userTurnCount: indexUserTurnCount,
+        assistantTurnCount: indexAssistantTurnCount,
         answerCount: indexAnswerCount,
+        folderId: indexFolderId,
         f19ChromeDesktopMinimalRow: isMinimalLibraryIndexRow,
         chatIndexMeta: chatIndexMeta,
       },
@@ -694,6 +697,55 @@
     return next;
   }
 
+  function existingCount(existing, field) {
+    var meta = safeMeta(existing && existing.meta);
+    return Math.max(numericCount(existing && existing[field]), numericCount(meta[field]));
+  }
+
+  function prepareExistingChatEvidencePatch(existing, patch) {
+    var chatId = cleanString(patch && patch.chatId);
+    if (!chatId || !existing || !patch) return null;
+    var next = { chatId: chatId };
+    var changed = false;
+    function maybeSetString(field) {
+      var incoming = cleanString(patch[field]);
+      if (!incoming) return;
+      if (!cleanString(existing[field])) {
+        next[field] = incoming;
+        changed = true;
+      }
+    }
+    function maybeSetMax(field) {
+      var incoming = numericCount(patch[field]);
+      if (incoming > existingCount(existing, field)) {
+        next[field] = incoming;
+        changed = true;
+      }
+    }
+    maybeSetString('lastSnapshotId');
+    maybeSetString('folderId');
+    maybeSetMax('snapshotCount');
+    maybeSetMax('messageCount');
+    maybeSetMax('turnCount');
+    maybeSetMax('userTurnCount');
+    maybeSetMax('assistantTurnCount');
+    maybeSetMax('answerCount');
+    if (patch.isSaved === true && existing.isSaved !== true) {
+      next.isSaved = true;
+      changed = true;
+    }
+    if (patch.isLinked === true && existing.isLinked !== true) {
+      next.isLinked = true;
+      changed = true;
+    }
+    if (!changed) return null;
+    next.meta = Object.assign({}, safeMeta(patch.meta), {
+      f19ChromeDesktopEvidenceMerged: true,
+      f19ChromeDesktopEvidenceMergedAt: Date.now()
+    });
+    return next;
+  }
+
   function safeJson(value) {
     try { return JSON.stringify(value == null ? {} : value); }
     catch (_) { return '{}'; }
@@ -718,6 +770,10 @@
       'is_linked',
       'href',
       'normalized_href',
+      'folder_id',
+      'user_turn_count',
+      'assistant_turn_count',
+      'last_snapshot_id',
       'snapshot_count',
       'link_source_href',
       'linked_from',
@@ -750,6 +806,10 @@
       patch && patch.isLinked ? 1 : 0,
       href,
       cleanString(patch && patch.normalizedHref) || href,
+      cleanString(patch && patch.folderId),
+      numericCount(patch && patch.userTurnCount),
+      numericCount(patch && patch.assistantTurnCount),
+      cleanString(patch && patch.lastSnapshotId) || null,
       numericCount(patch && patch.snapshotCount),
       cleanString(patch && patch.linkSourceHref),
       cleanString(patch && patch.linkedFrom),
@@ -1098,20 +1158,28 @@
         continue;
       }
       try {
-        var existing = await chatStore.get(chatId);
-        if (existing) {
-          result.skipped.chats += 1;
-          chatStateIndex[chatId] = 'skipped';
-          if (minimalSummary) minimalSummary.existing += 1;
-          if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
-          continue;
-        }
         var snapshots = Array.isArray(chat.snapshots) ? chat.snapshots.slice() : [];
         snapshots.sort(function (a, b) { return isoToEpochMs(b && b.createdAt) - isoToEpochMs(a && a.createdAt); });
         var patch = deriveChatPatchFromBundle(chat, snapshots);
         patch = prepareMinimalLibraryIndexPatch(patch, chat, snapshots, result);
         if (suppressCategoryId === true) {
           delete patch.categoryId;
+        }
+        var existing = await chatStore.get(chatId);
+        if (existing) {
+          var evidencePatch = prepareExistingChatEvidencePatch(existing, patch);
+          if (evidencePatch) {
+            await chatStore.upsert(evidencePatch);
+            result.written.chats += 1;
+            result.warnings.push({ kind: 'chrome-desktop-existing-chat-evidence-merged' });
+            if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+          } else {
+            result.skipped.chats += 1;
+            if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+          }
+          chatStateIndex[chatId] = 'skipped';
+          if (minimalSummary) minimalSummary.existing += 1;
+          continue;
         }
         try {
           await chatStore.upsert(patch);
@@ -1222,13 +1290,36 @@
 
   async function importFolderBindings(bundle, stores, result, chatStateIndex) {
     var fldData = bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY];
-    if (!fldData || !fldData.items || typeof fldData.items !== 'object') return;
+    var mergedItems = Object.create(null);
+    function addBinding(folderIdInput, chatIdInput) {
+      var folderId = cleanString(folderIdInput);
+      var chatId = cleanString(chatIdInput);
+      if (!folderId || !chatId) return;
+      if (!mergedItems[folderId]) mergedItems[folderId] = [];
+      if (mergedItems[folderId].indexOf(chatId) === -1) mergedItems[folderId].push(chatId);
+    }
+    if (fldData && fldData.items && typeof fldData.items === 'object' && !Array.isArray(fldData.items)) {
+      Object.keys(fldData.items).forEach(function (folderId) {
+        var chatIds = Array.isArray(fldData.items[folderId]) ? fldData.items[folderId] : [];
+        chatIds.forEach(function (chatId) { addBinding(folderId, chatId); });
+      });
+    }
+    var chats = bundle.chatArchive && Array.isArray(bundle.chatArchive.chats)
+      ? bundle.chatArchive.chats : [];
+    chats.forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var org = index.organization && typeof index.organization === 'object' && !Array.isArray(index.organization)
+        ? index.organization : {};
+      addBinding(org.folderId || org.folder_id || chat && (chat.folderId || chat.folder_id),
+        (chat && chat.chatId) || index.chatId || index.id);
+    });
+    if (Object.keys(mergedItems).length === 0) return;
     var folderStore = stores.folders;
     if (!folderStore || typeof folderStore.bindChat !== 'function') {
       result.warnings.push({ kind: 'folder-bindings', warn: 'store.folders.bindChat unavailable' });
       return;
     }
-    var folderIds = Object.keys(fldData.items);
+    var folderIds = Object.keys(mergedItems);
     for (var fi = 0; fi < folderIds.length; fi += 1) {
       var folderId = String(folderIds[fi] || '').trim();
       if (!folderId) continue;
@@ -1239,7 +1330,7 @@
         result.warnings.push({ kind: 'orphan-folder-binding', folderId: folderId });
         continue;
       }
-      var chatIds = Array.isArray(fldData.items[folderId]) ? fldData.items[folderId] : [];
+      var chatIds = Array.isArray(mergedItems[folderId]) ? mergedItems[folderId] : [];
       for (var ci = 0; ci < chatIds.length; ci += 1) {
         var chatId = String(chatIds[ci] || '').trim();
         if (!chatId) continue;

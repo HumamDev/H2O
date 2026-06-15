@@ -90,6 +90,7 @@ function buildChromeBundle() {
             pinned: true,
             organization: {
               categoryId: 'raw-category-id',
+              folderId: 'raw-folder-id',
               labels: ['raw-label-id'],
               tags: ['raw-tag-id'],
               projectId: 'raw-project-id'
@@ -121,7 +122,10 @@ function buildChromeBundle() {
         schemaVersion: 1,
         exportedFrom: 'chrome-studio',
         folders: [{ id: 'raw-folder-id', name: 'Private Folder Name', color: '#abcdef' }],
-        items: { 'raw-folder-id': ['raw-chat-id-1'] }
+        items: {
+          'raw-folder-id': ['raw-chat-id-1'],
+          'raw-legacy-folder-id': ['raw-chat-id-legacy']
+        }
       },
       'unsupported-private-key': { value: 'private unsupported value' }
     },
@@ -275,6 +279,7 @@ async function runVmProof() {
   assert(Object.keys(folderState.items).length === 0, 'chat-folder bindings must be deferred');
   const org = call.bundle.chatArchive.chats[0].chatIndex.organization;
   assert(org.categoryId === 'raw-category-id', 'chat category binding should be preserved for importer');
+  assert(org.folderId === 'raw-folder-id', 'safe per-chat folder binding should be preserved for importer');
   assert(!Object.prototype.hasOwnProperty.call(org, 'labels'), 'labels must be stripped from chat organization');
   assert(!Object.prototype.hasOwnProperty.call(org, 'tags'), 'tags must be stripped from chat organization');
   assert(!Object.prototype.hasOwnProperty.call(org, 'projectId'), 'project must be stripped from chat organization');
@@ -340,6 +345,7 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'function transcriptEvidenceFromLibraryRow', 'LibraryIndex transcript evidence export helper');
   assertContains(autoImportFile, 'messageCount: evidence.messageCount', 'message evidence carried into Chrome export');
   assertContains(autoImportFile, 'turnCount: evidence.turnCount', 'turn evidence carried into Chrome export');
+  assertContains(autoImportFile, 'folderId: cleanString(row && (row.folderId || row.folder_id))', 'Chrome export carries per-chat folder binding');
   assertContains(autoImportFile, 'supportedRowsRepresented', 'coverage supported-row representation detail');
   assertContains(autoImportFile, 'addedMinimalRowTypeCounts', 'coverage minimal-row class detail');
   assertContains(folderImportFile, 'var LATEST_FILE = \'latest.json\'', 'Desktop import transport constant');
@@ -365,12 +371,16 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'redactedErrorCategories', 'redacted import error categories');
   assertContains(folderSyncFile, 'staleMinimalRowErrorsAreCovered', 'covered stale minimal-row helper');
   assertContains(folderSyncFile, 'minimalRowsSatisfied', 'minimal row satisfied summary');
+  assertContains(folderSyncFile, 'function collectPerChatFolderBindings', 'per-chat folder binding coverage helper');
+  assertContains(folderSyncFile, 'nextOrg.folderId = org.folderId', 'Desktop supported bundle preserves folderId');
   assertContains(folderSyncFile, 'library-propagation-labels-deferred', 'label deferred taxonomy');
   assertContains(folderSyncFile, 'library-propagation-chat-folder-bindings-deferred', 'folder binding deferred taxonomy');
   assertContains(folderSyncFile, 'fileFingerprintChecked: true', 'file idempotency marker');
   assertContains(importBundleFile, 'shouldSkipExistingFolderMetadata', 'folder overwrite helper');
   assertContains(importBundleFile, 'skipExistingFolderMetadata', 'folder overwrite option');
   assertContains(importBundleFile, 'prepareMinimalLibraryIndexPatch', 'minimal row import helper');
+  assertContains(importBundleFile, 'prepareExistingChatEvidencePatch', 'existing chat evidence merge helper');
+  assertContains(importBundleFile, 'chrome-desktop-existing-chat-evidence-merged', 'existing chat evidence merge warning');
   assertContains(importBundleFile, 'materializeMinimalLibraryIndexRow', 'minimal row materializer');
   assertContains(importBundleFile, 'authorizedBulkMigrationExecute', 'authorized minimal row SQL path');
   assertContains(importBundleFile, 'f15.bulk-migration', 'authorized bulk migration identity');
@@ -378,6 +388,12 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'f19ChromeDesktopMaterializedShell', 'minimal row shell marker');
   assertContains(importBundleFile, 'numericCount(patch && patch.messageCount)', 'minimal row message evidence materialization');
   assertContains(importBundleFile, 'numericCount(patch && patch.snapshotCount)', 'minimal row snapshot evidence materialization');
+  assertContains(importBundleFile, 'folderId: indexFolderId', 'Desktop chat import preserves folder id patch');
+  assertContains(importBundleFile, 'messageCount: indexMessageCount', 'Desktop import preserves message count with snapshots');
+  assertContains(importBundleFile, 'turnCount: indexTurnCount', 'Desktop import preserves turn count with snapshots');
+  assertContains(importBundleFile, 'userTurnCount: indexUserTurnCount', 'Desktop import preserves user turn count with snapshots');
+  assertContains(importBundleFile, 'assistantTurnCount: indexAssistantTurnCount', 'Desktop import preserves assistant turn count with snapshots');
+  assertContains(importBundleFile, 'addBinding(org.folderId || org.folder_id', 'Desktop import binds per-chat folder organization');
   assertContains(importBundleFile, 'indexHasTranscriptEvidence', 'bundle chatIndex transcript evidence normalization');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-writer-identity-missing', 'minimal row writer identity error taxonomy');

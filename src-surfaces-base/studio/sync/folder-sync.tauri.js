@@ -710,24 +710,50 @@
         var nextOrg = {};
         if (typeof org.categoryId !== 'undefined') nextOrg.categoryId = org.categoryId;
         if (typeof org.category_id !== 'undefined') nextOrg.category_id = org.category_id;
+        if (typeof org.folderId !== 'undefined') nextOrg.folderId = org.folderId;
+        if (typeof org.folder_id !== 'undefined') nextOrg.folder_id = org.folder_id;
         chatIndex.organization = nextOrg;
       }
     }
     return out;
   }
 
-  function folderStateForChromeDesktop(bundle, warnings) {
+  function collectPerChatFolderBindings(chats) {
+    var covered = Object.create(null);
+    (Array.isArray(chats) ? chats : []).forEach(function (chat) {
+      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+      var org = index.organization && typeof index.organization === 'object' && !Array.isArray(index.organization)
+        ? index.organization : {};
+      var chatId = String((chat && chat.chatId) || index.chatId || index.id || '').trim();
+      var folderId = String(org.folderId || org.folder_id || '').trim();
+      if (!chatId || !folderId) return;
+      covered[folderId + '\n' + chatId] = true;
+    });
+    return covered;
+  }
+
+  function folderStateForChromeDesktop(bundle, warnings, coveredPerChatBindings) {
     var source = bundle && bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY_LOCAL];
     if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
     var folders = Array.isArray(source.folders) ? cloneJson(source.folders) : [];
     var items = source.items && typeof source.items === 'object' && !Array.isArray(source.items) ? source.items : {};
     var itemKeys = Object.keys(items);
+    var covered = coveredPerChatBindings && typeof coveredPerChatBindings === 'object' ? coveredPerChatBindings : {};
+    var hasUnsupportedLegacyBinding = false;
     for (var i = 0; i < itemKeys.length; i += 1) {
-      if (Array.isArray(items[itemKeys[i]]) && items[itemKeys[i]].length > 0) {
-        addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.folderBindings);
-        break;
+      var folderId = String(itemKeys[i] || '').trim();
+      var chatIds = Array.isArray(items[itemKeys[i]]) ? items[itemKeys[i]] : [];
+      for (var ci = 0; ci < chatIds.length; ci += 1) {
+        var chatId = String(chatIds[ci] || '').trim();
+        if (!chatId) continue;
+        if (covered[folderId + '\n' + chatId] !== true) {
+          hasUnsupportedLegacyBinding = true;
+          break;
+        }
       }
+      if (hasUnsupportedLegacyBinding) break;
     }
+    if (hasUnsupportedLegacyBinding) addUnique(warnings, CHROME_DESKTOP_DEFERRED_CODES.folderBindings);
     return {
       schemaVersion: Number(source.schemaVersion || source.version || 1) || 1,
       exportedFrom: String(source.exportedFrom || source.source || 'chrome-studio'),
@@ -786,7 +812,7 @@
     });
     var chatViewCounts = countChatViews(chats);
     var categories = cloneJson(sourceCategories) || [];
-    var folderState = folderStateForChromeDesktop(bundle, warnings);
+    var folderState = folderStateForChromeDesktop(bundle, warnings, collectPerChatFolderBindings(chats));
     var chromeStorageLocal = {};
     if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
 
