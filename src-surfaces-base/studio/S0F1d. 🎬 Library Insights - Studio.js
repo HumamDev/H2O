@@ -329,8 +329,12 @@
     return snapshotCount > 0 || messageCount > 0;
   }
 
+  function rowHasOpenableTranscriptContent(row) {
+    return !!(resolveSnapshotId(row) && rowHasTranscriptContent(row));
+  }
+
   function rowIsUrlOnlyLink(row) {
-    if (!row || rowHasTranscriptContent(row)) return false;
+    if (!row || rowHasOpenableTranscriptContent(row)) return false;
     const raw = row.raw || {};
     const st = getRowState(row);
     const view = String(row.view || raw.view || '').toLowerCase();
@@ -343,7 +347,7 @@
     const raw = row?.raw || {};
     const chatId = String(row?.chatId || raw.chatId || '').trim();
     if (chatId && text === chatId) return true;
-    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
+    if (/^(imported chat|linked chat|untitled chat|link|chatgpt)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -376,13 +380,20 @@
       row?.sourceTitle, raw.sourceTitle,
       row?.pageTitle, raw.pageTitle,
       row?.chatTitle, raw.chatTitle,
+      row?.originalTitle, raw.originalTitle,
       row?.name, raw.name,
       meta.title, rawMeta.title,
       meta.displayTitle, rawMeta.displayTitle,
       meta.sourceTitle, rawMeta.sourceTitle,
+      meta.pageTitle, rawMeta.pageTitle,
+      meta.chatTitle, rawMeta.chatTitle,
+      meta.originalTitle, rawMeta.originalTitle,
       source.title, rawSource.title,
       source.displayTitle, rawSource.displayTitle,
       source.sourceTitle, rawSource.sourceTitle,
+      source.pageTitle, rawSource.pageTitle,
+      source.chatTitle, rawSource.chatTitle,
+      source.originalTitle, rawSource.originalTitle,
       row?.filename, raw.filename,
       row?.sourceLabel, raw.sourceLabel,
       source.filename, rawSource.filename,
@@ -457,18 +468,18 @@
       case 'permission-denied':
       case 'permission-api-unavailable':
       case 'permission-check-failed':
-        return 'Could not update from URL: permission denied';
+        return 'Could not update from URL: permission/metadata unavailable';
       case 'host-permission-missing':
-        return 'Could not update from URL: host permission missing';
+        return 'Could not update from URL: permission/metadata unavailable';
       case 'background-unavailable':
-        return 'Could not update from URL: background bridge unavailable';
+        return 'Could not update from URL: background unavailable';
       case 'cors-blocked':
-        return 'Could not update from URL: CORS blocked';
+        return 'Could not update from URL: CORS/fetch blocked';
       case 'source-unavailable':
         return 'Could not update from URL: source unavailable';
       case 'no-title-found':
       case 'metadata-title-missing':
-        return 'Could not update from URL: no title found';
+        return 'Could not read title from URL: source page did not expose title';
       case 'invalid-url':
       case 'unsupported-url':
         return 'Could not update from URL: invalid URL';
@@ -645,7 +656,7 @@
     try {
       setStatus?.('Updating from URL...');
       const metadata = await fetchTitleFromUrl(url);
-      if (!metadata || metadata.ok !== true || !metadata.title) {
+      if (!metadata || metadata.ok !== true || !metadata.title || looksLikeOpaqueTitle(metadata.title, row)) {
         setStatus?.(metadataFailureCopy(metadata && metadata.reason));
         return;
       }
@@ -780,9 +791,9 @@
     const opensLinkedDetails = !!placeholderKind;
     // Click target priority: saved+snapshot → Studio reader; linked/imported
     // metadata-only shell rows → in-page details; otherwise the row is inert.
-    const opensReader = !!sid && !st.isDeleted;
+    const opensReader = !!sid && rowHasTranscriptContent(row) && !st.isDeleted;
     const displayTitle = displayTitleForRow(row);
-    const hasTranscript = rowHasTranscriptContent(row);
+    const hasTranscript = rowHasOpenableTranscriptContent(row);
     const urlOnlyLink = rowIsUrlOnlyLink(row);
 
     const meta = [];
@@ -799,7 +810,7 @@
     // Saved means transcript-backed. URL-only imported/link shells use the
     // Link badge and carry their placeholder/imported state inside details.
     const chips = [];
-    if (hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
+    if (opensReader && hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
     else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);
     if (st.isImported && !urlOnlyLink) chips.push(['Imported', 'wbRowChip--imported']);
 
@@ -1176,7 +1187,7 @@
     const v = String(opts.forceView || prefs.view || 'all').toLowerCase();
     let list;
     if (v === 'all') list = rows.slice();
-    else if (v === 'saved') list = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved);
+    else if (v === 'saved') list = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);
     else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));
     else list = rows.filter((r) => r.view === v);
 
@@ -1216,7 +1227,7 @@
     const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
 
     const total = counts.total;
-    const saved = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved).length;
+    const saved = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved).length;
     const pinned = counts.views?.pinned || 0;
     const archive = counts.views?.archive || 0;
     const linked = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
@@ -2024,7 +2035,7 @@
   // ── Page-shell renderers (header / search / secondary nav / tabs) ──────────
   function renderPageHeader(idx) {
     const rows = idx.getAll();
-    const savedCount   = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved).length;
+    const savedCount   = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved).length;
     const linkedCount  = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
     const folderCount  = pageData.folders.length;
     const labelCount   = pageData.labels.length;

@@ -312,7 +312,7 @@
     var chatId = cleanString(id);
     if (!text) return true;
     if (chatId && text === chatId) return true;
-    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
+    if (/^(imported chat|linked chat|untitled chat|link|chatgpt)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -338,15 +338,20 @@
       r.sourceTitle,
       r.pageTitle,
       r.chatTitle,
+      r.originalTitle,
       r.name,
       meta.title,
       meta.displayTitle,
       meta.sourceTitle,
       meta.pageTitle,
+      meta.chatTitle,
+      meta.originalTitle,
       source.title,
       source.displayTitle,
       source.sourceTitle,
       source.pageTitle,
+      source.chatTitle,
+      source.originalTitle,
       r.filename,
       r.fileName,
       r.sourceLabel,
@@ -515,7 +520,7 @@
     var archived = isArchivedRow(row);
     var imported = !saved && !linked && !archived && isImportedRow(row);
     var pinned = isPinnedRow(row);
-    var title = friendlyShellTitle(titleCandidatesFromLibraryRow(row), id, linked && !saved ? 'Linked chat' : 'Imported chat');
+    var title = friendlyShellTitle(titleCandidatesFromLibraryRow(row), id, linked && !saved ? 'Link' : 'Imported chat');
     var href = cleanString(row && (row.href || row.linkSourceHref || row.normalizedHref))
       || ('https://chatgpt.com/c/' + id);
     var view = linked && !saved ? 'linked' : (archived ? 'archived' : (imported ? 'imported' : 'saved'));
@@ -527,6 +532,9 @@
         title: title,
         displayTitle: title,
         sourceTitle: title,
+        pageTitle: title,
+        chatTitle: title,
+        originalTitle: title,
         href: href,
         view: view,
         state: {
@@ -543,7 +551,15 @@
         linkSourceHref: cleanString(row && (row.linkSourceHref || row.normalizedHref || href)),
         linkedFrom: cleanString(row && row.linkedFrom),
         linkedAt: cleanString(row && row.linkedAt),
-        f19MinimalLibraryIndexRow: true
+        f19MinimalLibraryIndexRow: true,
+        meta: {
+          title: title,
+          displayTitle: title,
+          sourceTitle: title,
+          pageTitle: title,
+          chatTitle: title,
+          originalTitle: title
+        }
       },
       migrated: false,
       snapshots: []

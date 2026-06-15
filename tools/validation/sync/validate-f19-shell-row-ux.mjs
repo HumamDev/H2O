@@ -33,7 +33,8 @@ const checks = [
       sources.chromeExport.includes('titleCandidatesFromLibraryRow') &&
       sources.chromeExport.includes('displayTitle: title') &&
       sources.chromeExport.includes('sourceTitle: title') &&
-      sources.chromeExport.includes("linked && !saved ? 'Linked chat' : 'Imported chat'") &&
+      sources.chromeExport.includes('originalTitle') &&
+      sources.chromeExport.includes("linked && !saved ? 'Link' : 'Imported chat'") &&
       !sources.chromeExport.includes('var title = cleanString(row && (row.title || row.chatTitle || row.name)) || id;'),
     FILES.chromeExport,
     'Chrome minimal LibraryIndex export must preserve available source/display title metadata and not fall back to raw chat IDs.'
@@ -41,7 +42,8 @@ const checks = [
   check(
     'chrome-import-shell-title-friendly',
     sources.chromeImport.includes('friendlyShellTitle(') &&
-      sources.chromeImport.includes("linked && !saved ? 'Linked chat' : 'Imported chat'") &&
+      sources.chromeImport.includes('originalTitle') &&
+      sources.chromeImport.includes("linked && !saved ? 'Link' : 'Imported chat'") &&
       !sources.chromeImport.includes('title: cleanString(index.title || chat.title || chatId)'),
     FILES.chromeImport,
     'Desktop-to-Chrome shell materialization must project friendly titles.'
@@ -51,6 +53,7 @@ const checks = [
     sources.libraryIndex.includes('friendlyShellTitle(') &&
       sources.libraryIndex.includes('function normalizeRegistryShellRow') &&
       sources.libraryIndex.includes("isImported: importedShell") &&
+      sources.libraryIndex.includes('originalTitle') &&
       sources.libraryIndex.includes("linked && !saved ? 'Link' : 'Imported chat'") &&
       sources.libraryIndex.includes("isLinked && !isSaved ? 'Link' : 'Imported chat'") &&
       !sources.libraryIndex.includes('title: String(rec.title || chatId).trim()'),
@@ -71,7 +74,7 @@ const checks = [
     'insights-explorer-all-filter',
     sources.insights.includes("view: 'all'") &&
       sources.insights.includes("Pill({ label: 'All'") &&
-      sources.insights.includes("else if (v === 'saved') list = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved);") &&
+      sources.insights.includes("else if (v === 'saved') list = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);") &&
       sources.insights.includes("else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));") &&
       sources.insights.includes("view === 'all' || view === 'saved'"),
     FILES.insights,
@@ -80,10 +83,11 @@ const checks = [
   check(
     'insights-link-badge-semantics',
     sources.insights.includes('function rowHasTranscriptContent') &&
+      sources.insights.includes('function rowHasOpenableTranscriptContent') &&
       sources.insights.includes('function rowIsUrlOnlyLink') &&
       sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')") &&
       sources.insights.includes('row.isImported || raw.isImported') &&
-      sources.insights.includes("if (hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);") &&
+      sources.insights.includes("if (opensReader && hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);") &&
       sources.insights.includes("else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);") &&
       sources.insights.includes("Pill({ label: 'Link'") &&
       !sources.insights.includes("else if (st.isLinked || opensLinkedDetails) chips.push(['Linked', 'wbRowChip--linked']);"),
@@ -97,13 +101,13 @@ const checks = [
       sources.insights.includes('function fetchTitleFromUrl') &&
       sources.insights.includes('fetchPageMetadata') &&
       sources.insights.includes('requiresBackgroundMetadataFetch') &&
-      sources.insights.includes('Could not update from URL: permission denied') &&
-      sources.insights.includes('Could not update from URL: host permission missing') &&
-      sources.insights.includes('Could not update from URL: background bridge unavailable') &&
-      sources.insights.includes('Could not update from URL: CORS blocked') &&
-      sources.insights.includes('Could not update from URL: no title found') &&
+      sources.insights.includes('Could not update from URL: permission/metadata unavailable') &&
+      sources.insights.includes('Could not update from URL: background unavailable') &&
+      sources.insights.includes('Could not update from URL: CORS/fetch blocked') &&
+      sources.insights.includes('Could not read title from URL: source page did not expose title') &&
       sources.insights.includes('metadata-store-unavailable') &&
       sources.insights.includes('f19UrlMetadataUpdatedAt') &&
+      sources.insights.includes('looksLikeOpaqueTitle(metadata.title, row)') &&
       !sources.insights.includes('fake turns'),
     FILES.insights,
     'Placeholder details must expose a metadata-only Update from URL action with classified safe failure copy.'
@@ -125,6 +129,7 @@ const checks = [
       sources.desktopImport.includes('displayTitle: title') &&
       sources.desktopImport.includes('sourceTitle: title') &&
       sources.desktopImport.includes('pageTitle: title') &&
+      sources.desktopImport.includes('originalTitle: title') &&
       !sources.desktopImport.includes('cleanString(patch && patch.title) || chatId'),
     FILES.desktopImport,
     'Desktop minimal shell materialization must preserve title metadata and never fall back to raw chat IDs.'
@@ -133,8 +138,9 @@ const checks = [
     'insights-title-candidate-order',
     sources.insights.includes('row?.displayTitle') &&
       sources.insights.includes('row?.sourceTitle') &&
+      sources.insights.includes('row?.originalTitle') &&
       sources.insights.includes('source.label') &&
-      sources.insights.includes('imported chat|linked chat|untitled chat') &&
+      sources.insights.includes('imported chat|linked chat|untitled chat|link|chatgpt') &&
       sources.insights.includes("if (kind === 'imported') return 'Imported chat';"),
     FILES.insights,
     'Imported shell rows must prefer original/display/source title metadata before the generic fallback.'

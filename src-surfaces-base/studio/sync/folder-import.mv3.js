@@ -138,7 +138,7 @@
     var chatId = cleanString(id);
     if (!text) return true;
     if (chatId && text === chatId) return true;
-    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
+    if (/^(imported chat|linked chat|untitled chat|link|chatgpt)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -900,33 +900,47 @@
       || ('https://chatgpt.com/c/' + chatId);
     var linkedAt = cleanString(index.linkedAt || chat.linkedAt);
     var now = nowIso();
-    return {
-      chatId: chatId,
-      title: friendlyShellTitle([
+    var title = friendlyShellTitle([
         index.title || chat.title,
         index.displayTitle,
         index.sourceTitle,
         index.pageTitle,
         index.chatTitle,
+        index.originalTitle,
         index.name,
         chat.displayTitle,
         chat.sourceTitle,
         chat.pageTitle,
         chat.chatTitle,
+        chat.originalTitle,
         chat.name,
         meta.title,
         meta.displayTitle,
         meta.sourceTitle,
+        meta.pageTitle,
+        meta.chatTitle,
+        meta.originalTitle,
         source.title,
         source.displayTitle,
         source.sourceTitle,
+        source.pageTitle,
+        source.chatTitle,
+        source.originalTitle,
         index.filename,
         index.sourceLabel,
         chat.filename,
         chat.sourceLabel,
         source.filename,
         source.label
-      ], chatId, linked && !saved ? 'Linked chat' : 'Imported chat'),
+      ], chatId, linked && !saved ? 'Link' : 'Imported chat');
+    return {
+      chatId: chatId,
+      title: title,
+      displayTitle: title,
+      sourceTitle: title,
+      pageTitle: title,
+      chatTitle: title,
+      originalTitle: title,
       href: href,
       normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
       updatedAt: cleanString(index.updatedAt || chat.updatedAt) || now,
