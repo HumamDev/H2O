@@ -195,6 +195,36 @@
     return String(raw || "").trim();
   }
 
+  function normalizeChatIdFromUrl(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    const clean = (input) => {
+      try {
+        const decoded = decodeURIComponent(String(input || "").trim());
+        return /^[A-Za-z0-9._:-]{8,}$/.test(decoded) ? decoded : "";
+      } catch {
+        const fallback = String(input || "").trim();
+        return /^[A-Za-z0-9._:-]{8,}$/.test(fallback) ? fallback : "";
+      }
+    };
+    const fromPath = (pathRaw) => {
+      const path = String(pathRaw || "");
+      const match = path.match(/(?:^|\/)c\/([^/?#\s]+)/i);
+      return match ? clean(match[1]) : "";
+    };
+    try {
+      const url = /^https?:\/\//i.test(value) ? new URL(value) : new URL(value, W.location?.origin || "https://chatgpt.com");
+      const fromUrlPath = fromPath(url.pathname || "");
+      if (fromUrlPath) return fromUrlPath;
+      const params = ["conversationId", "conversation_id", "chatId", "chat_id"];
+      for (const key of params) {
+        const candidate = clean(url.searchParams?.get?.(key) || "");
+        if (candidate) return candidate;
+      }
+    } catch {}
+    return fromPath(value);
+  }
+
   function setDockWarning(chatIdRaw, message = "") {
     const chatId = toChatId(chatIdRaw);
     if (!chatId) return;
@@ -233,10 +263,12 @@
   function getCurrentChatId() {
     const fromUtil = H2O.util?.getChatId?.();
     const utilId = toChatId(fromUtil);
-    if (utilId) return utilId;
+    if (utilId && !utilId.startsWith("path:")) return utilId;
 
     try {
       const u = new URL(W.location.href);
+      const fromUrl = normalizeChatIdFromUrl(u.href);
+      if (fromUrl) return fromUrl;
       const parts = String(u.pathname || "").split("/").filter(Boolean);
       const cIdx = parts.indexOf("c");
       if (cIdx >= 0 && parts[cIdx + 1]) return toChatId(parts[cIdx + 1]);
@@ -379,7 +411,7 @@
       const anchors = D.querySelectorAll('a[href*="/c/"]');
       for (const a of anchors) {
         const href = String(a?.getAttribute?.("href") || "").trim();
-        if (toChatId((href.match(/\/c\/([a-z0-9-]+)/i) || [])[1]) !== chatId) continue;
+        if (normalizeChatIdFromUrl(href) !== chatId) continue;
         const title = String(a.getAttribute?.("title") || a.innerText || "").replace(/\s+/g, " ").trim();
         if (title) return title;
       }
@@ -838,6 +870,94 @@
     return normalizeCapturedText(extractCaptureText(textRoot || cleanNode));
   }
 
+  function inferMessageRoleFromNode(el) {
+    if (!(el instanceof Element)) return "assistant";
+    const attrNames = [
+      ATTR_MESSAGE_AUTHOR_ROLE,
+      "data-author",
+      "data-role",
+      "data-message-role",
+      "data-testid",
+      "aria-label",
+    ];
+    for (const name of attrNames) {
+      const raw = String(el.getAttribute?.(name) || "").toLowerCase();
+      if (/\buser\b|\byou\b/.test(raw)) return "user";
+      if (/\bassistant\b|\bchatgpt\b/.test(raw)) return "assistant";
+    }
+    try {
+      const roleHost = el.closest?.('[data-message-author-role],[data-author],[data-role],[data-message-role]');
+      if (roleHost && roleHost !== el) return inferMessageRoleFromNode(roleHost);
+    } catch {}
+    return "assistant";
+  }
+
+  function captureTextLengthForNode(el) {
+    if (!(el instanceof Element)) return 0;
+    return normalizeCapturedText(el.textContent || "").length;
+  }
+
+  function isCaptureCandidateNode(el) {
+    if (!(el instanceof Element)) return false;
+    if (isArchiveInjectedNode(el)) return false;
+    try {
+      if (el.closest('form,textarea,[contenteditable="true"],nav,aside,header,footer,[data-testid*="composer"],[data-testid*="prompt-textarea"]')) return false;
+    } catch {}
+    return captureTextLengthForNode(el) > 0;
+  }
+
+  function uniqueCaptureCandidates(nodes) {
+    const seen = new Set();
+    const out = [];
+    for (const node of nodes) {
+      if (!(node instanceof Element) || seen.has(node) || !isCaptureCandidateNode(node)) continue;
+      seen.add(node);
+      out.push(node);
+    }
+    return out;
+  }
+
+  function collectNativeMessageNodesFallback(rootEl = null) {
+    const root = rootEl && rootEl.querySelectorAll ? rootEl : D;
+    const primary = uniqueCaptureCandidates(Array.from(root.querySelectorAll(SEL_MESSAGE_NODES)));
+    if (primary.length) return primary;
+
+    const roleSelectors = [
+      '[data-message-author-role]',
+      '[data-author="user"],[data-author="assistant"]',
+      '[data-role="user"],[data-role="assistant"]',
+      '[data-message-role="user"],[data-message-role="assistant"]',
+      '[data-testid*="user-message"],[data-testid*="assistant-message"]',
+      '[data-testid*="message"][data-testid*="user"],[data-testid*="message"][data-testid*="assistant"]',
+    ].join(',');
+    const roleNodes = uniqueCaptureCandidates(Array.from(root.querySelectorAll(roleSelectors)));
+    if (roleNodes.length) return roleNodes;
+
+    const turnNodes = uniqueCaptureCandidates(Array.from(root.querySelectorAll([
+      SEL_TURN_PRIMARY,
+      'article[data-testid^="conversation-turn"]',
+      'article',
+      '[role="article"]',
+    ].join(','))));
+    return turnNodes;
+  }
+
+  function collectNativeTurnNodesFallback(rootEl = null) {
+    const root = rootEl && rootEl.querySelectorAll ? rootEl : D;
+    const nodes = [];
+    if (root instanceof Element && (
+      String(root.getAttribute?.("data-testid") || "") === "conversation-turn"
+      || String(root.getAttribute?.("data-testid") || "").startsWith("conversation-turn-")
+    )) nodes.push(root);
+    nodes.push(...Array.from(root.querySelectorAll([
+      SEL_TURN_PRIMARY,
+      'article[data-testid^="conversation-turn"]',
+      'article',
+      '[role="article"]',
+    ].join(','))));
+    return uniqueCaptureCandidates(nodes);
+  }
+
   function isUsableAttachmentImageNode(node) {
     if (!(node instanceof Element)) return false;
     try {
@@ -961,7 +1081,7 @@
     const out = [];
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
-      const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
+      const role = inferMessageRoleFromNode(el);
       const text = captureCleanMessageText(el, role);
       const attachments = await captureMessageAttachments(el, role);
       if (!text && !attachments.length) continue;
@@ -978,7 +1098,7 @@
     const out = [];
     for (let i = 0; i < nodes.length; i += 1) {
       const el = nodes[i];
-      const role = normalizeRole(el?.getAttribute?.(ATTR_MESSAGE_AUTHOR_ROLE) || "assistant");
+      const role = inferMessageRoleFromNode(el);
       const text = captureCleanMessageText(el, role);
       if (!text) continue;
       const createdAt = normalizeCreatedAt(readCreateTimeFromNode(el));
@@ -3363,7 +3483,10 @@
   async function resolveEffectiveArchivePlan(c, o) { return getRenderer()?.resolveEffectiveArchivePlan?.(c, o) || { snapshotReady: false, advanced: ARCHIVE_ADVANCED_DEFAULTS }; }
   function getHybridState(c) { return getRenderer()?.getHybridState?.(c) || null; }
   function clearMiniMapColdMarkers() { return getRenderer()?.clearMiniMapColdMarkers?.(); }
-  function collectNativeMessageNodes(r) { return getRenderer()?.collectNativeMessageNodes?.(r) || []; }
+  function collectNativeMessageNodes(r) {
+    const rendererNodes = getRenderer()?.collectNativeMessageNodes?.(r) || [];
+    return rendererNodes.length ? rendererNodes : collectNativeMessageNodesFallback(r);
+  }
   async function disableHybrid(c, r) { return getRenderer()?.disableHybrid?.(c, r) || { ok: true }; }
   async function applyHybrid(c, r, o) { return getRenderer()?.applyHybrid?.(c, r, o) || { ok: false, reason: "renderer-not-loaded" }; }
   async function afterSnapshotCaptured(c, s, r) { return getRenderer()?.afterSnapshotCaptured?.(c, s, r) || { ok: false }; }
@@ -3374,7 +3497,10 @@
   async function resyncMiniMapColdMarkers(c, r) { return getRenderer()?.resyncMiniMapColdMarkers?.(c, r); }
   function messageIndexForAnswer(m, i) { return getRenderer()?.messageIndexForAnswer?.(m, i) || 0; }
   function pageModeLabel(m) { return getRenderer()?.pageModeLabel?.(m) || String(m || ""); }
-  function collectNativeTurnNodes(r) { return getRenderer()?.collectNativeTurnNodes?.(r) || []; }
+  function collectNativeTurnNodes(r) {
+    const rendererNodes = getRenderer()?.collectNativeTurnNodes?.(r) || [];
+    return rendererNodes.length ? rendererNodes : collectNativeTurnNodesFallback(r);
+  }
   function snapshotLabel(row) {
     const createdAt = String(row?.createdAt || "");
     const dt = createdAt ? new Date(createdAt) : null;
@@ -4081,6 +4207,43 @@
     });
   }
 
+  function inspectCurrentConversation(opts = {}) {
+    const currentUrlChatId = normalizeChatIdFromUrl(W.location?.href || W.location?.pathname || "");
+    const currentChatId = toChatId(getCurrentChatId());
+    const messageNodes = collectNativeMessageNodes(D);
+    const turnNodes = collectNativeTurnNodes(D);
+    const roleCounts = { user: 0, assistant: 0, unknown: 0 };
+    for (const node of messageNodes) {
+      const role = inferMessageRoleFromNode(node);
+      if (role === "user") roleCounts.user += 1;
+      else if (role === "assistant") roleCounts.assistant += 1;
+      else roleCounts.unknown += 1;
+    }
+    const visibleMessageCount = messageNodes.length;
+    const visibleConversationTurnCount = turnNodes.length;
+    const title = String(
+      opts?.title
+      || readSidebarConversationTitle(currentChatId)
+      || readConversationHistoryCacheTitle(currentChatId)
+      || D.title
+      || ""
+    ).replace(/\s+/g, " ").trim();
+    return {
+      ok: !!(currentChatId && visibleMessageCount > 0),
+      schema: "h2o.native.transcript.inspect-current-conversation.v1",
+      currentChatId,
+      currentUrlChatId,
+      title,
+      visibleMessageCount,
+      visibleConversationTurnCount,
+      roleCounts,
+      archiveBootCaptureNowCallable: typeof captureNow === "function",
+      wouldHaveTranscriptEvidence: visibleMessageCount > 0,
+      selectorStrategy: messageNodes.length ? "renderer-or-local-fallback" : "none",
+      dryRunPersisted: false,
+    };
+  }
+
   function legacyGetLatest(chatIdRaw) {
     const chatId = toChatId(chatIdRaw || getCurrentChatId());
     const cached = state.latestByChat.get(chatId);
@@ -4166,6 +4329,7 @@
     isExtensionBacked,
     getStorageMode,
     captureNow: (chatId, opts = {}) => captureNow(chatId, opts),
+    inspectCurrentConversation: (opts = {}) => inspectCurrentConversation(opts),
     captureWithOptions: (opts = {}) => captureWithOptions(opts),
     loadLatestSnapshot: (chatId) => loadLatestSnapshotInternal(chatId),
     getCachedLatestSnapshot: (chatIdRaw) => {
@@ -4244,6 +4408,8 @@
   archiveBoot.clearMiniMapColdMarkers = () => clearMiniMapColdMarkers();
   archiveBoot.resyncMiniMapColdMarkers = (chatId, reason) => resyncMiniMapColdMarkers(chatId, reason);
   archiveBoot.captureNow = (chatId, opts = {}) => captureNow(chatId, opts);
+  archiveBoot.getCurrentChatId = () => getCurrentChatId();
+  archiveBoot.inspectCurrentConversation = (opts = {}) => inspectCurrentConversation(opts);
   archiveBoot.captureWithOptions = (opts = {}) => captureWithOptions(opts);
   archiveBoot.loadLatestSnapshot = (chatId) => loadLatestSnapshotInternal(chatId);
   archiveBoot.openReader = () => { warn("openReader deprecated — use hybrid view or Studio"); return Promise.resolve({ ok: false, reason: "reader-removed" }); };

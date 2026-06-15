@@ -12,6 +12,7 @@ const FILES = {
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
   extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
+  archiveEngine: 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
@@ -270,6 +271,42 @@ const checks = [
       sources.extensionBridge.includes('op !== "__loaderDiag"'),
     FILES.nativeFolders,
     'Native folders runtime must expose H2O.folders.diagnose({ includeCaptureDryRun: true }) with loader/module/marker/handler/capture readiness diagnostics and clear failure reasons.'
+  ),
+  check(
+    'native-save-to-folder-current-chat-visible-message-detection',
+    sources.nativeFolders.includes('function DOM_parseChatIdFromHref') &&
+      sources.nativeFolders.includes("new URL(raw, W.location?.origin || 'https://chatgpt.com')") &&
+      sources.nativeFolders.includes("const params = ['conversationId', 'conversation_id', 'chatId', 'chat_id'];") &&
+      sources.nativeFolders.includes('function API_nonPathChatId') &&
+      sources.nativeFolders.includes('typeof H2O.archiveBoot?.getCurrentChatId ===') &&
+      sources.nativeFolders.includes('function API_visibleConversationSummary') &&
+      sources.nativeFolders.includes('archiveBoot.inspectCurrentConversation') &&
+      sources.nativeFolders.includes('visibleRoleCounts') &&
+      sources.nativeFolders.includes('wouldHaveTranscriptEvidence') &&
+      sources.nativeFolders.includes("detectionSource: String(visibleSummary.source || '')") &&
+      sources.nativeFolders.includes('if (current) return `/c/${encodeURIComponent(current)}`;') &&
+      sources.nativeFolders.includes('API_currentLoadedChatId() || API_nonPathChatId(visibleSummary.currentChatId)') &&
+      sources.chromeImport.includes('friendlyShellTitle('),
+    FILES.nativeFolders,
+    'Native Save to Folder diagnostics must derive current ChatGPT conversation ids from modern URL shapes and report visible transcript evidence from the same archive inspection path used by capture.'
+  ),
+  check(
+    'archive-engine-current-conversation-inspect-fallback',
+    sources.archiveEngine?.includes('function normalizeChatIdFromUrl') &&
+      sources.archiveEngine.includes('function collectNativeMessageNodesFallback') &&
+      sources.archiveEngine.includes('function collectNativeTurnNodesFallback') &&
+      sources.archiveEngine.includes('function inferMessageRoleFromNode') &&
+      sources.archiveEngine.includes('article[data-testid^="conversation-turn"]') &&
+      sources.archiveEngine.includes('[data-message-role="user"],[data-message-role="assistant"]') &&
+      sources.archiveEngine.includes('function inspectCurrentConversation') &&
+      sources.archiveEngine.includes('h2o.native.transcript.inspect-current-conversation.v1') &&
+      sources.archiveEngine.includes('wouldHaveTranscriptEvidence: visibleMessageCount > 0') &&
+      sources.archiveEngine.includes('archiveBoot.getCurrentChatId = () => getCurrentChatId();') &&
+      sources.archiveEngine.includes('archiveBoot.inspectCurrentConversation = (opts = {}) => inspectCurrentConversation(opts);') &&
+      sources.archiveEngine.includes('const rendererNodes = getRenderer()?.collectNativeMessageNodes?.(r) || [];') &&
+      sources.archiveEngine.includes('return rendererNodes.length ? rendererNodes : collectNativeMessageNodesFallback(r);'),
+    'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
+    'Transcript archive capture must use robust local DOM fallbacks and expose a non-persisting current-conversation inspection helper for Save-to-Folder readiness.'
   ),
   check(
     'chrome-background-page-metadata-fetch',

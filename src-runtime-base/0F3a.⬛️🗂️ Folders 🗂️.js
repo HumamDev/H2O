@@ -847,8 +847,32 @@
   }
 
   function DOM_parseChatIdFromHref(href) {
-    const m = String(href || '').match(/\/c\/([a-z0-9-]+)/i);
-    return m ? m[1] : null;
+    const raw = String(href || '').trim();
+    if (!raw) return null;
+    const clean = (value) => {
+      try {
+        const decoded = decodeURIComponent(String(value || '').trim());
+        return /^[A-Za-z0-9._:-]{8,}$/.test(decoded) ? decoded : '';
+      } catch {
+        const fallback = String(value || '').trim();
+        return /^[A-Za-z0-9._:-]{8,}$/.test(fallback) ? fallback : '';
+      }
+    };
+    const fromPath = (pathRaw) => {
+      const m = String(pathRaw || '').match(/(?:^|\/)c\/([^/?#\s]+)/i);
+      return m ? clean(m[1]) : '';
+    };
+    try {
+      const url = /^https?:\/\//i.test(raw) ? new URL(raw) : new URL(raw, W.location?.origin || 'https://chatgpt.com');
+      const fromUrlPath = fromPath(url.pathname || '');
+      if (fromUrlPath) return fromUrlPath;
+      const params = ['conversationId', 'conversation_id', 'chatId', 'chat_id'];
+      for (const key of params) {
+        const candidate = clean(url.searchParams?.get?.(key) || '');
+        if (candidate) return candidate;
+      }
+    } catch {}
+    return fromPath(raw) || null;
   }
 
   function DOM_findChatTitleInSidebarByHref(fullHref) {
@@ -6470,19 +6494,33 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     if (DOM_parseChatIdFromHref(path)) return path;
     const href = String(W.location?.href || '').trim();
     if (DOM_parseChatIdFromHref(href)) return href;
+    const current = API_currentLoadedChatId();
+    if (current) return `/c/${encodeURIComponent(current)}`;
     return '';
   }
 
   function API_currentLoadedChatId() {
+    const fromLocation = DOM_parseChatIdFromHref(String(W.location?.href || ''))
+      || DOM_parseChatIdFromHref(String(W.location?.pathname || ''));
+    if (fromLocation) return fromLocation;
     try {
       const fromUtil = H2O.util && typeof H2O.util.getChatId === 'function'
         ? String(H2O.util.getChatId() || '').trim()
         : '';
-      if (fromUtil) return fromUtil;
+      if (fromUtil && !fromUtil.startsWith('path:')) return fromUtil;
     } catch {}
-    return DOM_parseChatIdFromHref(String(W.location?.pathname || ''))
-      || DOM_parseChatIdFromHref(String(W.location?.href || ''))
-      || '';
+    try {
+      const fromArchive = typeof H2O.archiveBoot?.getCurrentChatId === 'function'
+        ? String(H2O.archiveBoot.getCurrentChatId() || '').trim()
+        : '';
+      if (fromArchive && !fromArchive.startsWith('path:')) return fromArchive;
+    } catch {}
+    try {
+      const currentAnchor = D.querySelector('a[aria-current="page"][href*="/c/"], a[aria-current="true"][href*="/c/"], a[data-active="true"][href*="/c/"]');
+      const fromActiveSidebar = DOM_parseChatIdFromHref(currentAnchor?.getAttribute?.('href') || '');
+      if (fromActiveSidebar) return fromActiveSidebar;
+    } catch {}
+    return '';
   }
 
   function API_targetIsCurrentLoadedChat(key) {
@@ -7342,30 +7380,88 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return DOM_parseChatIdFromHref(String(value || '').trim()) || '';
   }
 
+  function API_nonPathChatId(value) {
+    const id = String(value || '').trim();
+    return id && !id.startsWith('path:') ? id : '';
+  }
+
+  function API_archiveConversationInspect(opts = {}) {
+    try {
+      const inspect = H2O.archiveBoot?.inspectCurrentConversation;
+      if (typeof inspect !== 'function') return null;
+      const out = inspect(opts);
+      return out && typeof out === 'object' && !Array.isArray(out) ? out : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function API_isVisibleMessageCandidate(node) {
+    if (!(node instanceof Element)) return false;
+    try {
+      if (!node.isConnected) return false;
+      if (node.closest('.h2o-cold-layer,[data-h2o-cold="1"],form,textarea,[contenteditable="true"],nav,aside,header,footer,[data-testid*="composer"],[data-testid*="prompt-textarea"]')) return false;
+    } catch {}
+    return String(node.textContent || '').trim().length > 0;
+  }
+
+  function API_collectVisibleConversationNodes(selector) {
+    try {
+      const seen = new Set();
+      return Array.from(D.querySelectorAll(selector)).filter((node) => {
+        if (!(node instanceof Element) || seen.has(node) || !API_isVisibleMessageCandidate(node)) return false;
+        seen.add(node);
+        return true;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  function API_visibleConversationSummary(opts = {}) {
+    const archiveInspect = API_archiveConversationInspect(opts);
+    if (archiveInspect) {
+      return {
+        source: 'archiveBoot.inspectCurrentConversation',
+        currentChatId: String(archiveInspect.currentChatId || ''),
+        currentUrlChatId: String(archiveInspect.currentUrlChatId || ''),
+        title: String(archiveInspect.title || ''),
+        visibleMessageCount: Number(archiveInspect.visibleMessageCount || 0),
+        visibleConversationTurnCount: Number(archiveInspect.visibleConversationTurnCount || 0),
+        roleCounts: API_object(archiveInspect.roleCounts),
+        wouldHaveTranscriptEvidence: archiveInspect.wouldHaveTranscriptEvidence === true,
+      };
+    }
+    const primary = API_collectVisibleConversationNodes('[data-message-author-role="user"],[data-message-author-role="assistant"]');
+    const messages = primary.length ? primary : API_collectVisibleConversationNodes([
+      '[data-message-author-role]',
+      '[data-author="user"],[data-author="assistant"]',
+      '[data-role="user"],[data-role="assistant"]',
+      '[data-message-role="user"],[data-message-role="assistant"]',
+      '[data-testid*="user-message"],[data-testid*="assistant-message"]',
+      '[data-testid*="message"][data-testid*="user"],[data-testid*="message"][data-testid*="assistant"]',
+    ].join(','));
+    const turns = API_collectVisibleConversationNodes([
+      '[data-testid="conversation-turn"],[data-testid^="conversation-turn-"]',
+      'article[data-testid^="conversation-turn"]',
+      'article',
+      '[role="article"]',
+    ].join(','));
+    const finalMessages = messages.length ? messages : turns;
+    return {
+      source: '0F3a.local-dom-fallback',
+      currentChatId: API_currentLoadedChatId(),
+      currentUrlChatId: API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || '')),
+      title: String(D.title || ''),
+      visibleMessageCount: finalMessages.length,
+      visibleConversationTurnCount: turns.length || finalMessages.length,
+      roleCounts: {},
+      wouldHaveTranscriptEvidence: finalMessages.length > 0,
+    };
+  }
+
   function API_countVisibleMessageNodes() {
-    try {
-      const messageNodes = Array.from(D.querySelectorAll('[data-message-author-role]'));
-      if (messageNodes.length) return messageNodes.filter((node) => {
-        try {
-          const text = String(node?.textContent || '').trim();
-          return !!text && node.isConnected !== false;
-        } catch {
-          return false;
-        }
-      }).length;
-    } catch {}
-    try {
-      const turns = Array.from(D.querySelectorAll('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]'));
-      return turns.filter((node) => {
-        try {
-          const text = String(node?.textContent || '').trim();
-          return !!text && node.isConnected !== false;
-        } catch {
-          return false;
-        }
-      }).length;
-    } catch {}
-    return 0;
+    return API_visibleConversationSummary({ includeCaptureDryRun: false }).visibleMessageCount;
   }
 
   function API_bridge() {
@@ -7516,10 +7612,12 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   }
 
   function API_captureReadiness(opts = {}) {
-    const currentLoadedChatId = API_currentLoadedChatId();
-    const currentUrlChatId = API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || ''));
+    const visibleSummary = API_visibleConversationSummary(opts);
+    const currentLoadedChatId = API_currentLoadedChatId() || API_nonPathChatId(visibleSummary.currentChatId);
+    const currentUrlChatId = API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || '')) || String(visibleSummary.currentUrlChatId || '');
     const selectedTargetChatId = API_chatIdFromMaybeHref(String(STATE.menuDiag?.lastContextHref || STATE.menuDiag?.lastAnchorText || ''));
-    const visibleMessageCount = API_countVisibleMessageNodes();
+    const visibleMessageCount = Number(visibleSummary.visibleMessageCount || 0);
+    const visibleConversationTurnCount = Number(visibleSummary.visibleConversationTurnCount || visibleMessageCount || 0);
     const archiveCaptureNowCallable = typeof H2O.archiveBoot?.captureNow === 'function';
     const targetEqualsCurrent = selectedTargetChatId
       ? selectedTargetChatId === currentLoadedChatId
@@ -7531,7 +7629,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       selectedSidebarTargetChatId: selectedTargetChatId,
       selectedTargetEqualsCurrentLoadedChat: targetEqualsCurrent,
       visibleMessageCount,
-      visibleConversationTurnCount: visibleMessageCount,
+      visibleConversationTurnCount,
+      visibleRoleCounts: API_object(visibleSummary.roleCounts),
+      title: String(visibleSummary.title || ''),
+      detectionSource: String(visibleSummary.source || ''),
+      wouldHaveTranscriptEvidence: visibleSummary.wouldHaveTranscriptEvidence === true,
       archiveBootCaptureNowCallable: archiveCaptureNowCallable,
       captureDryRunRequested: includeCaptureDryRun,
       includeCaptureDryRun: false,
