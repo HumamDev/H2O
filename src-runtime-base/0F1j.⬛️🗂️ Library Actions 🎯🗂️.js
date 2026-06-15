@@ -313,6 +313,57 @@
     };
   }
 
+  function numericCount(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function captureSnapshotId(capture) {
+    if (!capture || typeof capture !== 'object') return '';
+    return trimString(
+      capture.snapshotId
+      || capture.snapshot_id
+      || capture.lastSnapshotId
+      || capture.snapshot?.snapshotId
+      || capture.snapshot?.snapshot_id
+      || capture.latest?.snapshotId
+      || capture.latest?.snapshot_id
+      || ''
+    );
+  }
+
+  function captureMessageCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    return numericCount(capture.messageCount)
+      || numericCount(capture.turnCount)
+      || numericCount(capture.userTurnCount)
+      || numericCount(capture.assistantTurnCount)
+      || numericCount(capture.snapshot?.messageCount)
+      || numericCount(capture.snapshot?.turnCount)
+      || numericCount(capture.latest?.messageCount)
+      || numericCount(capture.latest?.turnCount)
+      || (Array.isArray(capture.messages) ? capture.messages.length : 0)
+      || (Array.isArray(capture.snapshot?.messages) ? capture.snapshot.messages.length : 0)
+      || (Array.isArray(capture.latest?.messages) ? capture.latest.messages.length : 0);
+  }
+
+  function captureSummary(capture) {
+    const snapshotId = captureSnapshotId(capture);
+    return {
+      snapshotId,
+      snapshotCount: snapshotId ? 1 : numericCount(capture?.snapshotCount),
+      messageCount: captureMessageCount(capture),
+      captureSource: trimString(capture?.captureSource || capture?.source),
+      storage: trimString(capture?.storage),
+      workbenchVisible: capture?.workbenchVisible === undefined ? null : capture.workbenchVisible === true,
+    };
+  }
+
+  function captureHasRealTranscript(capture) {
+    if (!capture || capture.ok === false) return false;
+    return !!captureSnapshotId(capture) || captureMessageCount(capture) > 0;
+  }
+
   /**
    * Build a full chatgpt.com URL from any of the three href variants.
    * Returns '' when no useful source URL exists (imported-only records).
@@ -463,6 +514,8 @@
       let captureResult = null;
       let bindResult = null;
       let snapshotId = '';
+      let summary = null;
+      let resolvedTitle = resolveTitle(args.title);
 
       if (fid) {
         // Heavy path: existing folders flow captures transcript + binds.
@@ -475,6 +528,7 @@
           chatId: ident.chatId,
           href: ident.href,
           folderId: fid,
+          title: resolvedTitle,
           source,
         });
         if (!bindResult || bindResult.ok === false) {
@@ -484,7 +538,10 @@
           return normalizeForDiag('saveToFolder', out);
         }
         snapshotId = trimString(bindResult?.capture?.snapshotId)
-          || trimString(bindResult?.capture?.snapshot?.snapshotId);
+          || trimString(bindResult?.capture?.snapshot?.snapshotId)
+          || trimString(bindResult?.snapshotId);
+        summary = bindResult?.captureSummary || captureSummary(bindResult?.capture || null);
+        resolvedTitle = resolveTitle(args.title || bindResult?.title || bindResult?.capture?.title || bindResult?.capture?.snapshot?.title);
       } else {
         // Unfiled path: capture transcript only, no folder bind. Falls back
         // through captureCurrentChatForFolder (folders) → archiveBoot directly.
@@ -510,8 +567,23 @@
           diag.lastSave = out;
           return normalizeForDiag('saveToFolder', out);
         }
+        if (!captureHasRealTranscript(captureResult?.capture)) {
+          const out = {
+            ok: false,
+            chatId: ident.chatId,
+            folderId: '',
+            error: 'capture-transcript-missing',
+            message: 'Could not capture transcript; no Saved row was created.',
+            details: captureResult,
+            captureSummary: captureSummary(captureResult?.capture || null),
+          };
+          diag.lastSave = out;
+          return normalizeForDiag('saveToFolder', out);
+        }
         snapshotId = trimString(captureResult?.capture?.snapshotId)
           || trimString(captureResult?.capture?.snapshot?.snapshotId);
+        summary = captureSummary(captureResult?.capture || null);
+        resolvedTitle = resolveTitle(args.title || captureResult?.capture?.title || captureResult?.capture?.snapshot?.title || captureResult?.title);
         // Best-effort: clear any prior folder binding so the chat lands as Unfiled.
         if (H2O.folders && typeof H2O.folders.setBinding === 'function') {
           try { H2O.folders.setBinding(ident.chatId, '', { source, reason: 'unfiled-after-capture' }); } catch (e) { pushError('saveToFolder:setBinding-clear', e); }
@@ -526,13 +598,11 @@
       let record = null;
       try {
         if (hasChatRegistry()) {
-          const title = resolveTitle(args.title
-            || bindResult?.capture?.title
-            || bindResult?.capture?.snapshot?.title
-            || captureResult?.capture?.title
-            || captureResult?.capture?.snapshot?.title
-            || captureResult?.title);
-          record = H2O.ChatRegistry.upsertRecord(buildSaveRegistryPatchWithCore(ident, args, source, title), { source });
+          const patch = buildSaveRegistryPatchWithCore(ident, args, source, resolvedTitle);
+          if (summary?.snapshotId) patch.snapshotId = summary.snapshotId;
+          if (summary?.snapshotCount) patch.snapshotCount = summary.snapshotCount;
+          if (summary?.messageCount) patch.messageCount = summary.messageCount;
+          record = H2O.ChatRegistry.upsertRecord(patch, { source });
         }
       } catch (e) {
         pushError('saveToFolder:registry-stamp', e);
@@ -542,8 +612,15 @@
         ok: true,
         chatId: ident.chatId,
         folderId: fid,
-        snapshotId,
+        folderName: trimString(bindResult?.folderName),
+        title: resolvedTitle,
+        snapshotId: snapshotId || trimString(summary?.snapshotId),
+        snapshotCount: numericCount(summary?.snapshotCount),
+        messageCount: numericCount(summary?.messageCount),
+        captureSummary: summary,
         record,
+        syncQueued: bindResult?.syncQueued === undefined ? null : bindResult.syncQueued === true,
+        syncExported: bindResult?.syncExported === undefined ? false : bindResult.syncExported === true,
         details: bindResult || captureResult || null,
       };
       diag.lastSave = out;

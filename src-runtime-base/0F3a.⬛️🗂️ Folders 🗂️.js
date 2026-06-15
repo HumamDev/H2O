@@ -4916,6 +4916,7 @@ function ROUTE_clearPageRoute_LOCAL() {
               href: targetHref,
               folderId: f.id,
               folderName: f.name,
+              title: DOM_findTitleForHref(targetHref),
               source: 'save-to-folder-menu',
             });
         if (result?.status === 'chat-not-saved') {
@@ -4928,7 +4929,7 @@ function ROUTE_clearPageRoute_LOCAL() {
           return;
         }
         if (!result?.ok) {
-          UI_showLibraryToast(String(result?.reason || result?.status || 'Could not save to folder'), 'err');
+          UI_showLibraryToast(String(result?.message || result?.reason || result?.status || 'Could not save to folder'), 'err');
           return;
         }
         EVENT_flushLibraryFolderSync(inFolder ? 'save-to-folder-menu-clear' : 'save-to-folder-menu-bind');
@@ -5062,6 +5063,91 @@ function ROUTE_clearPageRoute_LOCAL() {
       if (a) return (a.textContent || '').trim().slice(0, 200);
     } catch {}
     return '';
+  }
+
+  function API_isGenericChatTitle(value) {
+    const title = String(value || '').trim();
+    if (!title) return true;
+    if (/^(new chat|untitled|untitled chat|chatgpt|chat|imported chat|linked chat|link)$/i.test(title)) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title)) return true;
+    return false;
+  }
+
+  function API_currentChatTitleState() {
+    try {
+      const api = W.H2O && W.H2O.ChatTitle;
+      if (api && typeof api.getState === 'function') return api.getState() || null;
+    } catch {}
+    return null;
+  }
+
+  function API_titleMetadataPatch(title, source) {
+    const cleanTitle = String(title || '').trim();
+    const titleSource = API_isGenericChatTitle(cleanTitle) ? 'derived' : 'title';
+    return {
+      title: cleanTitle,
+      titleSource,
+      displayTitle: cleanTitle,
+      sourceTitle: cleanTitle,
+      pageTitle: cleanTitle,
+      originalTitle: cleanTitle,
+      meta: {
+        displayTitle: cleanTitle,
+        sourceTitle: cleanTitle,
+        pageTitle: cleanTitle,
+        originalTitle: cleanTitle,
+        titleSource,
+        titleCapturedFrom: String(source || 'save-to-folder'),
+      },
+    };
+  }
+
+  function API_captureTitleCandidates(capture) {
+    const snapshot = capture && typeof capture === 'object' ? (capture.snapshot || capture.latest || capture.meta || {}) : {};
+    const meta = capture && typeof capture === 'object' ? (capture.meta || capture.snapshot?.meta || capture.latest?.meta || {}) : {};
+    return [
+      capture?.title,
+      capture?.displayTitle,
+      capture?.sourceTitle,
+      capture?.pageTitle,
+      capture?.originalTitle,
+      snapshot?.title,
+      snapshot?.displayTitle,
+      snapshot?.sourceTitle,
+      snapshot?.pageTitle,
+      snapshot?.originalTitle,
+      meta?.title,
+      meta?.displayTitle,
+      meta?.sourceTitle,
+      meta?.pageTitle,
+      meta?.originalTitle,
+    ];
+  }
+
+  function API_resolveSaveChatTitle({ explicitTitle = '', href = '', capture = null } = {}) {
+    const state = API_currentChatTitleState() || {};
+    const candidates = [
+      explicitTitle,
+      ...API_captureTitleCandidates(capture),
+      DOM_findTitleForHref(href),
+      state.baseTitle,
+      state.title,
+      state.currentTitle,
+      state.displayTitle,
+      state.sourceTitle,
+      state.pageTitle,
+      state.originalTitle,
+    ];
+    try { candidates.push(D.title || ''); } catch {}
+    for (const candidate of candidates) {
+      const title = String(candidate || '').trim();
+      if (title && !API_isGenericChatTitle(title)) return title.slice(0, 240);
+    }
+    for (const candidate of candidates) {
+      const title = String(candidate || '').trim();
+      if (title) return title.slice(0, 240);
+    }
+    return 'Untitled chat';
   }
 
   /* Add-to-Library click handler. Resolves identity from the menu's href,
@@ -6623,6 +6709,56 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     };
   }
 
+  function API_numberCount(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function API_captureSnapshotId(capture) {
+    if (!capture || typeof capture !== 'object') return '';
+    return String(
+      capture.snapshotId
+      || capture.snapshot_id
+      || capture.lastSnapshotId
+      || capture.snapshot?.snapshotId
+      || capture.snapshot?.snapshot_id
+      || capture.latest?.snapshotId
+      || capture.latest?.snapshot_id
+      || ''
+    ).trim();
+  }
+
+  function API_captureMessageCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    return API_numberCount(capture.messageCount)
+      || API_numberCount(capture.turnCount)
+      || API_numberCount(capture.userTurnCount)
+      || API_numberCount(capture.assistantTurnCount)
+      || API_numberCount(capture.snapshot?.messageCount)
+      || API_numberCount(capture.snapshot?.turnCount)
+      || API_numberCount(capture.latest?.messageCount)
+      || API_numberCount(capture.latest?.turnCount)
+      || (Array.isArray(capture.messages) ? capture.messages.length : 0)
+      || (Array.isArray(capture.snapshot?.messages) ? capture.snapshot.messages.length : 0)
+      || (Array.isArray(capture.latest?.messages) ? capture.latest.messages.length : 0);
+  }
+
+  function API_captureHasRealTranscript(capture) {
+    if (!capture || capture.ok === false) return false;
+    return !!API_captureSnapshotId(capture) || API_captureMessageCount(capture) > 0;
+  }
+
+  function API_captureSummary(capture) {
+    return {
+      snapshotId: API_captureSnapshotId(capture),
+      snapshotCount: API_captureSnapshotId(capture) ? 1 : API_numberCount(capture?.snapshotCount),
+      messageCount: API_captureMessageCount(capture),
+      captureSource: String(capture?.captureSource || capture?.source || ''),
+      storage: String(capture?.storage || ''),
+      workbenchVisible: capture?.workbenchVisible === undefined ? null : capture.workbenchVisible === true,
+    };
+  }
+
   async function API_captureCurrentChatForFolder(chatId, opts = {}) {
     const key = API_normalizeChatBindingKey(chatId);
     const cid = String(key.chatId || '').trim();
@@ -6672,7 +6808,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     };
   }
 
-  async function API_saveAndBindToFolder({ chatId = '', href = '', folderId = '', folderName = '', source = '' } = {}) {
+  async function API_saveAndBindToFolder({ chatId = '', href = '', folderId = '', folderName = '', title = '', source = '' } = {}) {
     const key = API_normalizeChatBindingKey(API_resolveSaveToFolderTarget(chatId || href));
     const cid = String(key.chatId || '').trim();
     const fid = String(folderId || '').trim();
@@ -6687,10 +6823,34 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     }
 
     const captured = await API_captureCurrentChatForFolder(cid, { source });
-    const captureAllowsBinding = !!(captured?.ok || (captured?.capture && captured.capture.ok !== false));
-    const registryAllowsBinding = !!API_getRegistryRecordForBindingKey(key);
-    if (!captureAllowsBinding && !registryAllowsBinding) {
-      return { ...captured, folderId: fid, folderName: label };
+    const captureSummary = API_captureSummary(captured?.capture);
+    const hasTranscriptEvidence = API_captureHasRealTranscript(captured?.capture);
+    if (!hasTranscriptEvidence) {
+      return {
+        ...(captured && typeof captured === 'object' ? captured : {}),
+        ok: false,
+        status: 'capture-transcript-missing',
+        reason: 'could-not-capture-transcript',
+        message: 'Could not capture transcript; no Saved row was created.',
+        fallback: API_getRegistryRecordForBindingKey(key) ? 'existing-link-only' : 'none',
+        chatId: cid,
+        folderId: fid,
+        folderName: label,
+        captureSummary,
+      };
+    }
+    if (!captured?.ok) {
+      return {
+        ...(captured && typeof captured === 'object' ? captured : {}),
+        ok: false,
+        status: String(captured?.status || 'capture-not-studio-visible'),
+        reason: 'captured-transcript-not-visible-to-studio',
+        message: 'Captured transcript was not available to Studio/Desktop sync.',
+        chatId: cid,
+        folderId: fid,
+        folderName: label,
+        captureSummary,
+      };
     }
 
     const binding = API_setBinding(cid, fid, {
@@ -6728,6 +6888,15 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         reg.upsertRecord({
           chatId: cid,
           href: String(key.href || ''),
+          normalizedHref: String(key.href || ''),
+          ...API_titleMetadataPatch(API_resolveSaveChatTitle({
+            explicitTitle: title,
+            href: String(key.href || href || ''),
+            capture: captured.capture,
+          }), source || 'save-to-folder'),
+          snapshotId: captureSummary.snapshotId,
+          snapshotCount: captureSummary.snapshotCount,
+          messageCount: captureSummary.messageCount,
           organization: { folderId: String(binding.folderId || fid) },
           state: { isSaved: true, isLinked: true },
           linkedFrom: 'save-to-folder',
@@ -6738,14 +6907,27 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       DIAG_err('save-and-bind:provenance-stamp', provenanceErr);
     }
 
+    const syncQueued = EVENT_flushLibraryFolderSync('save-to-folder-captured');
     return {
       ok: true,
       status: 'saved-and-bound',
       chatId: cid,
       folderId: String(binding.folderId || fid),
       folderName: String(binding.folderName || label),
+      title: API_resolveSaveChatTitle({
+        explicitTitle: title,
+        href: String(key.href || href || ''),
+        capture: captured.capture,
+      }),
+      snapshotId: captureSummary.snapshotId,
+      snapshotCount: captureSummary.snapshotCount,
+      messageCount: captureSummary.messageCount,
       capture: captured.capture,
+      captureSummary,
       binding,
+      syncQueued,
+      syncExported: false,
+      syncStatus: syncQueued ? 'native-broadcast-queued' : 'native-broadcast-unavailable',
     };
   }
 

@@ -12,6 +12,7 @@ const FILES = {
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
+  nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
 };
@@ -211,6 +212,33 @@ const checks = [
       sources.libraryActions.includes('H2O.ChatRegistry.upsertRecord(buildAddPatchWithCore(ident, args, source, title), { source })'),
     FILES.libraryActions,
     'Save/link actions must capture the current ChatGPT title into the registry instead of relying on later URL metadata fetch.'
+  ),
+  check(
+    'native-save-to-folder-requires-transcript-evidence',
+    sources.nativeFolders.includes('async function API_saveAndBindToFolder') &&
+      sources.nativeFolders.includes('function API_captureHasRealTranscript') &&
+      sources.nativeFolders.includes('function API_captureSummary') &&
+      sources.nativeFolders.includes('capture-transcript-missing') &&
+      sources.nativeFolders.includes('captured-transcript-not-visible-to-studio') &&
+      sources.nativeFolders.includes('Could not capture transcript; no Saved row was created.') &&
+      !sources.nativeFolders.includes('const registryAllowsBinding = !!API_getRegistryRecordForBindingKey(key);') &&
+      !sources.nativeFolders.includes('const captureAllowsBinding = !!(captured?.ok || (captured?.capture && captured.capture.ok !== false));'),
+    FILES.nativeFolders,
+    'Native ChatGPT Save to Folder must not bind/stamp a link-only registry record as Saved when transcript capture is missing or not Studio-visible.'
+  ),
+  check(
+    'native-save-to-folder-preserves-title-and-sync-status',
+    sources.nativeFolders.includes('function API_resolveSaveChatTitle') &&
+      sources.nativeFolders.includes('function API_titleMetadataPatch') &&
+      sources.nativeFolders.includes('title: DOM_findTitleForHref(targetHref)') &&
+      sources.nativeFolders.includes('...API_titleMetadataPatch(API_resolveSaveChatTitle') &&
+      sources.nativeFolders.includes('snapshotId: captureSummary.snapshotId') &&
+      sources.nativeFolders.includes('messageCount: captureSummary.messageCount') &&
+      sources.nativeFolders.includes("EVENT_flushLibraryFolderSync('save-to-folder-captured')") &&
+      sources.nativeFolders.includes('syncQueued') &&
+      sources.nativeFolders.includes('syncExported: false'),
+    FILES.nativeFolders,
+    'Native Save to Folder must preserve the current/sidebar title, expose transcript evidence, and queue the existing native-to-Studio sync broadcast.'
   ),
   check(
     'chrome-background-page-metadata-fetch',
