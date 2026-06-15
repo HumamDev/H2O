@@ -83,6 +83,7 @@
       ts: 0,
       requestId: 0,
     },
+    showRefreshInFlight: null,
   };
   const LOCAL_REVIEW_EXPLANATION = 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.';
   const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
@@ -275,10 +276,11 @@
     if (!row) return { isLinked: false, isSaved: false, isImported: false };
     const a = (row.state && typeof row.state === 'object') ? row.state : null;
     const b = (row.raw && row.raw.state && typeof row.raw.state === 'object') ? row.raw.state : null;
+    const raw = row.raw || {};
     return {
-      isLinked:   !!(a?.isLinked   || b?.isLinked),
-      isSaved:    !!(a?.isSaved    || b?.isSaved),
-      isImported: !!(a?.isImported || b?.isImported),
+      isLinked:   !!(a?.isLinked   || b?.isLinked   || row.isLinked   || raw.isLinked),
+      isSaved:    !!(a?.isSaved    || b?.isSaved    || row.isSaved    || raw.isSaved),
+      isImported: !!(a?.isImported || b?.isImported || row.isImported || raw.isImported),
     };
   }
 
@@ -314,8 +316,16 @@
     if (!row) return false;
     const raw = row.raw || {};
     if (resolveSnapshotId(row)) return true;
-    const snapshotCount = Number(row.snapshotCount ?? raw.snapshotCount ?? row.snapshotsCount ?? raw.snapshotsCount ?? 0) || 0;
-    const messageCount = Number(row.messageCount ?? raw.messageCount ?? row.turnCount ?? raw.turnCount ?? 0) || 0;
+    const hasRawSnapshotCount = Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')
+      || Object.prototype.hasOwnProperty.call(raw, 'snapshotsCount');
+    const hasRawMessageCount = Object.prototype.hasOwnProperty.call(raw, 'messageCount')
+      || Object.prototype.hasOwnProperty.call(raw, 'turnCount');
+    const snapshotCount = Number(hasRawSnapshotCount
+      ? (raw.snapshotCount ?? raw.snapshotsCount ?? 0)
+      : (row.snapshotCount ?? row.snapshotsCount ?? 0)) || 0;
+    const messageCount = Number(hasRawMessageCount
+      ? (raw.messageCount ?? raw.turnCount ?? 0)
+      : (row.messageCount ?? row.turnCount ?? 0)) || 0;
     return snapshotCount > 0 || messageCount > 0;
   }
 
@@ -442,15 +452,92 @@
     } catch { return ''; }
   }
 
+  function metadataFailureCopy(reason) {
+    switch (String(reason || '').trim()) {
+      case 'permission-denied':
+      case 'permission-api-unavailable':
+      case 'permission-check-failed':
+        return 'Could not update from URL: permission denied';
+      case 'cors-blocked':
+        return 'Could not update from URL: CORS blocked';
+      case 'source-unavailable':
+        return 'Could not update from URL: source unavailable';
+      case 'no-title-found':
+      case 'metadata-title-missing':
+        return 'Could not update from URL: no title found';
+      case 'invalid-url':
+      case 'unsupported-url':
+        return 'Could not update from URL: invalid URL';
+      case 'network-error':
+      case 'metadata-fetch-failed':
+        return 'Could not update from URL: network error';
+      case 'metadata-store-unavailable':
+        return 'Could not update from URL: metadata store unavailable';
+      default:
+        return 'Could not update from URL';
+    }
+  }
+
+  function callArchiveMetadataFetch(url) {
+    return new Promise((resolve) => {
+      try {
+        if (!W.chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+          resolve(null);
+          return;
+        }
+        chrome.runtime.sendMessage({
+          type: 'h2o-ext-archive:v1',
+          req: { op: 'fetchPageMetadata', payload: { url } },
+        }, (response) => {
+          try {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              resolve({ ok: false, reason: 'network-error' });
+              return;
+            }
+          } catch {}
+          const result = response && response.result ? response.result : response;
+          resolve(result && typeof result === 'object' ? result : null);
+        });
+      } catch {
+        resolve({ ok: false, reason: 'network-error' });
+      }
+    });
+  }
+
+  function classifyDirectMetadataFetchError(error) {
+    const msg = String(error?.message || error || '').toLowerCase();
+    if (msg.includes('unsupported-url')) return 'unsupported-url';
+    if (msg.includes('metadata-title-missing')) return 'no-title-found';
+    if (msg.includes('http 4') || msg.includes('http 5')) return 'source-unavailable';
+    if (msg.includes('failed to fetch') || msg.includes('cors')) return 'cors-blocked';
+    if (msg.includes('network')) return 'network-error';
+    return 'network-error';
+  }
+
   async function fetchTitleFromUrl(url) {
     const href = String(url || '').trim();
-    if (!/^https?:\/\//i.test(href)) throw new Error('unsupported-url');
-    const response = await fetch(href, { method: 'GET', credentials: 'omit', cache: 'no-store' });
-    if (!response || !response.ok) throw new Error('metadata-fetch-failed');
-    const text = await response.text();
-    const title = extractTitleFromHtml(text);
-    if (!title) throw new Error('metadata-title-missing');
-    return title;
+    if (!/^https?:\/\//i.test(href)) return { ok: false, reason: 'unsupported-url' };
+    const archiveResult = await callArchiveMetadataFetch(href);
+    if (archiveResult && archiveResult.ok === true) {
+      const title = String(archiveResult.title || archiveResult.displayTitle || archiveResult.sourceTitle || '').trim();
+      if (title && !looksLikeOpaqueTitle(title, null)) return { ok: true, title, source: 'background' };
+      return { ok: false, reason: 'no-title-found', source: 'background' };
+    }
+    if (archiveResult && archiveResult.reason && archiveResult.reason !== 'permission-api-unavailable') {
+      return { ok: false, reason: archiveResult.reason, source: 'background' };
+    }
+    try {
+      const response = await fetch(href, { method: 'GET', credentials: 'omit', cache: 'no-store' });
+      if (!response || !response.ok) {
+        return { ok: false, reason: 'source-unavailable', status: Number(response?.status || 0), source: 'direct' };
+      }
+      const text = await response.text();
+      const title = extractTitleFromHtml(text);
+      if (!title) return { ok: false, reason: 'no-title-found', source: 'direct' };
+      return { ok: true, title, source: 'direct' };
+    } catch (error) {
+      return { ok: false, reason: classifyDirectMetadataFetchError(error), source: 'direct' };
+    }
   }
 
   function applyLocalTitleToRow(row, title, url) {
@@ -539,12 +626,16 @@
   async function updateRowMetadataFromUrl(row, url, setStatus) {
     try {
       setStatus?.('Updating from URL...');
-      const title = await fetchTitleFromUrl(url);
-      await persistUrlMetadataTitle(row, title, url);
+      const metadata = await fetchTitleFromUrl(url);
+      if (!metadata || metadata.ok !== true || !metadata.title) {
+        setStatus?.(metadataFailureCopy(metadata && metadata.reason));
+        return;
+      }
+      await persistUrlMetadataTitle(row, metadata.title, url);
       setStatus?.('Updated title from URL.');
       render();
-    } catch {
-      setStatus?.('Could not update from URL');
+    } catch (error) {
+      setStatus?.(metadataFailureCopy(error && error.message));
     }
   }
 
@@ -947,6 +1038,20 @@
     return wrap;
   }
 
+  function indexProjectionSources(idx) {
+    try { return idx?.diagnose?.()?.projection?.sources || null; }
+    catch { return null; }
+  }
+
+  function indexSyncStateText(idx) {
+    const sources = indexProjectionSources(idx);
+    const syncedShellRows = Number(sources?.durableBundleShellRowsProjected || sources?.fallbackRegistryShellRows || 0) || 0;
+    if (!sources) return 'Sync metadata is loading; counts may settle after import hydration.';
+    return syncedShellRows > 0
+      ? `${formatNumber(syncedShellRows)} imported placeholder row(s) loaded from sync.`
+      : '';
+  }
+
   // ── Sort + group ───────────────────────────────────────────────────────────
   function sortRows(rows) {
     const list = rows.slice();
@@ -1088,13 +1193,7 @@
   function renderDashboard(idx) {
     const rows = idx.getAll();
     const counts = idx.counts();
-    let indexDiag = null;
-    try { indexDiag = idx.diagnose?.() || null; } catch {}
-    const indexSources = indexDiag?.projection?.sources || null;
-    const syncedShellRows = Number(indexSources?.durableBundleShellRowsProjected || indexSources?.fallbackRegistryShellRows || 0) || 0;
-    const syncStateText = !indexSources
-      ? 'Sync metadata is loading; counts may settle after import hydration.'
-      : (syncedShellRows > 0 ? `${formatNumber(syncedShellRows)} imported placeholder row(s) loaded from sync.` : '');
+    const syncStateText = indexSyncStateText(idx);
     const series = buildActivitySeries(rows, 30);
     const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
 
@@ -1367,6 +1466,7 @@
     const filtered = filterRowsForExplorer(rows, opts);
     const grouped = groupRows(filtered);
     const activeView = String(opts.forceView || prefs.view || 'saved').toLowerCase();
+    const syncStateText = indexSyncStateText(idx);
     let activeLinkedRow = null;
     if (state.activeLinkedRow) {
       activeLinkedRow = rows.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
@@ -1389,6 +1489,7 @@
       rich ? renderExplorerDropdownGrid(idx) : null,
       opts.hideInternalSearch ? null : SearchBar(),
       FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount, totalCount: rows.length }),
+      syncStateText ? el('div', { class: 'wbExpSyncState', style: 'font-size:12px;opacity:.68;margin-top:4px' }, syncStateText) : null,
       el('div', { class: 'wbExpSummary' },
         `${formatNumber(filtered.length)} of ${formatNumber(rows.length)} chats${
           rich && hasActiveFilters() ? ` · ${[
@@ -2335,6 +2436,15 @@
     pageHost.showLibraryRegion(true);
     state.visible = true;
     render();
+    const idx = getIndex();
+    if (idx && typeof idx.refresh === 'function' && !state.showRefreshInFlight) {
+      state.showRefreshInFlight = Promise.resolve(idx.ready)
+        .catch(() => {})
+        .then(() => idx.refresh('library-insights.show'))
+        .then(() => { if (state.visible) render(); })
+        .catch((e) => err('show.refresh-index', e))
+        .finally(() => { state.showRefreshInFlight = null; });
+    }
     // Refresh folder/label/category counts in the header asynchronously so the
     // stats line populates on first paint. The Workspace facade caches results
     // for ~30s; we re-render when fresh data lands.

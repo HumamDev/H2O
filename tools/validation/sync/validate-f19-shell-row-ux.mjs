@@ -8,6 +8,7 @@ const SCHEMA = 'h2o.sync.f19.shell-row-ux.v1';
 const FILES = {
   chromeExport: 'src-surfaces-base/studio/sync/auto-import.mv3.js',
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
+  chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
@@ -49,9 +50,12 @@ const checks = [
     'library-index-rehydrates-friendly-shell-titles',
     sources.libraryIndex.includes('friendlyShellTitle(') &&
       sources.libraryIndex.includes('function normalizeRegistryShellRow') &&
+      sources.libraryIndex.includes("isImported: importedShell") &&
+      sources.libraryIndex.includes("linked && !saved ? 'Link' : 'Imported chat'") &&
+      sources.libraryIndex.includes("isLinked && !isSaved ? 'Link' : 'Imported chat'") &&
       !sources.libraryIndex.includes('title: String(rec.title || chatId).trim()'),
     FILES.libraryIndex,
-    'Durable shell-row rehydration must not restore raw IDs as titles.'
+    'Durable shell-row rehydration must not restore raw IDs as titles and must carry shell state into the shared UI model.'
   ),
   check(
     'insights-imported-placeholder-clickable',
@@ -77,6 +81,8 @@ const checks = [
     'insights-link-badge-semantics',
     sources.insights.includes('function rowHasTranscriptContent') &&
       sources.insights.includes('function rowIsUrlOnlyLink') &&
+      sources.insights.includes("Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')") &&
+      sources.insights.includes('row.isImported || raw.isImported') &&
       sources.insights.includes("if (hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);") &&
       sources.insights.includes("else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);") &&
       sources.insights.includes("Pill({ label: 'Link'") &&
@@ -89,12 +95,26 @@ const checks = [
     sources.insights.includes('Update from URL') &&
       sources.insights.includes('function updateRowMetadataFromUrl') &&
       sources.insights.includes('function fetchTitleFromUrl') &&
-      sources.insights.includes('Could not update from URL') &&
+      sources.insights.includes('fetchPageMetadata') &&
+      sources.insights.includes('Could not update from URL: permission denied') &&
+      sources.insights.includes('Could not update from URL: CORS blocked') &&
+      sources.insights.includes('Could not update from URL: no title found') &&
       sources.insights.includes('metadata-store-unavailable') &&
       sources.insights.includes('f19UrlMetadataUpdatedAt') &&
       !sources.insights.includes('fake turns'),
     FILES.insights,
-    'Placeholder details must expose a metadata-only Update from URL action with safe failure copy.'
+    'Placeholder details must expose a metadata-only Update from URL action with classified safe failure copy.'
+  ),
+  check(
+    'chrome-background-page-metadata-fetch',
+    sources.chromeBackground.includes('"fetchPageMetadata"') &&
+      sources.chromeBackground.includes('async function fetchPageMetadata') &&
+      sources.chromeBackground.includes('pageMetadataExtractTitle') &&
+      sources.chromeBackground.includes('pageMetadataPermissionContains') &&
+      sources.chromeBackground.includes('permission-denied') &&
+      sources.chromeBackground.includes('no-title-found'),
+    FILES.chromeBackground,
+    'Chrome runtime must provide a background metadata fetch bridge so Update from URL can distinguish permission, network, and title failures.'
   ),
   check(
     'desktop-import-shell-title-friendly',

@@ -378,7 +378,7 @@
         chat.sourceLabel,
         source.filename,
         source.label,
-      ], chatId, linked && !saved ? 'Linked chat' : 'Imported chat'),
+      ], chatId, linked && !saved ? 'Link' : 'Imported chat'),
       href,
       normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
       updatedAt: cleanString(index.updatedAt || chat.updatedAt) || observedAt,
@@ -503,7 +503,7 @@
         rec.source && rec.source.sourceTitle,
         rec.filename,
         rec.sourceLabel,
-      ], chatId, isLinked && !isSaved ? 'Linked chat' : 'Imported chat'),
+      ], chatId, isLinked && !isSaved ? 'Link' : 'Imported chat'),
       projectId: rec.project?.projectId,
       folderId: rec.organization?.folderId,
       categoryId: rec.organization?.categoryId,
@@ -825,6 +825,14 @@
       isSaved: !!chat?.isSaved,
       isLinked: !!chat?.isLinked,
       isImported: importedShell,
+      state: {
+        isLinked: !!chat?.isLinked,
+        isSaved: !!chat?.isSaved,
+        isPinned: !!chat?.isPinned,
+        isArchived: !!chat?.isArchived,
+        isImported: importedShell,
+        isDeleted: !!chat?.isDeleted,
+      },
       meta,
     };
   }

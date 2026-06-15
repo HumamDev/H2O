@@ -1103,6 +1103,7 @@ const ARCHIVE_RUNTIME_OPS = Object.freeze([
   "libraryKvEstimate",
   "exportBundle",
   "importBundle",
+  "fetchPageMetadata",
   // v2 full-bundle migration (chat archive + chrome.storage.local + library-kv).
   // See exportFullBundle / dryRunImportFullBundle / importFullBundle below.
   "exportFullBundle",
@@ -4774,6 +4775,122 @@ async function httpRequest(req) {
   }
 }
 
+function pageMetadataDecodeEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_m, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCharCode(code) : "";
+    });
+}
+
+function pageMetadataExtractTitle(html) {
+  const text = String(html || "");
+  const meta = text.match(/<meta\s+[^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*content=["']([^"']+)["'][^>]*>/i)
+    || text.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*>/i);
+  const titleMatch = meta || text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return pageMetadataDecodeEntities(titleMatch && titleMatch[1]).replace(/\s+/g, " ").trim();
+}
+
+function pageMetadataOriginPattern(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.origin + "/*";
+  } catch {
+    return "";
+  }
+}
+
+function pageMetadataPermissionContains(originPattern) {
+  if (!originPattern) return Promise.resolve({ granted: false, reason: "invalid-url" });
+  if (typeof chrome === "undefined" || !chrome.permissions || typeof chrome.permissions.contains !== "function") {
+    return Promise.resolve({ granted: false, reason: "permission-api-unavailable" });
+  }
+  return new Promise((resolve) => {
+    try {
+      chrome.permissions.contains({ origins: [originPattern] }, (granted) => {
+        const lastError = chrome.runtime && chrome.runtime.lastError;
+        resolve({
+          granted: granted === true && !lastError,
+          reason: lastError ? "permission-check-failed" : (granted === true ? "" : "permission-denied"),
+        });
+      });
+    } catch {
+      resolve({ granted: false, reason: "permission-check-failed" });
+    }
+  });
+}
+
+async function fetchPageMetadata(payload = {}) {
+  const url = String(payload && payload.url || "").trim();
+  const originPattern = pageMetadataOriginPattern(url);
+  if (!originPattern) {
+    return { ok: false, reason: "invalid-url", permission: "not-applicable" };
+  }
+  const permission = await pageMetadataPermissionContains(originPattern);
+  if (!permission.granted) {
+    return {
+      ok: false,
+      reason: permission.reason || "permission-denied",
+      permission: "denied",
+      originPattern,
+    };
+  }
+  const response = await httpRequest({
+    method: "GET",
+    url,
+    timeoutMs: 15000,
+    headers: { accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5" },
+  });
+  if (!response || !response.ok) {
+    return {
+      ok: false,
+      reason: "network-error",
+      status: Number(response && response.status || 0),
+      permission: "granted",
+      originPattern,
+    };
+  }
+  const status = Number(response.status || 0);
+  if (status < 200 || status >= 300) {
+    return {
+      ok: false,
+      reason: "source-unavailable",
+      status,
+      permission: "granted",
+      originPattern,
+    };
+  }
+  const title = pageMetadataExtractTitle(response.responseText);
+  if (!title) {
+    return {
+      ok: false,
+      reason: "no-title-found",
+      status,
+      permission: "granted",
+      originPattern,
+      finalUrl: String(response.finalUrl || response.responseURL || url),
+    };
+  }
+  return {
+    ok: true,
+    reason: "",
+    status,
+    permission: "granted",
+    originPattern,
+    title,
+    displayTitle: title,
+    sourceTitle: title,
+    pageTitle: title,
+    finalUrl: String(response.finalUrl || response.responseURL || url),
+  };
+}
+
 // ─── Library KV (Phase 1.6 — durable backend for H2O.Library.Store) ─────────
 // A dedicated IndexedDB database isolated from the archive's h2o_chat_archive DB.
 // All keys MUST start with "h2o:prm:cgx:library:" (enforced by libraryKvValidateKey).
@@ -6832,6 +6949,9 @@ async function handleArchiveMessage(msg) {
   }
   if (op === "importBundle") {
     return { ok: true, result: await importBundle(payload.bundle, payload.mode, nsDisk) };
+  }
+  if (op === "fetchPageMetadata") {
+    return { ok: true, result: await fetchPageMetadata(payload || {}) };
   }
   if (op === "exportFullBundle") {
     return { ok: true, result: await exportFullBundle(payload || {}, nsDisk) };
