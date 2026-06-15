@@ -134,6 +134,10 @@
     try { return new Date().toISOString(); }
     catch (_) { return String(Date.now()); }
   }
+  function chromeExportPath(folderName) {
+    var name = String(folderName || '').trim();
+    return (name ? name + '/' : '') + CHROME_FILE;
+  }
   function pushError(op, err) {
     try {
       state.errors.push({
@@ -777,6 +781,7 @@
     var opts = (options && typeof options === 'object') ? options : {};
     var reason = String(opts.reason || 'manual');
     var startedAt = nowIso();
+    var exportPath = chromeExportPath('');
 
     /* (1) Flag gate. */
     if (!flagEnabled()) {
@@ -786,8 +791,13 @@
         startedAt: startedAt,
         completedAt: nowIso(),
         filename: '',
+        transport: CHROME_FILE,
+        direction: 'chrome-to-desktop',
+        chromeWritesSyncFolder: false,
+        path: exportPath,
         bytes: 0,
         flagEnabled: false,
+        status: 'chrome-to-desktop-export-flag-off',
         error: 'feature flag "' + FLAG_KEY + '" is OFF',
         warnings: [],
       };
@@ -804,8 +814,13 @@
         startedAt: startedAt,
         completedAt: nowIso(),
         filename: '',
+        transport: CHROME_FILE,
+        direction: 'chrome-to-desktop',
+        chromeWritesSyncFolder: false,
+        path: exportPath,
         bytes: 0,
         flagEnabled: true,
+        status: 'chrome-to-desktop-export-in-flight',
         error: 'export already in flight',
         warnings: [],
       };
@@ -825,6 +840,7 @@
         throw new Error('sync folder not connected — use Connect Folder first');
       }
       var dirHandle = row.handle;
+      exportPath = chromeExportPath(dirHandle && dirHandle.name);
 
       /* (3) readwrite permission (user gesture required). */
       await ensureReadWritePermission(dirHandle);
@@ -853,6 +869,10 @@
           startedAt: startedAt,
           completedAt: nowIso(),
           filename: '',
+          transport: CHROME_FILE,
+          direction: 'chrome-to-desktop',
+          chromeWritesSyncFolder: false,
+          path: exportPath,
           bytes: 0,
           flagEnabled: true,
           status: 'coverage-blocked',
@@ -880,16 +900,23 @@
       var writeResult = await writeBundleAtomic(dirHandle, json);
       bytes = writeResult.bytes;
       atomicMethod = writeResult.atomicMethod;
+      var completedAt = nowIso();
 
       var ok = {
         ok: true,
         reason: reason,
         startedAt: startedAt,
-        completedAt: nowIso(),
+        completedAt: completedAt,
+        exportedAt: completedAt,
         filename: CHROME_FILE,
+        transport: CHROME_FILE,
+        direction: 'chrome-to-desktop',
+        chromeWritesSyncFolder: true,
+        path: exportPath,
         bytes: bytes,
         atomicMethod: atomicMethod,
         flagEnabled: true,
+        status: 'chrome-to-desktop-exported',
         blockers: blockers,
         warnings: warnings,
         chromeExportCoverage: chromeExportCoverage,
@@ -921,9 +948,14 @@
         startedAt: startedAt,
         completedAt: failedAt,
         filename: '',
+        transport: CHROME_FILE,
+        direction: 'chrome-to-desktop',
+        chromeWritesSyncFolder: false,
+        path: exportPath,
         bytes: bytes,
         atomicMethod: atomicMethod,
         flagEnabled: true,
+        status: 'chrome-to-desktop-export-failed',
         warnings: warnings,
         errors: errors,
         error: String((e && e.message) || e),

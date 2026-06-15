@@ -12,8 +12,9 @@
  * Safety invariants:
  *   - no Desktop/Tauri behavior
  *   - no background polling or interval auto-import
- *   - no bidirectional sync
- *   - no Chrome writes to the sync folder
+ *   - syncNow() defaults to Desktop -> Chrome import from latest.json
+ *   - direction-specific Chrome -> Desktop export delegates to autoImport
+ *     and writes only chrome-latest.json
  *   - no import format or archive schema changes
  */
 (function (global) {
@@ -47,6 +48,7 @@
   var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var LATEST_FILE = 'latest.json';
+  var CHROME_LATEST_FILE = 'chrome-latest.json';
   var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
   var MSG_ARCHIVE = 'h2o-ext-archive:v1';
   var IDB_NAME = 'h2o.studio.sync.folder.mv3';
@@ -131,6 +133,10 @@
 
   function cleanString(value) {
     return String(value == null ? '' : value).trim();
+  }
+
+  function syncFolderPath(fileName) {
+    return (state.folderName ? state.folderName + '/' : '') + cleanString(fileName || '');
   }
 
   function looksLikeOpaqueTitle(value, id) {
@@ -1689,6 +1695,7 @@
       folderName: state.folderName,
       permission: state.permission,
       latestFile: LATEST_FILE,
+      chromeLatestFile: CHROME_LATEST_FILE,
       desktopChromePropagationSchema: PROPAGATION_SCHEMA,
       desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,
       /* F3.1: expose lastAppliedExportId so consumers can see which producer
@@ -1716,6 +1723,7 @@
       lastAutoSyncError: state.lastAutoSyncError,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: false,
+      chromeDesktopExportApiAvailable: !!getChromeAutoImportApi(),
     };
   }
 
@@ -1783,9 +1791,115 @@
     }
   }
 
+  function normalizeSyncDirection(value) {
+    return cleanString(value).toLowerCase().replace(/_/g, '-');
+  }
+
+  function wantsChromeToDesktopExport(options) {
+    var opts = safeObject(options);
+    var direction = normalizeSyncDirection(opts.direction || opts.syncDirection || opts.transportDirection);
+    return direction === 'chrome-to-desktop' || direction === 'chrome-to-desktop-export';
+  }
+
+  function getChromeAutoImportApi() {
+    try {
+      var sync = H2O && H2O.Studio && H2O.Studio.sync;
+      var autoImport = sync && sync.autoImport;
+      return autoImport && typeof autoImport.exportNow === 'function' ? autoImport : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function exportChromeToSyncFolder(options) {
+    var startedAt = Date.now();
+    var opts = safeObject(options);
+    if (state.syncInFlight) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        direction: 'chrome-to-desktop',
+        transport: CHROME_LATEST_FILE,
+        path: syncFolderPath(CHROME_LATEST_FILE),
+        autoSync: !!opts.autoSync,
+        chromeWritesSyncFolder: false,
+        desktopWritesSyncFolder: false,
+        status: 'sync-folder-sync-in-flight',
+      };
+    }
+    try { await loadStoredHandle(); }
+    catch (error) { pushError('chrome-to-desktop.load-folder-handle', error); }
+
+    var autoImport = getChromeAutoImportApi();
+    if (!autoImport) {
+      return {
+        ok: false,
+        phase: PHASE,
+        mode: MODE,
+        direction: 'chrome-to-desktop',
+        transport: CHROME_LATEST_FILE,
+        path: syncFolderPath(CHROME_LATEST_FILE),
+        autoSync: !!opts.autoSync,
+        chromeWritesSyncFolder: false,
+        desktopWritesSyncFolder: false,
+        blockers: ['chrome-to-desktop-export-unavailable'],
+        status: 'chrome-to-desktop-export-unavailable',
+        error: 'H2O.Studio.sync.autoImport.exportNow is unavailable',
+        durationMs: Date.now() - startedAt,
+      };
+    }
+
+    var raw;
+    try {
+      raw = safeObject(await autoImport.exportNow(Object.assign({}, opts, {
+        direction: 'chrome-to-desktop',
+        transport: CHROME_LATEST_FILE,
+      })));
+    } catch (error) {
+      pushError('chrome-to-desktop.exportNow', error);
+      raw = {
+        ok: false,
+        error: String(error && (error.message || error)),
+        blockers: ['chrome-to-desktop-export-failed'],
+        status: 'chrome-to-desktop-export-failed',
+      };
+    }
+
+    var blockers = Array.isArray(raw.blockers) ? raw.blockers.slice() : [];
+    if (raw.ok !== true && blockers.length === 0) {
+      blockers.push(raw.flagEnabled === false
+        ? 'chrome-to-desktop-export-flag-off'
+        : 'chrome-to-desktop-export-failed');
+    }
+    var status = raw.ok === true
+      ? 'chrome-to-desktop-exported'
+      : (cleanString(raw.status) || blockers[0] || 'chrome-to-desktop-export-blocked');
+
+    return Object.assign({}, raw, {
+      ok: raw.ok === true,
+      phase: PHASE,
+      mode: MODE,
+      direction: 'chrome-to-desktop',
+      transport: CHROME_LATEST_FILE,
+      path: cleanString(raw.path) || syncFolderPath(CHROME_LATEST_FILE),
+      filename: raw.ok === true ? CHROME_LATEST_FILE : cleanString(raw.filename),
+      autoSync: !!opts.autoSync,
+      backgroundAutoImport: false,
+      chromeWritesSyncFolder: raw.ok === true,
+      desktopWritesSyncFolder: false,
+      blockers: blockers,
+      status: status,
+      durationMs: Date.now() - startedAt,
+    });
+  }
+
   async function syncNow(options) {
     var startedAt = Date.now();
     var opts = safeObject(options);
+    if (wantsChromeToDesktopExport(opts)) {
+      return exportChromeToSyncFolder(opts);
+    }
     if (state.syncInFlight) {
       return {
         ok: false,
@@ -2212,6 +2326,16 @@
         },
         guardedImportAvailable: true
       },
+      chromeDesktopExport: {
+        api: 'H2O.Studio.sync.folder.exportChromeToSyncFolder',
+        syncNowDirection: 'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })',
+        transport: CHROME_LATEST_FILE,
+        direction: 'chrome-to-desktop',
+        autoImportAvailable: !!getChromeAutoImportApi(),
+        chromeWritesSyncFolder: true,
+        writesLatestJson: false,
+        staleDesktopLatestJsonIgnored: true
+      },
       automaticPolling: false,
       focusTriggerEnabled: !!state.autoSyncEnabled,
       visibilityTriggerEnabled: !!state.autoSyncEnabled,
@@ -2232,6 +2356,8 @@
     hasFolder: hasFolder,
     status: status,
     syncNow: syncNow,
+    exportChromeToSyncFolder: exportChromeToSyncFolder,
+    syncChromeToDesktop: exportChromeToSyncFolder,
     importLatestBundle: importLatestBundle,
     desktopChromePropagationSchema: PROPAGATION_SCHEMA,
     desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,

@@ -10,6 +10,8 @@ const root = process.cwd();
 const failures = [];
 
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
+const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const autoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const focusImportFile = 'src-surfaces-base/studio/sync/focus-import.tauri.js';
 const importBundleFile = 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
@@ -318,9 +320,22 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderSyncFile, focusImportFile, importBundleFile, contractFile]) assertExists(file);
+for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
+  assertContains(autoImportFile, 'direction: \'chrome-to-desktop\'', 'Chrome export direction result');
+  assertContains(autoImportFile, 'transport: CHROME_FILE', 'Chrome export transport result');
+  assertContains(autoImportFile, 'chromeWritesSyncFolder: true', 'Chrome export write marker');
+  assertContains(autoImportFile, 'chrome-to-desktop-exported', 'Chrome export success status');
+  assertContains(autoImportFile, 'chromeExportCoverage', 'Chrome export coverage diagnostic');
+  assertContains(folderImportFile, 'var LATEST_FILE = \'latest.json\'', 'Desktop import transport constant');
+  assertContains(folderImportFile, 'var CHROME_LATEST_FILE = \'chrome-latest.json\'', 'Chrome export transport constant');
+  assertContains(folderImportFile, 'function exportChromeToSyncFolder', 'direction-specific Chrome export API');
+  assertContains(folderImportFile, 'function wantsChromeToDesktopExport', 'direction selector');
+  assertContains(folderImportFile, 'autoImport.exportNow', 'folder API delegates to Chrome export');
+  assertContains(folderImportFile, 'syncNowDirection: \'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })\'', 'documented direction-specific syncNow');
+  assertContains(folderImportFile, 'staleDesktopLatestJsonIgnored: true', 'stale Desktop latest.json cannot masquerade as Chrome export');
+  assertContains(folderImportFile, 'exportChromeToSyncFolder: exportChromeToSyncFolder', 'public Chrome export API');
   assertContains(folderSyncFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
   assertContains(folderSyncFile, '0.1.0-f19.2.b', 'propagation version');
   assertContains(folderSyncFile, 'importChromeLatestBundle', 'bundle API');
