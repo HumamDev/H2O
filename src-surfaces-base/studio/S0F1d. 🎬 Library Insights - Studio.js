@@ -480,6 +480,10 @@
       case 'no-title-found':
       case 'metadata-title-missing':
         return 'Could not read title from URL: source page did not expose title';
+      case 'source-tab-not-open':
+        return 'Open the source tab first, then click Update from URL again';
+      case 'open-tab-title-generic':
+        return 'Could not read title from URL: open source tab title was not specific';
       case 'invalid-url':
       case 'unsupported-url':
         return 'Could not update from URL: invalid URL';

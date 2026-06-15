@@ -4826,11 +4826,108 @@ function pageMetadataPermissionContains(originPattern) {
   });
 }
 
+function pageMetadataNormalizeUrlForTabMatch(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    parsed.hash = "";
+    parsed.search = "";
+    parsed.pathname = parsed.pathname.replace(/\\/+$/g, "") || "/";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function pageMetadataNormalizeChatConversationUrl(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "https:" || (host !== "chatgpt.com" && !host.endsWith(".chatgpt.com"))) return "";
+    const match = parsed.pathname.match(/^\\/c\\/([^/?#\\/]+)\\/?$/i);
+    if (!match) return "";
+    return "https://chatgpt.com/c/" + match[1];
+  } catch {
+    return "";
+  }
+}
+
+function pageMetadataLooksLikeGenericTitle(value) {
+  const title = pageMetadataDecodeEntities(value).replace(/\\s+/g, " ").trim();
+  if (!title) return true;
+  const lower = title.toLowerCase();
+  if (lower === "chatgpt" || lower === "link" || lower === "imported chat") return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title)) return true;
+  return false;
+}
+
+function pageMetadataQueryTabs(queryInfo) {
+  if (typeof chrome === "undefined" || !chrome.tabs || typeof chrome.tabs.query !== "function") {
+    return Promise.resolve({ ok: false, reason: "tabs-api-unavailable", tabs: [] });
+  }
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.query(queryInfo, (rows) => {
+        const lastError = chrome.runtime && chrome.runtime.lastError;
+        if (lastError) {
+          resolve({ ok: false, reason: "tabs-query-failed", tabs: [] });
+          return;
+        }
+        resolve({ ok: true, reason: "", tabs: Array.isArray(rows) ? rows : [] });
+      });
+    } catch {
+      resolve({ ok: false, reason: "tabs-query-failed", tabs: [] });
+    }
+  });
+}
+
+async function pageMetadataTitleFromOpenTab(url) {
+  const targetChat = pageMetadataNormalizeChatConversationUrl(url);
+  const targetUrl = pageMetadataNormalizeUrlForTabMatch(url);
+  if (!targetUrl) return { ok: false, reason: "invalid-url", source: "open-tab" };
+  const query = targetChat ? { url: ["https://chatgpt.com/c/*", "https://chatgpt.com/g/*/c/*"] } : {};
+  const queried = await pageMetadataQueryTabs(query);
+  if (!queried.ok) return { ok: false, reason: queried.reason || "tabs-query-failed", source: "open-tab" };
+  const candidates = queried.tabs.filter((tab) => {
+    const tabUrl = String(tab && tab.url || "");
+    if (!tabUrl) return false;
+    if (targetChat) return pageMetadataNormalizeChatConversationUrl(tabUrl) === targetChat;
+    return pageMetadataNormalizeUrlForTabMatch(tabUrl) === targetUrl;
+  });
+  if (!candidates.length) return { ok: false, reason: "source-tab-not-open", source: "open-tab" };
+  const sorted = candidates.slice().sort((a, b) => Number(!!b.active) - Number(!!a.active));
+  for (const tab of sorted) {
+    const title = pageMetadataDecodeEntities(tab && tab.title).replace(/\\s+/g, " ").trim();
+    if (title && !pageMetadataLooksLikeGenericTitle(title)) {
+      return {
+        ok: true,
+        reason: "",
+        source: "open-tab",
+        title,
+        displayTitle: title,
+        sourceTitle: title,
+        pageTitle: title,
+        matchedOpenTab: true,
+      };
+    }
+  }
+  return { ok: false, reason: "open-tab-title-generic", source: "open-tab", matchedOpenTab: true };
+}
+
 async function fetchPageMetadata(payload = {}) {
   const url = String(payload && payload.url || "").trim();
   const originPattern = pageMetadataOriginPattern(url);
   if (!originPattern) {
     return { ok: false, reason: "invalid-url", permission: "not-applicable" };
+  }
+  const openTabTitle = await pageMetadataTitleFromOpenTab(url);
+  if (openTabTitle && openTabTitle.ok === true) {
+    return {
+      ...openTabTitle,
+      permission: "not-required",
+      originPattern,
+      finalUrl: pageMetadataNormalizeUrlForTabMatch(url) || url,
+    };
   }
   const permission = await pageMetadataPermissionContains(originPattern);
   if (!permission.granted) {
@@ -4868,13 +4965,17 @@ async function fetchPageMetadata(payload = {}) {
   }
   const title = pageMetadataExtractTitle(response.responseText);
   if (!title) {
+    const noTitleReason = openTabTitle && openTabTitle.reason === "source-tab-not-open"
+      ? "source-tab-not-open"
+      : (openTabTitle && openTabTitle.reason === "open-tab-title-generic" ? "open-tab-title-generic" : "no-title-found");
     return {
       ok: false,
-      reason: "no-title-found",
+      reason: noTitleReason,
       status,
       permission: "granted",
       originPattern,
       finalUrl: String(response.finalUrl || response.responseURL || url),
+      openTabTitleReason: openTabTitle && openTabTitle.reason || "",
     };
   }
   return {

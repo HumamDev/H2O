@@ -116,6 +116,8 @@ const checks = [
       sources.insights.includes('Could not update from URL: background unavailable') &&
       sources.insights.includes('Could not update from URL: CORS/fetch blocked') &&
       sources.insights.includes('Could not read title from URL: source page did not expose title') &&
+      sources.insights.includes('Open the source tab first, then click Update from URL again') &&
+      sources.insights.includes('Could not read title from URL: open source tab title was not specific') &&
       sources.insights.includes('metadata-store-unavailable') &&
       sources.insights.includes('f19UrlMetadataUpdatedAt') &&
       sources.insights.includes('looksLikeOpaqueTitle(metadata.title, row)') &&
@@ -127,6 +129,11 @@ const checks = [
     'chrome-background-page-metadata-fetch',
     sources.chromeBackground.includes('"fetchPageMetadata"') &&
       sources.chromeBackground.includes('async function fetchPageMetadata') &&
+      sources.chromeBackground.includes('async function pageMetadataTitleFromOpenTab') &&
+      sources.chromeBackground.includes('pageMetadataNormalizeChatConversationUrl') &&
+      sources.chromeBackground.includes('source-tab-not-open') &&
+      sources.chromeBackground.includes('open-tab-title-generic') &&
+      sources.chromeBackground.includes('matchedOpenTab: true') &&
       sources.chromeBackground.includes('pageMetadataExtractTitle') &&
       sources.chromeBackground.includes('pageMetadataPermissionContains') &&
       sources.chromeBackground.includes('permission-denied') &&
