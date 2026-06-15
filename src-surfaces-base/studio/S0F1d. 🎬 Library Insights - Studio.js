@@ -310,6 +310,42 @@
     return view === 'linked' || !!st.isLinked;
   }
 
+  function looksLikeOpaqueTitle(value, row) {
+    const text = String(value == null ? '' : value).trim();
+    if (!text) return true;
+    const raw = row?.raw || {};
+    const chatId = String(row?.chatId || raw.chatId || '').trim();
+    if (chatId && text === chatId) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+    if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
+    if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
+    return false;
+  }
+
+  function isImportedShellRow(row) {
+    if (!row || resolveSnapshotId(row)) return false;
+    const raw = row.raw || {};
+    const view = String(row.view || raw.view || '').toLowerCase();
+    const st = getRowState(row);
+    return view === 'imported' || !!st.isImported;
+  }
+
+  function rowPlaceholderKind(row) {
+    if (isImportedShellRow(row)) return 'imported';
+    if (isLinkedOnlyRow(row)) return 'linked';
+    return '';
+  }
+
+  function displayTitleForRow(row, fallback = 'Untitled chat') {
+    const raw = row?.raw || {};
+    const candidate = String(row?.title || raw.title || row?.displayTitle || raw.displayTitle || '').trim();
+    if (candidate && !looksLikeOpaqueTitle(candidate, row)) return candidate;
+    const kind = rowPlaceholderKind(row);
+    if (kind === 'imported') return 'Imported chat';
+    if (kind === 'linked') return 'Linked chat';
+    return String(fallback || 'Untitled chat');
+  }
+
   function sameChatRow(a, b) {
     const aChat = String(a?.chatId || a?.raw?.chatId || '').trim();
     const bChat = String(b?.chatId || b?.raw?.chatId || '').trim();
@@ -357,7 +393,9 @@
 
   function renderLinkedDetailsPanel(row) {
     const raw = row?.raw || {};
-    const title = String(row?.title || raw.title || row?.chatId || raw.chatId || 'Linked chat');
+    const kind = rowPlaceholderKind(row);
+    const imported = kind === 'imported';
+    const title = displayTitleForRow(row, imported ? 'Imported chat' : 'Linked chat');
     const url = resolveLinkedUrl(row);
     const linkedAt = formatLinkedDetailDate(row?.linkedAt || raw.linkedAt || row?.capturedAt || raw.capturedAt || row?.updatedAt || raw.updatedAt);
     const linkedFrom = String(row?.linkedFrom || raw.linkedFrom || '').trim();
@@ -372,8 +410,8 @@
 
     const metaRows = [
       ['URL', el('code', { style: 'white-space:normal;word-break:break-all' }, url || 'Unavailable')],
-      ['Linked at', linkedAt || 'Unavailable'],
-      ['Linked from', linkedFrom || 'Unavailable'],
+      [imported ? 'Imported at' : 'Linked at', linkedAt || 'Unavailable'],
+      [imported ? 'Imported from' : 'Linked from', linkedFrom || (imported ? 'sync-folder' : 'Unavailable')],
       ['Chat ID', el('code', { style: 'word-break:break-all' }, chatId || 'Unavailable')],
     ].map(([label, value]) => [
       el('div', { style: 'opacity:.58' }, label),
@@ -385,7 +423,7 @@
       class: 'wbLinkedDetailsOpen',
       data: { linkedAction: 'open-original' },
       style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.07);color:inherit;font:inherit;font-weight:600;cursor:pointer',
-    }, 'Open original');
+    }, imported ? 'Open source' : 'Open original');
     if (!url) openBtn.disabled = true;
     openBtn.addEventListener('click', (ev) => {
       ev.preventDefault();
@@ -398,7 +436,7 @@
       class: 'wbLinkedDetailsClose',
       data: { linkedAction: 'close' },
       style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:transparent;color:inherit;font:inherit;cursor:pointer;opacity:.78',
-    }, 'Back to Linked list');
+    }, imported ? 'Back to Library' : 'Back to Linked list');
     closeBtn.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -433,12 +471,15 @@
     return el('section', {
       class: 'wbLinkedDetailsPanel',
       role: 'region',
-      'aria-label': 'Linked chat details',
+      'aria-label': imported ? 'Imported chat placeholder details' : 'Linked chat details',
       style: 'margin:0 0 14px;padding:18px 20px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:rgba(255,255,255,.035)',
       data: { chatId },
     }, [
-      el('div', { style: 'font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.56;margin-bottom:6px' }, 'Linked chat'),
+      el('div', { style: 'font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.56;margin-bottom:6px' }, imported ? 'Imported placeholder' : 'Linked chat'),
       el('h2', { style: 'margin:0 0 12px;font-size:20px;line-height:1.3;font-weight:650' }, title),
+      imported ? el('p', { style: 'margin:0 0 14px;font-size:13px;line-height:1.45;opacity:.72' },
+        'This row was synced as metadata only. Transcript content is not present on this surface; use the source link when available or keep it as a Library placeholder.'
+      ) : null,
       el('div', {
         class: 'wbLinkedDetailsMeta',
         style: 'display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0 0 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
@@ -452,10 +493,12 @@
     const sid = resolveSnapshotId(row);
     const st = getRowState(row);
     const linkedUrl = resolveLinkedUrl(row);
-    const opensLinkedDetails = isLinkedOnlyRow(row);
-    // Click target priority: saved+snapshot → Studio reader; linked-only →
-    // in-page details; otherwise the row is inert.
+    const placeholderKind = rowPlaceholderKind(row);
+    const opensLinkedDetails = !!placeholderKind;
+    // Click target priority: saved+snapshot → Studio reader; linked/imported
+    // metadata-only shell rows → in-page details; otherwise the row is inert.
     const opensReader = !!sid && !st.isDeleted;
+    const displayTitle = displayTitleForRow(row);
 
     const meta = [];
     if (row.folderName) meta.push(`📁 ${row.folderName}`);
@@ -482,11 +525,11 @@
     // click in Studio and expose the native URL through the details panel.
     const anchorHref = opensReader
       ? `#/read/${encodeURIComponent(sid)}`
-      : (opensLinkedDetails ? '#/library/linked' : '#');
+      : (opensLinkedDetails ? '#/library/explorer' : '#');
     const inertAria = (opensReader || opensLinkedDetails) ? null : 'true';
 
     const titleRow = el('div', { class: 'wbChatRowTitleRow' }, [
-      el('div', { class: 'wbChatRowTitle' }, row.title || row.chatId || 'Untitled chat'),
+      el('div', { class: 'wbChatRowTitle' }, displayTitle),
       chips.length
         ? el('div', { class: 'wbChatRowChips' }, chips.map(([label, klass]) =>
             el('span', { class: `wbRowChip ${klass}`, 'aria-hidden': 'true' }, label)
@@ -537,9 +580,10 @@
         idx:        String(idx),
         linked:     (st.isLinked || opensLinkedDetails) ? '1' : '0',
         saved:      st.isSaved  ? '1' : '0',
-        opens:      opensReader ? 'reader' : (opensLinkedDetails ? 'linked-details' : 'none'),
+        placeholder: placeholderKind,
+        opens:      opensReader ? 'reader' : (opensLinkedDetails ? 'placeholder-details' : 'none'),
       },
-      title: row.title || row.chatId || '',
+      title: displayTitle,
       'aria-disabled': inertAria,
     }, children);
 
@@ -865,6 +909,13 @@
   function renderDashboard(idx) {
     const rows = idx.getAll();
     const counts = idx.counts();
+    let indexDiag = null;
+    try { indexDiag = idx.diagnose?.() || null; } catch {}
+    const indexSources = indexDiag?.projection?.sources || null;
+    const syncedShellRows = Number(indexSources?.durableBundleShellRowsProjected || indexSources?.fallbackRegistryShellRows || 0) || 0;
+    const syncStateText = !indexSources
+      ? 'Sync metadata is loading; counts may settle after import hydration.'
+      : (syncedShellRows > 0 ? `${formatNumber(syncedShellRows)} imported placeholder row(s) loaded from sync.` : '');
     const series = buildActivitySeries(rows, 30);
     const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
 
@@ -889,6 +940,7 @@
         el('div', { class: 'wbDashHeroLabel' }, 'Library'),
         el('div', { class: 'wbDashHeroValue' }, formatNumber(total)),
         el('div', { class: 'wbDashHeroSub' }, subParts.join(' · ')),
+        syncStateText ? el('div', { class: 'wbDashHeroSyncState', style: 'margin-top:6px;font-size:12px;opacity:.68' }, syncStateText) : null,
       ]),
       el('div', { class: 'wbDashHeroRight' }, [
         el('div', { class: 'wbDashHeroSparklineLabel' }, 'Activity · last 30 days'),
@@ -966,7 +1018,9 @@
         : [el('div', { class: 'wbDashRecentEmpty' }, 'No chats captured yet. Use the archive tools on chatgpt.com to capture a conversation.')]),
     ]);
 
-    return el('div', { class: 'wbDashBody' }, [hero, dist, facetGrid, recentBlock]);
+    const activePlaceholder = state.activeLinkedRow ? renderLinkedDetailsPanel(state.activeLinkedRow) : null;
+
+    return el('div', { class: 'wbDashBody' }, [hero, activePlaceholder, dist, facetGrid, recentBlock]);
   }
 
   // ── Explorer rich helpers ─────────────────────────────────────────────────
@@ -1138,8 +1192,8 @@
     const grouped = groupRows(filtered);
     const activeView = String(opts.forceView || prefs.view || 'saved').toLowerCase();
     let activeLinkedRow = null;
-    if (activeView === 'linked' && state.activeLinkedRow) {
-      activeLinkedRow = filtered.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
+    if (state.activeLinkedRow) {
+      activeLinkedRow = rows.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
       if (!activeLinkedRow) state.activeLinkedRow = null;
     }
     // "Rich" mode = dedicated Explorer tab. The Saved / Pinned / Archive tabs

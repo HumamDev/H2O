@@ -133,6 +133,23 @@
     return String(value == null ? '' : value).trim();
   }
 
+  function looksLikeOpaqueTitle(value, id) {
+    var text = cleanString(value);
+    var chatId = cleanString(id);
+    if (!text) return true;
+    if (chatId && text === chatId) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+    if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
+    if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
+    return false;
+  }
+
+  function friendlyShellTitle(primary, id, fallback) {
+    var title = cleanString(primary);
+    if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    return cleanString(fallback) || 'Imported chat';
+  }
+
   function safeObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
@@ -879,7 +896,11 @@
     var now = nowIso();
     return {
       chatId: chatId,
-      title: cleanString(index.title || chat.title || chatId),
+      title: friendlyShellTitle(
+        index.title || chat.title,
+        chatId,
+        linked && !saved ? 'Linked chat' : 'Imported chat'
+      ),
       href: href,
       normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
       updatedAt: cleanString(index.updatedAt || chat.updatedAt) || now,
