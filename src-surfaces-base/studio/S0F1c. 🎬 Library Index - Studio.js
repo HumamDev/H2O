@@ -764,6 +764,10 @@
   // see persist() for the fields each carries.
   function projectChatToCompactRow(chat, joins) {
     const cid = chat?.chatId;
+    const meta = chat?.meta && typeof chat.meta === 'object' && !Array.isArray(chat.meta) ? chat.meta : {};
+    const chatIndexMeta = meta.chatIndexMeta && typeof meta.chatIndexMeta === 'object' && !Array.isArray(meta.chatIndexMeta)
+      ? meta.chatIndexMeta
+      : {};
     const folderInfo = (joins.folderByChatId && joins.folderByChatId[cid]) || null;
     const labelInfos = (joins.labelsByChatId && joins.labelsByChatId[cid]) || [];
     const tagInfos = (joins.tagsByChatId && joins.tagsByChatId[cid]) || [];
@@ -775,10 +779,31 @@
     const href = chat?.href || chat?.linkSourceHref
       || (chat?.sourceId ? ('https://chatgpt.com/c/' + chat.sourceId) : '')
       || (cid ? ('https://chatgpt.com/c/' + cid) : '');
+    const importedShell = !!(chat?.importBatchId || meta.f19ChromeDesktopMinimalRow || meta.f19ChromeDesktopMaterializedShell);
+    const title = friendlyShellTitle([
+      chat?.title,
+      chat?.displayTitle,
+      chat?.sourceTitle,
+      chat?.pageTitle,
+      meta.title,
+      meta.displayTitle,
+      meta.sourceTitle,
+      meta.pageTitle,
+      chatIndexMeta.title,
+      chatIndexMeta.displayTitle,
+      chatIndexMeta.sourceTitle,
+      chatIndexMeta.pageTitle,
+      chatIndexMeta.chatTitle,
+      chatIndexMeta.name,
+      chat?.filename,
+      chat?.sourceLabel,
+      chatIndexMeta.filename,
+      chatIndexMeta.sourceLabel,
+    ], cid, chat?.isLinked && !chat?.isSaved ? 'Link' : 'Imported chat');
     return {
       chatId: cid,
       snapshotId: chat?.lastSnapshotId || null,
-      title: chat?.title || '',
+      title,
       projectId: chat?.projectId || '',
       folderId: folderInfo ? folderInfo.folderId : '',
       folderName: folderInfo ? folderInfo.name : '',
@@ -799,7 +824,8 @@
       linkSourceHref: chat?.linkSourceHref || '',
       isSaved: !!chat?.isSaved,
       isLinked: !!chat?.isLinked,
-      isImported: !!chat?.importBatchId,
+      isImported: importedShell,
+      meta,
     };
   }
 

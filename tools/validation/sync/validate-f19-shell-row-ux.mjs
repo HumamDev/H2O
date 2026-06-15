@@ -8,6 +8,7 @@ const SCHEMA = 'h2o.sync.f19.shell-row-ux.v1';
 const FILES = {
   chromeExport: 'src-surfaces-base/studio/sync/auto-import.mv3.js',
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
+  desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
 };
@@ -66,10 +67,44 @@ const checks = [
     'insights-explorer-all-filter',
     sources.insights.includes("view: 'all'") &&
       sources.insights.includes("Pill({ label: 'All'") &&
-      sources.insights.includes("let list = v === 'all' ? rows.slice() : rows.filter((r) => r.view === v);") &&
+      sources.insights.includes("else if (v === 'saved') list = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved);") &&
+      sources.insights.includes("else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));") &&
       sources.insights.includes("view === 'all' || view === 'saved'"),
     FILES.insights,
-    'Explorer must expose an All filter before Saved and include every known chat row.'
+    'Explorer must expose All, keep Saved transcript-backed, and route URL-only rows through the Link filter.'
+  ),
+  check(
+    'insights-link-badge-semantics',
+    sources.insights.includes('function rowHasTranscriptContent') &&
+      sources.insights.includes('function rowIsUrlOnlyLink') &&
+      sources.insights.includes("if (hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);") &&
+      sources.insights.includes("else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);") &&
+      sources.insights.includes("Pill({ label: 'Link'") &&
+      !sources.insights.includes("else if (st.isLinked || opensLinkedDetails) chips.push(['Linked', 'wbRowChip--linked']);"),
+    FILES.insights,
+    'Visible row badges must classify transcript-backed rows as Saved and URL-only shell rows as Link.'
+  ),
+  check(
+    'insights-update-from-url-action',
+    sources.insights.includes('Update from URL') &&
+      sources.insights.includes('function updateRowMetadataFromUrl') &&
+      sources.insights.includes('function fetchTitleFromUrl') &&
+      sources.insights.includes('Could not update from URL') &&
+      sources.insights.includes('metadata-store-unavailable') &&
+      sources.insights.includes('f19UrlMetadataUpdatedAt') &&
+      !sources.insights.includes('fake turns'),
+    FILES.insights,
+    'Placeholder details must expose a metadata-only Update from URL action with safe failure copy.'
+  ),
+  check(
+    'desktop-import-shell-title-friendly',
+    sources.desktopImport.includes('function friendlyShellTitle') &&
+      sources.desktopImport.includes('displayTitle: title') &&
+      sources.desktopImport.includes('sourceTitle: title') &&
+      sources.desktopImport.includes('pageTitle: title') &&
+      !sources.desktopImport.includes('cleanString(patch && patch.title) || chatId'),
+    FILES.desktopImport,
+    'Desktop minimal shell materialization must preserve title metadata and never fall back to raw chat IDs.'
   ),
   check(
     'insights-title-candidate-order',

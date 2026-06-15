@@ -310,6 +310,23 @@
     return view === 'linked' || !!st.isLinked;
   }
 
+  function rowHasTranscriptContent(row) {
+    if (!row) return false;
+    const raw = row.raw || {};
+    if (resolveSnapshotId(row)) return true;
+    const snapshotCount = Number(row.snapshotCount ?? raw.snapshotCount ?? row.snapshotsCount ?? raw.snapshotsCount ?? 0) || 0;
+    const messageCount = Number(row.messageCount ?? raw.messageCount ?? row.turnCount ?? raw.turnCount ?? 0) || 0;
+    return snapshotCount > 0 || messageCount > 0;
+  }
+
+  function rowIsUrlOnlyLink(row) {
+    if (!row || rowHasTranscriptContent(row)) return false;
+    const raw = row.raw || {};
+    const st = getRowState(row);
+    const view = String(row.view || raw.view || '').toLowerCase();
+    return !!resolveLinkedUrl(row) || view === 'linked' || !!st.isLinked || isImportedShellRow(row);
+  }
+
   function looksLikeOpaqueTitle(value, row) {
     const text = String(value == null ? '' : value).trim();
     if (!text) return true;
@@ -367,7 +384,7 @@
     }
     const kind = rowPlaceholderKind(row);
     if (kind === 'imported') return 'Imported chat';
-    if (kind === 'linked') return 'Linked chat';
+    if (kind === 'linked') return 'Link';
     return String(fallback || 'Untitled chat');
   }
 
@@ -416,11 +433,126 @@
     catch (e) { try { setStatus?.(`Open failed: ${String(e?.message || e || 'unknown error')}`); } catch {} }
   }
 
+  function extractTitleFromHtml(html) {
+    try {
+      const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+      const og = doc.querySelector('meta[property="og:title"],meta[name="twitter:title"]');
+      const title = String(og?.getAttribute('content') || doc.querySelector('title')?.textContent || '').trim();
+      return looksLikeOpaqueTitle(title, null) ? '' : title;
+    } catch { return ''; }
+  }
+
+  async function fetchTitleFromUrl(url) {
+    const href = String(url || '').trim();
+    if (!/^https?:\/\//i.test(href)) throw new Error('unsupported-url');
+    const response = await fetch(href, { method: 'GET', credentials: 'omit', cache: 'no-store' });
+    if (!response || !response.ok) throw new Error('metadata-fetch-failed');
+    const text = await response.text();
+    const title = extractTitleFromHtml(text);
+    if (!title) throw new Error('metadata-title-missing');
+    return title;
+  }
+
+  function applyLocalTitleToRow(row, title, url) {
+    if (!row) return;
+    const raw = row.raw || {};
+    const meta = row.meta && typeof row.meta === 'object' ? row.meta : {};
+    const rawMeta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {};
+    row.title = title;
+    row.displayTitle = title;
+    row.sourceTitle = title;
+    row.pageTitle = title;
+    row.href = row.href || url;
+    row.normalizedHref = row.normalizedHref || url;
+    row.linkSourceHref = row.linkSourceHref || url;
+    row.meta = Object.assign({}, meta, {
+      displayTitle: title,
+      sourceTitle: title,
+      pageTitle: title,
+    });
+    raw.title = title;
+    raw.displayTitle = title;
+    raw.sourceTitle = title;
+    raw.pageTitle = title;
+    raw.href = raw.href || url;
+    raw.normalizedHref = raw.normalizedHref || url;
+    raw.linkSourceHref = raw.linkSourceHref || url;
+    raw.meta = Object.assign({}, rawMeta, row.meta);
+  }
+
+  async function persistUrlMetadataTitle(row, title, url) {
+    const raw = row?.raw || {};
+    const chatId = String(row?.chatId || raw.chatId || '').trim();
+    if (!chatId) throw new Error('chat-id-missing');
+    const observedAt = new Date().toISOString();
+    let wrote = false;
+    const metaPatch = {
+      displayTitle: title,
+      sourceTitle: title,
+      pageTitle: title,
+      f19UrlMetadataUpdatedAt: observedAt,
+    };
+    const chatStore = H2O.Studio?.store?.chats || null;
+    if (chatStore && typeof chatStore.patch === 'function') {
+      await chatStore.patch(chatId, {
+        title,
+        href: url,
+        normalizedHref: url,
+        linkSourceHref: url,
+        meta: metaPatch,
+      });
+      wrote = true;
+    }
+    const registry = H2O.ChatRegistry || H2O.Library?.ChatRegistry || null;
+    if (registry && typeof registry.upsertRecord === 'function') {
+      const existing = typeof registry.getRecord === 'function' ? (registry.getRecord(chatId) || {}) : {};
+      registry.upsertRecord({
+        ...existing,
+        chatId,
+        title,
+        displayTitle: title,
+        sourceTitle: title,
+        pageTitle: title,
+        href: url,
+        normalizedHref: url,
+        linkSourceHref: url,
+        state: {
+          ...(existing.state || {}),
+          isLinked: true,
+          isImported: !!(existing.state?.isImported || getRowState(row).isImported),
+        },
+        meta: {
+          ...(existing.meta || {}),
+          ...metaPatch,
+        },
+      }, {
+        source: 'f19-url-metadata-refresh',
+        observedAt,
+      });
+      wrote = true;
+    }
+    if (!wrote) throw new Error('metadata-store-unavailable');
+    applyLocalTitleToRow(row, title, url);
+    try { await H2O.LibraryIndex?.refresh?.('f19.6c-update-from-url'); } catch {}
+  }
+
+  async function updateRowMetadataFromUrl(row, url, setStatus) {
+    try {
+      setStatus?.('Updating from URL...');
+      const title = await fetchTitleFromUrl(url);
+      await persistUrlMetadataTitle(row, title, url);
+      setStatus?.('Updated title from URL.');
+      render();
+    } catch {
+      setStatus?.('Could not update from URL');
+    }
+  }
+
   function renderLinkedDetailsPanel(row) {
     const raw = row?.raw || {};
     const kind = rowPlaceholderKind(row);
     const imported = kind === 'imported';
-    const title = displayTitleForRow(row, imported ? 'Imported chat' : 'Linked chat');
+    const title = displayTitleForRow(row, imported ? 'Imported chat' : 'Link');
     const url = resolveLinkedUrl(row);
     const linkedAt = formatLinkedDetailDate(row?.linkedAt || raw.linkedAt || row?.capturedAt || raw.capturedAt || row?.updatedAt || raw.updatedAt);
     const linkedFrom = String(row?.linkedFrom || raw.linkedFrom || '').trim();
@@ -435,8 +567,8 @@
 
     const metaRows = [
       ['URL', el('code', { style: 'white-space:normal;word-break:break-all' }, url || 'Unavailable')],
-      [imported ? 'Imported at' : 'Linked at', linkedAt || 'Unavailable'],
-      [imported ? 'Imported from' : 'Linked from', linkedFrom || (imported ? 'sync-folder' : 'Unavailable')],
+      [imported ? 'Imported at' : 'Link at', linkedAt || 'Unavailable'],
+      [imported ? 'Imported from' : 'Link from', linkedFrom || (imported ? 'sync-folder' : 'Unavailable')],
       ['Chat ID', el('code', { style: 'word-break:break-all' }, chatId || 'Unavailable')],
     ].map(([label, value]) => [
       el('div', { style: 'opacity:.58' }, label),
@@ -456,12 +588,27 @@
       openOriginalUrl(url, setStatus);
     });
 
+    const updateBtn = el('button', {
+      type: 'button',
+      class: 'wbLinkedDetailsUpdateUrl',
+      data: { linkedAction: 'update-from-url' },
+      style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(125,211,252,.10);color:inherit;font:inherit;font-weight:600;cursor:pointer',
+    }, 'Update from URL');
+    if (!url) updateBtn.disabled = true;
+    updateBtn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      updateBtn.disabled = true;
+      try { await updateRowMetadataFromUrl(row, url, setStatus); }
+      finally { updateBtn.disabled = !url; }
+    });
+
     const closeBtn = el('button', {
       type: 'button',
       class: 'wbLinkedDetailsClose',
       data: { linkedAction: 'close' },
       style: 'padding:8px 14px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:transparent;color:inherit;font:inherit;cursor:pointer;opacity:.78',
-    }, imported ? 'Back to Library' : 'Back to Linked list');
+    }, imported ? 'Back to Library' : 'Back to Link list');
     closeBtn.addEventListener('click', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -469,7 +616,7 @@
       render();
     });
 
-    const actions = [openBtn];
+    const actions = [openBtn, updateBtn];
     if (saveToFolder) {
       const saveBtn = el('button', {
         type: 'button',
@@ -496,15 +643,17 @@
     return el('section', {
       class: 'wbLinkedDetailsPanel',
       role: 'region',
-      'aria-label': imported ? 'Imported chat placeholder details' : 'Linked chat details',
+      'aria-label': imported ? 'Imported chat placeholder details' : 'Link details',
       style: 'margin:0 0 14px;padding:18px 20px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:rgba(255,255,255,.035)',
       data: { chatId },
     }, [
-      el('div', { style: 'font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.56;margin-bottom:6px' }, imported ? 'Imported placeholder' : 'Linked chat'),
+      el('div', { style: 'font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.56;margin-bottom:6px' }, imported ? 'Imported placeholder' : 'Link placeholder'),
       el('h2', { style: 'margin:0 0 12px;font-size:20px;line-height:1.3;font-weight:650' }, title),
-      imported ? el('p', { style: 'margin:0 0 14px;font-size:13px;line-height:1.45;opacity:.72' },
-        'This row was synced as metadata only. Transcript content is not present on this surface; use the source link when available or keep it as a Library placeholder.'
-      ) : null,
+      el('p', { style: 'margin:0 0 14px;font-size:13px;line-height:1.45;opacity:.72' },
+        imported
+          ? 'This row was synced as metadata only. Transcript content is not present on this surface; use the source link when available or keep it as a Library placeholder.'
+          : 'This row is URL metadata only. Transcript content is not present on this surface; open the source link or update its safe metadata from the URL.'
+      ),
       el('div', {
         class: 'wbLinkedDetailsMeta',
         style: 'display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;margin:0 0 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
@@ -524,6 +673,8 @@
     // metadata-only shell rows → in-page details; otherwise the row is inert.
     const opensReader = !!sid && !st.isDeleted;
     const displayTitle = displayTitleForRow(row);
+    const hasTranscript = rowHasTranscriptContent(row);
+    const urlOnlyLink = rowIsUrlOnlyLink(row);
 
     const meta = [];
     if (row.folderName) meta.push(`📁 ${row.folderName}`);
@@ -536,14 +687,12 @@
     const tags = (row.tags || []).slice(0, 3);
     const labels = (row.labels || []).slice(0, 3);
 
-    // Linked / Saved / Imported chips. Saved subsumes Linked visually.
-    // Imported (saved-only with no chatId) is a special case: show the
-    // Imported chip alongside Saved so the user knows the record has no
-    // native source URL to fall back to.
+    // Saved means transcript-backed. URL-only imported/link shells use the
+    // Link badge and carry their placeholder/imported state inside details.
     const chips = [];
-    if (st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
-    else if (st.isLinked || opensLinkedDetails) chips.push(['Linked', 'wbRowChip--linked']);
-    if (st.isImported) chips.push(['Imported', 'wbRowChip--imported']);
+    if (hasTranscript && st.isSaved) chips.push(['Saved', 'wbRowChip--saved']);
+    else if (urlOnlyLink || st.isLinked || opensLinkedDetails) chips.push(['Link', 'wbRowChip--linked']);
+    if (st.isImported && !urlOnlyLink) chips.push(['Imported', 'wbRowChip--imported']);
 
     // Anchor href: prefer the reader hash for saved rows so cmd-click "open
     // in new tab" stays inside Studio; for linked-only rows keep the primary
@@ -749,7 +898,7 @@
         Pill({ label: 'Pinned',  active: prefs.view === 'pinned',  onClick: onSet('view', 'pinned') }),
         Pill({ label: 'Archive', active: prefs.view === 'archive', onClick: onSet('view', 'archive') }),
         linkedCount > 0
-          ? Pill({ label: 'Linked', count: linkedCount, active: prefs.view === 'linked', onClick: onSet('view', 'linked') })
+          ? Pill({ label: 'Link', count: linkedCount, active: prefs.view === 'linked', onClick: onSet('view', 'linked') })
           : null,
       ]),
       opts.hideViewChips ? null : el('span', { class: 'wbFilterChipDivider' }),
@@ -902,7 +1051,11 @@
   // chip selection from tab selection).
   function filterRowsForExplorer(rows, opts = {}) {
     const v = String(opts.forceView || prefs.view || 'all').toLowerCase();
-    let list = v === 'all' ? rows.slice() : rows.filter((r) => r.view === v);
+    let list;
+    if (v === 'all') list = rows.slice();
+    else if (v === 'saved') list = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved);
+    else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));
+    else list = rows.filter((r) => r.view === v);
 
     // Dropdown-driven filters. Empty string in prefs = "All <thing>" (no filter).
     if (prefs.folderFilter)   list = list.filter((r) => String(r.folderId || '') === prefs.folderFilter);
@@ -946,20 +1099,17 @@
     const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
 
     const total = counts.total;
-    const saved = counts.views?.saved || 0;
+    const saved = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved).length;
     const pinned = counts.views?.pinned || 0;
     const archive = counts.views?.archive || 0;
-    // Linked-only records flow in from S0F1c via the Chat Registry source
-    // with view='linked'. Surface them as a first-class count alongside
-    // saved/pinned/archive so they have a visible signal on the dashboard.
-    const linked = counts.views?.linked || 0;
+    const linked = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
 
     const subParts = [
       `${formatNumber(saved)} saved`,
       `${formatNumber(pinned)} pinned`,
       `${formatNumber(archive)} archived`,
     ];
-    if (linked > 0) subParts.push(`${formatNumber(linked)} linked`);
+    if (linked > 0) subParts.push(`${formatNumber(linked)} link`);
 
     const hero = el('section', { class: 'wbDashHero' }, [
       el('div', { class: 'wbDashHeroLeft' }, [
@@ -980,14 +1130,14 @@
       BarRow({ name: 'Archive',  count: archive,  total, swatch: '#a78bfa' }),
     ];
     if (linked > 0) {
-      // Make the Linked bar a clickable link into Explorer with the Linked
+      // Make the Link bar a clickable link into Explorer with the Link
       // pill pre-selected. Persists prefs.view='linked' first so the
       // Explorer renderer picks it up on the next render() pass.
-      const linkedBar = BarRow({ name: 'Linked', count: linked, total, swatch: '#7dd3fc' });
+      const linkedBar = BarRow({ name: 'Link', count: linked, total, swatch: '#7dd3fc' });
       const linkedAnchor = el('a', {
         class: 'wbBarRowLink',
         href: '#/library/explorer',
-        'aria-label': `View ${linked} linked chats`,
+        'aria-label': `View ${linked} link chats`,
       }, [linkedBar]);
       linkedAnchor.addEventListener('click', (ev) => {
         // Programmatic prefs flip — the hash change handles the route, but
@@ -1225,10 +1375,10 @@
     // "Rich" mode = dedicated Explorer tab. The Saved / Pinned / Archive tabs
     // (forceView set) keep the simpler chip-only layout.
     const rich = !opts.forceView;
-    // Linked count drives whether the Linked pill renders. Saved/Pinned/
+    // Link count drives whether the Link pill renders. Saved/Pinned/
     // Archive tabs (forceView set) keep `hideViewChips:true` so they never
-    // show a Linked pill — the Saved tab must remain saved-transcript-only.
-    const linkedCount = (idx.counts?.()?.views?.linked) || 0;
+    // show a Link pill — the Saved tab must remain saved-transcript-only.
+    const linkedCount = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
 
     // The page-level shell renders a unified search input above the tab nav,
     // so we hide the internal Explorer SearchBar to avoid a duplicate field.
@@ -1711,14 +1861,9 @@
     { key: 'explorer',  label: 'Explorer' },
     { key: 'recents',   label: 'Recents' },
     { key: 'saved',     label: 'Saved' },
-    /* Phase K-2 — Linked Chats page-level tab. Sits next to Saved so
-     * the two data-tier siblings (Linked = registered-only, Saved =
-     * captured-snapshot) read as a pair. Routes to #/library/linked,
-     * dispatched into renderExplorer({ forceView: 'linked' }) — the
-     * same code path the existing conditional Linked chip already
-     * drives. The standalone #/linked workbench route (K-1) remains
-     * independent. */
-    { key: 'linked',    label: 'Linked' },
+    /* Phase K-2/F19.6c — URL-only rows still use the #/library/linked route
+     * for compatibility, but the visible product label is "Link". */
+    { key: 'linked',    label: 'Link' },
     { key: 'organize',  label: 'Organize' },
   ];
 
@@ -1759,18 +1904,14 @@
 
   // ── Page-shell renderers (header / search / secondary nav / tabs) ──────────
   function renderPageHeader(idx) {
-    const counts = idx.counts();
-    const savedCount   = counts.views?.saved || 0;
-    /* Phase K-2 — Linked chat count exposed alongside Saved in the
-     * Library page header so the new Linked tab has visible parity
-     * with Saved at the stats-line level. Reads from the same
-     * idx.counts().views bucket that Saved already uses. */
-    const linkedCount  = counts.views?.linked || 0;
+    const rows = idx.getAll();
+    const savedCount   = rows.filter((r) => rowHasTranscriptContent(r) && getRowState(r).isSaved).length;
+    const linkedCount  = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
     const folderCount  = pageData.folders.length;
     const labelCount   = pageData.labels.length;
     const catCount     = pageData.categories.length;
     const projectCount = Object.keys(idx.facets().byProject || {}).length;
-    const statsLine = `${formatNumber(savedCount)} saved · ${formatNumber(linkedCount)} linked · ${formatNumber(folderCount)} folders · ${formatNumber(labelCount)} labels · ${formatNumber(catCount)} categories · ${formatNumber(projectCount)} projects`;
+    const statsLine = `${formatNumber(savedCount)} saved · ${formatNumber(linkedCount)} link · ${formatNumber(folderCount)} folders · ${formatNumber(labelCount)} labels · ${formatNumber(catCount)} categories · ${formatNumber(projectCount)} projects`;
 
     const refreshBtn = el('button', {
       type: 'button',

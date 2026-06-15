@@ -99,6 +99,27 @@
     return String(value == null ? '' : value).trim();
   }
 
+  function looksLikeOpaqueTitle(value, id) {
+    var text = cleanString(value);
+    var chatId = cleanString(id);
+    if (!text) return true;
+    if (chatId && text === chatId) return true;
+    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
+    if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
+    if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
+    return false;
+  }
+
+  function friendlyShellTitle(values, id, fallback) {
+    var list = Array.isArray(values) ? values : [values];
+    for (var i = 0; i < list.length; i += 1) {
+      var title = cleanString(list[i]);
+      if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    }
+    return cleanString(fallback) || 'Imported chat';
+  }
+
   function safeMeta(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   }
@@ -524,12 +545,42 @@
     var chatIndex = (chat && chat.chatIndex && typeof chat.chatIndex === 'object') ? chat.chatIndex : {};
     var indexState = (chatIndex.state && typeof chatIndex.state === 'object') ? chatIndex.state : {};
     var indexOrg = (chatIndex.organization && typeof chatIndex.organization === 'object') ? chatIndex.organization : {};
+    var chatMeta = (chat && chat.meta && typeof chat.meta === 'object') ? chat.meta : {};
+    var chatSource = (chat && chat.source && typeof chat.source === 'object') ? chat.source : {};
     var hasSnapshots = snapshotsSortedDesc.length > 0;
     var latest = hasSnapshots ? snapshotsSortedDesc[0] : null;
+    var latestMeta = (latest && latest.meta && typeof latest.meta === 'object') ? latest.meta : {};
 
-    var title = (latest && latest.meta && latest.meta.title)
-      || chatIndex.title
-      || chatId;
+    var title = friendlyShellTitle([
+      latestMeta.title,
+      latestMeta.displayTitle,
+      latestMeta.sourceTitle,
+      latestMeta.pageTitle,
+      chatIndex.title,
+      chatIndex.displayTitle,
+      chatIndex.sourceTitle,
+      chatIndex.pageTitle,
+      chatIndex.chatTitle,
+      chatIndex.name,
+      chat && chat.title,
+      chat && chat.displayTitle,
+      chat && chat.sourceTitle,
+      chat && chat.pageTitle,
+      chat && chat.chatTitle,
+      chat && chat.name,
+      chatMeta.title,
+      chatMeta.displayTitle,
+      chatMeta.sourceTitle,
+      chatSource.title,
+      chatSource.displayTitle,
+      chatSource.sourceTitle,
+      chatIndex.filename,
+      chatIndex.sourceLabel,
+      chat && chat.filename,
+      chat && chat.sourceLabel,
+      chatSource.filename,
+      chatSource.label,
+    ], chatId, indexState.isLinked && !indexState.isSaved ? 'Link' : 'Imported chat');
     var href = chatIndex.href || ('https://chatgpt.com/c/' + chatId);
     var isSaved = hasSnapshots || !!indexState.isSaved;
     var isLinked = hasSnapshots || !!indexState.isLinked;
@@ -546,6 +597,9 @@
     return {
       chatId: chatId,
       title: title,
+      displayTitle: title,
+      sourceTitle: title,
+      pageTitle: title,
       href: href,
       normalizedHref: chatIndex.normalizedHref || href,
       isSaved: isSaved,
@@ -563,6 +617,9 @@
       meta: {
         importedFrom: 'h2o.studio.fullBundle.v2',
         importedAt: Date.now(),
+        displayTitle: title,
+        sourceTitle: title,
+        pageTitle: title,
         f19ChromeDesktopMinimalRow: isMinimalLibraryIndexRow,
         chatIndexMeta: chatIndexMeta,
       },
@@ -624,7 +681,15 @@
     var href = cleanString(patch && (patch.href || patch.normalizedHref)) || ('https://chatgpt.com/c/' + chatId);
     var values = [
       chatId,
-      cleanString(patch && patch.title) || chatId,
+      friendlyShellTitle([
+        patch && patch.title,
+        patch && patch.displayTitle,
+        patch && patch.sourceTitle,
+        patch && patch.pageTitle,
+        meta.displayTitle,
+        meta.sourceTitle,
+        meta.pageTitle,
+      ], chatId, 'Imported chat'),
       now,
       now,
       0,
