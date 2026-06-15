@@ -56,6 +56,7 @@
   ]);
   // Broadcast heartbeat to avoid event storms: at most one sync per 350ms.
   const COALESCE_MS = 350;
+  const ARCHIVE_MESSAGE_TYPE = 'h2o-ext-archive:v1';
   // Studio-originated sync key: write here, native picks up via chrome.storage.
   const BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:v1';
   // Native-originated sync key: native (0F1h) writes here when its Library
@@ -96,7 +97,13 @@
     lastNativeBroadcastFolderCount: 0,
     lastNativeBroadcastFolderBindingCount: 0,
     lastNativeBroadcastFolderSource: '',
+    lastNativeBroadcastSnapshotPayloadCount: 0,
     lastNativeBroadcastPayload: null,
+    lastNativeSnapshotPayloadMaterializeAt: 0,
+    lastNativeSnapshotPayloadMaterializeStatus: '',
+    lastNativeSnapshotPayloadMaterializedCount: 0,
+    lastNativeSnapshotPayloadSkippedCount: 0,
+    lastNativeSnapshotPayloadError: '',
     lastNativeBroadcastReadAt: 0,
     lastNativeBroadcastReadSource: '',
     lastNativeBroadcastReadError: '',
@@ -370,6 +377,182 @@
     const nestedValue = raw.value && typeof raw.value === 'object' ? raw.value : null;
     if (nestedValue && (nestedValue.projectCatalog || nestedValue.folderState || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native' || Array.isArray(nestedValue.reasons))) return nestedValue;
     return raw;
+  }
+
+  function snapshotPayloadHasContent(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    if (Array.isArray(payload.messages) && payload.messages.length > 0) return true;
+    const meta = payload.meta && typeof payload.meta === 'object' ? payload.meta : {};
+    return Array.isArray(meta.richTurns) && meta.richTurns.length > 0;
+  }
+
+  function callArchive(op, payload) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!W.chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+          reject(new Error('chrome runtime unavailable'));
+          return;
+        }
+        const message = { type: ARCHIVE_MESSAGE_TYPE, req: { op, payload: payload || {} } };
+        const sent = chrome.runtime.sendMessage(message, (response) => {
+          try {
+            if (chrome.runtime && chrome.runtime.lastError) {
+              reject(new Error(String(chrome.runtime.lastError.message || chrome.runtime.lastError)));
+              return;
+            }
+          } catch {}
+          if (!response || response.ok !== true) {
+            reject(new Error(String(response?.error || `archive op failed: ${op}`)));
+            return;
+          }
+          resolve(response.result);
+        });
+        if (sent && typeof sent.then === 'function') {
+          sent.then((response) => {
+            if (!response || response.ok !== true) reject(new Error(String(response?.error || `archive op failed: ${op}`)));
+            else resolve(response.result);
+          }).catch(reject);
+        }
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function normalizeNativeSnapshotPayload(row) {
+    const src = row && typeof row === 'object' ? row : {};
+    const chatId = String(src.chatId || '').trim();
+    const snapshotId = String(src.snapshotId || src.id || '').trim();
+    const messages = Array.isArray(src.messages) ? src.messages : [];
+    const meta = src.meta && typeof src.meta === 'object' ? { ...src.meta } : {};
+    const richTurns = Array.isArray(meta.richTurns) ? meta.richTurns : [];
+    if (!chatId || !snapshotId || (!messages.length && !richTurns.length)) return null;
+    const title = String(src.title || meta.title || meta.displayTitle || '').trim();
+    const href = String(src.href || meta.href || `/c/${chatId}`).trim();
+    const folderId = String(src.folderId || meta.folderId || '').trim();
+    const messageCount = Number(src.messageCount || messages.length || richTurns.length || 0) || 0;
+    const userTurnCount = Number(src.userTurnCount || meta.userTurnCount || 0) || 0;
+    const assistantTurnCount = Number(src.assistantTurnCount || meta.assistantTurnCount || 0) || 0;
+    const turnCount = Number(src.turnCount || meta.turnCount || messageCount || 0) || 0;
+    const answerCount = Number(src.answerCount || meta.answerCount || assistantTurnCount || 0) || 0;
+    if (title) {
+      meta.title = String(meta.title || title);
+      meta.displayTitle = String(meta.displayTitle || title);
+      meta.sourceTitle = String(meta.sourceTitle || title);
+      meta.pageTitle = String(meta.pageTitle || title);
+      meta.chatTitle = String(meta.chatTitle || title);
+      meta.originalTitle = String(meta.originalTitle || title);
+    }
+    if (href) meta.href = String(meta.href || href);
+    if (folderId) meta.folderId = String(meta.folderId || folderId);
+    meta.messageCount = Number(meta.messageCount || messageCount || 0) || 0;
+    meta.turnCount = Number(meta.turnCount || turnCount || 0) || 0;
+    meta.userTurnCount = Number(meta.userTurnCount || userTurnCount || 0) || 0;
+    meta.assistantTurnCount = Number(meta.assistantTurnCount || assistantTurnCount || 0) || 0;
+    meta.answerCount = Number(meta.answerCount || answerCount || 0) || 0;
+    return {
+      chatId,
+      bootMode: 'saved',
+      migrated: false,
+      chatIndex: {
+        id: chatId,
+        chatId,
+        title,
+        displayTitle: title,
+        sourceTitle: String(meta.sourceTitle || title),
+        pageTitle: String(meta.pageTitle || title),
+        chatTitle: String(meta.chatTitle || title),
+        originalTitle: String(meta.originalTitle || title),
+        href,
+        view: 'saved',
+        displayView: 'saved',
+        badgeKind: 'Saved',
+        readerKind: 'reader',
+        snapshotId,
+        lastSnapshotId: snapshotId,
+        latestSnapshotId: snapshotId,
+        snapshotCount: 1,
+        messageCount,
+        turnCount,
+        userTurnCount,
+        assistantTurnCount,
+        answerCount,
+        state: {
+          isSaved: true,
+          isLinked: true,
+          isImported: false,
+          isDeleted: false,
+        },
+        organization: folderId ? { folderId } : {},
+        linkedFrom: 'save-to-folder',
+        linkSourceHref: href,
+      },
+      snapshots: [{
+        snapshotId,
+        chatId,
+        createdAt: String(src.createdAt || new Date().toISOString()),
+        schemaVersion: Number(src.schemaVersion || 1) || 1,
+        messageCount,
+        digest: String(src.digest || ''),
+        meta,
+        messages,
+      }],
+    };
+  }
+
+  function redactNativeBroadcastPayload(payload) {
+    const src = payload && typeof payload === 'object' ? payload : null;
+    if (!src) return null;
+    const out = { ...src };
+    if (Array.isArray(out.snapshotPayloads)) {
+      out.snapshotPayloads = out.snapshotPayloads.map((item) => ({
+        schema: String(item?.schema || ''),
+        hasChatId: !!String(item?.chatId || '').trim(),
+        hasSnapshotId: !!String(item?.snapshotId || item?.id || '').trim(),
+        messageCount: Number(item?.messageCount || (Array.isArray(item?.messages) ? item.messages.length : 0)) || 0,
+        hasPayload: snapshotPayloadHasContent(item),
+      }));
+    }
+    return out;
+  }
+
+  async function materializeNativeSnapshotPayloads(payloads, reason = '') {
+    const rows = Array.isArray(payloads) ? payloads : [];
+    const chats = rows.map(normalizeNativeSnapshotPayload).filter(Boolean);
+    state.lastNativeBroadcastSnapshotPayloadCount = rows.length;
+    state.lastNativeSnapshotPayloadMaterializeAt = Date.now();
+    state.lastNativeSnapshotPayloadMaterializedCount = 0;
+    state.lastNativeSnapshotPayloadSkippedCount = rows.length - chats.length;
+    state.lastNativeSnapshotPayloadError = '';
+    if (!rows.length) {
+      state.lastNativeSnapshotPayloadMaterializeStatus = 'none';
+      return { ok: true, status: 'none', importedSnapshots: 0 };
+    }
+    if (!chats.length) {
+      state.lastNativeSnapshotPayloadMaterializeStatus = 'skipped-empty';
+      return { ok: true, status: 'skipped-empty', importedSnapshots: 0 };
+    }
+    try {
+      const bundle = {
+        schema: 'h2o.chatArchive.bundle.v1',
+        exportedAt: new Date().toISOString(),
+        scope: 'native-save-to-folder-snapshot-payloads',
+        chatCount: chats.length,
+        chats,
+        catalogs: {},
+      };
+      const result = await callArchive('importBundle', { bundle, mode: 'merge' });
+      state.lastNativeSnapshotPayloadMaterializedCount = Number(result?.importedSnapshots || chats.length || 0) || 0;
+      state.lastNativeSnapshotPayloadMaterializeStatus = 'imported';
+      try {
+        await W.H2O?.LibraryIndex?.refresh?.(`native-snapshot-payload-materialized:${reason || 'native-broadcast'}`);
+      } catch {}
+      triggerChromeAutoImport('native-snapshot-payload-materialized');
+      return { ok: true, status: 'imported', result };
+    } catch (e) {
+      state.lastNativeSnapshotPayloadMaterializeStatus = 'error';
+      state.lastNativeSnapshotPayloadError = String(e?.message || e || 'snapshot-payload-import-error');
+      err('native-snapshot-payload.materialize', e);
+      return { ok: false, status: 'error', error: state.lastNativeSnapshotPayloadError };
+    }
   }
 
   function normalizeFolderRow(row, index, fallbackSource = '') {
@@ -777,7 +960,15 @@
       state.lastNativeBroadcastFolderCount = Array.isArray(p?.folderState?.folders) ? p.folderState.folders.length : 0;
       state.lastNativeBroadcastFolderBindingCount = Number(p?.folderState?.counts?.bindingCount || countFolderBindings(p?.folderState?.items)) || 0;
       state.lastNativeBroadcastFolderSource = String(p?.folderState?.source || '');
-      state.lastNativeBroadcastPayload = p || null;
+      state.lastNativeBroadcastSnapshotPayloadCount = Array.isArray(p?.snapshotPayloads) ? p.snapshotPayloads.length : 0;
+      state.lastNativeBroadcastPayload = redactNativeBroadcastPayload(p);
+      if (Array.isArray(p?.snapshotPayloads) && p.snapshotPayloads.length) {
+        materializeNativeSnapshotPayloads(p.snapshotPayloads, reason || 'native-broadcast').catch((e) => {
+          state.lastNativeSnapshotPayloadMaterializeStatus = 'error';
+          state.lastNativeSnapshotPayloadError = String(e?.message || e || 'snapshot-payload-import-error');
+          err('native-snapshot-payload.materialize.async', e);
+        });
+      }
       let folderMergePromise = Promise.resolve(null);
       if (p?.folderState) {
         folderMergePromise = mergeNativeFolderState(p.folderState, reason || 'native-broadcast')
@@ -792,7 +983,7 @@
         state.lastNativeFolderMergePromise = folderMergePromise;
       }
       rememberFolderMetadataOperationResults(p, reason);
-      emitNativeBroadcastUpdated(p, reason);
+      emitNativeBroadcastUpdated(state.lastNativeBroadcastPayload, reason);
       return folderMergePromise;
     } catch (e) {
       err('native-broadcast.remember', e);
@@ -824,7 +1015,7 @@
         await rememberNativeBroadcast(payload, reason || 'refresh');
         step('native-broadcast.refresh', String(reason || 'manual'));
       }
-      return payload;
+      return state.lastNativeBroadcastPayload || redactNativeBroadcastPayload(payload);
     } catch (e) {
       state.lastNativeBroadcastReadAt = Date.now();
       state.lastNativeBroadcastReadSource = 'error';
@@ -1209,9 +1400,17 @@
             folderCount: state.lastNativeBroadcastFolderCount,
             folderBindingCount: state.lastNativeBroadcastFolderBindingCount,
             folderSource: state.lastNativeBroadcastFolderSource,
+            snapshotPayloadCount: state.lastNativeBroadcastSnapshotPayloadCount,
             readAt: state.lastNativeBroadcastReadAt,
             readSource: state.lastNativeBroadcastReadSource,
             readError: state.lastNativeBroadcastReadError,
+          },
+          nativeSnapshotPayloadMaterialize: {
+            at: state.lastNativeSnapshotPayloadMaterializeAt,
+            status: state.lastNativeSnapshotPayloadMaterializeStatus,
+            materializedCount: state.lastNativeSnapshotPayloadMaterializedCount,
+            skippedCount: state.lastNativeSnapshotPayloadSkippedCount,
+            error: state.lastNativeSnapshotPayloadError,
           },
           nativeFolderStateMerge: {
             key: FOLDER_STATE_DATA_KEY,

@@ -14,6 +14,7 @@ const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const focusImportFile = 'src-surfaces-base/studio/sync/focus-import.tauri.js';
 const importBundleFile = 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js';
+const studioSyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
 function read(file) {
@@ -417,6 +418,11 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'effectiveSnapshotSaved', 'Chrome export coverage accounts for downgraded saved rows');
   assertContains(autoImportFile, 'diagnoseSnapshotPayloadCoverage', 'Chrome export exposes latest snapshot payload coverage diagnostics');
   assertContains(autoImportFile, 'var aligned = await alignBundleToLibraryIndex(bundle)', 'Chrome export waits for snapshot payload hydration before writing chrome-latest');
+  assertContains(studioSyncFile, 'async function materializeNativeSnapshotPayloads', 'Studio materializes native Save-to-Folder payloads');
+  assertContains(studioSyncFile, "await callArchive('importBundle'", 'Studio imports native snapshot payloads into archive backend');
+  assertContains(studioSyncFile, "scope: 'native-save-to-folder-snapshot-payloads'", 'Studio tags native payload archive imports');
+  assertContains(studioSyncFile, 'function redactNativeBroadcastPayload', 'Studio redacts native snapshot payload diagnostics');
+  assertContains(studioSyncFile, 'nativeSnapshotPayloadMaterialize', 'Studio exposes native payload materialization diagnostics');
   assertContains(importBundleFile, 'var turns = buildTurnsFromSnapshot(snap);', 'Desktop import materializes snapshot payload turns');
   assertContains(importBundleFile, 'await snapStore.create({', 'Desktop import writes snapshot payload to snapshot store');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');

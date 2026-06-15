@@ -19,6 +19,7 @@ const FILES = {
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   nativeSync: 'src-runtime-base/0F1h.⬛️🗂️ Library Sync 🛰🗂️.js',
+  studioSync: 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
 };
@@ -252,6 +253,37 @@ const checks = [
       sources.nativeSync.includes('transcriptEvidenceCount: state.lastLinkedRecordsTranscriptEvidence'),
     FILES.nativeSync,
     'Native cross-surface linkedRecords broadcast must carry Save-to-Folder snapshot/message/turn evidence into Chrome Studio.'
+  ),
+  check(
+    'native-sync-broadcast-carries-save-to-folder-snapshot-payload',
+    sources.nativeSync.includes('function normalizeSnapshotPayloadForBroadcast') &&
+      sources.nativeSync.includes("schema: 'h2o.native.snapshot-payload.v1'") &&
+      sources.nativeSync.includes('function queueSnapshotPayload') &&
+      sources.nativeSync.includes('function snapshotPayloadsForBroadcast') &&
+      sources.nativeSync.includes('snapshotPayloads: snapshotPayloadsForBroadcast()') &&
+      sources.nativeSync.includes('SNAPSHOT_PAYLOAD_MAX') &&
+      sources.nativeSync.includes('meta.folderId = String(meta.folderId || folderId)') &&
+      sources.nativeFolders.includes('archive.loadSnapshot(captureSummary.snapshotId)') &&
+      sources.nativeFolders.includes('sync.queueSnapshotPayload') &&
+      sources.nativeFolders.includes('snapshotPayloadQueued') &&
+      sources.nativeFolders.includes('turnCount: captureSummary.turnCount') &&
+      sources.nativeFolders.includes('assistantTurnCount: captureSummary.assistantTurnCount'),
+    FILES.nativeSync,
+    'Native Save to Folder must broadcast recent snapshot payloads, not only compact registry metadata, so Chrome Studio can materialize reader content.'
+  ),
+  check(
+    'studio-native-broadcast-materializes-save-to-folder-snapshot-payload',
+    sources.studioSync.includes('async function materializeNativeSnapshotPayloads') &&
+      sources.studioSync.includes("scope: 'native-save-to-folder-snapshot-payloads'") &&
+      sources.studioSync.includes("await callArchive('importBundle'") &&
+      sources.studioSync.includes('function normalizeNativeSnapshotPayload') &&
+      sources.studioSync.includes('function redactNativeBroadcastPayload') &&
+      sources.studioSync.includes('nativeSnapshotPayloadMaterialize') &&
+      sources.studioSync.includes("readerKind: 'reader'") &&
+      sources.studioSync.includes('meta.folderId = String(meta.folderId || folderId)') &&
+      sources.studioSync.includes('assistantTurnCount'),
+    FILES.studioSync,
+    'Chrome Studio must import native Save-to-Folder snapshot payloads into the archive backend used by loadSnapshot while exposing only redacted diagnostics.'
   ),
   check(
     'library-actions-capture-source-title',

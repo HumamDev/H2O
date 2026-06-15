@@ -7197,6 +7197,40 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       DIAG_err('save-and-bind:provenance-stamp', provenanceErr);
     }
 
+    let snapshotPayloadQueued = false;
+    try {
+      const sync = H2O.Library?.Sync
+        || H2O.LibrarySync
+        || H2O.LibraryCore?.getService?.('library-sync')
+        || H2O.LibraryCore?.getOwner?.('library-sync');
+      const archive = H2O.archiveBoot || {};
+      if (sync && typeof sync.queueSnapshotPayload === 'function'
+          && archive && typeof archive.loadSnapshot === 'function'
+          && captureSummary.snapshotId) {
+        const snapshotPayload = await archive.loadSnapshot(captureSummary.snapshotId);
+        snapshotPayloadQueued = sync.queueSnapshotPayload({
+          chatId: cid,
+          snapshotId: captureSummary.snapshotId,
+          snapshot: snapshotPayload,
+          title: API_resolveSaveChatTitle({
+            explicitTitle: title,
+            href: String(key.href || href || ''),
+            capture: captured.capture,
+          }),
+          href: String(key.href || ''),
+          folderId: String(binding.folderId || fid),
+          snapshotCount: captureSummary.snapshotCount,
+          messageCount: captureSummary.messageCount,
+          turnCount: captureSummary.turnCount,
+          userTurnCount: captureSummary.userTurnCount,
+          assistantTurnCount: captureSummary.assistantTurnCount,
+          answerCount: captureSummary.answerCount,
+        }, { reason: 'save-to-folder-snapshot-payload' }) === true;
+      }
+    } catch (payloadErr) {
+      DIAG_err('save-and-bind:snapshot-payload-queue', payloadErr);
+    }
+
     const syncQueued = EVENT_flushLibraryFolderSync('save-to-folder-captured');
     const result = {
       ok: true,
@@ -7220,6 +7254,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       capture: captured.capture,
       captureSummary,
       binding,
+      snapshotPayloadQueued,
       syncQueued,
       syncExported: false,
       syncStatus: syncQueued ? 'native-broadcast-queued' : 'native-broadcast-unavailable',

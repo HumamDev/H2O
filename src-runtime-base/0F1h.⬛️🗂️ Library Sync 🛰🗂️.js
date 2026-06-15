@@ -146,6 +146,12 @@
     folderBridgeReadyBroadcasted: false,
     lastFolderBridgeReadyBroadcastAt: 0,
     lastFolderBridgeReadyBroadcastReason: '',
+    pendingSnapshotPayloads: [],
+    lastSnapshotPayloadQueuedAt: 0,
+    lastSnapshotPayloadQueuedCount: 0,
+    lastSnapshotPayloadQueuedStatus: '',
+    lastSnapshotPayloadBroadcastCount: 0,
+    lastSnapshotPayloadBroadcastCapped: false,
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -491,6 +497,8 @@
   const FOLDER_CATALOG_MAX = 250;
   const FOLDER_BINDING_MAX = 1200;
   const FOLDER_BINDINGS_PER_FOLDER_MAX = 250;
+  const SNAPSHOT_PAYLOAD_MAX = 8;
+  const SNAPSHOT_PAYLOAD_TTL_MS = 10 * 60 * 1000;
   function snapshotLinkedRecords() {
     try {
       const reg = W.H2O && W.H2O.ChatRegistry;
@@ -571,6 +579,98 @@
       err('snapshotLinkedRecords', e);
       return [];
     }
+  }
+
+  function normalizeSnapshotPayloadForBroadcast(input) {
+    const src = input && typeof input === 'object' ? input : {};
+    const snap = src.snapshot && typeof src.snapshot === 'object' ? src.snapshot : src;
+    const chatId = String(src.chatId || snap.chatId || '').trim();
+    const snapshotId = String(src.snapshotId || snap.snapshotId || snap.id || '').trim();
+    const messages = Array.isArray(snap.messages) ? snap.messages : [];
+    const meta = snap.meta && typeof snap.meta === 'object' ? { ...snap.meta } : {};
+    const richTurns = Array.isArray(meta.richTurns) ? meta.richTurns : [];
+    if (!chatId || !snapshotId || (!messages.length && !richTurns.length)) return null;
+    const messageCount = Number(src.messageCount || snap.messageCount || messages.length || richTurns.length || 0) || 0;
+    const userTurnCount = Number(src.userTurnCount || snap.userTurnCount || meta.userTurnCount || 0) || 0;
+    const assistantTurnCount = Number(src.assistantTurnCount || snap.assistantTurnCount || meta.assistantTurnCount || 0) || 0;
+    const turnCount = Number(src.turnCount || snap.turnCount || meta.turnCount || messageCount || 0) || 0;
+    const answerCount = Number(src.answerCount || snap.answerCount || meta.answerCount || assistantTurnCount || 0) || 0;
+    const title = String(src.title || meta.title || meta.displayTitle || '').trim();
+    const href = String(src.href || meta.href || '').trim();
+    const folderId = String(src.folderId || meta.folderId || '').trim();
+    if (title) {
+      meta.title = String(meta.title || title);
+      meta.displayTitle = String(meta.displayTitle || title);
+      meta.sourceTitle = String(meta.sourceTitle || title);
+      meta.pageTitle = String(meta.pageTitle || title);
+      meta.chatTitle = String(meta.chatTitle || title);
+      meta.originalTitle = String(meta.originalTitle || title);
+    }
+    if (href) meta.href = String(meta.href || href);
+    if (folderId) meta.folderId = String(meta.folderId || folderId);
+    meta.messageCount = Number(meta.messageCount || messageCount || 0) || 0;
+    meta.turnCount = Number(meta.turnCount || turnCount || 0) || 0;
+    meta.userTurnCount = Number(meta.userTurnCount || userTurnCount || 0) || 0;
+    meta.assistantTurnCount = Number(meta.assistantTurnCount || assistantTurnCount || 0) || 0;
+    meta.answerCount = Number(meta.answerCount || answerCount || 0) || 0;
+    return {
+      schema: 'h2o.native.snapshot-payload.v1',
+      chatId,
+      snapshotId,
+      createdAt: String(src.createdAt || snap.createdAt || new Date().toISOString()),
+      schemaVersion: Number(snap.schemaVersion || 1) || 1,
+      messageCount,
+      turnCount,
+      userTurnCount,
+      assistantTurnCount,
+      answerCount,
+      digest: String(snap.digest || ''),
+      title,
+      href,
+      folderId,
+      state: { isSaved: true, isLinked: true },
+      meta,
+      messages,
+      queuedAt: Date.now(),
+    };
+  }
+
+  function pruneSnapshotPayloadQueue() {
+    const cutoff = Date.now() - SNAPSHOT_PAYLOAD_TTL_MS;
+    state.pendingSnapshotPayloads = state.pendingSnapshotPayloads
+      .filter((item) => Number(item?.queuedAt || 0) >= cutoff)
+      .slice(-SNAPSHOT_PAYLOAD_MAX);
+    return state.pendingSnapshotPayloads;
+  }
+
+  function queueSnapshotPayload(input, opts = {}) {
+    const payload = normalizeSnapshotPayloadForBroadcast(input);
+    if (!payload) {
+      state.lastSnapshotPayloadQueuedStatus = 'invalid-or-empty';
+      return false;
+    }
+    pruneSnapshotPayloadQueue();
+    state.pendingSnapshotPayloads = state.pendingSnapshotPayloads
+      .filter((item) => String(item?.snapshotId || '') !== payload.snapshotId);
+    state.pendingSnapshotPayloads.push(payload);
+    state.pendingSnapshotPayloads = state.pendingSnapshotPayloads.slice(-SNAPSHOT_PAYLOAD_MAX);
+    state.lastSnapshotPayloadQueuedAt = Date.now();
+    state.lastSnapshotPayloadQueuedCount += 1;
+    state.lastSnapshotPayloadQueuedStatus = 'queued';
+    if (opts && opts.broadcastNow === true) broadcastImmediately(opts.reason || 'snapshot-payload-queued');
+    else scheduleBroadcast((opts && opts.reason) || 'snapshot-payload-queued');
+    return true;
+  }
+
+  function snapshotPayloadsForBroadcast() {
+    const rows = pruneSnapshotPayloadQueue();
+    state.lastSnapshotPayloadBroadcastCount = rows.length;
+    state.lastSnapshotPayloadBroadcastCapped = rows.length >= SNAPSHOT_PAYLOAD_MAX;
+    return rows.map((row) => ({
+      ...row,
+      meta: { ...(row.meta || {}) },
+      messages: Array.isArray(row.messages) ? row.messages.slice() : [],
+    }));
   }
 
   function normalizeProjectCatalogRow(row, index) {
@@ -890,6 +990,10 @@
       // native registry lives in chatgpt.com's localStorage and is otherwise
       // unreachable from Studio.
       linkedRecords: snapshotLinkedRecords(),
+      // F19.7q: carry only recent Save-to-Folder snapshot payloads so
+      // Studio can materialize them into the extension archive store. The
+      // compact linkedRecords projection above remains metadata-only.
+      snapshotPayloads: snapshotPayloadsForBroadcast(),
       // Phase 7C read-only projection: native project cache names live in
       // page localStorage. Studio cannot read that origin, so expose a bounded
       // catalog summary through the existing cross-surface sync envelope.
@@ -978,6 +1082,7 @@
     },
     pingStudio(reason) { scheduleBroadcast(reason || 'manual.ping'); broadcastNow(); },
     flushFolderState(reason) { broadcastImmediately(reason || 'manual.folder-state'); return true; },
+    queueSnapshotPayload,
     queueFolderMetadataOperationResult,
     diagnose() {
       return {
@@ -1037,6 +1142,14 @@
             eligibleCountComplete: !state.lastLinkedRecordsCapped,
             capped: state.lastLinkedRecordsCapped,
             cap: LINKED_SNAPSHOT_MAX,
+          },
+          snapshotPayloads: {
+            queuedAt: state.lastSnapshotPayloadQueuedAt,
+            queuedCount: state.lastSnapshotPayloadQueuedCount,
+            queueStatus: state.lastSnapshotPayloadQueuedStatus,
+            broadcastCount: state.lastSnapshotPayloadBroadcastCount,
+            capped: state.lastSnapshotPayloadBroadcastCapped,
+            cap: SNAPSHOT_PAYLOAD_MAX,
           },
           projectCatalog: {
             available: !!state.lastProjectCatalogAvailable,
