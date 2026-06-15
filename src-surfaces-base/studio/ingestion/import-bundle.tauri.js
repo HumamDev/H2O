@@ -542,6 +542,13 @@
     return out;
   }
 
+  function snapshotHasPayloadContent(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    if (Array.isArray(snapshot.messages) && snapshot.messages.length > 0) return true;
+    var meta = snapshot.meta && typeof snapshot.meta === 'object' ? snapshot.meta : {};
+    return Array.isArray(meta.richTurns) && meta.richTurns.length > 0;
+  }
+
   /* Derive the chats-table patch from a bundle chat + its (sorted-desc)
    * snapshots. Mirrors the chat-row fields M2a-3h's writeToChatsStore writes,
    * plus title/href/saved/linked/snapshot provenance. */
@@ -552,8 +559,9 @@
     var indexOrg = (chatIndex.organization && typeof chatIndex.organization === 'object') ? chatIndex.organization : {};
     var chatMeta = (chat && chat.meta && typeof chat.meta === 'object') ? chat.meta : {};
     var chatSource = (chat && chat.source && typeof chat.source === 'object') ? chat.source : {};
-    var hasSnapshots = snapshotsSortedDesc.length > 0;
-    var latest = hasSnapshots ? snapshotsSortedDesc[0] : null;
+    var payloadSnapshots = snapshotsSortedDesc.filter(snapshotHasPayloadContent);
+    var hasSnapshots = payloadSnapshots.length > 0;
+    var latest = hasSnapshots ? payloadSnapshots[0] : null;
     var latestMeta = (latest && latest.meta && typeof latest.meta === 'object') ? latest.meta : {};
     var indexSnapshotId = cleanString(chatIndex.lastSnapshotId || chatIndex.snapshotId || chatIndex.snapshot_id || chatIndex.latestSnapshotId || chat && (chat.lastSnapshotId || chat.snapshotId || chat.latestSnapshotId));
     var indexMessageCount = numericCount(chatIndex.messageCount || chat && chat.messageCount);
@@ -567,9 +575,17 @@
       || indexTurnCount > 0
       || indexUserTurnCount > 0
       || indexAssistantTurnCount > 0;
+    var missingSnapshotPayload = indexHasTranscriptEvidence && !hasSnapshots;
     var indexSnapshotCount = indexSnapshotId
       ? Math.max(numericCount(chatIndex.snapshotCount || chat && chat.snapshotCount), 1)
       : (indexHasTranscriptEvidence ? numericCount(chatIndex.snapshotCount || chat && chat.snapshotCount) : 0);
+    var effectiveSnapshotId = missingSnapshotPayload ? '' : indexSnapshotId;
+    var effectiveSnapshotCount = missingSnapshotPayload ? 0 : indexSnapshotCount;
+    var effectiveMessageCount = missingSnapshotPayload ? 0 : indexMessageCount;
+    var effectiveTurnCount = missingSnapshotPayload ? 0 : indexTurnCount;
+    var effectiveUserTurnCount = missingSnapshotPayload ? 0 : indexUserTurnCount;
+    var effectiveAssistantTurnCount = missingSnapshotPayload ? 0 : indexAssistantTurnCount;
+    var effectiveAnswerCount = missingSnapshotPayload ? 0 : indexAnswerCount;
 
     var title = friendlyShellTitle([
       latestMeta.title,
@@ -612,8 +628,8 @@
       chatSource.label,
     ], chatId, indexState.isLinked && !indexState.isSaved ? 'Link' : 'Imported chat');
     var href = chatIndex.href || ('https://chatgpt.com/c/' + chatId);
-    var isSaved = hasSnapshots || !!indexState.isSaved || (indexHasTranscriptEvidence && cleanString(chatIndex.displayView || chatIndex.view).toLowerCase() === 'saved');
-    var isLinked = hasSnapshots || !!indexState.isLinked;
+    var isSaved = hasSnapshots || (!missingSnapshotPayload && (!!indexState.isSaved || (indexHasTranscriptEvidence && cleanString(chatIndex.displayView || chatIndex.view).toLowerCase() === 'saved')));
+    var isLinked = hasSnapshots || !!indexState.isLinked || (!!href && missingSnapshotPayload);
     var isMinimalLibraryIndexRow = isF19MinimalLibraryIndexChat(chat);
 
     /* Preserve chatIndex fields that don't have dedicated columns. */
@@ -639,13 +655,13 @@
       isPinned: !!indexState.isPinned,
       isArchived: !!indexState.isArchived,
       isDeleted: !!indexState.isDeleted,
-      snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
-      lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
-      messageCount: indexMessageCount,
-      turnCount: indexTurnCount,
-      userTurnCount: indexUserTurnCount,
-      assistantTurnCount: indexAssistantTurnCount,
-      answerCount: indexAnswerCount,
+      snapshotCount: hasSnapshots ? payloadSnapshots.length : effectiveSnapshotCount,
+      lastSnapshotId: latest ? (latest.snapshotId || null) : (effectiveSnapshotId || null),
+      messageCount: effectiveMessageCount,
+      turnCount: effectiveTurnCount,
+      userTurnCount: effectiveUserTurnCount,
+      assistantTurnCount: effectiveAssistantTurnCount,
+      answerCount: effectiveAnswerCount,
       lastCapturedAt: latest ? isoToEpochMs(latest.createdAt) : 0,
       folderId: indexFolderId,
       categoryId: indexOrg.categoryId || '',
@@ -660,15 +676,24 @@
         pageTitle: title,
         chatTitle: title,
         originalTitle: title,
-        snapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
-        lastSnapshotId: latest ? (latest.snapshotId || null) : (indexSnapshotId || null),
-        snapshotCount: hasSnapshots ? snapshotsSortedDesc.length : indexSnapshotCount,
-        messageCount: indexMessageCount,
-        turnCount: indexTurnCount,
-        userTurnCount: indexUserTurnCount,
-        assistantTurnCount: indexAssistantTurnCount,
-        answerCount: indexAnswerCount,
+        snapshotId: latest ? (latest.snapshotId || null) : (effectiveSnapshotId || null),
+        lastSnapshotId: latest ? (latest.snapshotId || null) : (effectiveSnapshotId || null),
+        snapshotCount: hasSnapshots ? payloadSnapshots.length : effectiveSnapshotCount,
+        messageCount: effectiveMessageCount,
+        turnCount: effectiveTurnCount,
+        userTurnCount: effectiveUserTurnCount,
+        assistantTurnCount: effectiveAssistantTurnCount,
+        answerCount: effectiveAnswerCount,
         folderId: indexFolderId,
+        sourceSnapshotId: indexSnapshotId,
+        sourceSnapshotCount: indexSnapshotCount,
+        sourceMessageCount: indexMessageCount,
+        sourceTurnCount: indexTurnCount,
+        sourceUserTurnCount: indexUserTurnCount,
+        sourceAssistantTurnCount: indexAssistantTurnCount,
+        sourceAnswerCount: indexAnswerCount,
+        sourceIsSaved: !!indexState.isSaved,
+        f19SnapshotPayloadMissing: missingSnapshotPayload,
         f19ChromeDesktopMinimalRow: isMinimalLibraryIndexRow,
         chatIndexMeta: chatIndexMeta,
       },
@@ -1251,6 +1276,10 @@
         var snapshotId = String((snap && snap.snapshotId) || '').trim();
         if (!snapshotId) {
           result.warnings.push({ kind: 'snapshot', warn: 'missing snapshotId for chat ' + chatId });
+          continue;
+        }
+        if (!snapshotHasPayloadContent(snap)) {
+          result.warnings.push({ kind: 'snapshot', warn: 'snapshot payload missing for chat ' + chatId });
           continue;
         }
         try {

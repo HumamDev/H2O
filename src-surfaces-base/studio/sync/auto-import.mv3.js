@@ -87,6 +87,7 @@
   var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
   var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
   var EXPORT_COVERAGE_MINIMAL_ROWS = 'chrome-export-source-coverage-minimal-rows-added';
+  var EXPORT_SNAPSHOT_PAYLOAD_MISSING = 'chrome-export-snapshot-payload-missing';
   var CHROME_FILE          = 'chrome-latest.json';
   var CHROME_FILE_TMP      = 'chrome-latest.json.tmp';
   var MSG_ARCHIVE          = 'h2o-ext-archive:v1';
@@ -621,6 +622,91 @@
     };
   }
 
+  function snapshotPayloadHasContent(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    if (Array.isArray(snapshot.messages) && snapshot.messages.length > 0) return true;
+    var meta = snapshot.meta && typeof snapshot.meta === 'object' ? snapshot.meta : {};
+    return Array.isArray(meta.richTurns) && meta.richTurns.length > 0;
+  }
+
+  function chatHasSnapshotPayload(chat, snapshotId) {
+    var sid = cleanString(snapshotId);
+    if (!sid) return false;
+    var snapshots = Array.isArray(chat && chat.snapshots) ? chat.snapshots : [];
+    return snapshots.some(function (snapshot) {
+      return cleanString(snapshot && (snapshot.snapshotId || snapshot.id)) === sid
+        && snapshotPayloadHasContent(snapshot);
+    });
+  }
+
+  function snapshotBundlePayloadFromLoaded(loaded, evidence, row) {
+    var snapshotId = cleanString((loaded && loaded.snapshotId) || (evidence && evidence.snapshotId));
+    if (!snapshotId) return null;
+    var messages = Array.isArray(loaded && loaded.messages) ? loaded.messages : [];
+    var loadedMeta = loaded && loaded.meta && typeof loaded.meta === 'object' ? loaded.meta : {};
+    var title = friendlyShellTitle(titleCandidatesFromLibraryRow(row), rowId(row), 'Imported chat');
+    var meta = Object.assign({}, loadedMeta);
+    if (!cleanString(meta.title) && title) meta.title = title;
+    if (!cleanString(meta.displayTitle) && title) meta.displayTitle = title;
+    if (!cleanString(meta.sourceTitle) && title) meta.sourceTitle = title;
+    if (!cleanString(meta.pageTitle) && title) meta.pageTitle = title;
+    if (!cleanString(meta.chatTitle) && title) meta.chatTitle = title;
+    if (!cleanString(meta.originalTitle) && title) meta.originalTitle = title;
+    return {
+      snapshotId: snapshotId,
+      createdAt: cleanString(loaded && loaded.createdAt) || cleanString(row && (row.updatedAt || row.savedAt || row.createdAt)),
+      schemaVersion: Number((loaded && loaded.schemaVersion) || 1) || 1,
+      messageCount: numericCount(loaded && loaded.messageCount) || numericCount(evidence && evidence.messageCount) || messages.length,
+      digest: cleanString(loaded && loaded.digest),
+      meta: meta,
+      messages: messages
+    };
+  }
+
+  async function hydrateSnapshotPayloadForRow(row, evidence) {
+    var snapshotId = cleanString(evidence && evidence.snapshotId);
+    if (!snapshotId) return null;
+    try {
+      var loaded = await callArchive('loadSnapshot', { snapshotId: snapshotId });
+      var payload = snapshotBundlePayloadFromLoaded(loaded, evidence, row);
+      return snapshotPayloadHasContent(payload) ? payload : null;
+    } catch (e) {
+      pushError('hydrateSnapshotPayloadForRow', e);
+      return null;
+    }
+  }
+
+  async function ensureSnapshotPayloadForProjectedChat(projected, row, payloadStats) {
+    var evidence = transcriptEvidenceFromLibraryRow(row);
+    var snapshotId = cleanString(evidence.snapshotId);
+    if (!snapshotId || !isSavedRow(row) || !hasRealTranscriptEvidence(row)) return projected;
+    payloadStats.required += 1;
+    if (chatHasSnapshotPayload(projected, snapshotId)) {
+      payloadStats.present += 1;
+      return projected;
+    }
+    var payload = await hydrateSnapshotPayloadForRow(row, evidence);
+    if (!payload) {
+      payloadStats.missing += 1;
+      projected.chatIndex = projected.chatIndex && typeof projected.chatIndex === 'object'
+        ? projected.chatIndex : {};
+      projected.chatIndex.f19SnapshotPayloadMissing = true;
+      return projected;
+    }
+    projected.snapshots = Array.isArray(projected.snapshots) ? projected.snapshots.slice() : [];
+    var replaced = false;
+    for (var i = 0; i < projected.snapshots.length; i += 1) {
+      if (cleanString(projected.snapshots[i] && (projected.snapshots[i].snapshotId || projected.snapshots[i].id)) === snapshotId) {
+        projected.snapshots[i] = Object.assign({}, projected.snapshots[i], payload);
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) projected.snapshots.push(payload);
+    payloadStats.hydrated += 1;
+    return projected;
+  }
+
   function buildMinimalChatFromLibraryRow(row) {
     var id = rowId(row);
     if (!id) return null;
@@ -736,7 +822,8 @@
     return projected;
   }
 
-  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount) {
+  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount, payloadStats) {
+    payloadStats = payloadStats && typeof payloadStats === 'object' ? payloadStats : {};
     var snapshotCounts = countSnapshotRows(snapshotRows);
     var bundleCounts = countBundleViews(bundleChats);
     var missingTypeCounts = makeMissingRowTypeCounts(missingRows);
@@ -746,6 +833,7 @@
     var blockers = [];
     var warnings = [];
     if (addedRows.length > 0) warnings.push(EXPORT_COVERAGE_MINIMAL_ROWS);
+    if (Number(payloadStats.missing || 0) > 0) blockers.push(EXPORT_SNAPSHOT_PAYLOAD_MISSING);
     if (unexportableRows.length > 0
         || snapshotCounts.total !== bundleChats.length
         || snapshotCounts.saved !== bundleCounts.saved
@@ -773,6 +861,10 @@
       addedMinimalRowCount: addedRows.length,
       droppedArchiveRowCount: Number(droppedArchiveRowCount) || 0,
       unexportableRowCount: unexportableRows.length,
+      snapshotPayloadRequiredCount: Number(payloadStats.required || 0),
+      snapshotPayloadPresentCount: Number(payloadStats.present || 0),
+      snapshotPayloadHydratedCount: Number(payloadStats.hydrated || 0),
+      snapshotPayloadMissingCount: Number(payloadStats.missing || 0),
       missingRowTypeCounts: missingTypeCounts,
       snapshotExportClassCounts: snapshotClassCounts,
       addedMinimalRowTypeCounts: addedMinimalClassCounts,
@@ -794,7 +886,7 @@
     };
   }
 
-  function alignBundleToLibraryIndex(bundle) {
+  async function alignBundleToLibraryIndex(bundle) {
     var rows = getLibraryIndexRows();
     if (!rows) {
       return {
@@ -838,13 +930,15 @@
     var missingRows = [];
     var addedRows = [];
     var unexportableRows = [];
+    var payloadStats = { required: 0, present: 0, hydrated: 0, missing: 0 };
     var usedArchiveIndexes = Object.create(null);
     var projectedChats = [];
-    rows.forEach(function (row) {
+    for (var r = 0; r < rows.length; r += 1) {
+      var row = rows[r];
       var id = rowId(row);
       if (!id) {
         unexportableRows.push(row);
-        return;
+        continue;
       }
       var matched = null;
       var keys = libraryRowIdentityKeys(row);
@@ -859,22 +953,24 @@
         var projected = projectArchiveChatToLibraryRow(matched.chat, row);
         if (!projected) {
           unexportableRows.push(row);
-          return;
+          continue;
         }
+        projected = await ensureSnapshotPayloadForProjectedChat(projected, row, payloadStats);
         projectedChats.push(projected);
         usedArchiveIndexes[matched.index] = true;
-        return;
+        continue;
       }
 
       var minimal = buildMinimalChatFromLibraryRow(row);
       if (!minimal) {
         unexportableRows.push(row);
-        return;
+        continue;
       }
+      minimal = await ensureSnapshotPayloadForProjectedChat(minimal, row, payloadStats);
       missingRows.push(row);
       projectedChats.push(minimal);
       addedRows.push(row);
-    });
+    }
 
     var droppedArchiveRowCount = archiveChats.length - Object.keys(usedArchiveIndexes).length;
     chatArchive.chats = projectedChats;
@@ -884,7 +980,7 @@
       ? bundle.summary : {};
     bundle.diagnostics = bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
       ? bundle.diagnostics : {};
-    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount);
+    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount, payloadStats);
     bundle.summary.chatCount = chatArchive.chats.length;
     bundle.summary.f19ChromeExportCoverageOk = coverage.ok === true;
     bundle.diagnostics.chromeExportCoverage = coverage;
@@ -1006,7 +1102,7 @@
       /* (5) Align export source with the live Chrome Studio LibraryIndex.
        * F19.5 supported parity requires chrome-latest.json to cover the
        * same visible Library rows that the parity snapshot counts. */
-      var aligned = alignBundleToLibraryIndex(bundle);
+      var aligned = await alignBundleToLibraryIndex(bundle);
       bundle = aligned.bundle || bundle;
       chromeExportCoverage = aligned.coverage || null;
       if (chromeExportCoverage) {
