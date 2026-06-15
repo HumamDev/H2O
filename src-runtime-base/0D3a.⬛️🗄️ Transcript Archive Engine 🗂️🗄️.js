@@ -740,6 +740,62 @@
     };
   }
 
+  function countUserTurns(messages) {
+    const rows = Array.isArray(messages) ? messages : [];
+    let turns = 0;
+    for (let i = 0; i < rows.length; i += 1) {
+      if (String(rows[i]?.role || "").toLowerCase() === "user") turns += 1;
+    }
+    return turns;
+  }
+
+  function positiveCount(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }
+
+  function buildCaptureEvidence(messages, latest = null, out = null) {
+    const rows = normalizeMessages(messages);
+    const latestObj = isObj(latest) ? latest : {};
+    const outObj = isObj(out) ? out : {};
+    const snapshotId = String(
+      outObj.snapshotId
+      || outObj.snapshot_id
+      || outObj.lastSnapshotId
+      || latestObj.snapshotId
+      || latestObj.snapshot_id
+      || latestObj.lastSnapshotId
+      || ""
+    ).trim();
+    const messageCount = positiveCount(outObj.messageCount)
+      || positiveCount(latestObj.messageCount)
+      || rows.length;
+    const assistantTurnCount = positiveCount(outObj.assistantTurnCount)
+      || positiveCount(latestObj.assistantTurnCount)
+      || positiveCount(outObj.answerCount)
+      || positiveCount(latestObj.answerCount)
+      || countAssistantTurns(rows);
+    const userTurnCount = positiveCount(outObj.userTurnCount)
+      || positiveCount(latestObj.userTurnCount)
+      || countUserTurns(rows);
+    const turnCount = positiveCount(outObj.turnCount)
+      || positiveCount(latestObj.turnCount)
+      || Math.max(messageCount, assistantTurnCount + userTurnCount, assistantTurnCount, userTurnCount);
+    const snapshotCount = snapshotId
+      ? Math.max(positiveCount(outObj.snapshotCount), positiveCount(latestObj.snapshotCount), 1)
+      : Math.max(positiveCount(outObj.snapshotCount), positiveCount(latestObj.snapshotCount));
+    return {
+      snapshotId,
+      lastSnapshotId: snapshotId,
+      snapshotCount,
+      messageCount,
+      turnCount,
+      userTurnCount,
+      assistantTurnCount,
+      answerCount: positiveCount(outObj.answerCount) || positiveCount(latestObj.answerCount) || assistantTurnCount,
+    };
+  }
+
   const CAPTURE_STRIP_SUBTREE_SELECTORS = [
     ".h2o-cold-layer",
     ".h2o-archive-native-detached-bin",
@@ -2755,10 +2811,21 @@
           await afterSnapshotCaptured(chatId, latest, "capture-now");
           showCaptureSaveStrip(chatId, latest);
         }
+        const evidence = buildCaptureEvidence(messages, latest, out);
         return {
           ...(isObj(out) ? out : {}),
+          ...evidence,
           ok: out?.ok !== false,
-          messageCount: Number(out?.messageCount || messages.length || 0),
+          latest: latest ? {
+            snapshotId: evidence.snapshotId,
+            lastSnapshotId: evidence.lastSnapshotId,
+            snapshotCount: evidence.snapshotCount,
+            messageCount: evidence.messageCount,
+            turnCount: evidence.turnCount,
+            userTurnCount: evidence.userTurnCount,
+            assistantTurnCount: evidence.assistantTurnCount,
+            answerCount: evidence.answerCount,
+          } : null,
           captureSource,
           storage: "extension",
           workbenchVisible: true,
@@ -2775,10 +2842,21 @@
       await afterSnapshotCaptured(chatId, latest, "capture-now");
       showCaptureSaveStrip(chatId, latest);
     }
+    const evidence = buildCaptureEvidence(messages, latest, out);
     return {
       ...(isObj(out) ? out : {}),
+      ...evidence,
       ok: out?.ok !== false,
-      messageCount: Number(out?.messageCount || messages.length || 0),
+      latest: latest ? {
+        snapshotId: evidence.snapshotId,
+        lastSnapshotId: evidence.lastSnapshotId,
+        snapshotCount: evidence.snapshotCount,
+        messageCount: evidence.messageCount,
+        turnCount: evidence.turnCount,
+        userTurnCount: evidence.userTurnCount,
+        assistantTurnCount: evidence.assistantTurnCount,
+        answerCount: evidence.answerCount,
+      } : null,
       captureSource,
       storage: "legacy",
       workbenchVisible: false,

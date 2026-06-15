@@ -322,6 +322,7 @@
   STATE.lastChatHrefForMenu = STATE.lastChatHrefForMenu || '';
   STATE.lastChatMenuContext = STATE.lastChatMenuContext || null;
   STATE.savedLibraryRows = Array.isArray(STATE.savedLibraryRows) ? STATE.savedLibraryRows : [];
+  STATE.lastSaveToFolderSummary = STATE.lastSaveToFolderSummary || null;
 
   // active UI elements (owned)
   STATE.menuEl = null;  // assign menu
@@ -6806,20 +6807,107 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       || (Array.isArray(capture.latest?.messages) ? capture.latest.messages.length : 0);
   }
 
+  function API_captureTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    const messageCount = API_captureMessageCount(capture);
+    return API_numberCount(capture.turnCount)
+      || API_numberCount(capture.snapshot?.turnCount)
+      || API_numberCount(capture.latest?.turnCount)
+      || messageCount;
+  }
+
+  function API_captureUserTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    const fromMessages = (messages) => Array.isArray(messages)
+      ? messages.filter((item) => String(item?.role || item?.author || item?.type || '').toLowerCase() === 'user').length
+      : 0;
+    return API_numberCount(capture.userTurnCount)
+      || API_numberCount(capture.snapshot?.userTurnCount)
+      || API_numberCount(capture.latest?.userTurnCount)
+      || fromMessages(capture.messages)
+      || fromMessages(capture.snapshot?.messages)
+      || fromMessages(capture.latest?.messages);
+  }
+
+  function API_captureAssistantTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    const fromMessages = (messages) => Array.isArray(messages)
+      ? messages.filter((item) => {
+        const role = String(item?.role || item?.author || item?.type || '').toLowerCase();
+        return role === 'assistant' || role === 'chatgpt';
+      }).length
+      : 0;
+    return API_numberCount(capture.assistantTurnCount)
+      || API_numberCount(capture.answerCount)
+      || API_numberCount(capture.snapshot?.assistantTurnCount)
+      || API_numberCount(capture.snapshot?.answerCount)
+      || API_numberCount(capture.latest?.assistantTurnCount)
+      || API_numberCount(capture.latest?.answerCount)
+      || fromMessages(capture.messages)
+      || fromMessages(capture.snapshot?.messages)
+      || fromMessages(capture.latest?.messages);
+  }
+
   function API_captureHasRealTranscript(capture) {
     if (!capture || capture.ok === false) return false;
     return !!API_captureSnapshotId(capture) || API_captureMessageCount(capture) > 0;
   }
 
   function API_captureSummary(capture) {
+    const snapshotId = API_captureSnapshotId(capture);
+    const assistantTurnCount = API_captureAssistantTurnCount(capture);
     return {
-      snapshotId: API_captureSnapshotId(capture),
-      snapshotCount: API_captureSnapshotId(capture) ? 1 : API_numberCount(capture?.snapshotCount),
+      snapshotId,
+      lastSnapshotId: snapshotId,
+      snapshotCount: snapshotId ? 1 : API_numberCount(capture?.snapshotCount),
       messageCount: API_captureMessageCount(capture),
+      turnCount: API_captureTurnCount(capture),
+      userTurnCount: API_captureUserTurnCount(capture),
+      assistantTurnCount,
+      answerCount: API_numberCount(capture?.answerCount) || assistantTurnCount,
       captureSource: String(capture?.captureSource || capture?.source || ''),
       storage: String(capture?.storage || ''),
       workbenchVisible: capture?.workbenchVisible === undefined ? null : capture.workbenchVisible === true,
     };
+  }
+
+  function API_registryEvidenceSummary(record) {
+    const src = record && typeof record === 'object' ? record : {};
+    return {
+      snapshotId: String(src.snapshotId || src.lastSnapshotId || src.latestSnapshotId || '').trim(),
+      lastSnapshotId: String(src.lastSnapshotId || src.snapshotId || src.latestSnapshotId || '').trim(),
+      snapshotCount: API_numberCount(src.snapshotCount),
+      messageCount: API_numberCount(src.messageCount),
+      turnCount: API_numberCount(src.turnCount),
+      userTurnCount: API_numberCount(src.userTurnCount),
+      assistantTurnCount: API_numberCount(src.assistantTurnCount),
+      answerCount: API_numberCount(src.answerCount),
+      isSaved: src.state?.isSaved === true,
+      isLinked: src.state?.isLinked === true,
+      hasFolder: !!String(src.organization?.folderId || '').trim(),
+    };
+  }
+
+  function API_recordLastSaveToFolderSummary(result, registryPatch = null, registryRecord = null) {
+    const out = result && typeof result === 'object' ? result : {};
+    const captureSummary = out.captureSummary && typeof out.captureSummary === 'object' ? out.captureSummary : API_captureSummary(out.capture);
+    const registryEvidence = API_registryEvidenceSummary(registryRecord);
+    STATE.lastSaveToFolderSummary = {
+      ok: out.ok === true,
+      status: String(out.status || ''),
+      chatId: String(out.chatId || ''),
+      folderId: String(out.folderId || ''),
+      captureOk: out.capture?.ok === undefined ? null : out.capture.ok !== false,
+      captureSummary,
+      registryUpsertFields: registryPatch && typeof registryPatch === 'object' ? Object.keys(registryPatch).sort() : [],
+      registryEvidence,
+      latestRowWouldBeExportSafe: !!(
+        registryEvidence.isSaved &&
+        (registryEvidence.snapshotId || registryEvidence.messageCount > 0 || registryEvidence.turnCount > 0)
+      ),
+      observedAtIso: new Date().toISOString(),
+    };
+    return STATE.lastSaveToFolderSummary;
   }
 
   async function API_captureCurrentChatForFolder(chatId, opts = {}) {
@@ -6926,7 +7014,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     const captureSummary = API_captureSummary(captured?.capture);
     const hasTranscriptEvidence = API_captureHasRealTranscript(captured?.capture);
     if (!hasTranscriptEvidence) {
-      return {
+      const result = {
         ...(captured && typeof captured === 'object' ? captured : {}),
         ok: false,
         status: 'capture-transcript-missing',
@@ -6938,6 +7026,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         folderName: label,
         captureSummary,
       };
+      API_recordLastSaveToFolderSummary(result, null, null);
+      return result;
     }
     if (!captured?.ok) {
       return {
@@ -6982,10 +7072,12 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     // sticky-on-true public upsert API (no state can regress), is wrapped
     // in try/catch with the existing DIAG_err logger, and its result is
     // not used by the function's return value — it is a pure side effect.
+    let registryPatch = null;
+    let registryRecord = null;
     try {
       const reg = H2O.ChatRegistry;
       if (reg && typeof reg.upsertRecord === 'function') {
-        reg.upsertRecord({
+        registryPatch = {
           chatId: cid,
           href: String(key.href || ''),
           normalizedHref: String(key.href || ''),
@@ -6995,20 +7087,26 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
             capture: captured.capture,
           }), source || 'save-to-folder'),
           snapshotId: captureSummary.snapshotId,
+          lastSnapshotId: captureSummary.lastSnapshotId,
           snapshotCount: captureSummary.snapshotCount,
           messageCount: captureSummary.messageCount,
+          turnCount: captureSummary.turnCount,
+          userTurnCount: captureSummary.userTurnCount,
+          assistantTurnCount: captureSummary.assistantTurnCount,
+          answerCount: captureSummary.answerCount,
           organization: { folderId: String(binding.folderId || fid) },
           state: { isSaved: true, isLinked: true },
           linkedFrom: 'save-to-folder',
           linkSourceHref: String(key.href || ''),
-        }, { source: String(source || 'save-to-folder') });
+        };
+        registryRecord = reg.upsertRecord(registryPatch, { source: String(source || 'save-to-folder') });
       }
     } catch (provenanceErr) {
       DIAG_err('save-and-bind:provenance-stamp', provenanceErr);
     }
 
     const syncQueued = EVENT_flushLibraryFolderSync('save-to-folder-captured');
-    return {
+    const result = {
       ok: true,
       status: 'saved-and-bound',
       chatId: cid,
@@ -7020,8 +7118,13 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
         capture: captured.capture,
       }),
       snapshotId: captureSummary.snapshotId,
+      lastSnapshotId: captureSummary.lastSnapshotId,
       snapshotCount: captureSummary.snapshotCount,
       messageCount: captureSummary.messageCount,
+      turnCount: captureSummary.turnCount,
+      userTurnCount: captureSummary.userTurnCount,
+      assistantTurnCount: captureSummary.assistantTurnCount,
+      answerCount: captureSummary.answerCount,
       capture: captured.capture,
       captureSummary,
       binding,
@@ -7029,6 +7132,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       syncExported: false,
       syncStatus: syncQueued ? 'native-broadcast-queued' : 'native-broadcast-unavailable',
     };
+    API_recordLastSaveToFolderSummary(result, registryPatch, registryRecord);
+    return result;
   }
 
   function API_stampFolderBindingInRegistry(key, effective, opts = {}) {
@@ -7766,6 +7871,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       ownerRegistered: !!H2O.LibraryCore?.getOwner?.('folders'),
       serviceRegistered: !!H2O.LibraryCore?.getService?.('folders'),
       folderParity: API_getFolderParityDiagnostics(),
+      lastSaveToFolder: STATE.lastSaveToFolderSummary || null,
       metadataOperations: {
         version: FOLDER_METADATA_OPERATION_VERSION,
         operationSchema: FOLDER_METADATA_OPERATION_SCHEMA,

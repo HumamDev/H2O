@@ -264,6 +264,11 @@
     const pageTitle = firstNonPlaceholderTitle([r.pageTitle, r.source?.pageTitle, r.meta?.pageTitle]);
     const originalTitle = firstNonPlaceholderTitle([r.originalTitle, r.source?.originalTitle, r.meta?.originalTitle]);
     const title = firstNonPlaceholderTitle([r.title, displayTitle, sourceTitle, pageTitle, originalTitle]);
+    const snapshotId = trimString(r.snapshotId || r.snapshot_id || r.lastSnapshotId || r.latestSnapshotId);
+    const lastSnapshotId = trimString(r.lastSnapshotId || r.latestSnapshotId || snapshotId);
+    const snapshotCount = isFiniteNumber(r.snapshotCount)
+      ? Math.max(0, Math.trunc(r.snapshotCount))
+      : (snapshotId || lastSnapshotId ? 1 : 0);
 
     return {
       schemaVersion: Number(r.schemaVersion) || SCHEMA_VERSION,
@@ -285,9 +290,15 @@
       lastMessageAt: isoOrEmpty(r.lastMessageAt),
       lastOpenedAt: isoOrEmpty(r.lastOpenedAt),
 
+      snapshotId: snapshotId || lastSnapshotId,
+      lastSnapshotId: lastSnapshotId || snapshotId,
+      latestSnapshotId: lastSnapshotId || snapshotId,
+      snapshotCount,
+      messageCount: isFiniteNumber(r.messageCount) ? Math.max(0, Math.trunc(r.messageCount)) : 0,
       turnCount: isFiniteNumber(r.turnCount) ? Math.max(0, Math.trunc(r.turnCount)) : 0,
       answerCount: isFiniteNumber(r.answerCount) ? Math.max(0, Math.trunc(r.answerCount)) : 0,
       userTurnCount: isFiniteNumber(r.userTurnCount) ? Math.max(0, Math.trunc(r.userTurnCount)) : 0,
+      assistantTurnCount: isFiniteNumber(r.assistantTurnCount) ? Math.max(0, Math.trunc(r.assistantTurnCount)) : 0,
 
       source: {
         first: trimString(r.source?.first),
@@ -349,7 +360,7 @@
   // ── Diff ─────────────────────────────────────────────────────────────────
   function diffFields(prev, next) {
     const changed = [];
-    const top = ['title','titleSource','displayTitle','sourceTitle','pageTitle','originalTitle','createdAt','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','turnCount','answerCount','userTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
+    const top = ['title','titleSource','displayTitle','sourceTitle','pageTitle','originalTitle','createdAt','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','snapshotId','lastSnapshotId','latestSnapshotId','snapshotCount','messageCount','turnCount','answerCount','userTurnCount','assistantTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
     for (const f of top) {
       if (JSON.stringify(prev?.[f] ?? null) !== JSON.stringify(next?.[f] ?? null)) changed.push(f);
     }
@@ -394,9 +405,14 @@
     const updatedAt = pickNewerIso(a.updatedAt, b.updatedAt);
     const lastMessageAt = pickNewerIso(a.lastMessageAt, b.lastMessageAt);
     const lastOpenedAt = pickNewerIso(a.lastOpenedAt, b.lastOpenedAt);
+    const snapshotId = trimString(b.snapshotId) || trimString(b.lastSnapshotId) || trimString(a.snapshotId) || trimString(a.lastSnapshotId);
+    const lastSnapshotId = trimString(b.lastSnapshotId) || trimString(b.snapshotId) || trimString(a.lastSnapshotId) || trimString(a.snapshotId);
+    const snapshotCount = options.fullScan === true ? (b.snapshotCount || 0) : (maxNum(a.snapshotCount, b.snapshotCount) || 0);
+    const messageCount = options.fullScan === true ? (b.messageCount || 0) : (maxNum(a.messageCount, b.messageCount) || 0);
     const turnCount = options.fullScan === true ? (b.turnCount || 0) : (maxNum(a.turnCount, b.turnCount) || 0);
     const answerCount = options.fullScan === true ? (b.answerCount || 0) : (maxNum(a.answerCount, b.answerCount) || 0);
     const userTurnCount = options.fullScan === true ? (b.userTurnCount || 0) : (maxNum(a.userTurnCount, b.userTurnCount) || 0);
+    const assistantTurnCount = options.fullScan === true ? (b.assistantTurnCount || 0) : (maxNum(a.assistantTurnCount, b.assistantTurnCount) || 0);
     const sourceFirst = trimString(a.source.first) || trimString(b.source.first);
     const seenFrom = uniqueStrings([...(a.source.seenFrom || []), ...(b.source.seenFrom || [])]);
     const projectId = mergeOrgScalar(a.project.projectId, b.project.projectId, options);
@@ -466,9 +482,15 @@
       updatedAt,
       lastMessageAt,
       lastOpenedAt,
+      snapshotId,
+      lastSnapshotId: lastSnapshotId || snapshotId,
+      latestSnapshotId: lastSnapshotId || snapshotId,
+      snapshotCount,
+      messageCount,
       turnCount,
       answerCount,
       userTurnCount,
+      assistantTurnCount,
       source: { first: sourceFirst, seenFrom },
       project: { projectId, projectName },
       organization: { folderId, categoryId, tagIds, labelIds },

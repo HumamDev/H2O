@@ -347,12 +347,58 @@
       || (Array.isArray(capture.latest?.messages) ? capture.latest.messages.length : 0);
   }
 
+  function captureTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    return numericCount(capture.turnCount)
+      || numericCount(capture.snapshot?.turnCount)
+      || numericCount(capture.latest?.turnCount)
+      || captureMessageCount(capture);
+  }
+
+  function captureUserTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    const fromMessages = (messages) => Array.isArray(messages)
+      ? messages.filter((item) => String(item?.role || item?.author || item?.type || '').toLowerCase() === 'user').length
+      : 0;
+    return numericCount(capture.userTurnCount)
+      || numericCount(capture.snapshot?.userTurnCount)
+      || numericCount(capture.latest?.userTurnCount)
+      || fromMessages(capture.messages)
+      || fromMessages(capture.snapshot?.messages)
+      || fromMessages(capture.latest?.messages);
+  }
+
+  function captureAssistantTurnCount(capture) {
+    if (!capture || typeof capture !== 'object') return 0;
+    const fromMessages = (messages) => Array.isArray(messages)
+      ? messages.filter((item) => {
+        const role = String(item?.role || item?.author || item?.type || '').toLowerCase();
+        return role === 'assistant' || role === 'chatgpt';
+      }).length
+      : 0;
+    return numericCount(capture.assistantTurnCount)
+      || numericCount(capture.answerCount)
+      || numericCount(capture.snapshot?.assistantTurnCount)
+      || numericCount(capture.snapshot?.answerCount)
+      || numericCount(capture.latest?.assistantTurnCount)
+      || numericCount(capture.latest?.answerCount)
+      || fromMessages(capture.messages)
+      || fromMessages(capture.snapshot?.messages)
+      || fromMessages(capture.latest?.messages);
+  }
+
   function captureSummary(capture) {
     const snapshotId = captureSnapshotId(capture);
+    const assistantTurnCount = captureAssistantTurnCount(capture);
     return {
       snapshotId,
+      lastSnapshotId: snapshotId,
       snapshotCount: snapshotId ? 1 : numericCount(capture?.snapshotCount),
       messageCount: captureMessageCount(capture),
+      turnCount: captureTurnCount(capture),
+      userTurnCount: captureUserTurnCount(capture),
+      assistantTurnCount,
+      answerCount: numericCount(capture?.answerCount) || assistantTurnCount,
       captureSource: trimString(capture?.captureSource || capture?.source),
       storage: trimString(capture?.storage),
       workbenchVisible: capture?.workbenchVisible === undefined ? null : capture.workbenchVisible === true,
@@ -600,8 +646,13 @@
         if (hasChatRegistry()) {
           const patch = buildSaveRegistryPatchWithCore(ident, args, source, resolvedTitle);
           if (summary?.snapshotId) patch.snapshotId = summary.snapshotId;
+          if (summary?.lastSnapshotId) patch.lastSnapshotId = summary.lastSnapshotId;
           if (summary?.snapshotCount) patch.snapshotCount = summary.snapshotCount;
           if (summary?.messageCount) patch.messageCount = summary.messageCount;
+          if (summary?.turnCount) patch.turnCount = summary.turnCount;
+          if (summary?.userTurnCount) patch.userTurnCount = summary.userTurnCount;
+          if (summary?.assistantTurnCount) patch.assistantTurnCount = summary.assistantTurnCount;
+          if (summary?.answerCount) patch.answerCount = summary.answerCount;
           record = H2O.ChatRegistry.upsertRecord(patch, { source });
         }
       } catch (e) {
@@ -615,8 +666,13 @@
         folderName: trimString(bindResult?.folderName),
         title: resolvedTitle,
         snapshotId: snapshotId || trimString(summary?.snapshotId),
+        lastSnapshotId: trimString(summary?.lastSnapshotId),
         snapshotCount: numericCount(summary?.snapshotCount),
         messageCount: numericCount(summary?.messageCount),
+        turnCount: numericCount(summary?.turnCount),
+        userTurnCount: numericCount(summary?.userTurnCount),
+        assistantTurnCount: numericCount(summary?.assistantTurnCount),
+        answerCount: numericCount(summary?.answerCount),
         captureSummary: summary,
         record,
         syncQueued: bindResult?.syncQueued === undefined ? null : bindResult.syncQueued === true,

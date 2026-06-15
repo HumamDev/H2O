@@ -11,6 +11,7 @@ const FILES = {
   chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
+  runtimeRegistryCore: 'src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js',
   extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
   archiveEngine: 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
@@ -204,6 +205,21 @@ const checks = [
     'Registry merge must treat Imported chat/Link as placeholder titles and preserve safe title aliases across save/link/update/import flows.'
   ),
   check(
+    'registry-core-preserves-transcript-evidence',
+    sources.registryCore.includes('snapshotId: snapshotId || lastSnapshotId') &&
+      sources.registryCore.includes('lastSnapshotId: lastSnapshotId || snapshotId') &&
+      sources.registryCore.includes('latestSnapshotId: lastSnapshotId || snapshotId') &&
+      sources.registryCore.includes('messageCount: isFiniteNumber(r.messageCount)') &&
+      sources.registryCore.includes('assistantTurnCount: isFiniteNumber(r.assistantTurnCount)') &&
+      sources.registryCore.includes("snapshotId','lastSnapshotId','latestSnapshotId','snapshotCount','messageCount','turnCount','answerCount','userTurnCount','assistantTurnCount") &&
+      sources.runtimeRegistryCore.includes('snapshotId: snapshotId || lastSnapshotId') &&
+      sources.runtimeRegistryCore.includes('messageCount: isFiniteNumber(r.messageCount)') &&
+      sources.runtimeRegistryCore.includes('assistantTurnCount: isFiniteNumber(r.assistantTurnCount)') &&
+      sources.runtimeRegistryCore.includes('const messageCount = options.fullScan === true ? (b.messageCount || 0) : (maxNum(a.messageCount, b.messageCount) || 0);'),
+    FILES.registryCore,
+    'ChatRegistry canonical schema must preserve snapshot/message/turn evidence so Save to Folder records remain transcript-backed in Studio.'
+  ),
+  check(
     'library-actions-capture-source-title',
     sources.libraryActions.includes('function currentChatTitleState') &&
       sources.libraryActions.includes('function titleMetadataPatch') &&
@@ -241,7 +257,11 @@ const checks = [
       sources.nativeFolders.includes("title: String(opts?.title || '')") &&
       sources.nativeFolders.includes('...API_titleMetadataPatch(API_resolveSaveChatTitle') &&
       sources.nativeFolders.includes('snapshotId: captureSummary.snapshotId') &&
+      sources.nativeFolders.includes('lastSnapshotId: captureSummary.lastSnapshotId') &&
       sources.nativeFolders.includes('messageCount: captureSummary.messageCount') &&
+      sources.nativeFolders.includes('assistantTurnCount: captureSummary.assistantTurnCount') &&
+      sources.nativeFolders.includes('lastSaveToFolder: STATE.lastSaveToFolderSummary || null') &&
+      sources.nativeFolders.includes('function API_recordLastSaveToFolderSummary') &&
       sources.nativeFolders.includes("EVENT_flushLibraryFolderSync('save-to-folder-captured')") &&
       sources.nativeFolders.includes('syncQueued') &&
       sources.nativeFolders.includes('syncExported: false'),
@@ -299,6 +319,9 @@ const checks = [
       sources.archiveEngine.includes('article[data-testid^="conversation-turn"]') &&
       sources.archiveEngine.includes('[data-message-role="user"],[data-message-role="assistant"]') &&
       sources.archiveEngine.includes('function inspectCurrentConversation') &&
+      sources.archiveEngine.includes('function buildCaptureEvidence') &&
+      sources.archiveEngine.includes('lastSnapshotId: evidence.lastSnapshotId') &&
+      sources.archiveEngine.includes('assistantTurnCount: evidence.assistantTurnCount') &&
       sources.archiveEngine.includes('h2o.native.transcript.inspect-current-conversation.v1') &&
       sources.archiveEngine.includes('wouldHaveTranscriptEvidence: visibleMessageCount > 0') &&
       sources.archiveEngine.includes('archiveBoot.getCurrentChatId = () => getCurrentChatId();') &&
