@@ -250,14 +250,67 @@
     return ident;
   }
 
-  function resolveTitle(explicitTitle) {
-    const t1 = trimString(explicitTitle);
-    if (t1) return t1;
+  function isGenericTitle(value) {
+    const title = trimString(value);
+    if (!title) return true;
+    if (/^(new chat|untitled|untitled chat|chatgpt|chat|imported chat|linked chat|link)$/i.test(title)) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title)) return true;
+    return false;
+  }
+
+  function currentChatTitleState() {
     try {
-      const dt = trimString(D.title || '');
-      if (dt) return dt;
+      const api = W.H2O && W.H2O.ChatTitle;
+      if (api && typeof api.getState === 'function') return api.getState() || null;
     } catch {}
+    return null;
+  }
+
+  function resolveTitle(explicitTitle) {
+    const state = currentChatTitleState() || {};
+    const candidates = [
+      explicitTitle,
+      state.baseTitle,
+      state.title,
+      state.currentTitle,
+      state.displayTitle,
+      state.sourceTitle,
+      state.pageTitle,
+      state.originalTitle,
+    ];
+    try {
+      candidates.push(D.title || '');
+    } catch {}
+    for (const candidate of candidates) {
+      const title = trimString(candidate);
+      if (title && !isGenericTitle(title)) return title;
+    }
+    for (const candidate of candidates) {
+      const title = trimString(candidate);
+      if (title) return title;
+    }
     return 'Untitled chat';
+  }
+
+  function titleMetadataPatch(title, source) {
+    const cleanTitle = trimString(title);
+    const titleSource = isGenericTitle(cleanTitle) ? 'derived' : 'title';
+    return {
+      title: cleanTitle,
+      titleSource,
+      displayTitle: cleanTitle,
+      sourceTitle: cleanTitle,
+      pageTitle: cleanTitle,
+      originalTitle: cleanTitle,
+      meta: {
+        displayTitle: cleanTitle,
+        sourceTitle: cleanTitle,
+        pageTitle: cleanTitle,
+        originalTitle: cleanTitle,
+        titleSource,
+        titleCapturedFrom: source,
+      },
+    };
   }
 
   /**
@@ -291,11 +344,10 @@
       chatId: ident.chatId,
       href: ident.href,
       normalizedHref: ident.normalizedHref,
-      title,
-      titleSource: source,
+      ...titleMetadataPatch(title, source),
       source,
       project: args.project,
-    }, { source, titleSource: source }]);
+    }, { source, titleSource: 'title' }]);
 
     // Preserve the pre-7C native patch exactly; core is used only as a pure
     // planner and all behavior-sensitive provenance fields are restored here.
@@ -303,8 +355,7 @@
       chatId: ident.chatId,
       href: ident.href,
       normalizedHref: ident.normalizedHref,
-      title,
-      titleSource: source,
+      ...titleMetadataPatch(title, source),
       state: { isLinked: true },
       linkedFrom: source,
       linkSourceHref: ident.href,
@@ -320,7 +371,7 @@
     return patch;
   }
 
-  function buildSaveRegistryPatchWithCore(ident, args, source) {
+  function buildSaveRegistryPatchWithCore(ident, args, source, title) {
     const fid = trimString(args.folderId);
     tryCore('plan', 'buildSaveToFolderPlan', [{
       chatId: ident.chatId,
@@ -335,6 +386,7 @@
       chatId: ident.chatId,
       href: ident.href,
       normalizedHref: ident.normalizedHref,
+      ...titleMetadataPatch(title, source),
       organization: { folderId: fid },
       state: { isSaved: true, isLinked: true },
       linkedFrom: 'save-to-folder',
@@ -372,14 +424,15 @@
       // but short-circuiting here keeps `alreadyLinked` honest and avoids
       // emitting a redundant chat-registry:changed event.
       const prev = H2O.ChatRegistry.getRecord(ident.chatId);
+      const title = resolveTitle(args.title);
       if (prev && prev.state && prev.state.isLinked === true) {
         diag.counts.alreadyLinkedHits += 1;
-        const out = { ok: true, alreadyLinked: true, chatId: ident.chatId, record: prev };
+        const record = H2O.ChatRegistry.upsertRecord(buildAddPatchWithCore(ident, args, source, title), { source });
+        const out = { ok: true, alreadyLinked: true, chatId: ident.chatId, record: record || prev };
         diag.lastAdd = out;
         return normalizeForDiag('addToLibrary', out);
       }
 
-      const title = resolveTitle(args.title);
       const patch = buildAddPatchWithCore(ident, args, source, title);
 
       const record = H2O.ChatRegistry.upsertRecord(patch, { source });
@@ -473,7 +526,13 @@
       let record = null;
       try {
         if (hasChatRegistry()) {
-          record = H2O.ChatRegistry.upsertRecord(buildSaveRegistryPatchWithCore(ident, args, source), { source });
+          const title = resolveTitle(args.title
+            || bindResult?.capture?.title
+            || bindResult?.capture?.snapshot?.title
+            || captureResult?.capture?.title
+            || captureResult?.capture?.snapshot?.title
+            || captureResult?.title);
+          record = H2O.ChatRegistry.upsertRecord(buildSaveRegistryPatchWithCore(ident, args, source, title), { source });
         }
       } catch (e) {
         pushError('saveToFolder:registry-stamp', e);

@@ -10,6 +10,8 @@ const FILES = {
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
   chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
+  registryCore: 'shared/library/chat-registry-core.js',
+  libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
 };
@@ -120,10 +122,36 @@ const checks = [
       sources.insights.includes('Could not read title from URL: open source tab title was not specific') &&
       sources.insights.includes('metadata-store-unavailable') &&
       sources.insights.includes('f19UrlMetadataUpdatedAt') &&
+      sources.insights.includes("titleSource: 'title'") &&
+      sources.insights.includes('originalTitle: title') &&
       sources.insights.includes('looksLikeOpaqueTitle(metadata.title, row)') &&
       !sources.insights.includes('fake turns'),
     FILES.insights,
     'Placeholder details must expose a metadata-only Update from URL action with classified safe failure copy.'
+  ),
+  check(
+    'registry-core-preserves-better-title-aliases',
+    sources.registryCore.includes('imported chat|linked chat|link') &&
+      sources.registryCore.includes('function firstNonPlaceholderTitle') &&
+      sources.registryCore.includes('displayTitle: displayTitle || title') &&
+      sources.registryCore.includes('sourceTitle: sourceTitle || title') &&
+      sources.registryCore.includes('pageTitle: pageTitle || title') &&
+      sources.registryCore.includes('originalTitle: originalTitle || title') &&
+      sources.registryCore.includes("'displayTitle','sourceTitle','pageTitle','originalTitle'"),
+    FILES.registryCore,
+    'Registry merge must treat Imported chat/Link as placeholder titles and preserve safe title aliases across save/link/update/import flows.'
+  ),
+  check(
+    'library-actions-capture-source-title',
+    sources.libraryActions.includes('function currentChatTitleState') &&
+      sources.libraryActions.includes('function titleMetadataPatch') &&
+      sources.libraryActions.includes('displayTitle: cleanTitle') &&
+      sources.libraryActions.includes('originalTitle: cleanTitle') &&
+      sources.libraryActions.includes("titleSource = isGenericTitle(cleanTitle) ? 'derived' : 'title'") &&
+      sources.libraryActions.includes('buildSaveRegistryPatchWithCore(ident, args, source, title)') &&
+      sources.libraryActions.includes('H2O.ChatRegistry.upsertRecord(buildAddPatchWithCore(ident, args, source, title), { source })'),
+    FILES.libraryActions,
+    'Save/link actions must capture the current ChatGPT title into the registry instead of relying on later URL metadata fetch.'
   ),
   check(
     'chrome-background-page-metadata-fetch',

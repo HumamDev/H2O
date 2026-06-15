@@ -582,6 +582,7 @@
     row.displayTitle = title;
     row.sourceTitle = title;
     row.pageTitle = title;
+    row.originalTitle = title;
     row.href = row.href || url;
     row.normalizedHref = row.normalizedHref || url;
     row.linkSourceHref = row.linkSourceHref || url;
@@ -589,11 +590,15 @@
       displayTitle: title,
       sourceTitle: title,
       pageTitle: title,
+      originalTitle: title,
+      titleSource: 'title',
     });
     raw.title = title;
+    raw.titleSource = 'title';
     raw.displayTitle = title;
     raw.sourceTitle = title;
     raw.pageTitle = title;
+    raw.originalTitle = title;
     raw.href = raw.href || url;
     raw.normalizedHref = raw.normalizedHref || url;
     raw.linkSourceHref = raw.linkSourceHref || url;
@@ -610,6 +615,8 @@
       displayTitle: title,
       sourceTitle: title,
       pageTitle: title,
+      originalTitle: title,
+      titleSource: 'title',
       f19UrlMetadataUpdatedAt: observedAt,
     };
     const chatStore = H2O.Studio?.store?.chats || null;
@@ -630,9 +637,11 @@
         ...existing,
         chatId,
         title,
+        titleSource: 'title',
         displayTitle: title,
         sourceTitle: title,
         pageTitle: title,
+        originalTitle: title,
         href: url,
         normalizedHref: url,
         linkSourceHref: url,

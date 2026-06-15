@@ -129,12 +129,24 @@
     unknown: 5,
     '': 0,
   });
-  const PLACEHOLDER_TITLE_RE = /^(new chat|untitled|untitled chat|chatgpt|chat)$/i;
+  const PLACEHOLDER_TITLE_RE = /^(new chat|untitled|untitled chat|chatgpt|chat|imported chat|linked chat|link)$/i;
   function isPlaceholderTitle(t) {
     const v = trimString(t);
     if (!v) return true;
     if (PLACEHOLDER_TITLE_RE.test(v)) return true;
     return false;
+  }
+  function firstNonPlaceholderTitle(values) {
+    const list = Array.isArray(values) ? values : [];
+    for (const value of list) {
+      const title = trimString(value);
+      if (title && !isPlaceholderTitle(title)) return title;
+    }
+    for (const value of list) {
+      const title = trimString(value);
+      if (title) return title;
+    }
+    return '';
   }
   function titleSourceRank(s) {
     return TITLE_SOURCE_RANK[String(s || '').toLowerCase()] ?? 0;
@@ -193,14 +205,24 @@
 
     const state = sanitizeState(r.state, { flatDeleted, importedChatId: chatId });
 
+    const displayTitle = firstNonPlaceholderTitle([r.displayTitle, r.meta?.displayTitle]);
+    const sourceTitle = firstNonPlaceholderTitle([r.sourceTitle, r.source?.sourceTitle, r.meta?.sourceTitle]);
+    const pageTitle = firstNonPlaceholderTitle([r.pageTitle, r.source?.pageTitle, r.meta?.pageTitle]);
+    const originalTitle = firstNonPlaceholderTitle([r.originalTitle, r.source?.originalTitle, r.meta?.originalTitle]);
+    const title = firstNonPlaceholderTitle([r.title, displayTitle, sourceTitle, pageTitle, originalTitle]);
+
     return {
       schemaVersion: Number(r.schemaVersion) || SCHEMA_VERSION,
       chatId,
       href,
       normalizedHref,
 
-      title: trimString(r.title),
+      title,
       titleSource: trimString(r.titleSource),
+      displayTitle: displayTitle || title,
+      sourceTitle: sourceTitle || title,
+      pageTitle: pageTitle || title,
+      originalTitle: originalTitle || title,
 
       createdAt: isoOrEmpty(r.createdAt),
       firstSeenAt: isoOrEmpty(r.firstSeenAt),
@@ -270,7 +292,7 @@
 
   function diffFields(prev, next) {
     const changed = [];
-    const top = ['title','titleSource','createdAt','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','turnCount','answerCount','userTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
+    const top = ['title','titleSource','displayTitle','sourceTitle','pageTitle','originalTitle','createdAt','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','turnCount','answerCount','userTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
     for (const f of top) {
       if (JSON.stringify(prev?.[f] ?? null) !== JSON.stringify(next?.[f] ?? null)) changed.push(f);
     }
@@ -304,6 +326,10 @@
     const href = a.href || b.href;
     const normalizedHref = a.normalizedHref || b.normalizedHref || normalizeHref(href || hrefForChatId(chatId));
     const titlePick = chooseBetterTitle(a.title, a.titleSource, b.title, b.titleSource);
+    const displayTitle = firstNonPlaceholderTitle([b.displayTitle, b.title, a.displayTitle, a.title, titlePick.title]);
+    const sourceTitle = firstNonPlaceholderTitle([b.sourceTitle, b.title, a.sourceTitle, a.title, titlePick.title]);
+    const pageTitle = firstNonPlaceholderTitle([b.pageTitle, b.title, a.pageTitle, a.title, titlePick.title]);
+    const originalTitle = firstNonPlaceholderTitle([b.originalTitle, b.title, a.originalTitle, a.title, titlePick.title]);
     const createdAt = pickOlderIso(a.createdAt, b.createdAt);
     const firstSeenAt = pickOlderIso(a.firstSeenAt, b.firstSeenAt);
     const lastSeenAt = pickNewerIso(a.lastSeenAt, b.lastSeenAt);
@@ -371,6 +397,10 @@
       normalizedHref,
       title: titlePick.title,
       titleSource: titlePick.source,
+      displayTitle,
+      sourceTitle,
+      pageTitle,
+      originalTitle,
       createdAt,
       firstSeenAt,
       lastSeenAt,
