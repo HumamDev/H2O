@@ -24,6 +24,7 @@ const desktopChromePropagationValidator = 'tools/validation/sync/validate-f19-de
 const parityValidator = 'tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs';
 const hardeningValidator = 'tools/validation/sync/validate-f19-sync-hardening.mjs';
 const chromeAutoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
+const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
 
 const supportedFields = [
   'total',
@@ -619,7 +620,8 @@ function validateStaticFiles() {
     chromeDesktopPropagationValidator,
     desktopChromePropagationValidator,
     hardeningValidator,
-    chromeAutoImportFile
+    chromeAutoImportFile,
+    libraryIndexFile
   ]) assertExists(file);
 
   if (failures.length) return;
@@ -638,6 +640,8 @@ function validateStaticFiles() {
   assertContains(closureContractFile, 'chromeExportCoverage', 'F19.5 export coverage proof field');
   assertContains(closureContractFile, 'desktop-shell-row-import-unsupported', 'F19.5 Desktop shell row blocker');
   assertContains(closureContractFile, 'desktop-to-chrome-convergence-not-proven', 'F19.5 Desktop to Chrome convergence blocker');
+  assertContains(closureContractFile, 'desktop-to-chrome-persistence-not-proven', 'F19.5 Desktop to Chrome persistence blocker');
+  assertContains(closureContractFile, 'chrome-shell-row-rehydration-unsupported', 'F19.5 shell row rehydration blocker');
   assertContains(closureContractFile, 'convergence.ok === true', 'F19.5 Desktop to Chrome convergence proof');
   assertContains(closureContractFile, 'conflictDecision: "approve-merge"', 'F19.5 operator-approved merge command');
   assertContains(closureContractFile, 'conflictApproved:true', 'F19.5 operator-approved merge evidence');
@@ -659,6 +663,8 @@ function validateStaticFiles() {
   assertContains(chromeAutoImportFile, "view === 'imported'", 'Chrome export imported view handling');
   assertContains(chromeAutoImportFile, 'isSaved: saved,', 'Chrome export saved state must mirror LibraryIndex saved state');
   assertContains(chromeAutoImportFile, "imported ? 'imported' : 'saved'", 'Chrome export imported shell rows must remain total-only');
+  assertContains(libraryIndexFile, 'readDurableBundleShellRows', 'LibraryIndex durable shell row reload reader');
+  assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'LibraryIndex durable shell rehydration diagnostic');
 }
 
 const args = parseArgs();

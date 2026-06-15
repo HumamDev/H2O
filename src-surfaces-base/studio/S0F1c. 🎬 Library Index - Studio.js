@@ -221,6 +221,15 @@
   // linked-only snapshot in the broadcast payload (`linkedRecords`).
   // We read that snapshot here.
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
+  const ARCHIVE_MESSAGE_TYPE = 'h2o-ext-archive:v1';
+
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function boolValue(value) {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
 
   async function readNativeChatRegistryRecords() {
     try {
@@ -237,6 +246,184 @@
       const linked = payload.linkedRecords;
       return Array.isArray(linked) ? linked.filter((r) => r && typeof r === 'object') : [];
     } catch (e) { err('readNativeChatRegistryRecords', e); return []; }
+  }
+
+  function callArchiveExportFullBundle() {
+    return new Promise((resolve) => {
+      try {
+        if (!W.chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+          resolve(null);
+          return;
+        }
+        const message = { type: ARCHIVE_MESSAGE_TYPE, req: { op: 'exportFullBundle', payload: {} } };
+        const sent = chrome.runtime.sendMessage(message, (response) => {
+          try {
+            if (chrome.runtime && chrome.runtime.lastError) { resolve(null); return; }
+          } catch {}
+          resolve(response && response.ok ? response.result : null);
+        });
+        if (sent && typeof sent.then === 'function') {
+          sent.then((response) => resolve(response && response.ok ? response.result : null)).catch(() => resolve(null));
+        }
+      } catch (e) {
+        err('callArchiveExportFullBundle', e);
+        resolve(null);
+      }
+    });
+  }
+
+  function bundleChatIndex(chat) {
+    return chat && chat.chatIndex && typeof chat.chatIndex === 'object' && !Array.isArray(chat.chatIndex)
+      ? chat.chatIndex
+      : {};
+  }
+
+  function bundleChatState(chat) {
+    const index = bundleChatIndex(chat);
+    return index.state && typeof index.state === 'object' && !Array.isArray(index.state)
+      ? index.state
+      : {};
+  }
+
+  function bundleShellLinkTarget(chat, index) {
+    return cleanString(index && (index.href || index.normalizedHref || index.linkSourceHref))
+      || cleanString(chat && (chat.href || chat.normalizedHref || chat.linkSourceHref));
+  }
+
+  function isDurableBundleShellChat(chat) {
+    const chatId = cleanString(chat && chat.chatId);
+    const snapshots = Array.isArray(chat && chat.snapshots) ? chat.snapshots : [];
+    if (!chatId || snapshots.length > 0) return false;
+    const index = bundleChatIndex(chat);
+    const state = bundleChatState(chat);
+    const view = cleanString(index.view || index.kind || index.type).toLowerCase();
+    return index.f19MinimalLibraryIndexRow === true
+      || index.f19ChromeDesktopMinimalRow === true
+      || index.f19LibraryIndexProjectedRow === true
+      || view === 'saved'
+      || view === 'linked'
+      || view === 'imported'
+      || index.isSaved === true
+      || index.isLinked === true
+      || index.isImported === true
+      || state.isSaved === true
+      || state.isLinked === true
+      || state.isImported === true
+      || state.isPinned === true
+      || state.isArchived === true
+      || !!bundleShellLinkTarget(chat, index);
+  }
+
+  function recordFromDurableBundleShellChat(chat) {
+    const chatId = cleanString(chat && chat.chatId);
+    if (!chatId) return null;
+    const index = bundleChatIndex(chat);
+    const state = bundleChatState(chat);
+    const org = index.organization && typeof index.organization === 'object' && !Array.isArray(index.organization)
+      ? index.organization
+      : {};
+    const view = cleanString(index.view || index.kind || index.type).toLowerCase();
+    const saved = view === 'saved' || index.isSaved === true || state.isSaved === true;
+    const linked = view === 'linked' || index.isLinked === true || state.isLinked === true;
+    const imported = !saved && !linked
+      && (view === 'imported' || index.isImported === true || state.isImported === true || !!bundleShellLinkTarget(chat, index));
+    const href = bundleShellLinkTarget(chat, index) || ('https://chatgpt.com/c/' + chatId);
+    const observedAt = new Date().toISOString();
+    return {
+      chatId,
+      title: cleanString(index.title || chat.title || chatId),
+      href,
+      normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
+      updatedAt: cleanString(index.updatedAt || chat.updatedAt) || observedAt,
+      lastSeenAt: cleanString(index.lastSeenAt || chat.lastSeenAt) || observedAt,
+      source: {
+        first: 'desktop-sync-folder-rehydrate',
+        seenFrom: ['desktop-sync-folder-rehydrate'],
+      },
+      organization: {
+        categoryId: cleanString(org.categoryId || org.category_id),
+        folderId: '',
+        tagIds: [],
+        labelIds: [],
+      },
+      state: {
+        isSaved: !!saved,
+        isLinked: !!(linked || saved),
+        isPinned: index.pinned === true || index.isPinned === true || state.isPinned === true,
+        isArchived: index.archived === true || index.isArchived === true || state.isArchived === true,
+        isImported: !!imported || index.f19MinimalLibraryIndexRow === true || index.f19ChromeDesktopMinimalRow === true,
+        isDeleted: state.isDeleted === true,
+      },
+      linkedAt: cleanString(index.linkedAt || chat.linkedAt) || observedAt,
+      linkedFrom: cleanString(index.linkedFrom || chat.linkedFrom) || 'desktop-sync-folder-rehydrate',
+      linkSourceHref: cleanString(index.linkSourceHref || chat.linkSourceHref) || href,
+      quality: {
+        confidence: 'sync-shell',
+        inferredFields: imported ? ['desktop-imported-shell-row'] : ['desktop-shell-row'],
+      },
+    };
+  }
+
+  async function readDurableBundleShellRows() {
+    const out = {
+      available: false,
+      chatCount: 0,
+      shellRecordCount: 0,
+      shellRowCount: 0,
+      records: [],
+      rows: [],
+    };
+    const bundle = await callArchiveExportFullBundle();
+    const chats = bundle && bundle.chatArchive && Array.isArray(bundle.chatArchive.chats)
+      ? bundle.chatArchive.chats
+      : [];
+    out.available = !!bundle;
+    out.chatCount = chats.length;
+    for (const chat of chats) {
+      if (!isDurableBundleShellChat(chat)) continue;
+      const record = recordFromDurableBundleShellChat(chat);
+      const row = normalizeRegistryShellRow(record);
+      if (!record || !row) continue;
+      out.records.push(record);
+      out.rows.push(row);
+    }
+    out.shellRecordCount = out.records.length;
+    out.shellRowCount = out.rows.length;
+    return out;
+  }
+
+  async function rehydrateRegistryFromDurableShellRows(records, archiveIds) {
+    const out = { attempted: 0, materialized: 0, existing: 0, failed: 0 };
+    const reg = getChatRegistry();
+    if (!reg || typeof reg.upsertRecord !== 'function') return out;
+    try {
+      if (reg.ready && typeof reg.ready.then === 'function') await reg.ready;
+    } catch {}
+    for (const rec of (Array.isArray(records) ? records : [])) {
+      if (!rec || !rec.chatId || (archiveIds && archiveIds.has(rec.chatId))) continue;
+      out.attempted += 1;
+      try {
+        let existed = null;
+        if (typeof reg.getRecord === 'function') {
+          try { existed = reg.getRecord(rec.chatId); } catch { existed = null; }
+        }
+        const written = reg.upsertRecord(rec, {
+          source: 'desktop-sync-folder-rehydrate',
+          passive: true,
+          observedAt: new Date().toISOString(),
+        });
+        if (written) {
+          if (existed) out.existing += 1;
+          else out.materialized += 1;
+        } else {
+          out.failed += 1;
+        }
+      } catch (e) {
+        out.failed += 1;
+        err('rehydrateRegistryFromDurableShellRows', e);
+      }
+    }
+    return out;
   }
 
   // Zero-snapshot registry records live in Chat Registry but have no archive
@@ -338,6 +525,13 @@
           let fallbackRecordsCount = 0;
           let fallbackLinkedRows = 0;
           let fallbackRegistryShellRows = 0;
+          let durableBundleChatCount = 0;
+          let durableBundleShellRecords = 0;
+          let durableBundleShellRows = 0;
+          let durableBundleShellRowsProjected = 0;
+          let durableBundleShellRowsRehydrated = 0;
+          let durableBundleShellRowsExisting = 0;
+          let durableBundleShellRowsFailed = 0;
           for (const rec of nativeRecords) {
             if (!rec || !rec.chatId || archiveIds.has(rec.chatId)) continue;
             const row = normalizeLinkedOnlyRegistryRow(rec);
@@ -347,16 +541,24 @@
               nativeLinkedRows++;
             }
           }
+          const durable = await readDurableBundleShellRows();
+          durableBundleChatCount = durable.chatCount;
+          durableBundleShellRecords = durable.shellRecordCount;
+          durableBundleShellRows = durable.shellRowCount;
+          const rehydrated = await rehydrateRegistryFromDurableShellRows(durable.records, archiveIds);
+          durableBundleShellRowsRehydrated = rehydrated.materialized;
+          durableBundleShellRowsExisting = rehydrated.existing;
+          durableBundleShellRowsFailed = rehydrated.failed;
           // Always merge Studio-side registry shell rows after native rows.
           // Desktop -> Chrome propagation materializes zero-snapshot Desktop
           // rows here; skipping this merge when the native key is non-empty
           // makes latest.json imports falsely report success while the
           // LibraryIndex remains unchanged. Archive rows still win by chatId.
           const reg = getChatRegistry();
-          const list = reg && (typeof reg.listRecords === 'function'
+          const registryList = reg && (typeof reg.listRecords === 'function'
             ? await reg.listRecords({ includeDeleted: false })
             : (typeof reg.listActive === 'function' ? await reg.listActive() : []));
-          const fallbackRecords = Array.isArray(list) ? list : [];
+          const fallbackRecords = Array.isArray(registryList) ? registryList : [];
           fallbackRecordsCount = fallbackRecords.length;
           for (const rec of fallbackRecords) {
             if (!rec || !rec.chatId || archiveIds.has(rec.chatId) || projectedIds.has(rec.chatId)) continue;
@@ -368,6 +570,12 @@
               fallbackRegistryShellRows++;
             }
           }
+          for (const row of durable.rows) {
+            if (!row || !row.chatId || archiveIds.has(row.chatId) || projectedIds.has(row.chatId)) continue;
+            linkedRows.push(row);
+            projectedIds.add(row.chatId);
+            durableBundleShellRowsProjected++;
+          }
           state.lastRefreshSources = {
             reason: String(reason),
             archiveRowsRaw: list.length,
@@ -377,6 +585,13 @@
             fallbackRegistryRecords: fallbackRecordsCount,
             fallbackLinkedRows,
             fallbackRegistryShellRows,
+            durableBundleChatCount,
+            durableBundleShellRecords,
+            durableBundleShellRows,
+            durableBundleShellRowsProjected,
+            durableBundleShellRowsRehydrated,
+            durableBundleShellRowsExisting,
+            durableBundleShellRowsFailed,
             linkedRows: linkedRows.length,
             at: Date.now(),
           };

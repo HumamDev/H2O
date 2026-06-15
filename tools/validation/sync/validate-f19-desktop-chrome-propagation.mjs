@@ -11,6 +11,7 @@ const failures = [];
 
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoExportFile = 'src-surfaces-base/studio/sync/auto-export.tauri.js';
+const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
 function read(file) {
@@ -355,7 +356,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderImportFile, autoExportFile, contractFile]) assertExists(file);
+for (const file of [folderImportFile, autoExportFile, libraryIndexFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
@@ -375,6 +376,9 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'approve-merge', 'operator-approved merge decision');
   assertContains(folderImportFile, 'library-propagation-simultaneous-conflict-approved', 'operator-approved merge warning');
   assertContains(folderImportFile, 'redactedErrorCategories', 'redacted import error categories');
+  assertContains(libraryIndexFile, 'readDurableBundleShellRows', 'durable shell row reload reader');
+  assertContains(libraryIndexFile, 'desktop-sync-folder-rehydrate', 'Desktop shell row rehydration source');
+  assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'durable rehydration diagnostic');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
   assertContains(contractFile, 'F19.2.c Minimal Desktop -> Chrome Scope', 'F19.2.c doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
