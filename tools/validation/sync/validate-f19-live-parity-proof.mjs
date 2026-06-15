@@ -29,12 +29,15 @@ const supportedFields = [
   'total',
   'saved',
   'linked',
-  'pinned',
-  'archived',
   'folders',
   'categories',
   'recents',
   'rows'
+];
+
+const mergeLocalFields = [
+  'pinned',
+  'archived'
 ];
 
 const deferredFields = [
@@ -51,8 +54,6 @@ const supportedMismatchFields = new Set([
   'counts.total',
   'counts.saved',
   'counts.linked',
-  'counts.pinned',
-  'counts.archived',
   'counts.folders',
   'counts.categories',
   'hashes.folders',
@@ -63,6 +64,16 @@ const supportedMismatchFields = new Set([
   'desktop.sourceAvailable',
   'chrome.schema',
   'desktop.schema'
+]);
+
+const mergeLocalMismatchFields = new Set([
+  'counts.pinned',
+  'counts.archived'
+]);
+
+const mergeLocalMismatchCodes = new Set([
+  'library-parity-pinned-count-mismatch',
+  'library-parity-archived-count-mismatch'
 ]);
 
 const deferredMismatchCodes = new Set([
@@ -231,15 +242,17 @@ function buildContext() {
 function partitionMismatches(parity) {
   const mismatches = Array.isArray(parity?.mismatches) ? parity.mismatches : [];
   const supported = [];
+  const mergeLocal = [];
   const deferred = [];
   for (const mismatch of mismatches) {
     const field = String(mismatch?.field || '');
     const code = String(mismatch?.code || '');
     if (supportedMismatchFields.has(field)) supported.push(mismatch);
+    else if (mergeLocalMismatchFields.has(field) || mergeLocalMismatchCodes.has(code)) mergeLocal.push(mismatch);
     else if (deferredMismatchCodes.has(code)) deferred.push(mismatch);
     else supported.push(mismatch);
   }
-  return { supported, deferred };
+  return { supported, mergeLocal, deferred };
 }
 
 function propagationResult(direction) {
@@ -426,8 +439,10 @@ function makeProof(finalParity) {
       final: finalParity,
       supportedOk: partition.supported.length === 0,
       supportedMismatchCount: partition.supported.length,
+      mergeLocalMismatchCount: partition.mergeLocal.length,
       deferredMismatchCount: partition.deferred.length,
       supportedMismatches: partition.supported,
+      mergeLocalMismatches: partition.mergeLocal,
       deferredMismatches: partition.deferred
     },
     propagation: {
@@ -436,6 +451,7 @@ function makeProof(finalParity) {
     },
     chromeExportCoverage: chromeExportCoverageFixture(),
     supportedFields,
+    mergeLocalFields,
     deferredFields,
     privacy: {
       ok: true,
@@ -558,13 +574,19 @@ function validateProofObject(proof, options = {}) {
   assert(proof.syncFolder?.latestJsonSeen === true, 'latest.json must be observed');
   assert(proof.syncFolder?.chromeLatestJsonSeen === true, 'chrome-latest.json must be observed');
   assert(Array.isArray(proof.supportedFields), 'supportedFields missing');
+  assert(Array.isArray(proof.mergeLocalFields), 'mergeLocalFields missing');
   assert(Array.isArray(proof.deferredFields), 'deferredFields missing');
   for (const field of supportedFields) assert(proof.supportedFields.includes(field), `supportedFields missing ${field}`);
+  for (const field of mergeLocalFields) assert(proof.mergeLocalFields.includes(field), `mergeLocalFields missing ${field}`);
   for (const field of deferredFields) assert(proof.deferredFields.includes(field), `deferredFields missing ${field}`);
   assert(proof.parity?.final?.schema === paritySchema, 'final parity schema mismatch');
+  const computedPartition = partitionMismatches(proof.parity.final);
   assert(proof.parity?.supportedOk === true, 'supported parity must be ok');
-  assert(Number(proof.parity?.supportedMismatchCount || 0) === 0, 'supported mismatch count must be zero');
+  assert(Number(proof.parity?.supportedMismatchCount || 0) === computedPartition.supported.length, 'supported mismatch count does not match final parity');
+  assert(computedPartition.supported.length === 0, 'supported mismatch count must be zero');
+  assert(Number(proof.parity?.mergeLocalMismatchCount || 0) === computedPartition.mergeLocal.length, 'merge-local mismatch count does not match final parity');
   assert(typeof proof.parity?.deferredMismatchCount === 'number', 'deferred mismatch count missing');
+  assert(Number(proof.parity.deferredMismatchCount || 0) === computedPartition.deferred.length, 'deferred mismatch count does not match final parity');
   validatePropagationResult(proof.propagation?.chromeToDesktop, 'chrome-to-desktop');
   validatePropagationResult(proof.propagation?.desktopToChrome, 'desktop-to-chrome');
   validateChromeExportCoverage(proof.chromeExportCoverage);
@@ -620,6 +642,7 @@ function validateStaticFiles() {
   assertContains(closureContractFile, 'conflictDecision: "approve-merge"', 'F19.5 operator-approved merge command');
   assertContains(closureContractFile, 'conflictApproved:true', 'F19.5 operator-approved merge evidence');
   assertContains(closureContractFile, 'Premium Sync v1 supported fields complete', 'F19.5 supported-fields closure phrase');
+  assertContains(closureContractFile, 'merge-local', 'F19.5 merge-local field classification');
   assertContains(closureContractFile, 'Premium Sync complete', 'F19.5 full closure phrase');
   assertContains(closureContractFile, 'node tools/validation/sync/validate-f19-live-parity-proof.mjs --proof', 'F19.5 proof validation command');
   assertContains(hardeningContractFile, 'transport-stale', 'F19.4 stale taxonomy');
@@ -660,6 +683,7 @@ const result = {
   ok: failures.length === 0,
   mode: args.proof ? 'operator-proof-validation' : 'synthetic-contract-validation',
   supportedFields,
+  mergeLocalFields,
   deferredFields,
   failures,
   proofStatus: proof?.status || '',
