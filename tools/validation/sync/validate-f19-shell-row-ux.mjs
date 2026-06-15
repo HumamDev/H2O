@@ -11,6 +11,7 @@ const FILES = {
   chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
+  extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
@@ -245,6 +246,30 @@ const checks = [
       sources.nativeFolders.includes('syncExported: false'),
     FILES.nativeFolders,
     'Native Save to Folder must preserve the current/sidebar title, expose transcript evidence, and queue the existing native-to-Studio sync broadcast.'
+  ),
+  check(
+    'native-save-to-folder-build-truth-diagnostic',
+    sources.nativeFolders.includes('h2o.native.save-to-folder.build-truth.v1') &&
+      sources.nativeFolders.includes('f19.7d-runtime-build-truth') &&
+      sources.nativeFolders.includes('async function API_buildTruthDiagnostic') &&
+      sources.nativeFolders.includes('await bridge.__loaderInfo()') &&
+      sources.nativeFolders.includes('await bridge.__loaderDiag()') &&
+      sources.nativeFolders.includes('API_targetIsCurrentLoadedChat') &&
+      sources.nativeFolders.includes('capture-requires-open-chat') &&
+      sources.nativeFolders.includes('API_captureHasRealTranscript') &&
+      sources.nativeFolders.includes('API_saveAndBindToFolder') &&
+      sources.nativeFolders.includes('archiveBoot.captureNow') &&
+      sources.nativeFolders.includes('saveToFolderOwner') &&
+      sources.nativeFolders.includes('ENGINE_injectAddToFolder -> UI_openAssignMenu -> API_saveAndBindToFolder') &&
+      sources.nativeFolders.includes('visibleMessageCount') &&
+      sources.nativeFolders.includes('archiveBoot.captureNow persists snapshots; diagnostic only counts visible DOM messages') &&
+      sources.nativeFolders.includes('registryWriteWouldBeLinkOnly') &&
+      sources.nativeFolders.includes('saveHandlerStale') &&
+      sources.nativeFolders.includes('H2O.folders.diagnose.__h2oF197dBuildTruth') &&
+      sources.extensionBridge.includes('__loaderDiag: () => call("__loaderDiag"') &&
+      sources.extensionBridge.includes('op !== "__loaderDiag"'),
+    FILES.nativeFolders,
+    'Native folders runtime must expose H2O.folders.diagnose({ includeCaptureDryRun: true }) with loader/module/marker/handler/capture readiness diagnostics and clear failure reasons.'
   ),
   check(
     'chrome-background-page-metadata-fetch',

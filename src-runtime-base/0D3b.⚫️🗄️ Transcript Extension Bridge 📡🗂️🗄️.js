@@ -59,6 +59,7 @@
       && op !== "ping"
       && op !== "initSession"
       && op !== "__loaderInfo"
+      && op !== "__loaderDiag"
       && op !== "h2o:library-storage:diagnose"
       && op !== "h2o:library-storage:inspect-schema"
       && op !== "h2o:library-storage:verify-chat-registry-mirror"
@@ -276,6 +277,7 @@
     // the SW. Returns { loaderBuildTs, loaderBuildIso, libraryKvOps, allowOps, allowOpsCount, tag }
     // so we can confirm which loader.js Chrome actually has active for this page.
     __loaderInfo: () => call("__loaderInfo", {}, { timeoutMs: 1500 }),
+    __loaderDiag: () => call("__loaderDiag", {}, { timeoutMs: 1500 }),
   };
 
   function register() {

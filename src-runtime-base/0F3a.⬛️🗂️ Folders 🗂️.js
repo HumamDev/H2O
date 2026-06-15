@@ -7327,7 +7327,337 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     };
   }
 
-  function API_diagnose() {
+  const F197D_BUILD_TRUTH_SCHEMA = 'h2o.native.save-to-folder.build-truth.v1';
+  const F197D_BUILD_TRUTH_MARKER = 'f19.7d-runtime-build-truth';
+
+  function API_bool(value) {
+    return value === true;
+  }
+
+  function API_object(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function API_chatIdFromMaybeHref(value) {
+    return DOM_parseChatIdFromHref(String(value || '').trim()) || '';
+  }
+
+  function API_countVisibleMessageNodes() {
+    try {
+      const messageNodes = Array.from(D.querySelectorAll('[data-message-author-role]'));
+      if (messageNodes.length) return messageNodes.filter((node) => {
+        try {
+          const text = String(node?.textContent || '').trim();
+          return !!text && node.isConnected !== false;
+        } catch {
+          return false;
+        }
+      }).length;
+    } catch {}
+    try {
+      const turns = Array.from(D.querySelectorAll('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]'));
+      return turns.filter((node) => {
+        try {
+          const text = String(node?.textContent || '').trim();
+          return !!text && node.isConnected !== false;
+        } catch {
+          return false;
+        }
+      }).length;
+    } catch {}
+    return 0;
+  }
+
+  function API_bridge() {
+    try {
+      const archive = H2O.archiveBoot || {};
+      return typeof archive._getExtensionBridge === 'function' ? archive._getExtensionBridge() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function API_unwrapBridgeResult(value) {
+    const obj = API_object(value);
+    if (obj.result && typeof obj.result === 'object') return API_object(obj.result);
+    return obj;
+  }
+
+  async function API_loaderInfoDiagnostic() {
+    const bridge = API_bridge();
+    if (!bridge || typeof bridge.__loaderInfo !== 'function') {
+      return { ok: false, reason: 'loader-info-unavailable', value: null };
+    }
+    try {
+      const value = API_unwrapBridgeResult(await bridge.__loaderInfo());
+      return { ok: value?.ok !== false, reason: '', value };
+    } catch (error) {
+      return { ok: false, reason: 'loader-info-threw', error: String(error && (error.message || error) || ''), value: null };
+    }
+  }
+
+  async function API_loaderDiagDiagnostic() {
+    const bridge = API_bridge();
+    if (!bridge || typeof bridge.__loaderDiag !== 'function') {
+      return { ok: false, reason: 'loader-diag-unavailable', value: null };
+    }
+    try {
+      const value = API_unwrapBridgeResult(await bridge.__loaderDiag());
+      return { ok: value?.ok !== false, reason: '', value };
+    } catch (error) {
+      return { ok: false, reason: 'loader-diag-threw', error: String(error && (error.message || error) || ''), value: null };
+    }
+  }
+
+  function API_buildProfileFromLoader(loaderInfo) {
+    const tag = String(loaderInfo?.tag || '').toLowerCase();
+    if (tag.includes('studio launcher')) return 'studio-launcher';
+    if (tag.includes('dev ctrl') || tag.includes('dev-control') || tag.includes('dev controls')) return 'dev';
+    if (tag.includes('prod')) return 'prod';
+    if (tag) return 'unknown-tagged';
+    return 'unknown';
+  }
+
+  function API_loadedAliasesFromLoaderDiag(loaderDiag) {
+    const result = API_object(loaderDiag);
+    const diag = API_object(result.diag || result);
+    const current = API_object(diag.currentPageLoads);
+    return Object.keys(current).sort();
+  }
+
+  function API_aliasLoaded(aliases, pattern) {
+    return aliases.some((alias) => pattern.test(String(alias || '')));
+  }
+
+  function API_runtimeIdentity(loaderInfoDiag, loaderDiagDiag) {
+    const loaderInfo = API_object(loaderInfoDiag?.value);
+    const aliases = API_loadedAliasesFromLoaderDiag(loaderDiagDiag?.value);
+    const aliasBaseUrl = 'http://127.0.0.1:5500/alias/';
+    return {
+      schema: F197D_BUILD_TRUTH_SCHEMA,
+      marker: F197D_BUILD_TRUTH_MARKER,
+      surface: 'native-chatgpt-page',
+      extensionId: '',
+      extensionIdAvailable: false,
+      extensionBuildProfile: API_buildProfileFromLoader(loaderInfo),
+      loaderSource: String(loaderInfo?.source || ''),
+      loaderVersionFingerprint: [
+        String(loaderInfo?.loaderBuildTs || ''),
+        String(loaderInfo?.loaderBuildIso || ''),
+        String(loaderInfo?.tag || ''),
+      ].filter(Boolean).join('|'),
+      loaderBuildTs: Number(loaderInfo?.loaderBuildTs || 0) || null,
+      loaderBuildIso: String(loaderInfo?.loaderBuildIso || ''),
+      loaderTag: String(loaderInfo?.tag || ''),
+      loaderInfoAvailable: loaderInfoDiag?.ok === true,
+      loaderInfoReason: String(loaderInfoDiag?.reason || ''),
+      loaderDiagAvailable: loaderDiagDiag?.ok === true,
+      loaderDiagReason: String(loaderDiagDiag?.reason || ''),
+      runtimeCameFromAliasServer: aliases.length ? API_aliasLoaded(aliases, /^0[ADF]\d|^0F3a|^0F1j|^0D3a/i) : null,
+      aliasBaseUrl,
+      loadedModuleListAvailable: aliases.length > 0,
+      loadedModuleList: aliases,
+    };
+  }
+
+  function API_modulePresence(loadedAliases) {
+    const archive = H2O.archiveBoot || {};
+    const libraryActions = H2O.LibraryActions || H2O.Library?.Actions || null;
+    return {
+      '0F3a': true,
+      '0F1j': !!libraryActions || API_aliasLoaded(loadedAliases, /0F1j|Library_Actions|Library Actions/i),
+      '0D3a': !!archive || API_aliasLoaded(loadedAliases, /0D3a|Transcript_Archive_Engine|Transcript Archive Engine/i),
+      folderRuntimeLoaded: !!H2O.folders,
+      libraryActionsLoaded: !!libraryActions,
+      transcriptArchiveEngineLoaded: typeof archive.captureNow === 'function',
+    };
+  }
+
+  function API_markerPresence() {
+    return {
+      API_targetIsCurrentLoadedChat: typeof API_targetIsCurrentLoadedChat === 'function',
+      'capture-requires-open-chat': true,
+      API_captureHasRealTranscript: typeof API_captureHasRealTranscript === 'function',
+      API_saveAndBindToFolder: typeof API_saveAndBindToFolder === 'function',
+      'archiveBoot.captureNow': typeof H2O.archiveBoot?.captureNow === 'function',
+      API_captureCurrentChatForFolder: typeof API_captureCurrentChatForFolder === 'function',
+      API_captureSummary: typeof API_captureSummary === 'function',
+      F19_7_failClosed: true,
+      F19_7b_transcriptRequired: true,
+      F19_7d_buildTruthDiagnostic: true,
+    };
+  }
+
+  function API_handlerOwnership() {
+    const publicSave = H2O.folders?.saveAndBindToFolder;
+    const publicDiagnose = H2O.folders?.diagnose;
+    const libraryActions = H2O.LibraryActions || H2O.Library?.Actions || null;
+    const lastContextHref = String(STATE.menuDiag?.lastContextHref || '');
+    return {
+      saveToFolderOwner: publicSave === API_saveAndBindToFolder
+        ? '0F3a.API_saveAndBindToFolder'
+        : (typeof publicSave === 'function' ? 'external-or-stale-H2O.folders.saveAndBindToFolder' : 'missing'),
+      diagnoseOwner: publicDiagnose === API_diagnose
+        ? '0F3a.API_diagnose'
+        : (typeof publicDiagnose === 'function' ? 'external-or-stale-H2O.folders.diagnose' : 'missing'),
+      currentHandlerMatchesPatchedApi: publicSave === API_saveAndBindToFolder,
+      clickPathExpected: 'ENGINE_injectAddToFolder -> UI_openAssignMenu -> API_saveAndBindToFolder',
+      menuInjectionObserverInstalled: API_bool(STATE.menuDiag?.observerInstalled),
+      addToFolderInjectionAttempts: Number(STATE.menuDiag?.saveToFolderAttempts || 0),
+      addToFolderInjected: Number(STATE.menuDiag?.saveToFolderInjected || 0),
+      lastContextSource: String(STATE.menuDiag?.lastContextSource || ''),
+      lastContextHasHref: !!lastContextHref,
+      lastContextChatId: API_chatIdFromMaybeHref(lastContextHref),
+      lastSkipReason: String(STATE.menuDiag?.lastSkipReason || ''),
+      lastErrorMessage: String(STATE.menuDiag?.lastErrorMessage || ''),
+      libraryActionsSaveToFolderExists: typeof libraryActions?.saveToFolder === 'function',
+      anotherHandlerMayCreateLinkRows: publicSave !== API_saveAndBindToFolder,
+    };
+  }
+
+  function API_captureReadiness(opts = {}) {
+    const currentLoadedChatId = API_currentLoadedChatId();
+    const currentUrlChatId = API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || ''));
+    const selectedTargetChatId = API_chatIdFromMaybeHref(String(STATE.menuDiag?.lastContextHref || STATE.menuDiag?.lastAnchorText || ''));
+    const visibleMessageCount = API_countVisibleMessageNodes();
+    const archiveCaptureNowCallable = typeof H2O.archiveBoot?.captureNow === 'function';
+    const targetEqualsCurrent = selectedTargetChatId
+      ? selectedTargetChatId === currentLoadedChatId
+      : (currentUrlChatId ? currentUrlChatId === currentLoadedChatId : null);
+    const includeCaptureDryRun = opts?.includeCaptureDryRun === true;
+    return {
+      currentLoadedChatId,
+      currentUrlChatId,
+      selectedSidebarTargetChatId: selectedTargetChatId,
+      selectedTargetEqualsCurrentLoadedChat: targetEqualsCurrent,
+      visibleMessageCount,
+      visibleConversationTurnCount: visibleMessageCount,
+      archiveBootCaptureNowCallable: archiveCaptureNowCallable,
+      captureDryRunRequested: includeCaptureDryRun,
+      includeCaptureDryRun: false,
+      captureDryRunSafe: false,
+      captureDryRunReason: includeCaptureDryRun
+        ? 'archiveBoot.captureNow persists snapshots; diagnostic only counts visible DOM messages'
+        : 'not-requested',
+    };
+  }
+
+  function API_registrySyncReadiness(captureReadiness) {
+    const reg = H2O.ChatRegistry || null;
+    const nativeBroadcastExists = typeof EVENT_flushLibraryFolderSync === 'function';
+    const syncFolderBridgeExists = !!H2O.Studio?.sync?.folder || !!H2O.Studio?.sync?.autoImport || !!H2O.Studio?.sync?.autoExport;
+    return {
+      chatRegistryExists: !!reg,
+      chatRegistryUpsertCallable: typeof reg?.upsertRecord === 'function',
+      folderBindingApiExists: typeof API_setBinding === 'function',
+      nativeToStudioBroadcastExists: nativeBroadcastExists,
+      syncFolderBridgeExists,
+      latestSaveWouldBeExportSafe: !!(
+        captureReadiness?.archiveBootCaptureNowCallable &&
+        Number(captureReadiness?.visibleMessageCount || 0) > 0 &&
+        (captureReadiness?.selectedTargetEqualsCurrentLoadedChat !== false) &&
+        typeof reg?.upsertRecord === 'function'
+      ),
+    };
+  }
+
+  function API_failureReasons(runtimeIdentity, modulePresence, handlerOwnership, captureReadiness, registrySyncReadiness) {
+    const wrongExtension = runtimeIdentity.extensionBuildProfile === 'studio-launcher';
+    const loaderDiagNotRequested = runtimeIdentity.loaderDiagReason === 'loader-diag-not-requested';
+    const aliasUnavailable = !loaderDiagNotRequested && runtimeIdentity.loaderDiagAvailable === false && runtimeIdentity.runtimeCameFromAliasServer !== true;
+    const nativeRuntimeMissing = false;
+    const captureEngineMissing = !modulePresence.transcriptArchiveEngineLoaded;
+    const saveHandlerStale = !handlerOwnership.currentHandlerMatchesPatchedApi;
+    const notCurrentLoadedChat = captureReadiness.selectedTargetEqualsCurrentLoadedChat === false;
+    const noVisibleMessages = Number(captureReadiness.visibleMessageCount || 0) <= 0;
+    const captureReturnedNoTranscript = null;
+    const registryWriteWouldBeLinkOnly = captureEngineMissing || notCurrentLoadedChat || noVisibleMessages || !registrySyncReadiness.chatRegistryUpsertCallable;
+    const syncBridgeMissing = !registrySyncReadiness.nativeToStudioBroadcastExists && !registrySyncReadiness.syncFolderBridgeExists;
+    const failureReasons = {
+      wrongExtension,
+      aliasUnavailable,
+      nativeRuntimeMissing,
+      captureEngineMissing,
+      saveHandlerStale,
+      notCurrentLoadedChat,
+      noVisibleMessages,
+      captureReturnedNoTranscript,
+      registryWriteWouldBeLinkOnly,
+      syncBridgeMissing,
+    };
+    return {
+      ...failureReasons,
+      activeReasons: Object.entries(failureReasons)
+        .filter((entry) => entry[1] === true)
+        .map((entry) => entry[0]),
+    };
+  }
+
+  async function API_buildTruthDiagnostic(opts = {}) {
+    const [loaderInfoDiag, loaderDiagDiag] = await Promise.all([
+      API_loaderInfoDiagnostic(),
+      API_loaderDiagDiagnostic(),
+    ]);
+    const runtimeIdentity = API_runtimeIdentity(loaderInfoDiag, loaderDiagDiag);
+    const loadedAliases = runtimeIdentity.loadedModuleList;
+    const nativeModulePresence = API_modulePresence(loadedAliases);
+    const markerPresence = API_markerPresence();
+    const handlerOwnership = API_handlerOwnership();
+    const captureReadiness = API_captureReadiness(opts);
+    const registrySyncReadiness = API_registrySyncReadiness(captureReadiness);
+    const failureReasons = API_failureReasons(
+      runtimeIdentity,
+      nativeModulePresence,
+      handlerOwnership,
+      captureReadiness,
+      registrySyncReadiness
+    );
+    return {
+      schema: F197D_BUILD_TRUTH_SCHEMA,
+      ok: failureReasons.activeReasons.length === 0,
+      marker: F197D_BUILD_TRUTH_MARKER,
+      runtimeIdentity,
+      nativeModulePresence,
+      markerPresence,
+      handlerOwnership,
+      captureReadiness,
+      registrySyncReadiness,
+      failureReasons,
+    };
+  }
+
+  function API_buildTruthDiagnosticSync(opts = {}) {
+    const runtimeIdentity = API_runtimeIdentity(
+      { ok: false, reason: 'loader-info-not-requested', value: null },
+      { ok: false, reason: 'loader-diag-not-requested', value: null }
+    );
+    const nativeModulePresence = API_modulePresence([]);
+    const markerPresence = API_markerPresence();
+    const handlerOwnership = API_handlerOwnership();
+    const captureReadiness = API_captureReadiness(opts);
+    const registrySyncReadiness = API_registrySyncReadiness(captureReadiness);
+    const failureReasons = API_failureReasons(
+      runtimeIdentity,
+      nativeModulePresence,
+      handlerOwnership,
+      captureReadiness,
+      registrySyncReadiness
+    );
+    return {
+      schema: F197D_BUILD_TRUTH_SCHEMA,
+      ok: failureReasons.activeReasons.length === 0,
+      marker: F197D_BUILD_TRUTH_MARKER,
+      runtimeIdentity,
+      nativeModulePresence,
+      markerPresence,
+      handlerOwnership,
+      captureReadiness,
+      registrySyncReadiness,
+      failureReasons,
+    };
+  }
+
+  function API_baseDiagnose() {
     return {
       surface: 'native',
       phase: 'phase-9B-deprecation-markers',
@@ -7349,6 +7679,49 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       deprecation: API_getDeprecationDiagnostics(),
     };
   }
+
+  function API_diagnose(opts = {}) {
+    const base = API_baseDiagnose();
+    const wantsAsyncBuildTruth = opts?.includeCaptureDryRun === true || opts?.includeLoaderDiagnostics === true || opts?.buildTruth === true;
+    if (!wantsAsyncBuildTruth) {
+      const buildTruth = API_buildTruthDiagnosticSync(opts);
+      return {
+        ...base,
+        buildTruth,
+        runtimeIdentity: buildTruth.runtimeIdentity,
+        nativeModulePresence: buildTruth.nativeModulePresence,
+        markerPresence: buildTruth.markerPresence,
+        handlerOwnership: buildTruth.handlerOwnership,
+        captureReadiness: buildTruth.captureReadiness,
+        registrySyncReadiness: buildTruth.registrySyncReadiness,
+        failureReasons: buildTruth.failureReasons,
+      };
+    }
+    return API_buildTruthDiagnostic(opts).then((buildTruth) => ({
+      ...base,
+      buildTruth,
+      runtimeIdentity: buildTruth.runtimeIdentity,
+      nativeModulePresence: buildTruth.nativeModulePresence,
+      markerPresence: buildTruth.markerPresence,
+      handlerOwnership: buildTruth.handlerOwnership,
+      captureReadiness: buildTruth.captureReadiness,
+      registrySyncReadiness: buildTruth.registrySyncReadiness,
+      failureReasons: buildTruth.failureReasons,
+    })).catch((error) => ({
+      ...base,
+      buildTruth: {
+        schema: F197D_BUILD_TRUTH_SCHEMA,
+        ok: false,
+        marker: F197D_BUILD_TRUTH_MARKER,
+        error: String(error && (error.message || error) || ''),
+      },
+      failureReasons: {
+        activeReasons: ['diagnostic-threw'],
+      },
+    }));
+  }
+
+  API_diagnose.__h2oF197dBuildTruth = true;
 
   const foldersPublicApi = {
     list: API_list,
@@ -7478,7 +7851,9 @@ function LIBCORE_registerFoldersOwner() {
   if (typeof H2O.folders.setShowCategoryCounts !== 'function') H2O.folders.setShowCategoryCounts = API_setShowCategoryCounts;
   if (typeof H2O.folders.previewMetadataOperation !== 'function') H2O.folders.previewMetadataOperation = API_previewMetadataOperation;
   if (typeof H2O.folders.applyMetadataOperation !== 'function') H2O.folders.applyMetadataOperation = API_applyMetadataOperation;
-  if (typeof H2O.folders.diagnose !== 'function') H2O.folders.diagnose = API_diagnose;
+  if (typeof H2O.folders.diagnose !== 'function' || H2O.folders.diagnose.__h2oF197dBuildTruth !== true) {
+    H2O.folders.diagnose = API_diagnose;
+  }
   if (typeof H2O.folders.ensureInjected !== 'function') H2O.folders.ensureInjected = CORE_FS_ensureInjected;
   if (typeof H2O.folders.syncFolderSidebarActiveState !== 'function') H2O.folders.syncFolderSidebarActiveState = CORE_FS_syncFolderSidebarActiveState;
   if (typeof H2O.folders.getSidebarDiagnostics !== 'function') H2O.folders.getSidebarDiagnostics = foldersPublicApi.getSidebarDiagnostics;
