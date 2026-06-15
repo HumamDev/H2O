@@ -66,6 +66,7 @@
     snapshotId: "",
     currentFolderId: "",
     currentFolderName: "",
+    lastFolderSaveResult: null,
     visible: false,
     cssInjected: false,
   };
@@ -86,6 +87,116 @@
 
   function setFolderBinding(chatId, folderId) {
     try { return H2O.archiveBoot?.setFolderBinding?.(chatId, folderId); } catch (e) { warn("setFolderBinding failed", e); }
+  }
+
+  function currentChatHref(chatId) {
+    const id = String(chatId || "").trim();
+    if (!id) return "";
+    try {
+      const url = new URL(W.location.href);
+      if (url.hostname === "chatgpt.com" && url.pathname.split("/").includes(id)) {
+        return url.href;
+      }
+    } catch {}
+    return `https://chatgpt.com/c/${encodeURIComponent(id)}`;
+  }
+
+  function stripSaveResultSummary(result, folderId, folderName) {
+    const summary = (result && typeof result === "object") ? result : {};
+    const capture = (summary.captureSummary && typeof summary.captureSummary === "object")
+      ? summary.captureSummary
+      : {};
+    return {
+      ok: !!summary.ok,
+      status: String(summary.status || (summary.ok ? "saved-and-bound" : "save-to-folder-failed")),
+      reason: String(summary.reason || ""),
+      message: String(summary.message || ""),
+      chatId: String(summary.chatId || state.chatId || ""),
+      folderId: String(summary.folderId || folderId || ""),
+      folderName: String(summary.folderName || folderName || ""),
+      snapshotId: String(summary.snapshotId || summary.lastSnapshotId || capture.snapshotId || capture.lastSnapshotId || ""),
+      snapshotCount: Number(summary.snapshotCount || capture.snapshotCount || 0),
+      messageCount: Number(summary.messageCount || capture.messageCount || 0),
+      turnCount: Number(summary.turnCount || capture.turnCount || 0),
+      userTurnCount: Number(summary.userTurnCount || capture.userTurnCount || 0),
+      assistantTurnCount: Number(summary.assistantTurnCount || capture.assistantTurnCount || 0),
+    };
+  }
+
+  function saveFailureMessage(result) {
+    const message = String(result?.message || "").trim();
+    if (message) return message;
+    const status = String(result?.status || result?.reason || "").trim();
+    if (status === "extension-context-invalidated") {
+      return "Extension was reloaded. Refresh this ChatGPT tab, then try Save to Folder again.";
+    }
+    if (status === "capture-requires-open-chat") return "Open this chat first to capture transcript.";
+    if (status === "capture-transcript-missing") return "Could not capture transcript; no folder save was created.";
+    return "Could not save to folder.";
+  }
+
+  function updateSublabel(message) {
+    try {
+      const sublabel = state.root?.querySelector?.('[data-ref="sublabel"]');
+      if (sublabel) sublabel.textContent = String(message || "");
+    } catch {}
+  }
+
+  async function saveCurrentChatToFolder(folderId, folderName) {
+    const fid = String(folderId || "").trim();
+    const label = String(folderName || "").trim();
+    if (!fid) {
+      const clearResult = await Promise.resolve(setFolderBinding(state.chatId, ""));
+      const summary = {
+        ok: clearResult?.ok !== false,
+        status: String(clearResult?.status || "folder-binding-clear"),
+        chatId: String(state.chatId || ""),
+        folderId: "",
+        folderName: "",
+      };
+      state.lastFolderSaveResult = summary;
+      return summary;
+    }
+
+    const saveAndBind = H2O.folders?.saveAndBindToFolder;
+    if (typeof saveAndBind !== "function") {
+      const result = {
+        ok: false,
+        status: "canonical-save-to-folder-unavailable",
+        reason: "canonical-save-to-folder-unavailable",
+        message: "Save to Folder is not ready. Refresh this ChatGPT tab, then try again.",
+        chatId: String(state.chatId || ""),
+        folderId: fid,
+        folderName: label,
+      };
+      state.lastFolderSaveResult = result;
+      return result;
+    }
+
+    let result = null;
+    try {
+      result = await saveAndBind({
+        chatId: state.chatId,
+        href: currentChatHref(state.chatId),
+        folderId: fid,
+        folderName: label,
+        title: D.title || "",
+        source: "capture-save-strip-folder-dropdown",
+      });
+    } catch (error) {
+      warn("canonical save-to-folder failed", error);
+      result = {
+        ok: false,
+        status: "save-to-folder-threw",
+        reason: "save-to-folder-threw",
+        message: String(error?.message || "Could not save to folder."),
+        chatId: String(state.chatId || ""),
+        folderId: fid,
+        folderName: label,
+      };
+    }
+    state.lastFolderSaveResult = stripSaveResultSummary(result, fid, label);
+    return result;
   }
 
   function openWorkbench(route) {
@@ -319,14 +430,33 @@
   }
 
   async function selectFolder(folderId, folderName) {
-    state.currentFolderId = String(folderId || "");
-    state.currentFolderName = folderName || "Unfiled";
+    const previousFolderId = state.currentFolderId;
+    const previousFolderName = state.currentFolderName || "Unfiled";
+    const nextFolderId = String(folderId || "");
+    const nextFolderName = folderName || "Unfiled";
+
+    state.currentFolderId = nextFolderId;
+    state.currentFolderName = nextFolderName;
     state.folderLabelEl.textContent = state.currentFolderName;
     state.folderDropdown.classList.remove("h2o-ss-open");
     state.folderPill.classList.toggle("h2o-ss-active", !!state.currentFolderId);
 
     if (state.chatId) {
-      try { await setFolderBinding(state.chatId, state.currentFolderId); } catch {}
+      const result = await saveCurrentChatToFolder(state.currentFolderId, state.currentFolderName);
+      if (result?.ok === false) {
+        state.currentFolderId = previousFolderId;
+        state.currentFolderName = previousFolderName;
+        state.folderLabelEl.textContent = previousFolderName;
+        state.folderPill.classList.toggle("h2o-ss-active", !!previousFolderId);
+        updateSublabel(saveFailureMessage(result));
+        resetTimerLong();
+        return;
+      }
+      state.currentFolderId = String(result?.folderId || state.currentFolderId || "");
+      state.currentFolderName = String(result?.folderName || state.currentFolderName || "Unfiled");
+      state.folderLabelEl.textContent = state.currentFolderName;
+      state.folderPill.classList.toggle("h2o-ss-active", !!state.currentFolderId);
+      if (state.currentFolderId) updateSublabel(`Saved to ${state.currentFolderName}`);
     }
     resetTimerLong();
   }
@@ -417,8 +547,12 @@
     return state.visible;
   }
 
+  function getLastFolderSaveResult() {
+    return state.lastFolderSaveResult ? { ...state.lastFolderSaveResult } : null;
+  }
+
   // ─── Export ───
-  const api = { show, dismiss, isVisible };
+  const api = { show, dismiss, isVisible, getLastFolderSaveResult };
   H2O.archiveSaveStrip = api;
 
   // Flush any show calls queued by 0D3a before this script finished loading.

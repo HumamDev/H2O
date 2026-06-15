@@ -15,6 +15,7 @@ const FILES = {
   studioRegistryCore: 'src-surfaces-base/studio/S0F0c. 🎬 Library Registry Core - Studio.js',
   extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
   archiveEngine: 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
+  saveStrip: 'src-runtime-base/0D3d.⚫️🗄️ Transcript Save Strip ⏺️🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   nativeSync: 'src-runtime-base/0F1h.⬛️🗂️ Library Sync 🛰🗂️.js',
@@ -300,6 +301,21 @@ const checks = [
       sources.nativeFolders.includes('syncExported: false'),
     FILES.nativeFolders,
     'Native Save to Folder must preserve the current/sidebar title, expose transcript evidence, and queue the existing native-to-Studio sync broadcast.'
+  ),
+  check(
+    'native-save-strip-folder-dropdown-uses-canonical-save',
+    sources.saveStrip.includes('async function saveCurrentChatToFolder') &&
+      sources.saveStrip.includes('const saveAndBind = H2O.folders?.saveAndBindToFolder') &&
+      sources.saveStrip.includes('source: "capture-save-strip-folder-dropdown"') &&
+      sources.saveStrip.includes('canonical-save-to-folder-unavailable') &&
+      sources.saveStrip.includes('getLastFolderSaveResult') &&
+      sources.saveStrip.includes('state.lastFolderSaveResult = stripSaveResultSummary') &&
+      sources.saveStrip.includes('updateSublabel(saveFailureMessage(result))') &&
+      sources.nativeFolders.includes('async function API_saveAndBindToFolder') &&
+      sources.nativeFolders.includes('capture-transcript-missing') &&
+      sources.nativeFolders.includes('extension-context-invalidated'),
+    FILES.saveStrip,
+    'The transcript save strip folder dropdown must call the canonical Save-to-Folder pipeline instead of doing a folder-only/link-only binding.'
   ),
   check(
     'native-save-to-folder-build-truth-diagnostic',
