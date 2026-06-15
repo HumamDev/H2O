@@ -322,16 +322,20 @@
     if (!row) return false;
     const raw = row.raw || {};
     if (resolveSnapshotId(row)) return true;
-    const hasRawSnapshotCount = Object.prototype.hasOwnProperty.call(raw, 'snapshotCount')
-      || Object.prototype.hasOwnProperty.call(raw, 'snapshotsCount')
-      || (Array.isArray(raw.snapshots) && raw.snapshots.length > 0);
     const hasRawMessageCount = Object.prototype.hasOwnProperty.call(raw, 'messageCount')
       || Object.prototype.hasOwnProperty.call(raw, 'turnCount')
       || Object.prototype.hasOwnProperty.call(raw, 'userTurnCount')
       || Object.prototype.hasOwnProperty.call(raw, 'assistantTurnCount');
-    const snapshotCount = Number(hasRawSnapshotCount
-      ? (raw.snapshotCount ?? raw.snapshotsCount ?? raw.snapshots?.length ?? 0)
-      : (row.snapshotCount ?? row.snapshotsCount ?? 0)) || 0;
+    const hasSnapshotArrayEvidence = Array.isArray(raw.snapshots)
+      && raw.snapshots.some((snap) => {
+        if (!snap || typeof snap !== 'object') return false;
+        return !!(
+          snap.snapshotId
+          || snap.id
+          || Number(snap.messageCount || 0) > 0
+          || Number(snap.turnCount || 0) > 0
+        );
+      });
     const messageCount = Number(hasRawMessageCount
       ? (raw.messageCount ?? raw.turnCount ?? Math.max(Number(raw.userTurnCount) || 0, Number(raw.assistantTurnCount) || 0) ?? 0)
       : (row.messageCount ?? row.turnCount ?? Math.max(Number(row.userTurnCount) || 0, Number(row.assistantTurnCount) || 0) ?? 0)) || 0;
@@ -340,7 +344,7 @@
     if (!st.isSaved && (view === 'linked' || view === 'imported' || st.isLinked || st.isImported) && resolveLinkedUrl(row) && messageCount <= 0) {
       return false;
     }
-    return snapshotCount > 0 || messageCount > 0;
+    return hasSnapshotArrayEvidence || messageCount > 0;
   }
 
   function rowHasOpenableTranscriptContent(row) {

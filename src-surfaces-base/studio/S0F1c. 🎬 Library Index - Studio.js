@@ -263,7 +263,6 @@
       || chat?.snapshotId
       || chat?.snapshot_id
       || latestSnapshot?.snapshotId
-      || numericCount(chat?.snapshotCount) > 0
       || numericCount(chat?.messageCount) > 0
       || numericCount(chat?.turnCount) > 0
       || numericCount(chat?.userTurnCount) > 0
@@ -810,9 +809,9 @@
       || (chat?.sourceId ? ('https://chatgpt.com/c/' + chat.sourceId) : '')
       || (cid ? ('https://chatgpt.com/c/' + cid) : '');
     const importedShell = !!(chat?.importBatchId || meta.f19ChromeDesktopMinimalRow || meta.f19ChromeDesktopMaterializedShell);
-    const snapshotCount = Math.max(numericCount(chat?.snapshotCount), latestSnapshot ? 1 : 0);
     const messageCount = Math.max(numericCount(chat?.messageCount), numericCount(latestSnapshot?.messageCount));
     const snapshotId = String(chat?.lastSnapshotId || chat?.snapshotId || chat?.snapshot_id || latestSnapshot?.snapshotId || '').trim();
+    const snapshotCount = snapshotId ? Math.max(numericCount(chat?.snapshotCount), 1) : 0;
     const hasTranscript = chatHasTranscriptEvidence({ ...chat, snapshotCount, messageCount }, latestSnapshot);
     const displaySaved = !!(chat?.isSaved && hasTranscript);
     const displayLinked = !!(chat?.isLinked || (!hasTranscript && href));
