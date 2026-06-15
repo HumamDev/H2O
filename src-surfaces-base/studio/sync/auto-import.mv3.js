@@ -88,6 +88,7 @@
   var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
   var EXPORT_COVERAGE_MINIMAL_ROWS = 'chrome-export-source-coverage-minimal-rows-added';
   var EXPORT_SNAPSHOT_PAYLOAD_MISSING = 'chrome-export-snapshot-payload-missing';
+  var EXPORT_SNAPSHOT_PAYLOAD_DOWNGRADED = 'chrome-export-snapshot-payload-downgraded';
   var CHROME_FILE          = 'chrome-latest.json';
   var CHROME_FILE_TMP      = 'chrome-latest.json.tmp';
   var MSG_ARCHIVE          = 'h2o-ext-archive:v1';
@@ -127,6 +128,7 @@
     lastEventAt: 0,
     lastEventName: '',
     eventTriggerCount: 0,
+    lastSnapshotPayloadCoverage: null,
     errors: [],
   };
 
@@ -376,6 +378,23 @@
     return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
   }
 
+  function redactedHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+    }
+    return 'h:' + ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function incrementCount(map, key) {
+    if (!map) return;
+    var k = cleanString(key) || 'unknown';
+    map[k] = Number(map[k] || 0) + 1;
+  }
+
   function normalizeDisplayClass(value) {
     var text = cleanString(value).toLowerCase();
     if (!text) return '';
@@ -503,6 +522,42 @@
 
   function hasArchiveEvidence(row) {
     return hasRealTranscriptEvidence(row);
+  }
+
+  function rowPayloadClass(row) {
+    var r = row && typeof row === 'object' ? row : {};
+    var source = [
+      r.transcriptEvidenceSource,
+      r.captureSource,
+      r.linkedFrom,
+      r.sourceView,
+      r.originalView,
+      r.rawView,
+      r.source && r.source.kind,
+      r.source && r.source.source,
+      r.meta && r.meta.importedFrom,
+      r.meta && r.meta.captureSource
+    ].map(cleanString).join(' ').toLowerCase();
+    if (source.indexOf('save-to-folder') !== -1 || source.indexOf('native') !== -1) return 'native-save-to-folder';
+    if (isImportedRow(row)) return 'imported-shell';
+    if (hasArchiveEvidence(row)) return 'archive-backed';
+    if (cleanString(r.sourceView || r.originalView || r.rawView)) return 'registry-repair';
+    return 'saved-row';
+  }
+
+  function rowSourceKind(row) {
+    var r = row && typeof row === 'object' ? row : {};
+    var source = cleanString(r.sourceKind || r.sourceType || r.transcriptEvidenceSource || r.captureSource);
+    if (source) return source;
+    if (r.source && typeof r.source === 'object') {
+      source = cleanString(r.source.kind || r.source.source || r.source.type);
+      if (source) return source;
+    }
+    if (r.meta && typeof r.meta === 'object') {
+      source = cleanString(r.meta.importedFrom || r.meta.captureSource || r.meta.sourceKind);
+      if (source) return source;
+    }
+    return cleanString(r.sourceView || r.originalView || r.rawView || r.view || r.displayView || 'library-index');
   }
 
   function getLibraryIndexRows() {
@@ -665,15 +720,208 @@
 
   async function hydrateSnapshotPayloadForRow(row, evidence) {
     var snapshotId = cleanString(evidence && evidence.snapshotId);
-    if (!snapshotId) return null;
+    var chatId = rowId(row);
+    if (!snapshotId) {
+      return {
+        ok: false,
+        payload: null,
+        reason: 'snapshot-id-missing',
+        loadSnapshotStatus: 'snapshot-id-missing',
+        archiveIndexHasSnapshotId: false,
+        archiveSnapshotCount: 0
+      };
+    }
     try {
       var loaded = await callArchive('loadSnapshot', { snapshotId: snapshotId });
       var payload = snapshotBundlePayloadFromLoaded(loaded, evidence, row);
-      return snapshotPayloadHasContent(payload) ? payload : null;
+      if (snapshotPayloadHasContent(payload)) {
+        return {
+          ok: true,
+          payload: payload,
+          reason: '',
+          loadSnapshotStatus: 'loaded-by-snapshot-id',
+          archiveIndexHasSnapshotId: true,
+          archiveSnapshotCount: 0
+        };
+      }
+      var headers = [];
+      if (chatId) {
+        try {
+          var listed = await callArchive('listSnapshots', { chatId: chatId });
+          headers = Array.isArray(listed) ? listed : [];
+        } catch (listErr) {
+          pushError('hydrateSnapshotPayloadForRow.listSnapshots', listErr);
+        }
+      }
+      var archiveIndexHasSnapshotId = headers.some(function (header) {
+        return cleanString(header && header.snapshotId) === snapshotId;
+      });
+      var latestSnapshotId = '';
+      for (var h = 0; h < headers.length; h += 1) {
+        latestSnapshotId = cleanString(headers[h] && headers[h].snapshotId);
+        if (latestSnapshotId) break;
+      }
+      if (latestSnapshotId && latestSnapshotId !== snapshotId) {
+        try {
+          var latestLoaded = await callArchive('loadSnapshot', { snapshotId: latestSnapshotId });
+          var repairedEvidence = Object.assign({}, evidence, {
+            snapshotId: latestSnapshotId,
+            lastSnapshotId: latestSnapshotId,
+            latestSnapshotId: latestSnapshotId
+          });
+          var latestPayload = snapshotBundlePayloadFromLoaded(latestLoaded, repairedEvidence, row);
+          if (snapshotPayloadHasContent(latestPayload)) {
+            return {
+              ok: true,
+              payload: latestPayload,
+              reason: '',
+              loadSnapshotStatus: 'repaired-from-latest-snapshot',
+              archiveIndexHasSnapshotId: archiveIndexHasSnapshotId,
+              archiveSnapshotCount: headers.length,
+              repairedFromSnapshotIdHash: redactedHash(snapshotId),
+              repairedToSnapshotIdHash: redactedHash(latestSnapshotId)
+            };
+          }
+        } catch (latestErr) {
+          pushError('hydrateSnapshotPayloadForRow.loadLatestCandidate', latestErr);
+        }
+      }
+      return {
+        ok: false,
+        payload: null,
+        reason: headers.length === 0
+          ? 'archive-index-empty'
+          : (archiveIndexHasSnapshotId ? 'loadSnapshot-empty-payload' : 'archive-index-missing-snapshot-id'),
+        loadSnapshotStatus: loaded ? 'empty-payload' : 'loadSnapshot-not-found',
+        archiveIndexHasSnapshotId: archiveIndexHasSnapshotId,
+        archiveSnapshotCount: headers.length
+      };
     } catch (e) {
       pushError('hydrateSnapshotPayloadForRow', e);
-      return null;
+      return {
+        ok: false,
+        payload: null,
+        reason: 'loadSnapshot-error',
+        loadSnapshotStatus: 'loadSnapshot-error',
+        archiveIndexHasSnapshotId: false,
+        archiveSnapshotCount: 0
+      };
     }
+  }
+
+  function recordSnapshotPayloadMiss(payloadStats, row, evidence, hydrateResult, decision) {
+    var result = hydrateResult && typeof hydrateResult === 'object' ? hydrateResult : {};
+    var reason = cleanString(result.reason) || 'snapshot-payload-missing';
+    incrementCount(payloadStats.missingSnapshotReasons, reason);
+    incrementCount(payloadStats.missingSnapshotClasses, rowPayloadClass(row));
+    if (payloadStats.missingSnapshotDetails.length < 10) {
+      payloadStats.missingSnapshotDetails.push({
+        rowClass: rowPayloadClass(row),
+        rowSource: rowSourceKind(row),
+        hasSnapshotId: !!cleanString(evidence && evidence.snapshotId),
+        snapshotIdHash: redactedHash(evidence && evidence.snapshotId),
+        chatIdHash: redactedHash(rowId(row)),
+        loadSnapshotStatus: cleanString(result.loadSnapshotStatus || reason),
+        archiveIndexHasSnapshotId: result.archiveIndexHasSnapshotId === true,
+        archiveSnapshotCount: Number(result.archiveSnapshotCount || 0),
+        decision: decision || 'block-export'
+      });
+    }
+  }
+
+  function downgradeProjectedChatForMissingPayload(projected, row, evidence, reason) {
+    var id = rowId(row);
+    var title = friendlyShellTitle(titleCandidatesFromLibraryRow(row), id, 'Imported chat');
+    var href = cleanString(row && (row.href || row.url || row.sourceUrl || row.linkSourceHref || row.normalizedHref))
+      || (id ? 'https://chatgpt.com/c/' + id : '');
+    var next = cloneJson(projected) || {};
+    var existingIndex = next.chatIndex && typeof next.chatIndex === 'object' && !Array.isArray(next.chatIndex)
+      ? next.chatIndex : {};
+    var existingState = existingIndex.state && typeof existingIndex.state === 'object' ? existingIndex.state : {};
+    var existingMeta = existingIndex.meta && typeof existingIndex.meta === 'object' ? existingIndex.meta : {};
+    var existingOrg = existingIndex.organization && typeof existingIndex.organization === 'object' ? existingIndex.organization : {};
+    var snapshotId = cleanString(evidence && evidence.snapshotId);
+    var sourceEvidence = {
+      sourceSnapshotId: snapshotId,
+      sourceLastSnapshotId: cleanString(evidence && evidence.lastSnapshotId),
+      sourceSnapshotCount: numericCount(evidence && evidence.snapshotCount),
+      sourceMessageCount: numericCount(evidence && evidence.messageCount),
+      sourceTurnCount: numericCount(evidence && evidence.turnCount),
+      sourceUserTurnCount: numericCount(evidence && evidence.userTurnCount),
+      sourceAssistantTurnCount: numericCount(evidence && evidence.assistantTurnCount),
+      sourceAnswerCount: numericCount(evidence && evidence.answerCount),
+      f19SnapshotPayloadMissing: true,
+      f19SnapshotPayloadDowngraded: true,
+      f19SnapshotPayloadDowngradeReason: cleanString(reason) || 'snapshot-payload-missing'
+    };
+    next.snapshotId = '';
+    next.lastSnapshotId = '';
+    next.latestSnapshotId = '';
+    next.snapshotCount = 0;
+    next.messageCount = 0;
+    next.turnCount = 0;
+    next.userTurnCount = 0;
+    next.assistantTurnCount = 0;
+    next.answerCount = 0;
+    next.snapshots = [];
+    next.chatIndex = Object.assign({}, existingIndex, sourceEvidence, {
+      id: id || cleanString(existingIndex.id),
+      chatId: id || cleanString(existingIndex.chatId),
+      title: title,
+      displayTitle: title,
+      sourceTitle: cleanString(existingIndex.sourceTitle) || title,
+      pageTitle: cleanString(existingIndex.pageTitle) || title,
+      chatTitle: cleanString(existingIndex.chatTitle) || title,
+      originalTitle: cleanString(existingIndex.originalTitle) || title,
+      href: href || cleanString(existingIndex.href),
+      view: 'linked',
+      displayView: 'link',
+      badgeKind: 'Link',
+      readerKind: 'placeholder',
+      sourceView: cleanString(existingIndex.sourceView || existingIndex.originalView || existingIndex.rawView || existingIndex.view || 'saved'),
+      originalView: cleanString(existingIndex.originalView || existingIndex.sourceView || existingIndex.rawView || existingIndex.view || 'saved'),
+      rawView: cleanString(existingIndex.rawView || existingIndex.sourceView || existingIndex.originalView || existingIndex.view || 'saved'),
+      sourceIsSaved: existingIndex.sourceIsSaved === false ? false : true,
+      sourceIsLinked: existingIndex.sourceIsLinked === true || existingState.isLinked === true,
+      snapshotId: '',
+      lastSnapshotId: '',
+      latestSnapshotId: '',
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      userTurnCount: 0,
+      assistantTurnCount: 0,
+      answerCount: 0,
+      state: Object.assign({}, existingState, {
+        isSaved: false,
+        isLinked: true,
+        isImported: existingState.isImported === true || isImportedRow(row),
+        isDeleted: false
+      }),
+      organization: Object.assign({}, existingOrg, {
+        folderId: cleanString(existingOrg.folderId || existingOrg.folder_id || row && (row.folderId || row.folder_id))
+      }),
+      linkSourceHref: cleanString(existingIndex.linkSourceHref || href),
+      meta: Object.assign({}, existingMeta, {
+        title: title,
+        displayTitle: title,
+        sourceTitle: cleanString(existingMeta.sourceTitle) || title,
+        pageTitle: cleanString(existingMeta.pageTitle) || title,
+        chatTitle: cleanString(existingMeta.chatTitle) || title,
+        originalTitle: cleanString(existingMeta.originalTitle) || title
+      }, sourceEvidence, {
+        snapshotId: '',
+        lastSnapshotId: '',
+        latestSnapshotId: '',
+        snapshotCount: 0,
+        messageCount: 0,
+        turnCount: 0,
+        userTurnCount: 0,
+        assistantTurnCount: 0,
+        answerCount: 0
+      })
+    });
+    return next;
   }
 
   async function ensureSnapshotPayloadForProjectedChat(projected, row, payloadStats) {
@@ -685,13 +933,51 @@
       payloadStats.present += 1;
       return projected;
     }
-    var payload = await hydrateSnapshotPayloadForRow(row, evidence);
-    if (!payload) {
-      payloadStats.missing += 1;
+    var hydrated = await hydrateSnapshotPayloadForRow(row, evidence);
+    if (!hydrated || !hydrated.ok || !hydrated.payload) {
+      payloadStats.hydrationMiss += 1;
+      recordSnapshotPayloadMiss(payloadStats, row, evidence, hydrated, 'downgrade-to-metadata-only');
+      payloadStats.downgraded += 1;
+      return downgradeProjectedChatForMissingPayload(projected, row, evidence, hydrated && hydrated.reason);
+    }
+    var payload = hydrated.payload;
+    if (cleanString(hydrated.loadSnapshotStatus) === 'repaired-from-latest-snapshot') {
+      payloadStats.repaired += 1;
+      snapshotId = cleanString(payload && payload.snapshotId) || snapshotId;
+    }
+    if (snapshotId) {
+      var payloadMessageCount = numericCount(payload && payload.messageCount) || numericCount(evidence.messageCount);
+      projected.snapshotId = snapshotId;
+      projected.lastSnapshotId = snapshotId;
+      projected.latestSnapshotId = snapshotId;
+      projected.snapshotCount = Math.max(numericCount(evidence.snapshotCount), 1);
+      projected.messageCount = payloadMessageCount;
+      projected.turnCount = numericCount(evidence.turnCount);
+      projected.userTurnCount = numericCount(evidence.userTurnCount);
+      projected.assistantTurnCount = numericCount(evidence.assistantTurnCount);
+      projected.answerCount = numericCount(evidence.answerCount);
       projected.chatIndex = projected.chatIndex && typeof projected.chatIndex === 'object'
         ? projected.chatIndex : {};
-      projected.chatIndex.f19SnapshotPayloadMissing = true;
-      return projected;
+      projected.chatIndex.snapshotId = snapshotId;
+      projected.chatIndex.lastSnapshotId = snapshotId;
+      projected.chatIndex.latestSnapshotId = snapshotId;
+      projected.chatIndex.snapshotCount = Math.max(numericCount(evidence.snapshotCount), 1);
+      projected.chatIndex.messageCount = payloadMessageCount;
+      projected.chatIndex.turnCount = numericCount(evidence.turnCount);
+      projected.chatIndex.userTurnCount = numericCount(evidence.userTurnCount);
+      projected.chatIndex.assistantTurnCount = numericCount(evidence.assistantTurnCount);
+      projected.chatIndex.answerCount = numericCount(evidence.answerCount);
+      projected.chatIndex.meta = projected.chatIndex.meta && typeof projected.chatIndex.meta === 'object'
+        ? projected.chatIndex.meta : {};
+      projected.chatIndex.meta.snapshotId = snapshotId;
+      projected.chatIndex.meta.lastSnapshotId = snapshotId;
+      projected.chatIndex.meta.latestSnapshotId = snapshotId;
+      projected.chatIndex.meta.snapshotCount = Math.max(numericCount(evidence.snapshotCount), 1);
+      projected.chatIndex.meta.messageCount = payloadMessageCount;
+      projected.chatIndex.meta.turnCount = numericCount(evidence.turnCount);
+      projected.chatIndex.meta.userTurnCount = numericCount(evidence.userTurnCount);
+      projected.chatIndex.meta.assistantTurnCount = numericCount(evidence.assistantTurnCount);
+      projected.chatIndex.meta.answerCount = numericCount(evidence.answerCount);
     }
     projected.snapshots = Array.isArray(projected.snapshots) ? projected.snapshots.slice() : [];
     var replaced = false;
@@ -830,14 +1116,18 @@
     var snapshotClassCounts = makeExportClassCounts(snapshotRows);
     var addedMinimalClassCounts = makeExportClassCounts(addedRows);
     var unexportableClassCounts = makeExportClassCounts(unexportableRows);
+    var downgradedCount = Number(payloadStats.downgraded || 0);
+    var expectedSaved = Math.max(0, snapshotCounts.saved - downgradedCount);
+    var expectedLinked = snapshotCounts.linked + downgradedCount;
     var blockers = [];
     var warnings = [];
     if (addedRows.length > 0) warnings.push(EXPORT_COVERAGE_MINIMAL_ROWS);
+    if (downgradedCount > 0) warnings.push(EXPORT_SNAPSHOT_PAYLOAD_DOWNGRADED);
     if (Number(payloadStats.missing || 0) > 0) blockers.push(EXPORT_SNAPSHOT_PAYLOAD_MISSING);
     if (unexportableRows.length > 0
         || snapshotCounts.total !== bundleChats.length
-        || snapshotCounts.saved !== bundleCounts.saved
-        || snapshotCounts.linked !== bundleCounts.linked
+        || expectedSaved !== bundleCounts.saved
+        || expectedLinked !== bundleCounts.linked
         || snapshotCounts.pinned !== bundleCounts.pinned
         || snapshotCounts.archived !== bundleCounts.archived) {
       blockers.push(EXPORT_COVERAGE_MISMATCH);
@@ -864,17 +1154,28 @@
       snapshotPayloadRequiredCount: Number(payloadStats.required || 0),
       snapshotPayloadPresentCount: Number(payloadStats.present || 0),
       snapshotPayloadHydratedCount: Number(payloadStats.hydrated || 0),
+      snapshotPayloadRepairedCount: Number(payloadStats.repaired || 0),
+      snapshotPayloadHydrationMissCount: Number(payloadStats.hydrationMiss || 0),
+      snapshotPayloadDowngradedCount: downgradedCount,
       snapshotPayloadMissingCount: Number(payloadStats.missing || 0),
+      readerReadyPayloadMissingCount: Number(payloadStats.missing || 0),
+      missingSnapshotClasses: Object.assign({}, payloadStats.missingSnapshotClasses || {}),
+      missingSnapshotReasons: Object.assign({}, payloadStats.missingSnapshotReasons || {}),
+      missingSnapshotDetails: (payloadStats.missingSnapshotDetails || []).slice(0, 10),
+      effectiveSnapshotSaved: expectedSaved,
+      effectiveSnapshotLinked: expectedLinked,
       missingRowTypeCounts: missingTypeCounts,
       snapshotExportClassCounts: snapshotClassCounts,
       addedMinimalRowTypeCounts: addedMinimalClassCounts,
       unexportableRowTypeCounts: unexportableClassCounts,
       supportedRowsRepresented: snapshotCounts.total === bundleChats.length,
-      supportedStateRepresented: snapshotCounts.saved === bundleCounts.saved
-        && snapshotCounts.linked === bundleCounts.linked
+      supportedStateRepresented: expectedSaved === bundleCounts.saved
+        && expectedLinked === bundleCounts.linked
         && snapshotCounts.pinned === bundleCounts.pinned
         && snapshotCounts.archived === bundleCounts.archived,
-      coverageDecision: blockers.length === 0 ? 'allow-export' : 'block-export',
+      coverageDecision: blockers.length === 0
+        ? (downgradedCount > 0 ? 'allow-export-with-metadata-only-downgrade' : 'allow-export')
+        : 'block-export',
       blockers: blockers,
       warnings: warnings,
       privacy: {
@@ -930,7 +1231,18 @@
     var missingRows = [];
     var addedRows = [];
     var unexportableRows = [];
-    var payloadStats = { required: 0, present: 0, hydrated: 0, missing: 0 };
+    var payloadStats = {
+      required: 0,
+      present: 0,
+      hydrated: 0,
+      repaired: 0,
+      hydrationMiss: 0,
+      downgraded: 0,
+      missing: 0,
+      missingSnapshotClasses: Object.create(null),
+      missingSnapshotReasons: Object.create(null),
+      missingSnapshotDetails: []
+    };
     var usedArchiveIndexes = Object.create(null);
     var projectedChats = [];
     for (var r = 0; r < rows.length; r += 1) {
@@ -1105,6 +1417,7 @@
       var aligned = await alignBundleToLibraryIndex(bundle);
       bundle = aligned.bundle || bundle;
       chromeExportCoverage = aligned.coverage || null;
+      state.lastSnapshotPayloadCoverage = chromeExportCoverage;
       if (chromeExportCoverage) {
         (chromeExportCoverage.warnings || []).forEach(function (code) {
           if (warnings.indexOf(code) === -1) warnings.push(code);
@@ -1400,6 +1713,7 @@
       lastExportFile: state.lastExportFile,
       lastExportBytes: state.lastExportBytes,
       lastExportError: state.lastExportError,
+      lastSnapshotPayloadCoverage: state.lastSnapshotPayloadCoverage,
       inFlight: state.inFlight,
     };
   }
@@ -1424,6 +1738,10 @@
     });
   }
 
+  function diagnoseSnapshotPayloadCoverage() {
+    return state.lastSnapshotPayloadCoverage || null;
+  }
+
   /* ── Public API ──────────────────────────────────────────────────── */
   var api = {
     __installed: true,
@@ -1435,6 +1753,7 @@
     trigger: trigger,
     status: status,
     diagnose: diagnose,
+    diagnoseSnapshotPayloadCoverage: diagnoseSnapshotPayloadCoverage,
   };
   H2O.Studio.sync.autoImport = api;
 
