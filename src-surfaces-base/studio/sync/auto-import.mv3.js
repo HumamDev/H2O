@@ -312,6 +312,7 @@
     var chatId = cleanString(id);
     if (!text) return true;
     if (chatId && text === chatId) return true;
+    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -319,9 +320,41 @@
   }
 
   function friendlyShellTitle(primary, id, fallback) {
-    var title = cleanString(primary);
-    if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    var values = Array.isArray(primary) ? primary : [primary];
+    for (var i = 0; i < values.length; i += 1) {
+      var title = cleanString(values[i]);
+      if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    }
     return cleanString(fallback) || 'Imported chat';
+  }
+
+  function titleCandidatesFromLibraryRow(row) {
+    var r = row && typeof row === 'object' ? row : {};
+    var meta = r.meta && typeof r.meta === 'object' ? r.meta : {};
+    var source = r.source && typeof r.source === 'object' ? r.source : {};
+    return [
+      r.title,
+      r.displayTitle,
+      r.sourceTitle,
+      r.pageTitle,
+      r.chatTitle,
+      r.name,
+      meta.title,
+      meta.displayTitle,
+      meta.sourceTitle,
+      meta.pageTitle,
+      source.title,
+      source.displayTitle,
+      source.sourceTitle,
+      source.pageTitle,
+      r.filename,
+      r.fileName,
+      r.sourceLabel,
+      meta.filename,
+      meta.sourceLabel,
+      source.filename,
+      source.label
+    ];
   }
 
   function boolValue(value) {
@@ -482,11 +515,7 @@
     var archived = isArchivedRow(row);
     var imported = !saved && !linked && !archived && isImportedRow(row);
     var pinned = isPinnedRow(row);
-    var title = friendlyShellTitle(
-      row && (row.title || row.chatTitle || row.name),
-      id,
-      linked && !saved ? 'Linked chat' : 'Imported chat'
-    );
+    var title = friendlyShellTitle(titleCandidatesFromLibraryRow(row), id, linked && !saved ? 'Linked chat' : 'Imported chat');
     var href = cleanString(row && (row.href || row.linkSourceHref || row.normalizedHref))
       || ('https://chatgpt.com/c/' + id);
     var view = linked && !saved ? 'linked' : (archived ? 'archived' : (imported ? 'imported' : 'saved'));
@@ -496,6 +525,8 @@
       chatIndex: {
         id: id,
         title: title,
+        displayTitle: title,
+        sourceTitle: title,
         href: href,
         view: view,
         state: {

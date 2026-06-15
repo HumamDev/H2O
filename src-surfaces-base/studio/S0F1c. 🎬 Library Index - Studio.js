@@ -232,6 +232,7 @@
     const chatId = cleanString(id);
     if (!text) return true;
     if (chatId && text === chatId) return true;
+    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -239,8 +240,11 @@
   }
 
   function friendlyShellTitle(primary, id, fallback) {
-    const title = cleanString(primary);
-    if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    const values = Array.isArray(primary) ? primary : [primary];
+    for (const value of values) {
+      const title = cleanString(value);
+      if (title && !looksLikeOpaqueTitle(title, id)) return title;
+    }
     return cleanString(fallback) || 'Imported chat';
   }
 
@@ -339,6 +343,8 @@
     const org = index.organization && typeof index.organization === 'object' && !Array.isArray(index.organization)
       ? index.organization
       : {};
+    const meta = chat && chat.meta && typeof chat.meta === 'object' && !Array.isArray(chat.meta) ? chat.meta : {};
+    const source = chat && chat.source && typeof chat.source === 'object' && !Array.isArray(chat.source) ? chat.source : {};
     const view = cleanString(index.view || index.kind || index.type).toLowerCase();
     const saved = view === 'saved' || index.isSaved === true || state.isSaved === true;
     const linked = view === 'linked' || index.isLinked === true || state.isLinked === true;
@@ -348,11 +354,31 @@
     const observedAt = new Date().toISOString();
     return {
       chatId,
-      title: friendlyShellTitle(
+      title: friendlyShellTitle([
         index.title || chat.title,
-        chatId,
-        linked && !saved ? 'Linked chat' : 'Imported chat'
-      ),
+        index.displayTitle,
+        index.sourceTitle,
+        index.pageTitle,
+        index.chatTitle,
+        index.name,
+        chat.displayTitle,
+        chat.sourceTitle,
+        chat.pageTitle,
+        chat.chatTitle,
+        chat.name,
+        meta.title,
+        meta.displayTitle,
+        meta.sourceTitle,
+        source.title,
+        source.displayTitle,
+        source.sourceTitle,
+        index.filename,
+        index.sourceLabel,
+        chat.filename,
+        chat.sourceLabel,
+        source.filename,
+        source.label,
+      ], chatId, linked && !saved ? 'Linked chat' : 'Imported chat'),
       href,
       normalizedHref: cleanString(index.normalizedHref || chat.normalizedHref) || href,
       updatedAt: cleanString(index.updatedAt || chat.updatedAt) || observedAt,
@@ -465,11 +491,19 @@
     if (!isSaved && !isLinked && !isImported && !st.isPinned && !st.isArchived && !href) return null;
     return c.normalizeRowStudio({
       chatId,
-      title: friendlyShellTitle(
+      title: friendlyShellTitle([
         rec.title,
-        chatId,
-        isLinked && !isSaved ? 'Linked chat' : 'Imported chat'
-      ),
+        rec.displayTitle,
+        rec.sourceTitle,
+        rec.pageTitle,
+        rec.chatTitle,
+        rec.name,
+        rec.source && rec.source.title,
+        rec.source && rec.source.displayTitle,
+        rec.source && rec.source.sourceTitle,
+        rec.filename,
+        rec.sourceLabel,
+      ], chatId, isLinked && !isSaved ? 'Linked chat' : 'Imported chat'),
       projectId: rec.project?.projectId,
       folderId: rec.organization?.folderId,
       categoryId: rec.organization?.categoryId,

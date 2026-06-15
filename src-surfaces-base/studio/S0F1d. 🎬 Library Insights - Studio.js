@@ -51,7 +51,7 @@
   // Defaults are merged with whatever's in localStorage so old prefs survive a
   // schema bump (e.g. when we added folderFilter/categoryFilter/etc.).
   const PREF_DEFAULTS = {
-    view: 'saved',
+    view: 'all',
     groupBy: 'date',
     sort: 'recent',
     search: '',
@@ -316,6 +316,7 @@
     const raw = row?.raw || {};
     const chatId = String(row?.chatId || raw.chatId || '').trim();
     if (chatId && text === chatId) return true;
+    if (/^(imported chat|linked chat|untitled chat)$/i.test(text)) return true;
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return true;
     if (/^[0-9a-f][0-9a-f-]{23,}$/i.test(text)) return true;
     if (/^(imported|chat|conversation)[-_:][a-z0-9-]{12,}$/i.test(text)) return true;
@@ -338,8 +339,32 @@
 
   function displayTitleForRow(row, fallback = 'Untitled chat') {
     const raw = row?.raw || {};
-    const candidate = String(row?.title || raw.title || row?.displayTitle || raw.displayTitle || '').trim();
-    if (candidate && !looksLikeOpaqueTitle(candidate, row)) return candidate;
+    const meta = (row?.meta && typeof row.meta === 'object') ? row.meta : {};
+    const rawMeta = (raw.meta && typeof raw.meta === 'object') ? raw.meta : {};
+    const source = (row?.source && typeof row.source === 'object') ? row.source : {};
+    const rawSource = (raw.source && typeof raw.source === 'object') ? raw.source : {};
+    const candidates = [
+      row?.title, raw.title,
+      row?.displayTitle, raw.displayTitle,
+      row?.sourceTitle, raw.sourceTitle,
+      row?.pageTitle, raw.pageTitle,
+      row?.chatTitle, raw.chatTitle,
+      row?.name, raw.name,
+      meta.title, rawMeta.title,
+      meta.displayTitle, rawMeta.displayTitle,
+      meta.sourceTitle, rawMeta.sourceTitle,
+      source.title, rawSource.title,
+      source.displayTitle, rawSource.displayTitle,
+      source.sourceTitle, rawSource.sourceTitle,
+      row?.filename, raw.filename,
+      row?.sourceLabel, raw.sourceLabel,
+      source.filename, rawSource.filename,
+      source.label, rawSource.label,
+    ];
+    for (const candidate of candidates) {
+      const title = String(candidate || '').trim();
+      if (title && !looksLikeOpaqueTitle(title, row)) return title;
+    }
     const kind = rowPlaceholderKind(row);
     if (kind === 'imported') return 'Imported chat';
     if (kind === 'linked') return 'Linked chat';
@@ -719,6 +744,7 @@
     const linkedCount = (opts && opts.linkedCount) || 0;
     return el('div', { class: 'wbFilterChips' }, [
       opts.hideViewChips ? null : el('div', { class: 'wbFilterChipGroup' }, [
+        Pill({ label: 'All',     count: opts.totalCount, active: prefs.view === 'all',     onClick: onSet('view', 'all') }),
         Pill({ label: 'Saved',   active: prefs.view === 'saved',   onClick: onSet('view', 'saved') }),
         Pill({ label: 'Pinned',  active: prefs.view === 'pinned',  onClick: onSet('view', 'pinned') }),
         Pill({ label: 'Archive', active: prefs.view === 'archive', onClick: onSet('view', 'archive') }),
@@ -875,8 +901,8 @@
   // route locks the view filter (the user can no longer accidentally diverge
   // chip selection from tab selection).
   function filterRowsForExplorer(rows, opts = {}) {
-    const v = String(opts.forceView || prefs.view || 'saved').toLowerCase();
-    let list = rows.filter((r) => r.view === v);
+    const v = String(opts.forceView || prefs.view || 'all').toLowerCase();
+    let list = v === 'all' ? rows.slice() : rows.filter((r) => r.view === v);
 
     // Dropdown-driven filters. Empty string in prefs = "All <thing>" (no filter).
     if (prefs.folderFilter)   list = list.filter((r) => String(r.folderId || '') === prefs.folderFilter);
@@ -1212,7 +1238,7 @@
       rich ? renderExplorerToolbar(idx) : null,
       rich ? renderExplorerDropdownGrid(idx) : null,
       opts.hideInternalSearch ? null : SearchBar(),
-      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount }),
+      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount, totalCount: rows.length }),
       el('div', { class: 'wbExpSummary' },
         `${formatNumber(filtered.length)} of ${formatNumber(rows.length)} chats${
           rich && hasActiveFilters() ? ` · ${[
@@ -1847,8 +1873,12 @@
     const q = String(prefs.search || '').trim().toLowerCase();
     const filtered = q ? sorted.filter((r) => rowMatchesSearch(r, q)) : sorted;
     const grouped = groupRows(filtered);
+    const activePlaceholder = state.activeLinkedRow
+      ? sorted.find((row) => sameChatRow(row, state.activeLinkedRow)) || state.activeLinkedRow
+      : null;
 
     const body = el('section', { class: 'wbExpBody' });
+    if (activePlaceholder) body.appendChild(renderLinkedDetailsPanel(activePlaceholder));
     if (filtered.length === 0) {
       body.appendChild(el('div', { class: 'wbExpEmpty' }, [
         el('div', { class: 'wbExpEmptyTitle' }, 'No chats yet'),
@@ -2081,14 +2111,15 @@
   }
 
   function renderLibraryShell(view, idx) {
-    if (view !== 'linked' && state.activeLinkedRow) state.activeLinkedRow = null;
+    const canShowPlaceholder = ['dashboard', 'explorer', 'recents', 'saved', 'pinned', 'archive', 'linked', 'all'].includes(String(view || '').toLowerCase());
+    if (!canShowPlaceholder && state.activeLinkedRow) state.activeLinkedRow = null;
     let bodyContent;
     if (view === 'explorer')        bodyContent = renderExplorer(idx, { hideInternalSearch: true });
     else if (view === 'analytics')   bodyContent = renderAnalytics(idx);
     else if (view === 'recents')     bodyContent = renderRecents(idx);
     else if (view === 'organize')    bodyContent = renderOrganize(idx);
     else if (view === 'folders')     bodyContent = renderFoldersPage(idx);
-    else if (view === 'saved' || view === 'pinned' || view === 'archive' || view === 'linked') {
+    else if (view === 'all' || view === 'saved' || view === 'pinned' || view === 'archive' || view === 'linked') {
       /* Phase K-2 — 'linked' joins the saved/pinned/archive branch so
        * #/library/linked renders the same forceView Explorer view that
        * the existing Linked chip already drives. hideViewChips is set

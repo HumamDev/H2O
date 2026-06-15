@@ -28,10 +28,13 @@ const checks = [
   check(
     'chrome-export-shell-title-friendly',
     sources.chromeExport.includes('friendlyShellTitle(') &&
+      sources.chromeExport.includes('titleCandidatesFromLibraryRow') &&
+      sources.chromeExport.includes('displayTitle: title') &&
+      sources.chromeExport.includes('sourceTitle: title') &&
       sources.chromeExport.includes("linked && !saved ? 'Linked chat' : 'Imported chat'") &&
       !sources.chromeExport.includes('var title = cleanString(row && (row.title || row.chatTitle || row.name)) || id;'),
     FILES.chromeExport,
-    'Chrome minimal LibraryIndex export must not fall back to raw chat IDs as titles.'
+    'Chrome minimal LibraryIndex export must preserve available source/display title metadata and not fall back to raw chat IDs.'
   ),
   check(
     'chrome-import-shell-title-friendly',
@@ -54,9 +57,29 @@ const checks = [
     sources.insights.includes('function isImportedShellRow') &&
       sources.insights.includes('function displayTitleForRow') &&
       sources.insights.includes("placeholder: placeholderKind") &&
+      sources.insights.includes("const canShowPlaceholder = ['dashboard', 'explorer', 'recents', 'saved', 'pinned', 'archive', 'linked', 'all'].includes") &&
       sources.insights.includes("opens:      opensReader ? 'reader' : (opensLinkedDetails ? 'placeholder-details' : 'none')"),
     FILES.insights,
     'Library Insights must route imported shell rows to a placeholder details panel instead of making them inert.'
+  ),
+  check(
+    'insights-explorer-all-filter',
+    sources.insights.includes("view: 'all'") &&
+      sources.insights.includes("Pill({ label: 'All'") &&
+      sources.insights.includes("let list = v === 'all' ? rows.slice() : rows.filter((r) => r.view === v);") &&
+      sources.insights.includes("view === 'all' || view === 'saved'"),
+    FILES.insights,
+    'Explorer must expose an All filter before Saved and include every known chat row.'
+  ),
+  check(
+    'insights-title-candidate-order',
+    sources.insights.includes('row?.displayTitle') &&
+      sources.insights.includes('row?.sourceTitle') &&
+      sources.insights.includes('source.label') &&
+      sources.insights.includes('imported chat|linked chat|untitled chat') &&
+      sources.insights.includes("if (kind === 'imported') return 'Imported chat';"),
+    FILES.insights,
+    'Imported shell rows must prefer original/display/source title metadata before the generic fallback.'
   ),
   check(
     'insights-imported-placeholder-copy',
