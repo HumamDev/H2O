@@ -41,11 +41,12 @@ export function makeChromeLiveManifest({
   const requestOtpArmed = IDENTITY_PROVIDER_REQUEST_OTP_ARMED === true;
   const oauthProvider = String(IDENTITY_PROVIDER_OAUTH_PROVIDER || "").trim().toLowerCase();
   const oauthGoogleEnabled = oauthProvider === "google";
-  // Studio Launcher: NO chatgpt.com host_permission, NO dev-proxy host_permission.
-  // The extension purely opens its own packaged surfaces/studio/studio.html via
-  // chrome.runtime.getURL — no cross-origin reach needed at all.
+  // Studio Launcher: no content_scripts and no dev-proxy host_permission. It
+  // does keep a narrow chatgpt.com host permission so the Studio page can ask
+  // the service worker to refresh metadata for imported ChatGPT URL rows
+  // without direct extension-page fetches that CORS will block.
   const hostPermissions = STUDIO_ONLY
-    ? []
+    ? [CHAT_MATCH]
     : (manifestProfile === "production"
       ? [CHAT_MATCH]
       : (requestOtpArmed

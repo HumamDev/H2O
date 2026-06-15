@@ -4782,7 +4782,7 @@ function pageMetadataDecodeEntities(value) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_m, n) => {
+    .replace(/&#(\\d+);/g, (_m, n) => {
       const code = Number(n);
       return Number.isFinite(code) ? String.fromCharCode(code) : "";
     });
@@ -4790,10 +4790,10 @@ function pageMetadataDecodeEntities(value) {
 
 function pageMetadataExtractTitle(html) {
   const text = String(html || "");
-  const meta = text.match(/<meta\s+[^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*content=["']([^"']+)["'][^>]*>/i)
-    || text.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*>/i);
-  const titleMatch = meta || text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return pageMetadataDecodeEntities(titleMatch && titleMatch[1]).replace(/\s+/g, " ").trim();
+  const meta = text.match(/<meta\\s+[^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*content=["']([^"']+)["'][^>]*>/i)
+    || text.match(/<meta\\s+[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*>/i);
+  const titleMatch = meta || text.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);
+  return pageMetadataDecodeEntities(titleMatch && titleMatch[1]).replace(/\\s+/g, " ").trim();
 }
 
 function pageMetadataOriginPattern(url) {

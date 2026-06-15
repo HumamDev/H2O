@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 import { ASSETS_DIR } from "../../../../paths.mjs";
 
@@ -113,6 +114,15 @@ function copyFileAtomic(sourceFile, outFile) {
   const temp = path.join(dir, `.${base}.tmp-${process.pid}-${Date.now()}`);
   fs.copyFileSync(sourceFile, temp);
   fs.renameSync(temp, target);
+}
+
+function checkGeneratedJavaScript(file) {
+  const result = spawnSync(process.execPath, ["--check", file], {
+    encoding: "utf8",
+  });
+  if (result.status === 0) return;
+  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+  throw new Error(`[H2O] Generated JavaScript syntax check failed for ${file}${output ? `\n${output}` : ""}`);
 }
 
 const {
@@ -475,7 +485,8 @@ async function main() {
     identityProviderConfigStatus = identityProviderBuildConfig.status;
   }
 
-  writeFile(path.join(OUT_DIR, "bg.js"), makeChromeLiveBackgroundJs({
+  const backgroundFile = path.join(OUT_DIR, "bg.js");
+  writeFile(backgroundFile, makeChromeLiveBackgroundJs({
     DEV_TAG,
     CHAT_MATCH,
     DEV_HAS_CONTROLS,
@@ -491,6 +502,7 @@ async function main() {
     // primary source of duplicate-tab bugs (sw-boot vs onInstalled race).
     STUDIO_AUTO_RESTORE_ENABLED: !STUDIO_ONLY,
   }));
+  checkGeneratedJavaScript(backgroundFile);
 
   // Studio-launcher omits the chatgpt.com loader pipeline entirely: no
   // loader.js content-script, no folder-bridge page helper, no pilot-observer
