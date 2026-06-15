@@ -321,6 +321,8 @@
     const sourceView = cleanString(row.sourceView || row.originalView || row.rawView || row.view || raw.view).toLowerCase();
     const href = rowLinkedUrl(row);
     const hasTranscript = rowHasRealTranscriptEvidence(row);
+    const sourceIsSaved = !!(row.sourceIsSaved || row.isSaved || row.state?.isSaved || raw.isSaved || raw.state?.isSaved || sourceView === 'saved');
+    const sourceIsLinked = !!(row.sourceIsLinked || row.isLinked || row.state?.isLinked || raw.isLinked || raw.state?.isLinked || sourceView === 'linked' || sourceView === 'link');
     if (sourceView && !row.sourceView) row.sourceView = sourceView;
     if (sourceView && !row.originalView) row.originalView = sourceView;
     if (sourceView && !row.rawView) row.rawView = sourceView;
@@ -328,11 +330,25 @@
       row.displayView = row.archived ? 'archived' : 'saved';
       row.badgeKind = row.archived ? 'Archive' : 'Saved';
       row.readerKind = 'reader';
+      row.sourceIsSaved = sourceIsSaved;
+      row.sourceIsLinked = sourceIsLinked;
+      row.view = row.displayView;
+      row.isSaved = row.displayView === 'saved' || sourceIsSaved;
+      row.isLinked = sourceIsLinked;
+      row.state = Object.assign({}, row.state || {}, {
+        isSaved: row.isSaved,
+        isLinked: row.isLinked,
+      });
+      if (raw && typeof raw === 'object') {
+        raw.sourceView = raw.sourceView || sourceView || '';
+        raw.sourceIsSaved = raw.sourceIsSaved || sourceIsSaved;
+        raw.sourceIsLinked = raw.sourceIsLinked || sourceIsLinked;
+      }
       return row;
     }
     if (href) {
-      row.sourceIsSaved = !!(row.sourceIsSaved || row.isSaved || row.state?.isSaved || raw.isSaved || sourceView === 'saved');
-      row.sourceIsLinked = !!(row.sourceIsLinked || row.isLinked || row.state?.isLinked || raw.isLinked || sourceView === 'linked' || sourceView === 'link');
+      row.sourceIsSaved = sourceIsSaved;
+      row.sourceIsLinked = sourceIsLinked;
       row.view = 'link';
       row.displayView = 'link';
       row.badgeKind = 'Link';

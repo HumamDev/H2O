@@ -114,6 +114,10 @@ const checks = [
       sources.libraryIndex.includes('const messageCount = numericCount(rec.messageCount);') &&
       sources.libraryIndex.includes('row.snapshotCount = snapshotCount;') &&
       sources.libraryIndex.includes('row.assistantTurnCount = assistantTurnCount;') &&
+      sources.libraryIndex.includes("row.view = row.displayView") &&
+      sources.libraryIndex.includes("row.isSaved = row.displayView === 'saved' || sourceIsSaved") &&
+      sources.libraryIndex.includes('row.isLinked = sourceIsLinked') &&
+      sources.libraryIndex.includes('isSaved: row.isSaved') &&
       !sources.libraryIndex.includes('|| numericCount(chat?.snapshotCount) > 0') &&
       !sources.libraryIndex.includes('const hasOpenableTranscript = !!chat?.lastSnapshotId;'),
     FILES.libraryIndex,
