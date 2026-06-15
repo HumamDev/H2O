@@ -218,6 +218,9 @@ const checks = [
     sources.nativeFolders.includes('async function API_saveAndBindToFolder') &&
       sources.nativeFolders.includes('function API_captureHasRealTranscript') &&
       sources.nativeFolders.includes('function API_captureSummary') &&
+      sources.nativeFolders.includes('function API_targetIsCurrentLoadedChat') &&
+      sources.nativeFolders.includes('capture-requires-open-chat') &&
+      sources.nativeFolders.includes('Open this chat first to capture transcript.') &&
       sources.nativeFolders.includes('capture-transcript-missing') &&
       sources.nativeFolders.includes('captured-transcript-not-visible-to-studio') &&
       sources.nativeFolders.includes('Could not capture transcript; no Saved row was created.') &&
@@ -231,6 +234,9 @@ const checks = [
     sources.nativeFolders.includes('function API_resolveSaveChatTitle') &&
       sources.nativeFolders.includes('function API_titleMetadataPatch') &&
       sources.nativeFolders.includes('title: DOM_findTitleForHref(targetHref)') &&
+      sources.nativeFolders.includes('const preCaptureTitle = API_resolveSaveChatTitle') &&
+      sources.nativeFolders.includes('title: preCaptureTitle') &&
+      sources.nativeFolders.includes("title: String(opts?.title || '')") &&
       sources.nativeFolders.includes('...API_titleMetadataPatch(API_resolveSaveChatTitle') &&
       sources.nativeFolders.includes('snapshotId: captureSummary.snapshotId') &&
       sources.nativeFolders.includes('messageCount: captureSummary.messageCount') &&

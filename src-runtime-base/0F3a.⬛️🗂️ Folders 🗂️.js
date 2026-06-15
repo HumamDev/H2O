@@ -3866,14 +3866,20 @@ ${CROW}[aria-current="true"]{
       };
       const failureMessage = (status) => {
         switch (String(status || '')) {
+          case 'capture-requires-open-chat':
+            return 'Open this chat first to capture transcript.';
           case 'capture-unavailable':
             return 'Capture is not available from this page. Use Capture / Save from Command Bar first.';
+          case 'capture-transcript-missing':
+            return 'Could not capture transcript; no folder save was created.';
           case 'capture-failed':
             return 'Could not save this chat. Try Capture / Save from Command Bar.';
           case 'capture-target-unavailable':
             return 'Could not load that chat from ChatGPT. Open the chat and try again.';
           case 'capture-local-only':
             return 'The chat was saved locally, but Studio is not connected yet. Refresh the page and try again.';
+          case 'capture-not-studio-visible':
+            return 'Captured transcript was not available to Studio/Desktop sync. Refresh the page and try again.';
           case 'capture-not-indexed':
           case 'chat-not-saved':
             return 'The chat was captured, but Library has not indexed it yet. Try again in a moment.';
@@ -3920,6 +3926,7 @@ ${CROW}[aria-current="true"]{
             href,
             folderId,
             folderName,
+            title: DOM_findTitleForHref(href),
             source: 'save-before-folder-modal',
           });
           if (result?.ok) {
@@ -6466,6 +6473,24 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return '';
   }
 
+  function API_currentLoadedChatId() {
+    try {
+      const fromUtil = H2O.util && typeof H2O.util.getChatId === 'function'
+        ? String(H2O.util.getChatId() || '').trim()
+        : '';
+      if (fromUtil) return fromUtil;
+    } catch {}
+    return DOM_parseChatIdFromHref(String(W.location?.pathname || ''))
+      || DOM_parseChatIdFromHref(String(W.location?.href || ''))
+      || '';
+  }
+
+  function API_targetIsCurrentLoadedChat(key) {
+    const cid = String(key?.chatId || '').trim();
+    if (!cid) return false;
+    return cid === API_currentLoadedChatId();
+  }
+
   function API_getRegistryRecordForBindingKey(key) {
     const reg = H2O.ChatRegistry;
     if (!reg || !key) return null;
@@ -6774,7 +6799,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     let capture = null;
     try {
       capture = await archive.captureNow(cid, {
-        href: String(key.href || ''),
+        href: String(opts?.href || key.href || ''),
+        title: String(opts?.title || ''),
         source: String(opts?.source || 'capture-current-chat-for-folder'),
       });
     } catch (error) {
@@ -6822,7 +6848,43 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       return { ok: false, status: 'folder-bind-failed', reason: 'missing-folder-id', chatId: cid, folderId: fid, folderName: label };
     }
 
-    const captured = await API_captureCurrentChatForFolder(cid, { source });
+    if (!API_targetIsCurrentLoadedChat(key)) {
+      return {
+        ok: false,
+        status: 'capture-requires-open-chat',
+        reason: 'open-this-chat-first-to-capture-transcript',
+        message: 'Open this chat first to capture transcript.',
+        chatId: cid,
+        currentChatId: API_currentLoadedChatId(),
+        folderId: fid,
+        folderName: label,
+        href: String(key.href || href || ''),
+        title: API_resolveSaveChatTitle({
+          explicitTitle: title,
+          href: String(key.href || href || ''),
+          capture: null,
+        }),
+        captureSummary: {
+          snapshotId: '',
+          snapshotCount: 0,
+          messageCount: 0,
+          captureSource: 'not-current-loaded-chat',
+          storage: '',
+          workbenchVisible: null,
+        },
+      };
+    }
+
+    const preCaptureTitle = API_resolveSaveChatTitle({
+      explicitTitle: title,
+      href: String(key.href || href || ''),
+      capture: null,
+    });
+    const captured = await API_captureCurrentChatForFolder(cid, {
+      source,
+      href: String(key.href || href || ''),
+      title: preCaptureTitle,
+    });
     const captureSummary = API_captureSummary(captured?.capture);
     const hasTranscriptEvidence = API_captureHasRealTranscript(captured?.capture);
     if (!hasTranscriptEvidence) {
