@@ -655,6 +655,10 @@ function validateStaticFiles() {
   assertContains(chromeAutoImportFile, chromeExportCoverageSchema, 'Chrome export coverage schema');
   assertContains(chromeAutoImportFile, 'chrome-export-source-coverage-mismatch', 'Chrome export coverage mismatch blocker');
   assertContains(chromeAutoImportFile, 'f19MinimalLibraryIndexRow', 'minimal LibraryIndex row marker');
+  assertContains(chromeAutoImportFile, 'function isImportedRow', 'Chrome export imported row classifier');
+  assertContains(chromeAutoImportFile, "view === 'imported'", 'Chrome export imported view handling');
+  assertContains(chromeAutoImportFile, 'isSaved: saved,', 'Chrome export saved state must mirror LibraryIndex saved state');
+  assertContains(chromeAutoImportFile, "imported ? 'imported' : 'saved'", 'Chrome export imported shell rows must remain total-only');
 }
 
 const args = parseArgs();

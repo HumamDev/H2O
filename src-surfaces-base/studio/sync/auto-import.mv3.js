@@ -368,6 +368,12 @@
     return view === 'archived' || boolValue(row && (row.archived || row.isArchived));
   }
 
+  function isImportedRow(row) {
+    var view = rowView(row);
+    var stateObj = row && row.state && typeof row.state === 'object' ? row.state : {};
+    return view === 'imported' || boolValue(row && row.isImported) || boolValue(stateObj.isImported);
+  }
+
   function isPinnedRow(row) {
     return boolValue(row && (row.pinned || row.isPinned));
   }
@@ -409,9 +415,9 @@
       var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
       var view = cleanString(index.view || index.kind || index.type).toLowerCase();
       var hasSnapshots = Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0;
+      var imported = view === 'imported' || stateObj.isImported === true || index.isImported === true;
       if (view === 'linked' || stateObj.isLinked === true || index.isLinked === true) counts.linked += 1;
-      else if (hasSnapshots || view === 'saved' || stateObj.isSaved === true || index.isSaved === true) counts.saved += 1;
-      else counts.saved += 1;
+      else if (view === 'saved' || stateObj.isSaved === true || index.isSaved === true || (!imported && hasSnapshots)) counts.saved += 1;
       if (stateObj.isPinned === true || index.pinned === true || index.isPinned === true) counts.pinned += 1;
       if (stateObj.isArchived === true || index.archived === true || index.isArchived === true) counts.archived += 1;
     });
@@ -457,22 +463,24 @@
     var saved = isSavedRow(row);
     var linked = isLinkedRow(row);
     var archived = isArchivedRow(row);
+    var imported = !saved && !linked && !archived && isImportedRow(row);
     var pinned = isPinnedRow(row);
     var title = cleanString(row && (row.title || row.chatTitle || row.name)) || id;
     var href = cleanString(row && (row.href || row.linkSourceHref || row.normalizedHref))
       || ('https://chatgpt.com/c/' + id);
-    var view = linked && !saved ? 'linked' : (archived ? 'archived' : 'saved');
+    var view = linked && !saved ? 'linked' : (archived ? 'archived' : (imported ? 'imported' : 'saved'));
     return {
       chatId: id,
-      bootMode: linked && !saved ? 'linked' : 'saved',
+      bootMode: linked && !saved ? 'linked' : (imported ? 'imported' : 'saved'),
       chatIndex: {
         id: id,
         title: title,
         href: href,
         view: view,
         state: {
-          isSaved: saved || !linked,
+          isSaved: saved,
           isLinked: linked,
+          isImported: imported,
           isPinned: pinned,
           isArchived: archived,
           isDeleted: false
