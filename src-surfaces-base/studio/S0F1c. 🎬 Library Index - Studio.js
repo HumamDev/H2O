@@ -784,14 +784,20 @@
     const labelInfos = (joins.labelsByChatId && joins.labelsByChatId[cid]) || [];
     const tagInfos = (joins.tagsByChatId && joins.tagsByChatId[cid]) || [];
     const catInfo = (joins.categoryByChatId && joins.categoryByChatId[cid]) || null;
-    let view = 'all';
-    if (chat?.isArchived) view = 'archived';
-    else if (chat?.isSaved) view = 'saved';
-    else if (chat?.isLinked) view = 'linked';
     const href = chat?.href || chat?.linkSourceHref
       || (chat?.sourceId ? ('https://chatgpt.com/c/' + chat.sourceId) : '')
       || (cid ? ('https://chatgpt.com/c/' + cid) : '');
     const importedShell = !!(chat?.importBatchId || meta.f19ChromeDesktopMinimalRow || meta.f19ChromeDesktopMaterializedShell);
+    const snapshotCount = Number(chat?.snapshotCount || 0);
+    const messageCount = Number(chat?.messageCount || 0);
+    const hasOpenableTranscript = !!chat?.lastSnapshotId;
+    const displaySaved = !!(chat?.isSaved && hasOpenableTranscript);
+    const displayLinked = !!(chat?.isLinked || (!hasOpenableTranscript && href));
+    let view = 'all';
+    if (chat?.isArchived) view = 'archived';
+    else if (displaySaved) view = 'saved';
+    else if (displayLinked) view = 'linked';
+    else if (importedShell) view = 'imported';
     const title = friendlyShellTitle([
       chat?.title,
       chat?.displayTitle,
@@ -816,7 +822,7 @@
       chat?.sourceLabel,
       chatIndexMeta.filename,
       chatIndexMeta.sourceLabel,
-    ], cid, chat?.isLinked && !chat?.isSaved ? 'Link' : 'Imported chat');
+    ], cid, displayLinked && !displaySaved ? 'Link' : 'Imported chat');
     return {
       chatId: cid,
       snapshotId: chat?.lastSnapshotId || null,
@@ -829,7 +835,7 @@
       view,
       tags: tagInfos.map((t) => t && t.name).filter(Boolean),
       labels: labelInfos.map((l) => l && l.name).filter(Boolean),
-      snapshotCount: Number(chat?.snapshotCount || 0),
+      snapshotCount,
       capturedAt: chat?.lastCapturedAt || null,
       updatedAt: chat?.updatedAt || 0,
       messageCount: Number(chat?.messageCount || 0),
@@ -839,18 +845,21 @@
       // Reader / Library UI may consume these later (M2a-3i+):
       href,
       linkSourceHref: chat?.linkSourceHref || '',
-      isSaved: !!chat?.isSaved,
-      isLinked: !!chat?.isLinked,
+      isSaved: displaySaved,
+      isLinked: displayLinked,
       isImported: importedShell,
       state: {
-        isLinked: !!chat?.isLinked,
-        isSaved: !!chat?.isSaved,
+        isLinked: displayLinked,
+        isSaved: displaySaved,
         isPinned: !!chat?.isPinned,
         isArchived: !!chat?.isArchived,
         isImported: importedShell,
         isDeleted: !!chat?.isDeleted,
       },
-      meta,
+      meta: Object.assign({}, meta, {
+        f19SourceWasSaved: !!chat?.isSaved,
+        f19DisplayClassifiedAsLink: displayLinked && !displaySaved,
+      }),
     };
   }
 

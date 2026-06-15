@@ -61,6 +61,17 @@ const checks = [
     'Durable shell-row rehydration must not restore raw IDs as titles and must carry shell state into the shared UI model.'
   ),
   check(
+    'library-index-url-only-source-saved-classifies-link',
+    sources.libraryIndex.includes('const displaySaved = !!(chat?.isSaved && hasOpenableTranscript);') &&
+      sources.libraryIndex.includes("else if (displayLinked) view = 'linked';") &&
+      sources.libraryIndex.includes('isSaved: displaySaved') &&
+      sources.libraryIndex.includes('isLinked: displayLinked') &&
+      sources.libraryIndex.includes('f19SourceWasSaved') &&
+      sources.libraryIndex.includes('f19DisplayClassifiedAsLink'),
+    FILES.libraryIndex,
+    'URL-only rows with historical saved/source state must project as Link, not Saved, unless they have an openable transcript snapshot.'
+  ),
+  check(
     'insights-imported-placeholder-clickable',
     sources.insights.includes('function isImportedShellRow') &&
       sources.insights.includes('function displayTitleForRow') &&
