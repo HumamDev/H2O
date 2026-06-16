@@ -911,7 +911,7 @@
   function minimalRowClass(chat, patch) {
     var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
     var state = index.state && typeof index.state === 'object' ? index.state : {};
-    if (patch && (patch.lastSnapshotId || numericCount(patch.messageCount) > 0 || numericCount(patch.turnCount) > 0)) return 'minimal-transcript-row';
+    if (patchHasRealTranscriptEvidence(patch)) return 'minimal-transcript-row';
     if (patch && (patch.href || patch.normalizedHref || patch.linkSourceHref || state.isLinked)) return 'minimal-link-row';
     if (state.isPinned) return 'minimal-pinned-row';
     if (state.isArchived) return 'minimal-archived-row';
@@ -919,10 +919,51 @@
     return 'minimal-row';
   }
 
+  function patchHasRealTranscriptEvidence(patch) {
+    return !!(patch && cleanString(patch.lastSnapshotId || patch.snapshotId || patch.snapshot_id))
+      || numericCount(patch && patch.messageCount) > 0
+      || numericCount(patch && patch.turnCount) > 0
+      || numericCount(patch && patch.userTurnCount) > 0
+      || numericCount(patch && patch.assistantTurnCount) > 0;
+  }
+
+  function weakRowClass(chat, patch) {
+    if (isF19MinimalLibraryIndexChat(chat)) return minimalRowClass(chat, patch);
+    var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+    var state = index.state && typeof index.state === 'object' ? index.state : {};
+    if (patchHasRealTranscriptEvidence(patch)) return 'transcript-row';
+    if (patch && (patch.href || patch.normalizedHref || patch.linkSourceHref || state.isLinked || patch.isLinked)) return 'weak-link-row';
+    if (state.isPinned || patch && patch.isPinned) return 'weak-pinned-row';
+    if (state.isArchived || patch && patch.isArchived) return 'weak-archived-row';
+    if (state.isImported || index.source === 'native-linked-record-broadcast') return 'weak-imported-row';
+    return 'weak-row';
+  }
+
+  function isWeakNonTranscriptRow(chat, patch) {
+    if (patchHasRealTranscriptEvidence(patch)) return false;
+    var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+    var state = index.state && typeof index.state === 'object' ? index.state : {};
+    return !!(patch && (patch.href || patch.normalizedHref || patch.linkSourceHref || patch.isLinked || patch.isPinned || patch.isArchived))
+      || !!(state.isLinked || state.isPinned || state.isArchived || state.isImported)
+      || !!(index.href || index.url || index.sourceUrl || index.normalizedHref || index.linkSourceHref);
+  }
+
+  function shouldTryWeakRowShellMaterialization(chat, patch, code) {
+    if (!isWeakNonTranscriptRow(chat, patch)) return false;
+    return code === 'minimal-row-sql-writer-identity-missing' ||
+      code === 'category-cache-write-protected';
+  }
+
   function shouldSkipMinimalRowImportFailure(chat, patch, code) {
     if (code !== 'minimal-row-sql-writer-identity-missing') return false;
     if (!isF19MinimalLibraryIndexChat(chat)) return false;
-    if (patch && (patch.lastSnapshotId || numericCount(patch.messageCount) > 0 || numericCount(patch.turnCount) > 0)) return false;
+    if (patchHasRealTranscriptEvidence(patch)) return false;
+    return true;
+  }
+
+  function shouldSkipWeakRowImportFailure(chat, patch, code) {
+    if (code !== 'minimal-row-sql-writer-identity-missing') return false;
+    if (!isWeakNonTranscriptRow(chat, patch)) return false;
     return true;
   }
 
@@ -952,11 +993,20 @@
   function emptyChromeMinimalRows() {
     return { total: 0, attempted: 0, materialized: 0, existing: 0, skipped: 0, failed: 0 };
   }
+  function emptyChromeWeakRows() {
+    return { attempted: 0, materialized: 0, existing: 0, skipped: 0, failed: 0 };
+  }
   function chromeMinimalRows(result) {
     if (!result.chromeMinimalRows || typeof result.chromeMinimalRows !== 'object') {
       result.chromeMinimalRows = emptyChromeMinimalRows();
     }
     return result.chromeMinimalRows;
+  }
+  function chromeWeakRows(result) {
+    if (!result.chromeWeakRows || typeof result.chromeWeakRows !== 'object') {
+      result.chromeWeakRows = emptyChromeWeakRows();
+    }
+    return result.chromeWeakRows;
   }
 
   function wantsLibraryBulkMigration(options) {
@@ -1288,6 +1338,64 @@
           }
           if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
         } catch (primaryError) {
+          var primaryCode = classifyImportError(primaryError);
+          if (!isMinimalRow && shouldTryWeakRowShellMaterialization(chat, patch, primaryCode)) {
+            var weakSummary = chromeWeakRows(result);
+            weakSummary.attempted += 1;
+            try {
+              var weakMaterialized = await materializeMinimalLibraryIndexRow(chatStore, patch);
+              if (weakMaterialized.status === 'inserted') {
+                result.written.chats += 1;
+                chatStateIndex[chatId] = 'imported';
+                weakSummary.materialized += 1;
+                if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+                result.warnings.push({
+                  kind: 'chrome-weak-row-materialized-via-shell-insert',
+                  primaryCode: primaryCode,
+                  rowClass: weakRowClass(chat, patch),
+                  identitySource: String(identity.source || 'unknown'),
+                  fallbackUsed: true,
+                  chatIdHash: redactedImportHash(chatId)
+                });
+              } else {
+                result.skipped.chats += 1;
+                chatStateIndex[chatId] = 'skipped';
+                weakSummary.existing += 1;
+                if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+                result.warnings.push({
+                  kind: 'chrome-weak-row-materialize-existing',
+                  primaryCode: primaryCode,
+                  rowClass: weakRowClass(chat, patch),
+                  identitySource: String(identity.source || 'unknown'),
+                  fallbackUsed: true,
+                  chatIdHash: redactedImportHash(chatId)
+                });
+              }
+              continue;
+            } catch (weakFallbackError) {
+              weakFallbackError.primaryImportError = primaryError;
+              var weakFallbackCode = classifyMinimalRowError(weakFallbackError);
+              if (shouldSkipWeakRowImportFailure(chat, patch, weakFallbackCode)) {
+                result.skipped.chats += 1;
+                weakSummary.skipped += 1;
+                if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+                result.warnings.push({
+                  kind: 'chrome-weak-row-skipped-unrecoverable',
+                  code: weakFallbackCode,
+                  primaryCode: primaryCode,
+                  rowClass: weakRowClass(chat, patch),
+                  identitySource: String(identity.source || 'unknown'),
+                  transcriptBacked: false,
+                  fallbackUsed: true,
+                  missingIdentityReason: 'sqlite-writer-identity-function-unavailable',
+                  chatIdHash: redactedImportHash(chatId)
+                });
+                continue;
+              }
+              weakSummary.failed += 1;
+              throw weakFallbackError;
+            }
+          }
           if (!isMinimalRow) throw primaryError;
           try {
             var materialized = await materializeMinimalLibraryIndexRow(chatStore, patch);
@@ -1331,6 +1439,10 @@
           kind: isMinimalRow ? 'chrome-minimal-row-import' : 'chat',
           code: isMinimalRow ? classifyMinimalRowError(e) : classifyImportError(e),
           primaryCode: e && e.primaryImportError ? classifyImportError(e.primaryImportError) : '',
+          rowClass: isMinimalRow ? minimalRowClass(chat, patch) : weakRowClass(chat, patch),
+          identitySource: String(identity.source || 'unknown'),
+          transcriptBacked: patchHasRealTranscriptEvidence(patch),
+          chatIdHash: redactedImportHash(chatId),
           id: chatId,
           error: String(e && e.message || e)
         });

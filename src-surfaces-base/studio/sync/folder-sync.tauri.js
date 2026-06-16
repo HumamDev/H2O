@@ -872,6 +872,7 @@
     var skipped = r.skipped && typeof r.skipped === 'object' ? r.skipped : {};
     var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
     var chromeMinimalRows = r.chromeMinimalRows && typeof r.chromeMinimalRows === 'object' ? r.chromeMinimalRows : {};
+    var chromeWeakRows = r.chromeWeakRows && typeof r.chromeWeakRows === 'object' ? r.chromeWeakRows : {};
     var errorKinds = Object.create(null);
     var minimalRowErrors = 0;
     var nonMinimalErrorCount = 0;
@@ -933,6 +934,11 @@
       minimalRowsFailed: Number(chromeMinimalRows.failed || 0),
       minimalRowsSatisfied: Math.max(minimalRowsMaterialized, Number(chromeMinimalRows.materialized || 0)) +
         Math.max(minimalRowsExisting, Number(chromeMinimalRows.existing || 0)),
+      weakRowsAttempted: Number(chromeWeakRows.attempted || 0),
+      weakRowsMaterialized: Number(chromeWeakRows.materialized || 0),
+      weakRowsExisting: Number(chromeWeakRows.existing || 0),
+      weakRowsSkipped: Number(chromeWeakRows.skipped || 0),
+      weakRowsFailed: Number(chromeWeakRows.failed || 0),
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {
           return {
@@ -1014,6 +1020,11 @@
       minimalRowsSkipped: Number(f.importSummary && f.importSummary.minimalRowsSkipped || 0),
       minimalRowsFailed: Number(f.importSummary && f.importSummary.minimalRowsFailed || 0),
       minimalRowErrors: Number(f.importSummary && f.importSummary.minimalRowErrors || 0),
+      weakRowsAttempted: Number(f.importSummary && f.importSummary.weakRowsAttempted || 0),
+      weakRowsMaterialized: Number(f.importSummary && f.importSummary.weakRowsMaterialized || 0),
+      weakRowsExisting: Number(f.importSummary && f.importSummary.weakRowsExisting || 0),
+      weakRowsSkipped: Number(f.importSummary && f.importSummary.weakRowsSkipped || 0),
+      weakRowsFailed: Number(f.importSummary && f.importSummary.weakRowsFailed || 0),
       sideEffects: {
         chromeStorageWritten: false,
         desktopSqliteMayWriteSupportedRows: ok === true && status !== 'already-imported',

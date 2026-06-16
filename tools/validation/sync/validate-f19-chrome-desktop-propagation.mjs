@@ -464,6 +464,11 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'chrome-minimal-row-skipped-unrecoverable', 'Desktop import reports non-blocking unrecoverable minimal row skips');
   assertContains(importBundleFile, 'chatIdHash: redactedImportHash(chatId)', 'Desktop import redacts skipped minimal row identity');
   assertContains(folderSyncFile, 'minimalRowsSkipped', 'Desktop propagation redacted import summary exposes skipped minimal rows');
+  assertContains(importBundleFile, 'function shouldTryWeakRowShellMaterialization(chat, patch, code)', 'Desktop import routes non-minimal weak rows through safe shell materialization');
+  assertContains(importBundleFile, 'chrome-weak-row-materialized-via-shell-insert', 'Desktop import reports non-minimal weak row shell materialization');
+  assertContains(importBundleFile, 'chrome-weak-row-skipped-unrecoverable', 'Desktop import skips unrecoverable non-minimal weak rows without blocking');
+  assertContains(importBundleFile, 'transcriptBacked: patchHasRealTranscriptEvidence(patch)', 'Desktop import keeps transcript-backed row diagnostics strict');
+  assertContains(folderSyncFile, 'weakRowsMaterialized', 'Desktop propagation redacted import summary exposes weak row materialization counts');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
