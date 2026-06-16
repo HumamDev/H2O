@@ -263,6 +263,9 @@ const checks = [
       sources.nativeSync.includes('snapshotPayloads: snapshotPayloadsForBroadcast()') &&
       sources.nativeSync.includes('SNAPSHOT_PAYLOAD_MAX') &&
       sources.nativeSync.includes('meta.folderId = String(meta.folderId || folderId)') &&
+      sources.nativeSync.includes('function broadcastViaBridge') &&
+      sources.nativeSync.includes('chrome.runtime.lastError') &&
+      sources.nativeSync.includes("broadcastViaBridge(body, reasons, 'chrome-storage-error')") &&
       sources.nativeFolders.includes('archive.loadSnapshot(captureSummary.snapshotId)') &&
       sources.nativeFolders.includes('sync.queueSnapshotPayload') &&
       sources.nativeFolders.includes('snapshotPayloadQueued') &&
@@ -279,6 +282,8 @@ const checks = [
       sources.studioSync.includes('function normalizeNativeSnapshotPayload') &&
       sources.studioSync.includes('function redactNativeBroadcastPayload') &&
       sources.studioSync.includes('nativeSnapshotPayloadMaterialize') &&
+      sources.studioSync.includes('waitForNativeSnapshotPayloadMaterialization') &&
+      sources.studioSync.includes('verifyNativeSnapshotPayloadImports') &&
       sources.studioSync.includes("readerKind: 'reader'") &&
       sources.studioSync.includes('meta.folderId = String(meta.folderId || folderId)') &&
       sources.studioSync.includes('assistantTurnCount'),

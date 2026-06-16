@@ -673,6 +673,26 @@
     }));
   }
 
+  function broadcastViaBridge(body, reasons, fallbackReason = '') {
+    if (state.bridgeBound) {
+      const writePayload = { key: NATIVE_BROADCAST_KEY, value: body, t: body.ts };
+      let sent = false;
+      try { W.postMessage({ type: BRIDGE_WRITE, ...writePayload }, '*'); sent = true; } catch (e) { err('broadcast.bridge.postMessage', e); }
+      try { D.dispatchEvent(new CustomEvent(EV_WRITE, { detail: writePayload })); sent = true; } catch (e) { err('broadcast.bridge.event', e); }
+      if (sent) {
+        state.lastOutboundTransport = fallbackReason ? `bridge:${fallbackReason}` : 'bridge';
+        state.lastOutbound = body.ts;
+        step('outbound.bridge', String(reasons.length));
+      } else {
+        state.lastOutboundTransport = 'drop:transport-failed';
+        step('outbound.drop', 'transport-failed');
+      }
+    } else {
+      state.lastOutboundTransport = 'drop:no-transport';
+      step('outbound.drop', 'no transport');
+    }
+  }
+
   function normalizeProjectCatalogRow(row, index) {
     const src = row && typeof row === 'object' ? row : {};
     const id = String(src.id || src.projectId || '').trim();
@@ -1011,29 +1031,20 @@
       try {
         state.lastOutboundTransport = 'chrome.storage';
         chrome.storage.local.set({ [NATIVE_BROADCAST_KEY]: body }, () => {
+          let lastError = '';
+          try { lastError = chrome.runtime && chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : ''; } catch {}
+          if (lastError) {
+            err('broadcast.chrome.storage', new Error(lastError));
+            broadcastViaBridge(body, reasons, 'chrome-storage-error');
+            return;
+          }
           state.lastOutbound = body.ts;
           step('outbound', String(reasons.length));
         });
         return;
       } catch (e) { err('broadcast', e); /* fall through to bridge */ }
     }
-    if (state.bridgeBound) {
-      const writePayload = { key: NATIVE_BROADCAST_KEY, value: body, t: body.ts };
-      let sent = false;
-      try { W.postMessage({ type: BRIDGE_WRITE, ...writePayload }, '*'); sent = true; } catch (e) { err('broadcast.bridge.postMessage', e); }
-      try { D.dispatchEvent(new CustomEvent(EV_WRITE, { detail: writePayload })); sent = true; } catch (e) { err('broadcast.bridge.event', e); }
-      if (sent) {
-        state.lastOutboundTransport = 'bridge';
-        state.lastOutbound = body.ts;
-        step('outbound.bridge', String(reasons.length));
-      } else {
-        state.lastOutboundTransport = 'drop:transport-failed';
-        step('outbound.drop', 'transport-failed');
-      }
-    } else {
-      state.lastOutboundTransport = 'drop:no-transport';
-      step('outbound.drop', 'no transport');
-    }
+    broadcastViaBridge(body, reasons);
   }
 
   function scheduleBroadcast(reason) {

@@ -104,6 +104,12 @@
     lastNativeSnapshotPayloadMaterializedCount: 0,
     lastNativeSnapshotPayloadSkippedCount: 0,
     lastNativeSnapshotPayloadError: '',
+    lastNativeSnapshotPayloadMaterializePromise: null,
+    lastNativeSnapshotPayloadImportResult: null,
+    lastNativeSnapshotPayloadVerifyStatus: '',
+    lastNativeSnapshotPayloadVerifiedCount: 0,
+    lastNativeSnapshotPayloadVerifyError: '',
+    lastNativeSnapshotPayloadIdHashes: [],
     lastNativeBroadcastReadAt: 0,
     lastNativeBroadcastReadSource: '',
     lastNativeBroadcastReadError: '',
@@ -514,6 +520,34 @@
     return out;
   }
 
+  function redactedPayloadId(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return stableChecksum(raw).replace(/^h2o-folder-/, 'h:');
+  }
+
+  async function verifyNativeSnapshotPayloadImports(chats) {
+    const rows = Array.isArray(chats) ? chats : [];
+    let verified = 0;
+    const hashes = [];
+    for (const chat of rows) {
+      const snap = Array.isArray(chat?.snapshots) ? chat.snapshots[0] : null;
+      const snapshotId = String(snap?.snapshotId || '').trim();
+      if (!snapshotId) continue;
+      hashes.push(redactedPayloadId(snapshotId));
+      const loaded = await callArchive('loadSnapshot', { snapshotId });
+      const messages = Array.isArray(loaded?.messages) ? loaded.messages : [];
+      const meta = loaded?.meta && typeof loaded.meta === 'object' ? loaded.meta : {};
+      const richTurns = Array.isArray(meta.richTurns) ? meta.richTurns : [];
+      if (messages.length || richTurns.length) verified += 1;
+    }
+    state.lastNativeSnapshotPayloadVerifiedCount = verified;
+    state.lastNativeSnapshotPayloadIdHashes = hashes.slice(0, 12);
+    state.lastNativeSnapshotPayloadVerifyStatus = verified === rows.length ? 'verified' : 'partial';
+    state.lastNativeSnapshotPayloadVerifyError = '';
+    return { verified, hashes };
+  }
+
   async function materializeNativeSnapshotPayloads(payloads, reason = '') {
     const rows = Array.isArray(payloads) ? payloads : [];
     const chats = rows.map(normalizeNativeSnapshotPayload).filter(Boolean);
@@ -522,6 +556,11 @@
     state.lastNativeSnapshotPayloadMaterializedCount = 0;
     state.lastNativeSnapshotPayloadSkippedCount = rows.length - chats.length;
     state.lastNativeSnapshotPayloadError = '';
+    state.lastNativeSnapshotPayloadImportResult = null;
+    state.lastNativeSnapshotPayloadVerifyStatus = '';
+    state.lastNativeSnapshotPayloadVerifiedCount = 0;
+    state.lastNativeSnapshotPayloadVerifyError = '';
+    state.lastNativeSnapshotPayloadIdHashes = [];
     if (!rows.length) {
       state.lastNativeSnapshotPayloadMaterializeStatus = 'none';
       return { ok: true, status: 'none', importedSnapshots: 0 };
@@ -541,6 +580,18 @@
       };
       const result = await callArchive('importBundle', { bundle, mode: 'merge' });
       state.lastNativeSnapshotPayloadMaterializedCount = Number(result?.importedSnapshots || chats.length || 0) || 0;
+      state.lastNativeSnapshotPayloadImportResult = {
+        ok: result?.ok !== false,
+        mode: String(result?.mode || ''),
+        importedChats: Number(result?.importedChats || 0) || 0,
+        importedSnapshots: Number(result?.importedSnapshots || 0) || 0,
+      };
+      try {
+        await verifyNativeSnapshotPayloadImports(chats);
+      } catch (verifyErr) {
+        state.lastNativeSnapshotPayloadVerifyStatus = 'error';
+        state.lastNativeSnapshotPayloadVerifyError = String(verifyErr?.message || verifyErr || 'snapshot-payload-verify-error');
+      }
       state.lastNativeSnapshotPayloadMaterializeStatus = 'imported';
       try {
         await W.H2O?.LibraryIndex?.refresh?.(`native-snapshot-payload-materialized:${reason || 'native-broadcast'}`);
@@ -962,12 +1013,15 @@
       state.lastNativeBroadcastFolderSource = String(p?.folderState?.source || '');
       state.lastNativeBroadcastSnapshotPayloadCount = Array.isArray(p?.snapshotPayloads) ? p.snapshotPayloads.length : 0;
       state.lastNativeBroadcastPayload = redactNativeBroadcastPayload(p);
+      let materializePromise = Promise.resolve(null);
       if (Array.isArray(p?.snapshotPayloads) && p.snapshotPayloads.length) {
-        materializeNativeSnapshotPayloads(p.snapshotPayloads, reason || 'native-broadcast').catch((e) => {
+        materializePromise = materializeNativeSnapshotPayloads(p.snapshotPayloads, reason || 'native-broadcast').catch((e) => {
           state.lastNativeSnapshotPayloadMaterializeStatus = 'error';
           state.lastNativeSnapshotPayloadError = String(e?.message || e || 'snapshot-payload-import-error');
           err('native-snapshot-payload.materialize.async', e);
+          return { ok: false, status: 'error', error: state.lastNativeSnapshotPayloadError };
         });
+        state.lastNativeSnapshotPayloadMaterializePromise = materializePromise;
       }
       let folderMergePromise = Promise.resolve(null);
       if (p?.folderState) {
@@ -984,7 +1038,10 @@
       }
       rememberFolderMetadataOperationResults(p, reason);
       emitNativeBroadcastUpdated(state.lastNativeBroadcastPayload, reason);
-      return folderMergePromise;
+      return Promise.all([folderMergePromise, materializePromise]).then((results) => ({
+        folderMerge: results[0] || null,
+        snapshotPayloadMaterialize: results[1] || null,
+      }));
     } catch (e) {
       err('native-broadcast.remember', e);
       return Promise.resolve(null);
@@ -1354,6 +1411,12 @@
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
     getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
     refreshNativeBroadcast,
+    async refreshNativeSnapshotPayloads(reason) {
+      return refreshNativeBroadcast(reason || 'native-snapshot-payload-refresh');
+    },
+    waitForNativeSnapshotPayloadMaterialization() {
+      return state.lastNativeSnapshotPayloadMaterializePromise || Promise.resolve(null);
+    },
     refreshNativeFolderState(reason) {
       const why = reason || 'manual-folder-state-refresh';
       try { refreshExternalNativeFolderMergeDiagnostic(why).catch(() => {}); } catch {}
@@ -1411,6 +1474,11 @@
             materializedCount: state.lastNativeSnapshotPayloadMaterializedCount,
             skippedCount: state.lastNativeSnapshotPayloadSkippedCount,
             error: state.lastNativeSnapshotPayloadError,
+            importResult: state.lastNativeSnapshotPayloadImportResult ? { ...state.lastNativeSnapshotPayloadImportResult } : null,
+            verifyStatus: state.lastNativeSnapshotPayloadVerifyStatus,
+            verifiedCount: state.lastNativeSnapshotPayloadVerifiedCount,
+            verifyError: state.lastNativeSnapshotPayloadVerifyError,
+            snapshotIdHashes: state.lastNativeSnapshotPayloadIdHashes.slice(),
           },
           nativeFolderStateMerge: {
             key: FOLDER_STATE_DATA_KEY,

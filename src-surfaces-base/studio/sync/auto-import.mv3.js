@@ -129,6 +129,7 @@
     lastEventName: '',
     eventTriggerCount: 0,
     lastSnapshotPayloadCoverage: null,
+    lastNativeSnapshotPayloadPreflight: null,
     errors: [],
   };
 
@@ -716,6 +717,46 @@
       meta: meta,
       messages: messages
     };
+  }
+
+  async function refreshNativeSnapshotPayloadsBeforeExport(reason) {
+    var summary = {
+      attempted: false,
+      ok: true,
+      reason: String(reason || ''),
+      refreshCalled: false,
+      waitCalled: false,
+      status: 'not-available',
+      error: '',
+    };
+    try {
+      var sync = global.H2O && global.H2O.Library && global.H2O.Library.Sync;
+      if (!sync || (typeof sync.refreshNativeSnapshotPayloads !== 'function' && typeof sync.refreshNativeBroadcast !== 'function')) {
+        state.lastNativeSnapshotPayloadPreflight = summary;
+        return summary;
+      }
+      summary.attempted = true;
+      summary.status = 'started';
+      if (typeof sync.refreshNativeSnapshotPayloads === 'function') {
+        summary.refreshCalled = true;
+        await sync.refreshNativeSnapshotPayloads('chrome-export-preflight:' + String(reason || 'manual'));
+      } else if (typeof sync.refreshNativeBroadcast === 'function') {
+        summary.refreshCalled = true;
+        await sync.refreshNativeBroadcast('chrome-export-preflight:' + String(reason || 'manual'));
+      }
+      if (typeof sync.waitForNativeSnapshotPayloadMaterialization === 'function') {
+        summary.waitCalled = true;
+        await sync.waitForNativeSnapshotPayloadMaterialization();
+      }
+      summary.status = 'completed';
+    } catch (e) {
+      summary.ok = false;
+      summary.status = 'error';
+      summary.error = String(e && (e.message || e) || 'native-snapshot-payload-preflight-error');
+      pushError('native-snapshot-payload-preflight', e);
+    }
+    state.lastNativeSnapshotPayloadPreflight = summary;
+    return summary;
   }
 
   async function hydrateSnapshotPayloadForRow(row, evidence) {
@@ -1393,6 +1434,7 @@
     var errors = [];
     var blockers = [];
     var chromeExportCoverage = null;
+    var nativeSnapshotPayloadPreflight = null;
     var bytes = 0;
     var atomicMethod = '';
 
@@ -1408,15 +1450,22 @@
       /* (3) readwrite permission (user gesture required). */
       await ensureReadWritePermission(dirHandle);
 
-      /* (4) Produce bundle via service worker. */
+      /* (4) Pull any pending native Save-to-Folder snapshot payload into the
+       * same archive backend export coverage reads. This is intentionally a
+       * preflight only: if materialization fails, F19.7p payload coverage still
+       * downgrades or blocks reader-ready rows instead of weakening safety. */
+      nativeSnapshotPayloadPreflight = await refreshNativeSnapshotPayloadsBeforeExport(reason);
+
+      /* (5) Produce bundle via service worker. */
       var bundle = await callArchive('exportFullBundle', {});
 
-      /* (5) Align export source with the live Chrome Studio LibraryIndex.
+      /* (6) Align export source with the live Chrome Studio LibraryIndex.
        * F19.5 supported parity requires chrome-latest.json to cover the
        * same visible Library rows that the parity snapshot counts. */
       var aligned = await alignBundleToLibraryIndex(bundle);
       bundle = aligned.bundle || bundle;
       chromeExportCoverage = aligned.coverage || null;
+      if (chromeExportCoverage) chromeExportCoverage.nativeSnapshotPayloadPreflight = nativeSnapshotPayloadPreflight;
       state.lastSnapshotPayloadCoverage = chromeExportCoverage;
       if (chromeExportCoverage) {
         (chromeExportCoverage.warnings || []).forEach(function (code) {
@@ -1714,6 +1763,7 @@
       lastExportBytes: state.lastExportBytes,
       lastExportError: state.lastExportError,
       lastSnapshotPayloadCoverage: state.lastSnapshotPayloadCoverage,
+      lastNativeSnapshotPayloadPreflight: state.lastNativeSnapshotPayloadPreflight,
       inFlight: state.inFlight,
     };
   }
