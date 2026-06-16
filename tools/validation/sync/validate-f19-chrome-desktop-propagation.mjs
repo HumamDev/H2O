@@ -336,6 +336,137 @@ async function runVmProof() {
   }
 }
 
+function buildImportBundleContext({ transcriptBacked = false } = {}) {
+  let chatUpsertCalls = 0;
+  let authorizedSqlCalls = 0;
+  const context = {
+    console,
+    TextEncoder,
+    TextDecoder,
+    Date,
+    setTimeout(callback) {
+      if (typeof callback === 'function') callback();
+      return 1;
+    },
+    clearTimeout() {},
+    H2O: {
+      Desktop: {
+        Sync: {
+          async executeAuthorizedSqlite() {
+            authorizedSqlCalls += 1;
+            return [1, 0];
+          }
+        }
+      },
+      Studio: {
+        store: {
+          chats: {
+            async get() { return null; },
+            async upsert() {
+              chatUpsertCalls += 1;
+              throw new Error('no such function: h2o_writer_identity');
+            },
+            async reload() {}
+          },
+          snapshots: {
+            async get() { return null; },
+            async create() { return { ok: true }; }
+          },
+          categories: { async get() { return null; }, async upsert() { return { ok: true }; } },
+          labels: { async get() { return null; }, async upsert() { return { ok: true }; } },
+          folders: { async get() { return null; }, async upsert() { return { ok: true }; } }
+        }
+      }
+    },
+    chrome: {
+      storage: makeStorage(),
+      runtime: { lastError: null }
+    },
+    __TAURI_INTERNALS__: {
+      invoke() {
+        throw new Error('sqlite fallback should not be reached in weak-row proof');
+      }
+    },
+    __getProofCounters() {
+      return { chatUpsertCalls, authorizedSqlCalls, transcriptBacked };
+    }
+  };
+  context.window = context;
+  context.globalThis = context;
+  return vm.createContext(context);
+}
+
+function buildWeakImportBundle({ transcriptBacked = false } = {}) {
+  const snapshots = transcriptBacked ? [{
+    snapshotId: 'snap-private-fixture',
+    createdAt: '2026-06-14T12:00:00.000Z',
+    messages: [
+      { role: 'user', text: 'Private user text', order: 0 },
+      { role: 'assistant', text: 'Private assistant text', order: 1 }
+    ],
+    meta: { title: 'Private Transcript Title' }
+  }] : [];
+  return {
+    schema: 'h2o.studio.fullBundle.v2',
+    chatArchive: {
+      schema: 'h2o.chatArchive.bundle.v1',
+      catalogs: { categories: [], labels: [] },
+      chats: [{
+        chatId: 'weak-row-private-chat-id',
+        chatIndex: {
+          id: 'weak-row-private-chat-id',
+          title: transcriptBacked ? 'Private Transcript Title' : 'Private Link Title',
+          href: 'https://chatgpt.com/c/weak-row-private-chat-id',
+          view: transcriptBacked ? 'saved' : 'linked',
+          state: {
+            isSaved: transcriptBacked,
+            isLinked: !transcriptBacked,
+            isPinned: false,
+            isArchived: false,
+            isDeleted: false
+          },
+          organization: {}
+        },
+        snapshots
+      }]
+    },
+    chromeStorageLocal: {},
+    libraryKv: []
+  };
+}
+
+async function runImportBundleWeakRowProof() {
+  const source = read(importBundleFile);
+
+  const weakContext = buildImportBundleContext({ transcriptBacked: false });
+  vm.runInContext(source, weakContext, { filename: importBundleFile });
+  const weakResult = await weakContext.H2O.Studio.ingestion.importBundle(
+    buildWeakImportBundle({ transcriptBacked: false }),
+    'merge',
+    { disableLibraryBulkMigration: true }
+  );
+  const weakCounters = weakContext.__getProofCounters();
+  assert(weakResult.ok === true, 'weak zero-transcript row should not block import');
+  assert(weakCounters.chatUpsertCalls === 0, 'weak zero-transcript row should be handled before chatStore.upsert');
+  assert(weakCounters.authorizedSqlCalls === 1, 'weak zero-transcript row should use authorized shell materialization');
+  assert(weakResult.chromeWeakRows && weakResult.chromeWeakRows.attempted === 1, 'weakRowsAttempted should increment before upsert');
+  assert(weakResult.chromeWeakRows && weakResult.chromeWeakRows.materialized === 1, 'weak row should materialize in VM proof');
+  assert((weakResult.warnings || []).some((w) => w && w.kind === 'chrome-weak-row-pre-upsert-diagnostic'), 'weak row pre-upsert diagnostic missing');
+
+  const strictContext = buildImportBundleContext({ transcriptBacked: true });
+  vm.runInContext(source, strictContext, { filename: importBundleFile });
+  const strictResult = await strictContext.H2O.Studio.ingestion.importBundle(
+    buildWeakImportBundle({ transcriptBacked: true }),
+    'merge',
+    { disableLibraryBulkMigration: true }
+  );
+  const strictCounters = strictContext.__getProofCounters();
+  assert(strictResult.ok === false, 'transcript-backed row writer identity failure must remain strict');
+  assert(strictCounters.chatUpsertCalls === 1, 'transcript-backed row should still use canonical chatStore.upsert');
+  assert(!strictResult.chromeWeakRows || Number(strictResult.chromeWeakRows.attempted || 0) === 0, 'transcript-backed row must not be counted as weak');
+  assert((strictResult.errors || []).some((e) => e && e.transcriptBacked === true), 'strict transcript-backed error diagnostic missing');
+}
+
 for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
@@ -469,6 +600,10 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'chrome-weak-row-skipped-unrecoverable', 'Desktop import skips unrecoverable non-minimal weak rows without blocking');
   assertContains(importBundleFile, 'transcriptBacked: patchHasRealTranscriptEvidence(patch)', 'Desktop import keeps transcript-backed row diagnostics strict');
   assertContains(folderSyncFile, 'weakRowsMaterialized', 'Desktop propagation redacted import summary exposes weak row materialization counts');
+  assertContains(importBundleFile, 'function shouldPreemptWeakRowSqlWriter(chat, patch)', 'Desktop import classifies weak rows before store upsert SQL writer calls');
+  assertContains(importBundleFile, 'chrome-weak-row-pre-upsert-diagnostic', 'Desktop import reports redacted pre-upsert weak row diagnostics');
+  assertContains(importBundleFile, 'chrome-weak-row-skipped-before-store-upsert', 'Desktop import can skip unrecoverable weak rows before store upsert blocks');
+  assertContains(importBundleFile, 'identityFieldNames: importPatchIdentityFieldNames(chat, patch)', 'Desktop import reports identity field names without raw values');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
@@ -477,6 +612,7 @@ if (failures.length === 0) {
 
 if (failures.length === 0) {
   await runVmProof();
+  await runImportBundleWeakRowProof();
 }
 
 if (failures.length) {

@@ -939,6 +939,87 @@
     return 'weak-row';
   }
 
+  function patchHasAnyIdentityField(patch) {
+    if (!patch || typeof patch !== 'object') return false;
+    var names = [
+      'chatId',
+      'id',
+      'conversationId',
+      'conversation_id',
+      'href',
+      'url',
+      'sourceUrl',
+      'normalizedHref',
+      'linkSourceHref',
+      'snapshotId',
+      'snapshot_id',
+      'lastSnapshotId'
+    ];
+    for (var i = 0; i < names.length; i += 1) {
+      if (cleanString(patch[names[i]])) return true;
+    }
+    return false;
+  }
+
+  function importPatchIdentityFieldNames(chat, patch) {
+    var names = [];
+    function addIfPresent(name, value) {
+      if (cleanString(value) && names.indexOf(name) === -1) names.push(name);
+    }
+    var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+    var meta = chat && chat.meta && typeof chat.meta === 'object' ? chat.meta : {};
+    addIfPresent('chat.chatId', chat && chat.chatId);
+    addIfPresent('chat.id', chat && chat.id);
+    addIfPresent('chat.conversationId', chat && chat.conversationId);
+    addIfPresent('chat.href', chat && chat.href);
+    addIfPresent('chat.url', chat && chat.url);
+    addIfPresent('chat.sourceUrl', chat && chat.sourceUrl);
+    addIfPresent('chat.normalizedHref', chat && chat.normalizedHref);
+    addIfPresent('chat.linkSourceHref', chat && chat.linkSourceHref);
+    addIfPresent('chatIndex.chatId', index.chatId);
+    addIfPresent('chatIndex.id', index.id);
+    addIfPresent('chatIndex.href', index.href);
+    addIfPresent('chatIndex.url', index.url);
+    addIfPresent('chatIndex.sourceUrl', index.sourceUrl);
+    addIfPresent('chatIndex.normalizedHref', index.normalizedHref);
+    addIfPresent('chatIndex.linkSourceHref', index.linkSourceHref);
+    addIfPresent('meta.chatId', meta.chatId);
+    addIfPresent('meta.href', meta.href);
+    addIfPresent('meta.url', meta.url);
+    addIfPresent('patch.chatId', patch && patch.chatId);
+    addIfPresent('patch.id', patch && patch.id);
+    addIfPresent('patch.href', patch && patch.href);
+    addIfPresent('patch.url', patch && patch.url);
+    addIfPresent('patch.normalizedHref', patch && patch.normalizedHref);
+    addIfPresent('patch.linkSourceHref', patch && patch.linkSourceHref);
+    addIfPresent('patch.snapshotId', patch && patch.snapshotId);
+    addIfPresent('patch.lastSnapshotId', patch && patch.lastSnapshotId);
+    return names;
+  }
+
+  function redactedChatUpsertPatchDiagnostics(chat, patch) {
+    var rowClass = weakRowClass(chat, patch);
+    return {
+      rowClass: rowClass,
+      hasChatId: !!cleanString(patch && patch.chatId),
+      hasId: !!cleanString(patch && patch.id),
+      hasHref: !!cleanString(patch && patch.href),
+      hasUrl: !!cleanString(patch && patch.url),
+      hasSourceUrl: !!cleanString(patch && patch.sourceUrl),
+      hasNormalizedHref: !!cleanString(patch && patch.normalizedHref),
+      hasSnapshotId: !!cleanString(patch && (patch.snapshotId || patch.snapshot_id || patch.lastSnapshotId)),
+      isSaved: !!(patch && patch.isSaved),
+      isLinked: !!(patch && patch.isLinked),
+      hasTranscriptEvidence: patchHasRealTranscriptEvidence(patch),
+      identityFieldNames: importPatchIdentityFieldNames(chat, patch)
+    };
+  }
+
+  function shouldPreemptWeakRowSqlWriter(chat, patch) {
+    if (!isWeakNonTranscriptRow(chat, patch)) return false;
+    return patchHasAnyIdentityField(patch);
+  }
+
   function isWeakNonTranscriptRow(chat, patch) {
     if (patchHasRealTranscriptEvidence(patch)) return false;
     var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
@@ -1327,6 +1408,60 @@
           chatStateIndex[chatId] = 'skipped';
           if (minimalSummary) minimalSummary.existing += 1;
           continue;
+        }
+        if (!isMinimalRow && shouldPreemptWeakRowSqlWriter(chat, patch)) {
+          var preWeakSummary = chromeWeakRows(result);
+          preWeakSummary.attempted += 1;
+          var preUpsertDiagnostics = redactedChatUpsertPatchDiagnostics(chat, patch);
+          result.warnings.push(Object.assign({
+            kind: 'chrome-weak-row-pre-upsert-diagnostic',
+            identitySource: String(identity.source || 'unknown')
+          }, preUpsertDiagnostics));
+          try {
+            var preWeakMaterialized = await materializeMinimalLibraryIndexRow(chatStore, patch);
+            if (preWeakMaterialized.status === 'inserted') {
+              result.written.chats += 1;
+              chatStateIndex[chatId] = 'imported';
+              preWeakSummary.materialized += 1;
+              if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+              result.warnings.push({
+                kind: 'chrome-weak-row-materialized-before-store-upsert',
+                rowClass: preUpsertDiagnostics.rowClass,
+                identitySource: String(identity.source || 'unknown'),
+                fallbackUsed: true
+              });
+            } else {
+              result.skipped.chats += 1;
+              chatStateIndex[chatId] = 'skipped';
+              preWeakSummary.existing += 1;
+              if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+              result.warnings.push({
+                kind: 'chrome-weak-row-existing-before-store-upsert',
+                rowClass: preUpsertDiagnostics.rowClass,
+                identitySource: String(identity.source || 'unknown'),
+                fallbackUsed: true
+              });
+            }
+            continue;
+          } catch (preWeakFallbackError) {
+            var preWeakFallbackCode = classifyMinimalRowError(preWeakFallbackError);
+            if (shouldSkipWeakRowImportFailure(chat, patch, preWeakFallbackCode)) {
+              result.skipped.chats += 1;
+              chatStateIndex[chatId] = 'skipped';
+              preWeakSummary.skipped += 1;
+              if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+              result.warnings.push(Object.assign({
+                kind: 'chrome-weak-row-skipped-before-store-upsert',
+                code: preWeakFallbackCode,
+                identitySource: String(identity.source || 'unknown'),
+                fallbackUsed: true,
+                missingIdentityReason: 'sqlite-writer-identity-function-unavailable'
+              }, preUpsertDiagnostics));
+              continue;
+            }
+            preWeakSummary.failed += 1;
+            throw preWeakFallbackError;
+          }
         }
         try {
           await chatStore.upsert(patch);
