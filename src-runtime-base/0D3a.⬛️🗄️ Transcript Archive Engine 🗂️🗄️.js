@@ -195,6 +195,13 @@
     return String(raw || "").trim();
   }
 
+  function chatIdArg(raw) {
+    if (isObj(raw)) {
+      return toChatId(raw.chatId || raw.id || raw.conversationId || raw.conversation_id || "");
+    }
+    return toChatId(raw);
+  }
+
   function normalizeChatIdFromUrl(raw) {
     const value = String(raw || "").trim();
     if (!value) return "";
@@ -2926,7 +2933,7 @@
   }
 
   async function loadLatestSnapshotInternal(chatIdRaw) {
-    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    const chatId = chatIdArg(chatIdRaw) || toChatId(getCurrentChatId());
     if (!chatId) return null;
     if (await ensureExtensionBacked()) {
       const res = await bridgeCall("loadLatestSnapshot", { chatId });
@@ -2940,7 +2947,7 @@
   }
 
   async function listSnapshots(chatIdRaw) {
-    const chatId = toChatId(chatIdRaw || getCurrentChatId());
+    const chatId = chatIdArg(chatIdRaw) || toChatId(getCurrentChatId());
     if (!chatId) return [];
     if (await ensureExtensionBacked()) {
       const rows = await bridgeCall("listSnapshots", { chatId });

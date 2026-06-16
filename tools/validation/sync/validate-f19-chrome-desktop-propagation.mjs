@@ -17,6 +17,7 @@ const importBundleFile = 'src-surfaces-base/studio/ingestion/import-bundle.tauri
 const studioSyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
 const chromeLiveLoaderFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs';
+const chromeLiveManifestFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
 function read(file) {
@@ -334,7 +335,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, contractFile]) assertExists(file);
+for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(autoImportFile, 'direction: \'chrome-to-desktop\'', 'Chrome export direction result');
@@ -438,8 +439,12 @@ if (failures.length === 0) {
   assertContains(studioSyncFile, 'nativeSnapshotPayloadMaterialize', 'Studio exposes native payload materialization diagnostics');
   assertContains(chromeLiveLoaderFile, 'function forwardNativeSnapshotPayloadsToStudioLauncher', 'Native content bridge forwards snapshot payloads to Studio Launcher');
   assertContains(chromeLiveLoaderFile, 'snapshotPayloadRequestIdsFromStudioBroadcast', 'Native content bridge tracks snapshot payload direct relay requests');
+  assertContains(chromeLiveLoaderFile, 'request && request.snapshotId', 'Native content bridge direct relay matches snapshot IDs, not only opaque request IDs');
+  assertContains(chromeLiveLoaderFile, 'request && request.chatId', 'Native content bridge direct relay matches chat IDs for latest snapshot fallback');
   assertContains(chromeLiveBackgroundFile, 'function handleExternalNativeSnapshotPayloadsMessage', 'Studio Launcher background receives native snapshot payloads');
   assertContains(chromeLiveBackgroundFile, 'MSG_NATIVE_SNAPSHOT_PAYLOADS', 'Background bridge has snapshot payload message type');
+  assertContains(chromeLiveManifestFile, 'STUDIO_LAUNCHER_EXTENSION_ID', 'Native extension manifest declares the Studio Launcher external sender id');
+  assertContains(chromeLiveManifestFile, 'manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] }', 'Native extension manifest allows Studio Launcher external snapshot payload requests');
   assertContains(importBundleFile, 'var turns = buildTurnsFromSnapshot(snap);', 'Desktop import materializes snapshot payload turns');
   assertContains(importBundleFile, 'await snapStore.create({', 'Desktop import writes snapshot payload to snapshot store');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');

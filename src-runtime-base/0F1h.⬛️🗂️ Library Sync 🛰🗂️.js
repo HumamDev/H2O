@@ -164,6 +164,10 @@
     lastSnapshotPayloadRequestStatus: '',
     lastSnapshotPayloadRequestIdHashes: [],
     lastSnapshotPayloadRequestErrors: [],
+    lastSnapshotPayloadRequestBySnapshotIdSuccessCount: 0,
+    lastSnapshotPayloadRequestByChatIdFallbackSuccessCount: 0,
+    lastSnapshotPayloadRequestMessagePayloadCount: 0,
+    lastSnapshotPayloadRequestTurnPayloadCount: 0,
     handledSnapshotPayloadRequestIds: new Set(),
     pendingTimer: null,
     pendingReasons: new Set(),
@@ -393,6 +397,10 @@
     const archive = W.H2O?.archiveBoot || {};
     let fulfilled = 0;
     let failed = 0;
+    let bySnapshotIdSuccess = 0;
+    let byChatIdFallbackSuccess = 0;
+    let messagePayloads = 0;
+    let turnPayloads = 0;
     const hashes = [];
     const errors = [];
     for (const request of rows) {
@@ -405,8 +413,22 @@
       if (hash) hashes.push(hash);
       try {
         let snapshot = null;
-        if (snapshotId && typeof archive.loadSnapshot === 'function') snapshot = await archive.loadSnapshot(snapshotId);
-        if (!snapshot && chatId && typeof archive.loadLatestSnapshot === 'function') snapshot = await archive.loadLatestSnapshot(chatId);
+        if (snapshotId && typeof archive.loadSnapshot === 'function') {
+          snapshot = await archive.loadSnapshot(snapshotId);
+          if (snapshot) bySnapshotIdSuccess += 1;
+        }
+        if (!snapshot && chatId && typeof archive.loadLatestSnapshot === 'function') {
+          snapshot = await archive.loadLatestSnapshot(chatId);
+          if (snapshot) byChatIdFallbackSuccess += 1;
+        }
+        if (!snapshot) {
+          failed += 1;
+          errors.push(`${hash || 'h:missing'}:snapshot-not-found`);
+          continue;
+        }
+        if (Array.isArray(snapshot.messages) && snapshot.messages.length > 0) messagePayloads += 1;
+        if (Array.isArray(snapshot.turns) && snapshot.turns.length > 0) turnPayloads += 1;
+        else if (Array.isArray(snapshot.meta?.richTurns) && snapshot.meta.richTurns.length > 0) turnPayloads += 1;
         const queued = queueSnapshotPayload({
           chatId: chatId || snapshot?.chatId || '',
           snapshotId: snapshotId || snapshot?.snapshotId || '',
@@ -437,6 +459,10 @@
     state.lastSnapshotPayloadRequestStatus = failed ? (fulfilled ? 'partial' : 'failed') : 'fulfilled';
     state.lastSnapshotPayloadRequestIdHashes = hashes.slice(-SNAPSHOT_PAYLOAD_REQUEST_MAX);
     state.lastSnapshotPayloadRequestErrors = errors.slice(-8);
+    state.lastSnapshotPayloadRequestBySnapshotIdSuccessCount = bySnapshotIdSuccess;
+    state.lastSnapshotPayloadRequestByChatIdFallbackSuccessCount = byChatIdFallbackSuccess;
+    state.lastSnapshotPayloadRequestMessagePayloadCount = messagePayloads;
+    state.lastSnapshotPayloadRequestTurnPayloadCount = turnPayloads;
     if (fulfilled > 0) broadcastImmediately('snapshot-payload-request-fulfilled');
     step('snapshot-payload.requests', `${fulfilled}/${rows.length}`);
     return { handledIds, fulfilled, failed };
@@ -1290,6 +1316,7 @@
             cap: LINKED_SNAPSHOT_MAX,
           },
           snapshotPayloads: {
+            requestListenerInstalled: true,
             queuedAt: state.lastSnapshotPayloadQueuedAt,
             queuedCount: state.lastSnapshotPayloadQueuedCount,
             queueStatus: state.lastSnapshotPayloadQueuedStatus,
@@ -1308,6 +1335,10 @@
             requestStatus: state.lastSnapshotPayloadRequestStatus,
             requestIdHashes: state.lastSnapshotPayloadRequestIdHashes.slice(),
             requestErrors: state.lastSnapshotPayloadRequestErrors.slice(),
+            requestBySnapshotIdSuccessCount: state.lastSnapshotPayloadRequestBySnapshotIdSuccessCount,
+            requestByChatIdFallbackSuccessCount: state.lastSnapshotPayloadRequestByChatIdFallbackSuccessCount,
+            requestMessagePayloadCount: state.lastSnapshotPayloadRequestMessagePayloadCount,
+            requestTurnPayloadCount: state.lastSnapshotPayloadRequestTurnPayloadCount,
           },
           projectCatalog: {
             available: !!state.lastProjectCatalogAvailable,

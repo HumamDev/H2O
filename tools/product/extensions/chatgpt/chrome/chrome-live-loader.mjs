@@ -4048,9 +4048,20 @@ export function makeChromeLiveLoaderJs({
     }
 
     function snapshotPayloadRequestIdsFromStudioBroadcast(value) {
-      return snapshotPayloadRequestsFromStudioBroadcast(value)
-        .map((request) => String(request && (request.requestId || request.snapshotId || request.chatId) || "").trim())
-        .filter(Boolean);
+      const out = [];
+      for (const request of snapshotPayloadRequestsFromStudioBroadcast(value)) {
+        [
+          request && request.requestId,
+          request && request.snapshotId,
+          request && request.lastSnapshotId,
+          request && request.latestSnapshotId,
+          request && request.chatId,
+        ].forEach((candidate) => {
+          const id = String(candidate || "").trim();
+          if (id && !out.includes(id)) out.push(id);
+        });
+      }
+      return out;
     }
 
     function summarizeFolderMetadataRequestsFromStudioBroadcast(value) {

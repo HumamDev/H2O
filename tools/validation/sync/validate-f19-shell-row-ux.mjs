@@ -10,6 +10,7 @@ const FILES = {
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
   chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
   chromeLiveLoader: 'tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs',
+  chromeLiveManifest: 'tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
   runtimeRegistryCore: 'src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js',
@@ -270,12 +271,22 @@ const checks = [
       sources.nativeSync.includes('function handleSnapshotPayloadRequests') &&
       sources.nativeSync.includes('function fulfillSnapshotPayloadRequests') &&
       sources.nativeSync.includes('archive.loadSnapshot(snapshotId)') &&
+      sources.nativeSync.includes('archive.loadLatestSnapshot(chatId)') &&
       sources.nativeSync.includes("broadcastImmediately('snapshot-payload-request-fulfilled')") &&
       sources.nativeSync.includes('queuedHasBody') &&
       sources.nativeSync.includes('broadcastHasBodyCount') &&
+      sources.nativeSync.includes('requestListenerInstalled: true') &&
+      sources.nativeSync.includes('requestBySnapshotIdSuccessCount') &&
+      sources.nativeSync.includes('requestByChatIdFallbackSuccessCount') &&
+      sources.nativeSync.includes('requestMessagePayloadCount') &&
+      sources.nativeSync.includes('snapshot-not-found') &&
       sources.chromeLiveLoader.includes('MSG_NATIVE_SNAPSHOT_PAYLOADS') &&
       sources.chromeLiveLoader.includes('function forwardNativeSnapshotPayloadsToStudioLauncher') &&
+      sources.chromeLiveLoader.includes('request && request.snapshotId') &&
+      sources.chromeLiveLoader.includes('request && request.chatId') &&
       sources.chromeBackground.includes('function handleExternalNativeSnapshotPayloadsMessage') &&
+      sources.chromeLiveManifest.includes('STUDIO_LAUNCHER_EXTENSION_ID') &&
+      sources.chromeLiveManifest.includes('manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] }') &&
       sources.nativeFolders.includes('archive.loadSnapshot(captureSummary.snapshotId)') &&
       sources.nativeFolders.includes('sync.queueSnapshotPayload') &&
       sources.nativeFolders.includes('snapshotPayloadQueued') &&
@@ -298,11 +309,22 @@ const checks = [
       sources.studioSync.includes('snapshotPayloadResponseCount') &&
       sources.studioSync.includes('waitForNativeSnapshotPayloadMaterialization') &&
       sources.studioSync.includes('verifyNativeSnapshotPayloadImports') &&
+      sources.studioSync.includes('const messages = Array.isArray(src.messages) ? src.messages : []') &&
       sources.studioSync.includes("readerKind: 'reader'") &&
       sources.studioSync.includes('meta.folderId = String(meta.folderId || folderId)') &&
       sources.studioSync.includes('assistantTurnCount'),
     FILES.studioSync,
     'Chrome Studio must import native Save-to-Folder snapshot payloads into the archive backend used by loadSnapshot while exposing only redacted diagnostics.'
+  ),
+  check(
+    'native-archive-accepts-object-form-chat-id-for-payload-recovery',
+    sources.archiveEngine.includes('function chatIdArg') &&
+      sources.archiveEngine.includes('raw.chatId || raw.id || raw.conversationId || raw.conversation_id') &&
+      sources.archiveEngine.includes('const chatId = chatIdArg(chatIdRaw) || toChatId(getCurrentChatId())') &&
+      sources.archiveEngine.includes('archiveBoot.listSnapshots = (chatId) => listSnapshots(chatId)') &&
+      sources.archiveEngine.includes('archiveBoot.loadLatestSnapshot = (chatId) => loadLatestSnapshotInternal(chatId)'),
+    FILES.archiveEngine,
+    'Native archive payload recovery must accept both listSnapshots(chatId) and listSnapshots({ chatId }) so Studio/native diagnostics and repair callers resolve the same payloads.'
   ),
   check(
     'library-actions-capture-source-title',
@@ -322,6 +344,8 @@ const checks = [
       sources.nativeFolders.includes('function API_captureHasRealTranscript') &&
       sources.nativeFolders.includes('function API_captureSummary') &&
       sources.nativeFolders.includes('function API_targetIsCurrentLoadedChat') &&
+      sources.nativeFolders.includes('function API_currentUrlChatId') &&
+      sources.nativeFolders.includes('F19_7u_currentUrlChatIdParsing') &&
       sources.nativeFolders.includes('capture-requires-open-chat') &&
       sources.nativeFolders.includes('Open this chat first to capture transcript.') &&
       sources.nativeFolders.includes('capture-transcript-missing') &&

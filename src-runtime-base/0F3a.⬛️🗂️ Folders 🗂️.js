@@ -6503,8 +6503,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   }
 
   function API_currentLoadedChatId() {
-    const fromLocation = DOM_parseChatIdFromHref(String(W.location?.href || ''))
-      || DOM_parseChatIdFromHref(String(W.location?.pathname || ''));
+    const fromLocation = API_currentUrlChatId();
     if (fromLocation) return fromLocation;
     try {
       const fromUtil = H2O.util && typeof H2O.util.getChatId === 'function'
@@ -7613,6 +7612,14 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return DOM_parseChatIdFromHref(String(value || '').trim()) || '';
   }
 
+  function API_currentUrlChatId() {
+    return API_chatIdFromMaybeHref(String(W.location?.href || ''))
+      || API_chatIdFromMaybeHref(String(D.location?.href || ''))
+      || API_chatIdFromMaybeHref(String(D.URL || ''))
+      || API_chatIdFromMaybeHref(String(W.location?.pathname || ''))
+      || '';
+  }
+
   function API_nonPathChatId(value) {
     const id = String(value || '').trim();
     return id && !id.startsWith('path:') ? id : '';
@@ -7654,10 +7661,11 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
   function API_visibleConversationSummary(opts = {}) {
     const archiveInspect = API_archiveConversationInspect(opts);
     if (archiveInspect) {
+      const currentUrlChatId = String(archiveInspect.currentUrlChatId || '') || API_currentUrlChatId();
       return {
         source: 'archiveBoot.inspectCurrentConversation',
-        currentChatId: String(archiveInspect.currentChatId || ''),
-        currentUrlChatId: String(archiveInspect.currentUrlChatId || ''),
+        currentChatId: String(archiveInspect.currentChatId || '') || currentUrlChatId,
+        currentUrlChatId,
         title: String(archiveInspect.title || ''),
         visibleMessageCount: Number(archiveInspect.visibleMessageCount || 0),
         visibleConversationTurnCount: Number(archiveInspect.visibleConversationTurnCount || 0),
@@ -7684,7 +7692,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return {
       source: '0F3a.local-dom-fallback',
       currentChatId: API_currentLoadedChatId(),
-      currentUrlChatId: API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || '')),
+      currentUrlChatId: API_currentUrlChatId(),
       title: String(D.title || ''),
       visibleMessageCount: finalMessages.length,
       visibleConversationTurnCount: turns.length || finalMessages.length,
@@ -7811,6 +7819,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       'archiveBoot.captureNow': typeof H2O.archiveBoot?.captureNow === 'function',
       API_captureCurrentChatForFolder: typeof API_captureCurrentChatForFolder === 'function',
       API_captureSummary: typeof API_captureSummary === 'function',
+      F19_7u_currentUrlChatIdParsing: typeof API_currentUrlChatId === 'function',
       F19_7_failClosed: true,
       F19_7b_transcriptRequired: true,
       F19_7d_buildTruthDiagnostic: true,
@@ -7847,8 +7856,8 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
   function API_captureReadiness(opts = {}) {
     const visibleSummary = API_visibleConversationSummary(opts);
-    const currentLoadedChatId = API_currentLoadedChatId() || API_nonPathChatId(visibleSummary.currentChatId);
-    const currentUrlChatId = API_chatIdFromMaybeHref(String(W.location?.href || W.location?.pathname || '')) || String(visibleSummary.currentUrlChatId || '');
+    const currentUrlChatId = API_currentUrlChatId() || String(visibleSummary.currentUrlChatId || '');
+    const currentLoadedChatId = API_currentLoadedChatId() || API_nonPathChatId(visibleSummary.currentChatId) || currentUrlChatId;
     const selectedTargetChatId = API_chatIdFromMaybeHref(String(STATE.menuDiag?.lastContextHref || STATE.menuDiag?.lastAnchorText || ''));
     const visibleMessageCount = Number(visibleSummary.visibleMessageCount || 0);
     const visibleConversationTurnCount = Number(visibleSummary.visibleConversationTurnCount || visibleMessageCount || 0);

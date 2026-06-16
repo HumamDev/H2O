@@ -3,6 +3,8 @@
 //                  the public key instead of the load-path string. The
 //                  build orchestrator looks up the per-variant key from
 //                  config/extension-keys.json.)
+const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
+
 export function makeChromeLiveManifest({
   PROXY_PACK_URL,
   CHAT_MATCH,
@@ -123,6 +125,8 @@ export function makeChromeLiveManifest({
   }
   if (DEV_HAS_CONTROLS && manifestProfile !== "production" && !requestOtpArmed) {
     manifest.externally_connectable = { ids: ["*"] };
+  } else if (!STUDIO_ONLY) {
+    manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] };
   }
   return manifest;
 }
