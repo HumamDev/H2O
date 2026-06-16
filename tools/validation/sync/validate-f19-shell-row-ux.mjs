@@ -25,6 +25,7 @@ const FILES = {
   studioSync: 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
+  studioShell: 'src-surfaces-base/studio/studio.js',
 };
 
 function read(rel) {
@@ -188,6 +189,18 @@ const checks = [
       sources.insights.includes('Promise.resolve(resolveReaderSnapshotId(row))'),
     FILES.insights,
     'Transcript-backed rows with counts but no denormalized snapshot id must resolve a reader snapshot at click time instead of opening placeholder details.'
+  ),
+  check(
+    'saved-chats-page-saved-linked-snapshot-opens-reader',
+    sources.studioShell.includes('function rowReaderSnapshotId') &&
+      sources.studioShell.includes('function rowHasReaderSnapshot') &&
+      sources.studioShell.includes('row.snapshotId || row.lastSnapshotId || row.latestSnapshotId || row.snapshot_id') &&
+      sources.studioShell.includes('return rowHasReaderSnapshot(row) ? false : coreDecision;') &&
+      sources.studioShell.includes('if (rowHasReaderSnapshot(row)) return false;') &&
+      sources.studioShell.includes('const isLinkedState = liRow.isLinked === true') &&
+      sources.studioShell.includes('location.hash = `#/read/${encodeURIComponent(row.snapshotId)}`;'),
+    FILES.studioShell,
+    'Legacy Saved Chats page must route saved+linked rows with snapshot evidence to the reader instead of opening the original link.'
   ),
   check(
     'insights-update-from-url-action',

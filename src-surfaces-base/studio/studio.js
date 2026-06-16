@@ -3064,7 +3064,10 @@ function normalizeWorkbenchRow(raw){
   const row = raw && typeof raw === "object" ? raw : {};
   const messages = Array.isArray(row.messages) ? row.messages : [];
   const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
-  const snapshotId = String(row.snapshotId || meta.snapshotId || "").trim();
+  const snapshotId = String(
+    row.snapshotId || row.lastSnapshotId || row.latestSnapshotId || row.snapshot_id
+    || meta.snapshotId || meta.lastSnapshotId || meta.latestSnapshotId || meta.snapshot_id || ""
+  ).trim();
   const chatId = String(row.chatId || meta.chatId || "").trim();
   /* Phase K-1 — Linked rows (view: 'linked') are accepted without
    * snapshotId. Saved rows still require both ids. The view value
@@ -3072,8 +3075,12 @@ function normalizeWorkbenchRow(raw){
    * caller-provided shape without a view defaults to saved-rules. */
   const rowView = String(row.view || meta.view || "").trim().toLowerCase();
   const isLinkedRow = rowView === "linked";
+  const isLinkedState = row.isLinked === true
+    || !!(row.state && typeof row.state === "object" && row.state.isLinked === true)
+    || meta.isLinked === true;
+  const isLinkOnlyRow = isLinkedRow || isLinkedState;
   if (!chatId) return null;
-  if (!snapshotId && !isLinkedRow) return null;
+  if (!snapshotId && !isLinkOnlyRow) return null;
 
   const title = String(row.title || meta.title || chatId).trim() || chatId;
   const excerpt = String(row.excerpt || meta.excerpt || buildExcerptFromMessages(messages)).trim();
@@ -3127,6 +3134,9 @@ function normalizeWorkbenchRow(raw){
      * saved rows; populated on linked rows from the Library Index
      * projection. */
     href: String(row.href || meta.href || ""),
+    normalizedHref: String(row.normalizedHref || meta.normalizedHref || row.href || meta.href || ""),
+    linkSourceHref: String(row.linkSourceHref || meta.linkSourceHref || ""),
+    isLinked: isLinkOnlyRow,
     linkedAt: String(row.linkedAt || meta.linkedAt || ""),
     linkedFrom: String(row.linkedFrom || meta.linkedFrom || ""),
   };
@@ -3280,12 +3290,15 @@ async function buildRowsFromChatIds(chatIds){
 function projectLibraryIndexRowToWorkbenchInput(liRow){
   if (!liRow || typeof liRow !== 'object') return null;
   const chatId = String(liRow.chatId || '').trim();
-  const snapshotId = String(liRow.snapshotId || '').trim();
+  const snapshotId = String(liRow.snapshotId || liRow.lastSnapshotId || liRow.latestSnapshotId || liRow.snapshot_id || '').trim();
   const liView = String(liRow.view || '').toLowerCase();
   const isLinkedRow = liView === 'linked';
-  /* Saved rows still require snapshotId; linked-only rows do not. */
+  const isLinkedState = liRow.isLinked === true
+    || !!(liRow.state && typeof liRow.state === 'object' && liRow.state.isLinked === true);
+  const isLinkOnlyRow = isLinkedRow || isLinkedState;
+  /* Saved rows still require snapshotId; linked / saved+linked rows do not. */
   if (!chatId) return null;
-  if (!snapshotId && !isLinkedRow) return null;
+  if (!snapshotId && !isLinkOnlyRow) return null;
 
   // LI carries timestamps as epoch ms (capturedAt, updatedAt);
   // normalizeWorkbenchRow expects ISO strings. Same conversion edge as
@@ -3324,6 +3337,9 @@ function projectLibraryIndexRowToWorkbenchInput(liRow){
      * can surface "Open original" + Linked-from metadata without re-
      * reading the Chat Registry. Empty strings on saved rows. */
     href: String(liRow.href || liRow.normalizedHref || ''),
+    normalizedHref: String(liRow.normalizedHref || liRow.href || ''),
+    linkSourceHref: String(liRow.linkSourceHref || ''),
+    isLinked: isLinkOnlyRow,
     linkedAt: typeof liRow.linkedAt === 'number' ? toIso(liRow.linkedAt) : String(liRow.linkedAt || ''),
     linkedFrom: String(liRow.linkedFrom || ''),
     meta: {
@@ -4924,6 +4940,86 @@ function openTitlePalette(row, article, anchor){
   requestAnimationFrame(() => input.focus());
 }
 
+/* Native Save-to-Folder + linked-row open-target resolution.
+ * Prefers the shared LibraryIndexCore resolver (strict order:
+ * normalizedHref -> href -> linkSourceHref -> /c/<chatId>; never folderId);
+ * falls back to an inline equivalent so the open path works even before
+ * the core mirror (S0F0d) has loaded. */
+function resolveRowOpenTarget(row){
+  const core = W.H2O && W.H2O.Library && W.H2O.Library.LibraryIndexCore;
+  if (core && typeof core.resolveRowOpenTarget === "function") {
+    try { const t = core.resolveRowOpenTarget(row); if (t) return String(t); } catch (_) { /* fall through */ }
+  }
+  if (!row || typeof row !== "object") return "";
+  const norm = String(row.normalizedHref || "").trim();
+  if (norm) return norm;
+  const href = String(row.href || "").trim();
+  if (href) return href;
+  const linkSrc = String(row.linkSourceHref || "").trim();
+  if (linkSrc) return linkSrc;
+  const chatId = String(row.chatId || "").trim();
+  if (chatId && !/^imported[-_:]/i.test(chatId)) return "/c/" + encodeURIComponent(chatId);
+  return "";
+}
+
+function rowReaderSnapshotId(row){
+  if (!row || typeof row !== "object") return "";
+  const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+  return String(
+    row.snapshotId || row.lastSnapshotId || row.latestSnapshotId || row.snapshot_id
+    || meta.snapshotId || meta.lastSnapshotId || meta.latestSnapshotId || meta.snapshot_id || ""
+  ).trim();
+}
+
+function rowHasReaderSnapshot(row){
+  return !!rowReaderSnapshotId(row);
+}
+
+/* True when a row should open its original ChatGPT chat (a live link)
+ * rather than a captured snapshot reader. Saved+linked rows are common after
+ * native Save-to-Folder; once they have a reader snapshot, saved state wins. */
+function rowIsLinkOnly(row){
+  const core = W.H2O && W.H2O.Library && W.H2O.Library.LibraryIndexCore;
+  if (core && typeof core.rowIsLinkOnly === "function") {
+    try {
+      const coreDecision = !!core.rowIsLinkOnly(row);
+      return rowHasReaderSnapshot(row) ? false : coreDecision;
+    } catch (_) { /* fall through */ }
+  }
+  if (!row || typeof row !== "object") return false;
+  if (rowHasReaderSnapshot(row)) return false;
+  if (String(row.view || "").toLowerCase() === "linked") return true;
+  if (row.state && typeof row.state === "object" && row.state.isLinked === true) return true;
+  if (row.isLinked === true) return true;
+  return !!resolveRowOpenTarget(row);
+}
+
+/* Convert a resolved open target to an absolute chatgpt.com URL, then
+ * open it via platform.openUrl (Tauri shell|open / MV3 in-tab) with a
+ * window.open fallback. Mirrors S0F1j.sourceUrlFromTarget origin logic
+ * so relative /c/<id> targets always resolve against chatgpt.com and
+ * never against the Studio origin. Returns true when an open was
+ * dispatched. NEVER uses folderId. */
+function openRowOriginalChat(row, setStatus){
+  const target = resolveRowOpenTarget(row);
+  if (!target) { if (typeof setStatus === "function") setStatus("No original chat URL available."); return false; }
+  let url = String(target);
+  if (/^https?:\/\//i.test(url)) { /* already absolute */ }
+  else if (url.startsWith("/")) url = "https://chatgpt.com" + url;
+  else if (/^c\//i.test(url)) url = "https://chatgpt.com/" + url;
+  else url = "https://chatgpt.com/" + url;
+  if (typeof setStatus === "function") setStatus("Opening original...");
+  const platform = (W.H2O && W.H2O.Studio && W.H2O.Studio.platform) || null;
+  if (platform && typeof platform.openUrl === "function") {
+    Promise.resolve(platform.openUrl(url))
+      .then(() => { if (typeof setStatus === "function") setStatus(""); })
+      .catch((err) => { if (typeof setStatus === "function") setStatus("Open failed: " + String((err && (err.message || err)) || err)); });
+    return true;
+  }
+  try { window.open(url, "_blank", "noopener"); if (typeof setStatus === "function") setStatus(""); return true; }
+  catch (err) { if (typeof setStatus === "function") setStatus("Open failed: " + String(err)); return false; }
+}
+
 function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""){
   const article = document.createElement("article");
   article.className = "wbHistoryRow";
@@ -5051,6 +5147,11 @@ function renderRow(row, isSelected = false, activeView = "", activeFolderId = ""
       renderLinkedReaderPlaceholder(row);
       return;
     }
+    if (rowIsLinkOnly(row)) {
+      if (openRowOriginalChat(row)) return;
+      renderLinkedReaderPlaceholder(row);
+      return;
+    }
     location.hash = `#/read/${encodeURIComponent(row.snapshotId)}`;
   });
   syncRowTools(article, row);
@@ -5077,7 +5178,7 @@ function renderLinkedReaderPlaceholder(row){
   readerEl.hidden = false;
 
   const title = String(row?.title || row?.chatId || "Linked chat");
-  const href = String(row?.href || "").trim();
+  const href = String(resolveRowOpenTarget(row) || row?.href || "").trim();
   const linkedAtRaw = String(row?.linkedAt || "").trim();
   const linkedAtFmt = linkedAtRaw ? (fmtDateMeta(linkedAtRaw) || linkedAtRaw) : "";
   const linkedFrom = String(row?.linkedFrom || "").trim();
@@ -5117,23 +5218,17 @@ function renderLinkedReaderPlaceholder(row){
   const statusEl = readerEl.querySelector("#wbLinkedReader-status");
   const setStatus = (msg) => { if (statusEl) statusEl.textContent = String(msg || ""); };
 
-  /* Open original — prefer platform.openUrl (Tauri shell|open in
-   * Desktop, in-tab navigation in MV3); fall back to window.open. */
+  /* Open original — route through openRowOriginalChat so the open target
+   * is resolved via the strict preference chain and converted to an
+   * absolute chatgpt.com URL (never the Studio origin, never folderId),
+   * then opened via platform.openUrl (Tauri shell|open / MV3 in-tab)
+   * with a window.open fallback. */
   const openBtn = readerEl.querySelector("#wbLinkedReader-openOriginal");
   const hrefLink = readerEl.querySelector(".wbLinkedReader-hrefLink");
   const openOriginal = (ev) => {
     if (ev) { ev.preventDefault(); ev.stopPropagation(); }
     if (!href) return;
-    setStatus("Opening original…");
-    const platform = (W.H2O && W.H2O.Studio && W.H2O.Studio.platform) || null;
-    if (platform && typeof platform.openUrl === "function") {
-      platform.openUrl(href).then(() => setStatus("")).catch((err) => {
-        setStatus("Open failed: " + String((err && (err.message || err)) || err));
-      });
-      return;
-    }
-    try { window.open(href, "_blank", "noopener"); setStatus(""); }
-    catch (err) { setStatus("Open failed: " + String(err)); }
+    openRowOriginalChat(row, setStatus);
   };
   if (openBtn) openBtn.addEventListener("click", openOriginal);
   if (hrefLink) hrefLink.addEventListener("click", openOriginal);
