@@ -68,6 +68,16 @@
     refreshInFlight: null,
     subscribers: new Set(),
     ready: false,
+    lastRowsSignature: '',
+    lastRowsSignatureBefore: '',
+    lastRowsSignatureAfter: '',
+    lastRefreshChanged: false,
+    lastRefreshSkipped: false,
+    lastRefreshSkipReason: '',
+    lastUpdateReason: '',
+    updateEvents: [],
+    updateEventCount10s: 0,
+    skippedUpdateEvents: 0,
   };
 
   function getCore() { return H2O.LibraryCore || null; }
@@ -100,6 +110,106 @@
     return null;
   }
 
+  function sortStrings(list) {
+    return Array.isArray(list) ? list.map((v) => String(v || '')).sort() : [];
+  }
+
+  function canonicalRowForSignature(row) {
+    const r = row && typeof row === 'object' ? row : {};
+    const st = r.state && typeof r.state === 'object' ? r.state : {};
+    return {
+      chatId: cleanString(r.chatId),
+      snapshotId: cleanString(r.snapshotId),
+      lastSnapshotId: cleanString(r.lastSnapshotId),
+      latestSnapshotId: cleanString(r.latestSnapshotId),
+      title: cleanString(r.title),
+      view: cleanString(r.view),
+      displayView: cleanString(r.displayView),
+      badgeKind: cleanString(r.badgeKind),
+      readerKind: cleanString(r.readerKind),
+      folderId: cleanString(r.folderId),
+      folderName: cleanString(r.folderName),
+      categoryId: cleanString(r.categoryId),
+      categoryName: cleanString(r.categoryName),
+      projectId: cleanString(r.projectId),
+      labels: sortStrings(r.labels),
+      tags: sortStrings(r.tags),
+      snapshotCount: numericCount(r.snapshotCount),
+      messageCount: numericCount(r.messageCount),
+      turnCount: numericCount(r.turnCount),
+      userTurnCount: numericCount(r.userTurnCount),
+      assistantTurnCount: numericCount(r.assistantTurnCount),
+      answerCount: numericCount(r.answerCount),
+      pinned: !!r.pinned || !!st.isPinned,
+      archived: !!r.archived || !!st.isArchived,
+      isSaved: !!r.isSaved || !!st.isSaved,
+      isLinked: !!r.isLinked || !!st.isLinked,
+      isImported: !!r.isImported || !!st.isImported,
+      isDeleted: !!st.isDeleted,
+      href: cleanString(r.href),
+      normalizedHref: cleanString(r.normalizedHref),
+      linkSourceHref: cleanString(r.linkSourceHref),
+      capturedAt: cleanString(r.capturedAt),
+      updatedAt: cleanString(r.updatedAt),
+    };
+  }
+
+  function rowsSignature(rows) {
+    const list = (Array.isArray(rows) ? rows : [])
+      .map(canonicalRowForSignature)
+      .sort((a, b) => String(a.chatId || '').localeCompare(String(b.chatId || ''))
+        || String(a.snapshotId || '').localeCompare(String(b.snapshotId || '')));
+    return JSON.stringify(list);
+  }
+
+  function rememberUpdateEvent(reason, beforeHash, afterHash, emitted) {
+    const now = Date.now();
+    state.lastUpdateReason = String(reason || '');
+    state.lastRowsSignatureBefore = String(beforeHash || '');
+    state.lastRowsSignatureAfter = String(afterHash || '');
+    if (!emitted) state.skippedUpdateEvents += 1;
+    if (emitted) state.updateEvents.push({ t: now, reason: String(reason || ''), hash: String(afterHash || '') });
+    state.updateEvents = state.updateEvents.filter((evt) => evt && now - evt.t <= 10000).slice(-50);
+    state.updateEventCount10s = state.updateEvents.length;
+  }
+
+  function applyRowsIfChanged(nextRows, reason, source, refreshSources) {
+    const rows = Array.isArray(nextRows) ? nextRows : [];
+    const before = state.lastRowsSignature || rowsSignature(state.rows);
+    const after = rowsSignature(rows);
+    const changed = before !== after;
+    state.lastRowsSignatureBefore = before;
+    state.lastRowsSignatureAfter = after;
+    state.lastRefreshChanged = changed;
+    state.lastRefreshSkipped = !changed;
+    state.lastRefreshSkipReason = changed ? '' : 'unchanged-row-signature';
+    state.lastScanTs = Date.now();
+    state.lastScanReason = String(reason);
+    state.lastSource = String(source || state.lastSource || '');
+    state.lastRefreshSources = {
+      ...(refreshSources || {}),
+      reason: String(reason),
+      totalRows: rows.length,
+      source: state.lastSource,
+      changed,
+      dataHashBefore: before,
+      dataHashAfter: after,
+      skippedReason: changed ? '' : state.lastRefreshSkipReason,
+      at: state.lastScanTs,
+    };
+    if (!changed) {
+      rememberUpdateEvent(reason, before, after, false);
+      step('refresh.skip-unchanged', `${rows.length}:${reason}`);
+      return false;
+    }
+    state.rows = rows;
+    state.byChatId = Object.create(null);
+    for (const r of state.rows) state.byChatId[r.chatId] = r;
+    rebuildFacets();
+    state.lastRowsSignature = after;
+    return true;
+  }
+
   function rebuildFacets() {
     const c = ixCore();
     state.facets = c ? c.buildFacetsStudio(state.rows) : {
@@ -113,7 +223,15 @@
   }
 
   function emitUpdated(reason) {
-    const detail = { reason: String(reason || ''), rows: state.rows.length, t: Date.now(), surface: 'studio' };
+    rememberUpdateEvent(reason, state.lastRowsSignatureBefore, state.lastRowsSignature, true);
+    const detail = {
+      reason: String(reason || ''),
+      rows: state.rows.length,
+      t: Date.now(),
+      surface: 'studio',
+      dataHash: state.lastRowsSignature || '',
+      updateEventCount10s: state.updateEventCount10s,
+    };
     try { W.dispatchEvent(new CustomEvent('evt:h2o:library-index:updated', { detail })); } catch {}
     try { W.dispatchEvent(new CustomEvent('h2o:library-index:updated', { detail })); } catch {}
     try { W.H2O?.events?.emit?.('library-index:updated', detail); } catch {}
@@ -212,6 +330,7 @@
         state.byChatId = Object.create(null);
         for (const r of state.rows) state.byChatId[r.chatId] = r;
         rebuildFacets();
+        state.lastRowsSignature = rowsSignature(state.rows);
         state.lastSource = `${sourceLabel}-hydrate`;
         step('hydrate.ok', `${sourceLabel}:${state.rows.length}`);
       }
@@ -869,22 +988,12 @@
           };
         } catch (e) { err('refresh.linked-only', e); }
 
-        state.rows = archiveRows.concat(linkedRows);
-        state.byChatId = Object.create(null);
-        for (const r of state.rows) state.byChatId[r.chatId] = r;
-        rebuildFacets();
-        state.lastScanTs = Date.now();
-        state.lastScanReason = String(reason);
-        state.lastSource = linkedRows.length
+        const nextRows = archiveRows.concat(linkedRows);
+        const nextSource = linkedRows.length
           ? `studio-archive+registry(${linkedRows.length})`
           : 'studio-archive';
-        state.lastRefreshSources = {
-          ...(state.lastRefreshSources || {}),
-          reason: String(reason),
-          totalRows: state.rows.length,
-          source: state.lastSource,
-          at: state.lastScanTs,
-        };
+        const changed = applyRowsIfChanged(nextRows, reason, nextSource, state.lastRefreshSources || {});
+        if (!changed) return state.rows;
         step('refresh.ok', `${archiveRows.length}+${linkedRows.length}:${reason}`);
 
         // Mirror archive rows into Chat Registry so it has fresh metadata
@@ -1142,21 +1251,13 @@
         const joins = await loadDesktopJoinsForChats(list);
         const compact = list.map((c) => projectChatToCompactRow(c, joins));
         const normalized = compact.map(normalizeRow).filter(Boolean);
-        state.rows = normalized;
-        state.byChatId = Object.create(null);
-        for (const r of state.rows) state.byChatId[r.chatId] = r;
-        rebuildFacets();
-        state.lastScanTs = Date.now();
-        state.lastScanReason = String(reason);
-        state.lastSource = 'desktop-sqlite';
-        state.lastRefreshSources = {
+        const refreshSources = {
           reason: String(reason),
           sqliteChats: list.length,
           normalizedRows: normalized.length,
-          totalRows: state.rows.length,
-          source: state.lastSource,
-          at: state.lastScanTs,
         };
+        const changed = applyRowsIfChanged(normalized, reason, 'desktop-sqlite', refreshSources);
+        if (!changed) return state.rows;
         step('refreshFromStores.ok', `${list.length}->${normalized.length}:${reason}`);
         // Skip persist() on Desktop — SQLite tables are the canonical source
         // and the entity blob would only carry a redundant compact mirror.
@@ -1276,6 +1377,15 @@
         lastScanTs: state.lastScanTs,
         lastScanReason: state.lastScanReason,
         lastSource: state.lastSource,
+        lastUpdateReason: state.lastUpdateReason,
+        dataHash: state.lastRowsSignature,
+        dataHashBefore: state.lastRowsSignatureBefore,
+        dataHashAfter: state.lastRowsSignatureAfter,
+        lastRefreshChanged: state.lastRefreshChanged,
+        lastRefreshSkipped: state.lastRefreshSkipped,
+        lastRefreshSkipReason: state.lastRefreshSkipReason,
+        updateEventCount10s: state.updateEventCount10s,
+        skippedUpdateEvents: state.skippedUpdateEvents,
         lastPersistBackend: state.lastPersistBackend,
         lastPersistTs: state.lastPersistTs,
         hasArchive: !!getChatList(),

@@ -12,6 +12,9 @@ const failures = [];
 const contractFile = 'docs/systems/cross-platform/f19.4-chrome-desktop-sync-hardening-contract.md';
 const desktopReceiverFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const chromeReceiverFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const studioFile = 'src-surfaces-base/studio/studio.js';
+const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
+const librarySyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 
 const propagationSchema = 'h2o.studio.sync.chrome-desktop-propagation.v1';
 
@@ -361,7 +364,7 @@ async function runVmProofs() {
 }
 
 function runStaticAssertions() {
-  for (const file of [contractFile, desktopReceiverFile, chromeReceiverFile]) assertExists(file);
+  for (const file of [contractFile, desktopReceiverFile, chromeReceiverFile, studioFile, libraryIndexFile, librarySyncFile]) assertExists(file);
   for (const code of hardeningCodes) {
     assertContains(contractFile, code);
     assertContains(desktopReceiverFile, code);
@@ -401,6 +404,38 @@ function runStaticAssertions() {
     'F19.5 can close Premium Sync only after live Chrome and Desktop surfaces demonstrate'
   ]) {
     assertContains(contractFile, needle);
+  }
+  for (const needle of [
+    'function rowsSignature(rows)',
+    'function applyRowsIfChanged(nextRows, reason, source, refreshSources)',
+    'refresh.skip-unchanged',
+    'unchanged-row-signature',
+    'dataHashBefore',
+    'dataHashAfter',
+    'skippedUpdateEvents',
+    'updateEventCount10s',
+    'if (!changed) return state.rows;',
+    'emitUpdated(reason);'
+  ]) {
+    assertContains(libraryIndexFile, needle, `F19.7x no-op library refresh guard: ${needle}`);
+  }
+  for (const needle of [
+    'parseHash().name === "read"',
+    'state.rowsCacheInvalidatedWhileReading = true',
+    'scheduleNativeMetaRefresh',
+    'subscribeLibraryIndexToWorkbenchCache',
+    'refreshFromForeground'
+  ]) {
+    assertContains(studioFile, needle, `F19.7x reader remount guard: ${needle}`);
+  }
+  for (const needle of [
+    'function nativeBroadcastSignature(payload)',
+    'unchanged-native-broadcast-signature',
+    'lastNativeBroadcastSkippedCount',
+    'lastNativeBroadcastChanged',
+    'native-broadcast.skip-unchanged'
+  ]) {
+    assertContains(librarySyncFile, needle, `F19.7x native broadcast no-op guard: ${needle}`);
   }
 }
 

@@ -14242,6 +14242,10 @@ function subscribeLibraryIndexToWorkbenchCache(){
         // safe to call unconditionally. Other routes (library, settings,
         // migrate) ignore rowsCache; the invalidation alone is enough for
         // them on next navigation.
+        if (parseHash().name === "read") {
+          state.rowsCacheInvalidatedWhileReading = true;
+          return;
+        }
         renderRoute().catch(console.error);
       }, 200);
     });
@@ -14297,6 +14301,10 @@ function boot(){
     clearTimeout(nativeMetaRefreshTimer);
     nativeMetaRefreshTimer = setTimeout(() => {
       state.rowsCache = null;
+      if (parseHash().name === "read") {
+        state.rowsCacheInvalidatedWhileReading = true;
+        return;
+      }
       renderRoute({ force: true }).catch(console.error);
     }, 250);
   };
@@ -14411,6 +14419,10 @@ function boot(){
 
   const refreshFromForeground = () => {
     state.rowsCache = null;
+    if (parseHash().name === "read") {
+      state.rowsCacheInvalidatedWhileReading = true;
+      return;
+    }
     renderRoute({ force: true }).catch(console.error);
   };
   window.addEventListener("focus", refreshFromForeground);

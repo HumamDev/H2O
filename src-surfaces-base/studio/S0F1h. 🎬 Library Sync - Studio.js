@@ -101,6 +101,12 @@
     lastNativeBroadcastFolderSource: '',
     lastNativeBroadcastSnapshotPayloadCount: 0,
     lastNativeBroadcastPayload: null,
+    lastNativeBroadcastSignature: '',
+    lastNativeBroadcastSignatureBefore: '',
+    lastNativeBroadcastSignatureAfter: '',
+    lastNativeBroadcastChanged: false,
+    lastNativeBroadcastSkipReason: '',
+    lastNativeBroadcastSkippedCount: 0,
     lastNativeSnapshotPayloadMaterializeAt: 0,
     lastNativeSnapshotPayloadMaterializeStatus: '',
     lastNativeSnapshotPayloadMaterializedCount: 0,
@@ -404,6 +410,20 @@
     const nestedValue = raw.value && typeof raw.value === 'object' ? raw.value : null;
     if (nestedValue && (nestedValue.projectCatalog || nestedValue.folderState || Array.isArray(nestedValue.linkedRecords) || nestedValue.surface === 'native' || Array.isArray(nestedValue.reasons))) return nestedValue;
     return raw;
+  }
+
+  function nativeBroadcastSignature(payload) {
+    const p = normalizeNativeBroadcastPayload(payload);
+    if (!p) return '';
+    return stableChecksum({
+      linkedRecords: Array.isArray(p.linkedRecords) ? p.linkedRecords : [],
+      projectCatalog: p.projectCatalog || null,
+      folderState: p.folderState || null,
+      snapshotPayloads: Array.isArray(p.snapshotPayloads) ? p.snapshotPayloads : [],
+      folderMetadataOperationResults: Array.isArray(p.folderMetadataOperationResults)
+        ? p.folderMetadataOperationResults
+        : [],
+    });
   }
 
   function snapshotPayloadHasContent(payload) {
@@ -1125,6 +1145,9 @@
   function rememberNativeBroadcast(payload, reason = '') {
     try {
       const p = normalizeNativeBroadcastPayload(payload);
+      const beforeSignature = state.lastNativeBroadcastSignature || '';
+      const afterSignature = nativeBroadcastSignature(p);
+      const changed = !!afterSignature && beforeSignature !== afterSignature;
       state.lastNativeBroadcastAt = Date.now();
       state.lastNativeBroadcastTs = Number(p?.ts || 0) || 0;
       state.lastNativeBroadcastKeys = p ? Object.keys(p).slice(0, 24) : [];
@@ -1137,6 +1160,17 @@
       state.lastNativeBroadcastFolderBindingCount = Number(p?.folderState?.counts?.bindingCount || countFolderBindings(p?.folderState?.items)) || 0;
       state.lastNativeBroadcastFolderSource = String(p?.folderState?.source || '');
       state.lastNativeBroadcastSnapshotPayloadCount = Array.isArray(p?.snapshotPayloads) ? p.snapshotPayloads.length : 0;
+      state.lastNativeBroadcastSignatureBefore = beforeSignature;
+      state.lastNativeBroadcastSignatureAfter = afterSignature;
+      state.lastNativeBroadcastChanged = changed;
+      if (!changed && beforeSignature && afterSignature) {
+        state.lastNativeBroadcastSkipReason = 'unchanged-native-broadcast-signature';
+        state.lastNativeBroadcastSkippedCount += 1;
+        step('native-broadcast.skip-unchanged', String(reason || 'refresh'));
+        return Promise.resolve({ ok: true, status: 'unchanged-native-broadcast-signature', changed: false });
+      }
+      state.lastNativeBroadcastSignature = afterSignature || beforeSignature;
+      state.lastNativeBroadcastSkipReason = '';
       state.lastNativeBroadcastPayload = redactNativeBroadcastPayload(p);
       let materializePromise = Promise.resolve(null);
       if (Array.isArray(p?.snapshotPayloads) && p.snapshotPayloads.length) {
@@ -1590,6 +1624,12 @@
             folderBindingCount: state.lastNativeBroadcastFolderBindingCount,
             folderSource: state.lastNativeBroadcastFolderSource,
             snapshotPayloadCount: state.lastNativeBroadcastSnapshotPayloadCount,
+            changed: state.lastNativeBroadcastChanged,
+            signature: state.lastNativeBroadcastSignature,
+            signatureBefore: state.lastNativeBroadcastSignatureBefore,
+            signatureAfter: state.lastNativeBroadcastSignatureAfter,
+            skippedCount: state.lastNativeBroadcastSkippedCount,
+            skipReason: state.lastNativeBroadcastSkipReason,
             readAt: state.lastNativeBroadcastReadAt,
             readSource: state.lastNativeBroadcastReadSource,
             readError: state.lastNativeBroadcastReadError,
