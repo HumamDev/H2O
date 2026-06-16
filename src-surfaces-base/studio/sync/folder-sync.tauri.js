@@ -929,6 +929,7 @@
       minimalRowsAttempted: Number(chromeMinimalRows.attempted || 0),
       minimalRowsMaterialized: Math.max(minimalRowsMaterialized, Number(chromeMinimalRows.materialized || 0)),
       minimalRowsExisting: Math.max(minimalRowsExisting, Number(chromeMinimalRows.existing || 0)),
+      minimalRowsSkipped: Number(chromeMinimalRows.skipped || 0),
       minimalRowsFailed: Number(chromeMinimalRows.failed || 0),
       minimalRowsSatisfied: Math.max(minimalRowsMaterialized, Number(chromeMinimalRows.materialized || 0)) +
         Math.max(minimalRowsExisting, Number(chromeMinimalRows.existing || 0)),
@@ -1010,6 +1011,7 @@
       minimalRowsMaterialized: Number(f.importSummary && f.importSummary.minimalRowsMaterialized || 0),
       minimalRowsExisting: Number(f.importSummary && f.importSummary.minimalRowsExisting || 0),
       minimalRowsSatisfied: Number(f.importSummary && f.importSummary.minimalRowsSatisfied || 0),
+      minimalRowsSkipped: Number(f.importSummary && f.importSummary.minimalRowsSkipped || 0),
       minimalRowsFailed: Number(f.importSummary && f.importSummary.minimalRowsFailed || 0),
       minimalRowErrors: Number(f.importSummary && f.importSummary.minimalRowErrors || 0),
       sideEffects: {

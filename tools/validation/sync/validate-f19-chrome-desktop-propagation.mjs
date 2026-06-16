@@ -458,6 +458,12 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'minimal-row-sql-writer-identity-missing', 'minimal row writer identity error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-column-mismatch', 'minimal row column mismatch taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-execute-failed', 'minimal row SQL failure taxonomy');
+  assertContains(importBundleFile, 'function deriveChatIdentity(chat)', 'Desktop import derives weak/minimal row identity before write');
+  assertContains(importBundleFile, 'function extractChatIdFromUrl(value)', 'Desktop import derives chat identity from ChatGPT hrefs');
+  assertContains(importBundleFile, 'function shouldSkipMinimalRowImportFailure(chat, patch, code)', 'Desktop import skips unrecoverable weak minimal rows');
+  assertContains(importBundleFile, 'chrome-minimal-row-skipped-unrecoverable', 'Desktop import reports non-blocking unrecoverable minimal row skips');
+  assertContains(importBundleFile, 'chatIdHash: redactedImportHash(chatId)', 'Desktop import redacts skipped minimal row identity');
+  assertContains(folderSyncFile, 'minimalRowsSkipped', 'Desktop propagation redacted import summary exposes skipped minimal rows');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');

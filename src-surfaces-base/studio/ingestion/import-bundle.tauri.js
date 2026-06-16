@@ -104,6 +104,40 @@
     return isFinite(n) && n > 0 ? Math.trunc(n) : 0;
   }
 
+  function redactedImportHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var hash = 5381;
+    for (var i = 0; i < text.length; i += 1) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    return 'h:' + ((hash >>> 0).toString(16));
+  }
+
+  function extractChatIdFromUrl(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var match = text.match(/(?:^|\/)c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/i);
+    return match ? cleanString(match[1]) : '';
+  }
+
+  function deriveChatIdentity(chat) {
+    var src = chat && typeof chat === 'object' ? chat : {};
+    var index = src.chatIndex && typeof src.chatIndex === 'object' ? src.chatIndex : {};
+    var meta = src.meta && typeof src.meta === 'object' ? src.meta : {};
+    var direct = cleanString(src.chatId || src.id || src.conversationId || src.conversation_id || index.chatId || index.id || meta.chatId);
+    if (direct) return { chatId: direct, source: 'direct' };
+    var href = cleanString(index.href || index.url || index.sourceUrl || index.normalizedHref || index.linkSourceHref
+      || src.href || src.url || src.sourceUrl || src.normalizedHref || src.linkSourceHref || meta.href || meta.url);
+    var fromUrl = extractChatIdFromUrl(href);
+    if (fromUrl) return { chatId: fromUrl, source: 'href' };
+    var snaps = Array.isArray(src.snapshots) ? src.snapshots : [];
+    for (var i = 0; i < snaps.length; i += 1) {
+      var snap = snaps[i] && typeof snaps[i] === 'object' ? snaps[i] : {};
+      var snapChatId = cleanString(snap.chatId || snap.chat_id || snap.conversationId || snap.conversation_id);
+      if (snapChatId) return { chatId: snapChatId, source: 'snapshot' };
+    }
+    return { chatId: '', source: 'missing' };
+  }
+
   function looksLikeOpaqueTitle(value, id) {
     var text = cleanString(value);
     var chatId = cleanString(id);
@@ -874,6 +908,24 @@
     throw new Error('minimal-row-materialize: insert ignored without existing row');
   }
 
+  function minimalRowClass(chat, patch) {
+    var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
+    var state = index.state && typeof index.state === 'object' ? index.state : {};
+    if (patch && (patch.lastSnapshotId || numericCount(patch.messageCount) > 0 || numericCount(patch.turnCount) > 0)) return 'minimal-transcript-row';
+    if (patch && (patch.href || patch.normalizedHref || patch.linkSourceHref || state.isLinked)) return 'minimal-link-row';
+    if (state.isPinned) return 'minimal-pinned-row';
+    if (state.isArchived) return 'minimal-archived-row';
+    if (state.isImported || index.f19MinimalLibraryIndexRow === true) return 'minimal-imported-row';
+    return 'minimal-row';
+  }
+
+  function shouldSkipMinimalRowImportFailure(chat, patch, code) {
+    if (code !== 'minimal-row-sql-writer-identity-missing') return false;
+    if (!isF19MinimalLibraryIndexChat(chat)) return false;
+    if (patch && (patch.lastSnapshotId || numericCount(patch.messageCount) > 0 || numericCount(patch.turnCount) > 0)) return false;
+    return true;
+  }
+
   function emptySample() {
     return {
       writtenChatIds:        [], skippedChatIds:        [],
@@ -898,7 +950,7 @@
       deniedByPolicy: { chromeStorageLocal: 0, libraryKv: 0 } };
   }
   function emptyChromeMinimalRows() {
-    return { total: 0, attempted: 0, materialized: 0, existing: 0, failed: 0 };
+    return { total: 0, attempted: 0, materialized: 0, existing: 0, skipped: 0, failed: 0 };
   }
   function chromeMinimalRows(result) {
     if (!result.chromeMinimalRows || typeof result.chromeMinimalRows !== 'object') {
@@ -1185,7 +1237,11 @@
     }
     for (var i = 0; i < chats.length; i += 1) {
       var chat = chats[i];
-      var chatId = String((chat && chat.chatId) || '').trim();
+      var identity = deriveChatIdentity(chat);
+      var chatId = identity.chatId;
+      if (chatId && chat && !cleanString(chat.chatId)) {
+        chat = Object.assign({}, chat, { chatId: chatId });
+      }
       var isMinimalRow = isF19MinimalLibraryIndexChat(chat);
       var minimalSummary = null;
       if (isMinimalRow) {
@@ -1250,6 +1306,22 @@
             }
           } catch (fallbackError) {
             fallbackError.primaryImportError = primaryError;
+            var fallbackCode = classifyMinimalRowError(fallbackError);
+            if (shouldSkipMinimalRowImportFailure(chat, patch, fallbackCode)) {
+              result.skipped.chats += 1;
+              if (minimalSummary) minimalSummary.skipped += 1;
+              if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+              result.warnings.push({
+                kind: 'chrome-minimal-row-skipped-unrecoverable',
+                code: fallbackCode,
+                rowClass: minimalRowClass(chat, patch),
+                identitySource: String(identity.source || 'unknown'),
+                fallbackUsed: false,
+                missingIdentityReason: 'sqlite-writer-identity-function-unavailable',
+                chatIdHash: redactedImportHash(chatId)
+              });
+              continue;
+            }
             throw fallbackError;
           }
         }
