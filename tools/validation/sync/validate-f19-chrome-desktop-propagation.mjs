@@ -336,7 +336,7 @@ async function runVmProof() {
   }
 }
 
-function buildImportBundleContext({ transcriptBacked = false } = {}) {
+function buildImportBundleContext({ transcriptBacked = false, existingChat = null } = {}) {
   let chatUpsertCalls = 0;
   let authorizedSqlCalls = 0;
   const context = {
@@ -361,7 +361,7 @@ function buildImportBundleContext({ transcriptBacked = false } = {}) {
       Studio: {
         store: {
           chats: {
-            async get() { return null; },
+            async get() { return existingChat; },
             async upsert() {
               chatUpsertCalls += 1;
               throw new Error('no such function: h2o_writer_identity');
@@ -388,7 +388,7 @@ function buildImportBundleContext({ transcriptBacked = false } = {}) {
       }
     },
     __getProofCounters() {
-      return { chatUpsertCalls, authorizedSqlCalls, transcriptBacked };
+      return { chatUpsertCalls, authorizedSqlCalls, transcriptBacked, existingChat: !!existingChat };
     }
   };
   context.window = context;
@@ -465,6 +465,65 @@ async function runImportBundleWeakRowProof() {
   assert(strictCounters.chatUpsertCalls === 1, 'transcript-backed row should still use canonical chatStore.upsert');
   assert(!strictResult.chromeWeakRows || Number(strictResult.chromeWeakRows.attempted || 0) === 0, 'transcript-backed row must not be counted as weak');
   assert((strictResult.errors || []).some((e) => e && e.transcriptBacked === true), 'strict transcript-backed error diagnostic missing');
+
+  const existingWeakContext = buildImportBundleContext({
+    transcriptBacked: false,
+    existingChat: {
+      chatId: 'weak-row-private-chat-id',
+      title: 'Existing Private Link Title',
+      href: 'https://chatgpt.com/c/weak-row-private-chat-id',
+      isSaved: false,
+      isLinked: false,
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      userTurnCount: 0,
+      assistantTurnCount: 0,
+      meta: {}
+    }
+  });
+  vm.runInContext(source, existingWeakContext, { filename: importBundleFile });
+  const existingWeakResult = await existingWeakContext.H2O.Studio.ingestion.importBundle(
+    buildWeakImportBundle({ transcriptBacked: false }),
+    'merge',
+    { disableLibraryBulkMigration: true }
+  );
+  const existingWeakCounters = existingWeakContext.__getProofCounters();
+  assert(existingWeakResult.ok === true, 'existing weak zero-transcript evidence merge should not block import');
+  assert(existingWeakCounters.chatUpsertCalls === 1, 'existing weak row should only hit evidence merge upsert before skip');
+  assert(existingWeakResult.chromeWeakRows && existingWeakResult.chromeWeakRows.attempted === 1, 'existing weak evidence merge should increment weakRowsAttempted');
+  assert(existingWeakResult.chromeWeakRows && existingWeakResult.chromeWeakRows.skipped === 1, 'existing weak evidence merge should increment weakRowsSkipped');
+  assert((existingWeakResult.warnings || []).some((w) => w && w.kind === 'chrome-weak-row-skipped-unrecoverable' && w.phase === 'existing-evidence-upsert'),
+    'existing weak evidence skip diagnostic missing');
+
+  const existingStrictContext = buildImportBundleContext({
+    transcriptBacked: true,
+    existingChat: {
+      chatId: 'weak-row-private-chat-id',
+      title: 'Existing Private Transcript Title',
+      href: 'https://chatgpt.com/c/weak-row-private-chat-id',
+      isSaved: false,
+      isLinked: true,
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      userTurnCount: 0,
+      assistantTurnCount: 0,
+      meta: {}
+    }
+  });
+  vm.runInContext(source, existingStrictContext, { filename: importBundleFile });
+  const existingStrictResult = await existingStrictContext.H2O.Studio.ingestion.importBundle(
+    buildWeakImportBundle({ transcriptBacked: true }),
+    'merge',
+    { disableLibraryBulkMigration: true }
+  );
+  const existingStrictCounters = existingStrictContext.__getProofCounters();
+  assert(existingStrictResult.ok === false, 'existing transcript-backed evidence merge must remain strict');
+  assert(existingStrictCounters.chatUpsertCalls === 1, 'existing transcript-backed evidence should use strict upsert path');
+  assert(!existingStrictResult.chromeWeakRows || Number(existingStrictResult.chromeWeakRows.attempted || 0) === 0, 'existing transcript-backed evidence must not count as weak');
+  assert((existingStrictResult.errors || []).some((e) => e && e.transcriptBacked === true),
+    'existing transcript-backed strict diagnostic missing');
 }
 
 for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
@@ -603,6 +662,7 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'function shouldPreemptWeakRowSqlWriter(chat, patch)', 'Desktop import classifies weak rows before store upsert SQL writer calls');
   assertContains(importBundleFile, 'chrome-weak-row-pre-upsert-diagnostic', 'Desktop import reports redacted pre-upsert weak row diagnostics');
   assertContains(importBundleFile, 'chrome-weak-row-skipped-before-store-upsert', 'Desktop import can skip unrecoverable weak rows before store upsert blocks');
+  assertContains(importBundleFile, "phase: 'existing-evidence-upsert'", 'Desktop import can skip unrecoverable weak existing evidence merges');
   assertContains(importBundleFile, 'identityFieldNames: importPatchIdentityFieldNames(chat, patch)', 'Desktop import reports identity field names without raw values');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');

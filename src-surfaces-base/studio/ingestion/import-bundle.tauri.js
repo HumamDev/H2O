@@ -1397,10 +1397,34 @@
         if (existing) {
           var evidencePatch = prepareExistingChatEvidencePatch(existing, patch);
           if (evidencePatch) {
-            await chatStore.upsert(evidencePatch);
-            result.written.chats += 1;
-            result.warnings.push({ kind: 'chrome-desktop-existing-chat-evidence-merged' });
-            if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+            try {
+              await chatStore.upsert(evidencePatch);
+              result.written.chats += 1;
+              result.warnings.push({ kind: 'chrome-desktop-existing-chat-evidence-merged' });
+              if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
+            } catch (evidenceError) {
+              var evidenceCode = classifyImportError(evidenceError);
+              if (shouldSkipWeakRowImportFailure(chat, patch, evidenceCode)) {
+                var evidenceWeakSummary = chromeWeakRows(result);
+                evidenceWeakSummary.attempted += 1;
+                evidenceWeakSummary.skipped += 1;
+                result.skipped.chats += 1;
+                if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+                result.warnings.push(Object.assign({
+                  kind: 'chrome-weak-row-skipped-unrecoverable',
+                  code: evidenceCode,
+                  phase: 'existing-evidence-upsert',
+                  rowClass: weakRowClass(chat, patch),
+                  identitySource: String(identity.source || 'unknown'),
+                  transcriptBacked: false,
+                  fallbackUsed: false,
+                  missingIdentityReason: 'sqlite-writer-identity-function-unavailable',
+                  chatIdHash: redactedImportHash(chatId)
+                }, redactedChatUpsertPatchDiagnostics(chat, Object.assign({}, patch, evidencePatch))));
+              } else {
+                throw evidenceError;
+              }
+            }
           } else {
             result.skipped.chats += 1;
             if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
