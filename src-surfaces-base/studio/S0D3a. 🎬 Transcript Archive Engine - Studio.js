@@ -1377,6 +1377,73 @@
     };
   }
 
+  function desktopSnapshotStore() {
+    try {
+      const store = H2O.Studio?.store?.snapshots || null;
+      return store && typeof store.get === "function" ? store : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function projectDesktopStoreSnapshotToCanonical(input) {
+    if (!isObj(input) || !isObj(input.snapshot)) return null;
+    const snap = input.snapshot;
+    const turns = Array.isArray(input.turns) ? input.turns : [];
+    const capturedAtMs = Number(snap.capturedAt || 0) || 0;
+    let createdAt = "";
+    if (capturedAtMs > 0) {
+      try { createdAt = new Date(capturedAtMs).toISOString(); } catch {}
+    }
+    const messages = turns.map((turn, idx) => {
+      const meta = isObj(turn?.meta) ? turn.meta : {};
+      return {
+        role: String(turn?.role || "assistant"),
+        text: String(turn?.text || ""),
+        order: Number.isFinite(Number(turn?.turnIdx)) ? Number(turn.turnIdx) : idx,
+        createdAt: capturedAtMs || 0,
+        attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
+      };
+    });
+    const richTurns = turns
+      .filter((turn) => turn && typeof turn.outerHtml === "string" && turn.outerHtml)
+      .map((turn, idx) => Object.assign({
+        turnIdx: Number.isFinite(Number(turn.turnIdx)) ? Number(turn.turnIdx) : idx,
+        role: String(turn.role || "assistant"),
+        outerHTML: turn.outerHtml,
+      }, isObj(turn.meta) ? turn.meta : {}));
+    const meta = Object.assign({}, isObj(snap.meta) ? snap.meta : {});
+    if (snap.title && !meta.title) meta.title = snap.title;
+    if (richTurns.length > 0) meta.richTurns = richTurns;
+    if (Number(snap.messageCount || 0) > 0 && meta.messageCount == null) meta.messageCount = Number(snap.messageCount || 0);
+    return canonicalSnapshot({
+      snapshotId: snap.snapshotId,
+      chatId: snap.chatId,
+      title: snap.title || meta.title || "",
+      createdAt: createdAt || nowIso(),
+      schemaVersion: 1,
+      messageCount: Number(snap.messageCount || messages.length || 0) || 0,
+      digest: snap.digest || "",
+      messages,
+      meta,
+    });
+  }
+
+  async function loadDesktopStoreSnapshot(snapshotIdRaw) {
+    const snapshotId = String(snapshotIdRaw || "").trim();
+    const store = desktopSnapshotStore();
+    if (!snapshotId || !store) return null;
+    try {
+      const raw = await store.get(snapshotId);
+      const canonical = projectDesktopStoreSnapshotToCanonical(raw);
+      if (canonical) cacheSnapshot(canonical);
+      return canonical;
+    } catch (e) {
+      warn("desktop snapshot store load failed", e);
+      return null;
+    }
+  }
+
   async function sha256Hex(text) {
     const raw = String(text || "");
     try {
@@ -1701,6 +1768,17 @@
       if (canonical) cacheSnapshot(canonical);
       return canonical;
     }
+    const desktopStore = desktopSnapshotStore();
+    if (desktopStore && typeof desktopStore.listByChat === "function") {
+      try {
+        const rows = await desktopStore.listByChat(chatId);
+        const first = Array.isArray(rows) ? rows[0] : null;
+        const snapshotId = String(first?.snapshotId || first?.id || "").trim();
+        if (snapshotId) return loadDesktopStoreSnapshot(snapshotId);
+      } catch (e) {
+        warn("desktop snapshot store latest lookup failed", e);
+      }
+    }
     const legacy = legacyToCanonicalSnapshot(loadLegacyLatestRaw(chatId), chatId);
     if (legacy) cacheSnapshot(legacy);
     return legacy;
@@ -1717,6 +1795,20 @@
         if (sid) state.snapshotChatById.set(sid, chatId);
       }
       return out;
+    }
+    const desktopStore = desktopSnapshotStore();
+    if (desktopStore && typeof desktopStore.listByChat === "function") {
+      try {
+        const rows = await desktopStore.listByChat(chatId);
+        const out = Array.isArray(rows) ? rows : [];
+        out.forEach((row) => {
+          const sid = String(row?.snapshotId || row?.id || "");
+          if (sid) state.snapshotChatById.set(sid, chatId);
+        });
+        return out;
+      } catch (e) {
+        warn("desktop snapshot store list failed", e);
+      }
     }
     const latest = await loadLatestSnapshotInternal(chatId);
     if (!latest) return [];
@@ -1743,6 +1835,8 @@
       if (canonical) cacheSnapshot(canonical);
       return canonical;
     }
+    const desktop = await loadDesktopStoreSnapshot(snapshotId);
+    if (desktop) return desktop;
     const chatId = state.snapshotChatById.get(snapshotId) || getCurrentChatId();
     const legacy = legacyToCanonicalSnapshot(loadLegacyLatestRaw(chatId), chatId);
     if (!legacy || String(legacy.snapshotId || "") !== snapshotId) return null;

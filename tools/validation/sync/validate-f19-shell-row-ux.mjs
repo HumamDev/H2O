@@ -17,6 +17,7 @@ const FILES = {
   studioRegistryCore: 'src-surfaces-base/studio/S0F0c. 🎬 Library Registry Core - Studio.js',
   extensionBridge: 'src-runtime-base/0D3b.⚫️🗄️ Transcript Extension Bridge 📡🗂️🗄️.js',
   archiveEngine: 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js',
+  studioArchiveEngine: 'src-surfaces-base/studio/S0D3a. 🎬 Transcript Archive Engine - Studio.js',
   saveStrip: 'src-runtime-base/0D3d.⚫️🗄️ Transcript Save Strip ⏺️🗂️🗄️.js',
   libraryActions: 'src-runtime-base/0F1j.⬛️🗂️ Library Actions 🎯🗂️.js',
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
@@ -315,6 +316,17 @@ const checks = [
       sources.studioSync.includes('assistantTurnCount'),
     FILES.studioSync,
     'Chrome Studio must import native Save-to-Folder snapshot payloads into the archive backend used by loadSnapshot while exposing only redacted diagnostics.'
+  ),
+  check(
+    'desktop-studio-archive-loads-imported-snapshot-store',
+    sources.studioArchiveEngine.includes('function desktopSnapshotStore') &&
+      sources.studioArchiveEngine.includes('function projectDesktopStoreSnapshotToCanonical') &&
+      sources.studioArchiveEngine.includes('async function loadDesktopStoreSnapshot') &&
+      sources.studioArchiveEngine.includes('const raw = await store.get(snapshotId)') &&
+      sources.studioArchiveEngine.includes('const desktop = await loadDesktopStoreSnapshot(snapshotId)') &&
+      sources.studioArchiveEngine.includes('desktopStore.listByChat(chatId)'),
+    FILES.studioArchiveEngine,
+    'Desktop Studio archiveBoot.loadSnapshot/listSnapshots must read the same SQLite snapshot store that Chrome-to-Desktop import writes.'
   ),
   check(
     'native-archive-accepts-object-form-chat-id-for-payload-recovery',

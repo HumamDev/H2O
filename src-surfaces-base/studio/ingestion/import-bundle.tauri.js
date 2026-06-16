@@ -549,6 +549,22 @@
     return Array.isArray(meta.richTurns) && meta.richTurns.length > 0;
   }
 
+  function snapshotCombinedPayloadTurnCount(existing) {
+    var turns = Array.isArray(existing && existing.turns) ? existing.turns : [];
+    var count = 0;
+    for (var i = 0; i < turns.length; i += 1) {
+      var turn = turns[i] || {};
+      if (cleanString(turn.text) || cleanString(turn.outerHtml)) count += 1;
+    }
+    return count;
+  }
+
+  function shouldRepairExistingSnapshotPayload(existing, incomingTurns) {
+    var incomingCount = Array.isArray(incomingTurns) ? incomingTurns.length : 0;
+    if (incomingCount <= 0) return false;
+    return snapshotCombinedPayloadTurnCount(existing) < incomingCount;
+  }
+
   /* Derive the chats-table patch from a bundle chat + its (sorted-desc)
    * snapshots. Mirrors the chat-row fields M2a-3h's writeToChatsStore writes,
    * plus title/href/saved/linked/snapshot provenance. */
@@ -1283,13 +1299,36 @@
           continue;
         }
         try {
+          var turns = buildTurnsFromSnapshot(snap);
           var existing = await snapStore.get(snapshotId);
           if (existing) {
+            if (shouldRepairExistingSnapshotPayload(existing, turns) && typeof snapStore.upsert === 'function') {
+              var repairMeta = (snap && snap.meta && typeof snap.meta === 'object') ? snap.meta : {};
+              var repairMetaCopy = {};
+              Object.keys(repairMeta).forEach(function (k) { if (k !== 'richTurns') repairMetaCopy[k] = repairMeta[k]; });
+              var repairCapturedMs = isoToEpochMs(snap && snap.createdAt) || Date.now();
+              var repairSnapshotIdStr = String(snapshotId);
+              await snapStore.upsert({
+                snapshotId: snapshotId,
+                chatId: chatId,
+                title: repairMetaCopy.title || '',
+                capturedAt: repairCapturedMs,
+                turns: turns,
+                meta: repairMetaCopy,
+                digest: (snap && snap.digest) || '',
+                messageCount: Number((snap && snap.messageCount) || turns.length || 0),
+                pinned: !!repairMetaCopy.pinned,
+                legacy: repairSnapshotIdStr.indexOf('legacy:') === 0,
+              });
+              result.written.snapshots += 1;
+              result.warnings.push({ kind: 'snapshot-store-payload-repaired' });
+              if (result.sample.writtenSnapshotIds.length < 10) result.sample.writtenSnapshotIds.push(snapshotId);
+              continue;
+            }
             result.skipped.snapshots += 1;
             if (result.sample.skippedSnapshotIds.length < 10) result.sample.skippedSnapshotIds.push(snapshotId);
             continue;
           }
-          var turns = buildTurnsFromSnapshot(snap);
           /* Strip richTurns out of meta since their content moved into turn rows. */
           var srcMeta = (snap && snap.meta && typeof snap.meta === 'object') ? snap.meta : {};
           var meta = {};

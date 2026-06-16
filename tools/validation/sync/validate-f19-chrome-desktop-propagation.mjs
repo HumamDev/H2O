@@ -14,6 +14,7 @@ const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const focusImportFile = 'src-surfaces-base/studio/sync/focus-import.tauri.js';
 const importBundleFile = 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js';
+const studioArchiveFile = 'src-surfaces-base/studio/S0D3a. 🎬 Transcript Archive Engine - Studio.js';
 const studioSyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
 const chromeLiveLoaderFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs';
@@ -335,7 +336,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
+for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(autoImportFile, 'direction: \'chrome-to-desktop\'', 'Chrome export direction result');
@@ -447,6 +448,12 @@ if (failures.length === 0) {
   assertContains(chromeLiveManifestFile, 'manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] }', 'Native extension manifest allows Studio Launcher external snapshot payload requests');
   assertContains(importBundleFile, 'var turns = buildTurnsFromSnapshot(snap);', 'Desktop import materializes snapshot payload turns');
   assertContains(importBundleFile, 'await snapStore.create({', 'Desktop import writes snapshot payload to snapshot store');
+  assertContains(importBundleFile, 'function shouldRepairExistingSnapshotPayload', 'Desktop import repairs existing payloadless snapshot rows');
+  assertContains(importBundleFile, "result.warnings.push({ kind: 'snapshot-store-payload-repaired' })", 'Desktop import reports repaired snapshot payload rows');
+  assertContains(importBundleFile, 'await snapStore.upsert({', 'Desktop import upserts repaired snapshot payloads into reader store');
+  assertContains(studioArchiveFile, 'function loadDesktopStoreSnapshot', 'Desktop archive loader reads imported snapshot payloads from SQLite store');
+  assertContains(studioArchiveFile, 'const desktop = await loadDesktopStoreSnapshot(snapshotId)', 'Desktop archive loadSnapshot uses SQLite store before legacy fallback');
+  assertContains(studioArchiveFile, 'desktopStore.listByChat(chatId)', 'Desktop archive list/latest snapshot APIs use SQLite store');
   assertContains(importBundleFile, 'chrome-minimal-row-import', 'minimal row import error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-writer-identity-missing', 'minimal row writer identity error taxonomy');
   assertContains(importBundleFile, 'minimal-row-sql-column-mismatch', 'minimal row column mismatch taxonomy');
