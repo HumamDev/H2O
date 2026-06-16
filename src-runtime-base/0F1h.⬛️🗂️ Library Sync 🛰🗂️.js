@@ -150,8 +150,21 @@
     lastSnapshotPayloadQueuedAt: 0,
     lastSnapshotPayloadQueuedCount: 0,
     lastSnapshotPayloadQueuedStatus: '',
+    lastSnapshotPayloadQueuedIdHash: '',
+    lastSnapshotPayloadQueuedHasBody: false,
+    lastSnapshotPayloadQueuedMessageCount: 0,
     lastSnapshotPayloadBroadcastCount: 0,
     lastSnapshotPayloadBroadcastCapped: false,
+    lastSnapshotPayloadBroadcastIdHashes: [],
+    lastSnapshotPayloadBroadcastHasBodyCount: 0,
+    lastSnapshotPayloadRequestAt: 0,
+    lastSnapshotPayloadRequestCount: 0,
+    lastSnapshotPayloadRequestFulfilledCount: 0,
+    lastSnapshotPayloadRequestFailedCount: 0,
+    lastSnapshotPayloadRequestStatus: '',
+    lastSnapshotPayloadRequestIdHashes: [],
+    lastSnapshotPayloadRequestErrors: [],
+    handledSnapshotPayloadRequestIds: new Set(),
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -174,6 +187,7 @@
   // ── Inbound: Studio → native ───────────────────────────────────────────────
   function emitSyncEvent(reason, payload) {
     const handledFolderMetadataOperationRequests = handleFolderMetadataOperationRequests(payload);
+    const handledSnapshotPayloadRequests = handleSnapshotPayloadRequests(payload);
     const detail = {
       reason: String(reason || ''),
       payload: payload || null,
@@ -181,6 +195,8 @@
       surface: 'native',
       folderMetadataOperationRequestsHandled: handledFolderMetadataOperationRequests.length > 0,
       folderMetadataOperationRequestIds: handledFolderMetadataOperationRequests,
+      snapshotPayloadRequestsHandled: handledSnapshotPayloadRequests.length > 0,
+      snapshotPayloadRequestIds: handledSnapshotPayloadRequests,
     };
     try {
       const p = payload && typeof payload === 'object' ? payload : null;
@@ -351,6 +367,110 @@
     return out.filter(Boolean).slice(0, 8);
   }
 
+  function redactedSnapshotPayloadId(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return stableFolderStateChecksum(raw).replace(/^h2o-folder-/, 'h:');
+  }
+
+  function snapshotPayloadRequestsFromPayload(payload) {
+    const body = payload && typeof payload === 'object' ? payload : null;
+    const nested = body?.payload && typeof body.payload === 'object' ? body.payload : null;
+    const sources = [
+      body?.snapshotPayloadRequests,
+      nested?.snapshotPayloadRequests,
+    ];
+    const out = [];
+    for (const value of sources) {
+      if (Array.isArray(value)) out.push(...value);
+      else if (value && typeof value === 'object') out.push(value);
+    }
+    return out.filter(Boolean).slice(0, SNAPSHOT_PAYLOAD_REQUEST_MAX);
+  }
+
+  async function fulfillSnapshotPayloadRequests(requests, handledIds) {
+    const rows = Array.isArray(requests) ? requests : [];
+    const archive = W.H2O?.archiveBoot || {};
+    let fulfilled = 0;
+    let failed = 0;
+    const hashes = [];
+    const errors = [];
+    for (const request of rows) {
+      const snapshotId = String(request?.snapshotId || request?.lastSnapshotId || request?.latestSnapshotId || '').trim();
+      const chatId = String(request?.chatId || request?.id || '').trim();
+      const title = String(request?.title || '').trim();
+      const href = String(request?.href || request?.url || request?.sourceUrl || '').trim();
+      const folderId = String(request?.folderId || request?.folder_id || '').trim();
+      const hash = redactedSnapshotPayloadId(snapshotId || chatId);
+      if (hash) hashes.push(hash);
+      try {
+        let snapshot = null;
+        if (snapshotId && typeof archive.loadSnapshot === 'function') snapshot = await archive.loadSnapshot(snapshotId);
+        if (!snapshot && chatId && typeof archive.loadLatestSnapshot === 'function') snapshot = await archive.loadLatestSnapshot(chatId);
+        const queued = queueSnapshotPayload({
+          chatId: chatId || snapshot?.chatId || '',
+          snapshotId: snapshotId || snapshot?.snapshotId || '',
+          snapshot,
+          title,
+          href,
+          folderId,
+          messageCount: Number(request?.messageCount || snapshot?.messageCount || 0) || 0,
+          turnCount: Number(request?.turnCount || snapshot?.turnCount || snapshot?.meta?.turnCount || 0) || 0,
+          userTurnCount: Number(request?.userTurnCount || snapshot?.userTurnCount || snapshot?.meta?.userTurnCount || 0) || 0,
+          assistantTurnCount: Number(request?.assistantTurnCount || snapshot?.assistantTurnCount || snapshot?.meta?.assistantTurnCount || 0) || 0,
+          answerCount: Number(request?.answerCount || snapshot?.answerCount || snapshot?.meta?.answerCount || 0) || 0,
+        }, { reason: 'snapshot-payload-request-fulfilled' }) === true;
+        if (queued) fulfilled += 1;
+        else {
+          failed += 1;
+          errors.push(`${hash || 'h:missing'}:payload-empty`);
+        }
+      } catch (e) {
+        failed += 1;
+        errors.push(`${hash || 'h:missing'}:${String(e?.message || e || 'payload-request-error').slice(0, 80)}`);
+      }
+    }
+    state.lastSnapshotPayloadRequestAt = Date.now();
+    state.lastSnapshotPayloadRequestCount = rows.length;
+    state.lastSnapshotPayloadRequestFulfilledCount = fulfilled;
+    state.lastSnapshotPayloadRequestFailedCount = failed;
+    state.lastSnapshotPayloadRequestStatus = failed ? (fulfilled ? 'partial' : 'failed') : 'fulfilled';
+    state.lastSnapshotPayloadRequestIdHashes = hashes.slice(-SNAPSHOT_PAYLOAD_REQUEST_MAX);
+    state.lastSnapshotPayloadRequestErrors = errors.slice(-8);
+    if (fulfilled > 0) broadcastImmediately('snapshot-payload-request-fulfilled');
+    step('snapshot-payload.requests', `${fulfilled}/${rows.length}`);
+    return { handledIds, fulfilled, failed };
+  }
+
+  function handleSnapshotPayloadRequests(payload) {
+    const requests = snapshotPayloadRequestsFromPayload(payload);
+    if (!requests.length) return [];
+    const handled = [];
+    const todo = [];
+    for (const request of requests) {
+      const requestId = String(request?.requestId || request?.snapshotId || request?.chatId || '').trim();
+      if (!requestId || state.handledSnapshotPayloadRequestIds.has(requestId)) continue;
+      state.handledSnapshotPayloadRequestIds.add(requestId);
+      handled.push(requestId);
+      todo.push(request);
+    }
+    if (state.handledSnapshotPayloadRequestIds.size > 64) {
+      state.handledSnapshotPayloadRequestIds = new Set(Array.from(state.handledSnapshotPayloadRequestIds).slice(-32));
+    }
+    if (todo.length) {
+      fulfillSnapshotPayloadRequests(todo, handled).catch((e) => {
+        state.lastSnapshotPayloadRequestAt = Date.now();
+        state.lastSnapshotPayloadRequestCount = todo.length;
+        state.lastSnapshotPayloadRequestFulfilledCount = 0;
+        state.lastSnapshotPayloadRequestFailedCount = todo.length;
+        state.lastSnapshotPayloadRequestStatus = 'error';
+        state.lastSnapshotPayloadRequestErrors = [String(e?.message || e || 'snapshot-payload-request-error')];
+        err('snapshot-payload.requests', e);
+      });
+    }
+    return handled;
+  }
+
   function handleFolderMetadataOperationRequests(payload) {
     const requests = folderMetadataRequestsFromPayload(payload);
     if (!requests.length) return [];
@@ -498,6 +618,7 @@
   const FOLDER_BINDING_MAX = 1200;
   const FOLDER_BINDINGS_PER_FOLDER_MAX = 250;
   const SNAPSHOT_PAYLOAD_MAX = 8;
+  const SNAPSHOT_PAYLOAD_REQUEST_MAX = 12;
   const SNAPSHOT_PAYLOAD_TTL_MS = 10 * 60 * 1000;
   function snapshotLinkedRecords() {
     try {
@@ -647,6 +768,8 @@
     const payload = normalizeSnapshotPayloadForBroadcast(input);
     if (!payload) {
       state.lastSnapshotPayloadQueuedStatus = 'invalid-or-empty';
+      state.lastSnapshotPayloadQueuedHasBody = false;
+      state.lastSnapshotPayloadQueuedMessageCount = 0;
       return false;
     }
     pruneSnapshotPayloadQueue();
@@ -657,6 +780,10 @@
     state.lastSnapshotPayloadQueuedAt = Date.now();
     state.lastSnapshotPayloadQueuedCount += 1;
     state.lastSnapshotPayloadQueuedStatus = 'queued';
+    state.lastSnapshotPayloadQueuedIdHash = redactedSnapshotPayloadId(payload.snapshotId || payload.chatId);
+    state.lastSnapshotPayloadQueuedHasBody = (Array.isArray(payload.messages) && payload.messages.length > 0)
+      || (Array.isArray(payload.meta?.richTurns) && payload.meta.richTurns.length > 0);
+    state.lastSnapshotPayloadQueuedMessageCount = Number(payload.messageCount || 0) || 0;
     if (opts && opts.broadcastNow === true) broadcastImmediately(opts.reason || 'snapshot-payload-queued');
     else scheduleBroadcast((opts && opts.reason) || 'snapshot-payload-queued');
     return true;
@@ -666,6 +793,14 @@
     const rows = pruneSnapshotPayloadQueue();
     state.lastSnapshotPayloadBroadcastCount = rows.length;
     state.lastSnapshotPayloadBroadcastCapped = rows.length >= SNAPSHOT_PAYLOAD_MAX;
+    state.lastSnapshotPayloadBroadcastIdHashes = rows
+      .map((row) => redactedSnapshotPayloadId(row?.snapshotId || row?.chatId))
+      .filter(Boolean)
+      .slice(-SNAPSHOT_PAYLOAD_MAX);
+    state.lastSnapshotPayloadBroadcastHasBodyCount = rows.filter((row) => (
+      (Array.isArray(row?.messages) && row.messages.length > 0)
+      || (Array.isArray(row?.meta?.richTurns) && row.meta.richTurns.length > 0)
+    )).length;
     return rows.map((row) => ({
       ...row,
       meta: { ...(row.meta || {}) },
@@ -1158,9 +1293,21 @@
             queuedAt: state.lastSnapshotPayloadQueuedAt,
             queuedCount: state.lastSnapshotPayloadQueuedCount,
             queueStatus: state.lastSnapshotPayloadQueuedStatus,
+            queuedIdHash: state.lastSnapshotPayloadQueuedIdHash,
+            queuedHasBody: state.lastSnapshotPayloadQueuedHasBody,
+            queuedMessageCount: state.lastSnapshotPayloadQueuedMessageCount,
             broadcastCount: state.lastSnapshotPayloadBroadcastCount,
+            broadcastIdHashes: state.lastSnapshotPayloadBroadcastIdHashes.slice(),
+            broadcastHasBodyCount: state.lastSnapshotPayloadBroadcastHasBodyCount,
             capped: state.lastSnapshotPayloadBroadcastCapped,
             cap: SNAPSHOT_PAYLOAD_MAX,
+            requestAt: state.lastSnapshotPayloadRequestAt,
+            requestCount: state.lastSnapshotPayloadRequestCount,
+            requestFulfilledCount: state.lastSnapshotPayloadRequestFulfilledCount,
+            requestFailedCount: state.lastSnapshotPayloadRequestFailedCount,
+            requestStatus: state.lastSnapshotPayloadRequestStatus,
+            requestIdHashes: state.lastSnapshotPayloadRequestIdHashes.slice(),
+            requestErrors: state.lastSnapshotPayloadRequestErrors.slice(),
           },
           projectCatalog: {
             available: !!state.lastProjectCatalogAvailable,

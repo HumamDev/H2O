@@ -6951,6 +6951,7 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
       captureOk: out.capture?.ok === undefined ? null : out.capture.ok !== false,
       captureSummary,
       captureReadiness: out.captureReadiness && typeof out.captureReadiness === 'object' ? out.captureReadiness : null,
+      snapshotPayloadQueued: out.snapshotPayloadQueued === true,
       registryUpsertFields: registryPatch && typeof registryPatch === 'object' ? Object.keys(registryPatch).sort() : [],
       registryEvidence,
       latestRowWouldBeExportSafe: !!(

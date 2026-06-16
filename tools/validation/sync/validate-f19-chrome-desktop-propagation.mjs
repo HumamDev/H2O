@@ -418,11 +418,14 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'effectiveSnapshotSaved', 'Chrome export coverage accounts for downgraded saved rows');
   assertContains(autoImportFile, 'diagnoseSnapshotPayloadCoverage', 'Chrome export exposes latest snapshot payload coverage diagnostics');
   assertContains(autoImportFile, 'refreshNativeSnapshotPayloadsBeforeExport', 'Chrome export refreshes native snapshot payloads before coverage');
+  assertContains(autoImportFile, 'nativeSnapshotPayloadRequestsFromRows', 'Chrome export requests native Save-to-Folder payloads before coverage');
+  assertContains(autoImportFile, 'requestNativeSnapshotPayloads', 'Chrome export calls Studio native payload request API');
   assertContains(autoImportFile, 'nativeSnapshotPayloadPreflight', 'Chrome export reports native snapshot payload preflight diagnostics');
   assertContains(autoImportFile, 'var aligned = await alignBundleToLibraryIndex(bundle)', 'Chrome export waits for snapshot payload hydration before writing chrome-latest');
   assertContains(studioSyncFile, 'async function materializeNativeSnapshotPayloads', 'Studio materializes native Save-to-Folder payloads');
   assertContains(studioSyncFile, "await callArchive('importBundle'", 'Studio imports native snapshot payloads into archive backend');
   assertContains(studioSyncFile, 'verifyNativeSnapshotPayloadImports', 'Studio verifies native snapshot payload imports against loadSnapshot');
+  assertContains(studioSyncFile, 'requestNativeSnapshotPayloads', 'Studio requests missing native snapshot payloads from native runtime');
   assertContains(studioSyncFile, 'waitForNativeSnapshotPayloadMaterialization', 'Studio exposes awaitable native snapshot payload materialization');
   assertContains(studioSyncFile, "scope: 'native-save-to-folder-snapshot-payloads'", 'Studio tags native payload archive imports');
   assertContains(studioSyncFile, 'function redactNativeBroadcastPayload', 'Studio redacts native snapshot payload diagnostics');

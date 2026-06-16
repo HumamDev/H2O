@@ -69,6 +69,8 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
   const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
+  const SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS = 2500;
+  const SNAPSHOT_PAYLOAD_REQUEST_POLL_MS = 250;
   const FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE = 'h2o:library:studio-broadcast:v1';
   const NATIVE_OWNER_EXTENSION_IDS = [
     'bgdapdcjckbiejckpfeinlmcdnijifpg', // prod
@@ -110,6 +112,12 @@
     lastNativeSnapshotPayloadVerifiedCount: 0,
     lastNativeSnapshotPayloadVerifyError: '',
     lastNativeSnapshotPayloadIdHashes: [],
+    lastNativeSnapshotPayloadRequestAt: 0,
+    lastNativeSnapshotPayloadRequestCount: 0,
+    lastNativeSnapshotPayloadRequestStatus: '',
+    lastNativeSnapshotPayloadRequestSent: false,
+    lastNativeSnapshotPayloadRequestError: '',
+    lastNativeSnapshotPayloadRequestIdHashes: [],
     lastNativeBroadcastReadAt: 0,
     lastNativeBroadcastReadSource: '',
     lastNativeBroadcastReadError: '',
@@ -526,6 +534,33 @@
     return stableChecksum(raw).replace(/^h2o-folder-/, 'h:');
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => {
+      try { W.setTimeout(resolve, ms); } catch { resolve(); }
+    });
+  }
+
+  function normalizeSnapshotPayloadRequest(row, index) {
+    const src = row && typeof row === 'object' ? row : {};
+    const chatId = String(src.chatId || src.id || '').trim();
+    const snapshotId = String(src.snapshotId || src.lastSnapshotId || src.latestSnapshotId || src.snapshot_id || '').trim();
+    if (!chatId && !snapshotId) return null;
+    return {
+      schema: 'h2o.native.snapshot-payload-request.v1',
+      requestId: String(src.requestId || snapshotId || chatId || `native-snapshot-payload-${index || 0}`),
+      chatId,
+      snapshotId,
+      title: String(src.title || src.displayTitle || src.name || ''),
+      href: String(src.href || src.url || src.sourceUrl || ''),
+      folderId: String(src.folderId || src.folder_id || ''),
+      messageCount: Number(src.messageCount || 0) || 0,
+      turnCount: Number(src.turnCount || 0) || 0,
+      userTurnCount: Number(src.userTurnCount || 0) || 0,
+      assistantTurnCount: Number(src.assistantTurnCount || 0) || 0,
+      answerCount: Number(src.answerCount || 0) || 0,
+    };
+  }
+
   async function verifyNativeSnapshotPayloadImports(chats) {
     const rows = Array.isArray(chats) ? chats : [];
     let verified = 0;
@@ -546,6 +581,59 @@
     state.lastNativeSnapshotPayloadVerifyStatus = verified === rows.length ? 'verified' : 'partial';
     state.lastNativeSnapshotPayloadVerifyError = '';
     return { verified, hashes };
+  }
+
+  async function requestNativeSnapshotPayloads(requests, options = {}) {
+    const rows = Array.isArray(requests) ? requests : [];
+    const normalized = rows.map(normalizeSnapshotPayloadRequest).filter(Boolean).slice(0, 12);
+    const startedAt = Date.now();
+    const reason = String(options?.reason || 'native-snapshot-payload-request');
+    state.lastNativeSnapshotPayloadRequestAt = startedAt;
+    state.lastNativeSnapshotPayloadRequestCount = normalized.length;
+    state.lastNativeSnapshotPayloadRequestStatus = normalized.length ? 'started' : 'none';
+    state.lastNativeSnapshotPayloadRequestSent = false;
+    state.lastNativeSnapshotPayloadRequestError = '';
+    state.lastNativeSnapshotPayloadRequestIdHashes = normalized
+      .map((item) => redactedPayloadId(item.snapshotId || item.chatId))
+      .filter(Boolean)
+      .slice(0, 12);
+    if (!normalized.length) {
+      return { ok: true, status: 'none', requestedCount: 0 };
+    }
+    try {
+      state.lastNativeSnapshotPayloadRequestSent = broadcastFromStudio(reason, {
+        snapshotPayloadRequests: normalized,
+      });
+      if (!state.lastNativeSnapshotPayloadRequestSent) {
+        state.lastNativeSnapshotPayloadRequestStatus = 'broadcast-failed';
+        state.lastNativeSnapshotPayloadRequestError = 'native-owner-broadcast-unavailable';
+        return { ok: false, status: 'broadcast-failed', requestedCount: normalized.length };
+      }
+      const deadline = startedAt + Math.max(500, Number(options?.timeoutMs || SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS) || SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS);
+      let materialized = null;
+      while (Date.now() < deadline) {
+        await sleep(Number(options?.pollMs || SNAPSHOT_PAYLOAD_REQUEST_POLL_MS) || SNAPSHOT_PAYLOAD_REQUEST_POLL_MS);
+        try { await refreshNativeBroadcast(`${reason}:poll`); } catch {}
+        try { materialized = await (state.lastNativeSnapshotPayloadMaterializePromise || Promise.resolve(null)); } catch {}
+        if (state.lastNativeSnapshotPayloadMaterializeAt >= startedAt) break;
+      }
+      state.lastNativeSnapshotPayloadRequestStatus = state.lastNativeSnapshotPayloadMaterializeAt >= startedAt
+        ? 'completed'
+        : 'timeout';
+      return {
+        ok: state.lastNativeSnapshotPayloadRequestStatus === 'completed',
+        status: state.lastNativeSnapshotPayloadRequestStatus,
+        requestedCount: normalized.length,
+        materialized,
+        materializeStatus: state.lastNativeSnapshotPayloadMaterializeStatus,
+        verifiedCount: state.lastNativeSnapshotPayloadVerifiedCount,
+      };
+    } catch (e) {
+      state.lastNativeSnapshotPayloadRequestStatus = 'error';
+      state.lastNativeSnapshotPayloadRequestError = String(e?.message || e || 'native-snapshot-payload-request-error');
+      err('native-snapshot-payload.request', e);
+      return { ok: false, status: 'error', error: state.lastNativeSnapshotPayloadRequestError, requestedCount: normalized.length };
+    }
   }
 
   async function materializeNativeSnapshotPayloads(payloads, reason = '') {
@@ -1411,6 +1499,7 @@
     pingNow(reason) { coalesceEmit(reason || 'manual'); },
     getNativeBroadcast() { return state.lastNativeBroadcastPayload || null; },
     refreshNativeBroadcast,
+    requestNativeSnapshotPayloads,
     async refreshNativeSnapshotPayloads(reason) {
       return refreshNativeBroadcast(reason || 'native-snapshot-payload-refresh');
     },
@@ -1479,6 +1568,14 @@
             verifiedCount: state.lastNativeSnapshotPayloadVerifiedCount,
             verifyError: state.lastNativeSnapshotPayloadVerifyError,
             snapshotIdHashes: state.lastNativeSnapshotPayloadIdHashes.slice(),
+          },
+          nativeSnapshotPayloadRequest: {
+            at: state.lastNativeSnapshotPayloadRequestAt,
+            count: state.lastNativeSnapshotPayloadRequestCount,
+            status: state.lastNativeSnapshotPayloadRequestStatus,
+            sent: state.lastNativeSnapshotPayloadRequestSent,
+            error: state.lastNativeSnapshotPayloadRequestError,
+            snapshotIdHashes: state.lastNativeSnapshotPayloadRequestIdHashes.slice(),
           },
           nativeFolderStateMerge: {
             key: FOLDER_STATE_DATA_KEY,

@@ -719,6 +719,37 @@
     };
   }
 
+  function nativeSnapshotPayloadRequestsFromRows(rows) {
+    var list = Array.isArray(rows) ? rows : [];
+    var out = [];
+    var seen = Object.create(null);
+    list.forEach(function (row) {
+      if (!row || typeof row !== 'object') return;
+      if (rowPayloadClass(row) !== 'native-save-to-folder') return;
+      if (!isSavedRow(row) || !hasRealTranscriptEvidence(row)) return;
+      var evidence = transcriptEvidenceFromLibraryRow(row);
+      var snapshotId = cleanString(evidence && evidence.snapshotId);
+      var chatId = rowId(row);
+      var key = snapshotId || chatId;
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      out.push({
+        requestId: 'chrome-export-native-payload-' + Date.now() + '-' + out.length,
+        chatId: chatId,
+        snapshotId: snapshotId,
+        title: friendlyShellTitle(titleCandidatesFromLibraryRow(row), chatId, ''),
+        href: cleanString(row && (row.href || row.url || row.sourceUrl)),
+        folderId: cleanString(row && (row.folderId || row.folder_id)),
+        messageCount: numericCount(evidence.messageCount),
+        turnCount: numericCount(evidence.turnCount),
+        userTurnCount: numericCount(evidence.userTurnCount),
+        assistantTurnCount: numericCount(evidence.assistantTurnCount),
+        answerCount: numericCount(evidence.answerCount)
+      });
+    });
+    return out.slice(0, 12);
+  }
+
   async function refreshNativeSnapshotPayloadsBeforeExport(reason) {
     var summary = {
       attempted: false,
@@ -726,6 +757,10 @@
       reason: String(reason || ''),
       refreshCalled: false,
       waitCalled: false,
+      requestCalled: false,
+      requestedCount: 0,
+      requestStatus: '',
+      requestVerifiedCount: 0,
       status: 'not-available',
       error: '',
     };
@@ -737,6 +772,18 @@
       }
       summary.attempted = true;
       summary.status = 'started';
+      if (typeof sync.requestNativeSnapshotPayloads === 'function') {
+        var requests = nativeSnapshotPayloadRequestsFromRows(getLibraryIndexRows() || []);
+        summary.requestedCount = requests.length;
+        if (requests.length) {
+          summary.requestCalled = true;
+          var requestResult = await sync.requestNativeSnapshotPayloads(requests, {
+            reason: 'chrome-export-native-snapshot-payload-request:' + String(reason || 'manual')
+          });
+          summary.requestStatus = String(requestResult && requestResult.status || '');
+          summary.requestVerifiedCount = Number(requestResult && requestResult.verifiedCount || 0) || 0;
+        }
+      }
       if (typeof sync.refreshNativeSnapshotPayloads === 'function') {
         summary.refreshCalled = true;
         await sync.refreshNativeSnapshotPayloads('chrome-export-preflight:' + String(reason || 'manual'));

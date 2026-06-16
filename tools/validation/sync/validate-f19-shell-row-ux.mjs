@@ -266,6 +266,12 @@ const checks = [
       sources.nativeSync.includes('function broadcastViaBridge') &&
       sources.nativeSync.includes('chrome.runtime.lastError') &&
       sources.nativeSync.includes("broadcastViaBridge(body, reasons, 'chrome-storage-error')") &&
+      sources.nativeSync.includes('function handleSnapshotPayloadRequests') &&
+      sources.nativeSync.includes('function fulfillSnapshotPayloadRequests') &&
+      sources.nativeSync.includes('archive.loadSnapshot(snapshotId)') &&
+      sources.nativeSync.includes("broadcastImmediately('snapshot-payload-request-fulfilled')") &&
+      sources.nativeSync.includes('queuedHasBody') &&
+      sources.nativeSync.includes('broadcastHasBodyCount') &&
       sources.nativeFolders.includes('archive.loadSnapshot(captureSummary.snapshotId)') &&
       sources.nativeFolders.includes('sync.queueSnapshotPayload') &&
       sources.nativeFolders.includes('snapshotPayloadQueued') &&
@@ -282,6 +288,8 @@ const checks = [
       sources.studioSync.includes('function normalizeNativeSnapshotPayload') &&
       sources.studioSync.includes('function redactNativeBroadcastPayload') &&
       sources.studioSync.includes('nativeSnapshotPayloadMaterialize') &&
+      sources.studioSync.includes('requestNativeSnapshotPayloads') &&
+      sources.studioSync.includes('snapshotPayloadRequests: normalized') &&
       sources.studioSync.includes('waitForNativeSnapshotPayloadMaterialization') &&
       sources.studioSync.includes('verifyNativeSnapshotPayloadImports') &&
       sources.studioSync.includes("readerKind: 'reader'") &&
