@@ -3952,6 +3952,7 @@ export function makeChromeLiveLoaderJs({
      * its own chrome.storage.local namespace can carry the same linked-only
      * records the prod broadcast already builds via snapshotLinkedRecords. */
     const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+    const MSG_NATIVE_SNAPSHOT_PAYLOADS = "h2o:library:native-snapshot-payloads:v1";
     const MSG_FOLDER_METADATA_OPERATION_RESULTS = "h2o:library:folder-metadata-operation-results:v1";
     /* F10.5.3 — count-safe capture mirror. Parallel to the linked-records
      * bridge above: the page-world 3X1c Capture Mirror writes this key via
@@ -4006,6 +4007,7 @@ export function makeChromeLiveLoaderJs({
       if (!WATCHED.has(String(key || ""))) return;
       forwardNativeFolderStateToStudioLauncher(srcLabel, key, value);
       forwardNativeLinkedRecordsToStudioLauncher(srcLabel, key, value);
+      forwardNativeSnapshotPayloadsToStudioLauncher(srcLabel, key, value);
       forwardNativeCaptureMirrorToStudioLauncher(srcLabel, key, value);
       forwardNativeFolderMetadataOperationResultsToStudioLauncher(srcLabel, key, value);
       if (!hasStorage) {
@@ -4033,6 +4035,21 @@ export function makeChromeLiveLoaderJs({
         : (requests && typeof requests === "object" ? [requests] : []);
       return list
         .map((request) => String(request && request.requestId || "").trim())
+        .filter(Boolean);
+    }
+
+    function snapshotPayloadRequestsFromStudioBroadcast(value) {
+      const payload = value && typeof value === "object" ? value.payload : null;
+      const requests = payload && payload.snapshotPayloadRequests;
+      const list = Array.isArray(requests)
+        ? requests
+        : (requests && typeof requests === "object" ? [requests] : []);
+      return list.filter(Boolean).slice(0, 12);
+    }
+
+    function snapshotPayloadRequestIdsFromStudioBroadcast(value) {
+      return snapshotPayloadRequestsFromStudioBroadcast(value)
+        .map((request) => String(request && (request.requestId || request.snapshotId || request.chatId) || "").trim())
         .filter(Boolean);
     }
 
@@ -4069,10 +4086,13 @@ export function makeChromeLiveLoaderJs({
         return;
       }
       const requestIds = folderMetadataRequestIdsFromStudioBroadcast(value);
+      const snapshotPayloadRequestIds = snapshotPayloadRequestIdsFromStudioBroadcast(value);
       const requestSummaries = summarizeFolderMetadataRequestsFromStudioBroadcast(value);
       let settled = false;
       let timer = null;
       const results = [];
+      let snapshotPayloadResponseCount = 0;
+      let snapshotPayloadForwardedCount = 0;
       const finish = (status, extra = {}) => {
         if (settled) return;
         settled = true;
@@ -4082,6 +4102,9 @@ export function makeChromeLiveLoaderJs({
         }
         if (requestIds.length) {
           try { document.removeEventListener(EV_FOLDER_METADATA_RESULT, onResult, false); } catch {}
+        }
+        if (snapshotPayloadRequestIds.length) {
+          try { document.removeEventListener(EV_WRITE, onSnapshotPayloadWrite, false); } catch {}
         }
         try {
           sendResponse({
@@ -4093,6 +4116,9 @@ export function makeChromeLiveLoaderJs({
             requestSummaries: requestSummaries.slice(0, 8),
             resultCount: results.length,
             folderMetadataOperationResults: results.slice(0, 16),
+            snapshotPayloadRequestCount: snapshotPayloadRequestIds.length,
+            snapshotPayloadResponseCount,
+            snapshotPayloadForwardedCount,
             ...extra,
           });
         } catch {}
@@ -4107,6 +4133,20 @@ export function makeChromeLiveLoaderJs({
           finish("relayed-result");
         }
       };
+      const onSnapshotPayloadWrite = (ev) => {
+        const detail = ev && ev.detail && typeof ev.detail === "object" ? ev.detail : null;
+        if (!detail || String(detail.key || "") !== NATIVE_KEY) return;
+        const nextValue = detail.value && typeof detail.value === "object" ? detail.value : null;
+        const payloads = Array.isArray(nextValue && nextValue.snapshotPayloads) ? nextValue.snapshotPayloads : [];
+        if (!payloads.length) return;
+        snapshotPayloadResponseCount += payloads.length;
+        snapshotPayloadForwardedCount += payloads.filter((payload) => {
+          const snapshotId = String(payload && payload.snapshotId || "").trim();
+          const chatId = String(payload && payload.chatId || "").trim();
+          return snapshotPayloadRequestIds.includes(snapshotId) || snapshotPayloadRequestIds.includes(chatId);
+        }).length;
+        finish("relayed-snapshot-payload");
+      };
       try {
         if (requestIds.length) {
           document.addEventListener(EV_FOLDER_METADATA_RESULT, onResult, false);
@@ -4116,9 +4156,19 @@ export function makeChromeLiveLoaderJs({
             });
           }, DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS);
         }
+        if (snapshotPayloadRequestIds.length) {
+          document.addEventListener(EV_WRITE, onSnapshotPayloadWrite, false);
+          if (!timer) {
+            timer = setTimeout(() => {
+              finish(snapshotPayloadResponseCount ? "relayed-snapshot-payload-partial-timeout" : "relayed-snapshot-payload-timeout", {
+                timeoutMs: DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS,
+              });
+            }, DIRECT_FOLDER_METADATA_RESULT_TIMEOUT_MS);
+          }
+        }
         sendEvent(STUDIO_KEY, value, undefined, { direct: true });
-        dlog("studioBroadcast.direct.ok", String(value.reason || "") + " requests=" + requestIds.length);
-        if (!requestIds.length) {
+        dlog("studioBroadcast.direct.ok", String(value.reason || "") + " requests=" + requestIds.length + " snapshotPayloadRequests=" + snapshotPayloadRequestIds.length);
+        if (!requestIds.length && !snapshotPayloadRequestIds.length) {
           finish("relayed");
         }
       } catch (e) {
@@ -4127,6 +4177,7 @@ export function makeChromeLiveLoaderJs({
           timer = null;
         }
         try { document.removeEventListener(EV_FOLDER_METADATA_RESULT, onResult, false); } catch {}
+        try { document.removeEventListener(EV_WRITE, onSnapshotPayloadWrite, false); } catch {}
         dlog("studioBroadcast.direct.err", String(e && (e.message || e)));
         try { sendResponse({ ok: false, status: "relay-failed", key: STUDIO_KEY, error: String(e && (e.message || e)) }); } catch {}
       }
@@ -4206,6 +4257,41 @@ export function makeChromeLiveLoaderJs({
         });
       } catch (e) {
         dlog("linkedRecords.external.throw", String(e && (e.message || e)));
+      }
+    }
+
+    function forwardNativeSnapshotPayloadsToStudioLauncher(srcLabel, key, value) {
+      if (String(key || "") !== NATIVE_KEY) return;
+      const snapshotPayloads = value && typeof value === "object" && Array.isArray(value.snapshotPayloads)
+        ? value.snapshotPayloads
+        : null;
+      if (snapshotPayloads === null) return;
+      if (!chrome || !chrome.runtime || typeof chrome.runtime.sendMessage !== "function") return;
+      const ownId = String(chrome.runtime.id || "");
+      if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) return;
+      try {
+        chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+          type: MSG_NATIVE_SNAPSHOT_PAYLOADS,
+          key: NATIVE_KEY,
+          source: "native-content-bridge",
+          sourceExtensionId: ownId,
+          sourceLabel: String(srcLabel || ""),
+          ts: Date.now(),
+          snapshotPayloads,
+        }, (resp) => {
+          const le = chrome.runtime && chrome.runtime.lastError;
+          if (le) {
+            dlog("snapshotPayloads.external.skip", String(le.message || le));
+            return;
+          }
+          if (!resp || resp.ok === false) {
+            dlog("snapshotPayloads.external.err", String((resp && resp.error) || "no-response"));
+            return;
+          }
+          dlog("snapshotPayloads.external.ok", String(resp.status || "ok"));
+        });
+      } catch (e) {
+        dlog("snapshotPayloads.external.throw", String(e && (e.message || e)));
       }
     }
 
@@ -4376,6 +4462,7 @@ export function makeChromeLiveLoaderJs({
             if (!WATCHED.has(key)) continue;
             const ch = changes[key];
             if (key === NATIVE_KEY) {
+              forwardNativeSnapshotPayloadsToStudioLauncher("storage.onChanged", key, ch && ch.newValue);
               forwardNativeFolderMetadataOperationResultsToStudioLauncher("storage.onChanged", key, ch && ch.newValue);
             }
             sendEvent(key, ch && ch.newValue, ch && ch.oldValue);

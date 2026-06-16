@@ -69,7 +69,7 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
   const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
-  const SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS = 2500;
+  const SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS = 5000;
   const SNAPSHOT_PAYLOAD_REQUEST_POLL_MS = 250;
   const FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE = 'h2o:library:studio-broadcast:v1';
   const NATIVE_OWNER_EXTENSION_IDS = [
@@ -242,9 +242,19 @@
     return Array.isArray(requests) ? requests.length > 0 : !!(requests && typeof requests === 'object');
   }
 
+  function snapshotPayloadRequestPayloadPresent(payload) {
+    const p = payload && typeof payload === 'object' ? payload : null;
+    const requests = p && p.snapshotPayloadRequests;
+    return Array.isArray(requests) ? requests.length > 0 : !!(requests && typeof requests === 'object');
+  }
+
+  function studioBroadcastExternalPayloadPresent(payload) {
+    return folderMetadataRequestPayloadPresent(payload) || snapshotPayloadRequestPayloadPresent(payload);
+  }
+
   function forwardStudioBroadcastToNativeOwners(body) {
     const payload = body && typeof body === 'object' ? body.payload : null;
-    if (!folderMetadataRequestPayloadPresent(payload)) return false;
+    if (!studioBroadcastExternalPayloadPresent(payload)) return false;
     state.lastStudioBroadcastExternalAt = Date.now();
     state.lastStudioBroadcastExternalStatus = 'skipped';
     state.lastStudioBroadcastExternalAttempts = 0;
@@ -320,6 +330,9 @@
                 sent: Number(directRelay.sent || 0) || 0,
                 tabCount: Number(directRelay.tabCount || 0) || 0,
                 resultCount: Number(directRelay.resultCount || directRelayResults.length || 0) || 0,
+                snapshotPayloadRequestCount: Number(directRelay.snapshotPayloadRequestCount || 0) || 0,
+                snapshotPayloadResponseCount: Number(directRelay.snapshotPayloadResponseCount || 0) || 0,
+                snapshotPayloadForwardedCount: Number(directRelay.snapshotPayloadForwardedCount || 0) || 0,
                 errors: Array.isArray(directRelay.errors) ? directRelay.errors.slice(0, 8) : [],
               }
               : null,
@@ -617,9 +630,29 @@
         try { materialized = await (state.lastNativeSnapshotPayloadMaterializePromise || Promise.resolve(null)); } catch {}
         if (state.lastNativeSnapshotPayloadMaterializeAt >= startedAt) break;
       }
-      state.lastNativeSnapshotPayloadRequestStatus = state.lastNativeSnapshotPayloadMaterializeAt >= startedAt
-        ? 'completed'
-        : 'timeout';
+      if (state.lastNativeSnapshotPayloadMaterializeAt >= startedAt) {
+        state.lastNativeSnapshotPayloadRequestStatus = 'completed';
+      } else {
+        const directRelay = state.lastStudioBroadcastExternalDirectRelay || null;
+        const relayed = directRelay && Number(directRelay.sent || 0) > 0;
+        const tabCount = directRelay ? Number(directRelay.tabCount || 0) || 0 : 0;
+        const requestResponseCount = directRelay ? Number(directRelay.snapshotPayloadResponseCount || 0) || 0 : 0;
+        const requestForwardedCount = directRelay ? Number(directRelay.snapshotPayloadForwardedCount || 0) || 0 : 0;
+        if (state.lastStudioBroadcastExternalAttempts > 0 && state.lastStudioBroadcastExternalOkCount === 0) {
+          state.lastNativeSnapshotPayloadRequestStatus = 'bridge-send-failed';
+        } else if (directRelay && tabCount === 0) {
+          state.lastNativeSnapshotPayloadRequestStatus = 'no-open-chatgpt-tab';
+        } else if (!relayed) {
+          state.lastNativeSnapshotPayloadRequestStatus = 'listener-missing';
+        } else if (requestResponseCount === 0) {
+          state.lastNativeSnapshotPayloadRequestStatus = 'listener-reached-no-payload';
+        } else if (requestForwardedCount === 0) {
+          state.lastNativeSnapshotPayloadRequestStatus = 'snapshot-not-found';
+        } else {
+          state.lastNativeSnapshotPayloadRequestStatus = 'import-verify-failed';
+        }
+      }
+      const directRelay = state.lastStudioBroadcastExternalDirectRelay || null;
       return {
         ok: state.lastNativeSnapshotPayloadRequestStatus === 'completed',
         status: state.lastNativeSnapshotPayloadRequestStatus,
@@ -627,6 +660,10 @@
         materialized,
         materializeStatus: state.lastNativeSnapshotPayloadMaterializeStatus,
         verifiedCount: state.lastNativeSnapshotPayloadVerifiedCount,
+        directRelayStatus: String(directRelay?.status || ''),
+        listenerReached: Number(directRelay?.sent || 0) > 0,
+        responseCount: Number(directRelay?.snapshotPayloadResponseCount || 0) || 0,
+        forwardedCount: Number(directRelay?.snapshotPayloadForwardedCount || 0) || 0,
       };
     } catch (e) {
       state.lastNativeSnapshotPayloadRequestStatus = 'error';

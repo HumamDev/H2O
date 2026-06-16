@@ -120,6 +120,7 @@ const MSG_NATIVE_FOLDER_STATE = "h2o:library:native-folder-state:v1";
  * S0F1c's existing readNativeChatRegistryRecords() can pick up
  * linked-only records propagated from prod Cockpit Pro's native broadcast. */
 const MSG_NATIVE_LINKED_RECORDS = "h2o:library:native-linked-records:v1";
+const MSG_NATIVE_SNAPSHOT_PAYLOADS = "h2o:library:native-snapshot-payloads:v1";
 /* F10.5.3 — count-safe capture mirror: cross-extension message type +
  * the chrome.storage.local key the Studio Launcher reads (F10.5 bridge). */
 const MSG_NATIVE_CAPTURE_MIRROR = "h2o:capture:native-mirror:v1";
@@ -4254,6 +4255,9 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
       folderMetadataOperationResults: Array.isArray(directRelay && directRelay.folderMetadataOperationResults)
         ? directRelay.folderMetadataOperationResults.slice(0, 16)
         : [],
+      snapshotPayloadRequestCount: Number(directRelay && directRelay.snapshotPayloadRequestCount || 0) || 0,
+      snapshotPayloadResponseCount: Number(directRelay && directRelay.snapshotPayloadResponseCount || 0) || 0,
+      snapshotPayloadForwardedCount: Number(directRelay && directRelay.snapshotPayloadForwardedCount || 0) || 0,
       ts: Date.now(),
     };
   } catch (e) {
@@ -4288,6 +4292,9 @@ async function forwardStudioBroadcastToChatTabs(value) {
   let sent = 0;
   const errors = [];
   const folderMetadataOperationResults = [];
+  let snapshotPayloadRequestCount = 0;
+  let snapshotPayloadResponseCount = 0;
+  let snapshotPayloadForwardedCount = 0;
   await Promise.all(tabIds.map((tabId) => new Promise((resolve) => {
     try {
       chrome.tabs.sendMessage(tabId, {
@@ -4305,6 +4312,9 @@ async function forwardStudioBroadcastToChatTabs(value) {
           if (Array.isArray(resp.folderMetadataOperationResults)) {
             folderMetadataOperationResults.push(...resp.folderMetadataOperationResults);
           }
+          snapshotPayloadRequestCount += Number(resp.snapshotPayloadRequestCount || 0) || 0;
+          snapshotPayloadResponseCount += Number(resp.snapshotPayloadResponseCount || 0) || 0;
+          snapshotPayloadForwardedCount += Number(resp.snapshotPayloadForwardedCount || 0) || 0;
         } else {
           errors.push(String(tabId) + ":" + String((resp && (resp.status || resp.error)) || "no-response"));
         }
@@ -4322,6 +4332,9 @@ async function forwardStudioBroadcastToChatTabs(value) {
     tabCount: tabIds.length,
     resultCount: folderMetadataOperationResults.length,
     folderMetadataOperationResults: folderMetadataOperationResults.slice(0, 16),
+    snapshotPayloadRequestCount,
+    snapshotPayloadResponseCount,
+    snapshotPayloadForwardedCount,
     errors: errors.slice(0, 8),
   };
 }
@@ -4475,6 +4488,57 @@ async function handleExternalNativeLinkedRecordsMessage(msg, sender) {
       senderId,
       error: String((e && (e.stack || e.message || e)) || "merge-failed"),
       linkedRecordsCount: linkedRecords.length,
+    };
+  }
+}
+
+async function handleExternalNativeSnapshotPayloadsMessage(msg, sender) {
+  const senderId = String(sender && sender.id || "");
+  if (!senderId || !NATIVE_FOLDER_STATE_EXTERNAL_SENDER_IDS.has(senderId)) {
+    return { ok: false, status: "sender-not-allowed", senderId };
+  }
+  const snapshotPayloads = msg && Array.isArray(msg.snapshotPayloads) ? msg.snapshotPayloads : null;
+  if (snapshotPayloads === null) {
+    return { ok: false, status: "invalid-snapshot-payloads", senderId };
+  }
+  const source = String((msg && msg.source) || "native-content-bridge");
+  const sourceExtensionId = String((msg && msg.sourceExtensionId) || senderId);
+  const payloadHasBodyCount = snapshotPayloads.filter((item) => {
+    const src = item && typeof item === "object" ? item : {};
+    const meta = src.meta && typeof src.meta === "object" ? src.meta : {};
+    return (Array.isArray(src.messages) && src.messages.length > 0)
+      || (Array.isArray(meta.richTurns) && meta.richTurns.length > 0);
+  }).length;
+  try {
+    const before = await storageGet([NATIVE_BROADCAST_KEY]);
+    const prev = (before && before[NATIVE_BROADCAST_KEY] && typeof before[NATIVE_BROADCAST_KEY] === "object" && !Array.isArray(before[NATIVE_BROADCAST_KEY]))
+      ? before[NATIVE_BROADCAST_KEY]
+      : {};
+    const next = {
+      ...prev,
+      snapshotPayloads: snapshotPayloads.slice(0, 8),
+      ts: Date.now(),
+      surface: "native",
+      source,
+      sourceExtensionId,
+    };
+    await storageSet({ [NATIVE_BROADCAST_KEY]: next });
+    return {
+      ok: true,
+      status: snapshotPayloads.length ? "merged" : "merged-empty",
+      senderId,
+      key: NATIVE_BROADCAST_KEY,
+      snapshotPayloadCount: snapshotPayloads.length,
+      payloadHasBodyCount,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      status: "merge-failed",
+      senderId,
+      error: String((e && (e.stack || e.message || e)) || "merge-failed"),
+      snapshotPayloadCount: snapshotPayloads.length,
+      payloadHasBodyCount,
     };
   }
 }
@@ -11990,6 +12054,17 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         sendResponse(await handleExternalNativeLinkedRecordsMessage(msg, _sender));
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === MSG_NATIVE_SNAPSHOT_PAYLOADS) {
+    (async () => {
+      try {
+        sendResponse(await handleExternalNativeSnapshotPayloadsMessage(msg, _sender));
       } catch (e) {
         sendResponse({ ok: false, error: String(e && (e.stack || e.message || e)) });
       }

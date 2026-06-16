@@ -9,6 +9,7 @@ const FILES = {
   chromeExport: 'src-surfaces-base/studio/sync/auto-import.mv3.js',
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
   chromeBackground: 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs',
+  chromeLiveLoader: 'tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs',
   desktopImport: 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js',
   registryCore: 'shared/library/chat-registry-core.js',
   runtimeRegistryCore: 'src-runtime-base/0F0c.⬛️🧬 Library Registry Core 🧬.js',
@@ -272,6 +273,9 @@ const checks = [
       sources.nativeSync.includes("broadcastImmediately('snapshot-payload-request-fulfilled')") &&
       sources.nativeSync.includes('queuedHasBody') &&
       sources.nativeSync.includes('broadcastHasBodyCount') &&
+      sources.chromeLiveLoader.includes('MSG_NATIVE_SNAPSHOT_PAYLOADS') &&
+      sources.chromeLiveLoader.includes('function forwardNativeSnapshotPayloadsToStudioLauncher') &&
+      sources.chromeBackground.includes('function handleExternalNativeSnapshotPayloadsMessage') &&
       sources.nativeFolders.includes('archive.loadSnapshot(captureSummary.snapshotId)') &&
       sources.nativeFolders.includes('sync.queueSnapshotPayload') &&
       sources.nativeFolders.includes('snapshotPayloadQueued') &&
@@ -290,6 +294,8 @@ const checks = [
       sources.studioSync.includes('nativeSnapshotPayloadMaterialize') &&
       sources.studioSync.includes('requestNativeSnapshotPayloads') &&
       sources.studioSync.includes('snapshotPayloadRequests: normalized') &&
+      sources.studioSync.includes('snapshotPayloadRequestPayloadPresent') &&
+      sources.studioSync.includes('snapshotPayloadResponseCount') &&
       sources.studioSync.includes('waitForNativeSnapshotPayloadMaterialization') &&
       sources.studioSync.includes('verifyNativeSnapshotPayloadImports') &&
       sources.studioSync.includes("readerKind: 'reader'") &&

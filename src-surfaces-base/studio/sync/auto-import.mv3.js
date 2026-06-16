@@ -761,6 +761,9 @@
       requestedCount: 0,
       requestStatus: '',
       requestVerifiedCount: 0,
+      requestListenerReached: false,
+      requestResponseCount: 0,
+      requestForwardedCount: 0,
       status: 'not-available',
       error: '',
     };
@@ -782,6 +785,9 @@
           });
           summary.requestStatus = String(requestResult && requestResult.status || '');
           summary.requestVerifiedCount = Number(requestResult && requestResult.verifiedCount || 0) || 0;
+          summary.requestListenerReached = requestResult && requestResult.listenerReached === true;
+          summary.requestResponseCount = Number(requestResult && requestResult.responseCount || 0) || 0;
+          summary.requestForwardedCount = Number(requestResult && requestResult.forwardedCount || 0) || 0;
         }
       }
       if (typeof sync.refreshNativeSnapshotPayloads === 'function') {
