@@ -570,6 +570,60 @@
     if (normalized && list.indexOf(normalized) === -1) list.push(normalized);
   }
 
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function normalizeUnindexedReason(value) {
+    var text = cleanString(value);
+    if (text === 'archived' || text === 'not-indexed' || text === 'unknown-unindexed') return text;
+    return 'unknown-unindexed';
+  }
+
+  function sanitizeUnindexedManifestRow(entry) {
+    var row = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
+    return {
+      rowHash: cleanString(row.rowHash),
+      chatIdHash: cleanString(row.chatIdHash),
+      snapshotIdHash: cleanString(row.snapshotIdHash),
+      rowClass: cleanString(row.rowClass || 'unknown') || 'unknown',
+      reason: normalizeUnindexedReason(row.reason),
+      hasSnapshotId: row.hasSnapshotId === true,
+      hasSnapshots: row.hasSnapshots === true,
+      isSaved: row.isSaved === true,
+      isLinked: row.isLinked === true,
+      isPinned: row.isPinned === true,
+      isArchived: row.isArchived === true
+    };
+  }
+
+  function sanitizeUnindexedManifestForChromeDesktop(bundle) {
+    var diagnostics = bundle && bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
+      ? bundle.diagnostics : {};
+    var manifest = diagnostics.unindexedRowManifest && typeof diagnostics.unindexedRowManifest === 'object' && !Array.isArray(diagnostics.unindexedRowManifest)
+      ? diagnostics.unindexedRowManifest : {};
+    var sourceRows = Array.isArray(manifest.rows) ? manifest.rows
+      : (Array.isArray(diagnostics.unindexedRows) ? diagnostics.unindexedRows : []);
+    var rows = sourceRows.map(sanitizeUnindexedManifestRow);
+    var reasonCounts = Object.create(null);
+    rows.forEach(function (row) {
+      var reason = normalizeUnindexedReason(row.reason);
+      reasonCounts[reason] = Number(reasonCounts[reason] || 0) + 1;
+    });
+    return {
+      schema: cleanString(manifest.schema || 'h2o.studio.sync.chrome-export-unindexed-rows.v1'),
+      count: rows.length,
+      rows: rows,
+      reasonCounts: reasonCounts,
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      }
+    };
+  }
+
   function normalizeHardeningWarnings(warnings) {
     var out = Array.isArray(warnings) ? warnings.slice() : [];
     var legacyDeferred = [
@@ -815,6 +869,7 @@
     var folderState = folderStateForChromeDesktop(bundle, warnings, collectPerChatFolderBindings(chats));
     var chromeStorageLocal = {};
     if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
+    var unindexedManifest = sanitizeUnindexedManifestForChromeDesktop(bundle);
 
     var supported = {
       schema: FULL_BUNDLE_SCHEMA,
@@ -838,7 +893,11 @@
         }
       },
       chromeStorageLocal: chromeStorageLocal,
-      libraryKv: []
+      libraryKv: [],
+      diagnostics: {
+        unindexedRows: unindexedManifest.rows.slice(0, 50),
+        unindexedRowManifest: unindexedManifest
+      }
     };
 
     return {
@@ -857,6 +916,9 @@
         archivedCount: chatViewCounts.archived,
         snapshotCount: countSnapshots(chats),
         minimalRowCount: countMinimalLibraryRows(chats),
+        unindexedArchiveRowCount: Number(unindexedManifest.count || 0),
+        unindexedRowManifestCount: unindexedManifest.rows.length,
+        unindexedRowReasonCounts: Object.assign({}, unindexedManifest.reasonCounts || {}),
         categoryCount: categories.length,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
@@ -887,9 +949,11 @@
           hasSnapshotId: !!(entry && entry.hasSnapshotId),
           isSaved: !!(entry && entry.isSaved),
           isLinked: !!(entry && entry.isLinked),
+          isArchived: !!(entry && entry.isArchived),
           hasTranscriptEvidence: !!(entry && entry.hasTranscriptEvidence),
           weakClassifierRan: !!(entry && entry.weakClassifierRan),
           code: String(entry && entry.code || ''),
+          reason: String(entry && entry.reason || ''),
           identityFieldNames: Array.isArray(entry && entry.identityFieldNames)
             ? entry.identityFieldNames.slice(0, 12).map(function (name) { return String(name); }) : []
         };
@@ -960,6 +1024,12 @@
       weakRowsExisting: Number(chromeWeakRows.existing || 0),
       weakRowsSkipped: Number(chromeWeakRows.skipped || 0),
       weakRowsFailed: Number(chromeWeakRows.failed || 0),
+      unindexedRowsReceived: Number(r.unindexedRowsReceived || 0),
+      unindexedRowsMatched: Number(r.unindexedRowsMatched || 0),
+      unindexedRowsArchived: Number(r.unindexedRowsArchived || 0),
+      unindexedRowsMissing: Number(r.unindexedRowsMissing || 0),
+      unindexedRowReasonCounts: r.unindexedRowReasonCounts && typeof r.unindexedRowReasonCounts === 'object'
+        ? Object.assign({}, r.unindexedRowReasonCounts) : {},
       chatWriteDiagnostics: chatWriteDiagnostics,
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {
@@ -1047,6 +1117,13 @@
       weakRowsExisting: Number(f.importSummary && f.importSummary.weakRowsExisting || 0),
       weakRowsSkipped: Number(f.importSummary && f.importSummary.weakRowsSkipped || 0),
       weakRowsFailed: Number(f.importSummary && f.importSummary.weakRowsFailed || 0),
+      unindexedRowsReceived: Number(f.importSummary && f.importSummary.unindexedRowsReceived || 0),
+      unindexedRowsMatched: Number(f.importSummary && f.importSummary.unindexedRowsMatched || 0),
+      unindexedRowsArchived: Number(f.importSummary && f.importSummary.unindexedRowsArchived || 0),
+      unindexedRowsMissing: Number(f.importSummary && f.importSummary.unindexedRowsMissing || 0),
+      unindexedRowReasonCounts: f.importSummary && f.importSummary.unindexedRowReasonCounts &&
+        typeof f.importSummary.unindexedRowReasonCounts === 'object'
+        ? Object.assign({}, f.importSummary.unindexedRowReasonCounts) : {},
       sideEffects: {
         chromeStorageWritten: false,
         desktopSqliteMayWriteSupportedRows: ok === true && status !== 'already-imported',

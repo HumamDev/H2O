@@ -14,6 +14,7 @@ const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const focusImportFile = 'src-surfaces-base/studio/sync/focus-import.tauri.js';
 const importBundleFile = 'src-surfaces-base/studio/ingestion/import-bundle.tauri.js';
+const chatStoreFile = 'src-surfaces-base/studio/store/chats.tauri.js';
 const studioArchiveFile = 'src-surfaces-base/studio/S0D3a. 🎬 Transcript Archive Engine - Studio.js';
 const studioSyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
@@ -66,7 +67,31 @@ function makeStorage() {
   };
 }
 
+function chromeManifestHash(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  return `h:${(`00000000${hash.toString(16)}`).slice(-8)}`;
+}
+
 function buildChromeBundle() {
+  const unindexedRows = [1, 2, 3].map((index) => ({
+    rowHash: chromeManifestHash(`chat:unindexed-private-chat-${index}`),
+    chatIdHash: chromeManifestHash(`unindexed-private-chat-${index}`),
+    snapshotIdHash: '',
+    reason: 'not-indexed',
+    rowClass: 'unknown',
+    hasSnapshotId: false,
+    hasSnapshots: false,
+    isSaved: false,
+    isLinked: false,
+    isPinned: false,
+    isArchived: false
+  }));
   return {
     schema: 'h2o.studio.fullBundle.v2',
     exportedAt: '2026-06-14T12:00:00.000Z',
@@ -137,6 +162,21 @@ function buildChromeBundle() {
     libraryKv: [
       { key: 'h2o:library:labels:raw-chat-id-1', value: ['raw-label-id'] }
     ],
+    diagnostics: {
+      unindexedRowManifest: {
+        schema: 'h2o.studio.sync.chrome-export-unindexed-rows.v1',
+        count: unindexedRows.length,
+        rows: unindexedRows,
+        reasonCounts: { 'not-indexed': unindexedRows.length },
+        privacy: {
+          redacted: true,
+          rawIdsReturned: false,
+          rawTitlesReturned: false,
+          rawContentReturned: false
+        }
+      },
+      unindexedRows
+    },
     projects: [{ id: 'raw-project-id', name: 'Private Project Name' }]
   };
 }
@@ -175,6 +215,25 @@ function buildContext() {
               skipped: { chats: 0, snapshots: 0, categories: 0, folders: 0 },
               warnings: [],
               errors: [],
+              unindexedRowsReceived: 3,
+              unindexedRowsMatched: 3,
+              unindexedRowsArchived: 3,
+              unindexedRowsMissing: 0,
+              unindexedRowReasonCounts: { 'not-indexed': 3 },
+              chatWriteDiagnostics: [{
+                pathName: 'unindexed-archive-reconciliation',
+                action: 'reconciled-archived',
+                rowClass: 'unknown',
+                reason: 'not-indexed',
+                hasChatId: true,
+                hasSnapshotId: false,
+                isSaved: false,
+                isLinked: false,
+                isArchived: true,
+                hasTranscriptEvidence: false,
+                weakClassifierRan: true,
+                identityFieldNames: ['patch.chatId']
+              }],
               libraryBulkMigration: [
                 { phase: 'catalogs', ok: true, status: 'classified', blockers: [], warnings: [] }
               ]
@@ -247,6 +306,18 @@ async function runVmProof() {
   assert(result.sourceSummary.linkedCount === 1, 'source linked count mismatch');
   assert(result.sourceSummary.pinnedCount === 2, 'source pinned count mismatch');
   assert(result.sourceSummary.minimalRowCount === 1, 'source minimal row count mismatch');
+  assert(result.sourceSummary.unindexedArchiveRowCount === 3, 'source unindexed archive count mismatch');
+  assert(result.sourceSummary.unindexedRowManifestCount === 3, 'source unindexed manifest count mismatch');
+  assert(result.sourceSummary.unindexedRowReasonCounts['not-indexed'] === 3, 'source unindexed reason count mismatch');
+  assert(result.importSummary.unindexedRowsReceived === 3, 'import summary unindexedRowsReceived mismatch');
+  assert(result.importSummary.unindexedRowsMatched === 3, 'import summary unindexedRowsMatched mismatch');
+  assert(result.importSummary.unindexedRowsArchived === 3, 'import summary unindexedRowsArchived mismatch');
+  assert(result.importSummary.unindexedRowsMissing === 0, 'import summary unindexedRowsMissing mismatch');
+  assert(result.unindexedRowsReceived === 3, 'top-level unindexedRowsReceived mismatch');
+  assert(result.unindexedRowsArchived === 3, 'top-level unindexedRowsArchived mismatch');
+  assert(result.unindexedRowReasonCounts['not-indexed'] === 3, 'top-level unindexed reason count mismatch');
+  assert(result.importSummary.chatWriteDiagnostics.some((entry) => entry.action === 'reconciled-archived' && entry.reason === 'not-indexed'),
+    'redacted reconciled-archived diagnostic missing');
   assert(result.supportedFields.includes('saved-chat-records'), 'saved chats not marked supported');
   assert(result.supportedFields.includes('linked-chat-records'), 'linked chats not marked supported');
   assert(result.supportedFields.includes('folder-metadata'), 'folder metadata not marked supported');
@@ -275,6 +346,8 @@ async function runVmProof() {
   assert(call.options.f19ChromeDesktopPropagation === true, 'F19 propagation marker missing');
   assert(call.options.transport === 'chrome-latest.json', 'transport option mismatch');
   assert(call.bundle.chatArchive.chats.length === 2, 'chat count should be preserved');
+  assert(call.bundle.diagnostics.unindexedRowManifest.rows.length === 3, 'unindexed manifest should be preserved for Desktop import');
+  assert(call.bundle.diagnostics.unindexedRowManifest.reasonCounts['not-indexed'] === 3, 'unindexed manifest reason count should be preserved');
   assert(call.bundle.chatArchive.catalogs.categories.length === 1, 'category count should be preserved');
   assert(call.bundle.chatArchive.catalogs.labels.length === 0, 'labels must be stripped');
   assert(call.bundle.libraryKv.length === 0, 'libraryKv must be stripped');
@@ -436,6 +509,216 @@ function buildWeakImportBundle({ transcriptBacked = false } = {}) {
   };
 }
 
+function buildUnindexedReconciliationFixture() {
+  const existingRows = new Map();
+  const activeChats = [];
+  for (let i = 1; i <= 7; i += 1) {
+    const chatId = `active-saved-${i}`;
+    activeChats.push({
+      chatId,
+      chatIndex: {
+        id: chatId,
+        view: 'saved',
+        href: `https://chatgpt.com/c/${chatId}`,
+        state: { isSaved: true, isLinked: false, isPinned: i === 1, isArchived: false, isDeleted: false },
+        organization: {}
+      },
+      snapshots: []
+    });
+    existingRows.set(chatId, {
+      chatId,
+      href: `https://chatgpt.com/c/${chatId}`,
+      normalizedHref: `https://chatgpt.com/c/${chatId}`,
+      isSaved: true,
+      isLinked: false,
+      isPinned: i === 1,
+      isArchived: false,
+      isDeleted: false,
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      meta: {}
+    });
+  }
+  for (let i = 1; i <= 10; i += 1) {
+    const chatId = `active-link-${i}`;
+    activeChats.push({
+      chatId,
+      chatIndex: {
+        id: chatId,
+        view: 'linked',
+        href: `https://chatgpt.com/c/${chatId}`,
+        state: { isSaved: false, isLinked: true, isPinned: false, isArchived: false, isDeleted: false },
+        organization: {}
+      },
+      snapshots: []
+    });
+    existingRows.set(chatId, {
+      chatId,
+      href: `https://chatgpt.com/c/${chatId}`,
+      normalizedHref: `https://chatgpt.com/c/${chatId}`,
+      isSaved: false,
+      isLinked: true,
+      isPinned: false,
+      isArchived: false,
+      isDeleted: false,
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      meta: {}
+    });
+  }
+  const unindexedRows = [];
+  for (let i = 1; i <= 3; i += 1) {
+    const chatId = `unindexed-private-chat-${i}`;
+    existingRows.set(chatId, {
+      chatId,
+      href: `https://chatgpt.com/c/${chatId}`,
+      normalizedHref: `https://chatgpt.com/c/${chatId}`,
+      isSaved: false,
+      isLinked: false,
+      isPinned: false,
+      isArchived: false,
+      isDeleted: false,
+      snapshotCount: 0,
+      messageCount: 0,
+      turnCount: 0,
+      meta: {}
+    });
+    unindexedRows.push({
+      rowHash: chromeManifestHash(`chat:${chatId}`),
+      chatIdHash: chromeManifestHash(chatId),
+      snapshotIdHash: '',
+      reason: 'not-indexed',
+      rowClass: 'unknown',
+      hasSnapshotId: false,
+      hasSnapshots: false,
+      isSaved: false,
+      isLinked: false,
+      isPinned: false,
+      isArchived: false
+    });
+  }
+  const bundle = {
+    schema: 'h2o.studio.fullBundle.v2',
+    chatArchive: {
+      schema: 'h2o.chatArchive.bundle.v1',
+      catalogs: { categories: [], labels: [] },
+      chats: activeChats
+    },
+    chromeStorageLocal: {},
+    libraryKv: [],
+    diagnostics: {
+      unindexedRowManifest: {
+        schema: 'h2o.studio.sync.chrome-export-unindexed-rows.v1',
+        count: unindexedRows.length,
+        rows: unindexedRows,
+        reasonCounts: { 'not-indexed': unindexedRows.length },
+        privacy: {
+          redacted: true,
+          rawIdsReturned: false,
+          rawTitlesReturned: false,
+          rawContentReturned: false
+        }
+      },
+      unindexedRows
+    }
+  };
+  return { bundle, existingRows };
+}
+
+function buildUnindexedImportBundleContext(existingRows) {
+  let chatUpsertCalls = 0;
+  let archiveExistingCalls = 0;
+  const context = {
+    console,
+    TextEncoder,
+    TextDecoder,
+    Date,
+    setTimeout(callback) {
+      if (typeof callback === 'function') callback();
+      return 1;
+    },
+    clearTimeout() {},
+    H2O: {
+      Studio: {
+        store: {
+          chats: {
+            async get(chatId) {
+              const id = typeof chatId === 'string' ? chatId : String((chatId && (chatId.chatId || chatId.id)) || '');
+              return existingRows.get(id) || null;
+            },
+            async list() { return Array.from(existingRows.values()); },
+            async archiveExisting(chatId) {
+              const row = existingRows.get(chatId);
+              if (!row) return null;
+              archiveExistingCalls += 1;
+              row.isArchived = true;
+              return row;
+            },
+            async upsert() {
+              chatUpsertCalls += 1;
+              throw new Error('upsert must not create rows during unindexed reconciliation proof');
+            },
+            async reload() {}
+          },
+          snapshots: {
+            async get() { return null; },
+            async create() { return { ok: true }; }
+          },
+          categories: { async get() { return null; }, async upsert() { return { ok: true }; } },
+          labels: { async get() { return null; }, async upsert() { return { ok: true }; } },
+          folders: { async get() { return null; }, async upsert() { return { ok: true }; } }
+        }
+      }
+    },
+    chrome: {
+      storage: makeStorage(),
+      runtime: { lastError: null }
+    },
+    __TAURI_INTERNALS__: {
+      invoke() {
+        throw new Error('sqlite fallback should not be reached in unindexed reconciliation proof');
+      }
+    },
+    __getProofCounters() {
+      return { chatUpsertCalls, archiveExistingCalls };
+    }
+  };
+  context.window = context;
+  context.globalThis = context;
+  return vm.createContext(context);
+}
+
+async function runUnindexedArchiveReconciliationProof() {
+  const source = read(importBundleFile);
+  const fixture = buildUnindexedReconciliationFixture();
+  const context = buildUnindexedImportBundleContext(fixture.existingRows);
+  vm.runInContext(source, context, { filename: importBundleFile });
+  const result = await context.H2O.Studio.ingestion.importBundle(
+    fixture.bundle,
+    'merge',
+    { disableLibraryBulkMigration: true }
+  );
+  const counters = context.__getProofCounters();
+  assert(result.ok === true, 'unindexed archive reconciliation should not block import');
+  assert(counters.chatUpsertCalls === 0, 'unindexed reconciliation must not create rows via chatStore.upsert');
+  assert(counters.archiveExistingCalls === 3, 'unindexed reconciliation must archive exactly three existing rows');
+  assert(result.unindexedRowsReceived === 3, 'unindexedRowsReceived mismatch');
+  assert(result.unindexedRowsMatched === 3, 'unindexedRowsMatched mismatch');
+  assert(result.unindexedRowsArchived === 3, 'unindexedRowsArchived mismatch');
+  assert(result.unindexedRowsMissing === 0, 'unindexedRowsMissing mismatch');
+  assert(result.unindexedRowReasonCounts['not-indexed'] === 3, 'unindexed reason count mismatch');
+  assert((result.chatWriteDiagnostics || []).some((entry) => entry && entry.action === 'reconciled-archived' && entry.reason === 'not-indexed'),
+    'reconciled-archived chatWriteDiagnostic missing');
+  const rows = Array.from(fixture.existingRows.values());
+  const activeRows = rows.filter((row) => !row.isArchived && !row.isDeleted);
+  assert(activeRows.length === 17, 'Desktop active total should converge to 17');
+  assert(activeRows.filter((row) => row.isSaved).length === 7, 'Desktop active saved count should be 7');
+  assert(activeRows.filter((row) => !row.isSaved && row.isLinked).length === 10, 'Desktop active link count should be 10');
+  assert(rows.filter((row) => row.isArchived).length === 3, 'Desktop archived bucket should be 3');
+}
+
 async function runImportBundleWeakRowProof() {
   const source = read(importBundleFile);
 
@@ -561,7 +844,7 @@ async function runImportBundleWeakRowProof() {
     'existing transcript-backed strict failure diagnostic missing');
 }
 
-for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
+for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, chatStoreFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(autoImportFile, 'direction: \'chrome-to-desktop\'', 'Chrome export direction result');
@@ -713,6 +996,19 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'function safeImportChatUpsert', 'Desktop import centralizes chat upsert diagnostics and weak-row handling');
   assertContains(importBundleFile, 'existing-evidence-authorized-writer-unavailable', 'Desktop import does not fall through to unprivileged writer for transcript evidence');
   assertContains(importBundleFile, 'identityFieldNames: importPatchIdentityFieldNames(chat, patch)', 'Desktop import reports identity field names without raw values');
+  assertContains(importBundleFile, 'function reconcileUnindexedRowsIntoArchivedBucket', 'Desktop import reconciles Chrome unindexed manifest into archived bucket');
+  assertContains(importBundleFile, 'extractUnindexedRowManifest(bundle)', 'Desktop import reads Chrome unindexed manifest diagnostics');
+  assertContains(importBundleFile, 'archiveExistingDesktopChat(chatStore, matched)', 'Desktop import archives only matched existing unindexed rows');
+  assertContains(importBundleFile, "action: 'reconciled-archived'", 'Desktop import emits reconciled archived chatWriteDiagnostic');
+  assertContains(importBundleFile, 'unindexedRowsReceived', 'Desktop import exposes unindexedRowsReceived');
+  assertContains(importBundleFile, 'unindexedRowsMatched', 'Desktop import exposes unindexedRowsMatched');
+  assertContains(importBundleFile, 'unindexedRowsArchived', 'Desktop import exposes unindexedRowsArchived');
+  assertContains(importBundleFile, 'unindexedRowsMissing', 'Desktop import exposes unindexedRowsMissing');
+  assertContains(importBundleFile, 'unindexedRowReasonCounts', 'Desktop import exposes unindexed reason counts');
+  assertContains(folderSyncFile, 'sanitizeUnindexedManifestForChromeDesktop', 'Desktop folder sync preserves redacted unindexed manifest through supported bundle');
+  assertContains(folderSyncFile, 'unindexedRowsArchived', 'Desktop propagation redacted import summary exposes archived reconciliation count');
+  assertContains(chatStoreFile, 'function archiveExisting', 'Desktop chat store supports no-create archive update');
+  assertContains(chatStoreFile, 'UPDATE chats SET is_archived = 1', 'Desktop chat store archives existing rows without delete');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
@@ -721,6 +1017,7 @@ if (failures.length === 0) {
 
 if (failures.length === 0) {
   await runVmProof();
+  await runUnindexedArchiveReconciliationProof();
   await runImportBundleWeakRowProof();
 }
 

@@ -14,7 +14,7 @@
  * Contract: matches surfaces/studio/store/libraryIndex.js's standard surface
  *   (init / dispose / isReady / getAll / list / reload / saveNow / subscribe
  *   / diagnose) plus chat-specific methods (get / getByHref / upsert / patch
- *   / remove / delete / markSaved / markLinked / count).
+ *   / archiveExisting / remove / delete / markSaved / markLinked / count).
  *
  * Persistence model: writes hit SQLite immediately; saveNow() is a no-op.
  * Subscribers are in-process only — single-window V1; cross-window sync is
@@ -387,6 +387,23 @@
     return upsert(merged);
   }
 
+  function archiveExisting(chatIdInput) {
+    var id = getChatId(chatIdInput);
+    if (!id) return Promise.reject(new Error('archiveExisting: chatId required'));
+    return getById(id).then(function (existing) {
+      if (!existing) return null;
+      if (existing.isArchived === true) return existing;
+      var now = Date.now();
+      return sqlExecute('UPDATE chats SET is_archived = 1, updated_at = ? WHERE id = ?', [now, id])
+        .then(function (result) {
+          if (readRowsAffected(result) <= 0) return null;
+          recordWrite('archiveExisting');
+          notifySubscribers({ source: 'local', op: 'archiveExisting', chatId: id, mode: 'update' });
+          return getById(id);
+        });
+    });
+  }
+
   function remove(chatIdInput) {
     var id = getChatId(chatIdInput);
     if (!id) return Promise.resolve(false);
@@ -540,6 +557,7 @@
     getByHref: getByHref,
     upsert: upsert,
     patch: patchOne,
+    archiveExisting: archiveExisting,
     remove: remove,
     /* `delete` is a reserved word as a property name in legacy ES syntax;
      * it works as a string-keyed property in modern JS. Provided as an

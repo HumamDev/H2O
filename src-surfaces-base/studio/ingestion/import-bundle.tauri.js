@@ -112,6 +112,29 @@
     return 'h:' + ((hash >>> 0).toString(16));
   }
 
+  function chromeExportManifestHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+    }
+    return 'h:' + ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  function normalizeUnindexedReason(value) {
+    var text = cleanString(value);
+    if (text === 'archived' || text === 'not-indexed' || text === 'unknown-unindexed') return text;
+    return 'unknown-unindexed';
+  }
+
+  function incrementReasonCount(map, reason) {
+    if (!map) return;
+    var key = normalizeUnindexedReason(reason);
+    map[key] = Number(map[key] || 0) + 1;
+  }
+
   function extractChatIdFromUrl(value) {
     var text = cleanString(value);
     if (!text) return '';
@@ -1070,6 +1093,7 @@
       hasSnapshotId: !!cleanString(patch && (patch.snapshotId || patch.snapshot_id || patch.lastSnapshotId)),
       isSaved: !!(patch && patch.isSaved),
       isLinked: !!(patch && patch.isLinked),
+      isArchived: !!(patch && patch.isArchived),
       hasTranscriptEvidence: patchHasRealTranscriptEvidence(patch),
       identityFieldNames: importPatchIdentityFieldNames(chat, patch)
     };
@@ -1166,6 +1190,292 @@
         weakClassifierRan: true
       }, redactedChatUpsertPatchDiagnostics(chat, patch), fields || {}));
     } catch (_) { /* ignore diagnostics failures */ }
+  }
+
+  function emptyUnindexedRowReconciliation() {
+    return {
+      unindexedRowsReceived: 0,
+      unindexedRowsMatched: 0,
+      unindexedRowsArchived: 0,
+      unindexedRowsMissing: 0,
+      unindexedRowReasonCounts: {}
+    };
+  }
+
+  function applyUnindexedRowReconciliation(result, summary) {
+    var s = summary && typeof summary === 'object' ? summary : emptyUnindexedRowReconciliation();
+    var reasonCounts = s.unindexedRowReasonCounts && typeof s.unindexedRowReasonCounts === 'object'
+      ? s.unindexedRowReasonCounts : {};
+    result.unindexedRowsReceived = Number(s.unindexedRowsReceived || 0);
+    result.unindexedRowsMatched = Number(s.unindexedRowsMatched || 0);
+    result.unindexedRowsArchived = Number(s.unindexedRowsArchived || 0);
+    result.unindexedRowsMissing = Number(s.unindexedRowsMissing || 0);
+    result.unindexedRowReasonCounts = Object.assign({}, reasonCounts);
+    result.unindexedRowReconciliation = {
+      received: result.unindexedRowsReceived,
+      matched: result.unindexedRowsMatched,
+      archived: result.unindexedRowsArchived,
+      missing: result.unindexedRowsMissing,
+      reasonCounts: Object.assign({}, reasonCounts)
+    };
+  }
+
+  function sanitizeUnindexedManifestRow(entry) {
+    var row = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {};
+    return {
+      rowHash: cleanString(row.rowHash),
+      chatIdHash: cleanString(row.chatIdHash),
+      snapshotIdHash: cleanString(row.snapshotIdHash),
+      rowClass: cleanString(row.rowClass || 'unknown') || 'unknown',
+      reason: normalizeUnindexedReason(row.reason),
+      hasSnapshotId: row.hasSnapshotId === true,
+      hasSnapshots: row.hasSnapshots === true,
+      isSaved: row.isSaved === true,
+      isLinked: row.isLinked === true,
+      isPinned: row.isPinned === true,
+      isArchived: row.isArchived === true
+    };
+  }
+
+  function extractUnindexedRowManifest(bundle) {
+    var diagnostics = bundle && bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
+      ? bundle.diagnostics : {};
+    var manifest = diagnostics.unindexedRowManifest && typeof diagnostics.unindexedRowManifest === 'object' && !Array.isArray(diagnostics.unindexedRowManifest)
+      ? diagnostics.unindexedRowManifest : {};
+    var sourceRows = Array.isArray(manifest.rows) ? manifest.rows
+      : (Array.isArray(diagnostics.unindexedRows) ? diagnostics.unindexedRows : []);
+    var rows = [];
+    var reasonCounts = Object.create(null);
+    for (var i = 0; i < sourceRows.length; i += 1) {
+      var safeRow = sanitizeUnindexedManifestRow(sourceRows[i]);
+      rows.push(safeRow);
+      incrementReasonCount(reasonCounts, safeRow.reason);
+    }
+    return {
+      schema: cleanString(manifest.schema || 'h2o.studio.sync.chrome-export-unindexed-rows.v1'),
+      rows: rows,
+      count: rows.length,
+      reasonCounts: reasonCounts
+    };
+  }
+
+  function addIdentityHash(map, value) {
+    var hash = chromeExportManifestHash(value);
+    if (hash) map[hash] = true;
+  }
+
+  function addIdentityKey(keys, prefix, value) {
+    var text = cleanString(value);
+    if (text) keys[prefix + ':' + text] = true;
+  }
+
+  function addChatIdentityCandidates(row, values, keys) {
+    for (var i = 0; i < values.length; i += 1) {
+      var value = cleanString(values[i]);
+      if (!value) continue;
+      addIdentityKey(keys, 'chat', value);
+      var fromUrl = extractChatIdFromUrl(value);
+      if (fromUrl) addIdentityKey(keys, 'chat', fromUrl);
+    }
+  }
+
+  function desktopRowUnindexedIdentity(row) {
+    var r = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
+    var meta = safeMeta(r.meta);
+    var chatHashes = Object.create(null);
+    var snapshotHashes = Object.create(null);
+    var identityKeys = Object.create(null);
+    var chatValues = [
+      r.chatId,
+      r.id,
+      r.conversationId,
+      r.conversation_id,
+      r.href,
+      r.url,
+      r.sourceUrl,
+      r.normalizedHref,
+      r.linkSourceHref,
+      meta.chatId,
+      meta.id,
+      meta.conversationId,
+      meta.href,
+      meta.url,
+      meta.sourceUrl,
+      meta.normalizedHref,
+      meta.linkSourceHref
+    ];
+    for (var i = 0; i < chatValues.length; i += 1) {
+      var value = cleanString(chatValues[i]);
+      if (!value) continue;
+      addIdentityHash(chatHashes, value);
+      var fromUrl = extractChatIdFromUrl(value);
+      if (fromUrl) addIdentityHash(chatHashes, fromUrl);
+    }
+    addChatIdentityCandidates(r, chatValues, identityKeys);
+    var snapshotValues = [
+      r.snapshotId,
+      r.snapshot_id,
+      r.lastSnapshotId,
+      r.latestSnapshotId,
+      meta.snapshotId,
+      meta.snapshot_id,
+      meta.lastSnapshotId,
+      meta.latestSnapshotId,
+      meta.sourceSnapshotId
+    ];
+    for (var s = 0; s < snapshotValues.length; s += 1) {
+      var sid = cleanString(snapshotValues[s]);
+      if (!sid) continue;
+      addIdentityHash(snapshotHashes, sid);
+      addIdentityKey(identityKeys, 'snapshot', sid);
+    }
+    var identityKeyList = Object.keys(identityKeys).sort();
+    var rowHashes = Object.create(null);
+    if (identityKeyList.length > 0) rowHashes[chromeExportManifestHash(identityKeyList.join('|'))] = true;
+    return {
+      chatHashes: chatHashes,
+      snapshotHashes: snapshotHashes,
+      rowHashes: rowHashes
+    };
+  }
+
+  function desktopRowMatchesUnindexedManifest(row, manifestRow) {
+    var identity = desktopRowUnindexedIdentity(row);
+    var chatIdHash = cleanString(manifestRow && manifestRow.chatIdHash);
+    var snapshotIdHash = cleanString(manifestRow && manifestRow.snapshotIdHash);
+    var rowHash = cleanString(manifestRow && manifestRow.rowHash);
+    if (chatIdHash && identity.chatHashes[chatIdHash]) return true;
+    if (snapshotIdHash && identity.snapshotHashes[snapshotIdHash]) return true;
+    if (rowHash && identity.rowHashes[rowHash]) return true;
+    return false;
+  }
+
+  async function listExistingChatsForUnindexedReconciliation(chatStore) {
+    if (!chatStore) return [];
+    if (typeof chatStore.list === 'function') {
+      var listed = await chatStore.list({});
+      return Array.isArray(listed) ? listed : [];
+    }
+    if (typeof chatStore.getAll === 'function') {
+      var all = await chatStore.getAll();
+      return Array.isArray(all) ? all : [];
+    }
+    return [];
+  }
+
+  async function archiveExistingDesktopChat(chatStore, row) {
+    var chatId = cleanString(row && (row.chatId || row.id));
+    if (!chatId) return null;
+    if (row && row.isArchived === true) return row;
+    if (chatStore && typeof chatStore.archiveExisting === 'function') {
+      return await chatStore.archiveExisting(chatId);
+    }
+    var query = 'UPDATE chats SET is_archived = 1, updated_at = ? WHERE id = ?';
+    var writeResult = await authorizedBulkMigrationExecute(query, [Date.now(), chatId], 'f19.chrome-desktop-unindexed-archive-reconcile');
+    if (!writeResult) writeResult = await sqliteExecute(query, [Date.now(), chatId]);
+    if (writeResult && writeResult.ok === false) {
+      var blockers = Array.isArray(writeResult.blockers) ? writeResult.blockers.join(',') : 'authorized-sqlite-blocked';
+      throw new Error(blockers || 'authorized-sqlite-blocked');
+    }
+    if (readRowsAffected(writeResult) <= 0) return null;
+    if (chatStore && typeof chatStore.reload === 'function') {
+      try { await chatStore.reload(); } catch (_) { /* ignore */ }
+    }
+    return chatStore && typeof chatStore.get === 'function' ? await chatStore.get(chatId) : Object.assign({}, row, { isArchived: true });
+  }
+
+  async function reconcileUnindexedRowsIntoArchivedBucket(bundle, stores, result) {
+    var manifest = extractUnindexedRowManifest(bundle);
+    var summary = emptyUnindexedRowReconciliation();
+    summary.unindexedRowsReceived = manifest.rows.length;
+    summary.unindexedRowReasonCounts = Object.assign({}, manifest.reasonCounts || {});
+    applyUnindexedRowReconciliation(result, summary);
+    if (manifest.rows.length === 0) return summary;
+
+    var chatStore = stores && stores.chats;
+    if (!chatStore) {
+      summary.unindexedRowsMissing = manifest.rows.length;
+      result.warnings.push({ kind: 'chrome-unindexed-row-reconcile-unavailable', reason: 'chat-store-unavailable' });
+      applyUnindexedRowReconciliation(result, summary);
+      return summary;
+    }
+
+    var existingRows = [];
+    try {
+      existingRows = await listExistingChatsForUnindexedReconciliation(chatStore);
+    } catch (listError) {
+      summary.unindexedRowsMissing = manifest.rows.length;
+      result.warnings.push({ kind: 'chrome-unindexed-row-reconcile-unavailable', reason: 'chat-list-unavailable', code: classifyImportError(listError) });
+      applyUnindexedRowReconciliation(result, summary);
+      return summary;
+    }
+
+    var usedChatIds = Object.create(null);
+    for (var i = 0; i < manifest.rows.length; i += 1) {
+      var manifestRow = manifest.rows[i];
+      var reason = normalizeUnindexedReason(manifestRow.reason);
+      var matched = null;
+      for (var r = 0; r < existingRows.length; r += 1) {
+        var row = existingRows[r];
+        var rowChatId = cleanString(row && (row.chatId || row.id));
+        if (rowChatId && usedChatIds[rowChatId]) continue;
+        if (desktopRowMatchesUnindexedManifest(row, manifestRow)) {
+          matched = row;
+          break;
+        }
+      }
+      if (!matched) {
+        summary.unindexedRowsMissing += 1;
+        result.warnings.push({
+          kind: 'chrome-unindexed-row-missing',
+          reason: reason,
+          rowClass: manifestRow.rowClass,
+          rowHash: manifestRow.rowHash,
+          chatIdHash: manifestRow.chatIdHash,
+          snapshotIdHash: manifestRow.snapshotIdHash
+        });
+        continue;
+      }
+      summary.unindexedRowsMatched += 1;
+      var matchedChatId = cleanString(matched.chatId || matched.id);
+      if (matchedChatId) usedChatIds[matchedChatId] = true;
+      try {
+        var archived = await archiveExistingDesktopChat(chatStore, matched);
+        if (archived) {
+          summary.unindexedRowsArchived += 1;
+          pushChatWriteDiagnostic(result, 'unindexed-archive-reconciliation', null, {
+            chatId: matchedChatId,
+            isArchived: true,
+            lastSnapshotId: matched.lastSnapshotId || ''
+          }, {
+            action: 'reconciled-archived',
+            reason: reason,
+            rowClass: manifestRow.rowClass,
+            alreadyArchived: matched.isArchived === true
+          });
+        } else {
+          summary.unindexedRowsMissing += 1;
+          result.warnings.push({
+            kind: 'chrome-unindexed-row-archive-missing-after-match',
+            reason: reason,
+            rowClass: manifestRow.rowClass,
+            rowHash: manifestRow.rowHash,
+            chatIdHash: manifestRow.chatIdHash,
+            snapshotIdHash: manifestRow.snapshotIdHash
+          });
+        }
+      } catch (archiveError) {
+        result.warnings.push({
+          kind: 'chrome-unindexed-row-archive-failed',
+          reason: reason,
+          rowClass: manifestRow.rowClass,
+          code: classifyImportError(archiveError)
+        });
+      }
+      applyUnindexedRowReconciliation(result, summary);
+    }
+    applyUnindexedRowReconciliation(result, summary);
+    return summary;
   }
 
   async function safeImportChatUpsert(chatStore, patch, context) {
@@ -2515,6 +2825,11 @@
       warnings: warnings,
       errors: errors,
       sample: sample,
+      unindexedRowsReceived: 0,
+      unindexedRowsMatched: 0,
+      unindexedRowsArchived: 0,
+      unindexedRowsMissing: 0,
+      unindexedRowReasonCounts: {},
     };
 
     var chatStateIndex = Object.create(null);
@@ -2544,6 +2859,7 @@
       }
       await importChromeStorageBlobs(bundle, result);
       await importLibraryKvBlobs(bundle, result);
+      await reconcileUnindexedRowsIntoArchivedBucket(bundle, stores, result);
     } catch (e) {
       result.errors.push({ kind: 'fatal', error: String(e && e.message || e) });
     }
