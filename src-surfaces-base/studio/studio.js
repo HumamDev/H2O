@@ -4441,6 +4441,8 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
   const frag = document.createDocumentFragment();
   list.slice(0, 30).forEach((row) => {
     const readerSnapshotId = rowReaderSnapshotId(row);
+    const isSavedTranscript = libraryRowIsSavedTranscript(row);
+    const isLinkOnly = rowIsLinkOnly(row);
     const link = document.createElement("a");
     link.className = "wbSidebarChatItem";
     if (readerSnapshotId) {
@@ -4451,6 +4453,12 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
     }
     link.dataset.snapshotId = String(readerSnapshotId || "");
     link.dataset.chatId = row.chatId;
+    link.dataset.view = String(row.view || "");
+    link.dataset.saved = isSavedTranscript ? "1" : "0";
+    link.dataset.linked = isLinkOnly ? "1" : "0";
+    link.dataset.archived = (row.archived || row.isArchived) ? "1" : "0";
+    link.dataset.deleted = (row.deleted || row.isDeleted || row.tombstoned) ? "1" : "0";
+    link.dataset.opens = readerSnapshotId && !isLinkOnly ? "reader" : "placeholder-details";
     if (readerSnapshotId && readerSnapshotId === activeSnapshotId) link.classList.add("active");
 
     const meta = rowMetaParts(row).join(" · ");

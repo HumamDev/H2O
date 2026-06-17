@@ -1347,6 +1347,190 @@
     return rows;
   }
 
+  function recentsHashToken(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return `h:${h.toString(16).padStart(8, '0')}`;
+  }
+
+  function recentsRowIdentity(row, index = 0) {
+    return cleanString(row?.chatId || row?.id || row?.externalId || row?.conversationId || row?.snapshotId || row?.lastSnapshotId || row?.latestSnapshotId || row?.href || row?.normalizedHref || `row:${index}`);
+  }
+
+  function recentsRowView(row) {
+    return cleanString(row?.displayView || row?.badgeKind || row?.view || row?.raw?.displayView || row?.raw?.badgeKind || row?.raw?.view).toLowerCase();
+  }
+
+  function recentsState(row) {
+    return (row?.state && typeof row.state === 'object') ? row.state : {};
+  }
+
+  function recentsRowHasTranscript(row) {
+    const c = ixCore();
+    if (c && typeof c.rowHasTranscriptEvidence === 'function') {
+      try { return !!c.rowHasTranscriptEvidence(row); } catch {}
+    }
+    return rowHasRealTranscriptEvidence(row);
+  }
+
+  function recentsRowIsArchived(row) {
+    const st = recentsState(row);
+    const view = recentsRowView(row);
+    return view === 'archived' || view === 'archive' || !!(row?.archived || row?.isArchived || st.isArchived);
+  }
+
+  function recentsRowIsDeleted(row) {
+    const st = recentsState(row);
+    const view = recentsRowView(row);
+    return view === 'deleted' || view === 'tombstone' || !!(row?.deleted || row?.isDeleted || row?.tombstoned || st.isDeleted);
+  }
+
+  function recentsRowIsSaved(row) {
+    const st = recentsState(row);
+    const view = recentsRowView(row);
+    return view === 'saved' || view === 'imported' || !!(row?.saved || row?.isSaved || st.isSaved);
+  }
+
+  function recentsRowIsLinkOnly(row) {
+    if (!row || recentsRowHasTranscript(row)) return false;
+    const st = recentsState(row);
+    const view = recentsRowView(row);
+    return view === 'linked' || view === 'link' || !!(row.isLinked || st.isLinked || rowLinkedUrl(row));
+  }
+
+  function recentsStableTime(row) {
+    const c = ixCore();
+    if (c && typeof c.canonicalRowTime === 'function') {
+      try { return Number(c.canonicalRowTime(row, 'savedRecent')) || 0; } catch {}
+    }
+    const values = [
+      row?.sortAt, row?.capturedAt, row?.lastCapturedAt, row?.snapshotCapturedAt,
+      row?.savedAt, row?.createdAt, row?.lastMessageAt, row?.lastInteractionAt,
+      row?.updatedAt, row?.lastSeenAt, row?.observedAt, row?.ts,
+    ];
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value < 100000000000 ? value * 1000 : value;
+      const parsed = Date.parse(cleanString(value));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+  }
+
+  function canonicalSavedRecentRowsForDiagnostic(limit = Infinity) {
+    const c = ixCore();
+    if (c && typeof c.canonicalSavedRecentRows === 'function') {
+      return c.canonicalSavedRecentRows(state.rows, limit, { dateField: 'savedRecent' });
+    }
+    const rows = state.rows
+      .filter((row) => row && !recentsRowIsArchived(row) && !recentsRowIsDeleted(row))
+      .filter((row) => recentsRowIsSaved(row) && recentsRowHasTranscript(row) && !recentsRowIsLinkOnly(row))
+      .slice()
+      .sort((a, b) => {
+        const timeCompare = recentsStableTime(b) - recentsStableTime(a);
+        const titleCompare = cleanString(a?.title).localeCompare(cleanString(b?.title));
+        const idCompare = recentsRowIdentity(a).localeCompare(recentsRowIdentity(b));
+        return timeCompare || titleCompare || idCompare;
+      });
+    const cap = Number(limit);
+    return Number.isFinite(cap) && cap >= 0 ? rows.slice(0, cap) : rows;
+  }
+
+  function recentsToken(row, index = 0) {
+    const st = recentsState(row);
+    const identity = recentsRowIdentity(row, index);
+    return {
+      idHash: recentsHashToken(identity),
+      snapshotHash: recentsHashToken(row?.snapshotId || row?.lastSnapshotId || row?.latestSnapshotId),
+      view: recentsRowView(row),
+      saved: recentsRowIsSaved(row),
+      linked: !!(row?.isLinked || st.isLinked),
+      linkOnly: recentsRowIsLinkOnly(row),
+      archived: recentsRowIsArchived(row),
+      deleted: recentsRowIsDeleted(row),
+      transcript: recentsRowHasTranscript(row),
+      time: recentsStableTime(row),
+      folderHash: recentsHashToken(row?.folderId),
+      categoryHash: recentsHashToken(row?.categoryId),
+      messageCount: numericCount(row?.messageCount),
+      turnCount: numericCount(row?.turnCount),
+    };
+  }
+
+  function domRecentsTokens(selector, limit = 30) {
+    try {
+      const nodes = Array.from(W.document?.querySelectorAll?.(selector) || []);
+      return nodes.slice(0, limit).map((node, index) => ({
+        idHash: recentsHashToken(node.dataset?.chatId || node.getAttribute?.('data-chat-id') || `dom:${index}`),
+        snapshotHash: recentsHashToken(node.dataset?.snapshotId || node.getAttribute?.('data-snapshot-id')),
+        view: cleanString(node.dataset?.view),
+        linked: node.dataset?.linked === '1' || node.classList?.contains('wbSidebarChatItem--linked') || false,
+        saved: node.dataset?.saved === '1' || false,
+        archived: node.dataset?.archived === '1' || /archive|archived/i.test(cleanString(node.dataset?.view)),
+        deleted: node.dataset?.deleted === '1' || /deleted|tombstone/i.test(cleanString(node.dataset?.view)),
+        placeholder: cleanString(node.dataset?.placeholder),
+        opens: cleanString(node.dataset?.opens),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  function diagnoseRecentsParity(options = {}) {
+    const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : 30;
+    const c = ixCore();
+    const activeRows = c && typeof c.canonicalActiveRows === 'function'
+      ? c.canonicalActiveRows(state.rows)
+      : state.rows.filter((row) => row && !recentsRowIsArchived(row) && !recentsRowIsDeleted(row));
+    const savedRecentRows = canonicalSavedRecentRowsForDiagnostic(limit);
+    const allSavedRecentRows = canonicalSavedRecentRowsForDiagnostic(Infinity);
+    const linkOnlyLeaks = savedRecentRows.filter(recentsRowIsLinkOnly);
+    const archivedLeaks = savedRecentRows.filter((row) => recentsRowIsArchived(row) || recentsRowIsDeleted(row));
+    const tokens = savedRecentRows.map(recentsToken);
+    const domSidebarTokens = domRecentsTokens('#sidebarChatList .wbSidebarChatItem', limit);
+    const domDashboardTokens = domRecentsTokens('.wbDashRecentList .wbChatRow', 6);
+    const domLinkOnlyLeaks = [...domSidebarTokens, ...domDashboardTokens]
+      .filter((token) => token.linked && !token.saved && token.opens !== 'reader');
+    const domArchivedLeaks = [...domSidebarTokens, ...domDashboardTokens]
+      .filter((token) => token.archived || token.deleted);
+    return {
+      schema: 'h2o.library-index.recents-parity-diagnostic.v1',
+      ok: linkOnlyLeaks.length === 0 && archivedLeaks.length === 0 && domLinkOnlyLeaks.length === 0 && domArchivedLeaks.length === 0,
+      surface: 'studio',
+      source: LI_isTauri() ? 'desktop-sqlite' : 'chrome-archive',
+      sourceRowCount: state.rows.length,
+      activeRowCount: activeRows.length,
+      savedRecentsCandidateCount: allSavedRecentRows.length,
+      sidebarRecentsRowTokens: tokens,
+      dashboardRecentsRowTokens: tokens.slice(0, 6),
+      domSidebarRecentsRowTokens: domSidebarTokens,
+      domDashboardRecentTokens: domDashboardTokens,
+      linkOnlyRowsAccidentallyIncludedCount: linkOnlyLeaks.length + domLinkOnlyLeaks.length,
+      archivedRowsAccidentallyIncludedCount: archivedLeaks.length + domArchivedLeaks.length,
+      sourceLinkOnlyRowsAccidentallyIncludedCount: linkOnlyLeaks.length,
+      sourceArchivedRowsAccidentallyIncludedCount: archivedLeaks.length,
+      domLinkOnlyRowsAccidentallyIncludedCount: domLinkOnlyLeaks.length,
+      domArchivedRowsAccidentallyIncludedCount: domArchivedLeaks.length,
+      helperNames: {
+        canonicalSavedRecentRows: c && typeof c.canonicalSavedRecentRows === 'function' ? 'LibraryIndexCore.canonicalSavedRecentRows' : 'S0F1c.fallback',
+        rowHasTranscriptEvidence: c && typeof c.rowHasTranscriptEvidence === 'function' ? 'LibraryIndexCore.rowHasTranscriptEvidence' : 'S0F1c.rowHasRealTranscriptEvidence',
+        sidebarRenderer: 'studio.collectCanonicalSidebarRecentChats',
+        dashboardRenderer: 'S0F1d.renderDashboard',
+        sortDateField: 'savedRecent',
+      },
+      first10CanonicalSortTokens: allSavedRecentRows.slice(0, 10).map(recentsToken),
+      runtimeMarkers: {
+        hasCanonicalSavedRecentRows: !!(c && typeof c.canonicalSavedRecentRows === 'function'),
+        studioJsLoaded: !!W.H2O?.Studio,
+      },
+      observedAtIso: new Date().toISOString(),
+    };
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
   const LibraryIndex = {
     surface: 'studio',
@@ -1394,6 +1578,7 @@
 
     async refresh(reason) { return runRefresh(reason || 'api'); },
     scheduleRefresh,
+    diagnoseRecentsParity,
 
     subscribe(fn) {
       if (typeof fn !== 'function') return () => {};

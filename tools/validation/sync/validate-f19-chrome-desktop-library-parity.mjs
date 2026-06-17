@@ -13,6 +13,7 @@ const moduleFile = 'src-surfaces-base/studio/sync/library/library-chrome-desktop
 const sharedCoreFile = 'shared/library/library-index-core.js';
 const runtimeCoreFile = 'src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js';
 const studioCoreFile = 'src-surfaces-base/studio/S0F0d. 🎬 Library Index Core - Studio.js';
+const studioIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
 const htmlFile = 'src-surfaces-base/studio/studio.html';
 const packFile = 'tools/product/studio/pack-studio.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.1-chrome-desktop-library-parity-contract.md';
@@ -288,6 +289,17 @@ function runCanonicalHeadlineProof() {
   const savedRecentRows = core.canonicalSavedRecentRows(rows, 99);
   assert(savedRecentRows.length === 7, 'canonicalSavedRecentRows must include only active saved transcript rows');
   assert(savedRecentRows.every((row) => row.snapshotId && row.state?.isSaved && !row.archived && !row.state?.isArchived), 'canonicalSavedRecentRows returned a non-saved, link-only, or archived row');
+  assert(core.canonicalRowView(savedRecentRows[0]) === 'saved', 'saved+linked payload-backed rows must classify as saved');
+  assert(rows.filter((row) => !row.state?.isSaved && !row.state?.isArchived).every((row) => core.canonicalRowView(row) === 'linked'), 'link-only rows must classify as linked');
+  const unknownDateRows = [
+    { chatId: 'unknown-b', snapshotId: 'snap-b', title: 'Bravo', view: 'saved', state: { isSaved: true } },
+    { chatId: 'unknown-a', snapshotId: 'snap-a', title: 'Alpha', view: 'saved', state: { isSaved: true } },
+    { chatId: 'unknown-link', title: 'Link', href: '/c/unknown-link', view: 'linked', state: { isLinked: true } },
+    { chatId: 'unknown-archived', snapshotId: 'snap-archived', title: 'Archived', view: 'saved', archived: true, state: { isSaved: true, isArchived: true } },
+  ];
+  const deterministicSavedRecents = core.canonicalSavedRecentRows(unknownDateRows, 99);
+  assert(deterministicSavedRecents.length === 2, 'saved recents must exclude unknown-date link-only and archived rows');
+  assert(deterministicSavedRecents.map((row) => row.chatId).join(',') === 'unknown-a,unknown-b', 'unknown-date saved recents must sort by title/id fallback deterministically');
   const activeFacets = core.canonicalActiveFacets(rows);
   assert(Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'active-folder'), 'canonicalActiveFacets missing active folder');
   assert(!Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'archived-folder'), 'canonicalActiveFacets must exclude archived folder');
@@ -299,7 +311,7 @@ function runTriplicateProof() {
   assert(coreBody(studioCoreFile) === sharedBody, 'Studio LibraryIndexCore body differs from shared core');
 }
 
-for (const file of [moduleFile, sharedCoreFile, runtimeCoreFile, studioCoreFile, htmlFile, packFile, contractFile]) assertExists(file);
+for (const file of [moduleFile, sharedCoreFile, runtimeCoreFile, studioCoreFile, studioIndexFile, htmlFile, packFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   runTriplicateProof();
@@ -311,9 +323,18 @@ if (failures.length === 0) {
   assertContains(moduleFile, 'canonicalActiveRows', 'canonical active projection usage');
   assertContains(moduleFile, 'canonicalSavedRecentRows', 'canonical saved recent projection usage');
   assertContains(moduleFile, 'libraryIndexActiveRows', 'active row metadata');
+  assertContains(studioIndexFile, 'function diagnoseRecentsParity(options = {})', 'recents runtime diagnostic');
+  assertContains(studioIndexFile, 'domSidebarRecentsRowTokens', 'sidebar DOM recents tokens');
+  assertContains(studioIndexFile, 'domDashboardRecentTokens', 'dashboard DOM recents tokens');
+  assertContains(studioIndexFile, 'domLinkOnlyRowsAccidentallyIncludedCount', 'DOM link-only leak counter');
+  assertContains(studioIndexFile, 'first10CanonicalSortTokens', 'canonical sort token proof');
   assertContains(sharedCoreFile, 'canonicalExplorerRows', 'canonical explorer projection');
   assertContains(sharedCoreFile, 'canonicalRecentRows', 'canonical recents projection');
   assertContains(sharedCoreFile, 'canonicalSavedRecentRows', 'canonical saved recents projection');
+  assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.71', 'Library Index Core cache bust');
+  assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.71', 'Library Index cache bust');
+  assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
+  assertContains(htmlFile, './studio.js?v=2.5.71', 'Studio shell cache bust');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

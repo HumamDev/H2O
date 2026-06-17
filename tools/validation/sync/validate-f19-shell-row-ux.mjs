@@ -27,6 +27,7 @@ const FILES = {
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
   studioShell: 'src-surfaces-base/studio/studio.js',
+  studioHtml: 'src-surfaces-base/studio/studio.html',
 };
 
 function read(rel) {
@@ -176,11 +177,30 @@ const checks = [
       sources.studioShell.includes('function collectCanonicalSidebarRecentChats(rows, folderId = "", query = "")') &&
       sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalSavedRecentLibraryIndexRows(200))') &&
       sources.studioShell.includes('if (!libraryRowIsSavedTranscript(row)) return false;') &&
+      sources.studioShell.includes('link.dataset.saved = isSavedTranscript ? "1" : "0";') &&
+      sources.studioShell.includes('link.dataset.linked = isLinkOnly ? "1" : "0";') &&
+      sources.studioShell.includes('link.dataset.opens = readerSnapshotId && !isLinkOnly ? "reader" : "placeholder-details";') &&
+      sources.libraryIndex.includes('function diagnoseRecentsParity(options = {})') &&
+      sources.libraryIndex.includes('domSidebarRecentsRowTokens') &&
+      sources.libraryIndex.includes('domDashboardRecentTokens') &&
+      sources.libraryIndex.includes('domLinkOnlyRowsAccidentallyIncludedCount') &&
+      sources.libraryIndex.includes('first10CanonicalSortTokens') &&
+      sources.insights.includes("archived:   st.isArchived ? '1' : '0'") &&
+      sources.insights.includes("deleted:    st.isDeleted ? '1' : '0'") &&
       sources.studioShell.includes('window.addEventListener(eventName, scheduleLibraryIndexWorkbenchRefresh);') &&
       !sources.studioShell.includes('function isRecentSidebarSavedChat') &&
       !sources.studioShell.includes('Loading saved chats'),
     FILES.insights,
     'Library Explorer, Recents, stats, and legacy list views must use the shared active/archive projection instead of raw LibraryIndex rows.'
+  ),
+  check(
+    'studio-recents-runtime-cache-bust',
+    sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.71') &&
+      sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.71') &&
+      sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
+      sources.studioHtml.includes('./studio.js?v=2.5.71'),
+    FILES.studioHtml,
+    'Studio must cache-bust the Library Index core, Library Index, Insights, and shell scripts so canonical saved-recents changes reach Chrome and Desktop runtimes.'
   ),
   check(
     'insights-link-badge-semantics',

@@ -1031,6 +1031,8 @@
         idx:        String(idx),
         linked:     (st.isLinked || opensLinkedDetails) ? '1' : '0',
         saved:      st.isSaved  ? '1' : '0',
+        archived:   st.isArchived ? '1' : '0',
+        deleted:    st.isDeleted ? '1' : '0',
         placeholder: placeholderKind,
         opens:      opensReader ? 'reader' : (opensLinkedDetails ? 'placeholder-details' : 'none'),
       },
