@@ -243,9 +243,17 @@ const checks = [
   check(
     'folder-local-review-operator-gated',
     sources.studioShell.includes('const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = "h2o:studio:folder-local-review:operator-mode:v1";') &&
+      sources.studioShell.includes('const FOLDER_OPERATOR_MODE_CONFIRM_TEXT = "Operator Mode exposes folder review and cleanup tools. Use only for diagnostics.";') &&
       sources.studioShell.includes('function folderOperatorModeEnabled()') &&
       sources.studioShell.includes('function folderLocalReviewUiEnabled()') &&
       sources.studioShell.includes('W.H2O.Studio.folderOperatorMode = {') &&
+      sources.studioShell.includes('function settingsFolderOperatorModeDiagnosticsHtml') &&
+      sources.studioShell.includes('data-h2o-folder-operator-mode-action="enable"') &&
+      sources.studioShell.includes('Operator Mode ON') &&
+      sources.studioShell.includes('Disable Operator Mode') &&
+      sources.studioShell.includes('W.confirm(FOLDER_OPERATOR_MODE_CONFIRM_TEXT)') &&
+      sources.studioShell.includes('settingsBindFolderOperatorModeControls(panel)') &&
+      sources.studioShell.includes('rerenderSettingsFolderOperatorModeRoute();') &&
       sources.studioShell.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
       sources.studioShell.includes('host.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";') &&
       sources.studioShell.includes('page.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";') &&

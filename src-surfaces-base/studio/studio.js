@@ -44,6 +44,7 @@ const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
 const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = "h2o:studio:folder-local-review:operator-mode:v1";
+const FOLDER_OPERATOR_MODE_CONFIRM_TEXT = "Operator Mode exposes folder review and cleanup tools. Use only for diagnostics.";
 const FOLDER_LOCAL_REVIEW_EXPLANATION = "These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.";
 const FOLDER_LOCAL_REVIEW_BADGE_ORDER = ["extra", "test", "conflict", "desktop-only", "chrome-only", "review-required"];
 const FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS = Object.freeze([
@@ -206,8 +207,10 @@ function setFolderOperatorModeEnabled(enabled){
     W.H2O.Studio.folderLocalReviewOperatorMode = next;
   } catch {}
   applyFolderOperatorModeMarker();
+  syncFolderOperatorModeDiagnosticsUi(document);
   try { W.dispatchEvent(new CustomEvent("evt:h2o:studio:folder-operator-mode-changed", { detail: { enabled: next } })); } catch {}
   rerenderFolderOperatorModeSurfaces();
+  rerenderSettingsFolderOperatorModeRoute();
   return next;
 }
 
@@ -7195,6 +7198,94 @@ function settingsDataSectionHtml(cardStyle, btnStyle){
   `;
 }
 
+function settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle, extraStyle = ""){
+  const enabled = folderOperatorModeEnabled();
+  const style = [cardStyle, extraStyle].filter(Boolean).join(";");
+  const badgeStyle = [
+    "display:inline-flex",
+    "align-items:center",
+    "border:1px solid " + (enabled ? "rgba(34,197,94,.44)" : "rgba(255,255,255,.12)"),
+    "border-radius:999px",
+    "padding:3px 8px",
+    "font-size:11px",
+    "line-height:1.2",
+    "color:" + (enabled ? "rgba(187,247,208,.96)" : "rgba(255,255,255,.68)"),
+    "background:" + (enabled ? "rgba(34,197,94,.14)" : "rgba(255,255,255,.045)"),
+  ].join(";");
+  return `
+    <div class="wbSettingsCard" data-h2o-folder-operator-mode-ui="1" data-enabled="${enabled ? "true" : "false"}" style="${style}">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="min-width:220px;display:flex;flex-direction:column;gap:4px">
+          <div style="font-weight:600">Advanced Folder Operator Mode</div>
+          <div style="opacity:.72;font-size:12px;line-height:1.45">${esc(FOLDER_OPERATOR_MODE_CONFIRM_TEXT)}</div>
+        </div>
+        <span data-h2o-folder-operator-mode-badge="1" style="${badgeStyle}">${enabled ? "Operator Mode ON" : "Operator Mode OFF"}</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" data-h2o-folder-operator-mode-action="enable" style="${btnStyle}" ${enabled ? "disabled" : ""}>Enable Operator Mode</button>
+        <button type="button" data-h2o-folder-operator-mode-action="disable" style="${btnStyle}" ${enabled ? "" : "disabled"}>Disable Operator Mode</button>
+      </div>
+    </div>
+  `;
+}
+
+function syncFolderOperatorModeDiagnosticsUi(root = document){
+  const enabled = folderOperatorModeEnabled();
+  const nodes = Array.from(root?.querySelectorAll?.("[data-h2o-folder-operator-mode-ui='1']") || []);
+  nodes.forEach((node) => {
+    node.dataset.enabled = enabled ? "true" : "false";
+    const badge = node.querySelector("[data-h2o-folder-operator-mode-badge='1']");
+    if (badge) {
+      badge.textContent = enabled ? "Operator Mode ON" : "Operator Mode OFF";
+      badge.style.borderColor = enabled ? "rgba(34,197,94,.44)" : "rgba(255,255,255,.12)";
+      badge.style.color = enabled ? "rgba(187,247,208,.96)" : "rgba(255,255,255,.68)";
+      badge.style.background = enabled ? "rgba(34,197,94,.14)" : "rgba(255,255,255,.045)";
+    }
+    const enableBtn = node.querySelector("[data-h2o-folder-operator-mode-action='enable']");
+    const disableBtn = node.querySelector("[data-h2o-folder-operator-mode-action='disable']");
+    if (enableBtn) {
+      enableBtn.disabled = enabled;
+      enableBtn.setAttribute("aria-disabled", enabled ? "true" : "false");
+    }
+    if (disableBtn) {
+      disableBtn.disabled = !enabled;
+      disableBtn.setAttribute("aria-disabled", enabled ? "false" : "true");
+    }
+  });
+}
+
+function rerenderSettingsFolderOperatorModeRoute(){
+  const panel = document.getElementById("viewSettingsPanel");
+  if (!panel || panel.hidden) return;
+  const route = parseHash();
+  if (!route || route.name !== "settings") return;
+  panel.dataset.settingsRendered = "";
+  delete panel.dataset.syncControlsBound;
+  renderSettingsRoute(route).catch((err) => console.warn("[H2O.Studio] Folder operator Settings refresh failed", err));
+}
+
+function settingsBindFolderOperatorModeControls(panel){
+  if (!panel) return;
+  syncFolderOperatorModeDiagnosticsUi(panel);
+  if (panel.dataset.folderOperatorModeControlsBound === "1") return;
+  panel.dataset.folderOperatorModeControlsBound = "1";
+  panel.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-h2o-folder-operator-mode-action]");
+    if (!button || !panel.contains(button)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const action = String(button.getAttribute("data-h2o-folder-operator-mode-action") || "").trim();
+    if (action === "enable") {
+      if (!W.confirm(FOLDER_OPERATOR_MODE_CONFIRM_TEXT)) return;
+      setFolderOperatorModeEnabled(true);
+      return;
+    }
+    if (action === "disable") {
+      setFolderOperatorModeEnabled(false);
+    }
+  }, true);
+}
+
 function settingsStorageDiagnosticsHtml(meta, cardStyle){
   return `
     <div id="wbSettingsDiagBox" class="wbSettingsCard" style="${cardStyle}">
@@ -7268,6 +7359,7 @@ function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
     return `
       <div style="display:flex;flex-direction:column;gap:12px">
         ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
+        ${settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle)}
         ${settingsInfoCardHtml(
           "Folder Parity Diagnostics",
           "Existing Folder Parity, Folder Cleanup, Desktop Mirror Refresh, conflict review, orphan binding review, and Operations / Proofs diagnostics.",
@@ -7541,6 +7633,7 @@ function renderSettingsSectionShell(panel, section){
     </div>
   `;
   settingsBindEvaluationControls(panel);
+  settingsBindFolderOperatorModeControls(panel);
   if (key === "diagnostics" || key === "about") refreshSettingsDiagnostics(panel);
 }
 
@@ -7561,6 +7654,7 @@ async function renderSettingsTopLevelRoute(panel, route){
 
 function settingsWrapFolderParityRoute(panel, parityNode){
   const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
+  const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
   const fallback = `
     <div class="wbSettingsCard" style="${cardStyle}">
       Folder Parity diagnostics could not mount because the legacy Folder Parity panel was not rendered.
@@ -7583,8 +7677,11 @@ function settingsWrapFolderParityRoute(panel, parityNode){
         <nav class="wbSettingsSubnav" aria-label="Diagnostics tools">
           ${settingsDiagnosticsSubnavHtml("folder-parity")}
         </nav>
-        <div id="wbSettingsFolderParityHost" class="wbSettingsSectionBody" data-settings-section="diagnostics" data-settings-subsection="folder-parity">
-          ${parityNode ? "" : fallback}
+        <div class="wbSettingsSectionBody" data-settings-section="diagnostics" data-settings-subsection="folder-parity">
+          ${settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle)}
+          <div id="wbSettingsFolderParityHost" style="display:flex;flex-direction:column;gap:12px">
+            ${parityNode ? "" : fallback}
+          </div>
         </div>
       </section>
     </div>
@@ -7592,6 +7689,7 @@ function settingsWrapFolderParityRoute(panel, parityNode){
   const host = panel.querySelector("#wbSettingsFolderParityHost");
   if (host && parityNode) host.appendChild(parityNode);
   settingsBindEvaluationControls(panel);
+  settingsBindFolderOperatorModeControls(panel);
   panel.dataset.settingsRendered = "1";
   panel.dataset.settingsRenderedKey = "diagnostics/folder-parity";
   delete panel.dataset.syncControlsBound;
@@ -8186,6 +8284,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
     <div style="margin-top:8px;font-size:12px;opacity:.6">
       Tip: each Chrome extension ID has its own isolated <code>chrome.storage.local</code> and IndexedDB. If your data ever disappears after rebuilding from a new path, it's almost certainly still alive under the previous extension ID — use Import on the old extension's bundle to restore.
     </div>
+    ${settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle, "margin-top:12px")}
   `;
 
   const evaluationHtml = settingsEvaluationPanelHtml();
@@ -8197,6 +8296,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
     return;
   }
 
+  settingsBindFolderOperatorModeControls(panel);
   bindSettingsSyncControls(panel);
   refreshSettingsDiagnostics(panel);
 
@@ -8216,6 +8316,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
 
 async function refreshSettingsDiagnostics(panel){
   if (!panel) return;
+  syncFolderOperatorModeDiagnosticsUi(panel);
   const meta = migrateExtensionLabel();
   const elId = panel.querySelector("#wbSettingsDiagId");
   const elName = panel.querySelector("#wbSettingsDiagName");
