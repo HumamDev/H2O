@@ -1315,15 +1315,31 @@
 
   // ── Query API ──────────────────────────────────────────────────────────────
   function query({ view, folderId, projectId, categoryId, label, tag, search, pinned, archived } = {}) {
-    let rows = state.rows.slice();
-    if (view) rows = rows.filter((r) => r.view === String(view).toLowerCase());
+    const c = ixCore();
+    const normalizedView = String(view || '').toLowerCase();
+    const wantsArchive = normalizedView === 'archive' || normalizedView === 'archived' || archived === true;
+    let rows = wantsArchive
+      ? (c && typeof c.canonicalArchivedRows === 'function'
+        ? c.canonicalArchivedRows(state.rows)
+        : state.rows.filter((r) => r.archived && !r.deleted && !r.isDeleted))
+      : (c && typeof c.canonicalActiveRows === 'function'
+        ? c.canonicalActiveRows(state.rows)
+        : state.rows.filter((r) => !r.archived && !r.isArchived && !r.deleted && !r.isDeleted));
+    if (view && !wantsArchive) {
+      if (c && typeof c.canonicalRowsForView === 'function') rows = c.canonicalRowsForView(state.rows, normalizedView);
+      else rows = rows.filter((r) => r.view === normalizedView);
+    }
     if (folderId) rows = rows.filter((r) => r.folderId === folderId);
     if (projectId) rows = rows.filter((r) => r.projectId === projectId);
     if (categoryId) rows = rows.filter((r) => r.categoryId === categoryId);
     if (label) rows = rows.filter((r) => r.labels.includes(label));
     if (tag) rows = rows.filter((r) => r.tags.includes(tag));
     if (typeof pinned === 'boolean') rows = rows.filter((r) => r.pinned === pinned);
-    if (typeof archived === 'boolean') rows = rows.filter((r) => r.archived === archived);
+    if (typeof archived === 'boolean') {
+      rows = rows.filter((r) => archived
+        ? !!(r.archived || r.isArchived)
+        : !(r.archived || r.isArchived));
+    }
     if (search) {
       const needle = String(search).toLowerCase();
       rows = rows.filter((r) => r.title.toLowerCase().includes(needle));
@@ -1341,20 +1357,39 @@
     query,
 
     facets() {
+      const c = ixCore();
+      const facets = c && typeof c.canonicalActiveFacets === 'function'
+        ? c.canonicalActiveFacets(state.rows)
+        : state.facets;
       return {
-        byView: { ...state.facets.byView },
-        byFolder: { ...state.facets.byFolder },
-        byCategory: { ...state.facets.byCategory },
-        byProject: { ...state.facets.byProject },
-        byLabel: { ...state.facets.byLabel },
-        byTag: { ...state.facets.byTag },
+        byView: { ...facets.byView },
+        byFolder: { ...facets.byFolder },
+        byCategory: { ...facets.byCategory },
+        byProject: { ...facets.byProject },
+        byLabel: { ...facets.byLabel },
+        byTag: { ...facets.byTag },
       };
     },
 
     counts() {
       const c = ixCore();
-      if (c) return c.countsFromFacetsStudio(state.facets, state.rows.length);
-      return { total: state.rows.length, views: {}, folders: {}, categories: {}, projects: {}, labels: {}, tags: {} };
+      if (c) {
+        const headline = typeof c.canonicalHeadlineCounts === 'function'
+          ? c.canonicalHeadlineCounts(state.rows)
+          : { total: state.rows.length, saved: 0, link: 0, pinned: 0, archived: 0 };
+        const activeFacets = typeof c.canonicalActiveFacets === 'function' ? c.canonicalActiveFacets(state.rows) : state.facets;
+        const counts = c.countsFromFacetsStudio(activeFacets, headline.total);
+        counts.views = {
+          ...(counts.views || {}),
+          saved: Number(headline.saved || 0) || 0,
+          linked: Number(headline.link || headline.linked || 0) || 0,
+          link: Number(headline.link || headline.linked || 0) || 0,
+          pinned: Number(headline.pinned || 0) || 0,
+          archived: Number(headline.archived || 0) || 0,
+        };
+        return counts;
+      }
+      return { total: state.rows.filter((r) => !r.archived && !r.isArchived && !r.deleted && !r.isDeleted).length, views: {}, folders: {}, categories: {}, projects: {}, labels: {}, tags: {} };
     },
 
     async refresh(reason) { return runRefresh(reason || 'api'); },

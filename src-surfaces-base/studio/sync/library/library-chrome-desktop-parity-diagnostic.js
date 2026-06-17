@@ -161,6 +161,12 @@
     return view === 'archived' || boolValue(row.archived) || boolValue(row.isArchived);
   }
 
+  function isDeleted(row) {
+    var view = rowView(row);
+    return view === 'deleted' || view === 'tombstone' || view === 'tombstoned' ||
+      boolValue(row.deleted) || boolValue(row.isDeleted) || boolValue(row.tombstoned);
+  }
+
   function isPinned(row) {
     return boolValue(row.pinned) || boolValue(row.isPinned);
   }
@@ -293,6 +299,35 @@
     return 0;
   }
 
+  function canonicalActiveRows(rows) {
+    var core = getLibraryIndexCore();
+    if (core && typeof core.canonicalActiveRows === 'function') return asArray(core.canonicalActiveRows(asArray(rows)));
+    var seen = Object.create(null);
+    return asArray(rows).filter(function (row, index) {
+      if (!row || typeof row !== 'object' || isArchived(row) || isDeleted(row)) return false;
+      var key = cleanString(row.chatId || row.id || row.snapshotId || row.href || ('row:' + index));
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    });
+  }
+
+  function canonicalRecentRows(rows, limit) {
+    var core = getLibraryIndexCore();
+    if (core && typeof core.canonicalRecentRows === 'function') {
+      return asArray(core.canonicalRecentRows(asArray(rows), limit, { dateField: 'best' }));
+    }
+    return asArray(rows)
+      .slice()
+      .sort(function (a, b) {
+        var dateCompare = recencyNumber(b) - recencyNumber(a);
+        var titleCompare = cleanString(a.title).localeCompare(cleanString(b.title));
+        var idCompare = rowId(a).localeCompare(rowId(b));
+        return dateCompare || titleCompare || idCompare;
+      })
+      .slice(0, Math.max(0, Number(limit) || 0));
+  }
+
   function rowToken(row) {
     return {
       id: rowId(row),
@@ -314,10 +349,7 @@
   }
 
   function recentTokens(rows) {
-    return asArray(rows)
-      .slice()
-      .sort(function (a, b) { return recencyNumber(b) - recencyNumber(a); })
-      .slice(0, 20)
+    return canonicalRecentRows(rows, 20)
       .map(function (row) {
         return {
           id: rowId(row),
@@ -362,17 +394,18 @@
     } catch (_) {
       indexDiag = null;
     }
+    var activeRows = canonicalActiveRows(indexRows);
     var catalogs = {
-      folders: await readCatalog('folders', indexRows, warnings),
-      labels: await readCatalog('labels', indexRows, warnings),
-      categories: await readCatalog('categories', indexRows, warnings),
-      projects: await readCatalog('projects', indexRows, warnings)
+      folders: await readCatalog('folders', activeRows, warnings),
+      labels: await readCatalog('labels', activeRows, warnings),
+      categories: await readCatalog('categories', activeRows, warnings),
+      projects: await readCatalog('projects', activeRows, warnings)
     };
     var counts = summarizeCounts(indexRows, catalogs);
-    var rowTokens = indexRows.map(rowToken).filter(function (token) { return token.id; }).sort(function (a, b) {
+    var rowTokens = activeRows.map(rowToken).filter(function (token) { return token.id; }).sort(function (a, b) {
       return canonicalJson(a).localeCompare(canonicalJson(b));
     });
-    var recents = recentTokens(indexRows);
+    var recents = recentTokens(activeRows);
     var identity = readIdentityMetadata(warnings);
     var sourceAvailable = !!(idx && typeof idx.getAll === 'function');
     return {
@@ -387,6 +420,7 @@
         isChromeRuntime: detected.isChrome,
         libraryIndexAvailable: !!idx,
         libraryIndexRows: indexRows.length,
+        libraryIndexActiveRows: activeRows.length,
         libraryIndexSource: cleanString(indexDiag && (indexDiag.lastSource || indexDiag.source)),
         catalogSources: {
           folders: catalogs.folders.source,

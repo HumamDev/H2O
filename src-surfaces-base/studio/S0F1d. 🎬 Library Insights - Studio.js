@@ -55,6 +55,76 @@
     const total = Array.isArray(rows) ? rows.length : 0;
     return { total, saved: 0, link: 0, linked: 0, pinned: 0, archived: 0, folders: 0, labels: 0, categories: 0, projects: 0 };
   }
+  function fallbackDedupeRows(rows) {
+    const out = [];
+    const seen = new Set();
+    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      if (!row || typeof row !== 'object') return;
+      const key = String(row.chatId || row.id || row.snapshotId || row.href || `row:${index}`);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(row);
+    });
+    return out;
+  }
+  function canonicalActiveRows(rows) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalActiveRows === 'function') return core.canonicalActiveRows(rows);
+    return fallbackDedupeRows(rows).filter((row) => {
+      const st = getRowState(row);
+      return !st.isDeleted && !st.isArchived;
+    });
+  }
+  function canonicalArchivedRows(rows) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalArchivedRows === 'function') return core.canonicalArchivedRows(rows);
+    return fallbackDedupeRows(rows).filter((row) => {
+      const st = getRowState(row);
+      return !st.isDeleted && st.isArchived;
+    });
+  }
+  function canonicalActiveFacets(rows) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalActiveFacets === 'function') return core.canonicalActiveFacets(rows);
+    if (core && typeof core.buildFacetsStudio === 'function') return core.buildFacetsStudio(canonicalActiveRows(rows));
+    return { byView: {}, byFolder: {}, byCategory: {}, byProject: {}, byLabel: {}, byTag: {} };
+  }
+  function canonicalRowsForView(rows, view = 'all') {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalRowsForView === 'function') return core.canonicalRowsForView(rows, view);
+    const v = String(view || 'all').toLowerCase();
+    if (v === 'archive' || v === 'archived') return canonicalArchivedRows(rows);
+    const active = canonicalActiveRows(rows);
+    if (v === 'all' || v === 'recent' || v === 'recents') return active;
+    if (v === 'saved') return active.filter((row) => rowHasOpenableTranscriptContent(row) && getRowState(row).isSaved);
+    if (v === 'linked' || v === 'link') return active.filter((row) => rowIsUrlOnlyLink(row));
+    if (v === 'pinned') return active.filter((row) => getRowState(row).isPinned);
+    return active.filter((row) => String(row.view || '').toLowerCase() === v);
+  }
+  function canonicalSortRows(rows, sort = 'recent') {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalSortRows === 'function') return core.canonicalSortRows(rows, sort, 'best');
+    return (Array.isArray(rows) ? rows : []).slice().sort((a, b) => {
+      const dateCompare = asTs(b.updatedAt || b.capturedAt || b.createdAt) - asTs(a.updatedAt || a.capturedAt || a.createdAt);
+      const titleCompare = String(a.title || '').localeCompare(String(b.title || ''));
+      const idCompare = String(a.chatId || a.id || '').localeCompare(String(b.chatId || b.id || ''));
+      if (sort === 'oldest') return -dateCompare || titleCompare || idCompare;
+      if (sort === 'az') return titleCompare || dateCompare || idCompare;
+      if (sort === 'mostTurns') return ((Number(b.messageCount) || 0) - (Number(a.messageCount) || 0)) || dateCompare || titleCompare || idCompare;
+      return dateCompare || titleCompare || idCompare;
+    });
+  }
+  function canonicalRecentRows(rows, limit = 20) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalRecentRows === 'function') return core.canonicalRecentRows(rows, limit, { dateField: 'best' });
+    const sorted = canonicalSortRows(canonicalActiveRows(rows), 'recent');
+    return Number.isFinite(Number(limit)) && Number(limit) >= 0 ? sorted.slice(0, Number(limit)) : sorted;
+  }
+  function canonicalRowTime(row) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalRowTime === 'function') return core.canonicalRowTime(row, 'best');
+    return asTs(row?.updatedAt || row?.capturedAt || row?.createdAt);
+  }
 
   // ── Preferences (persisted) ────────────────────────────────────────────────
   // Defaults are merged with whatever's in localStorage so old prefs survive a
@@ -1163,17 +1233,7 @@
 
   // ── Sort + group ───────────────────────────────────────────────────────────
   function sortRows(rows) {
-    const list = rows.slice();
-    if (prefs.sort === 'recent') {
-      list.sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt));
-    } else if (prefs.sort === 'oldest') {
-      list.sort((a, b) => asTs(a.updatedAt || a.capturedAt) - asTs(b.updatedAt || b.capturedAt));
-    } else if (prefs.sort === 'az') {
-      list.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
-    } else if (prefs.sort === 'mostTurns') {
-      list.sort((a, b) => (Number(b.messageCount) || 0) - (Number(a.messageCount) || 0));
-    }
-    return list;
+    return canonicalSortRows(rows, prefs.sort || 'recent');
   }
 
   function groupRows(rows) {
@@ -1226,11 +1286,12 @@
     // Default: date bucket
     const buckets = new Map();
     for (const r of rows) {
-      const label = dateBucketLabel(asTs(r.updatedAt || r.capturedAt));
-      if (!buckets.has(label)) buckets.set(label, { key: label, label, rows: [], _orderTs: asTs(r.updatedAt || r.capturedAt) || 0 });
+      const rowTime = canonicalRowTime(r);
+      const label = dateBucketLabel(rowTime);
+      if (!buckets.has(label)) buckets.set(label, { key: label, label, rows: [], _orderTs: rowTime || 0 });
       const b = buckets.get(label);
       b.rows.push(r);
-      b._orderTs = Math.max(b._orderTs, asTs(r.updatedAt || r.capturedAt) || 0);
+      b._orderTs = Math.max(b._orderTs, rowTime || 0);
     }
     return [...buckets.values()].sort((a, b) => b._orderTs - a._orderTs);
   }
@@ -1265,11 +1326,12 @@
   // chip selection from tab selection).
   function filterRowsForExplorer(rows, opts = {}) {
     const v = String(opts.forceView || prefs.view || 'all').toLowerCase();
+    const activeRows = canonicalActiveRows(rows);
     let list;
-    if (v === 'all') list = rows.slice();
-    else if (v === 'saved') list = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);
-    else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));
-    else list = rows.filter((r) => r.view === v);
+    if (v === 'saved') list = activeRows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);
+    else if (v === 'linked' || v === 'link') list = activeRows.filter((r) => rowIsUrlOnlyLink(r));
+    else if (v === 'pinned') list = activeRows.filter((r) => getRowState(r).isPinned);
+    else list = canonicalRowsForView(rows, v);
 
     // Dropdown-driven filters. Empty string in prefs = "All <thing>" (no filter).
     if (prefs.folderFilter)   list = list.filter((r) => String(r.folderId || '') === prefs.folderFilter);
@@ -1281,6 +1343,10 @@
     const q = String(prefs.search || '').trim().toLowerCase();
     if (q) list = list.filter((r) => rowMatchesSearch(r, q));
     return sortRows(list);
+  }
+  function explorerKnownRows(rows, opts = {}) {
+    const v = String(opts.forceView || prefs.view || 'all').toLowerCase();
+    return (v === 'archive' || v === 'archived') ? canonicalArchivedRows(rows) : canonicalActiveRows(rows);
   }
 
   // True when any dropdown filter is currently active. Used to enable the
@@ -1301,10 +1367,12 @@
   // ── Renderers ──────────────────────────────────────────────────────────────
   function renderDashboard(idx) {
     const rows = idx.getAll();
+    const activeRows = canonicalActiveRows(rows);
+    const activeFacets = canonicalActiveFacets(rows);
     const headline = canonicalHeadlineCounts(rows);
     const syncStateText = indexSyncStateText(idx);
-    const series = buildActivitySeries(rows, 30);
-    const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
+    const series = buildActivitySeries(activeRows, 30);
+    const recent = canonicalRecentRows(rows, 6);
 
     const total = headline.total;
     const saved = headline.saved;
@@ -1360,9 +1428,9 @@
       el('div', { class: 'wbDashDistBars' }, distBars),
     ]);
 
-    const topFolders    = topN(idx.facets().byFolder, 6);
-    const topCategories = topN(idx.facets().byCategory, 6);
-    const topLabels     = topN(idx.facets().byLabel, 6);
+    const topFolders    = topN(activeFacets.byFolder, 6);
+    const topCategories = topN(activeFacets.byCategory, 6);
+    const topLabels     = topN(activeFacets.byLabel, 6);
 
     const facetBlock = (titleStr, entries, kind) => {
       const items = entries.length
@@ -1495,7 +1563,7 @@
   }
 
   function renderExplorerDropdownGrid(idx) {
-    const facets = idx.facets();
+    const facets = canonicalActiveFacets(idx.getAll());
     const tagFacet     = facets.byTag     || {};
     const projectFacet = facets.byProject || {};
 
@@ -1572,13 +1640,14 @@
 
   function renderExplorer(idx, opts = {}) {
     const rows = idx.getAll();
+    const knownRows = explorerKnownRows(rows, opts);
     const filtered = filterRowsForExplorer(rows, opts);
     const grouped = groupRows(filtered);
     const activeView = String(opts.forceView || prefs.view || 'saved').toLowerCase();
     const syncStateText = indexSyncStateText(idx);
     let activeLinkedRow = null;
     if (state.activeLinkedRow) {
-      activeLinkedRow = rows.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
+      activeLinkedRow = knownRows.find((row) => sameChatRow(row, state.activeLinkedRow)) || null;
       if (!activeLinkedRow) state.activeLinkedRow = null;
     }
     // "Rich" mode = dedicated Explorer tab. The Saved / Pinned / Archive tabs
@@ -1593,15 +1662,15 @@
     // The page-level shell renders a unified search input above the tab nav,
     // so we hide the internal Explorer SearchBar to avoid a duplicate field.
     const head = el('section', { class: 'wbExpHead' }, [
-      rich ? renderExplorerHero(filtered.length, rows.length) : null,
-      rich ? renderExplorerStatCards(idx, filtered.length, rows.length) : null,
+      rich ? renderExplorerHero(filtered.length, knownRows.length) : null,
+      rich ? renderExplorerStatCards(idx, filtered.length, knownRows.length) : null,
       rich ? renderExplorerToolbar(idx) : null,
       rich ? renderExplorerDropdownGrid(idx) : null,
       opts.hideInternalSearch ? null : SearchBar(),
       FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount, totalCount: headline.total }),
       syncStateText ? el('div', { class: 'wbExpSyncState', style: 'font-size:12px;opacity:.68;margin-top:4px' }, syncStateText) : null,
       el('div', { class: 'wbExpSummary' },
-        `${formatNumber(filtered.length)} of ${formatNumber(rows.length)} chats${
+        `${formatNumber(filtered.length)} of ${formatNumber(knownRows.length)} chats${
           rich && hasActiveFilters() ? ` · ${[
             prefs.folderFilter, prefs.categoryFilter, prefs.labelFilter,
             prefs.tagFilter, prefs.projectFilter,
@@ -1634,8 +1703,9 @@
   }
 
   function renderAnalytics(idx) {
-    const counts = canonicalHeadlineCounts(idx.getAll());
-    const f = idx.facets();
+    const allRows = idx.getAll();
+    const counts = canonicalHeadlineCounts(allRows);
+    const f = canonicalActiveFacets(allRows);
     const total = counts.total;
 
     // Map raw facet name → kind so the section helper knows whether to humanise
@@ -1688,8 +1758,13 @@
   function renderDetail(idx, kind, id) {
     const filterKey = kind === 'tag' ? 'tag' : (kind === 'label' ? 'label' : (kind === 'category' ? 'categoryId' : 'folderId'));
     const decoded = (() => { try { return decodeURIComponent(id); } catch { return id; } })();
-    const filter = { [filterKey]: decoded };
-    const rows = sortRows(idx.query(filter));
+    const sourceRows = canonicalActiveRows(idx.getAll());
+    let rows = sourceRows;
+    if (kind === 'tag') rows = rows.filter((r) => (r.tags || []).includes(decoded));
+    else if (kind === 'label') rows = rows.filter((r) => (r.labels || []).includes(decoded));
+    else if (kind === 'category') rows = rows.filter((r) => String(r.categoryId || '') === decoded);
+    else rows = rows.filter((r) => String(r.folderId || '') === decoded);
+    rows = sortRows(rows);
 
     const backHref = '#/library/explorer';
     const grouped = groupRows(rows);
@@ -2222,7 +2297,7 @@
     // sort inline by updatedAt / capturedAt and hide the Sort chip group on
     // this tab. View chips are hidden too — Recents spans all views.
     const all = idx.getAll();
-    const sorted = all.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt));
+    const sorted = canonicalRecentRows(all, Infinity);
     const q = String(prefs.search || '').trim().toLowerCase();
     const filtered = q ? sorted.filter((r) => rowMatchesSearch(r, q)) : sorted;
     const grouped = groupRows(filtered);
@@ -2256,7 +2331,7 @@
         // View and Sort chip groups; keep Group-by chips so the user can still
         // slice the recent stream by folder/category/label/project/date.
         FilterChips({ hideViewChips: true, hideSortChips: true }),
-        el('div', { class: 'wbExpSummary' }, `${formatNumber(filtered.length)} of ${formatNumber(all.length)} chats · all views`),
+        el('div', { class: 'wbExpSummary' }, `${formatNumber(filtered.length)} of ${formatNumber(sorted.length)} chats · active views`),
       ]),
       body,
     ]);
@@ -2287,7 +2362,7 @@
       if (!allChatIds.has(id)) organize.selected.delete(id);
     }
 
-    const sorted = sortRows(all);
+    const sorted = sortRows(canonicalActiveRows(all));
     const q = String(prefs.search || '').trim().toLowerCase();
     const filtered = q ? sorted.filter((r) => rowMatchesSearch(r, q)) : sorted;
     // Cap visible rows for performance; selection state isn't bounded by this.
@@ -2416,7 +2491,7 @@
         el('span', {}, `Select all visible (${formatNumber(visible.length)})`),
       ]),
       el('span', { class: 'wbOrganizeSummary' },
-        `${formatNumber(filtered.length)} of ${formatNumber(all.length)} chats`),
+        `${formatNumber(filtered.length)} of ${formatNumber(sorted.length)} chats`),
     ]);
 
     // ── Selectable rows ──────────────────────────────────────────────────────

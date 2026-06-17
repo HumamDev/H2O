@@ -3871,8 +3871,12 @@ async function enrichRowsWithFolderData(rows, force = false){
 function matchesView(row, view){
   if (!row) return false;
   const next = normalizeArchiveView(view);
+  const archived = !!(row.archived || row.isArchived);
+  const deleted = !!(row.deleted || row.isDeleted || row.tombstoned);
+  if (deleted) return false;
+  if (next === "archive") return archived;
+  if (archived) return false;
   if (next === "pinned") return !!row.pinned;
-  if (next === "archive") return !!row.archived;
   /* Phase K-1 — Linked view: only rows projected as linked-only by
    * Library Index (state.isLinked && !state.isSaved). Saved rows
    * (even if they also carry linked metadata) belong in #/saved by
@@ -3880,7 +3884,7 @@ function matchesView(row, view){
   if (next === "linked") return String(row.view || "").toLowerCase() === "linked";
   /* Saved view: explicitly exclude linked-only rows so a chat without
    * a snapshot does not surface alongside Saved snapshots. */
-  if (next === "saved") return !row.archived && String(row.view || "").toLowerCase() !== "linked";
+  if (next === "saved") return String(row.view || "").toLowerCase() !== "linked";
   return true;
 }
 
@@ -3924,9 +3928,22 @@ function filterRows(rows, view, query, folderId = "", tagFilter = ""){
     return haystack.includes(q);
   });
 
+  const core = W.H2O?.Library?.LibraryIndexCore || null;
+  if (core && typeof core.canonicalSortRows === "function") {
+    const sorted = core.canonicalSortRows(filtered, "recent", "best");
+    sorted.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return 0;
+    });
+    return sorted;
+  }
+
   filtered.sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""));
+    const dateCompare = String(b.updatedAt || b.capturedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.capturedAt || a.createdAt || ""));
+    const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
+    const idCompare = String(a.chatId || a.id || "").localeCompare(String(b.chatId || b.id || ""));
+    return dateCompare || titleCompare || idCompare;
   });
   return filtered;
 }

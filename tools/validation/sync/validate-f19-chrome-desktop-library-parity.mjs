@@ -198,6 +198,10 @@ async function runVmProof() {
   const desktopSnapshot = await desktopApi.captureSnapshot();
   assert(chromeSnapshot.surface === 'chrome-studio', 'Chrome snapshot surface mismatch');
   assert(desktopSnapshot.surface === 'desktop-studio', 'Desktop snapshot surface mismatch');
+  assert(chromeSnapshot.sourceMetadata.libraryIndexRows === 10, 'Chrome raw LibraryIndex row metadata mismatch');
+  assert(chromeSnapshot.sourceMetadata.libraryIndexActiveRows === 9, 'Chrome active LibraryIndex row metadata mismatch');
+  assert(desktopSnapshot.sourceMetadata.libraryIndexRows === 7, 'Desktop raw LibraryIndex row metadata mismatch');
+  assert(desktopSnapshot.sourceMetadata.libraryIndexActiveRows === 6, 'Desktop active LibraryIndex row metadata mismatch');
   assert(chromeSnapshot.counts.total === 9, 'Chrome canonical active total count mismatch');
   assert(chromeSnapshot.counts.archived === 1, 'Chrome canonical archived count mismatch');
   assert(chromeSnapshot.counts.link === 1, 'Chrome canonical link count mismatch');
@@ -266,6 +270,22 @@ function runCanonicalHeadlineProof() {
   assert(counts.folders === 1, 'folder count must use active rows only');
   assert(counts.labels === 1, 'label count must use active rows only');
   assert(counts.categories === 1, 'category count must use active rows only');
+
+  assert(typeof core.canonicalActiveRows === 'function', 'canonicalActiveRows missing');
+  assert(typeof core.canonicalArchivedRows === 'function', 'canonicalArchivedRows missing');
+  assert(typeof core.canonicalExplorerRows === 'function', 'canonicalExplorerRows missing');
+  assert(typeof core.canonicalRecentRows === 'function', 'canonicalRecentRows missing');
+  assert(typeof core.canonicalActiveFacets === 'function', 'canonicalActiveFacets missing');
+  assert(core.canonicalActiveRows(rows).length === 17, 'canonicalActiveRows must return 17 active rows');
+  assert(core.canonicalArchivedRows(rows).length === 3, 'canonicalArchivedRows must return 3 archived rows');
+  assert(core.canonicalExplorerRows(rows, { view: 'all' }).length === 17, 'canonicalExplorerRows all view must use active rows');
+  assert(core.canonicalExplorerRows(rows, { view: 'archive' }).length === 3, 'canonicalExplorerRows archive view must use archived rows');
+  const recentRows = core.canonicalRecentRows(rows, 99);
+  assert(recentRows.length === 17, 'canonicalRecentRows must exclude archived rows');
+  assert(recentRows.every((row) => !row.archived && !row.state?.isArchived), 'canonicalRecentRows returned an archived row');
+  const activeFacets = core.canonicalActiveFacets(rows);
+  assert(Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'active-folder'), 'canonicalActiveFacets missing active folder');
+  assert(!Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'archived-folder'), 'canonicalActiveFacets must exclude archived folder');
 }
 
 function runTriplicateProof() {
@@ -283,6 +303,11 @@ if (failures.length === 0) {
   assertContains(moduleFile, 'h2o.studio.sync.library-parity-snapshot.v1', 'snapshot schema');
   assertContains(moduleFile, 'h2o.studio.sync.chrome-desktop-library-parity.v1', 'parity schema');
   assertContains(moduleFile, 'canonicalHeadlineCounts', 'canonical headline count usage');
+  assertContains(moduleFile, 'canonicalActiveRows', 'canonical active projection usage');
+  assertContains(moduleFile, 'canonicalRecentRows', 'canonical recent projection usage');
+  assertContains(moduleFile, 'libraryIndexActiveRows', 'active row metadata');
+  assertContains(sharedCoreFile, 'canonicalExplorerRows', 'canonical explorer projection');
+  assertContains(sharedCoreFile, 'canonicalRecentRows', 'canonical recents projection');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

@@ -793,6 +793,40 @@
   function countFacetKeys(bucket) {
     return Object.keys(bucket || {}).filter(Boolean).length;
   }
+  function canonicalDedupeRows(rows) {
+    const out = [];
+    const seen = new Set();
+    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      if (!row || typeof row !== 'object') return;
+      const dedupeKey = getRowDedupeKey(row) || `row:${index}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      out.push(row);
+    });
+    return out;
+  }
+  function canonicalRowIsDeleted(row) {
+    return !!(row && typeof row === 'object' && rowDeletedForHeadline(row));
+  }
+  function canonicalRowIsArchived(row) {
+    return !!(row && typeof row === 'object' && rowArchivedForHeadline(row));
+  }
+  function canonicalActiveRows(rows) {
+    return canonicalDedupeRows(rows).filter((row) => !canonicalRowIsDeleted(row) && !canonicalRowIsArchived(row));
+  }
+  function canonicalArchivedRows(rows) {
+    return canonicalDedupeRows(rows).filter((row) => !canonicalRowIsDeleted(row) && canonicalRowIsArchived(row));
+  }
+  function canonicalRowView(row) {
+    const isSaved = rowSavedForHeadline(row);
+    const isLinked = !isSaved && (rowLinkedForHeadline(row) || rowIsLinkOnly(row));
+    return deriveViewFromBooleans({
+      isSaved,
+      isLinked,
+      isImported: rowImportedForHeadline(row),
+      isRecent: true,
+    });
+  }
   function canonicalHeadlineCounts(rows) {
     const counts = {
       total: 0,
@@ -807,26 +841,13 @@
       projects: 0,
     };
     const activeRows = [];
-    const seen = new Set();
-    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
-      if (!row || typeof row !== 'object') return;
-      const dedupeKey = getRowDedupeKey(row) || `row:${index}`;
-      if (seen.has(dedupeKey)) return;
-      seen.add(dedupeKey);
-      const deleted = rowDeletedForHeadline(row);
-      if (deleted) return;
-      if (rowArchivedForHeadline(row)) {
+    canonicalDedupeRows(rows).forEach((row) => {
+      if (canonicalRowIsDeleted(row)) return;
+      if (canonicalRowIsArchived(row)) {
         counts.archived += 1;
         return;
       }
-      const isSaved = rowSavedForHeadline(row);
-      const isLinked = !isSaved && (rowLinkedForHeadline(row) || rowIsLinkOnly(row));
-      const view = deriveViewFromBooleans({
-        isSaved,
-        isLinked,
-        isImported: rowImportedForHeadline(row),
-        isRecent: true,
-      });
+      const view = canonicalRowView(row);
       counts.total += 1;
       activeRows.push(row);
       if (rowFlagForHeadline(row, ['pinned', 'isPinned', 'is_pinned'])) counts.pinned += 1;
@@ -840,6 +861,9 @@
     counts.categories = countFacetKeys(facets.byCategory);
     counts.projects = countFacetKeys(facets.byProject);
     return counts;
+  }
+  function canonicalActiveFacets(rows) {
+    return buildFacetsStudio(canonicalActiveRows(rows));
   }
 
   // ── Filter / sort / bucket (native rows) ───────────────────────────────
@@ -881,18 +905,88 @@
       return true;
     });
   }
+  function canonicalRowTime(row, dateField = 'best') {
+    const explicit = readDateField(row, dateField || 'best');
+    const first = dateMs(explicit);
+    if (first) return first;
+    const candidates = [
+      row?.sortAt,
+      row?.lastInteractionAt,
+      row?.lastMessageAt,
+      row?.updatedAt,
+      row?.capturedAt,
+      row?.lastCapturedAt,
+      row?.savedAt,
+      row?.linkedAt,
+      row?.createdAt,
+      row?.observedAt,
+      row?.ts,
+    ];
+    for (const value of candidates) {
+      const ms = dateMs(value);
+      if (ms) return ms;
+    }
+    return 0;
+  }
+  function canonicalRowTitle(row) {
+    return normText(row?.title || row?.displayTitle || row?.sourceTitle || row?.chatTitle || row?.name || '');
+  }
+  function canonicalRowIdentity(row) {
+    return normText(getRowDedupeKey(row) || row?.chatId || row?.id || row?.snapshotId || row?.href || row?.normalizedHref || canonicalRowTitle(row));
+  }
+  function compareCanonicalRows(a, b, sort = 'recent', dateField = 'best') {
+    const s = ensureString(sort || 'recent').toLowerCase();
+    const titleCompare = canonicalRowTitle(a).localeCompare(canonicalRowTitle(b));
+    const idCompare = canonicalRowIdentity(a).localeCompare(canonicalRowIdentity(b));
+    const dateCompare = canonicalRowTime(b, dateField) - canonicalRowTime(a, dateField);
+    if (s === 'oldest') return -dateCompare || titleCompare || idCompare;
+    if (s === 'az' || s === 'title') return titleCompare || dateCompare || idCompare;
+    if (s === 'mostturns' || s === 'most-turns') {
+      const countCompare = (Number(b?.messageCount || b?.turnCount || 0) || 0) - (Number(a?.messageCount || a?.turnCount || 0) || 0);
+      return countCompare || dateCompare || titleCompare || idCompare;
+    }
+    if (s === 'source') return String(a?.source || '').localeCompare(String(b?.source || '')) || dateCompare || titleCompare || idCompare;
+    if (s === 'category') return String(a?.categoryText || a?.categoryName || a?.categoryId || '').localeCompare(String(b?.categoryText || b?.categoryName || b?.categoryId || '')) || dateCompare || titleCompare || idCompare;
+    if (s === 'label') return String(a?.labelText || '').localeCompare(String(b?.labelText || '')) || dateCompare || titleCompare || idCompare;
+    return dateCompare || titleCompare || idCompare;
+  }
   function sortChats(chats, sort = 'newest', dateField = 'createdAt') {
     const rows = (Array.isArray(chats) ? chats : []).slice();
     const s = ensureString(sort || 'newest').toLowerCase();
     rows.sort((a, b) => {
-      if (s === 'oldest') return -compareDateDesc(a, b, dateField) || String(a.title || '').localeCompare(String(b.title || ''));
-      if (s === 'title') return String(a.title || '').localeCompare(String(b.title || ''));
-      if (s === 'source') return String(a.source || '').localeCompare(String(b.source || '')) || compareDateDesc(a, b, dateField);
-      if (s === 'category') return String(a.categoryText || '').localeCompare(String(b.categoryText || '')) || compareDateDesc(a, b, dateField);
-      if (s === 'label') return String(a.labelText || '').localeCompare(String(b.labelText || '')) || compareDateDesc(a, b, dateField);
-      return compareDateDesc(a, b, dateField) || String(a.title || '').localeCompare(String(b.title || ''));
+      if (s === 'newest') return compareCanonicalRows(a, b, 'recent', dateField);
+      return compareCanonicalRows(a, b, s, dateField);
     });
     return rows;
+  }
+  function canonicalSortRows(rows, sort = 'recent', dateField = 'best') {
+    return (Array.isArray(rows) ? rows : []).slice().sort((a, b) => compareCanonicalRows(a, b, sort, dateField));
+  }
+  function canonicalRowsForView(rows, view = 'all') {
+    const normalized = ensureString(view || 'all').toLowerCase();
+    if (normalized === 'archive' || normalized === 'archived') return canonicalArchivedRows(rows);
+    const active = canonicalActiveRows(rows);
+    if (!normalized || normalized === 'all' || normalized === 'recent' || normalized === 'recents') return active;
+    if (normalized === 'saved') return active.filter((row) => canonicalRowView(row) === 'saved');
+    if (normalized === 'link' || normalized === 'linked') return active.filter((row) => canonicalRowView(row) === 'linked');
+    if (normalized === 'pinned') return active.filter((row) => rowFlagForHeadline(row, ['pinned', 'isPinned', 'is_pinned']));
+    if (normalized === 'imported') return active.filter((row) => canonicalRowView(row) === 'imported');
+    return active.filter((row) => rowViewForHeadline(row) === normalized);
+  }
+  function canonicalExplorerRows(rows, filters = {}) {
+    const f = filters && typeof filters === 'object' ? filters : {};
+    const view = f.forceView || f.view || 'all';
+    const sort = f.sort || 'recent';
+    const dateField = f.dateField || 'best';
+    return canonicalSortRows(filterChats(canonicalRowsForView(rows, view), Object.assign({}, f, {
+      includeArchived: view === 'archive' || view === 'archived'
+    })), sort, dateField);
+  }
+  function canonicalRecentRows(rows, limit = 20, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const sorted = canonicalSortRows(canonicalRowsForView(rows, opts.view || 'all'), 'recent', opts.dateField || 'best');
+    const cap = Number(limit);
+    return Number.isFinite(cap) && cap >= 0 ? sorted.slice(0, cap) : sorted;
   }
   function bucketKey(value, bucket = 'month') {
     const ms = dateMs(value);
@@ -1003,10 +1097,20 @@
     buildFacetsStudio,
     countsFromFacetsStudio,
     canonicalHeadlineCounts,
+    canonicalActiveRows,
+    canonicalArchivedRows,
+    canonicalRowView,
+    canonicalActiveFacets,
+    canonicalRowsForView,
 
     // Filter / sort / bucket
     matchesOne,
     filterChats,
+    canonicalRowTime,
+    compareCanonicalRows,
+    canonicalSortRows,
+    canonicalExplorerRows,
+    canonicalRecentRows,
     sortChats,
     bucketKey,
     isoWeekKey,

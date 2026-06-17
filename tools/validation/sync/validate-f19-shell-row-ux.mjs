@@ -143,11 +143,31 @@ const checks = [
     'insights-explorer-all-filter',
     sources.insights.includes("view: 'all'") &&
       sources.insights.includes("Pill({ label: 'All'") &&
-      sources.insights.includes("else if (v === 'saved') list = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);") &&
-      sources.insights.includes("else if (v === 'linked') list = rows.filter((r) => rowIsUrlOnlyLink(r));") &&
+      sources.insights.includes('const activeRows = canonicalActiveRows(rows);') &&
+      sources.insights.includes("if (v === 'saved') list = activeRows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved);") &&
+      sources.insights.includes("else if (v === 'linked' || v === 'link') list = activeRows.filter((r) => rowIsUrlOnlyLink(r));") &&
+      sources.insights.includes('else list = canonicalRowsForView(rows, v);') &&
       sources.insights.includes("view === 'all' || view === 'saved'"),
     FILES.insights,
     'Explorer must expose All, keep Saved transcript-backed, and route URL-only rows through the Link filter.'
+  ),
+  check(
+    'insights-canonical-active-projection',
+    sources.insights.includes('function canonicalActiveRows(rows)') &&
+      sources.insights.includes('function canonicalArchivedRows(rows)') &&
+      sources.insights.includes('function canonicalActiveFacets(rows)') &&
+      sources.insights.includes('function canonicalRecentRows(rows, limit = 20)') &&
+      sources.insights.includes('const recent = canonicalRecentRows(rows, 6);') &&
+      sources.insights.includes('const sorted = canonicalRecentRows(all, Infinity);') &&
+      sources.insights.includes('const knownRows = explorerKnownRows(rows, opts);') &&
+      sources.insights.includes('const f = canonicalActiveFacets(allRows);') &&
+      sources.libraryIndex.includes("typeof c.canonicalActiveFacets === 'function'") &&
+      sources.libraryIndex.includes("typeof c.canonicalHeadlineCounts === 'function'") &&
+      sources.studioShell.includes('if (next === "archive") return archived;') &&
+      sources.studioShell.includes('if (archived) return false;') &&
+      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "best")'),
+    FILES.insights,
+    'Library Explorer, Recents, stats, and legacy list views must use the shared active/archive projection instead of raw LibraryIndex rows.'
   ),
   check(
     'insights-link-badge-semantics',
