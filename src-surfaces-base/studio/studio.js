@@ -3379,27 +3379,51 @@ function readLinkedWorkbenchRowsFromLibraryIndex(){
     .filter(Boolean);
 }
 
-function canonicalRecentLibraryIndexRows(limit = 30){
+function libraryRowIsSavedTranscript(row){
+  if (!row || typeof row !== "object") return false;
+  const core = W.H2O?.Library?.LibraryIndexCore || null;
+  if (core && typeof core.rowHasTranscriptEvidence === "function") {
+    try { if (!core.rowHasTranscriptEvidence(row)) return false; } catch (_) { if (!rowReaderSnapshotId(row)) return false; }
+  } else if (!rowReaderSnapshotId(row)) {
+    const count = Number(row.messageCount || row.turnCount || row.userTurnCount || row.assistantTurnCount || row.answerCount || 0) || 0;
+    if (count <= 0) return false;
+  }
+  const view = String(row.view || row.displayView || row.badgeKind || "").toLowerCase();
+  if (view === "linked" || view === "link") return false;
+  if (view === "saved" || view === "imported") return true;
+  const state = row.state && typeof row.state === "object" ? row.state : {};
+  return row.isSaved === true || state.isSaved === true || row.saved === true;
+}
+
+function stableSavedRecentRowTime(row){
+  const value = row?.sortAt || row?.capturedAt || row?.lastCapturedAt || row?.snapshotCapturedAt || row?.savedAt || row?.createdAt || row?.lastMessageAt || row?.lastInteractionAt || row?.updatedAt || row?.lastSeenAt || row?.observedAt || "";
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n < 100000000000 ? n * 1000 : n;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function canonicalSavedRecentLibraryIndexRows(limit = 30){
   const rows = readLibraryIndexRows();
   const core = W.H2O?.Library?.LibraryIndexCore || null;
-  if (core && typeof core.canonicalRecentRows === "function") {
-    return core.canonicalRecentRows(rows, limit, { dateField: "best" });
+  if (core && typeof core.canonicalSavedRecentRows === "function") {
+    return core.canonicalSavedRecentRows(rows, limit, { dateField: "savedRecent" });
   }
   const source = Array.isArray(rows) ? rows.slice() : [];
-  const active = source.filter((row) => {
+  const saved = source.filter((row) => {
     const view = String(row?.view || row?.displayView || row?.badgeKind || "").toLowerCase();
     if (view === "archive" || view === "archived" || view === "deleted" || view === "tombstone") return false;
     if (row?.archived || row?.isArchived || row?.deleted || row?.isDeleted || row?.tombstoned) return false;
-    return true;
+    return libraryRowIsSavedTranscript(row);
   });
-  active.sort((a, b) => {
-    const dateCompare = String(b?.updatedAt || b?.capturedAt || b?.createdAt || "").localeCompare(String(a?.updatedAt || a?.capturedAt || a?.createdAt || ""));
+  saved.sort((a, b) => {
+    const dateCompare = stableSavedRecentRowTime(b) - stableSavedRecentRowTime(a);
     const titleCompare = String(a?.title || "").localeCompare(String(b?.title || ""));
     const idCompare = String(a?.chatId || a?.id || "").localeCompare(String(b?.chatId || b?.id || ""));
     return dateCompare || titleCompare || idCompare;
   });
   const cap = Number(limit);
-  return Number.isFinite(cap) && cap >= 0 ? active.slice(0, cap) : active;
+  return Number.isFinite(cap) && cap >= 0 ? saved.slice(0, cap) : saved;
 }
 
 function projectRecentLibraryRowsToWorkbenchRows(rows){
@@ -4351,13 +4375,14 @@ function setSidebarChatLoading(view, folderId = ""){
 
 function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
   const q = normalizeText(query).toLowerCase();
-  const fromIndex = projectRecentLibraryRowsToWorkbenchRows(canonicalRecentLibraryIndexRows(200));
+  const fromIndex = projectRecentLibraryRowsToWorkbenchRows(canonicalSavedRecentLibraryIndexRows(200));
   const fallback = Array.isArray(rows) && rows.length
     ? rows
     : (Array.isArray(state.rowsCache) ? state.rowsCache : []);
   const source = fromIndex.length ? fromIndex : fallback;
   const filtered = source.filter((row) => {
     if (!row || row.archived || row.isArchived || row.deleted || row.isDeleted || row.tombstoned) return false;
+    if (!libraryRowIsSavedTranscript(row)) return false;
     if (!matchesFolder(row, folderId)) return false;
     if (state.lastTagFilter && !(Array.isArray(row.tags) ? row.tags : []).includes(state.lastTagFilter)) return false;
     if (!q) return true;
@@ -4378,9 +4403,9 @@ function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
     return haystack.includes(q);
   });
   const core = W.H2O?.Library?.LibraryIndexCore || null;
-  if (core && typeof core.canonicalSortRows === "function") return core.canonicalSortRows(filtered, "recent", "best");
+  if (core && typeof core.canonicalSortRows === "function") return core.canonicalSortRows(filtered, "recent", "savedRecent");
   return filtered.sort((a, b) => {
-    const dateCompare = String(b.updatedAt || b.capturedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.capturedAt || a.createdAt || ""));
+    const dateCompare = stableSavedRecentRowTime(b) - stableSavedRecentRowTime(a);
     const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
     const idCompare = String(a.chatId || a.id || "").localeCompare(String(b.chatId || b.id || ""));
     return dateCompare || titleCompare || idCompare;

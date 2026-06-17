@@ -267,6 +267,7 @@
   function readDateField(row, field = 'createdAt') {
     const f = ensureString(field) || 'createdAt';
     if (f === 'best' || f === 'sortAt') return row?.sortAt || row?.lastInteractionAt || row?.lastMessageAt || row?.updatedAt || row?.savedAt || row?.lastSeenAt || row?.createdAt || row?.observedAt || '';
+    if (f === 'savedRecent') return row?.sortAt || row?.capturedAt || row?.lastCapturedAt || row?.snapshotCapturedAt || row?.savedAt || row?.createdAt || row?.lastMessageAt || row?.lastInteractionAt || row?.updatedAt || row?.lastSeenAt || row?.observedAt || '';
     if (f === 'lastInteractionAt') return row?.lastInteractionAt || row?.lastMessageAt || row?.updatedAt || row?.lastSeenAt || '';
     return row?.[f] || row?.dates?.[f] || '';
   }
@@ -562,6 +563,41 @@
     if (row.isLinked === true) return true;
     if (ensureString(row.snapshotId).trim()) return false;
     return !!resolveRowOpenTarget(row);
+  }
+
+  function rowHasTranscriptEvidence(row) {
+    if (!row || typeof row !== 'object') return false;
+    const raw = (row.raw && typeof row.raw === 'object') ? row.raw : {};
+    const snapshotId = ensureString(
+      row.snapshotId
+      || row.lastSnapshotId
+      || row.latestSnapshotId
+      || row.snapshot_id
+      || raw.snapshotId
+      || raw.lastSnapshotId
+      || raw.latestSnapshotId
+      || raw.snapshot_id
+      || raw.snapId
+      || raw.snapshot?.id
+      || raw.snapshot?.snapshotId
+      || raw.meta?.snapshotId
+      || raw.meta?.lastSnapshotId
+      || raw.meta?.latestSnapshotId
+    ).trim();
+    if (snapshotId) return true;
+    const countKeys = ['messageCount', 'turnCount', 'userTurnCount', 'assistantTurnCount', 'answerCount'];
+    for (const key of countKeys) {
+      if (toNonNegativeInt(row[key]) > 0 || toNonNegativeInt(raw[key]) > 0) return true;
+    }
+    const snapshots = Array.isArray(row.snapshots) ? row.snapshots : (Array.isArray(raw.snapshots) ? raw.snapshots : []);
+    return snapshots.some((snap) => {
+      if (!snap || typeof snap !== 'object') return false;
+      return !!(
+        ensureString(snap.snapshotId || snap.id).trim()
+        || toNonNegativeInt(snap.messageCount) > 0
+        || toNonNegativeInt(snap.turnCount) > 0
+      );
+    });
   }
 
   // ── Dedupe key ──────────────────────────────────────────────────────────
@@ -988,6 +1024,13 @@
     const cap = Number(limit);
     return Number.isFinite(cap) && cap >= 0 ? sorted.slice(0, cap) : sorted;
   }
+  function canonicalSavedRecentRows(rows, limit = 20, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const saved = canonicalActiveRows(rows).filter((row) => rowSavedForHeadline(row) && rowHasTranscriptEvidence(row));
+    const sorted = canonicalSortRows(saved, 'recent', opts.dateField || 'savedRecent');
+    const cap = Number(limit);
+    return Number.isFinite(cap) && cap >= 0 ? sorted.slice(0, cap) : sorted;
+  }
   function bucketKey(value, bucket = 'month') {
     const ms = dateMs(value);
     if (!ms) return '';
@@ -1086,6 +1129,7 @@
     // Open-target resolution (Native Save-to-Folder + linked rows)
     resolveRowOpenTarget,
     rowIsLinkOnly,
+    rowHasTranscriptEvidence,
 
     // Facets / counts
     bumpFacet,
@@ -1111,6 +1155,7 @@
     canonicalSortRows,
     canonicalExplorerRows,
     canonicalRecentRows,
+    canonicalSavedRecentRows,
     sortChats,
     bucketKey,
     isoWeekKey,

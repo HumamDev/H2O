@@ -23,6 +23,7 @@ const FILES = {
   nativeFolders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
   nativeSync: 'src-runtime-base/0F1h.⬛️🗂️ Library Sync 🛰🗂️.js',
   studioSync: 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js',
+  libraryIndexCore: 'shared/library/library-index-core.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
   studioShell: 'src-surfaces-base/studio/studio.js',
@@ -153,23 +154,28 @@ const checks = [
   ),
   check(
     'insights-canonical-active-projection',
-    sources.insights.includes('function canonicalActiveRows(rows)') &&
+      sources.insights.includes('function canonicalActiveRows(rows)') &&
       sources.insights.includes('function canonicalArchivedRows(rows)') &&
       sources.insights.includes('function canonicalActiveFacets(rows)') &&
       sources.insights.includes('function canonicalRecentRows(rows, limit = 20)') &&
-      sources.insights.includes('const recent = canonicalRecentRows(rows, 6);') &&
-      sources.insights.includes('const sorted = canonicalRecentRows(all, Infinity);') &&
+      sources.insights.includes('function canonicalSavedRecentRows(rows, limit = 20)') &&
+      sources.insights.includes('core.canonicalSavedRecentRows(rows, limit, { dateField: \'savedRecent\' })') &&
+      sources.insights.includes('const recent = canonicalSavedRecentRows(rows, 6);') &&
+      sources.insights.includes('const sorted = canonicalSavedRecentRows(all, Infinity);') &&
       sources.insights.includes('const knownRows = explorerKnownRows(rows, opts);') &&
       sources.insights.includes('const f = canonicalActiveFacets(allRows);') &&
       sources.libraryIndex.includes("typeof c.canonicalActiveFacets === 'function'") &&
       sources.libraryIndex.includes("typeof c.canonicalHeadlineCounts === 'function'") &&
+      sources.libraryIndexCore.includes('canonicalSavedRecentRows') &&
+      sources.libraryIndexCore.includes('rowHasTranscriptEvidence') &&
       sources.studioShell.includes('if (next === "archive") return archived;') &&
       sources.studioShell.includes('if (archived) return false;') &&
-      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "best")') &&
-      sources.studioShell.includes('function canonicalRecentLibraryIndexRows(limit = 30)') &&
-      sources.studioShell.includes('core.canonicalRecentRows(rows, limit, { dateField: "best" })') &&
+      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "savedRecent")') &&
+      sources.studioShell.includes('function canonicalSavedRecentLibraryIndexRows(limit = 30)') &&
+      sources.studioShell.includes('core.canonicalSavedRecentRows(rows, limit, { dateField: "savedRecent" })') &&
       sources.studioShell.includes('function collectCanonicalSidebarRecentChats(rows, folderId = "", query = "")') &&
-      sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalRecentLibraryIndexRows(200))') &&
+      sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalSavedRecentLibraryIndexRows(200))') &&
+      sources.studioShell.includes('if (!libraryRowIsSavedTranscript(row)) return false;') &&
       sources.studioShell.includes('window.addEventListener(eventName, scheduleLibraryIndexWorkbenchRefresh);') &&
       !sources.studioShell.includes('function isRecentSidebarSavedChat') &&
       !sources.studioShell.includes('Loading saved chats'),

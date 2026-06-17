@@ -120,6 +120,21 @@
     const sorted = canonicalSortRows(canonicalActiveRows(rows), 'recent');
     return Number.isFinite(Number(limit)) && Number(limit) >= 0 ? sorted.slice(0, Number(limit)) : sorted;
   }
+  function savedRecentRowTime(row) {
+    return asTs(row?.sortAt || row?.capturedAt || row?.lastCapturedAt || row?.snapshotCapturedAt || row?.savedAt || row?.createdAt || row?.lastMessageAt || row?.lastInteractionAt || row?.updatedAt || row?.lastSeenAt || row?.observedAt);
+  }
+  function canonicalSavedRecentRows(rows, limit = 20) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalSavedRecentRows === 'function') return core.canonicalSavedRecentRows(rows, limit, { dateField: 'savedRecent' });
+    const saved = canonicalActiveRows(rows).filter((row) => rowHasOpenableTranscriptContent(row) && getRowState(row).isSaved);
+    const sorted = saved.slice().sort((a, b) => {
+      const dateCompare = savedRecentRowTime(b) - savedRecentRowTime(a);
+      const titleCompare = String(a.title || '').localeCompare(String(b.title || ''));
+      const idCompare = String(a.chatId || a.id || a.snapshotId || '').localeCompare(String(b.chatId || b.id || b.snapshotId || ''));
+      return dateCompare || titleCompare || idCompare;
+    });
+    return Number.isFinite(Number(limit)) && Number(limit) >= 0 ? sorted.slice(0, Number(limit)) : sorted;
+  }
   function canonicalRowTime(row) {
     const core = getIndexCore();
     if (core && typeof core.canonicalRowTime === 'function') return core.canonicalRowTime(row, 'best');
@@ -1372,7 +1387,7 @@
     const headline = canonicalHeadlineCounts(rows);
     const syncStateText = indexSyncStateText(idx);
     const series = buildActivitySeries(activeRows, 30);
-    const recent = canonicalRecentRows(rows, 6);
+    const recent = canonicalSavedRecentRows(rows, 6);
 
     const total = headline.total;
     const saved = headline.saved;
@@ -2294,10 +2309,10 @@
 
   function renderRecents(idx) {
     // Recents is defined as "newest first" regardless of prefs.sort, so we
-    // sort inline by updatedAt / capturedAt and hide the Sort chip group on
-    // this tab. View chips are hidden too — Recents spans all views.
+    // sort by the canonical saved-recents date and hide the Sort chip group
+    // on this tab. View chips are hidden too — Recents shows saved transcripts.
     const all = idx.getAll();
-    const sorted = canonicalRecentRows(all, Infinity);
+    const sorted = canonicalSavedRecentRows(all, Infinity);
     const q = String(prefs.search || '').trim().toLowerCase();
     const filtered = q ? sorted.filter((r) => rowMatchesSearch(r, q)) : sorted;
     const grouped = groupRows(filtered);
