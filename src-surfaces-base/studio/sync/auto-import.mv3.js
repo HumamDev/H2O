@@ -587,12 +587,112 @@
     return cleanString(chat && (chat.chatId || (chat.chatIndex && (chat.chatIndex.chatId || chat.chatIndex.id))));
   }
 
+  function bundleChatIndex(chat) {
+    return chat && chat.chatIndex && typeof chat.chatIndex === 'object' && !Array.isArray(chat.chatIndex)
+      ? chat.chatIndex : {};
+  }
+
+  function bundleChatState(chat) {
+    var index = bundleChatIndex(chat);
+    return index.state && typeof index.state === 'object' && !Array.isArray(index.state)
+      ? index.state : {};
+  }
+
+  function bundleChatDisplayClass(chat) {
+    var index = bundleChatIndex(chat);
+    return normalizeDisplayClass(index.displayView || index.badgeKind || index.view || index.kind || index.type);
+  }
+
+  function bundleChatSnapshotId(chat) {
+    var index = bundleChatIndex(chat);
+    var sid = cleanString(
+      (chat && (chat.snapshotId || chat.lastSnapshotId || chat.latestSnapshotId))
+      || index.snapshotId
+      || index.lastSnapshotId
+      || index.latestSnapshotId
+      || index.snapshot_id
+    );
+    if (sid) return sid;
+    var snapshots = Array.isArray(chat && chat.snapshots) ? chat.snapshots : [];
+    for (var i = 0; i < snapshots.length; i += 1) {
+      sid = cleanString(snapshots[i] && (snapshots[i].snapshotId || snapshots[i].id));
+      if (sid) return sid;
+    }
+    return '';
+  }
+
+  function classifyUnindexedArchiveChat(chat) {
+    var index = bundleChatIndex(chat);
+    var stateObj = bundleChatState(chat);
+    var view = bundleChatDisplayClass(chat);
+    var hasSnapshots = Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0;
+    var isArchived = view === 'archived' || stateObj.isArchived === true || index.archived === true || index.isArchived === true;
+    var isLinked = view === 'link' || view === 'linked' || stateObj.isLinked === true || index.isLinked === true;
+    var isImported = view === 'imported' || view === 'placeholder' || stateObj.isImported === true || index.isImported === true;
+    var isSaved = !isLinked && (view === 'saved' || stateObj.isSaved === true || index.isSaved === true || (!isImported && hasSnapshots));
+    var isPinned = stateObj.isPinned === true || index.pinned === true || index.isPinned === true;
+    var rowClass = isArchived ? 'archived' : (isLinked ? 'link' : (isImported ? 'imported' : (isSaved ? 'saved' : 'unknown')));
+    return {
+      rowClass: rowClass,
+      isSaved: !!isSaved,
+      isLinked: !!isLinked,
+      isPinned: !!isPinned,
+      isArchived: !!isArchived,
+      hasSnapshotId: !!bundleChatSnapshotId(chat),
+      hasSnapshots: hasSnapshots
+    };
+  }
+
+  function unindexedArchiveReason(chat, classification) {
+    if (classification && classification.isArchived) return 'archived';
+    if (bundleChatIdentityKeys(chat).length > 0) return 'not-indexed';
+    return 'unknown-unindexed';
+  }
+
+  function buildUnindexedArchiveManifest(archiveChats, usedArchiveIndexes) {
+    var rows = [];
+    var reasonCounts = Object.create(null);
+    (Array.isArray(archiveChats) ? archiveChats : []).forEach(function (chat, index) {
+      if (usedArchiveIndexes && usedArchiveIndexes[index]) return;
+      var identityKeys = bundleChatIdentityKeys(chat).sort();
+      var rowHashSource = identityKeys.length > 0 ? identityKeys.join('|') : ('unindexed-archive-position:' + index);
+      var classification = classifyUnindexedArchiveChat(chat);
+      var reason = unindexedArchiveReason(chat, classification);
+      incrementCount(reasonCounts, reason);
+      rows.push({
+        rowHash: redactedHash(rowHashSource),
+        chatIdHash: redactedHash(bundleChatId(chat)),
+        snapshotIdHash: redactedHash(bundleChatSnapshotId(chat)),
+        rowClass: classification.rowClass,
+        reason: reason,
+        hasSnapshotId: classification.hasSnapshotId,
+        hasSnapshots: classification.hasSnapshots,
+        isSaved: classification.isSaved,
+        isLinked: classification.isLinked,
+        isPinned: classification.isPinned,
+        isArchived: classification.isArchived
+      });
+    });
+    return {
+      schema: 'h2o.studio.sync.chrome-export-unindexed-rows.v1',
+      count: rows.length,
+      rows: rows,
+      reasonCounts: reasonCounts,
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      }
+    };
+  }
+
   function countBundleViews(chats) {
     var counts = { saved: 0, linked: 0, pinned: 0, archived: 0 };
     (Array.isArray(chats) ? chats : []).forEach(function (chat) {
-      var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
-      var stateObj = index.state && typeof index.state === 'object' ? index.state : {};
-      var view = normalizeDisplayClass(index.displayView || index.badgeKind || index.view || index.kind || index.type);
+      var index = bundleChatIndex(chat);
+      var stateObj = bundleChatState(chat);
+      var view = bundleChatDisplayClass(chat);
       var hasSnapshots = Array.isArray(chat && chat.snapshots) && chat.snapshots.length > 0;
       var imported = view === 'imported' || view === 'placeholder' || stateObj.isImported === true || index.isImported === true;
       if (view === 'link' || view === 'linked' || stateObj.isLinked === true || index.isLinked === true) counts.linked += 1;
@@ -1202,8 +1302,9 @@
     return projected;
   }
 
-  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount, payloadStats) {
+  function buildCoverageObject(snapshotRows, bundleChats, originalChatCount, missingRows, addedRows, unexportableRows, unindexedManifest, payloadStats) {
     payloadStats = payloadStats && typeof payloadStats === 'object' ? payloadStats : {};
+    unindexedManifest = unindexedManifest && typeof unindexedManifest === 'object' ? unindexedManifest : buildUnindexedArchiveManifest([], {});
     var snapshotCounts = countSnapshotRows(snapshotRows);
     var bundleCounts = countBundleViews(bundleChats);
     var missingTypeCounts = makeMissingRowTypeCounts(missingRows);
@@ -1243,7 +1344,10 @@
       bundleArchivedCount: bundleCounts.archived,
       missingRowCount: missingRows.length,
       addedMinimalRowCount: addedRows.length,
-      droppedArchiveRowCount: Number(droppedArchiveRowCount) || 0,
+      unindexedArchiveRowCount: Number(unindexedManifest.count || 0) || 0,
+      unindexedRowManifestCount: Array.isArray(unindexedManifest.rows) ? unindexedManifest.rows.length : 0,
+      unindexedRowReasonCounts: Object.assign({}, unindexedManifest.reasonCounts || {}),
+      unindexedRows: Array.isArray(unindexedManifest.rows) ? unindexedManifest.rows.slice(0, 50) : [],
       unexportableRowCount: unexportableRows.length,
       snapshotPayloadRequiredCount: Number(payloadStats.required || 0),
       snapshotPayloadPresentCount: Number(payloadStats.present || 0),
@@ -1297,6 +1401,10 @@
           snapshotArchived: 0,
           bundleOriginalChatCount: 0,
           bundleChatCount: 0,
+          unindexedArchiveRowCount: 0,
+          unindexedRowManifestCount: 0,
+          unindexedRowReasonCounts: {},
+          unindexedRows: [],
           bundleSavedCount: 0,
           bundleLinkedCount: 0,
           bundlePinnedCount: 0,
@@ -1378,7 +1486,7 @@
       addedRows.push(row);
     }
 
-    var droppedArchiveRowCount = archiveChats.length - Object.keys(usedArchiveIndexes).length;
+    var unindexedManifest = buildUnindexedArchiveManifest(archiveChats, usedArchiveIndexes);
     chatArchive.chats = projectedChats;
 
     chatArchive.chatCount = chatArchive.chats.length;
@@ -1386,9 +1494,13 @@
       ? bundle.summary : {};
     bundle.diagnostics = bundle.diagnostics && typeof bundle.diagnostics === 'object' && !Array.isArray(bundle.diagnostics)
       ? bundle.diagnostics : {};
-    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows, droppedArchiveRowCount, payloadStats);
+    var coverage = buildCoverageObject(rows, chatArchive.chats, originalChatCount, missingRows, addedRows, unexportableRows, unindexedManifest, payloadStats);
     bundle.summary.chatCount = chatArchive.chats.length;
+    bundle.summary.unindexedArchiveRowCount = coverage.unindexedArchiveRowCount;
+    bundle.summary.unindexedRowManifestCount = coverage.unindexedRowManifestCount;
     bundle.summary.f19ChromeExportCoverageOk = coverage.ok === true;
+    bundle.diagnostics.unindexedRows = unindexedManifest.rows.slice(0, 50);
+    bundle.diagnostics.unindexedRowManifest = unindexedManifest;
     bundle.diagnostics.chromeExportCoverage = coverage;
     return { bundle: bundle, coverage: coverage };
   }
@@ -1546,6 +1658,11 @@
           warnings: warnings,
           blockers: blockers,
           chromeExportCoverage: chromeExportCoverage,
+          unindexedArchiveRowCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedArchiveRowCount || 0) : 0,
+          unindexedRowManifestCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedRowManifestCount || 0) : 0,
+          unindexedRowReasonCounts: chromeExportCoverage ? Object.assign({}, chromeExportCoverage.unindexedRowReasonCounts || {}) : {},
+          unindexedRows: chromeExportCoverage && Array.isArray(chromeExportCoverage.unindexedRows)
+            ? chromeExportCoverage.unindexedRows.slice(0, 50) : [],
         };
         state.lastExportAt = startedAt;
         state.lastExportStatus = 'coverage-blocked';
@@ -1586,6 +1703,11 @@
         blockers: blockers,
         warnings: warnings,
         chromeExportCoverage: chromeExportCoverage,
+        unindexedArchiveRowCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedArchiveRowCount || 0) : 0,
+        unindexedRowManifestCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedRowManifestCount || 0) : 0,
+        unindexedRowReasonCounts: chromeExportCoverage ? Object.assign({}, chromeExportCoverage.unindexedRowReasonCounts || {}) : {},
+        unindexedRows: chromeExportCoverage && Array.isArray(chromeExportCoverage.unindexedRows)
+          ? chromeExportCoverage.unindexedRows.slice(0, 50) : [],
       };
       state.lastExportAt = startedAt;
       state.lastExportStatus = 'ok';

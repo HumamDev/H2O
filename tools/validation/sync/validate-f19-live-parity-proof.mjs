@@ -112,11 +112,19 @@ const requiredChromeExportCoverageFields = [
   'snapshotTotal',
   'snapshotSaved',
   'snapshotLinked',
+  'bundleOriginalChatCount',
   'bundleChatCount',
   'bundleSavedCount',
   'bundleLinkedCount',
   'missingRowCount',
-  'missingRowTypeCounts'
+  'missingRowTypeCounts',
+  'unindexedArchiveRowCount',
+  'unindexedRowManifestCount',
+  'unindexedRowReasonCounts',
+  'unindexedRows',
+  'snapshotPayloadMissingCount',
+  'snapshotPayloadDowngradedCount',
+  'coverageDecision'
 ];
 
 const forbiddenNeedles = [
@@ -157,6 +165,11 @@ function assertExists(file) {
 function assertContains(file, needle, label = needle) {
   const text = read(file);
   assert(text.includes(needle), `${file}: missing ${label}`);
+}
+
+function assertNotContains(file, needle, label = needle) {
+  const text = read(file);
+  assert(!text.includes(needle), `${file}: unexpectedly contains ${label}`);
 }
 
 function parseArgs() {
@@ -383,29 +396,116 @@ function chromeExportCoverageFixture() {
     schema: chromeExportCoverageSchema,
     ok: true,
     sourcePolicy: 'library-index-supported-rows',
-    snapshotTotal: 2,
-    snapshotSaved: 1,
-    snapshotLinked: 1,
+    snapshotTotal: 17,
+    snapshotSaved: 7,
+    snapshotLinked: 10,
     snapshotPinned: 1,
     snapshotArchived: 0,
-    bundleOriginalChatCount: 1,
-    bundleChatCount: 2,
-    bundleSavedCount: 1,
-    bundleLinkedCount: 1,
+    bundleOriginalChatCount: 20,
+    bundleChatCount: 17,
+    bundleSavedCount: 7,
+    bundleLinkedCount: 10,
     bundlePinnedCount: 1,
     bundleArchivedCount: 0,
-    missingRowCount: 1,
-    addedMinimalRowCount: 1,
+    missingRowCount: 0,
+    addedMinimalRowCount: 0,
+    unindexedArchiveRowCount: 3,
+    unindexedRowManifestCount: 3,
+    unindexedRowReasonCounts: {
+      archived: 2,
+      'not-indexed': 1
+    },
+    unindexedRows: [
+      {
+        rowHash: 'h:10000001',
+        chatIdHash: 'h:10000002',
+        snapshotIdHash: 'h:10000003',
+        rowClass: 'archived',
+        reason: 'archived',
+        hasSnapshotId: true,
+        hasSnapshots: true,
+        isSaved: false,
+        isLinked: false,
+        isPinned: false,
+        isArchived: true
+      },
+      {
+        rowHash: 'h:20000001',
+        chatIdHash: 'h:20000002',
+        snapshotIdHash: 'h:20000003',
+        rowClass: 'archived',
+        reason: 'archived',
+        hasSnapshotId: true,
+        hasSnapshots: true,
+        isSaved: false,
+        isLinked: false,
+        isPinned: true,
+        isArchived: true
+      },
+      {
+        rowHash: 'h:30000001',
+        chatIdHash: 'h:30000002',
+        snapshotIdHash: 'h:30000003',
+        rowClass: 'saved',
+        reason: 'not-indexed',
+        hasSnapshotId: true,
+        hasSnapshots: true,
+        isSaved: true,
+        isLinked: false,
+        isPinned: false,
+        isArchived: false
+      }
+    ],
     unexportableRowCount: 0,
+    snapshotPayloadRequiredCount: 7,
+    snapshotPayloadPresentCount: 7,
+    snapshotPayloadHydratedCount: 0,
+    snapshotPayloadRepairedCount: 0,
+    snapshotPayloadHydrationMissCount: 0,
+    snapshotPayloadDowngradedCount: 0,
+    snapshotPayloadMissingCount: 0,
+    readerReadyPayloadMissingCount: 0,
+    missingSnapshotClasses: {},
+    missingSnapshotReasons: {},
+    missingSnapshotDetails: [],
+    effectiveSnapshotSaved: 7,
+    effectiveSnapshotLinked: 10,
     missingRowTypeCounts: {
-      linkedOnly: 1,
+      linkedOnly: 0,
       savedOnly: 0,
-      registryOnly: 1,
+      registryOnly: 0,
       archiveBacked: 0,
       pinned: 0
     },
+    snapshotExportClassCounts: {
+      saved: 7,
+      linked: 10,
+      pinned: 1,
+      archived: 0,
+      imported: 0,
+      archiveBacked: 7
+    },
+    addedMinimalRowTypeCounts: {
+      saved: 0,
+      linked: 0,
+      pinned: 0,
+      archived: 0,
+      imported: 0,
+      archiveBacked: 0
+    },
+    unexportableRowTypeCounts: {
+      saved: 0,
+      linked: 0,
+      pinned: 0,
+      archived: 0,
+      imported: 0,
+      archiveBacked: 0
+    },
+    supportedRowsRepresented: true,
+    supportedStateRepresented: true,
+    coverageDecision: 'allow-export',
     blockers: [],
-    warnings: ['chrome-export-source-coverage-minimal-rows-added'],
+    warnings: [],
     privacy: {
       redacted: true,
       rawIdsReturned: false,
@@ -535,7 +635,74 @@ function validatePropagationResult(result, direction) {
   }
 }
 
-function validateChromeExportCoverage(coverage) {
+function validateUnindexedRowsManifest(coverage, options = {}) {
+  const rows = Array.isArray(coverage.unindexedRows) ? coverage.unindexedRows : [];
+  const reasonCounts = coverage.unindexedRowReasonCounts && typeof coverage.unindexedRowReasonCounts === 'object'
+    ? coverage.unindexedRowReasonCounts : {};
+  const reasonTotal = Object.values(reasonCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+  const unindexedArchiveRowCount = Number(coverage.unindexedArchiveRowCount || 0);
+  const unindexedRowManifestCount = Number(coverage.unindexedRowManifestCount || 0);
+  const allowedReasons = new Set(['archived', 'not-indexed', 'unknown-unindexed']);
+  const allowedRowKeys = new Set([
+    'rowHash',
+    'chatIdHash',
+    'snapshotIdHash',
+    'rowClass',
+    'reason',
+    'hasSnapshotId',
+    'hasSnapshots',
+    'isSaved',
+    'isLinked',
+    'isPinned',
+    'isArchived'
+  ]);
+  const forbiddenRawKeys = new Set([
+    'id',
+    'chatId',
+    'conversationId',
+    'snapshotId',
+    'title',
+    'rawTitle',
+    'content',
+    'rawContent',
+    'text',
+    'href',
+    'url',
+    'sourceUrl',
+    'normalizedHref',
+    'linkSourceHref'
+  ]);
+
+  if (options.synthetic) {
+    assert(Number(coverage.bundleOriginalChatCount) === 20, 'chromeExportCoverage fixture must retain 20 original archive chats');
+    assert(Number(coverage.bundleChatCount) === 17, 'chromeExportCoverage fixture must project 17 active chats');
+    assert(unindexedArchiveRowCount === 3, 'chromeExportCoverage must report three unindexed archive rows');
+    assert(unindexedRowManifestCount === 3, 'chromeExportCoverage manifest count must report three rows');
+    assert(rows.length === 3, 'chromeExportCoverage unindexedRows manifest must contain three redacted rows');
+    assert(reasonTotal === 3, 'chromeExportCoverage unindexed row reason counts must total three');
+  }
+  assert(unindexedArchiveRowCount === unindexedRowManifestCount, 'chromeExportCoverage unindexed count must equal manifest count');
+  assert(reasonTotal === unindexedArchiveRowCount, 'chromeExportCoverage unindexed row reason counts must total unindexed count');
+  assert(rows.length === Math.min(unindexedArchiveRowCount, 50), 'chromeExportCoverage unindexedRows must expose capped redacted manifest rows');
+
+  for (const row of rows) {
+    assert(row && typeof row === 'object' && !Array.isArray(row), 'chromeExportCoverage unindexed row must be an object');
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    for (const key of Object.keys(row)) {
+      assert(allowedRowKeys.has(key), `chromeExportCoverage unindexed row includes unexpected key ${key}`);
+      assert(!forbiddenRawKeys.has(key), `chromeExportCoverage unindexed row leaks raw key ${key}`);
+    }
+    assert(typeof row.rowHash === 'string' && row.rowHash.startsWith('h:'), 'chromeExportCoverage unindexed rowHash must be redacted hash');
+    if (row.chatIdHash) assert(typeof row.chatIdHash === 'string' && row.chatIdHash.startsWith('h:'), 'chromeExportCoverage chatIdHash must be redacted hash');
+    if (row.snapshotIdHash) assert(typeof row.snapshotIdHash === 'string' && row.snapshotIdHash.startsWith('h:'), 'chromeExportCoverage snapshotIdHash must be redacted hash');
+    assert(allowedReasons.has(row.reason), `chromeExportCoverage unindexed row reason unsupported: ${row.reason}`);
+    for (const flag of ['hasSnapshotId', 'hasSnapshots', 'isSaved', 'isLinked', 'isPinned', 'isArchived']) {
+      assert(typeof row[flag] === 'boolean', `chromeExportCoverage unindexed row ${flag} must be boolean`);
+    }
+  }
+}
+
+function validateChromeExportCoverage(coverage, options = {}) {
   assert(coverage && typeof coverage === 'object', 'chromeExportCoverage missing');
   if (!coverage || typeof coverage !== 'object') return;
   assert(coverage.schema === chromeExportCoverageSchema, 'chromeExportCoverage schema mismatch');
@@ -552,6 +719,10 @@ function validateChromeExportCoverage(coverage) {
   if (Object.prototype.hasOwnProperty.call(coverage, 'snapshotArchived') && Object.prototype.hasOwnProperty.call(coverage, 'bundleArchivedCount')) {
     assert(Number(coverage.snapshotArchived) === Number(coverage.bundleArchivedCount), 'chromeExportCoverage snapshotArchived must equal bundleArchivedCount');
   }
+  validateUnindexedRowsManifest(coverage, options);
+  assert(Number(coverage.snapshotPayloadMissingCount || 0) === 0, 'chromeExportCoverage snapshot payload missing count must be zero');
+  assert(Number(coverage.snapshotPayloadDowngradedCount || 0) === 0, 'chromeExportCoverage snapshot payload downgraded count must be zero');
+  assert(coverage.coverageDecision === 'allow-export', 'chromeExportCoverage must still allow export when payload safety passes');
   assert(Number(coverage.unexportableRowCount || 0) === 0, 'chromeExportCoverage unexportable rows must be zero');
   assert(Array.isArray(coverage.blockers), 'chromeExportCoverage blockers must be an array');
   assert(!coverage.blockers.includes('chrome-export-source-coverage-mismatch'), 'chromeExportCoverage must not include coverage mismatch blocker');
@@ -590,7 +761,7 @@ function validateProofObject(proof, options = {}) {
   assert(Number(proof.parity.deferredMismatchCount || 0) === computedPartition.deferred.length, 'deferred mismatch count does not match final parity');
   validatePropagationResult(proof.propagation?.chromeToDesktop, 'chrome-to-desktop');
   validatePropagationResult(proof.propagation?.desktopToChrome, 'desktop-to-chrome');
-  validateChromeExportCoverage(proof.chromeExportCoverage);
+  validateChromeExportCoverage(proof.chromeExportCoverage, options);
   const warnings = new Set([
     ...(proof.propagation?.chromeToDesktop?.warnings || []),
     ...(proof.propagation?.desktopToChrome?.warnings || [])
@@ -663,6 +834,15 @@ function validateStaticFiles() {
   assertContains(chromeAutoImportFile, "view === 'imported'", 'Chrome export imported view handling');
   assertContains(chromeAutoImportFile, 'isSaved: saved,', 'Chrome export saved state must mirror LibraryIndex saved state');
   assertContains(chromeAutoImportFile, "imported ? 'imported' : 'saved'", 'Chrome export imported shell rows must remain total-only');
+  assertContains(chromeAutoImportFile, 'function buildUnindexedArchiveManifest', 'Chrome export unindexed archive row manifest builder');
+  assertContains(chromeAutoImportFile, 'h2o.studio.sync.chrome-export-unindexed-rows.v1', 'Chrome export unindexed manifest schema');
+  assertContains(chromeAutoImportFile, 'unindexedArchiveRowCount', 'Chrome export unindexed archive count');
+  assertContains(chromeAutoImportFile, 'unindexedRowManifestCount', 'Chrome export unindexed manifest count');
+  assertContains(chromeAutoImportFile, 'unindexedRowReasonCounts', 'Chrome export unindexed reason counts');
+  assertContains(chromeAutoImportFile, 'unindexedRows', 'Chrome export redacted unindexed row manifest');
+  assertContains(chromeAutoImportFile, 'rawTitlesReturned: false', 'Chrome export manifest raw title privacy flag');
+  assertContains(chromeAutoImportFile, 'rawContentReturned: false', 'Chrome export manifest raw content privacy flag');
+  assertNotContains(chromeAutoImportFile, 'droppedArchiveRowCount', 'legacy dropped archive row count field');
   assertContains(libraryIndexFile, 'readDurableBundleShellRows', 'LibraryIndex durable shell row reload reader');
   assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'LibraryIndex durable shell rehydration diagnostic');
 }

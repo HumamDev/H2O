@@ -653,6 +653,16 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'requestListenerReached', 'Chrome export preflight reports whether native listener was reached');
   assertContains(autoImportFile, 'requestForwardedCount', 'Chrome export preflight reports native payload forwarding count');
   assertContains(autoImportFile, 'var aligned = await alignBundleToLibraryIndex(bundle)', 'Chrome export waits for snapshot payload hydration before writing chrome-latest');
+  assertContains(autoImportFile, 'function buildUnindexedArchiveManifest', 'Chrome export builds redacted unindexed archive row manifest');
+  assertContains(autoImportFile, "schema: 'h2o.studio.sync.chrome-export-unindexed-rows.v1'", 'Chrome export unindexed row manifest schema');
+  assertContains(autoImportFile, 'unindexedArchiveRowCount', 'Chrome export coverage reports unindexed archive row count');
+  assertContains(autoImportFile, 'unindexedRowManifestCount', 'Chrome export coverage reports unindexed row manifest length');
+  assertContains(autoImportFile, 'unindexedRowReasonCounts', 'Chrome export coverage reports unindexed row reason counts');
+  assertContains(autoImportFile, 'unindexedRows', 'Chrome export exposes redacted unindexed row manifest');
+  assertContains(autoImportFile, "return 'archived'", 'Chrome export manifest supports archived reason');
+  assertContains(autoImportFile, "return 'not-indexed'", 'Chrome export manifest supports not-indexed reason');
+  assertContains(autoImportFile, "return 'unknown-unindexed'", 'Chrome export manifest supports unknown unindexed reason');
+  assertNotContains(autoImportFile, 'droppedArchiveRowCount', 'legacy dropped archive row count field');
   assertContains(studioSyncFile, 'async function materializeNativeSnapshotPayloads', 'Studio materializes native Save-to-Folder payloads');
   assertContains(studioSyncFile, "await callArchive('importBundle'", 'Studio imports native snapshot payloads into archive backend');
   assertContains(studioSyncFile, 'verifyNativeSnapshotPayloadImports', 'Studio verifies native snapshot payload imports against loadSnapshot');
