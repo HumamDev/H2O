@@ -908,6 +908,47 @@
     throw new Error('minimal-row-materialize: insert ignored without existing row');
   }
 
+  async function applyExistingChatEvidencePatch(chatStore, existing, patch) {
+    var chatId = cleanString(patch && patch.chatId);
+    if (!chatId) throw new Error('existing-evidence-merge: chatId required');
+    var meta = Object.assign({}, safeMeta(existing && existing.meta), safeMeta(patch && patch.meta));
+    if (patch && patch.turnCount !== undefined) meta.turnCount = numericCount(patch.turnCount);
+    if (patch && patch.answerCount !== undefined) meta.answerCount = numericCount(patch.answerCount);
+    var assignments = [];
+    var values = [];
+    function hasPatchField(field) {
+      return !!(patch && Object.prototype.hasOwnProperty.call(patch, field));
+    }
+    function setColumn(col, value) {
+      assignments.push(col + ' = ?');
+      values.push(value);
+    }
+    if (hasPatchField('lastSnapshotId')) setColumn('last_snapshot_id', cleanString(patch && patch.lastSnapshotId) || null);
+    if (hasPatchField('folderId')) setColumn('folder_id', cleanString(patch && patch.folderId));
+    if (hasPatchField('snapshotCount')) setColumn('snapshot_count', numericCount(patch && patch.snapshotCount));
+    if (hasPatchField('messageCount')) setColumn('message_count', numericCount(patch && patch.messageCount));
+    if (hasPatchField('userTurnCount')) setColumn('user_turn_count', numericCount(patch && patch.userTurnCount));
+    if (hasPatchField('assistantTurnCount')) setColumn('assistant_turn_count', numericCount(patch && patch.assistantTurnCount));
+    if (hasPatchField('isSaved')) setColumn('is_saved', patch.isSaved ? 1 : 0);
+    if (hasPatchField('isLinked')) setColumn('is_linked', patch.isLinked ? 1 : 0);
+    assignments.push('updated_at = ?');
+    values.push(Date.now());
+    assignments.push('meta_json = ?');
+    values.push(safeJson(meta));
+    values.push(chatId);
+    var query = 'UPDATE chats SET ' + assignments.join(', ') + ' WHERE id = ?';
+    var result = await authorizedBulkMigrationExecute(query, values, 'f19.chrome-desktop-existing-evidence');
+    if (!result) return await chatStore.upsert(patch);
+    if (result && result.ok === false) {
+      var blockers = Array.isArray(result.blockers) ? result.blockers.join(',') : 'authorized-sqlite-blocked';
+      throw new Error(blockers || 'authorized-sqlite-blocked');
+    }
+    if (chatStore && typeof chatStore.reload === 'function') {
+      try { await chatStore.reload(); } catch (_) { /* ignore */ }
+    }
+    return patch;
+  }
+
   function minimalRowClass(chat, patch) {
     var index = chat && chat.chatIndex && typeof chat.chatIndex === 'object' ? chat.chatIndex : {};
     var state = index.state && typeof index.state === 'object' ? index.state : {};
@@ -1398,7 +1439,7 @@
           var evidencePatch = prepareExistingChatEvidencePatch(existing, patch);
           if (evidencePatch) {
             try {
-              await chatStore.upsert(evidencePatch);
+              await applyExistingChatEvidencePatch(chatStore, existing, evidencePatch);
               result.written.chats += 1;
               result.warnings.push({ kind: 'chrome-desktop-existing-chat-evidence-merged' });
               if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
