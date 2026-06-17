@@ -908,9 +908,14 @@
     throw new Error('minimal-row-materialize: insert ignored without existing row');
   }
 
-  async function applyExistingChatEvidencePatch(chatStore, existing, patch) {
+  async function applyExistingChatEvidencePatch(chatStore, existing, patch, context) {
+    var ctx = context && typeof context === 'object' ? context : {};
+    var resultForDiag = ctx.result || {};
+    var chatForDiag = ctx.chat || null;
+    var identityForDiag = ctx.identity || {};
     var chatId = cleanString(patch && patch.chatId);
     if (!chatId) throw new Error('existing-evidence-merge: chatId required');
+    pushChatWriteDiagnostic(resultForDiag, 'existing-evidence-authorized-upsert', chatForDiag, patch, { action: 'authorized-upsert' });
     var meta = Object.assign({}, safeMeta(existing && existing.meta), safeMeta(patch && patch.meta));
     if (patch && patch.turnCount !== undefined) meta.turnCount = numericCount(patch.turnCount);
     if (patch && patch.answerCount !== undefined) meta.answerCount = numericCount(patch.answerCount);
@@ -938,11 +943,25 @@
     values.push(chatId);
     var query = 'UPDATE chats SET ' + assignments.join(', ') + ' WHERE id = ?';
     var result = await authorizedBulkMigrationExecute(query, values, 'f19.chrome-desktop-existing-evidence');
-    if (!result) return await chatStore.upsert(patch);
+    if (!result) {
+      pushChatWriteDiagnostic(resultForDiag, 'existing-evidence-authorized-upsert', chatForDiag, patch, {
+        action: 'authorized-upsert-unavailable'
+      });
+      if (patchHasRealTranscriptEvidence(patch)) {
+        throw new Error('existing-evidence-authorized-writer-unavailable');
+      }
+      return await safeImportChatUpsert(chatStore, patch, {
+        result: resultForDiag,
+        chat: chatForDiag,
+        identity: identityForDiag,
+        pathName: 'existing-evidence-upsert-fallback'
+      });
+    }
     if (result && result.ok === false) {
       var blockers = Array.isArray(result.blockers) ? result.blockers.join(',') : 'authorized-sqlite-blocked';
       throw new Error(blockers || 'authorized-sqlite-blocked');
     }
+    pushChatWriteDiagnostic(resultForDiag, 'existing-evidence-authorized-upsert', chatForDiag, patch, { action: 'authorized-upsert-ok' });
     if (chatStore && typeof chatStore.reload === 'function') {
       try { await chatStore.reload(); } catch (_) { /* ignore */ }
     }
@@ -1129,6 +1148,63 @@
       result.chromeWeakRows = emptyChromeWeakRows();
     }
     return result.chromeWeakRows;
+  }
+
+  function chatWriteDiagnostics(result) {
+    if (!result.chatWriteDiagnostics || !Array.isArray(result.chatWriteDiagnostics)) {
+      result.chatWriteDiagnostics = [];
+    }
+    return result.chatWriteDiagnostics;
+  }
+
+  function pushChatWriteDiagnostic(result, pathName, chat, patch, fields) {
+    try {
+      var list = chatWriteDiagnostics(result);
+      if (list.length >= 20) return;
+      list.push(Object.assign({
+        pathName: cleanString(pathName) || 'unknown-chat-write',
+        weakClassifierRan: true
+      }, redactedChatUpsertPatchDiagnostics(chat, patch), fields || {}));
+    } catch (_) { /* ignore diagnostics failures */ }
+  }
+
+  async function safeImportChatUpsert(chatStore, patch, context) {
+    var ctx = context && typeof context === 'object' ? context : {};
+    var result = ctx.result;
+    var chat = ctx.chat;
+    var pathName = cleanString(ctx.pathName) || 'chat-upsert';
+    var identity = ctx.identity || {};
+    pushChatWriteDiagnostic(result, pathName, chat, patch, { action: 'normal-upsert' });
+    try {
+      var row = await chatStore.upsert(patch);
+      pushChatWriteDiagnostic(result, pathName, chat, patch, { action: 'normal-upsert-ok' });
+      return { ok: true, status: 'upserted', row: row };
+    } catch (writeError) {
+      var code = classifyImportError(writeError);
+      var weak = shouldSkipWeakRowImportFailure(chat, patch, code);
+      pushChatWriteDiagnostic(result, pathName, chat, patch, {
+        action: weak ? 'weak-skip-candidate' : 'strict-block',
+        code: code
+      });
+      if (weak) {
+        var weakSummary = chromeWeakRows(result);
+        weakSummary.attempted += 1;
+        weakSummary.skipped += 1;
+        result.warnings.push(Object.assign({
+          kind: 'chrome-weak-row-skipped-unrecoverable',
+          code: code,
+          phase: pathName,
+          rowClass: weakRowClass(chat, patch),
+          identitySource: String(identity.source || 'unknown'),
+          transcriptBacked: false,
+          fallbackUsed: false,
+          missingIdentityReason: 'sqlite-writer-identity-function-unavailable',
+          chatIdHash: redactedImportHash(patch && patch.chatId)
+        }, redactedChatUpsertPatchDiagnostics(chat, patch)));
+        return { ok: true, status: 'weak-skipped' };
+      }
+      throw writeError;
+    }
   }
 
   function wantsLibraryBulkMigration(options) {
@@ -1439,7 +1515,17 @@
           var evidencePatch = prepareExistingChatEvidencePatch(existing, patch);
           if (evidencePatch) {
             try {
-              await applyExistingChatEvidencePatch(chatStore, existing, evidencePatch);
+              var evidenceMergeResult = await applyExistingChatEvidencePatch(chatStore, existing, evidencePatch, {
+                result: result,
+                chat: chat,
+                identity: identity
+              });
+              if (evidenceMergeResult && evidenceMergeResult.status === 'weak-skipped') {
+                result.skipped.chats += 1;
+                if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+                chatStateIndex[chatId] = 'skipped';
+                continue;
+              }
               result.written.chats += 1;
               result.warnings.push({ kind: 'chrome-desktop-existing-chat-evidence-merged' });
               if (result.sample.writtenChatIds.length < 10) result.sample.writtenChatIds.push(chatId);
@@ -1529,7 +1615,18 @@
           }
         }
         try {
-          await chatStore.upsert(patch);
+          var upsertResult = await safeImportChatUpsert(chatStore, patch, {
+            result: result,
+            chat: chat,
+            identity: identity,
+            pathName: 'primary-chat-upsert'
+          });
+          if (upsertResult && upsertResult.status === 'weak-skipped') {
+            result.skipped.chats += 1;
+            chatStateIndex[chatId] = 'skipped';
+            if (result.sample.skippedChatIds.length < 10) result.sample.skippedChatIds.push(chatId);
+            continue;
+          }
           result.written.chats += 1;
           chatStateIndex[chatId] = 'imported';
           if (minimalSummary) {

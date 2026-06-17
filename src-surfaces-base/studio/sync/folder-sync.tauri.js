@@ -873,6 +873,27 @@
     var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
     var chromeMinimalRows = r.chromeMinimalRows && typeof r.chromeMinimalRows === 'object' ? r.chromeMinimalRows : {};
     var chromeWeakRows = r.chromeWeakRows && typeof r.chromeWeakRows === 'object' ? r.chromeWeakRows : {};
+    var chatWriteDiagnostics = Array.isArray(r.chatWriteDiagnostics)
+      ? r.chatWriteDiagnostics.slice(0, 10).map(function (entry) {
+        return {
+          pathName: String(entry && entry.pathName || ''),
+          action: String(entry && entry.action || ''),
+          rowClass: String(entry && entry.rowClass || ''),
+          hasChatId: !!(entry && entry.hasChatId),
+          hasId: !!(entry && entry.hasId),
+          hasHref: !!(entry && entry.hasHref),
+          hasUrl: !!(entry && entry.hasUrl),
+          hasNormalizedHref: !!(entry && entry.hasNormalizedHref),
+          hasSnapshotId: !!(entry && entry.hasSnapshotId),
+          isSaved: !!(entry && entry.isSaved),
+          isLinked: !!(entry && entry.isLinked),
+          hasTranscriptEvidence: !!(entry && entry.hasTranscriptEvidence),
+          weakClassifierRan: !!(entry && entry.weakClassifierRan),
+          code: String(entry && entry.code || ''),
+          identityFieldNames: Array.isArray(entry && entry.identityFieldNames)
+            ? entry.identityFieldNames.slice(0, 12).map(function (name) { return String(name); }) : []
+        };
+      }) : [];
     var errorKinds = Object.create(null);
     var minimalRowErrors = 0;
     var nonMinimalErrorCount = 0;
@@ -939,6 +960,7 @@
       weakRowsExisting: Number(chromeWeakRows.existing || 0),
       weakRowsSkipped: Number(chromeWeakRows.skipped || 0),
       weakRowsFailed: Number(chromeWeakRows.failed || 0),
+      chatWriteDiagnostics: chatWriteDiagnostics,
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {
           return {

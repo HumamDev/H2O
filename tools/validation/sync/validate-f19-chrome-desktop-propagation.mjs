@@ -689,6 +689,7 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'chrome-minimal-row-skipped-unrecoverable', 'Desktop import reports non-blocking unrecoverable minimal row skips');
   assertContains(importBundleFile, 'chatIdHash: redactedImportHash(chatId)', 'Desktop import redacts skipped minimal row identity');
   assertContains(folderSyncFile, 'minimalRowsSkipped', 'Desktop propagation redacted import summary exposes skipped minimal rows');
+  assertContains(folderSyncFile, 'chatWriteDiagnostics', 'Desktop propagation redacted import summary exposes chat write diagnostics');
   assertContains(importBundleFile, 'function shouldTryWeakRowShellMaterialization(chat, patch, code)', 'Desktop import routes non-minimal weak rows through safe shell materialization');
   assertContains(importBundleFile, 'chrome-weak-row-materialized-via-shell-insert', 'Desktop import reports non-minimal weak row shell materialization');
   assertContains(importBundleFile, 'chrome-weak-row-skipped-unrecoverable', 'Desktop import skips unrecoverable non-minimal weak rows without blocking');
@@ -699,6 +700,8 @@ if (failures.length === 0) {
   assertContains(importBundleFile, 'chrome-weak-row-skipped-before-store-upsert', 'Desktop import can skip unrecoverable weak rows before store upsert blocks');
   assertContains(importBundleFile, "phase: 'existing-evidence-upsert'", 'Desktop import can skip unrecoverable weak existing evidence merges');
   assertContains(importBundleFile, 'f19.chrome-desktop-existing-evidence', 'Desktop import uses authorized SQL writer for existing evidence merges');
+  assertContains(importBundleFile, 'function safeImportChatUpsert', 'Desktop import centralizes chat upsert diagnostics and weak-row handling');
+  assertContains(importBundleFile, 'existing-evidence-authorized-writer-unavailable', 'Desktop import does not fall through to unprivileged writer for transcript evidence');
   assertContains(importBundleFile, 'identityFieldNames: importPatchIdentityFieldNames(chat, patch)', 'Desktop import reports identity field names without raw values');
   assertContains(focusImportFile, 'importChromeLatestFromFolder', 'focus importer guarded path');
   assertContains(contractFile, 'F19.2.b Minimal Chrome -> Desktop Scope', 'F19.2.b doc section');
