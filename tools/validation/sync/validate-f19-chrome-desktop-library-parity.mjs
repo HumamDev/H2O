@@ -278,6 +278,7 @@ function runCanonicalHeadlineProof() {
   assert(typeof core.canonicalRecentRows === 'function', 'canonicalRecentRows missing');
   assert(typeof core.canonicalSavedRecentRows === 'function', 'canonicalSavedRecentRows missing');
   assert(typeof core.rowHasTranscriptEvidence === 'function', 'rowHasTranscriptEvidence missing');
+  assert(typeof core.rowIsSavedRecentEligible === 'function', 'rowIsSavedRecentEligible missing');
   assert(typeof core.canonicalActiveFacets === 'function', 'canonicalActiveFacets missing');
   assert(core.canonicalActiveRows(rows).length === 17, 'canonicalActiveRows must return 17 active rows');
   assert(core.canonicalArchivedRows(rows).length === 3, 'canonicalArchivedRows must return 3 archived rows');
@@ -291,6 +292,50 @@ function runCanonicalHeadlineProof() {
   assert(savedRecentRows.every((row) => row.snapshotId && row.state?.isSaved && !row.archived && !row.state?.isArchived), 'canonicalSavedRecentRows returned a non-saved, link-only, or archived row');
   assert(core.canonicalRowView(savedRecentRows[0]) === 'saved', 'saved+linked payload-backed rows must classify as saved');
   assert(rows.filter((row) => !row.state?.isSaved && !row.state?.isArchived).every((row) => core.canonicalRowView(row) === 'linked'), 'link-only rows must classify as linked');
+  const chromeStyleLinkWithTranscriptEvidence = {
+    chatId: 'chrome-link-transcript-evidence',
+    title: 'Chrome linked row with transcript evidence',
+    href: '/c/chrome-link-transcript-evidence',
+    view: 'link',
+    saved: false,
+    linked: true,
+    isLinked: true,
+    messageCount: 8,
+    opens: 'placeholder-details',
+    state: { isSaved: false, isLinked: true, isArchived: false, isDeleted: false },
+  };
+  const chromeStyleSavedFalseLinked = {
+    chatId: 'chrome-saved-false-linked',
+    title: 'Chrome saved false linked row',
+    href: '/c/chrome-saved-false-linked',
+    view: 'saved',
+    snapshotId: 'chrome-saved-false-linked-snapshot',
+    saved: false,
+    isSaved: false,
+    isLinked: true,
+    state: { isSaved: false, isLinked: true, isArchived: false, isDeleted: false },
+  };
+  const savedLinkedPayloadBacked = {
+    chatId: 'saved-linked-payload-backed',
+    title: 'Saved linked payload backed',
+    href: '/c/saved-linked-payload-backed',
+    view: 'saved',
+    snapshotId: 'saved-linked-payload-backed-snapshot',
+    saved: true,
+    isSaved: true,
+    isLinked: true,
+    state: { isSaved: true, isLinked: true, isArchived: false, isDeleted: false },
+  };
+  assert(core.rowHasTranscriptEvidence(chromeStyleLinkWithTranscriptEvidence), 'fixture must carry transcript evidence');
+  assert(core.rowIsSavedRecentEligible(chromeStyleLinkWithTranscriptEvidence) === false, 'Chrome link rows with transcript evidence but saved:false must not be saved recents');
+  assert(core.rowIsSavedRecentEligible(chromeStyleSavedFalseLinked) === false, 'snapshot-backed rows with explicit saved:false must not be saved recents');
+  assert(core.rowIsSavedRecentEligible(savedLinkedPayloadBacked) === true, 'saved+linked payload-backed rows with saved:true must remain saved recents');
+  const savedRecentEligibilityRows = core.canonicalSavedRecentRows([
+    chromeStyleLinkWithTranscriptEvidence,
+    chromeStyleSavedFalseLinked,
+    savedLinkedPayloadBacked,
+  ], 99);
+  assert(savedRecentEligibilityRows.length === 1 && savedRecentEligibilityRows[0].chatId === 'saved-linked-payload-backed', 'canonicalSavedRecentRows must use saved-recents eligibility, not transcript evidence alone');
   const unknownDateRows = [
     { chatId: 'unknown-b', snapshotId: 'snap-b', title: 'Bravo', view: 'saved', state: { isSaved: true } },
     { chatId: 'unknown-a', snapshotId: 'snap-a', title: 'Alpha', view: 'saved', state: { isSaved: true } },
@@ -333,10 +378,12 @@ if (failures.length === 0) {
   assertContains(sharedCoreFile, 'canonicalExplorerRows', 'canonical explorer projection');
   assertContains(sharedCoreFile, 'canonicalRecentRows', 'canonical recents projection');
   assertContains(sharedCoreFile, 'canonicalSavedRecentRows', 'canonical saved recents projection');
-  assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.71', 'Library Index Core cache bust');
-  assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.72', 'Library Index cache bust');
+  assertContains(sharedCoreFile, 'rowIsSavedRecentEligible', 'canonical saved recents eligibility predicate');
+  assertContains(sharedCoreFile, 'filter(rowIsSavedRecentEligible)', 'canonical saved recents eligibility usage');
+  assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
+  assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './studio.js?v=2.5.72', 'Studio shell cache bust');
+  assertContains(htmlFile, './studio.js?v=2.5.73', 'Studio shell cache bust');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

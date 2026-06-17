@@ -1397,10 +1397,26 @@
   }
 
   function recentsRowIsLinkOnly(row) {
-    if (!row || recentsRowHasTranscript(row)) return false;
+    if (!row) return false;
     const st = recentsState(row);
     const view = recentsRowView(row);
-    return view === 'linked' || view === 'link' || !!(row.isLinked || st.isLinked || rowLinkedUrl(row));
+    if (view === 'linked' || view === 'link') return true;
+    if (recentsRowIsSaved(row) && recentsRowHasTranscript(row)) return false;
+    return !!(row.isLinked || st.isLinked || rowLinkedUrl(row));
+  }
+
+  function recentsRowIsSavedRecentEligible(row) {
+    const c = ixCore();
+    if (c && typeof c.rowIsSavedRecentEligible === 'function') {
+      try { return !!c.rowIsSavedRecentEligible(row); } catch {}
+    }
+    if (!row || recentsRowIsArchived(row) || recentsRowIsDeleted(row)) return false;
+    const view = recentsRowView(row);
+    if (view === 'linked' || view === 'link') return false;
+    if (cleanString(row?.opens || row?.openTarget || row?.openKind).toLowerCase() === 'placeholder-details') return false;
+    const st = recentsState(row);
+    if (row?.saved === false || row?.isSaved === false || st.isSaved === false) return false;
+    return recentsRowIsSaved(row) && recentsRowHasTranscript(row);
   }
 
   function recentsStableTime(row) {
@@ -1427,8 +1443,7 @@
       return c.canonicalSavedRecentRows(state.rows, limit, { dateField: 'savedRecent' });
     }
     const rows = state.rows
-      .filter((row) => row && !recentsRowIsArchived(row) && !recentsRowIsDeleted(row))
-      .filter((row) => recentsRowIsSaved(row) && recentsRowHasTranscript(row) && !recentsRowIsLinkOnly(row))
+      .filter(recentsRowIsSavedRecentEligible)
       .slice()
       .sort((a, b) => {
         const timeCompare = recentsStableTime(b) - recentsStableTime(a);
@@ -1545,6 +1560,7 @@
       domArchivedRowsAccidentallyIncludedCount: domArchivedLeaks.length,
       helperNames: {
         canonicalSavedRecentRows: c && typeof c.canonicalSavedRecentRows === 'function' ? 'LibraryIndexCore.canonicalSavedRecentRows' : 'S0F1c.fallback',
+        rowIsSavedRecentEligible: c && typeof c.rowIsSavedRecentEligible === 'function' ? 'LibraryIndexCore.rowIsSavedRecentEligible' : 'S0F1c.recentsRowIsSavedRecentEligible',
         rowHasTranscriptEvidence: c && typeof c.rowHasTranscriptEvidence === 'function' ? 'LibraryIndexCore.rowHasTranscriptEvidence' : 'S0F1c.rowHasRealTranscriptEvidence',
         sidebarRenderer: 'studio.collectCanonicalSidebarRecentChats',
         dashboardRenderer: 'S0F1d.renderDashboard',

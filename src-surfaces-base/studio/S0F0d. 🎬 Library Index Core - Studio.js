@@ -766,6 +766,11 @@
     const text = ensureString(value).trim().toLowerCase();
     return text === '1' || text === 'true' || text === 'yes';
   }
+  function falseish(value) {
+    if (value === false || value === 0) return true;
+    const text = ensureString(value).trim().toLowerCase();
+    return text === '0' || text === 'false' || text === 'no';
+  }
   function rowNestedState(row) {
     const raw = row && row.raw && typeof row.raw === 'object' ? row.raw : null;
     const meta = row && row.meta && typeof row.meta === 'object' ? row.meta : null;
@@ -797,6 +802,16 @@
       if (!src || typeof src !== 'object') continue;
       for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(src, key) && boolish(src[key])) return true;
+      }
+    }
+    return false;
+  }
+  function rowFlagFalseForHeadline(row, keys = []) {
+    const { raw, meta, rowState, rawState, metaState } = rowNestedState(row);
+    for (const src of [row, rowState, raw, rawState, meta, metaState]) {
+      if (!src || typeof src !== 'object') continue;
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(src, key) && falseish(src[key])) return true;
       }
     }
     return false;
@@ -862,6 +877,16 @@
       isImported: rowImportedForHeadline(row),
       isRecent: true,
     });
+  }
+  function rowIsSavedRecentEligible(row) {
+    if (!row || typeof row !== 'object') return false;
+    if (canonicalRowIsDeleted(row) || canonicalRowIsArchived(row)) return false;
+    const view = rowViewForHeadline(row);
+    if (view === 'link' || view === 'linked') return false;
+    if (ensureString(row.opens || row.openTarget || row.openKind).trim().toLowerCase() === 'placeholder-details') return false;
+    if (rowFlagFalseForHeadline(row, ['saved', 'isSaved', 'is_saved'])) return false;
+    if (!rowSavedForHeadline(row)) return false;
+    return rowHasTranscriptEvidence(row);
   }
   function canonicalHeadlineCounts(rows) {
     const counts = {
@@ -1026,7 +1051,7 @@
   }
   function canonicalSavedRecentRows(rows, limit = 20, options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
-    const saved = canonicalActiveRows(rows).filter((row) => rowSavedForHeadline(row) && rowHasTranscriptEvidence(row));
+    const saved = canonicalActiveRows(rows).filter(rowIsSavedRecentEligible);
     const sorted = canonicalSortRows(saved, 'recent', opts.dateField || 'savedRecent');
     const cap = Number(limit);
     return Number.isFinite(cap) && cap >= 0 ? sorted.slice(0, cap) : sorted;
@@ -1130,6 +1155,7 @@
     resolveRowOpenTarget,
     rowIsLinkOnly,
     rowHasTranscriptEvidence,
+    rowIsSavedRecentEligible,
 
     // Facets / counts
     bumpFacet,

@@ -26,6 +26,7 @@ const FILES = {
   libraryIndexCore: 'shared/library/library-index-core.js',
   libraryIndex: 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js',
   insights: 'src-surfaces-base/studio/S0F1d. 🎬 Library Insights - Studio.js',
+  libraryParityDiagnostic: 'src-surfaces-base/studio/sync/library/library-chrome-desktop-parity-diagnostic.js',
   studioShell: 'src-surfaces-base/studio/studio.js',
   studioHtml: 'src-surfaces-base/studio/studio.html',
 };
@@ -169,10 +170,13 @@ const checks = [
       sources.libraryIndex.includes("typeof c.canonicalHeadlineCounts === 'function'") &&
       sources.libraryIndexCore.includes('canonicalSavedRecentRows') &&
       sources.libraryIndexCore.includes('rowHasTranscriptEvidence') &&
+      sources.libraryIndexCore.includes('function rowIsSavedRecentEligible(row)') &&
+      sources.libraryIndexCore.includes('filter(rowIsSavedRecentEligible)') &&
       sources.studioShell.includes('if (next === "archive") return archived;') &&
       sources.studioShell.includes('if (archived) return false;') &&
       sources.studioShell.includes('function canonicalSavedRecentLibraryIndexRows(limit = 30)') &&
       sources.studioShell.includes('core.canonicalSavedRecentRows(rows, limit, { dateField: "savedRecent" })') &&
+      sources.studioShell.includes('core.rowIsSavedRecentEligible') &&
       sources.studioShell.includes('function collectCanonicalSidebarRecentChats(rows, folderId = "", query = "")') &&
       sources.studioShell.includes('const sourceIsCanonical = hasLibraryIndexRowsApi();') &&
       sources.studioShell.includes('const canonicalRows = sourceIsCanonical ? canonicalSavedRecentLibraryIndexRows(200) : [];') &&
@@ -189,6 +193,8 @@ const checks = [
       sources.libraryIndex.includes('domSidebarMatchesSourceOrder') &&
       sources.libraryIndex.includes('domSidebarSourceOrderMismatchCount') &&
       sources.libraryIndex.includes('&& domSidebarMatchesSourceOrder') &&
+      sources.libraryIndex.includes('function recentsRowIsSavedRecentEligible(row)') &&
+      sources.libraryIndex.includes("rowIsSavedRecentEligible: c && typeof c.rowIsSavedRecentEligible === 'function' ? 'LibraryIndexCore.rowIsSavedRecentEligible' : 'S0F1c.recentsRowIsSavedRecentEligible'") &&
       sources.libraryIndex.includes('domLinkOnlyRowsAccidentallyIncludedCount') &&
       sources.libraryIndex.includes('first10CanonicalSortTokens') &&
       sources.insights.includes("archived:   st.isArchived ? '1' : '0'") &&
@@ -198,6 +204,21 @@ const checks = [
       !sources.studioShell.includes('Loading saved chats'),
     FILES.insights,
     'Library Explorer, Recents, stats, and legacy list views must use the shared active/archive projection instead of raw LibraryIndex rows.'
+  ),
+  check(
+    'saved-recents-require-saved-identity-not-transcript-evidence',
+    sources.libraryIndexCore.includes('function rowIsSavedRecentEligible(row)') &&
+      sources.libraryIndexCore.includes("if (view === 'link' || view === 'linked') return false;") &&
+      sources.libraryIndexCore.includes("if (ensureString(row.opens || row.openTarget || row.openKind).trim().toLowerCase() === 'placeholder-details') return false;") &&
+      sources.libraryIndexCore.includes("if (rowFlagFalseForHeadline(row, ['saved', 'isSaved', 'is_saved'])) return false;") &&
+      sources.libraryIndexCore.includes('if (!rowSavedForHeadline(row)) return false;') &&
+      sources.libraryIndexCore.includes('return rowHasTranscriptEvidence(row);') &&
+      sources.libraryIndexCore.includes('filter(rowIsSavedRecentEligible)') &&
+      sources.studioShell.includes('core.rowIsSavedRecentEligible') &&
+      sources.libraryIndex.includes('recentsRowIsSavedRecentEligible') &&
+      sources.libraryParityDiagnostic.includes('function isSavedRecentEligible(row)'),
+    FILES.libraryIndexCore,
+    'Saved recents must require saved identity and reader evidence; link/placeholder rows with transcript evidence alone must stay out of sidebar and dashboard recents.'
   ),
   check(
     'sidebar-recents-preserves-canonical-dom-order',
@@ -210,10 +231,10 @@ const checks = [
   ),
   check(
     'studio-recents-runtime-cache-bust',
-    sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.72') &&
+    sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
+      sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./studio.js?v=2.5.72'),
+      sources.studioHtml.includes('./studio.js?v=2.5.73'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, and shell scripts so canonical saved-recents changes reach Chrome and Desktop runtimes.'
   ),

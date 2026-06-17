@@ -3382,16 +3382,22 @@ function readLinkedWorkbenchRowsFromLibraryIndex(){
 function libraryRowIsSavedTranscript(row){
   if (!row || typeof row !== "object") return false;
   const core = W.H2O?.Library?.LibraryIndexCore || null;
+  if (core && typeof core.rowIsSavedRecentEligible === "function") {
+    try { return !!core.rowIsSavedRecentEligible(row); } catch (_) {}
+  }
+  const view = String(row.view || row.displayView || row.badgeKind || "").toLowerCase();
+  if (view === "linked" || view === "link") return false;
+  if (String(row.opens || row.openTarget || row.openKind || "").trim().toLowerCase() === "placeholder-details") return false;
+  if (row.saved === false || row.isSaved === false || row.is_saved === false) return false;
   if (core && typeof core.rowHasTranscriptEvidence === "function") {
     try { if (!core.rowHasTranscriptEvidence(row)) return false; } catch (_) { if (!rowReaderSnapshotId(row)) return false; }
   } else if (!rowReaderSnapshotId(row)) {
     const count = Number(row.messageCount || row.turnCount || row.userTurnCount || row.assistantTurnCount || row.answerCount || 0) || 0;
     if (count <= 0) return false;
   }
-  const view = String(row.view || row.displayView || row.badgeKind || "").toLowerCase();
-  if (view === "linked" || view === "link") return false;
   if (view === "saved" || view === "imported") return true;
   const state = row.state && typeof row.state === "object" ? row.state : {};
+  if (state.isSaved === false) return false;
   return row.isSaved === true || state.isSaved === true || row.saved === true;
 }
 

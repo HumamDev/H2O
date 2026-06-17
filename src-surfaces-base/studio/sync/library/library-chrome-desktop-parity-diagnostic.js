@@ -142,6 +142,10 @@
     return value === true || value === 1 || value === '1' || value === 'true';
   }
 
+  function falseValue(value) {
+    return value === false || value === 0 || value === '0' || value === 'false';
+  }
+
   function rowView(row) {
     return cleanString(row.view || row.status || '').toLowerCase();
   }
@@ -149,6 +153,8 @@
   function isSaved(row) {
     var view = rowView(row);
     var state = row && row.state && typeof row.state === 'object' ? row.state : {};
+    if (view === 'linked' || view === 'link') return false;
+    if (falseValue(row.saved) || falseValue(row.isSaved) || falseValue(row.is_saved) || falseValue(state.isSaved)) return false;
     return view === 'saved' || view === 'imported' || boolValue(row.saved) || boolValue(row.isSaved) || boolValue(state.isSaved);
   }
 
@@ -325,6 +331,16 @@
     return false;
   }
 
+  function isSavedRecentEligible(row) {
+    var core = getLibraryIndexCore();
+    if (core && typeof core.rowIsSavedRecentEligible === 'function') return !!core.rowIsSavedRecentEligible(row);
+    if (!row || isArchived(row) || isDeleted(row)) return false;
+    var view = rowView(row);
+    if (view === 'linked' || view === 'link') return false;
+    if (cleanString(row.opens || row.openTarget || row.openKind).toLowerCase() === 'placeholder-details') return false;
+    return isSaved(row) && hasTranscriptEvidence(row);
+  }
+
   function canonicalActiveRows(rows) {
     var core = getLibraryIndexCore();
     if (core && typeof core.canonicalActiveRows === 'function') return asArray(core.canonicalActiveRows(asArray(rows)));
@@ -344,7 +360,7 @@
       return asArray(core.canonicalSavedRecentRows(asArray(rows), limit, { dateField: 'savedRecent' }));
     }
     return canonicalActiveRows(rows)
-      .filter(function (row) { return isSaved(row) && hasTranscriptEvidence(row); })
+      .filter(isSavedRecentEligible)
       .slice()
       .sort(function (a, b) {
         var dateCompare = savedRecencyNumber(b) - savedRecencyNumber(a);
