@@ -165,7 +165,14 @@ const checks = [
       sources.libraryIndex.includes("typeof c.canonicalHeadlineCounts === 'function'") &&
       sources.studioShell.includes('if (next === "archive") return archived;') &&
       sources.studioShell.includes('if (archived) return false;') &&
-      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "best")'),
+      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "best")') &&
+      sources.studioShell.includes('function canonicalRecentLibraryIndexRows(limit = 30)') &&
+      sources.studioShell.includes('core.canonicalRecentRows(rows, limit, { dateField: "best" })') &&
+      sources.studioShell.includes('function collectCanonicalSidebarRecentChats(rows, folderId = "", query = "")') &&
+      sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalRecentLibraryIndexRows(200))') &&
+      sources.studioShell.includes('window.addEventListener(eventName, scheduleLibraryIndexWorkbenchRefresh);') &&
+      !sources.studioShell.includes('function isRecentSidebarSavedChat') &&
+      !sources.studioShell.includes('Loading saved chats'),
     FILES.insights,
     'Library Explorer, Recents, stats, and legacy list views must use the shared active/archive projection instead of raw LibraryIndex rows.'
   ),

@@ -3379,6 +3379,37 @@ function readLinkedWorkbenchRowsFromLibraryIndex(){
     .filter(Boolean);
 }
 
+function canonicalRecentLibraryIndexRows(limit = 30){
+  const rows = readLibraryIndexRows();
+  const core = W.H2O?.Library?.LibraryIndexCore || null;
+  if (core && typeof core.canonicalRecentRows === "function") {
+    return core.canonicalRecentRows(rows, limit, { dateField: "best" });
+  }
+  const source = Array.isArray(rows) ? rows.slice() : [];
+  const active = source.filter((row) => {
+    const view = String(row?.view || row?.displayView || row?.badgeKind || "").toLowerCase();
+    if (view === "archive" || view === "archived" || view === "deleted" || view === "tombstone") return false;
+    if (row?.archived || row?.isArchived || row?.deleted || row?.isDeleted || row?.tombstoned) return false;
+    return true;
+  });
+  active.sort((a, b) => {
+    const dateCompare = String(b?.updatedAt || b?.capturedAt || b?.createdAt || "").localeCompare(String(a?.updatedAt || a?.capturedAt || a?.createdAt || ""));
+    const titleCompare = String(a?.title || "").localeCompare(String(b?.title || ""));
+    const idCompare = String(a?.chatId || a?.id || "").localeCompare(String(b?.chatId || b?.id || ""));
+    return dateCompare || titleCompare || idCompare;
+  });
+  const cap = Number(limit);
+  return Number.isFinite(cap) && cap >= 0 ? active.slice(0, cap) : active;
+}
+
+function projectRecentLibraryRowsToWorkbenchRows(rows){
+  return (Array.isArray(rows) ? rows : [])
+    .map(projectLibraryIndexRowToWorkbenchInput)
+    .filter(Boolean)
+    .map(normalizeWorkbenchRow)
+    .filter(Boolean);
+}
+
 function mergeLinkedLibraryIndexRows(baseRows){
   const out = Array.isArray(baseRows) ? baseRows.slice() : [];
   const seenChatIds = new Set();
@@ -4312,9 +4343,48 @@ function setSidebarChatLoading(view, folderId = ""){
   const folderLabel = folderId === FOLDER_FILTER_NONE
     ? "Unfiled"
     : (folderId ? resolveFolderName(folderId) : "");
-  labelEl.textContent = folderLabel || viewCopy(view);
+  labelEl.textContent = "Recents";
+  labelEl.title = folderLabel ? `Recent chats in ${folderLabel}` : "Recent chats";
   metaEl.textContent = "Loading…";
-  host.innerHTML = `<div class="wbSideEmpty">Loading chats…</div>`;
+  host.innerHTML = `<div class="wbSideEmpty">Loading recents…</div>`;
+}
+
+function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
+  const q = normalizeText(query).toLowerCase();
+  const fromIndex = projectRecentLibraryRowsToWorkbenchRows(canonicalRecentLibraryIndexRows(200));
+  const fallback = Array.isArray(rows) && rows.length
+    ? rows
+    : (Array.isArray(state.rowsCache) ? state.rowsCache : []);
+  const source = fromIndex.length ? fromIndex : fallback;
+  const filtered = source.filter((row) => {
+    if (!row || row.archived || row.isArchived || row.deleted || row.isDeleted || row.tombstoned) return false;
+    if (!matchesFolder(row, folderId)) return false;
+    if (state.lastTagFilter && !(Array.isArray(row.tags) ? row.tags : []).includes(state.lastTagFilter)) return false;
+    if (!q) return true;
+    const labels = row?.labels || {};
+    const haystack = [
+      row.title,
+      row.excerpt,
+      row.chatId,
+      row.folderId,
+      row.folderName,
+      row.originSource,
+      row?.category?.primaryCategoryId,
+      row?.category?.secondaryCategoryId,
+      ...labelSearchTokens(labels),
+      ...(row.tags || []),
+      ...(row.keywords || []),
+    ].join(" ").toLowerCase();
+    return haystack.includes(q);
+  });
+  const core = W.H2O?.Library?.LibraryIndexCore || null;
+  if (core && typeof core.canonicalSortRows === "function") return core.canonicalSortRows(filtered, "recent", "best");
+  return filtered.sort((a, b) => {
+    const dateCompare = String(b.updatedAt || b.capturedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.capturedAt || a.createdAt || ""));
+    const titleCompare = String(a.title || "").localeCompare(String(b.title || ""));
+    const idCompare = String(a.chatId || a.id || "").localeCompare(String(b.chatId || b.id || ""));
+    return dateCompare || titleCompare || idCompare;
+  });
 }
 
 function renderSidebarChatList(rows, view, folderId = "", query = ""){
@@ -4326,16 +4396,18 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
   const folderLabel = folderId === FOLDER_FILTER_NONE
     ? "Unfiled"
     : (folderId ? resolveFolderName(folderId) : "");
-  labelEl.textContent = folderLabel || viewCopy(view);
+  labelEl.textContent = "Recents";
+  labelEl.title = folderLabel ? `Recent chats in ${folderLabel}` : "Recent chats";
+  const list = collectCanonicalSidebarRecentChats(rows, folderId, query);
   metaEl.textContent = [
-    pluralize((Array.isArray(rows) ? rows : []).length, "chat"),
+    pluralize(list.length, "chat"),
+    folderLabel ? folderLabel : "",
     query ? "Filtered" : "",
   ].filter(Boolean).join(" · ");
 
   host.innerHTML = "";
-  const list = Array.isArray(rows) ? rows : [];
   if (!list.length){
-    host.innerHTML = `<div class="wbSideEmpty">No chats match the current archive view.</div>`;
+    host.innerHTML = `<div class="wbSideEmpty">No recent chats match this section.</div>`;
     setActiveSidebarChat("");
     return;
   }
@@ -4343,21 +4415,18 @@ function renderSidebarChatList(rows, view, folderId = "", query = ""){
   const activeSnapshotId = getActiveSnapshotId();
   const frag = document.createDocumentFragment();
   list.slice(0, 30).forEach((row) => {
+    const readerSnapshotId = rowReaderSnapshotId(row);
     const link = document.createElement("a");
     link.className = "wbSidebarChatItem";
-    /* Phase K-1 — linked rows have no snapshotId. Point the sidebar
-     * link to the Linked Chats list (#/linked) so a click doesn't
-     * trigger #/read/<empty> (which has no handler). */
-    const sidebarRowIsLinked = String(row?.view || "").toLowerCase() === "linked";
-    if (sidebarRowIsLinked) {
+    if (readerSnapshotId) {
+      link.href = `#/read/${encodeURIComponent(readerSnapshotId)}`;
+    } else {
       link.href = buildListHash("linked", state.lastFolderId || "");
       link.classList.add("wbSidebarChatItem--linked");
-    } else {
-      link.href = `#/read/${encodeURIComponent(row.snapshotId)}`;
     }
-    link.dataset.snapshotId = String(row.snapshotId || "");
+    link.dataset.snapshotId = String(readerSnapshotId || "");
     link.dataset.chatId = row.chatId;
-    if (!sidebarRowIsLinked && row.snapshotId === activeSnapshotId) link.classList.add("active");
+    if (readerSnapshotId && readerSnapshotId === activeSnapshotId) link.classList.add("active");
 
     const meta = rowMetaParts(row).join(" · ");
 
@@ -14241,38 +14310,45 @@ function renderMigrateImport(panel){
   });
 }
 
-// ── Desktop list auto-refresh (M2a-3j) ──────────────────────────────────────
-// On Tauri, the workbench list is sourced from H2O.LibraryIndex (via
-// fetchWorkbenchRows). LibraryIndex itself auto-refreshes from store
-// subscribers (M2a-3g), so any SQLite write (ingestion, chat upsert,
-// folder bind, etc.) triggers a LibraryIndex update. We listen for those
-// updates and invalidate state.rowsCache + re-render the current route so
-// the Desktop UI reflects the new data without a manual refresh.
+// ── LibraryIndex-driven list/sidebar refresh ────────────────────────────────
+// Workbench list rows and sidebar Recents can both be sourced from
+// H2O.LibraryIndex. Listen on Chrome and Desktop so the canonical recent
+// projection replaces the static loading placeholder as soon as the index is
+// ready, without forcing full route remounts on non-list pages.
 //
 // Debounced 200 ms so multi-write batches coalesce into one re-render.
-function subscribeLibraryIndexToWorkbenchCache(){
-  if (!STUDIO_isTauri()) return;
+let libraryIndexWorkbenchRefreshTimer = 0;
+function scheduleLibraryIndexWorkbenchRefresh(){
+  clearTimeout(libraryIndexWorkbenchRefreshTimer);
+  libraryIndexWorkbenchRefreshTimer = W.setTimeout(() => {
+    libraryIndexWorkbenchRefreshTimer = 0;
+    state.rowsCache = null;
+    refreshSidebarChatList(state.lastView, state.lastFolderId);
+    const route = parseHash();
+    if (route.name === "read") {
+      state.rowsCacheInvalidatedWhileReading = true;
+      return;
+    }
+    if (route.name === "list") renderRoute().catch(console.error);
+  }, 200);
+}
+
+function subscribeLibraryIndexToWorkbenchCache(attempt = 0){
+  if (subscribeLibraryIndexToWorkbenchCache._installed) return;
   const li = W.H2O && W.H2O.LibraryIndex;
-  if (!li || typeof li.subscribe !== 'function') return;
-  let pendingTimer = null;
+  if (!li || typeof li.subscribe !== 'function') {
+    if (attempt < 80 && !subscribeLibraryIndexToWorkbenchCache._retryTimer) {
+      subscribeLibraryIndexToWorkbenchCache._retryTimer = W.setTimeout(() => {
+        subscribeLibraryIndexToWorkbenchCache._retryTimer = null;
+        subscribeLibraryIndexToWorkbenchCache(attempt + 1);
+      }, 250);
+    }
+    return;
+  }
   try {
-    li.subscribe(() => {
-      if (pendingTimer) return;
-      pendingTimer = W.setTimeout(() => {
-        pendingTimer = null;
-        state.rowsCache = null;
-        // renderRoute dispatches to renderList (list/saved/pinned/archive/
-        // folder) or renderReader (read) based on the current hash —
-        // safe to call unconditionally. Other routes (library, settings,
-        // migrate) ignore rowsCache; the invalidation alone is enough for
-        // them on next navigation.
-        if (parseHash().name === "read") {
-          state.rowsCacheInvalidatedWhileReading = true;
-          return;
-        }
-        renderRoute().catch(console.error);
-      }, 200);
-    });
+    li.subscribe(scheduleLibraryIndexWorkbenchRefresh);
+    subscribeLibraryIndexToWorkbenchCache._installed = true;
+    scheduleLibraryIndexWorkbenchRefresh();
   } catch (e) {
     try { console.warn('[H2O.Studio] subscribeLibraryIndexToWorkbenchCache failed', e); } catch {}
   }
@@ -14281,6 +14357,7 @@ function subscribeLibraryIndexToWorkbenchCache(){
 function boot(){
   readUiPrefs();
   applyUiState();
+  subscribeLibraryIndexToWorkbenchCache();
 
   $("#refreshBtn")?.addEventListener("click", () => {
     state.rowsCache = null;
@@ -14357,10 +14434,14 @@ function boot(){
     "evt:h2o:chat-title:changed",
     "evt:h2o:chat-title:emoji-updated",
     "evt:h2o:library:cross-surface-sync",
+  ].forEach((eventName) => {
+    window.addEventListener(eventName, scheduleNativeMetaRefresh);
+  });
+  [
     "evt:h2o:library-index:updated",
     "h2o:library-index:updated",
   ].forEach((eventName) => {
-    window.addEventListener(eventName, scheduleNativeMetaRefresh);
+    window.addEventListener(eventName, scheduleLibraryIndexWorkbenchRefresh);
   });
 
   // v2.8: top-of-sidebar "Search chats" row → route into the Library Explorer

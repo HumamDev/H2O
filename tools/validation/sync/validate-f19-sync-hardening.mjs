@@ -423,6 +423,7 @@ function runStaticAssertions() {
     'parseHash().name === "read"',
     'state.rowsCacheInvalidatedWhileReading = true',
     'scheduleNativeMetaRefresh',
+    'scheduleLibraryIndexWorkbenchRefresh',
     'subscribeLibraryIndexToWorkbenchCache',
     'refreshFromForeground'
   ]) {
