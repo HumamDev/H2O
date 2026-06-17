@@ -237,8 +237,8 @@ const checks = [
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
       sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.74') &&
-      sources.studioHtml.includes('./studio.js?v=2.5.74'),
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.75') &&
+      sources.studioHtml.includes('./studio.js?v=2.5.75'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
   ),
@@ -291,6 +291,29 @@ const checks = [
       sources.sidebarTab.includes("showLocalReview ? `${canonicalRows.length} canonical` : `${canonicalRows.length} folders`"),
     FILES.studioShell,
     'Folder Local Review rows, debug labels, raw folder IDs, and destructive folder cleanup actions must remain hidden/disabled unless folder operator mode is explicitly enabled.'
+  ),
+  check(
+    'folder-sidebar-more-unfiled-polish',
+    sources.studioShell.includes('const SIDEBAR_UNFILED_ICON_SVG =') &&
+      sources.studioShell.includes('function renderFolderSidebarMoreLink()') &&
+      sources.studioShell.includes('link.className = "wbSidebarSectionMore wbFolderSectionMore";') &&
+      sources.studioShell.includes('link.href = "#/library/folders";') &&
+      sources.studioShell.includes('link.textContent = "More";') &&
+      sources.studioShell.includes('const orderedItems = [...unfiledItems, ...projectItems, ...localItems];') &&
+      sources.studioShell.includes('if (isUnfiled) link.classList.add("wbFolderItem--unfiled");') &&
+      !sources.studioShell.includes('isAllFoldersLink: true') &&
+      sources.sidebarSections.includes('inbox:') &&
+      sources.sidebarSections.includes("iconKey: 'inbox'") &&
+      sources.sidebarSections.includes('iconSvg: SIDEBAR_ICON_SVGS.inbox') &&
+      sources.sidebarSections.includes('const mainItems = [buildUnfiledSidebarItem()];') &&
+      sources.sidebarSections.includes("moreHref: '#/library/folders'") &&
+      sources.sidebarSections.includes("moreLabel: 'More'") &&
+      sources.sidebarSections.includes('const moreText = String(opts.moreLabel ||') &&
+      !sources.sidebarSections.includes('mainItems.push(buildAllFoldersSidebarItem())') &&
+      !sources.sidebarSections.includes('isAllFoldersLink') &&
+      !sources.sidebarSections.includes("name: 'All folders'"),
+    FILES.sidebarSections,
+    'Sidebar Folders must show Unfiled first with a distinct system icon, replace the fake All folders row with a More link to #/library/folders, and keep Local Review gated separately.'
   ),
   check(
     'insights-link-badge-semantics',

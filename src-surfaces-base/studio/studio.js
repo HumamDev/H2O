@@ -4092,20 +4092,9 @@ function setActiveNav(view){
 function setActiveFolder(folderId){
   const selected = normalizeFolderFilter(folderId);
   state.lastFolderId = selected;
-  // F10.4-sidebar-fix: when the operator is on the #/library/folders
-  // catalog page, mark the synthetic "All folders" utility row active
-  // even though selected/state.lastFolderId is the empty filter. Other
-  // folder rows take precedence — only the dedicated catalog hash
-  // counts as "all folders is the current view".
-  const isAllFoldersRoute = (() => {
-    try { return String(W.location?.hash || "") === "#/library/folders"; }
-    catch (_) { return false; }
-  })();
   $$(".wbFolderItem[data-folder-id]").forEach((node) => {
     const dataId = String(node.dataset.folderId || "");
-    const isMatch = dataId === selected
-      || (isAllFoldersRoute && dataId === "__all_folders__");
-    node.classList.toggle("active", isMatch);
+    node.classList.toggle("active", dataId === selected);
   });
 }
 
@@ -4190,24 +4179,13 @@ function collectFolderSidebarItems(rows, view, mode = "canonical"){
     });
   }
   if (mode === "canonical") {
-    out.push({ folderId: FOLDER_FILTER_NONE, label: "Unfiled", count: unfiledCount, kind: "utility" });
-    // F10.4-sidebar-fix: pin "All folders" as a utility sibling of
-    // "Unfiled" so studio.js's renderFolderSidebar (which rebuilds
-    // #folderList via host.innerHTML = "") stops dropping it whenever
-    // state.lastFolderId/view/etc. changes. The S0Z1g sidebar renderer
-    // also injects this row via buildAllFoldersSidebarItem; either may
-    // win the last-writer race, but now both produce the same row.
-    // href overrides buildListHash so the row navigates to the
-    // dedicated #/library/folders catalog page rather than the chat
-    // list. kind:"utility" matches Unfiled to share the existing
-    // utility-row render path.
     out.push({
-      folderId: "__all_folders__",
-      label: "All folders",
-      count: base.length,
+      folderId: FOLDER_FILTER_NONE,
+      label: "Unfiled",
+      count: unfiledCount,
       kind: "utility",
-      href: "#/library/folders",
-      isAllFoldersLink: true,
+      isSystem: true,
+      isUnfiled: true,
     });
   }
   return out;
@@ -4216,6 +4194,14 @@ function collectFolderSidebarItems(rows, view, mode = "canonical"){
 const SIDEBAR_FOLDER_ICON_SVG = `
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>
+`;
+
+const SIDEBAR_UNFILED_ICON_SVG = `
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 5.5h14l-1.8 8.2a2.5 2.5 0 0 1-2.4 2H9.2a2.5 2.5 0 0 1-2.4-2L5 5.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M8 15.5h1.7a2.3 2.3 0 0 0 4.6 0H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4 18.5h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
   </svg>
 `;
 
@@ -4238,9 +4224,20 @@ function folderSidebarCountDetails(item, countText){
 
 function folderSidebarSimpleCountLabel(item){
   if (!item) return "";
-  if (item.isAllFoldersLink) return "";
   const count = Number(item?.nativeMembershipCount ?? item?.canonicalCount ?? item?.count ?? item?.knownStudioCount ?? item?.knownCount ?? 0) || 0;
   return pluralize(count, "chat");
+}
+
+function renderFolderSidebarMoreLink(){
+  const link = document.createElement("a");
+  link.className = "wbSidebarSectionMore wbFolderSectionMore";
+  link.href = "#/library/folders";
+  link.dataset.h2oFolderMoreLink = "1";
+  link.dataset.groupby = "folder";
+  link.textContent = "More";
+  link.title = "Open all folders";
+  link.setAttribute("aria-label", "Open all folders");
+  return link;
 }
 
 function updateFolderCountToggleButton(button){
@@ -4298,10 +4295,12 @@ function renderFolderSidebarRow(view, item, opts){
     : null;
   if (appearance?.hidden) return null;
   const displayLabel = String(appearance?.name || item.label || "").trim() || item.folderId || "";
-  const folderIconSvg = appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG;
+  const isUnfiled = item.isUnfiled === true || item.folderId === FOLDER_FILTER_NONE || item.label === "Unfiled";
+  const folderIconSvg = isUnfiled ? SIDEBAR_UNFILED_ICON_SVG : (appearance?.iconSvg || SIDEBAR_FOLDER_ICON_SVG);
   const link = document.createElement("a");
   link.className = "wbFolderItem";
   if (opts && opts.review) link.classList.add("wbFolderItem--review");
+  if (isUnfiled) link.classList.add("wbFolderItem--unfiled");
   const operatorDetails = folderOperatorModeEnabled();
   const countText = operatorDetails
     ? (String(item.displayCountLabel || "").trim() || String(item.count || 0))
@@ -4313,14 +4312,14 @@ function renderFolderSidebarRow(view, item, opts){
   const rowTitle = countDetails ? `${displayLabel} — ${countDetails}` : displayLabel;
   if (!item.count && !hasDetailedCount) link.classList.add("is-empty");
   if (item.folderKind === "project_backed") link.classList.add("is-project-backed");
-  // F10.4-sidebar-fix: honor item.href override so utility rows like
-  // "All folders" (#/library/folders) route to their dedicated page
-  // instead of the default chat-list hash.
+  // Honor item.href overrides so system utility rows can route outside the
+  // default chat-list hash.
   link.href = item.href ? String(item.href) : buildListHash(view, item.folderId);
   link.title = rowTitle;
   link.setAttribute("aria-label", countDetails ? `${displayLabel}, ${countDetails}` : displayLabel);
   if (compactCounts) link.style.gridTemplateColumns = "16px minmax(0,1fr) 24px";
   link.dataset.folderId = String(item.folderId || "");
+  if (isUnfiled) link.dataset.systemRow = "true";
   if (hasDetailedCount) link.dataset.countLabel = countText;
   link.dataset.countMode = compactCounts ? "compact" : "inline";
   if (Array.isArray(item.badges) && item.badges.length) link.dataset.badges = item.badges.join(",");
@@ -4391,8 +4390,8 @@ function renderFolderSidebar(rows, view, selectedFolderId){
 
   const projectItems = items.filter((item) => item.kind === "folder" && item.folderKind === "project_backed");
   const localItems = items.filter((item) => item.kind === "folder" && item.folderKind !== "project_backed");
-  const utilityItems = items.filter((item) => item.kind !== "folder");
-  const orderedItems = [...projectItems, ...localItems, ...utilityItems];
+  const unfiledItems = items.filter((item) => item.isUnfiled === true || item.folderId === FOLDER_FILTER_NONE);
+  const orderedItems = [...unfiledItems, ...projectItems, ...localItems];
 
   orderedItems.forEach((item) => {
     if (projectItems.length && localItems.length && item === localItems[0]){
@@ -4403,6 +4402,8 @@ function renderFolderSidebar(rows, view, selectedFolderId){
     const link = renderFolderSidebarRow(view, item, { review: false });
     if (link) host.appendChild(link);
   });
+
+  host.appendChild(renderFolderSidebarMoreLink());
 
   if (reviewEntries.length > 0) {
     const persistKey = "h2o:prm:cgx:studio-sidebar:local-review:expanded:v1";

@@ -122,6 +122,7 @@
       </svg>
     `,
     folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14l-1.8 8.2a2.5 2.5 0 0 1-2.4 2H9.2a2.5 2.5 0 0 1-2.4-2L5 5.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 15.5h1.7a2.3 2.3 0 0 0 4.6 0H16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 18.5h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     briefcase: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7V5.8A1.8 1.8 0 0 1 10.8 4h2.4A1.8 1.8 0 0 1 15 5.8V7m-9.5 4.5h13M5 7h14a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     code: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5m6-10 5 5-5 5M13 5l-2 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     book: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5v-16Zm0 0v16M8 7h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -214,7 +215,6 @@
   }
 
   function folderSidebarSimpleCountLabel(item = {}) {
-    if (item.isAllFoldersLink) return '';
     const count = Number(item.nativeMembershipCount ?? item.canonicalCount ?? item.count ?? item.knownStudioCount ?? item.knownCount ?? 0) || 0;
     return folderSidebarChatCountLabel(count);
   }
@@ -2067,22 +2067,8 @@
       isUnfiled: true,
       disableMenu: true,
       href,
-      iconKey: 'folder',
-      iconSvg: SIDEBAR_ICON_SVGS.folder,
-    };
-  }
-
-  function buildAllFoldersSidebarItem() {
-    return {
-      id: '__all_folders__',
-      folderId: '__all_folders__',
-      name: 'All folders',
-      href: '#/library/folders',
-      icon: '…',
-      isCanonical: false,
-      isSystem: true,
-      isAllFoldersLink: true,
-      disableMenu: true,
+      iconKey: 'inbox',
+      iconSvg: SIDEBAR_ICON_SVGS.inbox,
     };
   }
 
@@ -2890,19 +2876,21 @@
       host.appendChild(link);
     }
 
-    if (prepared.length > visible.length) {
+    const forcedMoreHref = String(opts.moreHref || '').trim();
+    if (forcedMoreHref || prepared.length > visible.length) {
       const moreCount = prepared.length - visible.length;
       const groupBy = kind === 'labels' ? 'label'
                     : kind === 'categories' ? 'category'
                     : kind === 'projects' ? 'project'
                     : kind === 'folders' ? 'folder'
                     : 'date';
-      const moreHref = kind === 'folders' ? '#/library/folders' : '#/library/explorer';
+      const moreHref = forcedMoreHref || (kind === 'folders' ? '#/library/folders' : '#/library/explorer');
+      const moreText = String(opts.moreLabel || '').trim() || `More · ${formatNumber(moreCount)}`;
       const more = el('a', {
         class: 'wbSidebarSectionMore',
         href: moreHref,
         'data-groupby': groupBy,
-      }, `More · ${formatNumber(moreCount)}`);
+      }, moreText);
       // Switch non-folder sections into Explorer grouping. Folders have a
       // dedicated catalog page because their native/known counts need room.
       if (kind !== 'folders') {
@@ -2981,11 +2969,10 @@
       };
     };
 
-    const mainItems = canonicalRows
+    const mainItems = [buildUnfiledSidebarItem()];
+    mainItems.push(...canonicalRows
       .map(toSidebarItem)
-      .filter((item) => item && item.id !== FOLDER_FILTER_NONE);
-    mainItems.push(buildUnfiledSidebarItem());
-    mainItems.push(buildAllFoldersSidebarItem());
+      .filter((item) => item && item.id !== FOLDER_FILTER_NONE));
     const reviewItems = showLocalReview ? localReviewRows.map(toSidebarItem).filter(Boolean) : [];
 
     const mainEmptyText = fallbackUsed
@@ -2994,6 +2981,8 @@
     renderSectionList(host, 'folders', mainItems, {
       emptyText: mainEmptyText,
       limit: Math.max(mainItems.length, ITEM_LIMIT_DEFAULT),
+      moreHref: '#/library/folders',
+      moreLabel: 'More',
     });
 
     if (reviewItems.length > 0) {
