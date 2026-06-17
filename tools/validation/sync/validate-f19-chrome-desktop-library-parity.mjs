@@ -10,6 +10,9 @@ const root = process.cwd();
 const failures = [];
 
 const moduleFile = 'src-surfaces-base/studio/sync/library/library-chrome-desktop-parity-diagnostic.js';
+const sharedCoreFile = 'shared/library/library-index-core.js';
+const runtimeCoreFile = 'src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js';
+const studioCoreFile = 'src-surfaces-base/studio/S0F0d. 🎬 Library Index Core - Studio.js';
 const htmlFile = 'src-surfaces-base/studio/studio.html';
 const packFile = 'tools/product/studio/pack-studio.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.1-chrome-desktop-library-parity-contract.md';
@@ -46,6 +49,24 @@ function assertOrder(file, before, after) {
   }
 }
 
+function coreBody(file) {
+  const text = read(file);
+  const start = text.indexOf('(() => {');
+  assert(start !== -1, `${file}: core IIFE missing`);
+  return start === -1 ? '' : text.slice(start).trim();
+}
+
+function buildCoreContext() {
+  const context = { console, Date, H2O: { Library: {} } };
+  context.globalThis = context;
+  return vm.createContext(context);
+}
+
+function installCore(context) {
+  vm.runInContext(read(sharedCoreFile), context, { filename: sharedCoreFile });
+  return context.H2O?.Library?.LibraryIndexCore || null;
+}
+
 function makeRows(prefix, count, linkedCount = 1) {
   return Array.from({ length: count }, (_, index) => ({
     chatId: `${prefix}-chat-${index + 1}`,
@@ -61,6 +82,50 @@ function makeRows(prefix, count, linkedCount = 1) {
     tags: [],
     updatedAt: 1000 + index
   }));
+}
+
+function makeCanonicalHeadlineRows() {
+  const rows = [];
+  for (let index = 0; index < 17; index += 1) {
+    const saved = index < 7;
+    rows.push({
+      chatId: `active-chat-${index + 1}`,
+      snapshotId: saved ? `snapshot-${index + 1}` : '',
+      href: saved ? `/c/active-chat-${index + 1}` : `/c/link-chat-${index + 1}`,
+      view: saved ? 'saved' : 'linked',
+      pinned: index === 0,
+      folderId: 'active-folder',
+      categoryId: 'active-category',
+      labels: ['active-label'],
+      projectId: 'active-project',
+      state: {
+        isSaved: saved,
+        isLinked: true,
+        isPinned: index === 0,
+        isArchived: false,
+        isDeleted: false
+      }
+    });
+  }
+  for (let index = 0; index < 3; index += 1) {
+    rows.push({
+      chatId: `archived-chat-${index + 1}`,
+      snapshotId: `archived-snapshot-${index + 1}`,
+      view: 'saved',
+      archived: true,
+      folderId: 'archived-folder',
+      categoryId: 'archived-category',
+      labels: ['archived-label'],
+      projectId: 'archived-project',
+      state: {
+        isSaved: true,
+        isLinked: false,
+        isArchived: true,
+        isDeleted: false
+      }
+    });
+  }
+  return rows;
 }
 
 function buildContext(kind) {
@@ -113,6 +178,8 @@ async function runVmProof() {
   const source = read(moduleFile);
   const chromeContext = buildContext('chrome');
   const desktopContext = buildContext('desktop');
+  installCore(chromeContext);
+  installCore(desktopContext);
   vm.runInContext(source, chromeContext, { filename: moduleFile });
   vm.runInContext(source, desktopContext, { filename: moduleFile });
 
@@ -131,8 +198,14 @@ async function runVmProof() {
   const desktopSnapshot = await desktopApi.captureSnapshot();
   assert(chromeSnapshot.surface === 'chrome-studio', 'Chrome snapshot surface mismatch');
   assert(desktopSnapshot.surface === 'desktop-studio', 'Desktop snapshot surface mismatch');
-  assert(chromeSnapshot.counts.total === 10, 'Chrome total count mismatch');
-  assert(desktopSnapshot.counts.total === 7, 'Desktop total count mismatch');
+  assert(chromeSnapshot.counts.total === 9, 'Chrome canonical active total count mismatch');
+  assert(chromeSnapshot.counts.archived === 1, 'Chrome canonical archived count mismatch');
+  assert(chromeSnapshot.counts.link === 1, 'Chrome canonical link count mismatch');
+  assert(chromeSnapshot.counts.linked === chromeSnapshot.counts.link, 'Chrome linked alias mismatch');
+  assert(desktopSnapshot.counts.total === 6, 'Desktop canonical active total count mismatch');
+  assert(desktopSnapshot.counts.archived === 1, 'Desktop canonical archived count mismatch');
+  assert(desktopSnapshot.counts.link === 0, 'Desktop canonical link count mismatch');
+  assert(desktopSnapshot.counts.linked === desktopSnapshot.counts.link, 'Desktop linked alias mismatch');
 
   const leakedSnapshot = JSON.stringify({ chromeSnapshot, desktopSnapshot });
   for (const forbidden of [
@@ -177,12 +250,39 @@ async function runVmProof() {
   assert(match.ok === true, 'matching snapshots should pass');
 }
 
-for (const file of [moduleFile, htmlFile, packFile, contractFile]) assertExists(file);
+function runCanonicalHeadlineProof() {
+  const context = buildCoreContext();
+  const core = installCore(context);
+  assert(core?.__phase === '2B', 'LibraryIndexCore phase marker missing');
+  assert(typeof core?.canonicalHeadlineCounts === 'function', 'canonicalHeadlineCounts missing');
+  const rows = makeCanonicalHeadlineRows();
+  const counts = core.canonicalHeadlineCounts(rows);
+  assert(counts.total === 17, 'canonical active total must exclude archived rows');
+  assert(counts.saved === 7, 'saved+linked rows must count as saved');
+  assert(counts.link === 10, 'link-only rows must count as link');
+  assert(counts.linked === counts.link, 'linked alias must equal link');
+  assert(counts.pinned === 1, 'active pinned count mismatch');
+  assert(counts.archived === 3, 'archived side bucket mismatch');
+  assert(counts.folders === 1, 'folder count must use active rows only');
+  assert(counts.labels === 1, 'label count must use active rows only');
+  assert(counts.categories === 1, 'category count must use active rows only');
+}
+
+function runTriplicateProof() {
+  const sharedBody = coreBody(sharedCoreFile);
+  assert(coreBody(runtimeCoreFile) === sharedBody, 'runtime LibraryIndexCore body differs from shared core');
+  assert(coreBody(studioCoreFile) === sharedBody, 'Studio LibraryIndexCore body differs from shared core');
+}
+
+for (const file of [moduleFile, sharedCoreFile, runtimeCoreFile, studioCoreFile, htmlFile, packFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
+  runTriplicateProof();
+  runCanonicalHeadlineProof();
   assertContains(moduleFile, "var VERSION = '0.1.0-f19.1.a'", 'version marker');
   assertContains(moduleFile, 'h2o.studio.sync.library-parity-snapshot.v1', 'snapshot schema');
   assertContains(moduleFile, 'h2o.studio.sync.chrome-desktop-library-parity.v1', 'parity schema');
+  assertContains(moduleFile, 'canonicalHeadlineCounts', 'canonical headline count usage');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

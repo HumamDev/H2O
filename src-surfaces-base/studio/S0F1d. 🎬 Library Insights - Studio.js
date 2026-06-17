@@ -41,11 +41,20 @@
 
   // ── Service accessors ──────────────────────────────────────────────────────
   function getCore()      { return H2O.LibraryCore || null; }
+  function getIndexCore() { return H2O.Library?.LibraryIndexCore || null; }
   function getIndex()     { return H2O.LibraryIndex || null; }
   function getWorkspace() { return H2O.LibraryWorkspace || null; }
   function getUIShell()   { return getCore()?.getService?.('ui-shell') || null; }
   function getPageHost()  { return getCore()?.getService?.('page-host') || null; }
   function getRouteSvc()  { return getCore()?.getService?.('route') || null; }
+  function canonicalHeadlineCounts(rows) {
+    const core = getIndexCore();
+    if (core && typeof core.canonicalHeadlineCounts === 'function') {
+      return core.canonicalHeadlineCounts(rows);
+    }
+    const total = Array.isArray(rows) ? rows.length : 0;
+    return { total, saved: 0, link: 0, linked: 0, pinned: 0, archived: 0, folders: 0, labels: 0, categories: 0, projects: 0 };
+  }
 
   // ── Preferences (persisted) ────────────────────────────────────────────────
   // Defaults are merged with whatever's in localStorage so old prefs survive a
@@ -1079,8 +1088,8 @@
     };
     // Linked pill is conditional: only render when there's at least one
     // linked-only record so the filter row stays clean on installs that
-    // never used "Add to Library". Counts come from idx.counts() which
-    // the renderer captures alongside rows.
+    // never used "Add to Library". Counts come from the shared canonical
+    // headline projection.
     const linkedCount = (opts && opts.linkedCount) || 0;
     return el('div', { class: 'wbFilterChips' }, [
       opts.hideViewChips ? null : el('div', { class: 'wbFilterChipGroup' }, [
@@ -1292,16 +1301,16 @@
   // ── Renderers ──────────────────────────────────────────────────────────────
   function renderDashboard(idx) {
     const rows = idx.getAll();
-    const counts = idx.counts();
+    const headline = canonicalHeadlineCounts(rows);
     const syncStateText = indexSyncStateText(idx);
     const series = buildActivitySeries(rows, 30);
     const recent = rows.slice().sort((a, b) => asTs(b.updatedAt || b.capturedAt) - asTs(a.updatedAt || a.capturedAt)).slice(0, 6);
 
-    const total = counts.total;
-    const saved = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved).length;
-    const pinned = counts.views?.pinned || 0;
-    const archive = counts.views?.archive || 0;
-    const linked = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
+    const total = headline.total;
+    const saved = headline.saved;
+    const pinned = headline.pinned;
+    const archive = headline.archived;
+    const linked = headline.link;
 
     const subParts = [
       `${formatNumber(saved)} saved`,
@@ -1578,7 +1587,8 @@
     // Link count drives whether the Link pill renders. Saved/Pinned/
     // Archive tabs (forceView set) keep `hideViewChips:true` so they never
     // show a Link pill — the Saved tab must remain saved-transcript-only.
-    const linkedCount = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
+    const headline = canonicalHeadlineCounts(rows);
+    const linkedCount = headline.link;
 
     // The page-level shell renders a unified search input above the tab nav,
     // so we hide the internal Explorer SearchBar to avoid a duplicate field.
@@ -1588,7 +1598,7 @@
       rich ? renderExplorerToolbar(idx) : null,
       rich ? renderExplorerDropdownGrid(idx) : null,
       opts.hideInternalSearch ? null : SearchBar(),
-      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount, totalCount: rows.length }),
+      FilterChips({ hideViewChips: !!opts.forceView, hideSortChips: rich, linkedCount, totalCount: headline.total }),
       syncStateText ? el('div', { class: 'wbExpSyncState', style: 'font-size:12px;opacity:.68;margin-top:4px' }, syncStateText) : null,
       el('div', { class: 'wbExpSummary' },
         `${formatNumber(filtered.length)} of ${formatNumber(rows.length)} chats${
@@ -1624,7 +1634,7 @@
   }
 
   function renderAnalytics(idx) {
-    const counts = idx.counts();
+    const counts = canonicalHeadlineCounts(idx.getAll());
     const f = idx.facets();
     const total = counts.total;
 
@@ -2106,12 +2116,13 @@
   // ── Page-shell renderers (header / search / secondary nav / tabs) ──────────
   function renderPageHeader(idx) {
     const rows = idx.getAll();
-    const savedCount   = rows.filter((r) => rowHasOpenableTranscriptContent(r) && getRowState(r).isSaved).length;
-    const linkedCount  = rows.filter((r) => rowIsUrlOnlyLink(r)).length;
-    const folderCount  = pageData.folders.length;
-    const labelCount   = pageData.labels.length;
-    const catCount     = pageData.categories.length;
-    const projectCount = Object.keys(idx.facets().byProject || {}).length;
+    const headline = canonicalHeadlineCounts(rows);
+    const savedCount   = headline.saved;
+    const linkedCount  = headline.link;
+    const folderCount  = headline.folders;
+    const labelCount   = headline.labels;
+    const catCount     = headline.categories;
+    const projectCount = headline.projects;
     const statsLine = `${formatNumber(savedCount)} saved · ${formatNumber(linkedCount)} link · ${formatNumber(folderCount)} folders · ${formatNumber(labelCount)} labels · ${formatNumber(catCount)} categories · ${formatNumber(projectCount)} projects`;
 
     const refreshBtn = el('button', {

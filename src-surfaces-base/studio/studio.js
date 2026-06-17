@@ -13355,6 +13355,7 @@ async function refreshSettingsSync(panel){
   let diag = {};
   let rowsAfter = null;
   let counts = null;
+  let headlineCounts = null;
   try { folder = W.H2O?.Studio?.sync?.folder || null; }
   catch (err) { statusError = String(err && (err.message || err)); }
   try {
@@ -13368,6 +13369,10 @@ async function refreshSettingsSync(panel){
   try {
     const allRows = W.H2O?.LibraryIndex?.getAll?.();
     rowsAfter = Array.isArray(allRows) ? allRows.length : null;
+    const core = W.H2O?.Library?.LibraryIndexCore || null;
+    if (Array.isArray(allRows) && core && typeof core.canonicalHeadlineCounts === "function") {
+      headlineCounts = core.canonicalHeadlineCounts(allRows);
+    }
   } catch (err) {
     statusError = statusError || String(err && (err.message || err));
   }
@@ -13384,7 +13389,9 @@ async function refreshSettingsSync(panel){
     ["Last auto sync", diag.lastAutoSyncStatus || ""],
     ["Last error", diag.lastSyncError || diag.lastAutoSyncError || ""],
     ["Rows", rowsAfter != null ? String(rowsAfter) : ""],
-    ["Saved count", counts && counts.views ? String(counts.views.saved || 0) : ""],
+    ["Saved count", headlineCounts ? String(headlineCounts.saved || 0) : (counts && counts.views ? String(counts.views.saved || 0) : "")],
+    ["Link count", headlineCounts ? String(headlineCounts.link || 0) : ""],
+    ["Archived count", headlineCounts ? String(headlineCounts.archived || 0) : ""],
   ];
   if (statusError) rows.push(["Status error", statusError]);
   if (statusEl) statusEl.innerHTML = settingsSyncRowsHtml(rows);

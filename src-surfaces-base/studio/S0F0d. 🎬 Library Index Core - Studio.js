@@ -528,6 +528,42 @@
     return 'recents';
   }
 
+  // ── Open-target resolution (Native Save-to-Folder + linked rows) ────────
+  // Resolves the URL a row should open. Preference order is strict:
+  //   normalizedHref → href → linkSourceHref → /c/<chatId>
+  // NEVER returns folderId — a folder binding is metadata, not an open
+  // target. Returns '' only when no chat identity is resolvable. Native
+  // Save-to-Folder rows arrive as view:'saved' + state.isLinked:true with
+  // a valid href; this resolver yields /c/<chatId> for them.
+  function resolveRowOpenTarget(row) {
+    if (!row || typeof row !== 'object') return '';
+    const norm = ensureString(row.normalizedHref).trim();
+    if (norm) return norm;
+    const href = ensureString(row.href).trim();
+    if (href) return href;
+    const linkSrc = ensureString(row.linkSourceHref).trim();
+    if (linkSrc) return linkSrc;
+    const chatId = ensureString(row.chatId).trim();
+    if (chatId) return hrefForChatId(chatId);
+    return '';
+  }
+
+  // True when a row should open its original ChatGPT chat (a live link)
+  // instead of a captured Studio snapshot reader. Covers Native
+  // Save-to-Folder rows, which arrive as view:'saved' + state.isLinked:true
+  // with no readable transcript. A row is link-only when it is tagged
+  // linked (view OR state OR row flag), OR carries a resolvable link
+  // target without a captured snapshot.
+  function rowIsLinkOnly(row) {
+    if (!row || typeof row !== 'object') return false;
+    if (ensureString(row.view).trim().toLowerCase() === 'linked') return true;
+    const st = (row.state && typeof row.state === 'object') ? row.state : null;
+    if (st && st.isLinked === true) return true;
+    if (row.isLinked === true) return true;
+    if (ensureString(row.snapshotId).trim()) return false;
+    return !!resolveRowOpenTarget(row);
+  }
+
   // ── Dedupe key ──────────────────────────────────────────────────────────
   function getRowDedupeKey(row) {
     if (!row || typeof row !== 'object') return '';
@@ -689,6 +725,122 @@
       tags: collapse(f.byTag),
     };
   }
+  function boolish(value) {
+    if (value === true || value === 1) return true;
+    const text = ensureString(value).trim().toLowerCase();
+    return text === '1' || text === 'true' || text === 'yes';
+  }
+  function rowNestedState(row) {
+    const raw = row && row.raw && typeof row.raw === 'object' ? row.raw : null;
+    const meta = row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+    const rowState = row && row.state && typeof row.state === 'object' ? row.state : null;
+    const rawState = raw && raw.state && typeof raw.state === 'object' ? raw.state : null;
+    const metaState = meta && meta.state && typeof meta.state === 'object' ? meta.state : null;
+    return { raw, meta, rowState, rawState, metaState };
+  }
+  function rowViewForHeadline(row) {
+    const { raw, meta } = rowNestedState(row);
+    return ensureString(
+      row?.displayView
+      || row?.badgeKind
+      || row?.view
+      || row?.status
+      || raw?.displayView
+      || raw?.badgeKind
+      || raw?.view
+      || raw?.status
+      || meta?.displayView
+      || meta?.view
+      || meta?.status
+      || ''
+    ).trim().toLowerCase();
+  }
+  function rowFlagForHeadline(row, keys = []) {
+    const { raw, meta, rowState, rawState, metaState } = rowNestedState(row);
+    for (const src of [row, rowState, raw, rawState, meta, metaState]) {
+      if (!src || typeof src !== 'object') continue;
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(src, key) && boolish(src[key])) return true;
+      }
+    }
+    return false;
+  }
+  function rowDeletedForHeadline(row) {
+    const view = rowViewForHeadline(row);
+    return view === 'deleted'
+      || view === 'tombstone'
+      || view === 'tombstoned'
+      || rowFlagForHeadline(row, ['deleted', 'isDeleted', 'is_deleted', 'tombstoned', 'isTombstoned']);
+  }
+  function rowArchivedForHeadline(row) {
+    const view = rowViewForHeadline(row);
+    return view === 'archive'
+      || view === 'archived'
+      || rowFlagForHeadline(row, ['archived', 'isArchived', 'is_archived']);
+  }
+  function rowSavedForHeadline(row) {
+    const view = rowViewForHeadline(row);
+    return view === 'saved' || rowFlagForHeadline(row, ['saved', 'isSaved', 'is_saved']);
+  }
+  function rowImportedForHeadline(row) {
+    const view = rowViewForHeadline(row);
+    return view === 'imported' || rowFlagForHeadline(row, ['imported', 'isImported', 'is_imported']);
+  }
+  function rowLinkedForHeadline(row) {
+    const view = rowViewForHeadline(row);
+    return view === 'linked' || view === 'link' || rowFlagForHeadline(row, ['linked', 'isLinked', 'is_linked']);
+  }
+  function countFacetKeys(bucket) {
+    return Object.keys(bucket || {}).filter(Boolean).length;
+  }
+  function canonicalHeadlineCounts(rows) {
+    const counts = {
+      total: 0,
+      saved: 0,
+      link: 0,
+      linked: 0,
+      pinned: 0,
+      archived: 0,
+      folders: 0,
+      labels: 0,
+      categories: 0,
+      projects: 0,
+    };
+    const activeRows = [];
+    const seen = new Set();
+    (Array.isArray(rows) ? rows : []).forEach((row, index) => {
+      if (!row || typeof row !== 'object') return;
+      const dedupeKey = getRowDedupeKey(row) || `row:${index}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      const deleted = rowDeletedForHeadline(row);
+      if (deleted) return;
+      if (rowArchivedForHeadline(row)) {
+        counts.archived += 1;
+        return;
+      }
+      const isSaved = rowSavedForHeadline(row);
+      const isLinked = !isSaved && (rowLinkedForHeadline(row) || rowIsLinkOnly(row));
+      const view = deriveViewFromBooleans({
+        isSaved,
+        isLinked,
+        isImported: rowImportedForHeadline(row),
+        isRecent: true,
+      });
+      counts.total += 1;
+      activeRows.push(row);
+      if (rowFlagForHeadline(row, ['pinned', 'isPinned', 'is_pinned'])) counts.pinned += 1;
+      if (view === 'saved') counts.saved += 1;
+      else if (view === 'linked') counts.link += 1;
+    });
+    counts.linked = counts.link;
+    const facets = buildFacetsStudio(activeRows);
+    counts.folders = countFacetKeys(facets.byFolder);
+    counts.labels = countFacetKeys(facets.byLabel);
+    counts.categories = countFacetKeys(facets.byCategory);
+    counts.projects = countFacetKeys(facets.byProject);
+    return counts;
+  }
 
   // ── Filter / sort / bucket (native rows) ───────────────────────────────
   function matchesOne(value, candidates = []) {
@@ -837,6 +989,10 @@
     deriveViewFromBooleans,
     getRowDedupeKey,
 
+    // Open-target resolution (Native Save-to-Folder + linked rows)
+    resolveRowOpenTarget,
+    rowIsLinkOnly,
+
     // Facets / counts
     bumpFacet,
     facetRowsFromMap,
@@ -846,6 +1002,7 @@
     buildCounts,
     buildFacetsStudio,
     countsFromFacetsStudio,
+    canonicalHeadlineCounts,
 
     // Filter / sort / bucket
     matchesOne,

@@ -9,6 +9,7 @@
   'use strict';
 
   var H2O = global.H2O = global.H2O || {};
+  H2O.Library = H2O.Library || {};
   H2O.Studio = H2O.Studio || {};
   H2O.Studio.sync = H2O.Studio.sync || {};
 
@@ -220,6 +221,10 @@
     return H2O.LibraryIndex || (H2O.Library && H2O.Library.Index) || null;
   }
 
+  function getLibraryIndexCore() {
+    return (H2O.Library && H2O.Library.LibraryIndexCore) || null;
+  }
+
   async function readCatalog(kind, rows, warnings) {
     var workspace = H2O.LibraryWorkspace || (H2O.Studio && H2O.Studio.LibraryWorkspace) || null;
     var stores = (H2O.Studio && H2O.Studio.store) || {};
@@ -256,26 +261,25 @@
     return { source: 'unavailable', tokens: [] };
   }
 
-  function summarizeCounts(rows, catalogs) {
+  function summarizeCounts(rows) {
     var list = asArray(rows);
-    var counts = {
-      total: list.length,
-      saved: 0,
-      linked: 0,
-      pinned: 0,
-      archived: 0,
-      folders: catalogs.folders.tokens.length,
-      labels: catalogs.labels.tokens.length,
-      categories: catalogs.categories.tokens.length,
-      projects: catalogs.projects.tokens.length
+    var core = getLibraryIndexCore();
+    var canonical = core && typeof core.canonicalHeadlineCounts === 'function'
+      ? safeObject(core.canonicalHeadlineCounts(list))
+      : {};
+    var linkCount = Number(canonical.link || canonical.linked || 0) || 0;
+    return {
+      total: Number(canonical.total || 0) || 0,
+      saved: Number(canonical.saved || 0) || 0,
+      link: linkCount,
+      linked: linkCount,
+      pinned: Number(canonical.pinned || 0) || 0,
+      archived: Number(canonical.archived || 0) || 0,
+      folders: Number(canonical.folders || 0) || 0,
+      labels: Number(canonical.labels || 0) || 0,
+      categories: Number(canonical.categories || 0) || 0,
+      projects: Number(canonical.projects || 0) || 0
     };
-    list.forEach(function (row) {
-      if (isSaved(row)) counts.saved += 1;
-      if (isLinked(row)) counts.linked += 1;
-      if (isPinned(row)) counts.pinned += 1;
-      if (isArchived(row)) counts.archived += 1;
-    });
-    return counts;
   }
 
   function recencyNumber(row) {
@@ -461,7 +465,7 @@
 
     compareField(mismatches, MISMATCH_CODES.count, 'counts.total', Number(chrome.counts.total || 0), Number(desktop.counts.total || 0));
     compareField(mismatches, MISMATCH_CODES.saved, 'counts.saved', Number(chrome.counts.saved || 0), Number(desktop.counts.saved || 0));
-    compareField(mismatches, MISMATCH_CODES.linked, 'counts.linked', Number(chrome.counts.linked || 0), Number(desktop.counts.linked || 0));
+    compareField(mismatches, MISMATCH_CODES.linked, 'counts.link', Number(chrome.counts.link || chrome.counts.linked || 0), Number(desktop.counts.link || desktop.counts.linked || 0));
     compareField(mismatches, MISMATCH_CODES.pinned, 'counts.pinned', Number(chrome.counts.pinned || 0), Number(desktop.counts.pinned || 0));
     compareField(mismatches, MISMATCH_CODES.archived, 'counts.archived', Number(chrome.counts.archived || 0), Number(desktop.counts.archived || 0));
     compareField(mismatches, MISMATCH_CODES.folders, 'counts.folders', Number(chrome.counts.folders || 0), Number(desktop.counts.folders || 0));
