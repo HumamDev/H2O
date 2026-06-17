@@ -4375,11 +4375,13 @@ function setSidebarChatLoading(view, folderId = ""){
 
 function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
   const q = normalizeText(query).toLowerCase();
-  const fromIndex = projectRecentLibraryRowsToWorkbenchRows(canonicalSavedRecentLibraryIndexRows(200));
+  const sourceIsCanonical = hasLibraryIndexRowsApi();
+  const canonicalRows = sourceIsCanonical ? canonicalSavedRecentLibraryIndexRows(200) : [];
+  const fromIndex = projectRecentLibraryRowsToWorkbenchRows(canonicalRows);
   const fallback = Array.isArray(rows) && rows.length
     ? rows
     : (Array.isArray(state.rowsCache) ? state.rowsCache : []);
-  const source = fromIndex.length ? fromIndex : fallback;
+  const source = sourceIsCanonical ? fromIndex : fallback;
   const filtered = source.filter((row) => {
     if (!row || row.archived || row.isArchived || row.deleted || row.isDeleted || row.tombstoned) return false;
     if (!libraryRowIsSavedTranscript(row)) return false;
@@ -4402,6 +4404,7 @@ function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
     ].join(" ").toLowerCase();
     return haystack.includes(q);
   });
+  if (sourceIsCanonical) return filtered;
   const core = W.H2O?.Library?.LibraryIndexCore || null;
   if (core && typeof core.canonicalSortRows === "function") return core.canonicalSortRows(filtered, "recent", "savedRecent");
   return filtered.sort((a, b) => {

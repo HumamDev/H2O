@@ -1480,6 +1480,28 @@
     }
   }
 
+  function recentsTokenKey(token) {
+    return `${cleanString(token?.idHash)}|${cleanString(token?.snapshotHash)}`;
+  }
+
+  function recentsTokenSequenceMatches(sourceTokens, domTokens) {
+    const source = Array.isArray(sourceTokens) ? sourceTokens : [];
+    const dom = Array.isArray(domTokens) ? domTokens : [];
+    if (source.length !== dom.length) return false;
+    return dom.every((token, index) => recentsTokenKey(token) === recentsTokenKey(source[index]));
+  }
+
+  function recentsTokenSequenceMismatchCount(sourceTokens, domTokens) {
+    const source = Array.isArray(sourceTokens) ? sourceTokens : [];
+    const dom = Array.isArray(domTokens) ? domTokens : [];
+    const max = Math.max(source.length, dom.length);
+    let mismatches = 0;
+    for (let index = 0; index < max; index += 1) {
+      if (recentsTokenKey(source[index]) !== recentsTokenKey(dom[index])) mismatches += 1;
+    }
+    return mismatches;
+  }
+
   function diagnoseRecentsParity(options = {}) {
     const limit = Number.isFinite(Number(options.limit)) ? Number(options.limit) : 30;
     const c = ixCore();
@@ -1493,13 +1515,15 @@
     const tokens = savedRecentRows.map(recentsToken);
     const domSidebarTokens = domRecentsTokens('#sidebarChatList .wbSidebarChatItem', limit);
     const domDashboardTokens = domRecentsTokens('.wbDashRecentList .wbChatRow', 6);
+    const domSidebarMatchesSourceOrder = recentsTokenSequenceMatches(tokens, domSidebarTokens);
+    const domDashboardMatchesSourceOrder = recentsTokenSequenceMatches(tokens.slice(0, domDashboardTokens.length), domDashboardTokens);
     const domLinkOnlyLeaks = [...domSidebarTokens, ...domDashboardTokens]
       .filter((token) => token.linked && !token.saved && token.opens !== 'reader');
     const domArchivedLeaks = [...domSidebarTokens, ...domDashboardTokens]
       .filter((token) => token.archived || token.deleted);
     return {
       schema: 'h2o.library-index.recents-parity-diagnostic.v1',
-      ok: linkOnlyLeaks.length === 0 && archivedLeaks.length === 0 && domLinkOnlyLeaks.length === 0 && domArchivedLeaks.length === 0,
+      ok: linkOnlyLeaks.length === 0 && archivedLeaks.length === 0 && domLinkOnlyLeaks.length === 0 && domArchivedLeaks.length === 0 && domSidebarMatchesSourceOrder,
       surface: 'studio',
       source: LI_isTauri() ? 'desktop-sqlite' : 'chrome-archive',
       sourceRowCount: state.rows.length,
@@ -1509,6 +1533,10 @@
       dashboardRecentsRowTokens: tokens.slice(0, 6),
       domSidebarRecentsRowTokens: domSidebarTokens,
       domDashboardRecentTokens: domDashboardTokens,
+      domSidebarMatchesSourceOrder,
+      domDashboardMatchesSourceOrder,
+      domSidebarSourceOrderMismatchCount: recentsTokenSequenceMismatchCount(tokens, domSidebarTokens),
+      domDashboardSourceOrderMismatchCount: recentsTokenSequenceMismatchCount(tokens.slice(0, domDashboardTokens.length), domDashboardTokens),
       linkOnlyRowsAccidentallyIncludedCount: linkOnlyLeaks.length + domLinkOnlyLeaks.length,
       archivedRowsAccidentallyIncludedCount: archivedLeaks.length + domArchivedLeaks.length,
       sourceLinkOnlyRowsAccidentallyIncludedCount: linkOnlyLeaks.length,

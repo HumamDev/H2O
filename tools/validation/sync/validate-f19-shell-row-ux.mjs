@@ -171,11 +171,14 @@ const checks = [
       sources.libraryIndexCore.includes('rowHasTranscriptEvidence') &&
       sources.studioShell.includes('if (next === "archive") return archived;') &&
       sources.studioShell.includes('if (archived) return false;') &&
-      sources.studioShell.includes('core.canonicalSortRows(filtered, "recent", "savedRecent")') &&
       sources.studioShell.includes('function canonicalSavedRecentLibraryIndexRows(limit = 30)') &&
       sources.studioShell.includes('core.canonicalSavedRecentRows(rows, limit, { dateField: "savedRecent" })') &&
       sources.studioShell.includes('function collectCanonicalSidebarRecentChats(rows, folderId = "", query = "")') &&
-      sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalSavedRecentLibraryIndexRows(200))') &&
+      sources.studioShell.includes('const sourceIsCanonical = hasLibraryIndexRowsApi();') &&
+      sources.studioShell.includes('const canonicalRows = sourceIsCanonical ? canonicalSavedRecentLibraryIndexRows(200) : [];') &&
+      sources.studioShell.includes('projectRecentLibraryRowsToWorkbenchRows(canonicalRows)') &&
+      sources.studioShell.includes('const source = sourceIsCanonical ? fromIndex : fallback;') &&
+      sources.studioShell.includes('if (sourceIsCanonical) return filtered;') &&
       sources.studioShell.includes('if (!libraryRowIsSavedTranscript(row)) return false;') &&
       sources.studioShell.includes('link.dataset.saved = isSavedTranscript ? "1" : "0";') &&
       sources.studioShell.includes('link.dataset.linked = isLinkOnly ? "1" : "0";') &&
@@ -183,6 +186,9 @@ const checks = [
       sources.libraryIndex.includes('function diagnoseRecentsParity(options = {})') &&
       sources.libraryIndex.includes('domSidebarRecentsRowTokens') &&
       sources.libraryIndex.includes('domDashboardRecentTokens') &&
+      sources.libraryIndex.includes('domSidebarMatchesSourceOrder') &&
+      sources.libraryIndex.includes('domSidebarSourceOrderMismatchCount') &&
+      sources.libraryIndex.includes('&& domSidebarMatchesSourceOrder') &&
       sources.libraryIndex.includes('domLinkOnlyRowsAccidentallyIncludedCount') &&
       sources.libraryIndex.includes('first10CanonicalSortTokens') &&
       sources.insights.includes("archived:   st.isArchived ? '1' : '0'") &&
@@ -194,11 +200,20 @@ const checks = [
     'Library Explorer, Recents, stats, and legacy list views must use the shared active/archive projection instead of raw LibraryIndex rows.'
   ),
   check(
+    'sidebar-recents-preserves-canonical-dom-order',
+    sources.studioShell.indexOf('if (sourceIsCanonical) return filtered;') > -1 &&
+      sources.studioShell.indexOf('if (sourceIsCanonical) return filtered;') < sources.studioShell.indexOf('core.canonicalSortRows(filtered, "recent", "savedRecent")') &&
+      sources.libraryIndex.includes('recentsTokenSequenceMatches(tokens, domSidebarTokens)') &&
+      sources.libraryIndex.includes('ok: linkOnlyLeaks.length === 0 && archivedLeaks.length === 0 && domLinkOnlyLeaks.length === 0 && domArchivedLeaks.length === 0 && domSidebarMatchesSourceOrder'),
+    FILES.studioShell,
+    'Sidebar Recents DOM renderer must preserve canonical saved-recents order and diagnostics must fail on source/DOM order mismatch.'
+  ),
+  check(
     'studio-recents-runtime-cache-bust',
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.71') &&
+      sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.72') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./studio.js?v=2.5.71'),
+      sources.studioHtml.includes('./studio.js?v=2.5.72'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, and shell scripts so canonical saved-recents changes reach Chrome and Desktop runtimes.'
   ),
