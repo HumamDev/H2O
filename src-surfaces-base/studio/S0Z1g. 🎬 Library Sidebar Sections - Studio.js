@@ -686,6 +686,30 @@
     } catch { return ''; }
   }
 
+  function desktopFolderEditor() {
+    try {
+      const modals = W.H2O?.Studio?.OrganizationModals;
+      return modals && typeof modals.openFolderEditor === 'function' ? modals : null;
+    } catch { return null; }
+  }
+
+  function desktopFolderActions() {
+    try {
+      return W.H2O?.Studio?.actions?.folders || null;
+    } catch { return null; }
+  }
+
+  function canUseDesktopFolderEditor(mode = '') {
+    if (studioPlatformAdapter() !== 'tauri') return false;
+    if (!desktopFolderEditor()) return false;
+    const actions = desktopFolderActions();
+    const m = String(mode || '').trim();
+    if (m === 'create') return typeof actions?.create === 'function';
+    if (m === 'rename') return typeof actions?.rename === 'function';
+    if (m === 'color') return typeof actions?.update === 'function';
+    return false;
+  }
+
   function folderMetadataOperationRequest() {
     try {
       const fn = W.H2O?.Studio?.sync?.folderMetadataOperations?.request;
@@ -693,21 +717,29 @@
     } catch { return null; }
   }
 
+  function canRequestNativeCanonicalFolderColor(item) {
+    return item?.isCanonical === true
+      && studioPlatformAdapter() === 'mv3'
+      && !!folderMetadataOperationRequest();
+  }
+
   function canRequestCanonicalFolderColor(item) {
+    return canRequestNativeCanonicalFolderColor(item) || (item?.isCanonical === true && canUseDesktopFolderEditor('color'));
+  }
+
+  function canRequestNativeCanonicalFolderRename(item) {
     return item?.isCanonical === true
       && studioPlatformAdapter() === 'mv3'
       && !!folderMetadataOperationRequest();
   }
 
   function canRequestCanonicalFolderRename(item) {
-    return item?.isCanonical === true
-      && studioPlatformAdapter() === 'mv3'
-      && !!folderMetadataOperationRequest();
+    return canRequestNativeCanonicalFolderRename(item) || (item?.isCanonical === true && canUseDesktopFolderEditor('rename'));
   }
 
   function canRequestCanonicalFolderCreate() {
-    return studioPlatformAdapter() === 'mv3'
-      && !!folderMetadataOperationRequest();
+    return (studioPlatformAdapter() === 'mv3' && !!folderMetadataOperationRequest())
+      || canUseDesktopFolderEditor('create');
   }
 
   function canRequestCanonicalFolderDeletePreview(item) {
@@ -1260,6 +1292,36 @@
       try { renderAllSections(); } catch (e) { err('folderCreate.renderAfterApply', e); }
     }, 250);
     return applied;
+  }
+
+  async function requestDesktopFolderEditor(mode, item = {}, options = {}) {
+    const modals = desktopFolderEditor();
+    if (!modals) return { ok: false, status: 'desktop-folder-editor-unavailable' };
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const payload = {
+      mode,
+      folderId,
+      anchorEl: options.anchorEl || null,
+    };
+    if (options.name) payload.name = String(options.name || '').trim();
+    if (options.color) {
+      payload.color = options.color;
+      payload.iconColor = options.iconColor || options.color;
+    }
+    let result = null;
+    try {
+      result = await modals.openFolderEditor(payload);
+    } catch (e) {
+      err(`desktopFolderEditor.${mode}`, e);
+      return { ok: false, status: `${mode || 'folder'}-failed`, reason: String(e?.message || e || '') };
+    }
+    if (result?.ok) {
+      refreshAfterNativeFolderMetadataApply(`desktop-folder-${mode || 'edit'}`);
+      W.setTimeout(() => {
+        try { renderAllSections(); } catch (e) { err('desktopFolderEditor.renderAfterApply', e); }
+      }, 250);
+    }
+    return result || { ok: false, status: `${mode || 'folder'}-no-result` };
   }
 
   async function requestCanonicalFolderRename(item, name, controls = {}) {
@@ -2533,7 +2595,6 @@
     const color = normalizeHexColor(appearance.color || item.color || item.iconColor || '') || (item.kind === 'categories' ? categoryAppearance(item).color : '');
     if (isFolderMenu) {
       const isCanonicalFolder = item.isCanonical === true;
-      const disabledSyncTitle = 'Canonical folder actions are read-only until sync authority is proven.';
       const deleteTitle = 'Preview canonical folder delete through Native owner.';
       const hasFolderRoute = !!folderHrefForId(item.id);
       pop.appendChild(makeMenuAction('Open folder', SIDEBAR_MENU_ACTION_SVGS.open, () => openFolderRoute(item.id), {
@@ -2546,23 +2607,37 @@
       }));
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       if (isCanonicalFolder) {
-        if (canRequestCanonicalFolderColor(item)) {
+        if (canRequestNativeCanonicalFolderColor(item)) {
           makeCanonicalFolderColorPicker(item, color, pop, anchorEl).forEach((node) => pop.appendChild(node));
+        } else if (canUseDesktopFolderEditor('color')) {
+          pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, () => {
+            closeRowMenu();
+            requestDesktopFolderEditor('color', item, { anchorEl }).catch((e) => err('desktopFolderEditor.color.action', e));
+          }, {
+            title: 'Change folder color',
+          }));
         } else {
           pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
             disabled: true,
-            title: studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
+            title: studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : 'Desktop folder editor unavailable.',
           }));
         }
       } else {
         pop.appendChild(makeMenuColorPicker(item, color));
       }
-      if (isCanonicalFolder && canRequestCanonicalFolderRename(item)) {
+      if (isCanonicalFolder && canRequestNativeCanonicalFolderRename(item)) {
         makeCanonicalFolderRenamePanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+      } else if (isCanonicalFolder && canUseDesktopFolderEditor('rename')) {
+        pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, () => {
+          closeRowMenu();
+          requestDesktopFolderEditor('rename', item, { anchorEl }).catch((e) => err('desktopFolderEditor.rename.action', e));
+        }, {
+          title: 'Rename folder',
+        }));
       } else {
         pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, null, {
           disabled: true,
-          title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
+          title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : 'Desktop folder editor unavailable.',
         }));
       }
       if (folderDestructiveActionsEnabled()) {

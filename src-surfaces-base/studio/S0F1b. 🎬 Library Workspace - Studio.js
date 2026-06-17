@@ -37,6 +37,14 @@
     { id: 'f_3bf15f43b835d19dbac0fb13',  folderId: 'f_3bf15f43b835d19dbac0fb13',  name: 'Tech',    normalizedName: 'tech',    icon: 'folder', color: '', iconColor: '', sortOrder: 5 },
     { id: 'f_2bb1037f88b2719dbac10c22',  folderId: 'f_2bb1037f88b2719dbac10c22',  name: 'English', normalizedName: 'english', icon: 'folder', color: '', iconColor: '', sortOrder: 6 },
   ];
+  const CANONICAL_FOLDER_DISPLAY_ORDER_BY_ID = new Map(
+    KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder) => [String(folder.id || folder.folderId || '').trim(), Number(folder.sortOrder || 0)])
+      .filter(([id, order]) => id && Number.isFinite(order) && order > 0)
+  );
+  const CANONICAL_FOLDER_DISPLAY_ORDER_BY_NAME = new Map(
+    KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder) => [normalizeFolderName(folder.normalizedName || folder.name), Number(folder.sortOrder || 0)])
+      .filter(([name, order]) => name && Number.isFinite(order) && order > 0)
+  );
   const KNOWN_NATIVE_CANONICAL_BINDING_COUNT = 8;
   const KNOWN_TEST_FOLDER_NAMES = new Set([
     'case-rt',
@@ -104,6 +112,26 @@
     return String(row?.name || row?.title || row?.label || id).trim() || id;
   }
 
+  function finiteNumberFrom(values, fallback = null) {
+    for (const value of values) {
+      const number = Number(value);
+      if (Number.isFinite(number)) return number;
+    }
+    return fallback;
+  }
+
+  function canonicalFolderDisplayOrder(row) {
+    const id = folderIdOf(row);
+    const byId = CANONICAL_FOLDER_DISPLAY_ORDER_BY_ID.get(id);
+    if (Number.isFinite(byId) && byId > 0) return byId;
+    const byName = CANONICAL_FOLDER_DISPLAY_ORDER_BY_NAME.get(normalizeFolderName(row?.normalizedName || folderNameOf(row)));
+    if (Number.isFinite(byName) && byName > 0) return byName;
+    const explicit = finiteNumberFrom([row?.sortOrder, row?.sort_order, row?.displayOrder, row?.order, row?.position], null);
+    if (Number.isFinite(explicit) && explicit > 0) return 1000 + explicit;
+    const index = finiteNumberFrom([row?.index], null);
+    return Number.isFinite(index) ? 1000 + Math.max(0, index) : 1000;
+  }
+
   function normalizeFolderRow(row, index = 0, source = '') {
     const id = folderIdOf(row);
     if (!id) return null;
@@ -111,8 +139,11 @@
     const color = String(row?.color || row?.iconColor || '').trim();
     const iconColor = String(row?.iconColor || row?.color || '').trim();
     const icon = String(row?.icon || row?.iconKey || '').trim();
-    const rawSortOrder = Number(row?.sortOrder);
-    const sortOrder = Number.isFinite(rawSortOrder) ? rawSortOrder : index;
+    const rawSortOrder = finiteNumberFrom([row?.sortOrder, row?.sort_order, row?.displayOrder, row?.order, row?.position], null);
+    const stableCanonicalOrder = canonicalFolderDisplayOrder({ ...row, id, folderId: id, name });
+    const sortOrder = Number.isFinite(stableCanonicalOrder) && stableCanonicalOrder > 0
+      ? stableCanonicalOrder
+      : (Number.isFinite(rawSortOrder) ? rawSortOrder : index);
     const out = {
       id,
       folderId: id,
@@ -164,7 +195,7 @@
   function sortCanonicalRows(rows) {
     const arr = Array.isArray(rows) ? rows.slice() : [];
     return arr.sort((a, b) => {
-      const so = (Number(a?.sortOrder) || 0) - (Number(b?.sortOrder) || 0);
+      const so = canonicalFolderDisplayOrder(a) - canonicalFolderDisplayOrder(b);
       if (so !== 0) return so;
       const ix = (Number(a?.index) || 0) - (Number(b?.index) || 0);
       if (ix !== 0) return ix;
@@ -380,6 +411,31 @@
 
   function isPrimaryCanonicalFolder(row) {
     return PRIMARY_CANONICAL_FOLDER_IDS.has(folderIdOf(row));
+  }
+
+  function isCanonicalDisplayFolder(row) {
+    return isPrimaryCanonicalFolder(row) || isNativeOwnedFolderMirrorRow(row);
+  }
+
+  function mergeCanonicalFolderDisplaySource(localRow, canonicalRow, canonicalMirrorAvailable) {
+    const canonical = canonicalRow && typeof canonicalRow === 'object' ? canonicalRow : {};
+    const local = localRow && typeof localRow === 'object' ? localRow : {};
+    const next = { ...canonical };
+    const canonicalName = String(next.name || next.title || '').trim();
+    const localName = String(local.name || local.title || '').trim();
+    if (!canonicalMirrorAvailable && localName && localName !== canonicalName) {
+      next.name = localName;
+      next.title = localName;
+      next.normalizedName = normalizeFolderName(localName);
+    }
+    const localColor = String(local.iconColor || local.color || '').trim();
+    if (!String(next.color || '').trim() && localColor) next.color = localColor;
+    if (!String(next.iconColor || '').trim() && localColor) next.iconColor = localColor;
+    const localIcon = String(local.icon || local.iconKey || '').trim();
+    if (!String(next.icon || '').trim() && localIcon) next.icon = localIcon;
+    const stableOrder = canonicalFolderDisplayOrder(next);
+    if (Number.isFinite(stableOrder) && stableOrder > 0) next.sortOrder = stableOrder;
+    return next;
   }
 
   function isVisibleFolderUiReviewRow(row, canonicalNames) {
@@ -1233,7 +1289,7 @@
   }) {
     const canonicalRows = Array.isArray(canonicalFolders) ? canonicalFolders : [];
     const localRows = Array.isArray(localFolders) ? localFolders : [];
-    const primaryCanonicalRows = canonicalRows.filter(isPrimaryCanonicalFolder);
+    const primaryCanonicalRows = canonicalRows.filter(isCanonicalDisplayFolder);
     const canonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
     const canonicalNames = new Set(primaryCanonicalRows.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
     const duplicateNames = new Set((Array.isArray(duplicateGroups) ? duplicateGroups : []).map((group) => normalizeFolderName(group.name || group.normalizedName)).filter(Boolean));
@@ -1273,7 +1329,10 @@
       }
       const rawSortOrder = Number(folder?.sortOrder);
       const folderIndex = Number(folder?.index);
-      const rowSortOrder = Number.isFinite(rawSortOrder) ? rawSortOrder : (Number.isFinite(folderIndex) ? folderIndex : 0);
+      const stableOrder = canonicalFolderDisplayOrder(folder);
+      const rowSortOrder = Number.isFinite(stableOrder) && stableOrder > 0
+        ? stableOrder
+        : (Number.isFinite(rawSortOrder) ? rawSortOrder : (Number.isFinite(folderIndex) ? folderIndex : 0));
       const reviewBucket = isCanonical ? null : deriveReviewBucket({
         isCanonical,
         isExtra,
@@ -1315,7 +1374,7 @@
     const reviewSeen = new Set();
     for (const folder of primaryCanonicalRows) {
       const id = folderIdOf(folder);
-      out.push(common({ ...(localById.get(id) || {}), ...folder }, true));
+      out.push(common(mergeCanonicalFolderDisplaySource(localById.get(id), folder, canonicalMirrorAvailable), true));
     }
     for (const folder of canonicalRows) {
       const id = folderIdOf(folder);
@@ -1699,6 +1758,8 @@
       const canonicalRows = sortCanonicalRows(all.filter((row) => row && row.isCanonical));
       const localReviewRows = sortLocalReviewRows(all.filter((row) => row && !row.isCanonical));
       const canonicalSource = String(report?.canonicalSource || '');
+      const canonicalOrderTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${canonicalFolderDisplayOrder(row)}`);
+      const canonicalColorTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${String(row.iconColor || row.color || '').trim()}`);
       return {
         readOnly: true,
         surface: report.surface,
@@ -1709,6 +1770,8 @@
         canonicalBindingCount: report.canonicalBindingCount,
         localBindingCount: report.localBindingCount,
         canonicalSource,
+        canonicalOrderTokens,
+        canonicalColorTokens,
         fallbackUsed: canonicalSource === 'known-current-canonical-fallback',
         fallbackVisualsEnriched: !!report.fallbackVisualsEnriched,
         riskLevel: report.riskLevel,

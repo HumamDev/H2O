@@ -29,6 +29,7 @@ const FILES = {
   libraryParityDiagnostic: 'src-surfaces-base/studio/sync/library/library-chrome-desktop-parity-diagnostic.js',
   studioShell: 'src-surfaces-base/studio/studio.js',
   studioHtml: 'src-surfaces-base/studio/studio.html',
+  libraryWorkspace: 'src-surfaces-base/studio/S0F1b. 🎬 Library Workspace - Studio.js',
   sidebarSections: 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js',
   sidebarTab: 'src-surfaces-base/studio/S0Z1f. 🎬 Library Sidebar Tab - Studio.js',
 };
@@ -236,8 +237,9 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.76') &&
       sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.75') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.76') &&
       sources.studioHtml.includes('./studio.js?v=2.5.75'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
@@ -314,6 +316,33 @@ const checks = [
       !sources.sidebarSections.includes("name: 'All folders'"),
     FILES.sidebarSections,
     'Sidebar Folders must show Unfiled first with a distinct system icon, replace the fake All folders row with a More link to #/library/folders, and keep Local Review gated separately.'
+  ),
+  check(
+    'folder-sidebar-display-model-parity-actions',
+    sources.libraryWorkspace.includes('const CANONICAL_FOLDER_DISPLAY_ORDER_BY_ID = new Map') &&
+      sources.libraryWorkspace.includes('const CANONICAL_FOLDER_DISPLAY_ORDER_BY_NAME = new Map') &&
+      sources.libraryWorkspace.includes('function canonicalFolderDisplayOrder(row)') &&
+      sources.libraryWorkspace.includes('return 1000 + explicit;') &&
+      sources.libraryWorkspace.includes('function isCanonicalDisplayFolder(row)') &&
+      sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isNativeOwnedFolderMirrorRow(row);') &&
+      sources.libraryWorkspace.includes('function mergeCanonicalFolderDisplaySource(localRow, canonicalRow, canonicalMirrorAvailable)') &&
+      sources.libraryWorkspace.includes('const canonicalOrderTokens = canonicalRows.map') &&
+      sources.libraryWorkspace.includes('const canonicalColorTokens = canonicalRows.map') &&
+      sources.sidebarSections.includes('function desktopFolderEditor()') &&
+      sources.sidebarSections.includes("function canUseDesktopFolderEditor(mode = '')") &&
+      sources.sidebarSections.includes("if (m === 'create') return typeof actions?.create === 'function';") &&
+      sources.sidebarSections.includes("if (m === 'rename') return typeof actions?.rename === 'function';") &&
+      sources.sidebarSections.includes("if (m === 'color') return typeof actions?.update === 'function';") &&
+      sources.sidebarSections.includes('function canRequestNativeCanonicalFolderColor(item)') &&
+      sources.sidebarSections.includes('function canRequestNativeCanonicalFolderRename(item)') &&
+      sources.sidebarSections.includes('function requestDesktopFolderEditor(mode, item = {}, options = {})') &&
+      sources.sidebarSections.includes("requestDesktopFolderEditor('color', item, { anchorEl })") &&
+      sources.sidebarSections.includes("requestDesktopFolderEditor('rename', item, { anchorEl })") &&
+      sources.sidebarSections.includes("return (studioPlatformAdapter() === 'mv3' && !!folderMetadataOperationRequest())") &&
+      sources.sidebarSections.includes("|| canUseDesktopFolderEditor('create')") &&
+      sources.sidebarSections.includes('if (folderDestructiveActionsEnabled())'),
+    FILES.libraryWorkspace,
+    'Chrome and Desktop folder sidebar must use stable canonical order/color tokens, Desktop-safe create/rename/color actions, and keep delete/destructive actions operator-only.'
   ),
   check(
     'insights-link-badge-semantics',
