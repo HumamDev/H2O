@@ -50,6 +50,7 @@
   ];
   const SIDEBAR_APPEARANCE_KEY = 'h2o:studio:sidebar:row-appearance:v1';
   const TAG_CATEGORY_LINKS_KEY = 'h2o:prm:cgx:library:tag-category-links:v1';
+  const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';
   const LOCAL_REVIEW_EXPLANATION = 'These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.';
   const LOCAL_REVIEW_BADGE_ORDER = Object.freeze(['extra', 'test', 'conflict', 'desktop-only', 'chrome-only', 'review-required']);
   const FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
@@ -168,6 +169,39 @@
     const v = Number(n) || 0;
     if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
     return String(v);
+  }
+
+  function folderOperatorModeEnabled() {
+    try {
+      const api = W.H2O?.Studio?.folderOperatorMode;
+      if (api && typeof api.isEnabled === 'function') return api.isEnabled() === true;
+    } catch {}
+    try {
+      const explicit = W.H2O?.Studio?.folderLocalReviewOperatorMode;
+      if (explicit === true) return true;
+      if (explicit === false) return false;
+    } catch {}
+    try {
+      const raw = W.localStorage?.getItem?.(FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY);
+      return raw === '1' || raw === 'true';
+    } catch {}
+    return false;
+  }
+
+  function folderLocalReviewAppearanceAllowed() {
+    try {
+      const appearance = W.H2O?.Studio?.appearance;
+      if (appearance && typeof appearance.get === 'function') return appearance.get('showLocalReview') !== false;
+    } catch {}
+    return true;
+  }
+
+  function folderLocalReviewUiEnabled() {
+    return folderOperatorModeEnabled() && folderLocalReviewAppearanceAllowed();
+  }
+
+  function folderDestructiveActionsEnabled() {
+    return folderOperatorModeEnabled();
   }
 
   function countLabelForItem(item = {}) {
@@ -662,6 +696,7 @@
 
   function canRequestCanonicalFolderDeletePreview(item) {
     return item?.isCanonical === true
+      && folderDestructiveActionsEnabled()
       && studioPlatformAdapter() === 'mv3'
       && !!folderMetadataOperationRequest();
   }
@@ -2528,14 +2563,16 @@
           title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : disabledSyncTitle,
         }));
       }
-      if (isCanonicalFolder && canRequestCanonicalFolderDeletePreview(item)) {
-        makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
-      } else {
-        pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
-          danger: true,
-          disabled: true,
-          title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : deleteTitle,
-        }));
+      if (folderDestructiveActionsEnabled()) {
+        if (isCanonicalFolder && canRequestCanonicalFolderDeletePreview(item)) {
+          makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+        } else {
+          pop.appendChild(makeMenuAction('Delete folder', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+            danger: true,
+            disabled: true,
+            title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : deleteTitle,
+          }));
+        }
       }
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       pop.appendChild(makeMenuAction('Copy folder ID', SIDEBAR_MENU_ACTION_SVGS.copy, () => copyTextValue(item.id), {
@@ -2877,7 +2914,10 @@
 
     const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
     const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const showLocalReview = folderLocalReviewUiEnabled();
     const fallbackUsed = !!model?.fallbackUsed;
+    host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';
+    host.dataset.h2oFolderHiddenReviewRows = showLocalReview ? '0' : String(localReviewRows.length);
 
     const toSidebarItem = (row) => {
       const id = String(row?.folderId || row?.id || '').trim();
@@ -2925,7 +2965,7 @@
       .filter((item) => item && item.id !== FOLDER_FILTER_NONE);
     mainItems.push(buildUnfiledSidebarItem());
     mainItems.push(buildAllFoldersSidebarItem());
-    const reviewItems = localReviewRows.map(toSidebarItem).filter(Boolean);
+    const reviewItems = showLocalReview ? localReviewRows.map(toSidebarItem).filter(Boolean) : [];
 
     const mainEmptyText = fallbackUsed
       ? 'Folder catalog is loading from native ChatGPT.'
@@ -3420,8 +3460,10 @@
     W.addEventListener('evt:h2o:library:cross-surface-sync', () => renderAllSections());
     W.addEventListener('evt:h2o:folders:changed', () => renderAllSections());
     W.addEventListener('evt:h2o:labels:changed', () => renderAllSections());
+    W.addEventListener('evt:h2o:studio:folder-operator-mode-changed', () => renderAllSections());
+    W.addEventListener('evt:h2o:studio:appearance:changed', () => renderAllSections());
     W.addEventListener('storage', (ev) => {
-      if (FOLDERS_UI_KEYS.includes(String(ev?.key || ''))) renderAllSections();
+      if (FOLDERS_UI_KEYS.includes(String(ev?.key || '')) || String(ev?.key || '') === FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY) renderAllSections();
     });
     step('bindUpdates');
   }
@@ -3503,6 +3545,11 @@
         projectsRendered:  D.getElementById('projectList')?.children.length || 0,
         collapseState: { ...collapseState },
         folderSidebarUi: { ...FOLDER_SIDEBAR_UI_STATE },
+        folderOperatorMode: {
+          enabled: folderOperatorModeEnabled(),
+          localReviewVisible: folderLocalReviewUiEnabled(),
+          storageKey: FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY,
+        },
         folderCreateFlow: {
           ...FOLDER_CREATE_FLOW_STATE,
           lastPreview: FOLDER_CREATE_FLOW_STATE.lastPreview ? { ...FOLDER_CREATE_FLOW_STATE.lastPreview } : null,

@@ -29,6 +29,8 @@ const FILES = {
   libraryParityDiagnostic: 'src-surfaces-base/studio/sync/library/library-chrome-desktop-parity-diagnostic.js',
   studioShell: 'src-surfaces-base/studio/studio.js',
   studioHtml: 'src-surfaces-base/studio/studio.html',
+  sidebarSections: 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js',
+  sidebarTab: 'src-surfaces-base/studio/S0Z1f. 🎬 Library Sidebar Tab - Studio.js',
 };
 
 function read(rel) {
@@ -237,6 +239,32 @@ const checks = [
       sources.studioHtml.includes('./studio.js?v=2.5.73'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, and shell scripts so canonical saved-recents changes reach Chrome and Desktop runtimes.'
+  ),
+  check(
+    'folder-local-review-operator-gated',
+    sources.studioShell.includes('const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = "h2o:studio:folder-local-review:operator-mode:v1";') &&
+      sources.studioShell.includes('function folderOperatorModeEnabled()') &&
+      sources.studioShell.includes('function folderLocalReviewUiEnabled()') &&
+      sources.studioShell.includes('W.H2O.Studio.folderOperatorMode = {') &&
+      sources.studioShell.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
+      sources.studioShell.includes('host.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";') &&
+      sources.studioShell.includes('page.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";') &&
+      sources.studioShell.includes('Folder operator mode is required for cleanup mutation.') &&
+      sources.studioShell.includes('if (!folderOperatorModeEnabled() && (next === "local-review" || next === "cleanup-review"))') &&
+      sources.studioShell.includes('data-h2o-folder-operator-only="1"') &&
+      sources.sidebarSections.includes("const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';") &&
+      sources.sidebarSections.includes('function folderDestructiveActionsEnabled()') &&
+      sources.sidebarSections.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
+      sources.sidebarSections.includes("host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';") &&
+      sources.sidebarSections.includes('if (folderDestructiveActionsEnabled())') &&
+      sources.sidebarSections.includes("W.addEventListener('evt:h2o:studio:folder-operator-mode-changed', () => renderAllSections());") &&
+      sources.sidebarTab.includes("const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';") &&
+      sources.sidebarTab.includes('function folderLocalReviewUiEnabled()') &&
+      sources.sidebarTab.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
+      sources.sidebarTab.includes("'data-h2o-folder-local-review': showLocalReview ? 'operator' : 'hidden'") &&
+      sources.sidebarTab.includes("showLocalReview ? `${reviewRows.length} review` : ''"),
+    FILES.studioShell,
+    'Folder Local Review rows and destructive folder cleanup actions must remain hidden/disabled unless folder operator mode is explicitly enabled.'
   ),
   check(
     'insights-link-badge-semantics',

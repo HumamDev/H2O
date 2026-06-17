@@ -25,6 +25,7 @@
   // Default landing route for the Library page. Dashboard is the canonical
   // overview view; users can switch to Explorer/Analytics from page-level tabs.
   const LIBRARY_DEFAULT_HASH = '#/library/dashboard';
+  const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';
 
   // The injected DOM lives inside a section we own. We re-use the previous
   // SECTION_ID so any leftover instance from v1.1 is replaced cleanly.
@@ -40,6 +41,35 @@
   function getInsights() { return H2O.LibraryInsights || null; }
   function getPageHost() { return getCore()?.getService?.('page-host') || null; }
   function getIndex() { return H2O.LibraryIndex || null; }
+
+  function folderOperatorModeEnabled() {
+    try {
+      const api = W.H2O?.Studio?.folderOperatorMode;
+      if (api && typeof api.isEnabled === 'function') return api.isEnabled() === true;
+    } catch {}
+    try {
+      const explicit = W.H2O?.Studio?.folderLocalReviewOperatorMode;
+      if (explicit === true) return true;
+      if (explicit === false) return false;
+    } catch {}
+    try {
+      const raw = W.localStorage?.getItem?.(FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY);
+      return raw === '1' || raw === 'true';
+    } catch {}
+    return false;
+  }
+
+  function folderLocalReviewAppearanceAllowed() {
+    try {
+      const appearance = W.H2O?.Studio?.appearance;
+      if (appearance && typeof appearance.get === 'function') return appearance.get('showLocalReview') !== false;
+    } catch {}
+    return true;
+  }
+
+  function folderLocalReviewUiEnabled() {
+    return folderOperatorModeEnabled() && folderLocalReviewAppearanceAllowed();
+  }
 
   let folderPageRecoveryToken = 0;
 
@@ -333,7 +363,9 @@
     const canonicalRows = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
       .map((row) => normalizeFolderPageRow(row, true))
       .filter(Boolean);
-    const reviewRows = (Array.isArray(model?.localReviewRows) ? model.localReviewRows : [])
+    const showLocalReview = folderLocalReviewUiEnabled();
+    const rawReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const reviewRows = (showLocalReview ? rawReviewRows : [])
       .map((row) => normalizeFolderPageRow(row, false))
       .filter(Boolean);
     const knownUnfiled = countKnownUnfiledRows();
@@ -378,6 +410,8 @@
       class: 'wbLibraryPage',
       'data-h2o-folder-page': '1',
       'data-h2o-folder-page-owner': 'sidebar-tab-fallback',
+      'data-h2o-folder-local-review': showLocalReview ? 'operator' : 'hidden',
+      'data-h2o-folder-hidden-review-rows': showLocalReview ? '0' : String(rawReviewRows.length),
       'data-h2o-folder-page-reason': reason,
     }, [
       makeEl('header', { class: 'wbLibraryPageHeader' }, [
@@ -385,7 +419,11 @@
           makeEl('div', { class: 'wbLibraryPageBrandIcon', 'aria-hidden': 'true' }, 'F'),
           makeEl('div', { class: 'wbLibraryPageBrandText' }, [
             makeEl('h1', { class: 'wbLibraryPageTitle' }, 'Folders'),
-            makeEl('div', { class: 'wbLibraryPageStats' }, `${canonicalRows.length} canonical · ${reviewRows.length} review · ${model?.surface || 'studio'}`),
+            makeEl('div', { class: 'wbLibraryPageStats' }, [
+              `${canonicalRows.length} canonical`,
+              showLocalReview ? `${reviewRows.length} review` : '',
+              model?.surface || 'studio',
+            ].filter(Boolean).join(' · ')),
           ]),
         ]),
       ]),

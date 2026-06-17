@@ -43,6 +43,7 @@ const FOLDER_DESKTOP_ORPHAN_BINDING_CHAT_ID = "f5d1-test-chat-001";
 const FOLDER_DESKTOP_ORPHAN_BINDING_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_FINAL_F5D_FOLDER_ID = "f5d1-test-folder-b";
 const FOLDER_DESKTOP_ORPHAN_BINDING_CONFIRM_TEXT = "REMOVE ORPHAN DESKTOP BINDING";
+const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = "h2o:studio:folder-local-review:operator-mode:v1";
 const FOLDER_LOCAL_REVIEW_EXPLANATION = "These folders exist locally but are not in your native ChatGPT folder catalog. Read-only — no cleanup performed.";
 const FOLDER_LOCAL_REVIEW_BADGE_ORDER = ["extra", "test", "conflict", "desktop-only", "chrome-only", "review-required"];
 const FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS = Object.freeze([
@@ -157,6 +158,74 @@ function localReviewBadgesHtml(item = {}){
     `<span class="wbFolderLocalReviewBadge wbFolderLocalReviewBadge--${esc(badge)}" title="${esc(badge)}" style="display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(255,255,255,.68);background:rgba(255,255,255,.045);text-transform:none;letter-spacing:0">${esc(badge)}</span>`
   )).join("")}</span>`;
 }
+
+function folderOperatorModeEnabled(){
+  try {
+    const explicit = W.H2O?.Studio?.folderLocalReviewOperatorMode;
+    if (explicit === true) return true;
+    if (explicit === false) return false;
+  } catch {}
+  try {
+    const raw = W.localStorage?.getItem?.(FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY);
+    return raw === "1" || raw === "true";
+  } catch {}
+  return false;
+}
+
+function folderLocalReviewAppearanceAllowed(){
+  try {
+    const appearance = W.H2O?.Studio?.appearance;
+    if (appearance && typeof appearance.get === "function") return appearance.get("showLocalReview") !== false;
+  } catch {}
+  return true;
+}
+
+function folderLocalReviewUiEnabled(){
+  return folderOperatorModeEnabled() && folderLocalReviewAppearanceAllowed();
+}
+
+function applyFolderOperatorModeMarker(){
+  try {
+    document.documentElement.setAttribute("data-h2o-folder-operator-mode", folderOperatorModeEnabled() ? "on" : "off");
+  } catch {}
+}
+
+function rerenderFolderOperatorModeSurfaces(){
+  try { renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId); } catch {}
+  try {
+    if (isVisibleStudioFoldersRoute()) renderVisibleStudioFoldersPageBody({ force: false }).catch(console.warn);
+  } catch {}
+}
+
+function setFolderOperatorModeEnabled(enabled){
+  const next = enabled === true;
+  try { W.localStorage?.setItem?.(FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY, next ? "1" : "0"); } catch {}
+  try {
+    W.H2O = W.H2O || {};
+    W.H2O.Studio = W.H2O.Studio || {};
+    W.H2O.Studio.folderLocalReviewOperatorMode = next;
+  } catch {}
+  applyFolderOperatorModeMarker();
+  try { W.dispatchEvent(new CustomEvent("evt:h2o:studio:folder-operator-mode-changed", { detail: { enabled: next } })); } catch {}
+  rerenderFolderOperatorModeSurfaces();
+  return next;
+}
+
+function installFolderOperatorModeApi(){
+  try {
+    W.H2O = W.H2O || {};
+    W.H2O.Studio = W.H2O.Studio || {};
+    W.H2O.Studio.folderOperatorMode = {
+      storageKey: FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY,
+      isEnabled: folderOperatorModeEnabled,
+      setEnabled: setFolderOperatorModeEnabled,
+      localReviewVisible: folderLocalReviewUiEnabled,
+    };
+  } catch {}
+  applyFolderOperatorModeMarker();
+}
+
+installFolderOperatorModeApi();
 
 function studioHostUnmount(reason = "studio:unmount") {
   try { W.H2O?.studioHost?.unmount?.(reason); } catch {}
@@ -4293,8 +4362,10 @@ function renderFolderSidebar(rows, view, selectedFolderId){
   if (!host) return;
   ensureFolderCountToggle();
   const items = collectFolderSidebarItems(rows, view, "canonical");
-  const reviewItems = collectFolderSidebarItems(rows, view, "review");
+  const showLocalReview = folderLocalReviewUiEnabled();
+  const reviewItems = showLocalReview ? collectFolderSidebarItems(rows, view, "review") : [];
   host.innerHTML = "";
+  host.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";
 
   const folderEntries = items.filter((item) => item.kind === "folder");
   const reviewEntries = reviewItems.filter((item) => item.kind === "folder");
@@ -6392,7 +6463,10 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   const canonicalRows = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
     .map((row) => normalizeVisibleStudioFolderPageRow({ ...row, isCanonical: true }, true))
     .filter(Boolean);
-  const reviewRows = (Array.isArray(model?.localReviewRows) ? model.localReviewRows : [])
+  const showLocalReview = folderLocalReviewUiEnabled();
+  const rawReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+  const hiddenReviewRowCount = showLocalReview ? 0 : rawReviewRows.length;
+  const reviewRows = (showLocalReview ? rawReviewRows : [])
     .map((row) => normalizeVisibleStudioFolderPageRow(row, false))
     .filter(Boolean);
   const unfiledRow = {
@@ -6410,13 +6484,18 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   page.dataset.h2oFolderPage = "1";
   page.dataset.h2oFolderPageOwner = "studio-js-visible-body";
   page.dataset.h2oFolderPageStatus = canonicalRows.length ? "ready" : "empty";
+  page.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";
+  page.dataset.h2oFolderHiddenReviewRows = String(hiddenReviewRowCount);
   page.style.cssText = "padding:16px 18px 24px;display:flex;flex-direction:column;gap:14px;min-width:0";
 
   const summary = document.createElement("div");
   summary.className = "wbFolderPageSummary";
   summary.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;color:rgba(255,255,255,.62);font-size:12px;line-height:1.4";
   summary.innerHTML = `
-    <span>${pluralize(canonicalRows.length, "canonical folder")} · ${pluralize(reviewRows.length, "review row")}</span>
+    <span>${[
+      pluralize(canonicalRows.length, "canonical folder"),
+      showLocalReview ? pluralize(reviewRows.length, "review row") : "",
+    ].filter(Boolean).join(" · ")}</span>
     <span>${esc(String(model?.surface || "folder-parity"))}</span>
   `;
   page.appendChild(summary);
@@ -6453,7 +6532,7 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   if (subtitle) {
     subtitle.textContent = [
       pluralize(canonicalRows.length, "canonical folder"),
-      reviewRows.length ? pluralize(reviewRows.length, "Local Review row") : "",
+      showLocalReview && reviewRows.length ? pluralize(reviewRows.length, "Local Review row") : "",
       model?.surface ? String(model.surface) : "",
     ].filter(Boolean).join(" · ");
   }
@@ -7608,6 +7687,10 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
   const cardStyle = "display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.02)";
   const sectionTitleStyle = "margin:0 0 12px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;opacity:.65";
   const btnStyle = "padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block";
+  const folderOperatorMode = folderOperatorModeEnabled();
+  if (!folderOperatorMode && (FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" || FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review")) {
+    FOLDER_PARITY_SETTINGS_UI_STATE.activeTab = "overview";
+  }
 
   panel.innerHTML = `
     <h2 style="margin:0 0 4px;font-size:22px;font-weight:600">Studio Settings</h2>
@@ -7693,9 +7776,9 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
       <div id="wbSettingsFolderParityTabs" role="tablist" aria-label="Folder Parity sections" style="display:flex;gap:6px;flex-wrap:wrap;padding-top:4px">
         <button type="button" data-folder-parity-tab="overview" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview")}">Overview</button>
         <button type="button" data-folder-parity-tab="canonical" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "canonical")}">Canonical Folders</button>
-        <button type="button" data-folder-parity-tab="local-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review")}">Local Review</button>
+        ${folderOperatorMode ? `<button type="button" data-folder-parity-tab="local-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review")}">Local Review</button>` : ""}
         <button type="button" data-folder-parity-tab="mirror-refresh" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh")}">Mirror Refresh</button>
-        <button type="button" data-folder-parity-tab="cleanup-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review")}">Cleanup / Review</button>
+        ${folderOperatorMode ? `<button type="button" data-folder-parity-tab="cleanup-review" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review")}">Cleanup / Review</button>` : ""}
         <button type="button" data-folder-parity-tab="operations" role="tab" aria-selected="${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations" ? "true" : "false"}" style="${settingsFolderParityPanelTabStyle(FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "operations")}">Operations / Proofs</button>
       </div>
       <div id="wbSettingsFolderParityPanelOverview" data-folder-parity-panel="overview" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "overview" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
@@ -7745,7 +7828,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
           <div style="font-size:12px;opacity:.76;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px;padding:8px">Use Copy report JSON from the Folder Parity header for the current canonical diagnostics JSON. This section is read-only.</div>
         </div>
       </div>
-      <div id="wbSettingsFolderParityPanelLocalReview" data-folder-parity-panel="local-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
+      <div id="wbSettingsFolderParityPanelLocalReview" data-folder-parity-panel="local-review" data-h2o-folder-operator-only="1" ${folderOperatorMode && FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "" : "hidden"} style="display:${folderOperatorMode && FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "local-review" ? "flex" : "none"};flex-direction:column;gap:8px">
         ${settingsFolderSectionTabsHtml("parity-local-review", [
           { id: "review-rows", label: "Review Rows" },
           { id: "extra-rows", label: "Extra Rows" },
@@ -7821,7 +7904,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
         </div>
       </div>
       </div>
-      <div id="wbSettingsFolderParityPanelCleanupReview" data-folder-parity-panel="cleanup-review" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:10px">
+      <div id="wbSettingsFolderParityPanelCleanupReview" data-folder-parity-panel="cleanup-review" data-h2o-folder-operator-only="1" ${folderOperatorMode && FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "" : "hidden"} style="display:${folderOperatorMode && FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "cleanup-review" ? "flex" : "none"};flex-direction:column;gap:10px">
       <div id="wbSettingsFolderCleanupReview" style="display:flex;flex-direction:column;gap:10px;padding-top:12px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div>
@@ -8491,7 +8574,10 @@ function settingsFolderParityEnsureTabBinding(panel){
 }
 
 function settingsFolderParitySetActiveTab(panel, tabId){
-  const next = String(tabId || "overview").trim() || "overview";
+  let next = String(tabId || "overview").trim() || "overview";
+  if (!folderOperatorModeEnabled() && (next === "local-review" || next === "cleanup-review")) {
+    next = "overview";
+  }
   FOLDER_PARITY_SETTINGS_UI_STATE.activeTab = next;
   panel?.querySelectorAll?.("[data-folder-parity-panel]")?.forEach((el) => {
     const active = el.getAttribute("data-folder-parity-panel") === next;
@@ -10885,6 +10971,7 @@ function settingsFolderConflictBuildDeletionPreview(selectedIds, plan, mirror){
 }
 
 function settingsFolderConflictUpdateDeleteControls(panel){
+  const operatorMode = folderOperatorModeEnabled();
   const chromeSurface = settingsFolderCleanupIsChromeSurface();
   const selectedIds = settingsFolderConflictSelectedIds(panel);
   panel.__h2oFolderConflictDeleteSelectedIds = selectedIds;
@@ -10896,9 +10983,9 @@ function settingsFolderConflictUpdateDeleteControls(panel){
   const confirmationOk = String(confirmInput?.value || "") === FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT;
   const selectedMatchesPreview = !!preview?.ok
     && JSON.stringify((preview.selectedDuplicateFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
-  if (previewBtn) previewBtn.disabled = !chromeSurface || selectedIds.length === 0;
-  if (copyBtn) copyBtn.disabled = !preview?.ok;
-  if (deleteBtn) deleteBtn.disabled = !chromeSurface || !selectedMatchesPreview || !confirmationOk;
+  if (previewBtn) previewBtn.disabled = !operatorMode || !chromeSurface || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !operatorMode || !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !operatorMode || !chromeSurface || !selectedMatchesPreview || !confirmationOk;
 }
 
 async function previewSettingsFolderConflictDeletion(panel){
@@ -10939,6 +11026,11 @@ async function copySettingsFolderConflictDeletionPlan(panel){
 
 async function deleteSelectedEmptyDuplicateConflictFolders(panel){
   if (!panel) return;
+  if (!folderOperatorModeEnabled()) {
+    settingsFolderParityLog(panel, "Folder operator mode is required for cleanup mutation.");
+    settingsFolderConflictUpdateDeleteControls(panel);
+    return;
+  }
   const previewEl = panel.querySelector("#wbSettingsFolderConflictDeletePreview");
   const confirmValue = String(panel.querySelector("#wbSettingsFolderConflictDeleteConfirm")?.value || "");
   if (confirmValue !== FOLDER_DUPLICATE_CLEANUP_CONFIRM_TEXT) {
@@ -12139,6 +12231,7 @@ function settingsFolderDesktopResolveUnbindMethod(){
 }
 
 function settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel){
+  const operatorMode = folderOperatorModeEnabled();
   const selected = settingsFolderDesktopOrphanBindingSelected(panel);
   FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.selected = !!selected;
   panel.__h2oFolderDesktopOrphanBindingSelected = selected;
@@ -12156,9 +12249,9 @@ function settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel){
     && (preview.selectedBindings || []).length === 1
     && preview.selectedBindings[0]?.chatId === selected.chatId
     && preview.selectedBindings[0]?.folderId === selected.folderId;
-  if (previewBtn) previewBtn.disabled = !STUDIO_isTauri() || !selected;
-  if (copyBtn) copyBtn.disabled = !preview?.ok;
-  if (removeBtn) removeBtn.disabled = !STUDIO_isTauri() || !selectedMatchesPreview || !confirmationOk;
+  if (previewBtn) previewBtn.disabled = !operatorMode || !STUDIO_isTauri() || !selected;
+  if (copyBtn) copyBtn.disabled = !operatorMode || !preview?.ok;
+  if (removeBtn) removeBtn.disabled = !operatorMode || !STUDIO_isTauri() || !selectedMatchesPreview || !confirmationOk;
 }
 
 function settingsFolderDesktopRenderOrphanBindingReport(panel, report){
@@ -12470,6 +12563,7 @@ function settingsFolderDesktopResolveRemoveMethod(){
 }
 
 function settingsFolderDesktopUpdateDeleteControls(panel){
+  const operatorMode = folderOperatorModeEnabled();
   const selectedIds = settingsFolderDesktopSelectedDeleteIds(panel);
   panel.__h2oFolderDesktopDeleteSelectedIds = selectedIds;
   const preview = panel?.__h2oFolderDesktopDeletionPreview;
@@ -12480,9 +12574,9 @@ function settingsFolderDesktopUpdateDeleteControls(panel){
   const confirmationOk = String(confirmInput?.value || "") === FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT;
   const selectedMatchesPreview = !!preview?.ok
     && JSON.stringify((preview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
-  if (previewBtn) previewBtn.disabled = !STUDIO_isTauri() || selectedIds.length === 0;
-  if (copyBtn) copyBtn.disabled = !preview?.ok;
-  if (deleteBtn) deleteBtn.disabled = !STUDIO_isTauri() || !selectedMatchesPreview || !confirmationOk;
+  if (previewBtn) previewBtn.disabled = !operatorMode || !STUDIO_isTauri() || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !operatorMode || !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !operatorMode || !STUDIO_isTauri() || !selectedMatchesPreview || !confirmationOk;
 }
 
 async function refreshSettingsFolderDesktopReview(panel, seed = null){
@@ -12609,6 +12703,11 @@ async function copySettingsFolderDesktopOrphanBindingRemovalPlan(panel){
 
 async function removeSelectedOrphanDesktopBinding(panel){
   if (!panel) return;
+  if (!folderOperatorModeEnabled()) {
+    settingsFolderParityLog(panel, "Folder operator mode is required for cleanup mutation.");
+    settingsFolderDesktopUpdateOrphanBindingRemovalControls(panel);
+    return;
+  }
   const previewEl = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemovePreview");
   const confirmInput = panel.querySelector("#wbSettingsFolderDesktopOrphanBindingRemoveConfirm");
   if (confirmInput) FOLDER_DESKTOP_ORPHAN_BINDING_REMOVE_STATE.confirmation = String(confirmInput.value || "");
@@ -12785,6 +12884,11 @@ async function copySettingsFolderDesktopDeletionPlan(panel){
 
 async function deleteSelectedEmptyDesktopFolders(panel){
   if (!panel) return;
+  if (!folderOperatorModeEnabled()) {
+    settingsFolderParityLog(panel, "Folder operator mode is required for cleanup mutation.");
+    settingsFolderDesktopUpdateDeleteControls(panel);
+    return;
+  }
   const previewEl = panel.querySelector("#wbSettingsFolderDesktopDeletePreview");
   const confirmValue = String(panel.querySelector("#wbSettingsFolderDesktopDeleteConfirm")?.value || "");
   if (confirmValue !== FOLDER_DESKTOP_CLEANUP_CONFIRM_TEXT) {
@@ -12917,6 +13021,7 @@ async function deleteSelectedEmptyDesktopFolders(panel){
 }
 
 function settingsFolderCleanupUpdateDeleteControls(panel){
+  const operatorMode = folderOperatorModeEnabled();
   const chromeSurface = settingsFolderCleanupIsChromeSurface();
   const selectedIds = settingsFolderCleanupSelectedIds(panel);
   panel.__h2oFolderCleanupDeleteSelectedIds = selectedIds;
@@ -12928,9 +13033,9 @@ function settingsFolderCleanupUpdateDeleteControls(panel){
   const confirmationOk = String(confirmInput?.value || "") === FOLDER_CLEANUP_CONFIRM_TEXT;
   const selectedMatchesPreview = !!preview?.ok
     && JSON.stringify((preview.selectedFolderIds || []).slice().sort()) === JSON.stringify(selectedIds.slice().sort());
-  if (previewBtn) previewBtn.disabled = !chromeSurface || selectedIds.length === 0;
-  if (copyBtn) copyBtn.disabled = !preview?.ok;
-  if (deleteBtn) deleteBtn.disabled = !chromeSurface || !selectedMatchesPreview || !confirmationOk;
+  if (previewBtn) previewBtn.disabled = !operatorMode || !chromeSurface || selectedIds.length === 0;
+  if (copyBtn) copyBtn.disabled = !operatorMode || !preview?.ok;
+  if (deleteBtn) deleteBtn.disabled = !operatorMode || !chromeSurface || !selectedMatchesPreview || !confirmationOk;
 }
 
 async function refreshSettingsFolderCleanupReview(panel, seed = null){
@@ -13164,6 +13269,11 @@ async function copySettingsFolderCleanupDeletionPlan(panel){
 
 async function deleteSelectedSafeChromeMirrorFolders(panel){
   if (!panel) return;
+  if (!folderOperatorModeEnabled()) {
+    settingsFolderParityLog(panel, "Folder operator mode is required for cleanup mutation.");
+    settingsFolderCleanupUpdateDeleteControls(panel);
+    return;
+  }
   const previewEl = panel.querySelector("#wbSettingsFolderCleanupDeletePreview");
   const confirmValue = String(panel.querySelector("#wbSettingsFolderCleanupConfirm")?.value || "");
   if (confirmValue !== FOLDER_CLEANUP_CONFIRM_TEXT) {
