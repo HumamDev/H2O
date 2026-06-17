@@ -236,9 +236,11 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./studio.js?v=2.5.73'),
+      sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.74') &&
+      sources.studioHtml.includes('./studio.js?v=2.5.74'),
     FILES.studioHtml,
-    'Studio must cache-bust the Library Index core, Library Index, Insights, and shell scripts so canonical saved-recents changes reach Chrome and Desktop runtimes.'
+    'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
   ),
   check(
     'folder-local-review-operator-gated',
@@ -252,6 +254,13 @@ const checks = [
       sources.studioShell.includes('Operator Mode ON') &&
       sources.studioShell.includes('Disable Operator Mode') &&
       sources.studioShell.includes('W.confirm(FOLDER_OPERATOR_MODE_CONFIRM_TEXT)') &&
+      sources.studioShell.includes('function folderSidebarSimpleCountLabel(item)') &&
+      sources.studioShell.includes('if (!folderOperatorModeEnabled()) return folderSidebarSimpleCountLabel(item);') &&
+      sources.studioShell.includes('function visibleStudioFolderSimpleCountLabel(row)') &&
+      sources.studioShell.includes('if (!visibleStudioFolderDebugDetailsVisible()) return visibleStudioFolderSimpleCountLabel(row);') &&
+      sources.studioShell.includes('const debugBadge = showDebugDetails') &&
+      sources.studioShell.includes('const debugId = showDebugDetails && folderId') &&
+      sources.studioShell.includes('pluralize(canonicalRows.length, showLocalReview ? "canonical folder" : "folder")') &&
       sources.studioShell.includes('settingsBindFolderOperatorModeControls(panel)') &&
       sources.studioShell.includes('rerenderSettingsFolderOperatorModeRoute();') &&
       sources.studioShell.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
@@ -262,17 +271,26 @@ const checks = [
       sources.studioShell.includes('data-h2o-folder-operator-only="1"') &&
       sources.sidebarSections.includes("const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';") &&
       sources.sidebarSections.includes('function folderDestructiveActionsEnabled()') &&
+      sources.sidebarSections.includes('function folderSidebarSimpleCountLabel(item = {})') &&
+      sources.sidebarSections.includes('if (!folderSidebarDebugDetailsVisible()) return folderSidebarSimpleCountLabel(item);') &&
+      sources.sidebarSections.includes("const countLabel = kind === 'folders' && !folderDebugDetails") &&
+      sources.sidebarSections.includes('if (folderSidebarDebugDetailsVisible())') &&
       sources.sidebarSections.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
       sources.sidebarSections.includes("host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';") &&
       sources.sidebarSections.includes('if (folderDestructiveActionsEnabled())') &&
       sources.sidebarSections.includes("W.addEventListener('evt:h2o:studio:folder-operator-mode-changed', () => renderAllSections());") &&
       sources.sidebarTab.includes("const FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY = 'h2o:studio:folder-local-review:operator-mode:v1';") &&
       sources.sidebarTab.includes('function folderLocalReviewUiEnabled()') &&
+      sources.sidebarTab.includes('function folderPageSimpleCountLabel(row)') &&
+      sources.sidebarTab.includes('if (!folderPageDebugDetailsVisible()) return folderPageSimpleCountLabel(row);') &&
+      sources.sidebarTab.includes('const showDebugDetails = folderPageDebugDetailsVisible();') &&
+      sources.sidebarTab.includes("showLocalReview ? 'Canonical folders' : 'Folders'") &&
       sources.sidebarTab.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
       sources.sidebarTab.includes("'data-h2o-folder-local-review': showLocalReview ? 'operator' : 'hidden'") &&
-      sources.sidebarTab.includes("showLocalReview ? `${reviewRows.length} review` : ''"),
+      sources.sidebarTab.includes("showLocalReview ? `${reviewRows.length} review` : ''") &&
+      sources.sidebarTab.includes("showLocalReview ? `${canonicalRows.length} canonical` : `${canonicalRows.length} folders`"),
     FILES.studioShell,
-    'Folder Local Review rows and destructive folder cleanup actions must remain hidden/disabled unless folder operator mode is explicitly enabled.'
+    'Folder Local Review rows, debug labels, raw folder IDs, and destructive folder cleanup actions must remain hidden/disabled unless folder operator mode is explicitly enabled.'
   ),
   check(
     'insights-link-badge-semantics',

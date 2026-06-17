@@ -4220,6 +4220,7 @@ const SIDEBAR_FOLDER_ICON_SVG = `
 `;
 
 function folderSidebarCountDetails(item, countText){
+  if (!folderOperatorModeEnabled()) return folderSidebarSimpleCountLabel(item);
   const display = String(item?.displayCountLabel || "").trim();
   if (display) return display;
   if (item?.folderId === FOLDER_FILTER_NONE || item?.label === "Unfiled") {
@@ -4233,6 +4234,13 @@ function folderSidebarCountDetails(item, countText){
     return parts.join(" · ");
   }
   return String(countText || "").trim();
+}
+
+function folderSidebarSimpleCountLabel(item){
+  if (!item) return "";
+  if (item.isAllFoldersLink) return "";
+  const count = Number(item?.nativeMembershipCount ?? item?.canonicalCount ?? item?.count ?? item?.knownStudioCount ?? item?.knownCount ?? 0) || 0;
+  return pluralize(count, "chat");
 }
 
 function updateFolderCountToggleButton(button){
@@ -4294,8 +4302,11 @@ function renderFolderSidebarRow(view, item, opts){
   const link = document.createElement("a");
   link.className = "wbFolderItem";
   if (opts && opts.review) link.classList.add("wbFolderItem--review");
-  const countText = String(item.displayCountLabel || "").trim() || String(item.count || 0);
-  const hasDetailedCount = !!String(item.displayCountLabel || "").trim();
+  const operatorDetails = folderOperatorModeEnabled();
+  const countText = operatorDetails
+    ? (String(item.displayCountLabel || "").trim() || String(item.count || 0))
+    : folderSidebarSimpleCountLabel(item);
+  const hasDetailedCount = operatorDetails && !!String(item.displayCountLabel || "").trim();
   const compactCounts = !(opts && opts.review) && !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
   const countDetails = folderSidebarCountDetails(item, countText);
   const countPillStyle = "display:block;box-sizing:border-box;min-width:0;max-width:108px;padding:1px 5px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;";
@@ -6139,7 +6150,17 @@ function isVisibleStudioFoldersRoute(){
   return route.name === "library" && String(route.view || "").toLowerCase() === "folders";
 }
 
+function visibleStudioFolderDebugDetailsVisible(){
+  return folderOperatorModeEnabled();
+}
+
+function visibleStudioFolderSimpleCountLabel(row){
+  const count = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? row?.count ?? row?.knownStudioCount ?? row?.knownCount ?? 0) || 0;
+  return pluralize(count, "chat");
+}
+
 function visibleStudioFolderPageCountLabel(row){
+  if (!visibleStudioFolderDebugDetailsVisible()) return visibleStudioFolderSimpleCountLabel(row);
   const explicit = String(row?.displayCountLabel || "").trim();
   if (explicit) return explicit;
   if (row?.isUnfiled) return `${Number(row?.knownCount || 0) || 0} known here`;
@@ -6248,6 +6269,13 @@ function makeVisibleStudioFolderPageRow(row){
   const folderId = String(row?.folderId || row?.id || "").trim();
   const name = String(row?.name || folderId).trim() || folderId;
   const iconColor = normalizeSidebarIconColor(row?.iconColor || row?.color || "") || "currentColor";
+  const showDebugDetails = visibleStudioFolderDebugDetailsVisible();
+  const debugBadge = showDebugDetails
+    ? `<span style="display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)">${esc(row?.isUnfiled ? "system" : row?.isCanonical ? "canonical" : "review-required")}</span>`
+    : "";
+  const debugId = showDebugDetails && folderId
+    ? `<span style="display:block;margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all">ID ${esc(folderId)}</span>`
+    : "";
   const href = row?.isUnfiled
     ? buildListHash(state.lastView || "saved", FOLDER_FILTER_NONE)
     : buildListHash(state.lastView || "saved", folderId);
@@ -6275,9 +6303,9 @@ function makeVisibleStudioFolderPageRow(row){
     <span style="min-width:0">
       <span style="display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap">
         <span style="font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
-        <span style="display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)">${esc(row?.isUnfiled ? "system" : row?.isCanonical ? "canonical" : "review-required")}</span>
+        ${debugBadge}
       </span>
-      <span style="display:block;margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all">${folderId ? `ID ${esc(folderId)}` : ""}</span>
+      ${debugId}
     </span>
     <span title="${esc(label)}" aria-label="${esc(label)}" style="text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(label)}</span>
   `;
@@ -6496,7 +6524,7 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   summary.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;color:rgba(255,255,255,.62);font-size:12px;line-height:1.4";
   summary.innerHTML = `
     <span>${[
-      pluralize(canonicalRows.length, "canonical folder"),
+      pluralize(canonicalRows.length, showLocalReview ? "canonical folder" : "folder"),
       showLocalReview ? pluralize(reviewRows.length, "review row") : "",
     ].filter(Boolean).join(" · ")}</span>
     <span>${esc(String(model?.surface || "folder-parity"))}</span>
@@ -6534,7 +6562,7 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   const subtitle = $("#listSubtitle");
   if (subtitle) {
     subtitle.textContent = [
-      pluralize(canonicalRows.length, "canonical folder"),
+      pluralize(canonicalRows.length, showLocalReview ? "canonical folder" : "folder"),
       showLocalReview && reviewRows.length ? pluralize(reviewRows.length, "Local Review row") : "",
       model?.surface ? String(model.surface) : "",
     ].filter(Boolean).join(" · ");

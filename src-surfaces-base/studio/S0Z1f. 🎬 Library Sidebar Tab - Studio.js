@@ -71,6 +71,20 @@
     return folderOperatorModeEnabled() && folderLocalReviewAppearanceAllowed();
   }
 
+  function folderPageDebugDetailsVisible() {
+    return folderOperatorModeEnabled();
+  }
+
+  function folderPageChatCountLabel(value) {
+    const count = Number(value || 0) || 0;
+    return `${count} ${count === 1 ? 'chat' : 'chats'}`;
+  }
+
+  function folderPageSimpleCountLabel(row) {
+    const count = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? row?.count ?? row?.knownStudioCount ?? row?.knownCount ?? 0) || 0;
+    return folderPageChatCountLabel(count);
+  }
+
   let folderPageRecoveryToken = 0;
 
   function makeEl(tag, attrs = {}, children) {
@@ -210,6 +224,7 @@
   }
 
   function folderPageCountLabel(row) {
+    if (!folderPageDebugDetailsVisible()) return folderPageSimpleCountLabel(row);
     const explicit = String(row?.displayCountLabel || '').trim();
     if (explicit) return explicit;
     if (row?.isUnfiled) return `${Number(row?.knownCount || 0) || 0} known here`;
@@ -286,12 +301,27 @@
   function makeFallbackFolderPageRow(row) {
     const label = folderPageCountLabel(row);
     const color = String(row.iconColor || row.color || '').trim() || 'currentColor';
+    const showDebugDetails = folderPageDebugDetailsVisible();
     const icon = makeEl('span', {
       class: 'wbFolderPageIcon',
       'aria-hidden': 'true',
       style: `display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:${color};background:rgba(255,255,255,.035);flex:0 0 auto`,
       html: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>',
     });
+    const titleChildren = [
+      makeEl('span', { style: 'font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, row.name),
+    ];
+    if (showDebugDetails) {
+      titleChildren.push(makeEl('span', {
+        style: 'display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)',
+      }, row.isCanonical ? 'canonical' : (row.isUnfiled ? 'system' : 'review-required')));
+    }
+    const detailChildren = [
+      makeEl('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap' }, titleChildren),
+    ];
+    if (showDebugDetails && row.folderId) {
+      detailChildren.push(makeEl('div', { style: 'margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all' }, `ID ${row.folderId}`));
+    }
     const link = makeEl('a', {
       class: 'wbFolderPageRowLink',
       href: folderPageHref(row.folderId),
@@ -301,15 +331,7 @@
       style: 'display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;min-width:0;color:inherit;text-decoration:none',
     }, [
       icon,
-      makeEl('div', { style: 'min-width:0' }, [
-        makeEl('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap' }, [
-          makeEl('span', { style: 'font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, row.name),
-          makeEl('span', {
-            style: 'display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:2px 7px;font-size:10.5px;line-height:1.2;color:rgba(255,255,255,.78);background:rgba(255,255,255,.045)',
-          }, row.isCanonical ? 'canonical' : (row.isUnfiled ? 'system' : 'review-required')),
-        ]),
-        makeEl('div', { style: 'margin-top:5px;color:rgba(255,255,255,.55);font-size:11.5px;line-height:1.35;word-break:break-all' }, row.folderId ? `ID ${row.folderId}` : ''),
-      ]),
+      makeEl('div', { style: 'min-width:0' }, detailChildren),
       makeEl('div', { style: 'text-align:right;color:rgba(255,255,255,.78);font-size:12px;line-height:1.25;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, label),
     ]);
     return makeEl('div', {
@@ -384,7 +406,7 @@
       makeEl('h3', {
         class: 'wbFolderPageSectionTitle',
         style: 'margin:0 0 8px;padding:0;font-size:13px;font-weight:650;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.04em',
-      }, `Canonical folders · ${canonicalRows.length}`),
+      }, `${showLocalReview ? 'Canonical folders' : 'Folders'} · ${canonicalRows.length}`),
       makeEl('div', {
         class: 'wbFolderPageList',
         role: 'list',
@@ -420,7 +442,7 @@
           makeEl('div', { class: 'wbLibraryPageBrandText' }, [
             makeEl('h1', { class: 'wbLibraryPageTitle' }, 'Folders'),
             makeEl('div', { class: 'wbLibraryPageStats' }, [
-              `${canonicalRows.length} canonical`,
+              showLocalReview ? `${canonicalRows.length} canonical` : `${canonicalRows.length} folders`,
               showLocalReview ? `${reviewRows.length} review` : '',
               model?.surface || 'studio',
             ].filter(Boolean).join(' · ')),

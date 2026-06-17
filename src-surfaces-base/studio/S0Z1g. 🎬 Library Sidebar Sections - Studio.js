@@ -204,6 +204,21 @@
     return folderOperatorModeEnabled();
   }
 
+  function folderSidebarDebugDetailsVisible() {
+    return folderOperatorModeEnabled();
+  }
+
+  function folderSidebarChatCountLabel(value) {
+    const count = Number(value || 0) || 0;
+    return `${formatNumber(count)} ${count === 1 ? 'chat' : 'chats'}`;
+  }
+
+  function folderSidebarSimpleCountLabel(item = {}) {
+    if (item.isAllFoldersLink) return '';
+    const count = Number(item.nativeMembershipCount ?? item.canonicalCount ?? item.count ?? item.knownStudioCount ?? item.knownCount ?? 0) || 0;
+    return folderSidebarChatCountLabel(count);
+  }
+
   function countLabelForItem(item = {}) {
     const display = String(item.displayCountLabel || '').trim();
     if (display) return display;
@@ -211,6 +226,7 @@
   }
 
   function folderCountDetailsText(item = {}) {
+    if (!folderSidebarDebugDetailsVisible()) return folderSidebarSimpleCountLabel(item);
     const display = String(item.displayCountLabel || '').trim();
     if (display) return display;
     if (item.isUnfiled) {
@@ -2574,10 +2590,12 @@
           }));
         }
       }
-      pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
-      pop.appendChild(makeMenuAction('Copy folder ID', SIDEBAR_MENU_ACTION_SVGS.copy, () => copyTextValue(item.id), {
-        title: 'Copy folder ID',
-      }));
+      if (folderSidebarDebugDetailsVisible()) {
+        pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
+        pop.appendChild(makeMenuAction('Copy folder ID', SIDEBAR_MENU_ACTION_SVGS.copy, () => copyTextValue(item.id), {
+          title: 'Copy folder ID',
+        }));
+      }
     } else if (isCategoryMenu) {
       pop.appendChild(makeMenuColorPicker(item, color));
       pop.appendChild(makeMenuIconPicker(item, item.iconKey || appearance.icon || defaultIconForKind(item.kind)));
@@ -2796,8 +2814,11 @@
       if (!id || !name) continue;
       const href = String(item.href || '').trim() || routeSvc?.buildLibraryHash?.(routeKind, id) || `#/library/explorer`;
       const color = normalizeHexColor(item.color || '');
-      const countLabel = countLabelForItem(item);
-      const hasDetailedCount = !!String(item.displayCountLabel || '').trim();
+      const folderDebugDetails = kind !== 'folders' || folderSidebarDebugDetailsVisible();
+      const countLabel = kind === 'folders' && !folderDebugDetails
+        ? folderSidebarSimpleCountLabel(item)
+        : countLabelForItem(item);
+      const hasDetailedCount = folderDebugDetails && !!String(item.displayCountLabel || '').trim();
       const countDetails = kind === 'folders' ? folderCountDetailsText(item) : countLabel;
       const showInlineCount = !!countLabel && !compactFolderCounts;
       const countPillStyle = showInlineCount
