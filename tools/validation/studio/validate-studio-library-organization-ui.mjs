@@ -324,8 +324,8 @@ check(`D.toolbar: no novel refresh event names`, () => {
 
 console.log('Section E — Sidebar S0Z1g re-wiring');
 check(`E.sidebar: folder-create button branches through OrganizationModals on Desktop (R4.5.1.a)`, () => {
-  assert.match(SRC.sidebar, /tryOpenOrganizationModalsCreate/);
-  assert.match(SRC.sidebar, /openFolderEditor\(\s*\{\s*mode:\s*'create'/);
+  assert.match(SRC.sidebar, /requestDesktopFolderEditor/);
+  assert.match(SRC.sidebar, /requestDesktopFolderEditor\('create',\s*\{\},\s*\{\s*name:\s*nextName\s*\}\)/);
   /* MV3 fallback preserved. */
   assert.match(SRC.sidebar, /openFolderCreatePanel\(button\)/);
 });

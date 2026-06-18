@@ -348,8 +348,10 @@
     if (!folderId) {
       return baseResult('color', 'input-required', { reason: 'folderId is required' });
     }
+    var explicitColor = Object.prototype.hasOwnProperty.call(opts, 'color')
+      || Object.prototype.hasOwnProperty.call(opts, 'iconColor');
     var color = cleanString(opts.color);
-    if (!color) {
+    if (!color && !explicitColor) {
       if (opts.skipPrompts) {
         return baseResult('color', 'input-required', { folderId: folderId, reason: 'color is required' });
       }

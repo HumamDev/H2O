@@ -237,9 +237,11 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.76') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.76') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.77') &&
+      sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.77') &&
+      sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./studio.js?v=2.5.75'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
@@ -324,11 +326,19 @@ const checks = [
       sources.libraryWorkspace.includes('function canonicalFolderDisplayOrder(row)') &&
       sources.libraryWorkspace.includes('return 1000 + explicit;') &&
       sources.libraryWorkspace.includes('function isCanonicalDisplayFolder(row)') &&
-      sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isNativeOwnedFolderMirrorRow(row);') &&
+      sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row);') &&
+      sources.libraryWorkspace.includes('function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false)') &&
+      sources.libraryWorkspace.includes('nativeOnlyDisplaySuppressedFolders') &&
       sources.libraryWorkspace.includes('function mergeCanonicalFolderDisplaySource(localRow, canonicalRow, canonicalMirrorAvailable)') &&
       sources.libraryWorkspace.includes('const canonicalOrderTokens = canonicalRows.map') &&
       sources.libraryWorkspace.includes('const canonicalColorTokens = canonicalRows.map') &&
+      sources.sidebarSections.includes('function diagnoseFolderSidebarParity(options = {})') &&
+      sources.sidebarSections.includes('renderedSidebarFolderTokens') &&
+      sources.sidebarSections.includes('canonicalFolderDisplayModelTokens') &&
+      sources.sidebarSections.includes('capabilityPathUsed') &&
+      sources.sidebarSections.includes('H2O.Studio.diagnoseFolderSidebarParity = diagnoseFolderSidebarParity') &&
       sources.sidebarSections.includes('function desktopFolderEditor()') &&
+      sources.sidebarSections.includes('function studioIsTauri()') &&
       sources.sidebarSections.includes("function canUseDesktopFolderEditor(mode = '')") &&
       sources.sidebarSections.includes("if (m === 'create') return typeof actions?.create === 'function';") &&
       sources.sidebarSections.includes("if (m === 'rename') return typeof actions?.rename === 'function';") &&
@@ -336,8 +346,9 @@ const checks = [
       sources.sidebarSections.includes('function canRequestNativeCanonicalFolderColor(item)') &&
       sources.sidebarSections.includes('function canRequestNativeCanonicalFolderRename(item)') &&
       sources.sidebarSections.includes('function requestDesktopFolderEditor(mode, item = {}, options = {})') &&
-      sources.sidebarSections.includes("requestDesktopFolderEditor('color', item, { anchorEl })") &&
-      sources.sidebarSections.includes("requestDesktopFolderEditor('rename', item, { anchorEl })") &&
+      sources.sidebarSections.includes("const result = await requestDesktopFolderEditor('color', item, { color: nextColor, iconColor: nextColor });") &&
+      sources.sidebarSections.includes("const result = await requestDesktopFolderEditor('rename', item, { name: nextName });") &&
+      sources.sidebarSections.includes("const result = await requestDesktopFolderEditor('create', {}, { name: nextName });") &&
       sources.sidebarSections.includes("return (studioPlatformAdapter() === 'mv3' && !!folderMetadataOperationRequest())") &&
       sources.sidebarSections.includes("|| canUseDesktopFolderEditor('create')") &&
       sources.sidebarSections.includes('if (folderDestructiveActionsEnabled())'),

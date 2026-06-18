@@ -383,9 +383,9 @@ if (failures.length === 0) {
   assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
   assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.76', 'Library workspace cache bust');
+  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.77', 'Library workspace cache bust');
   assertContains(htmlFile, './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74', 'Library sidebar tab cache bust');
-  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.76', 'Library sidebar sections cache bust');
+  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.77', 'Library sidebar sections cache bust');
   assertContains(htmlFile, './studio.js?v=2.5.75', 'Studio shell cache bust');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');

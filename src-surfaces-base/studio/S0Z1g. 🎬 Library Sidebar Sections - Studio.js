@@ -686,6 +686,13 @@
     } catch { return ''; }
   }
 
+  function studioIsTauri() {
+    if (studioPlatformAdapter() === 'tauri') return true;
+    try { if (W.H2O?.Studio?.platform?.env?.isTauri === true) return true; } catch {}
+    try { if (typeof W.__TAURI_INTERNALS__ !== 'undefined' || typeof W.__TAURI__ !== 'undefined') return true; } catch {}
+    return false;
+  }
+
   function desktopFolderEditor() {
     try {
       const modals = W.H2O?.Studio?.OrganizationModals;
@@ -700,7 +707,7 @@
   }
 
   function canUseDesktopFolderEditor(mode = '') {
-    if (studioPlatformAdapter() !== 'tauri') return false;
+    if (!studioIsTauri()) return false;
     if (!desktopFolderEditor()) return false;
     const actions = desktopFolderActions();
     const m = String(mode || '').trim();
@@ -1072,6 +1079,22 @@
 
   async function requestCanonicalFolderColor(item, color, controls = {}) {
     const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    if (canUseDesktopFolderEditor('color')) {
+      const folderId = String(item?.id || item?.folderId || '').trim();
+      if (!folderId || item?.isCanonical !== true) {
+        setStatus('Blocked: target-not-canonical', 'blocked');
+        return { ok: false, status: 'target-not-canonical' };
+      }
+      const nextColor = normalizeHexColor(color || '');
+      setStatus('Applying...', 'pending');
+      const result = await requestDesktopFolderEditor('color', item, { color: nextColor, iconColor: nextColor });
+      if (result?.ok) {
+        setStatus(nextColor ? 'Color updated' : 'Color cleared', 'ok');
+        return result;
+      }
+      setStatus(`Blocked: ${String(result?.status || result?.reason || 'desktop-color-failed')}`, 'blocked');
+      return result;
+    }
     const request = folderMetadataOperationRequest();
     if (!request || studioPlatformAdapter() !== 'mv3') {
       setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
@@ -1144,15 +1167,36 @@
 
   async function requestCanonicalFolderCreate(name, controls = {}) {
     const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
-    const request = folderMetadataOperationRequest();
-    if (!request || studioPlatformAdapter() !== 'mv3') {
-      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
-      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
-    }
     const nextName = normalizeFolderCreateInput(name);
     if (!nextName) {
       setStatus('Blocked: invalid-folder-name', 'blocked');
       return { ok: false, blockers: [{ code: 'invalid-folder-name' }] };
+    }
+    if (canUseDesktopFolderEditor('create')) {
+      recordFolderCreateFlow('desktop-create-start', {
+        lastName: nextName,
+        lastStatus: 'desktop-creating',
+        lastPreview: null,
+        lastApply: null,
+        lastError: '',
+      });
+      setStatus('Creating...', 'pending');
+      const result = await requestDesktopFolderEditor('create', {}, { name: nextName });
+      recordFolderCreateFlow(result?.ok ? 'desktop-created' : 'desktop-create-blocked', {
+        lastStatus: result?.ok ? 'created' : String(result?.status || 'desktop-create-blocked'),
+        lastApply: result && typeof result === 'object' ? { ok: result.ok === true, status: String(result.status || ''), folderId: String(result.folderId || '') } : null,
+      });
+      if (result?.ok) {
+        setStatus('Folder created', 'ok');
+        return { ...result, applied: true };
+      }
+      setStatus(`Blocked: ${String(result?.status || result?.reason || 'desktop-create-failed')}`, 'blocked');
+      return result;
+    }
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
     }
 
     const operation = buildFolderCreateOperation(nextName);
@@ -1303,10 +1347,12 @@
       folderId,
       anchorEl: options.anchorEl || null,
     };
-    if (options.name) payload.name = String(options.name || '').trim();
-    if (options.color) {
-      payload.color = options.color;
-      payload.iconColor = options.iconColor || options.color;
+    if (Object.prototype.hasOwnProperty.call(options, 'name')) payload.name = String(options.name || '').trim();
+    if (Object.prototype.hasOwnProperty.call(options, 'color')) {
+      payload.color = normalizeHexColor(options.color || '');
+      payload.iconColor = Object.prototype.hasOwnProperty.call(options, 'iconColor')
+        ? normalizeHexColor(options.iconColor || '')
+        : normalizeHexColor(options.color || '');
     }
     let result = null;
     try {
@@ -1326,11 +1372,6 @@
 
   async function requestCanonicalFolderRename(item, name, controls = {}) {
     const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
-    const request = folderMetadataOperationRequest();
-    if (!request || studioPlatformAdapter() !== 'mv3') {
-      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
-      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
-    }
     const folderId = String(item?.id || item?.folderId || '').trim();
     if (!folderId || item?.isCanonical !== true) {
       setStatus('Blocked: target-not-canonical', 'blocked');
@@ -1340,6 +1381,21 @@
     if (!nextName) {
       setStatus('Blocked: invalid-folder-name', 'blocked');
       return { ok: false, blockers: [{ code: 'invalid-folder-name' }] };
+    }
+    if (canUseDesktopFolderEditor('rename')) {
+      setStatus('Renaming...', 'pending');
+      const result = await requestDesktopFolderEditor('rename', item, { name: nextName });
+      if (result?.ok) {
+        setStatus('Folder renamed', 'ok');
+        return { ...result, applied: true, after: { folderId, name: result.name || nextName } };
+      }
+      setStatus(`Blocked: ${String(result?.status || result?.reason || 'desktop-rename-failed')}`, 'blocked');
+      return result;
+    }
+    const request = folderMetadataOperationRequest();
+    if (!request || studioPlatformAdapter() !== 'mv3') {
+      setStatus('Blocked: native-owner-bridge-unavailable', 'blocked');
+      return { ok: false, blockers: [{ code: 'native-owner-bridge-unavailable' }] };
     }
     const freshItem = await resolveFreshCanonicalFolderItem(item);
     const requestItem = freshItem || item;
@@ -2607,15 +2663,8 @@
       }));
       pop.appendChild(el('div', { class: 'wbSidebarNativeSep', role: 'separator' }));
       if (isCanonicalFolder) {
-        if (canRequestNativeCanonicalFolderColor(item)) {
+        if (canRequestCanonicalFolderColor(item)) {
           makeCanonicalFolderColorPicker(item, color, pop, anchorEl).forEach((node) => pop.appendChild(node));
-        } else if (canUseDesktopFolderEditor('color')) {
-          pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, () => {
-            closeRowMenu();
-            requestDesktopFolderEditor('color', item, { anchorEl }).catch((e) => err('desktopFolderEditor.color.action', e));
-          }, {
-            title: 'Change folder color',
-          }));
         } else {
           pop.appendChild(makeMenuAction('Change color', SIDEBAR_MENU_ACTION_SVGS.palette, null, {
             disabled: true,
@@ -2625,15 +2674,8 @@
       } else {
         pop.appendChild(makeMenuColorPicker(item, color));
       }
-      if (isCanonicalFolder && canRequestNativeCanonicalFolderRename(item)) {
+      if (isCanonicalFolder && canRequestCanonicalFolderRename(item)) {
         makeCanonicalFolderRenamePanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
-      } else if (isCanonicalFolder && canUseDesktopFolderEditor('rename')) {
-        pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, () => {
-          closeRowMenu();
-          requestDesktopFolderEditor('rename', item, { anchorEl }).catch((e) => err('desktopFolderEditor.rename.action', e));
-        }, {
-          title: 'Rename folder',
-        }));
       } else {
         pop.appendChild(makeMenuAction('Rename folder', SIDEBAR_MENU_ACTION_SVGS.rename, null, {
           disabled: true,
@@ -3491,33 +3533,15 @@
         svg.style.height = '13px';
       });
       button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-      // R4.5.1.a — Desktop routes folder creation through
-      // H2O.Studio.OrganizationModals.openFolderEditor → actions.folders.create.
-      // The OrganizationModals module is Tauri-gated and only registers on
-      // Desktop, so on MV3 the dereference fails and we fall through to the
-      // existing canonical-folder-create panel (preserved verbatim).
-      function tryOpenOrganizationModalsCreate() {
-        try {
-          var modals = (W.H2O && W.H2O.Studio && W.H2O.Studio.OrganizationModals) || null;
-          if (modals && typeof modals.openFolderEditor === 'function') {
-            modals.openFolderEditor({ mode: 'create', anchorEl: button })
-              .catch((e) => { try { err('openFolderEditor.create', e); } catch (_) { /* swallow */ } });
-            return true;
-          }
-        } catch (_) { /* fall through */ }
-        return false;
-      }
       button.addEventListener('keydown', (ev) => {
         ev.stopPropagation();
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         ev.preventDefault();
-        if (tryOpenOrganizationModalsCreate()) return;
         openFolderCreatePanel(button);
       });
       button.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        if (tryOpenOrganizationModalsCreate()) return;
         openFolderCreatePanel(button);
       });
       sec.insertBefore(button, label.nextSibling);
@@ -3551,6 +3575,150 @@
       if (FOLDERS_UI_KEYS.includes(String(ev?.key || '')) || String(ev?.key || '') === FOLDER_LOCAL_REVIEW_OPERATOR_MODE_KEY) renderAllSections();
     });
     step('bindUpdates');
+  }
+
+  function diagnosticHash(value) {
+    const text = String(value || '');
+    if (!text) return '';
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return `h:${h.toString(16).padStart(8, '0').slice(0, 8)}`;
+  }
+
+  function normalizedDiagnosticName(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function folderRowSourceKind(row) {
+    if (row?.isSystem === true || String(row?.id || row?.folderId || '') === FOLDER_FILTER_NONE) return 'system';
+    if (row?.isCanonical === true) {
+      const source = String(row?.stateSource || row?.source || '').trim().toLowerCase();
+      if (source.includes('stored')) return 'canonical-stored';
+      if (source.includes('native')) return 'canonical-native';
+      if (source.includes('desktop') || source.includes('sqlite')) return 'canonical-desktop';
+      return 'canonical';
+    }
+    if (row?.reviewBucket) return `review-${row.reviewBucket}`;
+    const source = String(row?.source || '').trim().toLowerCase();
+    if (source.includes('desktop') || source.includes('sqlite')) return 'local-desktop';
+    if (source.includes('native') || source.includes('chrome')) return 'local-chrome';
+    return source || 'unknown';
+  }
+
+  function folderDiagnosticToken(row, index = 0) {
+    const id = String(row?.id || row?.folderId || '').trim();
+    const name = String(row?.name || row?.label || row?.title || '').trim();
+    const color = normalizeHexColor(row?.iconColor || row?.color || '');
+    const sourceKind = folderRowSourceKind(row);
+    return {
+      token: `${diagnosticHash(id)}:${normalizedDiagnosticName(name)}:${color || 'none'}:${sourceKind}`,
+      idHash: diagnosticHash(id),
+      normalizedName: normalizedDiagnosticName(name),
+      color: color || '',
+      sourceKind,
+      localOnly: row?.isCanonical === true || row?.isSystem === true ? false : true,
+      shownInNormalMode: !folderLocalReviewUiEnabled() ? (row?.isCanonical === true || row?.isSystem === true) : true,
+      order: index,
+    };
+  }
+
+  function renderedFolderSidebarTokens() {
+    const host = D.getElementById('folderList');
+    const rows = Array.from(host?.querySelectorAll?.('.wbSidebarSectionItem--folders[data-section="folders"]') || []);
+    return rows.map((node, index) => {
+      const id = String(node.getAttribute('data-id') || '').trim();
+      const name = String(node.querySelector('.wbSidebarSectionItemLabel')?.textContent || node.getAttribute('aria-label') || '').trim();
+      const color = normalizeHexColor(node.getAttribute('data-color') || '');
+      const isSystem = String(node.getAttribute('data-system-row') || '') === 'true' || id === FOLDER_FILTER_NONE;
+      const isCanonical = String(node.getAttribute('data-color-source') || '') === 'canonical' && !isSystem;
+      return folderDiagnosticToken({ id, folderId: id, name, color, iconColor: color, isSystem, isCanonical }, index);
+    });
+  }
+
+  function folderActionCapabilitySummary(item = {}) {
+    const canonicalItem = { ...item, isCanonical: true, kind: 'folders', section: 'folders' };
+    const createDesktop = canUseDesktopFolderEditor('create');
+    const renameDesktop = canUseDesktopFolderEditor('rename');
+    const colorDesktop = canUseDesktopFolderEditor('color');
+    const nativeRequest = !!folderMetadataOperationRequest() && studioPlatformAdapter() === 'mv3';
+    return {
+      create: {
+        available: canRequestCanonicalFolderCreate(),
+        path: nativeRequest ? 'mv3-native-owner-bridge' : (createDesktop ? 'desktop-organization-modals' : 'unavailable'),
+        reason: canRequestCanonicalFolderCreate() ? '' : 'folder-create-handler-unavailable',
+      },
+      rename: {
+        available: canRequestCanonicalFolderRename(canonicalItem),
+        path: canRequestNativeCanonicalFolderRename(canonicalItem) ? 'mv3-native-owner-bridge' : (renameDesktop ? 'desktop-inline-organization-modals' : 'unavailable'),
+        reason: canRequestCanonicalFolderRename(canonicalItem) ? '' : 'folder-rename-handler-unavailable',
+      },
+      color: {
+        available: canRequestCanonicalFolderColor(canonicalItem),
+        path: canRequestNativeCanonicalFolderColor(canonicalItem) ? 'mv3-native-owner-bridge' : (colorDesktop ? 'desktop-inline-organization-modals' : 'unavailable'),
+        reason: canRequestCanonicalFolderColor(canonicalItem) ? '' : 'folder-color-handler-unavailable',
+      },
+      delete: {
+        available: canRequestCanonicalFolderDeletePreview(canonicalItem),
+        path: canRequestCanonicalFolderDeletePreview(canonicalItem) ? 'mv3-native-owner-bridge-operator-only' : 'operator-gated',
+        reason: folderDestructiveActionsEnabled() ? 'delete-preview-handler-unavailable' : 'folder-operator-mode-required',
+      },
+    };
+  }
+
+  async function diagnoseFolderSidebarParity(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    let model = null;
+    try {
+      model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: opts.fresh !== false });
+    } catch (e) {
+      err('diagnoseFolderSidebarParity.getDisplayModel', e);
+    }
+    const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
+    const reviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const modelTokens = [
+      folderDiagnosticToken(buildUnfiledSidebarItem(), 0),
+      ...canonicalRows.map((row, index) => folderDiagnosticToken(row, index + 1)),
+    ];
+    const renderedTokens = renderedFolderSidebarTokens();
+    const renderedTokenValues = renderedTokens.map((row) => row.token);
+    const modelTokenValues = modelTokens.map((row) => row.token);
+    const createButton = D.querySelector('[data-h2o-folder-create-button="1"]');
+    const firstCanonical = canonicalRows[0] || {};
+    const capabilities = folderActionCapabilitySummary(firstCanonical);
+    return {
+      ok: renderedTokenValues.join('\n') === modelTokenValues.join('\n')
+        && renderedTokens.every((row) => row.localOnly !== true)
+        && !folderLocalReviewUiEnabled(),
+      surface: studioIsTauri() ? 'desktop-studio' : 'chrome-studio',
+      operatorModeEnabled: folderOperatorModeEnabled(),
+      localReviewVisible: folderLocalReviewUiEnabled(),
+      renderedSidebarFolderTokens: renderedTokens,
+      canonicalFolderDisplayModelTokens: modelTokens,
+      hiddenLocalReviewCount: reviewRows.length,
+      modelCanonicalCount: canonicalRows.length,
+      renderedCanonicalCount: renderedTokens.filter((row) => row.sourceKind !== 'system').length,
+      colorTokens: modelTokens.map((row) => `${row.idHash}:${row.color || 'none'}`),
+      createCapabilityAvailable: capabilities.create.available,
+      renameCapabilityAvailable: capabilities.rename.available,
+      colorCapabilityAvailable: capabilities.color.available,
+      capabilityPathUsed: {
+        create: capabilities.create.path,
+        rename: capabilities.rename.path,
+        color: capabilities.color.path,
+        delete: capabilities.delete.path,
+      },
+      buttonVisibilityState: {
+        createButtonVisible: !!createButton && createButton.hidden !== true,
+        createButtonDisabled: !!createButton && createButton.disabled === true,
+      },
+      menuActionState: capabilities,
+      destructiveActionsOperatorOnly: !folderDestructiveActionsEnabled() && capabilities.delete.available === false,
+      moreLinkHref: String(D.querySelector('#folderList .wbSidebarSectionMore')?.getAttribute('href') || ''),
+      warnings: Array.isArray(model?.warnings) ? model.warnings.slice(0, 8) : [],
+    };
   }
 
   // ── Boot ──────────────────────────────────────────────────────────────────
@@ -3644,7 +3812,16 @@
         errors: diag.errors.slice(-10),
       };
     },
+    diagnoseFolderSidebarParity,
   };
+
+  try {
+    if (H2O.Library.FolderParity && typeof H2O.Library.FolderParity === 'object') {
+      H2O.Library.FolderParity.diagnoseSidebar = diagnoseFolderSidebarParity;
+    }
+    H2O.Studio = H2O.Studio || {};
+    H2O.Studio.diagnoseFolderSidebarParity = diagnoseFolderSidebarParity;
+  } catch {}
 
   step('boot', 'studio-library-sidebar-sections-ready');
 })();

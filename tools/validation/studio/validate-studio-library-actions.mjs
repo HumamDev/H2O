@@ -559,7 +559,7 @@ check('R4.4: S0F3b uses H2O.Studio.store.folders (no new storage layer)', () => 
 
 check('R4.4: studio.html includes <script src="./S0F3b..."> after S0F3a', () => {
   const html = read(STUDIO_HTML_REL);
-  assert.match(html, /<script src="\.\/S0F3b\. 🎬 Folders Actions - Studio\.js"><\/script>/,
+  assert.match(html, /<script src="\.\/S0F3b\. 🎬 Folders Actions - Studio\.js(?:\?v=[^"]+)?"><\/script>/,
     'studio.html must include S0F3b script tag');
   const s0f3a = html.indexOf('S0F3a. 🎬 Folders - Studio.js');
   const s0f3b = html.indexOf('S0F3b. 🎬 Folders Actions - Studio.js');
@@ -792,7 +792,7 @@ check('R4.5.1.a: S0F1m enriches delete confirm with folder name + bound count', 
 
 check('R4.5.1.a: studio.html includes <script src="./S0F1m..."> after S0F1k', () => {
   const html = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/studio.html'), 'utf8');
-  assert.match(html, /<script src="\.\/S0F1m\. 🎬 Library Organization Modals - Studio\.js"><\/script>/);
+  assert.match(html, /<script src="\.\/S0F1m\. 🎬 Library Organization Modals - Studio\.js(?:\?v=[^"]+)?"><\/script>/);
   const idxK = html.indexOf('S0F1k. 🎬 Library Canonical Services');
   const idxM = html.indexOf('S0F1m. 🎬 Library Organization Modals');
   assert.ok(idxK > 0 && idxM > 0 && idxM > idxK,
@@ -809,20 +809,18 @@ check('R4.5.1.a: pack-studio.mjs has S0F1m in BOTH SOURCE_FILES and OUT_FILES', 
 check('R4.5.1.a: S0Z1g folder-create button re-wires through OrganizationModals on Desktop', () => {
   const s0z1g = fs.readFileSync(path.join(REPO_ROOT, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js'), 'utf8');
   // Re-wiring helper exists.
-  assert.match(s0z1g, /tryOpenOrganizationModalsCreate/);
+  assert.match(s0z1g, /requestDesktopFolderEditor/);
   // It dereferences H2O.Studio.OrganizationModals.
   assert.match(s0z1g, /H2O\.Studio\.OrganizationModals/);
-  // It calls openFolderEditor with create mode.
-  assert.match(s0z1g, /openFolderEditor\(\s*\{\s*mode:\s*'create'/);
+  // It calls the Desktop bridge with create mode and explicit input.
+  assert.match(s0z1g, /requestDesktopFolderEditor\('create',\s*\{\},\s*\{\s*name:\s*nextName\s*\}\)/);
   // MV3 fallback is preserved — openFolderCreatePanel still called.
   assert.match(s0z1g, /openFolderCreatePanel\(button\)/);
-  // Both click AND keydown handlers branch through the helper.
+  // Both click AND keydown handlers open the shared inline create panel.
   const clickBranch = s0z1g.match(/button\.addEventListener\('click'[\s\S]*?openFolderCreatePanel\(button\)[\s\S]*?\}\)/);
   const keyBranch   = s0z1g.match(/button\.addEventListener\('keydown'[\s\S]*?openFolderCreatePanel\(button\)[\s\S]*?\}\)/);
-  assert.ok(clickBranch && /tryOpenOrganizationModalsCreate/.test(clickBranch[0]),
-    'click handler should branch through tryOpenOrganizationModalsCreate');
-  assert.ok(keyBranch && /tryOpenOrganizationModalsCreate/.test(keyBranch[0]),
-    'keydown handler should branch through tryOpenOrganizationModalsCreate');
+  assert.ok(clickBranch, 'click handler should open the inline create panel');
+  assert.ok(keyBranch, 'keydown handler should open the inline create panel');
 });
 
 check('R4.5.1.a: S0F1m never imports / dereferences chrome.* runtime APIs', () => {

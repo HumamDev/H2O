@@ -150,6 +150,7 @@
       name,
       normalizedName: normalizeFolderName(name),
       source: String(row?.source || source || '').trim(),
+      stateSource: String(source || row?.stateSource || '').trim(),
       index,
       sortOrder,
     };
@@ -413,8 +414,26 @@
     return PRIMARY_CANONICAL_FOLDER_IDS.has(folderIdOf(row));
   }
 
+  function isStoredFolderStateRow(row) {
+    const stateSource = String(row?.stateSource || '').trim().toLowerCase();
+    return stateSource === 'stored-folder-state' || stateSource === 'folder-state';
+  }
+
   function isCanonicalDisplayFolder(row) {
-    return isPrimaryCanonicalFolder(row) || isNativeOwnedFolderMirrorRow(row);
+    return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row);
+  }
+
+  function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false) {
+    const src = stateInput && typeof stateInput === 'object' ? stateInput : { folders: [], items: {} };
+    const folders = (Array.isArray(src.folders) ? src.folders : [])
+      .filter((folder) => isPrimaryCanonicalFolder(folder) || (includeStoredDynamic && isStoredFolderStateRow(folder)));
+    const ids = new Set(folders.map((folder) => folderIdOf(folder)).filter(Boolean));
+    const items = {};
+    Object.keys(src.items || {}).forEach((folderId) => {
+      if (!ids.has(folderId)) return;
+      items[folderId] = Array.isArray(src.items[folderId]) ? src.items[folderId].slice() : [];
+    });
+    return { folders, items };
   }
 
   function mergeCanonicalFolderDisplaySource(localRow, canonicalRow, canonicalMirrorAvailable) {
@@ -428,11 +447,13 @@
       next.title = localName;
       next.normalizedName = normalizeFolderName(localName);
     }
-    const localColor = String(local.iconColor || local.color || '').trim();
-    if (!String(next.color || '').trim() && localColor) next.color = localColor;
-    if (!String(next.iconColor || '').trim() && localColor) next.iconColor = localColor;
-    const localIcon = String(local.icon || local.iconKey || '').trim();
-    if (!String(next.icon || '').trim() && localIcon) next.icon = localIcon;
+    if (!canonicalMirrorAvailable) {
+      const localColor = String(local.iconColor || local.color || '').trim();
+      if (!String(next.color || '').trim() && localColor) next.color = localColor;
+      if (!String(next.iconColor || '').trim() && localColor) next.iconColor = localColor;
+      const localIcon = String(local.icon || local.iconKey || '').trim();
+      if (!String(next.icon || '').trim() && localIcon) next.icon = localIcon;
+    }
     const stableOrder = canonicalFolderDisplayOrder(next);
     if (Number.isFinite(stableOrder) && stableOrder > 0) next.sortOrder = stableOrder;
     return next;
@@ -1419,9 +1440,9 @@
 
     const canonicalFromBroadcast = nativeState.folders.length > 0;
     const canonicalFromStoredMirror = storedState.folders.length > 0;
-    const mergedTrustedCanonical = canonicalFromBroadcast
-      ? mergeTrustedCanonicalFolderStates(nativeState, storedState, 'native-broadcast', 'stored-folder-state')
-      : (canonicalFromStoredMirror ? storedState : { folders: [], items: {} });
+    const mergedTrustedCanonical = canonicalFromStoredMirror
+      ? filterFolderStateForNormalDisplay(storedState, true)
+      : (canonicalFromBroadcast ? filterFolderStateForNormalDisplay(nativeState, false) : { folders: [], items: {} });
     const knownCanonicalFallbackRows = KNOWN_NATIVE_CANONICAL_FOLDERS
       .map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical'))
       .filter(Boolean);
@@ -1476,6 +1497,16 @@
       : 'ok';
     const canonicalMirrorAvailable = mergedTrustedCanonical.folders.length > 0;
     const canonicalItems = mergedTrustedCanonical.folders.length ? mergedTrustedCanonical.items : storedState.items;
+    const nativeOnlyDisplaySuppressedFolders = nativeState.folders
+      .filter((folder) => !isPrimaryCanonicalFolder(folder) && !storedState.folders.some((stored) => stored.id === folder.id))
+      .map((folder) => ({
+        id: folder.id,
+        folderId: folder.id,
+        name: folder.name,
+        normalizedName: folder.normalizedName,
+        source: folder.source || 'native-broadcast',
+        reason: 'native-only-not-materialized',
+      }));
     const folderDisplayRows = buildFolderDisplayRows({
       canonicalFolders,
       localFolders,
@@ -1527,7 +1558,9 @@
           .map((folder) => folder.id)
           .filter((id) => id && !nativeState.folders.some((folder) => folder.id === id))
           .slice(0, 16),
+        nativeOnlySuppressedFolderCount: nativeOnlyDisplaySuppressedFolders.length,
       },
+      nativeOnlyDisplaySuppressedFolders,
       canonicalFolders,
       localFolders,
       folderDisplayRows,
