@@ -134,6 +134,7 @@
     wrench: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.8 5.2a4.5 4.5 0 0 0 4.9 5L11 18.9a3 3 0 1 1-4.2-4.2l8.7-8.7ZM7.7 17.7h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     palette: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 0 0 0 16h1.1a1.9 1.9 0 0 0 1.3-3.2 1.3 1.3 0 0 1 .9-2.2H17a3 3 0 0 0 3-3A7.6 7.6 0 0 0 12 4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.7 11h.01M9.4 7.8h.01M13 7.4h.01" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
   });
+  const SIDEBAR_UNFILED_ICON_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.2 10.8h13.6l-1.1 6.1A2.6 2.6 0 0 1 15.1 19H8.9a2.6 2.6 0 0 1-2.6-2.1l-1.1-6.1Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M7.4 10.8 8.3 7a2.1 2.1 0 0 1 2-1.6h3.4a2.1 2.1 0 0 1 2 1.6l.9 3.8" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.8 14h1.6a1.8 1.8 0 0 0 3.2 0h1.6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7.2 13.8 9 12 10.8 10.2 9 12 7.2Z" fill="currentColor" stroke="none"/></svg>';
 
   const diag = { t0: performance.now(), steps: [], errors: [], bufMax: 50, errMax: 15 };
   const step = (s, o = '') => { try { diag.steps.push({ t: Math.round(performance.now() - diag.t0), s: String(s), o: String(o) }); if (diag.steps.length > diag.bufMax) diag.steps.splice(0, diag.steps.length - diag.bufMax); } catch {} };
@@ -2185,8 +2186,8 @@
       isUnfiled: true,
       disableMenu: true,
       href,
-      iconKey: 'inbox',
-      iconSvg: SIDEBAR_ICON_SVGS.inbox,
+      iconKey: 'unfiled',
+      iconSvg: SIDEBAR_UNFILED_ICON_SVG,
     };
   }
 
@@ -2972,6 +2973,14 @@
         'data-count-mode': compactFolderCounts ? 'compact' : (showInlineCount ? 'inline' : null),
         'data-system-row': item.isSystem === true ? 'true' : null,
         'data-color-source': item.isCanonical === true ? 'canonical' : (color ? 'local' : null),
+        'data-h2o-folder-sidebar-row': kind === 'folders' ? '1' : null,
+        'data-h2o-folder-id': kind === 'folders' ? id : null,
+        'data-h2o-folder-name': kind === 'folders' ? name : null,
+        'data-h2o-folder-canonical': kind === 'folders' && item.isCanonical === true ? 'true' : null,
+        'data-h2o-folder-color': kind === 'folders' && color ? color : null,
+        'data-h2o-folder-color-source': kind === 'folders' ? String(item.colorSource || '').trim() : null,
+        'data-h2o-folder-source-kind': kind === 'folders' ? (item.isSystem === true ? 'system' : item.isCanonical === true ? 'canonical' : 'local') : null,
+        'data-h2o-folder-normalized-name': kind === 'folders' ? String(item.normalizedName || name || '').trim().replace(/\s+/g, ' ').toLowerCase() : null,
         style: rowStyle,
       }, [
         makeItemIcon(item, kind),
@@ -3081,6 +3090,12 @@
         color: row?.isCanonical === true
           ? normalizeHexColor(row?.iconColor || row?.color || '')
           : (appearance.color || normalizeHexColor(row?.color || row?.iconColor || '')),
+        colorSource: String(row?.colorSource || '').trim(),
+        rowColor: normalizeHexColor(row?.rowColor || ''),
+        nativeColor: normalizeHexColor(row?.nativeColor || ''),
+        storedColor: normalizeHexColor(row?.storedColor || ''),
+        colorConflict: row?.colorConflict === true,
+        normalizedName: String(row?.normalizedName || '').trim(),
         iconKey: appearance.icon || 'folder',
         iconSvg: appearance.iconSvg || SIDEBAR_ICON_SVGS.folder,
       };
@@ -3613,11 +3628,17 @@
     const name = String(row?.name || row?.label || row?.title || '').trim();
     const color = normalizeHexColor(row?.iconColor || row?.color || '');
     const sourceKind = folderRowSourceKind(row);
+    const colorSource = String(row?.colorSource || row?.displayColorSource || '').trim() || (color ? 'unknown' : 'default');
     return {
-      token: `${diagnosticHash(id)}:${normalizedDiagnosticName(name)}:${color || 'none'}:${sourceKind}`,
+      token: `${diagnosticHash(id)}:${normalizedDiagnosticName(name)}:${color || 'none'}:${sourceKind}:${colorSource}`,
       idHash: diagnosticHash(id),
       normalizedName: normalizedDiagnosticName(name),
       color: color || '',
+      colorSource,
+      rowColor: normalizeHexColor(row?.rowColor || ''),
+      nativeColor: normalizeHexColor(row?.nativeColor || ''),
+      storedColor: normalizeHexColor(row?.storedColor || ''),
+      colorConflict: row?.colorConflict === true,
       sourceKind,
       localOnly: row?.isCanonical === true || row?.isSystem === true ? false : true,
       shownInNormalMode: !folderLocalReviewUiEnabled() ? (row?.isCanonical === true || row?.isSystem === true) : true,
@@ -3625,16 +3646,62 @@
     };
   }
 
-  function renderedFolderSidebarTokens() {
+  function renderedFolderSidebarTokens(modelRows = []) {
     const host = D.getElementById('folderList');
-    const rows = Array.from(host?.querySelectorAll?.('.wbSidebarSectionItem--folders[data-section="folders"]') || []);
+    const selector = [
+      '[data-h2o-folder-sidebar-row="1"]',
+      '.wbSidebarSectionItem--folders[data-section="folders"]',
+      '.wbFolderItem[data-folder-id]',
+    ].join(',');
+    const rows = Array.from(host?.querySelectorAll?.(selector) || [])
+      .filter((node, index, all) => all.indexOf(node) === index);
+    const modelById = new Map((Array.isArray(modelRows) ? modelRows : []).map((row) => [
+      String(row?.id || row?.folderId || '').trim(),
+      row,
+    ]).filter(([id]) => id));
     return rows.map((node, index) => {
-      const id = String(node.getAttribute('data-id') || '').trim();
-      const name = String(node.querySelector('.wbSidebarSectionItemLabel')?.textContent || node.getAttribute('aria-label') || '').trim();
-      const color = normalizeHexColor(node.getAttribute('data-color') || '');
-      const isSystem = String(node.getAttribute('data-system-row') || '') === 'true' || id === FOLDER_FILTER_NONE;
-      const isCanonical = String(node.getAttribute('data-color-source') || '') === 'canonical' && !isSystem;
-      return folderDiagnosticToken({ id, folderId: id, name, color, iconColor: color, isSystem, isCanonical }, index);
+      const id = String(
+        node.getAttribute('data-h2o-folder-id')
+        || node.getAttribute('data-id')
+        || node.getAttribute('data-folder-id')
+        || ''
+      ).trim();
+      const modelRow = modelById.get(id) || null;
+      const name = String(
+        node.getAttribute('data-h2o-folder-name')
+        || node.querySelector('.wbSidebarSectionItemLabel')?.textContent
+        || node.querySelector('.wbFolderLabel')?.textContent
+        || node.getAttribute('aria-label')
+        || modelRow?.name
+        || ''
+      ).trim();
+      const color = normalizeHexColor(
+        node.getAttribute('data-h2o-folder-color')
+        || node.getAttribute('data-color')
+        || modelRow?.iconColor
+        || modelRow?.color
+        || ''
+      );
+      const isSystem = String(node.getAttribute('data-system-row') || '') === 'true'
+        || node.classList?.contains?.('wbFolderItem--unfiled')
+        || id === FOLDER_FILTER_NONE;
+      const isReview = node.classList?.contains?.('wbFolderItem--review') || !!node.getAttribute('data-review-bucket');
+      const canonicalAttr = String(node.getAttribute('data-h2o-folder-canonical') || '').trim();
+      const isCanonical = canonicalAttr
+        ? canonicalAttr === 'true'
+        : (!!modelRow ? modelRow.isCanonical === true : (!isSystem && !isReview));
+      return folderDiagnosticToken({
+        ...(modelRow || {}),
+        id,
+        folderId: id,
+        name,
+        color,
+        iconColor: color,
+        colorSource: node.getAttribute('data-h2o-folder-color-source') || modelRow?.colorSource || '',
+        isSystem,
+        isCanonical,
+        reviewBucket: node.getAttribute('data-review-bucket') || modelRow?.reviewBucket || null,
+      }, index);
     });
   }
 
@@ -3678,11 +3745,9 @@
     }
     const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
     const reviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
-    const modelTokens = [
-      folderDiagnosticToken(buildUnfiledSidebarItem(), 0),
-      ...canonicalRows.map((row, index) => folderDiagnosticToken(row, index + 1)),
-    ];
-    const renderedTokens = renderedFolderSidebarTokens();
+    const modelRows = [buildUnfiledSidebarItem(), ...canonicalRows];
+    const modelTokens = modelRows.map((row, index) => folderDiagnosticToken(row, index));
+    const renderedTokens = renderedFolderSidebarTokens(modelRows);
     const renderedTokenValues = renderedTokens.map((row) => row.token);
     const modelTokenValues = modelTokens.map((row) => row.token);
     const createButton = D.querySelector('[data-h2o-folder-create-button="1"]');

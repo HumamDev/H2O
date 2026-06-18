@@ -37,6 +37,22 @@
     { id: 'f_3bf15f43b835d19dbac0fb13',  folderId: 'f_3bf15f43b835d19dbac0fb13',  name: 'Tech',    normalizedName: 'tech',    icon: 'folder', color: '', iconColor: '', sortOrder: 5 },
     { id: 'f_2bb1037f88b2719dbac10c22',  folderId: 'f_2bb1037f88b2719dbac10c22',  name: 'English', normalizedName: 'english', icon: 'folder', color: '', iconColor: '', sortOrder: 6 },
   ];
+  const CANONICAL_FOLDER_DISPLAY_COLORS = Object.freeze([
+    ['f_7050f49d3f341819dba53d547', 'study',   '#F472B6'],
+    ['f_5d9431084707f19dba53d548',  'case',    '#3B82F6'],
+    ['f_0606ea698948f19dba53d548',  'dev',     '#22C55E'],
+    ['f_e301f3506938c19dbac0e304',  'code',    '#A855F7'],
+    ['f_3bf15f43b835d19dbac0fb13',  'tech',    '#14B8A6'],
+    ['f_2bb1037f88b2719dbac10c22',  'english', '#FF914D'],
+  ]);
+  const CANONICAL_FOLDER_DISPLAY_COLOR_BY_ID = new Map(
+    CANONICAL_FOLDER_DISPLAY_COLORS.map(([id, , color]) => [String(id || '').trim(), String(color || '').trim()])
+      .filter(([id, color]) => id && color)
+  );
+  const CANONICAL_FOLDER_DISPLAY_COLOR_BY_NAME = new Map(
+    CANONICAL_FOLDER_DISPLAY_COLORS.map(([, name, color]) => [normalizeFolderName(name), String(color || '').trim()])
+      .filter(([name, color]) => name && color)
+  );
   const CANONICAL_FOLDER_DISPLAY_ORDER_BY_ID = new Map(
     KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder) => [String(folder.id || folder.folderId || '').trim(), Number(folder.sortOrder || 0)])
       .filter(([id, order]) => id && Number.isFinite(order) && order > 0)
@@ -130,6 +146,56 @@
     if (Number.isFinite(explicit) && explicit > 0) return 1000 + explicit;
     const index = finiteNumberFrom([row?.index], null);
     return Number.isFinite(index) ? 1000 + Math.max(0, index) : 1000;
+  }
+
+  function folderColorOf(row) {
+    return String(row?.iconColor || row?.color || row?.folderColor || row?.accentColor || '').trim();
+  }
+
+  function canonicalFolderDisplayColor(row) {
+    const byId = CANONICAL_FOLDER_DISPLAY_COLOR_BY_ID.get(folderIdOf(row));
+    if (byId) return byId;
+    return CANONICAL_FOLDER_DISPLAY_COLOR_BY_NAME.get(normalizeFolderName(row?.normalizedName || folderNameOf(row))) || '';
+  }
+
+  function indexFoldersById(folders) {
+    const out = new Map();
+    for (const folder of Array.isArray(folders) ? folders : []) {
+      const id = folderIdOf(folder);
+      if (id && !out.has(id)) out.set(id, folder);
+    }
+    return out;
+  }
+
+  function decorateCanonicalFolderColorSources(folder, storedById, nativeById) {
+    const id = folderIdOf(folder);
+    const storedRow = storedById instanceof Map ? storedById.get(id) : null;
+    const nativeRow = nativeById instanceof Map ? nativeById.get(id) : null;
+    const rowColor = folderColorOf(folder);
+    const storedColor = folderColorOf(storedRow);
+    const nativeColor = folderColorOf(nativeRow);
+    const displayColor = canonicalFolderDisplayColor(folder) || rowColor || nativeColor || storedColor || '';
+    const colorSource = canonicalFolderDisplayColor(folder)
+      ? 'known-canonical-display-palette'
+      : rowColor
+        ? 'canonical-row'
+        : nativeColor
+          ? 'native-broadcast'
+          : storedColor
+            ? 'stored-folder-state'
+            : 'default';
+    const conflictValues = Array.from(new Set([displayColor, rowColor, nativeColor, storedColor].filter(Boolean)));
+    return {
+      ...folder,
+      color: displayColor,
+      iconColor: displayColor,
+      displayColor,
+      colorSource,
+      rowColor,
+      nativeColor,
+      storedColor,
+      colorConflict: conflictValues.length > 1,
+    };
   }
 
   function normalizeFolderRow(row, index = 0, source = '') {
@@ -1369,6 +1435,11 @@
         source: String(folder?.source || '').trim(),
         color: String(folder?.color || folder?.iconColor || '').trim(),
         iconColor: String(folder?.iconColor || folder?.color || '').trim(),
+        colorSource: String(folder?.colorSource || '').trim(),
+        rowColor: String(folder?.rowColor || '').trim(),
+        nativeColor: String(folder?.nativeColor || '').trim(),
+        storedColor: String(folder?.storedColor || '').trim(),
+        colorConflict: folder?.colorConflict === true,
         icon: String(folder?.icon || '').trim(),
         index: Number.isFinite(folderIndex) ? folderIndex : 0,
         sortOrder: rowSortOrder,
@@ -1447,9 +1518,16 @@
       .map((folder, index) => normalizeFolderRow(folder, index, 'known-current-canonical'))
       .filter(Boolean);
     const fallbackCanonical = enrichKnownCanonicalFallbackRows(knownCanonicalFallbackRows, storedState.folders);
-    const canonicalFolders = mergedTrustedCanonical.folders.length
+    const canonicalFoldersRaw = mergedTrustedCanonical.folders.length
       ? mergedTrustedCanonical.folders
       : fallbackCanonical.rows;
+    const storedById = indexFoldersById(storedState.folders);
+    const nativeById = indexFoldersById(nativeState.folders);
+    const canonicalFolders = canonicalFoldersRaw.map((folder) => (
+      isPrimaryCanonicalFolder(folder)
+        ? decorateCanonicalFolderColorSources(folder, storedById, nativeById)
+        : folder
+    ));
     const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalBindingCount = canonicalFromBroadcast
