@@ -12,6 +12,7 @@ const failures = [];
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoExportFile = 'src-surfaces-base/studio/sync/auto-export.tauri.js';
 const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
+const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
 function read(file) {
@@ -185,7 +186,20 @@ function buildContext() {
                     schema: 'h2o.studio.fullBundle.v2',
                     mode: payload.mode,
                     chats: { importedChats: payload.bundle.chatArchive.chats.length, importedSnapshots: 1 },
-                    chromeStorageLocal: { written: 1, skipped: 0 },
+                    chromeStorageLocal: {
+                      written: 1,
+                      skipped: 0,
+                      folderStateMergeStats: {
+                        'h2o:prm:cgx:fldrs:state:data:v1': {
+                          incoming: 1,
+                          created: 0,
+                          refreshed: 1,
+                          skippedStale: 0,
+                          missingIncomingUpdatedAt: 0,
+                          missingExistingUpdatedAt: 0
+                        }
+                      }
+                    },
                     libraryKv: { written: 0, skipped: 0 }
                   }
                 };
@@ -274,6 +288,8 @@ async function runVmProof() {
   assert(result.importSummary.shellRowsIncoming === 2, 'shell row incoming count mismatch');
   assert(result.importSummary.shellRowsMaterialized === 2, 'shell row materialized count mismatch');
   assert(result.importSummary.shellRowsFailed === 0, 'shell row failure count mismatch');
+  assert(result.importSummary.folderMetadataFreshness.refreshed === 1, 'Desktop->Chrome newer folder metadata refresh summary missing');
+  assert(result.importSummary.folderMetadataFreshness.skippedStale === 0, 'Desktop->Chrome folder metadata should not be stale in fixture');
   assert(result.convergence && result.convergence.ok === true, 'desktop-to-chrome convergence should be proven');
   assert(Array.isArray(result.redactedErrorCategories), 'redacted error categories missing');
   assert(result.redactedErrorCategories.length === 0, 'redacted error categories should be empty on success');
@@ -356,7 +372,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderImportFile, autoExportFile, libraryIndexFile, contractFile]) assertExists(file);
+for (const file of [folderImportFile, autoExportFile, libraryIndexFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
@@ -365,6 +381,7 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'dryRunImportFullBundle', 'dry run archive API');
   assertContains(folderImportFile, 'importFullBundle', 'import archive API');
   assertContains(folderImportFile, "mode: 'merge'", 'merge import mode');
+  assertContains(folderImportFile, 'folderMetadataFreshness', 'redacted folder metadata freshness summary');
   assertContains(folderImportFile, 'library-propagation-labels-deferred', 'label deferred taxonomy');
   assertContains(folderImportFile, 'library-propagation-chat-folder-bindings-deferred', 'folder binding deferred taxonomy');
   assertContains(folderImportFile, 'library-propagation-tombstones-deferred', 'tombstone deferred taxonomy');
@@ -380,6 +397,10 @@ if (failures.length === 0) {
   assertContains(libraryIndexFile, 'desktop-sync-folder-rehydrate', 'Desktop shell row rehydration source');
   assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'durable rehydration diagnostic');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
+  assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
+  assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
+  assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');
+  assertContains(chromeLiveBackgroundFile, 'function comparableFolderStateData', 'Chrome folder state idempotent comparison');
   assertContains(contractFile, 'F19.2.c Minimal Desktop -> Chrome Scope', 'F19.2.c doc section');
   assertContains(contractFile, 'Premium Sync remains open', 'premium sync warning');
   assertNotContains(folderImportFile, 'SKIP_STALENESS_CHECK', 'staleness bypass');

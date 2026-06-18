@@ -933,6 +933,8 @@
     var written = r.written && typeof r.written === 'object' ? r.written : {};
     var skipped = r.skipped && typeof r.skipped === 'object' ? r.skipped : {};
     var denied = skipped.deniedByPolicy && typeof skipped.deniedByPolicy === 'object' ? skipped.deniedByPolicy : {};
+    var folderMetadataFreshness = r.folderMetadataFreshness && typeof r.folderMetadataFreshness === 'object'
+      ? r.folderMetadataFreshness : {};
     var chromeMinimalRows = r.chromeMinimalRows && typeof r.chromeMinimalRows === 'object' ? r.chromeMinimalRows : {};
     var chromeWeakRows = r.chromeWeakRows && typeof r.chromeWeakRows === 'object' ? r.chromeWeakRows : {};
     var chatWriteDiagnostics = Array.isArray(r.chatWriteDiagnostics)
@@ -1030,6 +1032,14 @@
       unindexedRowsMissing: Number(r.unindexedRowsMissing || 0),
       unindexedRowReasonCounts: r.unindexedRowReasonCounts && typeof r.unindexedRowReasonCounts === 'object'
         ? Object.assign({}, r.unindexedRowReasonCounts) : {},
+      folderMetadataFreshness: {
+        incoming: Number(folderMetadataFreshness.incoming || 0),
+        created: Number(folderMetadataFreshness.created || 0),
+        refreshed: Number(folderMetadataFreshness.refreshed || 0),
+        skippedStale: Number(folderMetadataFreshness.skippedStale || 0),
+        missingIncomingUpdatedAt: Number(folderMetadataFreshness.missingIncomingUpdatedAt || 0),
+        missingExistingUpdatedAt: Number(folderMetadataFreshness.missingExistingUpdatedAt || 0)
+      },
       chatWriteDiagnostics: chatWriteDiagnostics,
       libraryBulkMigration: Array.isArray(r.libraryBulkMigration)
         ? r.libraryBulkMigration.map(function (entry) {

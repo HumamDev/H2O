@@ -2952,6 +2952,46 @@ function normalizeFolderList(raw) {
   return out;
 }
 
+function folderCatalogRowTimestampMs(row) {
+  const value = row && (row.updatedAt || row.updated_at || row.modifiedAt || row.modified_at || row.createdAt || row.created_at);
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
+  const prev = prevRaw && typeof prevRaw === "object" ? prevRaw : {};
+  const item = itemRaw && typeof itemRaw === "object" ? itemRaw : {};
+  const prevMs = folderCatalogRowTimestampMs(prev);
+  const itemMs = folderCatalogRowTimestampMs(item);
+  let base = prev;
+  let winner = item;
+  if (prev.id && prevMs && (!itemMs || itemMs < prevMs)) {
+    base = item;
+    winner = prev;
+  }
+  const id = String(winner.id || base.id || "").trim();
+  return {
+    ...base,
+    ...winner,
+    id,
+    name: String(winner.name || base.name || id).trim() || id,
+    kind: String(winner.kind || base.kind || "local").trim() || "local",
+    projectRef: winner.projectRef || base.projectRef || null,
+    parentId: String(winner.parentId || base.parentId || "").trim(),
+    source: String(winner.source || base.source || "").trim(),
+    sortOrder: Number.isFinite(Number(winner.sortOrder)) ? Math.floor(Number(winner.sortOrder))
+      : Number.isFinite(Number(base.sortOrder)) ? Math.floor(Number(base.sortOrder)) : 0,
+    iconColor: String(winner.iconColor || base.iconColor || "").trim(),
+    color: String(winner.color || base.color || winner.iconColor || base.iconColor || "").trim(),
+    icon: String(winner.icon || base.icon || "").trim(),
+    createdAt: String(winner.createdAt || base.createdAt || "").trim(),
+    updatedAt: String(winner.updatedAt || base.updatedAt || "").trim(),
+  };
+}
+
 function mergeFolderCatalogLists(...lists) {
   const byId = new Map();
   for (const rawList of lists) {
@@ -2960,23 +3000,7 @@ function mergeFolderCatalogLists(...lists) {
       const id = String(item && item.id || "").trim();
       if (!id) continue;
       const prev = byId.get(id) || {};
-      byId.set(id, {
-        ...prev,
-        ...item,
-        id,
-        name: String(item.name || prev.name || id).trim() || id,
-        kind: String(item.kind || prev.kind || "local").trim() || "local",
-        projectRef: item.projectRef || prev.projectRef || null,
-        parentId: String(item.parentId || prev.parentId || "").trim(),
-        source: String(item.source || prev.source || "").trim(),
-        sortOrder: Number.isFinite(Number(item.sortOrder)) ? Math.floor(Number(item.sortOrder))
-          : Number.isFinite(Number(prev.sortOrder)) ? Math.floor(Number(prev.sortOrder)) : 0,
-        iconColor: String(item.iconColor || prev.iconColor || "").trim(),
-        color: String(item.color || prev.color || item.iconColor || prev.iconColor || "").trim(),
-        icon: String(item.icon || prev.icon || "").trim(),
-        createdAt: String(item.createdAt || prev.createdAt || "").trim(),
-        updatedAt: String(item.updatedAt || prev.updatedAt || "").trim(),
-      });
+      byId.set(id, mergeFolderCatalogRowByFreshness(prev, item));
     }
   }
   return Array.from(byId.values()).sort((a, b) => (
@@ -4028,6 +4052,36 @@ function mergeFolderStateItems(existingItems, incomingItems) {
   return out;
 }
 
+function folderStateMetadataMergeStats(existingRaw, incomingRaw) {
+  const existing = normalizeFolderStateData(existingRaw);
+  const incoming = normalizeFolderStateData(incomingRaw);
+  const existingById = new Map(existing.folders.map((folder) => [String(folder && folder.id || "").trim(), folder]));
+  const stats = {
+    incoming: incoming.folders.length,
+    created: 0,
+    refreshed: 0,
+    skippedStale: 0,
+    missingIncomingUpdatedAt: 0,
+    missingExistingUpdatedAt: 0,
+  };
+  for (const folder of incoming.folders) {
+    const id = String(folder && folder.id || "").trim();
+    if (!id) continue;
+    const prior = existingById.get(id);
+    if (!prior) {
+      stats.created += 1;
+      continue;
+    }
+    const incomingMs = folderCatalogRowTimestampMs(folder);
+    const existingMs = folderCatalogRowTimestampMs(prior);
+    if (!incomingMs) stats.missingIncomingUpdatedAt += 1;
+    if (incomingMs && !existingMs) stats.missingExistingUpdatedAt += 1;
+    if (existingMs && (!incomingMs || incomingMs < existingMs)) stats.skippedStale += 1;
+    else stats.refreshed += 1;
+  }
+  return stats;
+}
+
 function isNativeOwnedFolderStateRow(folder) {
   const source = String(folder && folder.source || "").trim().toLowerCase();
   const kind = String(folder && folder.kind || "").trim().toLowerCase();
@@ -4123,6 +4177,13 @@ function checksumFolderState(value) {
   return "h2o-folder-" + ((hash >>> 0).toString(16));
 }
 
+function comparableFolderStateData(raw) {
+  const next = normalizeFolderStateData(raw);
+  delete next.updatedAt;
+  delete next.exportedAt;
+  return next;
+}
+
 function countFolderStateBindings(itemsRaw) {
   const items = normalizeFolderStateItems(itemsRaw);
   return Object.values(items).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
@@ -4189,13 +4250,17 @@ async function writeChromeStorageLocalMerge(entries, modeRaw, opts = {}) {
   for (const k of safeKeys) {
     if (k === FOLDER_STATE_DATA_KEY) {
       const merged = mergeFolderStateData(existing[k], safeIncoming[k], mode, opts);
-      const mergeStats = merged && typeof merged === "object" ? merged.__h2oMergeStats : null;
+      const nativeMergeStats = merged && typeof merged === "object" ? merged.__h2oMergeStats : null;
+      const freshnessStats = folderStateMetadataMergeStats(existing[k], safeIncoming[k]);
       if (merged && typeof merged === "object") delete merged.__h2oMergeStats;
-      if (mode === "merge" && stableJson(normalizeFolderStateData(existing[k])) === stableJson(merged)) {
+      if (mode === "merge" && stableJson(comparableFolderStateData(existing[k])) === stableJson(comparableFolderStateData(merged))) {
+        folderStateMergeStats[k] = freshnessStats;
         skipped += 1;
         continue;
       }
-      if (mergeStats && typeof mergeStats === "object") folderStateMergeStats[k] = mergeStats;
+      folderStateMergeStats[k] = nativeMergeStats && typeof nativeMergeStats === "object"
+        ? { ...freshnessStats, ...nativeMergeStats }
+        : freshnessStats;
       writes[k] = merged;
       written += 1;
       continue;
@@ -4714,7 +4779,11 @@ async function dryRunImportFullBundle(bundleRaw, nsDisk = DEFAULT_NS_DISK) {
   const storageKeysDenied = [];
   for (const k of Object.keys(incomingStorage)) {
     if (!isExportableStorageKey(k)) { storageKeysDenied.push(k); continue; }
-    if (Object.prototype.hasOwnProperty.call(currentStorage, k)) storageKeysSkipped.push(k);
+    if (k === FOLDER_STATE_DATA_KEY && Object.prototype.hasOwnProperty.call(currentStorage, k)) {
+      const merged = mergeFolderStateData(currentStorage[k], incomingStorage[k], "merge");
+      if (stableJson(comparableFolderStateData(currentStorage[k])) === stableJson(comparableFolderStateData(merged))) storageKeysSkipped.push(k);
+      else storageKeysToWrite.push(k);
+    } else if (Object.prototype.hasOwnProperty.call(currentStorage, k)) storageKeysSkipped.push(k);
     else storageKeysToWrite.push(k);
   }
 

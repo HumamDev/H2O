@@ -1034,6 +1034,7 @@
     var storage = safeObject(importResult && importResult.chromeStorageLocal);
     var kv = safeObject(importResult && importResult.libraryKv);
     var shell = safeObject(shellRows);
+    var folderStateMergeStats = safeObject(safeObject(storage.folderStateMergeStats)[FOLDER_STATE_KEY_LOCAL]);
     return {
       ok: importResult && importResult.schema === FULL_BUNDLE_SCHEMA,
       mode: cleanString(importResult && importResult.mode) || 'merge',
@@ -1044,6 +1045,14 @@
       chromeStorageSkipped: numberOrZero(storage.skipped || storage.skippedCount),
       libraryKvWritten: numberOrZero(kv.written || kv.writtenCount || kv.imported),
       libraryKvSkipped: numberOrZero(kv.skipped || kv.skippedCount),
+      folderMetadataFreshness: {
+        incoming: numberOrZero(folderStateMergeStats.incoming),
+        created: numberOrZero(folderStateMergeStats.created),
+        refreshed: numberOrZero(folderStateMergeStats.refreshed),
+        skippedStale: numberOrZero(folderStateMergeStats.skippedStale),
+        missingIncomingUpdatedAt: numberOrZero(folderStateMergeStats.missingIncomingUpdatedAt),
+        missingExistingUpdatedAt: numberOrZero(folderStateMergeStats.missingExistingUpdatedAt)
+      },
       shellRowsIncoming: numberOrZero(shell.incoming),
       shellRowsMaterialized: numberOrZero(shell.materialized),
       shellRowsExisting: numberOrZero(shell.existing),

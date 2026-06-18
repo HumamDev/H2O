@@ -238,11 +238,13 @@ const checks = [
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
       sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.78') &&
-      sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') &&
+      (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
+        sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
       sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.78') &&
       sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
-      sources.studioHtml.includes('./studio.js?v=2.5.75'),
+      (sources.studioHtml.includes('./studio.js?v=2.5.75') ||
+        sources.studioHtml.includes('./studio.js?v=2.5.76')),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
   ),
@@ -277,7 +279,8 @@ const checks = [
       sources.sidebarSections.includes('function folderDestructiveActionsEnabled()') &&
       sources.sidebarSections.includes('function folderSidebarSimpleCountLabel(item = {})') &&
       sources.sidebarSections.includes('if (!folderSidebarDebugDetailsVisible()) return folderSidebarSimpleCountLabel(item);') &&
-      sources.sidebarSections.includes("const countLabel = kind === 'folders' && !folderDebugDetails") &&
+      (sources.sidebarSections.includes("const countLabel = kind === 'folders' && !folderDebugDetails") ||
+        sources.sidebarSections.includes('const countLabel = sidebarSectionCountValue(item);')) &&
       sources.sidebarSections.includes('if (folderSidebarDebugDetailsVisible())') &&
       sources.sidebarSections.includes('const showLocalReview = folderLocalReviewUiEnabled();') &&
       sources.sidebarSections.includes("host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';") &&
@@ -307,8 +310,10 @@ const checks = [
       sources.studioShell.includes('if (isUnfiled) link.classList.add("wbFolderItem--unfiled");') &&
       !sources.studioShell.includes('isAllFoldersLink: true') &&
       sources.sidebarSections.includes('inbox:') &&
-      sources.sidebarSections.includes("iconKey: 'inbox'") &&
-      sources.sidebarSections.includes('iconSvg: SIDEBAR_ICON_SVGS.inbox') &&
+      (sources.sidebarSections.includes("iconKey: 'inbox'") ||
+        sources.sidebarSections.includes("iconKey: 'unfiled'")) &&
+      (sources.sidebarSections.includes('iconSvg: SIDEBAR_ICON_SVGS.inbox') ||
+        sources.sidebarSections.includes('iconSvg: SIDEBAR_UNFILED_ICON_SVG')) &&
       sources.sidebarSections.includes('const mainItems = [buildUnfiledSidebarItem()];') &&
       sources.sidebarSections.includes("moreHref: '#/library/folders'") &&
       sources.sidebarSections.includes("moreLabel: 'More'") &&

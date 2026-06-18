@@ -1523,8 +1523,32 @@
   function allowsLibraryShimFallback(options) {
     return !(options && typeof options === 'object' && options.allowLibraryShimFallback === false);
   }
-  function shouldSkipExistingFolderMetadata(options) {
-    return !!(options && typeof options === 'object' && options.skipExistingFolderMetadata === true);
+  function folderMetadataTimestampMs(row) {
+    var meta = safeMeta(row && row.meta);
+    return isoToEpochMs(row && (row.updatedAt || row.updated_at || row.modifiedAt || row.modified_at))
+      || isoToEpochMs(meta.updatedAt || meta.updated_at || meta.modifiedAt || meta.modified_at)
+      || 0;
+  }
+  function folderMetadataFreshness(result) {
+    if (!result.folderMetadataFreshness || typeof result.folderMetadataFreshness !== 'object') {
+      result.folderMetadataFreshness = {
+        incoming: 0,
+        created: 0,
+        refreshed: 0,
+        skippedStale: 0,
+        missingIncomingUpdatedAt: 0,
+        missingExistingUpdatedAt: 0
+      };
+    }
+    return result.folderMetadataFreshness;
+  }
+  function shouldSkipExistingFolderMetadata(options, existing, incoming) {
+    if (!(options && typeof options === 'object' && options.skipExistingFolderMetadata === true)) return false;
+    if (!existing) return false;
+    var incomingMs = folderMetadataTimestampMs(incoming);
+    var existingMs = folderMetadataTimestampMs(existing);
+    if (incomingMs && (!existingMs || incomingMs > existingMs)) return false;
+    return true;
   }
   function libraryBulkApi() {
     return H2O.Desktop && H2O.Desktop.Sync && H2O.Desktop.Sync.executeLibraryBulkMigration;
@@ -1743,8 +1767,15 @@
       var id = cleanString(row && (row.id || row.folderId));
       if (!id) { result.warnings.push({ kind: 'folder', warn: 'missing id at index ' + i }); continue; }
       try {
+        var freshness = folderMetadataFreshness(result);
+        freshness.incoming += 1;
         var existing = await folderStore.get(id);
-        if (existing && shouldSkipExistingFolderMetadata(options)) {
+        var incomingMs = folderMetadataTimestampMs(row);
+        var existingMs = folderMetadataTimestampMs(existing);
+        if (existing && !incomingMs) freshness.missingIncomingUpdatedAt += 1;
+        if (existing && incomingMs && !existingMs) freshness.missingExistingUpdatedAt += 1;
+        if (existing && shouldSkipExistingFolderMetadata(options, existing, row)) {
+          freshness.skippedStale += 1;
           result.skipped.folders += 1;
           continue;
         }
@@ -1769,11 +1800,15 @@
           sortOrder: (typeof (row && row.sortOrder) === 'number') ? row.sortOrder
                     : (typeof (row && row.sort_order) === 'number') ? row.sort_order
                     : (typeof (existing && existing.sortOrder) === 'number') ? existing.sortOrder : 0,
+          createdAt: isoToEpochMs(row && (row.createdAt || row.created_at)) || (existing && existing.createdAt),
+          updatedAt: incomingMs || (existing && existing.updatedAt),
           iconColor: color,
           icon: icon,
           meta: patchMeta,
         });
         result.written.folders += 1;
+        if (existing) freshness.refreshed += 1;
+        else freshness.created += 1;
         if (result.sample.writtenFolderIds.length < 10) result.sample.writtenFolderIds.push(id);
       } catch (e) {
         result.errors.push({ kind: 'folder', id: id, error: String(e && e.message || e) });

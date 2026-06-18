@@ -220,6 +220,14 @@ function buildContext() {
               unindexedRowsArchived: 3,
               unindexedRowsMissing: 0,
               unindexedRowReasonCounts: { 'not-indexed': 3 },
+              folderMetadataFreshness: {
+                incoming: 1,
+                created: 0,
+                refreshed: 1,
+                skippedStale: 0,
+                missingIncomingUpdatedAt: 0,
+                missingExistingUpdatedAt: 0
+              },
               chatWriteDiagnostics: [{
                 pathName: 'unindexed-archive-reconciliation',
                 action: 'reconciled-archived',
@@ -313,6 +321,8 @@ async function runVmProof() {
   assert(result.importSummary.unindexedRowsMatched === 3, 'import summary unindexedRowsMatched mismatch');
   assert(result.importSummary.unindexedRowsArchived === 3, 'import summary unindexedRowsArchived mismatch');
   assert(result.importSummary.unindexedRowsMissing === 0, 'import summary unindexedRowsMissing mismatch');
+  assert(result.importSummary.folderMetadataFreshness.refreshed === 1, 'Chrome->Desktop newer folder metadata refresh summary missing');
+  assert(result.importSummary.folderMetadataFreshness.skippedStale === 0, 'Chrome->Desktop folder metadata should not be stale in fixture');
   assert(result.unindexedRowsReceived === 3, 'top-level unindexedRowsReceived mismatch');
   assert(result.unindexedRowsArchived === 3, 'top-level unindexedRowsArchived mismatch');
   assert(result.unindexedRowReasonCounts['not-indexed'] === 3, 'top-level unindexed reason count mismatch');
@@ -882,6 +892,7 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'allowLibraryShimFallback: false', 'guarded import fallback disable');
   assertContains(folderSyncFile, 'skipExistingFolderMetadata: true', 'folder overwrite guard');
   assertContains(folderSyncFile, 'redactedErrorCategories', 'redacted import error categories');
+  assertContains(folderSyncFile, 'folderMetadataFreshness', 'redacted folder metadata freshness summary');
   assertContains(folderSyncFile, 'staleMinimalRowErrorsAreCovered', 'covered stale minimal-row helper');
   assertContains(folderSyncFile, 'minimalRowsSatisfied', 'minimal row satisfied summary');
   assertContains(folderSyncFile, 'function collectPerChatFolderBindings', 'per-chat folder binding coverage helper');
@@ -890,6 +901,11 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'library-propagation-chat-folder-bindings-deferred', 'folder binding deferred taxonomy');
   assertContains(folderSyncFile, 'fileFingerprintChecked: true', 'file idempotency marker');
   assertContains(importBundleFile, 'shouldSkipExistingFolderMetadata', 'folder overwrite helper');
+  assertContains(importBundleFile, 'function folderMetadataTimestampMs', 'folder metadata timestamp helper');
+  assertContains(importBundleFile, 'shouldSkipExistingFolderMetadata(options, existing, row)', 'folder metadata freshness gate');
+  assertContains(importBundleFile, 'freshness.skippedStale', 'stale folder metadata skip counter');
+  assertContains(importBundleFile, 'freshness.refreshed', 'newer folder metadata refresh counter');
+  assertContains(importBundleFile, 'updatedAt: incomingMs || (existing && existing.updatedAt)', 'folder metadata preserves source updatedAt');
   assertContains(importBundleFile, 'skipExistingFolderMetadata', 'folder overwrite option');
   assertContains(importBundleFile, 'prepareMinimalLibraryIndexPatch', 'minimal row import helper');
   assertContains(importBundleFile, 'prepareExistingChatEvidencePatch', 'existing chat evidence merge helper');
@@ -962,6 +978,10 @@ if (failures.length === 0) {
   assertContains(chromeLiveLoaderFile, 'request && request.chatId', 'Native content bridge direct relay matches chat IDs for latest snapshot fallback');
   assertContains(chromeLiveBackgroundFile, 'function handleExternalNativeSnapshotPayloadsMessage', 'Studio Launcher background receives native snapshot payloads');
   assertContains(chromeLiveBackgroundFile, 'MSG_NATIVE_SNAPSHOT_PAYLOADS', 'Background bridge has snapshot payload message type');
+  assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
+  assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
+  assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');
+  assertContains(chromeLiveBackgroundFile, 'function comparableFolderStateData', 'Chrome folder state idempotent comparison');
   assertContains(chromeLiveManifestFile, 'STUDIO_LAUNCHER_EXTENSION_ID', 'Native extension manifest declares the Studio Launcher external sender id');
   assertContains(chromeLiveManifestFile, 'manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] }', 'Native extension manifest allows Studio Launcher external snapshot payload requests');
   assertContains(importBundleFile, 'var turns = buildTurnsFromSnapshot(snap);', 'Desktop import materializes snapshot payload turns');
