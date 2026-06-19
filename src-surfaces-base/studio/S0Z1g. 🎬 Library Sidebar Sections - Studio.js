@@ -21,6 +21,8 @@
   const D = document;
   const H2O = (W.H2O = W.H2O || {});
   H2O.Library = H2O.Library || {};
+  const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';
+  const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT = new Date().toISOString();
 
   // Persisted collapse state — per-section so toggling Labels doesn't affect Projects.
   const COLLAPSE_KEY = 'h2o:studio:sidebar:sections:collapse:v1';
@@ -3613,6 +3615,48 @@
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
   }
 
+  function scriptCacheBustVersion(src) {
+    const value = String(src || '').trim();
+    if (!value) return '';
+    try {
+      const url = new URL(value, W.location?.href || D.baseURI || 'http://localhost/');
+      return String(url.searchParams.get('v') || '').trim();
+    } catch {
+      const match = value.match(/[?&]v=([^&#]+)/i);
+      return match ? decodeURIComponent(match[1] || '') : '';
+    }
+  }
+
+  function findStudioScriptAsset(label, containsText, expectedVersion = '') {
+    const needle = String(containsText || '').trim().toLowerCase();
+    const scripts = Array.from(D.querySelectorAll('script[src]') || []);
+    const node = scripts.find((script) => String(script.getAttribute('src') || script.src || '').toLowerCase().includes(needle)) || null;
+    const attrSrc = String(node?.getAttribute?.('src') || '').trim();
+    const resolvedSrc = String(node?.src || '').trim();
+    const src = resolvedSrc || attrSrc;
+    const version = scriptCacheBustVersion(src || attrSrc);
+    return {
+      label: String(label || '').trim(),
+      present: !!node,
+      src: src || attrSrc,
+      attrSrc,
+      version,
+      expectedVersion: String(expectedVersion || '').trim(),
+      versionMatchesExpected: !!version && !!expectedVersion && version === String(expectedVersion),
+      srcHash: diagnosticHash(src || attrSrc),
+    };
+  }
+
+  function folderParityScriptAssetDiagnostics() {
+    return {
+      diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
+      registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
+      registrationSource: 'S0Z1g.Library Sidebar Sections',
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.83'),
+      s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.83'),
+    };
+  }
+
   function folderRowSourceKind(row) {
     if (row?.isSystem === true || String(row?.id || row?.folderId || '') === FOLDER_FILTER_NONE) return 'system';
     if (row?.isCanonical === true) {
@@ -3765,6 +3809,9 @@
     const firstCanonical = canonicalRows[0] || {};
     const capabilities = folderActionCapabilitySummary(firstCanonical);
     const modelHasCanonicalFolders = canonicalRows.length > 0;
+    const assetDiagnostics = folderParityScriptAssetDiagnostics();
+    const providerVersion = String(model?.folderParityVersion || model?.version || '');
+    const providerMarkerMissing = !providerVersion;
     return {
       ok: modelHasCanonicalFolders
         && renderedTokenValues.join('\n') === modelTokenValues.join('\n')
@@ -3773,9 +3820,26 @@
       surface: studioIsTauri() ? 'desktop-studio' : 'chrome-studio',
       operatorModeEnabled: folderOperatorModeEnabled(),
       localReviewVisible: folderLocalReviewUiEnabled(),
-      folderParityVersion: String(model?.folderParityVersion || model?.version || ''),
+      folderParityVersion: providerVersion,
       s0f1bLoadedVersion: String(model?.s0f1bLoadedVersion || ''),
+      diagnoseSidebarVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
+      diagnoseSidebarRegisteredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
+      diagnoseSidebarRegistrationSource: 'S0Z1g.Library Sidebar Sections',
       folderParityScriptUrl: String(model?.scriptUrl || model?.folderParityScriptUrl || ''),
+      folderParityProviderMarkerMissing: providerMarkerMissing,
+      folderParityProviderStale: providerMarkerMissing || model?.hasKnownCanonicalFallbackBuilder !== true,
+      folderParityProviderKeys: Object.keys(H2O.Library?.FolderParity || {}).slice(0, 24),
+      folderParityScriptAssets: assetDiagnostics,
+      s0f1bScriptTagPresent: assetDiagnostics.s0f1b.present,
+      s0f1bScriptTagSrc: assetDiagnostics.s0f1b.src,
+      s0f1bScriptTagVersion: assetDiagnostics.s0f1b.version,
+      s0f1bScriptTagExpectedVersion: assetDiagnostics.s0f1b.expectedVersion,
+      s0f1bScriptTagVersionMatchesExpected: assetDiagnostics.s0f1b.versionMatchesExpected,
+      s0z1gScriptTagPresent: assetDiagnostics.s0z1g.present,
+      s0z1gScriptTagSrc: assetDiagnostics.s0z1g.src,
+      s0z1gScriptTagVersion: assetDiagnostics.s0z1g.version,
+      s0z1gScriptTagExpectedVersion: assetDiagnostics.s0z1g.expectedVersion,
+      s0z1gScriptTagVersionMatchesExpected: assetDiagnostics.s0z1g.versionMatchesExpected,
       hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true,
       knownCanonicalFallbackRawCount: Number(model?.knownCanonicalFallbackRawCount || 0) || 0,
       folderCatalogReady: model?.folderCatalogReady === true,
@@ -3923,6 +3987,9 @@
   try {
     if (H2O.Library.FolderParity && typeof H2O.Library.FolderParity === 'object') {
       H2O.Library.FolderParity.diagnoseSidebar = diagnoseFolderSidebarParity;
+      H2O.Library.FolderParity.diagnoseSidebarVersion = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION;
+      H2O.Library.FolderParity.diagnoseSidebarRegisteredAt = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT;
+      H2O.Library.FolderParity.diagnoseSidebarRegistrationSource = 'S0Z1g.Library Sidebar Sections';
     }
     H2O.Studio = H2O.Studio || {};
     H2O.Studio.diagnoseFolderSidebarParity = diagnoseFolderSidebarParity;

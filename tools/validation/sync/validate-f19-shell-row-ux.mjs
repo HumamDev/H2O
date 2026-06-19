@@ -238,10 +238,10 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.82') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.83') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.82') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.83') &&
       sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./studio.js?v=2.5.77'),
@@ -394,6 +394,8 @@ const checks = [
       sources.libraryWorkspace.includes("const FOLDER_PARITY_RUNTIME_VERSION = 'f19.7-folder-fallback-v2';") &&
       sources.libraryWorkspace.includes('folderParityVersion: FOLDER_PARITY_RUNTIME_VERSION') &&
       sources.libraryWorkspace.includes('s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION') &&
+      sources.libraryWorkspace.includes("registrationSource: 'S0F1b.Library Workspace'") &&
+      sources.libraryWorkspace.includes('folderParityScriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL)') &&
       sources.libraryWorkspace.includes('hasKnownCanonicalFallbackBuilder') &&
       sources.libraryWorkspace.includes('knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
@@ -417,7 +419,14 @@ const checks = [
       sources.sidebarSections.includes('ok: modelHasCanonicalFolders') &&
       sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true') &&
       sources.sidebarSections.includes('protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0') &&
-      sources.sidebarSections.includes('folderParityVersion: String(model?.folderParityVersion || model?.version ||') &&
+      sources.sidebarSections.includes("const providerVersion = String(model?.folderParityVersion || model?.version || '')") &&
+      sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
+      sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
+      sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.83')") &&
+      sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
+      sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
+      sources.sidebarSections.includes('folderParityProviderStale') &&
       sources.sidebarSections.includes('hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true') &&
       sources.sidebarSections.includes('fallbackBuilderError: String(model?.fallbackBuilderError ||') &&
       sources.sidebarSections.includes('displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0') &&
