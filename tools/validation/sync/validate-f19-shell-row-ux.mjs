@@ -238,14 +238,13 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-        sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.80') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.81') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
-        sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.80') &&
-        sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.81') &&
+      sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
-      (sources.studioHtml.includes('./studio.js?v=2.5.75') ||
-        sources.studioHtml.includes('./studio.js?v=2.5.76')),
+      sources.studioHtml.includes('./studio.js?v=2.5.77'),
     FILES.studioHtml,
     'Studio must cache-bust the Library Index core, Library Index, Insights, sidebar, and shell scripts so canonical saved-recents and folder operator gates reach Chrome and Desktop runtimes.'
   ),
@@ -391,7 +390,12 @@ const checks = [
     ),
   check(
     'folder-catalog-readiness-fallback-rendering',
-    sources.libraryWorkspace.includes('folderCatalogReady: displayModelAvailable') &&
+    sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackDisplayRows') &&
+      sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
+      sources.libraryWorkspace.includes('protectedCanonicalFallback: protectedFallbackRows') &&
+      sources.libraryWorkspace.includes('protectedCanonicalFallbackCount: protectedFallbackRows.length') &&
+      sources.libraryWorkspace.includes('folderCatalogReady: canonicalMirrorAvailable') &&
+      sources.libraryWorkspace.includes('folderCatalogReady: report?.folderCatalogReady === true') &&
       sources.libraryWorkspace.includes('displayModelAvailable') &&
       sources.libraryWorkspace.includes('nativeBroadcastRequired: !displayModelAvailable') &&
       sources.libraryWorkspace.includes('renderBlockedReason') &&
@@ -401,7 +405,9 @@ const checks = [
       sources.studioShell.includes('if (!folderEntries.length)') &&
       sources.studioShell.includes('makeVisibleStudioFoldersFallbackModel(String(model?.renderBlockedReason') &&
       sources.sidebarSections.includes('host.dataset.h2oFolderCatalogReady') &&
-      sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true || canonicalRows.length > 0') &&
+      sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true') &&
+      sources.sidebarSections.includes('protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0') &&
+      sources.sidebarSections.includes('displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0') &&
       sources.sidebarSections.includes('renderBlockedReason: canonicalRows.length ?'),
     FILES.studioShell,
     'Folder sidebar/page must render the protected canonical fallback display model when native broadcast or FolderParity hydration is not ready, and only block when no usable model exists.'

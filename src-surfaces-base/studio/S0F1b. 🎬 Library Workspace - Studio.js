@@ -1530,6 +1530,26 @@
     return out;
   }
 
+  function buildProtectedCanonicalFallbackDisplayRows(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const reason = String(opts.reason || 'known-current-canonical-fallback').trim() || 'known-current-canonical-fallback';
+    const fallbackFolders = KNOWN_NATIVE_CANONICAL_FOLDERS
+      .map((folder, index) => normalizeFolderRow({ ...folder, source: reason }, index, reason))
+      .filter(Boolean)
+      .map((folder) => decorateCanonicalFolderColorSources(folder, new Map(), new Map()));
+    return buildFolderDisplayRows({
+      canonicalFolders: fallbackFolders,
+      localFolders: [],
+      canonicalItems: {},
+      storedItems: {},
+      canonicalMirrorAvailable: false,
+      rowStatsByFolder: opts.rowStatsByFolder || {},
+      desktopBindings: opts.desktopBindings || null,
+      duplicateGroups: [],
+      testFolderCandidates: [],
+    });
+  }
+
   async function diagnoseFolderParity(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const warnings = ['Read-only. No cleanup performed. Cleanup requires reviewed approval.'];
@@ -1656,7 +1676,7 @@
         source: folder.source || 'native-broadcast',
         reason: 'native-only-not-materialized',
       }));
-    const folderDisplayRows = buildFolderDisplayRows({
+    const rawFolderDisplayRows = buildFolderDisplayRows({
       canonicalFolders,
       localFolders,
       canonicalItems,
@@ -1667,9 +1687,23 @@
       duplicateGroups,
       testFolderCandidates,
     });
+    const rawCanonicalDisplayRowCount = rawFolderDisplayRows.filter((row) => row && row.isCanonical).length;
+    const protectedFallbackRows = rawCanonicalDisplayRowCount > 0
+      ? []
+      : buildProtectedCanonicalFallbackDisplayRows({
+        reason: 'known-current-canonical-fallback-empty-model',
+        rowStatsByFolder,
+        desktopBindings,
+      });
+    const folderDisplayRows = protectedFallbackRows.length
+      ? [
+        ...protectedFallbackRows,
+        ...rawFolderDisplayRows.filter((row) => row && !row.isCanonical),
+      ]
+      : rawFolderDisplayRows;
     const canonicalDisplayRowCount = folderDisplayRows.filter((row) => row && row.isCanonical).length;
     const displayModelAvailable = canonicalDisplayRowCount > 0;
-    const fallbackUsed = !mergedTrustedCanonical.folders.length;
+    const fallbackUsed = !mergedTrustedCanonical.folders.length || protectedFallbackRows.length > 0;
     const renderBlockedReason = displayModelAvailable
       ? ''
       : (folderDisplayRows.length ? 'folder-display-model-has-no-canonical-rows' : 'folder-display-model-empty');
@@ -1683,6 +1717,7 @@
       storedFolderState: storedState.folders,
       nativeBroadcast: nativeState.folders,
       displayModel: folderDisplayRows,
+      protectedCanonicalFallback: protectedFallbackRows,
       materializedUserFolders,
       hiddenLocalOnlyFolders,
       nativeOnlyDisplaySuppressedFolders,
@@ -1709,9 +1744,10 @@
         ? (canonicalFromStoredMirror && storedState.folders.length > nativeState.folders.length ? 'native-broadcast+stored-folder-state' : 'native-broadcast')
         : (canonicalFromStoredMirror ? 'stored-folder-state' : 'known-current-canonical-fallback'),
       fallbackVisualsEnriched,
-      folderCatalogReady: displayModelAvailable,
+      folderCatalogReady: canonicalMirrorAvailable,
       displayModelAvailable,
       fallbackModelUsed: fallbackUsed,
+      protectedCanonicalFallbackCount: protectedFallbackRows.length,
       storedModelAvailable: storedState.folders.length > 0,
       nativeBroadcastAvailable: nativeState.folders.length > 0,
       nativeBroadcastRequired: !displayModelAvailable,
@@ -1999,9 +2035,10 @@
         surface: report.surface,
         generatedAt: report.generatedAt,
         canonicalMirrorAvailable: report.canonicalMirrorAvailable,
-        folderCatalogReady: displayModelAvailable || report?.folderCatalogReady === true,
+        folderCatalogReady: report?.folderCatalogReady === true,
         displayModelAvailable: displayModelAvailable || report?.displayModelAvailable === true,
         fallbackModelUsed: report?.fallbackModelUsed === true || canonicalSource === 'known-current-canonical-fallback',
+        protectedCanonicalFallbackCount: Number(report?.protectedCanonicalFallbackCount || 0) || 0,
         storedModelAvailable: report?.storedModelAvailable === true,
         nativeBroadcastAvailable: report?.nativeBroadcastAvailable === true,
         nativeBroadcastRequired: !displayModelAvailable && report?.nativeBroadcastRequired === true,

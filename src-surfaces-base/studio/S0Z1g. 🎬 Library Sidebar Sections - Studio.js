@@ -3052,7 +3052,7 @@
     const showLocalReview = folderLocalReviewUiEnabled();
     const fallbackUsed = !!model?.fallbackUsed;
     const displayModelAvailable = canonicalRows.length > 0 || model?.displayModelAvailable === true;
-    const folderCatalogReady = displayModelAvailable || model?.folderCatalogReady === true;
+    const folderCatalogReady = model?.folderCatalogReady === true;
     const renderBlockedReason = displayModelAvailable ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty');
     host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';
     host.dataset.h2oFolderHiddenReviewRows = showLocalReview ? '0' : String(localReviewRows.length);
@@ -3771,9 +3771,10 @@
       surface: studioIsTauri() ? 'desktop-studio' : 'chrome-studio',
       operatorModeEnabled: folderOperatorModeEnabled(),
       localReviewVisible: folderLocalReviewUiEnabled(),
-      folderCatalogReady: model?.folderCatalogReady === true || canonicalRows.length > 0,
+      folderCatalogReady: model?.folderCatalogReady === true,
       displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0,
       fallbackModelUsed: model?.fallbackModelUsed === true || model?.fallbackUsed === true,
+      protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0,
       storedModelAvailable: model?.storedModelAvailable === true,
       nativeBroadcastRequired: canonicalRows.length === 0 && model?.nativeBroadcastRequired === true,
       renderBlockedReason: canonicalRows.length ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty'),
