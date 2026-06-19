@@ -3652,8 +3652,80 @@
       diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       registrationSource: 'S0Z1g.Library Sidebar Sections',
-      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.83'),
-      s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.83'),
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.84'),
+      s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.84'),
+    };
+  }
+
+  function folderParityProviderVersion(provider) {
+    return String(provider?.folderParityVersion || provider?.s0f1bLoadedVersion || provider?.version || '').trim();
+  }
+
+  function folderParityProviderKeys(provider) {
+    try { return Object.keys(provider || {}).map((key) => String(key || '').trim()).filter(Boolean); }
+    catch { return []; }
+  }
+
+  function folderParityProviderCurrent(provider) {
+    return folderParityProviderVersion(provider) === 'f19.7-folder-fallback-v2'
+      && provider?.hasKnownCanonicalFallbackBuilder === true
+      && typeof provider?.getDisplayModel === 'function';
+  }
+
+  function folderParityProviderStale(provider) {
+    return !folderParityProviderCurrent(provider);
+  }
+
+  function candidateFolderParityProviders() {
+    const out = [];
+    [
+      H2O.Library?.FolderParity,
+      H2O.LibraryWorkspace?.folderParity,
+      H2O.Library?.Workspace?.folderParity,
+    ].forEach((candidate) => {
+      if (!candidate || typeof candidate !== 'object' || out.includes(candidate)) return;
+      out.push(candidate);
+    });
+    return out;
+  }
+
+  function preserveSidebarDiagnosticOnProvider(provider) {
+    if (!provider || typeof provider !== 'object') return provider;
+    provider.diagnoseSidebar = diagnoseFolderSidebarParity;
+    provider.diagnoseSidebarVersion = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION;
+    provider.diagnoseSidebarRegisteredAt = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT;
+    provider.diagnoseSidebarRegistrationSource = 'S0Z1g.Library Sidebar Sections';
+    return provider;
+  }
+
+  function upgradeFolderParityProviderReference() {
+    const current = H2O.Library?.FolderParity && typeof H2O.Library.FolderParity === 'object'
+      ? H2O.Library.FolderParity
+      : null;
+    const previousProviderVersion = folderParityProviderVersion(current);
+    const previousProviderKeys = folderParityProviderKeys(current);
+    const providerWasStale = !!current && folderParityProviderStale(current);
+    const candidate = candidateFolderParityProviders().find(folderParityProviderCurrent) || null;
+    let providerUpgradeApplied = false;
+    let providerRegistrationError = '';
+    let provider = current || candidate;
+    try {
+      if ((!current || providerWasStale) && candidate && candidate !== current) {
+        H2O.Library.FolderParity = candidate;
+        provider = candidate;
+        providerUpgradeApplied = true;
+      }
+      preserveSidebarDiagnosticOnProvider(provider);
+    } catch (e) {
+      providerRegistrationError = String(e?.message || e || 'folder parity provider sidebar upgrade failed');
+    }
+    return {
+      provider,
+      providerUpgradeApplied,
+      previousProviderVersion,
+      previousProviderKeys: previousProviderKeys.slice(0, 32),
+      providerWasStale,
+      providerRegistrationError,
     };
   }
 
@@ -3787,9 +3859,11 @@
 
   async function diagnoseFolderSidebarParity(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
+    const providerUpgrade = upgradeFolderParityProviderReference();
+    const provider = providerUpgrade.provider;
     let model = null;
     try {
-      model = await H2O.Library?.FolderParity?.getDisplayModel?.({
+      model = await provider?.getDisplayModel?.({
         fresh: opts.fresh !== false,
         folderName: opts.folderName || opts.probeName || '',
       });
@@ -3828,7 +3902,14 @@
       folderParityScriptUrl: String(model?.scriptUrl || model?.folderParityScriptUrl || ''),
       folderParityProviderMarkerMissing: providerMarkerMissing,
       folderParityProviderStale: providerMarkerMissing || model?.hasKnownCanonicalFallbackBuilder !== true,
-      folderParityProviderKeys: Object.keys(H2O.Library?.FolderParity || {}).slice(0, 24),
+      providerUpgradeApplied: providerUpgrade.providerUpgradeApplied === true || model?.providerUpgradeApplied === true,
+      previousProviderVersion: String(model?.previousProviderVersion || providerUpgrade.previousProviderVersion || ''),
+      previousProviderKeys: Array.isArray(model?.previousProviderKeys) && model.previousProviderKeys.length
+        ? model.previousProviderKeys.slice(0, 32)
+        : providerUpgrade.previousProviderKeys,
+      providerWasStale: providerUpgrade.providerWasStale === true || model?.providerWasStale === true,
+      providerRegistrationError: String(model?.providerRegistrationError || providerUpgrade.providerRegistrationError || ''),
+      folderParityProviderKeys: folderParityProviderKeys(H2O.Library?.FolderParity).slice(0, 24),
       folderParityScriptAssets: assetDiagnostics,
       s0f1bScriptTagPresent: assetDiagnostics.s0f1b.present,
       s0f1bScriptTagSrc: assetDiagnostics.s0f1b.src,
@@ -3985,12 +4066,8 @@
   };
 
   try {
-    if (H2O.Library.FolderParity && typeof H2O.Library.FolderParity === 'object') {
-      H2O.Library.FolderParity.diagnoseSidebar = diagnoseFolderSidebarParity;
-      H2O.Library.FolderParity.diagnoseSidebarVersion = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION;
-      H2O.Library.FolderParity.diagnoseSidebarRegisteredAt = FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT;
-      H2O.Library.FolderParity.diagnoseSidebarRegistrationSource = 'S0Z1g.Library Sidebar Sections';
-    }
+    const providerUpgrade = upgradeFolderParityProviderReference();
+    preserveSidebarDiagnosticOnProvider(providerUpgrade.provider);
     H2O.Studio = H2O.Studio || {};
     H2O.Studio.diagnoseFolderSidebarParity = diagnoseFolderSidebarParity;
   } catch {}

@@ -30,6 +30,25 @@
     try { return String(W.document?.currentScript?.src || '').trim(); }
     catch { return ''; }
   })();
+  const FOLDER_PARITY_REGISTRATION_SOURCE = 'S0F1b.Library Workspace';
+  const FOLDER_PARITY_PROVIDER_REGISTRATION_STATE = {
+    providerUpgradeApplied: false,
+    previousProviderVersion: '',
+    previousProviderKeys: [],
+    providerWasStale: false,
+    providerRegisteredAt: '',
+    providerPreservedKeys: [],
+    providerRegistrationError: '',
+  };
+  try {
+    H2O.Library.FolderParityS0F1bLoadMarker = {
+      folderParityVersion: FOLDER_PARITY_RUNTIME_VERSION,
+      s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION,
+      registeredAt: FOLDER_PARITY_RUNTIME_LOADED_AT,
+      registrationSource: FOLDER_PARITY_REGISTRATION_SOURCE,
+      folderParityScriptUrl: FOLDER_PARITY_SCRIPT_URL,
+    };
+  } catch {}
 
   // TODO(P8f): fill canonical palette (color/iconColor) from a native runtime probe.
   // These entries are used only when the native broadcast and stored folder-state
@@ -1580,13 +1599,83 @@
       s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION,
       s0f1bLoadedAt: FOLDER_PARITY_RUNTIME_LOADED_AT,
       registeredAt: FOLDER_PARITY_RUNTIME_LOADED_AT,
-      registrationSource: 'S0F1b.Library Workspace',
+      registrationSource: FOLDER_PARITY_REGISTRATION_SOURCE,
       scriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL),
       folderParityScriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL),
       hasKnownCanonicalFallbackBuilder: typeof buildProtectedCanonicalFallbackDisplayRows === 'function',
       knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length,
+      providerUpgradeApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerUpgradeApplied === true,
+      previousProviderVersion: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.previousProviderVersion,
+      previousProviderKeys: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.previousProviderKeys.slice(0, 32),
+      providerWasStale: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerWasStale === true,
+      providerRegisteredAt: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegisteredAt,
+      providerPreservedKeys: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerPreservedKeys.slice(0, 16),
+      providerRegistrationError: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError,
       ...extra,
     };
+  }
+
+  function folderParityProviderVersion(provider) {
+    return String(provider?.folderParityVersion || provider?.s0f1bLoadedVersion || provider?.version || '').trim();
+  }
+
+  function folderParityProviderIsCurrent(provider) {
+    return folderParityProviderVersion(provider) === FOLDER_PARITY_RUNTIME_VERSION
+      && provider?.hasKnownCanonicalFallbackBuilder === true
+      && typeof provider?.getDisplayModel === 'function';
+  }
+
+  function folderParityProviderKeys(provider) {
+    try { return Object.keys(provider || {}).map((key) => String(key || '').trim()).filter(Boolean); }
+    catch { return []; }
+  }
+
+  function preserveFolderParityExternalMethods(target, previous) {
+    const preserved = [];
+    if (!target || !previous || target === previous) return preserved;
+    [
+      'diagnoseSidebar',
+      'diagnoseSidebarVersion',
+      'diagnoseSidebarRegisteredAt',
+      'diagnoseSidebarRegistrationSource',
+    ].forEach((key) => {
+      if (typeof previous[key] === 'undefined') return;
+      target[key] = previous[key];
+      preserved.push(key);
+    });
+    return preserved;
+  }
+
+  function registerFolderParityProvider(provider) {
+    const previous = H2O.Library?.FolderParity && typeof H2O.Library.FolderParity === 'object'
+      ? H2O.Library.FolderParity
+      : null;
+    const previousVersion = folderParityProviderVersion(previous);
+    const previousKeys = folderParityProviderKeys(previous);
+    const providerWasStale = !!previous && !folderParityProviderIsCurrent(previous);
+    try {
+      const preserved = preserveFolderParityExternalMethods(provider, previous);
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerUpgradeApplied = !previous || providerWasStale || previous !== provider;
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.previousProviderVersion = previousVersion;
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.previousProviderKeys = previousKeys.slice(0, 32);
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerWasStale = providerWasStale;
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegisteredAt = new Date().toISOString();
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerPreservedKeys = preserved.slice(0, 16);
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError = '';
+      Object.assign(provider, folderParityRuntimeMarkers({
+        providerUpgradeApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerUpgradeApplied,
+        previousProviderVersion,
+        previousProviderKeys: previousKeys.slice(0, 32),
+        providerWasStale,
+        providerPreservedKeys: preserved.slice(0, 16),
+      }));
+      H2O.Library.FolderParity = provider;
+      return provider;
+    } catch (e) {
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError = String(e?.message || e || 'folder parity provider registration failed');
+      H2O.Library.FolderParity = provider;
+      return provider;
+    }
   }
 
   async function diagnoseFolderParity(options = {}) {
@@ -2078,8 +2167,13 @@
     folderParityVersion: FOLDER_PARITY_RUNTIME_VERSION,
     s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION,
     registeredAt: FOLDER_PARITY_RUNTIME_LOADED_AT,
-    registrationSource: 'S0F1b.Library Workspace',
+    registrationSource: FOLDER_PARITY_REGISTRATION_SOURCE,
     folderParityScriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL),
+    providerUpgradeApplied: false,
+    previousProviderVersion: '',
+    previousProviderKeys: [],
+    providerWasStale: false,
+    providerRegistrationError: '',
     runtimeMarkers: folderParityRuntimeMarkers,
     getRuntimeMarkers: folderParityRuntimeMarkers,
     diagnose: diagnoseFolderParity,
@@ -2256,9 +2350,11 @@
     },
   });
 
+  const registeredFolderParity = registerFolderParityProvider(FolderParity);
+  Workspace.folderParity = registeredFolderParity;
   H2O.LibraryWorkspace = Workspace;
   H2O.Library.Workspace = Workspace;
-  H2O.Library.FolderParity = FolderParity;
+  H2O.Library.FolderParity = registeredFolderParity;
 
   // Register on Library Core
   function registerOnCore() {
