@@ -238,10 +238,10 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.81') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.82') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.81') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.82') &&
       sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./studio.js?v=2.5.77'),
@@ -391,9 +391,17 @@ const checks = [
   check(
     'folder-catalog-readiness-fallback-rendering',
     sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackDisplayRows') &&
+      sources.libraryWorkspace.includes("const FOLDER_PARITY_RUNTIME_VERSION = 'f19.7-folder-fallback-v2';") &&
+      sources.libraryWorkspace.includes('folderParityVersion: FOLDER_PARITY_RUNTIME_VERSION') &&
+      sources.libraryWorkspace.includes('s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION') &&
+      sources.libraryWorkspace.includes('hasKnownCanonicalFallbackBuilder') &&
+      sources.libraryWorkspace.includes('knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
+      sources.libraryWorkspace.includes("reason: 'get-display-model-empty-report'") &&
       sources.libraryWorkspace.includes('protectedCanonicalFallback: protectedFallbackRows') &&
       sources.libraryWorkspace.includes('protectedCanonicalFallbackCount: protectedFallbackRows.length') &&
+      sources.libraryWorkspace.includes('protectedCanonicalFallbackSource') &&
+      sources.libraryWorkspace.includes('fallbackBuilderError') &&
       sources.libraryWorkspace.includes('folderCatalogReady: canonicalMirrorAvailable') &&
       sources.libraryWorkspace.includes('folderCatalogReady: report?.folderCatalogReady === true') &&
       sources.libraryWorkspace.includes('displayModelAvailable') &&
@@ -405,8 +413,13 @@ const checks = [
       sources.studioShell.includes('if (!folderEntries.length)') &&
       sources.studioShell.includes('makeVisibleStudioFoldersFallbackModel(String(model?.renderBlockedReason') &&
       sources.sidebarSections.includes('host.dataset.h2oFolderCatalogReady') &&
+      sources.sidebarSections.includes('const modelHasCanonicalFolders = canonicalRows.length > 0') &&
+      sources.sidebarSections.includes('ok: modelHasCanonicalFolders') &&
       sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true') &&
       sources.sidebarSections.includes('protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0') &&
+      sources.sidebarSections.includes('folderParityVersion: String(model?.folderParityVersion || model?.version ||') &&
+      sources.sidebarSections.includes('hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true') &&
+      sources.sidebarSections.includes('fallbackBuilderError: String(model?.fallbackBuilderError ||') &&
       sources.sidebarSections.includes('displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0') &&
       sources.sidebarSections.includes('renderBlockedReason: canonicalRows.length ?'),
     FILES.studioShell,

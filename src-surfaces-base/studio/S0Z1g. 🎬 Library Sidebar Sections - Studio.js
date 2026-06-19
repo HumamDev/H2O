@@ -3764,17 +3764,26 @@
     const createButton = D.querySelector('[data-h2o-folder-create-button="1"]');
     const firstCanonical = canonicalRows[0] || {};
     const capabilities = folderActionCapabilitySummary(firstCanonical);
+    const modelHasCanonicalFolders = canonicalRows.length > 0;
     return {
-      ok: renderedTokenValues.join('\n') === modelTokenValues.join('\n')
+      ok: modelHasCanonicalFolders
+        && renderedTokenValues.join('\n') === modelTokenValues.join('\n')
         && renderedTokens.every((row) => row.localOnly !== true)
         && !folderLocalReviewUiEnabled(),
       surface: studioIsTauri() ? 'desktop-studio' : 'chrome-studio',
       operatorModeEnabled: folderOperatorModeEnabled(),
       localReviewVisible: folderLocalReviewUiEnabled(),
+      folderParityVersion: String(model?.folderParityVersion || model?.version || ''),
+      s0f1bLoadedVersion: String(model?.s0f1bLoadedVersion || ''),
+      folderParityScriptUrl: String(model?.scriptUrl || model?.folderParityScriptUrl || ''),
+      hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true,
+      knownCanonicalFallbackRawCount: Number(model?.knownCanonicalFallbackRawCount || 0) || 0,
       folderCatalogReady: model?.folderCatalogReady === true,
       displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0,
       fallbackModelUsed: model?.fallbackModelUsed === true || model?.fallbackUsed === true,
       protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0,
+      protectedCanonicalFallbackSource: String(model?.protectedCanonicalFallbackSource || ''),
+      fallbackBuilderError: String(model?.fallbackBuilderError || ''),
       storedModelAvailable: model?.storedModelAvailable === true,
       nativeBroadcastRequired: canonicalRows.length === 0 && model?.nativeBroadcastRequired === true,
       renderBlockedReason: canonicalRows.length ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty'),

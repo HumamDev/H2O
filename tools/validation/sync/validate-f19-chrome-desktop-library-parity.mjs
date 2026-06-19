@@ -14,6 +14,7 @@ const sharedCoreFile = 'shared/library/library-index-core.js';
 const runtimeCoreFile = 'src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js';
 const studioCoreFile = 'src-surfaces-base/studio/S0F0d. 🎬 Library Index Core - Studio.js';
 const studioIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
+const libraryWorkspaceFile = 'src-surfaces-base/studio/S0F1b. 🎬 Library Workspace - Studio.js';
 const htmlFile = 'src-surfaces-base/studio/studio.html';
 const packFile = 'tools/product/studio/pack-studio.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.1-chrome-desktop-library-parity-contract.md';
@@ -388,13 +389,16 @@ if (failures.length === 0) {
   assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
   assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.81', 'Library workspace cache bust');
+  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.82', 'Library workspace cache bust');
   assertContainsAny(htmlFile, [
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74',
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75'
   ], 'Library sidebar tab cache bust');
-  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.81', 'Library sidebar sections cache bust');
+  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.82', 'Library sidebar sections cache bust');
   assertContains(htmlFile, './studio.js?v=2.5.77', 'Studio shell cache bust');
+  assertContains(libraryWorkspaceFile, 'folderParityVersion', 'FolderParity runtime marker');
+  assertContains(libraryWorkspaceFile, 'hasKnownCanonicalFallbackBuilder', 'FolderParity fallback builder marker');
+  assertContains(libraryWorkspaceFile, 'knownCanonicalFallbackRawCount', 'FolderParity fallback raw count marker');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');
