@@ -3739,12 +3739,17 @@
     const opts = options && typeof options === 'object' ? options : {};
     let model = null;
     try {
-      model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: opts.fresh !== false });
+      model = await H2O.Library?.FolderParity?.getDisplayModel?.({
+        fresh: opts.fresh !== false,
+        folderName: opts.folderName || opts.probeName || '',
+      });
     } catch (e) {
       err('diagnoseFolderSidebarParity.getDisplayModel', e);
     }
     const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
     const reviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
+    const materializedUserRows = Array.isArray(model?.materializedUserFolders) ? model.materializedUserFolders : [];
+    const hiddenLocalOnlyRows = Array.isArray(model?.hiddenLocalOnlyFolders) ? model.hiddenLocalOnlyFolders : [];
     const modelRows = [buildUnfiledSidebarItem(), ...canonicalRows];
     const modelTokens = modelRows.map((row, index) => folderDiagnosticToken(row, index));
     const renderedTokens = renderedFolderSidebarTokens(modelRows);
@@ -3763,6 +3768,12 @@
       renderedSidebarFolderTokens: renderedTokens,
       canonicalFolderDisplayModelTokens: modelTokens,
       hiddenLocalReviewCount: reviewRows.length,
+      userCreatedMaterializedFolderCount: Number(model?.materializedUserFolderCount || materializedUserRows.length) || 0,
+      userCreatedMaterializedFolderTokens: materializedUserRows.map((row, index) => folderDiagnosticToken({ ...row, isCanonical: true }, index)),
+      hiddenDynamicNativeOnlyCount: Number(model?.hiddenDynamicNativeOnlyCount || 0) || 0,
+      hiddenLocalOnlyCount: Number(model?.hiddenLocalOnlyCount || hiddenLocalOnlyRows.length) || 0,
+      hiddenLocalOnlyTokens: hiddenLocalOnlyRows.map((row, index) => folderDiagnosticToken(row, index)),
+      folderNameProbe: model?.folderNameProbe || {},
       modelCanonicalCount: canonicalRows.length,
       renderedCanonicalCount: renderedTokens.filter((row) => row.sourceKind !== 'system').length,
       colorTokens: modelTokens.map((row) => `${row.idHash}:${row.color || 'none'}`),
@@ -3780,6 +3791,13 @@
         createButtonDisabled: !!createButton && createButton.disabled === true,
       },
       menuActionState: capabilities,
+      folderCreateLastResult: {
+        lastEvent: FOLDER_CREATE_FLOW_STATE.lastEvent,
+        lastName: FOLDER_CREATE_FLOW_STATE.lastName,
+        lastStatus: FOLDER_CREATE_FLOW_STATE.lastStatus,
+        lastApply: FOLDER_CREATE_FLOW_STATE.lastApply ? { ...FOLDER_CREATE_FLOW_STATE.lastApply } : null,
+        lastError: FOLDER_CREATE_FLOW_STATE.lastError,
+      },
       destructiveActionsOperatorOnly: !folderDestructiveActionsEnabled() && capabilities.delete.available === false,
       moreLinkHref: String(D.querySelector('#folderList .wbSidebarSectionMore')?.getAttribute('href') || ''),
       warnings: Array.isArray(model?.warnings) ? model.warnings.slice(0, 8) : [],

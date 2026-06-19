@@ -123,6 +123,17 @@
     return String(row?.id || row?.folderId || '').trim();
   }
 
+  function folderDiagnosticHash(value) {
+    const text = String(value || '');
+    if (!text) return '';
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return `h:${h.toString(16).padStart(8, '0').slice(0, 8)}`;
+  }
+
   function folderNameOf(row) {
     const id = folderIdOf(row);
     return String(row?.name || row?.title || row?.label || id).trim() || id;
@@ -150,6 +161,10 @@
 
   function folderColorOf(row) {
     return String(row?.iconColor || row?.color || row?.folderColor || row?.accentColor || '').trim();
+  }
+
+  function folderMetaOf(row) {
+    return (row?.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
   }
 
   function canonicalFolderDisplayColor(row) {
@@ -220,6 +235,11 @@
       index,
       sortOrder,
     };
+    const meta = folderMetaOf(row);
+    if (Object.keys(meta).length > 0) out.meta = { ...meta };
+    if (row?.userCreated === true || meta.userCreated === true) out.userCreated = true;
+    if (row?.materializedUserFolder === true || meta.materializedUserFolder === true) out.materializedUserFolder = true;
+    if (row?.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) out.trustedFolderDisplay = true;
     if (color) out.color = color;
     if (iconColor) out.iconColor = iconColor;
     if (icon) out.icon = icon;
@@ -485,8 +505,21 @@
     return stateSource === 'stored-folder-state' || stateSource === 'folder-state';
   }
 
+  function isMaterializedUserFolder(row) {
+    const id = folderIdOf(row);
+    const name = normalizeFolderName(row?.normalizedName || folderNameOf(row));
+    if (!id || !name || name === 'unfiled') return false;
+    if (isPrimaryCanonicalFolder(row) || isF5DReviewFolder(row)) return false;
+    const meta = folderMetaOf(row);
+    if (row?.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
+    if (row?.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
+    const source = String(row?.source || meta.source || '').trim().toLowerCase();
+    if ((row?.userCreated === true || meta.userCreated === true) && source.includes('desktop')) return true;
+    return false;
+  }
+
   function isCanonicalDisplayFolder(row) {
-    return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row);
+    return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);
   }
 
   function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false) {
@@ -685,6 +718,10 @@
       color,
       iconColor: color,
       icon: meta.icon || meta.iconKey || '',
+      meta,
+      userCreated: row.userCreated === true || meta.userCreated === true,
+      materializedUserFolder: row.materializedUserFolder === true || meta.materializedUserFolder === true,
+      trustedFolderDisplay: row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true,
     };
   }
   function deriveFolderRowsFromIndex() {
@@ -1377,6 +1414,13 @@
     const canonicalRows = Array.isArray(canonicalFolders) ? canonicalFolders : [];
     const localRows = Array.isArray(localFolders) ? localFolders : [];
     const primaryCanonicalRows = canonicalRows.filter(isCanonicalDisplayFolder);
+    const primaryCanonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
+    const materializedLocalRows = localRows
+      .filter((folder) => {
+        const id = folderIdOf(folder);
+        return id && !primaryCanonicalIds.has(id) && isMaterializedUserFolder(folder);
+      });
+    primaryCanonicalRows.push(...materializedLocalRows);
     const canonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
     const canonicalNames = new Set(primaryCanonicalRows.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
     const duplicateNames = new Set((Array.isArray(duplicateGroups) ? duplicateGroups : []).map((group) => normalizeFolderName(group.name || group.normalizedName)).filter(Boolean));
@@ -1560,6 +1604,7 @@
     const extraLocalFolders = localFolders
       .filter((folder) => {
         const name = normalizeFolderName(folder.name);
+        if (isMaterializedUserFolder(folder)) return false;
         return name !== 'unfiled' && folder.id && !canonicalIds.has(folder.id);
       })
       .map((folder) => ({
@@ -1568,6 +1613,32 @@
         name: folder.name,
         normalizedName: folder.normalizedName,
         bindingCount: Number(knownStudioRowCountByFolder[folder.id] || 0),
+      }));
+    const materializedUserFolders = localFolders
+      .filter(isMaterializedUserFolder)
+      .map((folder) => ({
+        id: folder.id,
+        folderId: folder.id,
+        name: folder.name,
+        normalizedName: folder.normalizedName,
+        source: folder.source,
+        bindingCount: Number(knownStudioRowCountByFolder[folder.id] || 0),
+      }));
+    const hiddenLocalOnlyFolders = localFolders
+      .filter((folder) => {
+        const id = folderIdOf(folder);
+        const name = normalizeFolderName(folder?.normalizedName || folderNameOf(folder));
+        if (!id || !name || name === 'unfiled') return false;
+        if (isPrimaryCanonicalFolder(folder) || isMaterializedUserFolder(folder) || isVisibleFolderUiReviewRow(folder, canonicalNames)) return false;
+        return !canonicalIds.has(id);
+      })
+      .map((folder) => ({
+        id: folder.id,
+        folderId: folder.id,
+        name: folder.name,
+        normalizedName: folder.normalizedName,
+        source: folder.source,
+        reason: 'local-only-not-materialized',
       }));
     const orphanBindingCount = Math.max(0, canonicalBindingCount - canonicalKnownRowCount);
     const riskLevel = (missingCanonicalFolders.length || duplicateGroups.length || testFolderCandidates.length || extraLocalFolders.length || orphanBindingCount)
@@ -1595,6 +1666,33 @@
       desktopBindings,
       duplicateGroups,
       testFolderCandidates,
+    });
+    const probeNames = Array.from(new Set([
+      normalizeFolderName(opts.folderName || opts.probeName || ''),
+      'sport',
+      'zz-sync-test-folder',
+    ].filter(Boolean)));
+    const probeFolderCollections = {
+      localSqlite: localFolders,
+      storedFolderState: storedState.folders,
+      nativeBroadcast: nativeState.folders,
+      displayModel: folderDisplayRows,
+      materializedUserFolders,
+      hiddenLocalOnlyFolders,
+      nativeOnlyDisplaySuppressedFolders,
+    };
+    const folderNameProbe = {};
+    probeNames.forEach((probeName) => {
+      folderNameProbe[probeName] = Object.fromEntries(Object.entries(probeFolderCollections).map(([key, rows]) => [
+        key,
+        (Array.isArray(rows) ? rows : []).filter((row) => normalizeFolderName(row?.normalizedName || row?.name || row?.title || '') === probeName).map((row) => ({
+          idHash: folderDiagnosticHash(row.id || row.folderId || ''),
+          normalizedName: normalizeFolderName(row.normalizedName || row.name || row.title),
+          source: row.source || '',
+          isCanonical: row.isCanonical === true,
+          isMaterializedUserFolder: isMaterializedUserFolder(row),
+        })),
+      ]));
     });
 
     return {
@@ -1639,6 +1737,12 @@
         nativeOnlySuppressedFolderCount: nativeOnlyDisplaySuppressedFolders.length,
       },
       nativeOnlyDisplaySuppressedFolders,
+      hiddenDynamicNativeOnlyCount: nativeOnlyDisplaySuppressedFolders.length,
+      hiddenLocalOnlyFolders,
+      hiddenLocalOnlyCount: hiddenLocalOnlyFolders.length,
+      materializedUserFolders,
+      materializedUserFolderCount: materializedUserFolders.length,
+      folderNameProbe,
       canonicalFolders,
       localFolders,
       folderDisplayRows,
@@ -1871,6 +1975,8 @@
       const canonicalSource = String(report?.canonicalSource || '');
       const canonicalOrderTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${canonicalFolderDisplayOrder(row)}`);
       const canonicalColorTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${String(row.iconColor || row.color || '').trim()}`);
+      const materializedUserFolders = Array.isArray(report?.materializedUserFolders) ? report.materializedUserFolders : [];
+      const hiddenLocalOnlyFolders = Array.isArray(report?.hiddenLocalOnlyFolders) ? report.hiddenLocalOnlyFolders : [];
       return {
         readOnly: true,
         surface: report.surface,
@@ -1886,6 +1992,12 @@
         fallbackUsed: canonicalSource === 'known-current-canonical-fallback',
         fallbackVisualsEnriched: !!report.fallbackVisualsEnriched,
         riskLevel: report.riskLevel,
+        materializedUserFolderCount: Number(report?.materializedUserFolderCount || materializedUserFolders.length) || 0,
+        materializedUserFolders,
+        hiddenDynamicNativeOnlyCount: Number(report?.hiddenDynamicNativeOnlyCount || 0) || 0,
+        hiddenLocalOnlyCount: Number(report?.hiddenLocalOnlyCount || hiddenLocalOnlyFolders.length) || 0,
+        hiddenLocalOnlyFolders,
+        folderNameProbe: report?.folderNameProbe || {},
         canonicalRows,
         localReviewRows,
         rows: [...canonicalRows, ...localReviewRows],

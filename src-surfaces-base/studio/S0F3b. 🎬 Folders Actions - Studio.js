@@ -123,6 +123,11 @@
     return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
   }
 
+  function nowIso() {
+    try { return new Date().toISOString(); }
+    catch (_) { return String(Date.now()); }
+  }
+
   function pushError(op, err) {
     try {
       state.errors.push({
@@ -189,11 +194,20 @@
       });
     }
     try {
+      var source = cleanString(opts.source) || 'desktop-user-folder-create';
+      var meta = Object.assign({}, safeMeta(opts.meta), {
+        source: source,
+        userCreated: true,
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        createdBy: 'desktop-studio',
+        updatedAt: nowIso(),
+      });
       var payload = {
         name: name,
         parentId: cleanString(opts.parentId),
-        source: cleanString(opts.source) || 'studio-actions',
-        meta: safeMeta(opts.meta),
+        source: source,
+        meta: meta,
       };
       var color = cleanString(opts.color);
       var iconColor = cleanString(opts.iconColor) || color;
