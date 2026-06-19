@@ -390,6 +390,23 @@ const checks = [
       'Chrome and Desktop folder sidebar must use stable canonical order/color tokens, Desktop-safe create/rename/color actions, and keep delete/destructive actions operator-only.'
     ),
   check(
+    'folder-catalog-readiness-fallback-rendering',
+    sources.libraryWorkspace.includes('folderCatalogReady: displayModelAvailable') &&
+      sources.libraryWorkspace.includes('displayModelAvailable') &&
+      sources.libraryWorkspace.includes('nativeBroadcastRequired: !displayModelAvailable') &&
+      sources.libraryWorkspace.includes('renderBlockedReason') &&
+      sources.studioShell.includes('function makeKnownCanonicalFolderCatalogFallback') &&
+      sources.studioShell.includes('folder-parity-api-loading') &&
+      sources.studioShell.includes('folder-parity-timeout-fallback') &&
+      sources.studioShell.includes('if (!folderEntries.length)') &&
+      sources.studioShell.includes('makeVisibleStudioFoldersFallbackModel(String(model?.renderBlockedReason') &&
+      sources.sidebarSections.includes('host.dataset.h2oFolderCatalogReady') &&
+      sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true || canonicalRows.length > 0') &&
+      sources.sidebarSections.includes('renderBlockedReason: canonicalRows.length ?'),
+    FILES.studioShell,
+    'Folder sidebar/page must render the protected canonical fallback display model when native broadcast or FolderParity hydration is not ready, and only block when no usable model exists.'
+  ),
+  check(
     'insights-link-badge-semantics',
     sources.insights.includes('function rowHasTranscriptContent') &&
       sources.insights.includes('function rowHasOpenableTranscriptContent') &&

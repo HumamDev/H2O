@@ -1667,6 +1667,12 @@
       duplicateGroups,
       testFolderCandidates,
     });
+    const canonicalDisplayRowCount = folderDisplayRows.filter((row) => row && row.isCanonical).length;
+    const displayModelAvailable = canonicalDisplayRowCount > 0;
+    const fallbackUsed = !mergedTrustedCanonical.folders.length;
+    const renderBlockedReason = displayModelAvailable
+      ? ''
+      : (folderDisplayRows.length ? 'folder-display-model-has-no-canonical-rows' : 'folder-display-model-empty');
     const probeNames = Array.from(new Set([
       normalizeFolderName(opts.folderName || opts.probeName || ''),
       'sport',
@@ -1703,6 +1709,13 @@
         ? (canonicalFromStoredMirror && storedState.folders.length > nativeState.folders.length ? 'native-broadcast+stored-folder-state' : 'native-broadcast')
         : (canonicalFromStoredMirror ? 'stored-folder-state' : 'known-current-canonical-fallback'),
       fallbackVisualsEnriched,
+      folderCatalogReady: displayModelAvailable,
+      displayModelAvailable,
+      fallbackModelUsed: fallbackUsed,
+      storedModelAvailable: storedState.folders.length > 0,
+      nativeBroadcastAvailable: nativeState.folders.length > 0,
+      nativeBroadcastRequired: !displayModelAvailable,
+      renderBlockedReason,
       canonicalMirrorAvailable,
       canonicalFolderCount: canonicalFolders.length,
       localFolderCount: localFolders.length,
@@ -1905,12 +1918,15 @@
     );
     addCheck(
       'folder.displayModel.available',
-      Array.isArray(report?.folderDisplayRows),
+      Array.isArray(report?.folderDisplayRows) && report.folderDisplayRows.some((row) => row && row.isCanonical),
       'error',
-      Array.isArray(report?.folderDisplayRows)
+      Array.isArray(report?.folderDisplayRows) && report.folderDisplayRows.some((row) => row && row.isCanonical)
         ? `Folder display model is available with ${report.folderDisplayRows.length} row(s).`
         : 'Folder display model is unavailable.',
-      { rowCount: Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows.length : null }
+      {
+        rowCount: Array.isArray(report?.folderDisplayRows) ? report.folderDisplayRows.length : null,
+        renderBlockedReason: report?.renderBlockedReason || '',
+      }
     );
     if (surface === 'desktop-studio') {
       addCheck(
@@ -1977,11 +1993,19 @@
       const canonicalColorTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${String(row.iconColor || row.color || '').trim()}`);
       const materializedUserFolders = Array.isArray(report?.materializedUserFolders) ? report.materializedUserFolders : [];
       const hiddenLocalOnlyFolders = Array.isArray(report?.hiddenLocalOnlyFolders) ? report.hiddenLocalOnlyFolders : [];
+      const displayModelAvailable = canonicalRows.length > 0;
       return {
         readOnly: true,
         surface: report.surface,
         generatedAt: report.generatedAt,
         canonicalMirrorAvailable: report.canonicalMirrorAvailable,
+        folderCatalogReady: displayModelAvailable || report?.folderCatalogReady === true,
+        displayModelAvailable: displayModelAvailable || report?.displayModelAvailable === true,
+        fallbackModelUsed: report?.fallbackModelUsed === true || canonicalSource === 'known-current-canonical-fallback',
+        storedModelAvailable: report?.storedModelAvailable === true,
+        nativeBroadcastAvailable: report?.nativeBroadcastAvailable === true,
+        nativeBroadcastRequired: !displayModelAvailable && report?.nativeBroadcastRequired === true,
+        renderBlockedReason: displayModelAvailable ? '' : (report?.renderBlockedReason || 'folder-display-model-empty'),
         canonicalFolderCount: canonicalRows.length,
         localFolderCount: localReviewRows.length,
         canonicalBindingCount: report.canonicalBindingCount,

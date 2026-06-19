@@ -3051,8 +3051,14 @@
     const localReviewRows = Array.isArray(model?.localReviewRows) ? model.localReviewRows : [];
     const showLocalReview = folderLocalReviewUiEnabled();
     const fallbackUsed = !!model?.fallbackUsed;
+    const displayModelAvailable = canonicalRows.length > 0 || model?.displayModelAvailable === true;
+    const folderCatalogReady = displayModelAvailable || model?.folderCatalogReady === true;
+    const renderBlockedReason = displayModelAvailable ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty');
     host.dataset.h2oFolderLocalReview = showLocalReview ? 'operator' : 'hidden';
     host.dataset.h2oFolderHiddenReviewRows = showLocalReview ? '0' : String(localReviewRows.length);
+    host.dataset.h2oFolderCatalogReady = folderCatalogReady ? 'true' : 'false';
+    host.dataset.h2oFolderDisplayModelAvailable = displayModelAvailable ? 'true' : 'false';
+    host.dataset.h2oFolderRenderBlockedReason = renderBlockedReason;
 
     const toSidebarItem = (row) => {
       const id = String(row?.folderId || row?.id || '').trim();
@@ -3765,6 +3771,12 @@
       surface: studioIsTauri() ? 'desktop-studio' : 'chrome-studio',
       operatorModeEnabled: folderOperatorModeEnabled(),
       localReviewVisible: folderLocalReviewUiEnabled(),
+      folderCatalogReady: model?.folderCatalogReady === true || canonicalRows.length > 0,
+      displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0,
+      fallbackModelUsed: model?.fallbackModelUsed === true || model?.fallbackUsed === true,
+      storedModelAvailable: model?.storedModelAvailable === true,
+      nativeBroadcastRequired: canonicalRows.length === 0 && model?.nativeBroadcastRequired === true,
+      renderBlockedReason: canonicalRows.length ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty'),
       renderedSidebarFolderTokens: renderedTokens,
       canonicalFolderDisplayModelTokens: modelTokens,
       hiddenLocalReviewCount: reviewRows.length,

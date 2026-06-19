@@ -55,6 +55,14 @@ const FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS = Object.freeze([
   Object.freeze({ folderId: "f_3bf15f43b835d19dbac0fb13", name: "Tech" }),
   Object.freeze({ folderId: "f_2bb1037f88b2719dbac10c22", name: "English" }),
 ]);
+const FOLDER_DESKTOP_MIRROR_CANONICAL_COLORS = Object.freeze({
+  f_7050f49d3f341819dba53d547: "#F472B6",
+  f_5d9431084707f19dba53d548: "#3B82F6",
+  f_0606ea698948f19dba53d548: "#22C55E",
+  f_e301f3506938c19dbac0e304: "#A855F7",
+  f_3bf15f43b835d19dbac0fb13: "#14B8A6",
+  f_2bb1037f88b2719dbac10c22: "#FF914D",
+});
 const FOLDER_DESKTOP_MIRROR_REFRESH_STATE = {
   path: "",
   pastedJson: "",
@@ -3598,6 +3606,38 @@ function normalizeSidebarIconColor(raw){
   return /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : "";
 }
 
+function makeKnownCanonicalFolderCatalogFallback(reason = "studio-known-canonical-fallback"){
+  return FOLDER_DESKTOP_MIRROR_CANONICAL_ROWS.map((row, index) => {
+    const folderId = String(row.folderId || "").trim();
+    const color = normalizeSidebarIconColor(FOLDER_DESKTOP_MIRROR_CANONICAL_COLORS[folderId] || "");
+    return {
+      id: folderId,
+      folderId,
+      name: String(row.name || folderId).trim() || folderId,
+      createdAt: "",
+      updatedAt: "",
+      kind: "folder",
+      projectRef: null,
+      iconColor: color,
+      color,
+      colorSource: color ? "known-canonical-display-palette" : "default",
+      source: reason,
+      displayCountLabel: "",
+      canonicalCount: 0,
+      nativeMembershipCount: 0,
+      knownCount: 0,
+      knownStudioCount: 0,
+      savedCount: 0,
+      linkedCount: 0,
+      orphanCount: 0,
+      localBindingCount: 0,
+      badges: [],
+      isCanonical: true,
+      sortOrder: index + 1,
+    };
+  }).filter((row) => row.id);
+}
+
 function mergeFolderCatalogs(...lists){
   const out = [];
   const seen = new Set();
@@ -3770,17 +3810,34 @@ async function fetchFolderParityCatalog(force = false){
 async function fetchFolderParityPartition(force = false){
   const api = W.H2O?.Library?.FolderParity;
   if (typeof api?.getDisplayModel !== "function") {
-    return { canonical: [], review: [], fallbackUsed: false };
+    return {
+      canonical: makeKnownCanonicalFolderCatalogFallback("folder-parity-api-loading"),
+      review: [],
+      fallbackUsed: true,
+      fallbackModelUsed: true,
+      folderCatalogReady: true,
+      displayModelAvailable: true,
+      storedModelAvailable: false,
+      nativeBroadcastRequired: false,
+      renderBlockedReason: "",
+    };
   }
   const model = await promiseWithTimeout(
     api.getDisplayModel({ fresh: !!force }),
     STUDIO_BOOT_AUX_TIMEOUT_MS,
     "FolderParity.getDisplayModel"
   );
+  const canonical = mapFolderParityRowsToCatalog(model?.canonicalRows || []);
   return {
-    canonical: mapFolderParityRowsToCatalog(model?.canonicalRows || []),
+    canonical: canonical.length ? canonical : makeKnownCanonicalFolderCatalogFallback("folder-parity-empty-display-model"),
     review: mapFolderParityRowsToCatalog(model?.localReviewRows || []),
-    fallbackUsed: !!model?.fallbackUsed,
+    fallbackUsed: !!model?.fallbackUsed || !canonical.length,
+    fallbackModelUsed: !!model?.fallbackModelUsed || !canonical.length,
+    folderCatalogReady: model?.folderCatalogReady === true || canonical.length > 0,
+    displayModelAvailable: model?.displayModelAvailable === true || canonical.length > 0,
+    storedModelAvailable: model?.storedModelAvailable === true,
+    nativeBroadcastRequired: !canonical.length && model?.nativeBroadcastRequired === true,
+    renderBlockedReason: canonical.length ? "" : (model?.renderBlockedReason || "folder-parity-empty-display-model"),
   };
 }
 
@@ -3798,10 +3855,13 @@ async function fetchFolderCatalog(force = false){
       canonical: Array.isArray(state.folderCatalog) ? state.folderCatalog.slice() : [],
       review: Array.isArray(state.folderLocalReview) ? state.folderLocalReview.slice() : [],
     };
-  } catch { /* FolderParity is the sole canonical source per P8a contract. No
-                ws.getFolders or archive-ops fallback — FolderParity's internal
-                KNOWN_NATIVE_CANONICAL_FOLDERS provides the cold-boot fallback. */ }
-  return { canonical: cachedCatalog.slice(), review: cachedReview.slice() };
+  } catch { /* FolderParity is the preferred canonical source per P8a contract.
+                If it is still booting, use the same protected known-canonical
+                display rows locally so the UI does not block on native broadcast. */ }
+  if (cachedCatalog.length) return { canonical: cachedCatalog.slice(), review: cachedReview.slice() };
+  state.folderCatalog = normalizeFolderCatalog(makeKnownCanonicalFolderCatalogFallback("folder-parity-timeout-fallback"));
+  state.folderLocalReview = cachedReview.slice();
+  return { canonical: state.folderCatalog.slice(), review: state.folderLocalReview.slice() };
 }
 
 async function fetchLabelCatalog(force = false){
@@ -4374,13 +4434,18 @@ function renderFolderSidebar(rows, view, selectedFolderId){
   const host = $("#folderList");
   if (!host) return;
   ensureFolderCountToggle();
-  const items = collectFolderSidebarItems(rows, view, "canonical");
+  let items = collectFolderSidebarItems(rows, view, "canonical");
   const showLocalReview = folderLocalReviewUiEnabled();
   const reviewItems = showLocalReview ? collectFolderSidebarItems(rows, view, "review") : [];
   host.innerHTML = "";
   host.dataset.h2oFolderLocalReview = showLocalReview ? "operator" : "hidden";
 
-  const folderEntries = items.filter((item) => item.kind === "folder");
+  let folderEntries = items.filter((item) => item.kind === "folder");
+  if (!folderEntries.length) {
+    state.folderCatalog = normalizeFolderCatalog(makeKnownCanonicalFolderCatalogFallback("studio-sidebar-cache-fallback"));
+    items = collectFolderSidebarItems(rows, view, "canonical");
+    folderEntries = items.filter((item) => item.kind === "folder");
+  }
   const reviewEntries = reviewItems.filter((item) => item.kind === "folder");
   if (items.length <= 1 && !folderEntries.length && !reviewEntries.length){
     host.innerHTML = `<div class="wbSideEmpty">Canonical folder catalog unavailable. Open chatgpt.com to broadcast folders.</div>`;
@@ -6348,7 +6413,8 @@ function prepareVisibleStudioFoldersBody(){
 }
 
 function makeVisibleStudioFoldersFallbackModel(reason = "studio-sidebar-cache"){
-  const canonicalRows = normalizeFolderCatalog(state.folderCatalog)
+  const cachedCanonical = normalizeFolderCatalog(state.folderCatalog);
+  const canonicalRows = (cachedCanonical.length ? cachedCanonical : makeKnownCanonicalFolderCatalogFallback(reason))
     .map((row) => ({
       ...row,
       id: row.id || row.folderId,
@@ -6376,6 +6442,12 @@ function makeVisibleStudioFoldersFallbackModel(reason = "studio-sidebar-cache"){
     generatedAt: new Date().toISOString(),
     canonicalSource: reason,
     fallbackUsed: true,
+    fallbackModelUsed: true,
+    folderCatalogReady: canonicalRows.length > 0,
+    displayModelAvailable: canonicalRows.length > 0,
+    storedModelAvailable: cachedCanonical.length > 0,
+    nativeBroadcastRequired: false,
+    renderBlockedReason: canonicalRows.length ? "" : "folder-display-model-empty",
     canonicalRows,
     localReviewRows,
   };
@@ -6432,21 +6504,13 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   });
 
   const parity = W.H2O?.Library?.FolderParity;
-  if (typeof parity?.getDisplayModel !== "function") {
-    if (listEl) {
-      listEl.innerHTML = `
-        <section class="wbFolderPage" data-h2o-folder-page="1" data-h2o-folder-page-owner="studio-js-visible-body" data-h2o-folder-page-status="waiting" style="padding:16px 18px 24px">
-          <div class="wbState">FolderParity is still loading. Folders will appear when the canonical model is ready.</div>
-        </section>
-      `;
-    }
+  let model = opts.model && typeof opts.model === "object" ? opts.model : null;
+  if (!model && typeof parity?.getDisplayModel !== "function") {
+    model = makeVisibleStudioFoldersFallbackModel("folder-parity-api-loading");
     W.setTimeout(() => {
       if (isVisibleStudioFoldersRoute()) renderVisibleStudioFoldersPageBody({ force: true }).catch(console.warn);
     }, 800);
-    return;
   }
-
-  let model = opts.model && typeof opts.model === "object" ? opts.model : null;
   if (!model) {
     let modelPromise = null;
     try {
@@ -6488,6 +6552,10 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
         return;
       }
     }
+  }
+  if (!Array.isArray(model?.canonicalRows) || model.canonicalRows.length === 0) {
+    const fallbackModel = makeVisibleStudioFoldersFallbackModel(String(model?.renderBlockedReason || "folder-display-model-empty"));
+    if (Array.isArray(fallbackModel.canonicalRows) && fallbackModel.canonicalRows.length) model = fallbackModel;
   }
   if (token !== state.renderToken || !isVisibleStudioFoldersRoute()) return;
   const finalListEl = prepareVisibleStudioFoldersBody() || listEl;
