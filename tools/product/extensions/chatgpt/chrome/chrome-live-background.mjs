@@ -2919,6 +2919,7 @@ function normalizeFolderEntry(raw) {
   const id = String(raw && (raw.id || raw.folderId) || "").trim();
   if (!id) return null;
   const kindRaw = String(raw && raw.kind || "").trim().toLowerCase();
+  const meta = raw && raw.meta && typeof raw.meta === "object" && !Array.isArray(raw.meta) ? raw.meta : {};
   const out = {
     id,
     name: String(raw && (raw.name || raw.title || id) || id).trim() || id,
@@ -2939,6 +2940,22 @@ function normalizeFolderEntry(raw) {
   }
   const icon = String(raw && (raw.icon || raw.iconKey || raw.appearance && raw.appearance.icon) || "").trim();
   if (icon) out.icon = icon;
+  const rawKindAsSource = kindRaw && kindRaw !== "local" && kindRaw !== "project_backed" ? kindRaw : "";
+  const sourceKind = String(raw && raw.sourceKind || meta.sourceKind || meta.kind || rawKindAsSource || "").trim();
+  if (sourceKind) out.sourceKind = sourceKind;
+  if ((raw && raw.userCreated === true) || meta.userCreated === true) out.userCreated = true;
+  if ((raw && raw.materializedUserFolder === true) || meta.materializedUserFolder === true) out.materializedUserFolder = true;
+  if ((raw && raw.trustedFolderDisplay === true) || meta.trustedFolderDisplay === true) out.trustedFolderDisplay = true;
+  if ((raw && raw.shownInNormalMode === true) || meta.shownInNormalMode === true) out.shownInNormalMode = true;
+  if (sourceKind || out.userCreated === true || out.materializedUserFolder === true || out.trustedFolderDisplay === true || out.shownInNormalMode === true) {
+    out.meta = {
+      ...(sourceKind ? { sourceKind } : {}),
+      ...(out.userCreated === true ? { userCreated: true } : {}),
+      ...(out.materializedUserFolder === true ? { materializedUserFolder: true } : {}),
+      ...(out.trustedFolderDisplay === true ? { trustedFolderDisplay: true } : {}),
+      ...(out.shownInNormalMode === true ? { shownInNormalMode: true } : {}),
+    };
+  }
   return out;
 }
 
@@ -2967,6 +2984,8 @@ function folderCatalogRowTimestampMs(row) {
 function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
   const prev = prevRaw && typeof prevRaw === "object" ? prevRaw : {};
   const item = itemRaw && typeof itemRaw === "object" ? itemRaw : {};
+  const prevMeta = prev.meta && typeof prev.meta === "object" && !Array.isArray(prev.meta) ? prev.meta : {};
+  const itemMeta = item.meta && typeof item.meta === "object" && !Array.isArray(item.meta) ? item.meta : {};
   const prevMs = folderCatalogRowTimestampMs(prev);
   const itemMs = folderCatalogRowTimestampMs(item);
   let base = prev;
@@ -2976,6 +2995,30 @@ function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
     winner = prev;
   }
   const id = String(winner.id || base.id || "").trim();
+  const winnerKindAsSource = String(winner.kind || "").trim();
+  const baseKindAsSource = String(base.kind || "").trim();
+  const sourceKind = String(
+    winner.sourceKind
+    || itemMeta.sourceKind
+    || itemMeta.kind
+    || base.sourceKind
+    || prevMeta.sourceKind
+    || prevMeta.kind
+    || (winnerKindAsSource && winnerKindAsSource !== "local" && winnerKindAsSource !== "project_backed" ? winnerKindAsSource : "")
+    || (baseKindAsSource && baseKindAsSource !== "local" && baseKindAsSource !== "project_backed" ? baseKindAsSource : "")
+    || ""
+  ).trim();
+  const userCreated = winner.userCreated === true || itemMeta.userCreated === true || base.userCreated === true || prevMeta.userCreated === true;
+  const materializedUserFolder = winner.materializedUserFolder === true || itemMeta.materializedUserFolder === true || base.materializedUserFolder === true || prevMeta.materializedUserFolder === true;
+  const trustedFolderDisplay = winner.trustedFolderDisplay === true || itemMeta.trustedFolderDisplay === true || base.trustedFolderDisplay === true || prevMeta.trustedFolderDisplay === true;
+  const shownInNormalMode = winner.shownInNormalMode === true || itemMeta.shownInNormalMode === true || base.shownInNormalMode === true || prevMeta.shownInNormalMode === true;
+  const meta = {
+    ...(sourceKind ? { sourceKind } : {}),
+    ...(userCreated ? { userCreated: true } : {}),
+    ...(materializedUserFolder ? { materializedUserFolder: true } : {}),
+    ...(trustedFolderDisplay ? { trustedFolderDisplay: true } : {}),
+    ...(shownInNormalMode ? { shownInNormalMode: true } : {}),
+  };
   return {
     ...base,
     ...winner,
@@ -2992,6 +3035,12 @@ function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
     icon: String(winner.icon || base.icon || "").trim(),
     createdAt: String(winner.createdAt || base.createdAt || "").trim(),
     updatedAt: String(winner.updatedAt || base.updatedAt || "").trim(),
+    ...(sourceKind ? { sourceKind } : {}),
+    ...(userCreated ? { userCreated: true } : {}),
+    ...(materializedUserFolder ? { materializedUserFolder: true } : {}),
+    ...(trustedFolderDisplay ? { trustedFolderDisplay: true } : {}),
+    ...(shownInNormalMode ? { shownInNormalMode: true } : {}),
+    ...(Object.keys(meta).length ? { meta } : {}),
   };
 }
 
@@ -4312,22 +4361,29 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
     } catch (e) {
       directRelay = { ok: false, status: "relay-error", sent: 0, errors: [String(e && (e.message || e))] };
     }
-    const backgroundFallback = await backgroundPreviewFolderMetadataOperationFallback(value, directRelay);
+    const backgroundFallback = await backgroundFolderMetadataOperationFallback(value, directRelay);
     const fallbackResults = Array.isArray(backgroundFallback && backgroundFallback.results)
       ? backgroundFallback.results
       : [];
     if (fallbackResults.length) {
+      const fallbackPreviewCount = fallbackResults.filter((result) => String(result && result.requestMode || "") === "preview").length;
+      const fallbackApplyCount = fallbackResults.filter((result) => String(result && result.requestMode || "") === "apply").length;
       directRelay = {
         ...directRelay,
         ok: true,
-        status: directRelay && directRelay.sent > 0 ? String(directRelay.status || "relayed") : "background-preview-fallback",
+        status: directRelay && directRelay.sent > 0 ? String(directRelay.status || "relayed") : String(backgroundFallback.status || "background-folder-metadata-fallback"),
         pageReceiverStatus: directRelay && directRelay.sent > 0 ? "listener-reached" : String(directRelay.pageReceiverStatus || "listener-absent"),
         receiverInstalled: !!(directRelay && directRelay.sent > 0),
         listenerReached: !!(directRelay && directRelay.sent > 0),
         resultCount: Number(directRelay && directRelay.resultCount || 0) + fallbackResults.length,
-        fallbackPreviewStatus: String(backgroundFallback.status || "background-preview-fallback"),
-        fallbackPreviewResultCount: fallbackResults.length,
-        fallbackPreviewReason: "native-owner-page-receiver-unavailable",
+        fallbackPreviewStatus: fallbackPreviewCount ? "background-preview-fallback" : "",
+        fallbackPreviewResultCount: fallbackPreviewCount,
+        fallbackPreviewReason: fallbackPreviewCount ? "native-owner-page-receiver-unavailable" : "",
+        applyFallbackStatus: fallbackApplyCount ? "background-apply-fallback" : "",
+        applyResultCount: fallbackApplyCount,
+        applyFallbackReason: fallbackApplyCount ? "native-owner-page-receiver-unavailable" : "",
+        folderStateForwardStatus: String((fallbackResults.find((result) => String(result && result.requestMode || "") === "apply") || {}).folderStateForwardStatus || ""),
+        folderStateForwardedToStudio: fallbackResults.some((result) => result && result.folderStateForwardedToStudio === true),
         errors: Array.isArray(directRelay && directRelay.errors)
           ? directRelay.errors.map(classifyDirectRelayError).filter(Boolean).slice(0, 8)
           : [],
@@ -4465,6 +4521,38 @@ function isReservedFolderMetadataName(value) {
     || key === "unfiled";
 }
 
+const PROTECTED_CANONICAL_FOLDER_NAME_KEYS = new Set([
+  "study",
+  "case",
+  "dev",
+  "code",
+  "tech",
+  "english",
+]);
+
+function cleanFolderMetadataId(value) {
+  return String(value || "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 160);
+}
+
+function randomFolderMetadataIdToken() {
+  try {
+    if (self.crypto && typeof self.crypto.randomUUID === "function") {
+      return String(self.crypto.randomUUID()).replace(/-/g, "").slice(0, 10);
+    }
+  } catch {}
+  return Math.random().toString(36).slice(2, 12);
+}
+
+function makeChromeUserFolderId(name, existingIds) {
+  const base = folderMetadataNameKey(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "folder";
+  const ids = existingIds instanceof Set ? existingIds : new Set();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const id = "fold_chrome_" + base + "_" + Date.now().toString(36) + "_" + randomFolderMetadataIdToken();
+    if (!ids.has(id)) return id;
+  }
+  return "fold_chrome_" + base + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
+}
+
 function folderMetadataResultBase(request, code) {
   const req = request && typeof request === "object" ? request : {};
   const operation = req.operation && typeof req.operation === "object" ? req.operation : {};
@@ -4486,32 +4574,46 @@ function folderMetadataResultBase(request, code) {
   };
 }
 
-async function previewCreateFolderMetadataOperationInBackground(request) {
+async function createFolderMetadataOperationContextInBackground(request, expectedMode) {
   const req = request && typeof request === "object" ? request : {};
   const operation = req.operation && typeof req.operation === "object" ? req.operation : {};
   const result = folderMetadataResultBase(req, "");
-  result.previewSource = "native-owner-background-storage-fallback";
+  const mode = String(req.requestMode || "").trim();
   result.warnings = [{ code: "native-owner-page-receiver-unavailable" }];
   if (req.schema !== FOLDER_METADATA_OPERATION_REQUEST_SCHEMA) result.blockers.push({ code: "invalid-request-schema" });
-  if (String(req.requestMode || "").trim() !== "preview") result.blockers.push({ code: "background-preview-only" });
+  if (mode !== String(expectedMode || "").trim()) result.blockers.push({ code: "background-" + String(expectedMode || "unknown") + "-only" });
   if (operation.schema !== FOLDER_METADATA_OPERATION_SCHEMA) result.blockers.push({ code: "invalid-folder-metadata-operation" });
-  if (String(operation.operationType || "").trim() !== "create-folder") result.blockers.push({ code: "background-preview-unsupported-operation" });
+  if (String(operation.operationType || "").trim() !== "create-folder") result.blockers.push({ code: "background-" + String(expectedMode || "unknown") + "-unsupported-operation" });
 
   const after = operation.after && typeof operation.after === "object" ? operation.after : {};
   const nextName = cleanFolderMetadataName(after.name || after.title || operation.name || operation.title);
-  const requestedId = String(operation.folderId || after.folderId || after.id || operation.id || "").trim();
+  const requestedId = cleanFolderMetadataId(operation.folderId || after.folderId || after.id || operation.id || "");
   const rows = await storageGet([FOLDER_STATE_DATA_KEY]);
   const data = normalizeFolderStateData(rows && rows[FOLDER_STATE_DATA_KEY]);
   const sourceHash = checksumFolderState({ folders: data.folders, items: data.items });
+  const staleGuard = operation.staleGuard && typeof operation.staleGuard === "object" && !Array.isArray(operation.staleGuard)
+    ? operation.staleGuard
+    : {};
 
   if (!nextName) result.blockers.push({ code: "invalid-folder-name" });
   if (nextName && isReservedFolderMetadataName(nextName)) result.blockers.push({ code: "reserved-folder-name" });
   const nextKey = folderMetadataNameKey(nextName);
+  if (nextKey && PROTECTED_CANONICAL_FOLDER_NAME_KEYS.has(nextKey)) {
+    result.blockers.push({ code: "protected-canonical-folder-name" });
+  }
   if (nextKey && data.folders.some((folder) => folderMetadataNameKey(folder && (folder.name || folder.title)) === nextKey)) {
     result.blockers.push({ code: "same-name-conflict" });
   }
   if (requestedId && data.folders.some((folder) => String(folder && folder.id || "").trim() === requestedId)) {
     result.blockers.push({ code: "folder-id-conflict" });
+  }
+  if (expectedMode === "apply") {
+    const guardSourceHash = String(staleGuard.sourceHash || "").trim();
+    if (!guardSourceHash) {
+      result.blockers.push({ code: "stale-guard-required" });
+    } else if (guardSourceHash !== sourceHash) {
+      result.blockers.push({ code: "stale-source-hash" });
+    }
   }
 
   result.folderId = requestedId;
@@ -4529,15 +4631,156 @@ async function previewCreateFolderMetadataOperationInBackground(request) {
     membershipCount: 0,
     sourceHash,
   };
+  result.staleGuard = {
+    sourceHash,
+    previewHash: result.before.previewHash,
+  };
+  return { req, operation, result, data, nextName, requestedId, sourceHash };
+}
+
+async function previewCreateFolderMetadataOperationInBackground(request) {
+  const ctx = await createFolderMetadataOperationContextInBackground(request, "preview");
+  const result = ctx.result;
+  result.previewSource = "native-owner-background-storage-fallback";
   result.proposed = {
     create: true,
-    folderName: nextName,
-    requestedFolderId: requestedId || null,
+    folderName: ctx.nextName,
+    requestedFolderId: ctx.requestedId || null,
     createEmptyItemBucket: true,
     membershipCount: 0,
   };
   result.ok = result.blockers.length === 0;
   result.canApply = result.ok;
+  return result;
+}
+
+function makeChromeUserCreatedFolderRow(name, folderId, now) {
+  const source = "chrome-user-folder-create";
+  return {
+    id: folderId,
+    folderId,
+    name,
+    kind: "local",
+    source,
+    sourceKind: source,
+    sourceSurface: "chrome-studio",
+    userCreated: true,
+    materializedUserFolder: true,
+    trustedFolderDisplay: true,
+    shownInNormalMode: true,
+    parentId: "",
+    sortOrder: 0,
+    createdAt: now,
+    updatedAt: now,
+    meta: {
+      source,
+      sourceKind: source,
+      sourceSurface: "chrome-studio",
+      userCreated: true,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+      createdBy: "chrome-studio",
+      updatedAt: now,
+    },
+  };
+}
+
+async function forwardBackgroundFolderStateToStudioLauncher(folderState, sourceLabel) {
+  if (!chrome.runtime || typeof chrome.runtime.sendMessage !== "function") {
+    return { ok: false, status: "chrome-runtime-sendMessage-unavailable" };
+  }
+  const ownId = String(chrome.runtime.id || "");
+  if (!STUDIO_LAUNCHER_EXTENSION_ID || ownId === STUDIO_LAUNCHER_EXTENSION_ID) {
+    return { ok: false, status: "studio-launcher-target-unavailable" };
+  }
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(STUDIO_LAUNCHER_EXTENSION_ID, {
+        type: MSG_NATIVE_FOLDER_STATE,
+        key: FOLDER_STATE_DATA_KEY,
+        source: "native-owner-background-folder-metadata-apply-fallback",
+        sourceExtensionId: ownId,
+        sourceLabel: String(sourceLabel || "folder-create-apply-background-fallback"),
+        ts: Date.now(),
+        folderState,
+      }, (resp) => {
+        const le = chrome.runtime && chrome.runtime.lastError;
+        if (le) {
+          resolve({ ok: false, status: "send-failed", error: classifyDirectRelayError(String(le.message || le)) });
+          return;
+        }
+        resolve(resp && typeof resp === "object" ? {
+          ok: resp.ok !== false,
+          status: String(resp.status || (resp.ok === false ? "failed" : "ok")),
+          mergedFolderCount: Number(resp.mergedFolderCount || resp.afterFolderCount || 0) || 0,
+        } : { ok: false, status: "no-response" });
+      });
+    } catch (e) {
+      resolve({ ok: false, status: "send-threw", error: String(e && (e.message || e) || "send-threw").slice(0, 160) });
+    }
+  });
+}
+
+async function applyCreateFolderMetadataOperationInBackground(request) {
+  const ctx = await createFolderMetadataOperationContextInBackground(request, "apply");
+  const result = ctx.result;
+  result.applySource = "native-owner-background-storage-fallback";
+  result.readOnly = false;
+  result.noMutation = true;
+  if (result.blockers.length) {
+    result.ok = false;
+    result.readOnly = true;
+    result.noMutation = true;
+    return result;
+  }
+  const now = nowIso();
+  const existingIds = new Set(ctx.data.folders.map((folder) => String(folder && folder.id || "").trim()).filter(Boolean));
+  const folderId = ctx.requestedId || makeChromeUserFolderId(ctx.nextName, existingIds);
+  const folder = makeChromeUserCreatedFolderRow(ctx.nextName, folderId, now);
+  const folders = mergeFolderCatalogLists(ctx.data.folders, [folder]);
+  const items = normalizeFolderStateItems(ctx.data.items);
+  if (!Array.isArray(items[folderId])) items[folderId] = [];
+  const nextState = {
+    ...ctx.data,
+    schemaVersion: ctx.data.schemaVersion || 1,
+    source: "native-owner-background-folder-metadata-apply-fallback",
+    sourceKind: "chrome-user-folder-create",
+    sourceSurface: "chrome-studio",
+    folders,
+    items,
+    updatedAt: now,
+  };
+  nextState.checksum = checksumFolderState({ folders: nextState.folders, items: nextState.items });
+  result.folderId = folderId;
+  result.after = {
+    ...folder,
+    sourceHash: checksumFolderState({ folders, items }),
+  };
+  result.applied = true;
+  result.noMutation = false;
+  result.readOnly = false;
+  result.ok = true;
+  result.canApply = false;
+  result.writesPerformed = 1;
+  await storageSet({
+    [FOLDER_STATE_DATA_KEY]: nextState,
+    [NATIVE_BROADCAST_KEY]: {
+      ts: Date.now(),
+      surface: "native",
+      source: "native-owner-background-folder-metadata-apply-fallback",
+      sourceExtensionId: String(chrome.runtime && chrome.runtime.id || ""),
+      reasons: ["folder-create-apply-background-fallback"],
+      folderState: nextState,
+      folderMetadataOperationResults: [result],
+    },
+  });
+  const forward = await forwardBackgroundFolderStateToStudioLauncher(nextState, "folder-create-apply-background-fallback");
+  result.folderStateForwardedToStudio = forward.ok === true;
+  result.folderStateForwardStatus = String(forward.status || "");
+  if (!forward.ok) {
+    result.warnings.push({ code: "studio-folder-state-forward-failed", status: String(forward.status || "failed") });
+  }
   return result;
 }
 
@@ -4548,7 +4791,7 @@ function classifyDirectRelayError(error) {
   return text.replace(new RegExp("chrome-extension://[a-z]+", "gi"), "chrome-extension://<redacted>").slice(0, 160);
 }
 
-async function backgroundPreviewFolderMetadataOperationFallback(value, directRelay) {
+async function backgroundFolderMetadataOperationFallback(value, directRelay) {
   const requests = folderMetadataOperationRequestsFromStudioBroadcast(value);
   if (!requests.length) return { results: [], status: "no-folder-metadata-requests" };
   const directResults = Array.isArray(directRelay && directRelay.folderMetadataOperationResults)
@@ -4561,18 +4804,24 @@ async function backgroundPreviewFolderMetadataOperationFallback(value, directRel
     if (!requestId || handled.has(requestId)) continue;
     const mode = String(request && request.requestMode || "").trim();
     const operationType = String(request && request.operation && request.operation.operationType || "").trim();
-    if (mode !== "preview" || operationType !== "create-folder") continue;
+    if ((mode !== "preview" && mode !== "apply") || operationType !== "create-folder") continue;
     try {
-      results.push(await previewCreateFolderMetadataOperationInBackground(request));
+      results.push(mode === "apply"
+        ? await applyCreateFolderMetadataOperationInBackground(request)
+        : await previewCreateFolderMetadataOperationInBackground(request));
     } catch (e) {
-      const failed = folderMetadataResultBase(request, "native-owner-background-preview-error");
-      failed.error = String(e && (e.message || e) || "native-owner-background-preview-error").slice(0, 160);
+      const failed = folderMetadataResultBase(request, mode === "apply" ? "native-owner-background-apply-error" : "native-owner-background-preview-error");
+      failed.error = String(e && (e.message || e) || "native-owner-background-folder-metadata-error").slice(0, 160);
       results.push(failed);
     }
   }
+  const previewCount = results.filter((result) => String(result && result.requestMode || "") === "preview").length;
+  const applyCount = results.filter((result) => String(result && result.requestMode || "") === "apply").length;
   return {
     results,
-    status: results.length ? "background-preview-fallback" : "unsupported-background-preview-fallback",
+    status: applyCount ? "background-apply-fallback" : (previewCount ? "background-preview-fallback" : "unsupported-background-folder-metadata-fallback"),
+    previewCount,
+    applyCount,
   };
 }
 
