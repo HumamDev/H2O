@@ -238,7 +238,7 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.87') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.88') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
       sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85') &&
@@ -416,6 +416,8 @@ const checks = [
       sources.libraryWorkspace.includes('function markProtectedCanonicalFallbackFolder(row, index = 0, reason =') &&
       sources.libraryWorkspace.includes('function protectedCanonicalFallbackRawShape(row, rejectionReason =') &&
       sources.libraryWorkspace.includes('function normalizeProtectedCanonicalFallbackRow(row, index = 0, reason =') &&
+      sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackNormalizationResults(reason =') &&
+      sources.libraryWorkspace.includes("const knownCanonicalFallbackPipeline = buildProtectedCanonicalFallbackNormalizationResults('known-current-canonical-fallback')") &&
       sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {})') &&
       sources.libraryWorkspace.includes('knownFallbackRawCount') &&
       sources.libraryWorkspace.includes('knownFallbackNormalizedCount') &&
@@ -425,6 +427,8 @@ const checks = [
       sources.libraryWorkspace.includes('knownFallbackRawShapes') &&
       sources.libraryWorkspace.includes('knownFallbackRejectedRows') &&
       sources.libraryWorkspace.includes('knownFallbackRejectionReasons') &&
+      sources.libraryWorkspace.includes('const fallbackReportUsed = !!displayModelFallbackReport') &&
+      sources.libraryWorkspace.includes('const knownFallbackRawCount = fallbackReportUsed') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
       sources.libraryWorkspace.includes("reason: 'get-display-model-empty-report'") &&
       sources.libraryWorkspace.includes('protectedCanonicalFallback: protectedFallbackRows') &&
@@ -450,7 +454,7 @@ const checks = [
       sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
       sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
       sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
-      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.87')") &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.88')") &&
       sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
       sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
       sources.sidebarSections.includes('function upgradeFolderParityProviderReference()') &&

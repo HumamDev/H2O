@@ -3652,7 +3652,7 @@
       diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       registrationSource: 'S0Z1g.Library Sidebar Sections',
-      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.87'),
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.88'),
       s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.85'),
     };
   }
