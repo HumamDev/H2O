@@ -400,6 +400,7 @@ const checks = [
       sources.libraryWorkspace.includes('folderParityScriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL)') &&
       sources.libraryWorkspace.includes('function registerFolderParityProvider(provider)') &&
       sources.libraryWorkspace.includes('previousProviderVersion') &&
+      sources.libraryWorkspace.includes('previousProviderVersion: previousVersion') &&
       sources.libraryWorkspace.includes('providerUpgradeApplied') &&
       sources.libraryWorkspace.includes('providerWasStale') &&
       sources.libraryWorkspace.includes('providerRegistrationError') &&
@@ -418,6 +419,7 @@ const checks = [
       sources.libraryWorkspace.includes('function normalizeProtectedCanonicalFallbackRow(row, index = 0, reason =') &&
       sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackNormalizationResults(reason =') &&
       sources.libraryWorkspace.includes("const knownCanonicalFallbackPipeline = buildProtectedCanonicalFallbackNormalizationResults('known-current-canonical-fallback')") &&
+      sources.libraryWorkspace.includes('const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));') &&
       sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {})') &&
       sources.libraryWorkspace.includes('knownFallbackRawCount') &&
       sources.libraryWorkspace.includes('knownFallbackNormalizedCount') &&

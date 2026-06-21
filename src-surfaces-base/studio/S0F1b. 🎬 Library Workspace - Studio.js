@@ -1875,7 +1875,7 @@
       applyFolderParityCanonicalShape(provider, {
         providerUpgradeApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerUpgradeApplied,
         providerReplacementApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerReplacementApplied,
-        previousProviderVersion,
+        previousProviderVersion: previousVersion,
         previousProviderKeys: previousKeys.slice(0, 32),
         providerWasStale,
         providerPreservedKeys: preserved.slice(0, 16),
@@ -1935,6 +1935,7 @@
     ));
     const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
+    const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
     const canonicalBindingCount = canonicalFromBroadcast
       ? countFolderStateBindings(mergedTrustedCanonical.items)
       : canonicalFromStoredMirror

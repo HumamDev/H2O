@@ -409,6 +409,7 @@ if (failures.length === 0) {
   assertContains(libraryWorkspaceFile, 'finalProviderVersion', 'FolderParity final provider version diagnostic');
   assertContains(libraryWorkspaceFile, 'finalProviderMarkerMissing', 'FolderParity final provider marker diagnostic');
   assertContains(libraryWorkspaceFile, 'previousProviderVersion', 'FolderParity previous provider version diagnostic');
+  assertContains(libraryWorkspaceFile, 'previousProviderVersion: previousVersion', 'FolderParity registration uses defined previous version variable');
   assertContains(libraryWorkspaceFile, 'providerWasStale', 'FolderParity stale provider diagnostic');
   assertContains(libraryWorkspaceFile, 'providerRegistrationError', 'FolderParity registration error diagnostic');
   assertContains(libraryWorkspaceFile, 'hasKnownCanonicalFallbackBuilder', 'FolderParity fallback builder marker');
@@ -420,6 +421,7 @@ if (failures.length === 0) {
   assertContains(libraryWorkspaceFile, 'function normalizeProtectedCanonicalFallbackRow(row, index = 0, reason =', 'FolderParity protected fallback normalization diagnostic');
   assertContains(libraryWorkspaceFile, 'function buildProtectedCanonicalFallbackNormalizationResults(reason =', 'FolderParity protected fallback normalization pipeline');
   assertContains(libraryWorkspaceFile, "const knownCanonicalFallbackPipeline = buildProtectedCanonicalFallbackNormalizationResults('known-current-canonical-fallback')", 'FolderParity display model fallback pipeline handoff');
+  assertContains(libraryWorkspaceFile, 'const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));', 'FolderParity diagnose path defines canonical names before hidden-local filtering');
   assertContains(libraryWorkspaceFile, 'function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {})', 'FolderParity fallback stage diagnostic builder');
   assertContains(libraryWorkspaceFile, 'knownFallbackNormalizedCount', 'FolderParity fallback normalized count diagnostic');
   assertContains(libraryWorkspaceFile, 'knownFallbackAfterFilterCount', 'FolderParity fallback after-filter count diagnostic');
