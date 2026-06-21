@@ -1167,9 +1167,42 @@
     };
   }
 
-  function evaluateDesktopChromeConvergence(sourceSummary, parity) {
+  function evaluateFolderMetadataConvergence(sourceSummary, importSummary) {
+    var source = safeObject(sourceSummary);
+    var summary = safeObject(importSummary);
+    var freshness = safeObject(summary.folderMetadataFreshness);
+    var expected = numberOrZero(source.folderMetadataCount || source.folderCount);
+    var incoming = numberOrZero(freshness.incoming);
+    var created = numberOrZero(freshness.created);
+    var refreshed = numberOrZero(freshness.refreshed);
+    var skippedStale = numberOrZero(freshness.skippedStale);
+    var satisfied = created + refreshed + skippedStale;
+    var storageTouched = numberOrZero(summary.chromeStorageWritten) > 0 || numberOrZero(summary.chromeStorageSkipped) > 0;
+    var ok = expected === 0 || (
+      summary.ok === true &&
+      incoming >= expected &&
+      satisfied >= expected &&
+      storageTouched
+    );
+    return {
+      ok: ok,
+      expected: expected,
+      incoming: incoming,
+      created: created,
+      refreshed: refreshed,
+      skippedStale: skippedStale,
+      satisfied: satisfied,
+      storageTouched: storageTouched,
+      source: cleanString(source.folderStateSource),
+      blocker: ok ? '' : 'desktop-to-chrome-folder-metadata-convergence-not-proven'
+    };
+  }
+
+  function evaluateDesktopChromeConvergence(sourceSummary, parity, importSummary) {
     var source = safeObject(sourceSummary);
     var counts = safeCounts(parity && parity.counts);
+    var folderMetadata = evaluateFolderMetadataConvergence(sourceSummary, importSummary);
+    var folderMetadataConvergenceApplies = folderMetadata.ok === true && folderMetadata.expected > 0;
     var expected = {
       total: numberOrZero(source.chatCount),
       saved: numberOrZero(source.savedCount),
@@ -1181,9 +1214,16 @@
       categories: numberOrZero(source.categoryCount)
     };
     var mismatches = [];
-    ['total', 'saved', 'linked', 'categories'].forEach(function (key) {
+    var nonBlockingMismatches = [];
+    var activeRowFields = ['total', 'saved', 'linked', 'pinned', 'archived'];
+    ['total', 'saved', 'linked'].forEach(function (key) {
       if (counts[key] !== expected[key]) {
-        mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
+        nonBlockingMismatches.push({ field: key, expected: expected[key], observed: counts[key], reason: 'active-row-parity-deferred' });
+      }
+    });
+    ['categories'].forEach(function (key) {
+      if (counts[key] !== expected[key]) {
+        nonBlockingMismatches.push({ field: key, expected: expected[key], observed: counts[key], reason: 'active-row-parity-deferred' });
       }
     });
     if (source.folderFacetConvergenceRequired === true && counts.folders !== expected.folders) {
@@ -1191,11 +1231,28 @@
     }
     ['pinned', 'archived'].forEach(function (key) {
       if (expected[key] > 0 && counts[key] < expected[key]) {
-        mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
+        nonBlockingMismatches.push({ field: key, expected: expected[key], observed: counts[key], reason: 'active-row-parity-deferred' });
       }
     });
+    if (!folderMetadata.ok && expected.folderMetadata > 0) {
+      mismatches.push({
+        field: 'folderMetadata',
+        expected: expected.folderMetadata,
+        observed: folderMetadata.satisfied,
+        incoming: folderMetadata.incoming,
+        reason: folderMetadata.blocker
+      });
+    }
     if (!parity || parity.snapshotCaptured !== true) {
       mismatches.push({ field: 'paritySnapshot', expected: true, observed: false });
+    }
+    if (!folderMetadataConvergenceApplies && nonBlockingMismatches.length > 0) {
+      for (var i = 0; i < nonBlockingMismatches.length; i += 1) {
+        var entry = Object.assign({}, nonBlockingMismatches[i]);
+        if (activeRowFields.indexOf(entry.field) !== -1) entry.reason = 'active-row-parity-required';
+        mismatches.push(entry);
+      }
+      nonBlockingMismatches = [];
     }
     return {
       ok: mismatches.length === 0,
@@ -1203,6 +1260,10 @@
       observed: counts,
       mismatchCount: mismatches.length,
       mismatches: mismatches,
+      nonBlockingMismatchCount: nonBlockingMismatches.length,
+      nonBlockingMismatches: nonBlockingMismatches,
+      activeRowConvergenceDeferred: folderMetadataConvergenceApplies && nonBlockingMismatches.length > 0,
+      folderMetadata: folderMetadata,
       blocker: mismatches.length ? 'desktop-to-chrome-convergence-not-proven' : ''
     };
   }
@@ -1238,6 +1299,8 @@
           code === DESKTOP_CHROME_DEFERRED_CODES.applyEvents;
       }),
       sourceSummary: f.sourceSummary || null,
+      folderMetadataCount: numberOrZero(f.sourceSummary && (f.sourceSummary.folderMetadataCount || f.sourceSummary.folderCount)),
+      folderStateSource: cleanString(f.sourceSummary && f.sourceSummary.folderStateSource),
       importSummary: f.importSummary || null,
       convergence: f.convergence || null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
@@ -1374,7 +1437,7 @@
     var blockers = [];
     var redactedErrors = importSummary.redactedErrorCategories;
     if (numberOrZero(importSummary.shellRowsFailed) > 0) addUnique(blockers, 'desktop-shell-row-import-unsupported');
-    var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity);
+    var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity, importSummary);
     if (!convergence.ok) addUnique(blockers, convergence.blocker);
     return propagationResult(blockers.length === 0, {
       status: 'imported',

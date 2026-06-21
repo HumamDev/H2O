@@ -131,10 +131,11 @@ function buildDesktopBundle() {
   };
 }
 
-function buildContext() {
+function buildContext(options = {}) {
   const archiveCalls = [];
   const refreshReasons = [];
   const registryRecords = new Map();
+  const parityCounts = options.parityCounts || { total: 3, saved: 1, linked: 1, pinned: 1, archived: 0, folders: 1, categories: 1 };
   const context = {
     console,
     TextEncoder,
@@ -250,7 +251,7 @@ function buildContext() {
       return {
         schema: 'h2o.studio.sync.library-parity-snapshot.v1',
         surface: 'chrome-studio',
-        counts: { total: 3, saved: 1, linked: 1, pinned: 1, archived: 0, folders: 1, categories: 1 },
+        counts: parityCounts,
         fingerprints: { chats: 'hash-only-fixture' }
       };
     }
@@ -330,6 +331,37 @@ async function runVmProof() {
   assert(approved.conflictApproval?.duplicateIdempotencyPreserved === true, 'approved merge must preserve duplicate idempotency');
   assert(approved.warnings.includes('library-propagation-simultaneous-conflict-approved'), 'approved merge warning missing');
 
+  const folderOnlyContext = buildContext({
+    parityCounts: { total: 17, saved: 7, linked: 10, pinned: 0, archived: 3, folders: 0, categories: 0 }
+  });
+  vm.runInContext(source, folderOnlyContext, { filename: folderImportFile });
+  const folderOnly = await folderOnlyContext.H2O.Studio.sync.folder.importLatestBundle(buildDesktopBundle(), {
+    fileFingerprint: 'sha256:test-folder-metadata-convergence',
+    conflictDecision: 'approve-merge'
+  });
+  assert(folderOnly.ok === true, 'folder metadata import should not be blocked by active row/facet parity mismatches');
+  assert(folderOnly.blockers.length === 0, 'folder metadata import should not emit convergence blockers');
+  assert(folderOnly.folderMetadataCount === 1, 'top-level folder metadata count missing');
+  assert(folderOnly.folderStateSource === 'chromeStorageLocal', 'top-level folder state source missing');
+  assert(folderOnly.convergence?.folderMetadata?.ok === true, 'folder metadata convergence lane should pass');
+  assert(folderOnly.convergence?.activeRowConvergenceDeferred === true, 'active row mismatch should be deferred after folder metadata convergence');
+  assert(Number(folderOnly.convergence?.nonBlockingMismatchCount || 0) > 0, 'non-blocking mismatch diagnostics should be present');
+  assert(!folderOnly.blockers.includes('desktop-to-chrome-convergence-not-proven'), 'folder metadata import should not keep the row convergence blocker');
+
+  const noFolderBundle = JSON.parse(JSON.stringify(buildDesktopBundle()));
+  delete noFolderBundle.chromeStorageLocal['h2o:prm:cgx:fldrs:state:data:v1'];
+  const noFolderContext = buildContext({
+    parityCounts: { total: 17, saved: 7, linked: 10, pinned: 0, archived: 3, folders: 0, categories: 0 }
+  });
+  vm.runInContext(source, noFolderContext, { filename: folderImportFile });
+  const noFolderResult = await noFolderContext.H2O.Studio.sync.folder.importLatestBundle(noFolderBundle, {
+    fileFingerprint: 'sha256:test-no-folder-metadata-convergence',
+    conflictDecision: 'approve-merge'
+  });
+  assert(noFolderResult.ok === false, 'row parity mismatches must still block when no folder metadata lane applies');
+  assert(noFolderResult.blockers.includes('desktop-to-chrome-convergence-not-proven'), 'no-folder import should keep the row convergence blocker');
+  assert(noFolderResult.convergence?.activeRowConvergenceDeferred === false, 'no-folder import must not defer active row convergence');
+
   const importCall = context.__archiveCalls.find((entry) => entry.message.req.op === 'importFullBundle');
   assert(importCall, 'importFullBundle was not called');
   const payload = importCall.message.req.payload;
@@ -391,6 +423,10 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'importDesktopBundlePayload', 'low-level bundle payload importer');
   assertContains(folderImportFile, 'folderMetadataCount', 'folder metadata source summary');
   assertContains(folderImportFile, 'folderFacetConvergenceRequired', 'folder metadata separated from active row facet convergence');
+  assertContains(folderImportFile, 'evaluateFolderMetadataConvergence', 'folder metadata convergence lane');
+  assertContains(folderImportFile, 'activeRowConvergenceDeferred', 'non-blocking active row mismatch diagnostics');
+  assertContains(folderImportFile, 'nonBlockingMismatches', 'redacted non-blocking mismatch diagnostics');
+  assertContains(folderImportFile, 'desktop-to-chrome-folder-metadata-convergence-not-proven', 'folder metadata convergence blocker');
   assertContains(folderImportFile, 'materializedUserFolder = true', 'Studio-created folder materialization stamping');
   assertContains(folderImportFile, 'dryRunImportFullBundle', 'dry run archive API');
   assertContains(folderImportFile, 'importFullBundle', 'import archive API');
