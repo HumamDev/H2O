@@ -151,7 +151,7 @@
   }
 
   function folderIdOf(row) {
-    return String(row?.id || row?.folderId || '').trim();
+    return String(row?.folderId || row?.folder_id || row?.folderKey || row?.key || row?.id || '').trim();
   }
 
   function folderDiagnosticHash(value) {
@@ -175,7 +175,31 @@
 
   function folderNameOf(row) {
     const id = folderIdOf(row);
-    return String(row?.name || row?.title || row?.label || id).trim() || id;
+    return String(row?.name || row?.title || row?.label || row?.displayName || row?.folderName || row?.folder_name || id).trim() || id;
+  }
+
+  function protectedCanonicalFallbackRawShape(row, rejectionReason = '') {
+    const src = row && typeof row === 'object' ? row : {};
+    const keys = Object.keys(src).map((key) => String(key || '').trim()).filter(Boolean).sort().slice(0, 32);
+    return {
+      keys,
+      idHash: folderDiagnosticHash(folderIdOf(src)),
+      nameHash: folderDiagnosticHash(folderNameOf(src)),
+      hasId: !!String(src.id || '').trim(),
+      hasFolderId: !!String(src.folderId || '').trim(),
+      hasFolderIdSnake: !!String(src.folder_id || '').trim(),
+      hasKey: !!String(src.key || '').trim(),
+      hasFolderKey: !!String(src.folderKey || '').trim(),
+      hasName: !!String(src.name || '').trim(),
+      hasTitle: !!String(src.title || '').trim(),
+      hasLabel: !!String(src.label || '').trim(),
+      hasColor: !!String(src.color || src.iconColor || src.folderColor || src.accentColor || '').trim(),
+      hasSourceKind: !!String(src.sourceKind || src.kind || '').trim(),
+      trustedFolderDisplay: src.trustedFolderDisplay === true || folderMetaOf(src).trustedFolderDisplay === true,
+      protectedCanonicalFallback: src.protectedCanonicalFallback === true || folderMetaOf(src).protectedCanonicalFallback === true,
+      shownInNormalMode: src.shownInNormalMode === true || folderMetaOf(src).shownInNormalMode === true,
+      rejectionReason: String(rejectionReason || '').trim(),
+    };
   }
 
   function finiteNumberFrom(values, fallback = null) {
@@ -1628,18 +1652,39 @@
     const reasons = [];
     if (!rawRows.length) reasons.push('known-canonical-fallback-raw-empty');
     if (rawRows.length && !normalizedRows.length) reasons.push('known-canonical-fallback-normalized-empty');
+    if (normalizedRows.length && rawRows.length && normalizedRows.length < rawRows.length) reasons.push('known-canonical-fallback-partial-normalization');
     if (normalizedRows.length && !finalRows.length) reasons.push('known-canonical-fallback-filtered-empty');
     return reasons;
+  }
+
+  function normalizeProtectedCanonicalFallbackRow(row, index = 0, reason = 'known-canonical-display-fallback') {
+    const raw = markProtectedCanonicalFallbackFolder(row, index, reason);
+    const normalized = normalizeFolderRow(raw, index, reason);
+    let rejectionReason = '';
+    if (!normalized) {
+      rejectionReason = !folderIdOf(raw)
+        ? 'missing-folder-id'
+        : !folderNameOf(raw)
+          ? 'missing-folder-name'
+          : 'normalizer-returned-null';
+    }
+    return {
+      raw,
+      row: normalized ? markProtectedCanonicalFallbackFolder(normalized, index, reason) : null,
+      rejectionReason,
+      rawShape: protectedCanonicalFallbackRawShape(raw, rejectionReason),
+    };
   }
 
   function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const reason = String(opts.reason || 'known-canonical-display-fallback').trim() || 'known-canonical-display-fallback';
     const rawRows = KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder, index) => markProtectedCanonicalFallbackFolder(folder, index, reason));
-    const fallbackFolders = rawRows
-      .map((folder, index) => normalizeFolderRow(folder, index, reason))
+    const normalizedResults = rawRows.map((folder, index) => normalizeProtectedCanonicalFallbackRow(folder, index, reason));
+    const rejectedRows = normalizedResults.filter((result) => !result.row);
+    const fallbackFolders = normalizedResults
+      .map((result) => result.row)
       .filter(Boolean)
-      .map((folder, index) => markProtectedCanonicalFallbackFolder(folder, index, reason))
       .map((folder) => markProtectedCanonicalFallbackFolder(decorateCanonicalFolderColorSources(folder, new Map(), new Map()), folder.index, reason));
     const rows = buildFolderDisplayRows({
       canonicalFolders: fallbackFolders,
@@ -1661,6 +1706,9 @@
       knownFallbackAfterFilterCount: finalRows.length,
       knownFallbackFinalDisplayCount: finalRows.length,
       knownFallbackDropReasons,
+      knownFallbackRawShapes: rawRows.map((row) => protectedCanonicalFallbackRawShape(row)),
+      knownFallbackRejectedRows: rejectedRows.map((result) => result.rawShape),
+      knownFallbackRejectionReasons: Array.from(new Set(rejectedRows.map((result) => result.rejectionReason).filter(Boolean))),
     };
   }
 
@@ -1675,6 +1723,9 @@
         knownFallbackAfterFilterCount: Number(result.knownFallbackAfterFilterCount || 0) || 0,
         knownFallbackFinalDisplayCount: Number(result.knownFallbackFinalDisplayCount || 0) || 0,
         knownFallbackDropReasons: Array.isArray(result.knownFallbackDropReasons) ? result.knownFallbackDropReasons : [],
+        knownFallbackRawShapes: Array.isArray(result.knownFallbackRawShapes) ? result.knownFallbackRawShapes : [],
+        knownFallbackRejectedRows: Array.isArray(result.knownFallbackRejectedRows) ? result.knownFallbackRejectedRows : [],
+        knownFallbackRejectionReasons: Array.isArray(result.knownFallbackRejectionReasons) ? result.knownFallbackRejectionReasons : [],
       };
     } catch (e) {
       err('folderParity.protectedCanonicalFallback', e);
@@ -1686,6 +1737,9 @@
         knownFallbackAfterFilterCount: 0,
         knownFallbackFinalDisplayCount: 0,
         knownFallbackDropReasons: ['known-canonical-fallback-builder-error'],
+        knownFallbackRawShapes: KNOWN_NATIVE_CANONICAL_FOLDERS.map((row) => protectedCanonicalFallbackRawShape(row, 'builder-error')),
+        knownFallbackRejectedRows: [],
+        knownFallbackRejectionReasons: ['builder-error'],
       };
     }
   }
@@ -1968,6 +2022,9 @@
     let knownFallbackAfterFilterCount = rawFolderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true).length;
     let knownFallbackFinalDisplayCount = knownFallbackAfterFilterCount;
     let knownFallbackDropReasons = protectedCanonicalFallbackDropReasons(KNOWN_NATIVE_CANONICAL_FOLDERS, fallbackCanonical.rows, rawFolderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true));
+    let knownFallbackRawShapes = KNOWN_NATIVE_CANONICAL_FOLDERS.map((row) => protectedCanonicalFallbackRawShape(row));
+    let knownFallbackRejectedRows = [];
+    let knownFallbackRejectionReasons = [];
     let protectedFallbackRows = !mergedTrustedCanonical.folders.length
       ? rawFolderDisplayRows.filter((row) => row && row.isCanonical)
       : [];
@@ -1985,6 +2042,9 @@
       knownFallbackAfterFilterCount = Number(built.knownFallbackAfterFilterCount || 0) || 0;
       knownFallbackFinalDisplayCount = Number(built.knownFallbackFinalDisplayCount || 0) || 0;
       knownFallbackDropReasons = Array.isArray(built.knownFallbackDropReasons) ? built.knownFallbackDropReasons : [];
+      knownFallbackRawShapes = Array.isArray(built.knownFallbackRawShapes) ? built.knownFallbackRawShapes : [];
+      knownFallbackRejectedRows = Array.isArray(built.knownFallbackRejectedRows) ? built.knownFallbackRejectedRows : [];
+      knownFallbackRejectionReasons = Array.isArray(built.knownFallbackRejectionReasons) ? built.knownFallbackRejectionReasons : [];
       if (protectedFallbackRows.length) protectedCanonicalFallbackSource = 'known-current-canonical-fallback-empty-model';
       if (fallbackBuilderError) warnings.push('Protected canonical fallback builder failed: ' + fallbackBuilderError);
     }
@@ -2045,6 +2105,9 @@
         knownFallbackAfterFilterCount,
         knownFallbackFinalDisplayCount,
         knownFallbackDropReasons,
+        knownFallbackRawShapes,
+        knownFallbackRejectedRows,
+        knownFallbackRejectionReasons,
       }),
       readOnly: true,
       surface,
@@ -2064,6 +2127,9 @@
       knownFallbackAfterFilterCount,
       knownFallbackFinalDisplayCount,
       knownFallbackDropReasons,
+      knownFallbackRawShapes,
+      knownFallbackRejectedRows,
+      knownFallbackRejectionReasons,
       storedModelAvailable: storedState.folders.length > 0,
       nativeBroadcastAvailable: nativeState.folders.length > 0,
       nativeBroadcastRequired: !displayModelAvailable,
@@ -2389,6 +2455,9 @@
       const knownFallbackAfterFilterCount = Number(report?.knownFallbackAfterFilterCount || protectedCanonicalFallbackCount || 0) || 0;
       const knownFallbackFinalDisplayCount = Number(report?.knownFallbackFinalDisplayCount || canonicalRows.filter((row) => row && row.protectedCanonicalFallback === true).length || 0) || 0;
       const knownFallbackDropReasons = Array.isArray(report?.knownFallbackDropReasons) ? report.knownFallbackDropReasons.slice() : [];
+      const knownFallbackRawShapes = Array.isArray(report?.knownFallbackRawShapes) ? report.knownFallbackRawShapes.slice(0, 12) : [];
+      const knownFallbackRejectedRows = Array.isArray(report?.knownFallbackRejectedRows) ? report.knownFallbackRejectedRows.slice(0, 12) : [];
+      const knownFallbackRejectionReasons = Array.isArray(report?.knownFallbackRejectionReasons) ? report.knownFallbackRejectionReasons.slice(0, 12) : [];
       return {
         ...folderParityRuntimeMarkers({
           protectedCanonicalFallbackCount,
@@ -2399,6 +2468,9 @@
           knownFallbackAfterFilterCount,
           knownFallbackFinalDisplayCount,
           knownFallbackDropReasons,
+          knownFallbackRawShapes,
+          knownFallbackRejectedRows,
+          knownFallbackRejectionReasons,
         }),
         readOnly: true,
         surface: report.surface,
@@ -2415,6 +2487,9 @@
         knownFallbackAfterFilterCount,
         knownFallbackFinalDisplayCount,
         knownFallbackDropReasons,
+        knownFallbackRawShapes,
+        knownFallbackRejectedRows,
+        knownFallbackRejectionReasons,
         storedModelAvailable: report?.storedModelAvailable === true,
         nativeBroadcastAvailable: report?.nativeBroadcastAvailable === true,
         nativeBroadcastRequired: !displayModelAvailable && report?.nativeBroadcastRequired === true,
