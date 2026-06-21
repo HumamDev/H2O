@@ -3652,8 +3652,8 @@
       diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       registrationSource: 'S0Z1g.Library Sidebar Sections',
-      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.84'),
-      s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.84'),
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.85'),
+      s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.85'),
     };
   }
 
@@ -3678,7 +3678,15 @@
 
   function candidateFolderParityProviders() {
     const out = [];
+    let s0f1bProvider = null;
+    try {
+      s0f1bProvider = typeof H2O.Library?.getFolderParityS0F1bProvider === 'function'
+        ? H2O.Library.getFolderParityS0F1bProvider()
+        : null;
+    } catch {}
     [
+      s0f1bProvider,
+      H2O.Library?.FolderParityS0F1bProvider,
       H2O.Library?.FolderParity,
       H2O.LibraryWorkspace?.folderParity,
       H2O.Library?.Workspace?.folderParity,
@@ -3707,13 +3715,17 @@
     const providerWasStale = !!current && folderParityProviderStale(current);
     const candidate = candidateFolderParityProviders().find(folderParityProviderCurrent) || null;
     let providerUpgradeApplied = false;
+    let providerReplacementApplied = false;
     let providerRegistrationError = '';
+    const providerMergeDirection = 's0f1b-provider-wins-preserve-sidebar-diagnostic-only';
+    const staleFieldsPreserved = false;
     let provider = current || candidate;
     try {
-      if ((!current || providerWasStale) && candidate && candidate !== current) {
+      if ((!current || providerWasStale) && candidate) {
         H2O.Library.FolderParity = candidate;
         provider = candidate;
         providerUpgradeApplied = true;
+        providerReplacementApplied = true;
       }
       preserveSidebarDiagnosticOnProvider(provider);
     } catch (e) {
@@ -3722,10 +3734,13 @@
     return {
       provider,
       providerUpgradeApplied,
+      providerReplacementApplied,
       previousProviderVersion,
       previousProviderKeys: previousProviderKeys.slice(0, 32),
       providerWasStale,
       providerRegistrationError,
+      providerMergeDirection,
+      staleFieldsPreserved,
     };
   }
 
@@ -3884,7 +3899,13 @@
     const capabilities = folderActionCapabilitySummary(firstCanonical);
     const modelHasCanonicalFolders = canonicalRows.length > 0;
     const assetDiagnostics = folderParityScriptAssetDiagnostics();
-    const providerVersion = String(model?.folderParityVersion || model?.version || '');
+    const finalProvider = H2O.Library?.FolderParity && typeof H2O.Library.FolderParity === 'object'
+      ? H2O.Library.FolderParity
+      : null;
+    const finalProviderVersion = folderParityProviderVersion(finalProvider);
+    const finalProviderKeys = folderParityProviderKeys(finalProvider).slice(0, 32);
+    const finalProviderMarkerMissing = !folderParityProviderCurrent(finalProvider);
+    const providerVersion = String(model?.folderParityVersion || finalProvider?.folderParityVersion || model?.version || finalProvider?.version || '');
     const providerMarkerMissing = !providerVersion;
     return {
       ok: modelHasCanonicalFolders
@@ -3895,21 +3916,27 @@
       operatorModeEnabled: folderOperatorModeEnabled(),
       localReviewVisible: folderLocalReviewUiEnabled(),
       folderParityVersion: providerVersion,
-      s0f1bLoadedVersion: String(model?.s0f1bLoadedVersion || ''),
+      s0f1bLoadedVersion: String(model?.s0f1bLoadedVersion || finalProvider?.s0f1bLoadedVersion || ''),
       diagnoseSidebarVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       diagnoseSidebarRegisteredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       diagnoseSidebarRegistrationSource: 'S0Z1g.Library Sidebar Sections',
-      folderParityScriptUrl: String(model?.scriptUrl || model?.folderParityScriptUrl || ''),
+      folderParityScriptUrl: String(model?.scriptUrl || model?.folderParityScriptUrl || finalProvider?.folderParityScriptUrl || ''),
       folderParityProviderMarkerMissing: providerMarkerMissing,
-      folderParityProviderStale: providerMarkerMissing || model?.hasKnownCanonicalFallbackBuilder !== true,
+      folderParityProviderStale: finalProviderMarkerMissing || providerMarkerMissing || (model?.hasKnownCanonicalFallbackBuilder !== true && finalProvider?.hasKnownCanonicalFallbackBuilder !== true),
       providerUpgradeApplied: providerUpgrade.providerUpgradeApplied === true || model?.providerUpgradeApplied === true,
+      providerReplacementApplied: providerUpgrade.providerReplacementApplied === true || model?.providerReplacementApplied === true,
+      providerMergeDirection: String(model?.providerMergeDirection || providerUpgrade.providerMergeDirection || ''),
+      staleFieldsPreserved: providerUpgrade.staleFieldsPreserved === true || model?.staleFieldsPreserved === true,
       previousProviderVersion: String(model?.previousProviderVersion || providerUpgrade.previousProviderVersion || ''),
       previousProviderKeys: Array.isArray(model?.previousProviderKeys) && model.previousProviderKeys.length
         ? model.previousProviderKeys.slice(0, 32)
         : providerUpgrade.previousProviderKeys,
       providerWasStale: providerUpgrade.providerWasStale === true || model?.providerWasStale === true,
       providerRegistrationError: String(model?.providerRegistrationError || providerUpgrade.providerRegistrationError || ''),
-      folderParityProviderKeys: folderParityProviderKeys(H2O.Library?.FolderParity).slice(0, 24),
+      finalProviderVersion,
+      finalProviderKeys,
+      finalProviderMarkerMissing,
+      folderParityProviderKeys: finalProviderKeys.slice(0, 24),
       folderParityScriptAssets: assetDiagnostics,
       s0f1bScriptTagPresent: assetDiagnostics.s0f1b.present,
       s0f1bScriptTagSrc: assetDiagnostics.s0f1b.src,
@@ -3921,8 +3948,8 @@
       s0z1gScriptTagVersion: assetDiagnostics.s0z1g.version,
       s0z1gScriptTagExpectedVersion: assetDiagnostics.s0z1g.expectedVersion,
       s0z1gScriptTagVersionMatchesExpected: assetDiagnostics.s0z1g.versionMatchesExpected,
-      hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true,
-      knownCanonicalFallbackRawCount: Number(model?.knownCanonicalFallbackRawCount || 0) || 0,
+      hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true || finalProvider?.hasKnownCanonicalFallbackBuilder === true,
+      knownCanonicalFallbackRawCount: Number(model?.knownCanonicalFallbackRawCount || finalProvider?.knownCanonicalFallbackRawCount || 0) || 0,
       folderCatalogReady: model?.folderCatalogReady === true,
       displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0,
       fallbackModelUsed: model?.fallbackModelUsed === true || model?.fallbackUsed === true,

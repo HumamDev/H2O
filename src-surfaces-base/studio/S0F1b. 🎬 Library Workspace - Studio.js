@@ -39,6 +39,12 @@
     providerRegisteredAt: '',
     providerPreservedKeys: [],
     providerRegistrationError: '',
+    providerReplacementApplied: false,
+    providerMergeDirection: 'preserve-safe-external-then-s0f1b-provider-wins',
+    staleFieldsPreserved: false,
+    finalProviderVersion: '',
+    finalProviderKeys: [],
+    finalProviderMarkerMissing: true,
   };
   try {
     H2O.Library.FolderParityS0F1bLoadMarker = {
@@ -1611,6 +1617,12 @@
       providerRegisteredAt: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegisteredAt,
       providerPreservedKeys: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerPreservedKeys.slice(0, 16),
       providerRegistrationError: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError,
+      providerReplacementApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerReplacementApplied === true,
+      providerMergeDirection: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerMergeDirection,
+      staleFieldsPreserved: false,
+      finalProviderVersion: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderVersion,
+      finalProviderKeys: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderKeys.slice(0, 32),
+      finalProviderMarkerMissing: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderMarkerMissing === true,
       ...extra,
     };
   }
@@ -1646,6 +1658,41 @@
     return preserved;
   }
 
+  function applyFolderParityCanonicalShape(target, extra = {}) {
+    if (!target || typeof target !== 'object') return target;
+    Object.assign(target, {
+      surface: 'studio',
+      version: FOLDER_PARITY_RUNTIME_VERSION,
+      folderParityVersion: FOLDER_PARITY_RUNTIME_VERSION,
+      s0f1bLoadedVersion: FOLDER_PARITY_RUNTIME_VERSION,
+      registeredAt: FOLDER_PARITY_RUNTIME_LOADED_AT,
+      registrationSource: FOLDER_PARITY_REGISTRATION_SOURCE,
+      folderParityScriptUrl: redactFolderParityScriptUrl(FOLDER_PARITY_SCRIPT_URL),
+      hasKnownCanonicalFallbackBuilder: typeof buildProtectedCanonicalFallbackDisplayRows === 'function',
+      knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length,
+      runtimeMarkers: folderParityRuntimeMarkers,
+      getRuntimeMarkers: folderParityRuntimeMarkers,
+      diagnose: diagnoseFolderParity,
+      selfCheck: selfCheckFolderParity,
+      formatCanonicalCountLabel,
+      getDisplayModel: FolderParity.getDisplayModel,
+    }, folderParityRuntimeMarkers(extra));
+    return target;
+  }
+
+  function recordFinalFolderParityProvider(provider) {
+    const version = folderParityProviderVersion(provider);
+    const keys = folderParityProviderKeys(provider);
+    FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderVersion = version;
+    FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderKeys = keys.slice(0, 32);
+    FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderMarkerMissing = !folderParityProviderIsCurrent(provider);
+    return {
+      finalProviderVersion: version,
+      finalProviderKeys: keys.slice(0, 32),
+      finalProviderMarkerMissing: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.finalProviderMarkerMissing,
+    };
+  }
+
   function registerFolderParityProvider(provider) {
     const previous = H2O.Library?.FolderParity && typeof H2O.Library.FolderParity === 'object'
       ? H2O.Library.FolderParity
@@ -1662,18 +1709,25 @@
       FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegisteredAt = new Date().toISOString();
       FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerPreservedKeys = preserved.slice(0, 16);
       FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError = '';
-      Object.assign(provider, folderParityRuntimeMarkers({
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerReplacementApplied = !previous || providerWasStale || previous !== provider;
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerMergeDirection = 'preserve-safe-external-then-s0f1b-provider-wins';
+      FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.staleFieldsPreserved = false;
+      applyFolderParityCanonicalShape(provider, {
         providerUpgradeApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerUpgradeApplied,
+        providerReplacementApplied: FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerReplacementApplied,
         previousProviderVersion,
         previousProviderKeys: previousKeys.slice(0, 32),
         providerWasStale,
         providerPreservedKeys: preserved.slice(0, 16),
-      }));
+      });
       H2O.Library.FolderParity = provider;
+      recordFinalFolderParityProvider(provider);
+      applyFolderParityCanonicalShape(provider, recordFinalFolderParityProvider(provider));
       return provider;
     } catch (e) {
       FOLDER_PARITY_PROVIDER_REGISTRATION_STATE.providerRegistrationError = String(e?.message || e || 'folder parity provider registration failed');
-      H2O.Library.FolderParity = provider;
+      H2O.Library.FolderParity = applyFolderParityCanonicalShape(provider);
+      recordFinalFolderParityProvider(provider);
       return provider;
     }
   }
@@ -2174,6 +2228,12 @@
     previousProviderKeys: [],
     providerWasStale: false,
     providerRegistrationError: '',
+    providerReplacementApplied: false,
+    providerMergeDirection: 'preserve-safe-external-then-s0f1b-provider-wins',
+    staleFieldsPreserved: false,
+    finalProviderVersion: '',
+    finalProviderKeys: [],
+    finalProviderMarkerMissing: true,
     runtimeMarkers: folderParityRuntimeMarkers,
     getRuntimeMarkers: folderParityRuntimeMarkers,
     diagnose: diagnoseFolderParity,
@@ -2354,6 +2414,18 @@
   Workspace.folderParity = registeredFolderParity;
   H2O.LibraryWorkspace = Workspace;
   H2O.Library.Workspace = Workspace;
+  H2O.Library.FolderParityS0F1bProvider = registeredFolderParity;
+  H2O.Library.getFolderParityS0F1bProvider = () => {
+    applyFolderParityCanonicalShape(registeredFolderParity, {
+      providerReplacementApplied: true,
+      providerMergeDirection: 's0f1b-canonical-provider-getter-rehydrate',
+      staleFieldsPreserved: false,
+    });
+    H2O.Library.FolderParityS0F1bProvider = registeredFolderParity;
+    recordFinalFolderParityProvider(registeredFolderParity);
+    applyFolderParityCanonicalShape(registeredFolderParity, recordFinalFolderParityProvider(registeredFolderParity));
+    return registeredFolderParity;
+  };
   H2O.Library.FolderParity = registeredFolderParity;
 
   // Register on Library Core

@@ -389,18 +389,25 @@ if (failures.length === 0) {
   assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
   assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.84', 'Library workspace cache bust');
+  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.85', 'Library workspace cache bust');
   assertContainsAny(htmlFile, [
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74',
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75'
   ], 'Library sidebar tab cache bust');
-  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.84', 'Library sidebar sections cache bust');
+  assertContains(htmlFile, './S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85', 'Library sidebar sections cache bust');
   assertContains(htmlFile, './studio.js?v=2.5.77', 'Studio shell cache bust');
   assertContains(libraryWorkspaceFile, 'folderParityVersion', 'FolderParity runtime marker');
   assertContains(libraryWorkspaceFile, "const FOLDER_PARITY_REGISTRATION_SOURCE = 'S0F1b.Library Workspace';", 'FolderParity registration source marker');
   assertContains(libraryWorkspaceFile, 'folderParityScriptUrl', 'FolderParity script URL marker');
   assertContains(libraryWorkspaceFile, 'function registerFolderParityProvider(provider)', 'FolderParity provider registration policy');
+  assertContains(libraryWorkspaceFile, 'function applyFolderParityCanonicalShape(target, extra = {})', 'FolderParity canonical provider shape policy');
+  assertContains(libraryWorkspaceFile, 'H2O.Library.getFolderParityS0F1bProvider = () =>', 'FolderParity S0F1b rehydrating provider getter');
   assertContains(libraryWorkspaceFile, 'providerUpgradeApplied', 'FolderParity provider upgrade diagnostic');
+  assertContains(libraryWorkspaceFile, 'providerReplacementApplied', 'FolderParity provider replacement diagnostic');
+  assertContains(libraryWorkspaceFile, 'providerMergeDirection', 'FolderParity provider merge direction diagnostic');
+  assertContains(libraryWorkspaceFile, 'staleFieldsPreserved', 'FolderParity stale-field preservation diagnostic');
+  assertContains(libraryWorkspaceFile, 'finalProviderVersion', 'FolderParity final provider version diagnostic');
+  assertContains(libraryWorkspaceFile, 'finalProviderMarkerMissing', 'FolderParity final provider marker diagnostic');
   assertContains(libraryWorkspaceFile, 'previousProviderVersion', 'FolderParity previous provider version diagnostic');
   assertContains(libraryWorkspaceFile, 'providerWasStale', 'FolderParity stale provider diagnostic');
   assertContains(libraryWorkspaceFile, 'providerRegistrationError', 'FolderParity registration error diagnostic');
@@ -409,6 +416,10 @@ if (failures.length === 0) {
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION', 'Folder sidebar asset diagnostic marker');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 's0f1bScriptTagSrc', 'Folder sidebar S0F1b script source diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'function upgradeFolderParityProviderReference()', 'Folder sidebar provider upgrade policy');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'H2O.Library.getFolderParityS0F1bProvider()', 'Folder sidebar canonical provider getter use');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'providerReplacementApplied', 'Folder sidebar provider replacement diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'finalProviderVersion', 'Folder sidebar final provider version diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'finalProviderMarkerMissing', 'Folder sidebar final provider marker diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'previousProviderKeys', 'Folder sidebar previous provider keys diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'folderParityProviderStale', 'FolderParity stale provider diagnostic');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');

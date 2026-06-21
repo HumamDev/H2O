@@ -238,10 +238,10 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.84') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.85') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
-      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.84') &&
+      sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85') &&
       sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./studio.js?v=2.5.77'),
@@ -401,6 +401,14 @@ const checks = [
       sources.libraryWorkspace.includes('providerUpgradeApplied') &&
       sources.libraryWorkspace.includes('providerWasStale') &&
       sources.libraryWorkspace.includes('providerRegistrationError') &&
+      sources.libraryWorkspace.includes('function applyFolderParityCanonicalShape(target, extra = {})') &&
+      sources.libraryWorkspace.includes('H2O.Library.FolderParityS0F1bProvider = registeredFolderParity') &&
+      sources.libraryWorkspace.includes('H2O.Library.getFolderParityS0F1bProvider = () =>') &&
+      sources.libraryWorkspace.includes('providerReplacementApplied') &&
+      sources.libraryWorkspace.includes('providerMergeDirection') &&
+      sources.libraryWorkspace.includes('staleFieldsPreserved: false') &&
+      sources.libraryWorkspace.includes('finalProviderVersion') &&
+      sources.libraryWorkspace.includes('finalProviderMarkerMissing') &&
       sources.libraryWorkspace.includes('hasKnownCanonicalFallbackBuilder') &&
       sources.libraryWorkspace.includes('knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
@@ -424,15 +432,21 @@ const checks = [
       sources.sidebarSections.includes('ok: modelHasCanonicalFolders') &&
       sources.sidebarSections.includes('folderCatalogReady: model?.folderCatalogReady === true') &&
       sources.sidebarSections.includes('protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0') &&
-      sources.sidebarSections.includes("const providerVersion = String(model?.folderParityVersion || model?.version || '')") &&
+      sources.sidebarSections.includes("const providerVersion = String(model?.folderParityVersion || finalProvider?.folderParityVersion || model?.version || finalProvider?.version || '')") &&
       sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
       sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
       sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
-      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.84')") &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.85')") &&
       sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
       sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
       sources.sidebarSections.includes('function upgradeFolderParityProviderReference()') &&
+      sources.sidebarSections.includes('H2O.Library.getFolderParityS0F1bProvider()') &&
       sources.sidebarSections.includes('providerUpgradeApplied') &&
+      sources.sidebarSections.includes('providerReplacementApplied') &&
+      sources.sidebarSections.includes('finalProviderVersion') &&
+      sources.sidebarSections.includes('finalProviderMarkerMissing') &&
+      sources.sidebarSections.includes('providerMergeDirection') &&
+      sources.sidebarSections.includes('staleFieldsPreserved') &&
       sources.sidebarSections.includes('previousProviderKeys') &&
       sources.sidebarSections.includes('providerWasStale') &&
       sources.sidebarSections.includes('folderParityProviderStale') &&
