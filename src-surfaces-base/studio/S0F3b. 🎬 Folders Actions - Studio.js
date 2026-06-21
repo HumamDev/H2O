@@ -195,11 +195,14 @@
     }
     try {
       var source = cleanString(opts.source) || 'desktop-user-folder-create';
+      var sourceKind = cleanString(opts.sourceKind) || source;
       var meta = Object.assign({}, safeMeta(opts.meta), {
         source: source,
+        sourceKind: sourceKind,
         userCreated: true,
         materializedUserFolder: true,
         trustedFolderDisplay: true,
+        shownInNormalMode: true,
         createdBy: 'desktop-studio',
         updatedAt: nowIso(),
       });
@@ -207,6 +210,11 @@
         name: name,
         parentId: cleanString(opts.parentId),
         source: source,
+        sourceKind: sourceKind,
+        userCreated: true,
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
         meta: meta,
       };
       var color = cleanString(opts.color);

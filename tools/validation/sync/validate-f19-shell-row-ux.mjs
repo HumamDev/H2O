@@ -238,11 +238,11 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.89') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.90') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
       sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85') &&
-      sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.80') &&
+      sources.studioHtml.includes('./S0F3b. 🎬 Folders Actions - Studio.js?v=2.5.81') &&
       sources.studioHtml.includes('./S0F1m. 🎬 Library Organization Modals - Studio.js?v=2.5.77') &&
       sources.studioHtml.includes('./studio.js?v=2.5.77'),
     FILES.studioHtml,
@@ -342,6 +342,9 @@ const checks = [
         sources.libraryWorkspace.includes('return 1000 + explicit;') &&
         sources.libraryWorkspace.includes('function isCanonicalDisplayFolder(row)') &&
         sources.libraryWorkspace.includes('function isMaterializedUserFolder(row)') &&
+        sources.libraryWorkspace.includes('const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set') &&
+        sources.libraryWorkspace.includes('function isStudioUserFolderActionSource(row)') &&
+        sources.libraryWorkspace.includes('if (isStudioUserFolderActionSource(row)) return true;') &&
         sources.libraryWorkspace.includes('function isProtectedCanonicalFallbackFolder(row)') &&
         sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isProtectedCanonicalFallbackFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);') &&
         sources.libraryWorkspace.includes('const materializedLocalRows = localRows') &&
@@ -386,7 +389,9 @@ const checks = [
         sources.folderActions.includes("var source = cleanString(opts.source) || 'desktop-user-folder-create';") &&
         sources.folderActions.includes('userCreated: true') &&
         sources.folderActions.includes('materializedUserFolder: true') &&
-        sources.folderActions.includes('trustedFolderDisplay: true'),
+        sources.folderActions.includes('trustedFolderDisplay: true') &&
+        sources.folderActions.includes('shownInNormalMode: true') &&
+        sources.folderActions.includes('sourceKind: sourceKind'),
       FILES.libraryWorkspace,
       'Chrome and Desktop folder sidebar must use stable canonical order/color tokens, Desktop-safe create/rename/color actions, and keep delete/destructive actions operator-only.'
     ),
@@ -462,7 +467,7 @@ const checks = [
       sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
       sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
       sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
-      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.89')") &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.90')") &&
       sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
       sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
       sources.sidebarSections.includes('function upgradeFolderParityProviderReference()') &&

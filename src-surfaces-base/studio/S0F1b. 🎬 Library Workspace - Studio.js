@@ -111,6 +111,11 @@
     'empty-rt',
     'english-rt',
   ]);
+  const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set([
+    'studio-actions',
+    'desktop-user-folder-create',
+    'chrome-user-folder-create',
+  ]);
 
   const diag = { t0: performance.now(), steps: [], errors: [], bufMax: 100, errMax: 25 };
   const step = (s, o = '') => {
@@ -230,6 +235,22 @@
     return (row?.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
   }
 
+  function folderSourceTokens(row) {
+    const meta = folderMetaOf(row);
+    return [
+      row?.source,
+      row?.sourceKind,
+      row?.kind,
+      meta.source,
+      meta.sourceKind,
+      meta.kind,
+    ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
+  }
+
+  function isStudioUserFolderActionSource(row) {
+    return folderSourceTokens(row).some((source) => STUDIO_USER_FOLDER_ACTION_SOURCES.has(source));
+  }
+
   function canonicalFolderDisplayColor(row) {
     const byId = CANONICAL_FOLDER_DISPLAY_COLOR_BY_ID.get(folderIdOf(row));
     if (byId) return byId;
@@ -310,6 +331,16 @@
     if (sourceKind) {
       out.sourceKind = sourceKind;
       out.kind = sourceKind;
+    }
+    if (isStudioUserFolderActionSource(row)) {
+      out.userCreated = true;
+      out.materializedUserFolder = true;
+      out.trustedFolderDisplay = true;
+      out.shownInNormalMode = true;
+      if (!out.sourceKind) {
+        out.sourceKind = 'studio-actions';
+        out.kind = 'studio-actions';
+      }
     }
     if (color) out.color = color;
     if (iconColor) out.iconColor = iconColor;
@@ -584,6 +615,7 @@
     const meta = folderMetaOf(row);
     if (row?.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
     if (row?.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
+    if (isStudioUserFolderActionSource(row)) return true;
     const source = String(row?.source || meta.source || '').trim().toLowerCase();
     if ((row?.userCreated === true || meta.userCreated === true) && source.includes('desktop')) return true;
     return false;
@@ -781,12 +813,14 @@
     if (!row || !row.folderId) return null;
     const meta = (row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
     const color = row.color || meta.iconColor || meta.color || '';
+    const sourceKind = meta.sourceKind || meta.kind || row.sourceKind || row.kind || row.source || meta.source || 'local';
     return {
       id: row.folderId,
       name: row.name || '',
       createdAt: epochToIso(row.createdAt),
       updatedAt: epochToIso(row.updatedAt),
-      kind: meta.kind || 'local',
+      kind: sourceKind,
+      sourceKind,
       parentId: row.parentId || meta.parentId || '',
       source: row.source || meta.source || 'desktop-sqlite',
       sortOrder: (typeof row.sortOrder === 'number') ? row.sortOrder : ((typeof meta.sortOrder === 'number') ? meta.sortOrder : 0),
@@ -798,6 +832,7 @@
       userCreated: row.userCreated === true || meta.userCreated === true,
       materializedUserFolder: row.materializedUserFolder === true || meta.materializedUserFolder === true,
       trustedFolderDisplay: row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true,
+      shownInNormalMode: row.shownInNormalMode === true || meta.shownInNormalMode === true,
     };
   }
   function deriveFolderRowsFromIndex() {
