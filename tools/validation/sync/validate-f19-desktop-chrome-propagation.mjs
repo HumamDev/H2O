@@ -12,6 +12,7 @@ const failures = [];
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoExportFile = 'src-surfaces-base/studio/sync/auto-export.tauri.js';
 const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
+const librarySyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
@@ -413,7 +414,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderImportFile, autoExportFile, libraryIndexFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
+for (const file of [folderImportFile, autoExportFile, libraryIndexFile, librarySyncFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
@@ -447,6 +448,14 @@ if (failures.length === 0) {
   assertContains(libraryIndexFile, 'desktop-sync-folder-rehydrate', 'Desktop shell row rehydration source');
   assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'durable rehydration diagnostic');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
+  assertContains(librarySyncFile, 'requestDesktopFolderMetadataOperation', 'Desktop folder metadata operation bridge');
+  assertContains(librarySyncFile, 'previewDesktopRenameFolderMetadataOperation', 'Desktop rename-folder preview bridge');
+  assertContains(librarySyncFile, 'applyDesktopRenameFolderMetadataOperation', 'Desktop rename-folder apply bridge');
+  assertContains(librarySyncFile, "DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder']", 'Desktop bridge remains rename-only');
+  assertContains(librarySyncFile, 'stale-guard-required', 'Desktop rename apply stale guard');
+  assertContains(librarySyncFile, 'protected-canonical-folder-name', 'Desktop rename protected canonical name guard');
+  assertContains(librarySyncFile, 'desktopRenameFallbackStatus', 'Desktop rename diagnostic status');
+  assertContains(librarySyncFile, 'desktopRenameResultCount', 'Desktop rename diagnostic count');
   assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
   assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');

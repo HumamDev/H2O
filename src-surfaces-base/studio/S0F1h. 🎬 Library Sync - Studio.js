@@ -69,6 +69,10 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
   const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
+  const DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder'];
+  const PROTECTED_CANONICAL_FOLDER_NAME_KEYS = new Set(['study', 'case', 'dev', 'code', 'tech', 'english']);
+  const RESERVED_FOLDER_METADATA_NAME_KEYS = new Set(['all', 'archive', 'archived', 'link', 'linked', 'links', 'recent', 'recents', 'saved', 'unfiled']);
+  const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set(['studio-actions', 'desktop-user-folder-create', 'chrome-user-folder-create']);
   const SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS = 5000;
   const SNAPSHOT_PAYLOAD_REQUEST_POLL_MS = 250;
   const FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE = 'h2o:library:studio-broadcast:v1';
@@ -174,6 +178,10 @@
     lastFolderMetadataResultId: '',
     lastFolderMetadataResultStatus: '',
     lastFolderMetadataResultBlockers: [],
+    lastDesktopFolderMetadataStatus: '',
+    lastDesktopFolderMetadataError: '',
+    lastDesktopRenameFallbackStatus: '',
+    lastDesktopRenameResultCount: 0,
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -1066,6 +1074,8 @@
       ok: false,
       applied: false,
       noMutation: true,
+      readOnly: true,
+      canApply: false,
       operationType: String(op.operationType || '').trim(),
       folderId: String(op.folderId || '').trim(),
       before: null,
@@ -1086,9 +1096,337 @@
     } catch { return ''; }
   }
 
-  function folderMetadataRequestTransportBlocker() {
+  function cleanFolderMetadataName(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function folderMetadataNameKey(value) {
+    return cleanFolderMetadataName(value).toLowerCase();
+  }
+
+  function folderMetadataRowId(row) {
+    return String(row && (row.folderId || row.id) || '').trim();
+  }
+
+  function folderMetadataRowName(row) {
+    return cleanFolderMetadataName(row && (row.name || row.title || row.label || ''));
+  }
+
+  function folderMetadataRowMeta(row) {
+    return (row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
+  }
+
+  function folderMetadataSourceTokens(row) {
+    const meta = folderMetadataRowMeta(row);
+    return [
+      row?.source,
+      row?.sourceKind,
+      row?.kind,
+      meta.source,
+      meta.sourceKind,
+      meta.kind,
+    ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
+  }
+
+  function isReservedFolderMetadataName(name) {
+    return RESERVED_FOLDER_METADATA_NAME_KEYS.has(folderMetadataNameKey(name));
+  }
+
+  function isDesktopRenameSafeFolder(row) {
+    if (!row || typeof row !== 'object') return false;
+    const nameKey = folderMetadataNameKey(folderMetadataRowName(row));
+    if (!folderMetadataRowId(row) || !nameKey || nameKey === 'unfiled') return false;
+    if (PROTECTED_CANONICAL_FOLDER_NAME_KEYS.has(nameKey)) return false;
+    const meta = folderMetadataRowMeta(row);
+    if (row.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
+    if (row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
+    if (row.userCreated === true || meta.userCreated === true) return true;
+    return folderMetadataSourceTokens(row).some((source) => STUDIO_USER_FOLDER_ACTION_SOURCES.has(source));
+  }
+
+  function comparableDesktopFolderMetadataRows(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        const meta = folderMetadataRowMeta(row);
+        return {
+          folderId: folderMetadataRowId(row),
+          name: folderMetadataRowName(row),
+          parentId: String(row?.parentId || meta.parentId || ''),
+          color: String(row?.iconColor || row?.color || meta.iconColor || meta.color || ''),
+          source: String(row?.source || meta.source || ''),
+          sourceKind: String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || ''),
+          userCreated: row?.userCreated === true || meta.userCreated === true,
+          materializedUserFolder: row?.materializedUserFolder === true || meta.materializedUserFolder === true,
+          trustedFolderDisplay: row?.trustedFolderDisplay === true || meta.trustedFolderDisplay === true,
+          shownInNormalMode: row?.shownInNormalMode === true || meta.shownInNormalMode === true,
+          sortOrder: Number(row?.sortOrder ?? meta.sortOrder ?? 0) || 0,
+          createdAt: String(row?.createdAt || meta.createdAt || ''),
+          updatedAt: String(row?.updatedAt || meta.updatedAt || ''),
+        };
+      })
+      .filter((row) => row.folderId)
+      .sort((a, b) => a.folderId.localeCompare(b.folderId));
+  }
+
+  function desktopFolderMetadataSourceHash(rows) {
+    return stableChecksum({ folders: comparableDesktopFolderMetadataRows(rows) });
+  }
+
+  function nowIso() {
+    try { return new Date().toISOString(); } catch { return ''; }
+  }
+
+  function getDesktopFolderStore() {
+    try { return W.H2O?.Studio?.store?.folders || null; } catch { return null; }
+  }
+
+  function getDesktopFolderActions() {
+    try { return W.H2O?.Studio?.actions?.folders || null; } catch { return null; }
+  }
+
+  async function readDesktopFolderMetadataRows() {
+    const store = getDesktopFolderStore();
+    if (!store) return { store: null, rows: [], error: 'desktop-folder-store-unavailable' };
+    try {
+      if (typeof store.list === 'function') {
+        const rows = await store.list();
+        return { store, rows: Array.isArray(rows) ? rows : [], error: '' };
+      }
+      if (typeof store.getAll === 'function') {
+        const rows = await store.getAll();
+        return { store, rows: Array.isArray(rows) ? rows : [], error: '' };
+      }
+      return { store, rows: [], error: 'desktop-folder-store-list-unavailable' };
+    } catch (e) {
+      return { store, rows: [], error: 'desktop-folder-store-read-failed', detail: String(e?.message || e || '') };
+    }
+  }
+
+  function dispatchDesktopFolderMetadataRefresh(reason) {
+    const cleanReason = String(reason || 'desktop-folder-metadata-rename').trim() || 'desktop-folder-metadata-rename';
+    try {
+      W.dispatchEvent(new CustomEvent('evt:h2o:library-index:refresh-request', {
+        detail: { reason: `folder-metadata-operations:${cleanReason}` },
+      }));
+    } catch {}
+    try { coalesceEmit(cleanReason); } catch {}
+    try { W.H2O?.Library?.FolderParity?.getDisplayModel?.({ reason: cleanReason, fresh: true }); } catch {}
+  }
+
+  function rememberImmediateFolderMetadataResult(requestId, result) {
+    const id = String(requestId || result?.requestId || '').trim();
+    state.lastFolderMetadataResultAt = Date.now();
+    state.lastFolderMetadataResultId = id;
+    state.lastFolderMetadataResultStatus = result?.ok === true ? 'ok' : 'blocked';
+    state.lastFolderMetadataRequestStatus = result?.ok === true ? 'resolved' : 'blocked';
+    state.lastFolderMetadataResultBlockers = Array.isArray(result?.blockers)
+      ? result.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
+      : [];
+    return result;
+  }
+
+  async function buildDesktopRenameFolderMetadataContext(requestId, mode, operation, expectedMode) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const result = folderMetadataResultBase(requestId, mode, op, '');
+    result.desktopBridge = 'tauri-folder-store';
+    result.desktopRenameFallbackStatus = 'started';
+    if (String(mode || '').trim() !== String(expectedMode || '').trim()) {
+      result.blockers.push({ code: `desktop-rename-${String(expectedMode || 'unknown')}-only` });
+    }
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+      result.blockers.push({ code: 'invalid-folder-metadata-operation' });
+    }
+    if (String(op.operationType || '').trim() !== 'rename-folder') {
+      result.blockers.push({ code: 'desktop-folder-metadata-operation-unsupported' });
+    }
+
+    const folderId = folderMetadataRowId(op);
+    const after = op.after && typeof op.after === 'object' ? op.after : {};
+    const nextName = cleanFolderMetadataName(after.name || after.title || op.name || op.title || '');
+    const staleGuard = op.staleGuard && typeof op.staleGuard === 'object' && !Array.isArray(op.staleGuard)
+      ? op.staleGuard
+      : {};
+    const read = await readDesktopFolderMetadataRows();
+    if (read.error) result.blockers.push({ code: read.error });
+    const rows = Array.isArray(read.rows) ? read.rows : [];
+    const sourceHash = desktopFolderMetadataSourceHash(rows);
+    const targetFolder = rows.find((row) => folderMetadataRowId(row) === folderId) || null;
+    const previousName = folderMetadataRowName(targetFolder);
+    const nextKey = folderMetadataNameKey(nextName);
+    const previewHash = stableChecksum({
+      operationType: 'rename-folder',
+      folderId,
+      beforeName: previousName,
+      name: nextName,
+      sourceHash,
+    });
+
+    if (!folderId) result.blockers.push({ code: 'folder-id-required' });
+    if (folderId && !targetFolder) result.blockers.push({ code: 'folder-not-found' });
+    if (targetFolder && !isDesktopRenameSafeFolder(targetFolder)) {
+      result.blockers.push({ code: 'folder-rename-not-allowed' });
+    }
+    if (!nextName) result.blockers.push({ code: 'invalid-folder-name' });
+    if (nextName && isReservedFolderMetadataName(nextName)) result.blockers.push({ code: 'reserved-folder-name' });
+    if (nextKey && PROTECTED_CANONICAL_FOLDER_NAME_KEYS.has(nextKey)) {
+      result.blockers.push({ code: 'protected-canonical-folder-name' });
+    }
+    if (nextKey && rows.some((row) => folderMetadataRowId(row) !== folderId && folderMetadataNameKey(folderMetadataRowName(row)) === nextKey)) {
+      result.blockers.push({ code: 'same-name-conflict' });
+    }
+    if (expectedMode === 'apply') {
+      const guardSourceHash = String(staleGuard.sourceHash || '').trim();
+      const guardPreviewHash = String(staleGuard.previewHash || '').trim();
+      if (!guardSourceHash || !guardPreviewHash) {
+        result.blockers.push({ code: 'stale-guard-required' });
+      } else {
+        if (guardSourceHash !== sourceHash) result.blockers.push({ code: 'stale-source-hash' });
+        if (guardPreviewHash !== previewHash) result.blockers.push({ code: 'stale-preview-hash' });
+      }
+    }
+
+    result.folderId = folderId;
+    result.before = {
+      id: folderId,
+      folderId,
+      name: previousName,
+      sourceHash,
+      folderCount: rows.length,
+      previewHash,
+    };
+    result.after = {
+      id: folderId,
+      folderId,
+      name: nextName,
+      sourceHash,
+    };
+    result.staleGuard = { sourceHash, previewHash };
+    return { result, store: read.store, rows, targetFolder, folderId, previousName, nextName, sourceHash, previewHash };
+  }
+
+  async function previewDesktopRenameFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildDesktopRenameFolderMetadataContext(requestId, mode, operation, 'preview');
+    const result = ctx.result;
+    result.previewSource = 'desktop-tauri-folder-store';
+    result.desktopRenameFallbackStatus = result.blockers.length ? 'blocked' : 'preview-ok';
+    result.applied = false;
+    result.noMutation = true;
+    result.readOnly = true;
+    result.canApply = result.blockers.length === 0;
+    result.ok = result.blockers.length === 0;
+    return result;
+  }
+
+  async function applyDesktopRenameFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildDesktopRenameFolderMetadataContext(requestId, mode, operation, 'apply');
+    const result = ctx.result;
+    result.applySource = 'desktop-tauri-folder-store';
+    result.desktopRenameFallbackStatus = result.blockers.length ? 'blocked' : 'apply-started';
+    result.readOnly = false;
+    result.noMutation = true;
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      return result;
+    }
+    const meta = folderMetadataRowMeta(ctx.targetFolder);
+    const now = nowIso();
+    const patch = {
+      name: ctx.nextName,
+      meta: {
+        ...meta,
+        updatedAt: now,
+      },
+    };
+    let actionResult = null;
+    const actions = getDesktopFolderActions();
+    if (actions && typeof actions.update === 'function') {
+      actionResult = await actions.update(ctx.folderId, patch);
+      if (!actionResult || actionResult.ok !== true) {
+        result.blockers.push({ code: String(actionResult?.status || 'desktop-folder-action-update-failed') });
+      }
+    } else if (ctx.store && typeof ctx.store.patch === 'function') {
+      const row = await ctx.store.patch(ctx.folderId, patch);
+      actionResult = { ok: !!row, row };
+      if (!row) result.blockers.push({ code: 'desktop-folder-store-patch-failed' });
+      dispatchDesktopFolderMetadataRefresh('desktop-folder-rename-apply');
+    } else {
+      result.blockers.push({ code: 'desktop-folder-store-patch-unavailable' });
+    }
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.desktopRenameFallbackStatus = 'blocked';
+      return result;
+    }
+
+    const updatedRow = actionResult?.row || await ctx.store?.get?.(ctx.folderId).catch(() => null);
+    const afterRows = (await readDesktopFolderMetadataRows()).rows || [];
+    result.folderId = ctx.folderId;
+    result.before = {
+      ...result.before,
+      name: ctx.previousName,
+    };
+    result.after = {
+      ...(updatedRow && typeof updatedRow === 'object' ? updatedRow : {}),
+      id: ctx.folderId,
+      folderId: ctx.folderId,
+      name: folderMetadataRowName(updatedRow) || ctx.nextName,
+      sourceHash: desktopFolderMetadataSourceHash(afterRows),
+    };
+    result.applied = true;
+    result.noMutation = false;
+    result.readOnly = false;
+    result.canApply = false;
+    result.ok = true;
+    result.writesPerformed = 1;
+    result.desktopRenameFallbackStatus = 'applied';
+    state.lastDesktopRenameResultCount += 1;
+    dispatchDesktopFolderMetadataRefresh('desktop-folder-rename-apply');
+    return result;
+  }
+
+  async function requestDesktopFolderMetadataOperation(requestId, mode, operation) {
+    state.lastDesktopFolderMetadataStatus = 'started';
+    state.lastDesktopFolderMetadataError = '';
+    state.lastDesktopRenameFallbackStatus = '';
+    try {
+      const operationType = String(operation?.operationType || '').trim();
+      let result;
+      if (operationType !== 'rename-folder') {
+        result = folderMetadataResultBase(requestId, mode, operation, 'desktop-folder-metadata-operation-unsupported');
+        result.desktopBridge = 'tauri-folder-store';
+      } else if (mode === 'preview') {
+        result = await previewDesktopRenameFolderMetadataOperation(requestId, mode, operation);
+      } else if (mode === 'apply') {
+        result = await applyDesktopRenameFolderMetadataOperation(requestId, mode, operation);
+      } else {
+        result = folderMetadataResultBase(requestId, mode, operation, 'invalid-request-mode');
+      }
+      state.lastDesktopFolderMetadataStatus = result?.ok === true ? 'ok' : 'blocked';
+      state.lastDesktopRenameFallbackStatus = String(result?.desktopRenameFallbackStatus || state.lastDesktopFolderMetadataStatus || '');
+      return rememberImmediateFolderMetadataResult(requestId, result);
+    } catch (e) {
+      state.lastDesktopFolderMetadataStatus = 'error';
+      state.lastDesktopFolderMetadataError = String(e?.message || e || 'desktop-folder-metadata-operation-failed');
+      state.lastDesktopRenameFallbackStatus = 'error';
+      const result = folderMetadataResultBase(requestId, mode, operation, 'desktop-folder-metadata-operation-failed');
+      result.desktopBridge = 'tauri-folder-store';
+      result.desktopRenameFallbackStatus = 'error';
+      result.errorCategory = 'desktop-folder-metadata-operation-failed';
+      return rememberImmediateFolderMetadataResult(requestId, result);
+    }
+  }
+
+  function folderMetadataRequestTransportBlocker(operation) {
     const adapter = currentPlatformAdapter();
-    if (adapter === 'tauri') return 'native-owner-request-desktop-bridge-not-implemented';
+    if (adapter === 'tauri') {
+      const operationType = String(operation?.operationType || '').trim();
+      if (!operationType || operationType === 'rename-folder') return '';
+      return 'desktop-folder-metadata-operation-unsupported';
+    }
     if (!hasChromeStorage() && !getPlatformBroadcast()) return 'native-owner-broadcast-unavailable';
     return '';
   }
@@ -1415,33 +1753,17 @@
       createdAt: operation.createdAt || new Date().toISOString(),
     } : null;
     const requestId = String(opts.requestId || folderMetadataRequestId()).trim();
-    const blocker = folderMetadataRequestTransportBlocker();
     if (mode !== 'preview' && mode !== 'apply') {
       return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'invalid-request-mode'));
     }
     if (!op || op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
       return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'invalid-folder-metadata-operation'));
     }
-    if (blocker) {
-      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, blocker));
-    }
-    if (state.pendingFolderMetadataRequests.size >= FOLDER_METADATA_REQUEST_MAX_PENDING) {
-      return Promise.resolve(folderMetadataResultBase(requestId, mode, op, 'too-many-pending-folder-metadata-requests'));
-    }
-
-    const request = {
-      schema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
-      requestId,
-      requestMode: mode,
-      operation: op,
-      createdAt: new Date().toISOString(),
-    };
-    const payload = { folderMetadataOperationRequests: [request] };
     const reason = String(opts.reason || `folder-metadata-operation-${mode}-request`);
     const waitForResult = opts.waitForResult !== false;
     const timeoutMsRaw = Number(opts.timeoutMs || FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS);
     const timeoutMs = Math.max(500, Math.min(30000, Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS));
-
+    const createdAt = new Date().toISOString();
     state.lastFolderMetadataRequestAt = Date.now();
     state.lastFolderMetadataRequestId = requestId;
     state.lastFolderMetadataRequestMode = mode;
@@ -1455,9 +1777,30 @@
       reason,
       timeoutMs,
       waitForResult,
-      createdAt: request.createdAt,
-      payloadKeys: Object.keys(payload),
+      createdAt,
+      payloadKeys: [],
     };
+
+    const blocker = folderMetadataRequestTransportBlocker(op);
+    if (blocker) {
+      return Promise.resolve(rememberImmediateFolderMetadataResult(requestId, folderMetadataResultBase(requestId, mode, op, blocker)));
+    }
+    if (currentPlatformAdapter() === 'tauri') {
+      return requestDesktopFolderMetadataOperation(requestId, mode, op);
+    }
+    if (state.pendingFolderMetadataRequests.size >= FOLDER_METADATA_REQUEST_MAX_PENDING) {
+      return Promise.resolve(rememberImmediateFolderMetadataResult(requestId, folderMetadataResultBase(requestId, mode, op, 'too-many-pending-folder-metadata-requests')));
+    }
+
+    const request = {
+      schema: FOLDER_METADATA_OPERATION_REQUEST_SCHEMA,
+      requestId,
+      requestMode: mode,
+      operation: op,
+      createdAt,
+    };
+    const payload = { folderMetadataOperationRequests: [request] };
+    state.lastFolderMetadataRequestEnvelope.payloadKeys = Object.keys(payload);
 
     if (!waitForResult) {
       const sent = broadcastFromStudio(reason, payload);
@@ -1513,6 +1856,14 @@
         resultSchema: FOLDER_METADATA_OPERATION_RESULT_SCHEMA,
         adapter: currentPlatformAdapter(),
         transportBlocker: folderMetadataRequestTransportBlocker(),
+        supportedOperationTypes: currentPlatformAdapter() === 'tauri'
+          ? DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES.slice()
+          : ['create-folder', 'rename-folder'],
+        desktopBridge: currentPlatformAdapter() === 'tauri' ? 'tauri-folder-store' : '',
+        desktopRenameFallbackStatus: state.lastDesktopRenameFallbackStatus,
+        desktopRenameResultCount: state.lastDesktopRenameResultCount,
+        desktopFolderMetadataStatus: state.lastDesktopFolderMetadataStatus,
+        desktopFolderMetadataError: state.lastDesktopFolderMetadataError,
         pendingRequests: state.pendingFolderMetadataRequests.size,
         lastRequestAt: state.lastFolderMetadataRequestAt,
         lastRequestId: state.lastFolderMetadataRequestId,
