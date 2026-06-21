@@ -982,6 +982,15 @@ if (failures.length === 0) {
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
   assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');
   assertContains(chromeLiveBackgroundFile, 'function comparableFolderStateData', 'Chrome folder state idempotent comparison');
+  assertContains(chromeLiveBackgroundFile, 'function backgroundPreviewFolderMetadataOperationFallback', 'Native owner background has folder metadata preview fallback');
+  assertContains(chromeLiveBackgroundFile, 'function previewCreateFolderMetadataOperationInBackground', 'Native owner background can preview create-folder without mutating');
+  assertContains(chromeLiveBackgroundFile, 'mode !== "preview"', 'Background folder metadata fallback is preview-only');
+  assertContains(chromeLiveBackgroundFile, 'operationType !== "create-folder"', 'Background folder metadata fallback is create-folder-only');
+  assertContains(chromeLiveBackgroundFile, 'native-owner-page-receiver-unavailable', 'Background fallback reports missing page receiver without raw relay errors');
+  assertContains(chromeLiveBackgroundFile, 'background-preview-fallback', 'External native owner response exposes preview fallback status');
+  assertContains(studioSyncFile, 'fallbackPreviewResultCount', 'Studio folder metadata diagnostics expose fallback preview result count');
+  assertContains(studioSyncFile, 'pageReceiverStatus', 'Studio folder metadata diagnostics expose native page receiver status');
+  assertContains(studioSyncFile, 'listenerReached', 'Studio folder metadata diagnostics expose direct relay listener reachability');
   assertContains(chromeLiveManifestFile, 'STUDIO_LAUNCHER_EXTENSION_ID', 'Native extension manifest declares the Studio Launcher external sender id');
   assertContains(chromeLiveManifestFile, 'manifest.externally_connectable = { ids: [STUDIO_LAUNCHER_EXTENSION_ID] }', 'Native extension manifest allows Studio Launcher external snapshot payload requests');
   assertContains(importBundleFile, 'var turns = buildTurnsFromSnapshot(snap);', 'Desktop import materializes snapshot payload turns');
