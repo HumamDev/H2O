@@ -4526,7 +4526,7 @@ function folderMetadataOperationRequestsFromStudioBroadcast(value) {
 }
 
 function cleanFolderMetadataName(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
+  return String(value || "").replace(/\\s+/g, " ").trim();
 }
 
 function folderMetadataNameKey(value) {

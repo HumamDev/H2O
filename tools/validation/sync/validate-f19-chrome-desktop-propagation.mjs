@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import vm from 'node:vm';
+import { pathToFileURL } from 'node:url';
 import { TextDecoder, TextEncoder } from 'node:util';
 import { webcrypto } from 'node:crypto';
 
@@ -854,6 +855,40 @@ async function runImportBundleWeakRowProof() {
     'existing transcript-backed strict failure diagnostic missing');
 }
 
+async function runChromeBackgroundFolderNameSanitizerProof() {
+  const moduleUrl = pathToFileURL(path.join(root, chromeLiveBackgroundFile)).href;
+  const { makeChromeLiveBackgroundJs } = await import(moduleUrl);
+  const backgroundSource = makeChromeLiveBackgroundJs({
+    DEV_TAG: 'f19-folder-name-sanitizer-proof',
+    CHAT_MATCH: 'https://chatgpt.com/*',
+    DEV_HAS_CONTROLS: false,
+    MANIFEST_PROFILE: 'production'
+  });
+  assert(backgroundSource.includes('function cleanFolderMetadataName'), 'generated Chrome background must include folder name cleaner');
+  assert(backgroundSource.includes('replace(/\\s+/g, " ")'), 'generated Chrome background must preserve whitespace regex escape');
+  assert(!backgroundSource.includes('replace(/s+/g, " ")'), 'generated Chrome background must not replace literal s characters');
+  const cleanerBlock = backgroundSource.match(/function cleanFolderMetadataName[\s\S]*?(?=function folderMetadataNameKey)/);
+  assert(!!cleanerBlock, 'generated Chrome background folder cleaner block missing');
+  if (!cleanerBlock) return;
+  const context = vm.createContext({ globalThis: {} });
+  context.globalThis = context;
+  vm.runInContext(`${cleanerBlock[0]}; globalThis.__cleanFolderMetadataName = cleanFolderMetadataName;`, context, {
+    filename: 'generated-chrome-live-background-folder-name-proof.js'
+  });
+  const clean = context.__cleanFolderMetadataName;
+  const roundTripNames = [
+    'zz-chrome-sync-proof-4',
+    'zz-desktop-rename-proof-4',
+    'sync',
+    'desktop',
+    'study-sync-test',
+    'case-study-test'
+  ];
+  for (const name of roundTripNames) {
+    assert(clean(name) === name, `Chrome folder name sanitizer corrupted ${name}`);
+  }
+}
+
 for (const file of [folderSyncFile, folderImportFile, autoImportFile, focusImportFile, importBundleFile, chatStoreFile, studioArchiveFile, studioSyncFile, chromeLiveBackgroundFile, chromeLiveLoaderFile, chromeLiveManifestFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
@@ -1084,6 +1119,7 @@ if (failures.length === 0) {
 }
 
 if (failures.length === 0) {
+  await runChromeBackgroundFolderNameSanitizerProof();
   await runVmProof();
   await runUnindexedArchiveReconciliationProof();
   await runImportBundleWeakRowProof();
