@@ -389,7 +389,7 @@ if (failures.length === 0) {
   assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
   assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.85', 'Library workspace cache bust');
+  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.86', 'Library workspace cache bust');
   assertContainsAny(htmlFile, [
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74',
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75'
@@ -413,6 +413,13 @@ if (failures.length === 0) {
   assertContains(libraryWorkspaceFile, 'providerRegistrationError', 'FolderParity registration error diagnostic');
   assertContains(libraryWorkspaceFile, 'hasKnownCanonicalFallbackBuilder', 'FolderParity fallback builder marker');
   assertContains(libraryWorkspaceFile, 'knownCanonicalFallbackRawCount', 'FolderParity fallback raw count marker');
+  assertContains(libraryWorkspaceFile, 'function isProtectedCanonicalFallbackFolder(row)', 'FolderParity protected fallback display predicate');
+  assertContains(libraryWorkspaceFile, 'function markProtectedCanonicalFallbackFolder(row, index = 0, reason =', 'FolderParity protected fallback row marker');
+  assertContains(libraryWorkspaceFile, 'function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {})', 'FolderParity fallback stage diagnostic builder');
+  assertContains(libraryWorkspaceFile, 'knownFallbackNormalizedCount', 'FolderParity fallback normalized count diagnostic');
+  assertContains(libraryWorkspaceFile, 'knownFallbackAfterFilterCount', 'FolderParity fallback after-filter count diagnostic');
+  assertContains(libraryWorkspaceFile, 'knownFallbackFinalDisplayCount', 'FolderParity fallback final display count diagnostic');
+  assertContains(libraryWorkspaceFile, 'knownFallbackDropReasons', 'FolderParity fallback drop reason diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION', 'Folder sidebar asset diagnostic marker');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 's0f1bScriptTagSrc', 'Folder sidebar S0F1b script source diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'function upgradeFolderParityProviderReference()', 'Folder sidebar provider upgrade policy');
@@ -422,6 +429,8 @@ if (failures.length === 0) {
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'finalProviderMarkerMissing', 'Folder sidebar final provider marker diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'previousProviderKeys', 'Folder sidebar previous provider keys diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'folderParityProviderStale', 'FolderParity stale provider diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', "s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.86')", 'Folder sidebar S0F1b script expected cache bust');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'knownFallbackFinalDisplayCount', 'Folder sidebar fallback final display diagnostic');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

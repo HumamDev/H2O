@@ -238,7 +238,7 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.85') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.86') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
       sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85') &&
@@ -341,7 +341,8 @@ const checks = [
         sources.libraryWorkspace.includes('return 1000 + explicit;') &&
         sources.libraryWorkspace.includes('function isCanonicalDisplayFolder(row)') &&
         sources.libraryWorkspace.includes('function isMaterializedUserFolder(row)') &&
-        sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);') &&
+        sources.libraryWorkspace.includes('function isProtectedCanonicalFallbackFolder(row)') &&
+        sources.libraryWorkspace.includes('return isPrimaryCanonicalFolder(row) || isProtectedCanonicalFallbackFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);') &&
         sources.libraryWorkspace.includes('const materializedLocalRows = localRows') &&
         sources.libraryWorkspace.includes('primaryCanonicalRows.push(...materializedLocalRows);') &&
         sources.libraryWorkspace.includes('materializedUserFolderCount') &&
@@ -411,6 +412,13 @@ const checks = [
       sources.libraryWorkspace.includes('finalProviderMarkerMissing') &&
       sources.libraryWorkspace.includes('hasKnownCanonicalFallbackBuilder') &&
       sources.libraryWorkspace.includes('knownCanonicalFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length') &&
+      sources.libraryWorkspace.includes('function markProtectedCanonicalFallbackFolder(row, index = 0, reason =') &&
+      sources.libraryWorkspace.includes('function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {})') &&
+      sources.libraryWorkspace.includes('knownFallbackRawCount') &&
+      sources.libraryWorkspace.includes('knownFallbackNormalizedCount') &&
+      sources.libraryWorkspace.includes('knownFallbackAfterFilterCount') &&
+      sources.libraryWorkspace.includes('knownFallbackFinalDisplayCount') &&
+      sources.libraryWorkspace.includes('knownFallbackDropReasons') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
       sources.libraryWorkspace.includes("reason: 'get-display-model-empty-report'") &&
       sources.libraryWorkspace.includes('protectedCanonicalFallback: protectedFallbackRows') &&
@@ -436,7 +444,7 @@ const checks = [
       sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
       sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
       sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
-      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.85')") &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.86')") &&
       sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
       sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
       sources.sidebarSections.includes('function upgradeFolderParityProviderReference()') &&
@@ -452,6 +460,8 @@ const checks = [
       sources.sidebarSections.includes('folderParityProviderStale') &&
       sources.sidebarSections.includes('hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true') &&
       sources.sidebarSections.includes('fallbackBuilderError: String(model?.fallbackBuilderError ||') &&
+      sources.sidebarSections.includes('knownFallbackRawCount: Number(model?.knownFallbackRawCount || model?.knownCanonicalFallbackRawCount || 0) || 0') &&
+      sources.sidebarSections.includes('knownFallbackFinalDisplayCount: Number(model?.knownFallbackFinalDisplayCount || 0) || 0') &&
       sources.sidebarSections.includes('displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0') &&
       sources.sidebarSections.includes('renderBlockedReason: canonicalRows.length ?'),
     FILES.studioShell,

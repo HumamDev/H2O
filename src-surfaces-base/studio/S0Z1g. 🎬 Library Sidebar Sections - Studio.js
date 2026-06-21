@@ -3652,7 +3652,7 @@
       diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       registrationSource: 'S0Z1g.Library Sidebar Sections',
-      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.85'),
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.86'),
       s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.85'),
     };
   }
@@ -3956,6 +3956,11 @@
       protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0,
       protectedCanonicalFallbackSource: String(model?.protectedCanonicalFallbackSource || ''),
       fallbackBuilderError: String(model?.fallbackBuilderError || ''),
+      knownFallbackRawCount: Number(model?.knownFallbackRawCount || model?.knownCanonicalFallbackRawCount || 0) || 0,
+      knownFallbackNormalizedCount: Number(model?.knownFallbackNormalizedCount || 0) || 0,
+      knownFallbackAfterFilterCount: Number(model?.knownFallbackAfterFilterCount || 0) || 0,
+      knownFallbackFinalDisplayCount: Number(model?.knownFallbackFinalDisplayCount || 0) || 0,
+      knownFallbackDropReasons: Array.isArray(model?.knownFallbackDropReasons) ? model.knownFallbackDropReasons.slice(0, 12) : [],
       storedModelAvailable: model?.storedModelAvailable === true,
       nativeBroadcastRequired: canonicalRows.length === 0 && model?.nativeBroadcastRequired === true,
       renderBlockedReason: canonicalRows.length ? '' : String(model?.renderBlockedReason || 'folder-display-model-empty'),

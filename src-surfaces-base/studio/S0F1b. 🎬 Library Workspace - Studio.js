@@ -279,6 +279,14 @@
     if (row?.userCreated === true || meta.userCreated === true) out.userCreated = true;
     if (row?.materializedUserFolder === true || meta.materializedUserFolder === true) out.materializedUserFolder = true;
     if (row?.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) out.trustedFolderDisplay = true;
+    if (row?.protectedCanonicalFallback === true || meta.protectedCanonicalFallback === true) out.protectedCanonicalFallback = true;
+    if (row?.shownInNormalMode === true || meta.shownInNormalMode === true) out.shownInNormalMode = true;
+    if (row?.isCanonical === true || meta.isCanonical === true) out.isCanonical = true;
+    const sourceKind = String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim();
+    if (sourceKind) {
+      out.sourceKind = sourceKind;
+      out.kind = sourceKind;
+    }
     if (color) out.color = color;
     if (iconColor) out.iconColor = iconColor;
     if (icon) out.icon = icon;
@@ -557,8 +565,13 @@
     return false;
   }
 
+  function isProtectedCanonicalFallbackFolder(row) {
+    const meta = folderMetaOf(row);
+    return row?.protectedCanonicalFallback === true || meta.protectedCanonicalFallback === true;
+  }
+
   function isCanonicalDisplayFolder(row) {
-    return isPrimaryCanonicalFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);
+    return isPrimaryCanonicalFolder(row) || isProtectedCanonicalFallbackFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);
   }
 
   function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false) {
@@ -1524,6 +1537,11 @@
         storedColor: String(folder?.storedColor || '').trim(),
         colorConflict: folder?.colorConflict === true,
         icon: String(folder?.icon || '').trim(),
+        stateSource: String(folder?.stateSource || '').trim(),
+        sourceKind: String(folder?.sourceKind || folder?.kind || '').trim(),
+        trustedFolderDisplay: folder?.trustedFolderDisplay === true,
+        protectedCanonicalFallback: folder?.protectedCanonicalFallback === true,
+        shownInNormalMode: folder?.shownInNormalMode === true,
         index: Number.isFinite(folderIndex) ? folderIndex : 0,
         sortOrder: rowSortOrder,
         isCanonical,
@@ -1570,13 +1588,60 @@
   }
 
   function buildProtectedCanonicalFallbackDisplayRows(options = {}) {
+    return buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options).rows;
+  }
+
+  function markProtectedCanonicalFallbackFolder(row, index = 0, reason = 'known-canonical-display-fallback') {
+    const source = String(reason || 'known-canonical-display-fallback').trim() || 'known-canonical-display-fallback';
+    const id = String(row?.folderId || row?.id || '').trim();
+    const name = String(row?.name || row?.title || row?.label || id).trim() || id;
+    const meta = {
+      ...folderMetaOf(row),
+      trustedFolderDisplay: true,
+      protectedCanonicalFallback: true,
+      shownInNormalMode: true,
+      isCanonical: true,
+      sourceKind: 'known-canonical-display-fallback',
+    };
+    return {
+      ...row,
+      id,
+      folderId: id,
+      name,
+      title: name,
+      normalizedName: normalizeFolderName(row?.normalizedName || name),
+      source,
+      stateSource: source,
+      sourceKind: 'known-canonical-display-fallback',
+      kind: 'known-canonical-display-fallback',
+      sortOrder: canonicalFolderDisplayOrder({ ...row, id, folderId: id, name }),
+      index,
+      trustedFolderDisplay: true,
+      protectedCanonicalFallback: true,
+      shownInNormalMode: true,
+      isCanonical: true,
+      meta,
+    };
+  }
+
+  function protectedCanonicalFallbackDropReasons(rawRows, normalizedRows, finalRows) {
+    const reasons = [];
+    if (!rawRows.length) reasons.push('known-canonical-fallback-raw-empty');
+    if (rawRows.length && !normalizedRows.length) reasons.push('known-canonical-fallback-normalized-empty');
+    if (normalizedRows.length && !finalRows.length) reasons.push('known-canonical-fallback-filtered-empty');
+    return reasons;
+  }
+
+  function buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
-    const reason = String(opts.reason || 'known-current-canonical-fallback').trim() || 'known-current-canonical-fallback';
-    const fallbackFolders = KNOWN_NATIVE_CANONICAL_FOLDERS
-      .map((folder, index) => normalizeFolderRow({ ...folder, source: reason }, index, reason))
+    const reason = String(opts.reason || 'known-canonical-display-fallback').trim() || 'known-canonical-display-fallback';
+    const rawRows = KNOWN_NATIVE_CANONICAL_FOLDERS.map((folder, index) => markProtectedCanonicalFallbackFolder(folder, index, reason));
+    const fallbackFolders = rawRows
+      .map((folder, index) => normalizeFolderRow(folder, index, reason))
       .filter(Boolean)
-      .map((folder) => decorateCanonicalFolderColorSources(folder, new Map(), new Map()));
-    return buildFolderDisplayRows({
+      .map((folder, index) => markProtectedCanonicalFallbackFolder(folder, index, reason))
+      .map((folder) => markProtectedCanonicalFallbackFolder(decorateCanonicalFolderColorSources(folder, new Map(), new Map()), folder.index, reason));
+    const rows = buildFolderDisplayRows({
       canonicalFolders: fallbackFolders,
       localFolders: [],
       canonicalItems: {},
@@ -1587,15 +1652,41 @@
       duplicateGroups: [],
       testFolderCandidates: [],
     });
+    const finalRows = rows.filter((row) => row && row.isCanonical);
+    const knownFallbackDropReasons = protectedCanonicalFallbackDropReasons(rawRows, fallbackFolders, finalRows);
+    return {
+      rows,
+      knownFallbackRawCount: rawRows.length,
+      knownFallbackNormalizedCount: fallbackFolders.length,
+      knownFallbackAfterFilterCount: finalRows.length,
+      knownFallbackFinalDisplayCount: finalRows.length,
+      knownFallbackDropReasons,
+    };
   }
 
   function buildProtectedCanonicalFallbackDisplayRowsSafe(options = {}) {
     try {
-      const rows = buildProtectedCanonicalFallbackDisplayRows(options);
-      return { rows: Array.isArray(rows) ? rows : [], error: '' };
+      const result = buildProtectedCanonicalFallbackDisplayRowsWithDiagnostics(options);
+      return {
+        rows: Array.isArray(result.rows) ? result.rows : [],
+        error: '',
+        knownFallbackRawCount: Number(result.knownFallbackRawCount || 0) || 0,
+        knownFallbackNormalizedCount: Number(result.knownFallbackNormalizedCount || 0) || 0,
+        knownFallbackAfterFilterCount: Number(result.knownFallbackAfterFilterCount || 0) || 0,
+        knownFallbackFinalDisplayCount: Number(result.knownFallbackFinalDisplayCount || 0) || 0,
+        knownFallbackDropReasons: Array.isArray(result.knownFallbackDropReasons) ? result.knownFallbackDropReasons : [],
+      };
     } catch (e) {
       err('folderParity.protectedCanonicalFallback', e);
-      return { rows: [], error: String(e?.message || e || 'protected canonical fallback failed') };
+      return {
+        rows: [],
+        error: String(e?.message || e || 'protected canonical fallback failed'),
+        knownFallbackRawCount: KNOWN_NATIVE_CANONICAL_FOLDERS.length,
+        knownFallbackNormalizedCount: 0,
+        knownFallbackAfterFilterCount: 0,
+        knownFallbackFinalDisplayCount: 0,
+        knownFallbackDropReasons: ['known-canonical-fallback-builder-error'],
+      };
     }
   }
 
@@ -1872,6 +1963,11 @@
     const rawCanonicalDisplayRowCount = rawFolderDisplayRows.filter((row) => row && row.isCanonical).length;
     let protectedCanonicalFallbackSource = '';
     let fallbackBuilderError = '';
+    let knownFallbackRawCount = KNOWN_NATIVE_CANONICAL_FOLDERS.length;
+    let knownFallbackNormalizedCount = fallbackCanonical.rows.length;
+    let knownFallbackAfterFilterCount = rawFolderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true).length;
+    let knownFallbackFinalDisplayCount = knownFallbackAfterFilterCount;
+    let knownFallbackDropReasons = protectedCanonicalFallbackDropReasons(KNOWN_NATIVE_CANONICAL_FOLDERS, fallbackCanonical.rows, rawFolderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true));
     let protectedFallbackRows = !mergedTrustedCanonical.folders.length
       ? rawFolderDisplayRows.filter((row) => row && row.isCanonical)
       : [];
@@ -1884,6 +1980,11 @@
       });
       protectedFallbackRows = built.rows;
       fallbackBuilderError = built.error;
+      knownFallbackRawCount = Number(built.knownFallbackRawCount || 0) || 0;
+      knownFallbackNormalizedCount = Number(built.knownFallbackNormalizedCount || 0) || 0;
+      knownFallbackAfterFilterCount = Number(built.knownFallbackAfterFilterCount || 0) || 0;
+      knownFallbackFinalDisplayCount = Number(built.knownFallbackFinalDisplayCount || 0) || 0;
+      knownFallbackDropReasons = Array.isArray(built.knownFallbackDropReasons) ? built.knownFallbackDropReasons : [];
       if (protectedFallbackRows.length) protectedCanonicalFallbackSource = 'known-current-canonical-fallback-empty-model';
       if (fallbackBuilderError) warnings.push('Protected canonical fallback builder failed: ' + fallbackBuilderError);
     }
@@ -1897,6 +1998,10 @@
       : rawFolderDisplayRows;
     const canonicalDisplayRowCount = folderDisplayRows.filter((row) => row && row.isCanonical).length;
     const displayModelAvailable = canonicalDisplayRowCount > 0;
+    knownFallbackFinalDisplayCount = folderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true).length || knownFallbackFinalDisplayCount;
+    if (knownFallbackRawCount > 0 && knownFallbackFinalDisplayCount <= 0 && !knownFallbackDropReasons.length) {
+      knownFallbackDropReasons = ['known-canonical-fallback-final-display-empty'];
+    }
     const fallbackUsed = !mergedTrustedCanonical.folders.length || protectedFallbackRows.length > 0;
     const renderBlockedReason = displayModelAvailable
       ? ''
@@ -1935,6 +2040,11 @@
         protectedCanonicalFallbackCount: protectedFallbackRows.length,
         protectedCanonicalFallbackSource,
         fallbackBuilderError,
+        knownFallbackRawCount,
+        knownFallbackNormalizedCount,
+        knownFallbackAfterFilterCount,
+        knownFallbackFinalDisplayCount,
+        knownFallbackDropReasons,
       }),
       readOnly: true,
       surface,
@@ -1949,6 +2059,11 @@
       protectedCanonicalFallbackCount: protectedFallbackRows.length,
       protectedCanonicalFallbackSource,
       fallbackBuilderError,
+      knownFallbackRawCount,
+      knownFallbackNormalizedCount,
+      knownFallbackAfterFilterCount,
+      knownFallbackFinalDisplayCount,
+      knownFallbackDropReasons,
       storedModelAvailable: storedState.folders.length > 0,
       nativeBroadcastAvailable: nativeState.folders.length > 0,
       nativeBroadcastRequired: !displayModelAvailable,
@@ -2269,11 +2384,21 @@
       const protectedCanonicalFallbackCount = Number(report?.protectedCanonicalFallbackCount || 0) || displayModelFallbackRows.length;
       const protectedCanonicalFallbackSource = String(report?.protectedCanonicalFallbackSource || (displayModelFallbackRows.length ? 'get-display-model-empty-report' : '') || '');
       const fallbackBuilderError = String(report?.fallbackBuilderError || displayModelFallbackError || '');
+      const knownFallbackRawCount = Number(report?.knownFallbackRawCount || report?.knownCanonicalFallbackRawCount || KNOWN_NATIVE_CANONICAL_FOLDERS.length || 0) || 0;
+      const knownFallbackNormalizedCount = Number(report?.knownFallbackNormalizedCount || displayModelFallbackRows.length || 0) || 0;
+      const knownFallbackAfterFilterCount = Number(report?.knownFallbackAfterFilterCount || protectedCanonicalFallbackCount || 0) || 0;
+      const knownFallbackFinalDisplayCount = Number(report?.knownFallbackFinalDisplayCount || canonicalRows.filter((row) => row && row.protectedCanonicalFallback === true).length || 0) || 0;
+      const knownFallbackDropReasons = Array.isArray(report?.knownFallbackDropReasons) ? report.knownFallbackDropReasons.slice() : [];
       return {
         ...folderParityRuntimeMarkers({
           protectedCanonicalFallbackCount,
           protectedCanonicalFallbackSource,
           fallbackBuilderError,
+          knownFallbackRawCount,
+          knownFallbackNormalizedCount,
+          knownFallbackAfterFilterCount,
+          knownFallbackFinalDisplayCount,
+          knownFallbackDropReasons,
         }),
         readOnly: true,
         surface: report.surface,
@@ -2285,6 +2410,11 @@
         protectedCanonicalFallbackCount,
         protectedCanonicalFallbackSource,
         fallbackBuilderError,
+        knownFallbackRawCount,
+        knownFallbackNormalizedCount,
+        knownFallbackAfterFilterCount,
+        knownFallbackFinalDisplayCount,
+        knownFallbackDropReasons,
         storedModelAvailable: report?.storedModelAvailable === true,
         nativeBroadcastAvailable: report?.nativeBroadcastAvailable === true,
         nativeBroadcastRequired: !displayModelAvailable && report?.nativeBroadcastRequired === true,
