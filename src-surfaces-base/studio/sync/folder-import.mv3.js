@@ -713,10 +713,98 @@
     return out;
   }
 
+  function isStudioFolderActionSource(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
+      ? row.meta : {};
+    var values = [
+      row && row.source,
+      row && row.sourceKind,
+      row && row.kind,
+      meta.source,
+      meta.sourceKind,
+      meta.kind
+    ].map(function (value) { return cleanString(value).toLowerCase(); });
+    return values.indexOf('studio-actions') !== -1 ||
+      values.indexOf('desktop-user-folder-create') !== -1 ||
+      values.indexOf('chrome-user-folder-create') !== -1;
+  }
+
+  function sanitizeFolderForDesktopChrome(row) {
+    var out = cloneJson(row) || {};
+    if (!out || typeof out !== 'object' || Array.isArray(out)) return null;
+    var folderId = cleanString(out.id || out.folderId || out.folder_id);
+    if (!folderId) return null;
+    out.id = cleanString(out.id || folderId);
+    out.folderId = cleanString(out.folderId || folderId);
+    if (typeof out.folder_id !== 'undefined') delete out.folder_id;
+    if (isStudioFolderActionSource(out)) {
+      var meta = out.meta && typeof out.meta === 'object' && !Array.isArray(out.meta)
+        ? Object.assign({}, out.meta)
+        : {};
+      var source = cleanString(out.source || meta.source || 'studio-actions') || 'studio-actions';
+      var sourceKind = cleanString(out.sourceKind || out.kind || meta.sourceKind || meta.kind || source) || source;
+      out.source = source;
+      out.sourceKind = sourceKind;
+      out.kind = sourceKind;
+      out.userCreated = true;
+      out.materializedUserFolder = true;
+      out.trustedFolderDisplay = true;
+      out.shownInNormalMode = true;
+      out.meta = Object.assign({}, meta, {
+        source: source,
+        sourceKind: sourceKind,
+        userCreated: true,
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true
+      });
+    }
+    return out;
+  }
+
+  function readDesktopChromeFolderStateSource(bundle) {
+    var csl = bundle && bundle.chromeStorageLocal && typeof bundle.chromeStorageLocal === 'object' && !Array.isArray(bundle.chromeStorageLocal)
+      ? bundle.chromeStorageLocal
+      : null;
+    var fromStorage = csl && csl[FOLDER_STATE_KEY_LOCAL];
+    if (fromStorage && typeof fromStorage === 'object' && !Array.isArray(fromStorage)) {
+      return { source: fromStorage, sourceKind: 'chromeStorageLocal' };
+    }
+    var direct = bundle && bundle.folderState;
+    if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+      return { source: direct, sourceKind: 'folderState' };
+    }
+    var catalogs = bundle && bundle.chatArchive && bundle.chatArchive.catalogs &&
+      typeof bundle.chatArchive.catalogs === 'object' && !Array.isArray(bundle.chatArchive.catalogs)
+      ? bundle.chatArchive.catalogs
+      : null;
+    var catalogFolders = catalogs && catalogs.folders;
+    if (Array.isArray(catalogFolders) && catalogFolders.length > 0) {
+      return {
+        source: {
+          schemaVersion: 1,
+          exportedFrom: 'chatArchive.catalogs.folders',
+          exportedAt: cleanString(bundle && bundle.exportedAt),
+          folders: catalogFolders,
+          items: {}
+        },
+        sourceKind: 'chatArchive.catalogs.folders'
+      };
+    }
+    return { source: null, sourceKind: '' };
+  }
+
   function folderStateForDesktopChrome(bundle, warnings) {
-    var source = bundle && bundle.chromeStorageLocal && bundle.chromeStorageLocal[FOLDER_STATE_KEY_LOCAL];
+    var found = readDesktopChromeFolderStateSource(bundle);
+    var source = found.source;
     if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
-    var folders = Array.isArray(source.folders) ? cloneJson(source.folders) : [];
+    var folders = [];
+    if (Array.isArray(source.folders)) {
+      for (var f = 0; f < source.folders.length; f += 1) {
+        var folder = sanitizeFolderForDesktopChrome(source.folders[f]);
+        if (folder) folders.push(folder);
+      }
+    }
     var items = source.items && typeof source.items === 'object' && !Array.isArray(source.items) ? source.items : {};
     var itemKeys = Object.keys(items);
     for (var i = 0; i < itemKeys.length; i += 1) {
@@ -729,6 +817,7 @@
       schemaVersion: Number(source.schemaVersion || source.version || 1) || 1,
       exportedFrom: cleanString(source.exportedFrom || source.source || 'desktop-studio'),
       exportedAt: cleanString(source.exportedAt || source.updatedAt),
+      sourceKind: cleanString(found.sourceKind),
       folders: folders,
       items: {}
     };
@@ -829,6 +918,9 @@
         importedShellCount: shellSummary.importedShellCount,
         snapshotCount: countSnapshots(chats),
         categoryCount: categories.length,
+        folderMetadataCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
+        folderStateSource: cleanString(folderState && folderState.sourceKind),
+        folderFacetConvergenceRequired: false,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
@@ -1085,14 +1177,18 @@
       pinned: numberOrZero(source.pinnedCount),
       archived: numberOrZero(source.archivedCount),
       folders: numberOrZero(source.folderCount),
+      folderMetadata: numberOrZero(source.folderMetadataCount || source.folderCount),
       categories: numberOrZero(source.categoryCount)
     };
     var mismatches = [];
-    ['total', 'saved', 'linked', 'folders', 'categories'].forEach(function (key) {
+    ['total', 'saved', 'linked', 'categories'].forEach(function (key) {
       if (counts[key] !== expected[key]) {
         mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
       }
     });
+    if (source.folderFacetConvergenceRequired === true && counts.folders !== expected.folders) {
+      mismatches.push({ field: 'folders', expected: expected.folders, observed: counts.folders });
+    }
     ['pinned', 'archived'].forEach(function (key) {
       if (expected[key] > 0 && counts[key] < expected[key]) {
         mismatches.push({ field: key, expected: expected[key], observed: counts[key] });
@@ -1210,7 +1306,7 @@
     }
   }
 
-  async function importLatestBundle(bundleInput, options) {
+  async function importDesktopBundlePayload(bundleInput, options) {
     var opts = safeObject(options);
     var normalized = buildDesktopChromeSupportedBundle(bundleInput);
     if (!normalized.ok) {
@@ -1299,6 +1395,38 @@
         protectedDomainFallbackDisabled: true
       }
     });
+  }
+
+  function isBundleLikeInput(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    return !!(
+      cleanString(value.schema) ||
+      value.chatArchive ||
+      value.chromeStorageLocal ||
+      value.libraryKv ||
+      value.folderState
+    );
+  }
+
+  function shouldTreatAsLatestJsonImportOptions(bundleInput, options, argumentCount) {
+    if (argumentCount === 0) return true;
+    if (typeof options !== 'undefined') return false;
+    if (!bundleInput || typeof bundleInput !== 'object' || Array.isArray(bundleInput)) return false;
+    if (isBundleLikeInput(bundleInput)) return false;
+    return Object.prototype.hasOwnProperty.call(bundleInput, 'reason') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'dryRunOnly') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'autoSync') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'conflictDecision') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'conflictApproved') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'approvedConflictBlockers') ||
+      Object.prototype.hasOwnProperty.call(bundleInput, 'direction');
+  }
+
+  async function importLatestBundle(bundleInput, options) {
+    if (shouldTreatAsLatestJsonImportOptions(bundleInput, options, arguments.length)) {
+      return syncNow(safeObject(bundleInput));
+    }
+    return importDesktopBundlePayload(bundleInput, options);
   }
 
   async function refreshLibraryIndex(reason) {
@@ -2170,7 +2298,7 @@
         };
       }
 
-      var propagation = await importLatestBundle(bundle, {
+      var propagation = await importDesktopBundlePayload(bundle, {
         dryRunOnly: opts.dryRunOnly === true,
         fileFingerprint: checksum,
         reason: cleanString(opts.reason),
@@ -2335,6 +2463,9 @@
         },
         guardedImportAvailable: true
       },
+      importLatestBundleReadsLatestJson: true,
+      importLatestBundlePayloadCompatibility: true,
+      fullBundleV2ImportCompatible: true,
       chromeDesktopExport: {
         api: 'H2O.Studio.sync.folder.exportChromeToSyncFolder',
         syncNowDirection: 'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })',

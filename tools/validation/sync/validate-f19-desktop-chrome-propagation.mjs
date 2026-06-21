@@ -119,7 +119,7 @@ function buildDesktopBundle() {
       'h2o:prm:cgx:fldrs:state:data:v1': {
         schemaVersion: 1,
         exportedFrom: 'desktop-studio',
-        folders: [{ id: 'desktop-folder-id', name: 'Private Desktop Folder', color: '#abcdef' }],
+        folders: [{ id: 'desktop-folder-id', name: 'Private Desktop Folder', color: '#abcdef', source: 'studio-actions' }],
         items: { 'desktop-folder-id': ['desktop-chat-id-1'] }
       },
       'unsupported-private-key': { value: 'private unsupported value' }
@@ -341,6 +341,10 @@ async function runVmProof() {
   assert(Object.keys(payload.bundle.chromeStorageLocal).length === 1, 'unsupported chromeStorageLocal keys must be stripped');
   const folderState = payload.bundle.chromeStorageLocal['h2o:prm:cgx:fldrs:state:data:v1'];
   assert(folderState.folders.length === 1, 'folder metadata should be preserved');
+  assert(folderState.folders[0].userCreated === true, 'Studio-created folder metadata should be user-created');
+  assert(folderState.folders[0].materializedUserFolder === true, 'Studio-created folder metadata should be materialized');
+  assert(folderState.folders[0].trustedFolderDisplay === true, 'Studio-created folder metadata should be trusted for display');
+  assert(folderState.folders[0].shownInNormalMode === true, 'Studio-created folder metadata should be normal-mode visible');
   assert(Object.keys(folderState.items).length === 0, 'chat-folder bindings must be deferred');
   const org = payload.bundle.chatArchive.chats[0].chatIndex.organization;
   assert(org.categoryId === 'desktop-category-id', 'chat category binding should be preserved for importer');
@@ -350,6 +354,11 @@ async function runVmProof() {
   assert(!Object.prototype.hasOwnProperty.call(org, 'tagIds'), 'tags must be stripped from chat organization');
   assert(!Object.prototype.hasOwnProperty.call(org, 'projectId'), 'project must be stripped from chat organization');
   assert(context.__refreshReasons.includes('desktop-chrome-propagation-import'), 'LibraryIndex refresh was not requested');
+
+  const latestJsonReadResult = await api.importLatestBundle({ reason: 'chrome-import-desktop-latest-folder-sport-proof' });
+  assert(latestJsonReadResult.status === 'sync-folder-not-connected', 'options-only importLatestBundle should read latest.json via syncNow when no folder is connected');
+  assert(!String(latestJsonReadResult.blockers || '').includes('library-propagation-schema-invalid'), 'options-only importLatestBundle must not treat options as a bundle payload');
+  assert(!String(latestJsonReadResult.blockers || '').includes('transport-schema-unsupported'), 'options-only importLatestBundle must not report schema unsupported before reading latest.json');
 
   const publicResult = JSON.stringify(result);
   for (const forbidden of [
@@ -378,6 +387,11 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
   assertContains(folderImportFile, '0.1.0-f19.2.c', 'propagation version');
   assertContains(folderImportFile, 'importLatestBundle', 'bundle API');
+  assertContains(folderImportFile, 'shouldTreatAsLatestJsonImportOptions', 'options-only latest.json import wrapper');
+  assertContains(folderImportFile, 'importDesktopBundlePayload', 'low-level bundle payload importer');
+  assertContains(folderImportFile, 'folderMetadataCount', 'folder metadata source summary');
+  assertContains(folderImportFile, 'folderFacetConvergenceRequired', 'folder metadata separated from active row facet convergence');
+  assertContains(folderImportFile, 'materializedUserFolder = true', 'Studio-created folder materialization stamping');
   assertContains(folderImportFile, 'dryRunImportFullBundle', 'dry run archive API');
   assertContains(folderImportFile, 'importFullBundle', 'import archive API');
   assertContains(folderImportFile, "mode: 'merge'", 'merge import mode');
