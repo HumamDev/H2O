@@ -989,6 +989,14 @@ if (failures.length === 0) {
   assertContains(chromeLiveBackgroundFile, 'function applyRenameFolderMetadataOperationInBackground', 'Native owner background can safely apply rename-folder when page receiver is absent');
   assertContains(chromeLiveBackgroundFile, 'function previewColorFolderMetadataOperationInBackground', 'Native owner background can preview change-folder-color without mutating');
   assertContains(chromeLiveBackgroundFile, 'function applyColorFolderMetadataOperationInBackground', 'Native owner background can safely apply change-folder-color when page receiver is absent');
+  assertContains(chromeLiveBackgroundFile, 'function isFolderMetadataColorOnlyPatch', 'Chrome color fallback marks color-only patches');
+  assertContains(chromeLiveBackgroundFile, 'folderMetadataPatchType: "change-folder-color"', 'Chrome color fallback forwards color-only patch metadata');
+  assertContains(chromeLiveBackgroundFile, 'colorOnlyPatchPreservesIdentity', 'Chrome color fallback preserves newer folder identity fields while applying color');
+  assertContains(chromeLiveBackgroundFile, 'colorPatchDiagnostics', 'Chrome folder-state merge reports color patch preservation diagnostics');
+  assertContains(chromeLiveBackgroundFile, 'colorPreservedName', 'Chrome color fallback reports preserved folder name');
+  assertContains(chromeLiveBackgroundFile, 'colorSourceRowName', 'Chrome color fallback reports incoming color source row name');
+  assertContains(chromeLiveBackgroundFile, 'colorLatestRowName', 'Chrome color fallback reports latest preserved folder row name');
+  assertContains(chromeLiveBackgroundFile, 'staleIncomingNameIgnored', 'Chrome color fallback reports stale incoming names ignored during merge');
   assertContains(chromeLiveBackgroundFile, 'mode !== "preview" && mode !== "apply"', 'Background folder metadata fallback accepts only preview/apply request modes');
   assertContains(chromeLiveBackgroundFile, 'result.previewSource = "native-owner-background-storage-fallback"', 'Preview fallback remains read-only/background sourced');
   assertContains(chromeLiveBackgroundFile, 'result.applySource = "native-owner-background-storage-fallback"', 'Apply fallback reports background apply source');

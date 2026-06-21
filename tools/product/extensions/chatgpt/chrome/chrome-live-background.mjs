@@ -2943,13 +2943,16 @@ function normalizeFolderEntry(raw) {
   const rawKindAsSource = kindRaw && kindRaw !== "local" && kindRaw !== "project_backed" ? kindRaw : "";
   const sourceKind = String(raw && raw.sourceKind || meta.sourceKind || meta.kind || rawKindAsSource || "").trim();
   if (sourceKind) out.sourceKind = sourceKind;
+  const folderMetadataPatchType = String(raw && (raw.folderMetadataPatchType || raw.patchType) || meta.folderMetadataPatchType || meta.patchType || "").trim();
+  if (folderMetadataPatchType) out.folderMetadataPatchType = folderMetadataPatchType;
   if ((raw && raw.userCreated === true) || meta.userCreated === true) out.userCreated = true;
   if ((raw && raw.materializedUserFolder === true) || meta.materializedUserFolder === true) out.materializedUserFolder = true;
   if ((raw && raw.trustedFolderDisplay === true) || meta.trustedFolderDisplay === true) out.trustedFolderDisplay = true;
   if ((raw && raw.shownInNormalMode === true) || meta.shownInNormalMode === true) out.shownInNormalMode = true;
-  if (sourceKind || out.userCreated === true || out.materializedUserFolder === true || out.trustedFolderDisplay === true || out.shownInNormalMode === true) {
+  if (sourceKind || folderMetadataPatchType || out.userCreated === true || out.materializedUserFolder === true || out.trustedFolderDisplay === true || out.shownInNormalMode === true) {
     out.meta = {
       ...(sourceKind ? { sourceKind } : {}),
+      ...(folderMetadataPatchType ? { folderMetadataPatchType } : {}),
       ...(out.userCreated === true ? { userCreated: true } : {}),
       ...(out.materializedUserFolder === true ? { materializedUserFolder: true } : {}),
       ...(out.trustedFolderDisplay === true ? { trustedFolderDisplay: true } : {}),
@@ -2981,6 +2984,12 @@ function folderCatalogRowTimestampMs(row) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function isFolderMetadataColorOnlyPatch(row) {
+  const meta = row && row.meta && typeof row.meta === "object" && !Array.isArray(row.meta) ? row.meta : {};
+  const type = String(row && (row.folderMetadataPatchType || row.patchType) || meta.folderMetadataPatchType || meta.patchType || "").trim();
+  return type === "change-folder-color";
+}
+
 function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
   const prev = prevRaw && typeof prevRaw === "object" ? prevRaw : {};
   const item = itemRaw && typeof itemRaw === "object" ? itemRaw : {};
@@ -2994,11 +3003,14 @@ function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
     base = item;
     winner = prev;
   }
+  const colorOnlyPatchPreservesIdentity = isFolderMetadataColorOnlyPatch(item) && !!base.id && winner === item;
+  const identity = colorOnlyPatchPreservesIdentity ? base : winner;
+  const colorSource = colorOnlyPatchPreservesIdentity ? item : winner;
   const id = String(winner.id || base.id || "").trim();
-  const winnerKindAsSource = String(winner.kind || "").trim();
+  const winnerKindAsSource = String(identity.kind || "").trim();
   const baseKindAsSource = String(base.kind || "").trim();
   const sourceKind = String(
-    winner.sourceKind
+    identity.sourceKind
     || itemMeta.sourceKind
     || itemMeta.kind
     || base.sourceKind
@@ -3023,18 +3035,24 @@ function mergeFolderCatalogRowByFreshness(prevRaw, itemRaw) {
     ...base,
     ...winner,
     id,
-    name: String(winner.name || base.name || id).trim() || id,
-    kind: String(winner.kind || base.kind || "local").trim() || "local",
-    projectRef: winner.projectRef || base.projectRef || null,
-    parentId: String(winner.parentId || base.parentId || "").trim(),
-    source: String(winner.source || base.source || "").trim(),
-    sortOrder: Number.isFinite(Number(winner.sortOrder)) ? Math.floor(Number(winner.sortOrder))
+    name: String(identity.name || base.name || winner.name || id).trim() || id,
+    kind: String(identity.kind || base.kind || winner.kind || "local").trim() || "local",
+    projectRef: identity.projectRef || base.projectRef || winner.projectRef || null,
+    parentId: String(identity.parentId || base.parentId || winner.parentId || "").trim(),
+    source: String(identity.source || base.source || winner.source || "").trim(),
+    sortOrder: Number.isFinite(Number(identity.sortOrder)) ? Math.floor(Number(identity.sortOrder))
+      : Number.isFinite(Number(winner.sortOrder)) ? Math.floor(Number(winner.sortOrder))
       : Number.isFinite(Number(base.sortOrder)) ? Math.floor(Number(base.sortOrder)) : 0,
-    iconColor: String(winner.iconColor || base.iconColor || "").trim(),
-    color: String(winner.color || base.color || winner.iconColor || base.iconColor || "").trim(),
-    icon: String(winner.icon || base.icon || "").trim(),
-    createdAt: String(winner.createdAt || base.createdAt || "").trim(),
+    iconColor: String(colorSource.iconColor || colorSource.color || base.iconColor || "").trim(),
+    color: String(colorSource.color || colorSource.iconColor || base.color || base.iconColor || "").trim(),
+    icon: String(identity.icon || base.icon || winner.icon || "").trim(),
+    createdAt: String(identity.createdAt || base.createdAt || winner.createdAt || "").trim(),
     updatedAt: String(winner.updatedAt || base.updatedAt || "").trim(),
+    ...(colorOnlyPatchPreservesIdentity ? {
+      colorPreservedName: true,
+      colorSourceRowName: String(item.name || "").trim(),
+      colorLatestRowName: String(base.name || "").trim(),
+    } : {}),
     ...(sourceKind ? { sourceKind } : {}),
     ...(userCreated ? { userCreated: true } : {}),
     ...(materializedUserFolder ? { materializedUserFolder: true } : {}),
@@ -4944,6 +4962,10 @@ async function forwardBackgroundFolderStateToStudioLauncher(folderState, sourceL
           ok: resp.ok !== false,
           status: String(resp.status || (resp.ok === false ? "failed" : "ok")),
           mergedFolderCount: Number(resp.mergedFolderCount || resp.afterFolderCount || 0) || 0,
+          colorPreservedName: resp.colorPreservedName === true,
+          colorSourceRowName: String(resp.colorSourceRowName || ""),
+          colorLatestRowName: String(resp.colorLatestRowName || ""),
+          staleIncomingNameIgnored: resp.staleIncomingNameIgnored === true,
         } : { ok: false, status: "no-response" });
       });
     } catch (e) {
@@ -4968,6 +4990,10 @@ async function writeBackgroundFolderStateAndForward(nextState, result, reason) {
   const forward = await forwardBackgroundFolderStateToStudioLauncher(nextState, reason);
   result.folderStateForwardedToStudio = forward.ok === true;
   result.folderStateForwardStatus = String(forward.status || "");
+  if (forward.colorPreservedName === true) result.colorPreservedName = true;
+  if (forward.colorSourceRowName) result.colorSourceRowName = forward.colorSourceRowName;
+  if (forward.colorLatestRowName) result.colorLatestRowName = forward.colorLatestRowName;
+  if (forward.staleIncomingNameIgnored === true) result.staleIncomingNameIgnored = true;
   if (!forward.ok) {
     result.warnings.push({ code: "studio-folder-state-forward-failed", status: String(forward.status || "failed") });
   }
@@ -5099,14 +5125,21 @@ async function applyColorFolderMetadataOperationInBackground(request) {
     ...ctx.targetFolder,
     color: ctx.nextColor,
     iconColor: ctx.nextColor,
+    folderMetadataPatchType: "change-folder-color",
     updatedAt: now,
     meta: {
       ...targetMeta,
       color: ctx.nextColor,
       iconColor: ctx.nextColor,
+      folderMetadataPatchType: "change-folder-color",
       updatedAt: now,
     },
   });
+  updatedFolder.folderMetadataPatchType = "change-folder-color";
+  updatedFolder.meta = {
+    ...(updatedFolder.meta || {}),
+    folderMetadataPatchType: "change-folder-color",
+  };
   const folders = ctx.data.folders.map((folder) => (
     folderMetadataRowId(folder) === ctx.folderId ? updatedFolder : folder
   )).filter(Boolean);
@@ -5135,6 +5168,9 @@ async function applyColorFolderMetadataOperationInBackground(request) {
     iconColor: color,
     sourceHash: checksumFolderState({ folders, items }),
   };
+  result.colorPreservedName = false;
+  result.colorSourceRowName = String(ctx.targetFolder && ctx.targetFolder.name || "");
+  result.colorLatestRowName = String(ctx.targetFolder && ctx.targetFolder.name || "");
   result.applied = true;
   result.noMutation = false;
   result.readOnly = false;
@@ -5226,6 +5262,29 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
   const duplicateNameDifferentIdSample = findFolderDuplicateNameDifferentIdCandidates(beforeState.folders, incomingState.folders).slice(0, 8);
   const incomingChecksum = String(folderState.checksum || checksumFolderState({ folders: incomingState.folders, items: incomingState.items }));
   const mergedChecksum = checksumFolderState({ folders: afterState.folders, items: afterState.items });
+  const beforeById = new Map(beforeState.folders.map((folder) => [String(folder && folder.id || "").trim(), folder]));
+  const afterById = new Map(afterState.folders.map((folder) => [String(folder && folder.id || "").trim(), folder]));
+  const colorPatchDiagnostics = incomingState.folders
+    .filter((folder) => isFolderMetadataColorOnlyPatch(folder))
+    .map((folder) => {
+      const id = String(folder && folder.id || "").trim();
+      const beforeFolder = beforeById.get(id) || null;
+      const afterFolder = afterById.get(id) || null;
+      const incomingName = String(folder && folder.name || "").trim();
+      const beforeName = String(beforeFolder && beforeFolder.name || "").trim();
+      const afterName = String(afterFolder && afterFolder.name || "").trim();
+      return {
+        id,
+        incomingName,
+        beforeName,
+        afterName,
+        preservedName: !!afterName && (!beforeName || afterName === beforeName),
+        staleIncomingNameIgnored: !!(incomingName && afterName && incomingName !== afterName),
+      };
+    })
+    .filter((entry) => entry.id)
+    .slice(0, 8);
+  const firstColorPatch = colorPatchDiagnostics[0] || null;
   const diagnostic = {
     key: FOLDER_STATE_DATA_KEY,
     diagnosticKey: NATIVE_FOLDER_STATE_EXTERNAL_MERGE_DIAG_KEY,
@@ -5252,6 +5311,11 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
     skipped: result.skipped,
     duplicateNameDifferentIdCount: duplicateNameDifferentIdSample.length,
     duplicateNameDifferentIdSample,
+    colorPatchDiagnostics,
+    colorPreservedName: !!(firstColorPatch && firstColorPatch.preservedName),
+    colorSourceRowName: firstColorPatch ? firstColorPatch.incomingName : "",
+    colorLatestRowName: firstColorPatch ? firstColorPatch.afterName : "",
+    staleIncomingNameIgnored: !!(firstColorPatch && firstColorPatch.staleIncomingNameIgnored),
     caseArrived: incomingState.folders.some((folder) => String(folder && folder.name || "").trim().toLowerCase() === "case"),
     emptyFolderCount: afterState.folders.filter((folder) => {
       const id = String(folder && folder.id || "").trim();
@@ -5280,6 +5344,10 @@ async function handleExternalNativeFolderStateMessage(msg, sender) {
     incomingChecksum,
     mergedChecksum,
     caseArrived: diagnostic.caseArrived,
+    colorPreservedName: diagnostic.colorPreservedName,
+    colorSourceRowName: diagnostic.colorSourceRowName,
+    colorLatestRowName: diagnostic.colorLatestRowName,
+    staleIncomingNameIgnored: diagnostic.staleIncomingNameIgnored,
     written: result.written,
     skipped: result.skipped,
     source: String(msg.source || "native-content-bridge"),
