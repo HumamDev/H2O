@@ -4369,6 +4369,7 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
       const fallbackPreviewCount = fallbackResults.filter((result) => String(result && result.requestMode || "") === "preview").length;
       const fallbackApplyCount = fallbackResults.filter((result) => String(result && result.requestMode || "") === "apply").length;
       const fallbackRenameCount = fallbackResults.filter((result) => String(result && result.operationType || "") === "rename-folder").length;
+      const fallbackColorCount = fallbackResults.filter((result) => String(result && result.operationType || "") === "change-folder-color").length;
       directRelay = {
         ...directRelay,
         ok: true,
@@ -4386,6 +4387,9 @@ async function handleExternalStudioBroadcastMessage(msg, sender) {
         renameFallbackStatus: fallbackRenameCount ? "background-rename-fallback" : "",
         renameResultCount: fallbackRenameCount,
         renameFallbackReason: fallbackRenameCount ? "native-owner-page-receiver-unavailable" : "",
+        colorFallbackStatus: fallbackColorCount ? "background-color-fallback" : "",
+        colorResultCount: fallbackColorCount,
+        colorFallbackReason: fallbackColorCount ? "native-owner-page-receiver-unavailable" : "",
         folderStateForwardStatus: String((fallbackResults.find((result) => String(result && result.requestMode || "") === "apply") || {}).folderStateForwardStatus || ""),
         folderStateForwardedToStudio: fallbackResults.some((result) => result && result.folderStateForwardedToStudio === true),
         errors: Array.isArray(directRelay && directRelay.errors)
@@ -4533,6 +4537,11 @@ const PROTECTED_CANONICAL_FOLDER_NAME_KEYS = new Set([
   "tech",
   "english",
 ]);
+const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set([
+  "studio-actions",
+  "desktop-user-folder-create",
+  "chrome-user-folder-create",
+]);
 
 function cleanFolderMetadataId(value) {
   return String(value || "").trim().replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 160);
@@ -4563,6 +4572,35 @@ function folderMetadataRowId(row) {
 
 function folderMetadataRowName(row) {
   return cleanFolderMetadataName(row && (row.name || row.title || row.label || ""));
+}
+
+function folderMetadataRowMeta(row) {
+  return row && row.meta && typeof row.meta === "object" && !Array.isArray(row.meta) ? row.meta : {};
+}
+
+function folderMetadataRowColor(row) {
+  const meta = folderMetadataRowMeta(row);
+  return normalizeHexColor(row && (row.iconColor || row.color || meta.iconColor || meta.color || ""));
+}
+
+function isBackgroundColorSafeFolder(row) {
+  if (!row || typeof row !== "object") return false;
+  const id = folderMetadataRowId(row);
+  const nameKey = folderMetadataNameKey(folderMetadataRowName(row));
+  if (!id || !nameKey || nameKey === "unfiled") return false;
+  if (PROTECTED_CANONICAL_FOLDER_NAME_KEYS.has(nameKey)) return false;
+  const meta = folderMetadataRowMeta(row);
+  if (row.userCreated === true || meta.userCreated === true) return true;
+  if (row.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
+  if (row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
+  return [
+    row.source,
+    row.sourceKind,
+    row.kind,
+    meta.source,
+    meta.sourceKind,
+    meta.kind,
+  ].map((value) => String(value || "").trim().toLowerCase()).some((source) => STUDIO_USER_FOLDER_ACTION_SOURCES.has(source));
 }
 
 function folderMetadataResultBase(request, code) {
@@ -4726,6 +4764,77 @@ async function renameFolderMetadataOperationContextInBackground(request, expecte
   return { req, operation, result, data, folderId, targetFolder, previousName, nextName, sourceHash, previewHash };
 }
 
+async function colorFolderMetadataOperationContextInBackground(request, expectedMode) {
+  const req = request && typeof request === "object" ? request : {};
+  const operation = req.operation && typeof req.operation === "object" ? req.operation : {};
+  const result = folderMetadataResultBase(req, "");
+  const mode = String(req.requestMode || "").trim();
+  result.warnings = [{ code: "native-owner-page-receiver-unavailable" }];
+  if (req.schema !== FOLDER_METADATA_OPERATION_REQUEST_SCHEMA) result.blockers.push({ code: "invalid-request-schema" });
+  if (mode !== String(expectedMode || "").trim()) result.blockers.push({ code: "background-" + String(expectedMode || "unknown") + "-only" });
+  if (operation.schema !== FOLDER_METADATA_OPERATION_SCHEMA) result.blockers.push({ code: "invalid-folder-metadata-operation" });
+  if (String(operation.operationType || "").trim() !== "change-folder-color") result.blockers.push({ code: "background-" + String(expectedMode || "unknown") + "-unsupported-operation" });
+
+  const folderId = cleanFolderMetadataId(operation.folderId || operation.id || "");
+  const after = operation.after && typeof operation.after === "object" ? operation.after : {};
+  const nextColor = normalizeHexColor(after.color || after.iconColor || operation.color || operation.iconColor || "");
+  const rows = await storageGet([FOLDER_STATE_DATA_KEY]);
+  const data = normalizeFolderStateData(rows && rows[FOLDER_STATE_DATA_KEY]);
+  const sourceHash = checksumFolderState({ folders: data.folders, items: data.items });
+  const targetFolder = data.folders.find((folder) => folderMetadataRowId(folder) === folderId) || null;
+  const previousColor = folderMetadataRowColor(targetFolder);
+  const staleGuard = operation.staleGuard && typeof operation.staleGuard === "object" && !Array.isArray(operation.staleGuard)
+    ? operation.staleGuard
+    : {};
+
+  if (!folderId) result.blockers.push({ code: "folder-id-required" });
+  if (folderId && !targetFolder) result.blockers.push({ code: "folder-not-found" });
+  if (targetFolder && !isBackgroundColorSafeFolder(targetFolder)) result.blockers.push({ code: "folder-color-not-allowed" });
+  if (!nextColor) result.blockers.push({ code: "invalid-folder-color" });
+
+  const previewHash = checksumFolderState({
+    operationType: "change-folder-color",
+    folderId,
+    beforeColor: previousColor,
+    color: nextColor,
+    sourceHash,
+  });
+  if (expectedMode === "apply") {
+    const guardSourceHash = String(staleGuard.sourceHash || "").trim();
+    const guardPreviewHash = String(staleGuard.previewHash || "").trim();
+    if (!guardSourceHash || !guardPreviewHash) {
+      result.blockers.push({ code: "stale-guard-required" });
+    } else {
+      if (guardSourceHash !== sourceHash) result.blockers.push({ code: "stale-source-hash" });
+      if (guardPreviewHash !== previewHash) result.blockers.push({ code: "stale-preview-hash" });
+    }
+  }
+
+  result.folderId = folderId;
+  result.before = {
+    id: folderId,
+    folderId,
+    color: previousColor,
+    iconColor: previousColor,
+    sourceHash,
+    folderCount: data.folders.length,
+    membershipCount: Array.isArray(data.items && data.items[folderId]) ? data.items[folderId].length : 0,
+    previewHash,
+  };
+  result.after = {
+    id: folderId,
+    folderId,
+    color: nextColor,
+    iconColor: nextColor,
+    sourceHash,
+  };
+  result.staleGuard = {
+    sourceHash,
+    previewHash,
+  };
+  return { req, operation, result, data, folderId, targetFolder, previousColor, nextColor, sourceHash, previewHash };
+}
+
 async function previewCreateFolderMetadataOperationInBackground(request) {
   const ctx = await createFolderMetadataOperationContextInBackground(request, "preview");
   const result = ctx.result;
@@ -4751,6 +4860,23 @@ async function previewRenameFolderMetadataOperationInBackground(request) {
     folderId: ctx.folderId,
     beforeName: ctx.previousName,
     afterName: ctx.nextName,
+    membershipCount: Array.isArray(ctx.data.items && ctx.data.items[ctx.folderId]) ? ctx.data.items[ctx.folderId].length : 0,
+  };
+  result.ok = result.blockers.length === 0;
+  result.canApply = result.ok;
+  return result;
+}
+
+async function previewColorFolderMetadataOperationInBackground(request) {
+  const ctx = await colorFolderMetadataOperationContextInBackground(request, "preview");
+  const result = ctx.result;
+  result.previewSource = "native-owner-background-storage-fallback";
+  result.colorSource = "native-owner-background-storage-fallback";
+  result.proposed = {
+    color: true,
+    folderId: ctx.folderId,
+    beforeColor: ctx.previousColor,
+    afterColor: ctx.nextColor,
     membershipCount: Array.isArray(ctx.data.items && ctx.data.items[ctx.folderId]) ? ctx.data.items[ctx.folderId].length : 0,
   };
   result.ok = result.blockers.length === 0;
@@ -4952,6 +5078,72 @@ async function applyRenameFolderMetadataOperationInBackground(request) {
   return writeBackgroundFolderStateAndForward(nextState, result, "folder-rename-apply-background-fallback");
 }
 
+async function applyColorFolderMetadataOperationInBackground(request) {
+  const ctx = await colorFolderMetadataOperationContextInBackground(request, "apply");
+  const result = ctx.result;
+  result.applySource = "native-owner-background-storage-fallback";
+  result.colorSource = "native-owner-background-storage-fallback";
+  result.readOnly = false;
+  result.noMutation = true;
+  if (result.blockers.length) {
+    result.ok = false;
+    result.readOnly = true;
+    result.noMutation = true;
+    return result;
+  }
+  const now = nowIso();
+  const targetMeta = ctx.targetFolder && ctx.targetFolder.meta && typeof ctx.targetFolder.meta === "object" && !Array.isArray(ctx.targetFolder.meta)
+    ? ctx.targetFolder.meta
+    : {};
+  const updatedFolder = normalizeFolderEntry({
+    ...ctx.targetFolder,
+    color: ctx.nextColor,
+    iconColor: ctx.nextColor,
+    updatedAt: now,
+    meta: {
+      ...targetMeta,
+      color: ctx.nextColor,
+      iconColor: ctx.nextColor,
+      updatedAt: now,
+    },
+  });
+  const folders = ctx.data.folders.map((folder) => (
+    folderMetadataRowId(folder) === ctx.folderId ? updatedFolder : folder
+  )).filter(Boolean);
+  const items = normalizeFolderStateItems(ctx.data.items);
+  const nextState = {
+    ...ctx.data,
+    schemaVersion: ctx.data.schemaVersion || 1,
+    source: "native-owner-background-folder-metadata-color-fallback",
+    sourceKind: String(updatedFolder.sourceKind || updatedFolder.kind || ctx.targetFolder.sourceKind || ctx.targetFolder.kind || ctx.targetFolder.source || "chrome-user-folder-create"),
+    sourceSurface: "chrome-studio",
+    folders,
+    items,
+    updatedAt: now,
+  };
+  nextState.checksum = checksumFolderState({ folders: nextState.folders, items: nextState.items });
+  const color = folderMetadataRowColor(updatedFolder) || ctx.nextColor;
+  result.folderId = ctx.folderId;
+  result.before = {
+    ...result.before,
+    color: ctx.previousColor,
+    iconColor: ctx.previousColor,
+  };
+  result.after = {
+    ...updatedFolder,
+    color,
+    iconColor: color,
+    sourceHash: checksumFolderState({ folders, items }),
+  };
+  result.applied = true;
+  result.noMutation = false;
+  result.readOnly = false;
+  result.ok = true;
+  result.canApply = false;
+  result.writesPerformed = 1;
+  return writeBackgroundFolderStateAndForward(nextState, result, "folder-color-apply-background-fallback");
+}
+
 function classifyDirectRelayError(error) {
   const text = String(error || "");
   if (/Receiving end does not exist|Could not establish connection/i.test(text)) return "native-owner-page-receiver-unavailable";
@@ -4972,12 +5164,16 @@ async function backgroundFolderMetadataOperationFallback(value, directRelay) {
     if (!requestId || handled.has(requestId)) continue;
     const mode = String(request && request.requestMode || "").trim();
     const operationType = String(request && request.operation && request.operation.operationType || "").trim();
-    if ((mode !== "preview" && mode !== "apply") || (operationType !== "create-folder" && operationType !== "rename-folder")) continue;
+    if ((mode !== "preview" && mode !== "apply") || (operationType !== "create-folder" && operationType !== "rename-folder" && operationType !== "change-folder-color")) continue;
     try {
       if (operationType === "rename-folder") {
         results.push(mode === "apply"
           ? await applyRenameFolderMetadataOperationInBackground(request)
           : await previewRenameFolderMetadataOperationInBackground(request));
+      } else if (operationType === "change-folder-color") {
+        results.push(mode === "apply"
+          ? await applyColorFolderMetadataOperationInBackground(request)
+          : await previewColorFolderMetadataOperationInBackground(request));
       } else {
         results.push(mode === "apply"
           ? await applyCreateFolderMetadataOperationInBackground(request)
@@ -4992,12 +5188,14 @@ async function backgroundFolderMetadataOperationFallback(value, directRelay) {
   const previewCount = results.filter((result) => String(result && result.requestMode || "") === "preview").length;
   const applyCount = results.filter((result) => String(result && result.requestMode || "") === "apply").length;
   const renameCount = results.filter((result) => String(result && result.operationType || "") === "rename-folder").length;
+  const colorCount = results.filter((result) => String(result && result.operationType || "") === "change-folder-color").length;
   return {
     results,
-    status: renameCount ? "background-rename-fallback" : (applyCount ? "background-apply-fallback" : (previewCount ? "background-preview-fallback" : "unsupported-background-folder-metadata-fallback")),
+    status: colorCount ? "background-color-fallback" : (renameCount ? "background-rename-fallback" : (applyCount ? "background-apply-fallback" : (previewCount ? "background-preview-fallback" : "unsupported-background-folder-metadata-fallback"))),
     previewCount,
     applyCount,
     renameCount,
+    colorCount,
   };
 }
 

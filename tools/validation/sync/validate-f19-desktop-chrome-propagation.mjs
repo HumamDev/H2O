@@ -451,11 +451,16 @@ if (failures.length === 0) {
   assertContains(librarySyncFile, 'requestDesktopFolderMetadataOperation', 'Desktop folder metadata operation bridge');
   assertContains(librarySyncFile, 'previewDesktopRenameFolderMetadataOperation', 'Desktop rename-folder preview bridge');
   assertContains(librarySyncFile, 'applyDesktopRenameFolderMetadataOperation', 'Desktop rename-folder apply bridge');
-  assertContains(librarySyncFile, "DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder']", 'Desktop bridge remains rename-only');
+  assertContains(librarySyncFile, 'previewDesktopColorFolderMetadataOperation', 'Desktop change-folder-color preview bridge');
+  assertContains(librarySyncFile, 'applyDesktopColorFolderMetadataOperation', 'Desktop change-folder-color apply bridge');
+  assertContains(librarySyncFile, "DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder', 'change-folder-color']", 'Desktop bridge supports only rename and color operations');
   assertContains(librarySyncFile, 'stale-guard-required', 'Desktop rename apply stale guard');
   assertContains(librarySyncFile, 'protected-canonical-folder-name', 'Desktop rename protected canonical name guard');
+  assertContains(librarySyncFile, 'invalid-folder-color', 'Desktop color hex guard');
   assertContains(librarySyncFile, 'desktopRenameFallbackStatus', 'Desktop rename diagnostic status');
   assertContains(librarySyncFile, 'desktopRenameResultCount', 'Desktop rename diagnostic count');
+  assertContains(librarySyncFile, 'desktopColorFallbackStatus', 'Desktop color diagnostic status');
+  assertContains(librarySyncFile, 'desktopColorResultCount', 'Desktop color diagnostic count');
   assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
   assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');

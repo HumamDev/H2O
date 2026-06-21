@@ -69,7 +69,7 @@
   const FOLDER_METADATA_OPERATION_RESULT_SCHEMA = 'h2o.folder-metadata-operation-result.v1';
   const FOLDER_METADATA_REQUEST_DEFAULT_TIMEOUT_MS = 5000;
   const FOLDER_METADATA_REQUEST_MAX_PENDING = 32;
-  const DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder'];
+  const DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES = ['rename-folder', 'change-folder-color'];
   const PROTECTED_CANONICAL_FOLDER_NAME_KEYS = new Set(['study', 'case', 'dev', 'code', 'tech', 'english']);
   const RESERVED_FOLDER_METADATA_NAME_KEYS = new Set(['all', 'archive', 'archived', 'link', 'linked', 'links', 'recent', 'recents', 'saved', 'unfiled']);
   const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set(['studio-actions', 'desktop-user-folder-create', 'chrome-user-folder-create']);
@@ -182,6 +182,8 @@
     lastDesktopFolderMetadataError: '',
     lastDesktopRenameFallbackStatus: '',
     lastDesktopRenameResultCount: 0,
+    lastDesktopColorFallbackStatus: '',
+    lastDesktopColorResultCount: 0,
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -1112,6 +1114,16 @@
     return cleanFolderMetadataName(row && (row.name || row.title || row.label || ''));
   }
 
+  function normalizeFolderMetadataHexColor(value) {
+    const raw = String(value || '').trim();
+    return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : '';
+  }
+
+  function folderMetadataRowColor(row) {
+    const meta = folderMetadataRowMeta(row);
+    return normalizeFolderMetadataHexColor(row?.iconColor || row?.color || meta.iconColor || meta.color || '');
+  }
+
   function folderMetadataRowMeta(row) {
     return (row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
   }
@@ -1142,6 +1154,10 @@
     if (row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
     if (row.userCreated === true || meta.userCreated === true) return true;
     return folderMetadataSourceTokens(row).some((source) => STUDIO_USER_FOLDER_ACTION_SOURCES.has(source));
+  }
+
+  function isDesktopColorSafeFolder(row) {
+    return isDesktopRenameSafeFolder(row);
   }
 
   function comparableDesktopFolderMetadataRows(rows) {
@@ -1388,33 +1404,204 @@
     return result;
   }
 
+  async function buildDesktopColorFolderMetadataContext(requestId, mode, operation, expectedMode) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const result = folderMetadataResultBase(requestId, mode, op, '');
+    result.desktopBridge = 'tauri-folder-store';
+    result.desktopColorFallbackStatus = 'started';
+    if (String(mode || '').trim() !== String(expectedMode || '').trim()) {
+      result.blockers.push({ code: `desktop-color-${String(expectedMode || 'unknown')}-only` });
+    }
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+      result.blockers.push({ code: 'invalid-folder-metadata-operation' });
+    }
+    if (String(op.operationType || '').trim() !== 'change-folder-color') {
+      result.blockers.push({ code: 'desktop-folder-metadata-operation-unsupported' });
+    }
+
+    const folderId = folderMetadataRowId(op);
+    const after = op.after && typeof op.after === 'object' ? op.after : {};
+    const nextColor = normalizeFolderMetadataHexColor(after.color || after.iconColor || op.color || op.iconColor || '');
+    const staleGuard = op.staleGuard && typeof op.staleGuard === 'object' && !Array.isArray(op.staleGuard)
+      ? op.staleGuard
+      : {};
+    const read = await readDesktopFolderMetadataRows();
+    if (read.error) result.blockers.push({ code: read.error });
+    const rows = Array.isArray(read.rows) ? read.rows : [];
+    const sourceHash = desktopFolderMetadataSourceHash(rows);
+    const targetFolder = rows.find((row) => folderMetadataRowId(row) === folderId) || null;
+    const previousColor = folderMetadataRowColor(targetFolder);
+    const previewHash = stableChecksum({
+      operationType: 'change-folder-color',
+      folderId,
+      beforeColor: previousColor,
+      color: nextColor,
+      sourceHash,
+    });
+
+    if (!folderId) result.blockers.push({ code: 'folder-id-required' });
+    if (folderId && !targetFolder) result.blockers.push({ code: 'folder-not-found' });
+    if (targetFolder && !isDesktopColorSafeFolder(targetFolder)) {
+      result.blockers.push({ code: 'folder-color-not-allowed' });
+    }
+    if (!nextColor) result.blockers.push({ code: 'invalid-folder-color' });
+    if (expectedMode === 'apply') {
+      const guardSourceHash = String(staleGuard.sourceHash || '').trim();
+      const guardPreviewHash = String(staleGuard.previewHash || '').trim();
+      if (!guardSourceHash || !guardPreviewHash) {
+        result.blockers.push({ code: 'stale-guard-required' });
+      } else {
+        if (guardSourceHash !== sourceHash) result.blockers.push({ code: 'stale-source-hash' });
+        if (guardPreviewHash !== previewHash) result.blockers.push({ code: 'stale-preview-hash' });
+      }
+    }
+
+    result.folderId = folderId;
+    result.before = {
+      id: folderId,
+      folderId,
+      color: previousColor,
+      iconColor: previousColor,
+      sourceHash,
+      folderCount: rows.length,
+      previewHash,
+    };
+    result.after = {
+      id: folderId,
+      folderId,
+      color: nextColor,
+      iconColor: nextColor,
+      sourceHash,
+    };
+    result.staleGuard = { sourceHash, previewHash };
+    return { result, store: read.store, rows, targetFolder, folderId, previousColor, nextColor, sourceHash, previewHash };
+  }
+
+  async function previewDesktopColorFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildDesktopColorFolderMetadataContext(requestId, mode, operation, 'preview');
+    const result = ctx.result;
+    result.previewSource = 'desktop-tauri-folder-store';
+    result.desktopColorFallbackStatus = result.blockers.length ? 'blocked' : 'preview-ok';
+    result.applied = false;
+    result.noMutation = true;
+    result.readOnly = true;
+    result.canApply = result.blockers.length === 0;
+    result.ok = result.blockers.length === 0;
+    return result;
+  }
+
+  async function applyDesktopColorFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildDesktopColorFolderMetadataContext(requestId, mode, operation, 'apply');
+    const result = ctx.result;
+    result.applySource = 'desktop-tauri-folder-store';
+    result.desktopColorFallbackStatus = result.blockers.length ? 'blocked' : 'apply-started';
+    result.readOnly = false;
+    result.noMutation = true;
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      return result;
+    }
+    const meta = folderMetadataRowMeta(ctx.targetFolder);
+    const now = nowIso();
+    const patch = {
+      color: ctx.nextColor,
+      iconColor: ctx.nextColor,
+      meta: {
+        ...meta,
+        color: ctx.nextColor,
+        iconColor: ctx.nextColor,
+        updatedAt: now,
+      },
+    };
+    let actionResult = null;
+    const actions = getDesktopFolderActions();
+    if (actions && typeof actions.update === 'function') {
+      actionResult = await actions.update(ctx.folderId, patch);
+      if (!actionResult || actionResult.ok !== true) {
+        result.blockers.push({ code: String(actionResult?.status || 'desktop-folder-action-update-failed') });
+      }
+    } else if (ctx.store && typeof ctx.store.patch === 'function') {
+      const row = await ctx.store.patch(ctx.folderId, patch);
+      actionResult = { ok: !!row, row };
+      if (!row) result.blockers.push({ code: 'desktop-folder-store-patch-failed' });
+      dispatchDesktopFolderMetadataRefresh('desktop-folder-color-apply');
+    } else {
+      result.blockers.push({ code: 'desktop-folder-store-patch-unavailable' });
+    }
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.desktopColorFallbackStatus = 'blocked';
+      return result;
+    }
+
+    const updatedRow = actionResult?.row || await ctx.store?.get?.(ctx.folderId).catch(() => null);
+    const afterRows = (await readDesktopFolderMetadataRows()).rows || [];
+    const color = folderMetadataRowColor(updatedRow) || ctx.nextColor;
+    result.folderId = ctx.folderId;
+    result.before = {
+      ...result.before,
+      color: ctx.previousColor,
+      iconColor: ctx.previousColor,
+    };
+    result.after = {
+      ...(updatedRow && typeof updatedRow === 'object' ? updatedRow : {}),
+      id: ctx.folderId,
+      folderId: ctx.folderId,
+      color,
+      iconColor: color,
+      sourceHash: desktopFolderMetadataSourceHash(afterRows),
+    };
+    result.applied = true;
+    result.noMutation = false;
+    result.readOnly = false;
+    result.canApply = false;
+    result.ok = true;
+    result.writesPerformed = 1;
+    result.desktopColorFallbackStatus = 'applied';
+    state.lastDesktopColorResultCount += 1;
+    dispatchDesktopFolderMetadataRefresh('desktop-folder-color-apply');
+    return result;
+  }
+
   async function requestDesktopFolderMetadataOperation(requestId, mode, operation) {
     state.lastDesktopFolderMetadataStatus = 'started';
     state.lastDesktopFolderMetadataError = '';
     state.lastDesktopRenameFallbackStatus = '';
+    state.lastDesktopColorFallbackStatus = '';
     try {
       const operationType = String(operation?.operationType || '').trim();
       let result;
-      if (operationType !== 'rename-folder') {
+      if (operationType !== 'rename-folder' && operationType !== 'change-folder-color') {
         result = folderMetadataResultBase(requestId, mode, operation, 'desktop-folder-metadata-operation-unsupported');
         result.desktopBridge = 'tauri-folder-store';
       } else if (mode === 'preview') {
-        result = await previewDesktopRenameFolderMetadataOperation(requestId, mode, operation);
+        result = operationType === 'change-folder-color'
+          ? await previewDesktopColorFolderMetadataOperation(requestId, mode, operation)
+          : await previewDesktopRenameFolderMetadataOperation(requestId, mode, operation);
       } else if (mode === 'apply') {
-        result = await applyDesktopRenameFolderMetadataOperation(requestId, mode, operation);
+        result = operationType === 'change-folder-color'
+          ? await applyDesktopColorFolderMetadataOperation(requestId, mode, operation)
+          : await applyDesktopRenameFolderMetadataOperation(requestId, mode, operation);
       } else {
         result = folderMetadataResultBase(requestId, mode, operation, 'invalid-request-mode');
       }
       state.lastDesktopFolderMetadataStatus = result?.ok === true ? 'ok' : 'blocked';
       state.lastDesktopRenameFallbackStatus = String(result?.desktopRenameFallbackStatus || state.lastDesktopFolderMetadataStatus || '');
+      state.lastDesktopColorFallbackStatus = String(result?.desktopColorFallbackStatus || state.lastDesktopColorFallbackStatus || '');
       return rememberImmediateFolderMetadataResult(requestId, result);
     } catch (e) {
       state.lastDesktopFolderMetadataStatus = 'error';
       state.lastDesktopFolderMetadataError = String(e?.message || e || 'desktop-folder-metadata-operation-failed');
       state.lastDesktopRenameFallbackStatus = 'error';
+      state.lastDesktopColorFallbackStatus = 'error';
       const result = folderMetadataResultBase(requestId, mode, operation, 'desktop-folder-metadata-operation-failed');
       result.desktopBridge = 'tauri-folder-store';
       result.desktopRenameFallbackStatus = 'error';
+      result.desktopColorFallbackStatus = 'error';
       result.errorCategory = 'desktop-folder-metadata-operation-failed';
       return rememberImmediateFolderMetadataResult(requestId, result);
     }
@@ -1424,7 +1611,7 @@
     const adapter = currentPlatformAdapter();
     if (adapter === 'tauri') {
       const operationType = String(operation?.operationType || '').trim();
-      if (!operationType || operationType === 'rename-folder') return '';
+      if (!operationType || DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES.includes(operationType)) return '';
       return 'desktop-folder-metadata-operation-unsupported';
     }
     if (!hasChromeStorage() && !getPlatformBroadcast()) return 'native-owner-broadcast-unavailable';
@@ -1858,10 +2045,12 @@
         transportBlocker: folderMetadataRequestTransportBlocker(),
         supportedOperationTypes: currentPlatformAdapter() === 'tauri'
           ? DESKTOP_FOLDER_METADATA_SUPPORTED_OPERATION_TYPES.slice()
-          : ['create-folder', 'rename-folder'],
+          : ['create-folder', 'rename-folder', 'change-folder-color'],
         desktopBridge: currentPlatformAdapter() === 'tauri' ? 'tauri-folder-store' : '',
         desktopRenameFallbackStatus: state.lastDesktopRenameFallbackStatus,
         desktopRenameResultCount: state.lastDesktopRenameResultCount,
+        desktopColorFallbackStatus: state.lastDesktopColorFallbackStatus,
+        desktopColorResultCount: state.lastDesktopColorResultCount,
         desktopFolderMetadataStatus: state.lastDesktopFolderMetadataStatus,
         desktopFolderMetadataError: state.lastDesktopFolderMetadataError,
         pendingRequests: state.pendingFolderMetadataRequests.size,
