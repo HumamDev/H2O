@@ -3652,7 +3652,7 @@
       diagnosticVersion: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION,
       registeredAt: FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_REGISTERED_AT,
       registrationSource: 'S0Z1g.Library Sidebar Sections',
-      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.88'),
+      s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.89'),
       s0z1g: findStudioScriptAsset('S0Z1g Library Sidebar Sections', 'S0Z1g', '2.5.85'),
     };
   }
@@ -3956,6 +3956,10 @@
       protectedCanonicalFallbackCount: Number(model?.protectedCanonicalFallbackCount || 0) || 0,
       protectedCanonicalFallbackSource: String(model?.protectedCanonicalFallbackSource || ''),
       fallbackBuilderError: String(model?.fallbackBuilderError || ''),
+      getDisplayModelError: String(model?.getDisplayModelError || ''),
+      diagnoseFolderParityThrew: model?.diagnoseFolderParityThrew === true,
+      fallbackBaseBuiltBeforeAwait: model?.fallbackBaseBuiltBeforeAwait === true,
+      fallbackBaseCount: Number(model?.fallbackBaseCount || 0) || 0,
       knownFallbackRawCount: Number(model?.knownFallbackRawCount || model?.knownCanonicalFallbackRawCount || 0) || 0,
       knownFallbackNormalizedCount: Number(model?.knownFallbackNormalizedCount || 0) || 0,
       knownFallbackAfterFilterCount: Number(model?.knownFallbackAfterFilterCount || 0) || 0,

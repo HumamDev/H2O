@@ -389,7 +389,7 @@ if (failures.length === 0) {
   assertContains(htmlFile, './S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73', 'Library Index Core cache bust');
   assertContains(htmlFile, './S0F1c. 🎬 Library Index - Studio.js?v=2.5.73', 'Library Index cache bust');
   assertContains(htmlFile, './S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71', 'Library Insights cache bust');
-  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.88', 'Library workspace cache bust');
+  assertContains(htmlFile, './S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.89', 'Library workspace cache bust');
   assertContainsAny(htmlFile, [
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74',
     './S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75'
@@ -428,6 +428,11 @@ if (failures.length === 0) {
   assertContains(libraryWorkspaceFile, 'knownFallbackRawShapes', 'FolderParity fallback raw-shape diagnostic field');
   assertContains(libraryWorkspaceFile, 'knownFallbackRejectedRows', 'FolderParity fallback rejected-row diagnostic field');
   assertContains(libraryWorkspaceFile, 'knownFallbackRejectionReasons', 'FolderParity fallback rejection reason diagnostic field');
+  assertContains(libraryWorkspaceFile, "reason: 'get-display-model-preawait-base'", 'FolderParity pre-await fallback base builder');
+  assertContains(libraryWorkspaceFile, 'const fallbackBaseBuiltBeforeAwait = true', 'FolderParity fallback base built before await marker');
+  assertContains(libraryWorkspaceFile, 'let diagnoseFolderParityThrew = false', 'FolderParity diagnose throw flag');
+  assertContains(libraryWorkspaceFile, 'getDisplayModelError', 'FolderParity getDisplayModel redacted error diagnostic');
+  assertContains(libraryWorkspaceFile, 'fallbackBaseCount', 'FolderParity fallback base count diagnostic');
   assertContains(libraryWorkspaceFile, 'const fallbackReportUsed = !!displayModelFallbackReport', 'FolderParity getDisplayModel fallback report handoff');
   assertContains(libraryWorkspaceFile, 'const knownFallbackRawCount = fallbackReportUsed', 'FolderParity getDisplayModel fallback raw count source');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION', 'Folder sidebar asset diagnostic marker');
@@ -439,9 +444,13 @@ if (failures.length === 0) {
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'finalProviderMarkerMissing', 'Folder sidebar final provider marker diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'previousProviderKeys', 'Folder sidebar previous provider keys diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'folderParityProviderStale', 'FolderParity stale provider diagnostic');
-  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', "s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.88')", 'Folder sidebar S0F1b script expected cache bust');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', "s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.89')", 'Folder sidebar S0F1b script expected cache bust');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'knownFallbackFinalDisplayCount', 'Folder sidebar fallback final display diagnostic');
   assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'knownFallbackRejectedRows', 'Folder sidebar fallback rejected-row diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'getDisplayModelError: String(model?.getDisplayModelError ||', 'Folder sidebar getDisplayModel error diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'diagnoseFolderParityThrew: model?.diagnoseFolderParityThrew === true', 'Folder sidebar diagnose throw diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'fallbackBaseBuiltBeforeAwait: model?.fallbackBaseBuiltBeforeAwait === true', 'Folder sidebar pre-await fallback diagnostic');
+  assertContains('src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js', 'fallbackBaseCount: Number(model?.fallbackBaseCount || 0) || 0', 'Folder sidebar fallback base count diagnostic');
   assertContains(moduleFile, 'captureSnapshot', 'capture API');
   assertContains(moduleFile, 'compareSnapshots', 'compare API');
   assertContains(moduleFile, 'runChromeDesktopLibraryParityDiagnostic', 'diagnostic API');

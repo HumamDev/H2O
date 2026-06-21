@@ -238,7 +238,7 @@ const checks = [
     sources.studioHtml.includes('./S0F0d. 🎬 Library Index Core - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1c. 🎬 Library Index - Studio.js?v=2.5.73') &&
       sources.studioHtml.includes('./S0F1d. 🎬 Library Insights - Studio.js?v=2.5.71') &&
-      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.88') &&
+      sources.studioHtml.includes('./S0F1b. 🎬 Library Workspace - Studio.js?v=2.5.89') &&
       (sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.74') ||
         sources.studioHtml.includes('./S0Z1f. 🎬 Library Sidebar Tab - Studio.js?v=2.5.75')) &&
       sources.studioHtml.includes('./S0Z1g. 🎬 Library Sidebar Sections - Studio.js?v=2.5.85') &&
@@ -427,10 +427,16 @@ const checks = [
       sources.libraryWorkspace.includes('knownFallbackRawShapes') &&
       sources.libraryWorkspace.includes('knownFallbackRejectedRows') &&
       sources.libraryWorkspace.includes('knownFallbackRejectionReasons') &&
+      sources.libraryWorkspace.includes("reason: 'get-display-model-preawait-base'") &&
+      sources.libraryWorkspace.includes('const fallbackBaseBuiltBeforeAwait = true') &&
+      sources.libraryWorkspace.includes('let diagnoseFolderParityThrew = false') &&
+      sources.libraryWorkspace.includes('try {\n        report = await diagnoseFolderParity(options);\n      } catch (e) {') &&
+      sources.libraryWorkspace.includes('getDisplayModelError') &&
+      sources.libraryWorkspace.includes('fallbackBaseCount') &&
       sources.libraryWorkspace.includes('const fallbackReportUsed = !!displayModelFallbackReport') &&
       sources.libraryWorkspace.includes('const knownFallbackRawCount = fallbackReportUsed') &&
       sources.libraryWorkspace.includes("reason: 'known-current-canonical-fallback-empty-model'") &&
-      sources.libraryWorkspace.includes("reason: 'get-display-model-empty-report'") &&
+      sources.libraryWorkspace.includes("useFallbackBaseRows('get-display-model-empty-report')") &&
       sources.libraryWorkspace.includes('protectedCanonicalFallback: protectedFallbackRows') &&
       sources.libraryWorkspace.includes('protectedCanonicalFallbackCount: protectedFallbackRows.length') &&
       sources.libraryWorkspace.includes('protectedCanonicalFallbackSource') &&
@@ -454,7 +460,7 @@ const checks = [
       sources.sidebarSections.includes('folderParityVersion: providerVersion') &&
       sources.sidebarSections.includes("const FOLDER_SIDEBAR_ASSET_DIAGNOSTIC_VERSION = 'f19.7-folder-sidebar-asset-diagnostic-v1';") &&
       sources.sidebarSections.includes('function folderParityScriptAssetDiagnostics()') &&
-      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.88')") &&
+      sources.sidebarSections.includes("s0f1b: findStudioScriptAsset('S0F1b Library Workspace', 'S0F1b', '2.5.89')") &&
       sources.sidebarSections.includes('s0f1bScriptTagSrc') &&
       sources.sidebarSections.includes('s0f1bScriptTagVersionMatchesExpected') &&
       sources.sidebarSections.includes('function upgradeFolderParityProviderReference()') &&
@@ -471,6 +477,10 @@ const checks = [
       sources.sidebarSections.includes('hasKnownCanonicalFallbackBuilder: model?.hasKnownCanonicalFallbackBuilder === true') &&
       sources.sidebarSections.includes('fallbackBuilderError: String(model?.fallbackBuilderError ||') &&
       sources.sidebarSections.includes('knownFallbackRawCount: Number(model?.knownFallbackRawCount || model?.knownCanonicalFallbackRawCount || 0) || 0') &&
+      sources.sidebarSections.includes('getDisplayModelError: String(model?.getDisplayModelError ||') &&
+      sources.sidebarSections.includes('diagnoseFolderParityThrew: model?.diagnoseFolderParityThrew === true') &&
+      sources.sidebarSections.includes('fallbackBaseBuiltBeforeAwait: model?.fallbackBaseBuiltBeforeAwait === true') &&
+      sources.sidebarSections.includes('fallbackBaseCount: Number(model?.fallbackBaseCount || 0) || 0') &&
       sources.sidebarSections.includes('knownFallbackFinalDisplayCount: Number(model?.knownFallbackFinalDisplayCount || 0) || 0') &&
       sources.sidebarSections.includes('knownFallbackRejectedRows: Array.isArray(model?.knownFallbackRejectedRows) ? model.knownFallbackRejectedRows.slice(0, 12) : []') &&
       sources.sidebarSections.includes('displayModelAvailable: model?.displayModelAvailable === true || canonicalRows.length > 0') &&
