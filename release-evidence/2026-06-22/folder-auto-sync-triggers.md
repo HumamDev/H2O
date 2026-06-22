@@ -449,3 +449,87 @@ Passed:
 - Live runtime retest still needs to be run after rebuilding/reloading assets.
 - Delete/tombstone lifecycle remains deferred to Phase 4. This repair does not propagate destructive folder deletes.
 - Chrome automatic Desktop import still depends on an existing File System Access folder handle and read grant; missing grant remains permission/reconnect required.
+
+## Phase 3f no-op Chrome refresh suppression
+
+### Phase 3f Live Trace Summary
+
+After Phase 3e, folder create/color/rename automatic sync worked in both directions within acceptable timing, but Chrome Studio still flickered periodically while idle. The live Chrome trace showed:
+
+- `lastSyncStatus: "sync-folder-imported"`
+- `lastAutoSyncStatus: "sync-folder-imported"`
+- `postImportRefresh.mode: "no-folder-metadata-change"`
+- `postImportRefresh.changedFolderCount: 0`
+- `postImportRefresh.changedFolderIds: []`
+- `postImportRefresh.changedFields: []`
+- `postImportRefresh.renderRefreshCount: 6`
+- blockers false
+
+That pointed to no-op Desktop-origin imports still refreshing or dispatching visible UI events even when there were no folder metadata changes to render.
+
+### Phase 3f Root Cause
+
+The Phase 3e targeted refresh fix still left the no-op import path doing visible refresh work:
+
+- `refreshChromeFolderUiAfterDesktopImport()` called a fresh FolderParity display model read even when `changedFolderCount === 0`.
+- `importDesktopBundlePayload()` refreshed LibraryIndex before the post-import UI refresh helper classified the import as `no-folder-metadata-change`.
+- `syncNow()` treated `no-folder-metadata-change` like a broad refresh mode and still dispatched import/cross-surface events.
+- The Chrome diagnostic `renderRefreshCount` exposed the cumulative count, so a no-op import could show a stale non-zero count instead of the last import's render count.
+
+### Phase 3f Files Changed
+
+- `src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `release-evidence/2026-06-22/folder-auto-sync-triggers.md`
+
+### Phase 3f Implementation Notes
+
+- Desktop-origin imports now compute a pre-import folder metadata change summary when callers do not provide one.
+- If `changedFolderCount === 0`, Chrome skips:
+  - FolderParity display-model refresh
+  - LibraryIndex refresh
+  - `evt:h2o:data:backup:imported`
+  - `evt:h2o:library:cross-surface-sync`
+- No-op imports still record diagnostics:
+  - `mode: "no-folder-metadata-change"`
+  - `refreshSuppressed: true`
+  - `renderRefreshCount: 0`
+  - `cumulativeRenderRefreshCount`
+- Public propagation results now redact changed folder IDs while preserving refresh mode/count/suppression diagnostics.
+- Real changed-folder imports still use the existing targeted/sidebar refresh paths.
+
+### Phase 3f Validation
+
+Passed:
+
+- `node --check src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `node --check tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs`
+- `node tools/validation/sync/validate-f19-sync-hardening.mjs`
+- `node tools/validation/studio/validate-studio-library-organization-ui.mjs`
+- `node tools/validation/sync/validate-f19-shell-row-ux.mjs`
+- `git diff --check`
+- `git diff --cached --check`
+
+### Phase 3f Manual Runtime Retest Steps
+
+1. Rebuild/reload assets:
+   - `npm run dev:all`
+   - `node apps/studio/desktop/build-tools/prepare-dist.mjs`
+2. Leave Chrome Studio idle for 60 seconds after sync is already current.
+3. Confirm no heavy flicker every 15-20 seconds.
+4. Run the Chrome trace again and confirm:
+   - `changedFolderCount: 0`
+   - `mode: "no-folder-metadata-change"` or `"duplicate-suppressed"`
+   - `renderRefreshCount: 0`
+   - `refreshSuppressed: true`
+5. Confirm actual Desktop color/rename/create changes still update Chrome within 3-15 seconds.
+6. Confirm Chrome color/create/rename still update Desktop within 5-15 seconds.
+
+### Phase 3f Remaining Limitations
+
+- Live runtime retest still needs to be run after rebuilding/reloading assets.
+- Delete/tombstone lifecycle remains deferred to Phase 4. This repair does not propagate destructive folder deletes.
+- Chrome automatic Desktop import still depends on an existing File System Access folder handle and read grant; missing grant remains permission/reconnect required.

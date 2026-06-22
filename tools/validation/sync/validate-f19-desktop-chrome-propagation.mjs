@@ -45,8 +45,8 @@ function assertNotContains(file, needle, label = needle) {
   assert(!text.includes(needle), `${file}: unexpectedly contains ${label}`);
 }
 
-function makeStorage() {
-  const values = new Map();
+function makeStorage(initial = {}) {
+  const values = new Map(Object.entries(initial || {}));
   return {
     __values: values,
     local: {
@@ -228,7 +228,7 @@ function buildContext(options = {}) {
     },
     chrome: {
       runtime: { id: 'chrome-extension-fixture', lastError: null },
-      storage: makeStorage()
+      storage: makeStorage(options.chromeStorageLocal || {})
     },
     __archiveCalls: archiveCalls,
     __refreshReasons: refreshReasons,
@@ -568,6 +568,27 @@ async function runVmProof() {
   assert(!Object.prototype.hasOwnProperty.call(org, 'projectId'), 'project must be stripped from chat organization');
   assert(context.__refreshReasons.includes('desktop-chrome-propagation-import'), 'LibraryIndex refresh was not requested');
 
+  const noChangeContext = buildContext({
+    chromeStorageLocal: {
+      'h2o:prm:cgx:fldrs:state:data:v1': {
+        schemaVersion: 1,
+        exportedFrom: 'desktop-studio',
+        folders: [{ id: 'desktop-folder-id', name: 'Private Desktop Folder', color: '#abcdef', source: 'studio-actions' }],
+        items: {}
+      }
+    }
+  });
+  vm.runInContext(source, noChangeContext, { filename: folderImportFile });
+  const noChangeResult = await noChangeContext.H2O.Studio.sync.folder.importLatestBundle(buildDesktopBundle(), {
+    fileFingerprint: 'sha256:test-no-folder-refresh-suppression'
+  });
+  assert(noChangeResult.ok === true, 'no-change folder import should still complete');
+  assert(noChangeResult.postImportRefresh?.mode === 'no-folder-metadata-change', 'no-change folder import should use no-folder-metadata-change mode');
+  assert(noChangeResult.postImportRefresh?.changedFolderCount === 0, 'no-change folder import should report zero changed folders');
+  assert(noChangeResult.postImportRefresh?.renderRefreshCount === 0, 'no-change folder import should not render refresh');
+  assert(noChangeResult.postImportRefresh?.refreshSuppressed === true, 'no-change folder import should report refresh suppression');
+  assert(!noChangeContext.__refreshReasons.includes('desktop-chrome-propagation-import'), 'no-change folder import must not refresh LibraryIndex');
+
   const latestJsonReadResult = await api.importLatestBundle({ reason: 'chrome-import-desktop-latest-folder-sport-proof' });
   assert(latestJsonReadResult.status === 'sync-folder-not-connected', 'options-only importLatestBundle should read latest.json via syncNow when no folder is connected');
   assert(!String(latestJsonReadResult.blockers || '').includes('library-propagation-schema-invalid'), 'options-only importLatestBundle must not treat options as a bundle payload');
@@ -684,10 +705,15 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'isFastDesktopLatestChangeReason', 'Desktop latest file changes bypass generic 30s auto-sync throttle');
   assertContains(folderImportFile, 'refreshChromeFolderUiAfterDesktopImport', 'Chrome imports refresh folder UI after Desktop-origin metadata changes');
   assertContains(folderImportFile, 'targeted-folder-refresh', 'Chrome uses targeted folder row refresh for color/name imports');
-  assertContains(folderImportFile, 'postImportRefresh: f.postImportRefresh || null', 'Chrome propagation preserves post-import refresh mode for rerender suppression');
+  assertContains(folderImportFile, 'redactedPostImportRefreshSummary(f.postImportRefresh)', 'Chrome propagation preserves redacted post-import refresh mode for rerender suppression');
   assertContains(folderImportFile, 'CHROME_TARGETED_REFRESH_RETRY_MS = 250', 'Chrome retries targeted folder row refresh instead of escalating immediately');
   assertContains(folderImportFile, 'targeted-folder-refresh-deferred', 'Chrome defers missed color/name row refresh to a targeted retry');
   assertContains(folderImportFile, 'duplicate-suppressed', 'Chrome duplicate auto-import suppresses repaint work');
+  assertContains(folderImportFile, 'no-folder-metadata-change', 'Chrome no-op folder imports are classified separately');
+  assertContains(folderImportFile, 'noOpRefreshSuppressed', 'Chrome no-op folder imports suppress visible refresh events');
+  assertContains(folderImportFile, 'refreshSuppressed: refreshSuppressed', 'Chrome no-op import diagnostics report refresh suppression');
+  assertContains(folderImportFile, 'lastChromePostImportRenderRefreshCount', 'Chrome diagnostics report last import render refresh count');
+  assertContains(folderImportFile, 'folderMetadataChangeSummary.changedFolderCount) > 0', 'Chrome skips LibraryIndex refresh when folder metadata is unchanged');
   assertContains(folderImportFile, 'currentLibraryIndexRowCount()', 'Chrome targeted imports avoid redundant library index refresh');
   assertContains(folderImportFile, 'renderRefreshCount', 'Chrome diagnostics expose post-import render refresh count');
   assertContains(folderImportFile, 'loopSuppressed', 'Chrome diagnostics expose suppressed import loop count');

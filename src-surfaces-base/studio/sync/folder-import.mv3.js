@@ -165,9 +165,12 @@
     lastDesktopToChromePostImportRefreshError: '',
     chromePostImportRefreshRetryTimer: null,
     chromePostImportRenderRefreshCount: 0,
+    lastChromePostImportRenderRefreshCount: 0,
     lastChromePostImportRefreshMode: '',
     lastChromePostImportRefreshAt: '',
     lastChromePostImportRefreshError: '',
+    lastChromePostImportRefreshSuppressed: false,
+    chromePostImportRefreshSuppressedCount: 0,
     lastChromePostImportChangedFolderCount: 0,
     lastChromePostImportChangedFields: [],
     lastChromePostImportChangedFolderIds: [],
@@ -1601,6 +1604,24 @@
     };
   }
 
+  function redactedPostImportRefreshSummary(value) {
+    var summary = safeObject(value);
+    var changedFolderIds = Array.isArray(summary.changedFolderIds) ? summary.changedFolderIds : [];
+    return {
+      mode: cleanString(summary.mode),
+      changedFolderCount: numberOrZero(summary.changedFolderCount),
+      changedFields: Array.isArray(summary.changedFields) ? summary.changedFields.slice() : [],
+      changedFolderIdCount: changedFolderIds.length,
+      changedFolderIdsRedacted: changedFolderIds.length > 0,
+      renderRefreshedAt: cleanString(summary.renderRefreshedAt),
+      renderRefreshCount: numberOrZero(summary.renderRefreshCount),
+      cumulativeRenderRefreshCount: numberOrZero(summary.cumulativeRenderRefreshCount),
+      refreshSuppressed: summary.refreshSuppressed === true,
+      totalPropagationMs: numberOrZero(summary.totalPropagationMs),
+      error: cleanString(summary.error)
+    };
+  }
+
   function propagationResult(ok, fields) {
     var f = fields && typeof fields === 'object' ? fields : {};
     var blockers = normalizeHardeningBlockers(f.blockers);
@@ -1636,7 +1657,7 @@
       folderStateSource: cleanString(f.sourceSummary && f.sourceSummary.folderStateSource),
       importSummary: f.importSummary || null,
       convergence: f.convergence || null,
-      postImportRefresh: f.postImportRefresh || null,
+      postImportRefresh: f.postImportRefresh ? redactedPostImportRefreshSummary(f.postImportRefresh) : null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
         (f.importSummary && f.importSummary.redactedErrorCategories)),
       parity: f.parity || {
@@ -1715,6 +1736,10 @@
     }
     var warnings = normalized.warnings.slice();
     if (opts.conflictApproved === true) addUnique(warnings, 'library-propagation-simultaneous-conflict-approved');
+    var folderMetadataChangeSummary = safeObject(opts.folderMetadataChangeSummary);
+    if (!Object.prototype.hasOwnProperty.call(folderMetadataChangeSummary, 'changedFolderCount')) {
+      folderMetadataChangeSummary = await summarizeDesktopFolderMetadataChanges(normalized.bundle);
+    }
     var dryRun;
     try {
       dryRun = await callArchive('dryRunImportFullBundle', { bundle: normalized.bundle });
@@ -1759,10 +1784,12 @@
       });
     }
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
-    await refreshLibraryIndex('desktop-chrome-propagation-import');
+    if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
+      await refreshLibraryIndex('desktop-chrome-propagation-import');
+    }
     state.lastDesktopToChromeImportAppliedAt = nowIso();
     var postImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
-      opts.folderMetadataChangeSummary || null,
+      folderMetadataChangeSummary,
       opts.reason || 'desktop-chrome-propagation-import',
       cleanString(normalized.bundle && normalized.bundle.exportedAt)
     );
@@ -1918,9 +1945,11 @@
     }
   }
 
-  function recordChromePostImportRefresh(mode, summary, refreshError, bundleExportedAt) {
+  function recordChromePostImportRefresh(mode, summary, refreshError, bundleExportedAt, options) {
+    var opts = safeObject(options);
     var safeSummary = safeObject(summary);
     var cleanMode = cleanString(mode) || 'unknown';
+    var refreshSuppressed = opts.refreshSuppressed === true;
     state.lastDesktopToChromeRenderRefreshedAt = nowIso();
     state.lastDesktopToChromeRefreshMode = cleanMode;
     state.lastDesktopToChromeChangedFolderCount = numberOrZero(safeSummary.changedFolderCount);
@@ -1930,6 +1959,9 @@
     state.lastChromePostImportRefreshMode = cleanMode;
     state.lastChromePostImportRefreshAt = state.lastDesktopToChromeRenderRefreshedAt;
     state.lastChromePostImportRefreshError = state.lastDesktopToChromePostImportRefreshError;
+    state.lastChromePostImportRenderRefreshCount = numberOrZero(opts.renderRefreshCount);
+    state.lastChromePostImportRefreshSuppressed = refreshSuppressed;
+    if (refreshSuppressed) state.chromePostImportRefreshSuppressedCount += 1;
     state.lastChromePostImportChangedFolderCount = state.lastDesktopToChromeChangedFolderCount;
     state.lastChromePostImportChangedFields = state.lastDesktopToChromeChangedFields.slice();
     state.lastChromePostImportChangedFolderIds = state.lastDesktopToChromeChangedFolderIds.slice();
@@ -2027,13 +2059,19 @@
           var retryMode = targeted && targeted.attempted && targeted.missing === 0 && targeted.updated >= numberOrZero(safeSummary.changedFolderCount)
             ? 'targeted-folder-refresh'
             : 'targeted-folder-refresh-missing';
-          recordChromePostImportRefresh(retryMode, safeSummary, '', bundleExportedAt);
+          recordChromePostImportRefresh(retryMode, safeSummary, '', bundleExportedAt, {
+            renderRefreshCount: 1,
+            refreshSuppressed: false
+          });
           dispatchFolderMetadataChangedEvent(safeSummary, reason, retryMode);
         })
         .catch(function (error) {
           var refreshError = String(error && (error.message || error));
           pushError('desktop-to-chrome-post-import-refresh.retry', error);
-          recordChromePostImportRefresh('targeted-folder-refresh-error', safeSummary, refreshError, bundleExportedAt);
+          recordChromePostImportRefresh('targeted-folder-refresh-error', safeSummary, refreshError, bundleExportedAt, {
+            renderRefreshCount: 0,
+            refreshSuppressed: false
+          });
           dispatchFolderMetadataChangedEvent(safeSummary, reason, 'targeted-folder-refresh-error');
         });
     }, CHROME_TARGETED_REFRESH_RETRY_MS);
@@ -2046,6 +2084,8 @@
     var changedCount = numberOrZero(safeSummary.changedFolderCount);
     var mode = changedCount ? 'targeted-folder-refresh' : 'no-folder-metadata-change';
     var refreshError = '';
+    var renderCountBefore = state.chromePostImportRenderRefreshCount;
+    var refreshSuppressed = changedCount === 0;
     try {
       if (changedCount && safeSummary.hasOnlyVisualUpdates === true) {
         var targeted = await applyFreshTargetedFolderRowRefresh(safeSummary, cleanReason);
@@ -2069,15 +2109,18 @@
           state.chromePostImportRenderRefreshCount += 1;
           mode = 'full-refresh-fallback';
         }
-      } else {
-        await prepareChromeFolderDisplayModel(cleanReason);
       }
     } catch (error) {
       refreshError = String(error && (error.message || error));
       pushError('desktop-to-chrome-post-import-refresh', error);
       mode = mode === 'targeted-folder-refresh' ? 'targeted-folder-refresh-error' : mode;
+      refreshSuppressed = false;
     }
-    recordChromePostImportRefresh(mode, safeSummary, refreshError, bundleExportedAt);
+    var renderRefreshCount = Math.max(0, state.chromePostImportRenderRefreshCount - renderCountBefore);
+    recordChromePostImportRefresh(mode, safeSummary, refreshError, bundleExportedAt, {
+      renderRefreshCount: renderRefreshCount,
+      refreshSuppressed: refreshSuppressed
+    });
     dispatchFolderMetadataChangedEvent(safeSummary, cleanReason, mode);
     return {
       mode: mode,
@@ -2085,7 +2128,9 @@
       changedFields: state.lastDesktopToChromeChangedFields.slice(),
       changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
       renderRefreshedAt: state.lastDesktopToChromeRenderRefreshedAt,
-      renderRefreshCount: state.chromePostImportRenderRefreshCount,
+      renderRefreshCount: renderRefreshCount,
+      cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+      refreshSuppressed: refreshSuppressed,
       totalPropagationMs: state.lastDesktopToChromeTotalPropagationMs,
       error: refreshError,
     };
@@ -2524,7 +2569,10 @@
         changedFolderCount: state.lastDesktopToChromeChangedFolderCount,
         changedFields: state.lastDesktopToChromeChangedFields.slice(),
         changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
-        renderRefreshCount: state.chromePostImportRenderRefreshCount,
+        renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
+        cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+        refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
+        refreshSuppressedCount: state.chromePostImportRefreshSuppressedCount,
         postImportRefreshError: state.lastDesktopToChromePostImportRefreshError,
         loopSuppressed: state.loopSuppressedCount,
         duplicateSkipped: state.duplicateSkippedCount,
@@ -2532,7 +2580,10 @@
       },
       chromePostImportRefreshMode: state.lastChromePostImportRefreshMode,
       changedFolderCount: state.lastChromePostImportChangedFolderCount,
-      renderRefreshCount: state.chromePostImportRenderRefreshCount,
+      renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
+      cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+      refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
+      refreshSuppressedCount: state.chromePostImportRefreshSuppressedCount,
       loopSuppressed: state.loopSuppressedCount,
       duplicateSkipped: state.duplicateSkippedCount,
       selfOriginSkipped: state.selfOriginSkippedCount,
@@ -3059,7 +3110,10 @@
         if (alreadyConvergence.ok) {
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
-          recordChromePostImportRefresh('duplicate-suppressed', folderMetadataChangeSummary, '', cleanString(bundle.exportedAt || ''));
+          recordChromePostImportRefresh('duplicate-suppressed', folderMetadataChangeSummary, '', cleanString(bundle.exportedAt || ''), {
+            renderRefreshCount: 0,
+            refreshSuppressed: true
+          });
           var alreadyPropagation = propagationResult(true, {
             status: 'already-imported',
             sourceSummary: alreadyNormalized.sourceSummary,
@@ -3088,7 +3142,9 @@
               changedFolderCount: numberOrZero(folderMetadataChangeSummary.changedFolderCount),
               changedFields: Array.isArray(folderMetadataChangeSummary.changedFields) ? folderMetadataChangeSummary.changedFields.slice() : [],
               changedFolderIds: Array.isArray(folderMetadataChangeSummary.changedFolderIds) ? folderMetadataChangeSummary.changedFolderIds.slice() : [],
-              renderRefreshCount: state.chromePostImportRenderRefreshCount,
+              renderRefreshCount: 0,
+              cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+              refreshSuppressed: true,
               loopSuppressed: state.loopSuppressedCount,
               duplicateSkipped: state.duplicateSkippedCount
             },
@@ -3259,20 +3315,26 @@
       }
 
       var refreshMode = cleanString(propagation && propagation.postImportRefresh && propagation.postImportRefresh.mode);
-      var rowsAfter = refreshMode.indexOf('targeted-folder-refresh') === 0 || refreshMode === 'duplicate-suppressed'
+      var refreshSuppressed = refreshMode.indexOf('targeted-folder-refresh') === 0 ||
+        refreshMode === 'duplicate-suppressed' ||
+        refreshMode === 'no-folder-metadata-change';
+      var noOpRefreshSuppressed = refreshMode === 'duplicate-suppressed' || refreshMode === 'no-folder-metadata-change';
+      var rowsAfter = refreshSuppressed
         ? currentLibraryIndexRowCount()
         : await refreshLibraryIndex('sync-folder-import');
-      try {
-        global.dispatchEvent(new CustomEvent('evt:h2o:data:backup:imported', {
-          detail: { source: 'sync-folder-import', result: propagation },
-        }));
-      } catch (_) { /* ignore */ }
-      if (refreshMode.indexOf('targeted-folder-refresh') !== 0 && refreshMode !== 'duplicate-suppressed') {
+      if (!noOpRefreshSuppressed) {
         try {
-          global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
-            detail: { source: 'sync-folder-import', refreshMode: refreshMode, t: Date.now() },
+          global.dispatchEvent(new CustomEvent('evt:h2o:data:backup:imported', {
+            detail: { source: 'sync-folder-import', result: propagation },
           }));
         } catch (_) { /* ignore */ }
+        if (refreshMode.indexOf('targeted-folder-refresh') !== 0 && refreshMode !== 'duplicate-suppressed') {
+          try {
+            global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
+              detail: { source: 'sync-folder-import', refreshMode: refreshMode, t: Date.now() },
+            }));
+          } catch (_) { /* ignore */ }
+        }
       }
 
       var importSummary = safeObject(propagation && propagation.importSummary);
@@ -3436,7 +3498,10 @@
           changedFolderCount: state.lastDesktopToChromeChangedFolderCount,
           changedFields: state.lastDesktopToChromeChangedFields.slice(),
           changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
-          renderRefreshCount: state.chromePostImportRenderRefreshCount,
+          renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
+          cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+          refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
+          refreshSuppressedCount: state.chromePostImportRefreshSuppressedCount,
           postImportRefreshError: state.lastDesktopToChromePostImportRefreshError,
           loopSuppressed: state.loopSuppressedCount,
           duplicateSkipped: state.duplicateSkippedCount,
@@ -3477,7 +3542,10 @@
         postImportRefreshMode: state.lastDesktopToChromeRefreshMode,
         chromePostImportRefreshMode: state.lastChromePostImportRefreshMode,
         changedFolderCount: state.lastChromePostImportChangedFolderCount,
-        renderRefreshCount: state.chromePostImportRenderRefreshCount,
+        renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
+        cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+        refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
+        refreshSuppressedCount: state.chromePostImportRefreshSuppressedCount,
         loopSuppressed: state.loopSuppressedCount,
         duplicateSkipped: state.duplicateSkippedCount,
         selfOriginSkipped: state.selfOriginSkippedCount,
