@@ -15,6 +15,7 @@ const autoExportFile = 'src-surfaces-base/studio/sync/auto-export.tauri.js';
 const folderActionsFile = 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js';
 const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
 const librarySyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
+const sidebarSectionsFile = 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
 const contractFile = 'docs/systems/cross-platform/f19.2-chrome-desktop-automatic-propagation-contract.md';
 
@@ -47,6 +48,7 @@ function assertNotContains(file, needle, label = needle) {
 function makeStorage() {
   const values = new Map();
   return {
+    __values: values,
     local: {
       get(keys, callback) {
         const out = {};
@@ -264,6 +266,182 @@ function buildContext(options = {}) {
   return vm.createContext(context);
 }
 
+function buildLibrarySyncContext(initialStorage = {}) {
+  const storage = makeStorage();
+  storage.local.set(initialStorage);
+  const context = {
+    console,
+    Date,
+    performance: { now: () => 0 },
+    setTimeout(callback) {
+      if (typeof callback === 'function') callback();
+      return 1;
+    },
+    clearTimeout() {},
+    setInterval() { return 1; },
+    clearInterval() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    CustomEvent: class CustomEvent {
+      constructor(type, init) {
+        this.type = type;
+        this.detail = init && init.detail;
+      }
+    },
+    chrome: {
+      runtime: { id: 'chrome-extension-fixture', lastError: null },
+      storage: {
+        ...storage,
+        onChanged: {
+          addListener() {},
+          removeListener() {}
+        }
+      }
+    },
+    H2O: {
+      Studio: {
+        platform: { env: { adapter: 'mv3' } },
+        sync: {}
+      },
+      Library: {},
+      LibraryIndex: {
+        async refresh() {
+          return { ok: true };
+        }
+      },
+      events: { emit() {} }
+    }
+  };
+  context.window = context;
+  context.globalThis = context;
+  return vm.createContext(context);
+}
+
+async function runFolderMutationResolverVmProof() {
+  const folderStateKey = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const importedFolderState = {
+    schemaVersion: 1,
+    source: 'stored-folder-state',
+    sourceKind: 'chromeStorageLocal',
+    folders: [
+      {
+        id: 'sport-folder-id',
+        folderId: 'sport-folder-id',
+        name: 'Sport',
+        title: 'Sport',
+        color: '#111111',
+        iconColor: '#111111',
+        source: 'desktop-sqlite',
+        sourceKind: 'desktop-sqlite',
+        kind: 'desktop-sqlite',
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
+        meta: {
+          source: 'desktop-sqlite',
+          sourceKind: 'desktop-sqlite',
+          materializedUserFolder: true,
+          trustedFolderDisplay: true,
+          shownInNormalMode: true
+        }
+      },
+      {
+        id: 'unfiled',
+        folderId: 'unfiled',
+        name: 'Unfiled',
+        title: 'Unfiled',
+        source: 'stored-folder-state',
+        sourceKind: 'known-canonical-display-fallback',
+        kind: 'known-canonical-display-fallback',
+        protectedCanonicalFallback: true,
+        trustedFolderDisplay: true,
+        meta: {
+          protectedCanonicalFallback: true,
+          trustedFolderDisplay: true,
+          sourceKind: 'known-canonical-display-fallback'
+        }
+      }
+    ],
+    items: {
+      'sport-folder-id': []
+    }
+  };
+  const context = buildLibrarySyncContext({ [folderStateKey]: importedFolderState });
+  vm.runInContext(read(librarySyncFile), context, { filename: librarySyncFile });
+  const api = context.H2O.Studio.sync.folderMetadataOperations;
+  assert(api && typeof api.request === 'function', 'folder metadata operations API missing');
+
+  const operation = {
+    schema: 'h2o.folder-metadata-operation.v1',
+    operationType: 'change-folder-color',
+    folderId: 'sport-folder-id',
+    before: {
+      id: 'sport-folder-id',
+      folderId: 'sport-folder-id',
+      name: 'Sport',
+      color: '#111111',
+      iconColor: '#111111',
+      source: 'desktop-sqlite',
+      sourceKind: 'desktop-sqlite',
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+      isCanonical: true
+    },
+    after: { iconColor: '#00AA00' },
+    sourceSurface: 'chrome-studio'
+  };
+  const preview = await api.request(operation, {
+    requestMode: 'preview',
+    requestId: 'chrome-local-color-preview-proof'
+  });
+  assert(preview.ok === true, 'Chrome imported folder color preview should pass');
+  assert(preview.canApply === true, 'Chrome imported folder color preview should be applyable');
+  assert(preview.chromeMutationRoute === 'studio-local', 'Chrome imported folder should resolve to studio-local route');
+  assert(!preview.blockers.some((entry) => entry.code === 'folder-not-found'), 'Chrome imported folder preview must not emit folder-not-found');
+
+  const applied = await api.request({ ...operation, staleGuard: preview.staleGuard }, {
+    requestMode: 'apply',
+    requestId: 'chrome-local-color-apply-proof'
+  });
+  assert(applied.ok === true, 'Chrome imported folder color apply should pass');
+  assert(applied.applied === true, 'Chrome imported folder color apply should mutate');
+  assert(applied.chromeMutationRoute === 'studio-local', 'Chrome imported folder apply should stay local');
+  assert(applied.writesPerformed === 1, 'Chrome imported folder color apply should write one mirror update');
+  assert(!applied.blockers.some((entry) => entry.code === 'folder-not-found'), 'Chrome imported folder apply must not emit folder-not-found');
+
+  const stored = context.chrome.storage.__values.get(folderStateKey);
+  const sport = stored.folders.find((row) => row.id === 'sport-folder-id');
+  assert(sport && sport.iconColor === '#00AA00', 'Chrome folder-state mirror iconColor was not updated');
+  assert(sport && sport.color === '#00AA00', 'Chrome folder-state mirror color was not updated');
+  assert(sport && sport.meta && sport.meta.iconColor === '#00AA00', 'Chrome folder-state mirror meta iconColor was not updated');
+
+  const protectedPreview = await api.request({
+    schema: 'h2o.folder-metadata-operation.v1',
+    operationType: 'change-folder-color',
+    folderId: 'unfiled',
+    before: {
+      id: 'unfiled',
+      folderId: 'unfiled',
+      name: 'Unfiled',
+      source: 'stored-folder-state',
+      sourceKind: 'known-canonical-display-fallback',
+      protectedCanonicalFallback: true,
+      isCanonical: true
+    },
+    after: { iconColor: '#00AA00' },
+    sourceSurface: 'chrome-studio'
+  }, {
+    requestMode: 'preview',
+    requestId: 'chrome-protected-color-preview-proof'
+  });
+  const protectedCodes = protectedPreview.blockers.map((entry) => entry.code);
+  assert(protectedPreview.ok === false, 'Protected folder color preview should be blocked');
+  assert(protectedCodes.includes('protected-folder'), 'Protected folder should use protected-folder blocker');
+  assert(!protectedCodes.includes('folder-not-found'), 'Protected folder must not emit folder-not-found');
+}
+
 async function runVmProof() {
   const source = read(folderImportFile);
   const context = buildContext();
@@ -416,7 +594,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderImportFile, folderSyncFile, autoExportFile, folderActionsFile, libraryIndexFile, librarySyncFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
+for (const file of [folderImportFile, folderSyncFile, autoExportFile, folderActionsFile, libraryIndexFile, librarySyncFile, sidebarSectionsFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
@@ -469,6 +647,19 @@ if (failures.length === 0) {
   assertContains(librarySyncFile, 'desktopRenameResultCount', 'Desktop rename diagnostic count');
   assertContains(librarySyncFile, 'desktopColorFallbackStatus', 'Desktop color diagnostic status');
   assertContains(librarySyncFile, 'desktopColorResultCount', 'Desktop color diagnostic count');
+  assertContains(librarySyncFile, 'requestChromeFolderMetadataOperationIfLocal', 'Chrome local folder metadata mutation resolver');
+  assertContains(librarySyncFile, 'previewChromeColorFolderMetadataOperation', 'Chrome local color preview bridge');
+  assertContains(librarySyncFile, 'applyChromeColorFolderMetadataOperation', 'Chrome local color apply bridge');
+  assertContains(librarySyncFile, 'isChromeStudioMutableFolderRow', 'Chrome mutable imported/studio folder classifier');
+  assertContains(librarySyncFile, 'chrome-folder-state-mirror', 'Chrome local color writes target folder-state mirror');
+  assertContains(librarySyncFile, 'folder-identity-missing', 'Chrome visible row missing identity blocker');
+  assertContains(librarySyncFile, 'protected-folder', 'Chrome protected/system folder blocker');
+  assertContains(librarySyncFile, 'local-review-folder-not-editable', 'Chrome local review folder blocker');
+  assertContains(librarySyncFile, 'folder-not-mutable', 'Chrome non-mutable folder blocker');
+  assertContains(librarySyncFile, 'native-owner-folder-not-found', 'Chrome native owner miss blocker');
+  assertContains(sidebarSectionsFile, 'buildFolderMutationTargetSnapshot', 'Sidebar passes visible folder target provenance');
+  assertContains(sidebarSectionsFile, 'display-color-not-confirmed', 'Sidebar gates color success on display confirmation');
+  assertContains(sidebarSectionsFile, 'data-h2o-folder-source-kind', 'Sidebar renders folder source-kind provenance');
   assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
   assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');
@@ -480,6 +671,10 @@ if (failures.length === 0) {
 
 if (failures.length === 0) {
   await runVmProof();
+}
+
+if (failures.length === 0) {
+  await runFolderMutationResolverVmProof();
 }
 
 if (failures.length) {

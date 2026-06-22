@@ -774,11 +774,43 @@
       || fallback;
   }
 
+  function buildFolderMutationTargetSnapshot(item) {
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const name = normalizeFolderRenameInput(item?.name || item?.label || item?.title || '');
+    const color = normalizeHexColor(item?.iconColor || item?.color || '');
+    const sourceKind = String(item?.sourceKind || item?.kind || '').trim();
+    const source = String(item?.source || '').trim();
+    const snapshot = {
+      id: folderId,
+      folderId,
+      name,
+      title: name,
+      color,
+      iconColor: color,
+      source,
+      stateSource: String(item?.stateSource || '').trim(),
+      sourceKind,
+      kind: sourceKind || 'folders',
+      isCanonical: item?.isCanonical === true,
+      materializedUserFolder: item?.materializedUserFolder === true,
+      trustedFolderDisplay: item?.trustedFolderDisplay === true,
+      protectedCanonicalFallback: item?.protectedCanonicalFallback === true,
+      shownInNormalMode: item?.shownInNormalMode === true,
+      reviewBucket: String(item?.reviewBucket || '').trim(),
+      hidden: item?.hidden === true,
+    };
+    Object.keys(snapshot).forEach((key) => {
+      if (snapshot[key] === '' || snapshot[key] === false || snapshot[key] == null) delete snapshot[key];
+    });
+    return snapshot;
+  }
+
   function buildFolderColorOperation(item, color, staleGuard = null) {
     const operation = {
       schema: FOLDER_METADATA_OPERATION_SCHEMA,
       operationType: 'change-folder-color',
       folderId: String(item?.id || item?.folderId || '').trim(),
+      before: buildFolderMutationTargetSnapshot(item),
       after: { iconColor: normalizeHexColor(color || '') },
       sourceSurface: 'chrome-studio',
       reason: FOLDER_METADATA_COLOR_REASON,
@@ -1167,7 +1199,8 @@
       return { ok: false, blockers: [{ code: 'target-not-canonical' }] };
     }
 
-    const operation = buildFolderColorOperation(item, color);
+    const nextColor = normalizeHexColor(color || '');
+    const operation = buildFolderColorOperation(item, nextColor);
     setStatus('Previewing...', 'pending');
     let preview = null;
     try {
@@ -1198,7 +1231,7 @@
     setStatus('Applying...', 'pending');
     let applied = null;
     try {
-      applied = await request(buildFolderColorOperation(item, color, staleGuardFromPreview(preview)), {
+      applied = await request(buildFolderColorOperation(item, nextColor, staleGuardFromPreview(preview)), {
         requestMode: 'apply',
         timeoutMs: FOLDER_METADATA_COLOR_TIMEOUT_MS,
       });
@@ -1221,9 +1254,22 @@
       }
       return applied;
     }
-    setStatus('Color updated', 'ok');
     refreshAfterNativeFolderColorApply();
-    return applied;
+    try { renderAllSections(); } catch (e) { err('folderColor.renderBeforeConfirm', e); }
+    const confirmation = await confirmFreshCanonicalFolderColor(folderId, nextColor);
+    if (confirmation.ok) {
+      setStatus(nextColor ? 'Color updated' : 'Color cleared', 'ok');
+      return { ...applied, displayConfirmation: confirmation };
+    }
+    setStatus(`Blocked: ${confirmation.status || 'display-color-not-confirmed'}`, 'blocked');
+    return {
+      ...applied,
+      ok: false,
+      applied: false,
+      persistenceOk: true,
+      status: confirmation.status || 'display-color-not-confirmed',
+      displayConfirmation: confirmation,
+    };
   }
 
   async function requestCanonicalFolderCreate(name, controls = {}) {
@@ -1790,7 +1836,7 @@
       }
     }, {
       keepOpen: true,
-      title: 'Change canonical folder color through Native owner',
+      title: 'Change folder color',
     });
     action.setAttribute('aria-haspopup', 'true');
     action.setAttribute('aria-expanded', 'false');
@@ -2862,6 +2908,12 @@
       || sidebarRow?.getAttribute?.('data-color')
       || ''
     );
+    const attr = (key) => String(
+      button.getAttribute?.(key)
+      || pageRow?.getAttribute?.(key)
+      || sidebarRow?.getAttribute?.(key)
+      || ''
+    ).trim();
     return {
       id: folderId,
       folderId,
@@ -2871,6 +2923,13 @@
       section: 'folders',
       color,
       iconColor: color,
+      source: attr('data-h2o-folder-source'),
+      stateSource: attr('data-h2o-folder-state-source'),
+      sourceKind: attr('data-h2o-folder-source-kind'),
+      materializedUserFolder: attr('data-h2o-folder-materialized') === 'true',
+      trustedFolderDisplay: attr('data-h2o-folder-trusted') === 'true',
+      protectedCanonicalFallback: attr('data-h2o-folder-protected') === 'true',
+      shownInNormalMode: attr('data-h2o-folder-shown-normal') === 'true',
       isCanonical: true,
     };
   }
@@ -3007,6 +3066,13 @@
           'data-h2o-folder-name': kind === 'folders' ? name : null,
           'data-h2o-folder-canonical': kind === 'folders' && item.isCanonical === true ? 'true' : null,
           'data-h2o-folder-color': kind === 'folders' && color ? color : null,
+          'data-h2o-folder-source': kind === 'folders' ? String(item.source || '').trim() : null,
+          'data-h2o-folder-state-source': kind === 'folders' ? String(item.stateSource || '').trim() : null,
+          'data-h2o-folder-source-kind': kind === 'folders' ? String(item.sourceKind || item.kind || '').trim() : null,
+          'data-h2o-folder-materialized': kind === 'folders' && item.materializedUserFolder === true ? 'true' : null,
+          'data-h2o-folder-trusted': kind === 'folders' && item.trustedFolderDisplay === true ? 'true' : null,
+          'data-h2o-folder-protected': kind === 'folders' && item.protectedCanonicalFallback === true ? 'true' : null,
+          'data-h2o-folder-shown-normal': kind === 'folders' && item.shownInNormalMode === true ? 'true' : null,
         }, '...')
         : null;
       if (menuButton) {
@@ -3039,7 +3105,13 @@
         'data-h2o-folder-canonical': kind === 'folders' && item.isCanonical === true ? 'true' : null,
         'data-h2o-folder-color': kind === 'folders' && color ? color : null,
         'data-h2o-folder-color-source': kind === 'folders' ? String(item.colorSource || '').trim() : null,
-        'data-h2o-folder-source-kind': kind === 'folders' ? (item.isSystem === true ? 'system' : item.isCanonical === true ? 'canonical' : 'local') : null,
+        'data-h2o-folder-source': kind === 'folders' ? String(item.source || '').trim() : null,
+        'data-h2o-folder-state-source': kind === 'folders' ? String(item.stateSource || '').trim() : null,
+        'data-h2o-folder-source-kind': kind === 'folders' ? String(item.sourceKind || item.kind || (item.isSystem === true ? 'system' : item.isCanonical === true ? 'canonical' : 'local')).trim() : null,
+        'data-h2o-folder-materialized': kind === 'folders' && item.materializedUserFolder === true ? 'true' : null,
+        'data-h2o-folder-trusted': kind === 'folders' && item.trustedFolderDisplay === true ? 'true' : null,
+        'data-h2o-folder-protected': kind === 'folders' && item.protectedCanonicalFallback === true ? 'true' : null,
+        'data-h2o-folder-shown-normal': kind === 'folders' && item.shownInNormalMode === true ? 'true' : null,
         'data-h2o-folder-normalized-name': kind === 'folders' ? String(item.normalizedName || name || '').trim().replace(/\s+/g, ' ').toLowerCase() : null,
         style: rowStyle,
       }, [
@@ -3919,7 +3991,7 @@
       },
       color: {
         available: canRequestCanonicalFolderColor(canonicalItem),
-        path: canRequestNativeCanonicalFolderColor(canonicalItem) ? 'mv3-native-owner-bridge' : (colorDesktop ? 'desktop-inline-organization-modals' : 'unavailable'),
+        path: canRequestNativeCanonicalFolderColor(canonicalItem) ? 'mv3-folder-mutation-resolver' : (colorDesktop ? 'desktop-inline-organization-modals' : 'unavailable'),
         reason: canRequestCanonicalFolderColor(canonicalItem) ? '' : 'folder-color-handler-unavailable',
       },
       delete: {

@@ -184,6 +184,12 @@
     lastDesktopRenameResultCount: 0,
     lastDesktopColorFallbackStatus: '',
     lastDesktopColorResultCount: 0,
+    lastChromeFolderMetadataStatus: '',
+    lastChromeFolderMetadataError: '',
+    lastChromeFolderColorMutationStatus: '',
+    lastChromeFolderColorResultCount: 0,
+    lastChromeFolderMutationRoute: '',
+    lastChromeFolderMutationBlocker: '',
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -790,12 +796,25 @@
       source: String(src.source || fallbackSource || '').trim() || 'folder-state',
       index: Number.isFinite(Number(src.index)) ? Number(src.index) : index,
     };
-    if (String(src.kind || '').trim()) out.kind = String(src.kind || '').trim();
+    const meta = (src.meta && typeof src.meta === 'object' && !Array.isArray(src.meta)) ? src.meta : {};
+    if (Object.keys(meta).length) out.meta = { ...meta };
+    const sourceKind = String(src.sourceKind || src.kind || meta.sourceKind || meta.kind || '').trim();
+    if (sourceKind) {
+      out.sourceKind = sourceKind;
+      out.kind = sourceKind;
+    }
+    if (String(src.stateSource || '').trim()) out.stateSource = String(src.stateSource || '').trim();
     if (src.projectRef && typeof src.projectRef === 'object') out.projectRef = src.projectRef;
     if (iconColor) out.iconColor = iconColor;
     if (color) out.color = color;
     if (String(src.icon || '').trim()) out.icon = String(src.icon || '').trim();
     if (String(src.parentId || '').trim()) out.parentId = String(src.parentId || '').trim();
+    ['userCreated', 'materializedUserFolder', 'trustedFolderDisplay', 'shownInNormalMode', 'protectedCanonicalFallback', 'isCanonical'].forEach((key) => {
+      if (src[key] === true || meta[key] === true) out[key] = true;
+    });
+    if (src.hidden === true || meta.hidden === true) out.hidden = true;
+    if (String(src.reviewBucket || meta.reviewBucket || '').trim()) out.reviewBucket = String(src.reviewBucket || meta.reviewBucket || '').trim();
+    if (String(src.colorSource || meta.colorSource || '').trim()) out.colorSource = String(src.colorSource || meta.colorSource || '').trim();
     if (Object.prototype.hasOwnProperty.call(src, 'sortOrder')) out.sortOrder = src.sortOrder;
     if (Object.prototype.hasOwnProperty.call(src, 'createdAt')) out.createdAt = src.createdAt;
     if (Object.prototype.hasOwnProperty.call(src, 'updatedAt')) out.updatedAt = src.updatedAt;
@@ -836,7 +855,15 @@
       out.title = incoming.title || incoming.name;
     }
     if (incoming.source) out.source = incoming.source;
-    if (incoming.kind) out.kind = incoming.kind;
+    const incomingMeta = (incoming.meta && typeof incoming.meta === 'object' && !Array.isArray(incoming.meta)) ? incoming.meta : {};
+    const existingMeta = (out.meta && typeof out.meta === 'object' && !Array.isArray(out.meta)) ? out.meta : {};
+    if (Object.keys(incomingMeta).length || Object.keys(existingMeta).length) out.meta = { ...existingMeta, ...incomingMeta };
+    const incomingSourceKind = String(incoming.sourceKind || incoming.kind || incomingMeta.sourceKind || incomingMeta.kind || '').trim();
+    if (incomingSourceKind) {
+      out.sourceKind = incomingSourceKind;
+      out.kind = incomingSourceKind;
+    }
+    if (incoming.stateSource) out.stateSource = incoming.stateSource;
     if (incoming.projectRef) out.projectRef = incoming.projectRef;
     if (incoming.iconColor) out.iconColor = incoming.iconColor;
     if (incoming.color) out.color = incoming.color;
@@ -844,6 +871,12 @@
     if (!out.iconColor && incoming.color) out.iconColor = incoming.color;
     if (incoming.icon) out.icon = incoming.icon;
     if (incoming.parentId) out.parentId = incoming.parentId;
+    ['userCreated', 'materializedUserFolder', 'trustedFolderDisplay', 'shownInNormalMode', 'protectedCanonicalFallback', 'isCanonical'].forEach((key) => {
+      if (incoming[key] === true || incomingMeta[key] === true) out[key] = true;
+    });
+    if (incoming.hidden === true || incomingMeta.hidden === true) out.hidden = true;
+    if (incoming.reviewBucket || incomingMeta.reviewBucket) out.reviewBucket = incoming.reviewBucket || incomingMeta.reviewBucket;
+    if (incoming.colorSource || incomingMeta.colorSource) out.colorSource = incoming.colorSource || incomingMeta.colorSource;
     if (Object.prototype.hasOwnProperty.call(incoming, 'sortOrder')) out.sortOrder = incoming.sortOrder;
     if (!Object.prototype.hasOwnProperty.call(out, 'createdAt') && Object.prototype.hasOwnProperty.call(incoming, 'createdAt')) out.createdAt = incoming.createdAt;
     if (Object.prototype.hasOwnProperty.call(incoming, 'updatedAt')) out.updatedAt = incoming.updatedAt;
@@ -859,8 +892,176 @@
     if (source === 'native-broadcast') return true;
     if (source === 'native-h2o-folder-state') return true;
     if (source.includes('native') && (source.includes('folder') || source.includes('catalog'))) return true;
+    if (source === 'canonical-native') return true;
     if (kind === 'native-folder-catalog' || kind === 'native-folder-state') return true;
+    if (kind === 'canonical-native') return true;
     return false;
+  }
+
+  function chromeFolderMetadataStateHash(folderState) {
+    const stateInput = folderState && typeof folderState === 'object' ? folderState : {};
+    return stableChecksum({
+      folders: comparableDesktopFolderMetadataRows(stateInput.folders || []),
+      items: stateInput.items || {},
+    });
+  }
+
+  function folderMetadataOperationBeforeRow(operation) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const before = op.before && typeof op.before === 'object' && !Array.isArray(op.before) ? op.before : null;
+    const target = op.target && typeof op.target === 'object' && !Array.isArray(op.target) ? op.target : null;
+    return before || target || null;
+  }
+
+  function mergeFolderMetadataVisibleRow(storedRow, visibleRow) {
+    const stored = storedRow && typeof storedRow === 'object' ? storedRow : {};
+    const visible = visibleRow && typeof visibleRow === 'object' ? visibleRow : {};
+    const storedMeta = folderMetadataRowMeta(stored);
+    const visibleMeta = folderMetadataRowMeta(visible);
+    const merged = {
+      ...visible,
+      ...stored,
+      meta: { ...visibleMeta, ...storedMeta },
+    };
+    const folderId = folderMetadataRowId(stored) || folderMetadataRowId(visible);
+    if (folderId) {
+      merged.id = folderId;
+      merged.folderId = folderId;
+    }
+    const name = folderMetadataRowName(stored) || folderMetadataRowName(visible);
+    if (name) {
+      merged.name = name;
+      merged.title = name;
+    }
+    const source = String(stored.source || storedMeta.source || visible.source || visibleMeta.source || '').trim();
+    const sourceKind = String(stored.sourceKind || stored.kind || storedMeta.sourceKind || storedMeta.kind || visible.sourceKind || visible.kind || visibleMeta.sourceKind || visibleMeta.kind || source).trim();
+    if (source) {
+      merged.source = source;
+      merged.meta.source = source;
+    }
+    if (sourceKind) {
+      merged.sourceKind = sourceKind;
+      merged.kind = sourceKind;
+      merged.meta.sourceKind = sourceKind;
+    }
+    ['userCreated', 'materializedUserFolder', 'trustedFolderDisplay', 'shownInNormalMode', 'protectedCanonicalFallback', 'isCanonical'].forEach((key) => {
+      if (stored[key] === true || storedMeta[key] === true || visible[key] === true || visibleMeta[key] === true) merged[key] = true;
+    });
+    return merged;
+  }
+
+  function isProtectedSystemFolderMetadataRow(row) {
+    if (!row || typeof row !== 'object') return false;
+    const meta = folderMetadataRowMeta(row);
+    const id = folderMetadataRowId(row).toLowerCase();
+    const nameKey = folderMetadataNameKey(folderMetadataRowName(row));
+    if (id === 'unfiled' || nameKey === 'unfiled') return true;
+    if (row.isSystem === true || meta.isSystem === true) return true;
+    if (row.protectedCanonicalFallback === true || meta.protectedCanonicalFallback === true) return true;
+    return folderMetadataSourceTokens(row).some((token) => token === 'known-canonical-display-fallback');
+  }
+
+  function isLocalReviewFolderMetadataRow(row) {
+    if (!row || typeof row !== 'object') return false;
+    const meta = folderMetadataRowMeta(row);
+    const bucket = String(row.reviewBucket || meta.reviewBucket || '').trim().toLowerCase();
+    if (bucket) return true;
+    if (row.hidden === true || meta.hidden === true) return true;
+    if (row.shownInNormalMode === false || meta.shownInNormalMode === false) return true;
+    return folderMetadataSourceTokens(row).some((token) => token.includes('local-review') || token.includes('cleanup-review') || token.includes('review-required'));
+  }
+
+  function isChromeStudioMutableFolderRow(row) {
+    if (!row || typeof row !== 'object') return false;
+    const folderId = folderMetadataRowId(row);
+    const nameKey = folderMetadataNameKey(folderMetadataRowName(row));
+    if (!folderId || !nameKey || nameKey === 'unfiled') return false;
+    if (isNativeOwnedFolderMirrorRow(row)) return false;
+    if (isProtectedSystemFolderMetadataRow(row)) return false;
+    if (isLocalReviewFolderMetadataRow(row)) return false;
+    const meta = folderMetadataRowMeta(row);
+    if (row.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
+    if (row.trustedFolderDisplay === true || meta.trustedFolderDisplay === true) return true;
+    if (row.userCreated === true || meta.userCreated === true) return true;
+    return folderMetadataSourceTokens(row).some((token) => {
+      if (STUDIO_USER_FOLDER_ACTION_SOURCES.has(token)) return true;
+      return token.includes('desktop')
+        || token.includes('sqlite')
+        || token.includes('studio')
+        || token.includes('import')
+        || token === 'stored-folder-state'
+        || token === 'folder-state'
+        || token === 'chromestoragelocal'
+        || token === 'chrome-storage-local';
+    });
+  }
+
+  async function readChromeFolderMetadataState() {
+    if (!hasChromeStorageRead()) {
+      return { raw: {}, state: { folders: [], items: {} }, error: 'chrome-storage-read-unavailable' };
+    }
+    try {
+      const raw = await chromeStorageGet(FOLDER_STATE_DATA_KEY);
+      return {
+        raw: raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {},
+        state: normalizeFolderState(raw, 'stored-folder-state'),
+        error: '',
+      };
+    } catch (e) {
+      return {
+        raw: {},
+        state: { folders: [], items: {} },
+        error: 'chrome-folder-state-read-failed',
+        detail: String(e?.message || e || ''),
+      };
+    }
+  }
+
+  async function readChromeNativeFolderMetadataState() {
+    const memoryPayload = normalizeNativeBroadcastPayload(state.lastNativeBroadcastPayload);
+    if (memoryPayload?.folderState) return normalizeFolderState(memoryPayload.folderState, 'native-folder-catalog');
+    if (!hasChromeStorageRead()) return { folders: [], items: {} };
+    try {
+      const raw = await chromeStorageGet(NATIVE_BROADCAST_KEY);
+      const payload = normalizeNativeBroadcastPayload(raw);
+      return normalizeFolderState(payload?.folderState || null, 'native-folder-catalog');
+    } catch {
+      return { folders: [], items: {} };
+    }
+  }
+
+  function chromeFolderColorPatchRow(row, nextColor, updatedAt) {
+    const source = String(row.source || folderMetadataRowMeta(row).source || 'stored-folder-state').trim() || 'stored-folder-state';
+    const sourceKind = String(row.sourceKind || row.kind || folderMetadataRowMeta(row).sourceKind || folderMetadataRowMeta(row).kind || source).trim() || source;
+    const folderId = folderMetadataRowId(row);
+    const name = folderMetadataRowName(row) || folderId;
+    const meta = {
+      ...folderMetadataRowMeta(row),
+      color: nextColor,
+      iconColor: nextColor,
+      source,
+      sourceKind,
+      updatedAt,
+    };
+    const out = {
+      ...row,
+      id: folderId,
+      folderId,
+      name,
+      title: name,
+      source,
+      stateSource: 'stored-folder-state',
+      sourceKind,
+      kind: sourceKind,
+      color: nextColor,
+      iconColor: nextColor,
+      updatedAt,
+      meta,
+    };
+    ['userCreated', 'materializedUserFolder', 'trustedFolderDisplay', 'shownInNormalMode'].forEach((key) => {
+      if (row[key] === true || meta[key] === true) out[key] = true;
+    });
+    return out;
   }
 
   function findDuplicateNameDifferentIdCandidates(currentFolders, incomingFolders) {
@@ -1084,6 +1285,23 @@
       after: null,
       blockers: code ? [{ code: String(code) }] : [],
       warnings: [],
+    };
+  }
+
+  function normalizeNativeOwnerFolderMetadataResult(result, operation) {
+    if (!result || typeof result !== 'object') return result;
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const sourceSurface = String(op.sourceSurface || '').trim();
+    if (sourceSurface !== 'chrome-studio') return result;
+    const blockers = Array.isArray(result.blockers) ? result.blockers : [];
+    if (!blockers.some((entry) => String(entry?.code || '').trim() === 'folder-not-found')) return result;
+    return {
+      ...result,
+      blockers: blockers.map((entry) => {
+        if (String(entry?.code || '').trim() !== 'folder-not-found') return entry;
+        return { ...entry, code: 'native-owner-folder-not-found' };
+      }),
+      nativeOwnerOriginalBlocker: 'folder-not-found',
     };
   }
 
@@ -1567,6 +1785,269 @@
     return result;
   }
 
+  async function buildChromeColorFolderMetadataContext(requestId, mode, operation, expectedMode) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const result = folderMetadataResultBase(requestId, mode, op, '');
+    result.chromeResolver = 'folder-state-mirror';
+    result.chromeColorMutationStatus = 'started';
+    if (String(mode || '').trim() !== String(expectedMode || '').trim()) {
+      result.blockers.push({ code: `chrome-color-${String(expectedMode || 'unknown')}-only` });
+    }
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+      result.blockers.push({ code: 'invalid-folder-metadata-operation' });
+    }
+    if (String(op.operationType || '').trim() !== 'change-folder-color') {
+      result.blockers.push({ code: 'folder-not-mutable' });
+    }
+
+    const folderId = folderMetadataRowId(op);
+    const after = op.after && typeof op.after === 'object' ? op.after : {};
+    const nextColor = normalizeFolderMetadataHexColor(after.color || after.iconColor || op.color || op.iconColor || '');
+    const visibleRow = folderMetadataOperationBeforeRow(op);
+    const read = await readChromeFolderMetadataState();
+    if (read.error) result.blockers.push({ code: read.error });
+    const storedState = read.state || { folders: [], items: {} };
+    const nativeState = await readChromeNativeFolderMetadataState();
+    const rows = Array.isArray(storedState.folders) ? storedState.folders : [];
+    const storedFolder = rows.find((row) => folderMetadataRowId(row) === folderId) || null;
+    const nativeFolder = (Array.isArray(nativeState.folders) ? nativeState.folders : [])
+      .find((row) => folderMetadataRowId(row) === folderId) || null;
+    const targetFolder = mergeFolderMetadataVisibleRow(storedFolder, visibleRow);
+    const hasTargetFolder = !!folderMetadataRowId(targetFolder);
+    const sourceHash = chromeFolderMetadataStateHash(storedState);
+    const previousColor = folderMetadataRowColor(targetFolder);
+    const previewHash = stableChecksum({
+      operationType: 'change-folder-color',
+      folderId,
+      beforeColor: previousColor,
+      color: nextColor,
+      sourceHash,
+    });
+    const staleGuard = op.staleGuard && typeof op.staleGuard === 'object' && !Array.isArray(op.staleGuard)
+      ? op.staleGuard
+      : {};
+
+    if (!folderId) result.blockers.push({ code: 'folder-identity-missing' });
+    if (!nextColor) result.blockers.push({ code: 'invalid-folder-color' });
+    if (!result.blockers.length && folderId && nativeFolder && (!storedFolder || isNativeOwnedFolderMirrorRow(storedFolder))) {
+      result.chromeMutationRoute = 'native-owner';
+      result.chromeColorMutationStatus = 'native-owner-route';
+      return {
+        result,
+        route: 'native-owner',
+        folderId,
+        targetFolder: nativeFolder,
+        previousColor: folderMetadataRowColor(nativeFolder),
+        nextColor,
+      };
+    }
+    if (!result.blockers.length && hasTargetFolder && isNativeOwnedFolderMirrorRow(targetFolder)) {
+      result.chromeMutationRoute = 'native-owner';
+      result.chromeColorMutationStatus = 'native-owner-route';
+      return {
+        result,
+        route: 'native-owner',
+        folderId,
+        targetFolder,
+        previousColor: folderMetadataRowColor(targetFolder),
+        nextColor,
+      };
+    }
+    if (hasTargetFolder && isProtectedSystemFolderMetadataRow(targetFolder)) {
+      result.blockers.push({ code: 'protected-folder' });
+    }
+    if (hasTargetFolder && isLocalReviewFolderMetadataRow(targetFolder)) {
+      result.blockers.push({ code: 'local-review-folder-not-editable' });
+    }
+    if (folderId && !hasTargetFolder) {
+      result.blockers.push({ code: visibleRow ? 'folder-identity-missing' : 'native-owner-folder-not-found' });
+    } else if (!result.blockers.length && hasTargetFolder && !isNativeOwnedFolderMirrorRow(targetFolder) && !isChromeStudioMutableFolderRow(targetFolder)) {
+      result.blockers.push({ code: 'folder-not-mutable' });
+    }
+    if (expectedMode === 'apply') {
+      const guardSourceHash = String(staleGuard.sourceHash || '').trim();
+      const guardPreviewHash = String(staleGuard.previewHash || '').trim();
+      if (!guardSourceHash || !guardPreviewHash) {
+        result.blockers.push({ code: 'stale-guard-required' });
+      } else {
+        if (guardSourceHash !== sourceHash) result.blockers.push({ code: 'stale-source-hash' });
+        if (guardPreviewHash !== previewHash) result.blockers.push({ code: 'stale-preview-hash' });
+      }
+    }
+
+    result.folderId = folderId;
+    result.chromeMutationRoute = 'studio-local';
+    result.before = {
+      id: folderId,
+      folderId,
+      name: folderMetadataRowName(targetFolder),
+      color: previousColor,
+      iconColor: previousColor,
+      source: String(targetFolder?.source || ''),
+      sourceKind: String(targetFolder?.sourceKind || targetFolder?.kind || ''),
+      sourceHash,
+      folderCount: rows.length,
+      previewHash,
+    };
+    result.after = {
+      id: folderId,
+      folderId,
+      color: nextColor,
+      iconColor: nextColor,
+      sourceHash,
+    };
+    result.staleGuard = { sourceHash, previewHash };
+    return {
+      result,
+      route: 'studio-local',
+      rawState: read.raw || {},
+      storedState,
+      rows,
+      items: storedState.items || {},
+      storedFolder,
+      targetFolder,
+      folderId,
+      previousColor,
+      nextColor,
+      sourceHash,
+      previewHash,
+    };
+  }
+
+  async function previewChromeColorFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildChromeColorFolderMetadataContext(requestId, mode, operation, 'preview');
+    const result = ctx.result;
+    if (ctx.route === 'native-owner') return null;
+    result.previewSource = 'chrome-folder-state-mirror';
+    result.chromeColorMutationStatus = result.blockers.length ? 'blocked' : 'preview-ok';
+    result.applied = false;
+    result.noMutation = true;
+    result.readOnly = true;
+    result.canApply = result.blockers.length === 0 && ctx.previousColor !== ctx.nextColor;
+    result.ok = result.blockers.length === 0;
+    if (result.ok && ctx.previousColor === ctx.nextColor) {
+      result.warnings.push({ code: 'no-op-color-unchanged' });
+    }
+    return result;
+  }
+
+  async function applyChromeColorFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildChromeColorFolderMetadataContext(requestId, mode, operation, 'apply');
+    const result = ctx.result;
+    if (ctx.route === 'native-owner') return null;
+    result.applySource = 'chrome-folder-state-mirror';
+    result.chromeColorMutationStatus = result.blockers.length ? 'blocked' : 'apply-started';
+    result.readOnly = false;
+    result.noMutation = true;
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      return result;
+    }
+    if (ctx.previousColor === ctx.nextColor) {
+      result.ok = true;
+      result.applied = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.canApply = false;
+      result.warnings.push({ code: 'no-op-color-unchanged' });
+      result.chromeColorMutationStatus = 'unchanged';
+      return result;
+    }
+
+    if (!hasChromeStorage()) {
+      result.blockers.push({ code: 'chrome-storage-write-unavailable' });
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.chromeColorMutationStatus = 'blocked';
+      return result;
+    }
+
+    const updatedAt = nowIso();
+    const nextRow = chromeFolderColorPatchRow(ctx.targetFolder, ctx.nextColor, updatedAt);
+    const nextFolders = ctx.rows.map((row) => ({ ...row }));
+    const existingIndex = nextFolders.findIndex((row) => folderMetadataRowId(row) === ctx.folderId);
+    if (existingIndex >= 0) nextFolders[existingIndex] = nextRow;
+    else nextFolders.push(nextRow);
+    const nextItems = { ...(ctx.items || {}) };
+    if (!Array.isArray(nextItems[ctx.folderId])) nextItems[ctx.folderId] = [];
+    const nextState = {
+      ...(ctx.rawState || {}),
+      schemaVersion: Number(ctx.rawState?.schemaVersion || ctx.rawState?.version || 1) || 1,
+      source: String(ctx.rawState?.source || ctx.rawState?.exportedFrom || 'stored-folder-state').trim() || 'stored-folder-state',
+      sourceKind: String(ctx.rawState?.sourceKind || 'chrome-folder-state-local-mutation').trim() || 'chrome-folder-state-local-mutation',
+      updatedAt,
+      folders: nextFolders,
+      items: nextItems,
+    };
+    await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState });
+
+    const afterState = normalizeFolderState(nextState, 'stored-folder-state');
+    const afterSourceHash = chromeFolderMetadataStateHash(afterState);
+    result.folderId = ctx.folderId;
+    result.before = {
+      ...result.before,
+      color: ctx.previousColor,
+      iconColor: ctx.previousColor,
+    };
+    result.after = {
+      ...nextRow,
+      id: ctx.folderId,
+      folderId: ctx.folderId,
+      color: ctx.nextColor,
+      iconColor: ctx.nextColor,
+      sourceHash: afterSourceHash,
+    };
+    result.applied = true;
+    result.noMutation = false;
+    result.readOnly = false;
+    result.canApply = false;
+    result.ok = true;
+    result.writesPerformed = 1;
+    result.chromeColorMutationStatus = existingIndex >= 0 ? 'updated' : 'inserted';
+    state.lastChromeFolderColorResultCount += 1;
+    try { coalesceEmit('chrome-folder-color-apply'); } catch {}
+    return result;
+  }
+
+  async function requestChromeFolderMetadataOperationIfLocal(requestId, mode, operation) {
+    if (currentPlatformAdapter() === 'tauri') return null;
+    const operationType = String(operation?.operationType || '').trim();
+    if (operationType !== 'change-folder-color') return null;
+    state.lastChromeFolderMetadataStatus = 'started';
+    state.lastChromeFolderMetadataError = '';
+    state.lastChromeFolderColorMutationStatus = '';
+    state.lastChromeFolderMutationRoute = '';
+    state.lastChromeFolderMutationBlocker = '';
+    try {
+      const result = mode === 'apply'
+        ? await applyChromeColorFolderMetadataOperation(requestId, mode, operation)
+        : await previewChromeColorFolderMetadataOperation(requestId, mode, operation);
+      if (!result) {
+        state.lastChromeFolderMutationRoute = 'native-owner';
+        state.lastChromeFolderMetadataStatus = 'native-owner-route';
+        state.lastChromeFolderColorMutationStatus = 'native-owner-route';
+        return null;
+      }
+      state.lastChromeFolderMutationRoute = String(result.chromeMutationRoute || 'studio-local');
+      state.lastChromeFolderMetadataStatus = result?.ok === true ? 'ok' : 'blocked';
+      state.lastChromeFolderColorMutationStatus = String(result.chromeColorMutationStatus || state.lastChromeFolderMetadataStatus || '');
+      state.lastChromeFolderMutationBlocker = result.blockers?.[0]?.code || '';
+      return rememberImmediateFolderMetadataResult(requestId, result);
+    } catch (e) {
+      state.lastChromeFolderMetadataStatus = 'error';
+      state.lastChromeFolderMetadataError = String(e?.message || e || 'chrome-folder-metadata-operation-failed');
+      state.lastChromeFolderColorMutationStatus = 'error';
+      const result = folderMetadataResultBase(requestId, mode, operation, 'chrome-folder-metadata-operation-failed');
+      result.chromeResolver = 'folder-state-mirror';
+      result.chromeColorMutationStatus = 'error';
+      result.errorCategory = 'chrome-folder-metadata-operation-failed';
+      return rememberImmediateFolderMetadataResult(requestId, result);
+    }
+  }
+
   async function requestDesktopFolderMetadataOperation(requestId, mode, operation) {
     state.lastDesktopFolderMetadataStatus = 'started';
     state.lastDesktopFolderMetadataError = '';
@@ -1623,16 +2104,17 @@
     if (!id) return false;
     const pending = state.pendingFolderMetadataRequests.get(id);
     if (!pending) return false;
+    const settledResult = normalizeNativeOwnerFolderMetadataResult(result, pending.operation);
     try { W.clearTimeout(pending.timer); } catch {}
     state.pendingFolderMetadataRequests.delete(id);
     state.lastFolderMetadataResultAt = Date.now();
     state.lastFolderMetadataResultId = id;
-    state.lastFolderMetadataResultStatus = result?.ok === true ? 'ok' : 'blocked';
-    state.lastFolderMetadataRequestStatus = result?.ok === true ? 'resolved' : 'blocked';
-    state.lastFolderMetadataResultBlockers = Array.isArray(result?.blockers)
-      ? result.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
+    state.lastFolderMetadataResultStatus = settledResult?.ok === true ? 'ok' : 'blocked';
+    state.lastFolderMetadataRequestStatus = settledResult?.ok === true ? 'resolved' : 'blocked';
+    state.lastFolderMetadataResultBlockers = Array.isArray(settledResult?.blockers)
+      ? settledResult.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
       : [];
-    pending.resolve(result);
+    pending.resolve(settledResult);
     return true;
   }
 
@@ -1930,7 +2412,7 @@
     }
   }
 
-  function requestFolderMetadataOperation(operation, options = {}) {
+  async function requestFolderMetadataOperation(operation, options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const mode = String(opts.requestMode || 'preview').trim();
     const op = operation && typeof operation === 'object' ? {
@@ -1975,6 +2457,8 @@
     if (currentPlatformAdapter() === 'tauri') {
       return requestDesktopFolderMetadataOperation(requestId, mode, op);
     }
+    const localChromeResult = await requestChromeFolderMetadataOperationIfLocal(requestId, mode, op);
+    if (localChromeResult) return localChromeResult;
     if (state.pendingFolderMetadataRequests.size >= FOLDER_METADATA_REQUEST_MAX_PENDING) {
       return Promise.resolve(rememberImmediateFolderMetadataResult(requestId, folderMetadataResultBase(requestId, mode, op, 'too-many-pending-folder-metadata-requests')));
     }
@@ -2053,6 +2537,13 @@
         desktopColorResultCount: state.lastDesktopColorResultCount,
         desktopFolderMetadataStatus: state.lastDesktopFolderMetadataStatus,
         desktopFolderMetadataError: state.lastDesktopFolderMetadataError,
+        chromeResolver: currentPlatformAdapter() === 'tauri' ? '' : 'folder-state-mirror-or-native-owner',
+        chromeFolderMetadataStatus: state.lastChromeFolderMetadataStatus,
+        chromeFolderMetadataError: state.lastChromeFolderMetadataError,
+        chromeFolderColorMutationStatus: state.lastChromeFolderColorMutationStatus,
+        chromeFolderColorResultCount: state.lastChromeFolderColorResultCount,
+        chromeFolderMutationRoute: state.lastChromeFolderMutationRoute,
+        chromeFolderMutationBlocker: state.lastChromeFolderMutationBlocker,
         pendingRequests: state.pendingFolderMetadataRequests.size,
         lastRequestAt: state.lastFolderMetadataRequestAt,
         lastRequestId: state.lastFolderMetadataRequestId,
