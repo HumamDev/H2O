@@ -884,6 +884,51 @@
     }
   }
 
+  async function confirmFreshCanonicalFolderColor(folderIdInput, expectedColorInput) {
+    const folderId = String(folderIdInput || '').trim();
+    const expectedColor = normalizeHexColor(expectedColorInput || '');
+    if (!folderId) return { ok: false, status: 'folder-id-required', folderId, expectedColor };
+    try {
+      const model = await W.H2O?.Library?.FolderParity?.getDisplayModel?.({
+        fresh: true,
+        reason: 'desktop-folder-color-confirmation',
+      });
+      const row = (Array.isArray(model?.canonicalRows) ? model.canonicalRows : [])
+        .find((candidate) => String(candidate?.folderId || candidate?.id || '').trim() === folderId);
+      if (!row) {
+        return {
+          ok: false,
+          status: 'folder-not-in-display-model',
+          folderId,
+          expectedColor,
+          canonicalMirrorAvailable: model?.canonicalMirrorAvailable === true,
+          displayModelAvailable: model?.displayModelAvailable === true,
+        };
+      }
+      const actualColor = normalizeHexColor(row.iconColor || row.color || '');
+      const ok = expectedColor ? actualColor === expectedColor : !actualColor;
+      return {
+        ok,
+        status: ok ? 'confirmed' : 'display-color-not-confirmed',
+        folderId,
+        expectedColor,
+        actualColor,
+        colorSource: String(row.colorSource || '').trim(),
+        canonicalMirrorAvailable: model?.canonicalMirrorAvailable === true,
+        displayModelAvailable: model?.displayModelAvailable === true,
+      };
+    } catch (e) {
+      err('folderColor.confirmFreshCanonicalColor', e);
+      return {
+        ok: false,
+        status: 'display-model-confirmation-failed',
+        folderId,
+        expectedColor,
+        reason: String(e?.message || e || ''),
+      };
+    }
+  }
+
   async function resolveFreshCanonicalFolderItemByName(name) {
     const targetName = normalizeFolderCreateInput(name);
     const targetKey = targetName.toLowerCase();
@@ -1092,8 +1137,21 @@
       setStatus('Applying...', 'pending');
       const result = await requestDesktopFolderEditor('color', item, { color: nextColor, iconColor: nextColor });
       if (result?.ok) {
-        setStatus(nextColor ? 'Color updated' : 'Color cleared', 'ok');
-        return result;
+        const confirmation = await confirmFreshCanonicalFolderColor(folderId, nextColor);
+        if (confirmation.ok) {
+          setStatus(nextColor ? 'Color updated' : 'Color cleared', 'ok');
+          refreshAfterNativeFolderMetadataApply('desktop-folder-color-confirmed');
+          return { ...result, applied: true, displayConfirmation: confirmation };
+        }
+        setStatus(`Blocked: ${confirmation.status || 'display-color-not-confirmed'}`, 'blocked');
+        return {
+          ...result,
+          ok: false,
+          applied: false,
+          persistenceOk: true,
+          status: confirmation.status || 'display-color-not-confirmed',
+          displayConfirmation: confirmation,
+        };
       }
       setStatus(`Blocked: ${String(result?.status || result?.reason || 'desktop-color-failed')}`, 'blocked');
       return result;

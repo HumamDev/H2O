@@ -3024,12 +3024,37 @@ async function runDesktopFoldersActionsTests() {
     };
   }
 
+  function makeChromeStorageMock() {
+    const values = new Map();
+    return {
+      _values: values,
+      runtime: { lastError: null },
+      storage: {
+        local: {
+          get(keys, callback) {
+            const out = {};
+            for (const key of Array.isArray(keys) ? keys : [keys]) {
+              if (values.has(key)) out[key] = values.get(key);
+            }
+            callback(out);
+          },
+          set(items, callback) {
+            for (const [key, value] of Object.entries(items || {})) values.set(key, value);
+            if (callback) callback();
+          },
+        },
+      },
+    };
+  }
+
   function buildSandbox() {
     const eventTarget = makeEventTarget();
     const store = makeFoldersStoreMock();
+    const chrome = makeChromeStorageMock();
     const sandbox = {
       __TAURI_INTERNALS__: { invoke: () => Promise.reject(new Error('mock invoke')) },
       H2O: { Studio: { store: { folders: store } } },
+      chrome,
       Promise, JSON, Date, console, Number, String, Boolean, Object, Array, Error, Math,
       Map, Set, WeakMap, WeakSet, Symbol, RegExp,
       CustomEvent: class { constructor(type, init) { this.type = type; this.detail = (init && init.detail) || null; } },
@@ -3040,6 +3065,7 @@ async function runDesktopFoldersActionsTests() {
       clearTimeout: globalThis.clearTimeout,
       _eventTarget: eventTarget,
       _store: store,
+      _chromeStorageValues: chrome._values,
     };
     sandbox.window = sandbox;
     sandbox.globalThis = sandbox;
@@ -3142,6 +3168,24 @@ async function runDesktopFoldersActionsTests() {
   // ── 13.4 — update (color/iconColor/parentId/meta) ──────────────────
   await checkAsync('update({color, iconColor, meta}) merges patch, dispatches refresh', async () => {
     sandbox._eventTarget._dispatchedEvents.length = 0;
+    const folderStateKey = 'h2o:prm:cgx:fldrs:state:data:v1';
+    sandbox.chrome.storage.local.set({
+      [folderStateKey]: {
+        schemaVersion: 1,
+        source: 'stored-folder-state',
+        folders: [{
+          id: folderA,
+          folderId: folderA,
+          name: 'Important Projects',
+          title: 'Important Projects',
+          source: 'stored-folder-state',
+          color: '#111111',
+          iconColor: '#111111',
+          updatedAt: '2026-06-21T00:00:00.000Z',
+        }],
+        items: { [folderA]: ['chat-stale'] },
+      },
+    });
     const r = await actions.update(folderA, {
       color: '#0000ff', iconColor: '#0000ff', meta: { sort: 99 },
     });
@@ -3154,6 +3198,14 @@ async function runDesktopFoldersActionsTests() {
     assert.equal(row.color, '#0000ff');
     assert.equal(row.iconColor, '#0000ff');
     assert.equal(row.meta.sort, 99);
+    assert.equal(r.folderStateMirror.ok, true);
+    assert.equal(r.folderStateMirror.status, 'updated');
+    const mirror = sandbox._chromeStorageValues.get(folderStateKey);
+    const mirrorRow = mirror.folders.find((folder) => folder.id === folderA);
+    assert.equal(mirrorRow.color, '#0000ff');
+    assert.equal(mirrorRow.iconColor, '#0000ff');
+    assert.equal(mirrorRow.stateSource, 'stored-folder-state');
+    assert.deepEqual(mirror.items[folderA], ['chat-stale']);
     const evts = refreshEvents(sandbox);
     assert.equal(evts.length, 1);
     assert.match(String(evts[0].detail.reason), /folders-actions:update/);

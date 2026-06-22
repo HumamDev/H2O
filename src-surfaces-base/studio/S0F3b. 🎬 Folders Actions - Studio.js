@@ -103,6 +103,7 @@
   var PHASE          = 'R4.4-folders';
   var MAX_ERRORS     = 20;
   var REFRESH_EVENT  = 'evt:h2o:library-index:refresh-request';
+  var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
 
   /* ── State (in-memory only) ──────────────────────────────────────── */
   var state = {
@@ -112,6 +113,7 @@
     lastWriteAction: '',
     lastWriteOk: null,
     lastAutoExportSchedule: null,
+    lastFolderStateMirrorReconcile: null,
     errors: [],
   };
 
@@ -127,6 +129,17 @@
   function nowIso() {
     try { return new Date().toISOString(); }
     catch (_) { return String(Date.now()); }
+  }
+
+  function epochToIso(value) {
+    var n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    try { return new Date(n).toISOString(); }
+    catch (_) { return ''; }
+  }
+
+  function safeObject(value) {
+    return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
   }
 
   function pushError(op, err) {
@@ -200,6 +213,194 @@
     try {
       return (H2O.Studio && H2O.Studio.store && H2O.Studio.store.folders) || null;
     } catch (_) { return null; }
+  }
+
+  function chromeStorageLocal() {
+    try {
+      var api = global['chrome'];
+      return api && api.storage && api.storage.local
+        ? api.storage.local
+        : null;
+    } catch (_) { return null; }
+  }
+
+  function chromeStorageGet(key) {
+    return new Promise(function (resolve, reject) {
+      var local = chromeStorageLocal();
+      if (!local || typeof local.get !== 'function') {
+        reject(new Error('storage-local-unavailable'));
+        return;
+      }
+      try {
+        local.get([key], function (items) {
+          var api = global['chrome'];
+          var runtimeError = api && api.runtime && api.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || String(runtimeError)));
+            return;
+          }
+          resolve(items ? items[key] : undefined);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function chromeStorageSet(items) {
+    return new Promise(function (resolve, reject) {
+      var local = chromeStorageLocal();
+      if (!local || typeof local.set !== 'function') {
+        reject(new Error('storage-local-unavailable'));
+        return;
+      }
+      try {
+        local.set(items, function () {
+          var api = global['chrome'];
+          var runtimeError = api && api.runtime && api.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || String(runtimeError)));
+            return;
+          }
+          resolve(true);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function folderRowId(row) {
+    return cleanString(row && (row.folderId || row.id));
+  }
+
+  function folderRowMeta(row) {
+    return safeObject(row && row.meta);
+  }
+
+  function folderRowColor(row) {
+    var meta = folderRowMeta(row);
+    return cleanString((row && (row.iconColor || row.color)) || meta.iconColor || meta.color || '');
+  }
+
+  function folderRowUpdatedAt(row) {
+    var meta = folderRowMeta(row);
+    var raw = (row && row.updatedAt) || meta.updatedAt || '';
+    return typeof raw === 'number' ? epochToIso(raw) : cleanString(raw);
+  }
+
+  function projectFolderStateMirrorRow(rowInput, existingInput, patchInput, fallbackUpdatedAt) {
+    var row = safeObject(rowInput);
+    var existing = safeObject(existingInput);
+    var patch = safeObject(patchInput);
+    var folderId = cleanString(folderRowId(row) || folderRowId(existing));
+    if (!folderId) return null;
+    var rowMeta = folderRowMeta(row);
+    var existingMeta = folderRowMeta(existing);
+    var patchMeta = safeObject(patch.meta);
+    var nextColor = Object.prototype.hasOwnProperty.call(patch, 'iconColor')
+      ? cleanString(patch.iconColor)
+      : Object.prototype.hasOwnProperty.call(patch, 'color')
+        ? cleanString(patch.color)
+        : folderRowColor(row);
+    var updatedAt = cleanString(fallbackUpdatedAt || folderRowUpdatedAt(row) || patchMeta.updatedAt || existing.updatedAt || existingMeta.updatedAt || nowIso());
+    var name = cleanString((row && row.name) || rowMeta.name || existing.name || existing.title || existingMeta.name || folderId);
+    var meta = Object.assign({}, existingMeta, rowMeta, patchMeta, {
+      color: nextColor,
+      iconColor: nextColor,
+      updatedAt: updatedAt,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+      source: cleanString(row.source || rowMeta.source || existing.source || existingMeta.source || 'desktop-sqlite'),
+    });
+    var out = Object.assign({}, existing, {
+      id: folderId,
+      folderId: folderId,
+      name: name,
+      title: name,
+      source: cleanString(row.source || rowMeta.source || existing.source || existingMeta.source || 'desktop-sqlite'),
+      stateSource: 'stored-folder-state',
+      color: nextColor,
+      iconColor: nextColor,
+      updatedAt: updatedAt,
+      meta: meta,
+      userCreated: row.userCreated === true || rowMeta.userCreated === true || existing.userCreated === true || existingMeta.userCreated === true,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+    });
+    var parentId = cleanString(row.parentId || rowMeta.parentId || existing.parentId || existingMeta.parentId || '');
+    var kind = cleanString(row.sourceKind || row.kind || rowMeta.sourceKind || rowMeta.kind || existing.sourceKind || existing.kind || existingMeta.sourceKind || existingMeta.kind || 'desktop-sqlite');
+    var icon = cleanString(row.icon || rowMeta.icon || rowMeta.iconKey || existing.icon || existingMeta.icon || existingMeta.iconKey || '');
+    if (parentId) out.parentId = parentId;
+    if (kind) {
+      out.kind = kind;
+      out.sourceKind = kind;
+    }
+    if (icon) out.icon = icon;
+    if (Object.prototype.hasOwnProperty.call(row, 'sortOrder')) out.sortOrder = row.sortOrder;
+    else if (Object.prototype.hasOwnProperty.call(existing, 'sortOrder')) out.sortOrder = existing.sortOrder;
+    if (Object.prototype.hasOwnProperty.call(row, 'createdAt')) out.createdAt = row.createdAt;
+    else if (Object.prototype.hasOwnProperty.call(existing, 'createdAt')) out.createdAt = existing.createdAt;
+    return out;
+  }
+
+  async function reconcileFolderStateMirrorColor(folderIdInput, row, patch) {
+    var folderId = cleanString(folderIdInput);
+    var result = {
+      ok: false,
+      status: 'not-run',
+      key: FOLDER_STATE_DATA_KEY,
+      folderId: folderId,
+      color: folderRowColor(row),
+      at: Date.now(),
+    };
+    if (!folderId) {
+      result.status = 'folder-id-required';
+      state.lastFolderStateMirrorReconcile = result;
+      return result;
+    }
+    try {
+      var raw = await chromeStorageGet(FOLDER_STATE_DATA_KEY);
+      var current = safeObject(raw);
+      var folders = Array.isArray(current.folders) ? current.folders.slice() : [];
+      var items = safeObject(current.items);
+      var index = -1;
+      for (var i = 0; i < folders.length; i += 1) {
+        if (folderRowId(folders[i]) === folderId) {
+          index = i;
+          break;
+        }
+      }
+      var updatedAt = nowIso();
+      var existing = index >= 0 ? folders[index] : null;
+      var nextRow = projectFolderStateMirrorRow(row, existing, patch, updatedAt);
+      if (!nextRow) {
+        result.status = 'row-project-failed';
+        state.lastFolderStateMirrorReconcile = result;
+        return result;
+      }
+      if (index >= 0) folders[index] = nextRow;
+      else folders.push(nextRow);
+      if (!Array.isArray(items[folderId])) items[folderId] = [];
+      var nextState = Object.assign({}, current, {
+        schemaVersion: Number(current.schemaVersion || current.version || 1) || 1,
+        source: cleanString(current.source || current.exportedFrom || 'stored-folder-state') || 'stored-folder-state',
+        updatedAt: updatedAt,
+        folders: folders,
+        items: items,
+      });
+      await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState });
+      result.ok = true;
+      result.status = index >= 0 ? 'updated' : 'inserted';
+      result.color = cleanString(nextRow.iconColor || nextRow.color || '');
+      result.folderCount = folders.length;
+      state.lastFolderStateMirrorReconcile = result;
+      return result;
+    } catch (e) {
+      result.status = 'error';
+      result.error = String((e && e.message) || e);
+      state.lastFolderStateMirrorReconcile = result;
+      pushError('reconcileFolderStateMirrorColor', e);
+      return result;
+    }
   }
 
   function baseResult(action, status, extra) {
@@ -360,7 +561,23 @@
         recordWrite('update', false);
         return baseResult('update', 'not-found', { folderId: folderId });
       }
+      var hasColorPatch = Object.prototype.hasOwnProperty.call(allowed, 'color')
+        || Object.prototype.hasOwnProperty.call(allowed, 'iconColor');
+      if (hasColorPatch) {
+        var updateAt = nowIso();
+        var nextPatchColor = Object.prototype.hasOwnProperty.call(allowed, 'iconColor')
+          ? cleanString(allowed.iconColor)
+          : cleanString(allowed.color);
+        allowed.meta = Object.assign({}, safeMeta(existing.meta), safeMeta(allowed.meta), {
+          color: nextPatchColor,
+          iconColor: nextPatchColor,
+          updatedAt: updateAt,
+        });
+      }
       var row = await store.patch(folderId, allowed);
+      var mirrorReconcile = hasColorPatch
+        ? await reconcileFolderStateMirrorColor(folderId, row || Object.assign({}, existing, allowed), allowed)
+        : null;
       recordWrite('update', true);
       dispatchRefresh('update');
       scheduleDesktopLatestExport('update', folderId);
@@ -369,6 +586,7 @@
         folderId: folderId,
         row: row,
         appliedFields: Object.keys(allowed),
+        folderStateMirror: mirrorReconcile,
       });
     } catch (e) {
       pushError('update', e);
@@ -594,6 +812,7 @@
       lastWriteAction: state.lastWriteAction,
       lastWriteOk: state.lastWriteOk,
       lastAutoExportSchedule: state.lastAutoExportSchedule,
+      lastFolderStateMirrorReconcile: state.lastFolderStateMirrorReconcile,
       storeAvailable: !!getStore(),
       refreshEvent: REFRESH_EVENT,
       cardinality: 'single-folder-per-chat',

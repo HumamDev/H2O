@@ -235,6 +235,21 @@
     return (row?.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
   }
 
+  function folderUpdatedAtMs(row) {
+    const meta = folderMetaOf(row);
+    const raw = row?.updatedAt ?? row?.updated_at ?? meta.updatedAt ?? meta.updated_at ?? '';
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+    const clean = String(raw || '').trim();
+    if (!clean) return 0;
+    const parsed = Date.parse(clean);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function folderUpdatedAtValue(row) {
+    const meta = folderMetaOf(row);
+    return String(row?.updatedAt ?? row?.updated_at ?? meta.updatedAt ?? meta.updated_at ?? '').trim();
+  }
+
   function folderSourceTokens(row) {
     const meta = folderMetaOf(row);
     return [
@@ -249,6 +264,15 @@
 
   function isStudioUserFolderActionSource(row) {
     return folderSourceTokens(row).some((source) => STUDIO_USER_FOLDER_ACTION_SOURCES.has(source));
+  }
+
+  function isDesktopOwnedFolderRow(row) {
+    if (isStudioUserFolderActionSource(row)) return true;
+    return folderSourceTokens(row).some((source) => (
+      source === 'desktop-sqlite'
+      || source === 'desktop-studio'
+      || source.includes('desktop')
+    ));
   }
 
   function canonicalFolderDisplayColor(row) {
@@ -345,6 +369,11 @@
     if (color) out.color = color;
     if (iconColor) out.iconColor = iconColor;
     if (icon) out.icon = icon;
+    const rowCreatedAt = String(row?.createdAt ?? '').trim();
+    const rowUpdatedAt = String(row?.updatedAt ?? '').trim();
+    if (rowCreatedAt) out.createdAt = row.createdAt;
+    if (rowUpdatedAt) out.updatedAt = row.updatedAt;
+    else if (meta.updatedAt) out.updatedAt = meta.updatedAt;
     return out;
   }
 
@@ -604,7 +633,14 @@
 
   function isStoredFolderStateRow(row) {
     const stateSource = String(row?.stateSource || '').trim().toLowerCase();
-    return stateSource === 'stored-folder-state' || stateSource === 'folder-state';
+    const source = String(row?.source || '').trim().toLowerCase();
+    const sourceKind = String(row?.sourceKind || row?.kind || '').trim().toLowerCase();
+    return stateSource === 'stored-folder-state'
+      || stateSource === 'folder-state'
+      || source === 'stored-folder-state'
+      || source === 'folder-state'
+      || sourceKind === 'stored-folder-state'
+      || sourceKind === 'folder-state';
   }
 
   function isMaterializedUserFolder(row) {
@@ -660,6 +696,24 @@
       if (!String(next.iconColor || '').trim() && localColor) next.iconColor = localColor;
       const localIcon = String(local.icon || local.iconKey || '').trim();
       if (!String(next.icon || '').trim() && localIcon) next.icon = localIcon;
+    }
+    const localColor = folderColorOf(local);
+    const canonicalColor = folderColorOf(canonical);
+    const localUpdatedAtMs = folderUpdatedAtMs(local);
+    const canonicalUpdatedAtMs = folderUpdatedAtMs(canonical);
+    const localDesktopOwned = LW_isTauri()
+      && localColor
+      && (isMaterializedUserFolder(local) || isDesktopOwnedFolderRow(local));
+    const localIsFresh = localUpdatedAtMs > 0 && (!canonicalUpdatedAtMs || localUpdatedAtMs >= canonicalUpdatedAtMs);
+    if (canonicalMirrorAvailable && localDesktopOwned && localIsFresh) {
+      next.color = localColor;
+      next.iconColor = localColor;
+      next.displayColor = localColor;
+      next.colorSource = 'desktop-sqlite-fresh';
+      next.localColor = localColor;
+      next.localUpdatedAt = folderUpdatedAtValue(local);
+      next.canonicalUpdatedAt = folderUpdatedAtValue(canonical);
+      next.colorConflict = !!(canonicalColor && canonicalColor !== localColor);
     }
     const stableOrder = canonicalFolderDisplayOrder(next);
     if (Number.isFinite(stableOrder) && stableOrder > 0) next.sortOrder = stableOrder;
