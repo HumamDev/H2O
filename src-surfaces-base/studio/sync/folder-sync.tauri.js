@@ -150,6 +150,11 @@
     lastAutoImportConfigMode:      '',
     lastAutoImportEffectiveMode:   '',
     lastAutoImportConfigMigration: '',
+    lastPostImportRefreshAt:       null,
+    lastPostImportRefreshStatus:   '',
+    lastPostImportRefreshError:    '',
+    lastPostImportRefreshReason:   '',
+    lastPostImportRefreshEvents:   [],
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -1733,6 +1738,95 @@
     });
   }
 
+  function dispatchPostImportRefreshEvent(name, detail, events, errors) {
+    try {
+      if (typeof global.dispatchEvent !== 'function' || typeof global.CustomEvent !== 'function') return false;
+      global.dispatchEvent(new global.CustomEvent(name, { detail: detail }));
+      events.push(name);
+      return true;
+    } catch (e) {
+      errors.push(name + ':' + String((e && e.message) || e));
+      pushErr('postImportRefresh.dispatch.' + name, e);
+      return false;
+    }
+  }
+
+  async function refreshDesktopFolderUiAfterChromeImport(result, reason) {
+    var cleanReason = String(reason || 'desktop-auto-import').trim() || 'desktop-auto-import';
+    var at = new Date().toISOString();
+    var status = String(result && result.status || (result && result.ok ? 'imported' : 'blocked'));
+    var sourceSummary = result && result.sourceSummary && typeof result.sourceSummary === 'object'
+      ? result.sourceSummary
+      : {};
+    var detail = {
+      source: 'desktop-auto-import',
+      reason: cleanReason,
+      status: status,
+      transport: CHROME_LATEST_FILE,
+      exportedAt: String(result && result.exportedAt || sourceSummary.exportedAt || ''),
+      t: Date.now(),
+    };
+    var events = [];
+    var errors = [];
+    state.lastPostImportRefreshAt = at;
+    state.lastPostImportRefreshReason = cleanReason;
+    state.lastPostImportRefreshStatus = 'refresh-pending';
+    state.lastPostImportRefreshError = '';
+    state.lastPostImportRefreshEvents = [];
+
+    dispatchPostImportRefreshEvent('evt:h2o:library-workspace:cache-bust', detail, events, errors);
+    dispatchPostImportRefreshEvent('evt:h2o:library-index:refresh-request', detail, events, errors);
+    dispatchPostImportRefreshEvent('evt:h2o:folders:changed', detail, events, errors);
+    dispatchPostImportRefreshEvent('evt:h2o:library:cross-surface-sync', detail, events, errors);
+    dispatchPostImportRefreshEvent('evt:h2o:library-workspace:updated', detail, events, errors);
+
+    try {
+      if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
+        await H2O.LibraryIndex.refresh('desktop-auto-import:' + cleanReason);
+        events.push('H2O.LibraryIndex.refresh');
+      }
+    } catch (e) {
+      errors.push('LibraryIndex.refresh:' + String((e && e.message) || e));
+      pushErr('postImportRefresh.libraryIndex.refresh', e);
+    }
+
+    try {
+      if (H2O.Library && H2O.Library.FolderParity && typeof H2O.Library.FolderParity.getDisplayModel === 'function') {
+        await H2O.Library.FolderParity.getDisplayModel({
+          fresh: true,
+          reason: 'desktop-auto-import-post-import-refresh:' + cleanReason,
+        });
+        events.push('H2O.Library.FolderParity.getDisplayModel');
+      }
+    } catch (e) {
+      errors.push('FolderParity.getDisplayModel:' + String((e && e.message) || e));
+      pushErr('postImportRefresh.folderParity.getDisplayModel', e);
+    }
+
+    try {
+      if (H2O.Library && H2O.Library.SidebarSections && typeof H2O.Library.SidebarSections.refresh === 'function') {
+        await H2O.Library.SidebarSections.refresh();
+        events.push('H2O.Library.SidebarSections.refresh');
+      }
+    } catch (e) {
+      errors.push('SidebarSections.refresh:' + String((e && e.message) || e));
+      pushErr('postImportRefresh.sidebarSections.refresh', e);
+    }
+
+    state.lastPostImportRefreshAt = new Date().toISOString();
+    state.lastPostImportRefreshEvents = events.slice(-12);
+    state.lastPostImportRefreshError = errors.join(',');
+    state.lastPostImportRefreshStatus = errors.length
+      ? (events.length ? 'refreshed-with-warnings' : 'refresh-failed')
+      : 'refreshed';
+    return {
+      status: state.lastPostImportRefreshStatus,
+      at: state.lastPostImportRefreshAt,
+      events: state.lastPostImportRefreshEvents.slice(),
+      error: state.lastPostImportRefreshError,
+    };
+  }
+
   async function runDesktopAutoImport(filePath, reason) {
     var cleanPath = String(filePath || '').trim();
     var cleanReason = String(reason || 'desktop-auto-import').trim() || 'desktop-auto-import';
@@ -1759,9 +1853,8 @@
           state.lastAutoImportBytes = Number(latest.sizeBytes || 0);
         }
       } catch (_) { /* diagnostic-only */ }
-      if (result && result.ok && H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
-        try { await H2O.LibraryIndex.refresh('desktop-auto-import:' + cleanReason); }
-        catch (e) { pushErr('autoImport.libraryIndex.refresh', e); }
+      if (result && result.ok) {
+        await refreshDesktopFolderUiAfterChromeImport(result, cleanReason);
       }
       return result;
     } catch (e) {
@@ -2069,6 +2162,11 @@
         lastAutoImportPath: state.lastAutoImportPath,
         lastAutoImportBytes: state.lastAutoImportBytes,
         lastAutoImportReason: state.lastAutoImportReason,
+        lastPostImportRefreshAt: state.lastPostImportRefreshAt,
+        lastPostImportRefreshStatus: state.lastPostImportRefreshStatus,
+        lastPostImportRefreshError: state.lastPostImportRefreshError,
+        lastPostImportRefreshReason: state.lastPostImportRefreshReason,
+        lastPostImportRefreshEvents: state.lastPostImportRefreshEvents.slice(),
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
         /* Phase D — orphan-folder-binding visibility (visibility only,
@@ -2134,6 +2232,9 @@
         desktopLastImportStatus: state.lastAutoImportStatus,
         desktopLastImportedAt: state.lastAutoImportAt,
         desktopLastImportError: state.lastAutoImportError,
+        postImportRefreshStatus: state.lastPostImportRefreshStatus,
+        postImportRefreshAt: state.lastPostImportRefreshAt,
+        postImportRefreshError: state.lastPostImportRefreshError,
         watcherRunning: watcherState.running,
         watcherMode: watcherState.mode,
         pendingActions: watcherState.pending.length,
@@ -2152,6 +2253,13 @@
         configuredMode: state.lastAutoImportConfigMode,
         effectiveMode: state.lastAutoImportEffectiveMode || watcherState.mode,
         configMigration: state.lastAutoImportConfigMigration,
+        postImportRefresh: {
+          status: state.lastPostImportRefreshStatus,
+          at: state.lastPostImportRefreshAt,
+          reason: state.lastPostImportRefreshReason,
+          error: state.lastPostImportRefreshError,
+          events: state.lastPostImportRefreshEvents.slice(),
+        },
       },
     };
   }

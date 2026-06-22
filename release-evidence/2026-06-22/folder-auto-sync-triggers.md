@@ -178,3 +178,98 @@ Passed:
 - Live manual runtime retest still needs to be run after rebuilding/reloading assets.
 - Delete/tombstone lifecycle remains deferred to Phase 4. This repair does not propagate destructive folder deletes.
 - Chrome automatic export still cannot request File System Access permission without a user gesture; it reports permission-required until a connected folder handle has read/write permission.
+
+## Phase 3c Chrome-to-Desktop Lifecycle Repair
+
+### Live Failure Summary
+
+Runtime testing after `7674ebb` showed Desktop -> Chrome create/color/rename passing, but Chrome -> Desktop still had lifecycle gaps:
+
+- Chrome rename on a visible synced/imported Studio folder showed `Blocked: native-owner-folder-not-found`.
+- Chrome create/color imports could eventually land in Desktop, but the visible Desktop sidebar often stayed stale until a manual Tauri reload/right-popup reload.
+- The practical Chrome -> Desktop timing was 30-60 seconds or manual reload, not the 5-15 second automatic target.
+
+### Phase 3c Root Cause
+
+- The Chrome local folder metadata resolver added in Phase 2 only intercepted `change-folder-color`. `rename-folder` fell through to the native-owner bridge, which resolves only against the live native ChatGPT catalog. Visible Studio-owned/imported rows therefore failed as `native-owner-folder-not-found`.
+- The Chrome rename operation payload did not carry the same visible-row `before` snapshot that color carries, so the local resolver also needed to recover row identity from the fresh FolderParity display model by `folderId`.
+- Desktop auto-import of `chrome-latest.json` refreshed `LibraryIndex`, but did not explicitly invalidate FolderParity/display-model caches or fire the sidebar folder/cross-surface change events. Successful imports could update persistence without causing the open Desktop sidebar to rerender.
+
+### Phase 3c Files Changed
+
+- `src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js`
+- `src-surfaces-base/studio/sync/folder-sync.tauri.js`
+- `tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `release-evidence/2026-06-22/folder-auto-sync-triggers.md`
+
+### Phase 3c Implementation Notes
+
+- Chrome Studio now routes `rename-folder` through the same local mutation resolver family as color for Studio-owned/imported visible rows.
+- The Chrome rename resolver:
+  - reads the folder-state mirror,
+  - falls back to a fresh FolderParity display row when the rename operation lacks `before`,
+  - keeps native-owned rows on the native-owner route,
+  - blocks protected/system/local-review rows with precise blocker codes,
+  - writes the new name to `FOLDER_STATE_DATA_KEY`,
+  - confirms the fresh display model shows the new name before returning `ok`,
+  - schedules Chrome -> Desktop export with `folder-metadata:chrome-local-rename`.
+- Desktop auto-import now runs a post-import refresh sequence after any successful or idempotent Chrome import:
+  - emits `evt:h2o:library-workspace:cache-bust`,
+  - emits `evt:h2o:library-index:refresh-request`,
+  - emits `evt:h2o:folders:changed`,
+  - emits `evt:h2o:library:cross-surface-sync`,
+  - emits `evt:h2o:library-workspace:updated`,
+  - refreshes `H2O.LibraryIndex`,
+  - requests fresh `H2O.Library.FolderParity.getDisplayModel`,
+  - calls `H2O.Library.SidebarSections.refresh()` when loaded.
+- Desktop diagnostics now expose `postImportRefreshStatus`, `postImportRefreshAt`, `postImportRefreshError`, and the refresh event list in `chromeToDesktop`, `desktopAutoImport`, and shared sync state.
+
+### Phase 3c Validation
+
+Passed:
+
+- `node --check "src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js"`
+- `node --check src-surfaces-base/studio/sync/folder-sync.tauri.js`
+- `node --check tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node --check tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs`
+- `node tools/validation/sync/validate-f19-sync-hardening.mjs`
+- `node tools/validation/studio/validate-studio-library-organization-ui.mjs`
+- `node tools/validation/sync/validate-f19-shell-row-ux.mjs`
+
+- `git diff --check`
+- `git diff --cached --check`
+
+### Phase 3c Manual Runtime Retest Matrix
+
+1. Rebuild/reload assets:
+   - `npm run dev:all`
+   - `node apps/studio/desktop/build-tools/prepare-dist.mjs`
+2. Chrome color -> Desktop visible update within 5-15 seconds, no manual reload.
+3. Chrome create -> Desktop visible update within 5-15 seconds, no manual reload.
+4. Chrome rename -> Desktop visible update within 5-15 seconds, no `native-owner-folder-not-found`.
+5. Desktop color/create/rename -> Chrome still passes within 5-15 seconds.
+6. Confirm no repeated export/import loop:
+   - Chrome `chromeToDesktop.lastExportedAt` advances once per local mutation burst.
+   - Desktop `desktopAutoImport.lastImportedAt` advances once per imported Chrome export.
+   - Duplicate scans report idempotent/already-imported rather than repeated writes.
+7. Confirm unsupported/protected/system folder operations show precise blockers:
+   - `protected-folder`
+   - `folder-not-mutable`
+   - `folder-identity-missing`
+   - `local-review-folder-not-editable`
+   - `native-owner-folder-not-found` only for true native-owner misses.
+8. Confirm Desktop diagnostics after Chrome mutation:
+   - `H2O.Studio.sync.folder.diagnose().desktopAutoImport.lastAutoImportStatus`
+   - `H2O.Studio.sync.folder.diagnose().desktopAutoImport.postImportRefresh.status`
+   - expected refresh status: `refreshed` or `refreshed-with-warnings` with visible sidebar updated.
+9. Confirm delete/tombstone remains deferred.
+
+### Phase 3c Remaining Limitations
+
+- Live manual runtime retest still needs to be run after rebuilding/reloading assets.
+- Delete/tombstone lifecycle remains deferred to Phase 4. This repair still does not propagate destructive folder deletes.
+- Chrome automatic export still depends on an existing File System Access folder handle and write grant; missing grant remains `permission-required`.

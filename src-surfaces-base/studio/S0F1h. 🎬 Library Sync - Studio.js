@@ -194,6 +194,8 @@
     lastChromeFolderMetadataError: '',
     lastChromeFolderColorMutationStatus: '',
     lastChromeFolderColorResultCount: 0,
+    lastChromeFolderRenameMutationStatus: '',
+    lastChromeFolderRenameResultCount: 0,
     lastChromeFolderMutationRoute: '',
     lastChromeFolderMutationBlocker: '',
     lastChromeFolderAutoExportAt: 0,
@@ -1075,6 +1077,127 @@
     return out;
   }
 
+  function chromeFolderRenamePatchRow(row, nextName, updatedAt) {
+    const source = String(row.source || folderMetadataRowMeta(row).source || 'stored-folder-state').trim() || 'stored-folder-state';
+    const sourceKind = String(row.sourceKind || row.kind || folderMetadataRowMeta(row).sourceKind || folderMetadataRowMeta(row).kind || source).trim() || source;
+    const folderId = folderMetadataRowId(row);
+    const color = folderMetadataRowColor(row);
+    const meta = {
+      ...folderMetadataRowMeta(row),
+      name: nextName,
+      title: nextName,
+      source,
+      sourceKind,
+      updatedAt,
+    };
+    const out = {
+      ...row,
+      id: folderId,
+      folderId,
+      name: nextName,
+      title: nextName,
+      source,
+      stateSource: 'stored-folder-state',
+      sourceKind,
+      kind: sourceKind,
+      updatedAt,
+      meta,
+    };
+    if (color) {
+      out.color = color;
+      out.iconColor = color;
+      out.meta.color = color;
+      out.meta.iconColor = color;
+    }
+    ['userCreated', 'materializedUserFolder', 'trustedFolderDisplay', 'shownInNormalMode'].forEach((key) => {
+      if (row[key] === true || meta[key] === true) out[key] = true;
+    });
+    return out;
+  }
+
+  function folderDisplayRowsFromModel(model) {
+    if (!model || typeof model !== 'object') return [];
+    const rows = [];
+    [
+      model.canonicalRows,
+      model.folderDisplayRows,
+      model.rows,
+      model.folders,
+    ].forEach((list) => {
+      if (!Array.isArray(list)) return;
+      list.forEach((row) => {
+        if (row && typeof row === 'object') rows.push(row);
+      });
+    });
+    return rows;
+  }
+
+  async function readChromeFolderDisplayRow(folderIdInput, reason = '') {
+    const folderId = String(folderIdInput || '').trim();
+    if (!folderId) return null;
+    const getDisplayModel = W.H2O?.Library?.FolderParity?.getDisplayModel;
+    if (typeof getDisplayModel !== 'function') return null;
+    try {
+      const model = await getDisplayModel.call(W.H2O.Library.FolderParity, {
+        fresh: true,
+        reason: String(reason || 'chrome-folder-display-row-resolve'),
+      });
+      return folderDisplayRowsFromModel(model)
+        .find((candidate) => folderMetadataRowId(candidate) === folderId) || null;
+    } catch (e) {
+      err('chrome-folder-display-row.resolve', e);
+      return null;
+    }
+  }
+
+  async function confirmChromeFolderDisplayName(folderIdInput, expectedNameInput, reason = '') {
+    const folderId = String(folderIdInput || '').trim();
+    const expectedName = cleanFolderMetadataName(expectedNameInput);
+    if (!folderId) return { ok: false, status: 'folder-identity-missing', folderId, expectedName };
+    if (!expectedName) return { ok: false, status: 'invalid-folder-name', folderId, expectedName };
+    const getDisplayModel = W.H2O?.Library?.FolderParity?.getDisplayModel;
+    if (typeof getDisplayModel !== 'function') {
+      return { ok: false, status: 'display-model-unavailable', folderId, expectedName };
+    }
+    let lastRow = null;
+    let lastError = '';
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => W.setTimeout(resolve, 125));
+      }
+      try {
+        const model = await getDisplayModel.call(W.H2O.Library.FolderParity, {
+          fresh: true,
+          reason: String(reason || 'chrome-folder-rename-confirmation'),
+        });
+        const row = folderDisplayRowsFromModel(model)
+          .find((candidate) => folderMetadataRowId(candidate) === folderId) || null;
+        lastRow = row;
+        if (row && folderMetadataRowName(row) === expectedName) {
+          return {
+            ok: true,
+            status: 'confirmed',
+            folderId,
+            expectedName,
+            actualName: folderMetadataRowName(row),
+            canonicalMirrorAvailable: model?.canonicalMirrorAvailable === true,
+            displayModelAvailable: model?.displayModelAvailable === true,
+          };
+        }
+      } catch (e) {
+        lastError = String(e?.message || e || '');
+      }
+    }
+    return {
+      ok: false,
+      status: lastError ? 'display-model-confirmation-failed' : (lastRow ? 'display-name-not-confirmed' : 'folder-not-in-display-model'),
+      folderId,
+      expectedName,
+      actualName: folderMetadataRowName(lastRow),
+      reason: lastError,
+    };
+  }
+
   function findDuplicateNameDifferentIdCandidates(currentFolders, incomingFolders) {
     const byName = new Map();
     const add = (folder, source) => {
@@ -1850,7 +1973,10 @@
     const folderId = folderMetadataRowId(op);
     const after = op.after && typeof op.after === 'object' ? op.after : {};
     const nextColor = normalizeFolderMetadataHexColor(after.color || after.iconColor || op.color || op.iconColor || '');
-    const visibleRow = folderMetadataOperationBeforeRow(op);
+    let visibleRow = folderMetadataOperationBeforeRow(op);
+    if (!visibleRow && folderId) {
+      visibleRow = await readChromeFolderDisplayRow(folderId, 'chrome-folder-color-resolve');
+    }
     const read = await readChromeFolderMetadataState();
     if (read.error) result.blockers.push({ code: read.error });
     const storedState = read.state || { folders: [], items: {} };
@@ -2060,37 +2186,302 @@
     return result;
   }
 
+  async function buildChromeRenameFolderMetadataContext(requestId, mode, operation, expectedMode) {
+    const op = operation && typeof operation === 'object' ? operation : {};
+    const result = folderMetadataResultBase(requestId, mode, op, '');
+    result.chromeResolver = 'folder-state-mirror';
+    result.chromeRenameMutationStatus = 'started';
+    if (String(mode || '').trim() !== String(expectedMode || '').trim()) {
+      result.blockers.push({ code: `chrome-rename-${String(expectedMode || 'unknown')}-only` });
+    }
+    if (op.schema !== FOLDER_METADATA_OPERATION_SCHEMA) {
+      result.blockers.push({ code: 'invalid-folder-metadata-operation' });
+    }
+    if (String(op.operationType || '').trim() !== 'rename-folder') {
+      result.blockers.push({ code: 'folder-not-mutable' });
+    }
+
+    const folderId = folderMetadataRowId(op);
+    const after = op.after && typeof op.after === 'object' ? op.after : {};
+    const nextName = cleanFolderMetadataName(after.name || after.title || op.name || op.title || '');
+    let visibleRow = folderMetadataOperationBeforeRow(op);
+    if (!visibleRow && folderId) {
+      visibleRow = await readChromeFolderDisplayRow(folderId, 'chrome-folder-rename-resolve');
+    }
+    const read = await readChromeFolderMetadataState();
+    if (read.error) result.blockers.push({ code: read.error });
+    const storedState = read.state || { folders: [], items: {} };
+    const nativeState = await readChromeNativeFolderMetadataState();
+    const rows = Array.isArray(storedState.folders) ? storedState.folders : [];
+    const storedFolder = rows.find((row) => folderMetadataRowId(row) === folderId) || null;
+    const nativeFolder = (Array.isArray(nativeState.folders) ? nativeState.folders : [])
+      .find((row) => folderMetadataRowId(row) === folderId) || null;
+    const targetFolder = mergeFolderMetadataVisibleRow(storedFolder, visibleRow);
+    const hasTargetFolder = !!folderMetadataRowId(targetFolder);
+    const sourceHash = chromeFolderMetadataStateHash(storedState);
+    const previousName = folderMetadataRowName(targetFolder);
+    const nextKey = folderMetadataNameKey(nextName);
+    const previewHash = stableChecksum({
+      operationType: 'rename-folder',
+      folderId,
+      beforeName: previousName,
+      name: nextName,
+      sourceHash,
+    });
+    const staleGuard = op.staleGuard && typeof op.staleGuard === 'object' && !Array.isArray(op.staleGuard)
+      ? op.staleGuard
+      : {};
+
+    if (!folderId) result.blockers.push({ code: 'folder-identity-missing' });
+    if (!nextName) result.blockers.push({ code: 'invalid-folder-name' });
+    if (nextName && isReservedFolderMetadataName(nextName)) result.blockers.push({ code: 'reserved-folder-name' });
+    if (nextKey && PROTECTED_CANONICAL_FOLDER_NAME_KEYS.has(nextKey)) {
+      result.blockers.push({ code: 'protected-canonical-folder-name' });
+    }
+    if (nextKey && rows.some((row) => folderMetadataRowId(row) !== folderId && folderMetadataNameKey(folderMetadataRowName(row)) === nextKey)) {
+      result.blockers.push({ code: 'same-name-conflict' });
+    }
+    if (!result.blockers.length && folderId && nativeFolder && (!storedFolder || isNativeOwnedFolderMirrorRow(storedFolder))) {
+      result.chromeMutationRoute = 'native-owner';
+      result.chromeRenameMutationStatus = 'native-owner-route';
+      return {
+        result,
+        route: 'native-owner',
+        folderId,
+        targetFolder: nativeFolder,
+        previousName: folderMetadataRowName(nativeFolder),
+        nextName,
+      };
+    }
+    if (!result.blockers.length && hasTargetFolder && isNativeOwnedFolderMirrorRow(targetFolder)) {
+      result.chromeMutationRoute = 'native-owner';
+      result.chromeRenameMutationStatus = 'native-owner-route';
+      return {
+        result,
+        route: 'native-owner',
+        folderId,
+        targetFolder,
+        previousName: folderMetadataRowName(targetFolder),
+        nextName,
+      };
+    }
+    if (hasTargetFolder && isProtectedSystemFolderMetadataRow(targetFolder)) {
+      result.blockers.push({ code: 'protected-folder' });
+    }
+    if (hasTargetFolder && isLocalReviewFolderMetadataRow(targetFolder)) {
+      result.blockers.push({ code: 'local-review-folder-not-editable' });
+    }
+    if (folderId && !hasTargetFolder) {
+      result.blockers.push({ code: visibleRow ? 'folder-identity-missing' : 'native-owner-folder-not-found' });
+    } else if (!result.blockers.length && hasTargetFolder && !isNativeOwnedFolderMirrorRow(targetFolder) && !isChromeStudioMutableFolderRow(targetFolder)) {
+      result.blockers.push({ code: 'folder-not-mutable' });
+    }
+    if (expectedMode === 'apply') {
+      const guardSourceHash = String(staleGuard.sourceHash || '').trim();
+      const guardPreviewHash = String(staleGuard.previewHash || '').trim();
+      if (!guardSourceHash || !guardPreviewHash) {
+        result.blockers.push({ code: 'stale-guard-required' });
+      } else {
+        if (guardSourceHash !== sourceHash) result.blockers.push({ code: 'stale-source-hash' });
+        if (guardPreviewHash !== previewHash) result.blockers.push({ code: 'stale-preview-hash' });
+      }
+    }
+
+    result.folderId = folderId;
+    result.chromeMutationRoute = 'studio-local';
+    result.before = {
+      id: folderId,
+      folderId,
+      name: previousName,
+      source: String(targetFolder?.source || ''),
+      sourceKind: String(targetFolder?.sourceKind || targetFolder?.kind || ''),
+      sourceHash,
+      folderCount: rows.length,
+      previewHash,
+    };
+    result.after = {
+      id: folderId,
+      folderId,
+      name: nextName,
+      sourceHash,
+    };
+    result.staleGuard = { sourceHash, previewHash };
+    return {
+      result,
+      route: 'studio-local',
+      rawState: read.raw || {},
+      storedState,
+      rows,
+      items: storedState.items || {},
+      storedFolder,
+      targetFolder,
+      folderId,
+      previousName,
+      nextName,
+      sourceHash,
+      previewHash,
+    };
+  }
+
+  async function previewChromeRenameFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildChromeRenameFolderMetadataContext(requestId, mode, operation, 'preview');
+    const result = ctx.result;
+    if (ctx.route === 'native-owner') return null;
+    result.previewSource = 'chrome-folder-state-mirror';
+    result.chromeRenameMutationStatus = result.blockers.length ? 'blocked' : 'preview-ok';
+    result.applied = false;
+    result.noMutation = true;
+    result.readOnly = true;
+    result.canApply = result.blockers.length === 0 && ctx.previousName !== ctx.nextName;
+    result.ok = result.blockers.length === 0;
+    if (result.ok && ctx.previousName === ctx.nextName) {
+      result.warnings.push({ code: 'no-op-name-unchanged' });
+    }
+    return result;
+  }
+
+  async function applyChromeRenameFolderMetadataOperation(requestId, mode, operation) {
+    const ctx = await buildChromeRenameFolderMetadataContext(requestId, mode, operation, 'apply');
+    const result = ctx.result;
+    if (ctx.route === 'native-owner') return null;
+    result.applySource = 'chrome-folder-state-mirror';
+    result.chromeRenameMutationStatus = result.blockers.length ? 'blocked' : 'apply-started';
+    result.readOnly = false;
+    result.noMutation = true;
+    if (result.blockers.length) {
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      return result;
+    }
+    if (ctx.previousName === ctx.nextName) {
+      result.ok = true;
+      result.applied = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.canApply = false;
+      result.warnings.push({ code: 'no-op-name-unchanged' });
+      result.chromeRenameMutationStatus = 'unchanged';
+      return result;
+    }
+
+    if (!hasChromeStorage()) {
+      result.blockers.push({ code: 'chrome-storage-write-unavailable' });
+      result.ok = false;
+      result.readOnly = true;
+      result.noMutation = true;
+      result.chromeRenameMutationStatus = 'blocked';
+      return result;
+    }
+
+    const updatedAt = nowIso();
+    const nextRow = chromeFolderRenamePatchRow(ctx.targetFolder, ctx.nextName, updatedAt);
+    const nextFolders = ctx.rows.map((row) => ({ ...row }));
+    const existingIndex = nextFolders.findIndex((row) => folderMetadataRowId(row) === ctx.folderId);
+    if (existingIndex >= 0) nextFolders[existingIndex] = nextRow;
+    else nextFolders.push(nextRow);
+    const nextItems = { ...(ctx.items || {}) };
+    if (!Array.isArray(nextItems[ctx.folderId])) nextItems[ctx.folderId] = [];
+    const nextState = {
+      ...(ctx.rawState || {}),
+      schemaVersion: Number(ctx.rawState?.schemaVersion || ctx.rawState?.version || 1) || 1,
+      source: String(ctx.rawState?.source || ctx.rawState?.exportedFrom || 'stored-folder-state').trim() || 'stored-folder-state',
+      sourceKind: String(ctx.rawState?.sourceKind || 'chrome-folder-state-local-mutation').trim() || 'chrome-folder-state-local-mutation',
+      updatedAt,
+      folders: nextFolders,
+      items: nextItems,
+    };
+    await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState });
+
+    try { coalesceEmit('chrome-folder-rename-apply'); } catch {}
+    const display = await confirmChromeFolderDisplayName(ctx.folderId, ctx.nextName, 'chrome-folder-rename-apply');
+    if (!display.ok) {
+      result.blockers.push({ code: display.status || 'display-name-not-confirmed' });
+      result.ok = false;
+      result.applied = true;
+      result.noMutation = false;
+      result.readOnly = true;
+      result.canApply = false;
+      result.writesPerformed = 1;
+      result.displayConfirmation = display;
+      result.chromeRenameMutationStatus = 'display-not-confirmed';
+      return result;
+    }
+
+    const afterState = normalizeFolderState(nextState, 'stored-folder-state');
+    const afterSourceHash = chromeFolderMetadataStateHash(afterState);
+    result.folderId = ctx.folderId;
+    result.before = {
+      ...result.before,
+      name: ctx.previousName,
+    };
+    result.after = {
+      ...nextRow,
+      id: ctx.folderId,
+      folderId: ctx.folderId,
+      name: ctx.nextName,
+      title: ctx.nextName,
+      sourceHash: afterSourceHash,
+    };
+    result.applied = true;
+    result.noMutation = false;
+    result.readOnly = false;
+    result.canApply = false;
+    result.ok = true;
+    result.writesPerformed = 1;
+    result.displayConfirmation = display;
+    result.chromeRenameMutationStatus = existingIndex >= 0 ? 'updated' : 'inserted';
+    state.lastChromeFolderRenameResultCount += 1;
+    scheduleChromeFolderAutoExport(operation, result, 'folder-metadata:chrome-local-rename');
+    return result;
+  }
+
   async function requestChromeFolderMetadataOperationIfLocal(requestId, mode, operation) {
     if (currentPlatformAdapter() === 'tauri') return null;
     const operationType = String(operation?.operationType || '').trim();
-    if (operationType !== 'change-folder-color') return null;
+    const isColor = operationType === 'change-folder-color';
+    const isRename = operationType === 'rename-folder';
+    if (!isColor && !isRename) return null;
     state.lastChromeFolderMetadataStatus = 'started';
     state.lastChromeFolderMetadataError = '';
-    state.lastChromeFolderColorMutationStatus = '';
+    if (isColor) state.lastChromeFolderColorMutationStatus = '';
+    if (isRename) state.lastChromeFolderRenameMutationStatus = '';
     state.lastChromeFolderMutationRoute = '';
     state.lastChromeFolderMutationBlocker = '';
     try {
       const result = mode === 'apply'
-        ? await applyChromeColorFolderMetadataOperation(requestId, mode, operation)
-        : await previewChromeColorFolderMetadataOperation(requestId, mode, operation);
+        ? (isColor
+          ? await applyChromeColorFolderMetadataOperation(requestId, mode, operation)
+          : await applyChromeRenameFolderMetadataOperation(requestId, mode, operation))
+        : (isColor
+          ? await previewChromeColorFolderMetadataOperation(requestId, mode, operation)
+          : await previewChromeRenameFolderMetadataOperation(requestId, mode, operation));
       if (!result) {
         state.lastChromeFolderMutationRoute = 'native-owner';
         state.lastChromeFolderMetadataStatus = 'native-owner-route';
-        state.lastChromeFolderColorMutationStatus = 'native-owner-route';
+        if (isColor) state.lastChromeFolderColorMutationStatus = 'native-owner-route';
+        if (isRename) state.lastChromeFolderRenameMutationStatus = 'native-owner-route';
         return null;
       }
       state.lastChromeFolderMutationRoute = String(result.chromeMutationRoute || 'studio-local');
       state.lastChromeFolderMetadataStatus = result?.ok === true ? 'ok' : 'blocked';
-      state.lastChromeFolderColorMutationStatus = String(result.chromeColorMutationStatus || state.lastChromeFolderMetadataStatus || '');
+      if (isColor) {
+        state.lastChromeFolderColorMutationStatus = String(result.chromeColorMutationStatus || state.lastChromeFolderMetadataStatus || '');
+      }
+      if (isRename) {
+        state.lastChromeFolderRenameMutationStatus = String(result.chromeRenameMutationStatus || state.lastChromeFolderMetadataStatus || '');
+      }
       state.lastChromeFolderMutationBlocker = result.blockers?.[0]?.code || '';
       return rememberImmediateFolderMetadataResult(requestId, result);
     } catch (e) {
       state.lastChromeFolderMetadataStatus = 'error';
       state.lastChromeFolderMetadataError = String(e?.message || e || 'chrome-folder-metadata-operation-failed');
-      state.lastChromeFolderColorMutationStatus = 'error';
+      if (isColor) state.lastChromeFolderColorMutationStatus = 'error';
+      if (isRename) state.lastChromeFolderRenameMutationStatus = 'error';
       const result = folderMetadataResultBase(requestId, mode, operation, 'chrome-folder-metadata-operation-failed');
       result.chromeResolver = 'folder-state-mirror';
-      result.chromeColorMutationStatus = 'error';
+      if (isColor) result.chromeColorMutationStatus = 'error';
+      if (isRename) result.chromeRenameMutationStatus = 'error';
       result.errorCategory = 'chrome-folder-metadata-operation-failed';
       return rememberImmediateFolderMetadataResult(requestId, result);
     }
@@ -2650,6 +3041,8 @@
         chromeFolderMetadataError: state.lastChromeFolderMetadataError,
         chromeFolderColorMutationStatus: state.lastChromeFolderColorMutationStatus,
         chromeFolderColorResultCount: state.lastChromeFolderColorResultCount,
+        chromeFolderRenameMutationStatus: state.lastChromeFolderRenameMutationStatus,
+        chromeFolderRenameResultCount: state.lastChromeFolderRenameResultCount,
         chromeFolderMutationRoute: state.lastChromeFolderMutationRoute,
         chromeFolderMutationBlocker: state.lastChromeFolderMutationBlocker,
         chromeFolderAutoExport: {

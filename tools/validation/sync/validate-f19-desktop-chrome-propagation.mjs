@@ -659,6 +659,14 @@ if (failures.length === 0) {
   assertContains(librarySyncFile, 'scheduleChromeFolderAutoExport', 'Chrome confirmed folder mutations schedule chrome-latest export');
   assertContains(librarySyncFile, 'previewChromeColorFolderMetadataOperation', 'Chrome local color preview bridge');
   assertContains(librarySyncFile, 'applyChromeColorFolderMetadataOperation', 'Chrome local color apply bridge');
+  assertContains(librarySyncFile, 'previewChromeRenameFolderMetadataOperation', 'Chrome local rename preview bridge');
+  assertContains(librarySyncFile, 'applyChromeRenameFolderMetadataOperation', 'Chrome local rename apply bridge');
+  assertContains(librarySyncFile, 'chromeFolderRenamePatchRow', 'Chrome local rename writes folder-state mirror row');
+  assertContains(librarySyncFile, 'chrome-folder-rename-resolve', 'Chrome rename resolver recovers visible display row identity');
+  assertContains(librarySyncFile, 'confirmChromeFolderDisplayName', 'Chrome rename success is gated on fresh display model confirmation');
+  assertContains(librarySyncFile, 'folder-metadata:chrome-local-rename', 'Chrome confirmed local rename schedules chrome-latest export');
+  assertContains(librarySyncFile, 'chromeFolderRenameMutationStatus', 'Chrome rename diagnostic status');
+  assertContains(librarySyncFile, 'chromeFolderRenameResultCount', 'Chrome rename diagnostic count');
   assertContains(librarySyncFile, 'isChromeStudioMutableFolderRow', 'Chrome mutable imported/studio folder classifier');
   assertContains(librarySyncFile, 'chrome-folder-state-mirror', 'Chrome local color writes target folder-state mirror');
   assertContains(librarySyncFile, 'folder-identity-missing', 'Chrome visible row missing identity blocker');

@@ -930,6 +930,13 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'importChromeLatestFromFolder', 'folder API');
   assertContains(folderSyncFile, 'runDesktopAutoImport', 'Desktop auto-import watcher path for chrome-latest.json');
   assertContains(folderSyncFile, 'desktopAutoImport', 'Desktop auto-import diagnostic object');
+  assertContains(folderSyncFile, 'refreshDesktopFolderUiAfterChromeImport', 'Desktop auto-import triggers post-import folder UI refresh');
+  assertContains(folderSyncFile, 'evt:h2o:folders:changed', 'Desktop post-import refresh emits folder change event');
+  assertContains(folderSyncFile, 'evt:h2o:library:cross-surface-sync', 'Desktop post-import refresh emits cross-surface sync event');
+  assertContains(folderSyncFile, 'H2O.Library.FolderParity.getDisplayModel', 'Desktop post-import refresh invalidates FolderParity display model');
+  assertContains(folderSyncFile, 'H2O.Library.SidebarSections.refresh', 'Desktop post-import refresh directly rerenders sidebar when loaded');
+  assertContains(folderSyncFile, 'postImportRefreshStatus', 'Desktop diagnostics expose post-import refresh status');
+  assertContains(folderSyncFile, 'desktop-auto-import-post-import-refresh', 'Desktop post-import refresh reason marker');
   assertContains(folderSyncFile, 'phase3-legacy-manual-to-auto', 'Desktop legacy manual watcher config migrates to Phase 3 auto-import');
   assertContains(folderSyncFile, 'PHASE3_AUTO_IMPORT_CONFIG_VERSION', 'Desktop auto-import config migration marker');
   assertContains(folderSyncFile, 'desktopAutoImportEnabled', 'Desktop chrome-to-desktop diagnostics expose effective auto-import state');
