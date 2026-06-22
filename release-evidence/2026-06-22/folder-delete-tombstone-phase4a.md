@@ -14,6 +14,7 @@ Phase 3 closed create/rename/color sync, but folder delete remained deferred bec
 
 - `src-surfaces-base/studio/store/folders.tauri.js`
 - `src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js`
+- `src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js`
 - `src-surfaces-base/studio/sync/auto-export.tauri.js`
 - `src-surfaces-base/studio/sync/folder-sync.tauri.js`
 - `tools/validation/sync/validate-folder-delete-tombstone-phase4a.mjs`
@@ -115,6 +116,61 @@ node tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs
 ```
 
 Result: passed.
+
+## Phase 4A Runtime Polish
+
+Live runtime testing after `9487922` found two closure issues:
+
+- Desktop folder action menus exposed Open, Open in Studio, Change color, and Rename, but no Phase 4A Delete / Recently Deleted action. Empty folders could only be soft-deleted from the console.
+- Console restore rehydrated the folder and marked the tombstone restored, but the returned result could still report `ok: false` with `folder-identity-missing`.
+
+Root cause:
+
+- The sidebar delete menu was still gated through the older MV3/native-owner/operator delete preview path. Phase 4A added store/action APIs, but no Tauri-only menu route used them.
+- Restore verification was too dependent on the initial recovery snapshot/id resolution shape and did not treat an already-restored tombstone with a visible folder row as an idempotent success.
+
+Polish implemented:
+
+- Added a Desktop/Tauri-only `Move to Recently Deleted` folder menu panel for canonical folder rows.
+- The panel calls `H2O.Studio.actions.folders.delete/remove`, which routes to `store.folders.softDeleteEmptyFolder`; it does not call the legacy hard `store.remove`.
+- The menu disables the action with precise blockers when the row is obviously ineligible:
+  - `protected-folder`
+  - `system-folder`
+  - `unfiled-folder`
+  - `local-review-folder-not-editable`
+  - `folder-not-empty`
+  - `folder-identity-missing`
+  - `tombstone-store-unavailable`
+- Store-side blockers remain authoritative, so non-empty/protected cases are still blocked even if UI row metadata is stale.
+- Restore now parses tombstone metadata defensively, resolves folder id from either `recoverySnapshot` or `recordId`, verifies the restored folder row, and returns `ok: true` for already-restored visible folders instead of surfacing `folder-identity-missing`.
+
+Additional validation commands:
+
+```bash
+node --check src-surfaces-base/studio/store/folders.tauri.js
+node --check "src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js"
+node --check tools/validation/sync/validate-folder-delete-tombstone-phase4a.mjs
+node tools/validation/sync/validate-folder-delete-tombstone-phase4a.mjs
+node tools/validation/sync/validate-f19-sync-hardening.mjs
+node tools/validation/studio/validate-studio-library-organization-ui.mjs
+node tools/validation/sync/validate-f19-shell-row-ux.mjs
+git diff --check
+```
+
+Result: passed.
+
+Updated manual retest:
+
+1. Rebuild/reload Desktop assets if testing in packaged/Tauri runtime.
+2. Create an empty test folder in Desktop Studio.
+3. Open the folder action menu and choose `Move to Recently Deleted`.
+4. Confirm the result is successful and the folder disappears from the normal Desktop folder list/sidebar.
+5. Confirm tombstone state through `H2O.Studio.store.folders.diagnosePhase4aTombstones()` and `H2O.Studio.store.tombstones.list({ recordKind: "folder", activeOnly: true })`.
+6. Restore with `H2O.Studio.store.folders.restoreTombstonedFolder({ tombstoneId: "<tombstone-id>" })`.
+7. Confirm restore returns `ok: true`, the active tombstone count decreases, and the folder reappears.
+8. Try Unfiled/protected/system/local-review folders and confirm the menu is disabled or the action reports the precise blocker.
+9. Try a folder with chats/bindings and confirm `folder-not-empty`.
+10. Confirm Chrome delete/tombstone sync, tombstone propagation, folder-with-chats delete, and hard purge remain deferred.
 
 ## Manual Retest Steps
 

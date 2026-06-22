@@ -366,6 +366,28 @@
     return 'folder:' + encodeURIComponent(cleanString(folderId));
   }
 
+  function folderIdFromTombstoneRecordId(recordId) {
+    var raw = cleanString(recordId);
+    if (raw.indexOf('folder:') !== 0) return '';
+    var encoded = raw.slice('folder:'.length);
+    try { return decodeURIComponent(encoded); }
+    catch (_) { return encoded; }
+  }
+
+  function tombstoneMeta(tombstone) {
+    if (!tombstone || typeof tombstone !== 'object') return {};
+    return parseMeta(Object.prototype.hasOwnProperty.call(tombstone, 'meta')
+      ? tombstone.meta
+      : (Object.prototype.hasOwnProperty.call(tombstone, 'metaJson') ? tombstone.metaJson : tombstone.meta_json));
+  }
+
+  function folderIdFromTombstone(tombstone) {
+    var meta = tombstoneMeta(tombstone);
+    var recoverySnapshot = safeMeta(meta.recoverySnapshot);
+    var folder = safeMeta(recoverySnapshot.folder);
+    return cleanString(folder.id || folder.folderId) || folderIdFromTombstoneRecordId(tombstone && tombstone.recordId);
+  }
+
   function addBlocker(list, code) {
     var clean = cleanString(code);
     if (clean && list.indexOf(clean) === -1) list.push(clean);
@@ -1354,14 +1376,15 @@
     }
   }
 
-  async function resolveFolderTombstone(input) {
+  async function resolveFolderTombstone(input, opts) {
     var tombstones = getTombstoneStore();
     if (!tombstones) return null;
+    var includeRestored = opts && opts.includeRestored === true;
     var value = cleanString(input && (input.tombstoneId || input.folderId || input.id || input));
     if (!value) return null;
     if (value.indexOf('tombstone:') === 0 && typeof tombstones.getById === 'function') {
       var direct = await tombstones.getById(value);
-      if (direct && !cleanString(direct.restoredAt)) return direct;
+      if (direct && (!cleanString(direct.restoredAt) || includeRestored)) return direct;
     }
     if (typeof tombstones.getTombstone === 'function') {
       return tombstones.getTombstone('folder', folderTombstoneRecordId(value));
@@ -1387,19 +1410,50 @@
       return base;
     }
     try {
-      var tombstone = await resolveFolderTombstone(input);
+      var tombstone = await resolveFolderTombstone(input, { includeRestored: true });
       if (!tombstone) {
         addBlocker(base.blockers, 'folder-identity-missing');
         base.status = 'folder-identity-missing';
         return base;
       }
-      var meta = safeMeta(tombstone.meta);
+      var meta = tombstoneMeta(tombstone);
       var recoverySnapshot = safeMeta(meta.recoverySnapshot);
       var patch = folderPatchFromRecoverySnapshot(recoverySnapshot);
       if (!patch || !patch.folderId) {
+        var recoveredFolderId = folderIdFromTombstone(tombstone);
+        var recoveredRow = recoveredFolderId ? await getById(recoveredFolderId) : null;
+        if (recoveredRow && cleanString(tombstone.restoredAt)) {
+          return Object.assign({}, base, {
+            ok: true,
+            status: 'folder-restored',
+            folderId: recoveredFolderId,
+            tombstoneId: tombstone.tombstoneId,
+            row: recoveredRow,
+            tombstone: tombstone,
+            alreadyRestored: true,
+            warnings: ['already-restored'],
+            blockers: [],
+          });
+        }
         addBlocker(base.blockers, 'folder-identity-missing');
         base.status = 'folder-identity-missing';
         return base;
+      }
+      if (cleanString(tombstone.restoredAt)) {
+        var alreadyRow = await getById(patch.folderId);
+        if (alreadyRow) {
+          return Object.assign({}, base, {
+            ok: true,
+            status: 'folder-restored',
+            folderId: patch.folderId,
+            tombstoneId: tombstone.tombstoneId,
+            row: alreadyRow,
+            tombstone: tombstone,
+            alreadyRestored: true,
+            warnings: ['already-restored'],
+            blockers: [],
+          });
+        }
       }
       var row = await upsertCore(patch, { generateId: false });
       var restored = await tombstones.markRestored(
@@ -1407,6 +1461,12 @@
         cleanString(options.restoredBySyncPeerId) || 'desktop-local-phase4a'
       );
       var mirror = await restoreFolderToStateMirror(recoverySnapshot);
+      var verifiedRow = await getById(patch.folderId);
+      if (!verifiedRow) {
+        addBlocker(base.blockers, 'folder-identity-missing');
+        base.status = 'folder-identity-missing';
+        return base;
+      }
       recordWrite('restoreTombstonedFolder');
       setPhase4aState('restoreTombstonedFolder', 'folder-restored', patch.folderId, tombstone.tombstoneId, -1);
       notifySubscribers({
@@ -1421,7 +1481,7 @@
         status: 'folder-restored',
         folderId: patch.folderId,
         tombstoneId: tombstone.tombstoneId,
-        row: row,
+        row: verifiedRow || row,
         tombstone: restored,
         folderStateMirror: mirror,
         blockers: [],

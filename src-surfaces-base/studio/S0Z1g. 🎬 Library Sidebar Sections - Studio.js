@@ -735,6 +735,12 @@
     return false;
   }
 
+  function canUseDesktopFolderSoftDelete() {
+    if (!studioIsTauri()) return false;
+    const actions = desktopFolderActions();
+    return typeof actions?.delete === 'function' || typeof actions?.remove === 'function';
+  }
+
   function folderMetadataOperationRequest() {
     try {
       const fn = W.H2O?.Studio?.sync?.folderMetadataOperations?.request;
@@ -780,7 +786,10 @@
 
   function resultCodes(result, listName = 'blockers') {
     const rows = Array.isArray(result?.[listName]) ? result[listName] : [];
-    return rows.map((entry) => String(entry?.code || '').trim()).filter(Boolean);
+    return rows.map((entry) => {
+      if (typeof entry === 'string') return entry.trim();
+      return String(entry?.code || '').trim();
+    }).filter(Boolean);
   }
 
   function firstResultCode(result, fallback = 'folder-color-request-failed') {
@@ -1040,6 +1049,62 @@
     if (hardBlockers.length) return false;
     if (deletePreviewMembershipCount(preview, item) !== 0) return false;
     return deletePreviewItemBucketEmpty(preview);
+  }
+
+  function numericFolderMenuValue(item, keys = []) {
+    for (const key of keys) {
+      if (!key) continue;
+      const raw = item?.[key];
+      if (raw == null || raw === '') continue;
+      const n = Number(raw);
+      if (Number.isFinite(n)) return Math.max(0, n);
+    }
+    return 0;
+  }
+
+  function addFolderBlocker(blockers, code) {
+    const clean = String(code || '').trim();
+    if (clean && !blockers.includes(clean)) blockers.push(clean);
+  }
+
+  function desktopFolderSoftDeleteBlockers(item = {}) {
+    const blockers = [];
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const name = String(item?.name || item?.label || item?.title || '').trim();
+    const normalizedName = String(item?.normalizedName || name || folderId || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const sourceKind = String(item?.sourceKind || item?.kind || '').trim().toLowerCase();
+    const source = String(item?.source || '').trim().toLowerCase();
+    const stateSource = String(item?.stateSource || '').trim().toLowerCase();
+    if (!folderId) addFolderBlocker(blockers, 'folder-identity-missing');
+    if (item?.isCanonical !== true) addFolderBlocker(blockers, 'local-review-folder-not-editable');
+    if (folderId === 'unfiled' || normalizedName === 'unfiled') addFolderBlocker(blockers, 'unfiled-folder');
+    if (['all', 'archive', 'archived', 'link', 'linked', 'links', 'recent', 'recents', 'saved'].includes(normalizedName)) {
+      addFolderBlocker(blockers, 'system-folder');
+    }
+    if (item?.protectedCanonicalFallback === true || item?.protected === true || item?.isProtected === true) {
+      addFolderBlocker(blockers, 'protected-folder');
+    }
+    if (sourceKind.includes('system') || source.includes('system') || stateSource.includes('system')) {
+      addFolderBlocker(blockers, 'system-folder');
+    }
+    if (sourceKind.includes('local-review') || sourceKind.includes('cleanup-review') ||
+        source.includes('local-review') || source.includes('cleanup-review') ||
+        stateSource.includes('local-review') || item?.reviewBucket) {
+      addFolderBlocker(blockers, 'local-review-folder-not-editable');
+    }
+    const knownCount = numericFolderMenuValue(item, ['knownCount', 'knownStudioCount']);
+    const localBindingCount = numericFolderMenuValue(item, ['localBindingCount', 'bindingCount']);
+    const canonicalCount = numericFolderMenuValue(item, ['canonicalCount', 'nativeMembershipCount', 'count']);
+    const savedCount = numericFolderMenuValue(item, ['savedCount', 'linkedCount']);
+    if (Math.max(knownCount, localBindingCount, canonicalCount, savedCount) > 0) {
+      addFolderBlocker(blockers, 'folder-not-empty');
+    }
+    if (!canUseDesktopFolderSoftDelete()) addFolderBlocker(blockers, 'tombstone-store-unavailable');
+    return blockers;
+  }
+
+  function desktopFolderSoftDeleteBlocker(item = {}) {
+    return desktopFolderSoftDeleteBlockers(item)[0] || '';
   }
 
   function navigateAfterDeletedFolder(folderId) {
@@ -1713,6 +1778,56 @@
     return applied;
   }
 
+  async function requestDesktopFolderSoftDelete(item, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const uiBlocker = desktopFolderSoftDeleteBlocker(item);
+    if (uiBlocker) {
+      setStatus(`Blocked: ${uiBlocker}`, 'blocked');
+      return { ok: false, blockers: [uiBlocker], status: uiBlocker };
+    }
+    const actions = desktopFolderActions();
+    const fn = typeof actions?.delete === 'function'
+      ? actions.delete
+      : (typeof actions?.remove === 'function' ? actions.remove : null);
+    if (!fn) {
+      setStatus('Blocked: tombstone-store-unavailable', 'blocked');
+      return { ok: false, blockers: ['tombstone-store-unavailable'], status: 'tombstone-store-unavailable' };
+    }
+    setStatus('Moving...', 'pending');
+    let result = null;
+    try {
+      result = await fn.call(actions, folderId);
+    } catch (e) {
+      err('desktopFolderSoftDelete.apply', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'folder-soft-delete-failed')}`, 'blocked');
+      return { ok: false, blockers: ['folder-soft-delete-threw'], status: 'folder-soft-delete-threw' };
+    }
+    const storeResult = result?.result && typeof result.result === 'object' ? result.result : result;
+    const blockers = resultCodes(result, 'blockers').concat(resultCodes(storeResult, 'blockers'));
+    const status = String(storeResult?.status || result?.status || '').trim();
+    if (storeResult?.ok !== true && result?.ok !== true) {
+      const blocker = blockers[0] || status || 'folder-soft-delete-failed';
+      setStatus(`Blocked: ${blocker}`, 'blocked');
+      return result || { ok: false, blockers: [blocker], status: blocker };
+    }
+    setStatus('Moved to Recently Deleted', 'ok');
+    navigateAfterDeletedFolder(folderId);
+    W.setTimeout(() => {
+      try { closeRowMenu(); } catch {}
+      try { renderAllSections(); } catch (e) { err('desktopFolderSoftDelete.renderAfterApply', e); }
+    }, 180);
+    return Object.assign({}, result || {}, {
+      ok: true,
+      applied: true,
+      folderId,
+      tombstoneId: storeResult?.tombstoneId || result?.tombstoneId || '',
+      noHardDelete: true,
+      noChatDelete: true,
+      crossPlatformSync: 'deferred',
+    });
+  }
+
   function menuTitleForKind(kind) {
     if (kind === 'folders') return 'Folder actions';
     if (kind === 'categories') return 'Category appearance';
@@ -2263,6 +2378,110 @@
     return [action, panel];
   }
 
+  function makeDesktopFolderSoftDeletePanel(item, pop, anchorEl) {
+    const blocker = desktopFolderSoftDeleteBlocker(item);
+    if (blocker) {
+      return [makeMenuAction('Move to Recently Deleted', SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+        danger: true,
+        disabled: true,
+        title: `Blocked: ${blocker}`,
+      })];
+    }
+    let pendingApply = false;
+    let action = null;
+    const panel = el('div', {
+      class: 'wbSidebarNativePickerSection',
+      'data-menu-item': 'desktop-folder-soft-delete-panel',
+      style: 'display:none;flex-direction:column;gap:6px;',
+    });
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Move folder to Recently Deleted'));
+    panel.appendChild(el('div', {
+      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);margin-bottom:4px;',
+    }, 'Empty folders can be restored from the tombstone recovery snapshot.'));
+    const buttonRow = el('div', {
+      style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:2px;',
+    });
+    const cancel = el('button', {
+      class: 'wbSidebarNativeAction',
+      type: 'button',
+      style: 'font-size:11px;padding:5px 8px;',
+    }, 'Cancel');
+    const submit = el('button', {
+      class: 'wbSidebarNativeAction wbSidebarNativeAction--danger',
+      type: 'button',
+      style: 'font-size:11px;padding:5px 8px;',
+    }, 'Move');
+    buttonRow.appendChild(cancel);
+    buttonRow.appendChild(submit);
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'display:none;margin-top:2px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    });
+    panel.appendChild(buttonRow);
+    panel.appendChild(status);
+    const setStatus = (message, kind = '') => {
+      const text = String(message || '');
+      status.textContent = text;
+      status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
+    };
+    const syncControls = () => {
+      submit.disabled = pendingApply;
+      submit.setAttribute('aria-disabled', pendingApply ? 'true' : 'false');
+      cancel.disabled = pendingApply;
+      cancel.setAttribute('aria-disabled', pendingApply ? 'true' : 'false');
+      submit.style.opacity = pendingApply ? '.55' : '1';
+      submit.style.cursor = pendingApply ? 'not-allowed' : 'pointer';
+    };
+    const applyDelete = () => {
+      if (pendingApply || submit.disabled) return;
+      pendingApply = true;
+      syncControls();
+      Promise.resolve(requestDesktopFolderSoftDelete(item, { setStatus }))
+        .finally(() => {
+          pendingApply = false;
+          syncControls();
+        });
+    };
+    cancel.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (pendingApply) return;
+      panel.style.display = 'none';
+      action?.setAttribute('aria-expanded', 'false');
+      setStatus('');
+      W.requestAnimationFrame(() => {
+        try { positionRowMenu(pop, anchorEl); } catch {}
+      });
+    });
+    submit.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      applyDelete();
+    });
+    action = makeMenuAction('Move to Recently Deleted', SIDEBAR_MENU_ACTION_SVGS.delete, () => {
+      panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+      action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
+      if (panel.style.display !== 'none') {
+        setStatus('');
+        W.requestAnimationFrame(() => {
+          try { positionRowMenu(pop, anchorEl); } catch {}
+          try { submit.focus?.(); } catch {}
+        });
+      }
+    }, {
+      keepOpen: true,
+      danger: true,
+      title: 'Soft-delete this empty folder locally; restore remains available.',
+    });
+    action.setAttribute('aria-haspopup', 'true');
+    action.setAttribute('aria-expanded', 'false');
+    syncControls();
+    return [action, panel];
+  }
+
   function folderHrefForId(folderId) {
     const id = String(folderId || '').trim();
     if (!id) return '';
@@ -2805,7 +3024,9 @@
           title: isCanonicalFolder && studioPlatformAdapter() === 'mv3' ? 'Native owner bridge unavailable.' : 'Desktop folder editor unavailable.',
         }));
       }
-      if (folderDestructiveActionsEnabled()) {
+      if (studioIsTauri()) {
+        makeDesktopFolderSoftDeletePanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+      } else if (folderDestructiveActionsEnabled()) {
         if (isCanonicalFolder && canRequestCanonicalFolderDeletePreview(item)) {
           makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
         } else {
@@ -2930,6 +3151,16 @@
       || sidebarRow?.getAttribute?.(key)
       || ''
     ).trim();
+    const numericAttr = (key) => {
+      const raw = attr(key);
+      if (!raw) return 0;
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.max(0, n) : 0;
+    };
+    const knownCount = numericAttr('data-known-count');
+    const canonicalCount = numericAttr('data-canonical-count');
+    const localBindingCount = numericAttr('data-local-binding-count');
+    const nativeMembershipCount = numericAttr('data-native-membership-count') || canonicalCount;
     return {
       id: folderId,
       folderId,
@@ -2946,6 +3177,12 @@
       trustedFolderDisplay: attr('data-h2o-folder-trusted') === 'true',
       protectedCanonicalFallback: attr('data-h2o-folder-protected') === 'true',
       shownInNormalMode: attr('data-h2o-folder-shown-normal') === 'true',
+      count: nativeMembershipCount,
+      canonicalCount,
+      nativeMembershipCount,
+      knownCount,
+      knownStudioCount: knownCount,
+      localBindingCount,
       isCanonical: true,
     };
   }
@@ -3089,6 +3326,10 @@
           'data-h2o-folder-trusted': kind === 'folders' && item.trustedFolderDisplay === true ? 'true' : null,
           'data-h2o-folder-protected': kind === 'folders' && item.protectedCanonicalFallback === true ? 'true' : null,
           'data-h2o-folder-shown-normal': kind === 'folders' && item.shownInNormalMode === true ? 'true' : null,
+          'data-known-count': kind === 'folders' && item.knownCount != null ? item.knownCount : null,
+          'data-canonical-count': kind === 'folders' && item.canonicalCount != null ? item.canonicalCount : null,
+          'data-local-binding-count': kind === 'folders' && item.localBindingCount != null ? item.localBindingCount : null,
+          'data-native-membership-count': kind === 'folders' && item.nativeMembershipCount != null ? item.nativeMembershipCount : null,
         }, '...')
         : null;
       if (menuButton) {
