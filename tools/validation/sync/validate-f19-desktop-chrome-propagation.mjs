@@ -684,6 +684,14 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'isFastDesktopLatestChangeReason', 'Desktop latest file changes bypass generic 30s auto-sync throttle');
   assertContains(folderImportFile, 'refreshChromeFolderUiAfterDesktopImport', 'Chrome imports refresh folder UI after Desktop-origin metadata changes');
   assertContains(folderImportFile, 'targeted-folder-refresh', 'Chrome uses targeted folder row refresh for color/name imports');
+  assertContains(folderImportFile, 'postImportRefresh: f.postImportRefresh || null', 'Chrome propagation preserves post-import refresh mode for rerender suppression');
+  assertContains(folderImportFile, 'CHROME_TARGETED_REFRESH_RETRY_MS = 250', 'Chrome retries targeted folder row refresh instead of escalating immediately');
+  assertContains(folderImportFile, 'targeted-folder-refresh-deferred', 'Chrome defers missed color/name row refresh to a targeted retry');
+  assertContains(folderImportFile, 'duplicate-suppressed', 'Chrome duplicate auto-import suppresses repaint work');
+  assertContains(folderImportFile, 'currentLibraryIndexRowCount()', 'Chrome targeted imports avoid redundant library index refresh');
+  assertContains(folderImportFile, 'renderRefreshCount', 'Chrome diagnostics expose post-import render refresh count');
+  assertContains(folderImportFile, 'loopSuppressed', 'Chrome diagnostics expose suppressed import loop count');
+  assertContains(folderImportFile, 'duplicateSkipped', 'Chrome diagnostics expose duplicate auto-import skip count');
   assertContains(folderImportFile, 'desktopToChromeLatency', 'Chrome diagnostics expose Desktop-to-Chrome propagation latency trace');
   assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');

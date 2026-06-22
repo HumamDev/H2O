@@ -374,3 +374,78 @@ Passed:
 - Live manual runtime retest still needs to be run after rebuilding/reloading assets.
 - Delete/tombstone lifecycle remains deferred to Phase 4. This repair still does not propagate destructive folder deletes.
 - Chrome automatic Desktop import still depends on an existing File System Access folder handle and read grant; missing grant remains permission/reconnect required.
+
+## Phase 3e Chrome flicker and visual refresh polish
+
+### Phase 3e Live Issue Summary
+
+After Phase 3d, transport and apply behavior was mostly working, but Chrome Studio still visibly flickered after Desktop-origin sync imports. Desktop -> Chrome create/color/rename propagated in about 3 seconds, while Chrome Studio showed heavy refresh flicker. Chrome -> Desktop rename also remained visually delayed in live testing until user interaction, so the repair focused on preventing Chrome-side refresh storms and confirming idempotent skips.
+
+### Phase 3e Root Cause
+
+Chrome Desktop-import had three repaint amplifiers:
+
+- `propagationResult()` accepted `postImportRefresh` but did not return it, so `syncNow()` could not see that a folder color/name import had already been handled by targeted row refresh and still emitted the broad `evt:h2o:library:cross-surface-sync` event.
+- A missed targeted folder row update for visual-only color/name changes immediately escalated to `SidebarSections.refresh()` or `evt:h2o:folders:changed`, rebuilding the sidebar instead of retrying the targeted row update after the display model settled.
+- Duplicate auto-imports with the same checksum still refreshed LibraryIndex and captured parity before returning `already-imported`, causing no-op poll/focus imports to repaint UI.
+
+### Phase 3e Files Changed
+
+- `src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `release-evidence/2026-06-22/folder-auto-sync-triggers.md`
+
+### Phase 3e Implementation Notes
+
+- Chrome propagation now preserves `postImportRefresh` on the returned propagation result so later dispatch logic can suppress broad cross-surface rerenders for targeted refreshes.
+- Visual-only Chrome folder metadata imports now use a targeted row refresh plus a 250 ms targeted retry (`targeted-folder-refresh-deferred`) when the first row lookup misses.
+- Visual-only imports no longer escalate immediately to full sidebar refresh on one targeted miss.
+- Duplicate auto-imports now return `duplicate-suppressed` and update idempotency diagnostics without refreshing LibraryIndex or repainting the sidebar.
+- Chrome sync diagnostics now expose:
+  - `chromePostImportRefreshMode`
+  - `changedFolderCount`
+  - `renderRefreshCount`
+  - `loopSuppressed`
+  - `duplicateSkipped`
+  - `selfOriginSkipped`
+- Targeted visual imports avoid the second post-import LibraryIndex refresh; create/import row insertion still uses the existing sidebar refresh path.
+
+### Phase 3e Validation
+
+Passed:
+
+- `node --check src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `node --check tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs`
+- `node tools/validation/sync/validate-f19-sync-hardening.mjs`
+- `node tools/validation/studio/validate-studio-library-organization-ui.mjs`
+- `node tools/validation/sync/validate-f19-shell-row-ux.mjs`
+
+- `git diff --check`
+- `git diff --cached --check`
+
+### Phase 3e Manual Runtime Retest Matrix
+
+1. Rebuild/reload assets:
+   - `npm run dev:all`
+   - `node apps/studio/desktop/build-tools/prepare-dist.mjs`
+2. Desktop color -> Chrome remains about 3-15 seconds, no Chrome manual refresh.
+3. Desktop rename -> Chrome remains about 3-15 seconds, no Chrome manual refresh.
+4. Desktop create -> Chrome remains about 3-15 seconds.
+5. Chrome color -> Desktop remains about 5-15 seconds.
+6. Chrome create -> Desktop remains about 5-15 seconds.
+7. Chrome rename -> Desktop visible update no longer requires mouse interaction, target 5-15 seconds if feasible.
+8. Chrome Studio no longer visibly flickers heavily during Desktop-origin color/name imports.
+9. Desktop remains no-flicker.
+10. Confirm no repeated export/import loop:
+    - Chrome `H2O.Studio.sync.folder.diagnose().desktopToChrome.latency.renderRefreshCount` should not climb on unchanged `latest.json` polls.
+    - Chrome duplicate/no-op imports should report `duplicate-suppressed`, with `duplicateSkipped`/`loopSuppressed` incrementing instead of sidebar refresh.
+11. Confirm delete/tombstone remains deferred.
+
+### Phase 3e Remaining Limitations
+
+- Live runtime retest still needs to be run after rebuilding/reloading assets.
+- Delete/tombstone lifecycle remains deferred to Phase 4. This repair does not propagate destructive folder deletes.
+- Chrome automatic Desktop import still depends on an existing File System Access folder handle and read grant; missing grant remains permission/reconnect required.
