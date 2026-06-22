@@ -123,6 +123,75 @@ Result: all commands passed in this workspace.
 11. Confirm protected/system/Unfiled/local-review folder delete remains blocked.
 12. Confirm Chrome delete/tombstone sync remains disabled/deferred.
 
+## Runtime Proof
+
+Runtime proof recorded after Phase 4B implementation.
+
+Folder under test:
+
+- name: `zz-delete-with-chat-test`
+- folderId: `fold_d0c66b27-b245-449f-904b-4c8c9878bf3c`
+- color: `#FFD54F`
+
+Chat under test:
+
+- chatId: `69f0ea75-1b38-838d-a930-e72796eba175`
+
+Normal delete proof:
+
+- `softDeleteFolder` returned `ok:true`
+- `affectedChatCount: 1`
+- `bindingCount: 1`
+- `bindingSnapshotCount: 1`
+- `bindingUnbindAttemptedCount: 1`
+- `bindingUnboundCount: 1`
+- `bindingUnbindSkippedCount: 0`
+- `bindingUnbindWarnings: []`
+- `noChatDelete: true`
+- `noHardDelete: true`
+- `tombstoneId: tombstone:936548c9-6db8-4a9f-84b5-138259743d6f`
+- after delete, `getForChat` returned `folderId:""` and `folder:null`
+
+Normal restore proof:
+
+- `restoreTombstonedFolder` returned `ok:true`
+- `bindingRestoreAttemptedCount: 1`
+- `bindingRestoredCount: 1`
+- `bindingSkippedCount: 0`
+- `restoreWarnings: []`
+- `getForChat` returned `folderId: fold_d0c66b27-b245-449f-904b-4c8c9878bf3c`
+
+Moved-chat safety edge proof:
+
+- Created second folder:
+  - name: `zz-phase4b-other-folder`
+  - folderId: `fold_d2bf376c-3095-4a2c-b3ba-4b16cf5e72d2`
+  - color: `#60A5FA`
+- Deleted original folder again:
+  - `tombstoneId: tombstone:8cb5911e-703a-4e44-9fa5-8939b897ec9c`
+  - `affectedChatCount: 1`
+  - `bindingCount: 1`
+  - `bindingSnapshotCount: 1`
+  - `bindingUnboundCount: 1`
+  - `noChatDelete: true`
+  - `noHardDelete: true`
+- Moved chat to the other folder before restore:
+  - `getForChat` returned `folderId: fold_d2bf376c-3095-4a2c-b3ba-4b16cf5e72d2`
+- Restored original folder:
+  - `restoreTombstonedFolder` returned `ok:true`
+  - `bindingRestoreAttemptedCount: 1`
+  - `bindingRestoredCount: 0`
+  - `bindingSkippedCount: 1`
+  - `restoreWarnings` contained `code: restore-binding-skipped-rebound`
+  - `currentFolderId: fold_d2bf376c-3095-4a2c-b3ba-4b16cf5e72d2`
+  - `getForChat` after restore still returned `folderId: fold_d2bf376c-3095-4a2c-b3ba-4b16cf5e72d2`
+
+Runtime verdict:
+
+- Phase 4B Desktop local folder-with-chat soft delete plus restore-rebind core path passed.
+- Moved-chat safety edge passed: restore does not steal chats moved elsewhere.
+- Chrome delete request/review, tombstone propagation, retention, and purge remain deferred.
+
 ## Remaining Limitations
 
 - Phase 4B is Desktop-local only.
