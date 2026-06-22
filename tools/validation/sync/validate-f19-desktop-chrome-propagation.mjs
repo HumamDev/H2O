@@ -10,7 +10,9 @@ const root = process.cwd();
 const failures = [];
 
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const autoExportFile = 'src-surfaces-base/studio/sync/auto-export.tauri.js';
+const folderActionsFile = 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js';
 const libraryIndexFile = 'src-surfaces-base/studio/S0F1c. 🎬 Library Index - Studio.js';
 const librarySyncFile = 'src-surfaces-base/studio/S0F1h. 🎬 Library Sync - Studio.js';
 const chromeLiveBackgroundFile = 'tools/product/extensions/chatgpt/chrome/chrome-live-background.mjs';
@@ -414,7 +416,7 @@ async function runVmProof() {
   }
 }
 
-for (const file of [folderImportFile, autoExportFile, libraryIndexFile, librarySyncFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
+for (const file of [folderImportFile, folderSyncFile, autoExportFile, folderActionsFile, libraryIndexFile, librarySyncFile, chromeLiveBackgroundFile, contractFile]) assertExists(file);
 
 if (failures.length === 0) {
   assertContains(folderImportFile, 'h2o.studio.sync.chrome-desktop-propagation.v1', 'propagation schema');
@@ -448,6 +450,12 @@ if (failures.length === 0) {
   assertContains(libraryIndexFile, 'desktop-sync-folder-rehydrate', 'Desktop shell row rehydration source');
   assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'durable rehydration diagnostic');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
+  assertContains(autoExportFile, "status: missing.length ? 'auto-export-subscriptions-partially-wired' : 'auto-export-subscriptions-wired'", 'auto-export retryable partial subscription wiring');
+  assertContains(folderSyncFile, 'exportDesktopLatestForChrome', 'Desktop folder.syncNow desktop-to-chrome export branch');
+  assertContains(folderSyncFile, "supportedDirections: ['chrome-to-desktop', 'desktop-to-chrome']", 'Desktop folder syncNow bidirectional direction marker');
+  assertContains(folderSyncFile, 'desktopWritesLatestJson: true', 'Desktop folder facade latest.json write marker');
+  assertContains(folderActionsFile, 'scheduleDesktopLatestExport', 'folder metadata action auto-export scheduling hook');
+  assertContains(folderActionsFile, "scheduleDesktopLatestExport('update', folderId)", 'folder color/update schedules Desktop latest.json export');
   assertContains(librarySyncFile, 'requestDesktopFolderMetadataOperation', 'Desktop folder metadata operation bridge');
   assertContains(librarySyncFile, 'previewDesktopRenameFolderMetadataOperation', 'Desktop rename-folder preview bridge');
   assertContains(librarySyncFile, 'applyDesktopRenameFolderMetadataOperation', 'Desktop rename-folder apply bridge');

@@ -175,7 +175,7 @@
   }
 
   function wireStoreSubscriptions() {
-    if (state.subscribersWired) {
+    if (state.subscribersWired && state.missingStores.length === 0) {
       return {
         ok: true,
         status: 'auto-export-subscriptions-already-wired',
@@ -184,9 +184,10 @@
       };
     }
     var stores = getStores();
-    var wired = [];
+    var wired = state.wiredStores.slice();
     var missing = [];
     STORE_NAMES.forEach(function (storeName) {
+      if (wired.indexOf(storeName) !== -1) return;
       var store = stores && stores[storeName];
       if (!store || typeof store.subscribe !== 'function') {
         missing.push(storeName);
@@ -215,7 +216,7 @@
     state.missingStores = missing;
     return {
       ok: true,
-      status: 'auto-export-subscriptions-wired',
+      status: missing.length ? 'auto-export-subscriptions-partially-wired' : 'auto-export-subscriptions-wired',
       wiredStores: wired.slice(),
       missingStores: missing.slice(),
     };

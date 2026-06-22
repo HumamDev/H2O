@@ -111,6 +111,7 @@
     lastWriteAt: 0,
     lastWriteAction: '',
     lastWriteOk: null,
+    lastAutoExportSchedule: null,
     errors: [],
   };
 
@@ -157,6 +158,42 @@
         }));
       }
     } catch (e) { pushError('dispatchRefresh', e); }
+  }
+
+  function scheduleDesktopLatestExport(reason, folderId) {
+    var cleanReason = cleanString(reason) || 'folder-metadata-change';
+    try {
+      var autoExport = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport;
+      if (!autoExport || typeof autoExport.schedule !== 'function') {
+        state.lastAutoExportSchedule = {
+          at: Date.now(),
+          reason: cleanReason,
+          folderId: cleanString(folderId),
+          status: 'auto-export-unavailable',
+        };
+        return null;
+      }
+      var result = autoExport.schedule('folder-metadata:' + cleanReason);
+      state.lastAutoExportSchedule = {
+        at: Date.now(),
+        reason: cleanReason,
+        folderId: cleanString(folderId),
+        status: cleanString(result && result.status),
+        scheduled: !!(result && result.scheduled),
+        enabled: !!(result && result.enabled),
+      };
+      return result;
+    } catch (e) {
+      state.lastAutoExportSchedule = {
+        at: Date.now(),
+        reason: cleanReason,
+        folderId: cleanString(folderId),
+        status: 'auto-export-schedule-error',
+        error: String((e && e.message) || e),
+      };
+      pushError('scheduleDesktopLatestExport', e);
+      return null;
+    }
   }
 
   function getStore() {
@@ -224,6 +261,7 @@
       var row = await store.create(payload);
       recordWrite('create', true);
       dispatchRefresh('create');
+      scheduleDesktopLatestExport('create', row && row.folderId);
       return baseResult('create', 'ok', {
         ok: true,
         folderId: row && row.folderId,
@@ -266,6 +304,7 @@
       var row = await store.patch(folderId, { name: newName });
       recordWrite('rename', true);
       dispatchRefresh('rename');
+      scheduleDesktopLatestExport('rename', folderId);
       return baseResult('rename', 'ok', {
         ok: true,
         folderId: folderId,
@@ -324,6 +363,7 @@
       var row = await store.patch(folderId, allowed);
       recordWrite('update', true);
       dispatchRefresh('update');
+      scheduleDesktopLatestExport('update', folderId);
       return baseResult('update', 'ok', {
         ok: true,
         folderId: folderId,
@@ -553,6 +593,7 @@
       lastWriteAt: state.lastWriteAt,
       lastWriteAction: state.lastWriteAction,
       lastWriteOk: state.lastWriteOk,
+      lastAutoExportSchedule: state.lastAutoExportSchedule,
       storeAvailable: !!getStore(),
       refreshEvent: REFRESH_EVENT,
       cardinality: 'single-folder-per-chat',

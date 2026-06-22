@@ -59,6 +59,7 @@
   var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
   var F19_CHROME_DESKTOP_VERSION = '0.1.0-f19.2.b';
+  var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var MAX_LEDGER_ENTRIES  = 100;
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
@@ -1073,12 +1074,14 @@
     var blockers = normalizeHardeningBlockers(f.blockers);
     var warnings = normalizeHardeningWarnings(f.warnings);
     var status = String(f.status || (ok ? 'imported' : 'blocked'));
+    var direction = String(f.direction || 'chrome-to-desktop');
+    var transport = String(f.transport || 'chrome-latest.json');
     return {
       schema: PROPAGATION_SCHEMA,
-      version: F19_CHROME_DESKTOP_VERSION,
+      version: String(f.version || F19_CHROME_DESKTOP_VERSION),
       ok: ok === true && blockers.length === 0,
-      direction: 'chrome-to-desktop',
-      transport: 'chrome-latest.json',
+      direction: direction,
+      transport: transport,
       status: status,
       supportedFields: CHROME_DESKTOP_SUPPORTED_FIELDS.slice(),
       deferredFields: warnings.filter(function (code) {
@@ -1535,6 +1538,85 @@
     return importChromeLatestFromFile(joinPath(folderPath, CHROME_LATEST_FILE), options);
   }
 
+  function exportLatestSyncBundleFunction() {
+    try {
+      return H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.exportLatestSyncBundle;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function exportDesktopLatestForChrome(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var reason = String(opts.reason || 'desktop-folder-sync-now').trim() || 'desktop-folder-sync-now';
+    var exporter = exportLatestSyncBundleFunction();
+    if (typeof exporter !== 'function') {
+      return propagationResult(false, {
+        direction: 'desktop-to-chrome',
+        transport: 'latest.json',
+        version: F19_DESKTOP_CHROME_VERSION,
+        status: 'desktop-to-chrome-export-unavailable',
+        blockers: ['desktop-to-chrome-export-unavailable'],
+        sourceSummary: {
+          direction: 'desktop-to-chrome',
+          transport: 'latest.json',
+          exporterAvailable: false,
+          apiHint: 'Use H2O.Studio.ingestion.exportLatestSyncBundle() after the exporter module loads.'
+        }
+      });
+    }
+    try {
+      var raw = await exporter(Object.assign({}, opts, {
+        direction: 'desktop-to-chrome',
+        transport: 'latest.json',
+        reason: reason,
+        syncNow: true,
+        syncNowFacade: 'H2O.Studio.sync.folder.syncNow'
+      }));
+      var ok = raw && raw.ok === true;
+      var status = String(raw && raw.status || (ok ? 'latest-sync-bundle-written' : 'desktop-to-chrome-export-failed'));
+      var blockers = ok ? [] : ['desktop-to-chrome-export-failed'];
+      return Object.assign({}, raw || {}, {
+        schema: PROPAGATION_SCHEMA,
+        version: F19_DESKTOP_CHROME_VERSION,
+        ok: ok,
+        direction: 'desktop-to-chrome',
+        transport: 'latest.json',
+        status: status,
+        blockers: blockers,
+        warnings: normalizeHardeningWarnings(raw && raw.warnings),
+        supportedFields: CHROME_DESKTOP_SUPPORTED_FIELDS.slice(),
+        sourceSummary: {
+          direction: 'desktop-to-chrome',
+          transport: 'latest.json',
+          exporterAvailable: true,
+          status: status,
+          path: String(raw && raw.path || ''),
+          bytes: Number(raw && raw.bytes) || 0,
+          exportedAt: String(raw && raw.exportedAt || ''),
+          exportId: String(raw && raw.exportId || ''),
+          sourceSurfaceKind: String(raw && raw.sourceSurfaceKind || ''),
+          sourceStoreKind: String(raw && raw.sourceStoreKind || ''),
+          folderCount: Number(raw && raw.folderCount) || null
+        }
+      });
+    } catch (error) {
+      return propagationResult(false, {
+        direction: 'desktop-to-chrome',
+        transport: 'latest.json',
+        version: F19_DESKTOP_CHROME_VERSION,
+        status: 'desktop-to-chrome-export-failed',
+        blockers: ['desktop-to-chrome-export-failed'],
+        sourceSummary: {
+          direction: 'desktop-to-chrome',
+          transport: 'latest.json',
+          exporterAvailable: true,
+          error: String(error && (error.message || error))
+        }
+      });
+    }
+  }
+
   async function folderSyncNow(options) {
     var opts = options && typeof options === 'object' ? options : {};
     var direction = String(opts.direction || opts.syncDirection || 'chrome-to-desktop').trim().toLowerCase().replace(/_/g, '-');
@@ -1545,7 +1627,15 @@
         reason: String(opts.reason || 'desktop-folder-sync-now')
       }));
     }
+    if (direction === 'desktop-to-chrome' || direction === 'desktop-to-chrome-export') {
+      return exportDesktopLatestForChrome(Object.assign({}, opts, {
+        direction: 'desktop-to-chrome',
+        reason: String(opts.reason || 'desktop-folder-sync-now')
+      }));
+    }
     return propagationResult(false, {
+      direction: direction,
+      transport: direction === 'desktop-to-chrome' ? 'latest.json' : '',
       status: 'blocked',
       blockers: ['library-propagation-direction-unsupported'],
       warnings: [],
@@ -1915,8 +2005,11 @@
     __version: '0.1.0-f19.7.k',
     direction: 'chrome-to-desktop',
     transport: CHROME_LATEST_FILE,
+    supportedDirections: ['chrome-to-desktop', 'desktop-to-chrome'],
     chromeWritesSyncFolder: false,
     desktopReadsChromeLatestJson: true,
+    desktopWritesLatestJson: true,
+    desktopToChromeTransport: 'latest.json',
     getConfig: getConfig,
     setConfig: setConfig,
     getLedger: getLedger,
