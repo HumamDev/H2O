@@ -8,6 +8,9 @@ const failures = [];
 
 const files = {
   reviews: 'src-surfaces-base/studio/store/tombstone-reviews.mv3.js',
+  desktopReviews: 'src-surfaces-base/studio/store/tombstone-reviews.tauri.js',
+  chromeExport: 'src-surfaces-base/studio/sync/auto-import.mv3.js',
+  desktopImport: 'src-surfaces-base/studio/sync/folder-sync.tauri.js',
   actions: 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js',
   sidebar: 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js',
 };
@@ -44,6 +47,9 @@ function assertIncludes(source, needle, label = needle) {
 }
 
 const reviews = read(files.reviews);
+const desktopReviews = read(files.desktopReviews);
+const chromeExport = read(files.chromeExport);
+const desktopImport = read(files.desktopImport);
 const actions = read(files.actions);
 const sidebar = read(files.sidebar);
 
@@ -75,6 +81,74 @@ assert(!requestBody.includes('createTombstone'), 'Chrome request must not create
 assert(!requestBody.includes('deleteFolder'), 'Chrome request must not call folder delete helpers');
 assert(!requestBody.includes('unbindChat'), 'Chrome request must not unbind chats');
 assert(!requestBody.includes('bindChat'), 'Chrome request must not bind chats');
+
+[
+  'FOLDER_DELETE_REQUEST_SCHEMA',
+  'collectFolderDeleteRequestsForExport',
+  'sanitizeFolderDeleteRequestForExport',
+  'listFolderDeleteRequests',
+  'bundle.folderDeleteRequests',
+  'desktopApplyRequired',
+  'noHardDelete: true',
+  'noChatDelete: true',
+  'noFolderMutation: true',
+  'noBindingMutation: true',
+  'noChatMutation: true',
+  'noSnapshotMutation: true',
+].forEach((needle) => assertIncludes(chromeExport, needle, `Chrome export ${needle}`));
+
+const collectExportBody = functionBody(chromeExport, 'collectFolderDeleteRequestsForExport');
+assert(collectExportBody.includes('listFolderDeleteRequests'), 'Chrome export must source requests from review store');
+assert(!collectExportBody.includes('softDeleteFolder'), 'Chrome export must not apply soft delete');
+assert(!collectExportBody.includes('createTombstone'), 'Chrome export must not create tombstones');
+assert(!collectExportBody.includes('unbindChat'), 'Chrome export must not unbind chats');
+assert(!collectExportBody.includes('bindChat'), 'Chrome export must not bind chats');
+
+[
+  'h2o.studio.folder-delete-request.v1',
+  "'delete-request': true",
+  'folderDeleteRequestDedupeKey',
+  'findPendingFolderDeleteRequest',
+  'listFolderDeleteRequests',
+  'ingestFolderDeleteRequests',
+  'folder-delete-request-imported-not-applied',
+  'desktopApplyRequired: true',
+  'noApply: true',
+  'noHardDelete: true',
+  'noChatDelete: true',
+  'noFolderMutation: true',
+  'noBindingMutation: true',
+  'noChatMutation: true',
+  'noSnapshotMutation: true',
+].forEach((needle) => assertIncludes(desktopReviews, needle, `Desktop review store ${needle}`));
+
+const desktopRequestIngestBody = functionBody(desktopReviews, 'ingestFolderDeleteRequests');
+assert(desktopRequestIngestBody.includes('folderDeleteRequests'), 'Desktop request ingest must read folderDeleteRequests section');
+assert(desktopRequestIngestBody.includes('ingestFolderDeleteRequestRow'), 'Desktop request ingest must route rows through request-only row handler');
+assert(!desktopRequestIngestBody.includes('softDeleteFolder'), 'Desktop request ingest must not apply soft delete');
+assert(!desktopRequestIngestBody.includes('softDeleteEmptyFolder'), 'Desktop request ingest must not apply empty-folder delete');
+assert(!desktopRequestIngestBody.includes('createTombstone'), 'Desktop request ingest must not create tombstones');
+assert(!desktopRequestIngestBody.includes('unbindChat'), 'Desktop request ingest must not unbind chats');
+assert(!desktopRequestIngestBody.includes('bindChat'), 'Desktop request ingest must not bind chats');
+
+[
+  'folder-delete-requests',
+  'sanitizeFolderDeleteRequestsForChromeDesktop',
+  'folderDeleteRequests: folderDeleteRequests',
+  'folderDeleteRequestCount',
+  'ingestFolderDeleteRequestsFromChromeBundle',
+  'reviews.ingestFolderDeleteRequests',
+  'folderDeleteRequestImport',
+].forEach((needle) => assertIncludes(desktopImport, needle, `Desktop import ${needle}`));
+
+const desktopImportBody = functionBody(desktopImport, 'ingestFolderDeleteRequestsFromChromeBundle');
+assert(desktopImportBody.includes('reviews.ingestFolderDeleteRequests'), 'Desktop import must call review-store request ingest');
+assert(desktopImportBody.includes('noApply'), 'Desktop import must mark request import as no-apply');
+assert(!desktopImportBody.includes('softDeleteFolder'), 'Desktop import must not call softDeleteFolder');
+assert(!desktopImportBody.includes('softDeleteEmptyFolder'), 'Desktop import must not call softDeleteEmptyFolder');
+assert(!desktopImportBody.includes('createTombstone'), 'Desktop import must not create tombstones');
+assert(!desktopImportBody.includes('unbindChat'), 'Desktop import must not unbind chats');
+assert(!desktopImportBody.includes('bindChat'), 'Desktop import must not bind chats');
 
 const chromeInstallBody = functionBody(actions, 'installChromeFolderDeleteRequestActions');
 assert(chromeInstallBody.includes('requestDelete'), 'Chrome actions facade must expose requestDelete');
@@ -110,8 +184,6 @@ assert(!chromeRequestUiBody.includes('requestDesktopFolderSoftDelete'), 'Chrome 
 assert(!chromeRequestUiBody.includes('softDeleteFolder'), 'Chrome request UI must not call softDeleteFolder');
 assert(!chromeRequestUiBody.includes('unbindChat'), 'Chrome request UI must not unbind chats');
 
-assert(!reviews.includes('folderDeleteRequests[]'), 'Phase 4C.1/4C.2 must not add request transport');
-
 if (failures.length) {
   console.error('[folder-delete-request-phase4c] FAIL');
   failures.forEach((failure) => console.error(` - ${failure}`));
@@ -122,11 +194,11 @@ console.log('[folder-delete-request-phase4c] PASS');
 console.log(JSON.stringify({
   schema: 'h2o.studio.sync.folder-delete-request-phase4c-validation.v1',
   ok: true,
-  chromeLocalOnly: true,
   requestOnly: true,
+  transportRequestOnly: true,
+  desktopIngestReviewOnly: true,
   noHardDelete: true,
   noChatDelete: true,
-  noTransport: true,
   desktopApplyDeferred: true,
   observedAtIso: new Date().toISOString(),
 }, null, 2));

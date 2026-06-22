@@ -36,6 +36,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
+  var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -67,6 +68,7 @@
     'unsupported-record-kind': true,
     'self-originated': true,
     'local-comparison-unavailable': true,
+    'delete-request': true,
   };
   var STATUSES = {
     pending: true,
@@ -159,6 +161,7 @@
     warnings: [],
     warnMax: 20,
     subscribers: new Set(),
+    lastFolderDeleteRequestIngest: null,
   };
 
   function recordError(op, e) {
@@ -378,6 +381,114 @@
         encodeURIComponent(recordId) + ':' + encodeURIComponent(deletedAt);
     }
     return '';
+  }
+
+  function folderDeleteRequestRecordId(folderId) {
+    return cleanScalar(folderId);
+  }
+
+  function folderDeleteRequestDedupeKey(folderId, requestId) {
+    return 'folder-delete-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
+  }
+
+  function parseFolderDeleteRequestPayload(input) {
+    if (!input) return null;
+    var raw = readField(input, 'rawTombstoneJson', 'raw_tombstone_json');
+    if (raw == null) raw = readField(input, 'payload', null);
+    if (raw == null && isObject(input)) raw = input;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isObject(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizeFolderDeleteRequest(input) {
+    var payload = parseFolderDeleteRequestPayload(input);
+    if (!payload) return { ok: false, code: 'folder-delete-request-not-object' };
+    if (cleanScalar(payload.schema) !== FOLDER_DELETE_REQUEST_SCHEMA) {
+      return { ok: false, code: 'folder-delete-request-schema-invalid' };
+    }
+    if (cleanScalar(payload.intent) !== 'folder-soft-delete-request') {
+      return { ok: false, code: 'folder-delete-request-intent-invalid' };
+    }
+    if (cleanScalar(payload.status) !== 'pending') {
+      return { ok: false, code: 'folder-delete-request-status-not-pending' };
+    }
+    if (payload.desktopApplyRequired !== true) {
+      return { ok: false, code: 'folder-delete-request-desktop-apply-required-missing' };
+    }
+    var folderId = cleanScalar(payload.folderId || payload.recordId);
+    if (!folderId) return { ok: false, code: 'folder-delete-request-folder-id-missing' };
+    var requestId = cleanScalar(payload.requestId || payload.reviewId);
+    if (!requestId) return { ok: false, code: 'folder-delete-request-id-missing' };
+    var out = {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanScalar(payload.reviewId || requestId) || requestId,
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      classification: 'delete-request',
+      folderId: folderId,
+      folderName: nullableString(payload.folderName || payload.folderNameAtRequest),
+      folderNameAtRequest: nullableString(payload.folderNameAtRequest || payload.folderName),
+      normalizedNameAtRequest: nullableString(payload.normalizedNameAtRequest),
+      requestedAt: nullableString(payload.requestedAt),
+      requestedBy: nullableString(payload.requestedBy || 'chrome-studio'),
+      sourceSurface: nullableString(payload.sourceSurface || 'chrome-studio'),
+      sourcePeerId: nullableString(payload.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: nullableString(payload.reason || 'user-requested-folder-delete') || 'user-requested-folder-delete',
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: isObject(payload.advisory) ? JSON.parse(JSON.stringify(payload.advisory)) : null,
+      transportedAt: nullableString(payload.transportedAt),
+    };
+    return { ok: true, request: out };
+  }
+
+  function findPendingFolderDeleteRequest(folderIdInput) {
+    var folderId = cleanScalar(folderIdInput);
+    if (!folderId) return Promise.resolve(null);
+    return listReviews({
+      classification: 'delete-request',
+      status: 'pending',
+      recordKind: 'folder',
+      recordId: folderDeleteRequestRecordId(folderId),
+      limit: MAX_LIST_LIMIT,
+    }).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).find(function (row) {
+        var parsed = normalizeFolderDeleteRequest(row);
+        return parsed.ok && parsed.request.folderId === folderId;
+      }) || null;
+    });
+  }
+
+  function listFolderDeleteRequests(filters) {
+    var f = isObject(filters) ? filters : {};
+    var folderId = cleanScalar(f.folderId || f.id || f.recordId || '');
+    var query = {
+      classification: 'delete-request',
+      recordKind: 'folder',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (cleanScalar(f.status)) query.status = cleanScalar(f.status);
+    if (folderId) query.recordId = folderDeleteRequestRecordId(folderId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).filter(function (row) {
+        var parsed = normalizeFolderDeleteRequest(row);
+        if (!parsed.ok) return false;
+        if (folderId && parsed.request.folderId !== folderId) return false;
+        return true;
+      });
+    });
   }
 
   function validateReview(record) {
@@ -1520,6 +1631,42 @@
     return record;
   }
 
+  function buildReviewRecordFromFolderDeleteRequest(request, sourceInfo, existing) {
+    var source = sourceInfo || {};
+    var reviewId = cleanScalar(existing && existing.reviewId) || cleanScalar(request.reviewId || request.requestId);
+    var dedupeKey = cleanScalar(existing && existing.dedupeKey) ||
+      folderDeleteRequestDedupeKey(request.folderId, request.requestId);
+    var warnings = [
+      { code: 'desktop-apply-required' },
+      { code: 'folder-delete-request-imported-not-applied' },
+    ];
+    return {
+      schema: REVIEW_SCHEMA,
+      reviewId: reviewId,
+      remoteTombstoneId: null,
+      remoteSyncPeerId: nullableString(request.sourcePeerId || source.sourceSyncPeerId || 'chrome-studio'),
+      remoteExportId: nullableString(source.exportId),
+      remoteSequenceNumber: source.sequenceNumber == null || source.sequenceNumber === '' ? null : Number(source.sequenceNumber),
+      recordKind: 'folder',
+      recordId: folderDeleteRequestRecordId(request.folderId),
+      deleteReason: nullableString(request.reason || 'user-requested-folder-delete'),
+      remoteDeletedAt: null,
+      receivedAt: nowIso(),
+      firstSeenAt: request.requestedAt || nowIso(),
+      lastSeenAt: nowIso(),
+      seenCount: 1,
+      lastSeenExportId: nullableString(source.exportId),
+      localRecordExists: null,
+      localUpdatedAt: null,
+      localHasNewerEdit: null,
+      classification: 'delete-request',
+      status: 'pending',
+      dedupeKey: dedupeKey,
+      rawTombstoneJson: JSON.stringify(request),
+      warningsJson: JSON.stringify(warnings),
+    };
+  }
+
   function addIngestCount(result, classification, status) {
     bumpCounter(result.byClassification, classification || 'unknown');
     bumpCounter(result.byStatus, status || 'unknown');
@@ -1639,6 +1786,147 @@
       recordError('ingestBundleTombstones', e);
       result.ok = false;
       pushIngestWarning(result, 'ingest-failed');
+      return result;
+    });
+  }
+
+  function makeFolderDeleteRequestIngestResult(bundle, sourceContext) {
+    var opts = isObject(sourceContext) ? sourceContext : {};
+    return {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA + '.transport-ingest.v1',
+      ok: true,
+      phase: 'phase4c.3a',
+      status: 'folder-delete-request-import-checked',
+      noApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      desktopApplyDeferred: true,
+      source: cleanScalar(opts.source || 'chrome-latest.json'),
+      found: 0,
+      inserted: 0,
+      updated: 0,
+      duplicatePending: 0,
+      skipped: 0,
+      invalid: 0,
+      failed: 0,
+      warnings: [],
+      sourceExportId: cleanScalar(bundle && bundle.exportId),
+      sourceSequenceNumber: bundle && bundle.sequenceNumber != null && bundle.sequenceNumber !== ''
+        ? Number(bundle.sequenceNumber)
+        : null,
+    };
+  }
+
+  function ingestFolderDeleteRequestRow(input, sourceInfo, result, dryRun) {
+    var parsed = normalizeFolderDeleteRequest(input);
+    if (!parsed.ok) {
+      result.skipped += 1;
+      result.invalid += 1;
+      if (result.warnings.indexOf(parsed.code) === -1) result.warnings.push(parsed.code);
+      return Promise.resolve();
+    }
+    var request = parsed.request;
+    if (dryRun) return Promise.resolve();
+    return getByDedupeKey(folderDeleteRequestDedupeKey(request.folderId, request.requestId))
+      .then(function (existingByRequest) {
+        if (existingByRequest) {
+          var existingRecord = buildReviewRecordFromFolderDeleteRequest(request, sourceInfo, existingByRequest);
+          return upsertReviewSighting(existingRecord).then(function () {
+            result.updated += 1;
+          });
+        }
+        return findPendingFolderDeleteRequest(request.folderId).then(function (existingPending) {
+          var record = buildReviewRecordFromFolderDeleteRequest(request, sourceInfo, existingPending);
+          return upsertReviewSighting(record).then(function () {
+            if (existingPending) {
+              result.updated += 1;
+              result.duplicatePending += 1;
+            } else {
+              result.inserted += 1;
+            }
+          });
+        });
+      })
+      .catch(function (e) {
+        result.failed += 1;
+        result.ok = false;
+        if (result.warnings.indexOf('folder-delete-request-write-failed') === -1) {
+          result.warnings.push('folder-delete-request-write-failed');
+        }
+        recordError('ingestFolderDeleteRequestRow', e);
+      });
+  }
+
+  function ingestFolderDeleteRequests(bundleInput, sourceContext) {
+    var opts = isObject(sourceContext) ? sourceContext : {};
+    var bundle = Array.isArray(bundleInput)
+      ? { folderDeleteRequests: bundleInput }
+      : (isObject(bundleInput) ? bundleInput : null);
+    var result = makeFolderDeleteRequestIngestResult(bundle || {}, opts);
+    if (!bundle) {
+      result.ok = false;
+      result.status = 'folder-delete-request-bundle-invalid';
+      result.warnings.push('folder-delete-request-bundle-invalid');
+      state.lastFolderDeleteRequestIngest = result;
+      return Promise.resolve(result);
+    }
+    if (!hasOwn(bundle, 'folderDeleteRequests')) {
+      result.status = 'no-folder-delete-requests';
+      state.lastFolderDeleteRequestIngest = result;
+      return Promise.resolve(result);
+    }
+    if (!Array.isArray(bundle.folderDeleteRequests)) {
+      result.ok = false;
+      result.status = 'folder-delete-request-section-invalid';
+      result.warnings.push('folder-delete-request-section-not-array');
+      state.lastFolderDeleteRequestIngest = result;
+      return Promise.resolve(result);
+    }
+    result.found = bundle.folderDeleteRequests.length;
+    if (result.found === 0) {
+      result.status = 'no-folder-delete-requests';
+      state.lastFolderDeleteRequestIngest = result;
+      return Promise.resolve(result);
+    }
+    var sourceInfo = readSourceInfo(bundle);
+    if (opts.exportId && !sourceInfo.exportId) sourceInfo.exportId = cleanScalar(opts.exportId);
+    if (opts.sourceSyncPeerId && !sourceInfo.sourceSyncPeerId) sourceInfo.sourceSyncPeerId = cleanScalar(opts.sourceSyncPeerId);
+    if (opts.sequenceNumber != null && sourceInfo.sequenceNumber == null) sourceInfo.sequenceNumber = Number(opts.sequenceNumber);
+    return ensureReady().then(function () {
+      var chain = Promise.resolve();
+      bundle.folderDeleteRequests.forEach(function (request) {
+        chain = chain.then(function () {
+          return ingestFolderDeleteRequestRow(request, sourceInfo, result, opts.dryRun === true);
+        });
+      });
+      return chain.then(function () {
+        result.status = result.failed > 0
+          ? 'folder-delete-request-import-partial'
+          : 'folder-delete-request-imported';
+        state.lastFolderDeleteRequestIngest = result;
+        notifySubscribers({
+          source: 'chrome-folder-delete-request-import',
+          op: 'ingestFolderDeleteRequests',
+          found: result.found,
+          inserted: result.inserted,
+          updated: result.updated,
+          duplicatePending: result.duplicatePending,
+          noApply: true,
+        });
+        return result;
+      });
+    }).catch(function (e) {
+      result.ok = false;
+      result.status = 'folder-delete-request-import-failed';
+      result.failed += Math.max(1, result.found - result.inserted - result.updated - result.skipped);
+      result.warnings.push('folder-delete-request-import-failed');
+      state.lastFolderDeleteRequestIngest = result;
+      recordError('ingestFolderDeleteRequests', e);
       return result;
     });
   }
@@ -3565,6 +3853,9 @@
     subscribe: subscribe,
     createReview: createReview,
     upsertReviewSighting: upsertReviewSighting,
+    findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
+    listFolderDeleteRequests: listFolderDeleteRequests,
+    ingestFolderDeleteRequests: ingestFolderDeleteRequests,
     getReview: getReview,
     getByDedupeKey: getByDedupeKey,
     listReviews: listReviews,
@@ -3587,6 +3878,7 @@
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
+      folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,

@@ -58,6 +58,7 @@
   var LEDGER_KEY = 'h2o:studio:sync:ledger:v1';
   var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
+  var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var F19_CHROME_DESKTOP_VERSION = '0.1.0-f19.2.b';
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
@@ -86,6 +87,7 @@
     'saved-chat-records',
     'linked-chat-records',
     'folder-metadata',
+    'folder-delete-requests',
     'category-metadata',
     'chat-category-bindings'
   ];
@@ -160,6 +162,7 @@
     lastPostImportRefreshEvents:   [],
     lastPostImportRefreshMode:     '',
     lastPostImportRefreshChangedFolderCount: 0,
+    lastFolderDeleteRequestImport: null,
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -829,6 +832,61 @@
     };
   }
 
+  function sanitizeFolderDeleteRequestForChromeDesktop(row) {
+    var request = safeObject(row);
+    if (cleanString(request.schema) !== FOLDER_DELETE_REQUEST_SCHEMA) return null;
+    if (cleanString(request.intent) !== 'folder-soft-delete-request') return null;
+    if (cleanString(request.status) !== 'pending') return null;
+    if (request.desktopApplyRequired !== true) return null;
+    var folderId = cleanString(request.folderId || request.recordId);
+    var requestId = cleanString(request.requestId || request.reviewId);
+    if (!folderId || !requestId) return null;
+    return {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanString(request.reviewId || requestId) || requestId,
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      classification: 'delete-request',
+      folderId: folderId,
+      folderName: cleanString(request.folderName || request.folderNameAtRequest) || null,
+      folderNameAtRequest: cleanString(request.folderNameAtRequest || request.folderName) || null,
+      normalizedNameAtRequest: cleanString(request.normalizedNameAtRequest) || null,
+      requestedAt: cleanString(request.requestedAt) || null,
+      requestedBy: cleanString(request.requestedBy || 'chrome-studio') || 'chrome-studio',
+      sourceSurface: cleanString(request.sourceSurface || 'chrome-studio') || 'chrome-studio',
+      sourcePeerId: cleanString(request.sourcePeerId || 'chrome-studio') || 'chrome-studio',
+      status: 'pending',
+      reason: cleanString(request.reason || 'user-requested-folder-delete') || 'user-requested-folder-delete',
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: request.advisory && typeof request.advisory === 'object' && !Array.isArray(request.advisory)
+        ? cloneJson(request.advisory) : null,
+      transportedAt: cleanString(request.transportedAt) || null,
+    };
+  }
+
+  function sanitizeFolderDeleteRequestsForChromeDesktop(bundle, warnings) {
+    if (!bundle || !Object.prototype.hasOwnProperty.call(bundle, 'folderDeleteRequests')) return [];
+    if (!Array.isArray(bundle.folderDeleteRequests)) {
+      addUnique(warnings, 'folder-delete-requests-section-invalid');
+      return [];
+    }
+    var out = [];
+    bundle.folderDeleteRequests.forEach(function (row) {
+      var request = sanitizeFolderDeleteRequestForChromeDesktop(row);
+      if (request) out.push(request);
+      else addUnique(warnings, 'folder-delete-request-skipped-invalid');
+    });
+    return out;
+  }
+
   function normalizeHardeningWarnings(warnings) {
     var out = Array.isArray(warnings) ? warnings.slice() : [];
     var legacyDeferred = [
@@ -1075,6 +1133,7 @@
     var chromeStorageLocal = {};
     if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
     var unindexedManifest = sanitizeUnindexedManifestForChromeDesktop(bundle);
+    var folderDeleteRequests = sanitizeFolderDeleteRequestsForChromeDesktop(bundle, warnings);
 
     var supported = {
       schema: FULL_BUNDLE_SCHEMA,
@@ -1098,6 +1157,7 @@
         }
       },
       chromeStorageLocal: chromeStorageLocal,
+      folderDeleteRequests: folderDeleteRequests,
       libraryKv: [],
       diagnostics: {
         unindexedRows: unindexedManifest.rows.slice(0, 50),
@@ -1126,6 +1186,7 @@
         unindexedRowReasonCounts: Object.assign({}, unindexedManifest.reasonCounts || {}),
         categoryCount: categories.length,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
+        folderDeleteRequestCount: folderDeleteRequests.length,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
         hasContentSha256: !!supported.contentSha256
@@ -1296,6 +1357,7 @@
       }),
       sourceSummary: f.sourceSummary || null,
       importSummary: f.importSummary || null,
+      folderDeleteRequestImport: f.folderDeleteRequestImport || null,
       parity: f.parity || {
         snapshotCaptured: false,
         paritySnapshotHash: '',
@@ -1378,6 +1440,78 @@
     }
   }
 
+  async function ingestFolderDeleteRequestsFromChromeBundle(normalized, options) {
+    var bundle = normalized && normalized.bundle && typeof normalized.bundle === 'object'
+      ? normalized.bundle : null;
+    var requests = bundle && Array.isArray(bundle.folderDeleteRequests)
+      ? bundle.folderDeleteRequests : [];
+    var result = {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA + '.transport-ingest.v1',
+      ok: true,
+      phase: 'phase4c.3a',
+      status: requests.length ? 'folder-delete-request-import-pending' : 'no-folder-delete-requests',
+      found: requests.length,
+      inserted: 0,
+      updated: 0,
+      duplicatePending: 0,
+      skipped: 0,
+      invalid: 0,
+      failed: 0,
+      warnings: [],
+      noApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      desktopApplyDeferred: true,
+      tombstonePropagation: 'deferred',
+    };
+    if (!requests.length) {
+      state.lastFolderDeleteRequestImport = result;
+      return result;
+    }
+    var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+    if (!reviews || typeof reviews.ingestFolderDeleteRequests !== 'function') {
+      result.ok = false;
+      result.status = 'folder-delete-request-review-store-unavailable';
+      result.failed = requests.length;
+      result.warnings.push('tombstone-review-store-unavailable');
+      state.lastFolderDeleteRequestImport = result;
+      return result;
+    }
+    try {
+      var importResult = await reviews.ingestFolderDeleteRequests(bundle, {
+        source: 'chrome-latest.json',
+        exportId: bundle.exportId || '',
+        sequenceNumber: bundle.sequenceNumber,
+        sourceSyncPeerId: cleanString(bundle.sourceSyncPeerId || ''),
+        mode: options && options.mode,
+      });
+      result = Object.assign(result, importResult || {});
+      result.noApply = true;
+      result.noHardDelete = true;
+      result.noChatDelete = true;
+      result.noFolderMutation = true;
+      result.noBindingMutation = true;
+      result.noChatMutation = true;
+      result.noSnapshotMutation = true;
+      result.desktopApplyDeferred = true;
+      result.tombstonePropagation = 'deferred';
+      state.lastFolderDeleteRequestImport = result;
+      return result;
+    } catch (e) {
+      result.ok = false;
+      result.status = 'folder-delete-request-import-failed';
+      result.failed = requests.length;
+      result.warnings.push('folder-delete-request-import-failed');
+      state.lastFolderDeleteRequestImport = result;
+      pushErr('folderDeleteRequests.ingest', e);
+      return result;
+    }
+  }
+
   async function importChromeLatestBundle(bundleInput, options) {
     var normalized = buildChromeDesktopSupportedBundle(bundleInput);
     if (!normalized.ok) {
@@ -1442,6 +1576,10 @@
         importSummary: importSummary
       });
     }
+    var folderDeleteRequestImport = await ingestFolderDeleteRequestsFromChromeBundle(normalized, options);
+    (folderDeleteRequestImport.warnings || []).forEach(function (code) {
+      addUnique(warnings, code);
+    });
     try {
       if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
         await H2O.LibraryIndex.refresh('f19-chrome-desktop-import');
@@ -1456,6 +1594,7 @@
       warnings: warnings,
       sourceSummary: normalized.sourceSummary,
       importSummary: importSummary,
+      folderDeleteRequestImport: folderDeleteRequestImport,
       parity: parity,
       idempotency: {
         fileFingerprintChecked: false,
@@ -2436,6 +2575,21 @@
         lastPostImportRefreshMode: state.lastPostImportRefreshMode,
         lastPostImportRefreshChangedFolderCount: state.lastPostImportRefreshChangedFolderCount,
         lastPostImportRefreshEvents: state.lastPostImportRefreshEvents.slice(),
+        lastFolderDeleteRequestImport: state.lastFolderDeleteRequestImport ? {
+          ok: state.lastFolderDeleteRequestImport.ok === true,
+          phase: cleanString(state.lastFolderDeleteRequestImport.phase),
+          status: cleanString(state.lastFolderDeleteRequestImport.status),
+          found: numberOrZero(state.lastFolderDeleteRequestImport.found),
+          inserted: numberOrZero(state.lastFolderDeleteRequestImport.inserted),
+          updated: numberOrZero(state.lastFolderDeleteRequestImport.updated),
+          duplicatePending: numberOrZero(state.lastFolderDeleteRequestImport.duplicatePending),
+          skipped: numberOrZero(state.lastFolderDeleteRequestImport.skipped),
+          invalid: numberOrZero(state.lastFolderDeleteRequestImport.invalid),
+          failed: numberOrZero(state.lastFolderDeleteRequestImport.failed),
+          noApply: state.lastFolderDeleteRequestImport.noApply === true,
+          desktopApplyDeferred: state.lastFolderDeleteRequestImport.desktopApplyDeferred === true,
+          tombstonePropagation: cleanString(state.lastFolderDeleteRequestImport.tombstonePropagation),
+        } : null,
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
         /* Phase D — orphan-folder-binding visibility (visibility only,

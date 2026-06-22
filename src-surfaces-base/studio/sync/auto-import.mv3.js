@@ -83,6 +83,7 @@
   /* ── Constants — mirror folder-import.mv3.js storage location ─────── */
   var PHASE                = 'R3-phase1';
   var FULL_BUNDLE_SCHEMA   = 'h2o.studio.fullBundle.v2';
+  var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var EXPORT_COVERAGE_SCHEMA = 'h2o.studio.sync.chrome-export-coverage.v1';
   var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
   var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
@@ -130,6 +131,7 @@
     eventTriggerCount: 0,
     lastSnapshotPayloadCoverage: null,
     lastNativeSnapshotPayloadPreflight: null,
+    lastFolderDeleteRequestExport: null,
     errors: [],
   };
 
@@ -334,6 +336,101 @@
    * transport bundle. */
   function cleanString(value) {
     return String(value == null ? '' : value).trim();
+  }
+  function isPlainObject(value) {
+    return !!(value && typeof value === 'object' && !Array.isArray(value));
+  }
+  function nullableString(value) {
+    var s = cleanString(value);
+    return s || null;
+  }
+
+  function parseFolderDeleteRequestPayload(row) {
+    var raw = row && row.rawTombstoneJson;
+    if (!raw && row && row.raw_tombstone_json) raw = row.raw_tombstone_json;
+    if (!raw && isPlainObject(row && row.payload)) raw = row.payload;
+    if (!raw && isPlainObject(row)) raw = row;
+    if (!raw) return null;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isPlainObject(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function sanitizeFolderDeleteRequestForExport(row) {
+    var payload = parseFolderDeleteRequestPayload(row);
+    if (!payload) return null;
+    if (cleanString(payload.schema) !== FOLDER_DELETE_REQUEST_SCHEMA) return null;
+    if (cleanString(payload.intent) !== 'folder-soft-delete-request') return null;
+    if (cleanString(payload.status) !== 'pending') return null;
+    if (payload.desktopApplyRequired !== true) return null;
+    var folderId = cleanString(payload.folderId || payload.recordId);
+    if (!folderId) return null;
+    var requestId = cleanString(payload.requestId || payload.reviewId || (row && row.reviewId));
+    if (!requestId) return null;
+    return {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanString(payload.reviewId || requestId) || requestId,
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      classification: 'delete-request',
+      folderId: folderId,
+      folderName: nullableString(payload.folderName || payload.folderNameAtRequest),
+      folderNameAtRequest: nullableString(payload.folderNameAtRequest || payload.folderName),
+      normalizedNameAtRequest: nullableString(payload.normalizedNameAtRequest),
+      requestedAt: cleanString(payload.requestedAt) || null,
+      requestedBy: nullableString(payload.requestedBy || 'chrome-studio'),
+      sourceSurface: nullableString(payload.sourceSurface || 'chrome-studio'),
+      sourcePeerId: nullableString(payload.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: nullableString(payload.reason || 'user-requested-folder-delete'),
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: isPlainObject(payload.advisory) ? cloneJson(payload.advisory) : null,
+      transportedAt: nowIso(),
+    };
+  }
+
+  async function collectFolderDeleteRequestsForExport() {
+    var result = {
+      ok: true,
+      schema: FOLDER_DELETE_REQUEST_SCHEMA + '.export.v1',
+      requestCount: 0,
+      skippedCount: 0,
+      warnings: [],
+      requests: [],
+    };
+    try {
+      var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      if (!reviews || typeof reviews.listFolderDeleteRequests !== 'function') {
+        result.storeAvailable = false;
+        return result;
+      }
+      result.storeAvailable = true;
+      var rows = await reviews.listFolderDeleteRequests({ status: 'pending', limit: 1000 });
+      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+        var request = sanitizeFolderDeleteRequestForExport(row);
+        if (request) result.requests.push(request);
+        else result.skippedCount += 1;
+      });
+      result.requestCount = result.requests.length;
+      return result;
+    } catch (e) {
+      result.ok = false;
+      result.warnings.push('folder-delete-request-export-failed');
+      result.error = String((e && e.message) || e);
+      pushError('folderDeleteRequests.export', e);
+      return result;
+    }
   }
 
   function looksLikeOpaqueTitle(value, id) {
@@ -1698,6 +1795,12 @@
       var aligned = await alignBundleToLibraryIndex(bundle);
       bundle = aligned.bundle || bundle;
       chromeExportCoverage = aligned.coverage || null;
+      var folderDeleteRequestExport = await collectFolderDeleteRequestsForExport();
+      bundle.folderDeleteRequests = folderDeleteRequestExport.requests || [];
+      state.lastFolderDeleteRequestExport = folderDeleteRequestExport;
+      (folderDeleteRequestExport.warnings || []).forEach(function (code) {
+        if (warnings.indexOf(code) === -1) warnings.push(code);
+      });
       if (chromeExportCoverage) chromeExportCoverage.nativeSnapshotPayloadPreflight = nativeSnapshotPayloadPreflight;
       state.lastSnapshotPayloadCoverage = chromeExportCoverage;
       if (chromeExportCoverage) {
@@ -1772,6 +1875,12 @@
         status: 'chrome-to-desktop-exported',
         blockers: blockers,
         warnings: warnings,
+        folderDeleteRequestExport: {
+          requestCount: Number(folderDeleteRequestExport.requestCount || 0),
+          skippedCount: Number(folderDeleteRequestExport.skippedCount || 0),
+          noApply: true,
+          desktopApplyRequired: true,
+        },
         chromeExportCoverage: chromeExportCoverage,
         unindexedArchiveRowCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedArchiveRowCount || 0) : 0,
         unindexedRowManifestCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedRowManifestCount || 0) : 0,
