@@ -58,6 +58,7 @@
   var AUTO_SYNC_MIN_INTERVAL_MS = 30000;
   var AUTO_SYNC_DELAY_MS = 1000;
   var AUTO_SYNC_BOOT_DELAY_MS = 1500;
+  var DESKTOP_LATEST_POLL_INTERVAL_MS = 5000;
   var CHROME_EXPORT_DEBOUNCE_MS = 2000;
   var MAX_ERRORS = 20;
   var DESKTOP_CHROME_SUPPORTED_FIELDS = [
@@ -116,6 +117,15 @@
     autoSyncEnabled: true,
     autoSyncEventsBound: false,
     autoSyncTimer: null,
+    desktopLatestPollTimer: null,
+    desktopLatestPollRunning: false,
+    desktopLatestPollSignature: '',
+    lastDesktopLatestPollAt: '',
+    lastDesktopLatestPollStatus: '',
+    lastDesktopLatestPollError: '',
+    lastDesktopLatestPollDetectedAt: '',
+    lastDesktopLatestPollFileLastModified: 0,
+    lastDesktopLatestPollFileSize: 0,
     autoSyncScheduledAt: 0,
     autoSyncScheduledReason: '',
     autoSyncRunning: false,
@@ -142,6 +152,16 @@
     lastTransportConflictReason: '',
     lastTransportConflictDecision: '',
     lastTransportConflictSummary: null,
+    lastDesktopToChromeExportWrittenAt: '',
+    lastDesktopToChromeImportStartedAt: '',
+    lastDesktopToChromeImportAppliedAt: '',
+    lastDesktopToChromeRenderRefreshedAt: '',
+    lastDesktopToChromeTotalPropagationMs: 0,
+    lastDesktopToChromeRefreshMode: '',
+    lastDesktopToChromeChangedFolderCount: 0,
+    lastDesktopToChromeChangedFields: [],
+    lastDesktopToChromeChangedFolderIds: [],
+    lastDesktopToChromePostImportRefreshError: '',
     errors: [],
   };
 
@@ -316,6 +336,9 @@
     state.lastSyncError = cleanString(saved.lastSyncError);
     state.lastFileLastModified = numberOrZero(saved.lastFileLastModified);
     state.lastFileSize = numberOrZero(saved.lastFileSize);
+    state.desktopLatestPollSignature = state.lastFileLastModified || state.lastFileSize
+      ? String(state.lastFileLastModified) + ':' + String(state.lastFileSize)
+      : '';
     state.autoSyncEnabled = Object.prototype.hasOwnProperty.call(saved, 'autoSyncEnabled')
       ? saved.autoSyncEnabled !== false
       : true;
@@ -424,6 +447,92 @@
     }
   }
 
+  function documentIsVisible() {
+    try {
+      return !global.document || !global.document.visibilityState || global.document.visibilityState === 'visible';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function desktopLatestFileSignature(file) {
+    return String(numberOrZero(file && file.lastModified)) + ':' + String(numberOrZero(file && file.size));
+  }
+
+  function isFastDesktopLatestChangeReason(reason) {
+    var clean = cleanString(reason).toLowerCase();
+    return clean.indexOf('desktop-latest-poll') !== -1
+      || clean.indexOf('desktop-latest-changed') !== -1
+      || clean.indexOf('folder-metadata-fast-import') !== -1;
+  }
+
+  function clearDesktopLatestPollTimer() {
+    if (!state.desktopLatestPollTimer) return;
+    try { global.clearInterval(state.desktopLatestPollTimer); }
+    catch (_) { /* ignore */ }
+    state.desktopLatestPollTimer = null;
+  }
+
+  async function pollDesktopLatestForChanges(reason) {
+    var cleanReason = cleanString(reason) || 'desktop-latest-poll';
+    if (!state.autoSyncEnabled || !state.handle || !documentIsVisible()) return null;
+    if (state.desktopLatestPollRunning || state.autoSyncRunning || state.syncInFlight) return null;
+    state.desktopLatestPollRunning = true;
+    state.lastDesktopLatestPollAt = nowIso();
+    state.lastDesktopLatestPollStatus = 'polling';
+    state.lastDesktopLatestPollError = '';
+    try {
+      var permission = await queryPermission(state.handle);
+      state.permission = permission;
+      if (permission !== 'granted') {
+        state.lastDesktopLatestPollStatus = 'permission-required';
+        state.lastDesktopLatestPollError = 'read permission not granted';
+        return null;
+      }
+      var fileHandle;
+      try {
+        fileHandle = await state.handle.getFileHandle(LATEST_FILE, { create: false });
+      } catch (missingError) {
+        state.lastDesktopLatestPollStatus = 'latest-missing';
+        state.lastDesktopLatestPollError = String(missingError && (missingError.message || missingError));
+        return null;
+      }
+      var file = await fileHandle.getFile();
+      var signature = desktopLatestFileSignature(file);
+      var previous = cleanString(state.desktopLatestPollSignature);
+      state.desktopLatestPollSignature = signature;
+      state.lastDesktopLatestPollFileLastModified = numberOrZero(file.lastModified);
+      state.lastDesktopLatestPollFileSize = numberOrZero(file.size);
+      if (previous && previous === signature) {
+        state.lastDesktopLatestPollStatus = 'unchanged';
+        return null;
+      }
+      state.lastDesktopLatestPollDetectedAt = nowIso();
+      state.lastDesktopLatestPollStatus = previous ? 'changed' : 'first-seen';
+      return scheduleAutoSync(previous ? 'desktop-latest-poll-changed' : 'desktop-latest-poll-first-seen');
+    } catch (error) {
+      state.lastDesktopLatestPollStatus = 'poll-failed';
+      state.lastDesktopLatestPollError = String(error && (error.message || error));
+      pushError('desktop-latest-poll', error);
+      return null;
+    } finally {
+      state.desktopLatestPollRunning = false;
+    }
+  }
+
+  function startDesktopLatestPoller(reason) {
+    if (state.desktopLatestPollTimer || !state.autoSyncEnabled || !state.handle) return false;
+    state.desktopLatestPollTimer = global.setInterval(function () {
+      pollDesktopLatestForChanges('desktop-latest-poll:' + cleanString(reason || 'interval'))
+        .catch(function (error) { pushError('desktop-latest-poll.interval', error); });
+    }, DESKTOP_LATEST_POLL_INTERVAL_MS);
+    global.setTimeout(function () {
+      pollDesktopLatestForChanges('desktop-latest-poll:' + cleanString(reason || 'start'))
+        .catch(function (error) { pushError('desktop-latest-poll.start', error); });
+    }, 250);
+    return true;
+  }
+
   async function requestReadPermission(handle) {
     if (!handle) return 'denied';
     var current = await queryPermission(handle);
@@ -456,16 +565,22 @@
     state.autoSyncEventsBound = true;
     try {
       global.addEventListener('focus', function () {
+        pollDesktopLatestForChanges('desktop-latest-poll:window-focus').catch(function (error) { pushError('desktop-latest-poll.focus', error); });
         scheduleAutoSync('window-focus').catch(function (error) { pushError('auto-sync.focus', error); });
       });
     } catch (error) { pushError('bind.focus', error); }
     try {
       global.document.addEventListener('visibilitychange', function () {
         if (global.document.visibilityState === 'visible') {
+          startDesktopLatestPoller('document-visible');
+          pollDesktopLatestForChanges('desktop-latest-poll:document-visible').catch(function (error) { pushError('desktop-latest-poll.visibility', error); });
           scheduleAutoSync('document-visible').catch(function (error) { pushError('auto-sync.visibility', error); });
+        } else {
+          clearDesktopLatestPollTimer();
         }
       });
     } catch (error) { pushError('bind.visibilitychange', error); }
+    startDesktopLatestPoller('bind-auto-sync-events');
   }
 
   function throttleRemainingMs(nowMs) {
@@ -1632,11 +1747,12 @@
     }
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     await refreshLibraryIndex('desktop-chrome-propagation-import');
-    try {
-      global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
-        detail: { source: 'desktop-chrome-propagation', t: Date.now() },
-      }));
-    } catch (_) { /* ignore */ }
+    state.lastDesktopToChromeImportAppliedAt = nowIso();
+    var postImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
+      opts.folderMetadataChangeSummary || null,
+      opts.reason || 'desktop-chrome-propagation-import',
+      cleanString(normalized.bundle && normalized.bundle.exportedAt)
+    );
     var parity = await captureParityAfterImport();
     if (parity.warning) addUnique(warnings, parity.warning);
     var importSummary = redactedChromeImportSummary(importResult, dryRun, shellRows);
@@ -1652,6 +1768,7 @@
       sourceSummary: normalized.sourceSummary,
       importSummary: importSummary,
       convergence: convergence,
+      postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
       parity: parity,
       conflictDecision: normalizeConflictDecision(opts),
@@ -1719,6 +1836,189 @@
     }
   }
 
+  async function summarizeDesktopFolderMetadataChanges(bundle) {
+    var incoming = folderMetadataRowsFromBundle(bundle);
+    var localState = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var localRows = Array.isArray(localState.folders) ? localState.folders : [];
+    var localById = Object.create(null);
+    for (var i = 0; i < localRows.length; i += 1) {
+      var localId = folderMetadataRowId(localRows[i]);
+      if (localId) localById[localId] = localRows[i];
+    }
+    var changedRows = [];
+    var changedFields = [];
+    var changedFolderIds = [];
+    for (var r = 0; r < incoming.rows.length; r += 1) {
+      var row = incoming.rows[r];
+      var folderId = folderMetadataRowId(row);
+      if (!folderId) continue;
+      var local = localById[folderId] || null;
+      var fields = [];
+      if (!local) fields.push('create');
+      else {
+        if (folderMetadataRowName(row) !== folderMetadataRowName(local)) fields.push('name');
+        if (folderMetadataRowColor(row) !== folderMetadataRowColor(local)) fields.push('color');
+      }
+      if (!fields.length) continue;
+      fields.forEach(function (field) { addUnique(changedFields, field); });
+      addUnique(changedFolderIds, folderId);
+      changedRows.push({ folderId: folderId, fields: fields.slice(), row: row });
+    }
+    return {
+      sourceKind: incoming.sourceKind,
+      changedFolderCount: changedRows.length,
+      changedFolderIds: changedFolderIds,
+      changedFields: changedFields,
+      hasCreate: changedFields.indexOf('create') !== -1,
+      hasOnlyVisualUpdates: changedRows.length > 0 && changedFields.every(function (field) {
+        return field === 'name' || field === 'color';
+      }),
+      rows: changedRows,
+    };
+  }
+
+  function dispatchFolderMetadataChangedEvent(summary, reason, mode) {
+    try {
+      global.dispatchEvent(new CustomEvent('evt:h2o:folder-metadata:changed', {
+        detail: {
+          source: 'desktop-to-chrome-import',
+          reason: cleanString(reason) || 'sync-folder-import',
+          refreshMode: cleanString(mode),
+          changedFolderCount: numberOrZero(summary && summary.changedFolderCount),
+          changedFolderIds: Array.isArray(summary && summary.changedFolderIds) ? summary.changedFolderIds.slice() : [],
+          changedFields: Array.isArray(summary && summary.changedFields) ? summary.changedFields.slice() : [],
+          t: Date.now(),
+        },
+      }));
+    } catch (error) {
+      pushError('dispatch-folder-metadata-changed', error);
+    }
+  }
+
+  function updateFolderRowNode(node, row) {
+    if (!node || !row) return false;
+    var folderId = folderMetadataRowId(row);
+    var name = folderMetadataRowName(row);
+    var color = folderMetadataRowColor(row);
+    if (!folderId) return false;
+    if (name) {
+      node.setAttribute('data-h2o-folder-name', name);
+      node.setAttribute('data-h2o-folder-normalized-name', name.replace(/\s+/g, ' ').toLowerCase());
+      node.setAttribute('title', name);
+      node.setAttribute('aria-label', name);
+      var label = node.querySelector && node.querySelector('.wbSidebarSectionItemLabel');
+      if (label) {
+        if (label.children && label.children.length) label.children[0].textContent = name;
+        else label.textContent = name;
+      }
+    }
+    if (color) {
+      node.setAttribute('data-color', color);
+      node.setAttribute('data-h2o-folder-color', color);
+      try { node.style.setProperty('--wb-sidebar-item-color', color); } catch (_) { /* ignore */ }
+    } else {
+      node.removeAttribute('data-color');
+      node.removeAttribute('data-h2o-folder-color');
+      try { node.style.removeProperty('--wb-sidebar-item-color'); } catch (_) { /* ignore */ }
+    }
+    if (node.querySelectorAll) {
+      node.querySelectorAll('.wbSidebarSectionItemMenu').forEach(function (button) {
+        button.setAttribute('data-h2o-folder-id', folderId);
+        if (name) button.setAttribute('data-h2o-folder-name', name);
+        if (color) button.setAttribute('data-h2o-folder-color', color);
+        else button.removeAttribute('data-h2o-folder-color');
+      });
+    }
+    return true;
+  }
+
+  function applyTargetedFolderRowRefresh(summary) {
+    var doc = global.document;
+    if (!doc || !doc.querySelectorAll) return { attempted: false, updated: 0, missing: numberOrZero(summary && summary.changedFolderCount) };
+    var rows = Array.isArray(summary && summary.rows) ? summary.rows : [];
+    var nodes = Array.prototype.slice.call(doc.querySelectorAll('[data-h2o-folder-sidebar-row="1"], .wbSidebarSectionItem--folders[data-section="folders"]'));
+    var updated = 0;
+    var missing = 0;
+    rows.forEach(function (entry) {
+      var folderId = cleanString(entry && entry.folderId);
+      if (!folderId) return;
+      var matched = false;
+      nodes.forEach(function (node) {
+        var nodeId = cleanString(node.getAttribute && (node.getAttribute('data-h2o-folder-id') || node.getAttribute('data-id')));
+        if (nodeId !== folderId) return;
+        matched = updateFolderRowNode(node, entry.row) || matched;
+      });
+      if (matched) updated += 1;
+      else missing += 1;
+    });
+    return { attempted: true, updated: updated, missing: missing };
+  }
+
+  async function refreshChromeFolderUiAfterDesktopImport(summary, reason, bundleExportedAt) {
+    var cleanReason = cleanString(reason) || 'sync-folder-import';
+    var safeSummary = safeObject(summary);
+    var changedCount = numberOrZero(safeSummary.changedFolderCount);
+    var mode = changedCount ? 'targeted-folder-refresh' : 'no-folder-metadata-change';
+    var refreshError = '';
+    try {
+      if (H2O.Library && H2O.Library.FolderParity && typeof H2O.Library.FolderParity.getDisplayModel === 'function') {
+        await H2O.Library.FolderParity.getDisplayModel({
+          fresh: true,
+          reason: 'desktop-to-chrome-post-import-refresh:' + cleanReason,
+        });
+      }
+      if (changedCount && safeSummary.hasOnlyVisualUpdates === true) {
+        var targeted = applyTargetedFolderRowRefresh(safeSummary);
+        if (!targeted.attempted || targeted.missing > 0 || targeted.updated < changedCount) {
+          if (H2O.Library && H2O.Library.SidebarSections && typeof H2O.Library.SidebarSections.refresh === 'function') {
+            await H2O.Library.SidebarSections.refresh();
+            mode = 'sidebar-refresh';
+          } else {
+            global.dispatchEvent(new CustomEvent('evt:h2o:folders:changed', {
+              detail: { source: 'desktop-to-chrome-import', reason: cleanReason, t: Date.now() },
+            }));
+            mode = 'full-refresh-fallback';
+          }
+        } else {
+          mode = 'targeted-folder-refresh';
+        }
+      } else if (changedCount) {
+        if (H2O.Library && H2O.Library.SidebarSections && typeof H2O.Library.SidebarSections.refresh === 'function') {
+          await H2O.Library.SidebarSections.refresh();
+          mode = 'sidebar-refresh';
+        } else {
+          global.dispatchEvent(new CustomEvent('evt:h2o:folders:changed', {
+            detail: { source: 'desktop-to-chrome-import', reason: cleanReason, t: Date.now() },
+          }));
+          mode = 'full-refresh-fallback';
+        }
+      }
+    } catch (error) {
+      refreshError = String(error && (error.message || error));
+      pushError('desktop-to-chrome-post-import-refresh', error);
+      mode = mode === 'targeted-folder-refresh' ? 'targeted-folder-refresh-error' : mode;
+    }
+    state.lastDesktopToChromeRenderRefreshedAt = nowIso();
+    state.lastDesktopToChromeRefreshMode = mode;
+    state.lastDesktopToChromeChangedFolderCount = changedCount;
+    state.lastDesktopToChromeChangedFields = Array.isArray(safeSummary.changedFields) ? safeSummary.changedFields.slice() : [];
+    state.lastDesktopToChromeChangedFolderIds = Array.isArray(safeSummary.changedFolderIds) ? safeSummary.changedFolderIds.slice() : [];
+    state.lastDesktopToChromePostImportRefreshError = refreshError;
+    var exportedMs = parseTimeMs(bundleExportedAt);
+    var renderMs = parseTimeMs(state.lastDesktopToChromeRenderRefreshedAt);
+    state.lastDesktopToChromeTotalPropagationMs = exportedMs && renderMs ? Math.max(0, renderMs - exportedMs) : 0;
+    dispatchFolderMetadataChangedEvent(safeSummary, cleanReason, mode);
+    return {
+      mode: mode,
+      changedFolderCount: changedCount,
+      changedFields: state.lastDesktopToChromeChangedFields.slice(),
+      changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
+      renderRefreshedAt: state.lastDesktopToChromeRenderRefreshedAt,
+      totalPropagationMs: state.lastDesktopToChromeTotalPropagationMs,
+      error: refreshError,
+    };
+  }
+
   function importCounts(importResult, dryRun) {
     var chats = safeObject(importResult && importResult.chats);
     var planChats = safeObject(dryRun && dryRun.plan && dryRun.plan.chats);
@@ -1775,6 +2075,7 @@
       state.lastSyncError = '';
       await persistState({ connected: true, permission: permission });
       if (state.autoSyncEnabled) {
+        startDesktopLatestPoller('folder-connected');
         scheduleAutoSync('folder-connected').catch(function (autoError) { pushError('auto-sync.folder-connected', autoError); });
       }
       return {
@@ -1803,6 +2104,7 @@
 
   async function disconnectFolder() {
     clearAutoSyncTimer();
+    clearDesktopLatestPollTimer();
     try { await idbDelete(IDB_KEY); }
     catch (error) { pushError('disconnect-folder', error); }
     state.handle = null;
@@ -1832,6 +2134,7 @@
     state.lastAutoSyncStatus = 'auto-sync-enabled';
     state.lastAutoSyncError = '';
     bindAutoSyncEvents();
+    startDesktopLatestPoller('enable-auto-sync');
     await persistState({
       autoSyncEnabled: true,
       lastAutoSyncStatus: state.lastAutoSyncStatus,
@@ -1854,6 +2157,7 @@
 
   async function disableAutoSync() {
     clearAutoSyncTimer();
+    clearDesktopLatestPollTimer();
     state.autoSyncEnabled = false;
     state.lastAutoSyncStatus = 'auto-sync-disabled';
     state.lastAutoSyncError = '';
@@ -2035,7 +2339,7 @@
     }
     var nowMs = Date.now();
     var remaining = throttleRemainingMs(nowMs);
-    if (remaining > 0) {
+    if (remaining > 0 && !isFastDesktopLatestChangeReason(cleanReason)) {
       state.lastAutoSyncStatus = 'auto-sync-throttled';
       state.lastAutoSyncReason = cleanReason;
       await persistState({
@@ -2126,6 +2430,28 @@
       autoSyncRunning: !!state.autoSyncRunning,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       autoSyncDelayMs: AUTO_SYNC_DELAY_MS,
+      desktopLatestPollingEnabled: !!state.desktopLatestPollTimer,
+      desktopLatestPollIntervalMs: DESKTOP_LATEST_POLL_INTERVAL_MS,
+      desktopLatestPollRunning: !!state.desktopLatestPollRunning,
+      lastDesktopLatestPollAt: state.lastDesktopLatestPollAt,
+      lastDesktopLatestPollStatus: state.lastDesktopLatestPollStatus,
+      lastDesktopLatestPollError: state.lastDesktopLatestPollError,
+      lastDesktopLatestPollDetectedAt: state.lastDesktopLatestPollDetectedAt,
+      lastDesktopLatestPollFileLastModified: state.lastDesktopLatestPollFileLastModified,
+      lastDesktopLatestPollFileSize: state.lastDesktopLatestPollFileSize,
+      desktopToChromeLatency: {
+        desktopMutationAt: state.lastDesktopToChromeExportWrittenAt,
+        desktopExportWrittenAt: state.lastDesktopToChromeExportWrittenAt,
+        chromeImportStartedAt: state.lastDesktopToChromeImportStartedAt,
+        chromeImportAppliedAt: state.lastDesktopToChromeImportAppliedAt,
+        chromeRenderRefreshedAt: state.lastDesktopToChromeRenderRefreshedAt,
+        totalPropagationMs: state.lastDesktopToChromeTotalPropagationMs,
+        postImportRefreshMode: state.lastDesktopToChromeRefreshMode,
+        changedFolderCount: state.lastDesktopToChromeChangedFolderCount,
+        changedFields: state.lastDesktopToChromeChangedFields.slice(),
+        changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
+        postImportRefreshError: state.lastDesktopToChromePostImportRefreshError,
+      },
       lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
       lastAutoSyncAt: state.lastAutoSyncAt,
       lastAutoSyncReason: state.lastAutoSyncReason,
@@ -2617,6 +2943,16 @@
           status: 'sync-folder-latest-schema-unsupported',
         };
       }
+      var folderMetadataChangeSummary = await summarizeDesktopFolderMetadataChanges(bundle);
+      state.lastDesktopToChromeExportWrittenAt = cleanString(bundle.exportedAt || '');
+      state.lastDesktopToChromeImportStartedAt = nowIso();
+      state.lastDesktopToChromeImportAppliedAt = '';
+      state.lastDesktopToChromeRenderRefreshedAt = '';
+      state.lastDesktopToChromeTotalPropagationMs = 0;
+      state.lastDesktopToChromeRefreshMode = '';
+      state.lastDesktopToChromeChangedFolderCount = numberOrZero(folderMetadataChangeSummary.changedFolderCount);
+      state.lastDesktopToChromeChangedFields = Array.isArray(folderMetadataChangeSummary.changedFields) ? folderMetadataChangeSummary.changedFields.slice() : [];
+      state.lastDesktopToChromeChangedFolderIds = Array.isArray(folderMetadataChangeSummary.changedFolderIds) ? folderMetadataChangeSummary.changedFolderIds.slice() : [];
       var signature = summarySignature(bundle);
       if (opts.autoSync && checksum && state.lastChecksum && state.lastChecksum === checksum) {
         var alreadyNormalized = buildDesktopChromeSupportedBundle(bundle);
@@ -2769,7 +3105,8 @@
         conflictDecision: transportApproval.conflictDecision,
         conflictApproved: transportApproval.conflictApproved,
         approvedConflictBlockers: transportApproval.approvedBlockers,
-        autoFolderMetadataConflictAnalysis: transportApproval.autoFolderMetadataConflictAnalysis || null
+        autoFolderMetadataConflictAnalysis: transportApproval.autoFolderMetadataConflictAnalysis || null,
+        folderMetadataChangeSummary: folderMetadataChangeSummary
       });
       if (opts.dryRunOnly) {
         state.lastSyncStatus = 'sync-folder-dry-run-ok';
@@ -2800,11 +3137,14 @@
           detail: { source: 'sync-folder-import', result: propagation },
         }));
       } catch (_) { /* ignore */ }
-      try {
-        global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
-          detail: { source: 'sync-folder-import', t: Date.now() },
-        }));
-      } catch (_) { /* ignore */ }
+      var refreshMode = cleanString(propagation && propagation.postImportRefresh && propagation.postImportRefresh.mode);
+      if (refreshMode !== 'targeted-folder-refresh') {
+        try {
+          global.dispatchEvent(new CustomEvent('evt:h2o:library:cross-surface-sync', {
+            detail: { source: 'sync-folder-import', refreshMode: refreshMode, t: Date.now() },
+          }));
+        } catch (_) { /* ignore */ }
+      }
 
       var importSummary = safeObject(propagation && propagation.importSummary);
       var dryRunSummary = safeObject(importSummary.dryRun);
@@ -2814,6 +3154,7 @@
       state.lastAppliedExportId = cleanString(bundle.exportId || '');
       state.lastAppliedExportedAt = cleanString(bundle.exportedAt || '');
       state.lastAppliedAt = nowIso();
+      state.lastDesktopToChromeImportAppliedAt = state.lastAppliedAt;
       state.lastChecksum = checksum || cleanString(bundle.checksum);
       state.lastSummarySignature = signature;
       state.lastSyncStatus = propagation && propagation.ok ? 'sync-folder-imported' : 'sync-folder-import-blocked';
@@ -2854,6 +3195,7 @@
         sourceSummary: propagation && propagation.sourceSummary,
         importSummary: propagation && propagation.importSummary,
         convergence: propagation && propagation.convergence,
+        postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,
         conflictApproved: propagation && propagation.conflictApproved,
         conflictApproval: propagation && propagation.conflictApproval,
@@ -2948,6 +3290,23 @@
         lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
         lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
         lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        desktopLatestPollingEnabled: !!state.desktopLatestPollTimer,
+        desktopLatestPollIntervalMs: DESKTOP_LATEST_POLL_INTERVAL_MS,
+        lastDesktopLatestPollStatus: state.lastDesktopLatestPollStatus,
+        lastDesktopLatestPollDetectedAt: state.lastDesktopLatestPollDetectedAt,
+        latency: {
+          desktopMutationAt: state.lastDesktopToChromeExportWrittenAt,
+          desktopExportWrittenAt: state.lastDesktopToChromeExportWrittenAt,
+          chromeImportStartedAt: state.lastDesktopToChromeImportStartedAt,
+          chromeImportAppliedAt: state.lastDesktopToChromeImportAppliedAt,
+          chromeRenderRefreshedAt: state.lastDesktopToChromeRenderRefreshedAt,
+          totalPropagationMs: state.lastDesktopToChromeTotalPropagationMs,
+          postImportRefreshMode: state.lastDesktopToChromeRefreshMode,
+          changedFolderCount: state.lastDesktopToChromeChangedFolderCount,
+          changedFields: state.lastDesktopToChromeChangedFields.slice(),
+          changedFolderIds: state.lastDesktopToChromeChangedFolderIds.slice(),
+          postImportRefreshError: state.lastDesktopToChromePostImportRefreshError,
+        },
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,
@@ -2977,6 +3336,10 @@
         lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
         lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
         lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        desktopLatestPollingEnabled: !!state.desktopLatestPollTimer,
+        desktopLatestPollIntervalMs: DESKTOP_LATEST_POLL_INTERVAL_MS,
+        lastDesktopLatestPollStatus: state.lastDesktopLatestPollStatus,
+        postImportRefreshMode: state.lastDesktopToChromeRefreshMode,
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,
@@ -2991,7 +3354,7 @@
         schedulerNotFired: !state.autoSyncScheduledAt && !state.lastAutoSyncAttemptAt,
         noFolderHandle: !state.handle,
       },
-      automaticPolling: false,
+      automaticPolling: !!state.desktopLatestPollTimer,
       focusTriggerEnabled: !!state.autoSyncEnabled,
       visibilityTriggerEnabled: !!state.autoSyncEnabled,
       bootReadyTriggerEnabled: !!state.autoSyncEnabled,
@@ -3033,6 +3396,7 @@
     if (!state.autoSyncEnabled) return;
     bindAutoSyncEvents();
     if (!state.handle) return;
+    startDesktopLatestPoller('studio-boot-ready');
     global.setTimeout(function () {
       scheduleAutoSync('studio-boot-ready').catch(function (error) {
         pushError('auto-sync.boot-ready', error);

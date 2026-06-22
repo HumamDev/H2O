@@ -932,10 +932,14 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'desktopAutoImport', 'Desktop auto-import diagnostic object');
   assertContains(folderSyncFile, 'refreshDesktopFolderUiAfterChromeImport', 'Desktop auto-import triggers post-import folder UI refresh');
   assertContains(folderSyncFile, 'evt:h2o:folders:changed', 'Desktop post-import refresh emits folder change event');
-  assertContains(folderSyncFile, 'evt:h2o:library:cross-surface-sync', 'Desktop post-import refresh emits cross-surface sync event');
+  assertContains(folderSyncFile, 'evt:h2o:folder-metadata:changed', 'Desktop post-import refresh emits targeted folder metadata event');
   assertContains(folderSyncFile, 'H2O.Library.FolderParity.getDisplayModel', 'Desktop post-import refresh invalidates FolderParity display model');
   assertContains(folderSyncFile, 'H2O.Library.SidebarSections.refresh', 'Desktop post-import refresh directly rerenders sidebar when loaded');
   assertContains(folderSyncFile, 'postImportRefreshStatus', 'Desktop diagnostics expose post-import refresh status');
+  assertContains(folderSyncFile, 'lastPostImportRefreshMode', 'Desktop diagnostics expose post-import refresh mode');
+  assertContains(folderSyncFile, 'applyTargetedDesktopFolderRows', 'Desktop post-import refresh can update existing folder rows without full sidebar reload');
+  assertContains(folderSyncFile, 'targeted-folder-refresh', 'Desktop refreshed folder metadata uses targeted refresh mode');
+  assertContains(folderSyncFile, 'full-refresh-fallback', 'Desktop diagnostics classify full refresh fallback');
   assertContains(folderSyncFile, 'desktop-auto-import-post-import-refresh', 'Desktop post-import refresh reason marker');
   assertContains(folderSyncFile, 'phase3-legacy-manual-to-auto', 'Desktop legacy manual watcher config migrates to Phase 3 auto-import');
   assertContains(folderSyncFile, 'PHASE3_AUTO_IMPORT_CONFIG_VERSION', 'Desktop auto-import config migration marker');

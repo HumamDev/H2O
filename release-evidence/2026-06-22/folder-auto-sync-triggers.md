@@ -273,3 +273,104 @@ Passed:
 - Live manual runtime retest still needs to be run after rebuilding/reloading assets.
 - Delete/tombstone lifecycle remains deferred to Phase 4. This repair still does not propagate destructive folder deletes.
 - Chrome automatic export still depends on an existing File System Access folder handle and write grant; missing grant remains `permission-required`.
+
+## Phase 3d Desktop-to-Chrome Latency and Targeted Refresh
+
+### Live Failure Summary
+
+Runtime testing after `30d9481` showed Chrome -> Desktop was mostly good, but Desktop -> Chrome and Desktop refresh UX still had gaps:
+
+- Desktop color -> Chrome could take more than 60 seconds or require a Chrome Studio refresh.
+- Desktop rename -> Chrome eventually appeared, but with too much delay.
+- Desktop create -> Chrome was fast, which pointed to a refreshed-metadata path problem rather than a total export failure.
+- Desktop Studio visibly flickered after Chrome-origin import because the post-import refresh path was too broad.
+
+### Phase 3d Root Cause
+
+- Chrome Desktop-import auto-sync had `AUTO_SYNC_MIN_INTERVAL_MS = 30000` and only boot/focus/visibility triggers. Repeated Desktop-origin color/rename tests could sit behind that throttle until focus, visibility, or manual refresh.
+- Desktop direct rename patched only `name`; unlike create/color it did not stamp fresh folder metadata `updatedAt`, so exported rename rows could look stale compared with Chrome local folder-state metadata.
+- Desktop-origin color/rename imports updated Chrome storage, but the UI refresh path did not distinguish refreshed folder metadata from newly created folder metadata. Existing rows needed a targeted row update; create still needs a section refresh to insert a new row.
+- The Phase 3c Desktop post-import helper dispatched broad cache-bust/index/folders/cross-surface/workspace events and then directly refreshed sidebar sections. That made Chrome-origin imports visually flicker in Desktop even when only an existing folder color/name changed.
+
+### Phase 3d Files Changed
+
+- `src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js`
+- `src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `src-surfaces-base/studio/sync/folder-sync.tauri.js`
+- `tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `release-evidence/2026-06-22/folder-auto-sync-triggers.md`
+
+### Phase 3d Implementation Notes
+
+- Desktop rename now stamps fresh folder metadata:
+  - `meta.name`
+  - `meta.updatedAt`
+  - `meta.source`
+  - `meta.sourceKind`
+- Chrome now starts a visible, permission-gated `latest.json` metadata poller when auto-sync is enabled and a sync folder handle exists.
+- The poller checks `latest.json` `lastModified/size` every 5 seconds and schedules import only when file metadata changes.
+- File-change-triggered Desktop imports bypass the generic 30 second auto-sync throttle; focus/visibility triggers still keep the existing throttle.
+- Chrome Desktop-import now records latency diagnostics:
+  - `desktopMutationAt`
+  - `desktopExportWrittenAt`
+  - `chromeImportStartedAt`
+  - `chromeImportAppliedAt`
+  - `chromeRenderRefreshedAt`
+  - `totalPropagationMs`
+  - `postImportRefreshMode`
+  - changed folder count/fields/ids
+- Chrome post-import folder refresh now uses:
+  - `targeted-folder-refresh` for existing row color/name updates,
+  - `sidebar-refresh` when a create/import needs a new row inserted,
+  - `full-refresh-fallback` only when the sidebar API is unavailable.
+- Desktop Chrome-origin post-import refresh now uses:
+  - targeted existing-row update from a fresh FolderParity display model for refreshed folder metadata,
+  - sidebar refresh only when created folders need insertion,
+  - targeted `evt:h2o:folder-metadata:changed` diagnostics instead of broad workspace/cross-surface refresh events for refreshed-only metadata.
+
+### Phase 3d Validation
+
+Passed:
+
+- `node --check "src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js"`
+- `node --check src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `node --check src-surfaces-base/studio/sync/folder-sync.tauri.js`
+- `node --check tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node --check tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-desktop-chrome-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-propagation.mjs`
+- `node tools/validation/sync/validate-f19-chrome-desktop-library-parity.mjs`
+- `node tools/validation/sync/validate-f19-sync-hardening.mjs`
+- `node tools/validation/studio/validate-studio-library-organization-ui.mjs`
+- `node tools/validation/sync/validate-f19-shell-row-ux.mjs`
+
+- `git diff --check`
+- `git diff --cached --check`
+
+### Phase 3d Manual Runtime Retest Matrix
+
+1. Rebuild/reload assets:
+   - `npm run dev:all`
+   - `node apps/studio/desktop/build-tools/prepare-dist.mjs`
+2. Desktop color -> Chrome visible update within 5-15 seconds, no Chrome manual refresh.
+3. Desktop rename -> Chrome visible update within 5-15 seconds, no Chrome manual refresh.
+4. Desktop create -> Chrome remains within 5-15 seconds.
+5. Chrome color -> Desktop remains within 5-15 seconds, no Desktop manual reload.
+6. Chrome create -> Desktop remains within 5-15 seconds, no Desktop manual reload.
+7. Chrome rename -> Desktop remains within 5-15 seconds, no Desktop manual reload.
+8. Desktop no longer visibly full-window flickers after Chrome-origin import.
+9. Confirm diagnostics:
+   - Chrome: `H2O.Studio.sync.folder.diagnose().desktopToChrome.latency`
+   - Chrome: `H2O.Studio.sync.folder.diagnose().desktopToChrome.desktopLatestPollingEnabled`
+   - Desktop: `H2O.Studio.sync.folder.diagnose().desktopAutoImport.postImportRefresh.mode`
+10. Confirm no repeated export/import loop:
+    - Chrome poll status reports `unchanged` when `latest.json` metadata is stable.
+    - Duplicate imports report idempotent/already-applied status rather than repeated writes.
+11. Confirm delete/tombstone remains deferred.
+
+### Phase 3d Remaining Limitations
+
+- Live manual runtime retest still needs to be run after rebuilding/reloading assets.
+- Delete/tombstone lifecycle remains deferred to Phase 4. This repair still does not propagate destructive folder deletes.
+- Chrome automatic Desktop import still depends on an existing File System Access folder handle and read grant; missing grant remains permission/reconnect required.

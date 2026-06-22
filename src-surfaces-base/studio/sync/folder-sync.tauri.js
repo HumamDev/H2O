@@ -155,6 +155,8 @@
     lastPostImportRefreshError:    '',
     lastPostImportRefreshReason:   '',
     lastPostImportRefreshEvents:   [],
+    lastPostImportRefreshMode:     '',
+    lastPostImportRefreshChangedFolderCount: 0,
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -1751,6 +1753,110 @@
     }
   }
 
+  function folderRefreshCountsFromResult(result) {
+    var importSummary = result && result.importSummary && typeof result.importSummary === 'object'
+      ? result.importSummary
+      : {};
+    var freshness = importSummary.folderMetadataFreshness && typeof importSummary.folderMetadataFreshness === 'object'
+      ? importSummary.folderMetadataFreshness
+      : {};
+    var created = Number(freshness.created || 0) || 0;
+    var refreshed = Number(freshness.refreshed || 0) || 0;
+    return {
+      created: created,
+      refreshed: refreshed,
+      changedFolderCount: created + refreshed,
+    };
+  }
+
+  function folderDisplayRowsFromModel(model) {
+    var out = [];
+    if (!model || typeof model !== 'object') return out;
+    [
+      model.canonicalRows,
+      model.folderDisplayRows,
+      model.rows,
+      model.folders,
+    ].forEach(function (list) {
+      if (!Array.isArray(list)) return;
+      list.forEach(function (row) {
+        if (row && typeof row === 'object') out.push(row);
+      });
+    });
+    return out;
+  }
+
+  function folderRowId(row) {
+    return String(row && (row.folderId || row.id || row.folder_id) || '').trim();
+  }
+
+  function folderRowName(row) {
+    return String(row && (row.name || row.title || row.label) || '').trim().replace(/\s+/g, ' ');
+  }
+
+  function folderRowColor(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
+    var color = String(row && (row.iconColor || row.color) || meta.iconColor || meta.color || '').trim();
+    return /^#[0-9a-f]{6}$/i.test(color) ? color.toUpperCase() : '';
+  }
+
+  function updateDesktopFolderRowNode(node, row) {
+    if (!node || !row) return false;
+    var folderId = folderRowId(row);
+    var name = folderRowName(row);
+    var color = folderRowColor(row);
+    if (!folderId) return false;
+    if (name) {
+      try {
+        node.setAttribute('data-h2o-folder-name', name);
+        node.setAttribute('data-h2o-folder-normalized-name', name.toLowerCase());
+        node.setAttribute('title', name);
+        node.setAttribute('aria-label', name);
+        var label = node.querySelector && node.querySelector('.wbSidebarSectionItemLabel');
+        if (label) {
+          if (label.children && label.children.length) label.children[0].textContent = name;
+          else label.textContent = name;
+        }
+      } catch (_) { /* best effort */ }
+    }
+    try {
+      if (color) {
+        node.setAttribute('data-color', color);
+        node.setAttribute('data-h2o-folder-color', color);
+        node.style.setProperty('--wb-sidebar-item-color', color);
+      } else {
+        node.removeAttribute('data-color');
+        node.removeAttribute('data-h2o-folder-color');
+        node.style.removeProperty('--wb-sidebar-item-color');
+      }
+    } catch (_) { /* best effort */ }
+    return true;
+  }
+
+  function applyTargetedDesktopFolderRows(model) {
+    var doc = global.document;
+    if (!doc || !doc.querySelectorAll) return { attempted: false, updated: 0 };
+    var rows = folderDisplayRowsFromModel(model);
+    var byId = Object.create(null);
+    rows.forEach(function (row) {
+      var id = folderRowId(row);
+      if (id) byId[id] = row;
+    });
+    var updated = 0;
+    var nodes = doc.querySelectorAll('[data-h2o-folder-sidebar-row="1"], .wbSidebarSectionItem--folders[data-section="folders"], .wbFolderItem[data-folder-id]');
+    nodes.forEach(function (node) {
+      var id = String(
+        node.getAttribute('data-h2o-folder-id') ||
+        node.getAttribute('data-folder-id') ||
+        node.getAttribute('data-id') ||
+        ''
+      ).trim();
+      if (!id || !byId[id]) return;
+      if (updateDesktopFolderRowNode(node, byId[id])) updated += 1;
+    });
+    return { attempted: true, updated: updated };
+  }
+
   async function refreshDesktopFolderUiAfterChromeImport(result, reason) {
     var cleanReason = String(reason || 'desktop-auto-import').trim() || 'desktop-auto-import';
     var at = new Date().toISOString();
@@ -1768,31 +1874,29 @@
     };
     var events = [];
     var errors = [];
+    var counts = folderRefreshCountsFromResult(result);
+    var refreshMode = counts.changedFolderCount > 0 && counts.created === 0
+      ? 'targeted-folder-refresh'
+      : (counts.created > 0 ? 'sidebar-refresh' : 'no-folder-metadata-change');
+    var displayModel = null;
     state.lastPostImportRefreshAt = at;
     state.lastPostImportRefreshReason = cleanReason;
     state.lastPostImportRefreshStatus = 'refresh-pending';
     state.lastPostImportRefreshError = '';
     state.lastPostImportRefreshEvents = [];
+    state.lastPostImportRefreshMode = refreshMode;
+    state.lastPostImportRefreshChangedFolderCount = counts.changedFolderCount;
 
-    dispatchPostImportRefreshEvent('evt:h2o:library-workspace:cache-bust', detail, events, errors);
-    dispatchPostImportRefreshEvent('evt:h2o:library-index:refresh-request', detail, events, errors);
-    dispatchPostImportRefreshEvent('evt:h2o:folders:changed', detail, events, errors);
-    dispatchPostImportRefreshEvent('evt:h2o:library:cross-surface-sync', detail, events, errors);
-    dispatchPostImportRefreshEvent('evt:h2o:library-workspace:updated', detail, events, errors);
-
-    try {
-      if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
-        await H2O.LibraryIndex.refresh('desktop-auto-import:' + cleanReason);
-        events.push('H2O.LibraryIndex.refresh');
-      }
-    } catch (e) {
-      errors.push('LibraryIndex.refresh:' + String((e && e.message) || e));
-      pushErr('postImportRefresh.libraryIndex.refresh', e);
-    }
+    dispatchPostImportRefreshEvent('evt:h2o:folder-metadata:changed', Object.assign({}, detail, {
+      refreshMode: refreshMode,
+      changedFolderCount: counts.changedFolderCount,
+      createdFolderCount: counts.created,
+      refreshedFolderCount: counts.refreshed,
+    }), events, errors);
 
     try {
       if (H2O.Library && H2O.Library.FolderParity && typeof H2O.Library.FolderParity.getDisplayModel === 'function') {
-        await H2O.Library.FolderParity.getDisplayModel({
+        displayModel = await H2O.Library.FolderParity.getDisplayModel({
           fresh: true,
           reason: 'desktop-auto-import-post-import-refresh:' + cleanReason,
         });
@@ -1803,14 +1907,39 @@
       pushErr('postImportRefresh.folderParity.getDisplayModel', e);
     }
 
-    try {
-      if (H2O.Library && H2O.Library.SidebarSections && typeof H2O.Library.SidebarSections.refresh === 'function') {
-        await H2O.Library.SidebarSections.refresh();
-        events.push('H2O.Library.SidebarSections.refresh');
+    if (refreshMode === 'targeted-folder-refresh') {
+      try {
+        var targeted = applyTargetedDesktopFolderRows(displayModel);
+        events.push('targeted-folder-refresh:' + String(targeted.updated || 0));
+        if (!targeted.attempted || targeted.updated === 0) {
+          refreshMode = 'sidebar-refresh';
+          state.lastPostImportRefreshMode = refreshMode;
+        }
+      } catch (e) {
+        errors.push('targeted-folder-refresh:' + String((e && e.message) || e));
+        pushErr('postImportRefresh.targetedFolderRows', e);
+        refreshMode = 'sidebar-refresh';
+        state.lastPostImportRefreshMode = refreshMode;
       }
-    } catch (e) {
-      errors.push('SidebarSections.refresh:' + String((e && e.message) || e));
-      pushErr('postImportRefresh.sidebarSections.refresh', e);
+    }
+
+    if (refreshMode === 'sidebar-refresh') {
+      try {
+        if (H2O.Library && H2O.Library.SidebarSections && typeof H2O.Library.SidebarSections.refresh === 'function') {
+          await H2O.Library.SidebarSections.refresh();
+          events.push('H2O.Library.SidebarSections.refresh');
+        } else {
+          dispatchPostImportRefreshEvent('evt:h2o:folders:changed', Object.assign({}, detail, {
+            refreshMode: 'full-refresh-fallback',
+            changedFolderCount: counts.changedFolderCount,
+          }), events, errors);
+          refreshMode = 'full-refresh-fallback';
+          state.lastPostImportRefreshMode = refreshMode;
+        }
+      } catch (e) {
+        errors.push('SidebarSections.refresh:' + String((e && e.message) || e));
+        pushErr('postImportRefresh.sidebarSections.refresh', e);
+      }
     }
 
     state.lastPostImportRefreshAt = new Date().toISOString();
@@ -1822,6 +1951,8 @@
     return {
       status: state.lastPostImportRefreshStatus,
       at: state.lastPostImportRefreshAt,
+      mode: state.lastPostImportRefreshMode,
+      changedFolderCount: state.lastPostImportRefreshChangedFolderCount,
       events: state.lastPostImportRefreshEvents.slice(),
       error: state.lastPostImportRefreshError,
     };
@@ -2166,6 +2297,8 @@
         lastPostImportRefreshStatus: state.lastPostImportRefreshStatus,
         lastPostImportRefreshError: state.lastPostImportRefreshError,
         lastPostImportRefreshReason: state.lastPostImportRefreshReason,
+        lastPostImportRefreshMode: state.lastPostImportRefreshMode,
+        lastPostImportRefreshChangedFolderCount: state.lastPostImportRefreshChangedFolderCount,
         lastPostImportRefreshEvents: state.lastPostImportRefreshEvents.slice(),
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
@@ -2235,6 +2368,8 @@
         postImportRefreshStatus: state.lastPostImportRefreshStatus,
         postImportRefreshAt: state.lastPostImportRefreshAt,
         postImportRefreshError: state.lastPostImportRefreshError,
+        postImportRefreshMode: state.lastPostImportRefreshMode,
+        postImportRefreshChangedFolderCount: state.lastPostImportRefreshChangedFolderCount,
         watcherRunning: watcherState.running,
         watcherMode: watcherState.mode,
         pendingActions: watcherState.pending.length,
@@ -2257,6 +2392,8 @@
           status: state.lastPostImportRefreshStatus,
           at: state.lastPostImportRefreshAt,
           reason: state.lastPostImportRefreshReason,
+          mode: state.lastPostImportRefreshMode,
+          changedFolderCount: state.lastPostImportRefreshChangedFolderCount,
           error: state.lastPostImportRefreshError,
           events: state.lastPostImportRefreshEvents.slice(),
         },

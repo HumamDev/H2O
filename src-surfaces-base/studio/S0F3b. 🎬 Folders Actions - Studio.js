@@ -502,7 +502,16 @@
         recordWrite('rename', false);
         return baseResult('rename', 'not-found', { folderId: folderId });
       }
-      var row = await store.patch(folderId, { name: newName });
+      var renamedAt = nowIso();
+      var row = await store.patch(folderId, {
+        name: newName,
+        meta: Object.assign({}, safeMeta(existing.meta), {
+          name: newName,
+          updatedAt: renamedAt,
+          source: cleanString(existing.source || safeMeta(existing.meta).source || 'desktop-sqlite'),
+          sourceKind: cleanString(existing.sourceKind || existing.kind || safeMeta(existing.meta).sourceKind || safeMeta(existing.meta).kind || 'desktop-sqlite'),
+        }),
+      });
       recordWrite('rename', true);
       dispatchRefresh('rename');
       scheduleDesktopLatestExport('rename', folderId);

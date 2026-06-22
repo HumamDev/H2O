@@ -640,6 +640,8 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'desktopWritesLatestJson: true', 'Desktop folder facade latest.json write marker');
   assertContains(folderActionsFile, 'scheduleDesktopLatestExport', 'folder metadata action auto-export scheduling hook');
   assertContains(folderActionsFile, "scheduleDesktopLatestExport('update', folderId)", 'folder color/update schedules Desktop latest.json export');
+  assertContains(folderActionsFile, "updatedAt: renamedAt", 'Desktop rename stamps fresh folder metadata updatedAt');
+  assertContains(folderActionsFile, "scheduleDesktopLatestExport('rename', folderId)", 'folder rename schedules Desktop latest.json export');
   assertContains(sidebarSectionsFile, 'scheduleDesktopFolderEditorAutoExport', 'Desktop sidebar folder editor schedules latest.json export after confirmed mutation');
   assertContains(sidebarSectionsFile, 'folder-metadata:desktop-sidebar-', 'Desktop sidebar folder editor uses folder-metadata auto-export lane');
   assertContains(librarySyncFile, 'requestDesktopFolderMetadataOperation', 'Desktop folder metadata operation bridge');
@@ -677,6 +679,12 @@ if (failures.length === 0) {
   assertContains(sidebarSectionsFile, 'buildFolderMutationTargetSnapshot', 'Sidebar passes visible folder target provenance');
   assertContains(sidebarSectionsFile, 'display-color-not-confirmed', 'Sidebar gates color success on display confirmation');
   assertContains(sidebarSectionsFile, 'data-h2o-folder-source-kind', 'Sidebar renders folder source-kind provenance');
+  assertContains(folderImportFile, 'DESKTOP_LATEST_POLL_INTERVAL_MS = 5000', 'Chrome polls connected latest.json for Desktop-origin changes');
+  assertContains(folderImportFile, 'desktop-latest-poll-changed', 'Chrome Desktop latest poll schedules fast import on file change');
+  assertContains(folderImportFile, 'isFastDesktopLatestChangeReason', 'Desktop latest file changes bypass generic 30s auto-sync throttle');
+  assertContains(folderImportFile, 'refreshChromeFolderUiAfterDesktopImport', 'Chrome imports refresh folder UI after Desktop-origin metadata changes');
+  assertContains(folderImportFile, 'targeted-folder-refresh', 'Chrome uses targeted folder row refresh for color/name imports');
+  assertContains(folderImportFile, 'desktopToChromeLatency', 'Chrome diagnostics expose Desktop-to-Chrome propagation latency trace');
   assertContains(chromeLiveBackgroundFile, 'function folderCatalogRowTimestampMs', 'Chrome folder row timestamp helper');
   assertContains(chromeLiveBackgroundFile, 'function mergeFolderCatalogRowByFreshness', 'Chrome folder metadata freshness merge');
   assertContains(chromeLiveBackgroundFile, 'function folderStateMetadataMergeStats', 'Chrome folder metadata merge stats');
