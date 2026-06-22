@@ -2545,11 +2545,23 @@
     var watcherRaw = safeObject(raw.watcher);
     var postImportRefresh = safeObject(desktopAutoImportRaw.postImportRefresh);
     var autoExportRaw = {};
+    var foldersStoreDiag = {};
+    var tombstoneStoreAvailable = false;
     try {
       var autoExport = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport;
       autoExportRaw = autoExport && typeof autoExport.diagnose === 'function' ? safeObject(autoExport.diagnose()) : {};
     } catch (_) {
       autoExportRaw = {};
+    }
+    try {
+      var stores = H2O.Studio && H2O.Studio.store;
+      var folderStore = stores && stores.folders;
+      var tombstoneStore = stores && stores.tombstones;
+      tombstoneStoreAvailable = !!(tombstoneStore && typeof tombstoneStore.createTombstone === 'function');
+      foldersStoreDiag = folderStore && typeof folderStore.diagnose === 'function' ? safeObject(folderStore.diagnose()) : {};
+    } catch (_) {
+      foldersStoreDiag = {};
+      tombstoneStoreAvailable = false;
     }
     var autoExportDtc = safeObject(autoExportRaw.desktopToChrome);
     var blockers = [];
@@ -2646,6 +2658,19 @@
         loopSuppressed: 0,
         duplicateSuppressed: 0,
         selfOriginSkipped: 0
+      },
+      tombstoneLocalDelete: {
+        phase: 'desktop-local-soft-delete',
+        tombstoneStoreAvailable: tombstoneStoreAvailable,
+        activeTombstoneCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).activeTombstoneCount),
+        restoreAvailableCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).restoreAvailableCount),
+        purgeBlocked: true,
+        hardDeleteBlocked: true,
+        chatDeleteBlocked: true,
+        chromeDeleteSync: 'deferred',
+        tombstoneSync: 'deferred',
+        lastOperation: cleanString(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastOperation),
+        lastStatus: cleanString(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastStatus)
       },
       watcher: {
         running: !!watcherRaw.running,

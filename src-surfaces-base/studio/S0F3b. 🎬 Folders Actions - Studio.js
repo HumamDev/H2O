@@ -8,7 +8,8 @@
  *   create({name, parentId, color, iconColor, source, meta}),
  *   rename(folderId, newName),
  *   update(folderId, patch),    // name/parentId/color/iconColor/meta passthrough
- *   remove(folderId),            // also exposed as `delete`
+ *   remove(folderId),            // Desktop Phase 4A soft delete; also exposed as `delete`
+ *   restore(folderIdOrTombstoneId),
  *   bindChat(chatId, folderId),
  *   unbindChat(chatId),          // single-folder-per-chat — no folderId needed
  *   getForChat(chatId),          // returns the single folder row or null
@@ -76,7 +77,9 @@
  *   - unbindChat signature: store.unbindChat(folderId, chatId) — we
  *     wrap a `unbindChat(chatId)` that first calls listForChat to find
  *     the current folder (V1: at most 1), then unbinds it.
- *   - remove cascades binding cleanup via store.folders.remove.
+ *   - remove/delete routes through store.folders.softDeleteEmptyFolder
+ *     for Desktop Phase 4A. The lower-level store.folders.remove hard
+ *     primitive remains available but is not used by this action API.
  *
  * Contract: src-surfaces-base/studio/STUDIO_STORAGE_CONTRACT.md
  *           docs/architecture/library-migration-plan.md (Phase 3)
@@ -605,8 +608,10 @@
   }
 
   /* ── remove(folderId) ────────────────────────────────────────────── */
-  /* store.folders.remove deletes folder_bindings rows referencing this
-   * folder before deleting the folders row. Cascade is handled. */
+  /* Phase 4A: action-level delete is Desktop-local empty-folder soft
+   * tombstone only. It does not call store.folders.remove(), does not
+   * delete folder rows, does not delete chats, and does not schedule
+   * Desktop→Chrome tombstone/delete propagation. */
   async function remove(folderIdInput) {
     var folderId = cleanString(folderIdInput);
     if (!folderId) {
@@ -614,27 +619,66 @@
       return baseResult('remove', 'folder-id-required', { reason: 'folderId is required' });
     }
     var store = getStore();
-    if (!store || typeof store.remove !== 'function') {
+    if (!store || typeof store.softDeleteEmptyFolder !== 'function') {
       recordWrite('remove', false);
       return baseResult('remove', 'store-unavailable', { folderId: folderId });
     }
     try {
-      var existing = await store.get(folderId);
-      if (!existing) {
-        recordWrite('remove', false);
-        return baseResult('remove', 'not-found', { folderId: folderId });
-      }
-      var ok = await store.remove(folderId);
-      recordWrite('remove', !!ok);
-      if (ok) dispatchRefresh('remove');
-      return baseResult('remove', ok ? 'ok' : 'not-removed', {
-        ok: !!ok,
+      var result = await store.softDeleteEmptyFolder(folderId, {
+        deleteReason: 'desktop-action-empty-folder-soft-delete',
+      });
+      var ok = !!(result && result.ok);
+      recordWrite('remove', ok);
+      if (ok) dispatchRefresh('soft-delete');
+      return baseResult('remove', ok ? 'ok' : cleanString(result && result.status) || 'not-removed', {
+        ok: ok,
         folderId: folderId,
+        tombstoneId: result && result.tombstoneId,
+        blockers: Array.isArray(result && result.blockers) ? result.blockers.slice() : [],
+        noHardDelete: true,
+        noChatDelete: true,
+        crossPlatformSync: 'deferred',
+        result: result,
       });
     } catch (e) {
       pushError('remove', e);
       recordWrite('remove', false);
       return baseResult('remove', 'error', { folderId: folderId, reason: String((e && e.message) || e) });
+    }
+  }
+
+  /* ── restore(folderIdOrTombstoneId) ──────────────────────────────── */
+  async function restore(folderOrTombstoneInput) {
+    var target = cleanString(folderOrTombstoneInput && (folderOrTombstoneInput.tombstoneId || folderOrTombstoneInput.folderId || folderOrTombstoneInput.id || folderOrTombstoneInput));
+    if (!target) {
+      recordWrite('restore', false);
+      return baseResult('restore', 'folder-id-required', { reason: 'folderId or tombstoneId is required' });
+    }
+    var store = getStore();
+    if (!store || typeof store.restoreTombstonedFolder !== 'function') {
+      recordWrite('restore', false);
+      return baseResult('restore', 'store-unavailable', { target: target });
+    }
+    try {
+      var result = await store.restoreTombstonedFolder(target);
+      var ok = !!(result && result.ok);
+      recordWrite('restore', ok);
+      if (ok) dispatchRefresh('restore');
+      return baseResult('restore', ok ? 'ok' : cleanString(result && result.status) || 'not-restored', {
+        ok: ok,
+        target: target,
+        folderId: result && result.folderId,
+        tombstoneId: result && result.tombstoneId,
+        blockers: Array.isArray(result && result.blockers) ? result.blockers.slice() : [],
+        noHardDelete: true,
+        noChatDelete: true,
+        crossPlatformSync: 'deferred',
+        result: result,
+      });
+    } catch (e) {
+      pushError('restore', e);
+      recordWrite('restore', false);
+      return baseResult('restore', 'error', { target: target, reason: String((e && e.message) || e) });
     }
   }
 
@@ -838,6 +882,8 @@
     update:     update,
     remove:     remove,
     'delete':   remove,   /* alias */
+    restore:    restore,
+    restoreTombstonedFolder: restore,
     bindChat:   bindChat,
     unbindChat: unbindChat,
     getForChat: getForChat,

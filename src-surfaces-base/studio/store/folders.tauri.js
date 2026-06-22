@@ -14,13 +14,14 @@
  *
  * Contract: matches surfaces/studio/store/chats.tauri.js's standard surface
  *   plus folder-specific methods (get / create / upsert / patch / remove
- *   / bindChat / unbindChat / listChats / listForChat / count).
+ *   / softDeleteEmptyFolder / restoreTombstonedFolder / bindChat /
+ *   unbindChat / listChats / listForChat / count).
  *
  * Persistence: writes hit SQLite immediately. tauri-plugin-sql v2 has no
  * exposed transaction wrapper, so multi-statement writes are sequential.
- * remove() deletes bindings before the folder row; on partial failure the
- * folder row remains and a retry converges. bindChat uses INSERT OR REPLACE
- * so the existing single-folder-per-chat binding is replaced atomically.
+ * Phase 4A routes public remove/delete through softDeleteEmptyFolder().
+ * bindChat uses INSERT OR REPLACE so the existing single-folder-per-chat
+ * binding is replaced atomically.
  *
  * Subscribers are in-process only — single-window V1.
  *
@@ -69,6 +70,21 @@
   var F16_FOLDER_LEGACY_FALLBACK_VERSION = '0.1.0-f16.4.b';
   var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_GUARDED = true;
   var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFAULT_ENABLED = false;
+  var PHASE4A_FOLDER_SOFT_DELETE_ENABLED = true;
+  var PHASE4A_FOLDER_SOFT_DELETE_PHASE = 'desktop-local-soft-delete';
+  var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var RESERVED_FOLDER_NAME_KEYS = {
+    all: true,
+    archive: true,
+    archived: true,
+    link: true,
+    linked: true,
+    links: true,
+    recent: true,
+    recents: true,
+    saved: true,
+    unfiled: true,
+  };
 
   /* ── State ────────────────────────────────────────────────────────── */
   var state = {
@@ -82,6 +98,18 @@
     warnings: [],
     warnMax: 20,
     subscribers: new Set(),
+    phase4a: {
+      installed: true,
+      phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+      lastOperationAt: null,
+      lastOperation: '',
+      lastStatus: '',
+      lastFolderId: '',
+      lastTombstoneId: '',
+      activeTombstoneCount: 0,
+      restoreAvailableCount: 0,
+      purgeBlocked: true,
+    },
   };
 
   function recordError(op, e) {
@@ -133,6 +161,55 @@
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
     return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
+  }
+
+  function chromeStorageLocal() {
+    try {
+      var api = global.chrome;
+      return api && api.storage && api.storage.local ? api.storage.local : null;
+    } catch (_) { return null; }
+  }
+
+  function chromeStorageGet(key) {
+    return new Promise(function (resolve, reject) {
+      var local = chromeStorageLocal();
+      if (!local || typeof local.get !== 'function') {
+        resolve(undefined);
+        return;
+      }
+      try {
+        local.get([key], function (items) {
+          var api = global.chrome;
+          var runtimeError = api && api.runtime && api.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || String(runtimeError)));
+            return;
+          }
+          resolve(items ? items[key] : undefined);
+        });
+      } catch (e) { reject(e); }
+    });
+  }
+
+  function chromeStorageSet(items) {
+    return new Promise(function (resolve, reject) {
+      var local = chromeStorageLocal();
+      if (!local || typeof local.set !== 'function') {
+        resolve(false);
+        return;
+      }
+      try {
+        local.set(items, function () {
+          var api = global.chrome;
+          var runtimeError = api && api.runtime && api.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message || String(runtimeError)));
+            return;
+          }
+          resolve(true);
+        });
+      } catch (e) { reject(e); }
+    });
   }
 
   function executeFolderBindingsLegacyFallback(query, values, reason) {
@@ -271,6 +348,211 @@
       return v ? v.trim() || null : null;
     }
     return null;
+  }
+
+  function cleanString(value) {
+    return String(value == null ? '' : value).trim();
+  }
+
+  function safeMeta(value) {
+    return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+  }
+
+  function normalizeFolderName(value) {
+    return cleanString(value).toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function folderTombstoneRecordId(folderId) {
+    return 'folder:' + encodeURIComponent(cleanString(folderId));
+  }
+
+  function addBlocker(list, code) {
+    var clean = cleanString(code);
+    if (clean && list.indexOf(clean) === -1) list.push(clean);
+  }
+
+  function setPhase4aState(operation, status, folderId, tombstoneId, delta) {
+    state.phase4a.lastOperationAt = Date.now();
+    state.phase4a.lastOperation = cleanString(operation);
+    state.phase4a.lastStatus = cleanString(status);
+    state.phase4a.lastFolderId = cleanString(folderId);
+    state.phase4a.lastTombstoneId = cleanString(tombstoneId);
+    if (typeof delta === 'number' && Number.isFinite(delta) && delta !== 0) {
+      state.phase4a.activeTombstoneCount = Math.max(0, Number(state.phase4a.activeTombstoneCount || 0) + delta);
+      state.phase4a.restoreAvailableCount = Math.max(0, Number(state.phase4a.restoreAvailableCount || 0) + delta);
+    }
+  }
+
+  function lifecycleSourceTokens(folder) {
+    var meta = safeMeta(folder && folder.meta);
+    return [
+      folder && folder.folderId,
+      folder && folder.id,
+      folder && folder.source,
+      folder && folder.sourceKind,
+      folder && folder.kind,
+      meta.source,
+      meta.sourceKind,
+      meta.kind,
+      meta.reviewBucket,
+      meta.lifecycleState,
+    ].map(function (value) { return cleanString(value).toLowerCase(); }).filter(Boolean);
+  }
+
+  function folderPhase4aBlockers(folder, folderId) {
+    var blockers = [];
+    var id = cleanString(folderId || getFolderId(folder));
+    var meta = safeMeta(folder && folder.meta);
+    var nameKey = normalizeFolderName((folder && folder.name) || meta.name || id);
+    var tokens = lifecycleSourceTokens(folder);
+    if (!id) addBlocker(blockers, 'folder-identity-missing');
+    if (id === 'unfiled' || nameKey === 'unfiled') addBlocker(blockers, 'unfiled-folder');
+    if (RESERVED_FOLDER_NAME_KEYS[nameKey]) addBlocker(blockers, 'system-folder');
+    if (folder && (folder.protectedCanonicalFallback === true || folder.protected === true ||
+        folder.isProtected === true || meta.protectedCanonicalFallback === true ||
+        meta.protected === true || meta.isProtected === true)) {
+      addBlocker(blockers, 'protected-folder');
+    }
+    if (tokens.some(function (token) {
+      return token.indexOf('local-review') !== -1 ||
+        token.indexOf('cleanup-review') !== -1 ||
+        token.indexOf('review-required') !== -1;
+    }) || /^(__|local-review[:_-])/i.test(id)) {
+      addBlocker(blockers, 'local-review-folder-not-editable');
+    }
+    return blockers;
+  }
+
+  function countKnownRowsForFolder(folderId) {
+    try {
+      var index = H2O && H2O.LibraryIndex;
+      var rows = index && typeof index.getAll === 'function' ? index.getAll() : [];
+      return (Array.isArray(rows) ? rows : []).filter(function (row) {
+        return cleanString(row && (row.folderId || row.folder)) === folderId;
+      }).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function countBindingRows(folderId) {
+    return sqlSelect('SELECT COUNT(*) AS n FROM folder_bindings WHERE folder_id = ?', [folderId])
+      .then(function (rows) {
+        return Array.isArray(rows) && rows.length ? Number(rows[0].n) || 0 : 0;
+      });
+  }
+
+  function getTombstoneStore() {
+    try { return H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstones; }
+    catch (_) { return null; }
+  }
+
+  function getActiveFolderTombstone(folderId) {
+    var tombstones = getTombstoneStore();
+    if (!tombstones || typeof tombstones.getTombstone !== 'function') return Promise.resolve(null);
+    return tombstones.getTombstone('folder', folderTombstoneRecordId(folderId));
+  }
+
+  function removeFolderFromStateMirror(folderId, tombstoneId) {
+    var fid = cleanString(folderId);
+    if (!fid) return Promise.resolve({ ok: false, status: 'folder-identity-missing' });
+    return chromeStorageGet(FOLDER_STATE_DATA_KEY).then(function (raw) {
+      var current = safeMeta(raw);
+      var folders = Array.isArray(current.folders) ? current.folders.slice() : [];
+      var items = safeMeta(current.items);
+      var before = folders.length;
+      folders = folders.filter(function (folder) { return getFolderId(folder) !== fid; });
+      var removedItems = Array.isArray(items[fid]) ? items[fid].length : 0;
+      delete items[fid];
+      var updatedAt = new Date().toISOString();
+      var nextState = Object.assign({}, current, {
+        schemaVersion: Number(current.schemaVersion || current.version || 1) || 1,
+        source: cleanString(current.source || current.exportedFrom || 'stored-folder-state') || 'stored-folder-state',
+        updatedAt: updatedAt,
+        folders: folders,
+        items: items,
+        phase4aLastLocalSoftDelete: {
+          folderId: fid,
+          tombstoneId: cleanString(tombstoneId),
+          at: updatedAt,
+          syncPropagation: 'deferred',
+        },
+      });
+      return chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState }).then(function (written) {
+        return {
+          ok: written !== false,
+          status: written === false ? 'storage-unavailable' : 'removed',
+          removedFolderRows: before - folders.length,
+          removedItemCount: removedItems,
+        };
+      });
+    }).catch(function (e) {
+      recordWarning('Phase4A folder-state mirror soft-delete failed: ' + ((e && e.message) || e));
+      return { ok: false, status: 'error', error: String((e && e.message) || e) };
+    });
+  }
+
+  function restoreFolderToStateMirror(snapshot) {
+    var recovery = safeMeta(snapshot);
+    var folder = safeMeta(recovery.folder);
+    var folderId = cleanString(folder.id || folder.folderId);
+    if (!folderId) return Promise.resolve({ ok: false, status: 'folder-identity-missing' });
+    return chromeStorageGet(FOLDER_STATE_DATA_KEY).then(function (raw) {
+      var current = safeMeta(raw);
+      var folders = Array.isArray(current.folders) ? current.folders.slice() : [];
+      var items = safeMeta(current.items);
+      var index = folders.findIndex(function (row) { return getFolderId(row) === folderId; });
+      var updatedAt = new Date().toISOString();
+      var name = cleanString(folder.name || folder.title || folderId);
+      var color = cleanString(folder.iconColor || folder.color || '');
+      var nextRow = Object.assign({}, index >= 0 ? folders[index] : {}, {
+        id: folderId,
+        folderId: folderId,
+        name: name,
+        title: name,
+        normalizedName: normalizeFolderName(folder.normalizedName || name),
+        source: cleanString(folder.source || 'desktop-sqlite'),
+        stateSource: 'stored-folder-state',
+        color: color,
+        iconColor: color,
+        updatedAt: updatedAt,
+        sortOrder: Number(folder.sortOrder) || 0,
+        meta: Object.assign({}, safeMeta(folder.meta), {
+          updatedAt: updatedAt,
+          materializedUserFolder: true,
+          trustedFolderDisplay: true,
+          shownInNormalMode: true,
+          phase4aRestoreSource: 'recoverySnapshot',
+        }),
+        userCreated: true,
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
+      });
+      if (cleanString(folder.parentId)) nextRow.parentId = cleanString(folder.parentId);
+      if (cleanString(folder.icon)) nextRow.icon = cleanString(folder.icon);
+      if (index >= 0) folders[index] = nextRow;
+      else folders.push(nextRow);
+      if (!Array.isArray(items[folderId])) items[folderId] = [];
+      var nextState = Object.assign({}, current, {
+        schemaVersion: Number(current.schemaVersion || current.version || 1) || 1,
+        source: cleanString(current.source || current.exportedFrom || 'stored-folder-state') || 'stored-folder-state',
+        updatedAt: updatedAt,
+        folders: folders,
+        items: items,
+        phase4aLastLocalRestore: {
+          folderId: folderId,
+          at: updatedAt,
+          syncPropagation: 'deferred',
+        },
+      });
+      return chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState }).then(function (written) {
+        return { ok: written !== false, status: index >= 0 ? 'updated' : 'inserted', folderCount: folders.length };
+      });
+    }).catch(function (e) {
+      recordWarning('Phase4A folder-state mirror restore failed: ' + ((e && e.message) || e));
+      return { ok: false, status: 'error', error: String((e && e.message) || e) };
+    });
   }
 
   function buildFolderBindingTombstone(folderId, chatId, opts) {
@@ -745,7 +1027,15 @@
       if (opts.sort.dir === 'DESC' || opts.sort.dir === 'desc') sortDir = 'DESC';
     }
     /* Tie-break by name to keep ordering deterministic when sort_order matches. */
-    var sql = 'SELECT * FROM folders ORDER BY ' + sortCol + ' ' + sortDir + ', name ASC';
+    var includeTombstoned = opts.includeTombstoned === true || opts.includeDeleted === true;
+    var where = includeTombstoned ? '' : (
+      ' WHERE NOT EXISTS (' +
+      'SELECT 1 FROM sync_tombstones t ' +
+      'WHERE t.record_kind = \'folder\' ' +
+      'AND t.record_id = \'folder:\' || folders.id ' +
+      'AND t.restored_at IS NULL)'
+    );
+    var sql = 'SELECT * FROM folders' + where + ' ORDER BY ' + sortCol + ' ' + sortDir + ', name ASC';
     if (typeof opts.limit === 'number' && opts.limit > 0) {
       sql += ' LIMIT ' + Math.floor(opts.limit);
       if (typeof opts.offset === 'number' && opts.offset > 0) sql += ' OFFSET ' + Math.floor(opts.offset);
@@ -756,7 +1046,15 @@
   }
 
   function countFolders() {
-    return sqlSelect('SELECT COUNT(*) AS n FROM folders', [])
+    return sqlSelect(
+      'SELECT COUNT(*) AS n FROM folders ' +
+      'WHERE NOT EXISTS (' +
+      'SELECT 1 FROM sync_tombstones t ' +
+      'WHERE t.record_kind = \'folder\' ' +
+      'AND t.record_id = \'folder:\' || folders.id ' +
+      'AND t.restored_at IS NULL)',
+      []
+    )
       .then(function (rows) {
         if (Array.isArray(rows) && rows.length > 0 && typeof rows[0].n === 'number') return rows[0].n;
         return 0;
@@ -829,6 +1127,311 @@
     if (!partial || typeof partial !== 'object') return getById(id);
     var merged = Object.assign({}, partial, { folderId: id });
     return upsertCore(merged, { generateId: false });
+  }
+
+  function buildFolderRecoverySnapshot(folder, counts) {
+    var meta = safeMeta(folder && folder.meta);
+    var folderId = getFolderId(folder);
+    var name = cleanString((folder && folder.name) || meta.name || folderId);
+    var color = cleanString((folder && (folder.iconColor || folder.color)) || meta.iconColor || meta.color || '');
+    return {
+      schema: 'h2o.studio.folder-recovery-snapshot.v1',
+      phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+      capturedAt: new Date().toISOString(),
+      noHardDelete: true,
+      noChatDelete: true,
+      folder: {
+        id: folderId,
+        folderId: folderId,
+        name: name,
+        title: name,
+        normalizedName: normalizeFolderName(name),
+        parentId: folder && folder.parentId != null ? folder.parentId : null,
+        color: color,
+        iconColor: color,
+        icon: cleanString(meta.icon || meta.iconKey || ''),
+        sortOrder: Number(folder && folder.sortOrder) || Number(meta.sortOrder) || 0,
+        source: cleanString((folder && folder.source) || meta.source || 'desktop-sqlite'),
+        sourceKind: cleanString((folder && (folder.sourceKind || folder.kind)) || meta.sourceKind || meta.kind || 'desktop-sqlite'),
+        createdAt: folder && folder.createdAt != null ? folder.createdAt : null,
+        updatedAt: folder && folder.updatedAt != null ? folder.updatedAt : null,
+        meta: Object.assign({}, meta),
+      },
+      counts: {
+        bindingCount: Number(counts && counts.bindingCount) || 0,
+        knownRowCount: Number(counts && counts.knownRowCount) || 0,
+      },
+      restorePolicy: {
+        localOnly: true,
+        crossPlatformSync: 'deferred',
+        purgeBlocked: true,
+      },
+    };
+  }
+
+  function folderPatchFromRecoverySnapshot(snapshot) {
+    var recovery = safeMeta(snapshot);
+    var folder = safeMeta(recovery.folder);
+    var folderId = cleanString(folder.id || folder.folderId);
+    if (!folderId) return null;
+    var name = cleanString(folder.name || folder.title || folderId);
+    var meta = Object.assign({}, safeMeta(folder.meta), {
+      name: name,
+      updatedAt: new Date().toISOString(),
+      phase4aRestored: true,
+      phase4aRestoreSource: 'recoverySnapshot',
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+    });
+    var patch = {
+      folderId: folderId,
+      name: name,
+      parentId: cleanString(folder.parentId),
+      source: cleanString(folder.source || 'desktop-sqlite'),
+      meta: meta,
+    };
+    var color = cleanString(folder.iconColor || folder.color || '');
+    if (color) {
+      patch.color = color;
+      patch.iconColor = color;
+    }
+    var sortOrder = Number(folder.sortOrder);
+    if (Number.isFinite(sortOrder)) patch.sortOrder = sortOrder;
+    return patch;
+  }
+
+  function folderUpdatedAtIso(folder) {
+    var raw = folder && folder.updatedAt;
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+      try { return new Date(raw).toISOString(); }
+      catch (_) { return null; }
+    }
+    var clean = cleanString(raw);
+    if (!clean) return null;
+    var parsed = Date.parse(clean);
+    if (!Number.isFinite(parsed)) return null;
+    try { return new Date(parsed).toISOString(); }
+    catch (_) { return null; }
+  }
+
+  async function diagnosePhase4aTombstones() {
+    var tombstones = getTombstoneStore();
+    var available = !!(tombstones && typeof tombstones.list === 'function');
+    var active = [];
+    var restored = [];
+    if (available) {
+      try {
+        active = await tombstones.list({ recordKind: 'folder', activeOnly: true, limit: 1000 });
+        restored = await tombstones.list({ recordKind: 'folder', restoredOnly: true, limit: 1000 });
+      } catch (e) {
+        recordWarning('Phase4A tombstone diagnose failed: ' + ((e && e.message) || e));
+      }
+    }
+    state.phase4a.activeTombstoneCount = Array.isArray(active) ? active.length : state.phase4a.activeTombstoneCount;
+    state.phase4a.restoreAvailableCount = state.phase4a.activeTombstoneCount;
+    return {
+      phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+      tombstoneStoreAvailable: available,
+      activeTombstoneCount: Number(state.phase4a.activeTombstoneCount || 0),
+      restoreAvailableCount: Number(state.phase4a.restoreAvailableCount || 0),
+      restoredTombstoneCount: Array.isArray(restored) ? restored.length : null,
+      purgeBlocked: true,
+      hardDeleteBlocked: true,
+      chatDeleteBlocked: true,
+      chromeDeleteSync: 'deferred',
+      tombstoneSync: 'deferred',
+      lastOperationAt: state.phase4a.lastOperationAt,
+      lastOperation: state.phase4a.lastOperation,
+      lastStatus: state.phase4a.lastStatus,
+      lastFolderId: state.phase4a.lastFolderId,
+      lastTombstoneId: state.phase4a.lastTombstoneId,
+    };
+  }
+
+  async function softDeleteEmptyFolder(folderIdInput, opts) {
+    var id = getFolderId(folderIdInput);
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var base = {
+      ok: false,
+      phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+      operation: 'softDeleteEmptyFolder',
+      folderId: id || '',
+      noHardDelete: true,
+      noChatDelete: true,
+      crossPlatformSync: 'deferred',
+      blockers: [],
+    };
+    if (!PHASE4A_FOLDER_SOFT_DELETE_ENABLED) {
+      addBlocker(base.blockers, 'phase-disabled');
+      base.status = 'phase-disabled';
+      return base;
+    }
+    if (!id) {
+      addBlocker(base.blockers, 'folder-identity-missing');
+      base.status = 'folder-identity-missing';
+      return base;
+    }
+    var tombstones = getTombstoneStore();
+    if (!tombstones || typeof tombstones.createTombstone !== 'function' ||
+        typeof tombstones.getTombstone !== 'function') {
+      addBlocker(base.blockers, 'tombstone-store-unavailable');
+      base.status = 'tombstone-store-unavailable';
+      setPhase4aState('softDeleteEmptyFolder', base.status, id, '', 0);
+      return base;
+    }
+    try {
+      var folder = await getById(id);
+      if (!folder) {
+        addBlocker(base.blockers, 'folder-identity-missing');
+        base.status = 'folder-identity-missing';
+        setPhase4aState('softDeleteEmptyFolder', base.status, id, '', 0);
+        return base;
+      }
+      folderPhase4aBlockers(folder, id).forEach(function (code) { addBlocker(base.blockers, code); });
+      var existingTombstone = await getActiveFolderTombstone(id);
+      if (existingTombstone) addBlocker(base.blockers, 'already-tombstoned');
+      var bindingCount = await countBindingRows(id);
+      var knownRowCount = countKnownRowsForFolder(id);
+      if (bindingCount > 0 || knownRowCount > 0) addBlocker(base.blockers, 'folder-not-empty');
+      if (base.blockers.length) {
+        base.status = base.blockers[0];
+        base.bindingCount = bindingCount;
+        base.knownRowCount = knownRowCount;
+        setPhase4aState('softDeleteEmptyFolder', base.status, id, existingTombstone && existingTombstone.tombstoneId, 0);
+        return base;
+      }
+      var recoverySnapshot = buildFolderRecoverySnapshot(folder, {
+        bindingCount: bindingCount,
+        knownRowCount: knownRowCount,
+      });
+      var priorDigest = await sha256Hex(recoverySnapshot);
+      var tombstone = await tombstones.createTombstone({
+        recordKind: 'folder',
+        recordId: folderTombstoneRecordId(id),
+        deleteReason: cleanString(options.deleteReason) || 'desktop-local-empty-folder-soft-delete',
+        deletedBySyncPeerId: cleanString(options.deletedBySyncPeerId) || 'desktop-local-phase4a',
+        priorDigest: priorDigest || null,
+        priorUpdatedAt: folderUpdatedAtIso(folder),
+        meta: {
+          phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+          lifecycleState: 'tombstoned',
+          localOnly: true,
+          crossPlatformSync: 'deferred',
+          hardDelete: false,
+          purgeBlocked: true,
+          noChatDelete: true,
+          bindingCount: 0,
+          recoverySnapshot: recoverySnapshot,
+        },
+      });
+      var mirror = await removeFolderFromStateMirror(id, tombstone && tombstone.tombstoneId);
+      recordWrite('softDeleteEmptyFolder');
+      setPhase4aState('softDeleteEmptyFolder', 'folder-soft-deleted', id, tombstone && tombstone.tombstoneId, 1);
+      notifySubscribers({
+        source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+        op: 'softDeleteEmptyFolder',
+        folderId: id,
+        tombstoneId: tombstone && tombstone.tombstoneId,
+        syncPropagation: 'deferred',
+      });
+      return Object.assign({}, base, {
+        ok: true,
+        status: 'folder-soft-deleted',
+        tombstoneId: tombstone && tombstone.tombstoneId,
+        bindingCount: 0,
+        knownRowCount: 0,
+        recoverySnapshot: recoverySnapshot,
+        folderStateMirror: mirror,
+        blockers: [],
+      });
+    } catch (e) {
+      recordError('softDeleteEmptyFolder', e);
+      base.status = 'error';
+      base.reason = String((e && e.message) || e);
+      setPhase4aState('softDeleteEmptyFolder', base.status, id, '', 0);
+      return base;
+    }
+  }
+
+  async function resolveFolderTombstone(input) {
+    var tombstones = getTombstoneStore();
+    if (!tombstones) return null;
+    var value = cleanString(input && (input.tombstoneId || input.folderId || input.id || input));
+    if (!value) return null;
+    if (value.indexOf('tombstone:') === 0 && typeof tombstones.getById === 'function') {
+      var direct = await tombstones.getById(value);
+      if (direct && !cleanString(direct.restoredAt)) return direct;
+    }
+    if (typeof tombstones.getTombstone === 'function') {
+      return tombstones.getTombstone('folder', folderTombstoneRecordId(value));
+    }
+    return null;
+  }
+
+  async function restoreTombstonedFolder(input, opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var tombstones = getTombstoneStore();
+    var base = {
+      ok: false,
+      phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+      operation: 'restoreTombstonedFolder',
+      noHardDelete: true,
+      noChatDelete: true,
+      crossPlatformSync: 'deferred',
+      blockers: [],
+    };
+    if (!tombstones || typeof tombstones.markRestored !== 'function') {
+      addBlocker(base.blockers, 'tombstone-store-unavailable');
+      base.status = 'tombstone-store-unavailable';
+      return base;
+    }
+    try {
+      var tombstone = await resolveFolderTombstone(input);
+      if (!tombstone) {
+        addBlocker(base.blockers, 'folder-identity-missing');
+        base.status = 'folder-identity-missing';
+        return base;
+      }
+      var meta = safeMeta(tombstone.meta);
+      var recoverySnapshot = safeMeta(meta.recoverySnapshot);
+      var patch = folderPatchFromRecoverySnapshot(recoverySnapshot);
+      if (!patch || !patch.folderId) {
+        addBlocker(base.blockers, 'folder-identity-missing');
+        base.status = 'folder-identity-missing';
+        return base;
+      }
+      var row = await upsertCore(patch, { generateId: false });
+      var restored = await tombstones.markRestored(
+        tombstone.tombstoneId,
+        cleanString(options.restoredBySyncPeerId) || 'desktop-local-phase4a'
+      );
+      var mirror = await restoreFolderToStateMirror(recoverySnapshot);
+      recordWrite('restoreTombstonedFolder');
+      setPhase4aState('restoreTombstonedFolder', 'folder-restored', patch.folderId, tombstone.tombstoneId, -1);
+      notifySubscribers({
+        source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+        op: 'restoreTombstonedFolder',
+        folderId: patch.folderId,
+        tombstoneId: tombstone.tombstoneId,
+        syncPropagation: 'deferred',
+      });
+      return Object.assign({}, base, {
+        ok: true,
+        status: 'folder-restored',
+        folderId: patch.folderId,
+        tombstoneId: tombstone.tombstoneId,
+        row: row,
+        tombstone: restored,
+        folderStateMirror: mirror,
+        blockers: [],
+      });
+    } catch (e) {
+      recordError('restoreTombstonedFolder', e);
+      base.status = 'error';
+      base.reason = String((e && e.message) || e);
+      return base;
+    }
   }
 
   function remove(folderIdInput) {
@@ -1065,6 +1668,14 @@
       installed: true,
       ready: state.ready,
       schemaVersion: SCHEMA_VERSION,
+      phase4aLocalSoftDelete: Object.assign({}, state.phase4a, {
+        tombstoneStoreAvailable: !!getTombstoneStore(),
+        purgeBlocked: true,
+        hardDeleteBlocked: true,
+        chatDeleteBlocked: true,
+        chromeDeleteSync: 'deferred',
+        tombstoneSync: 'deferred',
+      }),
       backend: state.ready ? 'sqlite' : (state.initError ? 'error' : 'pending'),
       dbUrl: DB_URL,
       tables: ['folders', 'folder_bindings'],
@@ -1100,8 +1711,13 @@
     create: create,
     upsert: upsert,
     patch: patchOne,
-    remove: remove,
-    'delete': remove,
+    softDeleteEmptyFolder: softDeleteEmptyFolder,
+    softDeleteFolder: softDeleteEmptyFolder,
+    restoreTombstonedFolder: restoreTombstonedFolder,
+    restoreFolder: restoreTombstonedFolder,
+    diagnosePhase4aTombstones: diagnosePhase4aTombstones,
+    remove: softDeleteEmptyFolder,
+    'delete': softDeleteEmptyFolder,
     bindChat: bindChat,
     unbindChat: unbindChat,
     listChats: listChats,

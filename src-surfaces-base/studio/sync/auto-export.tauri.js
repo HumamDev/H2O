@@ -190,6 +190,9 @@
   function shouldIgnoreChange(change) {
     var source = cleanString(change && change.source);
     if (source === 'reload') return true;
+    if (source === 'desktop-local-soft-delete') return true;
+    var op = cleanString(change && change.op);
+    if (op === 'softDeleteEmptyFolder' || op === 'restoreTombstonedFolder') return true;
     return false;
   }
 
