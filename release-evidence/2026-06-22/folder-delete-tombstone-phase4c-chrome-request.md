@@ -123,6 +123,58 @@ const afterBinding = await H2O.Studio.actions.folders?.getForChat?.(chatId);
 
 Note: Chrome may not expose Desktop SQLite binding helpers. In that case, use the display-model proof and the request-store proof; Chrome request creation is IndexedDB review bookkeeping only.
 
+## Chrome Runtime Proof
+
+Implementation commit under test:
+
+- `bcf47cbba572f3e60d31e8d52de645f55d6291a4`
+
+Folder used:
+
+- folderId: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- name: `zz-delete-ui-test`
+
+Request proof:
+
+- `request.ok: true`
+- `request.status: pending-created`
+- `request.phase: phase4c-chrome-delete-request`
+- `request.duplicate: false`
+- `matchingPendingRequests.length: 1`
+- `schema: h2o.studio.folder-delete-request.v1`
+- `classification: delete-request`
+- `desktopApplyRequired: true`
+- `noHardDelete: true`
+- `noChatDelete: true`
+- `noLocalApply: true`
+- `noFolderMutation: true`
+- `noBindingMutation: true`
+- `noChatMutation: true`
+- `noSnapshotMutation: true`
+- warning: `desktop-apply-required`
+
+Non-destructive proof:
+
+- `folderStillVisible: true`
+- `beforeFolderCount: 20`
+- `afterFolderCount: 20`
+- `noChromeDeleteApi: true`
+- `noBindingMutationApi: true`
+
+Duplicate request proof:
+
+- `second.ok: true`
+- `second.duplicate: true`
+- `second.status: pending-existing`
+- `matchingCount: 1`
+- original pending request reused: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+
+Runtime verdict:
+
+- Phase 4C.1 + 4C.2 runtime proof passed.
+- Chrome request-only flow is closed.
+- Chrome-to-Desktop transport, Desktop review/apply, status receipts, tombstone propagation, purge/retention, and WebDAV remain deferred.
+
 ## Remaining Limitations
 
 - Desktop/operator review and apply are not implemented in this slice.
