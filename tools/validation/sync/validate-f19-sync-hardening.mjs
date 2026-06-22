@@ -336,6 +336,13 @@ async function runVmProofs() {
   vm.runInContext(read(desktopReceiverFile), desktopContext, { filename: desktopReceiverFile });
   const desktopApi = desktopContext.H2O.Studio.sync;
   assert(desktopApi.chromeDesktopHardeningTaxonomy?.transportStale === 'transport-stale', 'Desktop hardening taxonomy marker missing');
+  const desktopHealth = desktopApi.folder?.health?.diagnose?.();
+  assert(desktopHealth?.schema === 'h2o.studio.sync.folder-health.v1', 'Desktop folder health schema missing');
+  assert(desktopHealth?.surface === 'desktop-studio', 'Desktop folder health surface mismatch');
+  assert(desktopHealth?.privacy?.redacted === true, 'Desktop folder health must be redacted');
+  assert(desktopHealth?.deferred?.deleteTombstone === 'deferred', 'Desktop folder health delete/tombstone deferral missing');
+  assert(desktopHealth?.deferred?.webdav === 'deferred', 'Desktop folder health WebDAV deferral missing');
+  assert(typeof desktopApi.folder?.diagnoseHealth === 'function', 'Desktop folder diagnoseHealth API missing');
   const desktopInvalid = await desktopApi.importChromeLatestBundle({ schema: 'unsupported' }, { proofMode: true });
   assert(desktopInvalid.ok === false, 'Desktop invalid schema should fail closed');
   assert(desktopInvalid.blockers.includes('transport-schema-unsupported'), 'Desktop invalid schema missing normalized blocker');
@@ -351,6 +358,13 @@ async function runVmProofs() {
   vm.runInContext(read(chromeReceiverFile), chromeContext, { filename: chromeReceiverFile });
   const chromeApi = chromeContext.H2O.Studio.sync.folder;
   assert(chromeApi.desktopChromeHardeningTaxonomy?.transportStale === 'transport-stale', 'Chrome hardening taxonomy marker missing');
+  const chromeHealth = chromeApi.health?.diagnose?.();
+  assert(chromeHealth?.schema === 'h2o.studio.sync.folder-health.v1', 'Chrome folder health schema missing');
+  assert(chromeHealth?.surface === 'chrome-studio', 'Chrome folder health surface mismatch');
+  assert(chromeHealth?.privacy?.redacted === true, 'Chrome folder health must be redacted');
+  assert(chromeHealth?.deferred?.deleteTombstone === 'deferred', 'Chrome folder health delete/tombstone deferral missing');
+  assert(chromeHealth?.deferred?.webdav === 'deferred', 'Chrome folder health WebDAV deferral missing');
+  assert(typeof chromeApi.diagnoseHealth === 'function', 'Chrome folder diagnoseHealth API missing');
   const chromeInvalid = await chromeApi.importLatestBundle({ schema: 'unsupported' }, { proofMode: true });
   assert(chromeInvalid.ok === false, 'Chrome invalid schema should fail closed');
   assert(chromeInvalid.blockers.includes('transport-schema-unsupported'), 'Chrome invalid schema missing normalized blocker');
@@ -375,6 +389,14 @@ function runStaticAssertions() {
   }
   for (const needle of [
     'classifyIncomingChromeTransport',
+    'FOLDER_SYNC_HEALTH_SCHEMA',
+    'function diagnoseHealth()',
+    "surface: 'desktop-studio'",
+    "privacy: {",
+    "redacted: true",
+    "deleteTombstone: 'deferred'",
+    "webdav: 'deferred'",
+    "'permission-required'",
     'latestPropagationLedgerEntry',
     'bundleExportedAt',
     'previousExportId',
@@ -388,6 +410,15 @@ function runStaticAssertions() {
   }
   for (const needle of [
     'classifyIncomingDesktopTransport',
+    'FOLDER_SYNC_HEALTH_SCHEMA',
+    'function diagnoseHealth()',
+    "surface: 'chrome-studio'",
+    "privacy: {",
+    "redacted: true",
+    "deleteTombstone: 'deferred'",
+    "webdav: 'deferred'",
+    "'permission-required'",
+    "'no-op-refresh-suppressed'",
     'lastAppliedExportedAt',
     'sync-folder-latest-missing',
     'sync-folder-latest-malformed',

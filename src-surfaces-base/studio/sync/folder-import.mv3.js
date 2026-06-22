@@ -47,6 +47,8 @@
   var FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2';
   var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
+  var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
+  var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
   var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
@@ -739,6 +741,97 @@
     if (!clean) return 0;
     var ms = Date.parse(clean);
     return isFinite(ms) ? ms : 0;
+  }
+
+  function addHealthCode(list, code) {
+    addUnique(list, cleanString(code));
+  }
+
+  function addHealthCodeFromHardening(list, code) {
+    var normalized = cleanString(code);
+    if (!normalized) return;
+    if (normalized === F19_SYNC_HARDENING_CODES.syncFolderMissing ||
+        normalized === 'sync-folder-missing' ||
+        normalized === 'sync-folder-not-connected') {
+      addHealthCode(list, 'no-folder-handle');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.permissionDenied ||
+        normalized === 'permission-denied' ||
+        normalized === 'sync-folder-permission-denied') {
+      addHealthCode(list, 'permission-required');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportFileMissing ||
+        normalized === 'sync-folder-latest-missing') {
+      addHealthCode(list, 'transport-file-missing');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportFileMalformed ||
+        normalized === F19_SYNC_HARDENING_CODES.transportSchemaUnsupported ||
+        normalized === 'sync-folder-latest-malformed' ||
+        normalized === 'sync-folder-latest-schema-unsupported') {
+      addHealthCode(list, 'transport-file-malformed');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportStale ||
+        normalized === 'library-propagation-transport-stale') {
+      addHealthCode(list, 'stale-transport');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict ||
+        normalized === 'library-propagation-simultaneous-update-conflict') {
+      addHealthCode(list, 'simultaneous-conflict');
+      return;
+    }
+    addHealthCode(list, normalized);
+  }
+
+  function addHealthCodesFromList(list, codes) {
+    var source = Array.isArray(codes) ? codes : [];
+    for (var i = 0; i < source.length; i += 1) addHealthCodeFromHardening(list, source[i]);
+  }
+
+  function addHealthCodesFromError(list, value) {
+    var text = cleanString(value).toLowerCase();
+    if (!text) return;
+    if (text.indexOf('permission') !== -1 || text.indexOf('denied') !== -1) {
+      addHealthCode(list, 'permission-required');
+    }
+    if (text.indexOf('not connected') !== -1 || text.indexOf('folder-required') !== -1 ||
+        text.indexOf('folder missing') !== -1 || text.indexOf('sync-folder-missing') !== -1) {
+      addHealthCode(list, 'no-folder-handle');
+    }
+    if (text.indexOf('latest-missing') !== -1 || text.indexOf('transport-file-missing') !== -1) {
+      addHealthCode(list, 'transport-file-missing');
+    }
+    if (text.indexOf('malformed') !== -1 || text.indexOf('schema') !== -1) {
+      addHealthCode(list, 'transport-file-malformed');
+    }
+    if (text.indexOf('stale') !== -1) {
+      addHealthCode(list, 'stale-transport');
+    }
+    if (text.indexOf('simultaneous') !== -1 || text.indexOf('conflict') !== -1) {
+      addHealthCode(list, 'simultaneous-conflict');
+    }
+  }
+
+  function folderHealthVerdict(blockers, warnings, pending, inFlight, disabled) {
+    if (disabled) return 'disabled';
+    if (Array.isArray(blockers) && blockers.length) return 'blocked';
+    if (pending || inFlight) return 'syncing';
+    if (Array.isArray(warnings) && warnings.indexOf('loop-suppressed') !== -1) return 'degraded';
+    if (Array.isArray(warnings) && warnings.length) return 'warning';
+    return 'healthy';
+  }
+
+  function folderHealthSummary(verdict) {
+    if (verdict === 'healthy') return 'Folder sync is current and no blockers are active.';
+    if (verdict === 'syncing') return 'Folder sync has pending or in-flight work.';
+    if (verdict === 'blocked') return 'Folder sync is blocked; review blockers and permissions.';
+    if (verdict === 'disabled') return 'Folder auto-sync is disabled on this surface.';
+    if (verdict === 'degraded') return 'Folder sync is running with loop or refresh suppression active.';
+    return 'Folder sync needs attention.';
   }
 
   function classifyIncomingDesktopTransport(bundle, checksum) {
@@ -3577,6 +3670,127 @@
     });
   }
 
+  function diagnoseHealth() {
+    var raw = diagnose();
+    var desktopToChromeRaw = safeObject(raw.desktopToChrome);
+    var chromeToDesktopRaw = safeObject(raw.chromeToDesktop);
+    var chromeAutoImportRaw = safeObject(raw.chromeAutoImport);
+    var latency = safeObject(desktopToChromeRaw.latency);
+    var blockerFlags = safeObject(raw.blockers);
+    var blockers = [];
+    var warnings = [];
+    var statusCodes = [];
+    var pending = !!(desktopToChromeRaw.pending || chromeToDesktopRaw.pending || chromeAutoImportRaw.pending);
+    var inFlight = !!(desktopToChromeRaw.inFlight || chromeToDesktopRaw.inFlight || chromeAutoImportRaw.running || raw.syncInFlight);
+    var autoSyncDisabled = !raw.autoSyncEnabled || blockerFlags.autoImportDisabled === true;
+    var permission = cleanString(chromeToDesktopRaw.permission || desktopToChromeRaw.permission || raw.permission || 'unknown') || 'unknown';
+
+    if (blockerFlags.permissionRequired === true || (permission && permission !== 'granted')) {
+      addHealthCode(blockers, 'permission-required');
+    }
+    if (blockerFlags.noFolderHandle === true || !raw.connected) {
+      addHealthCode(blockers, 'no-folder-handle');
+    }
+    if (autoSyncDisabled) addHealthCode(statusCodes, 'auto-sync-disabled');
+    if (blockerFlags.schedulerNotFired === true) addHealthCode(statusCodes, 'scheduler-not-fired');
+    if (blockerFlags.simultaneousConflict === true ||
+        cleanString(desktopToChromeRaw.simultaneousConflictStatus) === 'conflict-approval-required') {
+      addHealthCode(blockers, 'simultaneous-conflict');
+    }
+    addHealthCodesFromList(blockers, chromeToDesktopRaw.blockers);
+    addHealthCodesFromError(blockers, raw.lastSyncError);
+    addHealthCodesFromError(blockers, raw.lastAutoSyncError);
+    addHealthCodesFromError(blockers, chromeToDesktopRaw.lastExportError);
+
+    if (latency.refreshSuppressed === true || numberOrZero(latency.refreshSuppressedCount) > 0) {
+      addHealthCode(statusCodes, 'no-op-refresh-suppressed');
+    }
+    if (numberOrZero(latency.duplicateSkipped) > 0 || numberOrZero(chromeAutoImportRaw.duplicateSkipped) > 0) {
+      addHealthCode(statusCodes, 'duplicate-suppressed');
+    }
+    if (numberOrZero(latency.loopSuppressed) > 0 || numberOrZero(chromeAutoImportRaw.loopSuppressed) > 0) {
+      addHealthCode(statusCodes, 'loop-suppressed');
+    }
+    if (numberOrZero(latency.selfOriginSkipped) > 0 || numberOrZero(chromeAutoImportRaw.selfOriginSkipped) > 0) {
+      addHealthCode(statusCodes, 'self-origin-skipped');
+    }
+    if (!blockers.length && !statusCodes.length && !raw.connected && permission === 'unknown') {
+      addHealthCode(statusCodes, 'unknown-state');
+    }
+
+    var verdict = folderHealthVerdict(blockers, warnings, pending, inFlight, autoSyncDisabled && !blockers.length);
+    return {
+      schema: FOLDER_SYNC_HEALTH_SCHEMA,
+      version: FOLDER_SYNC_HEALTH_VERSION,
+      surface: 'chrome-studio',
+      observedAt: nowIso(),
+      verdict: verdict,
+      summaryText: folderHealthSummary(verdict),
+      blockers: blockers,
+      warnings: warnings,
+      statusCodes: statusCodes,
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      },
+      desktopToChrome: {
+        autoExportEnabled: !!desktopToChromeRaw.autoExportEnabled,
+        autoImportEnabled: !!desktopToChromeRaw.autoImportEnabled,
+        latestTransport: cleanString(desktopToChromeRaw.latestTransport || LATEST_FILE),
+        lastExportStatus: cleanString(state.lastDesktopLatestPollStatus),
+        lastExportedAt: cleanString(state.lastDesktopToChromeExportWrittenAt),
+        lastExportBytes: numberOrZero(state.lastDesktopLatestPollFileSize || state.lastFileSize),
+        lastExportError: '',
+        lastImportStatus: cleanString(desktopToChromeRaw.lastImportStatus),
+        lastImportedAt: cleanString(desktopToChromeRaw.lastImportedAt),
+        lastAppliedExportedAt: cleanString(state.lastAppliedExportedAt),
+        lastPropagationMs: numberOrZero(latency.totalPropagationMs),
+        pending: !!desktopToChromeRaw.pending,
+        inFlight: !!desktopToChromeRaw.inFlight,
+        permission: cleanString(desktopToChromeRaw.permission || permission),
+        noOpRefreshSuppressed: latency.refreshSuppressed === true,
+        refreshSuppressedCount: numberOrZero(latency.refreshSuppressedCount),
+        changedFolderCount: numberOrZero(latency.changedFolderCount),
+        changedFolderIds: [],
+        changedFolderIdsRedacted: true
+      },
+      chromeToDesktop: {
+        chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,
+        exportApiAvailable: !!chromeToDesktopRaw.exportApiAvailable,
+        permission: permission,
+        lastExportStatus: cleanString(chromeToDesktopRaw.lastExportStatus),
+        lastExportedAt: cleanString(chromeToDesktopRaw.lastExportedAt),
+        lastExportBytes: numberOrZero(chromeToDesktopRaw.lastExportBytes),
+        lastExportError: cleanString(chromeToDesktopRaw.lastExportError),
+        desktopAutoImportEnabled: null,
+        desktopLastImportStatus: '',
+        desktopLastImportedAt: '',
+        pending: !!chromeToDesktopRaw.pending,
+        inFlight: !!chromeToDesktopRaw.inFlight
+      },
+      uiRefreshHealth: {
+        postImportRefreshMode: cleanString(latency.chromePostImportRefreshMode || latency.postImportRefreshMode),
+        renderRefreshCount: numberOrZero(latency.renderRefreshCount),
+        cumulativeRenderRefreshCount: numberOrZero(latency.cumulativeRenderRefreshCount),
+        refreshSuppressed: latency.refreshSuppressed === true,
+        refreshSuppressedCount: numberOrZero(latency.refreshSuppressedCount),
+        lastChangedFolderCount: numberOrZero(latency.changedFolderCount),
+        lastChangedFields: Array.isArray(latency.changedFields) ? latency.changedFields.slice() : []
+      },
+      loopPrevention: {
+        loopSuppressed: numberOrZero(latency.loopSuppressed),
+        duplicateSuppressed: numberOrZero(latency.duplicateSkipped),
+        selfOriginSkipped: numberOrZero(latency.selfOriginSkipped)
+      },
+      deferred: {
+        deleteTombstone: 'deferred',
+        webdav: 'deferred'
+      }
+    };
+  }
+
   var api = {
     connectFolder: connectFolder,
     disconnectFolder: disconnectFolder,
@@ -3595,6 +3809,10 @@
     isAutoSyncEnabled: isAutoSyncEnabled,
     scheduleAutoSync: scheduleAutoSync,
     diagnose: diagnose,
+    diagnoseHealth: diagnoseHealth,
+    health: {
+      diagnose: diagnoseHealth,
+    },
   };
 
   H2O.Studio.sync = Object.assign({}, H2O.Studio.sync || {}, {

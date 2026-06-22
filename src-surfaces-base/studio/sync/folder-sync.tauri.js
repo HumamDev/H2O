@@ -60,6 +60,8 @@
   var PROPAGATION_SCHEMA = 'h2o.studio.sync.chrome-desktop-propagation.v1';
   var F19_CHROME_DESKTOP_VERSION = '0.1.0-f19.2.b';
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
+  var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
+  var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
   var MAX_LEDGER_ENTRIES  = 100;
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
@@ -641,6 +643,105 @@
 
   function cleanString(value) {
     return String(value == null ? '' : value).trim();
+  }
+
+  function safeObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function numberOrZero(value) {
+    var n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function addHealthCode(list, code) {
+    addUnique(list, cleanString(code));
+  }
+
+  function addHealthCodeFromHardening(list, code) {
+    var normalized = cleanString(code);
+    if (!normalized) return;
+    if (normalized === F19_SYNC_HARDENING_CODES.syncFolderMissing ||
+        normalized === 'sync-folder-missing' ||
+        normalized === 'library-propagation-folder-required') {
+      addHealthCode(list, 'no-folder-handle');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.permissionDenied ||
+        normalized === 'permission-denied') {
+      addHealthCode(list, 'permission-required');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportFileMissing ||
+        normalized === 'library-propagation-read-failed') {
+      addHealthCode(list, 'transport-file-missing');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportFileMalformed ||
+        normalized === F19_SYNC_HARDENING_CODES.transportSchemaUnsupported ||
+        normalized === 'library-propagation-json-parse-failed' ||
+        normalized === 'library-propagation-schema-invalid') {
+      addHealthCode(list, 'transport-file-malformed');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.transportStale ||
+        normalized === 'library-propagation-transport-stale') {
+      addHealthCode(list, 'stale-transport');
+      return;
+    }
+    if (normalized === F19_SYNC_HARDENING_CODES.simultaneousUpdateConflict ||
+        normalized === 'library-propagation-simultaneous-update-conflict') {
+      addHealthCode(list, 'simultaneous-conflict');
+      return;
+    }
+    addHealthCode(list, normalized);
+  }
+
+  function addHealthCodesFromList(list, codes) {
+    var source = Array.isArray(codes) ? codes : [];
+    for (var i = 0; i < source.length; i += 1) addHealthCodeFromHardening(list, source[i]);
+  }
+
+  function addHealthCodesFromError(list, value) {
+    var text = cleanString(value).toLowerCase();
+    if (!text) return;
+    if (text.indexOf('permission') !== -1 || text.indexOf('denied') !== -1) {
+      addHealthCode(list, 'permission-required');
+    }
+    if (text.indexOf('folder-required') !== -1 || text.indexOf('folder missing') !== -1 ||
+        text.indexOf('sync-folder-missing') !== -1) {
+      addHealthCode(list, 'no-folder-handle');
+    }
+    if (text.indexOf('read-failed') !== -1 || text.indexOf('transport-file-missing') !== -1) {
+      addHealthCode(list, 'transport-file-missing');
+    }
+    if (text.indexOf('malformed') !== -1 || text.indexOf('schema') !== -1) {
+      addHealthCode(list, 'transport-file-malformed');
+    }
+    if (text.indexOf('stale') !== -1) {
+      addHealthCode(list, 'stale-transport');
+    }
+    if (text.indexOf('simultaneous') !== -1 || text.indexOf('conflict') !== -1) {
+      addHealthCode(list, 'simultaneous-conflict');
+    }
+  }
+
+  function folderHealthVerdict(blockers, warnings, pending, inFlight, disabled) {
+    if (disabled) return 'disabled';
+    if (Array.isArray(blockers) && blockers.length) return 'blocked';
+    if (pending || inFlight) return 'syncing';
+    if (Array.isArray(warnings) && warnings.indexOf('loop-suppressed') !== -1) return 'degraded';
+    if (Array.isArray(warnings) && warnings.length) return 'warning';
+    return 'healthy';
+  }
+
+  function folderHealthSummary(verdict) {
+    if (verdict === 'healthy') return 'Folder sync is current and no blockers are active.';
+    if (verdict === 'syncing') return 'Folder sync has pending or in-flight work.';
+    if (verdict === 'blocked') return 'Folder sync is blocked; review blockers and permissions.';
+    if (verdict === 'disabled') return 'Folder auto-sync is disabled on this surface.';
+    if (verdict === 'degraded') return 'Folder sync is running with loop or refresh suppression active.';
+    return 'Folder sync needs attention.';
   }
 
   function normalizeUnindexedReason(value) {
@@ -2401,6 +2502,131 @@
     };
   }
 
+  function diagnoseHealth() {
+    var raw = diagnose();
+    var desktopToChromeRaw = safeObject(raw.desktopToChrome);
+    var chromeToDesktopRaw = safeObject(raw.chromeToDesktop);
+    var desktopAutoImportRaw = safeObject(raw.desktopAutoImport);
+    var watcherRaw = safeObject(raw.watcher);
+    var postImportRefresh = safeObject(desktopAutoImportRaw.postImportRefresh);
+    var autoExportRaw = {};
+    try {
+      var autoExport = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport;
+      autoExportRaw = autoExport && typeof autoExport.diagnose === 'function' ? safeObject(autoExport.diagnose()) : {};
+    } catch (_) {
+      autoExportRaw = {};
+    }
+    var autoExportDtc = safeObject(autoExportRaw.desktopToChrome);
+    var blockers = [];
+    var warnings = [];
+    var statusCodes = [];
+    var desktopAutoImportEnabled = desktopAutoImportRaw.autoImportEnabled === true ||
+      chromeToDesktopRaw.desktopAutoImportEnabled === true;
+    var desktopAutoExportEnabled = autoExportDtc.autoExportEnabled === true ||
+      desktopToChromeRaw.autoExportEnabled === true;
+    var pending = !!(autoExportDtc.pending || watcherRaw.pendingCount || chromeToDesktopRaw.pendingActions);
+    var inFlight = !!(autoExportDtc.flushInFlight || watcherRaw.scanInFlight);
+    var disabled = !desktopAutoExportEnabled && !desktopAutoImportEnabled;
+    var permission = watcherRaw.folderPath ? 'desktop-local-filesystem' : 'not-configured';
+
+    if (!desktopAutoExportEnabled) addHealthCode(statusCodes, 'auto-export-disabled');
+    if (!desktopAutoImportEnabled) addHealthCode(statusCodes, 'auto-import-disabled');
+    if (!watcherRaw.folderPath) addHealthCode(blockers, 'no-folder-handle');
+    if (watcherRaw.mode === 'off' && !desktopAutoImportEnabled) addHealthCode(statusCodes, 'auto-sync-disabled');
+    if (desktopAutoExportEnabled && !autoExportRaw.lastScheduledAt && !autoExportRaw.lastExportedAt) {
+      addHealthCode(statusCodes, 'scheduler-not-fired');
+    }
+    addHealthCodesFromError(blockers, autoExportDtc.lastExportError || autoExportRaw.lastExportError);
+    addHealthCodesFromError(blockers, chromeToDesktopRaw.desktopLastImportError || desktopAutoImportRaw.lastImportError);
+    if (Array.isArray(watcherRaw.errors)) {
+      for (var i = 0; i < watcherRaw.errors.length; i += 1) {
+        addHealthCodesFromError(blockers, watcherRaw.errors[i] && (watcherRaw.errors[i].error || watcherRaw.errors[i].message || watcherRaw.errors[i]));
+      }
+    }
+    if (watcherRaw.lastError) addHealthCodesFromError(blockers, watcherRaw.lastError.error || watcherRaw.lastError);
+    if (state.warnings.length) addHealthCode(statusCodes, 'desktop-import-warning-present');
+
+    var verdict = folderHealthVerdict(blockers, warnings, pending, inFlight, disabled && !blockers.length);
+    return {
+      schema: FOLDER_SYNC_HEALTH_SCHEMA,
+      version: FOLDER_SYNC_HEALTH_VERSION,
+      surface: 'desktop-studio',
+      observedAt: new Date().toISOString(),
+      verdict: verdict,
+      summaryText: folderHealthSummary(verdict),
+      blockers: blockers,
+      warnings: warnings,
+      statusCodes: statusCodes,
+      privacy: {
+        redacted: true,
+        rawIdsReturned: false,
+        rawTitlesReturned: false,
+        rawContentReturned: false
+      },
+      desktopToChrome: {
+        autoExportEnabled: desktopAutoExportEnabled,
+        latestTransport: cleanString(desktopToChromeRaw.latestTransport || 'latest.json'),
+        lastExportStatus: cleanString(autoExportDtc.lastExportStatus || desktopToChromeRaw.lastExportStatus),
+        lastExportedAt: cleanString(autoExportDtc.lastExportedAt || desktopToChromeRaw.lastExportedAt),
+        lastExportBytes: numberOrZero(autoExportDtc.lastExportBytes || desktopToChromeRaw.lastExportBytes),
+        lastExportError: cleanString(autoExportDtc.lastExportError || autoExportRaw.lastExportError),
+        lastImportStatus: '',
+        lastAppliedExportedAt: '',
+        lastPropagationMs: 0,
+        pending: !!autoExportDtc.pending,
+        inFlight: !!autoExportDtc.flushInFlight,
+        permission: 'desktop-local-filesystem',
+        noOpRefreshSuppressed: false,
+        refreshSuppressedCount: 0,
+        changedFolderCount: 0,
+        changedFolderIds: [],
+        changedFolderIdsRedacted: true
+      },
+      chromeToDesktop: {
+        chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,
+        exportApiAvailable: false,
+        permission: permission,
+        lastExportStatus: '',
+        lastExportedAt: cleanString(state.lastImportedChromeExportedAt),
+        lastExportBytes: 0,
+        lastExportError: '',
+        desktopAutoImportEnabled: desktopAutoImportEnabled,
+        desktopLastImportStatus: cleanString(chromeToDesktopRaw.desktopLastImportStatus || desktopAutoImportRaw.lastImportStatus),
+        desktopLastImportedAt: cleanString(chromeToDesktopRaw.desktopLastImportedAt || desktopAutoImportRaw.lastImportedAt),
+        desktopLastImportError: cleanString(chromeToDesktopRaw.desktopLastImportError || desktopAutoImportRaw.lastImportError),
+        pending: numberOrZero(watcherRaw.pendingCount) > 0,
+        inFlight: !!watcherRaw.scanInFlight
+      },
+      uiRefreshHealth: {
+        postImportRefreshMode: cleanString(postImportRefresh.mode || chromeToDesktopRaw.postImportRefreshMode),
+        renderRefreshCount: numberOrZero(postImportRefresh.events && postImportRefresh.events.length),
+        cumulativeRenderRefreshCount: numberOrZero(postImportRefresh.events && postImportRefresh.events.length),
+        refreshSuppressed: false,
+        refreshSuppressedCount: 0,
+        lastChangedFolderCount: numberOrZero(postImportRefresh.changedFolderCount || chromeToDesktopRaw.postImportRefreshChangedFolderCount),
+        lastChangedFields: []
+      },
+      loopPrevention: {
+        loopSuppressed: 0,
+        duplicateSuppressed: 0,
+        selfOriginSkipped: 0
+      },
+      watcher: {
+        running: !!watcherRaw.running,
+        mode: cleanString(watcherRaw.mode),
+        intervalMs: numberOrZero(watcherRaw.intervalMs),
+        pendingCount: numberOrZero(watcherRaw.pendingCount),
+        scanInFlight: !!watcherRaw.scanInFlight,
+        lastScanAt: watcherRaw.lastScanAt || null,
+        lastEventAt: watcherRaw.lastEventAt || null
+      },
+      deferred: {
+        deleteTombstone: 'deferred',
+        webdav: 'deferred'
+      }
+    };
+  }
+
   /* ── Register ────────────────────────────────────────────────────── */
   var existingSync = H2O.Studio.sync && typeof H2O.Studio.sync === 'object' ? H2O.Studio.sync : {};
   var desktopSyncApi = {
@@ -2420,6 +2646,7 @@
     chromeDesktopPropagationVersion: F19_CHROME_DESKTOP_VERSION,
     chromeDesktopHardeningTaxonomy: Object.assign({}, F19_SYNC_HARDENING_CODES),
     diagnose:        diagnose,
+    diagnoseHealth:  diagnoseHealth,
     /* M2d-1b polling watcher + Notify-mode API */
     startWatcher:         startWatcher,
     stopWatcher:          stopWatcher,
@@ -2452,6 +2679,11 @@
     importChromeLatestFromSyncFolder: importChromeLatestFromFolder,
     syncNow: folderSyncNow,
     diagnose: diagnose,
+    diagnoseHealth: diagnoseHealth,
+    health: Object.assign({}, existingSync.folder && existingSync.folder.health &&
+      typeof existingSync.folder.health === 'object' ? existingSync.folder.health : {}, {
+      diagnose: diagnoseHealth,
+    }),
     startWatcher: startWatcher,
     stopWatcher: stopWatcher,
     getWatcherState: getWatcherState,
