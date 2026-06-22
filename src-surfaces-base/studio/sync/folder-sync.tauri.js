@@ -62,6 +62,7 @@
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
+  var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var MAX_LEDGER_ENTRIES  = 100;
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
@@ -742,6 +743,40 @@
     if (verdict === 'disabled') return 'Folder auto-sync is disabled on this surface.';
     if (verdict === 'degraded') return 'Folder sync is running with loop or refresh suppression active.';
     return 'Folder sync needs attention.';
+  }
+
+  function healthTimeMs(value) {
+    if (typeof value === 'number' && isFinite(value)) return value;
+    return parseTimeMs(value);
+  }
+
+  function healthEventTimeMs(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return healthTimeMs(value.at || value.detectedAt || value.updatedAt);
+    }
+    return healthTimeMs(value);
+  }
+
+  function isRecentHealthEvent(ms) {
+    return !!(ms && Date.now() - ms >= 0 && Date.now() - ms <= HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS);
+  }
+
+  function shouldReportDesktopSchedulerNotFired(autoExportRaw, autoExportDtc) {
+    var raw = safeObject(autoExportRaw);
+    var desktopToChrome = safeObject(autoExportDtc);
+    if (desktopToChrome.pending || desktopToChrome.flushInFlight || raw.pending || raw.flushInFlight) return false;
+    if (!(desktopToChrome.autoExportEnabled === true || raw.enabled === true || raw.folderMutationAutoSyncEnabled === true)) {
+      return false;
+    }
+    var changeAt = healthEventTimeMs(raw.lastChange);
+    if (!isRecentHealthEvent(changeAt)) return false;
+    var scheduledAt = healthEventTimeMs(raw.lastScheduledAt || desktopToChrome.lastScheduledAt);
+    var exportedAt = Math.max(
+      healthEventTimeMs(raw.lastExportAt),
+      healthEventTimeMs(raw.lastExportedAt),
+      healthEventTimeMs(desktopToChrome.lastExportedAt)
+    );
+    return scheduledAt < changeAt && exportedAt < changeAt;
   }
 
   function normalizeUnindexedReason(value) {
@@ -2533,7 +2568,8 @@
     if (!desktopAutoImportEnabled) addHealthCode(statusCodes, 'auto-import-disabled');
     if (!watcherRaw.folderPath) addHealthCode(blockers, 'no-folder-handle');
     if (watcherRaw.mode === 'off' && !desktopAutoImportEnabled) addHealthCode(statusCodes, 'auto-sync-disabled');
-    if (desktopAutoExportEnabled && !autoExportRaw.lastScheduledAt && !autoExportRaw.lastExportedAt) {
+    if (shouldReportDesktopSchedulerNotFired(autoExportRaw, autoExportDtc)) {
+      addHealthCode(warnings, 'scheduler-not-fired');
       addHealthCode(statusCodes, 'scheduler-not-fired');
     }
     addHealthCodesFromError(blockers, autoExportDtc.lastExportError || autoExportRaw.lastExportError);

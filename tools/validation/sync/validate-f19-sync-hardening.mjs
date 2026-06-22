@@ -343,6 +343,7 @@ async function runVmProofs() {
   assert(desktopHealth?.deferred?.deleteTombstone === 'deferred', 'Desktop folder health delete/tombstone deferral missing');
   assert(desktopHealth?.deferred?.webdav === 'deferred', 'Desktop folder health WebDAV deferral missing');
   assert(typeof desktopApi.folder?.diagnoseHealth === 'function', 'Desktop folder diagnoseHealth API missing');
+  assert(!desktopHealth?.statusCodes?.includes('scheduler-not-fired'), 'Desktop idle folder health must not report scheduler-not-fired');
   const desktopInvalid = await desktopApi.importChromeLatestBundle({ schema: 'unsupported' }, { proofMode: true });
   assert(desktopInvalid.ok === false, 'Desktop invalid schema should fail closed');
   assert(desktopInvalid.blockers.includes('transport-schema-unsupported'), 'Desktop invalid schema missing normalized blocker');
@@ -365,6 +366,7 @@ async function runVmProofs() {
   assert(chromeHealth?.deferred?.deleteTombstone === 'deferred', 'Chrome folder health delete/tombstone deferral missing');
   assert(chromeHealth?.deferred?.webdav === 'deferred', 'Chrome folder health WebDAV deferral missing');
   assert(typeof chromeApi.diagnoseHealth === 'function', 'Chrome folder diagnoseHealth API missing');
+  assert(!chromeHealth?.statusCodes?.includes('scheduler-not-fired'), 'Chrome idle folder health must not report scheduler-not-fired');
   const chromeInvalid = await chromeApi.importLatestBundle({ schema: 'unsupported' }, { proofMode: true });
   assert(chromeInvalid.ok === false, 'Chrome invalid schema should fail closed');
   assert(chromeInvalid.blockers.includes('transport-schema-unsupported'), 'Chrome invalid schema missing normalized blocker');
@@ -391,6 +393,7 @@ function runStaticAssertions() {
     'classifyIncomingChromeTransport',
     'FOLDER_SYNC_HEALTH_SCHEMA',
     'function diagnoseHealth()',
+    'shouldReportDesktopSchedulerNotFired',
     "surface: 'desktop-studio'",
     "privacy: {",
     "redacted: true",
@@ -412,6 +415,7 @@ function runStaticAssertions() {
     'classifyIncomingDesktopTransport',
     'FOLDER_SYNC_HEALTH_SCHEMA',
     'function diagnoseHealth()',
+    'shouldReportChromeSchedulerNotFired',
     "surface: 'chrome-studio'",
     "privacy: {",
     "redacted: true",

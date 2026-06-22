@@ -49,6 +49,7 @@
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
+  var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
   var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
@@ -832,6 +833,37 @@
     if (verdict === 'disabled') return 'Folder auto-sync is disabled on this surface.';
     if (verdict === 'degraded') return 'Folder sync is running with loop or refresh suppression active.';
     return 'Folder sync needs attention.';
+  }
+
+  function healthTimeMs(value) {
+    if (typeof value === 'number' && isFinite(value)) return value;
+    return parseTimeMs(value);
+  }
+
+  function healthEventTimeMs(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return healthTimeMs(value.at || value.detectedAt || value.updatedAt);
+    }
+    return healthTimeMs(value);
+  }
+
+  function isRecentHealthEvent(ms) {
+    return !!(ms && Date.now() - ms >= 0 && Date.now() - ms <= HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS);
+  }
+
+  function shouldReportChromeSchedulerNotFired(raw, desktopToChromeRaw, blockerFlags) {
+    if (!blockerFlags || blockerFlags.schedulerNotFired !== true) return false;
+    if (!raw || !raw.autoSyncEnabled || !raw.connected) return false;
+    if (state.autoSyncTimer || state.autoSyncRunning || state.syncInFlight) return false;
+    var expectedAt = Math.max(
+      healthEventTimeMs(state.lastDesktopLatestPollDetectedAt),
+      healthEventTimeMs(state.lastDesktopToChromeExportWrittenAt),
+      healthEventTimeMs(desktopToChromeRaw && desktopToChromeRaw.lastDesktopLatestPollDetectedAt)
+    );
+    if (!isRecentHealthEvent(expectedAt)) return false;
+    var scheduledAt = healthEventTimeMs(state.autoSyncScheduledAt);
+    var attemptedAt = healthEventTimeMs(state.lastAutoSyncAttemptAt);
+    return scheduledAt < expectedAt && attemptedAt < expectedAt;
   }
 
   function classifyIncomingDesktopTransport(bundle, checksum) {
@@ -3692,7 +3724,10 @@
       addHealthCode(blockers, 'no-folder-handle');
     }
     if (autoSyncDisabled) addHealthCode(statusCodes, 'auto-sync-disabled');
-    if (blockerFlags.schedulerNotFired === true) addHealthCode(statusCodes, 'scheduler-not-fired');
+    if (shouldReportChromeSchedulerNotFired(raw, desktopToChromeRaw, blockerFlags)) {
+      addHealthCode(warnings, 'scheduler-not-fired');
+      addHealthCode(statusCodes, 'scheduler-not-fired');
+    }
     if (blockerFlags.simultaneousConflict === true ||
         cleanString(desktopToChromeRaw.simultaneousConflictStatus) === 'conflict-approval-required') {
       addHealthCode(blockers, 'simultaneous-conflict');

@@ -126,3 +126,35 @@ Additional targeted coverage was added to `validate-f19-sync-hardening.mjs` to v
 - Desktop reports local Desktop watcher/auto-export knowledge. It cannot directly inspect Chrome import state unless that state is reflected through the transport.
 - Delete/tombstone lifecycle remains deferred and must be designed before destructive sync propagation is enabled.
 - WebDAV/cloud/relay remain later transport adapters and are not implemented here.
+
+## Idle Status Consistency Polish
+
+Follow-up commit: `fix(sync): clarify folder health idle status`
+
+Runtime issue:
+
+- Desktop health could return `verdict: "healthy"` with `statusCodes: ["scheduler-not-fired"]`.
+- This was confusing because auto-export intentionally does not run on boot or idle startup, so a missing schedule/export is not a problem unless a recent mutation or detected export actually expected scheduler work.
+
+Root cause:
+
+- The Desktop health diagnostic emitted `scheduler-not-fired` whenever auto-export was enabled and there was no prior `lastScheduledAt` / `lastExportedAt`.
+- Chrome had an analogous direct mapping from the low-level `schedulerNotFired` flag. That flag is useful for raw diagnostics, but it is too broad for the health summary.
+
+Fix:
+
+- `scheduler-not-fired` is now only reported when a recent expected scheduling event exists and no scheduler/export attempt newer than that event is present.
+- When real, it is emitted in both `warnings[]` and `statusCodes[]`, which makes the verdict `warning` instead of a contradictory `healthy`.
+- Healthy idle state no longer emits `scheduler-not-fired`.
+- Sync behavior, export/import transport logic, redaction, delete/tombstone deferral, and WebDAV deferral are unchanged.
+
+Additional validation:
+
+```bash
+node --check src-surfaces-base/studio/sync/folder-import.mv3.js
+node --check src-surfaces-base/studio/sync/folder-sync.tauri.js
+node --check tools/validation/sync/validate-f19-sync-hardening.mjs
+node tools/validation/sync/validate-f19-sync-hardening.mjs
+```
+
+Result: passed. The hardening validator now also asserts that idle Chrome/Desktop health does not report `scheduler-not-fired`.
