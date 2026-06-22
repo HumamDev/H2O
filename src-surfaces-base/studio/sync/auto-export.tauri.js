@@ -32,6 +32,7 @@
   var SETTINGS_KEY = 'h2o:sync:autoexport:enabled:v1';
   var DIAGNOSTICS_KEY = 'h2o:sync:autoexport:diagnostics:v1';
   var DEBOUNCE_MS = 2000;
+  var FOLDER_METADATA_REASON_PREFIX = 'folder-metadata:';
   var STORE_NAMES = ['chats', 'snapshots', 'folders', 'labels', 'tags', 'categories'];
   var MAX_ERRORS = 20;
 
@@ -40,11 +41,13 @@
     loaded: false,
     loadPromise: null,
     enabled: false,
+    folderMutationAutoSyncEnabled: true,
     pending: false,
     debounceMs: DEBOUNCE_MS,
     timer: null,
     flushInFlight: false,
     rescheduleAfterFlush: false,
+    rescheduleReason: '',
     subscribersWired: false,
     wiredStores: [],
     missingStores: [],
@@ -127,6 +130,21 @@
     if (raw === true || raw === false) return !!raw;
     if (raw && typeof raw === 'object') return !!raw.enabled;
     return false;
+  }
+
+  function isFolderMutationReason(reason) {
+    return cleanString(reason).indexOf(FOLDER_METADATA_REASON_PREFIX) === 0;
+  }
+
+  function canRunForReason(reason) {
+    return !!state.enabled || (!!state.folderMutationAutoSyncEnabled && isFolderMutationReason(reason));
+  }
+
+  function lastExportAtIso() {
+    var ms = Number(state.lastExportAt || 0);
+    if (!ms) return '';
+    try { return new Date(ms).toISOString(); }
+    catch (_) { return String(ms); }
   }
 
   async function loadSetting() {
@@ -306,18 +324,19 @@
 
   function schedule(reason) {
     var cleanReason = cleanString(reason) || 'library-data-change';
-    if (!state.enabled) {
+    if (!canRunForReason(cleanReason)) {
       return {
         ok: false,
         phase: 'R2A-2',
         mode: 'desktop-latest-sync-bundle-auto-export',
         enabled: false,
+        folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
         scheduled: false,
         reason: cleanReason,
         status: 'auto-export-disabled',
       };
     }
-    wireStoreSubscriptions();
+    if (state.enabled) wireStoreSubscriptions();
     clearPendingTimer();
     state.pending = true;
     state.lastScheduledAt = Date.now();
@@ -330,22 +349,25 @@
       ok: true,
       phase: 'R2A-2',
       mode: 'desktop-latest-sync-bundle-auto-export',
-      enabled: true,
+      enabled: !!state.enabled,
+      folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
       scheduled: true,
       reason: cleanReason,
       debounceMs: state.debounceMs,
+      autoRunOnFolderMutation: !!state.folderMutationAutoSyncEnabled,
       status: 'auto-export-scheduled',
     };
   }
 
   async function flushNow(reason) {
     var cleanReason = cleanString(reason) || state.lastScheduledReason || 'manual-flush';
-    if (!state.enabled) {
+    if (!canRunForReason(cleanReason)) {
       return {
         ok: false,
         phase: 'R2A-2',
         mode: 'desktop-latest-sync-bundle-auto-export',
         enabled: false,
+        folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
         recordsWritten: 0,
         reason: cleanReason,
         status: 'auto-export-disabled',
@@ -357,7 +379,8 @@
         ok: false,
         phase: 'R2A-2',
         mode: 'desktop-latest-sync-bundle-auto-export',
-        enabled: true,
+        enabled: !!state.enabled,
+        folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
         recordsWritten: 0,
         reason: cleanReason,
         status: 'manual-export-unavailable',
@@ -368,11 +391,13 @@
     if (state.flushInFlight) {
       state.pending = true;
       state.rescheduleAfterFlush = true;
+      state.rescheduleReason = cleanReason;
       return {
         ok: false,
         phase: 'R2A-2',
         mode: 'desktop-latest-sync-bundle-auto-export',
-        enabled: true,
+        enabled: !!state.enabled,
+        folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
         pending: true,
         reason: cleanReason,
         status: 'auto-export-in-flight',
@@ -401,7 +426,8 @@
         ok: false,
         phase: 'R2A-2',
         mode: 'desktop-latest-sync-bundle-auto-export',
-        enabled: true,
+        enabled: !!state.enabled,
+        folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
         recordsWritten: 0,
         reason: cleanReason,
         error: String(error && (error.message || error)),
@@ -415,9 +441,11 @@
       return failure;
     } finally {
       state.flushInFlight = false;
-      if (state.rescheduleAfterFlush && state.enabled) {
+      if (state.rescheduleAfterFlush) {
+        var rescheduleReason = cleanString(state.rescheduleReason) || 'post-in-flight-store-change';
         state.rescheduleAfterFlush = false;
-        schedule('post-in-flight-store-change');
+        state.rescheduleReason = '';
+        schedule(rescheduleReason);
       }
     }
   }
@@ -429,6 +457,7 @@
       surface: 'desktop-tauri',
       mode: 'desktop-latest-sync-bundle-auto-export',
       enabled: !!state.enabled,
+      folderMutationAutoSyncEnabled: !!state.folderMutationAutoSyncEnabled,
       loaded: !!state.loaded,
       pending: !!state.pending,
       debounceMs: state.debounceMs,
@@ -442,6 +471,7 @@
       lastScheduledAt: state.lastScheduledAt,
       lastScheduledReason: state.lastScheduledReason,
       lastExportAt: state.lastExportAt,
+      lastExportedAt: lastExportAtIso(),
       lastExportStatus: state.lastExportStatus,
       lastExportPath: state.lastExportPath,
       lastExportBytes: state.lastExportBytes,
@@ -450,6 +480,21 @@
       manualExportAvailable: typeof exportFunction() === 'function',
       autoRunOnBoot: false,
       autoRunOnDataChange: !!state.enabled,
+      autoRunOnFolderMutation: !!state.folderMutationAutoSyncEnabled,
+      desktopToChrome: {
+        autoExportEnabled: !!state.enabled || !!state.folderMutationAutoSyncEnabled,
+        storeDataChangeAutoExportEnabled: !!state.enabled,
+        folderMutationAutoExportEnabled: !!state.folderMutationAutoSyncEnabled,
+        pending: !!state.pending,
+        flushInFlight: !!state.flushInFlight,
+        lastExportStatus: state.lastExportStatus,
+        lastExportedAt: lastExportAtIso(),
+        lastExportBytes: state.lastExportBytes,
+        lastExportPath: state.lastExportPath,
+        lastExportReason: state.lastExportReason,
+        lastScheduledAt: state.lastScheduledAt,
+        lastScheduledReason: state.lastScheduledReason,
+      },
       chromeAutoImport: false,
       bundleShapeChanged: false,
       errors: state.errors.slice(),

@@ -201,6 +201,11 @@
     return false;
   }
 
+  function isFolderAutoSyncExport(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    return opts.folderAutoSync === true || opts.folderMutationAutoSync === true;
+  }
+
   /* ── IndexedDB plumbing — read the existing folder handle ────────── */
   function openHandleDb() {
     return new Promise(function (resolve, reject) {
@@ -243,7 +248,7 @@
       throw new Error('File System Access API unavailable on this handle');
     }
     var current;
-    try { current = await handle.queryPermission({ mode: 'readwrite' }); }
+    try { current = await queryReadWritePermission(handle); }
     catch (e) { pushError('queryPermission', e); current = 'prompt'; }
     if (current === 'granted') return 'granted';
     var asked;
@@ -256,6 +261,22 @@
       throw new Error('readwrite permission not granted (got "' + asked + '")');
     }
     return asked;
+  }
+
+  async function queryReadWritePermission(handle) {
+    if (!handle || typeof handle.queryPermission !== 'function') return 'unknown';
+    try { return await handle.queryPermission({ mode: 'readwrite' }); }
+    catch (e) { pushError('queryReadWritePermission', e); return 'unknown'; }
+  }
+
+  function recordExportBlocked(payload) {
+    var p = payload && typeof payload === 'object' ? payload : {};
+    state.lastExportAt = String(p.startedAt || nowIso());
+    state.lastExportStatus = String(p.status || 'chrome-to-desktop-export-blocked');
+    state.lastExportFile = String(p.filename || '');
+    state.lastExportBytes = Number(p.bytes || 0);
+    state.lastExportError = String(p.error || '');
+    return p;
   }
 
   /* ── Service-worker round-trip to produce the bundle ──────────────── */
@@ -1551,9 +1572,10 @@
     var reason = String(opts.reason || 'manual');
     var startedAt = nowIso();
     var exportPath = chromeExportPath('');
+    var folderAutoSync = isFolderAutoSyncExport(opts);
 
     /* (1) Flag gate. */
-    if (!flagEnabled()) {
+    if (!flagEnabled() && !folderAutoSync) {
       var s1 = {
         ok: false,
         reason: reason,
@@ -1588,7 +1610,8 @@
         chromeWritesSyncFolder: false,
         path: exportPath,
         bytes: 0,
-        flagEnabled: true,
+        flagEnabled: flagEnabled(),
+        folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-export-in-flight',
         error: 'export already in flight',
         warnings: [],
@@ -1607,13 +1630,58 @@
       /* (2) Load directory handle. */
       var row = await loadStoredHandleRow();
       if (!row || !row.handle) {
+        if (folderAutoSync) {
+          return recordExportBlocked({
+            ok: false,
+            reason: reason,
+            startedAt: startedAt,
+            completedAt: nowIso(),
+            filename: '',
+            transport: CHROME_FILE,
+            direction: 'chrome-to-desktop',
+            chromeWritesSyncFolder: false,
+            path: exportPath,
+            bytes: 0,
+            flagEnabled: flagEnabled(),
+            folderAutoSync: true,
+            status: 'permission-required',
+            blockers: ['sync-folder-not-connected', 'permission-required'],
+            error: 'sync folder not connected — use Connect Folder first',
+            warnings: [],
+          });
+        }
         throw new Error('sync folder not connected — use Connect Folder first');
       }
       var dirHandle = row.handle;
       exportPath = chromeExportPath(dirHandle && dirHandle.name);
 
       /* (3) readwrite permission (user gesture required). */
-      await ensureReadWritePermission(dirHandle);
+      if (folderAutoSync) {
+        var writePermission = await queryReadWritePermission(dirHandle);
+        if (writePermission !== 'granted') {
+          return recordExportBlocked({
+            ok: false,
+            reason: reason,
+            startedAt: startedAt,
+            completedAt: nowIso(),
+            filename: '',
+            transport: CHROME_FILE,
+            direction: 'chrome-to-desktop',
+            chromeWritesSyncFolder: false,
+            path: exportPath,
+            bytes: 0,
+            flagEnabled: flagEnabled(),
+            folderAutoSync: true,
+            permission: writePermission,
+            status: 'permission-required',
+            blockers: ['permission-required'],
+            error: 'readwrite permission not granted (got "' + writePermission + '")',
+            warnings: [],
+          });
+        }
+      } else {
+        await ensureReadWritePermission(dirHandle);
+      }
 
       /* (4) Pull any pending native Save-to-Folder snapshot payload into the
        * same archive backend export coverage reads. This is intentionally a
@@ -1652,7 +1720,8 @@
           chromeWritesSyncFolder: false,
           path: exportPath,
           bytes: 0,
-          flagEnabled: true,
+          flagEnabled: flagEnabled(),
+          folderAutoSync: folderAutoSync,
           status: 'coverage-blocked',
           error: blockers[0],
           warnings: warnings,
@@ -1698,7 +1767,8 @@
         path: exportPath,
         bytes: bytes,
         atomicMethod: atomicMethod,
-        flagEnabled: true,
+        flagEnabled: flagEnabled(),
+        folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-exported',
         blockers: blockers,
         warnings: warnings,
@@ -1742,7 +1812,8 @@
         path: exportPath,
         bytes: bytes,
         atomicMethod: atomicMethod,
-        flagEnabled: true,
+        flagEnabled: flagEnabled(),
+        folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-export-failed',
         warnings: warnings,
         errors: errors,

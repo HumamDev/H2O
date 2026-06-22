@@ -73,6 +73,7 @@
   const PROTECTED_CANONICAL_FOLDER_NAME_KEYS = new Set(['study', 'case', 'dev', 'code', 'tech', 'english']);
   const RESERVED_FOLDER_METADATA_NAME_KEYS = new Set(['all', 'archive', 'archived', 'link', 'linked', 'links', 'recent', 'recents', 'saved', 'unfiled']);
   const STUDIO_USER_FOLDER_ACTION_SOURCES = new Set(['studio-actions', 'desktop-user-folder-create', 'chrome-user-folder-create']);
+  const CHROME_FOLDER_AUTO_EXPORT_OPERATION_TYPES = new Set(['create-folder', 'rename-folder', 'change-folder-color']);
   const SNAPSHOT_PAYLOAD_REQUEST_TIMEOUT_MS = 5000;
   const SNAPSHOT_PAYLOAD_REQUEST_POLL_MS = 250;
   const FOLDER_METADATA_STUDIO_BROADCAST_MESSAGE = 'h2o:library:studio-broadcast:v1';
@@ -190,6 +191,11 @@
     lastChromeFolderColorResultCount: 0,
     lastChromeFolderMutationRoute: '',
     lastChromeFolderMutationBlocker: '',
+    lastChromeFolderAutoExportAt: 0,
+    lastChromeFolderAutoExportReason: '',
+    lastChromeFolderAutoExportStatus: '',
+    lastChromeFolderAutoExportError: '',
+    lastChromeFolderAutoExportResult: null,
     pendingTimer: null,
     pendingReasons: new Set(),
     subscribers: new Set(),
@@ -2009,6 +2015,7 @@
     result.chromeColorMutationStatus = existingIndex >= 0 ? 'updated' : 'inserted';
     state.lastChromeFolderColorResultCount += 1;
     try { coalesceEmit('chrome-folder-color-apply'); } catch {}
+    scheduleChromeFolderAutoExport(operation, result, 'folder-metadata:chrome-local-color');
     return result;
   }
 
@@ -2114,6 +2121,7 @@
     state.lastFolderMetadataResultBlockers = Array.isArray(settledResult?.blockers)
       ? settledResult.blockers.map((entry) => String(entry?.code || '')).filter(Boolean).slice(0, 8)
       : [];
+    scheduleChromeFolderAutoExport(pending.operation, settledResult, 'folder-metadata:native-owner-apply');
     pending.resolve(settledResult);
     return true;
   }
@@ -2159,6 +2167,58 @@
       return true;
     } catch (e) {
       err('auto-import.trigger', e);
+      return false;
+    }
+  }
+
+  function scheduleChromeFolderAutoExport(operation, result, reason = '') {
+    try {
+      if (currentPlatformAdapter() !== 'mv3') return false;
+      const opType = String(result?.operationType || operation?.operationType || '').trim();
+      if (!CHROME_FOLDER_AUTO_EXPORT_OPERATION_TYPES.has(opType)) return false;
+      if (result?.ok !== true || result?.applied !== true) return false;
+      const folder = H2O.Studio?.sync?.folder;
+      const scheduler = folder && typeof folder.scheduleChromeToDesktopExport === 'function'
+        ? folder.scheduleChromeToDesktopExport
+        : null;
+      const exportReason = String(reason || `folder-metadata:${opType}`).trim();
+      state.lastChromeFolderAutoExportAt = Date.now();
+      state.lastChromeFolderAutoExportReason = exportReason;
+      state.lastChromeFolderAutoExportResult = null;
+      if (!scheduler) {
+        state.lastChromeFolderAutoExportStatus = 'chrome-folder-auto-export-unavailable';
+        state.lastChromeFolderAutoExportError = 'H2O.Studio.sync.folder.scheduleChromeToDesktopExport unavailable';
+        return false;
+      }
+      state.lastChromeFolderAutoExportStatus = 'export-pending';
+      state.lastChromeFolderAutoExportError = '';
+      const scheduled = scheduler.call(folder, {
+        reason: exportReason,
+        operationType: opType,
+        folderId: String(result?.folderId || result?.after?.folderId || result?.after?.id || operation?.folderId || ''),
+      });
+      if (scheduled && typeof scheduled.then === 'function') {
+        scheduled.then((scheduledResult) => {
+          state.lastChromeFolderAutoExportResult = scheduledResult && typeof scheduledResult === 'object'
+            ? { ...scheduledResult }
+            : null;
+          state.lastChromeFolderAutoExportStatus = String(scheduledResult?.status || state.lastChromeFolderAutoExportStatus || '');
+          state.lastChromeFolderAutoExportError = String(scheduledResult?.error || '');
+        }).catch((e) => {
+          state.lastChromeFolderAutoExportStatus = 'chrome-folder-auto-export-schedule-failed';
+          state.lastChromeFolderAutoExportError = String(e?.message || e || 'schedule-failed');
+          err('chrome-folder-auto-export.schedule.async', e);
+        });
+      } else {
+        state.lastChromeFolderAutoExportResult = scheduled && typeof scheduled === 'object' ? { ...scheduled } : null;
+        state.lastChromeFolderAutoExportStatus = String(scheduled?.status || state.lastChromeFolderAutoExportStatus || '');
+        state.lastChromeFolderAutoExportError = String(scheduled?.error || '');
+      }
+      return true;
+    } catch (e) {
+      state.lastChromeFolderAutoExportStatus = 'chrome-folder-auto-export-schedule-failed';
+      state.lastChromeFolderAutoExportError = String(e?.message || e || 'schedule-failed');
+      err('chrome-folder-auto-export.schedule', e);
       return false;
     }
   }
@@ -2544,6 +2604,13 @@
         chromeFolderColorResultCount: state.lastChromeFolderColorResultCount,
         chromeFolderMutationRoute: state.lastChromeFolderMutationRoute,
         chromeFolderMutationBlocker: state.lastChromeFolderMutationBlocker,
+        chromeFolderAutoExport: {
+          at: state.lastChromeFolderAutoExportAt,
+          reason: state.lastChromeFolderAutoExportReason,
+          status: state.lastChromeFolderAutoExportStatus,
+          error: state.lastChromeFolderAutoExportError,
+          result: state.lastChromeFolderAutoExportResult ? { ...state.lastChromeFolderAutoExportResult } : null,
+        },
         pendingRequests: state.pendingFolderMetadataRequests.size,
         lastRequestAt: state.lastFolderMetadataRequestAt,
         lastRequestId: state.lastFolderMetadataRequestId,

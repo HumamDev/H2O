@@ -896,6 +896,8 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'transport: CHROME_FILE', 'Chrome export transport result');
   assertContains(autoImportFile, 'chromeWritesSyncFolder: true', 'Chrome export write marker');
   assertContains(autoImportFile, 'chrome-to-desktop-exported', 'Chrome export success status');
+  assertContains(autoImportFile, 'folderAutoSync', 'Chrome folder mutation export bypasses only the legacy broad export flag');
+  assertContains(autoImportFile, 'permission-required', 'Chrome auto export reports missing write permission precisely');
   assertContains(autoImportFile, 'chromeExportCoverage', 'Chrome export coverage diagnostic');
   assertContains(autoImportFile, 'function displayClass', 'display classification helper');
   assertContains(autoImportFile, 'view === \'link\' || view === \'linked\'', 'Link display rows are exported as linked rows');
@@ -909,6 +911,9 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'var LATEST_FILE = \'latest.json\'', 'Desktop import transport constant');
   assertContains(folderImportFile, 'var CHROME_LATEST_FILE = \'chrome-latest.json\'', 'Chrome export transport constant');
   assertContains(folderImportFile, 'function exportChromeToSyncFolder', 'direction-specific Chrome export API');
+  assertContains(folderImportFile, 'function scheduleChromeToDesktopExport', 'Chrome folder mutation debounced export scheduler');
+  assertContains(folderImportFile, 'lastExportStatus', 'Chrome export status persisted in folder diagnostics');
+  assertContains(folderImportFile, 'chromeToDesktop', 'Chrome folder sync bidirectional diagnostic direction');
   assertContains(folderImportFile, 'function wantsChromeToDesktopExport', 'direction selector');
   assertContains(folderImportFile, 'autoImport.exportNow', 'folder API delegates to Chrome export');
   assertContains(folderImportFile, 'syncNowDirection: \'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })\'', 'documented direction-specific syncNow');
@@ -919,6 +924,8 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'importChromeLatestBundle', 'bundle API');
   assertContains(folderSyncFile, 'importChromeLatestFromFile', 'file API');
   assertContains(folderSyncFile, 'importChromeLatestFromFolder', 'folder API');
+  assertContains(folderSyncFile, 'runDesktopAutoImport', 'Desktop auto-import watcher path for chrome-latest.json');
+  assertContains(folderSyncFile, 'desktopAutoImport', 'Desktop auto-import diagnostic object');
   assertContains(folderSyncFile, 'var existingSync = H2O.Studio.sync', 'Desktop sync namespace merge');
   assertContains(folderSyncFile, 'var folderApi = Object.assign', 'Desktop sync.folder facade');
   assertContains(folderSyncFile, 'syncNow: folderSyncNow', 'Desktop folder syncNow facade');

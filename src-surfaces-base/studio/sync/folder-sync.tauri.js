@@ -63,6 +63,7 @@
   var MAX_LEDGER_ENTRIES  = 100;
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
+  var SYNC_FOLDER_NAME = 'H2O Studio Sync';
   /* Filename glob patterns. The first matches MV3 exporter output
    * (h2o-studio-full-bundle__<extIdFirst8>__<isoTimestamp>.json); the
    * second leaves room for a future short-format file; the third
@@ -138,6 +139,12 @@
     lastImportOrphanBindings:      0,
     lastImportOrphanBindingSample: [],
     lastImportOrphanBindingsAt:    null,
+    lastAutoImportAt:              null,
+    lastAutoImportStatus:          '',
+    lastAutoImportError:           '',
+    lastAutoImportPath:            '',
+    lastAutoImportBytes:           0,
+    lastAutoImportReason:          '',
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -186,6 +193,19 @@
     return null;
   }
 
+  function getHomeBaseDir() {
+    return 21;
+  }
+
+  function isAbsolutePath(path) {
+    var text = String(path || '');
+    return text.charAt(0) === '/' || /^[A-Za-z]:[\\/]/.test(text);
+  }
+
+  function readOptionsForPath(path) {
+    return isAbsolutePath(path) ? {} : { baseDir: getHomeBaseDir() };
+  }
+
   /* ── chrome.storage.local KV helpers (SQLite-backed on Desktop) ──── */
   function readKv(key) {
     return new Promise(function (resolve) {
@@ -216,7 +236,7 @@
 
   /* ── Defaults ─────────────────────────────────────────────────────── */
   function defaultConfig() {
-    return { schemaVersion: 1, mode: 'off', folderPath: '', updatedAt: '' };
+    return { schemaVersion: 1, mode: 'auto', folderPath: SYNC_FOLDER_NAME, updatedAt: '' };
   }
   function defaultLedger() {
     return { schemaVersion: 1, updatedAt: '', entries: [] };
@@ -281,7 +301,11 @@
   function fsReadDir(path) {
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
-    return invoke('plugin:fs|read_dir', { path: path });
+    var options = readOptionsForPath(path);
+    return invoke('plugin:fs|read_dir', { path: path, options: options }).catch(function (error) {
+      if (Object.keys(options).length === 0) throw error;
+      return invoke('plugin:fs|read_dir', { path: path });
+    });
   }
   /* tauri-plugin-fs v2 ships two reader commands:
    *   plugin:fs|read_text_file  — Rust returns String
@@ -296,12 +320,19 @@
     var invoke = getInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable');
     var raw;
+    var options = readOptionsForPath(path);
     try {
-      raw = await invoke('plugin:fs|read_text_file', { path: path });
+      raw = await invoke('plugin:fs|read_text_file', { path: path, options: options });
     } catch (textErr) {
       try {
-        raw = await invoke('plugin:fs|read_file', { path: path });
+        raw = await invoke('plugin:fs|read_file', { path: path, options: options });
       } catch (bytesErr) {
+        if (Object.keys(options).length > 0) {
+          try {
+            raw = await invoke('plugin:fs|read_text_file', { path: path });
+            return decodeToText(raw, path);
+          } catch (_) { /* preserve original paired error below */ }
+        }
         /* Surface the original text-read error since it's the canonical
          * path; include the bytes-read fallback error as context. */
         var msg = String((textErr && textErr.message) || textErr)
@@ -1672,11 +1703,55 @@
     });
   }
 
+  async function runDesktopAutoImport(filePath, reason) {
+    var cleanPath = String(filePath || '').trim();
+    var cleanReason = String(reason || 'desktop-auto-import').trim() || 'desktop-auto-import';
+    state.lastAutoImportAt = new Date().toISOString();
+    state.lastAutoImportReason = cleanReason;
+    state.lastAutoImportPath = cleanPath;
+    state.lastAutoImportError = '';
+    state.lastAutoImportStatus = 'import-pending';
+    state.lastAutoImportBytes = 0;
+    try {
+      var result = await importChromeLatestFromFile(cleanPath, {
+        trigger: 'desktop-auto-import',
+        reason: cleanReason,
+        autoImport: true,
+      });
+      state.lastAutoImportAt = new Date().toISOString();
+      state.lastAutoImportStatus = String(result && result.status || (result && result.ok ? 'imported' : 'blocked'));
+      state.lastAutoImportError = result && result.ok ? '' : String((result && (result.error || (result.blockers && result.blockers.join(',')))) || '');
+      try {
+        var ledger = await getLedger();
+        var latest = latestPropagationLedgerEntry(ledger, 'f19-chrome-desktop');
+        if (latest && latest.path === cleanPath) {
+          state.lastAutoImportBytes = Number(latest.sizeBytes || 0);
+        }
+      } catch (_) { /* diagnostic-only */ }
+      if (result && result.ok && H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
+        try { await H2O.LibraryIndex.refresh('desktop-auto-import:' + cleanReason); }
+        catch (e) { pushErr('autoImport.libraryIndex.refresh', e); }
+      }
+      return result;
+    } catch (e) {
+      state.lastAutoImportAt = new Date().toISOString();
+      state.lastAutoImportStatus = 'desktop-auto-import-failed';
+      state.lastAutoImportError = String((e && e.message) || e);
+      pushErr('autoImport', e);
+      return propagationResult(false, {
+        status: state.lastAutoImportStatus,
+        blockers: ['desktop-auto-import-failed'],
+        sourceSummary: { path: cleanPath }
+      });
+    }
+  }
+
   /* Single watcher tick: scan the configured folder once, walk candidates,
    * apply two-cycle file-stability check, emit 'new-candidate' for files
    * that are stable + not in the pending queue + not in the ledger, and
-   * always emit 'scan-complete' at the end. NEVER calls importFromFile —
-   * Notify mode is detection only. */
+   * always emit 'scan-complete' at the end. Notify mode is detection-only;
+   * auto mode imports stable chrome-latest.json through the guarded
+   * Chrome->Desktop propagation path. */
   async function runWatcherTick() {
     if (watcherState.scanInFlight) return;       /* single-flight */
     watcherState.scanInFlight = true;
@@ -1748,6 +1823,18 @@
         /* Stable + waited long enough. */
         if (c.fingerprint && pendingFingerprints[c.fingerprint]) {
           continue;  /* already queued */
+        }
+        if (watcherState.mode === 'auto' && String(c.filename || '').toLowerCase() === CHROME_LATEST_FILE) {
+          var autoImportedAt = new Date().toISOString();
+          var autoResult = await runDesktopAutoImport(c.path, 'watcher:auto:' + c.filename);
+          delete watcherState.sizeMap[c.path];
+          emitWatcherEvent({
+            kind: autoResult && autoResult.ok ? 'auto-imported' : 'auto-import-blocked',
+            at: autoImportedAt,
+            candidate: c,
+            result: autoResult,
+          });
+          continue;
         }
         var entry = {
           fingerprint: c.fingerprint,
@@ -1945,6 +2032,12 @@
       state: {
         lastScanAt: state.lastScanAt,
         lastImportAt: state.lastImportAt,
+        lastAutoImportAt: state.lastAutoImportAt,
+        lastAutoImportStatus: state.lastAutoImportStatus,
+        lastAutoImportError: state.lastAutoImportError,
+        lastAutoImportPath: state.lastAutoImportPath,
+        lastAutoImportBytes: state.lastAutoImportBytes,
+        lastAutoImportReason: state.lastAutoImportReason,
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
         /* Phase D — orphan-folder-binding visibility (visibility only,
@@ -1968,6 +2061,52 @@
         sizeMapTracking: Object.keys(watcherState.sizeMap).length,
         errors:         watcherState.errors.slice(-5),
         lastError:      watcherState.lastError,
+      },
+      desktopToChrome: {
+        autoExportEnabled: !!(H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport &&
+          H2O.Studio.sync.autoExport.diagnose && H2O.Studio.sync.autoExport.diagnose().desktopToChrome &&
+          H2O.Studio.sync.autoExport.diagnose().desktopToChrome.autoExportEnabled),
+        latestTransport: 'latest.json',
+        lastExportStatus: (function () {
+          try {
+            var d = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport &&
+              H2O.Studio.sync.autoExport.diagnose && H2O.Studio.sync.autoExport.diagnose();
+            return d && d.desktopToChrome ? d.desktopToChrome.lastExportStatus : '';
+          } catch (_) { return ''; }
+        })(),
+        lastExportedAt: (function () {
+          try {
+            var d = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport &&
+              H2O.Studio.sync.autoExport.diagnose && H2O.Studio.sync.autoExport.diagnose();
+            return d && d.desktopToChrome ? d.desktopToChrome.lastExportedAt : '';
+          } catch (_) { return ''; }
+        })(),
+        lastExportBytes: (function () {
+          try {
+            var d = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.autoExport &&
+              H2O.Studio.sync.autoExport.diagnose && H2O.Studio.sync.autoExport.diagnose();
+            return d && d.desktopToChrome ? d.desktopToChrome.lastExportBytes : 0;
+          } catch (_) { return 0; }
+        })(),
+      },
+      chromeToDesktop: {
+        chromeWritesSyncFolder: false,
+        desktopReadsChromeLatestJson: true,
+        autoImportEnabled: watcherState.mode === 'auto' && !!watcherState.folderPath,
+        lastImportStatus: state.lastAutoImportStatus,
+        lastImportedAt: state.lastAutoImportAt,
+        lastImportBytes: state.lastAutoImportBytes,
+        lastImportPath: state.lastAutoImportPath,
+        lastImportReason: state.lastAutoImportReason,
+        lastImportError: state.lastAutoImportError,
+        pendingActions: watcherState.pending.length,
+      },
+      desktopAutoImport: {
+        lastImportStatus: state.lastAutoImportStatus,
+        lastImportedAt: state.lastAutoImportAt,
+        lastImportError: state.lastAutoImportError,
+        watcherMode: watcherState.mode,
+        watcherRunning: watcherState.running,
       },
     };
   }

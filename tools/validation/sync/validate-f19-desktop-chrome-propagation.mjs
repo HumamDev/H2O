@@ -618,6 +618,8 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'library-propagation-tombstones-deferred', 'tombstone deferred taxonomy');
   assertContains(folderImportFile, 'library-propagation-apply-events-deferred', 'apply events deferred taxonomy');
   assertContains(folderImportFile, 'chromeStorageMayWriteSupportedRows', 'Chrome side-effect marker');
+  assertContains(folderImportFile, 'autoSyncEnabled: true', 'Chrome latest.json auto-import defaults enabled for connected sync folder');
+  assertContains(folderImportFile, 'chromeAutoImport', 'Chrome auto-import diagnostic object');
   assertContains(folderImportFile, 'desktop-shell-row-import-unsupported', 'Desktop shell row blocker');
   assertContains(folderImportFile, 'desktop-to-chrome-convergence-not-proven', 'Desktop to Chrome convergence blocker');
   assertContains(folderImportFile, 'conflictDecision', 'operator conflict decision');
@@ -628,8 +630,11 @@ if (failures.length === 0) {
   assertContains(libraryIndexFile, 'desktop-sync-folder-rehydrate', 'Desktop shell row rehydration source');
   assertContains(libraryIndexFile, 'durableBundleShellRowsRehydrated', 'durable rehydration diagnostic');
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
+  assertContains(autoExportFile, 'folderMutationAutoSyncEnabled: true', 'Desktop folder mutation auto-export lane defaults enabled');
+  assertContains(autoExportFile, 'autoRunOnFolderMutation', 'Desktop folder mutation auto-export diagnostic');
   assertContains(autoExportFile, "status: missing.length ? 'auto-export-subscriptions-partially-wired' : 'auto-export-subscriptions-wired'", 'auto-export retryable partial subscription wiring');
   assertContains(folderSyncFile, 'exportDesktopLatestForChrome', 'Desktop folder.syncNow desktop-to-chrome export branch');
+  assertContains(folderSyncFile, "mode: 'auto'", 'Desktop sync folder default auto import mode');
   assertContains(folderSyncFile, "supportedDirections: ['chrome-to-desktop', 'desktop-to-chrome']", 'Desktop folder syncNow bidirectional direction marker');
   assertContains(folderSyncFile, 'desktopWritesLatestJson: true', 'Desktop folder facade latest.json write marker');
   assertContains(folderActionsFile, 'scheduleDesktopLatestExport', 'folder metadata action auto-export scheduling hook');
@@ -648,6 +653,7 @@ if (failures.length === 0) {
   assertContains(librarySyncFile, 'desktopColorFallbackStatus', 'Desktop color diagnostic status');
   assertContains(librarySyncFile, 'desktopColorResultCount', 'Desktop color diagnostic count');
   assertContains(librarySyncFile, 'requestChromeFolderMetadataOperationIfLocal', 'Chrome local folder metadata mutation resolver');
+  assertContains(librarySyncFile, 'scheduleChromeFolderAutoExport', 'Chrome confirmed folder mutations schedule chrome-latest export');
   assertContains(librarySyncFile, 'previewChromeColorFolderMetadataOperation', 'Chrome local color preview bridge');
   assertContains(librarySyncFile, 'applyChromeColorFolderMetadataOperation', 'Chrome local color apply bridge');
   assertContains(librarySyncFile, 'isChromeStudioMutableFolderRow', 'Chrome mutable imported/studio folder classifier');

@@ -58,6 +58,7 @@
   var AUTO_SYNC_MIN_INTERVAL_MS = 30000;
   var AUTO_SYNC_DELAY_MS = 1000;
   var AUTO_SYNC_BOOT_DELAY_MS = 1500;
+  var CHROME_EXPORT_DEBOUNCE_MS = 2000;
   var MAX_ERRORS = 20;
   var DESKTOP_CHROME_SUPPORTED_FIELDS = [
     'saved-chat-records',
@@ -112,7 +113,7 @@
     lastSyncError: '',
     lastSyncResult: null,
     syncInFlight: false,
-    autoSyncEnabled: false,
+    autoSyncEnabled: true,
     autoSyncEventsBound: false,
     autoSyncTimer: null,
     autoSyncScheduledAt: 0,
@@ -123,6 +124,20 @@
     lastAutoSyncReason: '',
     lastAutoSyncStatus: '',
     lastAutoSyncError: '',
+    chromeExportTimer: null,
+    chromeExportPending: false,
+    chromeExportInFlight: false,
+    chromeExportScheduledAt: 0,
+    chromeExportScheduledReason: '',
+    lastChromeExportAttemptAt: 0,
+    lastChromeExportAt: '',
+    lastChromeExportReason: '',
+    lastChromeExportStatus: '',
+    lastChromeExportError: '',
+    lastChromeExportFile: '',
+    lastChromeExportBytes: 0,
+    lastChromeExportPermission: 'unknown',
+    lastChromeExportBlockers: [],
     errors: [],
   };
 
@@ -297,12 +312,25 @@
     state.lastSyncError = cleanString(saved.lastSyncError);
     state.lastFileLastModified = numberOrZero(saved.lastFileLastModified);
     state.lastFileSize = numberOrZero(saved.lastFileSize);
-    state.autoSyncEnabled = !!saved.autoSyncEnabled;
+    state.autoSyncEnabled = Object.prototype.hasOwnProperty.call(saved, 'autoSyncEnabled')
+      ? saved.autoSyncEnabled !== false
+      : true;
     state.lastAutoSyncAttemptAt = numberOrZero(saved.lastAutoSyncAttemptAt);
     state.lastAutoSyncAt = cleanString(saved.lastAutoSyncAt);
     state.lastAutoSyncReason = cleanString(saved.lastAutoSyncReason);
     state.lastAutoSyncStatus = cleanString(saved.lastAutoSyncStatus);
     state.lastAutoSyncError = cleanString(saved.lastAutoSyncError);
+    state.lastChromeExportAttemptAt = numberOrZero(saved.lastChromeExportAttemptAt);
+    state.lastChromeExportAt = cleanString(saved.lastChromeExportAt);
+    state.lastChromeExportReason = cleanString(saved.lastChromeExportReason);
+    state.lastChromeExportStatus = cleanString(saved.lastChromeExportStatus);
+    state.lastChromeExportError = cleanString(saved.lastChromeExportError);
+    state.lastChromeExportFile = cleanString(saved.lastChromeExportFile);
+    state.lastChromeExportBytes = numberOrZero(saved.lastChromeExportBytes);
+    state.lastChromeExportPermission = cleanString(saved.lastChromeExportPermission) || state.lastChromeExportPermission;
+    state.lastChromeExportBlockers = Array.isArray(saved.lastChromeExportBlockers)
+      ? saved.lastChromeExportBlockers.map(cleanString).filter(Boolean).slice(0, 8)
+      : [];
   }
 
   async function persistState(patch) {
@@ -329,9 +357,22 @@
       lastAutoSyncReason: state.lastAutoSyncReason,
       lastAutoSyncStatus: state.lastAutoSyncStatus,
       lastAutoSyncError: state.lastAutoSyncError,
+      chromeExportPending: !!state.chromeExportPending,
+      chromeExportInFlight: !!state.chromeExportInFlight,
+      chromeExportScheduledAt: state.chromeExportScheduledAt,
+      chromeExportScheduledReason: state.chromeExportScheduledReason,
+      lastChromeExportAttemptAt: state.lastChromeExportAttemptAt,
+      lastChromeExportAt: state.lastChromeExportAt,
+      lastChromeExportReason: state.lastChromeExportReason,
+      lastChromeExportStatus: state.lastChromeExportStatus,
+      lastChromeExportError: state.lastChromeExportError,
+      lastChromeExportFile: state.lastChromeExportFile,
+      lastChromeExportBytes: state.lastChromeExportBytes,
+      lastChromeExportPermission: state.lastChromeExportPermission,
+      lastChromeExportBlockers: state.lastChromeExportBlockers.slice(),
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
-      chromeWritesSyncFolder: false,
+      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
     }, safeObject(patch));
     await writeKv(STATE_KEY, next);
   }
@@ -369,6 +410,16 @@
     }
   }
 
+  async function queryReadWritePermission(handle) {
+    if (!handle || typeof handle.queryPermission !== 'function') return 'unknown';
+    try {
+      return await handle.queryPermission({ mode: 'readwrite' });
+    } catch (error) {
+      pushError('query-readwrite-permission', error);
+      return 'unknown';
+    }
+  }
+
   async function requestReadPermission(handle) {
     if (!handle) return 'denied';
     var current = await queryPermission(handle);
@@ -387,6 +438,13 @@
     try { global.clearTimeout(state.autoSyncTimer); }
     catch (_) { /* ignore */ }
     state.autoSyncTimer = null;
+  }
+
+  function clearChromeExportTimer() {
+    if (!state.chromeExportTimer) return;
+    try { global.clearTimeout(state.chromeExportTimer); }
+    catch (_) { /* ignore */ }
+    state.chromeExportTimer = null;
   }
 
   function bindAutoSyncEvents() {
@@ -1921,8 +1979,21 @@
       lastAutoSyncReason: state.lastAutoSyncReason,
       lastAutoSyncStatus: state.lastAutoSyncStatus,
       lastAutoSyncError: state.lastAutoSyncError,
+      chromeExportPending: !!state.chromeExportPending,
+      chromeExportInFlight: !!state.chromeExportInFlight,
+      chromeExportDebounceMs: CHROME_EXPORT_DEBOUNCE_MS,
+      chromeExportScheduledAt: state.chromeExportScheduledAt,
+      chromeExportScheduledReason: state.chromeExportScheduledReason,
+      lastExportStatus: state.lastChromeExportStatus,
+      lastExportedAt: state.lastChromeExportAt,
+      lastExportFile: state.lastChromeExportFile,
+      lastExportBytes: state.lastChromeExportBytes,
+      lastExportError: state.lastChromeExportError,
+      lastExportReason: state.lastChromeExportReason,
+      lastExportPermission: state.lastChromeExportPermission,
+      lastExportBlockers: state.lastChromeExportBlockers.slice(),
       backgroundAutoImport: false,
-      chromeWritesSyncFolder: false,
+      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
       chromeDesktopExportApiAvailable: !!getChromeAutoImportApi(),
     };
   }
@@ -2011,11 +2082,179 @@
     }
   }
 
+  function normalizeBlockers(value) {
+    return Array.isArray(value)
+      ? value.map(cleanString).filter(Boolean).slice(0, 8)
+      : [];
+  }
+
+  async function rememberChromeExportResult(result, reason) {
+    var raw = safeObject(result);
+    var blockers = normalizeBlockers(raw.blockers);
+    state.chromeExportPending = false;
+    state.chromeExportInFlight = false;
+    state.lastChromeExportAt = cleanString(raw.exportedAt || raw.completedAt) || nowIso();
+    state.lastChromeExportReason = cleanString(reason || raw.reason || state.lastChromeExportReason);
+    state.lastChromeExportStatus = cleanString(raw.status) || (raw.ok === true ? 'chrome-to-desktop-exported' : 'chrome-to-desktop-export-blocked');
+    state.lastChromeExportError = cleanString(raw.error || raw.reason);
+    state.lastChromeExportFile = cleanString(raw.filename || (raw.ok === true ? CHROME_LATEST_FILE : ''));
+    state.lastChromeExportBytes = numberOrZero(raw.bytes);
+    state.lastChromeExportPermission = cleanString(raw.permission || state.lastChromeExportPermission || state.permission || 'unknown');
+    state.lastChromeExportBlockers = blockers;
+    try {
+      await persistState({
+        chromeExportPending: false,
+        chromeExportInFlight: false,
+        lastChromeExportAt: state.lastChromeExportAt,
+        lastChromeExportReason: state.lastChromeExportReason,
+        lastChromeExportStatus: state.lastChromeExportStatus,
+        lastChromeExportError: state.lastChromeExportError,
+        lastChromeExportFile: state.lastChromeExportFile,
+        lastChromeExportBytes: state.lastChromeExportBytes,
+        lastChromeExportPermission: state.lastChromeExportPermission,
+        lastChromeExportBlockers: state.lastChromeExportBlockers.slice(),
+      });
+    } catch (error) { pushError('persist-chrome-export-result', error); }
+    return raw;
+  }
+
+  async function recordChromeExportBlocked(reason, status, blockers, error, permission) {
+    var result = {
+      ok: false,
+      phase: PHASE,
+      mode: MODE,
+      direction: 'chrome-to-desktop',
+      transport: CHROME_LATEST_FILE,
+      path: syncFolderPath(CHROME_LATEST_FILE),
+      autoSync: true,
+      chromeWritesSyncFolder: false,
+      desktopWritesSyncFolder: false,
+      permission: cleanString(permission || state.permission || 'unknown'),
+      blockers: normalizeBlockers(blockers),
+      error: cleanString(error),
+      status: cleanString(status) || 'chrome-to-desktop-export-blocked',
+    };
+    await rememberChromeExportResult(result, reason);
+    return result;
+  }
+
+  async function runChromeToDesktopExport(reason) {
+    var cleanReason = cleanString(reason) || state.chromeExportScheduledReason || 'folder-metadata-auto-export';
+    if (state.chromeExportInFlight) {
+      return recordChromeExportBlocked(cleanReason, 'export-pending', ['chrome-to-desktop-export-in-flight'], 'export already in flight', state.lastChromeExportPermission);
+    }
+    state.chromeExportInFlight = true;
+    state.chromeExportPending = false;
+    state.lastChromeExportAttemptAt = Date.now();
+    state.lastChromeExportReason = cleanReason;
+    state.lastChromeExportStatus = 'export-pending';
+    state.lastChromeExportError = '';
+    state.lastChromeExportBlockers = [];
+    try {
+      await persistState({
+        chromeExportPending: false,
+        chromeExportInFlight: true,
+        lastChromeExportAttemptAt: state.lastChromeExportAttemptAt,
+        lastChromeExportReason: cleanReason,
+        lastChromeExportStatus: state.lastChromeExportStatus,
+        lastChromeExportError: '',
+        lastChromeExportBlockers: [],
+      });
+    } catch (error) { pushError('persist-chrome-export-start', error); }
+
+    try { await loadStoredHandle(); }
+    catch (error) { pushError('chrome-auto-export.load-folder-handle', error); }
+    if (!state.handle) {
+      return recordChromeExportBlocked(
+        cleanReason,
+        'permission-required',
+        ['sync-folder-not-connected', 'permission-required'],
+        'sync folder not connected — use Connect Folder first',
+        'unknown'
+      );
+    }
+    var writePermission = await queryReadWritePermission(state.handle);
+    state.lastChromeExportPermission = writePermission;
+    if (writePermission !== 'granted') {
+      return recordChromeExportBlocked(
+        cleanReason,
+        'permission-required',
+        ['permission-required'],
+        'readwrite permission not granted (got "' + writePermission + '")',
+        writePermission
+      );
+    }
+    try {
+      var result = await exportChromeToSyncFolder({
+        reason: cleanReason,
+        autoSync: true,
+        folderAutoSync: true,
+        folderMutationAutoSync: true,
+      });
+      return result;
+    } catch (error) {
+      pushError('run-chrome-to-desktop-export', error);
+      return recordChromeExportBlocked(
+        cleanReason,
+        'chrome-to-desktop-export-failed',
+        ['chrome-to-desktop-export-failed'],
+        String(error && (error.message || error)),
+        writePermission
+      );
+    } finally {
+      state.chromeExportInFlight = false;
+    }
+  }
+
+  async function scheduleChromeToDesktopExport(options) {
+    var opts = typeof options === 'string' ? { reason: options } : safeObject(options);
+    var cleanReason = cleanString(opts.reason) || 'folder-metadata-auto-export';
+    clearChromeExportTimer();
+    state.chromeExportPending = true;
+    state.chromeExportScheduledAt = Date.now();
+    state.chromeExportScheduledReason = cleanReason;
+    state.lastChromeExportReason = cleanReason;
+    state.lastChromeExportStatus = 'export-pending';
+    state.lastChromeExportError = '';
+    state.lastChromeExportBlockers = [];
+    try {
+      await persistState({
+        chromeExportPending: true,
+        chromeExportScheduledAt: state.chromeExportScheduledAt,
+        chromeExportScheduledReason: cleanReason,
+        lastChromeExportReason: cleanReason,
+        lastChromeExportStatus: state.lastChromeExportStatus,
+        lastChromeExportError: '',
+        lastChromeExportBlockers: [],
+      });
+    } catch (error) { pushError('persist-chrome-export-scheduled', error); }
+    state.chromeExportTimer = global.setTimeout(function () {
+      state.chromeExportTimer = null;
+      runChromeToDesktopExport(cleanReason).catch(function (error) {
+        pushError('scheduled-chrome-export', error);
+      });
+    }, CHROME_EXPORT_DEBOUNCE_MS);
+    return {
+      ok: true,
+      phase: PHASE,
+      mode: MODE,
+      direction: 'chrome-to-desktop',
+      transport: CHROME_LATEST_FILE,
+      autoSync: true,
+      chromeWritesSyncFolder: false,
+      scheduled: true,
+      pending: true,
+      reason: cleanReason,
+      delayMs: CHROME_EXPORT_DEBOUNCE_MS,
+      status: 'export-pending',
+    };
+  }
+
   async function exportChromeToSyncFolder(options) {
     var startedAt = Date.now();
     var opts = safeObject(options);
     if (state.syncInFlight) {
-      return {
+      return rememberChromeExportResult({
         ok: false,
         phase: PHASE,
         mode: MODE,
@@ -2026,14 +2265,14 @@
         chromeWritesSyncFolder: false,
         desktopWritesSyncFolder: false,
         status: 'sync-folder-sync-in-flight',
-      };
+      }, cleanString(opts.reason) || 'chrome-to-desktop-export');
     }
     try { await loadStoredHandle(); }
     catch (error) { pushError('chrome-to-desktop.load-folder-handle', error); }
 
     var autoImport = getChromeAutoImportApi();
     if (!autoImport) {
-      return {
+      return rememberChromeExportResult({
         ok: false,
         phase: PHASE,
         mode: MODE,
@@ -2047,7 +2286,7 @@
         status: 'chrome-to-desktop-export-unavailable',
         error: 'H2O.Studio.sync.autoImport.exportNow is unavailable',
         durationMs: Date.now() - startedAt,
-      };
+      }, cleanString(opts.reason) || 'chrome-to-desktop-export');
     }
 
     var raw;
@@ -2076,7 +2315,7 @@
       ? 'chrome-to-desktop-exported'
       : (cleanString(raw.status) || blockers[0] || 'chrome-to-desktop-export-blocked');
 
-    return Object.assign({}, raw, {
+    var normalized = Object.assign({}, raw, {
       ok: raw.ok === true,
       phase: PHASE,
       mode: MODE,
@@ -2092,6 +2331,8 @@
       status: status,
       durationMs: Date.now() - startedAt,
     });
+    await rememberChromeExportResult(normalized, cleanString(opts.reason) || 'chrome-to-desktop-export');
+    return normalized;
   }
 
   async function syncNow(options) {
@@ -2531,6 +2772,7 @@
       fullBundleV2ImportCompatible: true,
       chromeDesktopExport: {
         api: 'H2O.Studio.sync.folder.exportChromeToSyncFolder',
+        schedulerApi: 'H2O.Studio.sync.folder.scheduleChromeToDesktopExport',
         syncNowDirection: 'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })',
         transport: CHROME_LATEST_FILE,
         direction: 'chrome-to-desktop',
@@ -2538,6 +2780,42 @@
         chromeWritesSyncFolder: true,
         writesLatestJson: false,
         staleDesktopLatestJsonIgnored: true
+      },
+      desktopToChrome: {
+        autoImportEnabled: !!state.autoSyncEnabled,
+        autoExportEnabled: false,
+        latestTransport: LATEST_FILE,
+        lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
+        lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
+        lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        pending: !!state.autoSyncTimer,
+        inFlight: !!state.autoSyncRunning || !!state.syncInFlight,
+        permission: state.permission,
+      },
+      chromeToDesktop: {
+        autoExportEnabled: true,
+        chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
+        exportApiAvailable: !!getChromeAutoImportApi(),
+        transport: CHROME_LATEST_FILE,
+        lastExportStatus: state.lastChromeExportStatus,
+        lastExportedAt: state.lastChromeExportAt,
+        lastExportBytes: state.lastChromeExportBytes,
+        lastExportFile: state.lastChromeExportFile,
+        lastExportReason: state.lastChromeExportReason,
+        lastExportError: state.lastChromeExportError,
+        permission: state.lastChromeExportPermission || state.permission,
+        pending: !!state.chromeExportPending,
+        inFlight: !!state.chromeExportInFlight,
+        blockers: state.lastChromeExportBlockers.slice(),
+      },
+      chromeAutoImport: {
+        autoImportEnabled: !!state.autoSyncEnabled,
+        lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
+        lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
+        lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        permission: state.permission,
+        pending: !!state.autoSyncTimer,
+        running: !!state.autoSyncRunning,
       },
       automaticPolling: false,
       focusTriggerEnabled: !!state.autoSyncEnabled,
@@ -2561,6 +2839,7 @@
     syncNow: syncNow,
     exportChromeToSyncFolder: exportChromeToSyncFolder,
     syncChromeToDesktop: exportChromeToSyncFolder,
+    scheduleChromeToDesktopExport: scheduleChromeToDesktopExport,
     importLatestBundle: importLatestBundle,
     desktopChromePropagationSchema: PROPAGATION_SCHEMA,
     desktopChromePropagationVersion: F19_DESKTOP_CHROME_VERSION,
