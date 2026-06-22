@@ -47,6 +47,7 @@
   var DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review.diagnostic.v1';
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
+  var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -69,6 +70,7 @@
     'unsupported-record-kind': true,
     'self-originated': true,
     'local-comparison-unavailable': true,
+    'delete-request': true,
   };
   var STATUSES = {
     pending: true,
@@ -126,6 +128,11 @@
     warnings: [],
     warnMax: 20,
     subscribers: new Set(),
+    lastFolderDeleteRequestAt: null,
+    lastFolderDeleteRequestFolderId: '',
+    lastFolderDeleteRequestStatus: '',
+    folderDeleteRequestCreates: 0,
+    folderDeleteRequestDuplicates: 0,
   };
 
   function recordError(op, e) {
@@ -165,6 +172,32 @@
   function nullableString(value) {
     var s = cleanScalar(value);
     return s || null;
+  }
+
+  function readFolderId(input) {
+    if (input && typeof input === 'object') {
+      return cleanScalar(input.folderId || input.id || input.recordId);
+    }
+    return cleanScalar(input);
+  }
+
+  function folderDeleteRequestRecordId(folderId) {
+    return cleanScalar(folderId);
+  }
+
+  function folderDeleteRequestDedupeKey(folderId, requestId) {
+    return 'folder-delete-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
+  }
+
+  function parseRequestPayload(row) {
+    var raw = row && row.rawTombstoneJson;
+    if (!raw) return null;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isObject(parsed) && parsed.schema === FOLDER_DELETE_REQUEST_SCHEMA ? parsed : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   function isObject(value) {
@@ -261,6 +294,54 @@
       if (c && typeof c.randomUUID === 'function') return 'tombstone-review:' + c.randomUUID();
     } catch (_) { /* ignore */ }
     return 'tombstone-review:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+
+  function generateFolderDeleteRequestId() {
+    try {
+      var c = global.crypto || null;
+      if (c && typeof c.randomUUID === 'function') return 'folder-delete-request:' + c.randomUUID();
+    } catch (_) { /* ignore */ }
+    return 'folder-delete-request:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+
+  function shapeFolderDeleteRequestInput(input, options, requestId, requestedAt) {
+    var data = isObject(input) ? input : {};
+    var opts = isObject(options) ? options : {};
+    var folderId = readFolderId(input);
+    var folderName = cleanScalar(data.folderName || data.name || data.title || opts.folderName || opts.name || '');
+    var sourceSurface = cleanScalar(opts.sourceSurface || data.sourceSurface || 'chrome-studio') || 'chrome-studio';
+    var knownChatCount = Number(data.knownChatCount || data.knownStudioCount || data.localBindingCount || data.count || opts.knownChatCount || 0);
+    return {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: requestId,
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      folderId: folderId,
+      folderName: folderName || null,
+      folderNameAtRequest: folderName || null,
+      normalizedNameAtRequest: folderName ? folderName.replace(/\s+/g, ' ').toLowerCase() : null,
+      requestedAt: requestedAt,
+      requestedBy: 'chrome-studio',
+      sourceSurface: sourceSurface,
+      sourcePeerId: nullableString(opts.sourcePeerId || data.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: cleanScalar(opts.reason || data.reason || 'user-requested-folder-delete') || 'user-requested-folder-delete',
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: {
+        knownChatCountAtRequest: Number.isFinite(knownChatCount) ? Math.max(0, knownChatCount) : 0,
+        isCanonical: data.isCanonical === true,
+        sourceKind: nullableString(data.sourceKind || data.kind),
+        stateSource: nullableString(data.stateSource),
+      },
+    };
   }
 
   function readField(input, camel, snake) {
@@ -972,6 +1053,170 @@
         });
       })
       .catch(function (e) { recordError('createReview', e); throw e; });
+  }
+
+  function findPendingFolderDeleteRequest(folderIdInput) {
+    var folderId = readFolderId(folderIdInput);
+    if (!folderId) return Promise.resolve(null);
+    return listReviews({
+      classification: 'delete-request',
+      status: 'pending',
+      recordKind: 'folder',
+      recordId: folderDeleteRequestRecordId(folderId),
+      limit: MAX_LIST_LIMIT,
+    }).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).find(function (row) {
+        var payload = parseRequestPayload(row);
+        return payload && cleanScalar(payload.folderId) === folderId && cleanScalar(payload.status) === 'pending';
+      }) || null;
+    });
+  }
+
+  function listFolderDeleteRequests(filters) {
+    var f = isObject(filters) ? filters : {};
+    var folderId = readFolderId(f.folderId || f.id || f.recordId || '');
+    var query = {
+      classification: 'delete-request',
+      recordKind: 'folder',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (cleanScalar(f.status)) query.status = cleanScalar(f.status);
+    if (folderId) query.recordId = folderDeleteRequestRecordId(folderId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).filter(function (row) {
+        var payload = parseRequestPayload(row);
+        if (!payload) return false;
+        if (folderId && cleanScalar(payload.folderId) !== folderId) return false;
+        return true;
+      });
+    });
+  }
+
+  function requestFolderDelete(input, options) {
+    var folderId = readFolderId(input);
+    var requestedAt = nowIso();
+    if (!folderId) {
+      return Promise.resolve({
+        ok: false,
+        status: 'folder-identity-missing',
+        blockers: [{ code: 'folder-identity-missing' }],
+        noHardDelete: true,
+        noChatDelete: true,
+        desktopApplyRequired: true,
+      });
+    }
+    return ensureReady()
+      .then(function () { return findPendingFolderDeleteRequest(folderId); })
+      .then(function (existing) {
+        if (existing) {
+          state.folderDeleteRequestDuplicates += 1;
+          state.lastFolderDeleteRequestAt = requestedAt;
+          state.lastFolderDeleteRequestFolderId = folderId;
+          state.lastFolderDeleteRequestStatus = 'pending-existing';
+          return {
+            ok: true,
+            status: 'pending-existing',
+            duplicate: true,
+            folderId: folderId,
+            requestId: cleanScalar(existing.reviewId),
+            reviewId: cleanScalar(existing.reviewId),
+            review: existing,
+            payload: parseRequestPayload(existing),
+            noHardDelete: true,
+            noChatDelete: true,
+            desktopApplyRequired: true,
+          };
+        }
+        var requestId = generateFolderDeleteRequestId();
+        var payload = shapeFolderDeleteRequestInput(input, options, requestId, requestedAt);
+        var review = {
+          schema: REVIEW_SCHEMA,
+          reviewId: requestId,
+          classification: 'delete-request',
+          status: 'pending',
+          recordKind: 'folder',
+          recordId: folderDeleteRequestRecordId(folderId),
+          deleteReason: payload.reason,
+          remoteSyncPeerId: payload.sourcePeerId || 'chrome-studio',
+          receivedAt: requestedAt,
+          firstSeenAt: requestedAt,
+          lastSeenAt: requestedAt,
+          dedupeKey: folderDeleteRequestDedupeKey(folderId, requestId),
+          rawTombstoneJson: JSON.stringify(payload),
+          warningsJson: JSON.stringify([{ code: 'desktop-apply-required' }]),
+        };
+        return createReview(review).then(function (created) {
+          state.folderDeleteRequestCreates += 1;
+          state.lastFolderDeleteRequestAt = requestedAt;
+          state.lastFolderDeleteRequestFolderId = folderId;
+          state.lastFolderDeleteRequestStatus = 'pending-created';
+          notifySubscribers({
+            source: 'chrome-folder-delete-request',
+            op: 'requestFolderDelete',
+            folderId: folderId,
+            requestId: requestId,
+            reviewId: requestId,
+            status: 'pending',
+          });
+          return {
+            ok: true,
+            status: 'pending-created',
+            duplicate: false,
+            folderId: folderId,
+            requestId: requestId,
+            reviewId: requestId,
+            review: created,
+            payload: payload,
+            noHardDelete: true,
+            noChatDelete: true,
+            desktopApplyRequired: true,
+          };
+        });
+      })
+      .catch(function (e) {
+        recordError('requestFolderDelete', e);
+        return {
+          ok: false,
+          status: 'folder-delete-request-failed',
+          folderId: folderId,
+          blockers: [{ code: 'folder-delete-request-failed' }],
+          reason: String((e && e.message) || e),
+          noHardDelete: true,
+          noChatDelete: true,
+          desktopApplyRequired: true,
+        };
+      });
+  }
+
+  function diagnoseFolderDeleteRequests(options) {
+    var includeRows = !!(options && options.includeRows);
+    return Promise.all([
+      listFolderDeleteRequests({ status: 'pending', limit: MAX_LIST_LIMIT }),
+      listFolderDeleteRequests({ limit: MAX_LIST_LIMIT }),
+    ]).then(function (parts) {
+      var pending = parts[0] || [];
+      var all = parts[1] || [];
+      var result = {
+        schema: FOLDER_DELETE_REQUEST_SCHEMA + '.diagnostic',
+        ok: true,
+        installed: true,
+        surface: 'chrome-studio',
+        nonDestructive: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        desktopApplyRequired: true,
+        transportDeferred: true,
+        pendingCount: pending.length,
+        totalCount: all.length,
+        lastRequestAt: state.lastFolderDeleteRequestAt,
+        lastRequestFolderId: state.lastFolderDeleteRequestFolderId,
+        lastRequestStatus: state.lastFolderDeleteRequestStatus,
+        createsSinceBoot: state.folderDeleteRequestCreates,
+        duplicatesSinceBoot: state.folderDeleteRequestDuplicates,
+      };
+      if (includeRows) result.pending = pending;
+      return result;
+    });
   }
 
   function upsertReviewSighting(record) {
@@ -3358,6 +3603,8 @@
         duplicateCount: 0,
         cascadeReviewCount: 0,
         deleteVsEditCount: 0,
+        folderDeleteRequestCount: 0,
+        folderDeleteRequestPendingCount: 0,
         unsupportedKindCount: 0,
         initError: 'indexedDB unavailable',
         warnings: [{ code: 'indexeddb-unavailable' }],
@@ -3394,9 +3641,19 @@
           duplicateCount: findCount(byClassification, 'duplicate-remote-tombstone'),
           cascadeReviewCount: findCount(byClassification, 'cascade-review'),
           deleteVsEditCount: findCount(byClassification, 'delete-vs-edit'),
+          folderDeleteRequestCount: findCount(byClassification, 'delete-request'),
+          folderDeleteRequestPendingCount: rows.filter(function (row) {
+            return cleanScalar(row && row.classification) === 'delete-request' &&
+              cleanScalar(row && row.status) === 'pending';
+          }).length,
           unsupportedKindCount: findCount(byClassification, 'unsupported-record-kind'),
           lastReloadedAt: state.lastReloadedAt,
           lastWriteAt: state.lastWriteAt,
+          lastFolderDeleteRequestAt: state.lastFolderDeleteRequestAt,
+          lastFolderDeleteRequestFolderId: includeSensitive ? state.lastFolderDeleteRequestFolderId : '',
+          lastFolderDeleteRequestStatus: state.lastFolderDeleteRequestStatus,
+          folderDeleteRequestCreates: state.folderDeleteRequestCreates,
+          folderDeleteRequestDuplicates: state.folderDeleteRequestDuplicates,
           writesSinceBoot: state.writesSinceBoot,
           subscribers: state.subscribers.size,
           initError: state.initError,
@@ -3426,6 +3683,8 @@
           duplicateCount: 0,
           cascadeReviewCount: 0,
           deleteVsEditCount: 0,
+          folderDeleteRequestCount: 0,
+          folderDeleteRequestPendingCount: 0,
           unsupportedKindCount: 0,
           initError: state.initError || String((e && e.message) || e),
           warnings: state.warnings.concat([{ code: 'diagnose-failed' }]),
@@ -3445,6 +3704,10 @@
     saveNow: saveNow,
     subscribe: subscribe,
     createReview: createReview,
+    requestFolderDelete: requestFolderDelete,
+    findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
+    listFolderDeleteRequests: listFolderDeleteRequests,
+    diagnoseFolderDeleteRequests: diagnoseFolderDeleteRequests,
     upsertReviewSighting: upsertReviewSighting,
     getReview: getReview,
     getByDedupeKey: getByDedupeKey,
@@ -3467,6 +3730,7 @@
     buildDedupeKey: buildDedupeKey,
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
+      folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,

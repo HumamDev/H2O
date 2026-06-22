@@ -10,6 +10,7 @@
  *   update(folderId, patch),    // name/parentId/color/iconColor/meta passthrough
  *   remove(folderId),            // Desktop Phase 4A soft delete; also exposed as `delete`
  *   restore(folderIdOrTombstoneId),
+ *   requestDelete(folderId),     // Chrome Phase 4C request-only review row, no mutation
  *   bindChat(chatId, folderId),
  *   unbindChat(chatId),          // single-folder-per-chat — no folderId needed
  *   getForChat(chatId),          // returns the single folder row or null
@@ -27,8 +28,9 @@
  *      R4.1/R4.2/R4.3 actions modules.
  *   4. Returns a normalized result object {ok, action, status, ...}.
  *
- * Tauri-gated at load. On MV3/web this file is a silent no-op and does
- * not register anything; H2O.Studio.actions.folders stays undefined.
+ * Desktop mutation methods are Tauri-gated. On Chrome/MV3 this file
+ * installs only the Phase 4C requestDelete/list/diagnostic helpers; it
+ * does not expose remove/delete/apply and does not mutate folders.
  *
  * ── PRESERVED EXISTING BEHAVIOR ───────────────────────────────────────
  * S0F1b's `desktopSetFolderBinding` (which predates R4) continues to
@@ -95,11 +97,22 @@
     } catch (_) { /* swallow */ }
     return false;
   }
-  if (!detectTauri()) return;
+
+  function detectChromeExtension() {
+    try {
+      return !!(global.chrome && global.chrome.runtime && global.chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  }
 
   var H2O = global.H2O = global.H2O || {};
   H2O.Studio = H2O.Studio || {};
   H2O.Studio.actions = H2O.Studio.actions || {};
+  if (!detectTauri()) {
+    installChromeFolderDeleteRequestActions();
+    return;
+  }
   if (H2O.Studio.actions.folders && H2O.Studio.actions.folders.__installed) return;
 
   /* ── Constants ────────────────────────────────────────────────────── */
@@ -143,6 +156,101 @@
 
   function safeObject(value) {
     return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+  }
+
+  function chromeFolderDeleteReviewStore() {
+    try {
+      return (H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function chromeRequestBlockers(result) {
+    var rows = Array.isArray(result && result.blockers) ? result.blockers : [];
+    return rows.map(function (entry) {
+      if (typeof entry === 'string') return entry;
+      return cleanString(entry && entry.code);
+    }).filter(Boolean);
+  }
+
+  function chromeRequestResult(action, status, extra) {
+    return Object.assign({
+      ok: false,
+      action: cleanString(action),
+      status: cleanString(status),
+      surface: 'chrome-studio',
+      phase: 'phase4c-chrome-delete-request',
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+    }, extra || {});
+  }
+
+  async function chromeRequestDelete(folderInput, options) {
+    var folderId = cleanString(folderInput && (folderInput.folderId || folderInput.id || folderInput.recordId) || folderInput);
+    if (!folderId) {
+      return chromeRequestResult('requestDelete', 'folder-identity-missing', {
+        blockers: ['folder-identity-missing'],
+      });
+    }
+    var reviewStore = chromeFolderDeleteReviewStore();
+    if (!reviewStore || typeof reviewStore.requestFolderDelete !== 'function') {
+      return chromeRequestResult('requestDelete', 'tombstone-review-store-unavailable', {
+        folderId: folderId,
+        blockers: ['tombstone-review-store-unavailable'],
+      });
+    }
+    try {
+      var result = await reviewStore.requestFolderDelete(folderInput, options || {});
+      var ok = !!(result && result.ok);
+      return chromeRequestResult('requestDelete', ok ? cleanString(result.status) || 'pending' : cleanString(result && result.status) || 'folder-delete-request-failed', {
+        ok: ok,
+        folderId: cleanString(result && result.folderId) || folderId,
+        requestId: cleanString(result && result.requestId),
+        reviewId: cleanString(result && result.reviewId),
+        duplicate: !!(result && result.duplicate),
+        blockers: chromeRequestBlockers(result),
+        review: result && result.review || null,
+        payload: result && result.payload || null,
+      });
+    } catch (e) {
+      return chromeRequestResult('requestDelete', 'folder-delete-request-threw', {
+        folderId: folderId,
+        blockers: ['folder-delete-request-threw'],
+        reason: String((e && e.message) || e),
+      });
+    }
+  }
+
+  async function chromeListDeleteRequests(filters) {
+    var reviewStore = chromeFolderDeleteReviewStore();
+    if (!reviewStore || typeof reviewStore.listFolderDeleteRequests !== 'function') return [];
+    return reviewStore.listFolderDeleteRequests(filters || {});
+  }
+
+  async function chromeDiagnoseDeleteRequests(options) {
+    var reviewStore = chromeFolderDeleteReviewStore();
+    if (!reviewStore || typeof reviewStore.diagnoseFolderDeleteRequests !== 'function') {
+      return chromeRequestResult('diagnoseDeleteRequests', 'tombstone-review-store-unavailable', {
+        blockers: ['tombstone-review-store-unavailable'],
+      });
+    }
+    return reviewStore.diagnoseFolderDeleteRequests(options || {});
+  }
+
+  function installChromeFolderDeleteRequestActions() {
+    if (!detectChromeExtension()) return;
+    H2O.Studio.actions = H2O.Studio.actions || {};
+    var existing = H2O.Studio.actions.folders || {};
+    if (existing.__installed && typeof existing.requestDelete === 'function') return;
+    existing.__installed = true;
+    existing.__version = '0.1.0-phase4c-request';
+    existing.requestDelete = chromeRequestDelete;
+    existing.listDeleteRequests = chromeListDeleteRequests;
+    existing.diagnoseDeleteRequests = chromeDiagnoseDeleteRequests;
+    if (typeof existing.diagnose !== 'function') existing.diagnose = chromeDiagnoseDeleteRequests;
+    H2O.Studio.actions.folders = existing;
   }
 
   function pushError(op, err) {

@@ -40,6 +40,10 @@
     lastApply: null,
     lastError: '',
   };
+  const FOLDER_DELETE_REQUEST_UI_STATE = {
+    pendingFolderIds: new Set(),
+    lastLoadedAt: 0,
+  };
   let folderActionDelegationBound = false;
   const FOLDERS_UI_KEYS = [
     'h2o:prm:cgx:fldrs:state:ui:v1',
@@ -274,6 +278,19 @@
       style: 'display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(255,255,255,.68);background:rgba(255,255,255,.045);text-transform:none;letter-spacing:0',
       title: badge,
     }, badge)));
+  }
+
+  function folderDeleteRequestBadgeNode(item = {}) {
+    const badges = new Set((Array.isArray(item.badges) ? item.badges : [])
+      .map((badge) => String(badge || '').trim().toLowerCase())
+      .filter(Boolean));
+    if (item.deleteRequestPending === true) badges.add('delete-requested');
+    if (!badges.has('delete-requested')) return null;
+    return el('span', {
+      class: 'wbSidebarFolderDeleteRequestBadge',
+      style: 'display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(250,204,21,.22);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(254,240,138,.92);background:rgba(250,204,21,.08);text-transform:none;letter-spacing:0',
+      title: 'Folder delete request pending Desktop review',
+    }, 'delete requested');
   }
 
   function normalizeHexColor(raw = '') {
@@ -741,6 +758,25 @@
     return typeof actions?.delete === 'function' || typeof actions?.remove === 'function';
   }
 
+  function chromeFolderDeleteRequestActions() {
+    try {
+      const actions = W.H2O?.Studio?.actions?.folders;
+      if (actions && typeof actions.requestDelete === 'function') return actions;
+    } catch {}
+    return null;
+  }
+
+  function canUseChromeFolderDeleteRequest() {
+    if (studioPlatformAdapter() !== 'mv3') return false;
+    const actions = chromeFolderDeleteRequestActions();
+    if (actions && typeof actions.requestDelete === 'function') return true;
+    try {
+      return typeof W.H2O?.Studio?.store?.tombstoneReviews?.requestFolderDelete === 'function';
+    } catch {
+      return false;
+    }
+  }
+
   function folderMetadataOperationRequest() {
     try {
       const fn = W.H2O?.Studio?.sync?.folderMetadataOperations?.request;
@@ -1098,6 +1134,116 @@
 
   function desktopFolderSoftDeleteBlocker(item = {}) {
     return desktopFolderSoftDeleteBlockers(item)[0] || '';
+  }
+
+  function chromeFolderDeleteRequestBlockers(item = {}) {
+    const blockers = [];
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const name = String(item?.name || item?.label || item?.title || '').trim();
+    const normalizedName = String(item?.normalizedName || name || folderId || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const sourceKind = String(item?.sourceKind || item?.kind || '').trim().toLowerCase();
+    const source = String(item?.source || '').trim().toLowerCase();
+    const stateSource = String(item?.stateSource || '').trim().toLowerCase();
+    if (studioPlatformAdapter() !== 'mv3') addFolderBlocker(blockers, 'chrome-studio-required');
+    if (!folderId) addFolderBlocker(blockers, 'folder-identity-missing');
+    if (item?.isCanonical !== true) addFolderBlocker(blockers, 'local-review-folder-not-editable');
+    if (folderId === 'unfiled' || normalizedName === 'unfiled') addFolderBlocker(blockers, 'unfiled-folder');
+    if (['all', 'archive', 'archived', 'link', 'linked', 'links', 'recent', 'recents', 'saved'].includes(normalizedName)) {
+      addFolderBlocker(blockers, 'system-folder');
+    }
+    if (item?.protectedCanonicalFallback === true || item?.protected === true || item?.isProtected === true || item?.isSystem === true) {
+      addFolderBlocker(blockers, 'protected-folder');
+    }
+    if (sourceKind.includes('system') || source.includes('system') || stateSource.includes('system')) {
+      addFolderBlocker(blockers, 'system-folder');
+    }
+    if (sourceKind.includes('local-review') || sourceKind.includes('cleanup-review') ||
+        source.includes('local-review') || source.includes('cleanup-review') ||
+        stateSource.includes('local-review') || item?.reviewBucket) {
+      addFolderBlocker(blockers, 'local-review-folder-not-editable');
+    }
+    if (!canUseChromeFolderDeleteRequest()) addFolderBlocker(blockers, 'tombstone-review-store-unavailable');
+    return blockers;
+  }
+
+  function chromeFolderDeleteRequestBlocker(item = {}) {
+    return chromeFolderDeleteRequestBlockers(item)[0] || '';
+  }
+
+  function folderIdFromDeleteRequestReview(row) {
+    const recordId = String(row?.recordId || '').trim();
+    try {
+      const payload = JSON.parse(String(row?.rawTombstoneJson || '{}'));
+      const folderId = String(payload?.folderId || '').trim();
+      if (folderId) return folderId;
+    } catch {}
+    return recordId;
+  }
+
+  async function loadPendingChromeFolderDeleteRequestIds() {
+    if (studioPlatformAdapter() !== 'mv3') return FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds;
+    try {
+      const store = W.H2O?.Studio?.store?.tombstoneReviews;
+      const rows = typeof store?.listFolderDeleteRequests === 'function'
+        ? await store.listFolderDeleteRequests({ status: 'pending', limit: 1000 })
+        : [];
+      const next = new Set((Array.isArray(rows) ? rows : [])
+        .map(folderIdFromDeleteRequestReview)
+        .filter(Boolean));
+      FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds = next;
+      FOLDER_DELETE_REQUEST_UI_STATE.lastLoadedAt = Date.now();
+      return next;
+    } catch (e) {
+      err('folderDeleteRequest.loadPending', e);
+      return FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds;
+    }
+  }
+
+  async function requestChromeFolderDelete(item, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const blocker = chromeFolderDeleteRequestBlocker(item);
+    if (blocker) {
+      setStatus(`Blocked: ${blocker}`, 'blocked');
+      return { ok: false, status: blocker, blockers: [blocker] };
+    }
+    const folderId = String(item?.id || item?.folderId || '').trim();
+    const actions = chromeFolderDeleteRequestActions();
+    const store = W.H2O?.Studio?.store?.tombstoneReviews;
+    const requestFn = typeof actions?.requestDelete === 'function'
+      ? actions.requestDelete.bind(actions)
+      : (typeof store?.requestFolderDelete === 'function' ? store.requestFolderDelete.bind(store) : null);
+    if (!requestFn) {
+      setStatus('Blocked: tombstone-review-store-unavailable', 'blocked');
+      return { ok: false, status: 'tombstone-review-store-unavailable', blockers: ['tombstone-review-store-unavailable'] };
+    }
+    setStatus('Requesting Desktop review...', 'pending');
+    let result = null;
+    try {
+      result = await requestFn({
+        ...item,
+        folderId,
+        folderName: String(item?.name || item?.title || '').trim(),
+        sourceSurface: 'chrome-studio',
+      }, {
+        sourceSurface: 'chrome-studio',
+        reason: 'user-requested-folder-delete',
+      });
+    } catch (e) {
+      err('folderDeleteRequest.request', e);
+      setStatus(`Blocked: ${String(e?.message || e || 'request-failed')}`, 'blocked');
+      return { ok: false, status: 'folder-delete-request-threw', blockers: ['folder-delete-request-threw'] };
+    }
+    if (!result?.ok) {
+      const code = firstResultCode(result, String(result?.status || 'folder-delete-request-failed'));
+      setStatus(`Blocked: ${code}`, 'blocked');
+      return result || { ok: false, status: code, blockers: [code] };
+    }
+    FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId);
+    setStatus(result.duplicate ? 'Delete request already pending for Desktop review' : 'Delete request pending for Desktop review', 'ok');
+    W.requestAnimationFrame(() => {
+      try { renderFolders(); } catch (e) { err('folderDeleteRequest.renderPending', e); }
+    });
+    return result;
   }
 
   function navigateAfterDeletedFolder(folderId) {
@@ -2483,6 +2629,60 @@
     return [action, panel];
   }
 
+  function makeChromeFolderDeleteRequestPanel(item, pop, anchorEl) {
+    const blocker = chromeFolderDeleteRequestBlocker(item);
+    const label = 'Request delete (review on Desktop)';
+    if (blocker) {
+      return [makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+        disabled: true,
+        title: `Blocked: ${blocker}`,
+      })];
+    }
+    let pending = false;
+    let action = null;
+    const panel = el('div', {
+      class: 'wbSidebarNativePickerSection',
+      'data-menu-item': 'chrome-folder-delete-request-panel',
+      style: 'display:none;flex-direction:column;gap:6px;',
+    });
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Desktop review request'));
+    panel.appendChild(el('div', {
+      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);margin-bottom:4px;',
+    }, 'Chrome only creates a pending request. Desktop must review and apply the soft delete. No chats are deleted.'));
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'display:none;margin-top:2px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+    });
+    panel.appendChild(status);
+    const setStatus = (message, kind = '') => {
+      const text = String(message || '');
+      status.textContent = text;
+      status.dataset.kind = String(kind || '');
+      status.style.display = text ? 'block' : 'none';
+    };
+    action = makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, () => {
+      panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+      action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
+      if (pending || panel.style.display === 'none') return;
+      pending = true;
+      Promise.resolve(requestChromeFolderDelete(item, { setStatus }))
+        .finally(() => {
+          pending = false;
+          W.requestAnimationFrame(() => {
+            try { positionRowMenu(pop, anchorEl); } catch {}
+          });
+        });
+    }, {
+      keepOpen: true,
+      title: 'Create a non-destructive Desktop review request',
+    });
+    action.setAttribute('aria-haspopup', 'true');
+    action.setAttribute('aria-expanded', 'false');
+    return [action, panel];
+  }
+
   function folderHrefForId(folderId) {
     const id = String(folderId || '').trim();
     if (!id) return '';
@@ -3027,6 +3227,8 @@
       }
       if (studioIsTauri()) {
         makeDesktopFolderSoftDeletePanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
+      } else if (studioPlatformAdapter() === 'mv3') {
+        makeChromeFolderDeleteRequestPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
       } else if (folderDestructiveActionsEnabled()) {
         if (isCanonicalFolder && canRequestCanonicalFolderDeletePreview(item)) {
           makeCanonicalFolderDeletePreviewPanel(item, pop, anchorEl).forEach((node) => pop.appendChild(node));
@@ -3302,6 +3504,7 @@
         ? 'display:block;box-sizing:border-box;min-width:0;max-width:108px;padding:1px 5px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;'
         : null;
       const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
+      const deleteRequestBadge = kind === 'folders' ? folderDeleteRequestBadgeNode(item) : null;
       const title = countDetails ? `${name} — ${countDetails}` : name;
       const ariaLabel = countDetails ? `${name}, ${countDetails}` : name;
       const rowStyle = [
@@ -3380,6 +3583,12 @@
         }, [
           el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
           localReviewBadgeNodes(item),
+        ]) : deleteRequestBadge ? el('span', {
+          class: 'wbSidebarSectionItemLabel',
+          style: 'display:flex;flex-direction:column;gap:2px;min-width:0;white-space:normal;line-height:1.25',
+        }, [
+          el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
+          deleteRequestBadge,
         ]) : el('span', { class: 'wbSidebarSectionItemLabel' }, name),
         showInlineCount ? el('span', {
           class: `wbSidebarSectionItemCount${hasDetailedCount ? ' wbSidebarSectionItemCount--folderParity' : ''}`,
@@ -3449,6 +3658,7 @@
     host.dataset.h2oFolderCatalogReady = folderCatalogReady ? 'true' : 'false';
     host.dataset.h2oFolderDisplayModelAvailable = displayModelAvailable ? 'true' : 'false';
     host.dataset.h2oFolderRenderBlockedReason = renderBlockedReason;
+    const pendingDeleteRequestIds = await loadPendingChromeFolderDeleteRequestIds();
 
     const toSidebarItem = (row) => {
       const id = String(row?.folderId || row?.id || '').trim();
@@ -3463,6 +3673,9 @@
         section: 'folders',
       });
       const nativeCount = Number(row?.nativeMembershipCount ?? row?.canonicalCount ?? 0) || 0;
+      const badges = Array.isArray(row?.badges) ? row.badges.slice() : [];
+      const deleteRequestPending = pendingDeleteRequestIds.has(id);
+      if (deleteRequestPending && !badges.includes('delete-requested')) badges.push('delete-requested');
       return {
         id,
         folderId: id,
@@ -3477,7 +3690,8 @@
         linkedCount: Number(row?.linkedCount || 0),
         orphanCount: Number(row?.orphanCount || 0),
         localBindingCount: Number(row?.localBindingCount || 0),
-        badges: Array.isArray(row?.badges) ? row.badges : [],
+        badges: badges,
+        deleteRequestPending: deleteRequestPending,
         isCanonical: row?.isCanonical === true,
         isExtra: row?.isExtra === true,
         isTestCandidate: row?.isTestCandidate === true,
