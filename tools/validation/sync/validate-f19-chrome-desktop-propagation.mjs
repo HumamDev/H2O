@@ -914,6 +914,10 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'function scheduleChromeToDesktopExport', 'Chrome folder mutation debounced export scheduler');
   assertContains(folderImportFile, 'lastExportStatus', 'Chrome export status persisted in folder diagnostics');
   assertContains(folderImportFile, 'chromeToDesktop', 'Chrome folder sync bidirectional diagnostic direction');
+  assertContains(folderImportFile, 'function analyzeFolderMetadataAutoConflict', 'Chrome auto-import analyzes folder metadata conflicts before approval');
+  assertContains(folderImportFile, 'safe-folder-metadata-field-merge', 'safe folder metadata auto-merge marker');
+  assertContains(folderImportFile, 'conflict-approval-required', 'true simultaneous conflicts report approval required');
+  assertContains(folderImportFile, 'auto-approved-folder-metadata', 'safe folder metadata simultaneous conflict auto-approval diagnostic');
   assertContains(folderImportFile, 'function wantsChromeToDesktopExport', 'direction selector');
   assertContains(folderImportFile, 'autoImport.exportNow', 'folder API delegates to Chrome export');
   assertContains(folderImportFile, 'syncNowDirection: \'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })\'', 'documented direction-specific syncNow');
@@ -926,6 +930,9 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'importChromeLatestFromFolder', 'folder API');
   assertContains(folderSyncFile, 'runDesktopAutoImport', 'Desktop auto-import watcher path for chrome-latest.json');
   assertContains(folderSyncFile, 'desktopAutoImport', 'Desktop auto-import diagnostic object');
+  assertContains(folderSyncFile, 'phase3-legacy-manual-to-auto', 'Desktop legacy manual watcher config migrates to Phase 3 auto-import');
+  assertContains(folderSyncFile, 'PHASE3_AUTO_IMPORT_CONFIG_VERSION', 'Desktop auto-import config migration marker');
+  assertContains(folderSyncFile, 'desktopAutoImportEnabled', 'Desktop chrome-to-desktop diagnostics expose effective auto-import state');
   assertContains(folderSyncFile, 'var existingSync = H2O.Studio.sync', 'Desktop sync namespace merge');
   assertContains(folderSyncFile, 'var folderApi = Object.assign', 'Desktop sync.folder facade');
   assertContains(folderSyncFile, 'syncNow: folderSyncNow', 'Desktop folder syncNow facade');

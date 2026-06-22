@@ -138,6 +138,10 @@
     lastChromeExportBytes: 0,
     lastChromeExportPermission: 'unknown',
     lastChromeExportBlockers: [],
+    lastTransportConflictStatus: '',
+    lastTransportConflictReason: '',
+    lastTransportConflictDecision: '',
+    lastTransportConflictSummary: null,
     errors: [],
   };
 
@@ -648,6 +652,150 @@
       approvedBlockers: approved,
       warning: approved.length > 0 ? 'library-propagation-simultaneous-conflict-approved' : ''
     };
+  }
+
+  function folderMetadataRowId(row) {
+    return cleanString(row && (row.folderId || row.id || row.folder_id));
+  }
+
+  function folderMetadataRowName(row) {
+    return cleanString(row && (row.name || row.title || row.label));
+  }
+
+  function folderMetadataRowColor(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
+      ? row.meta : {};
+    return cleanString(row && (row.color || row.iconColor || meta.color || meta.iconColor)).toUpperCase();
+  }
+
+  function folderMetadataRowTimestampMs(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
+      ? row.meta : {};
+    return parseTimeMs(row && (row.updatedAt || row.updated_at || meta.updatedAt || meta.updated_at));
+  }
+
+  function folderMetadataRowsFromBundle(bundle) {
+    var found = readDesktopChromeFolderStateSource(bundle);
+    var source = found && found.source;
+    var rows = [];
+    if (source && typeof source === 'object' && !Array.isArray(source) && Array.isArray(source.folders)) {
+      for (var i = 0; i < source.folders.length; i += 1) {
+        var folder = sanitizeFolderForDesktopChrome(source.folders[i]);
+        if (folder) rows.push(folder);
+      }
+    }
+    return {
+      sourceKind: cleanString(found && found.sourceKind),
+      rows: rows
+    };
+  }
+
+  async function analyzeFolderMetadataAutoConflict(bundle) {
+    var incoming = folderMetadataRowsFromBundle(bundle);
+    if (!incoming.rows.length) {
+      return { safe: false, reason: 'folder-metadata-source-missing', changedFolderCount: 0, changedFields: [] };
+    }
+    var localState = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var localRows = Array.isArray(localState.folders) ? localState.folders : [];
+    var localById = Object.create(null);
+    for (var l = 0; l < localRows.length; l += 1) {
+      var localId = folderMetadataRowId(localRows[l]);
+      if (localId) localById[localId] = localRows[l];
+    }
+    var changed = [];
+    var localNewer = [];
+    var changedFields = [];
+    for (var i = 0; i < incoming.rows.length; i += 1) {
+      var row = incoming.rows[i];
+      var folderId = folderMetadataRowId(row);
+      if (!folderId) continue;
+      var local = localById[folderId] || null;
+      var fields = [];
+      if (!local) {
+        fields.push('create');
+      } else {
+        if (folderMetadataRowName(row) !== folderMetadataRowName(local)) fields.push('name');
+        if (folderMetadataRowColor(row) !== folderMetadataRowColor(local)) fields.push('color');
+      }
+      if (!fields.length) continue;
+      fields.forEach(function (field) { addUnique(changedFields, field); });
+      var incomingMs = folderMetadataRowTimestampMs(row);
+      var localMs = folderMetadataRowTimestampMs(local);
+      if (local && localMs && incomingMs && localMs > incomingMs) {
+        localNewer.push({ folderId: folderId, fields: fields.slice(), localUpdatedAtMs: localMs, incomingUpdatedAtMs: incomingMs });
+      } else if (local && localMs && !incomingMs) {
+        localNewer.push({ folderId: folderId, fields: fields.slice(), localUpdatedAtMs: localMs, incomingUpdatedAtMs: 0 });
+      }
+      changed.push({ folderId: folderId, fields: fields.slice(), incomingUpdatedAtMs: incomingMs, localUpdatedAtMs: localMs });
+    }
+    if (!changed.length) {
+      return {
+        safe: true,
+        reason: 'folder-metadata-no-field-difference',
+        sourceKind: incoming.sourceKind,
+        changedFolderCount: 0,
+        changedFields: []
+      };
+    }
+    if (localNewer.length) {
+      return {
+        safe: false,
+        reason: 'same-field-newer-local-folder-metadata',
+        sourceKind: incoming.sourceKind,
+        changedFolderCount: changed.length,
+        changedFields: changedFields,
+        localNewer: localNewer.slice(0, 8)
+      };
+    }
+    return {
+      safe: true,
+      reason: 'safe-folder-metadata-field-merge',
+      sourceKind: incoming.sourceKind,
+      changedFolderCount: changed.length,
+      changedFields: changedFields,
+      changed: changed.slice(0, 8)
+    };
+  }
+
+  async function resolveAutoSyncTransportBlockers(bundle, blockers, options) {
+    var resolved = resolveOperatorApprovedTransportBlockers(blockers, options);
+    state.lastTransportConflictStatus = '';
+    state.lastTransportConflictReason = '';
+    state.lastTransportConflictDecision = resolved.conflictDecision;
+    state.lastTransportConflictSummary = null;
+    if (resolved.blockers.indexOf('library-propagation-simultaneous-update-conflict') === -1) {
+      return resolved;
+    }
+    if (!options || options.autoSync !== true) {
+      state.lastTransportConflictStatus = 'conflict-approval-required';
+      state.lastTransportConflictReason = 'manual-or-non-auto-sync-simultaneous-conflict';
+      state.lastTransportConflictDecision = 'conflict-approval-required';
+      return Object.assign({}, resolved, {
+        conflictDecision: 'conflict-approval-required',
+        conflictApprovalRequired: true
+      });
+    }
+    var analysis = await analyzeFolderMetadataAutoConflict(bundle);
+    state.lastTransportConflictReason = cleanString(analysis.reason);
+    state.lastTransportConflictSummary = cloneJson(analysis);
+    if (!analysis.safe) {
+      state.lastTransportConflictStatus = 'conflict-approval-required';
+      state.lastTransportConflictDecision = 'conflict-approval-required';
+      return Object.assign({}, resolved, {
+        conflictDecision: 'conflict-approval-required',
+        conflictApprovalRequired: true,
+        autoFolderMetadataConflictAnalysis: analysis
+      });
+    }
+    var autoApproved = resolveOperatorApprovedTransportBlockers(blockers, { conflictDecision: 'approve-merge' });
+    state.lastTransportConflictStatus = 'auto-approved-folder-metadata';
+    state.lastTransportConflictDecision = 'auto-approve-folder-metadata';
+    return Object.assign({}, autoApproved, {
+      conflictDecision: 'auto-approve-folder-metadata',
+      conflictApproved: true,
+      autoApproved: true,
+      autoFolderMetadataConflictAnalysis: analysis
+    });
   }
 
   function hasAnyKeys(value, keys) {
@@ -1804,7 +1952,11 @@
       var result = await syncNow({ autoSync: true, reason: cleanReason });
       state.lastAutoSyncAt = nowIso();
       state.lastAutoSyncStatus = cleanString(result && result.status) || (result && result.ok ? 'auto-sync-ok' : 'auto-sync-failed');
-      state.lastAutoSyncError = cleanString(result && (result.error || result.reason));
+      state.lastAutoSyncError = cleanString(result && (
+        result.error ||
+        result.reason ||
+        (Array.isArray(result.blockers) ? result.blockers.join(',') : '')
+      ));
       await persistState({
         lastAutoSyncAttemptAt: state.lastAutoSyncAttemptAt,
         lastAutoSyncAt: state.lastAutoSyncAt,
@@ -2535,11 +2687,14 @@
       }
 
       var transportBlockers = classifyIncomingDesktopTransport(bundle, checksum);
-      var transportApproval = resolveOperatorApprovedTransportBlockers(transportBlockers, opts);
+      var transportApproval = await resolveAutoSyncTransportBlockers(bundle, transportBlockers, opts);
       transportBlockers = transportApproval.blockers;
       if (transportBlockers.length > 0) {
+        var transportBlockedStatus = transportApproval.conflictApprovalRequired
+          ? 'conflict-approval-required'
+          : 'blocked';
         var blockedPropagation = propagationResult(false, {
-          status: 'blocked',
+          status: transportBlockedStatus,
           blockers: transportBlockers,
           conflictDecision: transportApproval.conflictDecision,
           conflictApproved: transportApproval.conflictApproved,
@@ -2563,7 +2718,9 @@
         state.lastFileLastModified = numberOrZero(file.lastModified);
         state.lastFileSize = numberOrZero(file.size);
         state.lastSummarySignature = signature;
-        state.lastSyncStatus = 'sync-folder-import-blocked';
+        state.lastSyncStatus = transportApproval.conflictApprovalRequired
+          ? 'conflict-approval-required'
+          : 'sync-folder-import-blocked';
         state.lastSyncError = cleanString(blockedPropagation.blockers.join(','));
         state.lastSyncResult = blockedPropagation;
         await persistState({
@@ -2590,6 +2747,8 @@
           conflictDecision: blockedPropagation.conflictDecision,
           conflictApproved: blockedPropagation.conflictApproved,
           conflictApproval: blockedPropagation.conflictApproval,
+          conflictApprovalRequired: transportApproval.conflictApprovalRequired === true,
+          autoFolderMetadataConflictAnalysis: transportApproval.autoFolderMetadataConflictAnalysis || null,
           blockers: blockedPropagation.blockers,
           warnings: blockedPropagation.warnings,
           redactedErrorCategories: blockedPropagation.redactedErrorCategories,
@@ -2609,7 +2768,8 @@
         autoSync: !!opts.autoSync,
         conflictDecision: transportApproval.conflictDecision,
         conflictApproved: transportApproval.conflictApproved,
-        approvedConflictBlockers: transportApproval.approvedBlockers
+        approvedConflictBlockers: transportApproval.approvedBlockers,
+        autoFolderMetadataConflictAnalysis: transportApproval.autoFolderMetadataConflictAnalysis || null
       });
       if (opts.dryRunOnly) {
         state.lastSyncStatus = 'sync-folder-dry-run-ok';
@@ -2788,6 +2948,10 @@
         lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
         lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
         lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        simultaneousConflictStatus: state.lastTransportConflictStatus,
+        simultaneousConflictDecision: state.lastTransportConflictDecision,
+        simultaneousConflictReason: state.lastTransportConflictReason,
+        simultaneousConflictSummary: state.lastTransportConflictSummary,
         pending: !!state.autoSyncTimer,
         inFlight: !!state.autoSyncRunning || !!state.syncInFlight,
         permission: state.permission,
@@ -2813,9 +2977,19 @@
         lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
         lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
         lastImportError: state.lastAutoSyncError || state.lastSyncError,
+        simultaneousConflictStatus: state.lastTransportConflictStatus,
+        simultaneousConflictDecision: state.lastTransportConflictDecision,
+        simultaneousConflictReason: state.lastTransportConflictReason,
         permission: state.permission,
         pending: !!state.autoSyncTimer,
         running: !!state.autoSyncRunning,
+      },
+      blockers: {
+        permissionRequired: state.permission !== 'granted',
+        autoImportDisabled: !state.autoSyncEnabled,
+        simultaneousConflict: state.lastTransportConflictStatus === 'conflict-approval-required',
+        schedulerNotFired: !state.autoSyncScheduledAt && !state.lastAutoSyncAttemptAt,
+        noFolderHandle: !state.handle,
       },
       automaticPolling: false,
       focusTriggerEnabled: !!state.autoSyncEnabled,

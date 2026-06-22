@@ -632,6 +632,7 @@ if (failures.length === 0) {
   assertContains(autoExportFile, 'exportLatestSyncBundle', 'Desktop latest.json exporter');
   assertContains(autoExportFile, 'folderMutationAutoSyncEnabled: true', 'Desktop folder mutation auto-export lane defaults enabled');
   assertContains(autoExportFile, 'autoRunOnFolderMutation', 'Desktop folder mutation auto-export diagnostic');
+  assertContains(autoExportFile, "source: 'folder-metadata-operation'", 'explicit Desktop folder mutation schedules record lastChange');
   assertContains(autoExportFile, "status: missing.length ? 'auto-export-subscriptions-partially-wired' : 'auto-export-subscriptions-wired'", 'auto-export retryable partial subscription wiring');
   assertContains(folderSyncFile, 'exportDesktopLatestForChrome', 'Desktop folder.syncNow desktop-to-chrome export branch');
   assertContains(folderSyncFile, "mode: 'auto'", 'Desktop sync folder default auto import mode');
@@ -639,6 +640,8 @@ if (failures.length === 0) {
   assertContains(folderSyncFile, 'desktopWritesLatestJson: true', 'Desktop folder facade latest.json write marker');
   assertContains(folderActionsFile, 'scheduleDesktopLatestExport', 'folder metadata action auto-export scheduling hook');
   assertContains(folderActionsFile, "scheduleDesktopLatestExport('update', folderId)", 'folder color/update schedules Desktop latest.json export');
+  assertContains(sidebarSectionsFile, 'scheduleDesktopFolderEditorAutoExport', 'Desktop sidebar folder editor schedules latest.json export after confirmed mutation');
+  assertContains(sidebarSectionsFile, 'folder-metadata:desktop-sidebar-', 'Desktop sidebar folder editor uses folder-metadata auto-export lane');
   assertContains(librarySyncFile, 'requestDesktopFolderMetadataOperation', 'Desktop folder metadata operation bridge');
   assertContains(librarySyncFile, 'previewDesktopRenameFolderMetadataOperation', 'Desktop rename-folder preview bridge');
   assertContains(librarySyncFile, 'applyDesktopRenameFolderMetadataOperation', 'Desktop rename-folder apply bridge');

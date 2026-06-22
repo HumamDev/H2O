@@ -60,6 +60,7 @@
     lastExportPath: '',
     lastExportBytes: 0,
     lastExportReason: '',
+    lastExportError: '',
     lastResult: null,
     errors: [],
   };
@@ -339,6 +340,15 @@
     if (state.enabled) wireStoreSubscriptions();
     clearPendingTimer();
     state.pending = true;
+    if (isFolderMutationReason(cleanReason)) {
+      state.lastChange = {
+        at: Date.now(),
+        store: 'folders',
+        source: 'folder-metadata-operation',
+        op: cleanReason.slice(FOLDER_METADATA_REASON_PREFIX.length) || 'changed',
+        reason: cleanReason,
+      };
+    }
     state.lastScheduledAt = Date.now();
     state.lastScheduledReason = cleanReason;
     state.timer = global.setTimeout(function () {
@@ -418,6 +428,7 @@
       state.lastExportStatus = cleanString(result && result.status);
       state.lastExportPath = cleanString(result && result.path);
       state.lastExportBytes = Number(result && result.bytes) || 0;
+      state.lastExportError = cleanString(result && (result.error || result.reason));
       state.lastResult = result || null;
       await persistDiagnostics(result, cleanReason);
       return result;
@@ -435,6 +446,7 @@
       };
       state.lastExportAt = Date.now();
       state.lastExportStatus = failure.status;
+      state.lastExportError = failure.error;
       state.lastResult = failure;
       pushError('flush-now', error);
       await persistDiagnostics(failure, cleanReason);
@@ -476,6 +488,7 @@
       lastExportPath: state.lastExportPath,
       lastExportBytes: state.lastExportBytes,
       lastExportReason: state.lastExportReason,
+      lastExportError: state.lastExportError,
       flushInFlight: !!state.flushInFlight,
       manualExportAvailable: typeof exportFunction() === 'function',
       autoRunOnBoot: false,
@@ -492,6 +505,7 @@
         lastExportBytes: state.lastExportBytes,
         lastExportPath: state.lastExportPath,
         lastExportReason: state.lastExportReason,
+        lastExportError: state.lastExportError,
         lastScheduledAt: state.lastScheduledAt,
         lastScheduledReason: state.lastScheduledReason,
       },

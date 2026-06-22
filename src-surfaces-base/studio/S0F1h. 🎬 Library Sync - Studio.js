@@ -185,6 +185,11 @@
     lastDesktopRenameResultCount: 0,
     lastDesktopColorFallbackStatus: '',
     lastDesktopColorResultCount: 0,
+    lastDesktopFolderAutoExportAt: 0,
+    lastDesktopFolderAutoExportReason: '',
+    lastDesktopFolderAutoExportStatus: '',
+    lastDesktopFolderAutoExportError: '',
+    lastDesktopFolderAutoExportResult: null,
     lastChromeFolderMetadataStatus: '',
     lastChromeFolderMetadataError: '',
     lastChromeFolderColorMutationStatus: '',
@@ -1453,6 +1458,40 @@
     try { W.H2O?.Library?.FolderParity?.getDisplayModel?.({ reason: cleanReason, fresh: true }); } catch {}
   }
 
+  function scheduleDesktopFolderAutoExport(operationType, folderId, reason = '') {
+    try {
+      if (currentPlatformAdapter() !== 'tauri') return false;
+      const autoExport = W.H2O?.Studio?.sync?.autoExport;
+      const scheduler = autoExport && typeof autoExport.schedule === 'function'
+        ? autoExport.schedule
+        : null;
+      const cleanOperation = String(operationType || 'folder-metadata').trim() || 'folder-metadata';
+      const exportReason = String(reason || `folder-metadata:desktop-${cleanOperation}`).trim();
+      state.lastDesktopFolderAutoExportAt = Date.now();
+      state.lastDesktopFolderAutoExportReason = exportReason;
+      state.lastDesktopFolderAutoExportResult = null;
+      if (!scheduler) {
+        state.lastDesktopFolderAutoExportStatus = 'desktop-folder-auto-export-unavailable';
+        state.lastDesktopFolderAutoExportError = 'H2O.Studio.sync.autoExport.schedule unavailable';
+        return false;
+      }
+      state.lastDesktopFolderAutoExportStatus = 'export-pending';
+      state.lastDesktopFolderAutoExportError = '';
+      const scheduled = scheduler.call(autoExport, exportReason);
+      state.lastDesktopFolderAutoExportResult = scheduled && typeof scheduled === 'object'
+        ? { ...scheduled, folderId: String(folderId || '') }
+        : null;
+      state.lastDesktopFolderAutoExportStatus = String(scheduled?.status || state.lastDesktopFolderAutoExportStatus || '');
+      state.lastDesktopFolderAutoExportError = String(scheduled?.error || '');
+      return scheduled?.scheduled === true || scheduled?.ok === true;
+    } catch (e) {
+      state.lastDesktopFolderAutoExportStatus = 'desktop-folder-auto-export-schedule-failed';
+      state.lastDesktopFolderAutoExportError = String(e?.message || e || 'schedule-failed');
+      err('desktop-folder-auto-export.schedule', e);
+      return false;
+    }
+  }
+
   function rememberImmediateFolderMetadataResult(requestId, result) {
     const id = String(requestId || result?.requestId || '').trim();
     state.lastFolderMetadataResultAt = Date.now();
@@ -1625,6 +1664,7 @@
     result.desktopRenameFallbackStatus = 'applied';
     state.lastDesktopRenameResultCount += 1;
     dispatchDesktopFolderMetadataRefresh('desktop-folder-rename-apply');
+    scheduleDesktopFolderAutoExport('rename-folder', ctx.folderId, 'folder-metadata:desktop-rename');
     return result;
   }
 
@@ -1788,6 +1828,7 @@
     result.desktopColorFallbackStatus = 'applied';
     state.lastDesktopColorResultCount += 1;
     dispatchDesktopFolderMetadataRefresh('desktop-folder-color-apply');
+    scheduleDesktopFolderAutoExport('change-folder-color', ctx.folderId, 'folder-metadata:desktop-color');
     return result;
   }
 
@@ -2595,6 +2636,13 @@
         desktopRenameResultCount: state.lastDesktopRenameResultCount,
         desktopColorFallbackStatus: state.lastDesktopColorFallbackStatus,
         desktopColorResultCount: state.lastDesktopColorResultCount,
+        desktopFolderAutoExport: {
+          at: state.lastDesktopFolderAutoExportAt,
+          reason: state.lastDesktopFolderAutoExportReason,
+          status: state.lastDesktopFolderAutoExportStatus,
+          error: state.lastDesktopFolderAutoExportError,
+          result: state.lastDesktopFolderAutoExportResult ? { ...state.lastDesktopFolderAutoExportResult } : null,
+        },
         desktopFolderMetadataStatus: state.lastDesktopFolderMetadataStatus,
         desktopFolderMetadataError: state.lastDesktopFolderMetadataError,
         chromeResolver: currentPlatformAdapter() === 'tauri' ? '' : 'folder-state-mirror-or-native-owner',

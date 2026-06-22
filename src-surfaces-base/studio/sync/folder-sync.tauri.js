@@ -64,6 +64,7 @@
   var MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; /* 100 MB */
   var VALID_MODES = ['off', 'manual', 'notify', 'auto'];
   var SYNC_FOLDER_NAME = 'H2O Studio Sync';
+  var PHASE3_AUTO_IMPORT_CONFIG_VERSION = 1;
   /* Filename glob patterns. The first matches MV3 exporter output
    * (h2o-studio-full-bundle__<extIdFirst8>__<isoTimestamp>.json); the
    * second leaves room for a future short-format file; the third
@@ -145,6 +146,10 @@
     lastAutoImportPath:            '',
     lastAutoImportBytes:           0,
     lastAutoImportReason:          '',
+    lastImportedChromeExportedAt:  '',
+    lastAutoImportConfigMode:      '',
+    lastAutoImportEffectiveMode:   '',
+    lastAutoImportConfigMigration: '',
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -236,7 +241,13 @@
 
   /* ── Defaults ─────────────────────────────────────────────────────── */
   function defaultConfig() {
-    return { schemaVersion: 1, mode: 'auto', folderPath: SYNC_FOLDER_NAME, updatedAt: '' };
+    return {
+      schemaVersion: 1,
+      mode: 'auto',
+      folderPath: SYNC_FOLDER_NAME,
+      phase3AutoSyncConfigVersion: PHASE3_AUTO_IMPORT_CONFIG_VERSION,
+      updatedAt: ''
+    };
   }
   function defaultLedger() {
     return { schemaVersion: 1, updatedAt: '', entries: [] };
@@ -246,10 +257,27 @@
   async function getConfig() {
     var raw = await readKv(CONFIG_KEY);
     var base = defaultConfig();
-    if (!raw || typeof raw !== 'object') return base;
+    if (!raw || typeof raw !== 'object') {
+      state.lastAutoImportConfigMode = '';
+      state.lastAutoImportEffectiveMode = String(base.mode || '');
+      state.lastAutoImportConfigMigration = '';
+      return base;
+    }
     var merged = Object.assign(base, raw);
+    var rawMode = String(raw.mode || '').trim();
+    var legacyManual = raw.phase3AutoSyncConfigVersion !== PHASE3_AUTO_IMPORT_CONFIG_VERSION
+      && rawMode === 'manual';
+    if (legacyManual) {
+      merged.mode = 'auto';
+      merged.phase3AutoSyncConfigVersion = PHASE3_AUTO_IMPORT_CONFIG_VERSION;
+      merged.autoImportMigration = 'phase3-legacy-manual-to-auto';
+    }
     if (VALID_MODES.indexOf(merged.mode) < 0) merged.mode = 'off';
     merged.folderPath = String(merged.folderPath || '').trim();
+    if (merged.mode === 'auto' && !merged.folderPath) merged.folderPath = SYNC_FOLDER_NAME;
+    state.lastAutoImportConfigMode = rawMode || '';
+    state.lastAutoImportEffectiveMode = String(merged.mode || '');
+    state.lastAutoImportConfigMigration = String(merged.autoImportMigration || '');
     return merged;
   }
   async function setConfig(patch) {
@@ -257,13 +285,15 @@
     var next = Object.assign({}, current, (patch && typeof patch === 'object') ? patch : {});
     if (VALID_MODES.indexOf(next.mode) < 0) next.mode = 'off';
     next.folderPath = String(next.folderPath || '').trim();
+    if (next.mode === 'auto' && !next.folderPath) next.folderPath = SYNC_FOLDER_NAME;
     next.schemaVersion = 1;
+    next.phase3AutoSyncConfigVersion = PHASE3_AUTO_IMPORT_CONFIG_VERSION;
+    delete next.autoImportMigration;
     next.updatedAt = new Date().toISOString();
     try { await writeKv(CONFIG_KEY, next); }
     catch (e) { pushErr('setConfig', e); throw e; }
-    /* M2d-1b: auto-manage watcher based on the new mode + folderPath.
-     * Treats 'auto' as 'notify' for now — actual auto-import lands in
-     * M2d-1c (one-branch addition inside runWatcherTick). */
+    /* M2d-1b: auto-manage watcher based on mode + folderPath. In auto
+     * mode the watcher imports stable chrome-latest.json candidates. */
     try { reconcileWatcherFromConfig(next, current); }
     catch (e) { pushWatcherErr('setConfig.reconcile', e); }
     return next;
@@ -1719,6 +1749,7 @@
         autoImport: true,
       });
       state.lastAutoImportAt = new Date().toISOString();
+      state.lastImportedChromeExportedAt = String(result && result.exportedAt || '');
       state.lastAutoImportStatus = String(result && result.status || (result && result.ok ? 'imported' : 'blocked'));
       state.lastAutoImportError = result && result.ok ? '' : String((result && (result.error || (result.blockers && result.blockers.join(',')))) || '');
       try {
@@ -2093,20 +2124,34 @@
         chromeWritesSyncFolder: false,
         desktopReadsChromeLatestJson: true,
         autoImportEnabled: watcherState.mode === 'auto' && !!watcherState.folderPath,
+        desktopAutoImportEnabled: watcherState.mode === 'auto' && !!watcherState.folderPath,
         lastImportStatus: state.lastAutoImportStatus,
         lastImportedAt: state.lastAutoImportAt,
         lastImportBytes: state.lastAutoImportBytes,
         lastImportPath: state.lastAutoImportPath,
         lastImportReason: state.lastAutoImportReason,
         lastImportError: state.lastAutoImportError,
+        desktopLastImportStatus: state.lastAutoImportStatus,
+        desktopLastImportedAt: state.lastAutoImportAt,
+        desktopLastImportError: state.lastAutoImportError,
+        watcherRunning: watcherState.running,
+        watcherMode: watcherState.mode,
         pendingActions: watcherState.pending.length,
       },
       desktopAutoImport: {
+        autoImportEnabled: watcherState.mode === 'auto' && !!watcherState.folderPath,
         lastImportStatus: state.lastAutoImportStatus,
+        lastAutoImportStatus: state.lastAutoImportStatus,
         lastImportedAt: state.lastAutoImportAt,
+        lastAutoImportAt: state.lastAutoImportAt,
         lastImportError: state.lastAutoImportError,
+        lastAutoImportError: state.lastAutoImportError,
+        lastImportedChromeExportedAt: state.lastImportedChromeExportedAt,
         watcherMode: watcherState.mode,
         watcherRunning: watcherState.running,
+        configuredMode: state.lastAutoImportConfigMode,
+        effectiveMode: state.lastAutoImportEffectiveMode || watcherState.mode,
+        configMigration: state.lastAutoImportConfigMigration,
       },
     };
   }
@@ -2174,15 +2219,20 @@
     folder: folderApi,
   });
 
-  /* Boot-time auto-start: if persisted config has mode ∈ {notify, auto}
-   * AND folderPath set, kick the watcher after the platform/stores have
-   * a chance to initialize. Wrapped in setTimeout(0) so module
-   * registration completes synchronously first. 'auto' starts the watcher
-   * in Notify behavior for M2d-1b — actual auto-import lands in M2d-1c. */
+  /* Boot-time auto-start: if persisted/effective config has mode ∈
+   * {notify, auto} AND folderPath set, kick the watcher after the
+   * platform/stores have a chance to initialize. */
   global.setTimeout(function () {
     getConfig().then(function (cfg) {
       watcherState.folderPath = cfg.folderPath || '';
       watcherState.mode = cfg.mode || 'off';
+      if (cfg.autoImportMigration) {
+        var persisted = Object.assign({}, cfg, {
+          updatedAt: new Date().toISOString(),
+        });
+        delete persisted.autoImportMigration;
+        writeKv(CONFIG_KEY, persisted).catch(function (e) { pushWatcherErr('boot.config-migration', e); });
+      }
       if ((cfg.mode === 'notify' || cfg.mode === 'auto') && cfg.folderPath) {
         startWatcher();
       }

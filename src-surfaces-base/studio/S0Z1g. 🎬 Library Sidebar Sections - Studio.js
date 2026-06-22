@@ -709,6 +709,21 @@
     } catch { return null; }
   }
 
+  function scheduleDesktopFolderEditorAutoExport(mode = '', folderId = '') {
+    try {
+      if (!studioIsTauri()) return false;
+      const cleanMode = String(mode || '').trim();
+      if (!['create', 'rename', 'color'].includes(cleanMode)) return false;
+      const autoExport = W.H2O?.Studio?.sync?.autoExport;
+      if (!autoExport || typeof autoExport.schedule !== 'function') return false;
+      autoExport.schedule(`folder-metadata:desktop-sidebar-${cleanMode}`);
+      return true;
+    } catch (e) {
+      err('desktopFolderEditor.autoExport', e);
+      return false;
+    }
+  }
+
   function canUseDesktopFolderEditor(mode = '') {
     if (!studioIsTauri()) return false;
     if (!desktopFolderEditor()) return false;
@@ -1469,6 +1484,7 @@
       return { ok: false, status: `${mode || 'folder'}-failed`, reason: String(e?.message || e || '') };
     }
     if (result?.ok) {
+      scheduleDesktopFolderEditorAutoExport(mode, result.folderId || result.result?.folderId || folderId);
       refreshAfterNativeFolderMetadataApply(`desktop-folder-${mode || 'edit'}`);
       W.setTimeout(() => {
         try { renderAllSections(); } catch (e) { err('desktopFolderEditor.renderAfterApply', e); }
