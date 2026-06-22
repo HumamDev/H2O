@@ -608,7 +608,7 @@
   }
 
   /* ── remove(folderId) ────────────────────────────────────────────── */
-  /* Phase 4A: action-level delete is Desktop-local empty-folder soft
+  /* Phase 4A/4B: action-level delete is Desktop-local soft
    * tombstone only. It does not call store.folders.remove(), does not
    * delete folder rows, does not delete chats, and does not schedule
    * Desktop→Chrome tombstone/delete propagation. */
@@ -625,7 +625,7 @@
     }
     try {
       var result = await store.softDeleteEmptyFolder(folderId, {
-        deleteReason: 'desktop-action-empty-folder-soft-delete',
+        deleteReason: 'desktop-action-folder-soft-delete',
       });
       var ok = !!(result && result.ok);
       recordWrite('remove', ok);
@@ -634,6 +634,9 @@
         ok: ok,
         folderId: folderId,
         tombstoneId: result && result.tombstoneId,
+        affectedChatCount: Number(result && result.affectedChatCount) || 0,
+        bindingUnboundCount: Number(result && result.bindingUnboundCount) || 0,
+        bindingUnbindSkippedCount: Number(result && result.bindingUnbindSkippedCount) || 0,
         blockers: Array.isArray(result && result.blockers) ? result.blockers.slice() : [],
         noHardDelete: true,
         noChatDelete: true,
@@ -669,6 +672,10 @@
         target: target,
         folderId: result && result.folderId,
         tombstoneId: result && result.tombstoneId,
+        bindingRestoreAttemptedCount: Number(result && result.bindingRestoreAttemptedCount) || 0,
+        bindingRestoredCount: Number(result && result.bindingRestoredCount) || 0,
+        bindingSkippedCount: Number(result && result.bindingSkippedCount) || 0,
+        restoreWarnings: Array.isArray(result && result.restoreWarnings) ? result.restoreWarnings.slice() : [],
         blockers: Array.isArray(result && result.blockers) ? result.blockers.slice() : [],
         noHardDelete: true,
         noChatDelete: true,

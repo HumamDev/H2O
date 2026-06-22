@@ -1092,13 +1092,6 @@
         stateSource.includes('local-review') || item?.reviewBucket) {
       addFolderBlocker(blockers, 'local-review-folder-not-editable');
     }
-    const knownCount = numericFolderMenuValue(item, ['knownCount', 'knownStudioCount']);
-    const localBindingCount = numericFolderMenuValue(item, ['localBindingCount', 'bindingCount']);
-    const canonicalCount = numericFolderMenuValue(item, ['canonicalCount', 'nativeMembershipCount', 'count']);
-    const savedCount = numericFolderMenuValue(item, ['savedCount', 'linkedCount']);
-    if (Math.max(knownCount, localBindingCount, canonicalCount, savedCount) > 0) {
-      addFolderBlocker(blockers, 'folder-not-empty');
-    }
     if (!canUseDesktopFolderSoftDelete()) addFolderBlocker(blockers, 'tombstone-store-unavailable');
     return blockers;
   }
@@ -2395,9 +2388,17 @@
       style: 'display:none;flex-direction:column;gap:6px;',
     });
     panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Move folder to Recently Deleted'));
+    const affectedChatCount = Math.max(
+      numericFolderMenuValue(item, ['knownCount', 'knownStudioCount']),
+      numericFolderMenuValue(item, ['localBindingCount', 'bindingCount']),
+      numericFolderMenuValue(item, ['canonicalCount', 'nativeMembershipCount', 'count']),
+      numericFolderMenuValue(item, ['savedCount', 'linkedCount'])
+    );
     panel.appendChild(el('div', {
       style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);margin-bottom:4px;',
-    }, 'Empty folders can be restored from the tombstone recovery snapshot.'));
+    }, affectedChatCount > 0
+      ? `${affectedChatCount} ${affectedChatCount === 1 ? 'chat moves' : 'chats move'} to Unfiled. No chats are deleted. Restore can reattach eligible chats.`
+      : 'Empty folders can be restored from the tombstone recovery snapshot. No chats are deleted.'));
     const buttonRow = el('div', {
       style: 'display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:2px;',
     });

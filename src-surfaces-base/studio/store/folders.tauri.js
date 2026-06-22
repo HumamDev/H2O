@@ -108,6 +108,12 @@
       lastTombstoneId: '',
       activeTombstoneCount: 0,
       restoreAvailableCount: 0,
+      affectedChatCount: 0,
+      lastAffectedChatCount: 0,
+      lastBindingRestoreAttemptedCount: 0,
+      lastBindingRestoredCount: 0,
+      lastBindingSkippedCount: 0,
+      lastRestoreWarnings: [],
       purgeBlocked: true,
     },
   };
@@ -402,6 +408,33 @@
     if (typeof delta === 'number' && Number.isFinite(delta) && delta !== 0) {
       state.phase4a.activeTombstoneCount = Math.max(0, Number(state.phase4a.activeTombstoneCount || 0) + delta);
       state.phase4a.restoreAvailableCount = Math.max(0, Number(state.phase4a.restoreAvailableCount || 0) + delta);
+    }
+  }
+
+  function setPhase4bBindingState(input) {
+    var data = input && typeof input === 'object' ? input : {};
+    if (Object.prototype.hasOwnProperty.call(data, 'affectedChatCount')) {
+      state.phase4a.lastAffectedChatCount = Math.max(0, Number(data.affectedChatCount) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'activeAffectedChatCountDelta')) {
+      state.phase4a.affectedChatCount = Math.max(
+        0,
+        Number(state.phase4a.affectedChatCount || 0) + (Number(data.activeAffectedChatCountDelta) || 0)
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'bindingRestoreAttemptedCount')) {
+      state.phase4a.lastBindingRestoreAttemptedCount = Math.max(0, Number(data.bindingRestoreAttemptedCount) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'bindingRestoredCount')) {
+      state.phase4a.lastBindingRestoredCount = Math.max(0, Number(data.bindingRestoredCount) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'bindingSkippedCount')) {
+      state.phase4a.lastBindingSkippedCount = Math.max(0, Number(data.bindingSkippedCount) || 0);
+    }
+    if (Array.isArray(data.restoreWarnings)) {
+      state.phase4a.lastRestoreWarnings = data.restoreWarnings.slice(0, 20).map(function (warning) {
+        return typeof warning === 'string' ? warning : cleanString(warning && warning.code);
+      }).filter(Boolean);
     }
   }
 
@@ -1156,10 +1189,27 @@
     var folderId = getFolderId(folder);
     var name = cleanString((folder && folder.name) || meta.name || folderId);
     var color = cleanString((folder && (folder.iconColor || folder.color)) || meta.iconColor || meta.color || '');
+    var capturedAt = new Date().toISOString();
+    var bindingRows = Array.isArray(counts && counts.bindings) ? counts.bindings : [];
+    var bindingSnapshots = bindingRows.map(function (row) {
+      var chatId = cleanString(row && row.chatId);
+      if (!chatId) return null;
+      return {
+        chatId: chatId,
+        folderId: folderId,
+        folderName: name,
+        assignedAt: row && row.assignedAt != null ? Number(row.assignedAt) : null,
+        priorUpdatedAt: row && row.assignedAt != null ? Number(row.assignedAt) : null,
+        priorDigest: cleanString(row && row.priorDigest) || null,
+        capturedAt: capturedAt,
+        source: 'folder_bindings',
+        restorePolicy: 'rebind-if-currently-unfiled',
+      };
+    }).filter(Boolean);
     return {
       schema: 'h2o.studio.folder-recovery-snapshot.v1',
       phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
-      capturedAt: new Date().toISOString(),
+      capturedAt: capturedAt,
       noHardDelete: true,
       noChatDelete: true,
       folder: {
@@ -1180,15 +1230,151 @@
         meta: Object.assign({}, meta),
       },
       counts: {
-        bindingCount: Number(counts && counts.bindingCount) || 0,
+        bindingCount: bindingSnapshots.length,
         knownRowCount: Number(counts && counts.knownRowCount) || 0,
+        affectedChatCount: bindingSnapshots.length,
       },
+      bindings: bindingSnapshots,
+      bindingCaptureOk: counts && counts.bindingCaptureOk === true,
+      affectedChatCount: bindingSnapshots.length,
       restorePolicy: {
         localOnly: true,
         crossPlatformSync: 'deferred',
         purgeBlocked: true,
+        bindingRestore: 'rebind-if-currently-unfiled',
       },
     };
+  }
+
+  function recoverySnapshotBindings(snapshot) {
+    var recovery = safeMeta(snapshot);
+    var rows = Array.isArray(recovery.bindings) ? recovery.bindings : [];
+    return rows.map(function (row) {
+      var chatId = cleanString(row && row.chatId);
+      if (!chatId) return null;
+      return {
+        chatId: chatId,
+        folderId: cleanString(row && row.folderId),
+        folderName: cleanString(row && row.folderName),
+        assignedAt: row && row.assignedAt != null ? Number(row.assignedAt) : null,
+        capturedAt: cleanString(row && row.capturedAt),
+      };
+    }).filter(Boolean);
+  }
+
+  async function getChatForBindingRestore(chatId) {
+    var cid = cleanString(chatId);
+    if (!cid) return null;
+    var chatsStore = (H2O.Studio && H2O.Studio.store && H2O.Studio.store.chats) || null;
+    if (!chatsStore || typeof chatsStore.get !== 'function') return null;
+    try { return await chatsStore.get(cid); }
+    catch (e) {
+      recordWarning('Phase4B restore chat lookup failed: ' + ((e && e.message) || e));
+      return null;
+    }
+  }
+
+  async function unbindSnapshotBindingsForSoftDelete(folderId, bindings) {
+    var fid = cleanString(folderId);
+    var rows = Array.isArray(bindings) ? bindings : [];
+    var result = {
+      attemptedCount: rows.length,
+      unboundCount: 0,
+      skippedCount: 0,
+      warnings: [],
+    };
+    for (var i = 0; i < rows.length; i += 1) {
+      var chatId = cleanString(rows[i] && rows[i].chatId);
+      if (!chatId) {
+        result.skippedCount += 1;
+        result.warnings.push({ code: 'soft-delete-binding-skipped-chat-missing', chatId: '' });
+        continue;
+      }
+      var ok = false;
+      try {
+        ok = await unbindChat(fid, chatId, {
+          reason: 'phase4b-folder-soft-delete-move-to-unfiled',
+          source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+          noChatDelete: true,
+        });
+      } catch (e) {
+        recordWarning('Phase4B soft-delete unbind failed: ' + ((e && e.message) || e));
+        ok = false;
+      }
+      if (ok) result.unboundCount += 1;
+      else {
+        result.skippedCount += 1;
+        result.warnings.push({ code: 'soft-delete-binding-unbind-failed', chatId: chatId });
+      }
+    }
+    return result;
+  }
+
+  async function restoreBindingsFromRecoverySnapshot(folderId, snapshot) {
+    var fid = cleanString(folderId);
+    var bindings = recoverySnapshotBindings(snapshot);
+    var result = {
+      bindingRestoreAttemptedCount: bindings.length,
+      bindingRestoredCount: 0,
+      bindingSkippedCount: 0,
+      restoreWarnings: [],
+    };
+    for (var i = 0; i < bindings.length; i += 1) {
+      var binding = bindings[i];
+      var chatId = binding.chatId;
+      var chat = await getChatForBindingRestore(chatId);
+      if (!chat) {
+        result.bindingSkippedCount += 1;
+        result.restoreWarnings.push({ code: 'restore-binding-skipped-chat-missing', chatId: chatId });
+        continue;
+      }
+      var currentRows = await listForChat(chatId);
+      var current = Array.isArray(currentRows) && currentRows.length ? currentRows[0] : null;
+      var currentFolderId = getFolderId(current);
+      if (currentFolderId && currentFolderId !== fid) {
+        result.bindingSkippedCount += 1;
+        result.restoreWarnings.push({ code: 'restore-binding-skipped-rebound', chatId: chatId, currentFolderId: currentFolderId });
+        continue;
+      }
+      if (currentFolderId === fid) {
+        result.bindingRestoredCount += 1;
+        continue;
+      }
+      var rebound = false;
+      try {
+        rebound = await bindChat(fid, chatId, {
+          assignedAt: Number(binding.assignedAt) || Date.now(),
+          reason: 'phase4b-folder-restore-rebind',
+          source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
+          noChatDelete: true,
+          allowTombstonedFolderRebind: true,
+        });
+      } catch (e) {
+        recordWarning('Phase4B restore bind failed: ' + ((e && e.message) || e));
+        rebound = false;
+      }
+      if (rebound) result.bindingRestoredCount += 1;
+      else {
+        result.bindingSkippedCount += 1;
+        result.restoreWarnings.push({ code: 'restore-binding-skipped-bind-failed', chatId: chatId });
+      }
+    }
+    setPhase4bBindingState(result);
+    return result;
+  }
+
+  function affectedChatCountFromTombstone(tombstone) {
+    var meta = tombstoneMeta(tombstone);
+    var recovery = safeMeta(meta.recoverySnapshot);
+    var counts = safeMeta(recovery.counts);
+    var bindings = recoverySnapshotBindings(recovery);
+    return Math.max(
+      Number(meta.bindingCount) || 0,
+      Number(recovery.affectedChatCount) || 0,
+      Number(counts.affectedChatCount) || 0,
+      Number(counts.bindingCount) || 0,
+      bindings.length
+    );
   }
 
   function folderPatchFromRecoverySnapshot(snapshot) {
@@ -1252,11 +1438,20 @@
     }
     state.phase4a.activeTombstoneCount = Array.isArray(active) ? active.length : state.phase4a.activeTombstoneCount;
     state.phase4a.restoreAvailableCount = state.phase4a.activeTombstoneCount;
+    state.phase4a.affectedChatCount = (Array.isArray(active) ? active : []).reduce(function (sum, tombstone) {
+      return sum + affectedChatCountFromTombstone(tombstone);
+    }, 0);
     return {
       phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
       tombstoneStoreAvailable: available,
       activeTombstoneCount: Number(state.phase4a.activeTombstoneCount || 0),
       restoreAvailableCount: Number(state.phase4a.restoreAvailableCount || 0),
+      affectedChatCount: Number(state.phase4a.affectedChatCount || 0),
+      lastAffectedChatCount: Number(state.phase4a.lastAffectedChatCount || 0),
+      lastBindingRestoreAttemptedCount: Number(state.phase4a.lastBindingRestoreAttemptedCount || 0),
+      lastBindingRestoredCount: Number(state.phase4a.lastBindingRestoredCount || 0),
+      lastBindingSkippedCount: Number(state.phase4a.lastBindingSkippedCount || 0),
+      lastRestoreWarnings: state.phase4a.lastRestoreWarnings.slice(),
       restoredTombstoneCount: Array.isArray(restored) ? restored.length : null,
       purgeBlocked: true,
       hardDeleteBlocked: true,
@@ -1313,25 +1508,30 @@
       folderPhase4aBlockers(folder, id).forEach(function (code) { addBlocker(base.blockers, code); });
       var existingTombstone = await getActiveFolderTombstone(id);
       if (existingTombstone) addBlocker(base.blockers, 'already-tombstoned');
-      var bindingCount = await countBindingRows(id);
+      var bindingRead = await readFolderBindingsForRemoveSafely(id);
+      if (!bindingRead || bindingRead.ok !== true) addBlocker(base.blockers, 'binding-capture-failed');
+      var bindingRows = bindingRead && Array.isArray(bindingRead.bindings) ? bindingRead.bindings : [];
+      var bindingCount = bindingRows.length;
       var knownRowCount = countKnownRowsForFolder(id);
-      if (bindingCount > 0 || knownRowCount > 0) addBlocker(base.blockers, 'folder-not-empty');
       if (base.blockers.length) {
         base.status = base.blockers[0];
         base.bindingCount = bindingCount;
         base.knownRowCount = knownRowCount;
+        base.affectedChatCount = bindingCount;
         setPhase4aState('softDeleteEmptyFolder', base.status, id, existingTombstone && existingTombstone.tombstoneId, 0);
         return base;
       }
       var recoverySnapshot = buildFolderRecoverySnapshot(folder, {
         bindingCount: bindingCount,
         knownRowCount: knownRowCount,
+        bindingCaptureOk: bindingRead && bindingRead.ok === true,
+        bindings: bindingRows,
       });
       var priorDigest = await sha256Hex(recoverySnapshot);
       var tombstone = await tombstones.createTombstone({
         recordKind: 'folder',
         recordId: folderTombstoneRecordId(id),
-        deleteReason: cleanString(options.deleteReason) || 'desktop-local-empty-folder-soft-delete',
+        deleteReason: cleanString(options.deleteReason) || (bindingCount > 0 ? 'desktop-local-folder-with-chats-soft-delete' : 'desktop-local-empty-folder-soft-delete'),
         deletedBySyncPeerId: cleanString(options.deletedBySyncPeerId) || 'desktop-local-phase4a',
         priorDigest: priorDigest || null,
         priorUpdatedAt: folderUpdatedAtIso(folder),
@@ -1343,13 +1543,24 @@
           hardDelete: false,
           purgeBlocked: true,
           noChatDelete: true,
-          bindingCount: 0,
+          bindingCount: bindingCount,
+          affectedChatCount: bindingCount,
+          bindingCaptureOk: true,
           recoverySnapshot: recoverySnapshot,
         },
       });
+      var unbindResult = await unbindSnapshotBindingsForSoftDelete(id, recoverySnapshot.bindings);
       var mirror = await removeFolderFromStateMirror(id, tombstone && tombstone.tombstoneId);
       recordWrite('softDeleteEmptyFolder');
       setPhase4aState('softDeleteEmptyFolder', 'folder-soft-deleted', id, tombstone && tombstone.tombstoneId, 1);
+      setPhase4bBindingState({
+        affectedChatCount: bindingCount,
+        activeAffectedChatCountDelta: bindingCount,
+        bindingRestoreAttemptedCount: 0,
+        bindingRestoredCount: 0,
+        bindingSkippedCount: 0,
+        restoreWarnings: [],
+      });
       notifySubscribers({
         source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
         op: 'softDeleteEmptyFolder',
@@ -1361,10 +1572,18 @@
         ok: true,
         status: 'folder-soft-deleted',
         tombstoneId: tombstone && tombstone.tombstoneId,
-        bindingCount: 0,
-        knownRowCount: 0,
+        bindingCount: bindingCount,
+        knownRowCount: knownRowCount,
+        affectedChatCount: bindingCount,
+        bindingSnapshotCount: recoverySnapshot.bindings.length,
+        bindingUnbindAttemptedCount: unbindResult.attemptedCount,
+        bindingUnboundCount: unbindResult.unboundCount,
+        bindingUnbindSkippedCount: unbindResult.skippedCount,
+        bindingUnbindWarnings: unbindResult.warnings,
         recoverySnapshot: recoverySnapshot,
         folderStateMirror: mirror,
+        noHardDelete: true,
+        noChatDelete: true,
         blockers: [],
       });
     } catch (e) {
@@ -1423,6 +1642,7 @@
         var recoveredFolderId = folderIdFromTombstone(tombstone);
         var recoveredRow = recoveredFolderId ? await getById(recoveredFolderId) : null;
         if (recoveredRow && cleanString(tombstone.restoredAt)) {
+          var recoveredBindingResult = await restoreBindingsFromRecoverySnapshot(recoveredFolderId, recoverySnapshot);
           return Object.assign({}, base, {
             ok: true,
             status: 'folder-restored',
@@ -1431,6 +1651,10 @@
             row: recoveredRow,
             tombstone: tombstone,
             alreadyRestored: true,
+            bindingRestoreAttemptedCount: recoveredBindingResult.bindingRestoreAttemptedCount,
+            bindingRestoredCount: recoveredBindingResult.bindingRestoredCount,
+            bindingSkippedCount: recoveredBindingResult.bindingSkippedCount,
+            restoreWarnings: recoveredBindingResult.restoreWarnings,
             warnings: ['already-restored'],
             blockers: [],
           });
@@ -1442,6 +1666,7 @@
       if (cleanString(tombstone.restoredAt)) {
         var alreadyRow = await getById(patch.folderId);
         if (alreadyRow) {
+          var alreadyBindingResult = await restoreBindingsFromRecoverySnapshot(patch.folderId, recoverySnapshot);
           return Object.assign({}, base, {
             ok: true,
             status: 'folder-restored',
@@ -1450,16 +1675,16 @@
             row: alreadyRow,
             tombstone: tombstone,
             alreadyRestored: true,
+            bindingRestoreAttemptedCount: alreadyBindingResult.bindingRestoreAttemptedCount,
+            bindingRestoredCount: alreadyBindingResult.bindingRestoredCount,
+            bindingSkippedCount: alreadyBindingResult.bindingSkippedCount,
+            restoreWarnings: alreadyBindingResult.restoreWarnings,
             warnings: ['already-restored'],
             blockers: [],
           });
         }
       }
       var row = await upsertCore(patch, { generateId: false });
-      var restored = await tombstones.markRestored(
-        tombstone.tombstoneId,
-        cleanString(options.restoredBySyncPeerId) || 'desktop-local-phase4a'
-      );
       var mirror = await restoreFolderToStateMirror(recoverySnapshot);
       var verifiedRow = await getById(patch.folderId);
       if (!verifiedRow) {
@@ -1467,8 +1692,16 @@
         base.status = 'folder-identity-missing';
         return base;
       }
+      var bindingRestore = await restoreBindingsFromRecoverySnapshot(patch.folderId, recoverySnapshot);
+      var restored = await tombstones.markRestored(
+        tombstone.tombstoneId,
+        cleanString(options.restoredBySyncPeerId) || 'desktop-local-phase4a'
+      );
       recordWrite('restoreTombstonedFolder');
       setPhase4aState('restoreTombstonedFolder', 'folder-restored', patch.folderId, tombstone.tombstoneId, -1);
+      setPhase4bBindingState({
+        activeAffectedChatCountDelta: -bindingRestore.bindingRestoreAttemptedCount,
+      });
       notifySubscribers({
         source: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
         op: 'restoreTombstonedFolder',
@@ -1484,6 +1717,10 @@
         row: verifiedRow || row,
         tombstone: restored,
         folderStateMirror: mirror,
+        bindingRestoreAttemptedCount: bindingRestore.bindingRestoreAttemptedCount,
+        bindingRestoredCount: bindingRestore.bindingRestoredCount,
+        bindingSkippedCount: bindingRestore.bindingSkippedCount,
+        restoreWarnings: bindingRestore.restoreWarnings,
         blockers: [],
       });
     } catch (e) {
@@ -1589,30 +1826,43 @@
     var chatId = String(chatIdInput || '').trim();
     if (!folderId) return Promise.reject(new Error('bindChat: folderId required'));
     if (!chatId) return Promise.reject(new Error('bindChat: chatId required'));
-    if (!f15FolderBindingDelegationEnabled(opts)) {
-      return bindChatLegacy(folderId, chatId, opts);
-    }
-    return delegateF15FolderBindingWrite('bind', folderId, chatId, opts).then(function (result) {
-      if (result && result.ok === true) {
-        recordWrite('bindChat.f15');
-        api.__lastF15FolderBindingDelegationResult = result;
-        notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
-        return true;
+    return getActiveFolderTombstone(folderId).then(function (activeTombstone) {
+      if (activeTombstone && !(opts && opts.allowTombstonedFolderRebind === true)) {
+        api.__lastFolderBindingBlocked = {
+          ok: false,
+          code: 'folder-tombstoned',
+          folderId: folderId,
+          chatId: chatId,
+          tombstoneId: activeTombstone.tombstoneId,
+        };
+        recordWarning('bindChat blocked: folder-tombstoned');
+        return false;
       }
-      recordWarning('bindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
-      api.__lastF15FolderBindingDelegationResult = result || null;
-      if (explicitF7FallbackAllowed(opts)) {
-        recordWarning('bindChat explicit F7 fallback after F15 delegation failure');
+      if (!f15FolderBindingDelegationEnabled(opts)) {
         return bindChatLegacy(folderId, chatId, opts);
       }
-      return false;
-    }).catch(function (e) {
-      recordError('bindChat.f15', e);
-      if (explicitF7FallbackAllowed(opts)) {
-        recordWarning('bindChat explicit F7 fallback after F15 delegation exception');
-        return bindChatLegacy(folderId, chatId, opts);
-      }
-      return false;
+      return delegateF15FolderBindingWrite('bind', folderId, chatId, opts).then(function (result) {
+        if (result && result.ok === true) {
+          recordWrite('bindChat.f15');
+          api.__lastF15FolderBindingDelegationResult = result;
+          notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
+          return true;
+        }
+        recordWarning('bindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
+        api.__lastF15FolderBindingDelegationResult = result || null;
+        if (explicitF7FallbackAllowed(opts)) {
+          recordWarning('bindChat explicit F7 fallback after F15 delegation failure');
+          return bindChatLegacy(folderId, chatId, opts);
+        }
+        return false;
+      }).catch(function (e) {
+        recordError('bindChat.f15', e);
+        if (explicitF7FallbackAllowed(opts)) {
+          recordWarning('bindChat explicit F7 fallback after F15 delegation exception');
+          return bindChatLegacy(folderId, chatId, opts);
+        }
+        return false;
+      });
     });
   }
 

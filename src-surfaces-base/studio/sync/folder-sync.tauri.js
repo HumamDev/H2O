@@ -2664,6 +2664,14 @@
         tombstoneStoreAvailable: tombstoneStoreAvailable,
         activeTombstoneCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).activeTombstoneCount),
         restoreAvailableCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).restoreAvailableCount),
+        affectedChatCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).affectedChatCount),
+        lastAffectedChatCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastAffectedChatCount),
+        lastBindingRestoreAttemptedCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastBindingRestoreAttemptedCount),
+        lastBindingRestoredCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastBindingRestoredCount),
+        lastBindingSkippedCount: numberOrZero(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastBindingSkippedCount),
+        lastRestoreWarnings: Array.isArray(safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastRestoreWarnings)
+          ? safeObject(foldersStoreDiag.phase4aLocalSoftDelete).lastRestoreWarnings.slice(0, 20).map(function (code) { return cleanString(code); }).filter(Boolean)
+          : [],
         purgeBlocked: true,
         hardDeleteBlocked: true,
         chatDeleteBlocked: true,
