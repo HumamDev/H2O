@@ -238,6 +238,56 @@ node tools/smoke/chrome-cdp-studio.mjs \
   --op diagnoseHealth
 ```
 
+## Slice 4A Extension Discovery Hardening
+
+Follow-up date: 2026-06-23
+
+Runtime setup issue:
+
+- Chrome Dev and CDP were reachable on port `9226`.
+- The helper found a Studio target at the default extension ID.
+- The page still showed `ERR_BLOCKED_BY_CLIENT` / `<extension id> is blocked`.
+- This proved the helper could still open a stale or unusable extension URL without first verifying that the Studio Launcher extension was actually loaded in the smoke profile.
+
+Root cause:
+
+- The helper built the Studio URL from the default extension ID before checking the unpacked extension path or discovering the extension loaded by the smoke profile.
+- Launch mode also passed the extension URL as the initial page, so a stale ID could be opened before the extension service worker/background target was ready.
+
+Fix:
+
+- Launch mode validates `--extension-path` and requires `manifest.json`.
+- Launch mode passes both `--disable-extensions-except=<launcher path>` and `--load-extension=<launcher path>` so the smoke profile is scoped to the Studio Launcher extension.
+- The helper launches Chrome Dev on `about:blank`, then discovers loaded extension IDs through CDP targets before constructing the Studio URL.
+- Discovery uses browser-level `Target.getTargets` plus `/json/list` target summaries.
+- Discovery separates all `discoveredExtensionIds` from usable `loadedExtensionIds` so a stale blocked extension error page is not treated as a loaded Studio Launcher.
+- The helper opens Studio with the discovered extension ID instead of blindly relying on the default ID.
+- If the launcher extension is not discoverable, the helper returns `studio-launcher-extension-not-loaded`.
+- If the extension path or manifest is wrong, the helper returns:
+  - `studio-launcher-extension-path-missing`
+  - `studio-launcher-manifest-missing`
+  - `studio-launcher-manifest-invalid`
+- If Studio still opens to a blocked Chrome error page, the helper returns `chrome-extension-page-blocked` with:
+  - `attemptedExtensionId`
+  - `discoveredExtensionIds`
+  - `extensionPath`
+  - `extensionDiscovery`
+  - target diagnostics
+
+The Studio Launcher manifest includes a `key`, so its extension ID should be stable when the extension loads correctly. The helper still treats runtime CDP discovery as authoritative for the smoke profile.
+
+Retest command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode launch \
+  --port 9226 \
+  --chrome-path "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev" \
+  --extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher" \
+  --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile-9226" \
+  --op diagnoseHealth
+```
+
 ## Safety Guarantees
 
 - External helper only; no in-app runtime behavior changed.

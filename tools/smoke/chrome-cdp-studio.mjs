@@ -125,6 +125,9 @@ function parseArgs(argv) {
     throw new Error('invalid --wait-after-navigate-ms');
   }
   if (options.mode !== 'attach' && options.mode !== 'launch') throw new Error('invalid --mode');
+  if (options.loadExtension && options.loadExtension !== 'none') {
+    options.loadExtension = path.resolve(repoRoot, options.loadExtension);
+  }
   return options;
 }
 
@@ -154,9 +157,9 @@ function summarizeCdpVersion(version) {
   };
 }
 
-function studioUrlFor(options) {
+function studioUrlFor(options, extensionId = options.extensionId) {
   const base = options.studioUrl ||
-    `chrome-extension://${options.extensionId}/surfaces/studio/studio.html#/saved`;
+    `chrome-extension://${extensionId}/surfaces/studio/studio.html#/saved`;
   const url = new URL(base);
   url.searchParams.set(URL_FLAG, REQUIRED_VALUE);
   return url.toString();
@@ -214,10 +217,43 @@ async function probeCdpVersion(port, timeoutMs = 800) {
   }
 }
 
-function launchChrome(options, url) {
+function validateExtensionPath(loadExtension) {
+  if (!loadExtension || loadExtension === 'none') {
+    throw statusError('studio-launcher-extension-path-missing', {
+      extensionPath: String(loadExtension || ''),
+    });
+  }
+  const extensionPath = path.resolve(repoRoot, loadExtension);
+  const manifestPath = path.join(extensionPath, 'manifest.json');
+  if (!fs.existsSync(extensionPath)) {
+    throw statusError('studio-launcher-extension-path-missing', { extensionPath });
+  }
+  if (!fs.existsSync(manifestPath)) {
+    throw statusError('studio-launcher-manifest-missing', { extensionPath, manifestPath });
+  }
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    throw statusError('studio-launcher-manifest-invalid', {
+      extensionPath,
+      manifestPath,
+      rawErrorStatus: String(error && error.message || error),
+    });
+  }
+  return {
+    extensionPath,
+    manifestPath,
+    manifestName: String(manifest && manifest.name || ''),
+    manifestVersion: String(manifest && manifest.version || ''),
+    manifestHasKey: !!(manifest && manifest.key),
+  };
+}
+
+function launchChrome(options, url, extensionInfo = null) {
   const chromePath = findChromeBinary(options.chromePath);
   if (!chromePath || !fs.existsSync(chromePath)) {
-    throw new Error('chrome-binary-missing');
+    throw statusError('chrome-binary-missing', { chromePath });
   }
   const args = [
     `--remote-debugging-port=${options.port}`,
@@ -225,8 +261,9 @@ function launchChrome(options, url) {
     '--no-first-run',
     '--no-default-browser-check',
   ];
-  if (options.loadExtension && options.loadExtension !== 'none' && fs.existsSync(options.loadExtension)) {
-    args.push(`--load-extension=${options.loadExtension}`);
+  if (extensionInfo && extensionInfo.extensionPath) {
+    args.push(`--disable-extensions-except=${extensionInfo.extensionPath}`);
+    args.push(`--load-extension=${extensionInfo.extensionPath}`);
   }
   args.push(url);
   const child = spawn(chromePath, args, {
@@ -237,10 +274,10 @@ function launchChrome(options, url) {
   return { chromePath, args };
 }
 
-function isStudioTarget(target, options) {
+function isStudioTarget(target, options, extensionId = options.extensionId) {
   const url = String(target && target.url || '');
   return target && target.type === 'page' &&
-    url.includes(`chrome-extension://${options.extensionId}/`) &&
+    url.includes(`chrome-extension://${extensionId}/`) &&
     url.includes('/surfaces/studio/studio.html');
 }
 
@@ -270,6 +307,102 @@ function summarizeTargets(targets, options) {
   };
 }
 
+function extensionIdFromUrl(url) {
+  const match = String(url || '').match(/^chrome-extension:\/\/([a-z]{32})\//);
+  return match ? match[1] : '';
+}
+
+function isBlockedExtensionTarget(target) {
+  const title = String(target && target.title || '').toLowerCase();
+  const url = String(target && target.url || '').toLowerCase();
+  return title.includes(' is blocked') ||
+    title.includes('blocked by client') ||
+    title.includes('err_blocked_by_client') ||
+    url.startsWith('chrome-error://');
+}
+
+function summarizeAnyExtensionTargets(targets) {
+  const rows = Array.isArray(targets) ? targets.map(summarizeTarget) : [];
+  const extensionTargets = rows.filter((target) => extensionIdFromUrl(target.url));
+  const loadedExtensionTargets = extensionTargets.filter((target) => !isBlockedExtensionTarget(target));
+  const discoveredExtensionIds = [...new Set(extensionTargets.map((target) => extensionIdFromUrl(target.url)).filter(Boolean))];
+  const loadedExtensionIds = [...new Set(loadedExtensionTargets.map((target) => extensionIdFromUrl(target.url)).filter(Boolean))];
+  const studioTargets = extensionTargets.filter((target) => target.url.includes('/surfaces/studio/studio.html'));
+  return {
+    targetCount: rows.length,
+    extensionTargetFound: extensionTargets.length > 0,
+    extensionTargetCount: extensionTargets.length,
+    discoveredExtensionIds,
+    loadedExtensionIds,
+    extensionTargets,
+    loadedExtensionTargets,
+    studioTargetFound: studioTargets.length > 0,
+    studioTargetCount: studioTargets.length,
+    studioTargets,
+  };
+}
+
+async function browserTargetInfos(cdpVersion, timeoutMs) {
+  const browserWs = cdpVersion && cdpVersion.webSocketDebuggerUrl;
+  if (!browserWs) return [];
+  const client = new CdpClient(browserWs);
+  try {
+    await client.connect(timeoutMs);
+    const listed = await client.send('Target.getTargets');
+    return Array.isArray(listed && listed.targetInfos) ? listed.targetInfos : [];
+  } finally {
+    client.close();
+  }
+}
+
+async function discoverExtensionTargets(options, cdpVersion) {
+  const jsonTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 }).catch(() => []);
+  const browserTargets = await browserTargetInfos(cdpVersion, Math.min(options.timeoutMs, 5000)).catch(() => []);
+  const combined = [
+    ...(Array.isArray(jsonTargets) ? jsonTargets : []),
+    ...(Array.isArray(browserTargets) ? browserTargets : []),
+  ];
+  return summarizeAnyExtensionTargets(combined);
+}
+
+function selectDiscoveredExtensionId(discovery, options) {
+  const ids = Array.isArray(discovery && discovery.loadedExtensionIds)
+    ? discovery.loadedExtensionIds
+    : [];
+  if (options.extensionId && ids.includes(options.extensionId)) return options.extensionId;
+  if (ids.length === 1) return ids[0];
+  const studioTarget = Array.isArray(discovery && discovery.studioTargets)
+    ? discovery.studioTargets.find((target) => extensionIdFromUrl(target.url) && !isBlockedExtensionTarget(target))
+    : null;
+  if (studioTarget) return extensionIdFromUrl(studioTarget.url);
+  return '';
+}
+
+async function waitForStudioLauncherExtension(options, cdpVersion, extensionInfo = null) {
+  const deadline = Date.now() + Math.max(1000, options.timeoutMs);
+  let lastDiscovery = null;
+  while (Date.now() < deadline) {
+    lastDiscovery = await discoverExtensionTargets(options, cdpVersion);
+    const extensionId = selectDiscoveredExtensionId(lastDiscovery, options);
+    if (extensionId) {
+      return {
+        extensionId,
+        extensionDiscovery: lastDiscovery,
+        attemptedExtensionId: options.extensionId,
+        extensionPath: extensionInfo && extensionInfo.extensionPath || '',
+        extensionManifest: extensionInfo || null,
+      };
+    }
+    await sleep(300);
+  }
+  throw statusError('studio-launcher-extension-not-loaded', {
+    attemptedExtensionId: options.extensionId,
+    extensionPath: extensionInfo && extensionInfo.extensionPath || '',
+    extensionManifest: extensionInfo || null,
+    extensionDiscovery: lastDiscovery,
+  });
+}
+
 async function openStudioTarget(port, url) {
   const route = `/json/new?${encodeURIComponent(url)}`;
   try {
@@ -279,18 +412,18 @@ async function openStudioTarget(port, url) {
   }
 }
 
-async function findOrOpenStudioTarget(options, url) {
+async function findOrOpenStudioTarget(options, url, extensionId = options.extensionId) {
   const targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-  const existing = Array.isArray(targets) ? targets.find((target) => isStudioTarget(target, options)) : null;
+  const existing = Array.isArray(targets) ? targets.find((target) => isStudioTarget(target, options, extensionId)) : null;
   if (existing) {
     return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
   }
   const opened = await openStudioTarget(options.port, url);
-  if (opened && isStudioTarget(opened, options)) {
+  if (opened && isStudioTarget(opened, options, extensionId)) {
     return { target: opened, diagnostics: summarizeTargets([opened], options), opened: true };
   }
   const refreshedTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-  const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isStudioTarget(target, options)) : null;
+  const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isStudioTarget(target, options, extensionId)) : null;
   if (refreshed) {
     return { target: refreshed, diagnostics: summarizeTargets(refreshedTargets, options), opened: true };
   }
@@ -596,11 +729,15 @@ async function run(options) {
     });
   }
 
-  const url = studioUrlFor(options);
+  let url = '';
   let launch = null;
   let cdpVersion = null;
+  let extensionInfo = null;
+  let extensionBundle = null;
+  let effectiveOptions = options;
   try {
     if (options.mode === 'launch') {
+      extensionInfo = validateExtensionPath(options.loadExtension);
       const existingVersion = await probeCdpVersion(options.port);
       if (existingVersion) {
         return result('chrome-cdp-port-in-use', {
@@ -612,18 +749,47 @@ async function run(options) {
           nextAction: `Use a free port such as ${CHROME_DEV_SMOKE_PORT}, or run --mode attach if this is the intended browser.`,
         });
       }
-      launch = launchChrome(options, url);
+      launch = launchChrome(options, 'about:blank', extensionInfo);
     }
     cdpVersion = await waitForCdp(options.port, options.timeoutMs);
   } catch (error) {
-    return result('chrome-cdp-unavailable', {
+    const status = error && error.status || 'chrome-cdp-unavailable';
+    return result(status, {
       ok: false,
       mode: options.mode,
       port: options.port,
       error: String(error && error.message || error),
+      extensionPath: error && error.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+      extensionManifest: extensionInfo,
       launch,
       browser: cdpVersion ? summarizeCdpVersion(cdpVersion) : null,
-      blockers: ['chrome-cdp-unavailable'],
+      blockers: [status],
+    });
+  }
+
+  try {
+    extensionBundle = await waitForStudioLauncherExtension(options, cdpVersion, extensionInfo);
+    effectiveOptions = {
+      ...options,
+      extensionId: extensionBundle.extensionId,
+    };
+    url = studioUrlFor(effectiveOptions, extensionBundle.extensionId);
+  } catch (error) {
+    const status = error && error.status || error && error.message || 'studio-launcher-extension-not-loaded';
+    return result(status, {
+      ok: false,
+      mode: options.mode,
+      port: options.port,
+      browser: summarizeCdpVersion(cdpVersion),
+      error: String(error && error.message || error),
+      blockers: [status],
+      attemptedExtensionId: error && error.attemptedExtensionId || options.extensionId,
+      discoveredExtensionIds: error && error.extensionDiscovery && error.extensionDiscovery.discoveredExtensionIds || [],
+      extensionPath: error && error.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+      extensionManifest: error && error.extensionManifest || extensionInfo,
+      extensionDiscovery: error && error.extensionDiscovery || null,
+      launch,
+      nextAction: 'Confirm Chrome Dev loaded the Studio Launcher unpacked extension from --extension-path and that the smoke profile is not reusing a stale/blocked profile.',
     });
   }
 
@@ -631,7 +797,7 @@ async function run(options) {
   let target;
   let controlBundle = null;
   try {
-    targetBundle = await findOrOpenStudioTarget(options, url);
+    targetBundle = await findOrOpenStudioTarget(effectiveOptions, url, extensionBundle.extensionId);
     target = targetBundle.target;
   } catch (error) {
     const status = error && error.status || error && error.message || 'chrome-studio-target-missing';
@@ -644,6 +810,12 @@ async function run(options) {
       browser: summarizeCdpVersion(cdpVersion),
       error: String(error && error.message || error),
       blockers,
+      attemptedExtensionId: options.extensionId,
+      discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
+      discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+      extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       targetDiagnostics: error && error.targetDiagnostics || null,
       nextAction: status === 'chrome-extension-not-loaded'
         ? 'Launch Chrome Dev with --extension-path apps/extensions/chatgpt/chrome/studio-launcher and a separate --user-data-dir, or attach to that smoke profile port.'
@@ -668,6 +840,12 @@ async function run(options) {
         targetUrl: target.url || url,
         studioTargetFound: true,
         smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+        attemptedExtensionId: options.extensionId,
+        discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
+        discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+        extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+        extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+        extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
         registryGatesEnabled: false,
         registryGates,
         targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
@@ -696,6 +874,12 @@ async function run(options) {
       targetUrl: target.url || url,
       studioTargetFound: true,
       smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      attemptedExtensionId: options.extensionId,
+      discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
+      discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+      extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       registryGatesEnabled: registryGates && registryGates.enabled === true,
       registryGates,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
@@ -719,6 +903,12 @@ async function run(options) {
       targetUrl: target && target.url || url,
       studioTargetFound: !!target,
       smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      attemptedExtensionId: options.extensionId,
+      discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
+      discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
+      extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: error && error.pageStatus || null,
