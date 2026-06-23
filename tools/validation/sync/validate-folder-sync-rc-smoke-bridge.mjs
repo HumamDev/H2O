@@ -80,6 +80,19 @@ assertContains(registry, 'folderModelCountAfter', 'createFolder after count diag
 assertContains(registry, "status: 'folder-create-failed'", 'structured createFolder failure status');
 assertContains(registry, "blockers: ['folder-create-failed']", 'structured createFolder blocker');
 assertContains(registry, 'summary.source = detectSurface().kind', 'createFolder source surface summary');
+assertContains(registry, 'requestFolderMetadataPreview', 'folder metadata preview helper');
+assertContains(registry, 'requestMode: \'preview\'', 'preview request mode');
+assertContains(registry, 'setChromeFolderColor', 'Chrome color stale guard path');
+assertContains(registry, 'folder-metadata-preview-apply', 'Chrome color path diagnostic');
+assertContains(registry, 'operation.staleGuard = staleGuard', 'Chrome color stale guard apply');
+assertContains(registry, "status: 'folder-color-set'", 'stable color success status');
+assertContains(registry, "status: 'folder-color-set-failed'", 'structured color failure status');
+assertContains(registry, 'staleGuardProvided', 'color stale guard diagnostic');
+assertContains(registry, 'staleGuardSource', 'color stale guard source diagnostic');
+assertContains(registry, 'folderFoundBefore', 'color before folder diagnostic');
+assertContains(registry, 'folderFoundAfter', 'color after folder diagnostic');
+assertContains(registry, 'colorBefore', 'color before diagnostic');
+assertContains(registry, 'colorAfter', 'color after diagnostic');
 
 const expectedOps = [
   'getFolderModel',

@@ -517,6 +517,16 @@
     });
   }
 
+  async function requestFolderMetadataPreview(operation, payload) {
+    var request = getPath(H2O, ['Studio', 'sync', 'folderMetadataOperations', 'request']);
+    if (typeof request !== 'function') return null;
+    return request.call(H2O.Studio.sync.folderMetadataOperations, operation, {
+      requestMode: 'preview',
+      timeoutMs: Number(payload.timeoutMs) || 30000,
+      reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge',
+    });
+  }
+
   function summarizeMutationResult(op, result) {
     var r = safeObject(result);
     return baseResult(op, {
@@ -888,10 +898,86 @@
     return unsupportedResult('renameFolder', 'unsupported-op-on-surface');
   }
 
+  async function setChromeFolderColor(payload) {
+    if (detectSurface().kind !== 'chrome-studio') return null;
+    var folderId = cleanString(payload.folderId || payload.id);
+    var color = normalizeColor(payload.color || payload.iconColor);
+    if (!folderId) return unsupportedResult('setFolderColor', 'folder-id-required');
+    if (!color) return unsupportedResult('setFolderColor', 'folder-color-required');
+
+    var foundBefore = await findFolderRow({ folderId: folderId });
+    var beforeRow = foundBefore.row || null;
+    var colorBefore = cleanString(beforeRow && (beforeRow.color || beforeRow.iconColor));
+    var operation = buildMetadataOperation('change-folder-color', beforeRow || { folderId: folderId }, payload);
+    var preview = await requestFolderMetadataPreview(operation, payload);
+    var staleGuard = safeObject(preview && preview.staleGuard);
+    var staleGuardProvided = !!(cleanString(staleGuard.sourceHash) && cleanString(staleGuard.previewHash));
+    if (staleGuardProvided) operation.staleGuard = staleGuard;
+
+    var applyResult = staleGuardProvided ? await requestFolderMetadataApply(operation, payload) : null;
+    var foundAfter = await findFolderRow({ folderId: folderId });
+    var afterRow = foundAfter.row || null;
+    var colorAfter = normalizeColor(afterRow && (afterRow.color || afterRow.iconColor));
+    var apply = safeObject(applyResult);
+    var rawBlockers = codeList(apply.blockers);
+    var rawWarnings = codeList(apply.warnings);
+    var ok = apply.ok === true && !!afterRow && colorAfter === color;
+    if (ok) {
+      return baseResult('setFolderColor', {
+        ok: true,
+        status: 'folder-color-set',
+        folderId: folderId,
+        id: folderId,
+        color: color,
+        iconColor: color,
+        row: afterRow,
+        applied: apply.applied === true,
+        colorPathUsed: 'folder-metadata-preview-apply',
+        staleGuardProvided: true,
+        staleGuardSource: 'folder-metadata-preview',
+        folderFoundBefore: !!beforeRow,
+        folderFoundAfter: !!afterRow,
+        colorBefore: colorBefore,
+        colorAfter: colorAfter,
+        previewStatus: cleanString(preview && preview.status),
+        previewOk: safeObject(preview).ok === true,
+        applyStatus: cleanString(apply.status),
+        blockers: [],
+        warnings: rawWarnings,
+      });
+    }
+    return baseResult('setFolderColor', {
+      ok: false,
+      status: 'folder-color-set-failed',
+      blockers: rawBlockers.length ? rawBlockers : ['folder-color-set-failed'],
+      folderId: folderId,
+      id: folderId,
+      color: color,
+      iconColor: color,
+      applied: apply.applied === true,
+      colorPathUsed: 'folder-metadata-preview-apply',
+      staleGuardProvided: staleGuardProvided,
+      staleGuardSource: staleGuardProvided ? 'folder-metadata-preview' : '',
+      folderFoundBefore: !!beforeRow,
+      folderFoundAfter: !!afterRow,
+      colorBefore: colorBefore,
+      colorAfter: colorAfter,
+      previewStatus: cleanString(preview && preview.status),
+      previewOk: safeObject(preview).ok === true,
+      previewBlockers: codeList(preview && preview.blockers),
+      applyStatus: cleanString(apply.status),
+      applyOk: apply.ok === true,
+      applyBlockers: rawBlockers,
+      warnings: rawWarnings,
+    });
+  }
+
   async function setFolderColor(payload) {
     var folderId = cleanString(payload.folderId || payload.id);
     var color = normalizeColor(payload.color || payload.iconColor);
     if (!folderId) return unsupportedResult('setFolderColor', 'folder-id-required');
+    var chromeResult = await setChromeFolderColor(payload);
+    if (chromeResult) return chromeResult;
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     if (actions && typeof actions.update === 'function') {
       return summarizeMutationResult('setFolderColor', await actions.update(folderId, {
