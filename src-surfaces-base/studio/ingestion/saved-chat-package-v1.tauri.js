@@ -405,7 +405,11 @@
     if (!chatId) throw new Error('chatId is required for saved chat package snapshot');
     if (!snapshotId) throw new Error('snapshotId is required for saved chat package snapshot');
     var source = projectSource(chat, meta);
-    var capturedAt = epochToIso(snapshot.capturedAt) || firstString(meta.capturedAt) || nowIso();
+    /* Determinism: capturedAt/savedAt are part of the canonical, content-hashed
+     * snapshot.json. They must come only from stored snapshot/chat/meta values,
+     * never from the live wall clock (nowIso). Absent → '' so two machines
+     * projecting the same store snapshot produce identical bytes/contentHash. */
+    var capturedAt = epochToIso(snapshot.capturedAt) || firstString(meta.capturedAt) || '';
     var savedAt = epochToIso(snapshot.updatedAt) || epochToIso(chat.updatedAt) || firstString(meta.savedAt, meta.updatedAt) || capturedAt;
     var messages = asArray(src.turns).map(function (turn, index) {
       return normalizeSavedChatMessageV1(turn || {}, index);
@@ -425,9 +429,12 @@
         captureSurface: firstString(meta.captureSurface, 'desktop'),
         captureAdapter: firstString(meta.captureAdapter, RENDERER_VERSION),
         model: firstString(meta.model),
-        locale: firstString(meta.locale, (global.navigator && global.navigator.language) || ''),
-        timezone: firstString(meta.timezone, (global.Intl && global.Intl.DateTimeFormat
-          ? (global.Intl.DateTimeFormat().resolvedOptions().timeZone || '') : '')),
+        /* Determinism: locale/timezone are part of the canonical, content-hashed
+         * snapshot.json. Use only stored capture values — never the live
+         * environment (navigator.language / Intl timezone) — so the same store
+         * snapshot hashes identically on any machine. */
+        locale: firstString(meta.locale),
+        timezone: firstString(meta.timezone),
         digest: firstString(snapshot.digest),
         messageCount: Number(snapshot.messageCount || messages.length || 0),
       },
@@ -524,6 +531,11 @@
     parts.push('<html lang="en">');
     parts.push('<head>');
     parts.push('<meta charset="utf-8">');
+    /* Defense-in-depth for the derived renderer: even if the regex sanitizer
+     * misses a vector, this static CSP blocks scripts/objects/frames/forms and
+     * confines the document. Inline <style> below requires style-src inline;
+     * images allowed from data:/file:/https: only. No script source is allowed. */
+    parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: file: https:; style-src \'unsafe-inline\'; font-src data:; base-uri \'none\'; form-action \'none\'; frame-src \'none\'; object-src \'none\'">');
     parts.push('<meta name="viewport" content="width=device-width, initial-scale=1">');
     parts.push('<title>' + escapeHtml(title) + '</title>');
     parts.push('<style>');
@@ -804,6 +816,62 @@
     });
   }
 
+  function getTextDecoder() {
+    if (typeof global.TextDecoder === 'function') return new global.TextDecoder();
+    if (typeof TextDecoder === 'function') return new TextDecoder();
+    throw new Error('TextDecoder unavailable');
+  }
+
+  /* tauri-plugin-fs read_text_file may surface bytes as a JS number array or a
+   * typed array rather than a string; normalize to text before parsing. */
+  function decodeFsText(value) {
+    if (typeof value === 'string') return value;
+    if (value instanceof Uint8Array) return getTextDecoder().decode(value);
+    if (Array.isArray(value)) return getTextDecoder().decode(Uint8Array.from(value));
+    if (value && typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+      return getTextDecoder().decode(value);
+    }
+    if (value && typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+      return getTextDecoder().decode(new Uint8Array(value));
+    }
+    return String(value == null ? '' : value);
+  }
+
+  async function fsReadTextFile(path, options) {
+    var fs = getTauriFsFacade();
+    if (fs && typeof fs.readTextFile === 'function') return decodeFsText(await fs.readTextFile(path, options || {}));
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs read_text_file');
+    return decodeFsText(await invoke('plugin:fs|read_text_file', { path: path, options: options || {} }));
+  }
+
+  /* Conservative guard before a recursive overwrite delete: only ever delete a
+   * directory that looks like one of our packages. The basename must end in
+   * '.h2ochat' (always true for our own materializer), and if a manifest.json is
+   * readable it must declare our package schema. A missing/unreadable manifest is
+   * tolerated (a partial package we wrote) because the '.h2ochat' basename guard
+   * already prevents targeting an arbitrary user directory — documented
+   * limitation: we do not deep-verify packages whose manifest cannot be read. */
+  async function assertOverwritableSavedChatPackage(packagePath, options) {
+    var base = cleanString(packagePath).replace(/[\/\\]+$/g, '');
+    var basename = base.slice(base.lastIndexOf('/') + 1);
+    basename = basename.slice(basename.lastIndexOf('\\') + 1);
+    if (!/\.h2ochat$/.test(basename)) {
+      throw new Error('refusing recursive overwrite of non-package path (expected *.h2ochat): ' + packagePath);
+    }
+    var manifestText = '';
+    try { manifestText = await fsReadTextFile(joinPath(packagePath, 'manifest.json'), options); }
+    catch (_) { manifestText = ''; }
+    if (!manifestText) return;
+    var parsed = null;
+    try { parsed = JSON.parse(manifestText); }
+    catch (_) { parsed = null; }
+    var schema = parsed && cleanString(parsed.schema);
+    if (schema && schema !== MANIFEST_SCHEMA) {
+      throw new Error('refusing overwrite: existing folder has foreign manifest schema "' + schema + '"');
+    }
+  }
+
   async function writeSavedChatPackageV1(options) {
     var opts = safeObject(options);
     var targetDir = firstString(opts.targetDir, opts.targetFolder);
@@ -816,6 +884,7 @@
       throw new Error('saved chat package already exists: ' + packagePath);
     }
     if (exists && opts.overwrite) {
+      await assertOverwritableSavedChatPackage(packagePath, baseOptions);
       await fsRemove(packagePath, Object.assign({}, baseOptions, { recursive: true }));
     }
     await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));

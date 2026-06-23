@@ -446,12 +446,20 @@ referenced assets are otherwise valid.
 
 ## Non-Goals for Phase A/B
 
-Phase A and Phase B do not include:
+Phase B includes a private Desktop-only package projector/writer
+(`H2O.Studio.ingestion.buildSavedChatPackageV1` and
+`writeSavedChatPackageV1`): an explicitly-invoked, read-through-store,
+projection-only materializer that writes package files to an explicit target
+folder. That private writer is in scope.
 
-- runtime package writer implementation
-- runtime package importer implementation
+The following remain out of scope for Phase A/B:
+
+- UI-wired writer or any Save-to-Folder menu/button/UI wiring
+- automatic, background, or triggered package materialization (no watchers,
+  no sync-driven or event-driven writes)
+- package importer / recovery flow
 - asset CAS implementation
-- live package editing
+- live package editing (packages remain projection-only, never a live store)
 - Desktop archive index implementation
 - Chrome package materialization
 - sync bridge changes

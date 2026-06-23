@@ -142,27 +142,92 @@ function createMockStores() {
     },
   ];
 
-  return {
-    chats: {
+  const mutationCalls = [];
+  const stores = {
+    chats: withMutationSpies('chats', {
       get: async (id) => (id === chatId ? { ...chat } : null),
-    },
-    snapshots: {
+    }, mutationCalls),
+    snapshots: withMutationSpies('snapshots', {
       listByChat: async (id) => (id === chatId ? [{ ...snapshot }] : []),
       get: async (id) => (id === snapshotId ? { snapshot: { ...snapshot }, turns: turns.map((turn) => ({ ...turn, meta: { ...(turn.meta || {}) } })) } : null),
-    },
-    folders: {
+    }, mutationCalls),
+    folders: withMutationSpies('folders', {
       listForChat: async (id) => (id === chatId ? [{ folderId: 'folder_a', name: 'Folder A' }] : []),
-    },
-    categories: {
+    }, mutationCalls),
+    categories: withMutationSpies('categories', {
       getForChat: async (id) => (id === chatId ? { categoryId: 'cat_a', name: 'Category A' } : null),
-    },
-    labels: {
+    }, mutationCalls),
+    labels: withMutationSpies('labels', {
       listForChat: async (id) => (id === chatId ? [{ labelId: 'label_a' }, { labelId: 'label_b' }] : []),
-    },
-    tags: {
+    }, mutationCalls),
+    tags: withMutationSpies('tags', {
       listForChat: async (id) => (id === chatId ? [{ tagId: 'tag_a' }] : []),
+    }, mutationCalls),
+  };
+  stores.__mutationCalls = mutationCalls;
+  return stores;
+}
+
+// Minimal store snapshot deliberately LACKING locale, timezone, and capturedAt
+// so the determinism test exercises the (now removed) environment/wall-clock
+// fallback paths. Output must not depend on the host environment.
+function createBareStores() {
+  const chatId = 'chat_bare';
+  const snapshotId = 'snap_bare';
+  return {
+    chats: { get: async (id) => (id === chatId ? { chatId, title: 'Bare Chat' } : null) },
+    snapshots: {
+      listByChat: async (id) => (id === chatId ? [{ snapshotId, chatId }] : []),
+      get: async (id) => (id === snapshotId
+        ? {
+          snapshot: { snapshotId, chatId, title: 'Bare Chat', meta: {} },
+          turns: [
+            { turnIdx: 0, role: 'user', text: 'hello', meta: { messageId: 'm0' } },
+            { turnIdx: 1, role: 'assistant', outerHtml: '<p>hi there</p>', meta: { messageId: 'm1' } },
+          ],
+        }
+        : null),
+    },
+    folders: { listForChat: async () => [] },
+    categories: { getForChat: async () => null },
+    labels: { listForChat: async () => [] },
+    tags: { listForChat: async () => [] },
+  };
+}
+
+// Fake Intl whose timezone differs per environment, to prove snapshot.json
+// no longer derives its timezone from Intl.
+function makeIntl(timeZone) {
+  return {
+    DateTimeFormat: function () {
+      return { resolvedOptions: function () { return { timeZone }; } };
     },
   };
+}
+
+function loadModuleWithEnv({ lang, timeZone, stores }) {
+  const mockFs = createMockFs();
+  const context = {
+    console,
+    URL,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    ArrayBuffer,
+    Intl: makeIntl(timeZone),
+    navigator: { language: lang },
+    crypto: globalThis.crypto || crypto.webcrypto,
+    __TAURI_INTERNALS__: { invoke: async () => { throw new Error('mock invoke unused'); } },
+    __TAURI__: { fs: mockFs.api },
+    H2O: { Studio: { store: stores } },
+    chrome: { runtime: { id: 'desktop-test', getManifest: () => ({ name: 'H2O Studio Test', version: '0.0.0-test' }) } },
+  };
+  context.globalThis = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
+  const ingestion = sandbox.H2O?.Studio?.ingestion;
+  if (!ingestion) throw new Error('H2O.Studio.ingestion did not register');
+  return ingestion;
 }
 
 function createMockFs() {
@@ -191,8 +256,25 @@ function createMockFs() {
         files.set(target, String(text));
         return true;
       },
+      readTextFile: async (target) => {
+        if (!files.has(target)) throw new Error('not found: ' + target);
+        return files.get(target);
+      },
     },
   };
+}
+
+// Wraps an entity store's read methods with mutation spies so the validator can
+// prove Phase B build/write never writes back into H2O.Studio.store.
+function withMutationSpies(name, readMethods, calls) {
+  const out = { ...readMethods };
+  for (const method of ['upsert', 'bulkUpsert', 'patch', 'create', 'remove', 'delete', 'set', 'saveNow']) {
+    out[method] = async (...args) => {
+      calls.push({ store: name, method, args });
+      return null;
+    };
+  }
+  return out;
 }
 
 function loadModule() {
@@ -202,6 +284,7 @@ function loadModule() {
     console,
     URL,
     TextEncoder,
+    TextDecoder,
     Uint8Array,
     ArrayBuffer,
     Intl,
@@ -311,7 +394,7 @@ async function main() {
     assert.ok(html.indexOf('ingestion/saved-chat-package-v1.tauri.js') < html.indexOf('sync/kernel/privacy-scan.tauri.js'));
   });
 
-  const { ingestion, mockFs } = loadModule();
+  const { ingestion, mockFs, stores } = loadModule();
 
   check('private Desktop API registers required functions', () => {
     assert.equal(typeof ingestion.buildSavedChatPackageV1, 'function');
@@ -332,6 +415,25 @@ async function main() {
     validatePackageObject(latest);
   });
 
+  await checkAsync('snapshot.json bytes and contentHash are identical across environments', async () => {
+    // Same canonical store snapshot (no stored locale/timezone/capturedAt),
+    // projected under two different environments. After the determinism fix the
+    // output must not depend on navigator.language, Intl timezone, or wall clock.
+    const envA = loadModuleWithEnv({ lang: 'en-US', timeZone: 'America/New_York', stores: createBareStores() });
+    const envB = loadModuleWithEnv({ lang: 'de-DE', timeZone: 'Asia/Tokyo', stores: createBareStores() });
+    const a = await envA.buildSavedChatPackageV1({ snapshotId: 'snap_bare' });
+    const b = await envB.buildSavedChatPackageV1({ snapshotId: 'snap_bare' });
+    assert.equal(a.files['snapshot.json'].text, b.files['snapshot.json'].text, 'snapshot.json canonical bytes must be identical across environments');
+    assert.equal(a.contentHash, b.contentHash, 'contentHash must be identical across environments');
+    assert.equal(a.files['snapshot.json'].sha256, b.files['snapshot.json'].sha256);
+    // Prove the environment-derived fields did not leak into the hashed snapshot.
+    const snap = JSON.parse(a.files['snapshot.json'].text);
+    assert.equal(snap.metadata.locale, '', 'locale must be empty when not stored (no navigator fallback)');
+    assert.equal(snap.metadata.timezone, '', 'timezone must be empty when not stored (no Intl fallback)');
+    assert.equal(snap.capturedAt, '', 'capturedAt must be empty when not stored (no nowIso fallback)');
+    assert.equal(snap.savedAt, '', 'savedAt must be empty when not stored (no nowIso fallback)');
+  });
+
   await checkAsync('writeSavedChatPackageV1 writes explicit target folder only', async () => {
     const written = await ingestion.writeSavedChatPackageV1({
       snapshotId: 'snap_phase_b',
@@ -346,6 +448,20 @@ async function main() {
     assert.equal(mockFs.dirs.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/assets'), false);
   });
 
+  await checkAsync('written snapshot.json bytes re-hash to manifest contentHash', async () => {
+    const targetDir = '/tmp/h2o-readback-test';
+    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', targetDir });
+    const root = `${targetDir}/chat_phase_b.h2ochat`;
+    const onDiskSnapshot = mockFs.files.get(`${root}/snapshot.json`);
+    const onDiskManifest = JSON.parse(mockFs.files.get(`${root}/manifest.json`));
+    assert.equal(typeof onDiskSnapshot, 'string', 'snapshot.json must have been written to disk');
+    const rehash = sha256Prefixed(onDiskSnapshot);
+    assert.equal(rehash, onDiskManifest.contentHash, 'rehash of written snapshot.json must equal manifest.contentHash');
+    assert.equal(rehash, onDiskManifest.files.snapshot.sha256, 'rehash must equal manifest.files.snapshot.sha256');
+    assert.equal(onDiskSnapshot, written.files['snapshot.json'].text, 'written bytes must equal build-result bytes');
+    assert.equal(onDiskManifest.contentHash, onDiskManifest.files.snapshot.sha256, 'no assets ⇒ contentHash === files.snapshot.sha256');
+  });
+
   await checkAsync('writer fails when package exists unless overwrite is explicit', async () => {
     await assert.rejects(
       () => ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', targetDir: '/tmp/h2o-saved-chat-test' }),
@@ -357,6 +473,15 @@ async function main() {
       overwrite: true,
     });
     assert.equal(overwritten.written, true);
+  });
+
+  check('Phase B build/write never calls store mutation methods', () => {
+    // After every build + write + overwrite above, no store mutation spy fired.
+    assert.deepEqual(
+      stores.__mutationCalls,
+      [],
+      `expected zero store mutations, saw: ${JSON.stringify(stores.__mutationCalls)}`,
+    );
   });
 
   check('diagnose reports Phase B boundaries', () => {
