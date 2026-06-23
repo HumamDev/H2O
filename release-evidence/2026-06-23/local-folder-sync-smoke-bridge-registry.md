@@ -236,6 +236,149 @@ Expected:
 - without both `?h2oSmokeBridge=folder-sync-rc` and `localStorage["h2o:studio:smoke-bridge:enabled:v1"] = "folder-sync-rc"`, commands return a clear disabled/gated result
 - enabled commands remain unavailable until all gates pass
 
+## Manual Live Proof
+
+Follow-up date: 2026-06-23
+
+Implementation commits:
+
+- Registry implementation: `3e6343ab4c2ae0bf6583e778d2034a64b4d3c275`
+- Loader/copy-path fix: `ca6644cd6267fe6c487cb3aefbe4488583ea2b5d`
+
+### Desktop Disabled-State Proof
+
+Surface:
+
+- `desktop-studio`
+
+Adapter:
+
+- `tauri`
+
+`diagnoseGates()` returned:
+
+- `enabled:false`
+- `blockers:["url-flag-required","local-storage-opt-in-required"]`
+- `knownLocalDevSurface:true`
+- `publicReleaseBlocked:true`
+
+Disabled run:
+
+```js
+await H2O.Studio.devSmoke.folderSync.run('diagnoseHealth', {
+  commandId: 'manual-disabled-health',
+  createdAt: new Date().toISOString()
+})
+```
+
+Returned:
+
+- `ok:false`
+- `status:"smoke-bridge-disabled"`
+- `disabled:true`
+- safety flags true:
+  - `noArbitraryEval`
+  - `noBroadFilesystemAccess`
+  - `noHardDelete`
+  - `noPurge`
+  - `noRawSql`
+  - `noChatDelete`
+  - `noSnapshotDelete`
+  - `noTombstonePropagationApply`
+
+### Desktop Enabled Proof
+
+Enabled with:
+
+```js
+localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc')
+```
+
+and URL flag:
+
+```text
+?h2oSmokeBridge=folder-sync-rc
+```
+
+`diagnoseGates()` returned:
+
+- `enabled:true`
+- `surface:"desktop-studio"`
+- `adapter:"tauri"`
+- `blockers:[]`
+
+`getFolderModel` returned:
+
+- `ok:true`
+- `status:"folder-model-read"`
+- `rowCount:17`
+- `canonicalRowCount:17`
+- `displayModelAvailable:true`
+
+`diagnoseHealth` returned:
+
+- `ok:true`
+- `status:"healthy"`
+- `verdict:"healthy"`
+- `blockers:[]`
+- `warnings:[]`
+- `summaryText:"Folder sync is current and no blockers are active."`
+
+### Chrome Enabled Proof
+
+Enabled with:
+
+```js
+localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc')
+```
+
+and URL flag:
+
+```text
+?h2oSmokeBridge=folder-sync-rc
+```
+
+`diagnoseGates()` returned:
+
+- `enabled:true`
+- `surface:"chrome-studio"`
+- `adapter:"mv3"`
+- `blockers:[]`
+
+`getFolderModel` returned:
+
+- `ok:true`
+- `status:"folder-model-read"`
+- `rowCount:19`
+- `canonicalRowCount:19`
+- `displayModelAvailable:true`
+
+`diagnoseHealth` returned:
+
+- `ok:true`
+- `status:"healthy"`
+- `verdict:"healthy"`
+- `blockers:[]`
+- `warnings:[]`
+- `chromeToDesktop.chromeWritesSyncFolder:true`
+- `chromeToDesktop.exportApiAvailable:true`
+- `chromeToDesktop.permission:"granted"`
+- `desktopToChrome.autoImportEnabled:true`
+
+### Live Safety Verdict
+
+- Registry loads on both Desktop and Chrome.
+- Disabled-by-default gates work.
+- URL + localStorage opt-in enables the bridge.
+- Basic read/health commands work.
+- No arbitrary eval, hard delete, purge, raw SQL, chat deletion, snapshot deletion, or tombstone propagation apply is exposed.
+- Slice 2 is ready for Slice 3: Desktop file-command queue bridge.
+
+### Live-Proof Validation
+
+- `git diff --check` - pass
+- `git diff --cached --check` - pass
+
 ## Deferred
 
 - Desktop file-command queue bridge
