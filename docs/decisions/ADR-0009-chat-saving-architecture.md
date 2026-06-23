@@ -11,6 +11,8 @@ Related:
 - [ADR-0008: Chrome Companion Surface + Desktop Professional Workspace Contract](ADR-0008-chrome-companion-desktop-professional-workspace-contract.md)
 - [Contract: Library](../systems/library/contract.md)
 - [Saved Chat Package v1 Schema Spec](../systems/archive/saved-chat-package-v1.md)
+- [Saved Chat Package Format — Versioned Umbrella Spec](../systems/archive/saved-chat-package-format.md)
+- [ADR-0010: Saved Chat Asset CAS + Capability Gate](ADR-0010-saved-chat-asset-cas.md)
 
 ## Problem Statement
 

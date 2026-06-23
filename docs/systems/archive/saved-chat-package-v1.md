@@ -8,6 +8,7 @@ Related:
 
 - [ADR-0009: Chat Saving Architecture - H2O Studio Archive Model](../../decisions/ADR-0009-chat-saving-architecture.md)
 - [ADR-0005: Linked vs Saved Library Records](../../decisions/ADR-0005-linked-vs-saved-library-records.md)
+- [Saved Chat Package Format — Versioned Umbrella Spec](saved-chat-package-format.md) — version matrix; v2 (asset-capable) design
 - [Contract: Library](../library/contract.md)
 - [Library Record Shapes](../library/record-shapes.md)
 
