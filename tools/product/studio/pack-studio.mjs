@@ -1183,6 +1183,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/tombstone-reviews.mv3.js",
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
+  "ingestion/saved-chat-package-v1.tauri.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",
   "sync/kernel/blockers.tauri.js",
