@@ -29,7 +29,8 @@ assertContains(helper, "/private/tmp/h2o-folder-sync-smoke-chrome-profile", 'def
 assertContains(helper, 'CHROME_DEV_SMOKE_PORT = 9225', 'Chrome Dev smoke port');
 assertContains(helper, "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile", 'Chrome Dev smoke profile');
 assertContains(helper, '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev', 'Chrome Dev binary example');
-assertContains(helper, 'apps/extensions/chatgpt/chrome/studio-launcher', 'Studio Launcher extension default');
+assertContains(helper, 'build/chrome-ext-studio-launcher', 'Studio Launcher built extension default');
+assertContains(helper, 'apps/extensions/chatgpt/chrome/studio-launcher', 'legacy Studio Launcher template diagnostic');
 assertContains(helper, 'H2O.Studio.devSmoke.folderSync.run', 'registry path label');
 assertContains(helper, 'h2oSmokeBridge', 'URL flag');
 assertContains(helper, 'h2o:studio:smoke-bridge:enabled:v1', 'localStorage opt-in');
@@ -113,6 +114,11 @@ assertContains(helper, 'Extensions.triggerAction', 'CDP extension action trigger
 assertContains(helper, 'filter: [{ type: \'tab\', exclude: false }]', 'tab target filter for extension action');
 assertContains(helper, 'SMOKE_EXTENSION_COPY_ROOT', 'temporary smoke extension copy root');
 assertContains(helper, 'prepareSmokeExtensionCopy', 'temporary smoke extension copy preparation');
+assertContains(helper, 'SMOKE_REGISTRY_RELATIVE_PATH', 'smoke registry relative path');
+assertContains(helper, 'SOURCE_SMOKE_REGISTRY', 'source smoke registry overlay path');
+assertContains(helper, 'overlayCurrentSmokeRegistry', 'source smoke registry overlay');
+assertContains(helper, 'smokeRegistryOverlayApplied', 'smoke registry overlay diagnostic');
+assertContains(helper, 'smokeRegistryWasStale', 'stale smoke registry diagnostic');
 assertContains(helper, 'patchSmokeExtensionManifest', 'temporary smoke manifest patch');
 assertContains(helper, "resources: ['surfaces/studio/*']", 'smoke copy exposes only Studio resources');
 assertContains(helper, "matches: ['<all_urls>']", 'smoke copy web-accessible match for CDP navigation');

@@ -18,7 +18,10 @@ const CHROME_DEV_SMOKE_PORT = 9225;
 const CHROME_DEV_SMOKE_PROFILE = '/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile';
 const CHROME_DEV_PATH = '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev';
 const DEFAULT_EXTENSION_ID = 'bpobkkppdlldlkccaehmpfclmkhiemhg';
-const DEFAULT_LOAD_EXTENSION = path.join(repoRoot, 'apps/extensions/chatgpt/chrome/studio-launcher');
+const DEFAULT_LOAD_EXTENSION = path.join(repoRoot, 'build/chrome-ext-studio-launcher');
+const LEGACY_STUDIO_LAUNCHER_EXTENSION = path.join(repoRoot, 'apps/extensions/chatgpt/chrome/studio-launcher');
+const SMOKE_REGISTRY_RELATIVE_PATH = 'surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js';
+const SOURCE_SMOKE_REGISTRY = path.join(repoRoot, 'src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js');
 const SMOKE_EXTENSION_COPY_ROOT = '/private/tmp/h2o-folder-sync-smoke-extension-copies';
 const CHROME_LOAD_EXTENSION_FEATURE_BYPASS = 'DisableLoadExtensionCommandLineSwitch';
 const URL_FLAG = 'h2oSmokeBridge';
@@ -605,6 +608,53 @@ function patchSmokeExtensionManifest(copyPath) {
   };
 }
 
+function sha256File(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return '';
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  } catch (_) {
+    return '';
+  }
+}
+
+function overlayCurrentSmokeRegistry(copyPath) {
+  const outputPath = path.join(copyPath, SMOKE_REGISTRY_RELATIVE_PATH);
+  const sourcePath = SOURCE_SMOKE_REGISTRY;
+  const beforeHash = sha256File(outputPath);
+  const sourceHash = sha256File(sourcePath);
+  const sourceExists = !!sourceHash;
+  const outputExistedBefore = !!beforeHash;
+  if (!sourceExists) {
+    return {
+      smokeRegistryOverlayApplied: false,
+      smokeRegistryOverlayStatus: 'source-missing',
+      smokeRegistryRelativePath: SMOKE_REGISTRY_RELATIVE_PATH,
+      smokeRegistrySourcePath: sourcePath,
+      smokeRegistryOutputPath: outputPath,
+      smokeRegistrySourceHash: '',
+      smokeRegistryBeforeHash: beforeHash,
+      smokeRegistryAfterHash: beforeHash,
+      smokeRegistryWasMissing: !outputExistedBefore,
+      smokeRegistryWasStale: false,
+    };
+  }
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  if (beforeHash !== sourceHash) fs.copyFileSync(sourcePath, outputPath);
+  const afterHash = sha256File(outputPath);
+  return {
+    smokeRegistryOverlayApplied: beforeHash !== sourceHash,
+    smokeRegistryOverlayStatus: afterHash === sourceHash ? 'source-current' : 'overlay-failed',
+    smokeRegistryRelativePath: SMOKE_REGISTRY_RELATIVE_PATH,
+    smokeRegistrySourcePath: sourcePath,
+    smokeRegistryOutputPath: outputPath,
+    smokeRegistrySourceHash: sourceHash,
+    smokeRegistryBeforeHash: beforeHash,
+    smokeRegistryAfterHash: afterHash,
+    smokeRegistryWasMissing: !outputExistedBefore,
+    smokeRegistryWasStale: !!beforeHash && beforeHash !== sourceHash,
+  };
+}
+
 function prepareSmokeExtensionCopy(extensionInfo) {
   const sourcePath = extensionInfo && extensionInfo.extensionPath || '';
   const extensionId = extensionInfo && extensionInfo.expectedExtensionId || crypto.createHash('sha256').update(sourcePath).digest('hex').slice(0, 16);
@@ -612,6 +662,7 @@ function prepareSmokeExtensionCopy(extensionInfo) {
   fs.rmSync(copyPath, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(copyPath), { recursive: true });
   fs.cpSync(sourcePath, copyPath, { recursive: true });
+  const smokeRegistryOverlay = overlayCurrentSmokeRegistry(copyPath);
 
   const bgPath = path.join(copyPath, 'bg.js');
   let studioAutoRestorePatched = false;
@@ -632,6 +683,12 @@ function prepareSmokeExtensionCopy(extensionInfo) {
     sourceExtensionPath: sourcePath,
     smokeExtensionCopy: true,
     smokeExtensionCopyRoot: copyPath,
+    legacyStudioLauncherSourcePath: LEGACY_STUDIO_LAUNCHER_EXTENSION,
+    smokeRegistryOverlay,
+    smokeRegistryOverlayApplied: smokeRegistryOverlay.smokeRegistryOverlayApplied === true,
+    smokeRegistryOverlayStatus: smokeRegistryOverlay.smokeRegistryOverlayStatus,
+    smokeRegistryWasStale: smokeRegistryOverlay.smokeRegistryWasStale === true,
+    smokeRegistryWasMissing: smokeRegistryOverlay.smokeRegistryWasMissing === true,
     studioAutoRestorePatched,
     smokeUrlFlagPatched,
     smokeOpenWrapperPatched,
@@ -1891,7 +1948,7 @@ async function run(options) {
       expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: error && error.targetDiagnostics || null,
       nextAction: status === 'chrome-extension-not-loaded'
-        ? 'Launch Chrome Dev with --extension-path apps/extensions/chatgpt/chrome/studio-launcher and a separate --user-data-dir, or attach to that smoke profile port.'
+        ? 'Run node tools/dev/dev-all.mjs, then launch Chrome Dev with --extension-path build/chrome-ext-studio-launcher and a separate --user-data-dir, or attach to that smoke profile port.'
         : 'Confirm the Studio extension page is open and the extension ID/path are correct.',
     });
   }
