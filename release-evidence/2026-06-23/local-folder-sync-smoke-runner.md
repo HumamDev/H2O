@@ -26,8 +26,14 @@ Default behavior:
 
 - default CDP port: `9224`
 - default smoke profile: `/private/tmp/h2o-folder-sync-smoke-chrome-profile`
+- Chrome Dev smoke example port: `9225`
+- Chrome Dev smoke example profile: `/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile`
+- Chrome Dev binary example: `/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev`
 - default Studio Launcher extension ID: `bpobkkppdlldlkccaehmpfclmkhiemhg`
 - default unpacked extension path for launch mode: `apps/extensions/chatgpt/chrome/studio-launcher`
+- supported aliases:
+  - `--user-data-dir` / `--profile-dir` for the smoke profile
+  - `--extension-path` for the unpacked extension path
 - supported modes:
   - `attach`
   - `launch`
@@ -112,6 +118,71 @@ node tools/smoke/chrome-cdp-studio.mjs \
   --load-extension apps/extensions/chatgpt/chrome/studio-launcher \
   --op getFolderModel
 ```
+
+## Chrome Dev Smoke Setup
+
+Follow-up date: 2026-06-23
+
+Runtime setup issue:
+
+- Normal Google Chrome was reachable on CDP port `9224`.
+- The Studio Launcher extension was loaded in Google Chrome Dev, not normal Google Chrome.
+- Starting Chrome Dev with `--remote-debugging-port=9224` while an existing Chrome Dev session was already open printed `Opening in existing browser session.`
+- That existing Chrome Dev session did not expose CDP, so the helper could attach to the wrong browser or fail to find the Studio extension target.
+
+Fix / guidance:
+
+- Use a separate Chrome Dev smoke profile so Chrome Dev starts a distinct CDP-enabled process.
+- Use a distinct port, recommended `9225`, to avoid attaching to normal Chrome on `9224`.
+- Load the Studio Launcher extension explicitly from the repo bundle.
+- The helper now supports the exact aliases used by the smoke command:
+  - `--user-data-dir`
+  - `--profile-dir`
+  - `--extension-path`
+
+Launch Chrome Dev smoke profile with Studio Launcher:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode launch \
+  --port 9225 \
+  --chrome-path "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev" \
+  --extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher" \
+  --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile" \
+  --op diagnoseHealth
+```
+
+Attach to the same Chrome Dev smoke profile:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode attach \
+  --port 9225 \
+  --op getFolderModel
+```
+
+Expected success diagnostics include:
+
+- `browser.browser`
+- `port:9225`
+- `studioTargetFound:true`
+- `targetUrl` containing `/surfaces/studio/studio.html`
+- `smokeUrlFlagPresent:true`
+- `registryGatesEnabled:true`
+
+Improved failure statuses:
+
+- `chrome-cdp-port-in-use`: launch mode found an existing CDP browser on the requested port before launching.
+- `chrome-cdp-unavailable`: no CDP endpoint was reachable.
+- `chrome-extension-not-loaded`: the requested extension target or smoke registry was not available.
+- `chrome-cdp-attached-to-wrong-browser`: attach mode likely connected to a browser/profile that does not have the Studio Launcher extension loaded.
+- `chrome-studio-target-missing`: extension appears available but the Studio target could not be found/opened.
+
+Next actions by failure:
+
+- For `chrome-cdp-port-in-use`, choose a free port such as `9225` or use `--mode attach` if the existing browser is intentional.
+- For `chrome-extension-not-loaded`, rerun launch mode with `--extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher"` and a separate `--user-data-dir`.
+- For `chrome-studio-target-missing`, verify the extension ID and Studio Launcher bundle are correct.
 
 Expected unavailable status if Chrome is not reachable:
 

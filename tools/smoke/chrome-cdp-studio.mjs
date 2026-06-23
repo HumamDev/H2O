@@ -13,6 +13,9 @@ const SCHEMA = 'h2o.studio.chrome-cdp-smoke-helper.result.v1';
 const PHASE = 'folder-sync-rc-smoke-chrome-cdp-helper';
 const DEFAULT_PORT = 9224;
 const DEFAULT_PROFILE = '/private/tmp/h2o-folder-sync-smoke-chrome-profile';
+const CHROME_DEV_SMOKE_PORT = 9225;
+const CHROME_DEV_SMOKE_PROFILE = '/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile';
+const CHROME_DEV_PATH = '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev';
 const DEFAULT_EXTENSION_ID = 'bpobkkppdlldlkccaehmpfclmkhiemhg';
 const DEFAULT_LOAD_EXTENSION = path.join(repoRoot, 'apps/extensions/chatgpt/chrome/studio-launcher');
 const URL_FLAG = 'h2oSmokeBridge';
@@ -22,6 +25,7 @@ const REGISTRY_PATH_LABEL = 'H2O.Studio.devSmoke.folderSync.run';
 const REGISTRY_OBJECT_EXPRESSION = 'globalThis.H2O && globalThis.H2O.Studio && globalThis.H2O.Studio.devSmoke && globalThis.H2O.Studio.devSmoke.folderSync';
 const GLOBAL_OBJECT_EXPRESSION = 'globalThis';
 const REGISTRY_CALL_WRAPPER = 'function(op, payload) { return this.run(op, payload); }';
+const REGISTRY_GATES_WRAPPER = 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }';
 const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1') }; }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
@@ -96,9 +100,9 @@ function parseArgs(argv) {
     if (value == null) throw new Error(`missing value for --${key}`);
     if (key === 'mode') options.mode = value;
     else if (key === 'port') options.port = Number(value);
-    else if (key === 'profile') options.profile = value;
+    else if (key === 'profile' || key === 'profile-dir' || key === 'user-data-dir') options.profile = value;
     else if (key === 'extension-id') options.extensionId = value;
-    else if (key === 'load-extension') options.loadExtension = value;
+    else if (key === 'load-extension' || key === 'extension-path') options.loadExtension = value;
     else if (key === 'chrome-path') options.chromePath = value;
     else if (key === 'studio-url') options.studioUrl = value;
     else if (key === 'op') options.op = value;
@@ -123,8 +127,23 @@ function usage() {
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9224 --op getFolderModel',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port 9224 --op diagnoseHealth',
     '',
+    'Chrome Dev smoke profile:',
+    `  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port ${CHROME_DEV_SMOKE_PORT} --chrome-path "${CHROME_DEV_PATH}" --extension-path "${DEFAULT_LOAD_EXTENSION}" --user-data-dir "${CHROME_DEV_SMOKE_PROFILE}" --op diagnoseHealth`,
+    `  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port ${CHROME_DEV_SMOKE_PORT} --op getFolderModel`,
+    '',
     'Slice 4A supports read-only ops only: diagnoseHealth, getFolderModel.',
   ].join('\n');
+}
+
+function summarizeCdpVersion(version) {
+  const v = version && typeof version === 'object' ? version : {};
+  return {
+    browser: String(v.Browser || ''),
+    protocolVersion: String(v['Protocol-Version'] || ''),
+    webKitVersion: String(v['WebKit-Version'] || ''),
+    userAgent: String(v['User-Agent'] || ''),
+    webSocketDebuggerUrl: String(v.webSocketDebuggerUrl || ''),
+  };
 }
 
 function studioUrlFor(options) {
@@ -179,6 +198,14 @@ async function waitForCdp(port, timeoutMs) {
   throw new Error(`chrome-cdp-unavailable${detail}`);
 }
 
+async function probeCdpVersion(port, timeoutMs = 800) {
+  try {
+    return await cdpJson(port, '/json/version', { timeoutMs });
+  } catch (_) {
+    return null;
+  }
+}
+
 function launchChrome(options, url) {
   const chromePath = findChromeBinary(options.chromePath);
   if (!chromePath || !fs.existsSync(chromePath)) {
@@ -209,6 +236,32 @@ function isStudioTarget(target, options) {
     url.includes('/surfaces/studio/studio.html');
 }
 
+function summarizeTarget(target) {
+  const t = target && typeof target === 'object' ? target : {};
+  return {
+    id: String(t.id || ''),
+    type: String(t.type || ''),
+    title: String(t.title || ''),
+    url: String(t.url || ''),
+  };
+}
+
+function summarizeTargets(targets, options) {
+  const rows = Array.isArray(targets) ? targets.map(summarizeTarget) : [];
+  const extensionPrefix = `chrome-extension://${options.extensionId}/`;
+  const extensionTargets = rows.filter((target) => target.url.startsWith(extensionPrefix));
+  const studioTargets = rows.filter((target) => target.url.startsWith(extensionPrefix) &&
+    target.url.includes('/surfaces/studio/studio.html'));
+  return {
+    targetCount: rows.length,
+    extensionTargetFound: extensionTargets.length > 0,
+    studioTargetFound: studioTargets.length > 0,
+    extensionTargetCount: extensionTargets.length,
+    studioTargetCount: studioTargets.length,
+    studioTargets,
+  };
+}
+
 async function openStudioTarget(port, url) {
   const route = `/json/new?${encodeURIComponent(url)}`;
   try {
@@ -221,13 +274,23 @@ async function openStudioTarget(port, url) {
 async function findOrOpenStudioTarget(options, url) {
   const targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
   const existing = Array.isArray(targets) ? targets.find((target) => isStudioTarget(target, options)) : null;
-  if (existing && existing.webSocketDebuggerUrl) return existing;
+  if (existing && existing.webSocketDebuggerUrl) {
+    return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
+  }
   const opened = await openStudioTarget(options.port, url);
-  if (opened && opened.webSocketDebuggerUrl) return opened;
+  if (opened && opened.webSocketDebuggerUrl && isStudioTarget(opened, options)) {
+    return { target: opened, diagnostics: summarizeTargets([opened], options), opened: true };
+  }
   const refreshedTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
   const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isStudioTarget(target, options)) : null;
-  if (refreshed && refreshed.webSocketDebuggerUrl) return refreshed;
-  throw new Error('chrome-studio-target-missing');
+  if (refreshed && refreshed.webSocketDebuggerUrl) {
+    return { target: refreshed, diagnostics: summarizeTargets(refreshedTargets, options), opened: true };
+  }
+  const diagnostics = summarizeTargets(refreshedTargets, options);
+  const error = new Error(diagnostics.extensionTargetFound ? 'chrome-studio-target-missing' : 'chrome-extension-not-loaded');
+  error.status = error.message;
+  error.targetDiagnostics = diagnostics;
+  throw error;
 }
 
 class CdpClient {
@@ -362,6 +425,18 @@ async function runReadOnlyRegistryOp(cdp, registryObjectId, op, payload) {
   return called && called.result ? called.result.value : null;
 }
 
+async function diagnoseRegistryGates(cdp, registryObjectId) {
+  const called = await cdp.send('Runtime.callFunctionOn', {
+    objectId: registryObjectId,
+    functionDeclaration: REGISTRY_GATES_WRAPPER,
+    arguments: [],
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  if (called.exceptionDetails) return null;
+  return called && called.result ? called.result.value : null;
+}
+
 async function run(options) {
   if (!READ_ONLY_OP_SET.has(options.op)) {
     return result('op-not-read-only', {
@@ -374,11 +449,23 @@ async function run(options) {
 
   const url = studioUrlFor(options);
   let launch = null;
+  let cdpVersion = null;
   try {
     if (options.mode === 'launch') {
+      const existingVersion = await probeCdpVersion(options.port);
+      if (existingVersion) {
+        return result('chrome-cdp-port-in-use', {
+          ok: false,
+          mode: options.mode,
+          port: options.port,
+          browser: summarizeCdpVersion(existingVersion),
+          blockers: ['chrome-cdp-port-in-use'],
+          nextAction: `Use a free port such as ${CHROME_DEV_SMOKE_PORT}, or run --mode attach if this is the intended browser.`,
+        });
+      }
       launch = launchChrome(options, url);
     }
-    await waitForCdp(options.port, options.timeoutMs);
+    cdpVersion = await waitForCdp(options.port, options.timeoutMs);
   } catch (error) {
     return result('chrome-cdp-unavailable', {
       ok: false,
@@ -386,20 +473,31 @@ async function run(options) {
       port: options.port,
       error: String(error && error.message || error),
       launch,
+      browser: cdpVersion ? summarizeCdpVersion(cdpVersion) : null,
       blockers: ['chrome-cdp-unavailable'],
     });
   }
 
+  let targetBundle;
   let target;
   try {
-    target = await findOrOpenStudioTarget(options, url);
+    targetBundle = await findOrOpenStudioTarget(options, url);
+    target = targetBundle.target;
   } catch (error) {
-    return result('chrome-studio-target-missing', {
+    const status = error && error.status || error && error.message || 'chrome-studio-target-missing';
+    const blockers = [status];
+    if (status === 'chrome-extension-not-loaded' && options.mode === 'attach') blockers.push('chrome-cdp-attached-to-wrong-browser');
+    return result(status, {
       ok: false,
       mode: options.mode,
       port: options.port,
+      browser: summarizeCdpVersion(cdpVersion),
       error: String(error && error.message || error),
-      blockers: ['chrome-studio-target-missing'],
+      blockers,
+      targetDiagnostics: error && error.targetDiagnostics || null,
+      nextAction: status === 'chrome-extension-not-loaded'
+        ? 'Launch Chrome Dev with --extension-path apps/extensions/chatgpt/chrome/studio-launcher and a separate --user-data-dir, or attach to that smoke profile port.'
+        : 'Confirm the Studio extension page is open and the extension ID/path are correct.',
     });
   }
 
@@ -407,6 +505,7 @@ async function run(options) {
   try {
     await cdp.connect(options.timeoutMs);
     const registryObjectId = await prepareTarget(cdp, url, options);
+    const registryGates = await diagnoseRegistryGates(cdp, registryObjectId);
     const commandId = options.commandId || `chrome-${options.op}-${Date.now().toString(36)}`;
     const payload = {
       commandId,
@@ -419,23 +518,41 @@ async function run(options) {
       ok: !!(registryResult && registryResult.ok === true),
       mode: options.mode,
       port: options.port,
+      browser: summarizeCdpVersion(cdpVersion),
       op: options.op,
       commandId,
       targetId: target.id || '',
       targetUrl: target.url || url,
+      studioTargetFound: true,
+      smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      registryGatesEnabled: registryGates && registryGates.enabled === true,
+      registryGates,
+      targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
       result: registryResult,
       launch,
     });
   } catch (error) {
-    return result(String(error && error.message || error) || 'chrome-cdp-helper-failed', {
+    const rawStatus = String(error && error.message || error) || 'chrome-cdp-helper-failed';
+    const status = rawStatus === 'smoke-registry-unavailable' ? 'chrome-extension-not-loaded' : rawStatus;
+    const blockers = [status];
+    if (status === 'chrome-extension-not-loaded' && options.mode === 'attach') blockers.push('chrome-cdp-attached-to-wrong-browser');
+    return result(status, {
       ok: false,
       mode: options.mode,
       port: options.port,
+      browser: summarizeCdpVersion(cdpVersion),
       op: options.op,
       targetId: target && target.id || '',
       targetUrl: target && target.url || url,
-      blockers: ['chrome-cdp-helper-failed'],
+      studioTargetFound: !!target,
+      smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+      blockers,
+      rawErrorStatus: rawStatus,
       error: String(error && error.message || error),
+      nextAction: status === 'chrome-extension-not-loaded'
+        ? 'Confirm Chrome Dev was launched with --extension-path and the prepared Studio Launcher extension bundle.'
+        : '',
     });
   } finally {
     cdp.close();
