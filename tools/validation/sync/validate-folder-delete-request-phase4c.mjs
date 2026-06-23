@@ -269,6 +269,67 @@ assert(!chromeReceiptImportBody.includes('hideFolder'), 'Chrome receipt import m
 assert(!chromeReceiptImportBody.includes('unbindChat'), 'Chrome receipt import must not unbind chats');
 assert(!chromeReceiptImportBody.includes('bindChat'), 'Chrome receipt import must not bind chats');
 
+const chromeHideReceiptNormalizeBody = functionBody(chromeImport, 'normalizeFolderDeleteReceiptForChromeHide');
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  "receipt.status) !== 'applied'",
+  "receipt.decision) !== 'applied-folder-delete-request'",
+  'receipt.statusOnly !== true',
+  'receipt.noTombstoneApply !== true',
+  'receipt.noHardDelete !== true',
+  'receipt.noChatDelete !== true',
+  "receipt.tombstonePropagation) !== 'deferred'",
+  'receipt-request-identity-missing',
+  'receipt-folder-identity-missing',
+].forEach((needle) => assertIncludes(chromeHideReceiptNormalizeBody, needle, `Chrome hide receipt validation ${needle}`));
+
+const chromeHideTargetBody = functionBody(chromeImport, 'validateFolderDeleteReceiptHideTarget');
+[
+  'findChromeFolderDeleteReceiptReviewForHide',
+  'receipt-no-matching-request',
+  'receipt-folder-mismatch',
+  'receipt-request-mismatch',
+  'receipt-review-not-resolved-applied',
+  'chromeFolderDeleteReviewIsResolvedApplied',
+].forEach((needle) => assertIncludes(chromeHideTargetBody, needle, `Chrome hide target gate ${needle}`));
+
+const chromeHideMirrorBody = functionBody(chromeImport, 'hideFolderByDesktopReceiptFromMirror');
+[
+  'FOLDER_STATE_KEY_LOCAL',
+  'hiddenByDesktopReceipt',
+  'deletedByDesktopReceipt',
+  'writeKv(FOLDER_STATE_KEY_LOCAL',
+  'statusOnly: true',
+  'noTombstoneApply: true',
+  'noHardDelete: true',
+  'noChatDelete: true',
+  "tombstonePropagation: 'deferred'",
+].forEach((needle) => assertIncludes(chromeHideMirrorBody, needle, `Chrome visible-state hide ${needle}`));
+assert(!chromeHideMirrorBody.includes('softDeleteFolder'), 'Chrome visible-state hide must not call softDeleteFolder');
+assert(!chromeHideMirrorBody.includes('softDeleteEmptyFolder'), 'Chrome visible-state hide must not call softDeleteEmptyFolder');
+assert(!chromeHideMirrorBody.includes('createTombstone'), 'Chrome visible-state hide must not create tombstones');
+assert(!chromeHideMirrorBody.includes('chrome.storage.local.remove'), 'Chrome visible-state hide must not remove storage keys');
+assert(!chromeHideMirrorBody.includes('unbindChat'), 'Chrome visible-state hide must not unbind chats');
+assert(!chromeHideMirrorBody.includes('bindChat'), 'Chrome visible-state hide must not bind chats');
+
+const chromeHideImportBody = functionBody(chromeImport, 'hideFoldersAfterFolderDeleteReceipts');
+assert(chromeHideImportBody.includes('validateFolderDeleteReceiptHideTarget'), 'Chrome hide flow must validate receipt and local review before hiding');
+assert(chromeHideImportBody.includes('hideFolderByDesktopReceiptFromMirror'), 'Chrome hide flow must route through mirror-only hide helper');
+assert(!chromeHideImportBody.includes('softDeleteFolder'), 'Chrome hide flow must not call softDeleteFolder');
+assert(!chromeHideImportBody.includes('createTombstone'), 'Chrome hide flow must not create tombstones');
+assert(!chromeHideImportBody.includes('unbindChat'), 'Chrome hide flow must not unbind chats');
+assert(!chromeHideImportBody.includes('bindChat'), 'Chrome hide flow must not bind chats');
+
+const chromeHideSummaryBody = functionBody(chromeImport, 'mergeFolderDeleteReceiptHideSummary');
+assert(chromeHideSummaryBody.includes('delete-receipt-hide'), 'Chrome hide summary must expose delete-receipt-hide changed field');
+assert(chromeHideSummaryBody.includes('hasOnlyVisualUpdates = false'), 'Chrome hide refresh must not use visual-only row patching for removal');
+
+const chromeImportPayloadBody = functionBody(chromeImport, 'importDesktopBundlePayload');
+assert(chromeImportPayloadBody.includes('hideFoldersAfterFolderDeleteReceipts'), 'Chrome desktop bundle import must apply receipt hide after status import');
+assert(chromeImportPayloadBody.includes('mergeFolderDeleteReceiptHideResult'), 'Chrome desktop bundle import must merge receipt hide diagnostics');
+assert(chromeImportPayloadBody.includes('mergeFolderDeleteReceiptHideSummary'), 'Chrome desktop bundle import must merge hide into post-import refresh summary');
+assert(chromeImportPayloadBody.includes('refreshChromeFolderUiAfterDesktopImport'), 'Chrome desktop bundle import must refresh through the existing debounced UI path');
+
 const desktopApplyValidationBody = functionBody(desktopReviews, 'validateFolderDeleteRequestReviewForApply');
 [
   "classification) !== 'delete-request'",
@@ -348,8 +409,9 @@ console.log(JSON.stringify({
   desktopIngestReviewOnly: true,
   desktopApplyExplicitOnly: true,
   desktopReceiptExportStatusOnly: true,
-  chromeReceiptImportStatusOnly: true,
-  chromeFolderHideDeferred: true,
+  chromeReceiptImportStatusOnlyThenVisibleHide: true,
+  chromeFolderHideVisibleStateOnly: true,
+  chromeTombstoneApplyDeferred: true,
   noHardDelete: true,
   noChatDelete: true,
   observedAtIso: new Date().toISOString(),

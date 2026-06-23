@@ -931,6 +931,11 @@
     return parseTimeMs(row && (row.updatedAt || row.updated_at || meta.updatedAt || meta.updated_at));
   }
 
+  function normalizeFolderRecordId(value) {
+    var text = cleanString(value);
+    return text.indexOf('folder:') === 0 ? text.slice('folder:'.length) : text;
+  }
+
   function folderMetadataRowsFromBundle(bundle) {
     var found = readDesktopChromeFolderStateSource(bundle);
     var source = found && found.source;
@@ -1913,6 +1918,10 @@
       });
     }
     var folderDeleteReceiptImport = await ingestFolderDeleteReceiptsFromDesktopBundle(bundleInput, opts);
+    var folderDeleteReceiptHide = await hideFoldersAfterFolderDeleteReceipts(bundleInput);
+    folderDeleteReceiptImport = mergeFolderDeleteReceiptHideResult(folderDeleteReceiptImport, folderDeleteReceiptHide);
+    state.lastFolderDeleteReceiptImport = folderDeleteReceiptImport;
+    folderMetadataChangeSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, folderDeleteReceiptHide);
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2056,6 +2065,298 @@
       }),
       rows: changedRows,
     };
+  }
+
+  function addUniqueFolderId(list, folderId) {
+    var id = normalizeFolderRecordId(folderId);
+    if (id && list.indexOf(id) === -1) list.push(id);
+  }
+
+  function folderDeleteReceiptIdsForChromeHide(receipt) {
+    var ids = [];
+    addUnique(ids, receipt && receipt.requestId);
+    addUnique(ids, receipt && receipt.reviewId);
+    return ids;
+  }
+
+  function normalizeFolderDeleteReceiptForChromeHide(receiptInput) {
+    var receipt = safeObject(receiptInput);
+    var folderId = normalizeFolderRecordId(receipt.folderId);
+    var requestIds = folderDeleteReceiptIdsForChromeHide(receipt);
+    if (cleanString(receipt.schema) !== FOLDER_DELETE_RECEIPT_SCHEMA) return { ok: false, code: 'receipt-schema-invalid' };
+    if (cleanString(receipt.status) !== 'applied') return { ok: false, code: 'receipt-status-not-applied' };
+    if (cleanString(receipt.decision) !== 'applied-folder-delete-request') return { ok: false, code: 'receipt-decision-not-applied-folder-delete-request' };
+    if (receipt.statusOnly !== true) return { ok: false, code: 'receipt-not-status-only' };
+    if (receipt.noTombstoneApply !== true) return { ok: false, code: 'receipt-tombstone-apply-not-blocked' };
+    if (receipt.noHardDelete !== true) return { ok: false, code: 'receipt-hard-delete-not-blocked' };
+    if (receipt.noChatDelete !== true) return { ok: false, code: 'receipt-chat-delete-not-blocked' };
+    if (cleanString(receipt.tombstonePropagation) !== 'deferred') return { ok: false, code: 'receipt-tombstone-propagation-not-deferred' };
+    if (!folderId) return { ok: false, code: 'receipt-folder-identity-missing' };
+    if (!requestIds.length) return { ok: false, code: 'receipt-request-identity-missing' };
+    return {
+      ok: true,
+      receipt: Object.assign({}, receipt, {
+        folderId: folderId,
+        requestId: cleanString(receipt.requestId),
+        reviewId: cleanString(receipt.reviewId),
+        receiptId: cleanString(receipt.receiptId),
+        tombstoneId: cleanString(receipt.tombstoneId),
+      }),
+      requestIds: requestIds
+    };
+  }
+
+  function parseJsonObject(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string' || !value.trim()) return {};
+    try {
+      var parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function chromeFolderDeleteReviewPayload(review) {
+    return parseJsonObject(review && (review.rawTombstoneJson || review.raw_tombstone_json || review.rawJson || review.payloadJson));
+  }
+
+  function chromeFolderDeleteReviewFolderId(review) {
+    var payload = chromeFolderDeleteReviewPayload(review);
+    return normalizeFolderRecordId(payload.folderId || payload.recordId || (review && review.recordId));
+  }
+
+  function chromeFolderDeleteReviewRequestId(review) {
+    var payload = chromeFolderDeleteReviewPayload(review);
+    return cleanString(payload.requestId || payload.reviewId || (review && review.reviewId));
+  }
+
+  function chromeFolderDeleteReviewIsResolvedApplied(review) {
+    return cleanString(review && review.status) === 'resolved' &&
+      cleanString(review && review.decision) === 'applied-folder-delete-request';
+  }
+
+  async function findChromeFolderDeleteReceiptReviewForHide(receipt) {
+    var reviews = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+    if (!reviews || typeof reviews.getReview !== 'function') {
+      return { ok: false, code: 'folder-delete-receipt-store-unavailable' };
+    }
+    var ids = folderDeleteReceiptIdsForChromeHide(receipt);
+    for (var i = 0; i < ids.length; i += 1) {
+      var review = await reviews.getReview(ids[i]);
+      if (review) return { ok: true, review: review };
+    }
+    if (typeof reviews.listFolderDeleteRequests === 'function') {
+      var rows = await reviews.listFolderDeleteRequests({ folderId: receipt.folderId, limit: 100 });
+      var list = Array.isArray(rows) ? rows : [];
+      for (var r = 0; r < list.length; r += 1) {
+        var requestId = chromeFolderDeleteReviewRequestId(list[r]);
+        if (ids.indexOf(requestId) !== -1 || ids.indexOf(cleanString(list[r] && list[r].reviewId)) !== -1) {
+          return { ok: true, review: list[r] };
+        }
+      }
+    }
+    return { ok: false, code: 'receipt-no-matching-request' };
+  }
+
+  async function validateFolderDeleteReceiptHideTarget(receiptInput) {
+    var normalized = normalizeFolderDeleteReceiptForChromeHide(receiptInput);
+    if (!normalized.ok) return normalized;
+    var receipt = normalized.receipt;
+    var found = await findChromeFolderDeleteReceiptReviewForHide(receipt);
+    if (!found.ok || !found.review) return { ok: false, code: found.code || 'receipt-no-matching-request', receipt: receipt };
+    var review = found.review;
+    var localFolderId = chromeFolderDeleteReviewFolderId(review);
+    if (localFolderId !== receipt.folderId) return { ok: false, code: 'receipt-folder-mismatch', receipt: receipt };
+    var localRequestId = chromeFolderDeleteReviewRequestId(review);
+    if (localRequestId && normalized.requestIds.indexOf(localRequestId) === -1 &&
+      normalized.requestIds.indexOf(cleanString(review.reviewId)) === -1) {
+      return { ok: false, code: 'receipt-request-mismatch', receipt: receipt };
+    }
+    if (!chromeFolderDeleteReviewIsResolvedApplied(review)) {
+      return { ok: false, code: 'receipt-review-not-resolved-applied', receipt: receipt };
+    }
+    return { ok: true, receipt: receipt, review: review };
+  }
+
+  function folderStateHasFolderId(folderState, folderId) {
+    var id = normalizeFolderRecordId(folderId);
+    var folders = Array.isArray(folderState && folderState.folders) ? folderState.folders : [];
+    for (var i = 0; i < folders.length; i += 1) {
+      if (normalizeFolderRecordId(folderMetadataRowId(folders[i])) === id) return true;
+    }
+    var items = safeObject(folderState && folderState.items);
+    return !!(id && Object.prototype.hasOwnProperty.call(items, id));
+  }
+
+  async function hideFolderByDesktopReceiptFromMirror(receipt) {
+    var folderId = normalizeFolderRecordId(receipt && receipt.folderId);
+    if (!folderId) return { ok: false, hidden: false, status: 'receipt-folder-identity-missing' };
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var markerBag = safeObject(current.hiddenByDesktopReceipt);
+    var alreadyMarked = !!markerBag[folderId];
+    var hasFolder = folderStateHasFolderId(current, folderId);
+    if (!hasFolder && alreadyMarked) {
+      return { ok: true, hidden: false, alreadyHidden: true, status: 'folder-delete-receipt-folder-already-hidden', writesPerformed: 0, folderId: folderId };
+    }
+    var next = cloneJson(current) || {};
+    var rows = Array.isArray(next.folders) ? next.folders : [];
+    next.folders = rows.filter(function (row) {
+      return normalizeFolderRecordId(folderMetadataRowId(row)) !== folderId;
+    });
+    if (next.items && typeof next.items === 'object' && !Array.isArray(next.items)) {
+      var nextItems = Object.assign({}, next.items);
+      delete nextItems[folderId];
+      next.items = nextItems;
+    }
+    var hidden = Object.assign({}, safeObject(next.hiddenByDesktopReceipt));
+    hidden[folderId] = Object.assign({}, safeObject(hidden[folderId]), {
+      hiddenByDesktopReceipt: true,
+      deletedByDesktopReceipt: true,
+      folderId: folderId,
+      receiptId: cleanString(receipt.receiptId),
+      requestId: cleanString(receipt.requestId),
+      reviewId: cleanString(receipt.reviewId),
+      tombstoneId: cleanString(receipt.tombstoneId),
+      hiddenAt: nowIso(),
+      statusOnly: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      tombstonePropagation: 'deferred'
+    });
+    next.hiddenByDesktopReceipt = hidden;
+    next.updatedAt = nowIso();
+    await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    return {
+      ok: true,
+      hidden: hasFolder,
+      alreadyHidden: !hasFolder,
+      status: hasFolder ? 'folder-delete-receipt-folder-hidden' : 'folder-delete-receipt-folder-already-hidden',
+      writesPerformed: 1,
+      folderId: folderId
+    };
+  }
+
+  function makeFolderDeleteReceiptHideResult() {
+    return {
+      schema: FOLDER_DELETE_RECEIPT_SCHEMA + '.chrome-hide',
+      phase: 'phase4c.4c',
+      attempted: true,
+      ok: true,
+      hiddenCount: 0,
+      alreadyHiddenCount: 0,
+      hideSkippedCount: 0,
+      hideBlockerCount: 0,
+      hideWarningCount: 0,
+      visibleStateOnlyHide: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      noDestructiveFolderMutation: true,
+      tombstonePropagation: 'deferred',
+      hiddenFolderIds: [],
+      warnings: [],
+      blockers: []
+    };
+  }
+
+  function addFolderDeleteReceiptHideCode(result, field, code) {
+    var list = Array.isArray(result && result[field]) ? result[field] : null;
+    var c = cleanString(code);
+    if (!list || !c) return;
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].code === c) {
+        list[i].count = numberOrZero(list[i].count || 1) + 1;
+        return;
+      }
+    }
+    list.push({ code: c });
+  }
+
+  async function hideFoldersAfterFolderDeleteReceipts(bundle) {
+    var result = makeFolderDeleteReceiptHideResult();
+    var receipts = Array.isArray(bundle && bundle.folderDeleteReceipts) ? bundle.folderDeleteReceipts : [];
+    if (!receipts.length) return result;
+    for (var i = 0; i < receipts.length; i += 1) {
+      try {
+        var target = await validateFolderDeleteReceiptHideTarget(receipts[i]);
+        if (!target.ok) {
+          result.hideSkippedCount += 1;
+          result.hideWarningCount += 1;
+          addFolderDeleteReceiptHideCode(result, 'warnings', target.code || 'folder-delete-receipt-hide-skipped');
+          continue;
+        }
+        var hidden = await hideFolderByDesktopReceiptFromMirror(target.receipt);
+        if (hidden && hidden.hidden) {
+          result.hiddenCount += 1;
+          addUniqueFolderId(result.hiddenFolderIds, hidden.folderId);
+        } else if (hidden && hidden.alreadyHidden) {
+          result.alreadyHiddenCount += 1;
+        } else {
+          result.hideSkippedCount += 1;
+          result.hideWarningCount += 1;
+          addFolderDeleteReceiptHideCode(result, 'warnings', cleanString(hidden && hidden.status) || 'folder-delete-receipt-hide-skipped');
+        }
+      } catch (error) {
+        pushError('folder-delete-receipt-hide', error);
+        result.hideSkippedCount += 1;
+        result.hideBlockerCount += 1;
+        addFolderDeleteReceiptHideCode(result, 'blockers', 'folder-delete-receipt-hide-failed');
+      }
+    }
+    result.ok = result.hideBlockerCount === 0;
+    return result;
+  }
+
+  function mergeFolderDeleteReceiptHideResult(receiptImport, hideResult) {
+    var base = Object.assign({}, safeObject(receiptImport));
+    var hide = safeObject(hideResult);
+    base.phase = 'phase4c.4c';
+    base.hiddenCount = numberOrZero(hide.hiddenCount);
+    base.alreadyHiddenCount = numberOrZero(hide.alreadyHiddenCount);
+    base.hideSkippedCount = numberOrZero(hide.hideSkippedCount);
+    base.hideBlockerCount = numberOrZero(hide.hideBlockerCount);
+    base.hideWarningCount = numberOrZero(hide.hideWarningCount);
+    base.visibleStateOnlyHide = true;
+    base.noFolderHide = base.hiddenCount > 0 || base.alreadyHiddenCount > 0 ? false : base.noFolderHide !== false;
+    base.noTombstoneApply = true;
+    base.noTombstoneCreate = true;
+    base.noHardDelete = true;
+    base.noChatDelete = true;
+    base.noBindingMutation = true;
+    base.noChatMutation = true;
+    base.noSnapshotMutation = true;
+    base.noDestructiveFolderMutation = true;
+    base.tombstonePropagation = 'deferred';
+    base.warnings = (Array.isArray(base.warnings) ? base.warnings.slice() : []).concat(Array.isArray(hide.warnings) ? hide.warnings : []);
+    base.blockers = (Array.isArray(base.blockers) ? base.blockers.slice() : []).concat(Array.isArray(hide.blockers) ? hide.blockers : []);
+    base.warningCount = base.warnings.length || numberOrZero(base.warningCount);
+    base.blockerCount = base.blockers.length || numberOrZero(base.blockerCount);
+    base.ok = base.ok !== false && base.blockerCount === 0 && hide.ok !== false;
+    return base;
+  }
+
+  function mergeFolderDeleteReceiptHideSummary(metadataSummary, hideResult) {
+    var summary = Object.assign({}, safeObject(metadataSummary));
+    var hide = safeObject(hideResult);
+    var changedFolderIds = Array.isArray(summary.changedFolderIds) ? summary.changedFolderIds.slice() : [];
+    var changedFields = Array.isArray(summary.changedFields) ? summary.changedFields.slice() : [];
+    var hiddenIds = Array.isArray(hide.hiddenFolderIds) ? hide.hiddenFolderIds : [];
+    hiddenIds.forEach(function (folderId) { addUniqueFolderId(changedFolderIds, folderId); });
+    if (numberOrZero(hide.hiddenCount) > 0) addUnique(changedFields, 'delete-receipt-hide');
+    summary.changedFolderIds = changedFolderIds;
+    summary.changedFields = changedFields;
+    summary.changedFolderCount = changedFolderIds.length || (numberOrZero(summary.changedFolderCount) + numberOrZero(hide.hiddenCount));
+    if (numberOrZero(hide.hiddenCount) > 0) {
+      summary.hasDeleteReceiptHide = true;
+      summary.hasOnlyVisualUpdates = false;
+    }
+    return summary;
   }
 
   function dispatchFolderMetadataChangedEvent(summary, reason, mode) {
@@ -2775,13 +3076,21 @@
       blockerCount: 1,
       warningCount: 1,
       noFolderHide: true,
+      hiddenCount: 0,
+      alreadyHiddenCount: 0,
+      hideSkippedCount: 0,
+      hideBlockerCount: 0,
+      hideWarningCount: 0,
+      visibleStateOnlyHide: true,
       noTombstoneApply: true,
+      noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
       noFolderMutation: true,
       noBindingMutation: true,
       noChatMutation: true,
       noSnapshotMutation: true,
+      noDestructiveFolderMutation: true,
       tombstonePropagation: 'deferred',
       blockers: [{ code: cleanString(code) || 'folder-delete-receipt-store-unavailable' }],
       warnings: [{ code: cleanString(code) || 'folder-delete-receipt-store-unavailable' }],
@@ -2817,14 +3126,22 @@
       malformedCount: numberOrZero(r.malformedCount),
       blockerCount: blockers.length || numberOrZero(r.blockerCount),
       warningCount: warnings.length || numberOrZero(r.warningCount),
-      noFolderHide: true,
+      noFolderHide: r.noFolderHide === false ? false : true,
+      hiddenCount: numberOrZero(r.hiddenCount),
+      alreadyHiddenCount: numberOrZero(r.alreadyHiddenCount),
+      hideSkippedCount: numberOrZero(r.hideSkippedCount),
+      hideBlockerCount: numberOrZero(r.hideBlockerCount),
+      hideWarningCount: numberOrZero(r.hideWarningCount),
+      visibleStateOnlyHide: r.visibleStateOnlyHide === true,
       noTombstoneApply: true,
+      noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
-      noFolderMutation: true,
+      noFolderMutation: r.noFolderMutation === false ? false : true,
       noBindingMutation: true,
       noChatMutation: true,
       noSnapshotMutation: true,
+      noDestructiveFolderMutation: true,
       tombstonePropagation: 'deferred',
       warnings: warnings,
       blockers: blockers,
@@ -3352,12 +3669,36 @@
           : { ok: false, blocker: 'desktop-to-chrome-convergence-not-proven' };
         if (alreadyConvergence.ok) {
           var alreadyReceiptImport = await ingestFolderDeleteReceiptsFromDesktopBundle(bundle, opts);
+          var alreadyReceiptHide = await hideFoldersAfterFolderDeleteReceipts(bundle);
+          alreadyReceiptImport = mergeFolderDeleteReceiptHideResult(alreadyReceiptImport, alreadyReceiptHide);
+          state.lastFolderDeleteReceiptImport = alreadyReceiptImport;
+          var alreadyRefreshSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, alreadyReceiptHide);
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
-          recordChromePostImportRefresh('duplicate-suppressed', folderMetadataChangeSummary, '', cleanString(bundle.exportedAt || ''), {
-            renderRefreshCount: 0,
-            refreshSuppressed: true
-          });
+          var alreadyPostImportRefresh;
+          if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0) {
+            alreadyPostImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
+              alreadyRefreshSummary,
+              opts.reason || 'desktop-chrome-propagation-import',
+              cleanString(bundle.exportedAt || '')
+            );
+          } else {
+            recordChromePostImportRefresh('duplicate-suppressed', alreadyRefreshSummary, '', cleanString(bundle.exportedAt || ''), {
+              renderRefreshCount: 0,
+              refreshSuppressed: true
+            });
+            alreadyPostImportRefresh = {
+              mode: 'duplicate-suppressed',
+              changedFolderCount: numberOrZero(alreadyRefreshSummary.changedFolderCount),
+              changedFields: Array.isArray(alreadyRefreshSummary.changedFields) ? alreadyRefreshSummary.changedFields.slice() : [],
+              changedFolderIds: Array.isArray(alreadyRefreshSummary.changedFolderIds) ? alreadyRefreshSummary.changedFolderIds.slice() : [],
+              renderRefreshCount: 0,
+              cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
+              refreshSuppressed: true,
+              loopSuppressed: state.loopSuppressedCount,
+              duplicateSkipped: state.duplicateSkippedCount
+            };
+          }
           var alreadyPropagation = propagationResult(true, {
             status: 'already-imported',
             sourceSummary: alreadyNormalized.sourceSummary,
@@ -3382,17 +3723,7 @@
             folderDeleteReceiptImport: alreadyReceiptImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
-            postImportRefresh: {
-              mode: 'duplicate-suppressed',
-              changedFolderCount: numberOrZero(folderMetadataChangeSummary.changedFolderCount),
-              changedFields: Array.isArray(folderMetadataChangeSummary.changedFields) ? folderMetadataChangeSummary.changedFields.slice() : [],
-              changedFolderIds: Array.isArray(folderMetadataChangeSummary.changedFolderIds) ? folderMetadataChangeSummary.changedFolderIds.slice() : [],
-              renderRefreshCount: 0,
-              cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
-              refreshSuppressed: true,
-              loopSuppressed: state.loopSuppressedCount,
-              duplicateSkipped: state.duplicateSkippedCount
-            },
+            postImportRefresh: alreadyPostImportRefresh,
             warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],
             idempotency: {
               fileFingerprintChecked: true,
