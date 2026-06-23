@@ -228,7 +228,7 @@ Design-only; no table or migration is added in C1.
 | Slice | Scope | Gate / notes |
 |---|---|---|
 | **C1** | **This docs/design patch.** Umbrella + ADR-0010. | Docs only (current). |
-| **C2a** | **Capability/security gate.** Narrow, security-reviewed binary fs read/write/mkdir scoped to the app-owned archive/CAS root (+ save-location for export). | Prerequisite for any byte writing. No code in C1. |
+| **C2a** | **Capability/security gate (landed 2026-06-23).** New isolated `capabilities/archive-cas.json` granting binary `mkdir`/`exists`/`read-file`/`write-file` scoped to `$APPLOCALDATA/archive` only; no `remove`/`rename`; save-location for export deferred to C4. See [ADR-0010](../../decisions/ADR-0010-saved-chat-asset-cas.md). | Prerequisite for any byte writing. Capability only — no CAS code. |
 | **C2b** | **SQLite v7 `assets` registry** migration + turn↔asset association + finalize v2 schema (`saved-chat-package-v2.md`). | Migration slice. |
 | **C3** | **CAS put/get + validator + sanitizer centralization.** Content-addressed write/read, dedup, refcount; shared allowlist sanitizer; headless validator. | — |
 | **C4** | **Package materialization with assets.** Extend projector: extract images → CAS, emit `manifest.assets` + `assetRefs`, rewrite in-HTML refs, copy into package `assets/`, compute v2 `contentHash`; extend validator (asset integrity, dedup, v1 back-compat). | — |

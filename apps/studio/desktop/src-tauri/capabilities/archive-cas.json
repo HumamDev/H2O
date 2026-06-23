@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "archive-cas",
+  "description": "Chat Saving Architecture Phase C C2a capability gate. Grants the minimum binary filesystem access for a FUTURE app-owned saved-chat archive / content-addressed store (CAS) under $APPLOCALDATA/archive (containing assets/sha256-<hash>.<ext>). Scoped strictly to that app-owned archive root: mkdir + exists + binary read-file + binary write-file only. Intentionally grants NO remove/rename (CAS blobs are content-addressed and immutable; no GC in Phase C) and NO broad $HOME / $APPLOCALDATA access. This is the security boundary only; no CAS code, no DB migration, no UI, and no package-export save dialog are added by C2a (export-target save dialog is deferred to C4). The live archive/CAS root is deliberately separate from the Sync lane's $HOME/H2O Studio Sync/ folder (ADR-0009, ADR-0010).",
+  "windows": ["main"],
+  "permissions": [
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPLOCALDATA/archive" },
+        { "path": "$APPLOCALDATA/archive/assets" },
+        { "path": "$APPLOCALDATA/archive/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "$APPLOCALDATA/archive" },
+        { "path": "$APPLOCALDATA/archive/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$APPLOCALDATA/archive/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$APPLOCALDATA/archive/**" }
+      ]
+    }
+  ]
+}

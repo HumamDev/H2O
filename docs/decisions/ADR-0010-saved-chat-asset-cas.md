@@ -1,6 +1,6 @@
 # ADR-0010: Saved Chat Asset CAS + Capability Gate
 
-Status: Accepted (design; implementation gated)
+Status: Accepted (design); C2a capability gate landed 2026-06-23
 
 Date: 2026-06-23
 
@@ -74,9 +74,9 @@ CAS. The schema/hash detail lives in the
     only**, and
   - a scoped save-location grant (e.g. save dialog) for the user-chosen package
     **export** target.
-- **This patch changes no capability.** The expansion is recorded here as a gated
-  prerequisite and must be reviewed on its own before any byte-writing CAS code
-  lands.
+- **The C1 patch changed no capability.** The expansion was recorded as a gated
+  prerequisite to be reviewed on its own before any byte-writing CAS code lands.
+  → **Landed in C2a; see "C2a — Capability Boundary (landed)" below.**
 
 ## Consequences
 
@@ -114,6 +114,35 @@ This ADR does not implement and this patch does not include:
 - Remote-URL asset fetching (a capture concern).
 - PDFs / non-image file types beyond the initial image slice.
 - Automatic asset garbage collection.
+
+## C2a — Capability Boundary (landed)
+
+The C2a slice adds **only** the capability/security boundary — no CAS code, no DB
+migration, no UI, no save dialog.
+
+- **File:** `apps/studio/desktop/src-tauri/capabilities/archive-cas.json` — a new,
+  isolated capability (`identifier: "archive-cas"`, `windows: ["main"]`),
+  auto-loaded because `tauri.conf.json` sets no explicit `app.security.capabilities`
+  list. `default.json` is intentionally left untouched so the Sync lane's existing
+  fs scoping is unaffected.
+- **Scope:** the app-owned archive root **`$APPLOCALDATA/archive`** (the CAS lives
+  beneath it at `archive/assets/sha256-<hex>.<ext>`). `$APPLOCALDATA` keeps large
+  binary content in non-roaming, app-owned storage.
+- **Commands granted (least privilege):** `fs:allow-mkdir`, `fs:allow-exists`,
+  `fs:allow-read-file` (binary), `fs:allow-write-file` (binary) — each scoped to
+  `$APPLOCALDATA/archive` / `$APPLOCALDATA/archive/**` only.
+- **Deliberately NOT granted:** `remove` / `rename` on the archive root (CAS blobs
+  are content-addressed and immutable; no GC in Phase C), and any broad `$HOME` or
+  unscoped `$APPLOCALDATA` access.
+- **Separation:** the archive/CAS root is **not** under `$HOME/H2O Studio Sync/`;
+  the Sync lane folder and the archive store remain distinct (ADR-0009).
+- **Save/export dialog: deferred to C4.** C2a only opens the app-owned CAS root for
+  the live store. A scoped save-location grant for materializing a package to a
+  *user-chosen* export folder is needed only when C4 implements export, so it is
+  intentionally not added here.
+
+Note: the generated `gen/schemas/capabilities.json` is rebuilt by the Tauri
+toolchain at build time and is not hand-edited by this patch.
 
 ## Implementation Gate
 
