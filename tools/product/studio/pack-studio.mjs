@@ -140,6 +140,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: full-bundle export. Reads SQLite-backed public store
   // adapters and emits Chrome-compatible h2o.studio.fullBundle.v2.
   "ingestion/export-bundle.tauri.js",
+  // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
+  // API only; no UI, import/recovery, sync transport, or CAS implementation.
+  "ingestion/saved-chat-package-v1.tauri.js",
   // F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Inert shared
   // scanner/enforcer only; no domain adoption, publication, replay,
   // watermark, apply, convergence, storage, network, or mobile behavior.

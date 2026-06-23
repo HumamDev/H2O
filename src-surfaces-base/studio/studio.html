@@ -559,6 +559,11 @@
        adapters and emits Chrome-compatible h2o.studio.fullBundle.v2
        without changing Chrome import logic or mutating Desktop data. -->
   <script src="./ingestion/export-bundle.tauri.js"></script>
+  <!-- Desktop-only: saved-chat package v1 projector/writer. Private API
+       only; reads through H2O.Studio.store adapters and writes deterministic
+       projection files only when explicitly invoked. No UI, import, sync, or
+       CAS behavior is installed in Phase B. -->
+  <script src="./ingestion/saved-chat-package-v1.tauri.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
        enforceRedactionClass. No domain adoption, publication, replay,
