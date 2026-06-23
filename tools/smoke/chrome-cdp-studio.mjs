@@ -27,6 +27,7 @@ const GLOBAL_OBJECT_EXPRESSION = 'globalThis';
 const REGISTRY_CALL_WRAPPER = 'function(op, payload) { return this.run(op, payload); }';
 const REGISTRY_GATES_WRAPPER = 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }';
 const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1') }; }";
+const PAGE_STATUS_WRAPPER = "function() { var body = this.document && this.document.body ? String(this.document.body.innerText || '') : ''; return { href: String(this.location && this.location.href || ''), title: String(this.document && this.document.title || ''), readyState: String(this.document && this.document.readyState || ''), bodyText: body.slice(0, 500) }; }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 
@@ -65,6 +66,13 @@ function result(status, extra = {}) {
     ...safetyFlags(),
     ...extra,
   };
+}
+
+function statusError(status, extra = {}) {
+  const error = new Error(status);
+  error.status = status;
+  Object.assign(error, extra);
+  return error;
 }
 
 function printJson(value) {
@@ -274,16 +282,16 @@ async function openStudioTarget(port, url) {
 async function findOrOpenStudioTarget(options, url) {
   const targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
   const existing = Array.isArray(targets) ? targets.find((target) => isStudioTarget(target, options)) : null;
-  if (existing && existing.webSocketDebuggerUrl) {
+  if (existing) {
     return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
   }
   const opened = await openStudioTarget(options.port, url);
-  if (opened && opened.webSocketDebuggerUrl && isStudioTarget(opened, options)) {
+  if (opened && isStudioTarget(opened, options)) {
     return { target: opened, diagnostics: summarizeTargets([opened], options), opened: true };
   }
   const refreshedTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
   const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isStudioTarget(target, options)) : null;
-  if (refreshed && refreshed.webSocketDebuggerUrl) {
+  if (refreshed) {
     return { target: refreshed, diagnostics: summarizeTargets(refreshedTargets, options), opened: true };
   }
   const diagnostics = summarizeTargets(refreshedTargets, options);
@@ -306,25 +314,35 @@ class CdpClient {
       return Promise.reject(new Error('node-websocket-unavailable'));
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('cdp-websocket-timeout')), timeoutMs);
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(value);
+      };
+      const timer = setTimeout(() => finish(reject, new Error('cdp-websocket-timeout')), timeoutMs);
       const ws = new WebSocket(this.webSocketUrl);
       this.ws = ws;
       ws.addEventListener('open', () => {
-        clearTimeout(timer);
-        resolve();
+        if (this.isOpen()) finish(resolve);
+        else finish(reject, new Error(`cdp-websocket-not-open:${ws.readyState}`));
       });
       ws.addEventListener('message', (event) => {
         this.handleMessage(event.data);
       });
       ws.addEventListener('error', () => {
-        clearTimeout(timer);
-        reject(new Error('cdp-websocket-error'));
+        finish(reject, new Error('cdp-websocket-error'));
       }, { once: true });
       ws.addEventListener('close', () => {
         for (const pending of this.pending.values()) pending.reject(new Error('cdp-websocket-closed'));
         this.pending.clear();
       });
     });
+  }
+
+  isOpen() {
+    return !!this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
   handleMessage(data) {
@@ -345,12 +363,14 @@ class CdpClient {
     }
   }
 
-  send(method, params = {}) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('cdp-websocket-not-open'));
+  send(method, params = {}, sessionId = '') {
+    if (!this.isOpen()) {
+      const state = this.ws ? this.ws.readyState : 'missing';
+      return Promise.reject(new Error(`cdp-websocket-not-open:${state}`));
     }
     const id = this.nextId++;
     const message = { id, method, params };
+    if (sessionId) message.sessionId = sessionId;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.ws.send(JSON.stringify(message));
@@ -358,8 +378,100 @@ class CdpClient {
   }
 
   close() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close();
+    if (this.isOpen()) this.ws.close();
   }
+}
+
+async function connectDirectTarget(target, options) {
+  if (!target || !target.webSocketDebuggerUrl) {
+    throw statusError('cdp-target-websocket-missing');
+  }
+  const client = new CdpClient(target.webSocketDebuggerUrl);
+  try {
+    await client.connect(options.timeoutMs);
+    const control = {
+      transport: 'target-websocket',
+      sessionId: '',
+      send(method, params = {}) {
+        return client.send(method, params);
+      },
+      close() {
+        client.close();
+      },
+    };
+    await control.send('Runtime.enable');
+    return control;
+  } catch (error) {
+    client.close();
+    throw statusError('cdp-target-websocket-open-failed', {
+      rawErrorStatus: String(error && error.message || error),
+    });
+  }
+}
+
+async function connectBrowserAttachedTarget(cdpVersion, target, options) {
+  const browserWs = cdpVersion && cdpVersion.webSocketDebuggerUrl;
+  if (!browserWs) throw statusError('cdp-browser-websocket-missing');
+  const client = new CdpClient(browserWs);
+  try {
+    await client.connect(options.timeoutMs);
+  } catch (error) {
+    client.close();
+    throw statusError('cdp-browser-websocket-open-failed', {
+      rawErrorStatus: String(error && error.message || error),
+    });
+  }
+  let sessionId = '';
+  try {
+    const attached = await client.send('Target.attachToTarget', {
+      targetId: target.id,
+      flatten: true,
+    });
+    sessionId = String(attached && attached.sessionId || '');
+    if (!sessionId) throw new Error('missing sessionId');
+    const control = {
+      transport: 'browser-target-attach',
+      sessionId,
+      send(method, params = {}) {
+        return client.send(method, params, sessionId);
+      },
+      close() {
+        client.send('Target.detachFromTarget', { sessionId }).catch(() => {}).finally(() => client.close());
+      },
+    };
+    await control.send('Runtime.enable');
+    return control;
+  } catch (error) {
+    client.close();
+    throw statusError('cdp-target-attach-failed', {
+      rawErrorStatus: String(error && error.message || error),
+    });
+  }
+}
+
+async function connectTargetControl(cdpVersion, target, options) {
+  const diagnostics = {
+    targetWebSocketPresent: !!(target && target.webSocketDebuggerUrl),
+    cdpTransport: '',
+    directTargetError: '',
+    browserAttachFallback: false,
+  };
+  if (diagnostics.targetWebSocketPresent) {
+    try {
+      const control = await connectDirectTarget(target, options);
+      diagnostics.cdpTransport = control.transport;
+      return { control, diagnostics };
+    } catch (error) {
+      diagnostics.directTargetError = String(error && (error.status || error.message) || error);
+      diagnostics.browserAttachFallback = true;
+    }
+  } else {
+    diagnostics.directTargetError = 'cdp-target-websocket-missing';
+    diagnostics.browserAttachFallback = true;
+  }
+  const control = await connectBrowserAttachedTarget(cdpVersion, target, options);
+  diagnostics.cdpTransport = control.transport;
+  return { control, diagnostics };
 }
 
 async function getGlobalObjectId(cdp) {
@@ -369,6 +481,42 @@ async function getGlobalObjectId(cdp) {
     returnByValue: false,
   });
   return evaluated && evaluated.result && evaluated.result.objectId;
+}
+
+async function inspectPageStatus(cdp, globalObjectId) {
+  const called = await cdp.send('Runtime.callFunctionOn', {
+    objectId: globalObjectId,
+    functionDeclaration: PAGE_STATUS_WRAPPER,
+    arguments: [],
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  const pageStatus = called && called.result ? called.result.value || null : null;
+  const text = JSON.stringify(pageStatus || {}).toLowerCase();
+  const blocked = text.includes('err_blocked_by_client') ||
+    text.includes(' is blocked') ||
+    text.includes('blocked by client') ||
+    text.includes('chrome-error://');
+  if (blocked) {
+    throw statusError('chrome-extension-page-blocked', { pageStatus });
+  }
+  if (pageStatus && pageStatus.bodyText) pageStatus.bodyText = '';
+  return pageStatus;
+}
+
+function assertNavigationOk(navigation, stage) {
+  const errorText = String(navigation && navigation.errorText || '');
+  if (!errorText) return;
+  if (errorText.includes('ERR_BLOCKED_BY_CLIENT') || errorText.toLowerCase().includes('blocked')) {
+    throw statusError('chrome-extension-page-blocked', {
+      navigationStage: stage,
+      navigationErrorText: errorText,
+    });
+  }
+  throw statusError('chrome-page-navigation-failed', {
+    navigationStage: stage,
+    navigationErrorText: errorText,
+  });
 }
 
 async function setSmokeOptIn(cdp, globalObjectId) {
@@ -397,20 +545,21 @@ async function waitForRegistryObject(cdp, timeoutMs) {
     if (objectId) return objectId;
     await sleep(300);
   }
-  throw new Error('smoke-registry-unavailable');
+  throw statusError('smoke-registry-missing');
 }
 
 async function prepareTarget(cdp, url, options) {
-  await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
-  await cdp.send('Page.navigate', { url });
+  assertNavigationOk(await cdp.send('Page.navigate', { url }), 'initial');
   await sleep(options.waitAfterNavigateMs);
   const globalObjectId = await getGlobalObjectId(cdp);
   if (!globalObjectId) throw new Error('chrome-global-object-missing');
+  const initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
   await setSmokeOptIn(cdp, globalObjectId);
-  await cdp.send('Page.navigate', { url });
+  assertNavigationOk(await cdp.send('Page.navigate', { url }), 'after-opt-in');
   await sleep(options.waitAfterNavigateMs);
-  return waitForRegistryObject(cdp, options.timeoutMs);
+  const registryObjectId = await waitForRegistryObject(cdp, options.timeoutMs);
+  return { registryObjectId, initialPageStatus };
 }
 
 async function runReadOnlyRegistryOp(cdp, registryObjectId, op, payload) {
@@ -480,6 +629,7 @@ async function run(options) {
 
   let targetBundle;
   let target;
+  let controlBundle = null;
   try {
     targetBundle = await findOrOpenStudioTarget(options, url);
     target = targetBundle.target;
@@ -501,11 +651,32 @@ async function run(options) {
     });
   }
 
-  const cdp = new CdpClient(target.webSocketDebuggerUrl);
   try {
-    await cdp.connect(options.timeoutMs);
-    const registryObjectId = await prepareTarget(cdp, url, options);
+    controlBundle = await connectTargetControl(cdpVersion, target, options);
+    const cdp = controlBundle.control;
+    const prepared = await prepareTarget(cdp, url, options);
+    const registryObjectId = prepared.registryObjectId;
     const registryGates = await diagnoseRegistryGates(cdp, registryObjectId);
+    if (registryGates && registryGates.enabled !== true) {
+      return result('smoke-registry-disabled', {
+        ok: false,
+        mode: options.mode,
+        port: options.port,
+        browser: summarizeCdpVersion(cdpVersion),
+        op: options.op,
+        targetId: target.id || '',
+        targetUrl: target.url || url,
+        studioTargetFound: true,
+        smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+        registryGatesEnabled: false,
+        registryGates,
+        targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+        cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
+        pageStatus: prepared.initialPageStatus || null,
+        blockers: ['smoke-registry-disabled'],
+        launch,
+      });
+    }
     const commandId = options.commandId || `chrome-${options.op}-${Date.now().toString(36)}`;
     const payload = {
       commandId,
@@ -528,12 +699,14 @@ async function run(options) {
       registryGatesEnabled: registryGates && registryGates.enabled === true,
       registryGates,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+      cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
+      pageStatus: prepared.initialPageStatus || null,
       result: registryResult,
       launch,
     });
   } catch (error) {
-    const rawStatus = String(error && error.message || error) || 'chrome-cdp-helper-failed';
-    const status = rawStatus === 'smoke-registry-unavailable' ? 'chrome-extension-not-loaded' : rawStatus;
+    const rawStatus = String(error && (error.status || error.message) || error) || 'chrome-cdp-helper-failed';
+    const status = rawStatus;
     const blockers = [status];
     if (status === 'chrome-extension-not-loaded' && options.mode === 'attach') blockers.push('chrome-cdp-attached-to-wrong-browser');
     return result(status, {
@@ -547,15 +720,23 @@ async function run(options) {
       studioTargetFound: !!target,
       smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+      cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
+      pageStatus: error && error.pageStatus || null,
+      navigationStage: error && error.navigationStage || '',
+      navigationErrorText: error && error.navigationErrorText || '',
       blockers,
-      rawErrorStatus: rawStatus,
+      rawErrorStatus: error && error.rawErrorStatus || rawStatus,
       error: String(error && error.message || error),
       nextAction: status === 'chrome-extension-not-loaded'
         ? 'Confirm Chrome Dev was launched with --extension-path and the prepared Studio Launcher extension bundle.'
-        : '',
+        : status === 'chrome-extension-page-blocked'
+          ? 'Open the smoke profile extension page and disable the client/policy/extension blocker that is blocking the Studio extension URL.'
+          : status === 'smoke-registry-missing'
+            ? 'Confirm the prepared Studio bundle includes the smoke registry file and reload the Studio target.'
+            : '',
     });
   } finally {
-    cdp.close();
+    if (controlBundle && controlBundle.control) controlBundle.control.close();
   }
 }
 

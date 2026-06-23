@@ -46,6 +46,12 @@ assertContains(helper, 'chrome-cdp-port-in-use', 'CDP port in use status');
 assertContains(helper, 'chrome-cdp-attached-to-wrong-browser', 'wrong browser blocker');
 assertContains(helper, 'chrome-extension-not-loaded', 'extension not loaded status');
 assertContains(helper, 'chrome-studio-target-missing', 'target missing status');
+assertContains(helper, 'cdp-browser-websocket-open-failed', 'browser WebSocket failure status');
+assertContains(helper, 'cdp-target-websocket-missing', 'missing target WebSocket status');
+assertContains(helper, 'cdp-target-attach-failed', 'target attach failure status');
+assertContains(helper, 'chrome-extension-page-blocked', 'blocked extension page status');
+assertContains(helper, 'smoke-registry-missing', 'missing smoke registry status');
+assertContains(helper, 'smoke-registry-disabled', 'disabled smoke registry status');
 assertContains(helper, 'chrome-extension://', 'Chrome Studio extension URL support');
 assertContains(helper, '--remote-debugging-port=', 'launch mode remote debugging port');
 assertContains(helper, '--user-data-dir=', 'launch mode smoke profile');
@@ -57,6 +63,13 @@ assertContains(helper, 'registryGatesEnabled', 'registry gate diagnostic output'
 assertContains(helper, 'smokeUrlFlagPresent', 'smoke URL flag diagnostic output');
 assertContains(helper, 'summarizeCdpVersion', 'browser version diagnostic output');
 assertContains(helper, 'returnByValue: true', 'redacted value result transport');
+assertContains(helper, 'connectBrowserAttachedTarget', 'browser-level attach fallback');
+assertContains(helper, 'connectTargetControl', 'target control selector');
+assertContains(helper, 'Target.attachToTarget', 'browser-level target attach command');
+assertContains(helper, 'flatten: true', 'flattened target session');
+assertContains(helper, 'PAGE_STATUS_WRAPPER', 'page status check wrapper');
+assertContains(helper, 'ERR_BLOCKED_BY_CLIENT', 'blocked page detection');
+assertContains(helper, 'cdpControlDiagnostics', 'CDP control diagnostic output');
 
 assertNotContains(helper, 'eval(', 'Chrome CDP helper');
 assertNotContains(helper, 'new Function', 'Chrome CDP helper');

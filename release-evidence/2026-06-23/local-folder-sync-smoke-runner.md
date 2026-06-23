@@ -196,6 +196,48 @@ Expected missing target status if the extension page cannot be opened or found:
 chrome-studio-target-missing
 ```
 
+## Slice 4A Target Control Hardening
+
+Follow-up date: 2026-06-23
+
+Runtime setup issue:
+
+- Chrome Dev smoke launch on port `9226` reached Chrome Dev and found the Studio target.
+- The helper failed with `cdp-websocket-not-open` while trying to control the target.
+- The visible Chrome page showed `ERR_BLOCKED_BY_CLIENT` for the Studio extension URL.
+- `/json/version` still returned a valid browser WebSocket URL, so browser-level CDP was available.
+
+Root cause:
+
+- The helper assumed the Studio page target WebSocket was the only control channel.
+- It did not fall back to browser-level `Target.attachToTarget` when target-level WebSocket control failed or was unavailable.
+- It also did not inspect the loaded page state before invoking the registry, so a blocked extension page surfaced as a generic WebSocket/control failure.
+
+Fix:
+
+- The helper now returns Studio targets even when `webSocketDebuggerUrl` is missing.
+- It first attempts target-level WebSocket control, then falls back to the browser WebSocket plus `Target.attachToTarget` with a flattened session.
+- It runs a fixed page-status check after navigation and reports blocked extension pages as `chrome-extension-page-blocked`.
+- It reports specific control statuses:
+  - `cdp-browser-websocket-open-failed`
+  - `cdp-target-websocket-missing`
+  - `cdp-target-attach-failed`
+  - `chrome-extension-page-blocked`
+  - `smoke-registry-missing`
+  - `smoke-registry-disabled`
+
+Retest command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode launch \
+  --port 9226 \
+  --chrome-path "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev" \
+  --extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher" \
+  --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile-9226" \
+  --op diagnoseHealth
+```
+
 ## Safety Guarantees
 
 - External helper only; no in-app runtime behavior changed.
