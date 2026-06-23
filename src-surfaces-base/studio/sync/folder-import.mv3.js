@@ -3255,6 +3255,24 @@
     }
   }
 
+  function getChromeExportWriteGate() {
+    try {
+      var autoImport = getChromeAutoImportApi();
+      if (autoImport && typeof autoImport.diagnoseChromeExportWriteGate === 'function') {
+        return safeObject(autoImport.diagnoseChromeExportWriteGate());
+      }
+    } catch (error) {
+      pushError('chrome-export-write-gate', error);
+    }
+    return {
+      schema: 'h2o.studio.sync.chrome-export-write-gate.v1',
+      flagKey: 'sync.chromeAutoImport',
+      effectiveFlagEnabled: false,
+      blockers: ['chrome-export-write-gate-unavailable'],
+      privacy: { redacted: true },
+    };
+  }
+
   function normalizeBlockers(value) {
     return Array.isArray(value)
       ? value.map(cleanString).filter(Boolean).slice(0, 8)
@@ -4009,6 +4027,7 @@
 
   function diagnose() {
     var storage = getChromeStorageLocal();
+    var chromeExportWriteGate = getChromeExportWriteGate();
     return Object.assign(status(), {
       installed: true,
       api: 'H2O.Studio.sync.folder',
@@ -4048,6 +4067,10 @@
         transport: CHROME_LATEST_FILE,
         direction: 'chrome-to-desktop',
         autoImportAvailable: !!getChromeAutoImportApi(),
+        exportFlagKey: cleanString(chromeExportWriteGate.flagKey || 'sync.chromeAutoImport'),
+        exportFlagEnabled: chromeExportWriteGate.effectiveFlagEnabled === true,
+        exportWriteGate: chromeExportWriteGate,
+        enableForSmokeSnippet: cleanString(chromeExportWriteGate.enableForSmokeSnippet),
         chromeWritesSyncFolder: true,
         writesLatestJson: false,
         staleDesktopLatestJsonIgnored: true
@@ -4098,6 +4121,11 @@
         autoExportEnabled: true,
         chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
         exportApiAvailable: !!getChromeAutoImportApi(),
+        exportFlagKey: cleanString(chromeExportWriteGate.flagKey || 'sync.chromeAutoImport'),
+        exportFlagEnabled: chromeExportWriteGate.effectiveFlagEnabled === true,
+        exportWriteGate: chromeExportWriteGate,
+        exportFlagOff: chromeExportWriteGate.effectiveFlagEnabled !== true,
+        enableForSmokeSnippet: cleanString(chromeExportWriteGate.enableForSmokeSnippet),
         transport: CHROME_LATEST_FILE,
         lastExportStatus: state.lastChromeExportStatus,
         lastExportedAt: state.lastChromeExportAt,
@@ -4112,6 +4140,8 @@
       },
       chromeAutoImport: {
         autoImportEnabled: !!state.autoSyncEnabled,
+        chromeExportWriteGate: chromeExportWriteGate,
+        chromeExportFlagEnabled: chromeExportWriteGate.effectiveFlagEnabled === true,
         lastImportStatus: state.lastAutoSyncStatus || state.lastSyncStatus,
         lastImportedAt: state.lastAutoSyncAt || state.lastAppliedAt,
         lastImportError: state.lastAutoSyncError || state.lastSyncError,
@@ -4248,6 +4278,11 @@
       chromeToDesktop: {
         chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,
         exportApiAvailable: !!chromeToDesktopRaw.exportApiAvailable,
+        exportFlagKey: cleanString(chromeToDesktopRaw.exportFlagKey),
+        exportFlagEnabled: chromeToDesktopRaw.exportFlagEnabled === true,
+        exportWriteGate: safeObject(chromeToDesktopRaw.exportWriteGate),
+        exportFlagOff: chromeToDesktopRaw.exportFlagOff === true,
+        enableForSmokeSnippet: cleanString(chromeToDesktopRaw.enableForSmokeSnippet),
         permission: permission,
         lastExportStatus: cleanString(chromeToDesktopRaw.lastExportStatus),
         lastExportedAt: cleanString(chromeToDesktopRaw.lastExportedAt),

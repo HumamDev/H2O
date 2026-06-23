@@ -908,6 +908,12 @@ if (failures.length === 0) {
   assertContains(autoImportFile, 'folderId: cleanString(row && (row.folderId || row.folder_id))', 'Chrome export carries per-chat folder binding');
   assertContains(autoImportFile, 'supportedRowsRepresented', 'coverage supported-row representation detail');
   assertContains(autoImportFile, 'addedMinimalRowTypeCounts', 'coverage minimal-row class detail');
+  assertContains(autoImportFile, 'SMOKE_CHROME_EXPORT_OPT_IN_KEY', 'Chrome smoke export opt-in key');
+  assertContains(autoImportFile, 'h2o:studio:smoke-bridge:chrome-export-enabled:v1', 'Chrome smoke export localStorage key');
+  assertContains(autoImportFile, 'function smokeChromeExportEnabled', 'Chrome smoke export enablement gate');
+  assertContains(autoImportFile, 'function diagnoseChromeExportWriteGate', 'Chrome export write gate diagnostic');
+  assertContains(autoImportFile, 'publicReleaseBlocked', 'Chrome smoke export remains public-release gated');
+  assertContains(autoImportFile, 'enableForSmokeSnippet', 'Chrome export diagnostic reports smoke enable snippet');
   assertContains(folderImportFile, 'var LATEST_FILE = \'latest.json\'', 'Desktop import transport constant');
   assertContains(folderImportFile, 'var CHROME_LATEST_FILE = \'chrome-latest.json\'', 'Chrome export transport constant');
   assertContains(folderImportFile, 'function exportChromeToSyncFolder', 'direction-specific Chrome export API');
@@ -920,6 +926,9 @@ if (failures.length === 0) {
   assertContains(folderImportFile, 'auto-approved-folder-metadata', 'safe folder metadata simultaneous conflict auto-approval diagnostic');
   assertContains(folderImportFile, 'function wantsChromeToDesktopExport', 'direction selector');
   assertContains(folderImportFile, 'autoImport.exportNow', 'folder API delegates to Chrome export');
+  assertContains(folderImportFile, 'function getChromeExportWriteGate', 'folder diagnose reads Chrome export write gate');
+  assertContains(folderImportFile, 'exportWriteGate: chromeExportWriteGate', 'folder diagnose exposes Chrome export write gate');
+  assertContains(folderImportFile, 'exportFlagOff: chromeExportWriteGate.effectiveFlagEnabled !== true', 'folder diagnose reports Chrome export flag-off state');
   assertContains(folderImportFile, 'syncNowDirection: \'H2O.Studio.sync.folder.syncNow({ direction: "chrome-to-desktop" })\'', 'documented direction-specific syncNow');
   assertContains(folderImportFile, 'staleDesktopLatestJsonIgnored: true', 'stale Desktop latest.json cannot masquerade as Chrome export');
   assertContains(folderImportFile, 'exportChromeToSyncFolder: exportChromeToSyncFolder', 'public Chrome export API');

@@ -98,6 +98,9 @@
   var IDB_KEY              = 'sync-folder';
   var FLAG_KEY             = 'sync.chromeAutoImport';
   var EVENT_TRIGGER_FLAG_KEY = 'sync.chromeAutoImport.eventTrigger';
+  var SMOKE_BRIDGE_OPT_IN_KEY = 'h2o:studio:smoke-bridge:enabled:v1';
+  var SMOKE_CHROME_EXPORT_OPT_IN_KEY = 'h2o:studio:smoke-bridge:chrome-export-enabled:v1';
+  var SMOKE_REQUIRED_VALUE = 'folder-sync-rc';
   var SETTINGS_KEY         = 'h2o:sync:chrome-auto-import:state:v1';
   var MAX_ERRORS           = 20;
   /* R3 phase 2 — event-trigger wiring. The whitelist names below are
@@ -193,7 +196,42 @@
   /* ── Feature flag (defaults OFF) ──────────────────────────────────── */
   /* The flag is read live on every exportNow() call so flipping it via
    * H2O.flags.set(...) takes effect immediately without a reload. */
-  function flagEnabled() {
+  function readLocalStorageString(key) {
+    try {
+      return cleanString(global.localStorage && global.localStorage.getItem(key));
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function chromeExtensionSurface() {
+    try {
+      if (global.location && cleanString(global.location.protocol) === 'chrome-extension:') return true;
+    } catch (_) { /* ignore */ }
+    try {
+      return !!(global.chrome && global.chrome.runtime && global.chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function publicReleaseFlagActive() {
+    try {
+      if (global.H2O_PUBLIC_RELEASE === true) return true;
+      if (H2O.Studio && H2O.Studio.release && H2O.Studio.release.publicRelease === true) return true;
+      if (H2O.Studio && H2O.Studio.config && H2O.Studio.config.publicRelease === true) return true;
+    } catch (_) { /* ignore */ }
+    try {
+      if (readLocalStorageString('h2o:studio:public-release:v1') === 'true') return true;
+    } catch (_) { /* ignore */ }
+    try {
+      var root = global.document && global.document.documentElement;
+      if (root && root.getAttribute('data-h2o-public-release') === '1') return true;
+    } catch (_) { /* ignore */ }
+    return false;
+  }
+
+  function masterFlagEnabled() {
     try {
       var flags = H2O.flags;
       if (flags && typeof flags.get === 'function') {
@@ -201,6 +239,52 @@
       }
     } catch (_) { /* fall through */ }
     return false;
+  }
+
+  function smokeChromeExportEnabled() {
+    return chromeExtensionSurface() &&
+      !publicReleaseFlagActive() &&
+      readLocalStorageString(SMOKE_BRIDGE_OPT_IN_KEY) === SMOKE_REQUIRED_VALUE &&
+      readLocalStorageString(SMOKE_CHROME_EXPORT_OPT_IN_KEY) === SMOKE_REQUIRED_VALUE;
+  }
+
+  function flagEnabled() {
+    return masterFlagEnabled() || smokeChromeExportEnabled();
+  }
+
+  function diagnoseChromeExportWriteGate() {
+    var smokeBridgeOptIn = readLocalStorageString(SMOKE_BRIDGE_OPT_IN_KEY);
+    var smokeExportOptIn = readLocalStorageString(SMOKE_CHROME_EXPORT_OPT_IN_KEY);
+    var masterEnabled = masterFlagEnabled();
+    var smokeSurface = chromeExtensionSurface();
+    var publicReleaseBlocked = !publicReleaseFlagActive();
+    var smokeEnabled = smokeChromeExportEnabled();
+    var blockers = [];
+    if (!masterEnabled && !smokeEnabled) blockers.push('chrome-export-flag-off');
+    if (smokeExportOptIn === SMOKE_REQUIRED_VALUE && !smokeSurface) blockers.push('smoke-chrome-extension-surface-required');
+    if (smokeExportOptIn === SMOKE_REQUIRED_VALUE && !publicReleaseBlocked) blockers.push('public-release-flag-active');
+    if (smokeExportOptIn === SMOKE_REQUIRED_VALUE && smokeBridgeOptIn !== SMOKE_REQUIRED_VALUE) blockers.push('smoke-bridge-opt-in-required');
+    return {
+      schema: 'h2o.studio.sync.chrome-export-write-gate.v1',
+      phase: PHASE,
+      flagKey: FLAG_KEY,
+      flagEnabled: masterEnabled,
+      effectiveFlagEnabled: masterEnabled || smokeEnabled,
+      eventTriggerFlagKey: EVENT_TRIGGER_FLAG_KEY,
+      eventTriggerEnabled: eventTriggerFlagEnabled(),
+      smokeBridgeOptInKey: SMOKE_BRIDGE_OPT_IN_KEY,
+      smokeChromeExportOptInKey: SMOKE_CHROME_EXPORT_OPT_IN_KEY,
+      smokeRequiredValue: SMOKE_REQUIRED_VALUE,
+      smokeBridgeOptIn: smokeBridgeOptIn === SMOKE_REQUIRED_VALUE,
+      smokeChromeExportOptIn: smokeExportOptIn === SMOKE_REQUIRED_VALUE,
+      smokeChromeExportEnabled: smokeEnabled,
+      chromeExtensionSurface: smokeSurface,
+      publicReleaseBlocked: publicReleaseBlocked,
+      blockers: blockers,
+      enableForSmokeSnippet: "localStorage.setItem('" + SMOKE_BRIDGE_OPT_IN_KEY + "', '" + SMOKE_REQUIRED_VALUE + "'); localStorage.setItem('" + SMOKE_CHROME_EXPORT_OPT_IN_KEY + "', '" + SMOKE_REQUIRED_VALUE + "');",
+      normalFlagSnippet: "H2O.flags.set('" + FLAG_KEY + "', true)",
+      privacy: { redacted: true },
+    };
   }
 
   function isFolderAutoSyncExport(options) {
@@ -1670,6 +1754,7 @@
     var startedAt = nowIso();
     var exportPath = chromeExportPath('');
     var folderAutoSync = isFolderAutoSyncExport(opts);
+    var writeGate = diagnoseChromeExportWriteGate();
 
     /* (1) Flag gate. */
     if (!flagEnabled() && !folderAutoSync) {
@@ -1685,8 +1770,11 @@
         path: exportPath,
         bytes: 0,
         flagEnabled: false,
+        exportWriteGate: writeGate,
+        blockers: ['chrome-export-flag-off'],
         status: 'chrome-to-desktop-export-flag-off',
         error: 'feature flag "' + FLAG_KEY + '" is OFF',
+        enableForSmokeSnippet: writeGate.enableForSmokeSnippet,
         warnings: [],
       };
       state.lastExportAt = startedAt;
@@ -1708,6 +1796,7 @@
         path: exportPath,
         bytes: 0,
         flagEnabled: flagEnabled(),
+        exportWriteGate: diagnoseChromeExportWriteGate(),
         folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-export-in-flight',
         error: 'export already in flight',
@@ -1740,6 +1829,7 @@
             path: exportPath,
             bytes: 0,
             flagEnabled: flagEnabled(),
+            exportWriteGate: diagnoseChromeExportWriteGate(),
             folderAutoSync: true,
             status: 'permission-required',
             blockers: ['sync-folder-not-connected', 'permission-required'],
@@ -1768,6 +1858,7 @@
             path: exportPath,
             bytes: 0,
             flagEnabled: flagEnabled(),
+            exportWriteGate: diagnoseChromeExportWriteGate(),
             folderAutoSync: true,
             permission: writePermission,
             status: 'permission-required',
@@ -1824,6 +1915,7 @@
           path: exportPath,
           bytes: 0,
           flagEnabled: flagEnabled(),
+          exportWriteGate: diagnoseChromeExportWriteGate(),
           folderAutoSync: folderAutoSync,
           status: 'coverage-blocked',
           error: blockers[0],
@@ -1871,6 +1963,7 @@
         bytes: bytes,
         atomicMethod: atomicMethod,
         flagEnabled: flagEnabled(),
+        exportWriteGate: diagnoseChromeExportWriteGate(),
         folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-exported',
         blockers: blockers,
@@ -1922,6 +2015,7 @@
         bytes: bytes,
         atomicMethod: atomicMethod,
         flagEnabled: flagEnabled(),
+        exportWriteGate: diagnoseChromeExportWriteGate(),
         folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-export-failed',
         warnings: warnings,
@@ -2097,12 +2191,16 @@
     try { handleRow = await loadStoredHandleRow(); }
     catch (e) { pushError('status.loadHandle', e); }
     var folderName = handleRow && handleRow.handle && handleRow.handle.name ? handleRow.handle.name : '';
+    var writeGate = diagnoseChromeExportWriteGate();
     return {
       phase: PHASE,
       flagKey: FLAG_KEY,
-      flagEnabled: flagEnabled(),
+      flagEnabled: writeGate.effectiveFlagEnabled === true,
+      flagEnabledByMasterFlag: writeGate.flagEnabled === true,
+      flagEnabledBySmokeBridge: writeGate.smokeChromeExportEnabled === true,
       eventTriggerFlagKey: EVENT_TRIGGER_FLAG_KEY,
       eventTriggerEnabled: eventTriggerFlagEnabled(),
+      chromeExportWriteGate: writeGate,
       eventTriggerListenersBound: state.listenersBound,
       eventTriggerNames: EVENT_TRIGGER_NAMES.slice(),
       eventTriggerDebounceMs: EVENT_TRIGGER_DEBOUNCE_MS,
@@ -2159,6 +2257,7 @@
     status: status,
     diagnose: diagnose,
     diagnoseSnapshotPayloadCoverage: diagnoseSnapshotPayloadCoverage,
+    diagnoseChromeExportWriteGate: diagnoseChromeExportWriteGate,
   };
   H2O.Studio.sync.autoImport = api;
 

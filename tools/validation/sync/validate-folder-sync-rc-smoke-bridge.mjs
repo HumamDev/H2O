@@ -57,6 +57,10 @@ assertContains(registry, 'syncFolderDiagnose', 'sync folder diagnose output');
 assertContains(registry, "api && typeof api.diagnose === 'function'", 'live sync folder diagnose source');
 assertContains(registry, "permission === 'granted'", 'granted permission reconciliation gate');
 assertContains(registry, "'permission-required', 'no-folder-handle'", 'permission blocker reconciliation list');
+assertContains(registry, 'chromeExportFlagKey', 'Chrome export flag diagnostic summary');
+assertContains(registry, 'chromeExportFlagEnabled', 'Chrome export effective flag summary');
+assertContains(registry, 'chromeExportSmokeEnabled', 'Chrome smoke export summary');
+assertContains(registry, 'chromeExportSmokeOptInKey', 'Chrome smoke export opt-in key summary');
 
 const expectedOps = [
   'getFolderModel',

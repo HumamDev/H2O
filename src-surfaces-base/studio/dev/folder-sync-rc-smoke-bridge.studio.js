@@ -429,6 +429,7 @@
     var blockers = safeObject(r.blockers);
     var desktopToChrome = safeObject(r.desktopToChrome);
     var chromeToDesktop = safeObject(r.chromeToDesktop);
+    var exportWriteGate = safeObject(chromeToDesktop.exportWriteGate || safeObject(r.chromeDesktopExport).exportWriteGate);
     return {
       available: !!raw,
       connected: r.connected === true,
@@ -436,6 +437,10 @@
       folderName: cleanString(r.folderName),
       fileSystemAccessAvailable: r.fileSystemAccessAvailable === true,
       chromeWritesSyncFolder: r.chromeWritesSyncFolder === true || chromeToDesktop.chromeWritesSyncFolder === true,
+      chromeExportFlagKey: cleanString(chromeToDesktop.exportFlagKey || exportWriteGate.flagKey),
+      chromeExportFlagEnabled: chromeToDesktop.exportFlagEnabled === true || exportWriteGate.effectiveFlagEnabled === true,
+      chromeExportSmokeEnabled: exportWriteGate.smokeChromeExportEnabled === true,
+      chromeExportSmokeOptInKey: cleanString(exportWriteGate.smokeChromeExportOptInKey),
       desktopToChromePermission: cleanString(desktopToChrome.permission),
       chromeToDesktopPermission: cleanString(chromeToDesktop.permission),
       permissionRequired: blockers.permissionRequired === true,
