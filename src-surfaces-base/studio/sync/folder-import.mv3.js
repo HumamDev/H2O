@@ -49,6 +49,7 @@
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
+  var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
@@ -177,6 +178,7 @@
     lastChromePostImportChangedFolderCount: 0,
     lastChromePostImportChangedFields: [],
     lastChromePostImportChangedFolderIds: [],
+    lastFolderDeleteReceiptImport: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -1383,6 +1385,7 @@
         folderStateSource: cleanString(folderState && folderState.sourceKind),
         folderFacetConvergenceRequired: false,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
+        folderDeleteReceiptCount: Array.isArray(bundle.folderDeleteReceipts) ? bundle.folderDeleteReceipts.length : 0,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
         hasContentSha256: !!supported.contentSha256
@@ -1781,6 +1784,7 @@
       folderMetadataCount: numberOrZero(f.sourceSummary && (f.sourceSummary.folderMetadataCount || f.sourceSummary.folderCount)),
       folderStateSource: cleanString(f.sourceSummary && f.sourceSummary.folderStateSource),
       importSummary: f.importSummary || null,
+      folderDeleteReceiptImport: f.folderDeleteReceiptImport || null,
       convergence: f.convergence || null,
       postImportRefresh: f.postImportRefresh ? redactedPostImportRefreshSummary(f.postImportRefresh) : null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
@@ -1908,6 +1912,7 @@
         importSummary: { ok: false, dryRun: redactedDryRunSummary(dryRun) }
       });
     }
+    var folderDeleteReceiptImport = await ingestFolderDeleteReceiptsFromDesktopBundle(bundleInput, opts);
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -1932,6 +1937,7 @@
       warnings: warnings,
       sourceSummary: normalized.sourceSummary,
       importSummary: importSummary,
+      folderDeleteReceiptImport: folderDeleteReceiptImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -2705,6 +2711,7 @@
       },
       chromePostImportRefreshMode: state.lastChromePostImportRefreshMode,
       changedFolderCount: state.lastChromePostImportChangedFolderCount,
+      folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
       cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
       refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
@@ -2751,6 +2758,117 @@
       failed: 0,
       warnings: [{ code: cleanString(code) || 'tombstone-review-store-unavailable' }],
     };
+  }
+
+  function folderDeleteReceiptImportUnavailable(code) {
+    return {
+      schema: FOLDER_DELETE_RECEIPT_SCHEMA + '.import',
+      phase: 'phase4c.4b',
+      attempted: true,
+      ok: false,
+      found: 0,
+      receiptCount: 0,
+      resolvedCount: 0,
+      alreadyResolvedCount: 0,
+      skippedCount: 0,
+      malformedCount: 0,
+      blockerCount: 1,
+      warningCount: 1,
+      noFolderHide: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      blockers: [{ code: cleanString(code) || 'folder-delete-receipt-store-unavailable' }],
+      warnings: [{ code: cleanString(code) || 'folder-delete-receipt-store-unavailable' }],
+    };
+  }
+
+  function normalizeFolderDeleteReceiptImportResult(raw) {
+    var r = safeObject(raw);
+    var warnings = Array.isArray(r.warnings)
+      ? r.warnings.map(function (warning) {
+        var out = { code: cleanString(warning && warning.code) || 'warning' };
+        if (warning && warning.count != null) out.count = numberOrZero(warning.count);
+        return out;
+      }).filter(function (warning) { return warning.code; })
+      : [];
+    var blockers = Array.isArray(r.blockers)
+      ? r.blockers.map(function (blocker) {
+        var out = { code: cleanString(blocker && blocker.code) || 'blocker' };
+        if (blocker && blocker.count != null) out.count = numberOrZero(blocker.count);
+        return out;
+      }).filter(function (blocker) { return blocker.code; })
+      : [];
+    return {
+      schema: cleanString(r.schema || (FOLDER_DELETE_RECEIPT_SCHEMA + '.import')),
+      phase: cleanString(r.phase || 'phase4c.4b'),
+      attempted: r.attempted !== false,
+      ok: r.ok !== false && blockers.length === 0,
+      found: numberOrZero(r.found),
+      receiptCount: numberOrZero(r.receiptCount),
+      resolvedCount: numberOrZero(r.resolvedCount),
+      alreadyResolvedCount: numberOrZero(r.alreadyResolvedCount),
+      skippedCount: numberOrZero(r.skippedCount),
+      malformedCount: numberOrZero(r.malformedCount),
+      blockerCount: blockers.length || numberOrZero(r.blockerCount),
+      warningCount: warnings.length || numberOrZero(r.warningCount),
+      noFolderHide: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      warnings: warnings,
+      blockers: blockers,
+    };
+  }
+
+  async function ingestFolderDeleteReceiptsFromDesktopBundle(bundle, options) {
+    var receipts = Array.isArray(bundle && bundle.folderDeleteReceipts) ? bundle.folderDeleteReceipts : [];
+    if (!receipts.length) {
+      var empty = normalizeFolderDeleteReceiptImportResult({
+        schema: FOLDER_DELETE_RECEIPT_SCHEMA + '.import',
+        phase: 'phase4c.4b',
+        attempted: true,
+        ok: true,
+        found: 0,
+        receiptCount: 0,
+        noFolderHide: true,
+        noTombstoneApply: true,
+      });
+      state.lastFolderDeleteReceiptImport = empty;
+      return empty;
+    }
+    try {
+      var reviews = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      if (!reviews || typeof reviews.ingestFolderDeleteReceipts !== 'function') {
+        var unavailable = folderDeleteReceiptImportUnavailable('folder-delete-receipt-store-unavailable');
+        state.lastFolderDeleteReceiptImport = unavailable;
+        return unavailable;
+      }
+      var result = await reviews.ingestFolderDeleteReceipts(bundle, {
+        source: 'latest.json',
+        syncReason: cleanString(options && options.reason),
+        bundleExportId: cleanString(bundle && bundle.exportId),
+        bundleSourceSyncPeerId: cleanString(bundle && bundle.sourceSyncPeerId),
+      });
+      var normalized = normalizeFolderDeleteReceiptImportResult(result);
+      state.lastFolderDeleteReceiptImport = normalized;
+      return normalized;
+    } catch (error) {
+      pushError('folder-delete-receipt-import', error);
+      var failed = folderDeleteReceiptImportUnavailable('folder-delete-receipt-import-failed');
+      state.lastFolderDeleteReceiptImport = failed;
+      return failed;
+    }
   }
 
   function normalizeTombstoneReviewIngestResult(raw) {
@@ -3233,6 +3351,7 @@
           }
           : { ok: false, blocker: 'desktop-to-chrome-convergence-not-proven' };
         if (alreadyConvergence.ok) {
+          var alreadyReceiptImport = await ingestFolderDeleteReceiptsFromDesktopBundle(bundle, opts);
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           recordChromePostImportRefresh('duplicate-suppressed', folderMetadataChangeSummary, '', cleanString(bundle.exportedAt || ''), {
@@ -3260,6 +3379,7 @@
               },
               redactedErrorCategories: []
             },
+            folderDeleteReceiptImport: alreadyReceiptImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: {
@@ -3316,6 +3436,7 @@
             rowsAfter: alreadyRowsAfter,
             sourceSummary: alreadyPropagation.sourceSummary,
             importSummary: alreadyPropagation.importSummary,
+            folderDeleteReceiptImport: alreadyPropagation.folderDeleteReceiptImport,
             convergence: alreadyPropagation.convergence,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
@@ -3510,6 +3631,7 @@
         },
         sourceSummary: propagation && propagation.sourceSummary,
         importSummary: propagation && propagation.importSummary,
+        folderDeleteReceiptImport: propagation && propagation.folderDeleteReceiptImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,
@@ -3632,6 +3754,7 @@
           duplicateSkipped: state.duplicateSkippedCount,
           selfOriginSkipped: state.selfOriginSkippedCount,
         },
+        folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,

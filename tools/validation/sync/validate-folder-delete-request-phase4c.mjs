@@ -199,8 +199,75 @@ assert(!receiptExportBody.includes('DELETE FROM'), 'Desktop receipt export must 
 assert(!receiptExportBody.includes('unbindChat'), 'Desktop receipt export must not unbind chats');
 assert(!receiptExportBody.includes('bindChat'), 'Desktop receipt export must not bind chats');
 
-assert(!chromeImport.includes('folderDeleteReceipts'), 'Chrome import must not consume folderDeleteReceipts in Phase 4C.4a');
-assert(!chromeImport.includes('folder-delete-receipt'), 'Chrome import must not implement folder delete receipts in Phase 4C.4a');
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  'FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA',
+  'FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA',
+  'applyFolderDeleteReceipt',
+  'ingestFolderDeleteReceipts',
+  'normalizeFolderDeleteReceipt',
+  'findFolderDeleteRequestReviewForReceipt',
+  'receipt-no-matching-request',
+  'receipt-folder-mismatch',
+  'receipt-review-not-pending',
+  'statusOnly: true',
+  'noTombstoneApply: true',
+  "tombstonePropagation: 'deferred'",
+  'noFolderHide: true',
+  'noFolderMutation: true',
+  'noBindingMutation: true',
+  'noChatMutation: true',
+  'noSnapshotMutation: true',
+].forEach((needle) => assertIncludes(reviews, needle, `Chrome receipt review store ${needle}`));
+
+const chromeReceiptNormalizeBody = functionBody(reviews, 'normalizeFolderDeleteReceipt');
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  "receipt.status) !== 'applied'",
+  "receipt.decision) !== 'applied-folder-delete-request'",
+  'receipt.statusOnly !== true',
+  'receipt.noTombstoneApply !== true',
+  'receipt.noHardDelete !== true',
+  'receipt.noChatDelete !== true',
+  "receipt.tombstonePropagation) !== 'deferred'",
+  'receipt-request-identity-missing',
+  'receipt-folder-identity-missing',
+].forEach((needle) => assertIncludes(chromeReceiptNormalizeBody, needle, `Chrome receipt validation ${needle}`));
+
+const chromeReceiptApplyBody = functionBody(reviews, 'applyFolderDeleteReceipt');
+assert(chromeReceiptApplyBody.includes('findFolderDeleteRequestReviewForReceipt'), 'Chrome receipt apply must require a matching local request');
+assert(chromeReceiptApplyBody.includes('receipt-no-matching-request'), 'Chrome receipt apply must report no matching local request');
+assert(chromeReceiptApplyBody.includes('receipt-folder-mismatch'), 'Chrome receipt apply must block folder mismatches');
+assert(chromeReceiptApplyBody.includes('canApplyDecisionTransition'), 'Chrome receipt apply must use the review status transition guard');
+assert(chromeReceiptApplyBody.includes("status: 'resolved'"), 'Chrome receipt apply must mark the request review resolved');
+assert(chromeReceiptApplyBody.includes("decision: 'applied-folder-delete-request'"), 'Chrome receipt apply must record the applied decision');
+assert(chromeReceiptApplyBody.includes('folderDeleteReceiptRawWithResult'), 'Chrome receipt apply must persist receipt metadata');
+assert(!chromeReceiptApplyBody.includes('softDeleteFolder'), 'Chrome receipt apply must not call softDeleteFolder');
+assert(!chromeReceiptApplyBody.includes('softDeleteEmptyFolder'), 'Chrome receipt apply must not call softDeleteEmptyFolder');
+assert(!chromeReceiptApplyBody.includes('createTombstone'), 'Chrome receipt apply must not create tombstones');
+assert(!chromeReceiptApplyBody.includes('removeFolder'), 'Chrome receipt apply must not remove folders');
+assert(!chromeReceiptApplyBody.includes('hideFolder'), 'Chrome receipt apply must not hide folders');
+assert(!chromeReceiptApplyBody.includes('unbindChat'), 'Chrome receipt apply must not unbind chats');
+assert(!chromeReceiptApplyBody.includes('bindChat'), 'Chrome receipt apply must not bind chats');
+
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  'ingestFolderDeleteReceiptsFromDesktopBundle',
+  'folderDeleteReceipts',
+  'folderDeleteReceiptImport',
+  'noFolderHide: true',
+  'noTombstoneApply: true',
+  "tombstonePropagation: 'deferred'",
+].forEach((needle) => assertIncludes(chromeImport, needle, `Chrome receipt import ${needle}`));
+
+const chromeReceiptImportBody = functionBody(chromeImport, 'ingestFolderDeleteReceiptsFromDesktopBundle');
+assert(chromeReceiptImportBody.includes('reviews.ingestFolderDeleteReceipts'), 'Chrome import must call review-store receipt ingest');
+assert(!chromeReceiptImportBody.includes('softDeleteFolder'), 'Chrome receipt import must not call softDeleteFolder');
+assert(!chromeReceiptImportBody.includes('createTombstone'), 'Chrome receipt import must not create tombstones');
+assert(!chromeReceiptImportBody.includes('removeFolder'), 'Chrome receipt import must not remove folders');
+assert(!chromeReceiptImportBody.includes('hideFolder'), 'Chrome receipt import must not hide folders');
+assert(!chromeReceiptImportBody.includes('unbindChat'), 'Chrome receipt import must not unbind chats');
+assert(!chromeReceiptImportBody.includes('bindChat'), 'Chrome receipt import must not bind chats');
 
 const desktopApplyValidationBody = functionBody(desktopReviews, 'validateFolderDeleteRequestReviewForApply');
 [
@@ -281,9 +348,9 @@ console.log(JSON.stringify({
   desktopIngestReviewOnly: true,
   desktopApplyExplicitOnly: true,
   desktopReceiptExportStatusOnly: true,
-  chromeReceiptImportDeferred: true,
+  chromeReceiptImportStatusOnly: true,
+  chromeFolderHideDeferred: true,
   noHardDelete: true,
   noChatDelete: true,
-  chromeReceiptDeferred: true,
   observedAtIso: new Date().toISOString(),
 }, null, 2));

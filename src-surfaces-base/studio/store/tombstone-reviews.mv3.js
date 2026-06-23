@@ -48,6 +48,9 @@
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
+  var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
+  var FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-delete-receipt-import.v1';
+  var FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-delete-receipt-apply-result.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -189,6 +192,19 @@
     return 'folder-delete-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
   }
 
+  function folderDeleteReceiptIds(receipt) {
+    var values = [
+      cleanScalar(receipt && receipt.requestId),
+      cleanScalar(receipt && receipt.reviewId),
+    ];
+    var seen = Object.create(null);
+    return values.filter(function (value) {
+      if (!value || seen[value]) return false;
+      seen[value] = true;
+      return true;
+    });
+  }
+
   function parseRequestPayload(row) {
     var raw = row && row.rawTombstoneJson;
     if (!raw) return null;
@@ -198,6 +214,55 @@
     } catch (_) {
       return null;
     }
+  }
+
+  function normalizeFolderDeleteReceipt(input) {
+    var receipt = isObject(input) ? input : {};
+    if (cleanScalar(receipt.schema) !== FOLDER_DELETE_RECEIPT_SCHEMA) {
+      return { ok: false, code: 'receipt-schema-invalid' };
+    }
+    if (cleanScalar(receipt.status) !== 'applied') {
+      return { ok: false, code: 'receipt-status-not-applied' };
+    }
+    if (cleanScalar(receipt.decision) !== 'applied-folder-delete-request') {
+      return { ok: false, code: 'receipt-decision-invalid' };
+    }
+    if (receipt.statusOnly !== true) return { ok: false, code: 'receipt-status-only-missing' };
+    if (receipt.noTombstoneApply !== true) return { ok: false, code: 'receipt-no-tombstone-apply-missing' };
+    if (receipt.noHardDelete !== true) return { ok: false, code: 'receipt-no-hard-delete-missing' };
+    if (receipt.noChatDelete !== true) return { ok: false, code: 'receipt-no-chat-delete-missing' };
+    if (cleanScalar(receipt.tombstonePropagation) !== 'deferred') {
+      return { ok: false, code: 'receipt-tombstone-propagation-not-deferred' };
+    }
+    var requestId = cleanScalar(receipt.requestId || receipt.reviewId);
+    var reviewId = cleanScalar(receipt.reviewId || receipt.requestId);
+    var folderId = cleanScalar(receipt.folderId);
+    if (!requestId && !reviewId) return { ok: false, code: 'receipt-request-identity-missing' };
+    if (!folderId) return { ok: false, code: 'receipt-folder-identity-missing' };
+    return {
+      ok: true,
+      receipt: {
+        schema: FOLDER_DELETE_RECEIPT_SCHEMA,
+        receiptId: nullableString(receipt.receiptId),
+        requestId: requestId || reviewId,
+        reviewId: reviewId || requestId,
+        folderId: folderId,
+        folderName: nullableString(receipt.folderName || receipt.folderNameAtRequest),
+        recordKind: 'folder',
+        intent: 'folder-soft-delete-request',
+        status: 'applied',
+        decision: 'applied-folder-delete-request',
+        appliedAt: nullableString(receipt.appliedAt),
+        tombstoneId: nullableString(receipt.tombstoneId),
+        sourcePeerId: nullableString(receipt.sourcePeerId || receipt.appliedBySyncPeerId || receipt.appliedBy || 'desktop-studio'),
+        noHardDelete: true,
+        noChatDelete: true,
+        statusOnly: true,
+        noTombstoneApply: true,
+        tombstonePropagation: 'deferred',
+        chromeHideDeferred: receipt.chromeHideDeferred !== false,
+      },
+    };
   }
 
   function isObject(value) {
@@ -1215,6 +1280,301 @@
         duplicatesSinceBoot: state.folderDeleteRequestDuplicates,
       };
       if (includeRows) result.pending = pending;
+      return result;
+    });
+  }
+
+  function makeFolderDeleteReceiptApplyResult(receipt) {
+    var r = isObject(receipt) ? receipt : {};
+    return {
+      schema: FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA,
+      phase: 'phase4c.4b',
+      ok: false,
+      applied: false,
+      resolved: false,
+      alreadyResolved: false,
+      receiptId: nullableString(r.receiptId),
+      requestId: nullableString(r.requestId || r.reviewId),
+      reviewId: nullableString(r.reviewId || r.requestId),
+      folderId: nullableString(r.folderId),
+      status: 'not-applied',
+      decision: 'applied-folder-delete-request',
+      reviewFound: false,
+      reviewStatus: null,
+      reviewUpdated: false,
+      writesPerformed: 0,
+      noFolderHide: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function blockFolderDeleteReceiptApply(receipt, code, extra) {
+    var result = makeFolderDeleteReceiptApplyResult(receipt);
+    var normalized = cleanScalar(code) || 'folder-delete-receipt-blocked';
+    result.status = normalized;
+    pushBlocker(result, normalized);
+    if (extra && typeof extra === 'object') Object.assign(result, extra);
+    return result;
+  }
+
+  function findFolderDeleteRequestReviewForReceipt(receipt) {
+    var ids = folderDeleteReceiptIds(receipt);
+    function byId(index) {
+      if (index >= ids.length) return Promise.resolve(null);
+      return getReview(ids[index]).then(function (review) {
+        return review || byId(index + 1);
+      });
+    }
+    return byId(0).then(function (review) {
+      if (review) return { review: review, foundById: true };
+      return listFolderDeleteRequests({ folderId: receipt.folderId, limit: MAX_LIST_LIMIT }).then(function (rows) {
+        var found = (Array.isArray(rows) ? rows : []).find(function (row) {
+          var payload = parseRequestPayload(row);
+          if (!payload) return false;
+          return ids.indexOf(cleanScalar(payload.requestId)) !== -1 ||
+            ids.indexOf(cleanScalar(payload.reviewId)) !== -1 ||
+            ids.indexOf(cleanScalar(row && row.reviewId)) !== -1;
+        }) || null;
+        return { review: found, foundById: false };
+      });
+    });
+  }
+
+  function folderDeleteReceiptLocalFolderId(review) {
+    var payload = parseRequestPayload(review);
+    return cleanScalar(payload && payload.folderId) || cleanScalar(review && review.recordId);
+  }
+
+  function folderDeleteReceiptLocalRequestId(review) {
+    var payload = parseRequestPayload(review);
+    return cleanScalar(payload && (payload.requestId || payload.reviewId)) || cleanScalar(review && review.reviewId);
+  }
+
+  function appendFolderDeleteReceiptWarnings(rawWarnings) {
+    var warnings = parseWarnings(rawWarnings);
+    pushCodeWarning(warnings, 'folder-delete-receipt-imported');
+    pushCodeWarning(warnings, 'folder-delete-request-applied-on-desktop');
+    pushCodeWarning(warnings, 'chrome-hide-deferred');
+    pushCodeWarning(warnings, 'no-tombstone-apply');
+    return JSON.stringify(warnings);
+  }
+
+  function folderDeleteReceiptRawWithResult(review, receipt, importedAt) {
+    var payload = parseRequestPayload(review) || {};
+    payload.status = 'resolved';
+    payload.desktopReceiptResult = {
+      schema: FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA,
+      phase: 'phase4c.4b',
+      status: 'applied',
+      decision: 'applied-folder-delete-request',
+      receiptId: cleanScalar(receipt.receiptId),
+      requestId: cleanScalar(receipt.requestId),
+      reviewId: cleanScalar(receipt.reviewId),
+      folderId: cleanScalar(receipt.folderId),
+      importedAt: importedAt,
+      receivedAt: importedAt,
+      appliedAt: nullableString(receipt.appliedAt),
+      tombstoneId: nullableString(receipt.tombstoneId),
+      noHardDelete: true,
+      noChatDelete: true,
+      statusOnly: true,
+      noTombstoneApply: true,
+      noFolderHide: true,
+      chromeHideDeferred: true,
+      tombstonePropagation: 'deferred',
+    };
+    return JSON.stringify(payload);
+  }
+
+  function applyFolderDeleteReceipt(receiptInput, options) {
+    var normalized = normalizeFolderDeleteReceipt(receiptInput);
+    if (!normalized.ok) {
+      return Promise.resolve(blockFolderDeleteReceiptApply(receiptInput, normalized.code || 'receipt-invalid'));
+    }
+    var receipt = normalized.receipt;
+    return ensureReady()
+      .then(function () { return findFolderDeleteRequestReviewForReceipt(receipt); })
+      .then(function (match) {
+        var review = match && match.review;
+        if (!review) {
+          var noMatch = blockFolderDeleteReceiptApply(receipt, 'receipt-no-matching-request');
+          noMatch.warningOnly = true;
+          return noMatch;
+        }
+        var result = makeFolderDeleteReceiptApplyResult(receipt);
+        result.reviewFound = true;
+        result.reviewId = cleanScalar(review.reviewId);
+        result.reviewStatus = nullableString(review.status);
+        var localFolderId = folderDeleteReceiptLocalFolderId(review);
+        if (localFolderId !== receipt.folderId) {
+          pushBlocker(result, 'receipt-folder-mismatch');
+          result.status = 'receipt-folder-mismatch';
+          result.localFolderIdPresent = !!localFolderId;
+          return result;
+        }
+        var localRequestId = folderDeleteReceiptLocalRequestId(review);
+        var ids = folderDeleteReceiptIds(receipt);
+        if (localRequestId && ids.indexOf(localRequestId) === -1 && ids.indexOf(cleanScalar(review.reviewId)) === -1) {
+          pushBlocker(result, 'receipt-request-mismatch');
+          result.status = 'receipt-request-mismatch';
+          return result;
+        }
+        var currentStatus = cleanScalar(review.status);
+        if (currentStatus === 'resolved' && cleanScalar(review.decision) === 'applied-folder-delete-request') {
+          result.ok = true;
+          result.alreadyResolved = true;
+          result.status = 'folder-delete-receipt-already-resolved';
+          return result;
+        }
+        if (!canApplyDecisionTransition(currentStatus, 'resolved')) {
+          pushBlocker(result, 'receipt-review-not-pending');
+          result.status = 'receipt-review-not-pending';
+          return result;
+        }
+        var importedAt = nowIso();
+        var next = Object.assign({}, review, {
+          status: 'resolved',
+          decision: 'applied-folder-delete-request',
+          decidedAt: importedAt,
+          decidedBySyncPeerId: cleanScalar(receipt.sourcePeerId || 'desktop-studio') || 'desktop-studio',
+          rawTombstoneJson: folderDeleteReceiptRawWithResult(review, receipt, importedAt),
+          warningsJson: appendFolderDeleteReceiptWarnings(review.warningsJson || review.warnings),
+          updatedAt: importedAt,
+        });
+        return idbPut(next).then(function () {
+          recordWrite('applyFolderDeleteReceipt');
+          notifySubscribers({
+            source: 'desktop-folder-delete-receipt',
+            op: 'applyFolderDeleteReceipt',
+            reviewId: cleanScalar(review.reviewId),
+            folderId: receipt.folderId,
+            status: 'resolved',
+            noFolderHide: true,
+            noTombstoneApply: true,
+          });
+          result.ok = true;
+          result.applied = true;
+          result.resolved = true;
+          result.status = 'folder-delete-receipt-applied';
+          result.decision = 'applied-folder-delete-request';
+          result.decidedAt = importedAt;
+          result.reviewUpdated = true;
+          result.writesPerformed = 1;
+          return result;
+        });
+      })
+      .catch(function (e) {
+        recordError('applyFolderDeleteReceipt', e);
+        var failure = blockFolderDeleteReceiptApply(receipt, 'folder-delete-receipt-apply-failed');
+        pushCodeWarning(failure.warnings, 'folder-delete-receipt-apply-threw');
+        return failure;
+      });
+  }
+
+  function makeFolderDeleteReceiptImportResult(bundleInput, options) {
+    var opts = isObject(options) ? options : {};
+    return {
+      schema: FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA,
+      phase: 'phase4c.4b',
+      ok: true,
+      source: cleanScalar(opts.source || 'latest.json'),
+      attempted: true,
+      found: 0,
+      receiptCount: 0,
+      resolvedCount: 0,
+      alreadyResolvedCount: 0,
+      skippedCount: 0,
+      malformedCount: 0,
+      blockerCount: 0,
+      warningCount: 0,
+      noFolderHide: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      warnings: [],
+      blockers: [],
+      results: [],
+    };
+  }
+
+  function addReceiptImportCode(list, code) {
+    var c = cleanScalar(code);
+    if (!c || !Array.isArray(list)) return;
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].code === c) {
+        list[i].count = Number(list[i].count || 1) + 1;
+        return;
+      }
+    }
+    list.push({ code: c });
+  }
+
+  function ingestFolderDeleteReceipts(bundleInput, options) {
+    var bundle = Array.isArray(bundleInput)
+      ? { folderDeleteReceipts: bundleInput }
+      : (isObject(bundleInput) ? bundleInput : null);
+    var result = makeFolderDeleteReceiptImportResult(bundle, options);
+    if (!bundle || !Object.prototype.hasOwnProperty.call(bundle, 'folderDeleteReceipts')) {
+      result.found = 0;
+      result.receiptCount = 0;
+      return Promise.resolve(result);
+    }
+    if (!Array.isArray(bundle.folderDeleteReceipts)) {
+      result.ok = false;
+      result.malformedCount = 1;
+      result.skippedCount = 1;
+      result.warningCount = 1;
+      addReceiptImportCode(result.warnings, 'folder-delete-receipts-malformed');
+      return Promise.resolve(result);
+    }
+    result.found = bundle.folderDeleteReceipts.length;
+    result.receiptCount = bundle.folderDeleteReceipts.length;
+    return bundle.folderDeleteReceipts.reduce(function (promise, receipt) {
+      return promise.then(function () {
+        return applyFolderDeleteReceipt(receipt, options).then(function (single) {
+          result.results.push({
+            ok: single && single.ok === true,
+            status: cleanScalar(single && single.status),
+            reviewFound: single && single.reviewFound === true,
+            resolved: single && single.resolved === true,
+            alreadyResolved: single && single.alreadyResolved === true,
+            noFolderHide: true,
+            noTombstoneApply: true,
+          });
+          if (single && single.resolved === true) result.resolvedCount += 1;
+          else if (single && single.alreadyResolved === true) result.alreadyResolvedCount += 1;
+          else result.skippedCount += 1;
+          if (single && Array.isArray(single.blockers) && single.blockers.length) {
+            result.blockerCount += single.blockers.length;
+            single.blockers.forEach(function (blocker) {
+              addReceiptImportCode(result.blockers, blocker && blocker.code);
+            });
+          }
+          if (single && Array.isArray(single.warnings) && single.warnings.length) {
+            result.warningCount += single.warnings.length;
+            single.warnings.forEach(function (warning) {
+              addReceiptImportCode(result.warnings, warning && warning.code);
+            });
+          }
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      result.ok = result.blockerCount === 0;
+      if (result.blockerCount > 0) addReceiptImportCode(result.warnings, 'folder-delete-receipt-import-blocked');
       return result;
     });
   }
@@ -3708,6 +4068,8 @@
     findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
     listFolderDeleteRequests: listFolderDeleteRequests,
     diagnoseFolderDeleteRequests: diagnoseFolderDeleteRequests,
+    applyFolderDeleteReceipt: applyFolderDeleteReceipt,
+    ingestFolderDeleteReceipts: ingestFolderDeleteReceipts,
     upsertReviewSighting: upsertReviewSighting,
     getReview: getReview,
     getByDedupeKey: getByDedupeKey,
@@ -3731,6 +4093,8 @@
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
+      folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
+      folderDeleteReceiptImportSchema: FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
