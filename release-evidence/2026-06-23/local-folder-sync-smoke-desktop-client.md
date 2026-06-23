@@ -91,6 +91,136 @@ node tools/smoke/desktop-folder-sync-queue-client.mjs --op getFolderModel --time
 
 Expected success requires Desktop Studio to be open with the Slice 2 registry gates enabled and the Slice 3 Desktop file-command queue running.
 
+## Slice 4B Live Proof
+
+Proof date: 2026-06-23
+
+Relevant implementation commit:
+
+- `88c418789f5a0574eda65a2b8a66b68dad843e83` - `feat(sync): add desktop smoke queue client`
+
+Initial timeout behavior:
+
+- Running the client before Desktop smoke gates were active returned:
+  - `status: desktop-queue-timeout`
+  - `blockers: ["desktop-queue-timeout"]`
+- This was expected because Desktop queue was not enabled/running through the smoke gate yet.
+
+Desktop queue gate enablement:
+
+- Desktop Studio smoke bridge was enabled with:
+  - localStorage key: `h2o:studio:smoke-bridge:enabled:v1 = folder-sync-rc`
+  - URL flag: `h2oSmokeBridge=folder-sync-rc`
+- Desktop queue diagnostic showed:
+  - `enabled:true`
+  - `started:true`
+  - `commandPathScoped:true`
+  - `resultPathScoped:true`
+  - `tauriFsRootScoped:true`
+  - `noRawSql:true`
+  - `noHardDelete:true`
+  - `noPurge:true`
+  - `noChatDelete:true`
+  - `noSnapshotDelete:true`
+  - `noTombstonePropagationApply:true`
+
+`diagnoseHealth` proof:
+
+```sh
+node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 30000
+```
+
+- Top-level result:
+  - `schema: h2o.studio.desktop-queue-smoke-client.result.v1`
+  - `ok:true`
+  - `status: healthy`
+  - `op: diagnoseHealth`
+  - `commandId: desktop-diagnoseHealth-mqquhb2d`
+  - `commandPath: /Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json`
+  - `resultPath: /Users/hobayda/H2O Studio Sync/.h2o-smoke/results/desktop-diagnoseHealth-mqquhb2d.json`
+- Nested queue result:
+  - `ok:true`
+  - `status: healthy`
+  - `surface: desktop-studio`
+  - `adapter: tauri`
+  - `registryGatesEnabled:true`
+  - `commandPathScoped:true`
+  - `resultPathScoped:true`
+  - `tauriFsRootScoped:true`
+- Nested registry result:
+  - `result.ok:true`
+  - `result.op: diagnoseHealth`
+  - `result.surface: desktop-studio`
+  - `result.adapter: tauri`
+  - `result.status: healthy`
+  - `result.verdict: healthy`
+  - `result.summaryText: Folder sync is current and no blockers are active.`
+  - `result.blockers: []`
+  - `desktopToChrome.autoExportEnabled:true`
+  - `desktopToChrome.permission: desktop-local-filesystem`
+  - `chromeToDesktop.desktopAutoImportEnabled:true`
+  - `chromeToDesktop.permission: desktop-local-filesystem`
+  - `tombstoneLocalDelete.hardDeleteBlocked:true`
+  - `tombstoneLocalDelete.chatDeleteBlocked:true`
+  - `tombstoneLocalDelete.purgeBlocked:true`
+
+`getFolderModel` proof:
+
+```sh
+node tools/smoke/desktop-folder-sync-queue-client.mjs --op getFolderModel --timeout-ms 30000
+```
+
+- Top-level result:
+  - `schema: h2o.studio.desktop-queue-smoke-client.result.v1`
+  - `ok:true`
+  - `status: folder-model-read`
+  - `op: getFolderModel`
+  - `commandId: desktop-getFolderModel-mqquhea2`
+  - `resultPath: /Users/hobayda/H2O Studio Sync/.h2o-smoke/results/desktop-getFolderModel-mqquhea2.json`
+- Nested queue result:
+  - `ok:true`
+  - `status: folder-model-read`
+  - `surface: desktop-studio`
+  - `adapter: tauri`
+  - `registryGatesEnabled:true`
+  - `commandPathScoped:true`
+  - `resultPathScoped:true`
+  - `tauriFsRootScoped:true`
+- Nested registry result:
+  - `result.ok:true`
+  - `result.op: getFolderModel`
+  - `result.status: folder-model-read`
+  - `rowCount: 17`
+  - `canonicalRowCount: 17`
+  - `displayModelAvailable:true`
+  - `allowed:true`
+  - `disabled:false`
+
+Safety proof:
+
+- Safety flags remained true:
+  - `readOnly:true`
+  - `noArbitraryEval:true`
+  - `noProductionListener:true`
+  - `noRawSql:true`
+  - `noHardDelete:true`
+  - `noPurge:true`
+  - `noTombstonePropagationApply:true`
+  - `noChatDelete:true`
+  - `noSnapshotDelete:true`
+  - `noBroadFilesystemAccess:true`
+  - `commandPathScoped:true`
+  - `resultPathScoped:true`
+  - `tauriFsRootScoped:true`
+
+Verdict:
+
+- Slice 4B Desktop queue client is live-proven.
+- It can write a command file, wait for Desktop queue output, and print the result JSON.
+- Desktop queue processed both read-only commands through the same gated smoke registry.
+- The client is ready to be used by the combined read-only smoke runner.
+- Chrome `getFolderModel` previously showed `rowCount:6` while Desktop showed `rowCount:17`. This is not a Slice 4B failure; convergence comparison belongs to the combined runner/full RC smoke stage.
+
 ## Validation
 
 Commands run:
