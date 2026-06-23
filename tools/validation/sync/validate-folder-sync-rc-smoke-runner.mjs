@@ -34,6 +34,9 @@ assertContains(helper, 'H2O.Studio.devSmoke.folderSync.run', 'registry path labe
 assertContains(helper, 'h2oSmokeBridge', 'URL flag');
 assertContains(helper, 'h2o:studio:smoke-bridge:enabled:v1', 'localStorage opt-in');
 assertContains(helper, 'folder-sync-rc', 'required smoke gate value');
+assertContains(helper, 'VISIBLE_MARKER_WRAPPER', 'visible Studio marker probe');
+assertContains(helper, '__H2O_SMOKE_VISIBLE_MARKER', 'visible marker source');
+assertContains(helper, 'visibleMarkerSeen', 'visible marker diagnostic');
 assertContains(helper, 'Runtime.callFunctionOn', 'fixed CDP callFunctionOn usage');
 assertContains(helper, 'function(op, payload) { return this.run(op, payload); }', 'fixed registry wrapper');
 assertContains(helper, 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }', 'fixed registry gates wrapper');
@@ -122,6 +125,12 @@ assertContains(helper, 'candidates: combined.filter((target) => isStudioTarget',
 assertContains(helper, 'history.replaceState', 'same-page smoke URL flag update');
 assertContains(helper, 'SMOKE_URL_FLAG_HISTORY_WRAPPER', 'same-page smoke URL flag wrapper');
 assertContains(helper, 'replaceSmokeUrlFlagWithoutReload', 'no-reload smoke URL flag helper');
+assertContains(helper, 'attach-preserve-existing-target', 'attach mode preserves existing target URL');
+assertContains(helper, 'preserve-connected-target-without-smoke-query', 'connected target without smoke query preservation reason');
+assertContains(helper, 'attachLocalOptInAllowed', 'attach mode localStorage gate diagnostic');
+assertContains(helper, 'urlChanged', 'URL change diagnostic');
+assertContains(helper, 'originalHref', 'original href diagnostic');
+assertContains(helper, 'finalHref', 'final href diagnostic');
 assertContains(helper, 'beforeNavigateSyncDiagnose', 'before navigation sync diagnose');
 assertContains(helper, 'afterNavigateSyncDiagnose', 'after navigation sync diagnose');
 assertContains(helper, 'finalSyncDiagnose', 'final sync diagnose after prepare');

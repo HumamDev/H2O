@@ -695,6 +695,75 @@ Expected after the folder is connected in the same CDP-controlled page:
 - `prepareDiagnostics.finalSyncDiagnose.permission:"granted"`
 - `result.blockers:[]`
 
+## Chrome Attach Without Smoke Query Preservation
+
+Follow-up issue:
+
+- The visible connected Chrome Studio page had:
+  - `href: chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html#/saved`
+  - `connected:true`
+  - `permission:"granted"`
+  - `folderName:"H2O Studio Sync"`
+- The helper selected/probed:
+  - `chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/saved`
+- That query-flag target did not have the folder handle.
+
+Root cause:
+
+- Attach mode treated the smoke query URL as the required runnable Studio URL.
+- The in-page smoke registry also required the URL flag, so the helper had to mutate or select a query-flag URL target before the registry could run.
+- For an already-connected Studio page, the URL query difference can mean the helper is not using the page/runtime that owns the File System Access handle.
+
+Fix:
+
+- Attach mode now discovers and probes all Studio targets regardless of `h2oSmokeBridge=folder-sync-rc`.
+- The helper probes each candidate before changing URL state.
+- A connected/granted target without the smoke query is now valid in attach mode.
+- For attach mode, the helper does not navigate, reload, or `history.replaceState` an existing Studio page that lacks the smoke query.
+- The in-page dev-smoke gate now allows Chrome attach mode when all of these are true:
+  - localStorage opt-in is `folder-sync-rc`
+  - surface is `chrome-studio`
+  - known local/dev surface gate passes
+  - public release is blocked
+- The URL flag remains supported for fresh launch sessions.
+- Helper diagnostics now include:
+  - `visibleMarkerSeen`
+  - `visibleMarker`
+  - `originalHref`
+  - `finalHref`
+  - `urlChanged`
+  - `attachLocalOptInAllowed`
+
+Live follow-up on port `9243` after the code change:
+
+- The CDP target set currently exposed only the query-flag target:
+  - `selectedTargetUrl: chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/saved`
+  - `visibleMarkerSeen:false`
+  - `connectedGrantedTargetCount:0`
+  - `finalSyncDiagnose.permission:"unknown"`
+- Interpretation:
+  - The helper no longer needs the query flag for an attach target.
+  - The current live browser session still does not expose the marked connected no-query page on port `9243`.
+  - To prove the positive path, reopen or reload the connected `studio.html#/saved` page with the updated registry bundle, set the localStorage opt-in, reconnect the folder if needed, then rerun the helper.
+
+Validation:
+
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`: passed.
+- `node --check tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
+Retest command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9243 --op diagnoseHealth --timeout-ms 30000
+```
+
 ## Chrome Connected-Target Selection Repair
 
 Follow-up issue:

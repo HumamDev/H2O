@@ -35,6 +35,7 @@ const PAGE_STATUS_WRAPPER = "function() { var body = this.document && this.docum
 const SYNC_FOLDER_DIAGNOSE_WRAPPER = "async function() { try { var api = globalThis.H2O && globalThis.H2O.Studio && globalThis.H2O.Studio.sync && globalThis.H2O.Studio.sync.folder; if (!api || typeof api.diagnose !== 'function') return { ok: false, status: 'sync-folder-diagnose-unavailable' }; var raw = await api.diagnose() || {}; var blockers = raw.blockers || {}; var desktopToChrome = raw.desktopToChrome || {}; var chromeToDesktop = raw.chromeToDesktop || {}; return { ok: true, status: 'sync-folder-diagnosed', connected: raw.connected === true, permission: String(raw.permission || chromeToDesktop.permission || desktopToChrome.permission || ''), folderName: String(raw.folderName || ''), fileSystemAccessAvailable: raw.fileSystemAccessAvailable === true, chromeWritesSyncFolder: raw.chromeWritesSyncFolder === true || chromeToDesktop.chromeWritesSyncFolder === true, desktopToChromePermission: String(desktopToChrome.permission || ''), chromeToDesktopPermission: String(chromeToDesktop.permission || ''), permissionRequired: blockers.permissionRequired === true, noFolderHandle: blockers.noFolderHandle === true }; } catch (error) { return { ok: false, status: 'sync-folder-diagnose-threw', error: String(error && error.message || error) }; } }";
 const SYNC_FOLDER_DIAGNOSE_EVALUATE_EXPRESSION = `(${SYNC_FOLDER_DIAGNOSE_WRAPPER})()`;
 const SMOKE_URL_FLAG_HISTORY_WRAPPER = "function(url) { var beforeHref = String(this.location && this.location.href || ''); this.history.replaceState(this.history.state, this.document && this.document.title || '', url); return { mode: 'history-replace-state', beforeHref: beforeHref, href: String(this.location && this.location.href || ''), changed: beforeHref !== String(this.location && this.location.href || '') }; }";
+const VISIBLE_MARKER_WRAPPER = "function() { var marker = globalThis.__H2O_SMOKE_VISIBLE_MARKER; if (!marker || typeof marker !== 'object') return { seen: false }; return { seen: true, at: String(marker.at || ''), href: String(marker.href || ''), connected: marker.connected === true, permission: String(marker.permission || ''), folderName: String(marker.folderName || '') }; }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 
@@ -847,10 +848,23 @@ async function waitForSyncFolderDiagnose(cdp, globalObjectId, options) {
   };
 }
 
+async function readVisibleMarker(cdp, globalObjectId) {
+  const called = await cdp.send('Runtime.callFunctionOn', {
+    objectId: globalObjectId,
+    functionDeclaration: VISIBLE_MARKER_WRAPPER,
+    arguments: [],
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  if (called.exceptionDetails) return { seen: false, status: 'visible-marker-read-threw' };
+  return called && called.result ? called.result.value || { seen: false } : { seen: false };
+}
+
 function scoreStudioTargetProbe(probe) {
   if (!probe || probe.ok !== true) return 0;
   const syncDiag = probe.syncFolderDiagnose || {};
   let score = 10;
+  if (probe.visibleMarkerSeen === true) score += 30;
   if (probe.smokeUrlFlagPresent === true) score += 10;
   if (probe.readyState === 'complete') score += 5;
   if (probe.registryPresent === true) score += 10;
@@ -886,6 +900,18 @@ function summarizeTargetProbe(probes) {
       ok: row && row.ok === true,
       readyState: String(row && row.readyState || ''),
       smokeUrlFlagPresent: row && row.smokeUrlFlagPresent === true,
+      originalHref: String(row && row.originalHref || ''),
+      finalHref: String(row && row.finalHref || row && row.originalHref || ''),
+      urlChanged: row && row.urlChanged === true,
+      visibleMarkerSeen: row && row.visibleMarkerSeen === true,
+      visibleMarker: row && row.visibleMarker ? {
+        seen: row.visibleMarker.seen === true,
+        at: String(row.visibleMarker.at || ''),
+        href: String(row.visibleMarker.href || ''),
+        connected: row.visibleMarker.connected === true,
+        permission: String(row.visibleMarker.permission || ''),
+        folderName: String(row.visibleMarker.folderName || ''),
+      } : null,
       registryPresent: row && row.registryPresent === true,
       registryGatesEnabled: row && row.registryGatesEnabled === true,
       syncFolderDiagnoseAttempts: Number(row && row.syncFolderDiagnoseAttempts || 0),
@@ -913,6 +939,8 @@ async function probeStudioTarget(target, options) {
     const globalObjectId = await getGlobalObjectId(control.control);
     if (!globalObjectId) throw new Error('chrome-global-object-missing');
     const pageStatus = await inspectPageStatus(control.control, globalObjectId);
+    const originalHref = String(pageStatus && pageStatus.href || target && target.url || '');
+    const visibleMarker = await readVisibleMarker(control.control, globalObjectId).catch(() => ({ seen: false }));
     await setSmokeOptIn(control.control, globalObjectId).catch(() => null);
     const registryObjectId = await getRegistryObjectId(control.control);
     let registryGates = null;
@@ -927,7 +955,12 @@ async function probeStudioTarget(target, options) {
       targetUrl: String(target && target.url || ''),
       targetSource: String(target && target.__source || ''),
       readyState: String(pageStatus && pageStatus.readyState || ''),
-      smokeUrlFlagPresent: String(pageStatus && pageStatus.href || target && target.url || '').includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      smokeUrlFlagPresent: originalHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      originalHref,
+      finalHref: originalHref,
+      urlChanged: false,
+      visibleMarkerSeen: visibleMarker && visibleMarker.seen === true,
+      visibleMarker,
       registryPresent: !!registryObjectId,
       registryGatesEnabled: registryGates && registryGates.enabled === true,
       syncFolderDiagnoseAttempts: syncProbe.attempts,
@@ -1232,39 +1265,64 @@ async function prepareTarget(cdp, url, options) {
   if (!globalObjectId) throw new Error('chrome-global-object-missing');
   let initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
   let currentHref = String(initialPageStatus && initialPageStatus.href || '');
+  const originalHref = currentHref;
+  const initialVisibleMarker = await readVisibleMarker(cdp, globalObjectId).catch(() => ({ seen: false }));
   const beforeNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
   let afterNavigateSyncProbe = beforeNavigateSyncProbe;
   let navigation = {
     occurred: false,
     mode: 'none',
     smokeUrlFlagAlreadyPresent: currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+    originalHref,
+    finalHref: currentHref,
+    urlChanged: false,
   };
   if (currentHref.includes('/surfaces/studio/studio.html') &&
       !currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`)) {
     await setSmokeOptIn(cdp, globalObjectId).catch(() => null);
-    const historyResult = await replaceSmokeUrlFlagWithoutReload(cdp, globalObjectId, url);
-    navigation = {
-      occurred: true,
-      mode: 'history-replace-state',
-      smokeUrlFlagAlreadyPresent: false,
-      result: historyResult,
-    };
-    await sleep(Math.max(100, Math.min(options.waitAfterNavigateMs, 500)));
-    globalObjectId = await getGlobalObjectId(cdp);
-    if (!globalObjectId) throw new Error('chrome-global-object-missing-after-smoke-url-flag-update');
-    initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
-    currentHref = String(initialPageStatus && initialPageStatus.href || '');
-    afterNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
-    if (syncFolderDiagnoseLost(beforeNavigateSyncProbe.diagnose, afterNavigateSyncProbe.diagnose)) {
-      throw statusError('chrome-cdp-navigation-lost-folder-handle', {
-        beforeNavigateSyncDiagnose: beforeNavigateSyncProbe.diagnose,
-        afterNavigateSyncDiagnose: afterNavigateSyncProbe.diagnose,
-        navigation,
-      });
+    if (options.mode === 'attach') {
+      navigation = {
+        occurred: false,
+        mode: 'attach-preserve-existing-target',
+        smokeUrlFlagAlreadyPresent: false,
+        originalHref,
+        finalHref: currentHref,
+        urlChanged: false,
+        reason: 'preserve-connected-target-without-smoke-query',
+      };
+      afterNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
+    } else {
+      const historyResult = await replaceSmokeUrlFlagWithoutReload(cdp, globalObjectId, url);
+      navigation = {
+        occurred: true,
+        mode: 'history-replace-state',
+        smokeUrlFlagAlreadyPresent: false,
+        originalHref,
+        finalHref: String(historyResult && historyResult.href || currentHref),
+        urlChanged: historyResult && historyResult.changed === true,
+        result: historyResult,
+      };
+      await sleep(Math.max(100, Math.min(options.waitAfterNavigateMs, 500)));
+      globalObjectId = await getGlobalObjectId(cdp);
+      if (!globalObjectId) throw new Error('chrome-global-object-missing-after-smoke-url-flag-update');
+      initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
+      currentHref = String(initialPageStatus && initialPageStatus.href || '');
+      navigation.finalHref = currentHref;
+      navigation.urlChanged = originalHref !== currentHref;
+      afterNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
+      if (syncFolderDiagnoseLost(beforeNavigateSyncProbe.diagnose, afterNavigateSyncProbe.diagnose)) {
+        throw statusError('chrome-cdp-navigation-lost-folder-handle', {
+          beforeNavigateSyncDiagnose: beforeNavigateSyncProbe.diagnose,
+          afterNavigateSyncDiagnose: afterNavigateSyncProbe.diagnose,
+          navigation,
+        });
+      }
     }
   }
+  const attachLocalOptInAllowed = options.mode === 'attach' &&
+    currentHref.includes('/surfaces/studio/studio.html');
   if (!currentHref.includes('/surfaces/studio/studio.html') ||
-      !currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`)) {
+      (!currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`) && !attachLocalOptInAllowed)) {
     throw statusError('chrome-studio-target-url-mismatch', {
       pageStatus: initialPageStatus,
       expectedUrl: url,
@@ -1279,6 +1337,12 @@ async function prepareTarget(cdp, url, options) {
     prepareDiagnostics: {
       navigation,
       smokeOptIn: smokeOptIn && smokeOptIn.result ? smokeOptIn.result.value || null : null,
+      originalHref,
+      finalHref: currentHref,
+      urlChanged: originalHref !== currentHref,
+      attachLocalOptInAllowed,
+      visibleMarkerSeen: initialVisibleMarker && initialVisibleMarker.seen === true,
+      visibleMarker: initialVisibleMarker,
       beforeNavigateSyncDiagnose: beforeNavigateSyncProbe.diagnose,
       beforeNavigateSyncDiagnoseAttempts: beforeNavigateSyncProbe.attempts,
       beforeNavigateSyncDiagnoseWaitedMs: beforeNavigateSyncProbe.waitedMs,
@@ -1481,7 +1545,7 @@ async function run(options) {
         targetId: targetIdOf(target),
         targetUrl: target.url || url,
         studioTargetFound: true,
-        smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+        smokeUrlFlagPresent: String(prepared.initialPageStatus && prepared.initialPageStatus.href || target.url || '').includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
         attemptedExtensionId: options.extensionId,
         expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
         discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
@@ -1524,7 +1588,7 @@ async function run(options) {
       targetId: targetIdOf(target),
       targetUrl: target.url || url,
       studioTargetFound: true,
-      smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      smokeUrlFlagPresent: String(prepared.initialPageStatus && prepared.initialPageStatus.href || target.url || '').includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
       attemptedExtensionId: options.extensionId,
       expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
       discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',

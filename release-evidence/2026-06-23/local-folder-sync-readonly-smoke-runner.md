@@ -453,6 +453,50 @@ Rerun command:
 node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
 ```
 
+## Chrome Attach Without Smoke Query Preservation
+
+Follow-up issue:
+
+- The connected page was `studio.html#/saved`.
+- The helper-selected page was `studio.html?h2oSmokeBridge=folder-sync-rc#/saved`.
+- The query-flag page did not have the File System Access folder handle, so the combined runner reported Chrome permission blockers even though the visible no-query page was connected.
+
+Fix:
+
+- Chrome attach mode can now use a connected/granted Studio page without adding or requiring the smoke query flag.
+- The helper probes candidates before changing URL state.
+- For attach mode, an existing Studio target without the query flag is preserved; no `Page.navigate`, reload, or `history.replaceState` is performed.
+- The dev-smoke registry can run on Chrome Studio with localStorage opt-in plus known-dev/public-release gates, even without the URL flag.
+- The combined runner can use helper `prepareDiagnostics.finalSyncDiagnose` as the live permission source if the registry health projection lags.
+
+Diagnostics added:
+
+- `visibleMarkerSeen`
+- `visibleMarker`
+- `originalHref`
+- `finalHref`
+- `urlChanged`
+- `attachLocalOptInAllowed`
+
+Live follow-up:
+
+- Port `9243` currently exposed only the query-flag Studio target.
+- The helper reported `visibleMarkerSeen:false`, so the connected no-query page was not present in the CDP target set during this run.
+- The positive proof requires reopening/reloading the connected no-query page with the updated bundle, setting the localStorage opt-in, and rerunning:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
+```
+
+Validation for fix:
+
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.

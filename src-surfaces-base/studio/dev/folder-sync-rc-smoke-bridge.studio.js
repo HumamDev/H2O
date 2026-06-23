@@ -175,14 +175,24 @@
     var surface = detectSurface();
     var urlFlag = readUrlFlag();
     var localOptIn = readLocalOptIn();
+    var localStorageOptIn = localOptIn === REQUIRED_VALUE;
+    var knownSurface = knownLocalDevSurface(surface);
+    var publicReleaseBlocked = !publicReleaseFlagActive();
+    var chromeAttachLocalOptIn = surface.kind === 'chrome-studio' &&
+      localStorageOptIn &&
+      knownSurface &&
+      publicReleaseBlocked;
+    var urlFlagSatisfied = urlFlag === REQUIRED_VALUE || chromeAttachLocalOptIn;
     var checks = {
       urlFlag: urlFlag === REQUIRED_VALUE,
-      localStorageOptIn: localOptIn === REQUIRED_VALUE,
-      knownLocalDevSurface: knownLocalDevSurface(surface),
-      publicReleaseBlocked: !publicReleaseFlagActive(),
+      urlFlagSatisfied: urlFlagSatisfied,
+      chromeAttachLocalOptIn: chromeAttachLocalOptIn,
+      localStorageOptIn: localStorageOptIn,
+      knownLocalDevSurface: knownSurface,
+      publicReleaseBlocked: publicReleaseBlocked,
     };
     var blockers = [];
-    if (!checks.urlFlag) blockers.push('url-flag-required');
+    if (!checks.urlFlagSatisfied) blockers.push('url-flag-required');
     if (!checks.localStorageOptIn) blockers.push('local-storage-opt-in-required');
     if (!checks.knownLocalDevSurface) blockers.push('known-local-dev-surface-required');
     if (!checks.publicReleaseBlocked) blockers.push('public-release-flag-active');
@@ -195,6 +205,8 @@
       observedAt: nowIso(),
       urlFlagName: URL_FLAG,
       urlFlagValue: urlFlag ? 'present' : '',
+      urlFlagRequiredByFreshLaunch: true,
+      urlFlagBypassedByChromeAttachLocalOptIn: chromeAttachLocalOptIn,
       localStorageKey: OPT_IN_KEY,
       localStorageOptInValue: localOptIn ? 'present' : '',
       requiredValue: REQUIRED_VALUE,
