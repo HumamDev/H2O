@@ -619,6 +619,83 @@ Rerun command:
 node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9243 --op diagnoseHealth --timeout-ms 30000
 ```
 
+Live follow-up on port `9243`:
+
+- The helper probed the CDP target set and found one Studio target:
+  - `selectedTargetId: C665FF003C8F3B09E5B5D366630ACCFE`
+  - `selectedTargetScore: 55`
+  - `selectedTargetSyncPermission: "unknown"`
+  - `selectedTargetSyncConnected: false`
+  - `selectedTargetChromeWritesSyncFolder: false`
+- No connected/granted Studio target was present in the CDP target list on that port:
+  - `probedTargetCount: 1`
+  - `connectedGrantedTargetCount: 0`
+- Interpretation:
+  - The helper now reports the precise targeting condition.
+  - If manual console shows a connected/granted Studio page, that page must be in a different Chrome Dev session/port/profile or not currently exposed through the queried CDP target set.
+  - The next operator action is to attach the runner to the Chrome Dev port that owns the connected/granted visible Studio page, or restart the smoke Chrome Dev profile and grant `/Users/hobayda/H2O Studio Sync` permission in that same CDP-controlled page.
+
+## Chrome Connected-Target Selection Repair
+
+Follow-up issue:
+
+- Manual console inspection in the visible Chrome Dev smoke Studio page showed `H2O.Studio.sync.folder.diagnose()` with:
+  - `connected:true`
+  - `permission:"granted"`
+  - `folderName:"H2O Studio Sync"`
+  - `chromeWritesSyncFolder:true`
+  - `permissionRequired:false`
+  - `noFolderHandle:false`
+- The CDP helper could still select a stale or different Studio target where the same diagnose call reported:
+  - `connected:false`
+  - `permission:"unknown"`
+  - `chromeWritesSyncFolder:false`
+  - `permissionRequired:true`
+  - `noFolderHandle:true`
+
+Root cause:
+
+- The helper originally selected from `/json/list` smoke URL matches first.
+- It did not merge browser-level `Target.getTargets` results with `/json/list`.
+- It deduped too aggressively for duplicate-looking Studio pages and did not normalize `id` versus `targetId`.
+- The sync-folder probe wrapper called `H2O.Studio.sync.folder.diagnose()` without awaiting async results, which could make a usable target look unconnected.
+
+Fix:
+
+- The helper now collects candidate Studio targets from both `/json/list` and browser `Target.getTargets`.
+- Target identity is normalized with `id || targetId`, and candidates are deduped only by target id instead of URL/title.
+- Every Studio page candidate is probed, including pages that do not yet have the smoke URL flag.
+- Candidate probes read:
+  - page ready state
+  - smoke URL flag
+  - registry presence
+  - registry gate state
+  - awaited `H2O.Studio.sync.folder.diagnose()`
+- Selection now prefers targets with:
+  - `connected:true`
+  - `permission:"granted"`
+  - `chromeWritesSyncFolder:true`
+- If the chosen target lacks the smoke URL flag, the helper sets the localStorage opt-in and navigates that same target to the smoke URL instead of opening a new duplicate.
+- Helper output includes a redacted `targetProbeSummary` with target count, connected/granted count, selected target id, score, permission, connection state, and probe summaries.
+
+Runner behavior:
+
+- The combined runner now treats a permission-only Chrome health blocker as a CDP targeting problem when target probes ran but none had a connected/granted sync folder handle.
+- In that case it reports `chrome-cdp-connected-target-missing` instead of `chrome-health-permission-state-unconfirmed`.
+
+Safety:
+
+- This remains read-only.
+- No arbitrary JavaScript CLI was added.
+- The helper still calls only the fixed registry wrapper for allowed operations.
+- Slice 4A allowed ops remain `diagnoseHealth` and `getFolderModel`.
+
+Rerun command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9243 --op diagnoseHealth --timeout-ms 30000
+```
+
 ## Validation
 
 Commands run:

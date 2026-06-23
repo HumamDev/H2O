@@ -39,10 +39,13 @@ assertContains(runner, "'--op', 'getFolderModel'", 'getFolderModel execution pla
 assertContains(runner, 'chrome-health-permission-required', 'Chrome permission warning behavior');
 assertContains(runner, 'permissionOnlyChromeHealthBlocked', 'Chrome permission blocker classifier');
 assertContains(runner, 'syncFolderDiagnose', 'live sync folder diagnose summary');
+assertContains(runner, 'targetProbeSummary', 'Chrome target probe summary');
 assertContains(runner, 'chromeSyncDiagnosePermissionGranted', 'granted sync permission classifier');
 assertContains(runner, 'chromeSyncDiagnosePermissionMissing', 'missing sync permission classifier');
+assertContains(runner, 'chromeCdpConnectedTargetMissing', 'missing connected CDP target classifier');
 assertContains(runner, "diag.permission === 'granted'", 'granted permission check');
 assertContains(runner, "diag.available !== true", 'real diagnose required for missing permission warning');
+assertContains(runner, 'chrome-cdp-connected-target-missing', 'connected target missing blocker');
 assertContains(runner, 'chrome-health-permission-state-unconfirmed', 'unconfirmed permission blocker');
 assertContains(runner, 'row-count-differs', 'row count warning behavior');
 assertContains(runner, 'comparisonIsInformational: true', 'informational comparison marker');

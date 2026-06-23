@@ -38,7 +38,9 @@ assertContains(helper, 'Runtime.callFunctionOn', 'fixed CDP callFunctionOn usage
 assertContains(helper, 'function(op, payload) { return this.run(op, payload); }', 'fixed registry wrapper');
 assertContains(helper, 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }', 'fixed registry gates wrapper');
 assertContains(helper, 'SYNC_FOLDER_DIAGNOSE_WRAPPER', 'fixed sync folder diagnose wrapper');
-assertContains(helper, 'this.H2O.Studio.sync.folder', 'sync folder diagnose wrapper source');
+assertContains(helper, 'async function() { try { var api = globalThis.H2O && globalThis.H2O.Studio', 'async sync folder diagnose wrapper');
+assertContains(helper, 'var raw = await api.diagnose() || {}', 'awaited sync folder diagnose');
+assertContains(helper, 'globalThis.H2O.Studio.sync.folder', 'sync folder diagnose wrapper source');
 assertContains(helper, "status: 'sync-folder-diagnosed'", 'sync folder diagnose wrapper status');
 assertContains(helper, 'arguments: [{ value: op }, { value: payload }]', 'structured CDP arguments');
 assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel'])", 'Slice 4A read-only allowlist');
@@ -108,6 +110,12 @@ assertContains(helper, 'blockedExtensionTargetCount', 'blocked extension target 
 assertContains(helper, 'isBlockedExtensionTarget', 'blocked extension target guard');
 assertContains(helper, 'isSmokeStudioTarget', 'smoke Studio target guard');
 assertContains(helper, 'selectBestStudioTarget', 'best Studio target selector');
+assertContains(helper, 'collectStudioTargetCandidates', 'all Studio target candidate collector');
+assertContains(helper, 'mergeTargetLists', 'target list merge without URL title dedupe');
+assertContains(helper, 'browserTargetInfos', 'browser Target.getTargets candidate source');
+assertContains(helper, 'candidates: combined.filter((target) => isStudioTarget', 'all Studio pages are probed before smoke flag navigation');
+assertContains(helper, "Page.navigate', { url }", 'selected target smoke URL navigation');
+assertContains(helper, 'smoke-url-flag-navigation', 'smoke URL navigation diagnostic');
 assertContains(helper, 'probeStudioTarget', 'Studio target probe');
 assertContains(helper, 'readSyncFolderDiagnose', 'target sync diagnose probe');
 assertContains(helper, 'scoreStudioTargetProbe', 'target score by permission');

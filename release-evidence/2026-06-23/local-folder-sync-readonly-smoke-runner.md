@@ -327,6 +327,83 @@ Rerun command:
 node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
 ```
 
+## Chrome Connected-Target Selection Repair
+
+Follow-up issue:
+
+- After the permission-state alignment patch, manual console inspection in the visible Chrome Dev smoke Studio page showed the folder handle was connected and granted.
+- The combined runner still selected or probed a CDP Studio target whose live sync diagnose reported:
+  - `connected:false`
+  - `permission:"unknown"`
+  - `chromeWritesSyncFolder:false`
+  - `permissionRequired:true`
+  - `noFolderHandle:true`
+- This proved the remaining mismatch was target selection, not the folder health diagnostic itself.
+
+Root cause:
+
+- Duplicate or stale Chrome Studio extension targets can exist in the smoke Chrome Dev profile.
+- The helper previously favored the first smoke URL match and did not probe all Studio targets from both CDP discovery surfaces.
+- Browser `Target.getTargets` uses `targetId`, while `/json/list` uses `id`; missing normalization made target probing and selection less reliable.
+- The sync-folder diagnose probe did not await the real async diagnose call.
+
+Fix:
+
+- Chrome CDP helper now merges `/json/list` with browser `Target.getTargets`.
+- It normalizes target ids, avoids URL/title-only dedupe, and probes every candidate Studio target.
+- The probe is fixed/read-only and awaits `H2O.Studio.sync.folder.diagnose()`.
+- Connected/granted targets are scored above URL-only targets.
+- The selected target can be navigated to the smoke URL flag after localStorage opt-in, avoiding a new duplicate page when an already-connected Studio target exists.
+- The helper and combined runner now emit `targetProbeSummary` diagnostics:
+  - `probedTargetCount`
+  - `connectedGrantedTargetCount`
+  - `selectedTargetId`
+  - `selectedTargetScore`
+  - `selectedTargetSyncPermission`
+  - `selectedTargetSyncConnected`
+  - `selectedTargetChromeWritesSyncFolder`
+
+Corrected behavior:
+
+- If a connected/granted CDP Studio target exists, the helper should select it and the combined runner should not emit `chrome-health-permission-required`.
+- If the CDP target set contains no connected/granted Studio page, the combined runner reports `chrome-cdp-connected-target-missing` as a precise blocker so the operator can restart or attach to the correct Chrome Dev smoke session/port.
+- `row-count-differs` may still remain as an informational warning until the later full convergence/mutation smoke stage.
+
+Validation for fix:
+
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
+Rerun command:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
+```
+
+Live follow-up on port `9243` after this repair:
+
+- Combined runner result:
+  - `ok:false`
+  - `status:"readonly-smoke-blocked"`
+  - `blockers:["chrome-cdp-connected-target-missing"]`
+  - `warnings:["row-count-differs"]`
+- Chrome target probe summary:
+  - `probedTargetCount: 1`
+  - `connectedGrantedTargetCount: 0`
+  - `selectedTargetId: C665FF003C8F3B09E5B5D366630ACCFE`
+  - `selectedTargetScore: 55`
+  - `selectedTargetSyncPermission: "unknown"`
+  - `selectedTargetSyncConnected: false`
+  - `selectedTargetChromeWritesSyncFolder: false`
+- Interpretation:
+  - The old misleading permission warning path is fixed.
+  - The runner now correctly says the CDP target set on port `9243` does not contain a connected/granted Studio target.
+  - If the visible Chrome Dev smoke page has permission granted in manual console, the runner must be pointed at that page's actual CDP session/port, or the connected page must be reopened/regranted in the current CDP-controlled smoke profile.
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.

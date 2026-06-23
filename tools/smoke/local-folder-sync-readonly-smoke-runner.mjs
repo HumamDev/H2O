@@ -215,6 +215,9 @@ function commandSummary(runResult) {
     syncFolderDiagnose: registry && registry.syncFolderDiagnose && typeof registry.syncFolderDiagnose === 'object'
       ? registry.syncFolderDiagnose
       : null,
+    targetProbeSummary: helper && helper.targetProbeSummary && typeof helper.targetProbeSummary === 'object'
+      ? helper.targetProbeSummary
+      : null,
     rowCount: Number(registry && registry.rowCount || 0),
     canonicalRowCount: Number(registry && registry.canonicalRowCount || 0),
     displayModelAvailable: registry && registry.displayModelAvailable === true,
@@ -245,6 +248,13 @@ function chromeSyncDiagnosePermissionMissing(summary) {
   if (diag.permissionRequired === true) return true;
   if (diag.permission && diag.permission !== 'granted') return true;
   return false;
+}
+
+function chromeCdpConnectedTargetMissing(summary) {
+  const probe = summary && summary.targetProbeSummary || {};
+  if (!probe || typeof probe !== 'object') return false;
+  return Number(probe.probedTargetCount || 0) > 0 &&
+    Number(probe.connectedGrantedTargetCount || 0) === 0;
 }
 
 function compareFolders(chromeModelOutput, desktopModelOutput) {
@@ -333,6 +343,10 @@ async function run(options) {
     for (let i = blockers.length - 1; i >= 0; i -= 1) {
       if (blockers[i] === 'chrome-health-unavailable') blockers.splice(i, 1);
     }
+  } else if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) &&
+      chromeModelSummary.registryOk &&
+      chromeCdpConnectedTargetMissing(chromeDiagnoseSummary)) {
+    blockers.push('chrome-cdp-connected-target-missing');
   } else if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) && chromeModelSummary.registryOk) {
     blockers.push('chrome-health-permission-state-unconfirmed');
   } else if (!chromeDiagnoseSummary.helperOk || !chromeDiagnoseSummary.registryOk) {
