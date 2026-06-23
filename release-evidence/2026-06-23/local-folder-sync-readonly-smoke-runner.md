@@ -497,6 +497,88 @@ Validation for fix:
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
 - `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
 
+## Final Green Read-Only Smoke Proof
+
+Command:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9246 --timeout-ms 30000
+```
+
+Final result:
+
+- Chrome port: `9246`
+- Chrome mode: `attach`
+- `blockers:[]`
+- `warnings:[]`
+
+Chrome `diagnoseHealth` proof:
+
+- `status:"healthy"`
+- `result.status:"healthy"`
+- `result.blockers:[]`
+- `syncFolderDiagnose.connected:true`
+- `syncFolderDiagnose.permission:"granted"`
+- `syncFolderDiagnose.folderName:"H2O Studio Sync"`
+- `syncFolderDiagnose.chromeWritesSyncFolder:true`
+- `syncFolderDiagnose.permissionRequired:false`
+- `syncFolderDiagnose.noFolderHandle:false`
+
+Chrome `getFolderModel` proof:
+
+- `status:"folder-model-read"`
+- `rowCount:17`
+- `canonicalRowCount:17`
+- `displayModelAvailable:true`
+
+Desktop `diagnoseHealth` proof:
+
+- `status:"healthy"`
+- `registryStatus:"healthy"`
+- `registryVerdict:"healthy"`
+- `blockers:[]`
+- `warnings:[]`
+
+Desktop `getFolderModel` proof:
+
+- `status:"folder-model-read"`
+- `rowCount:17`
+- `canonicalRowCount:17`
+- `displayModelAvailable:true`
+
+Comparison proof:
+
+- `chromeRowCount:17`
+- `desktopRowCount:17`
+- `rowCountMatch:true`
+- `commonFolderCount:17`
+- `chromeOnlyCount:0`
+- `desktopOnlyCount:0`
+- `comparisonIsInformational:true`
+
+Safety proof:
+
+- `readOnly:true`
+- `noArbitraryEval:true`
+- `noProductionListener:true`
+- `noRawSql:true`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noTombstonePropagationApply:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noBroadFilesystemAccess:true`
+
+Verdict:
+
+- Slice 4C combined read-only local folder-sync smoke runner is fully live-proven.
+- Chrome and Desktop both report healthy/readable state.
+- Folder row counts match exactly: `17/17`.
+- No blockers and no warnings remain.
+- This closes the read-only smoke bridge proof.
+- Next phase can move to full local RC mutation smoke for create/rename/color roundtrip.
+- Delete/tombstone mutation smoke remains separate unless explicitly scoped.
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.
