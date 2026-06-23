@@ -247,6 +247,102 @@ const snapshotsAfter = await H2O.Studio.store.snapshots.list?.({ limit: 100000 }
 
 Expected: chat and snapshot counts do not decrease.
 
+## Runtime Proof
+
+Implementation commit under test:
+
+- `5b8da7e5b0de11f28f9a47db690eadb8536788db`
+- `feat(sync): apply chrome folder delete requests on desktop`
+
+### Request / Folder Under Test
+
+- `reviewId: folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `folderId: fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- folder name: `zz-delete-ui-test`
+
+### First Desktop Apply Proof
+
+- `pendingBeforeCount: 1`
+- `visibleBefore: true`
+- `applyResult.schema: h2o.studio.tombstone-review-apply-result.v1`
+- `applyResult.phase: phase4c.3b`
+- `applyResult.ok: true`
+- `applyResult.applied: true`
+- `applyResult.requestApplyOnly: true`
+- `applyResult.mutationType: folder.softDelete`
+- `applyResult.noHardDelete: true`
+- `applyResult.noChatDelete: true`
+- `visibleAfter: false`
+- `reviewAfter.status: resolved`
+- `reviewAfter.decision: applied-folder-delete-request`
+- `reviewAfter.decidedAt: 2026-06-23T10:21:54.461Z`
+- `chatCountBefore: 20`
+- `chatCountAfter: 20`
+- `snapshotCountBefore: 7`
+- `snapshotCountAfter: 7`
+
+### Tombstone Proof
+
+New active tombstone:
+
+- `tombstoneId: tombstone:0d5ed9cf-6a1f-4ae9-9089-6b22114a34df`
+- `recordKind: folder`
+- `recordId: folder:fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- `deletedAt: 2026-06-23T10:21:54.450Z`
+- `restoredAt: null`
+- `deleteReason: desktop-approved-chrome-folder-delete-request`
+- `noChatDelete: true`
+- `bindingCount: 0`
+- `affectedChatCount: 0`
+
+Historical restored tombstone also existed:
+
+- `tombstoneId: tombstone:5547a347-3528-4257-9815-c49e7fd327dc`
+- `deletedAt: 2026-06-22T16:26:53.031Z`
+- `restoredAt: 2026-06-22T16:28:20.022Z`
+- `deleteReason: desktop-action-empty-folder-soft-delete`
+
+Important interpretation:
+
+- `totalMatchingTombstones: 2`
+- `activeUnrestoredTombstoneCount: 1`
+- the second tombstone is historical/restored, not an active duplicate
+- `tombstones.list({ includeRestored:false })` appeared to still surface restored tombstones, so active proof should filter by `!restoredAt`
+
+### Repeat Apply / Idempotency Proof
+
+- `again.schema: h2o.studio.tombstone-review-apply-result.v1`
+- `again.phase: phase4c.3b`
+- `again.ok: false`
+- `again.applied: false`
+- `again.alreadyApplied: true`
+- `again.status: folder-delete-request-already-applied`
+- `again.blockers` included code: `folder-delete-request-already-applied`
+- `again.reviewFound: true`
+- `again.reviewStatus: resolved`
+- `again.reviewUpdated: false`
+- `again.localTombstoneCreated: false`
+- `again.writesPerformed: 0`
+- `again.noHardDelete: true`
+- `again.noChatDelete: true`
+- active unrestored tombstone count after repeat: `1`
+- `reviewAfterRepeat.status: resolved`
+- `reviewAfterRepeat.decision: applied-folder-delete-request`
+
+### Runtime Verdict
+
+Phase 4C.3b Desktop review/apply path passed:
+
+- Desktop applies a pending Chrome folder-delete request only through safe `softDeleteFolder`.
+- The review transitions to resolved/applied.
+- The folder is soft-deleted and hidden from the normal folder list.
+- An active tombstone is created exactly once.
+- Repeat apply is idempotently blocked and performs no writes.
+- No chats or snapshots were deleted.
+- Chrome receipt/hiding remains deferred.
+- Tombstone propagation remains deferred.
+- Retention/purge and WebDAV/cloud/relay remain deferred.
+
 ## Remaining Deferred
 
 - Desktop operator UI for reviewing/applying requests.
