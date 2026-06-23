@@ -111,6 +111,10 @@ assert(!collectExportBody.includes('bindChat'), 'Chrome export must not bind cha
   'findPendingFolderDeleteRequest',
   'listFolderDeleteRequests',
   'ingestFolderDeleteRequests',
+  'applyFolderDeleteRequest',
+  'validateFolderDeleteRequestReviewForApply',
+  'desktop-approved-chrome-folder-delete-request',
+  'applied-folder-delete-request',
   'folder-delete-request-imported-not-applied',
   'desktopApplyRequired: true',
   'noApply: true',
@@ -125,11 +129,35 @@ assert(!collectExportBody.includes('bindChat'), 'Chrome export must not bind cha
 const desktopRequestIngestBody = functionBody(desktopReviews, 'ingestFolderDeleteRequests');
 assert(desktopRequestIngestBody.includes('folderDeleteRequests'), 'Desktop request ingest must read folderDeleteRequests section');
 assert(desktopRequestIngestBody.includes('ingestFolderDeleteRequestRow'), 'Desktop request ingest must route rows through request-only row handler');
+assert(!desktopRequestIngestBody.includes('applyFolderDeleteRequest'), 'Desktop request ingest must not auto-apply delete requests');
 assert(!desktopRequestIngestBody.includes('softDeleteFolder'), 'Desktop request ingest must not apply soft delete');
 assert(!desktopRequestIngestBody.includes('softDeleteEmptyFolder'), 'Desktop request ingest must not apply empty-folder delete');
 assert(!desktopRequestIngestBody.includes('createTombstone'), 'Desktop request ingest must not create tombstones');
 assert(!desktopRequestIngestBody.includes('unbindChat'), 'Desktop request ingest must not unbind chats');
 assert(!desktopRequestIngestBody.includes('bindChat'), 'Desktop request ingest must not bind chats');
+
+const desktopApplyBody = functionBody(desktopReviews, 'applyFolderDeleteRequest');
+assert(desktopApplyBody.includes('validateFolderDeleteRequestReviewForApply'), 'Desktop apply must validate request review before mutation');
+assert(desktopApplyBody.includes("folders.softDeleteFolder"), 'Desktop apply must call the safe softDeleteFolder path');
+assert(desktopApplyBody.includes("status !== 'pending'") || desktopReviews.includes("currentStatus !== 'pending'"), 'Desktop apply must block non-pending reviews');
+assert(desktopApplyBody.includes('desktop-approved-chrome-folder-delete-request'), 'Desktop apply must use the approved Chrome request delete reason');
+assert(desktopApplyBody.includes('noHardDelete: true'), 'Desktop apply result must preserve noHardDelete');
+assert(desktopApplyBody.includes('noChatDelete: true'), 'Desktop apply result must preserve noChatDelete');
+assert(!desktopApplyBody.includes('createTombstone'), 'Desktop apply must not create tombstones directly');
+assert(!desktopApplyBody.includes('DELETE FROM'), 'Desktop apply must not use raw SQL DELETE');
+assert(!desktopApplyBody.includes('removeFolderFromStateMirror'), 'Desktop apply must not bypass folder store mirror handling');
+assert(!desktopApplyBody.includes('unbindChat'), 'Desktop apply must not unbind chats directly');
+assert(!desktopApplyBody.includes('bindChat'), 'Desktop apply must not bind chats directly');
+
+const desktopApplyValidationBody = functionBody(desktopReviews, 'validateFolderDeleteRequestReviewForApply');
+[
+  "classification) !== 'delete-request'",
+  "recordKind) !== 'folder'",
+  "currentStatus !== 'pending'",
+  'folder-soft-delete-request',
+  'desktopApplyRequired',
+  'folder-identity-missing',
+].forEach((needle) => assertIncludes(desktopApplyValidationBody, needle, `Desktop apply validation ${needle}`));
 
 [
   'folder-delete-requests',
@@ -144,6 +172,7 @@ assert(!desktopRequestIngestBody.includes('bindChat'), 'Desktop request ingest m
 const desktopImportBody = functionBody(desktopImport, 'ingestFolderDeleteRequestsFromChromeBundle');
 assert(desktopImportBody.includes('reviews.ingestFolderDeleteRequests'), 'Desktop import must call review-store request ingest');
 assert(desktopImportBody.includes('noApply'), 'Desktop import must mark request import as no-apply');
+assert(!desktopImportBody.includes('applyFolderDeleteRequest'), 'Desktop import must not auto-apply pending requests');
 assert(!desktopImportBody.includes('softDeleteFolder'), 'Desktop import must not call softDeleteFolder');
 assert(!desktopImportBody.includes('softDeleteEmptyFolder'), 'Desktop import must not call softDeleteEmptyFolder');
 assert(!desktopImportBody.includes('createTombstone'), 'Desktop import must not create tombstones');
@@ -197,8 +226,9 @@ console.log(JSON.stringify({
   requestOnly: true,
   transportRequestOnly: true,
   desktopIngestReviewOnly: true,
+  desktopApplyExplicitOnly: true,
   noHardDelete: true,
   noChatDelete: true,
-  desktopApplyDeferred: true,
+  chromeReceiptDeferred: true,
   observedAtIso: new Date().toISOString(),
 }, null, 2));

@@ -1931,6 +1931,256 @@
     });
   }
 
+  function folderDeleteRequestApplyReviewId(input) {
+    if (input && typeof input === 'object') {
+      return cleanScalar(input.reviewId || input.requestId || input.id);
+    }
+    return cleanScalar(input);
+  }
+
+  function makeFolderDeleteRequestApplyResult(review) {
+    return {
+      schema: APPLY_RESULT_SCHEMA,
+      phase: 'phase4c.3b',
+      ok: false,
+      applied: false,
+      requestApplyOnly: true,
+      reviewFound: !!review,
+      reviewId: nullableString(review && review.reviewId),
+      requestId: null,
+      folderId: null,
+      recordKind: nullableString(review && review.recordKind),
+      classification: nullableString(review && review.classification),
+      reviewStatus: nullableString(review && review.status),
+      status: 'not-applied',
+      decision: nullableString(review && review.decision),
+      mutationType: 'folder.softDelete',
+      localTombstoneCreated: false,
+      reviewUpdated: false,
+      writesPerformed: 0,
+      tombstoneId: null,
+      affectedChatCount: 0,
+      bindingCount: 0,
+      noHardDelete: true,
+      noChatDelete: true,
+      chromeReceiptDeferred: true,
+      chromeHidingDeferred: true,
+      tombstonePropagation: 'deferred',
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function blockFolderDeleteRequestApply(review, code, extra) {
+    var result = makeFolderDeleteRequestApplyResult(review);
+    var normalized = cleanScalar(code) || 'folder-delete-request-apply-blocked';
+    result.status = normalized;
+    pushBlocker(result, normalized);
+    if (extra && typeof extra === 'object') Object.assign(result, extra);
+    return result;
+  }
+
+  function validateFolderDeleteRequestReviewForApply(review) {
+    if (!review) return { ok: false, code: 'review-not-found' };
+    if (cleanScalar(review.classification) !== 'delete-request') {
+      return { ok: false, code: 'review-not-delete-request' };
+    }
+    if (cleanScalar(review.recordKind) !== 'folder') {
+      return { ok: false, code: 'review-record-kind-not-folder' };
+    }
+    var currentStatus = cleanScalar(review.status);
+    if (currentStatus !== 'pending') {
+      if (currentStatus === 'resolved' && cleanScalar(review.decision) === 'applied-folder-delete-request') {
+        return { ok: false, code: 'folder-delete-request-already-applied', alreadyApplied: true };
+      }
+      return { ok: false, code: 'folder-delete-request-not-pending' };
+    }
+    var parsed = normalizeFolderDeleteRequest(review);
+    if (!parsed.ok) return { ok: false, code: parsed.code || 'folder-delete-request-invalid' };
+    var request = parsed.request;
+    if (cleanScalar(request.recordKind) !== 'folder') return { ok: false, code: 'request-record-kind-not-folder' };
+    if (cleanScalar(request.intent) !== 'folder-soft-delete-request') return { ok: false, code: 'request-intent-invalid' };
+    if (request.desktopApplyRequired !== true) return { ok: false, code: 'desktop-apply-required-missing' };
+    if (!cleanScalar(request.folderId)) return { ok: false, code: 'folder-identity-missing' };
+    var recordFolderId = folderDeleteRequestRecordId(request.folderId);
+    if (cleanScalar(review.recordId) && cleanScalar(review.recordId) !== recordFolderId) {
+      return { ok: false, code: 'folder-identity-mismatch' };
+    }
+    return { ok: true, request: request };
+  }
+
+  function folderDeleteRequestApplyWarnings(review, applyResult) {
+    var warnings = parseWarnings(review && (review.warningsJson || review.warnings));
+    warnings.push({
+      code: 'folder-delete-request-applied-on-desktop',
+      noHardDelete: true,
+      noChatDelete: true,
+      tombstoneIdPresent: !!(applyResult && applyResult.tombstoneId),
+    });
+    return JSON.stringify(warnings);
+  }
+
+  function folderDeleteRequestRawWithApplyResult(review, request, softDeleteResult, appliedAt, peerId) {
+    var payload = parseFolderDeleteRequestPayload(review) || {};
+    if (!isObject(payload)) payload = {};
+    payload.desktopApplyResult = {
+      schema: APPLY_RESULT_SCHEMA,
+      phase: 'phase4c.3b',
+      status: 'applied-folder-delete-request',
+      appliedAt: appliedAt,
+      appliedBySurface: 'desktop-studio',
+      appliedBySyncPeerIdPresent: !!peerId,
+      reviewId: cleanScalar(review && review.reviewId),
+      requestId: cleanScalar(request && request.requestId),
+      folderId: cleanScalar(request && request.folderId),
+      tombstoneId: cleanScalar(softDeleteResult && softDeleteResult.tombstoneId) || null,
+      affectedChatCount: Number(softDeleteResult && softDeleteResult.affectedChatCount) || 0,
+      bindingCount: Number(softDeleteResult && softDeleteResult.bindingCount) || 0,
+      bindingUnboundCount: Number(softDeleteResult && softDeleteResult.bindingUnboundCount) || 0,
+      bindingUnbindSkippedCount: Number(softDeleteResult && softDeleteResult.bindingUnbindSkippedCount) || 0,
+      noHardDelete: true,
+      noChatDelete: true,
+      chromeReceiptDeferred: true,
+      tombstonePropagation: 'deferred',
+    };
+    return JSON.stringify(payload);
+  }
+
+  function markFolderDeleteRequestApplied(review, request, softDeleteResult, peerId) {
+    var appliedAt = nowIso();
+    var rawJson = folderDeleteRequestRawWithApplyResult(review, request, softDeleteResult, appliedAt, peerId);
+    var warningsJson = folderDeleteRequestApplyWarnings(review, softDeleteResult);
+    return sqlExecute(
+      'UPDATE ' + TABLE + ' SET status = ?, decision = ?, decided_at = ?, decided_by_sync_peer_id = ?, raw_tombstone_json = ?, warnings_json = ?, updated_at = ? WHERE review_id = ? AND status = ?',
+      [
+        'resolved',
+        'applied-folder-delete-request',
+        appliedAt,
+        peerId || null,
+        rawJson,
+        warningsJson,
+        appliedAt,
+        cleanScalar(review && review.reviewId),
+        'pending',
+      ]
+    ).then(function (updateResult) {
+      if (readRowsAffected(updateResult) <= 0) {
+        return blockFolderDeleteRequestApply(review, 'review-status-update-failed');
+      }
+      recordWrite('applyFolderDeleteRequest');
+      notifySubscribers({
+        source: 'local',
+        op: 'applyFolderDeleteRequest',
+        reviewId: cleanScalar(review && review.reviewId),
+        folderId: cleanScalar(request && request.folderId),
+        status: 'resolved',
+        decision: 'applied-folder-delete-request',
+      });
+      var result = makeFolderDeleteRequestApplyResult(review);
+      result.ok = true;
+      result.applied = true;
+      result.status = 'folder-delete-request-applied';
+      result.decision = 'applied-folder-delete-request';
+      result.reviewStatus = 'resolved';
+      result.reviewUpdated = true;
+      result.writesPerformed = 1;
+      result.requestId = cleanScalar(request && request.requestId);
+      result.folderId = cleanScalar(request && request.folderId);
+      result.tombstoneId = cleanScalar(softDeleteResult && softDeleteResult.tombstoneId) || null;
+      result.localTombstoneCreated = !!result.tombstoneId;
+      result.affectedChatCount = Number(softDeleteResult && softDeleteResult.affectedChatCount) || 0;
+      result.bindingCount = Number(softDeleteResult && softDeleteResult.bindingCount) || 0;
+      result.bindingUnboundCount = Number(softDeleteResult && softDeleteResult.bindingUnboundCount) || 0;
+      result.bindingUnbindSkippedCount = Number(softDeleteResult && softDeleteResult.bindingUnbindSkippedCount) || 0;
+      result.softDeleteStatus = cleanScalar(softDeleteResult && softDeleteResult.status);
+      result.appliedAt = appliedAt;
+      result.appliedBySyncPeerIdPresent = !!peerId;
+      result.softDeleteResult = {
+        ok: softDeleteResult && softDeleteResult.ok === true,
+        status: cleanScalar(softDeleteResult && softDeleteResult.status),
+        tombstoneId: result.tombstoneId,
+        affectedChatCount: result.affectedChatCount,
+        bindingCount: result.bindingCount,
+        noHardDelete: true,
+        noChatDelete: true,
+      };
+      return result;
+    });
+  }
+
+  function applyFolderDeleteRequest(input, options) {
+    var reviewId = folderDeleteRequestApplyReviewId(input);
+    var opts = isObject(options) ? options : {};
+    if (!reviewId) return Promise.resolve(blockFolderDeleteRequestApply(null, 'review-id-required'));
+    return ensureReady()
+      .then(function () { return getReview(reviewId); })
+      .then(function (review) {
+        var validation = validateFolderDeleteRequestReviewForApply(review);
+        if (!validation.ok) {
+          var existingParsed = normalizeFolderDeleteRequest(review);
+          var existingRequest = existingParsed && existingParsed.ok ? existingParsed.request : null;
+          return blockFolderDeleteRequestApply(review, validation.code, {
+            alreadyApplied: validation.alreadyApplied === true,
+            requestId: existingRequest ? existingRequest.requestId : null,
+            folderId: existingRequest ? existingRequest.folderId : null,
+          });
+        }
+        var request = validation.request;
+        var folders = H2O.Studio && H2O.Studio.store && H2O.Studio.store.folders;
+        if (!folders || typeof folders.get !== 'function' || typeof folders.softDeleteFolder !== 'function') {
+          return blockFolderDeleteRequestApply(review, 'folder-store-unavailable', {
+            requestId: request.requestId,
+            folderId: request.folderId,
+          });
+        }
+        return folders.get(request.folderId).then(function (folder) {
+          if (!folder) {
+            return blockFolderDeleteRequestApply(review, 'folder-identity-missing', {
+              requestId: request.requestId,
+              folderId: request.folderId,
+            });
+          }
+          return readLocalSyncPeerIdForDecision().then(function (peerId) {
+            return folders.softDeleteFolder({ folderId: request.folderId }, {
+              deleteReason: cleanScalar(opts.deleteReason) || 'desktop-approved-chrome-folder-delete-request',
+              reason: cleanScalar(opts.reason) || 'desktop-approved-chrome-folder-delete-request',
+              sourceReviewId: cleanScalar(review.reviewId),
+              reviewId: cleanScalar(review.reviewId),
+              requestId: cleanScalar(request.requestId),
+              noHardDelete: true,
+              noChatDelete: true,
+            }).then(function (softDeleteResult) {
+              if (!softDeleteResult || softDeleteResult.ok !== true) {
+                var status = cleanScalar(softDeleteResult && softDeleteResult.status) || 'soft-delete-failed';
+                var blocked = blockFolderDeleteRequestApply(review, status, {
+                  requestId: request.requestId,
+                  folderId: request.folderId,
+                  softDeleteStatus: status,
+                  softDeleteResult: softDeleteResult || null,
+                });
+                (Array.isArray(softDeleteResult && softDeleteResult.blockers) ? softDeleteResult.blockers : []).forEach(function (code) {
+                  pushBlocker(blocked, code && (code.code || code));
+                });
+                return blocked;
+              }
+              return markFolderDeleteRequestApplied(review, request, softDeleteResult, peerId);
+            });
+          }, function () {
+            return blockFolderDeleteRequestApply(review, 'local-identity-unavailable', {
+              requestId: request.requestId,
+              folderId: request.folderId,
+            });
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('applyFolderDeleteRequest', e);
+        var blocked = blockFolderDeleteRequestApply(null, 'folder-delete-request-apply-failed');
+        blocked.reason = String((e && e.message) || e);
+        return blocked;
+      });
+  }
+
   function requireDecisionReason(reason) {
     var value = cleanString(reason);
     if (!value) throw new Error('decision reason required');
@@ -3856,6 +4106,7 @@
     findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
     listFolderDeleteRequests: listFolderDeleteRequests,
     ingestFolderDeleteRequests: ingestFolderDeleteRequests,
+    applyFolderDeleteRequest: applyFolderDeleteRequest,
     getReview: getReview,
     getByDedupeKey: getByDedupeKey,
     listReviews: listReviews,
