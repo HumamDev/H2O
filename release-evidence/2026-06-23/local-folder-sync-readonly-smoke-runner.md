@@ -149,6 +149,131 @@ Results:
 - `git diff --check`: passed.
 - `git diff --cached --check`: passed.
 
+## Live Proof
+
+Implementation commit:
+
+- `894f5086edc8544ddb29eaf8b93b2615ae8c1daf` - `feat(sync): add local folder sync readonly smoke runner`
+
+Runtime command:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
+```
+
+The combined runner executed:
+
+1. Chrome `diagnoseHealth`
+2. Chrome `getFolderModel`
+3. Desktop `diagnoseHealth`
+4. Desktop `getFolderModel`
+
+Combined result:
+
+- `blockers: []`
+- `warnings: ["chrome-health-permission-required", "row-count-differs"]`
+
+This is an expected Slice 4C pass. Chrome File System Access permission is not required for read-only model access, and row-count difference is informational at this stage.
+
+### Chrome Proof
+
+- Studio target found: `studioTargetFound:true`
+- Smoke URL flag present: `smokeUrlFlagPresent:true`
+- Extension ID discovered/loaded: `bpobkkppdlldlkccaehmpfclmkhiemhg`
+- Registry gates:
+  - `registryGatesEnabled:true`
+  - `surface: chrome-studio`
+  - `adapter: mv3`
+  - `blockers:[]`
+- CDP transport: `target-websocket`
+
+Chrome `diagnoseHealth`:
+
+- Helper reachable.
+- Registry result: `ok:true`
+- `status: blocked`
+- `verdict: blocked`
+- Blockers:
+  - `permission-required`
+  - `no-folder-handle`
+
+Interpretation: this is an expected warning for a fresh Chrome smoke profile without File System Access permission.
+
+Chrome `getFolderModel`:
+
+- `ok:true`
+- `status: folder-model-read`
+- `rowCount:6`
+- `canonicalRowCount:6`
+- `displayModelAvailable:true`
+
+### Desktop Proof
+
+Desktop `diagnoseHealth`:
+
+- `helperReachable:true`
+- `helperOk:true`
+- `status: healthy`
+- `registryOk:true`
+- `registryStatus: healthy`
+- `registryVerdict: healthy`
+- `registryGatesEnabled:true`
+- `blockers:[]`
+- `warnings:[]`
+
+Desktop `getFolderModel`:
+
+- `helperReachable:true`
+- `helperOk:true`
+- `status: folder-model-read`
+- `registryOk:true`
+- `registryStatus: folder-model-read`
+- `registryGatesEnabled:true`
+- `rowCount:17`
+- `canonicalRowCount:17`
+- `displayModelAvailable:true`
+
+### Comparison Proof
+
+- `chromeRowCount:6`
+- `desktopRowCount:17`
+- `rowCountMatch:false`
+- `commonFolderCount:6`
+- `chromeOnlyCount:0`
+- `desktopOnlyCount:11`
+- `comparisonIsInformational:true`
+
+Interpretation:
+
+- Row-count difference is a warning only in Slice 4C.
+- Full convergence/parity belongs to the later full RC smoke/mutation stage, not this read-only communication proof.
+
+### Safety Proof
+
+- `readOnly:true`
+- `noArbitraryEval:true`
+- `noRawSql:true`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noTombstonePropagationApply:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noBroadFilesystemAccess:true`
+
+No mutation operations were executed. The live proof did not create, rename, recolor, delete, request, or apply folder changes.
+
+### Live Verdict
+
+Slice 4C combined read-only smoke runner is live-proven.
+
+- Chrome CDP helper and Desktop queue client can now be driven together by one command.
+- The combined runner produces one redacted report with no blockers.
+- Remaining warnings are expected:
+  - Chrome fresh profile lacks File System Access permission.
+  - Chrome/Desktop row counts differ before full convergence smoke.
+
+Next phase should prepare for full local RC smoke by either granting the Chrome smoke profile access to `/Users/hobayda/H2O Studio Sync`, or adding an explicit operator step/check for Chrome File System Access permission before mutation smoke.
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.
