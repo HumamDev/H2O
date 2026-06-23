@@ -375,7 +375,8 @@
   }
 
   function buildMetadataOperation(operationType, row, payload) {
-    var folderId = cleanString(payload.folderId || payload.id || row.folderId);
+    var sourceRow = safeObject(row);
+    var folderId = cleanString(payload.folderId || payload.id || sourceRow.folderId);
     var op = {
       schema: FOLDER_METADATA_OPERATION_SCHEMA,
       operationType: operationType,
@@ -418,6 +419,53 @@
       duplicate: r.duplicate === true,
       blockers: codeList(r.blockers),
       warnings: codeList(r.warnings),
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    });
+  }
+
+  async function summarizeCreateFolderResult(result, payload) {
+    var summary = summarizeMutationResult('createFolder', result);
+    var requestedName = cleanString(payload.name || payload.folderName);
+    var requestedColor = normalizeColor(payload.color || payload.iconColor);
+    var found = null;
+    if (!summary.folderId && requestedName) {
+      try {
+        found = await findFolderRow({ name: requestedName });
+      } catch (_) {
+        found = null;
+      }
+      if (found && found.row) {
+        summary.folderId = cleanString(found.row.folderId);
+        summary.id = summary.folderId;
+        summary.name = cleanString(found.row.name || requestedName);
+        summary.color = cleanString(found.row.color || found.row.iconColor || requestedColor);
+        summary.iconColor = summary.color;
+        summary.modelRowCount = Number(found.model && found.model.rowCount) || 0;
+      }
+    }
+    if (summary.folderId) {
+      summary.ok = true;
+      summary.status = 'folder-created';
+      summary.id = summary.folderId;
+      summary.name = cleanString(summary.name || requestedName);
+      summary.color = cleanString(summary.color || requestedColor);
+      summary.iconColor = cleanString(summary.iconColor || summary.color);
+      summary.source = detectSurface().kind;
+      summary.blockers = [];
+      return summary;
+    }
+    return baseResult('createFolder', {
+      ok: false,
+      status: 'folder-create-failed',
+      blockers: ['folder-create-failed'],
+      reason: cleanString(summary.reason || summary.status || 'created folder was not returned or visible in folder model'),
+      requestedName: requestedName,
+      requestedColor: requestedColor,
+      rawStatus: cleanString(summary.status),
+      rawOk: summary.ok === true,
+      warnings: codeList(summary.warnings),
       noHardDelete: true,
       noChatDelete: true,
       noSnapshotDelete: true,
@@ -507,7 +555,7 @@
     if (!name) return unsupportedResult('createFolder', 'folder-name-required');
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     if (actions && typeof actions.create === 'function') {
-      return summarizeMutationResult('createFolder', await actions.create({
+      return summarizeCreateFolderResult(await actions.create({
         name: name,
         color: normalizeColor(payload.color || payload.iconColor),
         iconColor: normalizeColor(payload.iconColor || payload.color),
@@ -517,7 +565,7 @@
     }
     var operation = buildMetadataOperation('create-folder', null, payload);
     var result = await requestFolderMetadataApply(operation, payload);
-    if (result) return summarizeMutationResult('createFolder', result);
+    if (result) return summarizeCreateFolderResult(result, payload);
     return unsupportedResult('createFolder', 'unsupported-op-on-surface');
   }
 

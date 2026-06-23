@@ -61,6 +61,14 @@ assertContains(registry, 'chromeExportFlagKey', 'Chrome export flag diagnostic s
 assertContains(registry, 'chromeExportFlagEnabled', 'Chrome export effective flag summary');
 assertContains(registry, 'chromeExportSmokeEnabled', 'Chrome smoke export summary');
 assertContains(registry, 'chromeExportSmokeOptInKey', 'Chrome smoke export opt-in key summary');
+assertContains(registry, 'var sourceRow = safeObject(row)', 'null-safe folder metadata operation row');
+assertContains(registry, 'sourceRow.folderId', 'null-safe folder metadata operation folderId source');
+assertContains(registry, 'summarizeCreateFolderResult', 'createFolder result confirmation helper');
+assertContains(registry, "findFolderRow({ name: requestedName })", 'createFolder post-create model lookup');
+assertContains(registry, "summary.status = 'folder-created'", 'stable createFolder success status');
+assertContains(registry, "status: 'folder-create-failed'", 'structured createFolder failure status');
+assertContains(registry, "blockers: ['folder-create-failed']", 'structured createFolder blocker');
+assertContains(registry, 'summary.source = detectSurface().kind', 'createFolder source surface summary');
 
 const expectedOps = [
   'getFolderModel',
