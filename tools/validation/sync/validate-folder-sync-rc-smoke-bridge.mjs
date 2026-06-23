@@ -6,6 +6,7 @@ import process from 'node:process';
 const root = process.cwd();
 const registryPath = path.join(root, 'src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js');
 const studioHtmlPath = path.join(root, 'src-surfaces-base/studio/studio.html');
+const packStudioPath = path.join(root, 'tools/product/studio/pack-studio.mjs');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -27,6 +28,7 @@ function assertNotContains(source, needle, label) {
 
 const registry = read(registryPath);
 const html = read(studioHtmlPath);
+const packStudio = read(packStudioPath);
 
 assertContains(registry, 'H2O.Studio.devSmoke.folderSync', 'registry namespace');
 assertContains(registry, 'h2o:studio:smoke-bridge:enabled:v1', 'localStorage gate');
@@ -93,11 +95,16 @@ assertNotContains(registry, 'DROP TABLE', 'registry');
 assertNotContains(registry, 'TRUNCATE TABLE', 'registry');
 
 assertContains(html, './dev/folder-sync-rc-smoke-bridge.studio.js', 'Studio loader');
+assertContains(packStudio, '"dev/folder-sync-rc-smoke-bridge.studio.js"', 'Studio packer copy list');
+
+const packEntryCount = (packStudio.match(/"dev\/folder-sync-rc-smoke-bridge\.studio\.js"/g) || []).length;
+assert(packEntryCount === 2, `Studio packer should contain source and output entries exactly once each; found ${packEntryCount}`);
 
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-folder-sync-rc-smoke-bridge',
   registryPath,
   studioHtmlPath,
+  packStudioPath,
   allowedOpCount: expectedOps.length,
 }, null, 2));

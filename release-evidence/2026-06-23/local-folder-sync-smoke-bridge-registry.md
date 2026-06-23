@@ -132,6 +132,7 @@ await H2O.Studio.devSmoke.folderSync.run('diagnoseHealth', {
 Commands run:
 
 - `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
+- `node --check tools/product/studio/pack-studio.mjs`
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`
 - `git diff --check`
@@ -140,10 +141,100 @@ Commands run:
 Results:
 
 - `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js` - pass
+- `node --check tools/product/studio/pack-studio.mjs` - pass
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass, `allowedOpCount:14`
 - `git diff --check` - pass
 - `git diff --cached --check` - pass
+
+## Loader / Copy-Path Fix
+
+Follow-up date: 2026-06-23
+
+### Live Issue
+
+After commit `3e6343ab4c2ae0bf6583e778d2034a64b4d3c275`, Chrome Studio loaded `studio.html` with:
+
+```html
+<script src="./dev/folder-sync-rc-smoke-bridge.studio.js"></script>
+```
+
+but the generated Chrome Studio bundle did not contain `surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js`, causing:
+
+```text
+folder-sync-rc-smoke-bridge.studio.js:1 Failed to load resource: net::ERR_FILE_NOT_FOUND
+```
+
+and:
+
+```js
+H2O.Studio.devSmoke?.folderSync?.diagnoseGates?.()
+// undefined
+```
+
+### Root Cause
+
+`src-surfaces-base/studio/studio.html` referenced the registry file, but `tools/product/studio/pack-studio.mjs` uses explicit `ARCHIVE_WORKBENCH_SOURCE_FILES` and `ARCHIVE_WORKBENCH_OUT_FILES` pack lists. The new `dev/folder-sync-rc-smoke-bridge.studio.js` file was not listed, so `npm run dev:all` copied the script tag into generated Chrome Studio HTML without copying the script file.
+
+### Files Changed
+
+- `tools/product/studio/pack-studio.mjs`
+- `tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`
+- `release-evidence/2026-06-23/local-folder-sync-smoke-bridge-registry.md`
+
+No registry behavior was changed.
+
+### Inclusion / Copy Behavior
+
+The registry file is now included once in both Studio packer lists:
+
+- `ARCHIVE_WORKBENCH_SOURCE_FILES`
+- `ARCHIVE_WORKBENCH_OUT_FILES`
+
+The entry is aligned with the existing dev validation harness order near `dev/f7-folder-color-apply-validation.tauri.js`, matching the `studio.html` script tag position.
+
+After rebuild/prep, the file exists at:
+
+- `apps/extensions/chatgpt/chrome/studio-launcher/surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
+- `apps/extensions/chatgpt/chrome/prod/surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
+- `apps/studio/desktop/dist/dev/folder-sync-rc-smoke-bridge.studio.js`
+
+### Validation Results
+
+- `npm run dev:all` - pass
+- `node apps/studio/desktop/build-tools/prepare-dist.mjs` - pass, copied 275 files into `apps/studio/desktop/dist/`
+- `ls apps/extensions/chatgpt/chrome/studio-launcher/surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js apps/extensions/chatgpt/chrome/prod/surfaces/studio/dev/folder-sync-rc-smoke-bridge.studio.js apps/studio/desktop/dist/dev/folder-sync-rc-smoke-bridge.studio.js` - pass
+- `rg "folder-sync-rc-smoke-bridge" apps/extensions/chatgpt/chrome/studio-launcher/surfaces/studio/studio.html apps/extensions/chatgpt/chrome/prod/surfaces/studio/studio.html apps/studio/desktop/dist/studio.html apps/studio/desktop/dist/dev/folder-sync-rc-smoke-bridge.studio.js` - pass
+- `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js` - pass
+- `node --check tools/product/studio/pack-studio.mjs` - pass
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass, `allowedOpCount:14`
+- `git diff --check` - pass
+- `git diff --cached --check` - pass
+
+### Manual Chrome Console Retest
+
+Reload the Studio Launcher extension and Chrome Studio after `npm run dev:all`, then run:
+
+```js
+H2O.Studio.devSmoke?.folderSync?.diagnoseGates?.()
+```
+
+Then run the disabled command check:
+
+```js
+await H2O.Studio.devSmoke?.folderSync?.run?.('diagnoseHealth', {
+  commandId: 'manual-disabled-health',
+  createdAt: new Date().toISOString()
+})
+```
+
+Expected:
+
+- no `ERR_FILE_NOT_FOUND` for `folder-sync-rc-smoke-bridge.studio.js`
+- registry object is present
+- without both `?h2oSmokeBridge=folder-sync-rc` and `localStorage["h2o:studio:smoke-bridge:enabled:v1"] = "folder-sync-rc"`, commands return a clear disabled/gated result
+- enabled commands remain unavailable until all gates pass
 
 ## Deferred
 

@@ -994,6 +994,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: debug F7.4.3 folder color apply validation harness. Dormant
   // until manually invoked through H2O.Studio.devValidation.
   "dev/f7-folder-color-apply-validation.tauri.js",
+  // Dev-only: gated local folder sync RC smoke registry. Disabled unless
+  // explicit URL + localStorage opt-in gates pass; no runner or file queue.
+  "dev/folder-sync-rc-smoke-bridge.studio.js",
   // F1B: hidden/gated readiness runner. Mounts only when BOTH
   //   H2O.flags.experimentalMultiPeer === true AND
   //   location.hash === '#/dev/multi-peer-readiness'
@@ -1340,6 +1343,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/binding-convergence-proof.tauri.js",
   "sync/binding-convergence-ui.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
+  "dev/folder-sync-rc-smoke-bridge.studio.js",
   "sync/multi-peer-runner.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
