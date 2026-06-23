@@ -1559,6 +1559,9 @@
   <!-- Dev-only: gated local folder sync RC smoke command registry. Disabled unless
        explicit URL + localStorage opt-in gates pass; no runner or file queue. -->
   <script src="./dev/folder-sync-rc-smoke-bridge.studio.js"></script>
+  <!-- Desktop-only: gated local folder sync RC smoke file-command queue. Reads
+       only .h2o-smoke/desktop-command.json and dispatches through the registry. -->
+  <script src="./dev/folder-sync-rc-smoke-desktop-queue.tauri.js"></script>
   <!-- F1B: hidden/gated readiness runner. Mounts only when BOTH
        H2O.flags.experimentalMultiPeer === true AND
        location.hash === '#/dev/multi-peer-readiness' (F1B.1 also reconciles

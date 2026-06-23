@@ -997,6 +997,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Dev-only: gated local folder sync RC smoke registry. Disabled unless
   // explicit URL + localStorage opt-in gates pass; no runner or file queue.
   "dev/folder-sync-rc-smoke-bridge.studio.js",
+  // Desktop-only: gated local folder sync RC smoke file-command queue. Reads
+  // only .h2o-smoke/desktop-command.json and dispatches through the registry.
+  "dev/folder-sync-rc-smoke-desktop-queue.tauri.js",
   // F1B: hidden/gated readiness runner. Mounts only when BOTH
   //   H2O.flags.experimentalMultiPeer === true AND
   //   location.hash === '#/dev/multi-peer-readiness'
@@ -1344,6 +1347,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/binding-convergence-ui.tauri.js",
   "dev/f7-folder-color-apply-validation.tauri.js",
   "dev/folder-sync-rc-smoke-bridge.studio.js",
+  "dev/folder-sync-rc-smoke-desktop-queue.tauri.js",
   "sync/multi-peer-runner.js",
 
   "S1A1a. 🎬 MiniMap Kernel - Studio.js",
