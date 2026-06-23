@@ -147,6 +147,116 @@ Expected:
 - no Chrome tombstone is created
 - no chat/snapshot/binding mutation occurs
 
+## Runtime Proof
+
+Implementation commit:
+
+- `14049f1a3ab6937bc97a92e07d1cf477b228a1df`
+- `feat(sync): hide chrome folders after delete receipts`
+
+Request/receipt under test:
+
+- requestId/reviewId: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- folderId: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- folder name: `zz-delete-ui-test`
+- Desktop receipt decision: `applied-folder-delete-request`
+- status-only receipt tombstone reference: `tombstone:0d5ed9cf-6a1f-4ae9-9089-6b22114a34df`
+
+First Chrome hide proof:
+
+```js
+await H2O.Studio.sync.folder.syncNow({
+  direction: "desktop-to-chrome",
+  reason: "phase4c4c-folder-hide-proof"
+});
+```
+
+Observed result:
+
+- `importResult.ok: true`
+- `importResult.status: sync-folder-imported`
+- `folderDeleteReceiptImport.schema: h2o.studio.folder-delete-receipt-import.v1`
+- `folderDeleteReceiptImport.phase: phase4c.4c`
+- `folderDeleteReceiptImport.ok: true`
+- `folderDeleteReceiptImport.found: 1`
+- `folderDeleteReceiptImport.receiptCount: 1`
+- `folderDeleteReceiptImport.alreadyResolvedCount: 1`
+- `folderDeleteReceiptImport.hiddenCount: 1`
+- `folderDeleteReceiptImport.alreadyHiddenCount: 0`
+- `folderDeleteReceiptImport.hideBlockerCount: 0`
+- `folderDeleteReceiptImport.hideSkippedCount: 0`
+- `folderDeleteReceiptImport.warningCount: 0`
+- `folderDeleteReceiptImport.blockerCount: 0`
+- `folderDeleteReceiptImport.visibleStateOnlyHide: true`
+- `folderDeleteReceiptImport.noDestructiveFolderMutation: true`
+- `folderDeleteReceiptImport.noFolderMutation: true`
+- `folderDeleteReceiptImport.noBindingMutation: true`
+- `folderDeleteReceiptImport.noChatMutation: true`
+- `folderDeleteReceiptImport.noSnapshotMutation: true`
+- `folderDeleteReceiptImport.noTombstoneApply: true`
+- `folderDeleteReceiptImport.noTombstoneCreate: true`
+- `folderDeleteReceiptImport.noHardDelete: true`
+- `folderDeleteReceiptImport.noChatDelete: true`
+- `folderDeleteReceiptImport.tombstonePropagation: deferred`
+- `folderVisibleBefore: true`
+- `folderVisibleAfter: false`
+- `beforeFolderCount: 20`
+- `afterFolderCount: 19`
+- `afterReview.status: resolved`
+- `afterReview.decision: applied-folder-delete-request`
+
+Repeat import / idempotency proof:
+
+```js
+await H2O.Studio.sync.folder.syncNow({
+  direction: "desktop-to-chrome",
+  reason: "phase4c4c-folder-hide-idempotency-proof"
+});
+```
+
+Observed result:
+
+- `repeatImport.ok: true`
+- `repeatImport.status: sync-folder-imported`
+- `folderDeleteReceiptImport.phase: phase4c.4c`
+- `folderDeleteReceiptImport.ok: true`
+- `folderDeleteReceiptImport.found: 1`
+- `folderDeleteReceiptImport.receiptCount: 1`
+- `folderDeleteReceiptImport.alreadyResolvedCount: 1`
+- `folderDeleteReceiptImport.hiddenCount: 0`
+- `folderDeleteReceiptImport.alreadyHiddenCount: 1`
+- `folderDeleteReceiptImport.hideBlockerCount: 0`
+- `folderDeleteReceiptImport.hideSkippedCount: 0`
+- `folderDeleteReceiptImport.warningCount: 0`
+- `folderDeleteReceiptImport.blockerCount: 0`
+- `folderVisibleBeforeRepeat: false`
+- `folderVisibleAfterRepeat: false`
+- `beforeFolderCount: 19`
+- `afterFolderCount: 19`
+- `afterReview.status: resolved`
+- `afterReview.decision: applied-folder-delete-request`
+- `noTombstoneApply: true`
+- `noTombstoneCreate: true`
+- `noHardDelete: true`
+- `noChatDelete: true`
+- `visibleStateOnlyHide: true`
+
+Interpretation:
+
+- Phase 4C.4c Chrome hide passed.
+- Chrome hides the folder only after a validated Desktop-applied status receipt.
+- Hide is visible-state/mirror only.
+- The folder disappears from Chrome FolderParity visible rows.
+- Repeat import is idempotent and does not hide twice.
+- Chrome does not create or apply tombstones.
+- Chrome does not hard-delete.
+- Chrome does not mutate chats, bindings, or snapshots.
+- Tombstone propagation remains deferred.
+- Restore receipts remain deferred.
+- Retention/purge and WebDAV/cloud/relay remain deferred.
+
+Note: in the first hide proof, chat row counts were not used as the authoritative safety proof because the local LibraryIndex appeared to hydrate during sync. Authoritative safety comes from the explicit flags `noChatDelete:true`, `noChatMutation:true`, `noSnapshotMutation:true`, and `noBindingMutation:true`.
+
 ## Remaining Deferred Work
 
 - Restore receipts.
