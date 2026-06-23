@@ -1,6 +1,6 @@
 # ADR-0010: Saved Chat Asset CAS + Capability Gate
 
-Status: Accepted (design); C2a capability gate landed 2026-06-23
+Status: Accepted (design); C2a capability gate landed 2026-06-23; C3.0 CAS layout locked 2026-06-23
 
 Date: 2026-06-23
 
@@ -50,8 +50,9 @@ CAS. The schema/hash detail lives in the
 ### 2. Live CAS location — app-owned, separate from the sync folder
 
 - The **live/global CAS is app-owned Desktop archive storage**, located in the
-  application's own data directory **alongside `studio-v1.db`** (app-local data),
-  e.g. `<appArchiveRoot>/assets/sha256-<hex>.<ext>`.
+  application's own **app-local-data** directory under `archive/assets/`. The
+  concrete blob layout is locked in "C3.0 — Live CAS Layout & Boundaries" below
+  (it is *not* the same layout as the per-package export copy).
 - The CAS is **content-addressed and global/shared** across all chats and snapshots
   (one blob per unique `sha256` ⇒ dedup). It is **app-owned, not user-edited**.
 - **The live CAS must NOT live inside `$HOME/H2O Studio Sync/`.** That folder
@@ -81,7 +82,7 @@ CAS. The schema/hash detail lives in the
 ## Consequences
 
 - Phase C implementation is **docs-first and capability-gated**: C1 (this) → C2a
-  (capability/security) → C2b (SQLite v7 `assets` registry) → C3 (CAS + sanitizer +
+  (capability/security) → C2b (SQLite `assets` registry, Migration v14) → C3 (CAS + sanitizer +
   validator) → C4 (materialization with assets) → C5 (archive/index diagnostics).
   See the [umbrella spec](../systems/archive/saved-chat-package-format.md) slicing
   table.
@@ -126,8 +127,8 @@ migration, no UI, no save dialog.
   list. `default.json` is intentionally left untouched so the Sync lane's existing
   fs scoping is unaffected.
 - **Scope:** the app-owned archive root **`$APPLOCALDATA/archive`** (the CAS lives
-  beneath it at `archive/assets/sha256-<hex>.<ext>`). `$APPLOCALDATA` keeps large
-  binary content in non-roaming, app-owned storage.
+  beneath it at `archive/assets/<aa>/sha256-<hex>` — layout locked in C3.0 below).
+  `$APPLOCALDATA` keeps large binary content in non-roaming, app-owned storage.
 - **Commands granted (least privilege):** `fs:allow-mkdir`, `fs:allow-exists`,
   `fs:allow-read-file` (binary), `fs:allow-write-file` (binary) — each scoped to
   `$APPLOCALDATA/archive` / `$APPLOCALDATA/archive/**` only.
@@ -144,8 +145,108 @@ migration, no UI, no save dialog.
 Note: the generated `gen/schemas/capabilities.json` is rebuilt by the Tauri
 toolchain at build time and is not hand-edited by this patch.
 
+## C3.0 — Live CAS Layout & Boundaries (locked)
+
+C3.0 is a **docs-only** slice that freezes the concrete CAS layout and the C3
+implementation boundaries before any C3 code is written. These decisions are
+effectively irreversible once blobs exist on disk, so they are locked here first.
+C3.0 adds **no** CAS code, **no** sanitizer code, and changes no capability.
+
+### Live CAS layout (locked)
+
+- **Live CAS root:** `$APPLOCALDATA/archive/assets`.
+- **Live blob path:** `archive/assets/<aa>/sha256-<hex>`, where `<aa>` is the
+  **first two hex characters** of the sha256 (prefix sharding).
+- **Live blobs are extension-less.** The filename is the bare content hash; no
+  `.<ext>` suffix.
+- **Why:** extension-less storage lets `get(sha256)` / `exists(sha256)` resolve a
+  blob purely from the hash with **no registry lookup** (keeps the CAS decoupled
+  from `H2O.Studio.store.assets`); prefix sharding avoids one huge flat directory
+  at thousands of blobs and is decided now so no later blob migration is needed.
+
+### Package materialization layout (locked, distinct)
+
+- The **export/package copy** remains **package-relative**:
+  `assets/sha256-<hash>.<ext>`.
+- The package copy **may include the extension** because the manifest `assets[*]`
+  descriptors carry `ext` / `mimeType` (see
+  [saved-chat-package-format.md](../systems/archive/saved-chat-package-format.md)).
+- The **live CAS layout and the package export layout are intentionally
+  different.** The live store is internal/extension-less/sharded; the package copy
+  is portable/extension-bearing/flat. C4 is where the `.<ext>` is applied when
+  copying a CAS blob into a package.
+
+### Base-directory access (locked)
+
+- C3's **primary** filesystem access pattern uses Tauri
+  `BaseDirectory.AppLocalData` (**numeric token `15`**) with **relative paths**
+  under `archive/assets/...`. This matches the C2a capability scope
+  `$APPLOCALDATA/archive/**`.
+- An absolute-path approach (resolve app-local-data via `plugin:path`, then use
+  absolute paths) is an acceptable **fallback** if `write_file` + `baseDir` proves
+  unsupported in the installed plugin version; an absolute path under the real
+  app-local-data dir still satisfies the `$APPLOCALDATA/**` scope.
+- **`$HOME/H2O Studio Sync/` is unrelated and MUST NOT host the live CAS.**
+
+### DB path vs CAS path (accepted split)
+
+- The SQLite DB (`sqlite:studio-v1.db`) may live in the **app-config** directory
+  per `tauri-plugin-sql`'s default resolution.
+- The CAS lives in **app-local-data**. On macOS these resolve to the same folder;
+  on Linux/Windows they differ — that is **accepted**: both are app-owned, and
+  large binary blobs belong in (non-roaming) local-data.
+- **Do not move the DB path** as part of this lane. ADR-0010's earlier
+  "alongside `studio-v1.db`" wording is superseded by this precise split.
+
+### C3 CAS module scope (locked)
+
+- The C3 CAS module (`src-surfaces-base/studio/ingestion/asset-cas.tauri.js`,
+  namespace `H2O.Studio.ingestion.assetCas`) is **filesystem-only**.
+- It **must not call `H2O.Studio.store.assets`**. Registry `upsert` and turn
+  linking are **C4 caller** logic, not CAS responsibilities.
+- Therefore `putAssetBytes` / `getAssetBytes` / `exists` / `describe` are
+  **independently testable without SQLite**.
+
+### Safe C4 cross-component write order (documented now)
+
+When C4 wires CAS to the registry, the order is:
+
+1. **Hash** the bytes (sha256).
+2. **Write/dedup** the CAS blob (idempotent; returns once the blob is durable).
+3. **Upsert** the `assets` registry row (`H2O.Studio.store.assets.upsert`).
+4. **Link** the asset to its turn (`H2O.Studio.store.assets.linkToTurn`).
+
+This ordering guarantees an interruption leaves **at worst an orphan blob** (or a
+registry row with no link) — **never a referenced-but-missing asset**.
+
+### Sanitizer centralization (locked targets, code deferred)
+
+- C3 will centralize the sanitizer into a shared module **later** (C3.1) — **not
+  in C3.0**.
+- **Planned module:** `src-surfaces-base/studio/platform/html-sanitizer.js`.
+- **Planned global:** `H2O.Studio.html.sanitize`.
+- **Interim stance retained:** the Phase B hardened **regex sanitizer + CSP** stays
+  in force; a DOM-based sanitizer and any validator DOM shim are **deferred**
+  (validators are headless).
+
+### C3 implementation slicing
+
+- **C3.0** — this docs-only patch (layout + boundaries locked).
+- **C3.1** — sanitizer centralization (shared module + projector rewire,
+  behavior-preserving; existing projector validator must stay green).
+- **C3.2** — CAS put/get module (filesystem-only) + focused validator.
+- **C3.3 (optional)** — focused real-Tauri binary fs smoke to confirm the
+  `write_file` + `baseDir` shape.
+
+### Deferred explicitly in C3.0
+
+No CAS code, no sanitizer code, no package asset materialization, no image
+extraction, no `manifest.assets` emission, no `contentHash` v2 implementation, no
+registry linking, no UI, no sync, no import/recovery, no WebDAV/cloud.
+
 ## Implementation Gate
 
 No CAS, capability, migration, or UI work may begin until the C1 design (this ADR +
 the umbrella spec) is accepted. The first implementing slice is **C2a**
-(capability/security review), not CAS code.
+(capability/security review), not CAS code. Within C3, the first slice is **C3.0**
+(this docs lock), then **C3.1** (sanitizer), then **C3.2** (CAS code).

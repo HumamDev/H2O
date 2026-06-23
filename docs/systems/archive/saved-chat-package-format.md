@@ -161,23 +161,42 @@ chat identity.
 - `payloadVersion` is emitted explicitly so the `contentHash` construction is
   self-describing, not inferred.
 
+## Live CAS vs Package Export Layout (C3.0, locked)
+
+The **live content-addressed store** and the **per-package export copy** use
+**intentionally different layouts**. The binding decision is recorded in
+[ADR-0010 → "C3.0 — Live CAS Layout & Boundaries"](../../decisions/ADR-0010-saved-chat-asset-cas.md);
+summarized here:
+
+| Aspect | Live CAS (app-owned, internal) | Package export copy (portable) |
+|---|---|---|
+| Root | `$APPLOCALDATA/archive/assets` | `<chatId>.h2ochat/assets/` |
+| Blob path | `archive/assets/<aa>/sha256-<hex>` (`<aa>` = first 2 hex chars) | `assets/sha256-<hex>.<ext>` |
+| Extension | **extension-less** (hash only) | **includes `.<ext>`** (from manifest `ext`/`mimeType`) |
+| Directory shape | prefix-sharded (avoids huge flat dir) | flat per package |
+| Resolution | `get`/`exists` by hash alone, **no registry lookup** | descriptor-driven (`manifest.assets[*]`) |
+
+C4 applies the `.<ext>` when copying a CAS blob into a package. The live store is
+never required to know an asset's extension to read it back; `ext`/`mimeType` are
+registry/manifest metadata only.
+
 ## Desktop Archive / Index Design (future ownership)
 
 Design-only; no table or migration is added in C1.
 
 - **Reuse `chats` / `snapshots` / `snapshot_turns` as the source of truth.** Do not
   build a parallel archive store.
-- **Add a future `assets` registry table** (proposed SQLite migration v7 — see
-  slicing) as the canonical content registry: PK `sha256`, plus `mime`, `ext`,
-  `byte_size`, `created_at`, `refcount`, `meta_json`. Bytes live in the CAS on disk;
+- **`assets` registry table (landed in C2b as SQLite Migration v14)** is the
+  canonical content registry: PK `sha256`, plus `mime_type`, `ext`, `byte_size`,
+  `created_at`, `updated_at`, `refcount`, `meta_json`. Bytes live in the CAS on disk;
   the table holds metadata + refcount.
-- **Turn↔asset association:** prefer a **join table** `snapshot_turn_assets`
-  (`snapshot_id`, `turn_idx`, `asset_sha256`, …) over `snapshot_turns.meta_json`
-  refs. Trade-off: the join table makes dedup, refcount, and future GC queries
-  first-class and indexable; `meta_json` refs avoid a migration but make
-  refcount/GC and "which turns use asset X" queries scan-heavy. The join table is
-  recommended; if a v7 migration is undesirable at C2b, `meta_json` refs are the
-  documented fallback.
+- **Turn↔asset association: shipped as the join table** `snapshot_turn_assets`
+  (`snapshot_id`, `turn_idx`, `sha256`, `relation`, …) rather than
+  `snapshot_turns.meta_json` refs. Trade-off (decided): the join table makes dedup,
+  refcount, and future GC queries first-class and indexable; `meta_json` refs would
+  have avoided a migration but make refcount/GC and "which turns use asset X"
+  queries scan-heavy. The join table was the chosen design and shipped in C2b
+  (Migration v14).
 - **Search / FTS is design-only** and may be a later slice (today search is
   in-memory per the storage contract). When built, index **text and content
   metadata, not raw HTML**: chat `title`, turn `contentText` (via the existing
@@ -196,9 +215,12 @@ Design-only; no table or migration is added in C1.
 - The Phase B **regex sanitizer + CSP is interim** (the validator is headless, so a
   DOM sanitizer cannot run there without a shim — this is why regex was chosen).
 - Phase C should **centralize the sanitizer contract** into a shared,
-  surface-neutral module (e.g. `H2O.Studio.html.sanitize`) consumed by the
-  projector and any future renderer/import, rather than duplicating per-feature
-  sanitizers.
+  surface-neutral module consumed by the projector and any future renderer/import,
+  rather than duplicating per-feature sanitizers. **Locked targets (C3.0):**
+  module `src-surfaces-base/studio/platform/html-sanitizer.js`, global
+  `H2O.Studio.html.sanitize`. The extraction + projector rewire happens in **C3.1**
+  (behavior-preserving; the existing projector validator must stay green) — **not
+  in C3.0**.
 - The shared sanitizer should be **allowlist-based**. A **DOM/allowlist
   implementation may be deferred** (headless-validator constraint); at minimum the
   **allowlist contract is centralized and documented** now, with the hardened regex
@@ -229,9 +251,12 @@ Design-only; no table or migration is added in C1.
 |---|---|---|
 | **C1** | **This docs/design patch.** Umbrella + ADR-0010. | Docs only (current). |
 | **C2a** | **Capability/security gate (landed 2026-06-23).** New isolated `capabilities/archive-cas.json` granting binary `mkdir`/`exists`/`read-file`/`write-file` scoped to `$APPLOCALDATA/archive` only; no `remove`/`rename`; save-location for export deferred to C4. See [ADR-0010](../../decisions/ADR-0010-saved-chat-asset-cas.md). | Prerequisite for any byte writing. Capability only — no CAS code. |
-| **C2b** | **SQLite v7 `assets` registry** migration + turn↔asset association + finalize v2 schema (`saved-chat-package-v2.md`). | Migration slice. |
-| **C3** | **CAS put/get + validator + sanitizer centralization.** Content-addressed write/read, dedup, refcount; shared allowlist sanitizer; headless validator. | — |
-| **C4** | **Package materialization with assets.** Extend projector: extract images → CAS, emit `manifest.assets` + `assetRefs`, rewrite in-HTML refs, copy into package `assets/`, compute v2 `contentHash`; extend validator (asset integrity, dedup, v1 back-compat). | — |
+| **C2b** | **SQLite `assets` registry (landed as Migration v14)** + `snapshot_turn_assets` join + `H2O.Studio.store.assets` adapter (refcount recomputed from the join). _Note: v7–v13 were already taken, so the registry shipped as v14, not v7._ | Migration slice (done). |
+| **C3.0** | **Docs lock (this section + ADR-0010 "C3.0").** Freezes live CAS layout (`archive/assets/<aa>/sha256-<hex>`, extension-less, sharded), package-copy layout, base dir (`AppLocalData`=15), DB/CAS split, CAS module = filesystem-only, C4 write order, sanitizer module targets. | Docs only. |
+| **C3.1** | **Sanitizer centralization.** Create `platform/html-sanitizer.js` (`H2O.Studio.html.sanitize`); rewire projector to consume it (behavior-preserving). | Projector validator must stay green. |
+| **C3.2** | **CAS put/get module.** `ingestion/asset-cas.tauri.js` — content-addressed write/read/exists/describe, dedup, no GC; filesystem-only (no registry calls); headless validator. | — |
+| **C3.3 (optional)** | **Real-Tauri binary fs smoke** confirming the `write_file` + `baseDir` shape. | Only if a focused desktop smoke harness exists. |
+| **C4** | **Package materialization with assets.** Extend projector: extract images → CAS, emit `manifest.assets` + `assetRefs`, rewrite in-HTML refs, copy into package `assets/` (adding `.<ext>`), compute v2 `contentHash`; extend validator (asset integrity, dedup, v1 back-compat). | — |
 | **C5** | **Archive/index diagnostics.** Index/search design + rebuild-from-store + CAS/archive health diagnostic. FTS implementation may be its own slice or slip to Phase D. | — |
 
 ## Deferred (explicitly out of scope for this C1 patch)
