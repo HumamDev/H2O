@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +19,7 @@ const CHROME_DEV_SMOKE_PROFILE = '/private/tmp/h2o-folder-sync-smoke-chrome-dev-
 const CHROME_DEV_PATH = '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev';
 const DEFAULT_EXTENSION_ID = 'bpobkkppdlldlkccaehmpfclmkhiemhg';
 const DEFAULT_LOAD_EXTENSION = path.join(repoRoot, 'apps/extensions/chatgpt/chrome/studio-launcher');
+const CHROME_LOAD_EXTENSION_FEATURE_BYPASS = 'DisableLoadExtensionCommandLineSwitch';
 const URL_FLAG = 'h2oSmokeBridge';
 const REQUIRED_VALUE = 'folder-sync-rc';
 const OPT_IN_KEY = 'h2o:studio:smoke-bridge:enabled:v1';
@@ -217,36 +219,70 @@ async function probeCdpVersion(port, timeoutMs = 800) {
   }
 }
 
+function idFromExtensionKey(key) {
+  if (!key) return '';
+  try {
+    const digest = crypto.createHash('sha256').update(Buffer.from(String(key), 'base64')).digest();
+    const hex = digest.subarray(0, 16).toString('hex');
+    return hex.replace(/[0-9a-f]/g, (char) => String.fromCharCode('a'.charCodeAt(0) + Number.parseInt(char, 16)));
+  } catch (_) {
+    return '';
+  }
+}
+
+function manifestRequiredFiles(manifest) {
+  const files = ['surfaces/studio/studio.html'];
+  const backgroundWorker = manifest && manifest.background && manifest.background.service_worker;
+  if (backgroundWorker) files.push(String(backgroundWorker));
+  const icons = manifest && manifest.icons && typeof manifest.icons === 'object' ? manifest.icons : {};
+  for (const icon of Object.values(icons)) {
+    if (icon) files.push(String(icon));
+  }
+  return [...new Set(files)];
+}
+
 function validateExtensionPath(loadExtension) {
   if (!loadExtension || loadExtension === 'none') {
-    throw statusError('studio-launcher-extension-path-missing', {
+    throw statusError('chrome-extension-path-invalid', {
       extensionPath: String(loadExtension || ''),
     });
   }
   const extensionPath = path.resolve(repoRoot, loadExtension);
   const manifestPath = path.join(extensionPath, 'manifest.json');
   if (!fs.existsSync(extensionPath)) {
-    throw statusError('studio-launcher-extension-path-missing', { extensionPath });
+    throw statusError('chrome-extension-path-invalid', { extensionPath });
   }
   if (!fs.existsSync(manifestPath)) {
-    throw statusError('studio-launcher-manifest-missing', { extensionPath, manifestPath });
+    throw statusError('chrome-extension-manifest-invalid', { extensionPath, manifestPath });
   }
   let manifest = null;
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   } catch (error) {
-    throw statusError('studio-launcher-manifest-invalid', {
+    throw statusError('chrome-extension-manifest-invalid', {
       extensionPath,
       manifestPath,
       rawErrorStatus: String(error && error.message || error),
     });
   }
+  const requiredFiles = manifestRequiredFiles(manifest);
+  const missingRequiredFiles = requiredFiles.filter((file) => !fs.existsSync(path.join(extensionPath, file)));
+  if (missingRequiredFiles.length > 0) {
+    throw statusError('chrome-extension-path-invalid', {
+      extensionPath,
+      manifestPath,
+      missingRequiredFiles,
+    });
+  }
+  const expectedExtensionId = idFromExtensionKey(manifest && manifest.key);
   return {
     extensionPath,
     manifestPath,
     manifestName: String(manifest && manifest.name || ''),
     manifestVersion: String(manifest && manifest.version || ''),
     manifestHasKey: !!(manifest && manifest.key),
+    expectedExtensionId,
+    requiredFiles,
   };
 }
 
@@ -262,16 +298,32 @@ function launchChrome(options, url, extensionInfo = null) {
     '--no-default-browser-check',
   ];
   if (extensionInfo && extensionInfo.extensionPath) {
+    args.push('--enable-unsafe-extension-debugging');
+    args.push(`--disable-features=${CHROME_LOAD_EXTENSION_FEATURE_BYPASS}`);
     args.push(`--disable-extensions-except=${extensionInfo.extensionPath}`);
     args.push(`--load-extension=${extensionInfo.extensionPath}`);
   }
   args.push(url);
+  const stdoutTail = [];
+  const stderrTail = [];
+  const captureTail = (stream, bucket) => {
+    if (!stream) return;
+    stream.setEncoding('utf8');
+    stream.on('data', (chunk) => {
+      const lines = String(chunk || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      bucket.push(...lines);
+      while (bucket.length > 12) bucket.shift();
+    });
+    if (typeof stream.unref === 'function') stream.unref();
+  };
   const child = spawn(chromePath, args, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  captureTail(child.stdout, stdoutTail);
+  captureTail(child.stderr, stderrTail);
   child.unref();
-  return { chromePath, args };
+  return { chromePath, args, pid: child.pid || 0, stdoutTail, stderrTail };
 }
 
 function isStudioTarget(target, options, extensionId = options.extensionId) {
@@ -325,6 +377,7 @@ function summarizeAnyExtensionTargets(targets) {
   const rows = Array.isArray(targets) ? targets.map(summarizeTarget) : [];
   const extensionTargets = rows.filter((target) => extensionIdFromUrl(target.url));
   const loadedExtensionTargets = extensionTargets.filter((target) => !isBlockedExtensionTarget(target));
+  const blockedExtensionTargets = extensionTargets.filter((target) => isBlockedExtensionTarget(target));
   const discoveredExtensionIds = [...new Set(extensionTargets.map((target) => extensionIdFromUrl(target.url)).filter(Boolean))];
   const loadedExtensionIds = [...new Set(loadedExtensionTargets.map((target) => extensionIdFromUrl(target.url)).filter(Boolean))];
   const studioTargets = extensionTargets.filter((target) => target.url.includes('/surfaces/studio/studio.html'));
@@ -336,6 +389,8 @@ function summarizeAnyExtensionTargets(targets) {
     loadedExtensionIds,
     extensionTargets,
     loadedExtensionTargets,
+    blockedExtensionTargetCount: blockedExtensionTargets.length,
+    blockedExtensionTargets,
     studioTargetFound: studioTargets.length > 0,
     studioTargetCount: studioTargets.length,
     studioTargets,
@@ -365,10 +420,12 @@ async function discoverExtensionTargets(options, cdpVersion) {
   return summarizeAnyExtensionTargets(combined);
 }
 
-function selectDiscoveredExtensionId(discovery, options) {
+function selectDiscoveredExtensionId(discovery, options, extensionInfo = null) {
   const ids = Array.isArray(discovery && discovery.loadedExtensionIds)
     ? discovery.loadedExtensionIds
     : [];
+  const expectedExtensionId = extensionInfo && extensionInfo.expectedExtensionId || '';
+  if (expectedExtensionId && ids.includes(expectedExtensionId)) return expectedExtensionId;
   if (options.extensionId && ids.includes(options.extensionId)) return options.extensionId;
   if (ids.length === 1) return ids[0];
   const studioTarget = Array.isArray(discovery && discovery.studioTargets)
@@ -381,25 +438,46 @@ function selectDiscoveredExtensionId(discovery, options) {
 async function waitForStudioLauncherExtension(options, cdpVersion, extensionInfo = null) {
   const deadline = Date.now() + Math.max(1000, options.timeoutMs);
   let lastDiscovery = null;
+  let expectedPageProbe = null;
   while (Date.now() < deadline) {
     lastDiscovery = await discoverExtensionTargets(options, cdpVersion);
-    const extensionId = selectDiscoveredExtensionId(lastDiscovery, options);
+    const extensionId = selectDiscoveredExtensionId(lastDiscovery, options, extensionInfo);
     if (extensionId) {
       return {
         extensionId,
         extensionDiscovery: lastDiscovery,
         attemptedExtensionId: options.extensionId,
+        expectedExtensionId: extensionInfo && extensionInfo.expectedExtensionId || '',
         extensionPath: extensionInfo && extensionInfo.extensionPath || '',
         extensionManifest: extensionInfo || null,
+        expectedPageProbe,
       };
+    }
+    const expectedExtensionId = extensionInfo && extensionInfo.expectedExtensionId || '';
+    if (expectedExtensionId && !expectedPageProbe) {
+      const probeOptions = { ...options, extensionId: expectedExtensionId };
+      const probeUrl = studioUrlFor(probeOptions, expectedExtensionId);
+      try {
+        expectedPageProbe = summarizeTarget(await openStudioTarget(options.port, probeUrl));
+      } catch (error) {
+        expectedPageProbe = {
+          url: probeUrl,
+          error: String(error && error.message || error),
+        };
+      }
     }
     await sleep(300);
   }
-  throw statusError('studio-launcher-extension-not-loaded', {
+  const blockedCount = Number(lastDiscovery && lastDiscovery.blockedExtensionTargetCount || 0);
+  const status = blockedCount > 0 ? 'chrome-extension-policy-blocked' : 'chrome-load-extension-ignored';
+  throw statusError(status, {
+    blockers: [status, 'studio-launcher-extension-not-loaded'],
     attemptedExtensionId: options.extensionId,
+    expectedExtensionId: extensionInfo && extensionInfo.expectedExtensionId || '',
     extensionPath: extensionInfo && extensionInfo.extensionPath || '',
     extensionManifest: extensionInfo || null,
     extensionDiscovery: lastDiscovery,
+    expectedPageProbe,
   });
 }
 
@@ -763,7 +841,7 @@ async function run(options) {
       extensionManifest: extensionInfo,
       launch,
       browser: cdpVersion ? summarizeCdpVersion(cdpVersion) : null,
-      blockers: [status],
+      blockers: error && Array.isArray(error.blockers) ? error.blockers : [status],
     });
   }
 
@@ -782,14 +860,21 @@ async function run(options) {
       port: options.port,
       browser: summarizeCdpVersion(cdpVersion),
       error: String(error && error.message || error),
-      blockers: [status],
+      blockers: error && Array.isArray(error.blockers) ? error.blockers : [status],
       attemptedExtensionId: error && error.attemptedExtensionId || options.extensionId,
+      expectedExtensionId: error && error.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
       discoveredExtensionIds: error && error.extensionDiscovery && error.extensionDiscovery.discoveredExtensionIds || [],
+      loadedExtensionIds: error && error.extensionDiscovery && error.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: error && error.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: error && error.extensionManifest || extensionInfo,
       extensionDiscovery: error && error.extensionDiscovery || null,
+      expectedPageProbe: error && error.expectedPageProbe || null,
       launch,
-      nextAction: 'Confirm Chrome Dev loaded the Studio Launcher unpacked extension from --extension-path and that the smoke profile is not reusing a stale/blocked profile.',
+      nextAction: status === 'chrome-load-extension-ignored'
+        ? `Chrome did not expose the unpacked extension. Confirm Chrome Dev accepts --load-extension with --disable-features=${CHROME_LOAD_EXTENSION_FEATURE_BYPASS}, or create a fresh --user-data-dir and retry.`
+        : status === 'chrome-extension-policy-blocked'
+          ? 'Chrome exposed only blocked extension targets. Check chrome://policy and remove extension-blocking policy/client settings for the smoke profile.'
+          : 'Confirm Chrome Dev loaded the Studio Launcher unpacked extension from --extension-path and that the smoke profile is not reusing a stale/blocked profile.',
     });
   }
 
@@ -811,11 +896,14 @@ async function run(options) {
       error: String(error && error.message || error),
       blockers,
       attemptedExtensionId: options.extensionId,
+      expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
       discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
       discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
+      expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: error && error.targetDiagnostics || null,
       nextAction: status === 'chrome-extension-not-loaded'
         ? 'Launch Chrome Dev with --extension-path apps/extensions/chatgpt/chrome/studio-launcher and a separate --user-data-dir, or attach to that smoke profile port.'
@@ -841,11 +929,14 @@ async function run(options) {
         studioTargetFound: true,
         smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
         attemptedExtensionId: options.extensionId,
+        expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
         discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
         discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+        loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
         extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
         extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
         extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
+        expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
         registryGatesEnabled: false,
         registryGates,
         targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
@@ -875,11 +966,14 @@ async function run(options) {
       studioTargetFound: true,
       smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
       attemptedExtensionId: options.extensionId,
+      expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
       discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
       discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
+      expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       registryGatesEnabled: registryGates && registryGates.enabled === true,
       registryGates,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
@@ -904,11 +998,14 @@ async function run(options) {
       studioTargetFound: !!target,
       smokeUrlFlagPresent: url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
       attemptedExtensionId: options.extensionId,
+      expectedExtensionId: extensionBundle && extensionBundle.expectedExtensionId || extensionInfo && extensionInfo.expectedExtensionId || '',
       discoveredExtensionId: extensionBundle && extensionBundle.extensionId || '',
       discoveredExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.discoveredExtensionIds || [],
+      loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
+      expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: error && error.pageStatus || null,

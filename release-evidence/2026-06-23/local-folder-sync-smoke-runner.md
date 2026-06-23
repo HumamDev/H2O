@@ -288,6 +288,69 @@ node tools/smoke/chrome-cdp-studio.mjs \
   --op diagnoseHealth
 ```
 
+## Slice 4A Chrome Dev Extension Load Fix
+
+Follow-up date: 2026-06-23
+
+Runtime setup issue:
+
+- Chrome Dev started successfully with CDP on port `9226`.
+- Launch arguments included `--load-extension=<studio-launcher>` and `--disable-extensions-except=<studio-launcher>`.
+- CDP target discovery still reported:
+  - `status: studio-launcher-extension-not-loaded`
+  - `discoveredExtensionIds: []`
+  - `extensionTargetFound:false`
+  - `studioTargetFound:false`
+- The manifest was valid and included a stable key:
+  - `manifestName: H2O Studio Launcher (Unpacked)`
+  - `manifestVersion: 1.3.0`
+  - `manifestHasKey:true`
+
+Root cause:
+
+- Current Chrome Dev can ignore command-line unpacked extension loading unless the command-line load switch is explicitly allowed for the smoke process.
+- The helper also did not compute the manifest-key-derived expected extension ID or expose Chrome launch stderr/stdout tail diagnostics, so a load failure had insufficient attribution.
+
+Fix:
+
+- Launch mode now adds:
+  - `--enable-unsafe-extension-debugging`
+  - `--disable-features=DisableLoadExtensionCommandLineSwitch`
+  - `--disable-extensions-except=<launcher path>`
+  - `--load-extension=<launcher path>`
+- Extension validation now checks:
+  - extension directory exists
+  - `manifest.json` exists and parses
+  - `surfaces/studio/studio.html` exists
+  - manifest `background.service_worker` exists
+  - manifest icon files exist
+- The helper derives `expectedExtensionId` from the manifest `key`.
+- Extension discovery reports:
+  - `attemptedExtensionId`
+  - `expectedExtensionId`
+  - `expectedPageProbe`
+  - `discoveredExtensionIds`
+  - `loadedExtensionIds`
+  - `blockedExtensionTargetCount`
+  - `extensionPath`
+  - `extensionManifest`
+  - Chrome `stdoutTail` / `stderrTail`
+- If Chrome still exposes no loaded extension target after launch, the helper now reports `chrome-load-extension-ignored` with `studio-launcher-extension-not-loaded` as a blocker.
+- If Chrome exposes only blocked extension targets, the helper reports `chrome-extension-policy-blocked`.
+- Because MV3 service workers may not expose a CDP target until activated, the helper probes the manifest-key-derived Studio URL once before the final discovery verdict.
+
+Retest command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode launch \
+  --port 9226 \
+  --chrome-path "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev" \
+  --extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher" \
+  --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile-9226" \
+  --op diagnoseHealth
+```
+
 ## Safety Guarantees
 
 - External helper only; no in-app runtime behavior changed.
