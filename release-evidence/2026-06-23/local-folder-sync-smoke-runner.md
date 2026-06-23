@@ -635,6 +635,66 @@ Live follow-up on port `9243`:
   - If manual console shows a connected/granted Studio page, that page must be in a different Chrome Dev session/port/profile or not currently exposed through the queried CDP target set.
   - The next operator action is to attach the runner to the Chrome Dev port that owns the connected/granted visible Studio page, or restart the smoke Chrome Dev profile and grant `/Users/hobayda/H2O Studio Sync` permission in that same CDP-controlled page.
 
+## Chrome Folder-Handle Preservation During Attach
+
+Follow-up issue:
+
+- After the operator selected `/Users/hobayda/H2O Studio Sync` through `H2O.Studio.sync.folder.connectFolder()` in the visible Chrome Dev smoke page, manual console diagnose reported:
+  - `connected:true`
+  - `permission:"granted"`
+  - `folderName:"H2O Studio Sync"`
+  - `chromeWritesSyncFolder:true`
+  - `permissionRequired:false`
+  - `noFolderHandle:false`
+- The helper could still report the same target as `permission:"unknown"` and `noFolderHandle:true`.
+
+Root cause / audit result:
+
+- The helper already avoided `Page.navigate` when the selected target was at the exact smoke Studio URL with the URL flag.
+- However, the attach-mode setup still had a reload-capable path for an already-open Studio page missing only the smoke URL flag.
+- The target probe and prepare path also read the sync-folder diagnose once, which could race the page's async File System Access handle restoration from IndexedDB.
+
+Fix:
+
+- Existing Studio targets are no longer reloaded just to add `h2oSmokeBridge=folder-sync-rc`.
+- If the target is already a Studio page but lacks the smoke URL flag, the helper now:
+  - sets the localStorage opt-in only if needed
+  - updates the URL with `history.replaceState`
+  - preserves the current page runtime and IndexedDB-backed folder handle state
+- The helper now waits briefly and boundedly for `H2O.Studio.sync.folder.diagnose()` to report the restored handle before scoring a target or running the registry command.
+- The helper includes a `Runtime.evaluate` fallback for the sync diagnose probe if `Runtime.callFunctionOn` returns no by-value object.
+- Output now includes `prepareDiagnostics`:
+  - `navigation`
+  - `beforeNavigateSyncDiagnose`
+  - `afterNavigateSyncDiagnose`
+  - `finalSyncDiagnose`
+  - diagnose attempt/wait counters
+  - `boundedWaitForFolderHandle:true`
+- If a future same-page setup path ever sees granted permission before URL setup and unknown permission after setup, the helper reports `chrome-cdp-navigation-lost-folder-handle`.
+
+Validation:
+
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
+Retest command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9243 --op diagnoseHealth --timeout-ms 30000
+```
+
+Expected after the folder is connected in the same CDP-controlled page:
+
+- `targetProbeSummary.connectedGrantedTargetCount >= 1`
+- `selectedTargetSyncPermission:"granted"`
+- `selectedTargetSyncConnected:true`
+- `prepareDiagnostics.finalSyncDiagnose.permission:"granted"`
+- `result.blockers:[]`
+
 ## Chrome Connected-Target Selection Repair
 
 Follow-up issue:

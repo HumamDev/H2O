@@ -196,6 +196,22 @@ function folderIdOf(row) {
   return String(row && (row.folderId || row.id) || '').trim();
 }
 
+function syncFolderDiagnoseFromHelper(helper, registry) {
+  if (registry && registry.syncFolderDiagnose && typeof registry.syncFolderDiagnose === 'object') {
+    return registry.syncFolderDiagnose;
+  }
+  const prepare = helper && helper.prepareDiagnostics && typeof helper.prepareDiagnostics === 'object'
+    ? helper.prepareDiagnostics
+    : null;
+  if (prepare && prepare.finalSyncDiagnose && typeof prepare.finalSyncDiagnose === 'object') {
+    return prepare.finalSyncDiagnose;
+  }
+  if (prepare && prepare.afterNavigateSyncDiagnose && typeof prepare.afterNavigateSyncDiagnose === 'object') {
+    return prepare.afterNavigateSyncDiagnose;
+  }
+  return null;
+}
+
 function commandSummary(runResult) {
   const helper = runResult && runResult.output || null;
   const registry = registryResult(helper);
@@ -212,8 +228,9 @@ function commandSummary(runResult) {
       helper && helper.result && helper.result.registryGatesEnabled === true,
     blockers: [...blockersOf(helper), ...blockersOf(registry)],
     warnings: [...warningsOf(helper), ...warningsOf(registry)],
-    syncFolderDiagnose: registry && registry.syncFolderDiagnose && typeof registry.syncFolderDiagnose === 'object'
-      ? registry.syncFolderDiagnose
+    syncFolderDiagnose: syncFolderDiagnoseFromHelper(helper, registry),
+    prepareDiagnostics: helper && helper.prepareDiagnostics && typeof helper.prepareDiagnostics === 'object'
+      ? helper.prepareDiagnostics
       : null,
     targetProbeSummary: helper && helper.targetProbeSummary && typeof helper.targetProbeSummary === 'object'
       ? helper.targetProbeSummary

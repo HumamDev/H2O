@@ -404,6 +404,55 @@ Live follow-up on port `9243` after this repair:
   - The runner now correctly says the CDP target set on port `9243` does not contain a connected/granted Studio target.
   - If the visible Chrome Dev smoke page has permission granted in manual console, the runner must be pointed at that page's actual CDP session/port, or the connected page must be reopened/regranted in the current CDP-controlled smoke profile.
 
+## Chrome Folder-Handle Preservation During Attach
+
+Follow-up issue:
+
+- The visible Chrome Dev smoke Studio page could show a granted sync folder handle after `connectFolder()`.
+- The direct helper and combined runner could still report `permission-required` / `no-folder-handle`.
+- The remaining risk was that the helper either reloaded an existing page during attach setup or probed before the File System Access handle had been restored from IndexedDB.
+
+Root cause / audit result:
+
+- The current target URL already had `h2oSmokeBridge=folder-sync-rc`, so the specific user-reported target should not have taken the helper's `Page.navigate` branch.
+- The helper still had a reload-capable branch for an existing Studio page missing only the URL flag, and that branch was unsafe for handle preservation.
+- The target selection probe also performed only a single immediate diagnose read.
+
+Fix:
+
+- Replaced the existing-target URL-flag reload path with an in-page `history.replaceState` update.
+- Kept localStorage opt-in idempotent.
+- Added bounded waiting around `H2O.Studio.sync.folder.diagnose()` in both target scoring and final target preparation.
+- Added a `Runtime.evaluate` fallback when `Runtime.callFunctionOn` does not return a by-value diagnose object.
+- Added `prepareDiagnostics` to helper output and runner summaries:
+  - `beforeNavigateSyncDiagnose`
+  - `afterNavigateSyncDiagnose`
+  - `finalSyncDiagnose`
+  - diagnose wait/attempt counts
+  - navigation mode
+- Added explicit `chrome-cdp-navigation-lost-folder-handle` detection if a future setup step ever changes a granted handle to unknown.
+- The combined runner now uses `prepareDiagnostics.finalSyncDiagnose` as a fallback live permission source if the registry health projection is stale.
+
+Corrected expected behavior:
+
+- If the same CDP-controlled Chrome Studio page has `connected:true` and `permission:"granted"`, the helper should preserve that state and the combined runner should not emit `chrome-health-permission-required`.
+- The only expected Slice 4C warning after that is `row-count-differs`.
+
+Validation for fix:
+
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
+Rerun command:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
+```
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.

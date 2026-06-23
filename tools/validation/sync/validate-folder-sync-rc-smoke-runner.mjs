@@ -42,6 +42,10 @@ assertContains(helper, 'async function() { try { var api = globalThis.H2O && glo
 assertContains(helper, 'var raw = await api.diagnose() || {}', 'awaited sync folder diagnose');
 assertContains(helper, 'globalThis.H2O.Studio.sync.folder', 'sync folder diagnose wrapper source');
 assertContains(helper, "status: 'sync-folder-diagnosed'", 'sync folder diagnose wrapper status');
+assertContains(helper, 'SYNC_FOLDER_DIAGNOSE_EVALUATE_EXPRESSION', 'sync folder diagnose evaluate fallback');
+assertContains(helper, 'waitForSyncFolderDiagnose', 'bounded sync folder diagnose wait');
+assertContains(helper, 'syncFolderDiagnoseGranted', 'granted folder handle classifier');
+assertContains(helper, 'syncFolderDiagnoseLost', 'lost folder handle classifier');
 assertContains(helper, 'arguments: [{ value: op }, { value: payload }]', 'structured CDP arguments');
 assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel'])", 'Slice 4A read-only allowlist');
 assertContains(helper, "if (!READ_ONLY_OP_SET.has(options.op))", 'read-only op guard');
@@ -55,6 +59,7 @@ assertContains(helper, 'cdp-browser-websocket-open-failed', 'browser WebSocket f
 assertContains(helper, 'cdp-target-websocket-missing', 'missing target WebSocket status');
 assertContains(helper, 'cdp-target-attach-failed', 'target attach failure status');
 assertContains(helper, 'chrome-extension-page-blocked', 'blocked extension page status');
+assertContains(helper, 'chrome-cdp-navigation-lost-folder-handle', 'lost folder handle blocker');
 assertContains(helper, 'smoke-registry-missing', 'missing smoke registry status');
 assertContains(helper, 'smoke-registry-disabled', 'disabled smoke registry status');
 assertContains(helper, 'chrome-studio-target-url-mismatch', 'Studio target URL mismatch status');
@@ -114,8 +119,13 @@ assertContains(helper, 'collectStudioTargetCandidates', 'all Studio target candi
 assertContains(helper, 'mergeTargetLists', 'target list merge without URL title dedupe');
 assertContains(helper, 'browserTargetInfos', 'browser Target.getTargets candidate source');
 assertContains(helper, 'candidates: combined.filter((target) => isStudioTarget', 'all Studio pages are probed before smoke flag navigation');
-assertContains(helper, "Page.navigate', { url }", 'selected target smoke URL navigation');
-assertContains(helper, 'smoke-url-flag-navigation', 'smoke URL navigation diagnostic');
+assertContains(helper, 'history.replaceState', 'same-page smoke URL flag update');
+assertContains(helper, 'SMOKE_URL_FLAG_HISTORY_WRAPPER', 'same-page smoke URL flag wrapper');
+assertContains(helper, 'replaceSmokeUrlFlagWithoutReload', 'no-reload smoke URL flag helper');
+assertContains(helper, 'beforeNavigateSyncDiagnose', 'before navigation sync diagnose');
+assertContains(helper, 'afterNavigateSyncDiagnose', 'after navigation sync diagnose');
+assertContains(helper, 'finalSyncDiagnose', 'final sync diagnose after prepare');
+assertContains(helper, 'boundedWaitForFolderHandle', 'bounded folder handle wait diagnostic');
 assertContains(helper, 'probeStudioTarget', 'Studio target probe');
 assertContains(helper, 'readSyncFolderDiagnose', 'target sync diagnose probe');
 assertContains(helper, 'scoreStudioTargetProbe', 'target score by permission');

@@ -30,9 +30,11 @@ const GLOBAL_OBJECT_EXPRESSION = 'globalThis';
 const REGISTRY_CALL_WRAPPER = 'function(op, payload) { return this.run(op, payload); }';
 const REGISTRY_GATES_WRAPPER = 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }';
 const SERVICE_WORKER_OPEN_STUDIO_EXPRESSION = "globalThis.__h2oSmokeOpenStudio()";
-const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1') }; }";
+const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { var before = this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1'); if (before !== 'folder-sync-rc') this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1'), changed: before !== 'folder-sync-rc' }; }";
 const PAGE_STATUS_WRAPPER = "function() { var body = this.document && this.document.body ? String(this.document.body.innerText || '') : ''; return { href: String(this.location && this.location.href || ''), title: String(this.document && this.document.title || ''), readyState: String(this.document && this.document.readyState || ''), bodyText: body.slice(0, 500) }; }";
 const SYNC_FOLDER_DIAGNOSE_WRAPPER = "async function() { try { var api = globalThis.H2O && globalThis.H2O.Studio && globalThis.H2O.Studio.sync && globalThis.H2O.Studio.sync.folder; if (!api || typeof api.diagnose !== 'function') return { ok: false, status: 'sync-folder-diagnose-unavailable' }; var raw = await api.diagnose() || {}; var blockers = raw.blockers || {}; var desktopToChrome = raw.desktopToChrome || {}; var chromeToDesktop = raw.chromeToDesktop || {}; return { ok: true, status: 'sync-folder-diagnosed', connected: raw.connected === true, permission: String(raw.permission || chromeToDesktop.permission || desktopToChrome.permission || ''), folderName: String(raw.folderName || ''), fileSystemAccessAvailable: raw.fileSystemAccessAvailable === true, chromeWritesSyncFolder: raw.chromeWritesSyncFolder === true || chromeToDesktop.chromeWritesSyncFolder === true, desktopToChromePermission: String(desktopToChrome.permission || ''), chromeToDesktopPermission: String(chromeToDesktop.permission || ''), permissionRequired: blockers.permissionRequired === true, noFolderHandle: blockers.noFolderHandle === true }; } catch (error) { return { ok: false, status: 'sync-folder-diagnose-threw', error: String(error && error.message || error) }; } }";
+const SYNC_FOLDER_DIAGNOSE_EVALUATE_EXPRESSION = `(${SYNC_FOLDER_DIAGNOSE_WRAPPER})()`;
+const SMOKE_URL_FLAG_HISTORY_WRAPPER = "function(url) { var beforeHref = String(this.location && this.location.href || ''); this.history.replaceState(this.history.state, this.document && this.document.title || '', url); return { mode: 'history-replace-state', beforeHref: beforeHref, href: String(this.location && this.location.href || ''), changed: beforeHref !== String(this.location && this.location.href || '') }; }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 
@@ -788,9 +790,61 @@ async function readSyncFolderDiagnose(cdp, globalObjectId) {
     returnByValue: true,
   });
   if (called.exceptionDetails) {
-    return { ok: false, status: 'sync-folder-diagnose-call-threw' };
+    return readSyncFolderDiagnoseViaEvaluate(cdp, 'sync-folder-diagnose-call-threw');
   }
-  return called && called.result ? called.result.value || null : null;
+  const value = called && called.result ? called.result.value || null : null;
+  if (value && typeof value === 'object') return value;
+  return readSyncFolderDiagnoseViaEvaluate(cdp, 'sync-folder-diagnose-call-empty');
+}
+
+async function readSyncFolderDiagnoseViaEvaluate(cdp, fallbackStatus) {
+  const evaluated = await cdp.send('Runtime.evaluate', {
+    expression: SYNC_FOLDER_DIAGNOSE_EVALUATE_EXPRESSION,
+    objectGroup: 'h2o-folder-sync-smoke',
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (evaluated.exceptionDetails) {
+    return { ok: false, status: fallbackStatus || 'sync-folder-diagnose-evaluate-threw' };
+  }
+  return evaluated && evaluated.result ? evaluated.result.value || null : null;
+}
+
+function syncFolderDiagnoseGranted(diag) {
+  return diag && typeof diag === 'object' &&
+    diag.connected === true &&
+    diag.permission === 'granted' &&
+    diag.permissionRequired !== true &&
+    diag.noFolderHandle !== true;
+}
+
+function syncFolderDiagnoseLost(before, after) {
+  return syncFolderDiagnoseGranted(before) && !syncFolderDiagnoseGranted(after);
+}
+
+async function waitForSyncFolderDiagnose(cdp, globalObjectId, options) {
+  const startedAt = Date.now();
+  const maxWaitMs = Math.min(Math.max(1000, Number(options && options.timeoutMs || 0)), 6000);
+  const deadline = startedAt + maxWaitMs;
+  let attempts = 0;
+  let last = null;
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    last = await readSyncFolderDiagnose(cdp, globalObjectId).catch((error) => ({
+      ok: false,
+      status: 'sync-folder-diagnose-failed',
+      error: String(error && error.message || error),
+    }));
+    if (syncFolderDiagnoseGranted(last)) break;
+    if (last && last.status === 'sync-folder-diagnose-unavailable' && attempts >= 3) break;
+    await sleep(250);
+  }
+  return {
+    diagnose: last,
+    attempts,
+    waitedMs: Date.now() - startedAt,
+    connectedGranted: syncFolderDiagnoseGranted(last),
+  };
 }
 
 function scoreStudioTargetProbe(probe) {
@@ -834,6 +888,8 @@ function summarizeTargetProbe(probes) {
       smokeUrlFlagPresent: row && row.smokeUrlFlagPresent === true,
       registryPresent: row && row.registryPresent === true,
       registryGatesEnabled: row && row.registryGatesEnabled === true,
+      syncFolderDiagnoseAttempts: Number(row && row.syncFolderDiagnoseAttempts || 0),
+      syncFolderDiagnoseWaitedMs: Number(row && row.syncFolderDiagnoseWaitedMs || 0),
       syncFolderDiagnose: row && row.syncFolderDiagnose ? {
         ok: row.syncFolderDiagnose.ok === true,
         connected: row.syncFolderDiagnose.connected === true,
@@ -863,11 +919,8 @@ async function probeStudioTarget(target, options) {
     if (registryObjectId) {
       registryGates = await diagnoseRegistryGates(control.control, registryObjectId).catch(() => null);
     }
-    const syncFolderDiagnose = await readSyncFolderDiagnose(control.control, globalObjectId).catch((error) => ({
-      ok: false,
-      status: 'sync-folder-diagnose-failed',
-      error: String(error && error.message || error),
-    }));
+    const syncProbe = await waitForSyncFolderDiagnose(control.control, globalObjectId, options);
+    const syncFolderDiagnose = syncProbe.diagnose;
     return {
       ok: true,
       targetId: targetIdOf(target),
@@ -877,6 +930,8 @@ async function probeStudioTarget(target, options) {
       smokeUrlFlagPresent: String(pageStatus && pageStatus.href || target && target.url || '').includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
       registryPresent: !!registryObjectId,
       registryGatesEnabled: registryGates && registryGates.enabled === true,
+      syncFolderDiagnoseAttempts: syncProbe.attempts,
+      syncFolderDiagnoseWaitedMs: syncProbe.waitedMs,
       syncFolderDiagnose,
     };
   } catch (error) {
@@ -1140,6 +1195,18 @@ async function setSmokeOptIn(cdp, globalObjectId) {
   });
 }
 
+async function replaceSmokeUrlFlagWithoutReload(cdp, globalObjectId, url) {
+  const called = await cdp.send('Runtime.callFunctionOn', {
+    objectId: globalObjectId,
+    functionDeclaration: SMOKE_URL_FLAG_HISTORY_WRAPPER,
+    arguments: [{ value: url }],
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  if (called.exceptionDetails) throw statusError('chrome-smoke-url-flag-history-replace-failed');
+  return called && called.result ? called.result.value || null : null;
+}
+
 async function getRegistryObjectId(cdp) {
   const evaluated = await cdp.send('Runtime.evaluate', {
     expression: REGISTRY_OBJECT_EXPRESSION,
@@ -1165,16 +1232,36 @@ async function prepareTarget(cdp, url, options) {
   if (!globalObjectId) throw new Error('chrome-global-object-missing');
   let initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
   let currentHref = String(initialPageStatus && initialPageStatus.href || '');
+  const beforeNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
+  let afterNavigateSyncProbe = beforeNavigateSyncProbe;
+  let navigation = {
+    occurred: false,
+    mode: 'none',
+    smokeUrlFlagAlreadyPresent: currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+  };
   if (currentHref.includes('/surfaces/studio/studio.html') &&
       !currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`)) {
     await setSmokeOptIn(cdp, globalObjectId).catch(() => null);
-    const navigation = await cdp.send('Page.navigate', { url });
-    assertNavigationOk(navigation, 'smoke-url-flag-navigation');
-    await sleep(Math.max(250, Math.min(options.waitAfterNavigateMs, 2000)));
+    const historyResult = await replaceSmokeUrlFlagWithoutReload(cdp, globalObjectId, url);
+    navigation = {
+      occurred: true,
+      mode: 'history-replace-state',
+      smokeUrlFlagAlreadyPresent: false,
+      result: historyResult,
+    };
+    await sleep(Math.max(100, Math.min(options.waitAfterNavigateMs, 500)));
     globalObjectId = await getGlobalObjectId(cdp);
-    if (!globalObjectId) throw new Error('chrome-global-object-missing-after-smoke-url-navigation');
+    if (!globalObjectId) throw new Error('chrome-global-object-missing-after-smoke-url-flag-update');
     initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
     currentHref = String(initialPageStatus && initialPageStatus.href || '');
+    afterNavigateSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
+    if (syncFolderDiagnoseLost(beforeNavigateSyncProbe.diagnose, afterNavigateSyncProbe.diagnose)) {
+      throw statusError('chrome-cdp-navigation-lost-folder-handle', {
+        beforeNavigateSyncDiagnose: beforeNavigateSyncProbe.diagnose,
+        afterNavigateSyncDiagnose: afterNavigateSyncProbe.diagnose,
+        navigation,
+      });
+    }
   }
   if (!currentHref.includes('/surfaces/studio/studio.html') ||
       !currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`)) {
@@ -1183,9 +1270,27 @@ async function prepareTarget(cdp, url, options) {
       expectedUrl: url,
     });
   }
-  await setSmokeOptIn(cdp, globalObjectId);
+  const smokeOptIn = await setSmokeOptIn(cdp, globalObjectId);
+  const finalSyncProbe = await waitForSyncFolderDiagnose(cdp, globalObjectId, options);
   const registryObjectId = await waitForRegistryObject(cdp, options.timeoutMs);
-  return { registryObjectId, initialPageStatus };
+  return {
+    registryObjectId,
+    initialPageStatus,
+    prepareDiagnostics: {
+      navigation,
+      smokeOptIn: smokeOptIn && smokeOptIn.result ? smokeOptIn.result.value || null : null,
+      beforeNavigateSyncDiagnose: beforeNavigateSyncProbe.diagnose,
+      beforeNavigateSyncDiagnoseAttempts: beforeNavigateSyncProbe.attempts,
+      beforeNavigateSyncDiagnoseWaitedMs: beforeNavigateSyncProbe.waitedMs,
+      afterNavigateSyncDiagnose: afterNavigateSyncProbe.diagnose,
+      afterNavigateSyncDiagnoseAttempts: afterNavigateSyncProbe.attempts,
+      afterNavigateSyncDiagnoseWaitedMs: afterNavigateSyncProbe.waitedMs,
+      finalSyncDiagnose: finalSyncProbe.diagnose,
+      finalSyncDiagnoseAttempts: finalSyncProbe.attempts,
+      finalSyncDiagnoseWaitedMs: finalSyncProbe.waitedMs,
+      boundedWaitForFolderHandle: true,
+    },
+  };
 }
 
 async function runReadOnlyRegistryOp(cdp, registryObjectId, op, payload) {
@@ -1396,6 +1501,7 @@ async function run(options) {
         targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
         cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
         pageStatus: prepared.initialPageStatus || null,
+        prepareDiagnostics: prepared.prepareDiagnostics || null,
         blockers: ['smoke-registry-disabled'],
         launch,
       });
@@ -1438,6 +1544,7 @@ async function run(options) {
       targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: prepared.initialPageStatus || null,
+      prepareDiagnostics: prepared.prepareDiagnostics || null,
       result: registryResult,
       launch,
     });
@@ -1473,6 +1580,11 @@ async function run(options) {
       targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: error && error.pageStatus || null,
+      prepareDiagnostics: error && (error.beforeNavigateSyncDiagnose || error.afterNavigateSyncDiagnose || error.navigation) ? {
+        navigation: error.navigation || null,
+        beforeNavigateSyncDiagnose: error.beforeNavigateSyncDiagnose || null,
+        afterNavigateSyncDiagnose: error.afterNavigateSyncDiagnose || null,
+      } : null,
       navigationStage: error && error.navigationStage || '',
       navigationErrorText: error && error.navigationErrorText || '',
       blockers,

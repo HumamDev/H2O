@@ -39,6 +39,10 @@ assertContains(runner, "'--op', 'getFolderModel'", 'getFolderModel execution pla
 assertContains(runner, 'chrome-health-permission-required', 'Chrome permission warning behavior');
 assertContains(runner, 'permissionOnlyChromeHealthBlocked', 'Chrome permission blocker classifier');
 assertContains(runner, 'syncFolderDiagnose', 'live sync folder diagnose summary');
+assertContains(runner, 'syncFolderDiagnoseFromHelper', 'helper sync diagnose fallback');
+assertContains(runner, 'prepareDiagnostics', 'helper prepare diagnostics summary');
+assertContains(runner, 'finalSyncDiagnose', 'final helper sync diagnose fallback');
+assertContains(runner, 'afterNavigateSyncDiagnose', 'after navigation sync diagnose fallback');
 assertContains(runner, 'targetProbeSummary', 'Chrome target probe summary');
 assertContains(runner, 'chromeSyncDiagnosePermissionGranted', 'granted sync permission classifier');
 assertContains(runner, 'chromeSyncDiagnosePermissionMissing', 'missing sync permission classifier');
