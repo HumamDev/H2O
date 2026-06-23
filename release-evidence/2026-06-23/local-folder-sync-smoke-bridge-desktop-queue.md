@@ -257,6 +257,135 @@ Expected:
 - original result file remains the authoritative command result
 - no duplicate destructive-capable operation is run
 
+## Manual Live Proof
+
+Follow-up date: 2026-06-23
+
+Implementation commits:
+
+- Slice 3 implementation: `ea3e5db78234a902142e614e9e7dfcce300d5929`
+- Filesystem scope fix: `981dd76b6a00325f26ccf8e54d8ce9e5c28ef89d`
+
+### Queue Diagnostic Proof
+
+`H2O.Studio.devSmoke.folderSyncQueue.diagnose()` showed:
+
+- `surface:"desktop-studio"`
+- `adapter:"tauri"`
+- `enabled:true`
+- `started:true`
+- `commandPath:"/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json"`
+- `commandFsPath:"H2O Studio Sync/.h2o-smoke/desktop-command.json"`
+- `resultsDir:"/Users/hobayda/H2O Studio Sync/.h2o-smoke/results"`
+- `resultsFsDir:"H2O Studio Sync/.h2o-smoke/results"`
+- `commandPathScoped:true`
+- `resultPathScoped:true`
+- `tauriFsRootScoped:true`
+- `processedCommandCount:1`
+- `writeCount:1`
+- `readCount:3`
+- `lastCommandId:"manual-diagnose-health-001"`
+- `lastResultPath:"/Users/hobayda/H2O Studio Sync/.h2o-smoke/results/manual-diagnose-health-001.json"`
+- `lastStatus:"duplicate-command-id"` on repeated poll
+- `duplicateCount:2`
+- `lastError:""`
+
+### Command File Proof
+
+Terminal wrote:
+
+```text
+/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json
+```
+
+Payload:
+
+- `commandId:"manual-diagnose-health-001"`
+- `op:"diagnoseHealth"`
+- `createdAt:"2026-06-23T00:00:00.000Z"`
+- `surface:"desktop-studio"`
+- `payload:{}`
+
+### pollOnce Proof
+
+Ran:
+
+```js
+H2O.Studio.devSmoke.folderSyncQueue.pollOnce({ reason: 'manual-desktop-queue-proof' })
+```
+
+Repeated poll returned:
+
+- `ok:true`
+- `status:"duplicate-command-id"`
+- `duplicate:true`
+- `noCommandExecuted:true`
+- `commandId:"manual-diagnose-health-001"`
+- `op:"diagnoseHealth"`
+- `registryGatesEnabled:true`
+- `commandPathScoped:true`
+- `resultPathScoped:true`
+- `tauriFsRootScoped:true`
+
+### Result File Proof
+
+Result file exists at:
+
+```text
+/Users/hobayda/H2O Studio Sync/.h2o-smoke/results/manual-diagnose-health-001.json
+```
+
+Result JSON showed:
+
+- `schema:"h2o.studio.dev-smoke.folder-sync.desktop-queue-result.v1"`
+- `phase:"folder-sync-rc-smoke-desktop-queue"`
+- `ok:true`
+- `status:"healthy"`
+- `surface:"desktop-studio"`
+- `adapter:"tauri"`
+- `registryGatesEnabled:true`
+- `commandPathScoped:true`
+- `resultPathScoped:true`
+- `tauriFsRootScoped:true`
+- `commandId:"manual-diagnose-health-001"`
+- `op:"diagnoseHealth"`
+- `result.ok:true`
+- `result.status:"healthy"`
+- `result.verdict:"healthy"`
+- `result.summaryText:"Folder sync is current and no blockers are active."`
+- `result.blockers:[]`
+- `result.warnings:[]`
+
+### Safety Proof
+
+All safety flags were true:
+
+- `noArbitraryEval`
+- `noRawSql`
+- `noHardDelete`
+- `noPurge`
+- `noTombstonePropagationApply`
+- `noChatDelete`
+- `noSnapshotDelete`
+- `noBroadFilesystemAccess`
+
+Additional safety observations:
+
+- No arbitrary eval.
+- No HTTP server.
+- No broad filesystem access.
+- No hard delete, purge, raw SQL, chat deletion, snapshot deletion, or tombstone propagation apply.
+- Queue only dispatches through `H2O.Studio.devSmoke.folderSync.run(op, payload)`.
+
+### Live Verdict
+
+- Slice 3 Desktop file-command queue bridge is live-proven.
+- The queue can read a command from `.h2o-smoke/desktop-command.json`.
+- The queue can execute an allowlisted smoke registry command.
+- The queue can write a redacted result JSON under `.h2o-smoke/results/`.
+- Duplicate command IDs are idempotently blocked.
+- Slice 3 is ready for Slice 4: Chrome CDP helper + smoke runner.
+
 ## Validation
 
 Commands run:
