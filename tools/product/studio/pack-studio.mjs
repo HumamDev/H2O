@@ -151,6 +151,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
   // API only; no UI, import/recovery, sync transport, or CAS implementation.
   "ingestion/saved-chat-package-v1.tauri.js",
+  // Desktop-only: content-addressed asset store (Phase C C3.2). Filesystem-only
+  // put/get under $APPLOCALDATA/archive/assets; no registry/DB coupling, no
+  // materialization, no GC.
+  "ingestion/asset-cas.tauri.js",
   // F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Inert shared
   // scanner/enforcer only; no domain adoption, publication, replay,
   // watermark, apply, convergence, storage, network, or mobile behavior.
@@ -1194,6 +1198,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/export-bundle.tauri.js",
   "platform/html-sanitizer.js",
   "ingestion/saved-chat-package-v1.tauri.js",
+  "ingestion/asset-cas.tauri.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",
   "sync/kernel/blockers.tauri.js",

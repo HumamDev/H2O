@@ -574,6 +574,11 @@
        projection files only when explicitly invoked. No UI, import, sync, or
        CAS behavior is installed in Phase B. -->
   <script src="./ingestion/saved-chat-package-v1.tauri.js"></script>
+  <!-- Desktop-only: content-addressed asset store (Phase C C3.2). Filesystem-
+       only put/get/exists/describe under $APPLOCALDATA/archive/assets; no
+       registry/DB coupling, no materialization, no GC, no UI/sync. Self-detect
+       gating like the projector. -->
+  <script src="./ingestion/asset-cas.tauri.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
        enforceRedactionClass. No domain adoption, publication, replay,
