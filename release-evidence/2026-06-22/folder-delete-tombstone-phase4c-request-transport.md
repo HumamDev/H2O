@@ -234,6 +234,89 @@ const pendingAgain = await H2O.Studio.store.tombstoneReviews.listFolderDeleteReq
 });
 ```
 
+## Runtime Proof
+
+Implementation commit under test:
+
+- `9bfb26e1ab800d12a9f815eea74d20e726654f5a`
+- `feat(sync): transport chrome folder delete requests`
+
+### Chrome-Side Export Proof
+
+- folderId: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- folder name: `zz-delete-ui-test`
+- pending request count before/export probe: `1`
+- `exportOutcome.ok: true`
+- export `startedAt`: `2026-06-23T10:06:23.927Z`
+- export `completedAt`: `2026-06-23T10:06:29.450Z`
+- export `exportedAt`: `2026-06-23T10:06:29.450Z`
+- Chrome status/diagnose: `ok:true`
+
+### Desktop Import/List Proof
+
+Desktop auto-import was active and healthy:
+
+- `watcher.running: true`
+- `folderPath: /Users/hobayda/H2O Studio Sync`
+- `health.verdict: healthy`
+- `lastAutoImportStatus: imported`
+- `lastAutoImportAt: 2026-06-23T10:06:36.922Z`
+
+Desktop manual import later returned blocked:
+
+- `importOk:false`
+- `importStatus: blocked`
+- blockers:
+  - `library-propagation-read-failed`
+  - `transport-file-missing`
+
+Interpretation: the manual import did not prove the transport because the request had already been auto-imported earlier, or the file was not available to that exact manual read.
+
+Desktop list proof showed:
+
+- `beforeCount: 1`
+- `afterCount: 1`
+- pending review exists
+- `reviewId: folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `status: pending`
+- `classification: delete-request`
+- `recordKind: folder`
+- `recordId: fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- `remoteSyncPeerId: chrome-studio`
+
+### Non-Apply Proof
+
+- `folderStillVisible: true`
+- `folderCount: 27`
+- `pendingReviewCount: 1`
+- `activeUnrestoredTombstoneCount: 0`
+
+There was one matching historical tombstone, but it was restored before this transport proof:
+
+- `matchingTombstoneCount: 1`
+- `tombstoneId: tombstone:5547a347-3528-4257-9815-c49e7fd327dc`
+- `recordId: folder:fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- `deletedAt: 2026-06-22T16:26:53.031Z`
+- `restoredAt: 2026-06-22T16:28:20.022Z`
+- `deleteReason: desktop-action-empty-folder-soft-delete`
+
+Therefore there is no active delete from Phase 4C.3a.
+
+### Runtime Verdict
+
+Phase 4C.3a transport/import path is runtime-proven enough:
+
+- Chrome exported a pending request successfully.
+- Desktop has a pending `delete-request` review from `chrome-studio`.
+- Desktop did not apply delete.
+- The folder remains visible.
+- No active unrestored tombstone exists.
+
+Caveat:
+
+- Manual import returned `transport-file-missing` after auto-import had already imported or observed the request.
+- Future diagnostics could better expose whether `chrome-latest.json` was consumed, missing, or already processed.
+
 ## Remaining Limitations
 
 - Desktop operator review/apply is deferred to Phase 4C.3b.
