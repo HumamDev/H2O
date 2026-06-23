@@ -31,12 +31,19 @@ assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke', 'scoped smok
 assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json', 'scoped command path');
 assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke/results', 'scoped result path');
 assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel'])", 'read-only allowlist');
-assertContains(helper, 'READ_ONLY_OP_SET.has(options.op)', 'read-only op guard');
-assertContains(helper, 'op-not-read-only', 'read-only rejection status');
+assertContains(helper, 'MUTATION_OPS = Object.freeze', 'mutation allowlist');
+assertContains(helper, 'classifyOp(options.op, options.allowMutation)', 'operation classifier guard');
+assertContains(helper, 'mutation-op-requires-allow-mutation', 'mutation opt-in rejection status');
+assertContains(helper, 'op-not-allowlisted', 'unknown op rejection status');
+assertContains(helper, '--allow-mutation', 'mutation opt-in CLI flag');
+assertContains(helper, '--payload-json', 'structured payload JSON CLI');
+assertContains(helper, '--payload-file', 'structured payload file CLI');
+assertContains(helper, 'JSON.parse(raw)', 'JSON-only payload parser');
+assertContains(helper, 'payload-json-object-required', 'payload object-only guard');
 assertContains(helper, 'desktop-queue-timeout', 'queue timeout status');
 assertContains(helper, "desktop-${op}-${Date.now().toString(36)}", 'default unique commandId');
 assertContains(helper, "expectedSurface: 'desktop-studio'", 'Desktop expected surface payload');
-assertContains(helper, "reason: 'desktop-queue-smoke-client'", 'client reason payload');
+assertContains(helper, "'desktop-queue-smoke-client'", 'client reason payload');
 assertContains(helper, 'fs.writeFileSync(COMMAND_PATH', 'single command file writer');
 assertContains(helper, 'resultPathForCommand(command.commandId)', 'commandId result path');
 assertContains(helper, 'privacy: { redacted: true }', 'redacted privacy flag');
@@ -50,6 +57,8 @@ assertContains(helper, 'noSnapshotDelete: true', 'snapshot delete safety flag');
 assertContains(helper, 'noBroadFilesystemAccess: true', 'broad filesystem safety flag');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 30000', 'diagnoseHealth usage example');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op getFolderModel --timeout-ms 30000', 'getFolderModel usage example');
+assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op renameFolder --allow-mutation', 'renameFolder mutation usage example');
+assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op setFolderColor --allow-mutation', 'setFolderColor mutation usage example');
 
 assertNotContains(helper, 'eval(', 'Desktop queue client');
 assertNotContains(helper, 'new Function', 'Desktop queue client');
@@ -62,6 +71,13 @@ assertNotContains(helper, 'purgeTombstone', 'Desktop queue client');
 assertNotContains(helper, 'purgeFolder', 'Desktop queue client');
 assertNotContains(helper, 'deleteChat(', 'Desktop queue client');
 assertNotContains(helper, 'deleteSnapshot(', 'Desktop queue client');
+assertNotContains(helper, 'requestFolderDelete', 'Desktop queue client');
+assertNotContains(helper, 'applyFolderDeleteRequest', 'Desktop queue client');
+assertNotContains(helper, 'listFolderDeleteRequests', 'Desktop queue client');
+assertNotContains(helper, 'listFolderDeleteReceipts', 'Desktop queue client');
+assertNotContains(helper, 'listActiveFolderTombstones', 'Desktop queue client');
+assertNotContains(helper, 'deleteFolder', 'Desktop queue client');
+assertNotContains(helper, 'restoreFolder', 'Desktop queue client');
 
 const allowlistMatch = helper.match(/READ_ONLY_OPS = Object\.freeze\(\[([^\]]+)\]\)/);
 assert(allowlistMatch, 'READ_ONLY_OPS declaration missing');
@@ -70,9 +86,6 @@ for (const op of ['diagnoseHealth', 'getFolderModel']) {
   assert(allowlistBlock.includes(`'${op}'`), `READ_ONLY_OPS missing ${op}`);
 }
 for (const op of [
-  'createFolder',
-  'renameFolder',
-  'setFolderColor',
   'requestFolderDelete',
   'applyFolderDeleteRequest',
   'hardDelete',
@@ -84,11 +97,35 @@ for (const op of [
   assert(!allowlistBlock.includes(op), `READ_ONLY_OPS must not include ${op}`);
 }
 
+const mutationAllowlistMatch = helper.match(/MUTATION_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
+assert(mutationAllowlistMatch, 'MUTATION_OPS declaration missing');
+const mutationAllowlistBlock = mutationAllowlistMatch[1];
+for (const op of ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden']) {
+  assert(mutationAllowlistBlock.includes(`'${op}'`), `MUTATION_OPS missing ${op}`);
+}
+for (const op of [
+  'requestFolderDelete',
+  'applyFolderDeleteRequest',
+  'listFolderDeleteRequests',
+  'listFolderDeleteReceipts',
+  'listActiveFolderTombstones',
+  'restoreFolder',
+  'deleteFolder',
+  'hardDelete',
+  'purge',
+  'rawSql',
+  'deleteChat',
+  'deleteSnapshot',
+]) {
+  assert(!mutationAllowlistBlock.includes(op), `MUTATION_OPS must not include ${op}`);
+}
+
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-folder-sync-rc-smoke-desktop-client',
   helperPath,
   commandPath: '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json',
   resultsDir: '/Users/hobayda/H2O Studio Sync/.h2o-smoke/results',
-  allowedOps: ['diagnoseHealth', 'getFolderModel'],
+  readOnlyOps: ['diagnoseHealth', 'getFolderModel'],
+  mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden'],
 }, null, 2));

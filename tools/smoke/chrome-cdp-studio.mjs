@@ -145,6 +145,15 @@ try {
 }
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
+const MUTATION_OPS = Object.freeze([
+  'createFolder',
+  'renameFolder',
+  'setFolderColor',
+  'syncNow',
+  'verifyFolderVisible',
+  'verifyFolderHidden',
+]);
+const MUTATION_OP_SET = new Set(MUTATION_OPS);
 
 function nowIso() {
   return new Date().toISOString();
@@ -160,6 +169,10 @@ function safetyFlags() {
     registryPath: REGISTRY_PATH_LABEL,
     cdpCall: 'fixed-registry-wrapper',
     readOnly: true,
+    allowMutation: false,
+    payloadAccepted: false,
+    mutationAllowed: false,
+    noArbitraryEval: true,
     noArbitraryJsInput: true,
     noProductionListener: true,
     noRawSql: true,
@@ -168,6 +181,7 @@ function safetyFlags() {
     noTombstonePropagationApply: true,
     noChatDelete: true,
     noSnapshotDelete: true,
+    noBroadFilesystemAccess: true,
   };
 }
 
@@ -194,6 +208,128 @@ function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+function classifyOp(op, allowMutation) {
+  if (READ_ONLY_OP_SET.has(op)) {
+    return {
+      ok: true,
+      kind: 'read-only',
+      status: 'op-read-only',
+      readOnly: true,
+      mutationAllowed: false,
+    };
+  }
+  if (MUTATION_OP_SET.has(op)) {
+    if (allowMutation === true) {
+      return {
+        ok: true,
+        kind: 'mutation',
+        status: 'mutation-op-allowed',
+        readOnly: false,
+        mutationAllowed: true,
+      };
+    }
+    return {
+      ok: false,
+      kind: 'mutation',
+      status: 'mutation-op-requires-allow-mutation',
+      readOnly: false,
+      mutationAllowed: false,
+    };
+  }
+  return {
+    ok: false,
+    kind: 'unsupported',
+    status: 'op-not-allowlisted',
+    readOnly: false,
+    mutationAllowed: false,
+  };
+}
+
+function parsePayloadJson(raw, source) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'payload-json-invalid',
+      source,
+      error: String(error && error.message || error),
+    };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      status: 'payload-json-object-required',
+      source,
+    };
+  }
+  return {
+    ok: true,
+    status: 'payload-json-accepted',
+    source,
+    payload: parsed,
+  };
+}
+
+function loadStructuredPayload(options) {
+  if (options.payloadJson && options.payloadFile) {
+    return {
+      ok: false,
+      status: 'payload-source-conflict',
+      source: 'multiple',
+    };
+  }
+  if (options.payloadJson) return parsePayloadJson(options.payloadJson, 'payload-json');
+  if (options.payloadFile) {
+    const payloadFile = path.resolve(repoRoot, options.payloadFile);
+    let raw = '';
+    try {
+      raw = fs.readFileSync(payloadFile, 'utf8');
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'payload-file-read-failed',
+        source: 'payload-file',
+        payloadFile,
+        error: String(error && error.message || error),
+      };
+    }
+    return {
+      ...parsePayloadJson(raw, 'payload-file'),
+      payloadFile,
+    };
+  }
+  return {
+    ok: true,
+    status: 'payload-empty',
+    source: '',
+    payload: {},
+  };
+}
+
+function redactPayloadValue(value, depth = 0) {
+  if (depth > 5) return '[redacted-depth]';
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  if (Array.isArray(value)) return value.slice(0, 25).map((entry) => redactPayloadValue(entry, depth + 1));
+  if (typeof value !== 'object') return null;
+  const output = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 50)) {
+    const lower = key.toLowerCase();
+    if (lower.includes('token') || lower.includes('secret') || lower.includes('password')) {
+      output[key] = '[redacted]';
+      continue;
+    }
+    if (lower === 'content' || lower === 'rawcontent' || lower === 'snapshotpayload') {
+      output[key] = '[redacted]';
+      continue;
+    }
+    output[key] = redactPayloadValue(entry, depth + 1);
+  }
+  return output;
+}
+
 function parseArgs(argv) {
   const options = {
     mode: 'attach',
@@ -205,6 +341,9 @@ function parseArgs(argv) {
     studioUrl: '',
     op: 'diagnoseHealth',
     commandId: '',
+    allowMutation: false,
+    payloadJson: '',
+    payloadFile: '',
     timeoutMs: 20000,
     waitAfterNavigateMs: 1200,
   };
@@ -212,6 +351,10 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') {
       options.help = true;
+      continue;
+    }
+    if (arg === '--allow-mutation') {
+      options.allowMutation = true;
       continue;
     }
     if (!arg.startsWith('--')) {
@@ -230,6 +373,9 @@ function parseArgs(argv) {
     else if (key === 'studio-url') options.studioUrl = value;
     else if (key === 'op') options.op = value;
     else if (key === 'command-id') options.commandId = value;
+    else if (key === 'allow-mutation') options.allowMutation = value !== 'false';
+    else if (key === 'payload-json') options.payloadJson = String(value);
+    else if (key === 'payload-file') options.payloadFile = String(value);
     else if (key === 'timeout-ms') options.timeoutMs = Number(value);
     else if (key === 'wait-after-navigate-ms') options.waitAfterNavigateMs = Number(value);
     else throw new Error(`unknown option: --${key}`);
@@ -252,12 +398,16 @@ function usage() {
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9224 --op diagnoseHealth',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9224 --op getFolderModel',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port 9224 --op diagnoseHealth',
+    '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9246 --op createFolder --allow-mutation --payload-json \'{"name":"zz-5a-chrome-create","color":"#FF4C4C"}\' --timeout-ms 30000',
+    '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9246 --op syncNow --allow-mutation --payload-json \'{"direction":"chrome-to-desktop","reason":"slice-5a-manual-proof"}\' --timeout-ms 30000',
+    '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9246 --op verifyFolderVisible --allow-mutation --payload-file /private/tmp/h2o-folder-visible-payload.json --timeout-ms 30000',
     '',
     'Chrome Dev smoke profile:',
     `  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port ${CHROME_DEV_SMOKE_PORT} --chrome-path "${CHROME_DEV_PATH}" --extension-path "${DEFAULT_LOAD_EXTENSION}" --user-data-dir "${CHROME_DEV_SMOKE_PROFILE}" --op diagnoseHealth`,
     `  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port ${CHROME_DEV_SMOKE_PORT} --op getFolderModel`,
     '',
-    'Slice 4A supports read-only ops only: diagnoseHealth, getFolderModel.',
+    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel.',
+    'Slice 5A mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }
 
@@ -1547,7 +1697,7 @@ async function prepareTarget(cdp, url, options) {
   };
 }
 
-async function runReadOnlyRegistryOp(cdp, registryObjectId, op, payload) {
+async function runRegistryOp(cdp, registryObjectId, op, payload) {
   const called = await cdp.send('Runtime.callFunctionOn', {
     objectId: registryObjectId,
     functionDeclaration: REGISTRY_CALL_WRAPPER,
@@ -1572,12 +1722,34 @@ async function diagnoseRegistryGates(cdp, registryObjectId) {
 }
 
 async function run(options) {
-  if (!READ_ONLY_OP_SET.has(options.op)) {
-    return result('op-not-read-only', {
+  const opMode = classifyOp(options.op, options.allowMutation);
+  const payloadLoad = loadStructuredPayload(options);
+  const payloadProvided = !!(options.payloadJson || options.payloadFile);
+  const commonMode = {
+    op: options.op,
+    allowMutation: options.allowMutation === true,
+    mutationAllowed: opMode.mutationAllowed === true,
+    readOnly: opMode.readOnly === true,
+    payloadAccepted: payloadLoad.ok === true && payloadProvided,
+    payloadSource: payloadLoad.source || '',
+    allowedReadOnlyOps: READ_ONLY_OPS,
+    allowedMutationOps: MUTATION_OPS,
+  };
+  if (!opMode.ok) {
+    return result(opMode.status, {
       ok: false,
-      op: options.op,
-      allowlist: READ_ONLY_OPS,
-      blockers: ['op-not-read-only'],
+      ...commonMode,
+      blockers: [opMode.status],
+    });
+  }
+  if (!payloadLoad.ok) {
+    return result(payloadLoad.status, {
+      ok: false,
+      ...commonMode,
+      payloadAccepted: false,
+      payloadFile: payloadLoad.payloadFile || '',
+      error: payloadLoad.error || '',
+      blockers: [payloadLoad.status],
     });
   }
 
@@ -1598,6 +1770,7 @@ async function run(options) {
       if (existingVersion) {
         return result('chrome-cdp-port-in-use', {
           ok: false,
+          ...commonMode,
           mode: options.mode,
           port: options.port,
           browser: summarizeCdpVersion(existingVersion),
@@ -1628,6 +1801,7 @@ async function run(options) {
     const status = error && error.status || 'chrome-cdp-unavailable';
     return result(status, {
       ok: false,
+      ...commonMode,
       mode: options.mode,
       port: options.port,
       error: String(error && error.message || error),
@@ -1659,6 +1833,7 @@ async function run(options) {
     const status = error && error.status || error && error.message || 'studio-launcher-extension-not-loaded';
     return result(status, {
       ok: false,
+      ...commonMode,
       mode: options.mode,
       port: options.port,
       browser: summarizeCdpVersion(cdpVersion),
@@ -1696,6 +1871,7 @@ async function run(options) {
     if (status === 'chrome-extension-not-loaded' && options.mode === 'attach') blockers.push('chrome-cdp-attached-to-wrong-browser');
     return result(status, {
       ok: false,
+      ...commonMode,
       mode: options.mode,
       port: options.port,
       browser: summarizeCdpVersion(cdpVersion),
@@ -1729,6 +1905,7 @@ async function run(options) {
     if (registryGates && registryGates.enabled !== true) {
       return result('smoke-registry-disabled', {
         ok: false,
+        ...commonMode,
         mode: options.mode,
         port: options.port,
         browser: summarizeCdpVersion(cdpVersion),
@@ -1762,20 +1939,24 @@ async function run(options) {
       });
     }
     const commandId = options.commandId || `chrome-${options.op}-${Date.now().toString(36)}`;
+    const commandPayload = payloadLoad.payload || {};
     const payload = {
+      ...commandPayload,
       commandId,
       createdAt: nowIso(),
       expectedSurface: 'chrome-studio',
-      reason: 'chrome-cdp-smoke-helper',
+      reason: commandPayload.reason || 'chrome-cdp-smoke-helper',
     };
-    const registryResult = await runReadOnlyRegistryOp(cdp, registryObjectId, options.op, payload);
+    const registryResult = await runRegistryOp(cdp, registryObjectId, options.op, payload);
     return result(registryResult && registryResult.status || 'registry-result', {
       ok: !!(registryResult && registryResult.ok === true),
+      ...commonMode,
       mode: options.mode,
       port: options.port,
       browser: summarizeCdpVersion(cdpVersion),
       op: options.op,
       commandId,
+      payloadSummary: redactPayloadValue(commandPayload),
       targetId: targetIdOf(target),
       targetUrl: target.url || url,
       studioTargetFound: true,
@@ -1810,6 +1991,7 @@ async function run(options) {
     if (status === 'chrome-extension-not-loaded' && options.mode === 'attach') blockers.push('chrome-cdp-attached-to-wrong-browser');
     return result(status, {
       ok: false,
+      ...commonMode,
       mode: options.mode,
       port: options.port,
       browser: summarizeCdpVersion(cdpVersion),

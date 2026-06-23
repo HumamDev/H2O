@@ -51,8 +51,15 @@ assertContains(helper, 'syncFolderDiagnoseGranted', 'granted folder handle class
 assertContains(helper, 'syncFolderDiagnoseLost', 'lost folder handle classifier');
 assertContains(helper, 'arguments: [{ value: op }, { value: payload }]', 'structured CDP arguments');
 assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel'])", 'Slice 4A read-only allowlist');
-assertContains(helper, "if (!READ_ONLY_OP_SET.has(options.op))", 'read-only op guard');
-assertContains(helper, 'op-not-read-only', 'read-only rejection status');
+assertContains(helper, "MUTATION_OPS = Object.freeze", 'Slice 5A mutation allowlist');
+assertContains(helper, 'classifyOp(options.op, options.allowMutation)', 'operation classifier guard');
+assertContains(helper, 'mutation-op-requires-allow-mutation', 'mutation opt-in rejection status');
+assertContains(helper, 'op-not-allowlisted', 'unknown op rejection status');
+assertContains(helper, '--allow-mutation', 'mutation opt-in CLI flag');
+assertContains(helper, '--payload-json', 'structured payload JSON CLI');
+assertContains(helper, '--payload-file', 'structured payload file CLI');
+assertContains(helper, 'JSON.parse(raw)', 'JSON-only payload parser');
+assertContains(helper, 'payload-json-object-required', 'payload object-only guard');
 assertContains(helper, 'chrome-cdp-unavailable', 'CDP unavailable status');
 assertContains(helper, 'chrome-cdp-port-in-use', 'CDP port in use status');
 assertContains(helper, 'chrome-cdp-attached-to-wrong-browser', 'wrong browser blocker');
@@ -168,11 +175,13 @@ assertNotContains(helper, 'new Function', 'Chrome CDP helper');
 assertNotContains(helper, '--js', 'Chrome CDP helper');
 assertNotContains(helper, '--script', 'Chrome CDP helper');
 assertNotContains(helper, '--expression', 'Chrome CDP helper');
-assertNotContains(helper, 'createFolder', 'Chrome CDP helper');
-assertNotContains(helper, 'renameFolder', 'Chrome CDP helper');
-assertNotContains(helper, 'setFolderColor', 'Chrome CDP helper');
 assertNotContains(helper, 'requestFolderDelete', 'Chrome CDP helper');
 assertNotContains(helper, 'applyFolderDeleteRequest', 'Chrome CDP helper');
+assertNotContains(helper, 'listFolderDeleteRequests', 'Chrome CDP helper');
+assertNotContains(helper, 'listFolderDeleteReceipts', 'Chrome CDP helper');
+assertNotContains(helper, 'listActiveFolderTombstones', 'Chrome CDP helper');
+assertNotContains(helper, 'deleteFolder', 'Chrome CDP helper');
+assertNotContains(helper, 'restoreFolder', 'Chrome CDP helper');
 assertNotContains(helper, 'DELETE FROM', 'Chrome CDP helper');
 assertNotContains(helper, 'DROP TABLE', 'Chrome CDP helper');
 assertNotContains(helper, 'TRUNCATE TABLE', 'Chrome CDP helper');
@@ -184,9 +193,6 @@ for (const op of ['diagnoseHealth', 'getFolderModel']) {
   assert(allowlistBlock.includes(`'${op}'`), `READ_ONLY_OPS missing ${op}`);
 }
 for (const op of [
-  'createFolder',
-  'renameFolder',
-  'setFolderColor',
   'requestFolderDelete',
   'applyFolderDeleteRequest',
   'hardDelete',
@@ -198,6 +204,29 @@ for (const op of [
   assert(!allowlistBlock.includes(op), `READ_ONLY_OPS must not include ${op}`);
 }
 
+const mutationAllowlistMatch = helper.match(/MUTATION_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
+assert(mutationAllowlistMatch, 'MUTATION_OPS declaration missing');
+const mutationAllowlistBlock = mutationAllowlistMatch[1];
+for (const op of ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden']) {
+  assert(mutationAllowlistBlock.includes(`'${op}'`), `MUTATION_OPS missing ${op}`);
+}
+for (const op of [
+  'requestFolderDelete',
+  'applyFolderDeleteRequest',
+  'listFolderDeleteRequests',
+  'listFolderDeleteReceipts',
+  'listActiveFolderTombstones',
+  'restoreFolder',
+  'deleteFolder',
+  'hardDelete',
+  'purge',
+  'rawSql',
+  'deleteChat',
+  'deleteSnapshot',
+]) {
+  assert(!mutationAllowlistBlock.includes(op), `MUTATION_OPS must not include ${op}`);
+}
+
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-folder-sync-rc-smoke-runner',
@@ -206,5 +235,6 @@ console.log(JSON.stringify({
   defaultProfile: '/private/tmp/h2o-folder-sync-smoke-chrome-profile',
   chromeDevPort: 9225,
   chromeDevProfile: '/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile',
-  allowedOps: ['diagnoseHealth', 'getFolderModel'],
+  readOnlyOps: ['diagnoseHealth', 'getFolderModel'],
+  mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden'],
 }, null, 2));
