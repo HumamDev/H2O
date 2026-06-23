@@ -18,6 +18,7 @@ const DESKTOP_HELPER = 'tools/smoke/desktop-folder-sync-queue-client.mjs';
 const DEFAULT_INITIAL_COLOR = '#FF4C4C';
 const DEFAULT_CHROME_COLOR = '#22C55E';
 const DEFAULT_DESKTOP_COLOR = '#A855F7';
+const VERIFY_RETRY_INTERVAL_MS = 2000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -131,6 +132,10 @@ function normalizeColor(value) {
 
 function uniqueToken() {
   return Date.now().toString(36);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseJsonStdout(stdout) {
@@ -279,6 +284,10 @@ function buildDesktopArgs(options, op, payload) {
 
 async function runStep(stepResults, key, label, surface, helperPath, args, timeoutMs, check) {
   const runResult = await execNodeJson(label, helperPath, args, timeoutMs);
+  return recordStep(stepResults, key, label, surface, runResult, check);
+}
+
+function recordStep(stepResults, key, label, surface, runResult, check, retry = null) {
   const summary = helperSummary(runResult);
   const checkResult = typeof check === 'function' ? check(summary) : { ok: summary.helperOk && summary.registryOk };
   const ok = checkResult.ok === true;
@@ -307,8 +316,48 @@ async function runStep(stepResults, key, label, surface, helperPath, args, timeo
     completedAt: runResult.completedAt,
     helper: summary.raw,
   };
+  if (retry) step.retry = retry;
   stepResults.push(step);
   return { runResult, summary, step };
+}
+
+async function runRetriedStep(stepResults, key, label, surface, helperPath, args, timeoutMs, check) {
+  const startedAt = nowIso();
+  const deadline = Date.now() + timeoutMs;
+  const attempts = [];
+  let finalRunResult = null;
+  let finalSummary = null;
+  let finalCheckResult = null;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt += 1;
+    finalRunResult = await execNodeJson(`${label} attempt ${attempt}`, helperPath, args, Math.min(timeoutMs, 10000));
+    finalSummary = helperSummary(finalRunResult);
+    finalCheckResult = typeof check === 'function' ? check(finalSummary) : { ok: finalSummary.helperOk && finalSummary.registryOk };
+    attempts.push({
+      attempt,
+      ok: finalCheckResult.ok === true,
+      status: finalSummary.registryStatus || finalSummary.status,
+      folderId: finalSummary.folderId,
+      name: finalSummary.name,
+      color: finalSummary.color,
+      blockers: [...finalSummary.blockers, ...codeList(finalCheckResult.blockers)],
+      warnings: [...finalSummary.warnings, ...codeList(finalCheckResult.warnings)],
+      startedAt: finalRunResult.startedAt,
+      completedAt: finalRunResult.completedAt,
+    });
+    if (finalCheckResult.ok === true) break;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= VERIFY_RETRY_INTERVAL_MS) break;
+    await sleep(Math.min(VERIFY_RETRY_INTERVAL_MS, remainingMs));
+  }
+  return recordStep(stepResults, key, label, surface, finalRunResult, check, {
+    startedAt,
+    completedAt: nowIso(),
+    attemptCount: attempts.length,
+    intervalMs: VERIFY_RETRY_INTERVAL_MS,
+    attempts,
+  });
 }
 
 function expectOk(key) {
@@ -390,6 +439,48 @@ async function run(options) {
   const stepResults = [];
   const warnings = [];
   const blockers = [];
+  let comparison = null;
+  let firstFailedStep = '';
+
+  function finish() {
+    for (const step of stepResults) {
+      for (const blocker of step.blockers || []) blockers.push(blocker);
+      for (const warning of step.warnings || []) warnings.push(warning);
+    }
+    const deferredWarnings = collectDeferredWarnings(stepResults);
+    const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
+    const uniqueWarnings = [...new Set(warnings.filter(Boolean))];
+    const ok = uniqueBlockers.length === 0;
+    return result(ok ? 'mutation-smoke-passed' : 'mutation-smoke-blocked', {
+      ok,
+      folderId: folderId || '',
+      createdName,
+      renamedName,
+      initialColor: options.initialColor,
+      chromeColor: options.chromeColor,
+      desktopColor: options.desktopColor,
+      blockers: uniqueBlockers,
+      warnings: uniqueWarnings,
+      deferredWarnings,
+      deferredWarningsNonBlocking: deferredWarnings.length > 0 && uniqueBlockers.length === 0,
+      firstFailedStep,
+      comparison,
+      stepResults,
+      inputs: {
+        chromePort: options.chromePort,
+        chromeMode: options.chromeMode,
+        timeoutMs: options.timeoutMs,
+        allowMutation: options.allowMutation,
+        verifyRetryIntervalMs: VERIFY_RETRY_INTERVAL_MS,
+      },
+    });
+  }
+
+  function requireStep(completed) {
+    if (completed && completed.step && completed.step.ok === true) return false;
+    firstFailedStep = completed && completed.step && completed.step.key || 'unknown-step';
+    return true;
+  }
 
   const create = await runStep(stepResults, 'chrome-create-folder', 'Chrome createFolder', 'chrome-studio', CHROME_HELPER,
     buildChromeArgs(options, 'createFolder', { name: createdName, color: options.initialColor, reason: 'mutation-smoke-chrome-create' }),
@@ -397,84 +488,121 @@ async function run(options) {
     expectOk('chrome-create-folder'));
   const folderId = create.summary.folderId;
   if (!folderId) blockers.push('created-folder-id-missing');
+  if (requireStep(create) || !folderId) {
+    if (!firstFailedStep) firstFailedStep = 'chrome-create-folder';
+    return finish();
+  }
 
-  await runStep(stepResults, 'chrome-export-created', 'Chrome export created folder', 'chrome-studio', CHROME_HELPER,
+  const chromeExportCreated = await runStep(stepResults, 'chrome-export-created', 'Chrome export created folder', 'chrome-studio', CHROME_HELPER,
     buildChromeArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'mutation-smoke-chrome-export-created' }),
     options.timeoutMs,
     expectOk('chrome-export-created'));
+  if (requireStep(chromeExportCreated)) return finish();
 
   if (folderId) {
-    await runStep(stepResults, 'desktop-verify-created', 'Desktop verify Chrome-created folder', 'desktop-studio', DESKTOP_HELPER,
+    await runStep(stepResults, 'desktop-import-created', 'Desktop import Chrome-created folder', 'desktop-studio', DESKTOP_HELPER,
+      buildDesktopArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'mutation-smoke-desktop-import-created' }),
+      options.timeoutMs,
+      expectOk('desktop-import-created'));
+
+    const desktopVerifyCreated = await runRetriedStep(stepResults, 'desktop-verify-created', 'Desktop verify Chrome-created folder', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'verifyFolderVisible', { folderId, name: createdName }),
       options.timeoutMs,
       expectVisible(folderId, createdName, options.initialColor));
+    if (requireStep(desktopVerifyCreated)) return finish();
 
-    await runStep(stepResults, 'desktop-rename-folder', 'Desktop rename folder', 'desktop-studio', DESKTOP_HELPER,
+    const desktopRename = await runStep(stepResults, 'desktop-rename-folder', 'Desktop rename folder', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'renameFolder', { folderId, name: renamedName, reason: 'mutation-smoke-desktop-rename' }),
       options.timeoutMs,
       expectOk('desktop-rename-folder'));
+    if (requireStep(desktopRename)) return finish();
 
-    await runStep(stepResults, 'desktop-export-rename', 'Desktop export rename', 'desktop-studio', DESKTOP_HELPER,
+    const desktopExportRename = await runStep(stepResults, 'desktop-export-rename', 'Desktop export rename', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'syncNow', { direction: 'desktop-to-chrome', reason: 'mutation-smoke-desktop-export-rename' }),
       options.timeoutMs,
       expectOk('desktop-export-rename'));
+    if (requireStep(desktopExportRename)) return finish();
 
-    await runStep(stepResults, 'chrome-import-rename', 'Chrome import rename', 'chrome-studio', CHROME_HELPER,
-      buildChromeArgs(options, 'syncNow', { direction: 'desktop-to-chrome', reason: 'mutation-smoke-chrome-import-rename' }),
+    const chromeImportRename = await runStep(stepResults, 'chrome-import-rename', 'Chrome import rename', 'chrome-studio', CHROME_HELPER,
+      buildChromeArgs(options, 'syncNow', {
+        direction: 'desktop-to-chrome',
+        reason: 'mutation-smoke-chrome-import-rename',
+        conflictDecision: 'approve-merge',
+      }),
       options.timeoutMs,
       expectOk('chrome-import-rename'));
+    if (requireStep(chromeImportRename)) return finish();
 
-    await runStep(stepResults, 'chrome-verify-rename', 'Chrome verify rename', 'chrome-studio', CHROME_HELPER,
+    const chromeVerifyRename = await runRetriedStep(stepResults, 'chrome-verify-rename', 'Chrome verify rename', 'chrome-studio', CHROME_HELPER,
       buildChromeArgs(options, 'verifyFolderVisible', { folderId, name: renamedName }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.initialColor));
+    if (requireStep(chromeVerifyRename)) return finish();
 
-    await runStep(stepResults, 'chrome-set-color', 'Chrome set color', 'chrome-studio', CHROME_HELPER,
+    const chromeSetColor = await runStep(stepResults, 'chrome-set-color', 'Chrome set color', 'chrome-studio', CHROME_HELPER,
       buildChromeArgs(options, 'setFolderColor', { folderId, color: options.chromeColor, reason: 'mutation-smoke-chrome-set-color' }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.chromeColor));
+    if (requireStep(chromeSetColor)) return finish();
 
-    await runStep(stepResults, 'chrome-export-color', 'Chrome export color', 'chrome-studio', CHROME_HELPER,
+    const chromeExportColor = await runStep(stepResults, 'chrome-export-color', 'Chrome export color', 'chrome-studio', CHROME_HELPER,
       buildChromeArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'mutation-smoke-chrome-export-color' }),
       options.timeoutMs,
       expectOk('chrome-export-color'));
+    if (requireStep(chromeExportColor)) return finish();
 
-    await runStep(stepResults, 'desktop-verify-chrome-color', 'Desktop verify Chrome color', 'desktop-studio', DESKTOP_HELPER,
+    await runStep(stepResults, 'desktop-import-chrome-color', 'Desktop import Chrome color', 'desktop-studio', DESKTOP_HELPER,
+      buildDesktopArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'mutation-smoke-desktop-import-chrome-color' }),
+      options.timeoutMs,
+      expectOk('desktop-import-chrome-color'));
+
+    const desktopVerifyChromeColor = await runRetriedStep(stepResults, 'desktop-verify-chrome-color', 'Desktop verify Chrome color', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'verifyFolderVisible', { folderId, name: renamedName }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.chromeColor));
+    if (requireStep(desktopVerifyChromeColor)) return finish();
 
-    await runStep(stepResults, 'desktop-set-color', 'Desktop set color', 'desktop-studio', DESKTOP_HELPER,
+    const desktopSetColor = await runStep(stepResults, 'desktop-set-color', 'Desktop set color', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'setFolderColor', { folderId, color: options.desktopColor, reason: 'mutation-smoke-desktop-set-color' }),
       options.timeoutMs,
       expectOk('desktop-set-color'));
+    if (requireStep(desktopSetColor)) return finish();
 
-    await runStep(stepResults, 'desktop-verify-local-color', 'Desktop verify local color', 'desktop-studio', DESKTOP_HELPER,
+    const desktopVerifyLocalColor = await runRetriedStep(stepResults, 'desktop-verify-local-color', 'Desktop verify local color', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'verifyFolderVisible', { folderId, name: renamedName }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.desktopColor));
+    if (requireStep(desktopVerifyLocalColor)) return finish();
 
-    await runStep(stepResults, 'desktop-export-final-color', 'Desktop export final color', 'desktop-studio', DESKTOP_HELPER,
+    const desktopExportFinalColor = await runStep(stepResults, 'desktop-export-final-color', 'Desktop export final color', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'syncNow', { direction: 'desktop-to-chrome', reason: 'mutation-smoke-desktop-export-final-color' }),
       options.timeoutMs,
       expectOk('desktop-export-final-color'));
+    if (requireStep(desktopExportFinalColor)) return finish();
 
-    await runStep(stepResults, 'chrome-import-final-color', 'Chrome import final color', 'chrome-studio', CHROME_HELPER,
-      buildChromeArgs(options, 'syncNow', { direction: 'desktop-to-chrome', reason: 'mutation-smoke-chrome-import-final-color' }),
+    const chromeImportFinalColor = await runStep(stepResults, 'chrome-import-final-color', 'Chrome import final color', 'chrome-studio', CHROME_HELPER,
+      buildChromeArgs(options, 'syncNow', {
+        direction: 'desktop-to-chrome',
+        reason: 'mutation-smoke-chrome-import-final-color',
+        conflictDecision: 'approve-merge',
+      }),
       options.timeoutMs,
       expectOk('chrome-import-final-color'));
+    if (requireStep(chromeImportFinalColor)) return finish();
 
-    await runStep(stepResults, 'chrome-verify-final-color', 'Chrome verify final color', 'chrome-studio', CHROME_HELPER,
+    const chromeVerifyFinalColor = await runRetriedStep(stepResults, 'chrome-verify-final-color', 'Chrome verify final color', 'chrome-studio', CHROME_HELPER,
       buildChromeArgs(options, 'verifyFolderVisible', { folderId, name: renamedName }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.desktopColor));
+    if (requireStep(chromeVerifyFinalColor)) return finish();
 
     const finalDesktop = await runStep(stepResults, 'desktop-final-parity-check', 'Desktop final parity check', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'verifyFolderVisible', { folderId, name: renamedName }),
       options.timeoutMs,
       expectVisible(folderId, renamedName, options.desktopColor));
+    if (requireStep(finalDesktop)) return finish();
     const finalChrome = stepResults.find((step) => step.key === 'chrome-verify-final-color');
-    const comparison = finalComparison(finalChrome, finalDesktop.step);
+    comparison = finalComparison(finalChrome, finalDesktop.step);
     if (!comparison.folderIdMatch) blockers.push('final-folder-id-mismatch');
     if (!comparison.nameMatch) blockers.push('final-folder-name-mismatch');
     if (!comparison.colorMatch) blockers.push('final-folder-color-mismatch');
@@ -483,44 +611,19 @@ async function run(options) {
       buildChromeArgs(options, 'getFolderModel', { reason: 'mutation-smoke-final-chrome-model' }),
       options.timeoutMs,
       expectOk('chrome-final-folder-model'));
+    if (requireStep(chromeFinalModel)) return finish();
     const desktopFinalModel = await runStep(stepResults, 'desktop-final-folder-model', 'Desktop final getFolderModel', 'desktop-studio', DESKTOP_HELPER,
       buildDesktopArgs(options, 'getFolderModel', { reason: 'mutation-smoke-final-desktop-model' }),
       options.timeoutMs,
       expectOk('desktop-final-folder-model'));
+    if (requireStep(desktopFinalModel)) return finish();
     comparison.model = compareFolderModels(chromeFinalModel.summary.raw, desktopFinalModel.summary.raw);
     if (!comparison.model.rowCountMatch) blockers.push('final-row-count-mismatch');
     if (comparison.model.chromeOnlyCount !== 0) blockers.push('final-chrome-only-folders');
     if (comparison.model.desktopOnlyCount !== 0) blockers.push('final-desktop-only-folders');
   }
 
-  for (const step of stepResults) {
-    for (const blocker of step.blockers || []) blockers.push(blocker);
-    for (const warning of step.warnings || []) warnings.push(warning);
-  }
-  const deferredWarnings = collectDeferredWarnings(stepResults);
-  const uniqueBlockers = [...new Set(blockers.filter(Boolean))];
-  const uniqueWarnings = [...new Set(warnings.filter(Boolean))];
-  const ok = uniqueBlockers.length === 0;
-  return result(ok ? 'mutation-smoke-passed' : 'mutation-smoke-blocked', {
-    ok,
-    folderId: folderId || '',
-    createdName,
-    renamedName,
-    initialColor: options.initialColor,
-    chromeColor: options.chromeColor,
-    desktopColor: options.desktopColor,
-    blockers: uniqueBlockers,
-    warnings: uniqueWarnings,
-    deferredWarnings,
-    deferredWarningsNonBlocking: deferredWarnings.length > 0 && uniqueBlockers.length === 0,
-    stepResults,
-    inputs: {
-      chromePort: options.chromePort,
-      chromeMode: options.chromeMode,
-      timeoutMs: options.timeoutMs,
-      allowMutation: options.allowMutation,
-    },
-  });
+  return finish();
 }
 
 async function main() {
