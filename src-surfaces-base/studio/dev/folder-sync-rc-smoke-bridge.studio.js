@@ -21,6 +21,8 @@
   var OPT_IN_KEY = 'h2o:studio:smoke-bridge:enabled:v1';
   var REQUIRED_VALUE = 'folder-sync-rc';
   var FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
+  var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var REFRESH_EVENT = 'evt:h2o:library-index:refresh-request';
 
   var ALLOWED_OPS = Object.freeze([
     'getFolderModel',
@@ -301,6 +303,110 @@
     return value;
   }
 
+  function hasChromeStorageLocal() {
+    try {
+      return !!(global.chrome && global.chrome.storage && global.chrome.storage.local &&
+        typeof global.chrome.storage.local.get === 'function' &&
+        typeof global.chrome.storage.local.set === 'function');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function chromeStorageGet(key) {
+    return new Promise(function (resolve, reject) {
+      try {
+        if (!hasChromeStorageLocal()) return resolve(null);
+        global.chrome.storage.local.get(key, function (items) {
+          try {
+            var runtime = global.chrome && global.chrome.runtime;
+            if (runtime && runtime.lastError) return reject(new Error(runtime.lastError.message || 'chrome-storage-get-failed'));
+          } catch (_) { /* ignore */ }
+          resolve(items && items[key]);
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function chromeStorageSet(items) {
+    return new Promise(function (resolve, reject) {
+      try {
+        if (!hasChromeStorageLocal()) return reject(new Error('chrome-storage-write-unavailable'));
+        global.chrome.storage.local.set(items, function () {
+          try {
+            var runtime = global.chrome && global.chrome.runtime;
+            if (runtime && runtime.lastError) return reject(new Error(runtime.lastError.message || 'chrome-storage-set-failed'));
+          } catch (_) { /* ignore */ }
+          resolve(true);
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function folderNameKey(value) {
+    return cleanString(value).toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function folderIdSlug(value) {
+    var slug = folderNameKey(value).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return slug || 'folder';
+  }
+
+  function randomToken() {
+    try {
+      if (global.crypto && typeof global.crypto.getRandomValues === 'function') {
+        var bytes = new Uint8Array(6);
+        global.crypto.getRandomValues(bytes);
+        return Array.prototype.map.call(bytes, function (byte) {
+          return ('0' + byte.toString(16)).slice(-2);
+        }).join('');
+      }
+    } catch (_) { /* ignore */ }
+    return Math.floor(Math.random() * 0xFFFFFFFFFFFF).toString(16);
+  }
+
+  function makeSmokeFolderId(name, existingRows) {
+    var existing = safeArray(existingRows).reduce(function (acc, row) {
+      var id = cleanString(row && (row.folderId || row.id));
+      if (id) acc[id] = true;
+      return acc;
+    }, Object.create(null));
+    for (var attempt = 0; attempt < 8; attempt += 1) {
+      var id = 'fold_smoke_' + folderIdSlug(name).slice(0, 48) + '_' + Date.now().toString(36) + '_' + randomToken();
+      if (!existing[id]) return id;
+    }
+    return 'fold_smoke_' + Date.now().toString(36) + '_' + randomToken();
+  }
+
+  function availableCreateApis() {
+    var rows = [];
+    var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
+    if (actions && typeof actions.create === 'function') rows.push('actions.folders.create');
+    var request = getPath(H2O, ['Studio', 'sync', 'folderMetadataOperations', 'request']);
+    if (typeof request === 'function') rows.push('sync.folderMetadataOperations.request');
+    if (hasChromeStorageLocal()) rows.push('chrome.folder-state-mirror');
+    return rows;
+  }
+
+  function dispatchFolderStateRefresh(reason) {
+    try {
+      if (H2O.Library && H2O.Library.Sync && typeof H2O.Library.Sync.pingNow === 'function') {
+        H2O.Library.Sync.pingNow(reason || 'folder-sync-rc-smoke-folder-create');
+      }
+    } catch (_) { /* ignore */ }
+    try {
+      if (typeof global.dispatchEvent === 'function' && typeof global.CustomEvent === 'function') {
+        global.dispatchEvent(new global.CustomEvent(REFRESH_EVENT, {
+          detail: { reason: reason || 'folder-sync-rc-smoke-folder-create' },
+        }));
+      }
+    } catch (_) { /* ignore */ }
+  }
+
   function summarizeFolderRow(row) {
     var r = safeObject(row);
     var meta = safeObject(r.meta);
@@ -358,6 +464,7 @@
   async function findFolderRow(payload) {
     var targetId = cleanString(payload.folderId || payload.id);
     var targetName = cleanString(payload.name || payload.folderName);
+    var targetNameKey = folderNameKey(targetName);
     var modelResult = await getFolderModel({ reason: 'folder-sync-rc-smoke-bridge-find' });
     var rows = safeArray(modelResult.folders);
     var row = null;
@@ -367,6 +474,10 @@
         break;
       }
       if (!targetId && targetName && rows[i].name === targetName) {
+        row = rows[i];
+        break;
+      }
+      if (!targetId && targetNameKey && folderNameKey(rows[i].name) === targetNameKey) {
         row = rows[i];
         break;
       }
@@ -429,6 +540,7 @@
     var summary = summarizeMutationResult('createFolder', result);
     var requestedName = cleanString(payload.name || payload.folderName);
     var requestedColor = normalizeColor(payload.color || payload.iconColor);
+    var diagnostics = safeObject(payload.__createDiagnostics);
     var found = null;
     if (!summary.folderId && requestedName) {
       try {
@@ -447,12 +559,21 @@
     }
     if (summary.folderId) {
       summary.ok = true;
-      summary.status = 'folder-created';
+      summary.status = diagnostics.existing === true ? 'folder-created-or-existing' : 'folder-created';
       summary.id = summary.folderId;
       summary.name = cleanString(summary.name || requestedName);
       summary.color = cleanString(summary.color || requestedColor);
       summary.iconColor = cleanString(summary.iconColor || summary.color);
       summary.source = detectSurface().kind;
+      summary.createPathUsed = cleanString(diagnostics.createPathUsed);
+      summary.availableCreateApis = safeArray(diagnostics.availableCreateApis);
+      summary.duplicateNameDetected = diagnostics.duplicateNameDetected === true;
+      summary.existing = diagnostics.existing === true;
+      summary.existingFolderId = cleanString(diagnostics.existingFolderId);
+      summary.folderModelCountBefore = Number(diagnostics.folderModelCountBefore) || 0;
+      summary.folderModelCountAfter = Number(diagnostics.folderModelCountAfter || summary.modelRowCount) || 0;
+      summary.createdFolderFoundByName = diagnostics.createdFolderFoundByName === true || !!found;
+      summary.rawResult = safeObject(diagnostics.rawResult);
       summary.blockers = [];
       return summary;
     }
@@ -463,6 +584,14 @@
       reason: cleanString(summary.reason || summary.status || 'created folder was not returned or visible in folder model'),
       requestedName: requestedName,
       requestedColor: requestedColor,
+      createPathUsed: cleanString(diagnostics.createPathUsed),
+      availableCreateApis: safeArray(diagnostics.availableCreateApis),
+      duplicateNameDetected: diagnostics.duplicateNameDetected === true,
+      existingFolderId: cleanString(diagnostics.existingFolderId),
+      folderModelCountBefore: Number(diagnostics.folderModelCountBefore) || 0,
+      folderModelCountAfter: Number(diagnostics.folderModelCountAfter) || 0,
+      createdFolderFoundByName: diagnostics.createdFolderFoundByName === true,
+      rawResult: safeObject(diagnostics.rawResult),
       rawStatus: cleanString(summary.status),
       rawOk: summary.ok === true,
       warnings: codeList(summary.warnings),
@@ -470,6 +599,157 @@
       noChatDelete: true,
       noSnapshotDelete: true,
     });
+  }
+
+  async function createChromeFolderStateMirrorFolder(payload) {
+    if (detectSurface().kind !== 'chrome-studio') return null;
+    var name = cleanString(payload.name || payload.folderName);
+    if (!name) return unsupportedResult('createFolder', 'folder-name-required');
+    var color = normalizeColor(payload.color || payload.iconColor);
+    var before = await getFolderModel({ reason: 'folder-sync-rc-smoke-create-before' });
+    var beforeRows = safeArray(before.folders);
+    var nameKey = folderNameKey(name);
+    var existing = beforeRows.filter(function (row) {
+      return !row.hidden && folderNameKey(row.name) === nameKey;
+    })[0] || null;
+    var diagnostics = {
+      createPathUsed: 'chrome-folder-state-mirror',
+      availableCreateApis: availableCreateApis(),
+      folderModelCountBefore: Number(before.rowCount) || beforeRows.length,
+      duplicateNameDetected: !!existing,
+      existingFolderId: cleanString(existing && existing.folderId),
+      existing: !!existing,
+      createdFolderFoundByName: !!existing,
+    };
+    if (existing) {
+      diagnostics.folderModelCountAfter = diagnostics.folderModelCountBefore;
+      return summarizeCreateFolderResult({
+        ok: true,
+        status: 'folder-created-or-existing',
+        folderId: existing.folderId,
+        name: existing.name,
+        color: existing.color || existing.iconColor || color,
+      }, Object.assign({}, payload, { __createDiagnostics: diagnostics }));
+    }
+    if (!hasChromeStorageLocal()) {
+      return baseResult('createFolder', {
+        ok: false,
+        status: 'folder-create-failed',
+        blockers: ['folder-create-failed'],
+        reason: 'chrome-storage-write-unavailable',
+        requestedName: name,
+        requestedColor: color,
+        createPathUsed: diagnostics.createPathUsed,
+        availableCreateApis: diagnostics.availableCreateApis,
+        duplicateNameDetected: false,
+        folderModelCountBefore: diagnostics.folderModelCountBefore,
+        folderModelCountAfter: diagnostics.folderModelCountBefore,
+        createdFolderFoundByName: false,
+      });
+    }
+
+    var raw = safeObject(await chromeStorageGet(FOLDER_STATE_DATA_KEY));
+    var folders = Array.isArray(raw.folders) ? raw.folders.slice() : [];
+    var items = safeObject(raw.items);
+    var storedExisting = folders.filter(function (row) {
+      return folderNameKey(row && (row.name || row.title || safeObject(row.meta).name)) === nameKey;
+    })[0] || null;
+    if (storedExisting) {
+      var storedSummary = summarizeFolderRow(storedExisting);
+      diagnostics.duplicateNameDetected = true;
+      diagnostics.existing = true;
+      diagnostics.existingFolderId = storedSummary.folderId;
+      diagnostics.createdFolderFoundByName = true;
+      diagnostics.folderModelCountAfter = diagnostics.folderModelCountBefore;
+      return summarizeCreateFolderResult({
+        ok: true,
+        status: 'folder-created-or-existing',
+        folderId: storedSummary.folderId,
+        name: storedSummary.name || name,
+        color: storedSummary.color || color,
+      }, Object.assign({}, payload, { __createDiagnostics: diagnostics }));
+    }
+
+    var now = nowIso();
+    var folderId = makeSmokeFolderId(name, folders);
+    var source = 'chrome-studio';
+    var sourceKind = 'chrome-user-folder-create';
+    var meta = Object.assign({}, safeObject(payload.meta), {
+      folderId: folderId,
+      name: name,
+      title: name,
+      color: color,
+      iconColor: color,
+      source: source,
+      sourceKind: sourceKind,
+      userCreated: true,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+      createdBy: 'chrome-studio',
+      createdAt: now,
+      updatedAt: now,
+    });
+    var row = {
+      id: folderId,
+      folderId: folderId,
+      name: name,
+      title: name,
+      color: color,
+      iconColor: color,
+      source: source,
+      sourceKind: sourceKind,
+      kind: sourceKind,
+      stateSource: 'stored-folder-state',
+      userCreated: true,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+      createdAt: now,
+      updatedAt: now,
+      meta: meta,
+    };
+    folders.push(row);
+    if (!Array.isArray(items[folderId])) items[folderId] = [];
+    var nextState = Object.assign({}, raw, {
+      schemaVersion: Number(raw.schemaVersion || raw.version || 1) || 1,
+      source: cleanString(raw.source || raw.exportedFrom || 'stored-folder-state') || 'stored-folder-state',
+      sourceKind: 'chrome-folder-state-local-mutation',
+      updatedAt: now,
+      folders: folders,
+      items: items,
+    });
+    await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState });
+    dispatchFolderStateRefresh('folder-sync-rc-smoke-create-folder');
+
+    var found = await findFolderRow({ name: name });
+    diagnostics.folderModelCountAfter = Number(found.model && found.model.rowCount) || folders.length;
+    diagnostics.createdFolderFoundByName = !!(found && found.row);
+    if (!found || !found.row) {
+      return baseResult('createFolder', {
+        ok: false,
+        status: 'folder-create-failed',
+        blockers: ['folder-create-failed'],
+        reason: 'created-folder-not-visible-in-display-model',
+        requestedName: name,
+        requestedColor: color,
+        folderId: folderId,
+        id: folderId,
+        createPathUsed: diagnostics.createPathUsed,
+        availableCreateApis: diagnostics.availableCreateApis,
+        duplicateNameDetected: false,
+        folderModelCountBefore: diagnostics.folderModelCountBefore,
+        folderModelCountAfter: diagnostics.folderModelCountAfter,
+        createdFolderFoundByName: false,
+      });
+    }
+    return summarizeCreateFolderResult({
+      ok: true,
+      status: 'folder-created',
+      folderId: found.row.folderId || folderId,
+      name: found.row.name || name,
+      color: found.row.color || found.row.iconColor || color,
+    }, Object.assign({}, payload, { __createDiagnostics: diagnostics }));
   }
 
   function summarizeFolderSyncDiagnose(raw) {
@@ -553,19 +833,42 @@
   async function createFolder(payload) {
     var name = cleanString(payload.name || payload.folderName);
     if (!name) return unsupportedResult('createFolder', 'folder-name-required');
+    var chromeLocalResult = await createChromeFolderStateMirrorFolder(payload);
+    if (chromeLocalResult) return chromeLocalResult;
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     if (actions && typeof actions.create === 'function') {
-      return summarizeCreateFolderResult(await actions.create({
+      var actionResult = await actions.create({
         name: name,
         color: normalizeColor(payload.color || payload.iconColor),
         iconColor: normalizeColor(payload.iconColor || payload.color),
         parentId: cleanString(payload.parentId),
         meta: safeObject(payload.meta),
+      });
+      return summarizeCreateFolderResult(actionResult, Object.assign({}, payload, {
+        __createDiagnostics: {
+          createPathUsed: 'actions.folders.create',
+          availableCreateApis: availableCreateApis(),
+          rawResult: {
+            ok: safeObject(actionResult).ok === true,
+            status: cleanString(safeObject(actionResult).status),
+            reason: cleanString(safeObject(actionResult).reason),
+          },
+        },
       }));
     }
     var operation = buildMetadataOperation('create-folder', null, payload);
     var result = await requestFolderMetadataApply(operation, payload);
-    if (result) return summarizeCreateFolderResult(result, payload);
+    if (result) return summarizeCreateFolderResult(result, Object.assign({}, payload, {
+      __createDiagnostics: {
+        createPathUsed: 'sync.folderMetadataOperations.request',
+        availableCreateApis: availableCreateApis(),
+        rawResult: {
+          ok: safeObject(result).ok === true,
+          status: cleanString(safeObject(result).status),
+          reason: cleanString(safeObject(result).reason),
+        },
+      },
+    }));
     return unsupportedResult('createFolder', 'unsupported-op-on-surface');
   }
 
