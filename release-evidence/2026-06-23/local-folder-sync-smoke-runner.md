@@ -456,6 +456,117 @@ node tools/smoke/chrome-cdp-studio.mjs \
   - `canonicalRowCount: 6`
   - `displayModelAvailable:true`
 
+## Slice 4A Live Proof
+
+Proof date: 2026-06-23
+
+Relevant implementation/fix commits:
+
+- `42734ddf77dd3f36f4b7c8df1fcea202fbe08ed9` - Slice 4A helper implementation
+- `a54bee8c4968d4ec0bee4e5b60dc0a67f9745f57` - Chrome Dev smoke launch/documentation fix
+- `a3482ddd05da1a8c24347e36d5c536ed6b839116` - CDP target-control hardening
+- `c6984de1afa788b2750b1f470e95ca15a02fed40` - extension target discovery fix
+- `d518e795f08e3910a761eb2a1a15749287af89d5` - Chrome smoke profile extension loading fix
+- `9cde16f58f7d0fd58e47b264e35a662fff8b85a4` - latest helper success path, loading/reaching Studio extension and registry
+
+Launch/attach context:
+
+- Chrome Dev smoke CDP port: `9243`
+- Chrome browser: `Chrome/151.0.7896.2`
+- Smoke Studio URL:
+  - `chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/saved`
+- Extension ID discovered/loaded:
+  - `bpobkkppdlldlkccaehmpfclmkhiemhg`
+- CDP target transport:
+  - `target-websocket`
+- Registry path:
+  - `H2O.Studio.devSmoke.folderSync.run`
+- Registry call:
+  - `fixed-registry-wrapper`
+- Registry gates:
+  - `enabled:true`
+  - `surface: chrome-studio`
+  - `adapter: mv3`
+  - `blockers: []`
+
+`diagnoseHealth` proof:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode attach \
+  --port 9243 \
+  --op diagnoseHealth \
+  --timeout-ms 30000
+```
+
+- Helper reached the Chrome Studio target and registry.
+- Top-level helper returned `ok:true` for the command execution path.
+- Registry result:
+  - `result.ok:true`
+  - `result.op: diagnoseHealth`
+  - `result.surface: chrome-studio`
+  - `result.adapter: mv3`
+  - `result.status: blocked`
+  - `result.verdict: blocked`
+  - `result.blockers: ["permission-required", "no-folder-handle"]`
+- Interpretation:
+  - This is expected for a fresh smoke Chrome profile without File System Access permission to `/Users/hobayda/H2O Studio Sync`.
+  - This is not a CDP/helper failure.
+  - Future full smoke requires granting the sync folder handle in the smoke Chrome profile.
+
+`getFolderModel` proof:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode attach \
+  --port 9243 \
+  --op getFolderModel \
+  --timeout-ms 30000
+```
+
+- Helper result:
+  - `ok:true`
+  - `status: folder-model-read`
+  - `studioTargetFound:true`
+  - `smokeUrlFlagPresent:true`
+  - `registryGatesEnabled:true`
+  - `cdpControlDiagnostics.cdpTransport: target-websocket`
+  - `pageStatus.readyState: complete`
+- Registry result:
+  - `result.ok:true`
+  - `result.status: folder-model-read`
+  - `rowCount: 6`
+  - `canonicalRowCount: 6`
+  - `displayModelAvailable:true`
+  - `surface: chrome-studio`
+  - `adapter: mv3`
+  - `allowed:true`
+  - `disabled:false`
+
+Safety proof:
+
+- Safety flags remained true:
+  - `noArbitraryJsInput`
+  - `noProductionListener`
+  - `noRawSql`
+  - `noHardDelete`
+  - `noPurge`
+  - `noTombstonePropagationApply`
+  - `noChatDelete`
+  - `noSnapshotDelete`
+- Helper remains Slice 4A read-only:
+  - `diagnoseHealth`
+  - `getFolderModel`
+- No create, rename, color, delete, request, or apply operations were executed.
+
+Verdict:
+
+- Slice 4A Chrome CDP helper is live-proven for read-only registry commands.
+- It can reach Chrome Studio through CDP, enable smoke gates, call the fixed allowlisted registry wrapper, and return redacted JSON evidence.
+- The only remaining Chrome blocker is expected File System Access permission for the fresh smoke profile.
+- Next slice should be the Desktop queue client helper / combined read-only smoke runner.
+- Before full mutation smoke, the smoke Chrome profile must be granted access to `/Users/hobayda/H2O Studio Sync`.
+
 ## Safety Guarantees
 
 - External helper only; no in-app runtime behavior changed.
