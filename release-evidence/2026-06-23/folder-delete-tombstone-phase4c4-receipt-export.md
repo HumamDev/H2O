@@ -124,3 +124,76 @@ Expected receipt proof for the Phase 4C.3b runtime fixture:
 - `noChatDelete`: `true`
 
 Chrome behavior is intentionally unchanged in this phase.
+
+## Runtime Proof - 2026-06-23
+
+Implementation commit:
+
+- `1849f3624492eb272ab031ed6b27f6aa583f8549`
+- `feat(sync): export folder delete receipts`
+
+### Desktop Export Proof
+
+Ran in Desktop Studio:
+
+```js
+H2O.Studio.sync.folder.syncNow({
+  direction: "desktop-to-chrome",
+  reason: "phase4c4a-folder-delete-receipt-export-proof"
+});
+```
+
+Result:
+
+- `ok`: `true`
+- `status`: `latest-sync-bundle-written`
+- `direction`: `desktop-to-chrome`
+- `transport`: `latest.json`
+- `path`: `~/H2O Studio Sync/latest.json`
+- `folderDeleteReceiptCount`: `1`
+- `bytes`: `504799`
+- `exportedAt`: `2026-06-23T11:02:22.631Z`
+- `blockers`: `[]`
+- `warnings`: `[]`
+
+### Receipt Store Proof
+
+`H2O.Studio.store.tombstoneReviews.listFolderDeleteReceipts(...)` returned:
+
+- `receiptCount`: `1`
+- `schema`: `h2o.studio.folder-delete-receipt.v1`
+- `requestId`: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `reviewId`: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `folderId`: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+
+### latest.json Inspection Proof
+
+Direct terminal inspection of `/Users/hobayda/H2O Studio Sync/latest.json` showed:
+
+- `count`: `1`
+- `schema`: `h2o.studio.folder-delete-receipt.v1`
+- `requestId`: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `reviewId`: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `folderId`: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- `status`: `applied`
+- `decision`: `applied-folder-delete-request`
+- `tombstoneId`: `tombstone:0d5ed9cf-6a1f-4ae9-9089-6b22114a34df`
+- `statusOnly`: `true`
+- `noTombstoneApply`: `true`
+- `noHardDelete`: `true`
+- `noChatDelete`: `true`
+- `tombstonePropagation`: `deferred`
+- `chromeHideDeferred`: `true`
+
+### Runtime Verdict
+
+Phase 4C.4a Desktop receipt export passed.
+
+Desktop exports status-only `folderDeleteReceipts[]` into `latest.json`. The receipt references the applied Desktop tombstone, but does not propagate or apply tombstones on Chrome.
+
+Still deferred:
+
+- Chrome import/resolve/hide remains intentionally unchanged and deferred to Phase 4C.4b/4C.4c.
+- Restore receipts remain deferred.
+- Retention/purge remains deferred.
+- WebDAV/cloud/relay remain deferred.
