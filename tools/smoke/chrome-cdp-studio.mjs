@@ -19,6 +19,7 @@ const CHROME_DEV_SMOKE_PROFILE = '/private/tmp/h2o-folder-sync-smoke-chrome-dev-
 const CHROME_DEV_PATH = '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev';
 const DEFAULT_EXTENSION_ID = 'bpobkkppdlldlkccaehmpfclmkhiemhg';
 const DEFAULT_LOAD_EXTENSION = path.join(repoRoot, 'apps/extensions/chatgpt/chrome/studio-launcher');
+const SMOKE_EXTENSION_COPY_ROOT = '/private/tmp/h2o-folder-sync-smoke-extension-copies';
 const CHROME_LOAD_EXTENSION_FEATURE_BYPASS = 'DisableLoadExtensionCommandLineSwitch';
 const URL_FLAG = 'h2oSmokeBridge';
 const REQUIRED_VALUE = 'folder-sync-rc';
@@ -28,6 +29,7 @@ const REGISTRY_OBJECT_EXPRESSION = 'globalThis.H2O && globalThis.H2O.Studio && g
 const GLOBAL_OBJECT_EXPRESSION = 'globalThis';
 const REGISTRY_CALL_WRAPPER = 'function(op, payload) { return this.run(op, payload); }';
 const REGISTRY_GATES_WRAPPER = 'function() { return this.diagnoseGates ? this.diagnoseGates() : null; }';
+const SERVICE_WORKER_OPEN_STUDIO_EXPRESSION = "globalThis.__h2oSmokeOpenStudio()";
 const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1') }; }";
 const PAGE_STATUS_WRAPPER = "function() { var body = this.document && this.document.body ? String(this.document.body.innerText || '') : ''; return { href: String(this.location && this.location.href || ''), title: String(this.document && this.document.title || ''), readyState: String(this.document && this.document.readyState || ''), bodyText: body.slice(0, 500) }; }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
@@ -277,12 +279,71 @@ function validateExtensionPath(loadExtension) {
   const expectedExtensionId = idFromExtensionKey(manifest && manifest.key);
   return {
     extensionPath,
+    sourceExtensionPath: extensionPath,
     manifestPath,
     manifestName: String(manifest && manifest.name || ''),
     manifestVersion: String(manifest && manifest.version || ''),
     manifestHasKey: !!(manifest && manifest.key),
     expectedExtensionId,
     requiredFiles,
+  };
+}
+
+function patchSmokeLauncherBg(source) {
+  let output = String(source || '');
+  let autoRestorePatched = false;
+  let smokeUrlFlagPatched = false;
+  let smokeOpenWrapperPatched = false;
+  if (output.includes('const STUDIO_AUTO_RESTORE_ENABLED = false;')) {
+    output = output.replace(
+      'const STUDIO_AUTO_RESTORE_ENABLED = false;',
+      'const STUDIO_AUTO_RESTORE_ENABLED = true;'
+    );
+    autoRestorePatched = true;
+  }
+  const studioGetUrl = 'chrome.runtime.getURL("surfaces/studio/studio.html")';
+  const smokeStudioGetUrl = `(chrome.runtime.getURL("surfaces/studio/studio.html") + "?${URL_FLAG}=${REQUIRED_VALUE}")`;
+  if (output.includes(studioGetUrl)) {
+    output = output.split(studioGetUrl).join(smokeStudioGetUrl);
+    smokeUrlFlagPatched = true;
+  }
+  if (!output.includes('__h2oSmokeOpenStudio')) {
+    output += '\ntry { globalThis.__h2oSmokeOpenStudio = function() { return openOrFocusStudio("/saved"); }; } catch (_) {}\n';
+    smokeOpenWrapperPatched = true;
+  }
+  return { source: output, autoRestorePatched, smokeUrlFlagPatched, smokeOpenWrapperPatched };
+}
+
+function prepareSmokeExtensionCopy(extensionInfo) {
+  const sourcePath = extensionInfo && extensionInfo.extensionPath || '';
+  const extensionId = extensionInfo && extensionInfo.expectedExtensionId || crypto.createHash('sha256').update(sourcePath).digest('hex').slice(0, 16);
+  const copyPath = path.join(SMOKE_EXTENSION_COPY_ROOT, extensionId);
+  fs.rmSync(copyPath, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(copyPath), { recursive: true });
+  fs.cpSync(sourcePath, copyPath, { recursive: true });
+
+  const bgPath = path.join(copyPath, 'bg.js');
+  let studioAutoRestorePatched = false;
+  let smokeUrlFlagPatched = false;
+  let smokeOpenWrapperPatched = false;
+  if (fs.existsSync(bgPath)) {
+    const patched = patchSmokeLauncherBg(fs.readFileSync(bgPath, 'utf8'));
+    fs.writeFileSync(bgPath, patched.source);
+    studioAutoRestorePatched = patched.autoRestorePatched;
+    smokeUrlFlagPatched = patched.smokeUrlFlagPatched;
+    smokeOpenWrapperPatched = patched.smokeOpenWrapperPatched;
+  }
+
+  const copied = validateExtensionPath(copyPath);
+  return {
+    ...copied,
+    sourceExtensionPath: sourcePath,
+    smokeExtensionCopy: true,
+    smokeExtensionCopyRoot: copyPath,
+    studioAutoRestorePatched,
+    smokeUrlFlagPatched,
+    smokeOpenWrapperPatched,
+    cdpLoadPreferred: true,
   };
 }
 
@@ -299,9 +360,11 @@ function launchChrome(options, url, extensionInfo = null) {
   ];
   if (extensionInfo && extensionInfo.extensionPath) {
     args.push('--enable-unsafe-extension-debugging');
-    args.push(`--disable-features=${CHROME_LOAD_EXTENSION_FEATURE_BYPASS}`);
-    args.push(`--disable-extensions-except=${extensionInfo.extensionPath}`);
-    args.push(`--load-extension=${extensionInfo.extensionPath}`);
+    if (!extensionInfo.cdpLoadPreferred) {
+      args.push(`--disable-features=${CHROME_LOAD_EXTENSION_FEATURE_BYPASS}`);
+      args.push(`--disable-extensions-except=${extensionInfo.extensionPath}`);
+      args.push(`--load-extension=${extensionInfo.extensionPath}`);
+    }
   }
   args.push(url);
   const stdoutTail = [];
@@ -331,6 +394,12 @@ function isStudioTarget(target, options, extensionId = options.extensionId) {
   return target && target.type === 'page' &&
     url.includes(`chrome-extension://${extensionId}/`) &&
     url.includes('/surfaces/studio/studio.html');
+}
+
+function isSmokeStudioTarget(target, options, extensionId = options.extensionId) {
+  const url = String(target && target.url || '');
+  return isStudioTarget(target, options, extensionId) &&
+    url.includes(`${URL_FLAG}=${REQUIRED_VALUE}`);
 }
 
 function summarizeTarget(target) {
@@ -420,13 +489,132 @@ async function discoverExtensionTargets(options, cdpVersion) {
   return summarizeAnyExtensionTargets(combined);
 }
 
+async function loadUnpackedExtensionViaCdp(cdpVersion, extensionInfo, options) {
+  const browserWs = cdpVersion && cdpVersion.webSocketDebuggerUrl;
+  if (!browserWs) throw statusError('cdp-browser-websocket-missing');
+  const client = new CdpClient(browserWs);
+  try {
+    await client.connect(Math.min(options.timeoutMs, 10000));
+    const loaded = await client.send('Extensions.loadUnpacked', {
+      path: extensionInfo.extensionPath,
+    });
+    const extensionId = String(loaded && (loaded.id || loaded.extensionId) || '');
+    return {
+      ok: !!extensionId,
+      status: extensionId ? 'chrome-extension-loaded-via-cdp' : 'chrome-extension-load-unpacked-no-id',
+      extensionId,
+      extensionPath: extensionInfo.extensionPath,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'chrome-extension-load-unpacked-failed',
+      extensionPath: extensionInfo && extensionInfo.extensionPath || '',
+      rawErrorStatus: String(error && error.message || error),
+    };
+  } finally {
+    client.close();
+  }
+}
+
+async function triggerStudioLauncherActionViaCdp(cdpVersion, extensionId, options) {
+  const browserWs = cdpVersion && cdpVersion.webSocketDebuggerUrl;
+  if (!browserWs) throw statusError('cdp-browser-websocket-missing');
+  const client = new CdpClient(browserWs);
+  try {
+    await client.connect(Math.min(options.timeoutMs, 10000));
+    const listed = await client.send('Target.getTargets', {
+      filter: [{ type: 'tab', exclude: false }],
+    });
+    const targets = Array.isArray(listed && listed.targetInfos) ? listed.targetInfos : [];
+    let tabTarget = targets.find((target) => target.type === 'tab' && String(target.url || '') === 'about:blank') ||
+      targets.find((target) => target.type === 'tab');
+    if (!tabTarget) {
+      const created = await client.send('Target.createTarget', { url: 'about:blank' });
+      const createdTargetId = String(created && created.targetId || '');
+      const refreshed = await client.send('Target.getTargets', {
+        filter: [{ type: 'tab', exclude: false }],
+      });
+      const refreshedTargets = Array.isArray(refreshed && refreshed.targetInfos) ? refreshed.targetInfos : [];
+      tabTarget = refreshedTargets.find((target) => target.type === 'tab' && String(target.targetId || '') === createdTargetId) ||
+        refreshedTargets.find((target) => target.type === 'tab' && String(target.url || '') === 'about:blank') ||
+        refreshedTargets.find((target) => target.type === 'tab');
+    }
+    const targetId = String(tabTarget && (tabTarget.targetId || tabTarget.id) || '');
+    if (!targetId) throw statusError('chrome-extension-action-target-missing');
+    await client.send('Extensions.triggerAction', {
+      id: extensionId,
+      targetId,
+    });
+    return {
+      ok: true,
+      status: 'chrome-extension-action-triggered',
+      extensionId,
+      targetId,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'chrome-extension-action-trigger-failed',
+      extensionId,
+      rawErrorStatus: String(error && (error.status || error.message) || error),
+    };
+  } finally {
+    client.close();
+  }
+}
+
+async function openStudioViaLauncherServiceWorker(cdpVersion, extensionId, options) {
+  const targets = await browserTargetInfos(cdpVersion, Math.min(options.timeoutMs, 10000)).catch(() => []);
+  const serviceWorker = targets.find((target) => target.type === 'service_worker' &&
+    String(target.url || '') === `chrome-extension://${extensionId}/bg.js`);
+  if (!serviceWorker) {
+    return {
+      ok: false,
+      status: 'chrome-extension-service-worker-missing',
+      extensionId,
+    };
+  }
+  let control = null;
+  try {
+    control = await connectBrowserAttachedTarget(cdpVersion, {
+      id: String(serviceWorker.targetId || serviceWorker.id || ''),
+    }, options);
+    const evaluated = await control.send('Runtime.evaluate', {
+      expression: SERVICE_WORKER_OPEN_STUDIO_EXPRESSION,
+      objectGroup: 'h2o-folder-sync-smoke',
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (evaluated.exceptionDetails) throw new Error('open-studio-service-worker-call-threw');
+    return {
+      ok: !!(evaluated && evaluated.result && evaluated.result.value && evaluated.result.value.ok),
+      status: 'chrome-extension-service-worker-open-studio-called',
+      extensionId,
+      targetId: String(serviceWorker.targetId || serviceWorker.id || ''),
+      result: evaluated && evaluated.result ? evaluated.result.value || null : null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'chrome-extension-service-worker-open-studio-failed',
+      extensionId,
+      rawErrorStatus: String(error && (error.status || error.message) || error),
+    };
+  } finally {
+    if (control) control.close();
+  }
+}
+
 function selectDiscoveredExtensionId(discovery, options, extensionInfo = null) {
   const ids = Array.isArray(discovery && discovery.loadedExtensionIds)
     ? discovery.loadedExtensionIds
     : [];
   const expectedExtensionId = extensionInfo && extensionInfo.expectedExtensionId || '';
   if (expectedExtensionId && ids.includes(expectedExtensionId)) return expectedExtensionId;
+  if (expectedExtensionId) return '';
   if (options.extensionId && ids.includes(options.extensionId)) return options.extensionId;
+  if (options.extensionId) return '';
   if (ids.length === 1) return ids[0];
   const studioTarget = Array.isArray(discovery && discovery.studioTargets)
     ? discovery.studioTargets.find((target) => extensionIdFromUrl(target.url) && !isBlockedExtensionTarget(target))
@@ -454,7 +642,7 @@ async function waitForStudioLauncherExtension(options, cdpVersion, extensionInfo
       };
     }
     const expectedExtensionId = extensionInfo && extensionInfo.expectedExtensionId || '';
-    if (expectedExtensionId && !expectedPageProbe) {
+    if (expectedExtensionId && !expectedPageProbe && !(extensionInfo && extensionInfo.studioAutoRestorePatched)) {
       const probeOptions = { ...options, extensionId: expectedExtensionId };
       const probeUrl = studioUrlFor(probeOptions, expectedExtensionId);
       try {
@@ -491,17 +679,33 @@ async function openStudioTarget(port, url) {
 }
 
 async function findOrOpenStudioTarget(options, url, extensionId = options.extensionId) {
-  const targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-  const existing = Array.isArray(targets) ? targets.find((target) => isStudioTarget(target, options, extensionId)) : null;
-  if (existing) {
-    return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
+  const deadline = Date.now() + Math.min(Math.max(1000, options.timeoutMs), 12000);
+  let targets = [];
+  while (Date.now() < deadline) {
+    targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
+    const existing = Array.isArray(targets) ? targets.find((target) => isSmokeStudioTarget(target, options, extensionId)) : null;
+    if (existing) {
+      return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
+    }
+    if (options.externalStudioOpenAllowed === false) {
+      await sleep(300);
+      continue;
+    }
+    break;
+  }
+  if (options.externalStudioOpenAllowed === false) {
+    const diagnostics = summarizeTargets(targets, options);
+    const error = new Error('chrome-studio-target-missing');
+    error.status = 'chrome-studio-target-missing';
+    error.targetDiagnostics = diagnostics;
+    throw error;
   }
   const opened = await openStudioTarget(options.port, url);
-  if (opened && isStudioTarget(opened, options, extensionId)) {
+  if (opened && isSmokeStudioTarget(opened, options, extensionId)) {
     return { target: opened, diagnostics: summarizeTargets([opened], options), opened: true };
   }
   const refreshedTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-  const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isStudioTarget(target, options, extensionId)) : null;
+  const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isSmokeStudioTarget(target, options, extensionId)) : null;
   if (refreshed) {
     return { target: refreshed, diagnostics: summarizeTargets(refreshedTargets, options), opened: true };
   }
@@ -761,14 +965,18 @@ async function waitForRegistryObject(cdp, timeoutMs) {
 
 async function prepareTarget(cdp, url, options) {
   await cdp.send('Page.enable');
-  assertNavigationOk(await cdp.send('Page.navigate', { url }), 'initial');
-  await sleep(options.waitAfterNavigateMs);
   const globalObjectId = await getGlobalObjectId(cdp);
   if (!globalObjectId) throw new Error('chrome-global-object-missing');
   const initialPageStatus = await inspectPageStatus(cdp, globalObjectId);
+  const currentHref = String(initialPageStatus && initialPageStatus.href || '');
+  if (!currentHref.includes('/surfaces/studio/studio.html') ||
+      !currentHref.includes(`${URL_FLAG}=${REQUIRED_VALUE}`)) {
+    throw statusError('chrome-studio-target-url-mismatch', {
+      pageStatus: initialPageStatus,
+      expectedUrl: url,
+    });
+  }
   await setSmokeOptIn(cdp, globalObjectId);
-  assertNavigationOk(await cdp.send('Page.navigate', { url }), 'after-opt-in');
-  await sleep(options.waitAfterNavigateMs);
   const registryObjectId = await waitForRegistryObject(cdp, options.timeoutMs);
   return { registryObjectId, initialPageStatus };
 }
@@ -812,10 +1020,14 @@ async function run(options) {
   let cdpVersion = null;
   let extensionInfo = null;
   let extensionBundle = null;
+  let extensionLoad = null;
+  let extensionAction = null;
+  let extensionServiceWorkerOpen = null;
   let effectiveOptions = options;
   try {
     if (options.mode === 'launch') {
       extensionInfo = validateExtensionPath(options.loadExtension);
+      extensionInfo = prepareSmokeExtensionCopy(extensionInfo);
       const existingVersion = await probeCdpVersion(options.port);
       if (existingVersion) {
         return result('chrome-cdp-port-in-use', {
@@ -830,6 +1042,22 @@ async function run(options) {
       launch = launchChrome(options, 'about:blank', extensionInfo);
     }
     cdpVersion = await waitForCdp(options.port, options.timeoutMs);
+    if (options.mode === 'launch' && extensionInfo) {
+      extensionLoad = await loadUnpackedExtensionViaCdp(cdpVersion, extensionInfo, options);
+      if (extensionLoad && extensionLoad.extensionId) {
+        extensionInfo = {
+          ...extensionInfo,
+          expectedExtensionId: extensionLoad.extensionId,
+          cdpLoadExtensionId: extensionLoad.extensionId,
+        };
+        if (extensionInfo.smokeUrlFlagPatched) {
+          extensionAction = await triggerStudioLauncherActionViaCdp(cdpVersion, extensionLoad.extensionId, {
+            ...options,
+            extensionId: extensionLoad.extensionId,
+          });
+        }
+      }
+    }
   } catch (error) {
     const status = error && error.status || 'chrome-cdp-unavailable';
     return result(status, {
@@ -839,6 +1067,7 @@ async function run(options) {
       error: String(error && error.message || error),
       extensionPath: error && error.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionInfo,
+      extensionLoad,
       launch,
       browser: cdpVersion ? summarizeCdpVersion(cdpVersion) : null,
       blockers: error && Array.isArray(error.blockers) ? error.blockers : [status],
@@ -850,8 +1079,15 @@ async function run(options) {
     effectiveOptions = {
       ...options,
       extensionId: extensionBundle.extensionId,
+      externalStudioOpenAllowed: !(extensionInfo && extensionInfo.studioAutoRestorePatched),
     };
     url = studioUrlFor(effectiveOptions, extensionBundle.extensionId);
+    if (options.mode === 'launch' && extensionInfo && extensionInfo.smokeUrlFlagPatched && !(extensionAction && extensionAction.ok)) {
+      extensionAction = await triggerStudioLauncherActionViaCdp(cdpVersion, extensionBundle.extensionId, effectiveOptions);
+    }
+    if (options.mode === 'launch' && extensionInfo && extensionInfo.smokeUrlFlagPatched) {
+      extensionServiceWorkerOpen = await openStudioViaLauncherServiceWorker(cdpVersion, extensionBundle.extensionId, effectiveOptions);
+    }
   } catch (error) {
     const status = error && error.status || error && error.message || 'studio-launcher-extension-not-loaded';
     return result(status, {
@@ -867,6 +1103,9 @@ async function run(options) {
       loadedExtensionIds: error && error.extensionDiscovery && error.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: error && error.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: error && error.extensionManifest || extensionInfo,
+      extensionLoad,
+      extensionAction,
+      extensionServiceWorkerOpen,
       extensionDiscovery: error && error.extensionDiscovery || null,
       expectedPageProbe: error && error.expectedPageProbe || null,
       launch,
@@ -902,6 +1141,9 @@ async function run(options) {
       loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionLoad,
+      extensionAction,
+      extensionServiceWorkerOpen,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: error && error.targetDiagnostics || null,
@@ -935,6 +1177,9 @@ async function run(options) {
         loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
         extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
         extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+        extensionLoad,
+        extensionAction,
+        extensionServiceWorkerOpen,
         extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
         expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
         registryGatesEnabled: false,
@@ -972,6 +1217,9 @@ async function run(options) {
       loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionLoad,
+      extensionAction,
+      extensionServiceWorkerOpen,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       registryGatesEnabled: registryGates && registryGates.enabled === true,
@@ -1004,6 +1252,9 @@ async function run(options) {
       loadedExtensionIds: extensionBundle && extensionBundle.extensionDiscovery && extensionBundle.extensionDiscovery.loadedExtensionIds || [],
       extensionPath: extensionBundle && extensionBundle.extensionPath || extensionInfo && extensionInfo.extensionPath || '',
       extensionManifest: extensionBundle && extensionBundle.extensionManifest || extensionInfo,
+      extensionLoad,
+      extensionAction,
+      extensionServiceWorkerOpen,
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
@@ -1014,6 +1265,7 @@ async function run(options) {
       blockers,
       rawErrorStatus: error && error.rawErrorStatus || rawStatus,
       error: String(error && error.message || error),
+      launch,
       nextAction: status === 'chrome-extension-not-loaded'
         ? 'Confirm Chrome Dev was launched with --extension-path and the prepared Studio Launcher extension bundle.'
         : status === 'chrome-extension-page-blocked'

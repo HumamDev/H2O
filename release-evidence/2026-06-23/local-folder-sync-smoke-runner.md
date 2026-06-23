@@ -339,6 +339,26 @@ Fix:
 - If Chrome exposes only blocked extension targets, the helper reports `chrome-extension-policy-blocked`.
 - Because MV3 service workers may not expose a CDP target until activated, the helper probes the manifest-key-derived Studio URL once before the final discovery verdict.
 
+Follow-up live investigation:
+
+- A fresh Chrome Dev smoke run on port `9231` proved the extension did load.
+- The helper reported:
+  - `expectedExtensionId: bpobkkppdlldlkccaehmpfclmkhiemhg`
+  - `discoveredExtensionId: bpobkkppdlldlkccaehmpfclmkhiemhg`
+  - `loadedExtensionIds` included `bpobkkppdlldlkccaehmpfclmkhiemhg`
+  - the Studio target existed at the expected `chrome-extension://.../surfaces/studio/studio.html?...` URL.
+- The actual remaining blocker was `Page.navigate` inside the helper's `prepareTarget()` path:
+  - `navigationStage: initial`
+  - `navigationErrorText: net::ERR_BLOCKED_BY_CLIENT`
+
+Second fix:
+
+- The helper now opens the Studio extension page through `/json/new` and reuses that target.
+- It no longer calls CDP `Page.navigate` for the Studio extension URL before invoking the smoke registry.
+- Target selection now requires the existing/opened Studio page to already include `h2oSmokeBridge=folder-sync-rc`.
+- If the selected page is not a smoke-flagged Studio page, the helper reports `chrome-studio-target-url-mismatch`.
+- Page blocked detection remains in place through the fixed page-status probe.
+
 Retest command:
 
 ```sh
@@ -350,6 +370,91 @@ node tools/smoke/chrome-cdp-studio.mjs \
   --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile-9226" \
   --op diagnoseHealth
 ```
+
+## Slice 4A Chrome Dev Extension Load Repair
+
+Follow-up date: 2026-06-23
+
+Runtime issue:
+
+- Fresh Chrome Dev smoke profiles still did not reliably expose the unpacked Studio Launcher through command-line `--load-extension`.
+- The helper could reach Chrome Dev CDP, but target discovery showed only unrelated built-in extension targets.
+- Direct external opening of the Studio extension page through `/json/new` or CDP navigation could produce `ERR_BLOCKED_BY_CLIENT`.
+- `Extensions.triggerAction` initially failed because Chrome's default `Target.getTargets` filter excludes `tab` targets.
+- Calling `openOrFocusStudio('/saved')` from the service worker failed until the temporary smoke copy exposed a fixed wrapper on `globalThis`.
+
+Root cause:
+
+- Chrome Dev 151's command-line extension load path was not sufficient for a clean smoke profile in this environment.
+- The Studio Launcher source intentionally has `STUDIO_AUTO_RESTORE_ENABLED = false`, so loading the extension does not open Studio by itself.
+- The helper was relying on externally navigating to an internal extension URL. Chrome can block that path, while the extension can open its own page safely through its service-worker/tab APIs.
+
+Fix:
+
+- Launch mode now prepares a temporary smoke-only copy under:
+  - `/private/tmp/h2o-folder-sync-smoke-extension-copies/<extensionId>`
+- The temporary copy is patched only outside the repo:
+  - `STUDIO_AUTO_RESTORE_ENABLED = true`
+  - Studio URLs include `?h2oSmokeBridge=folder-sync-rc`
+  - `globalThis.__h2oSmokeOpenStudio()` calls the existing `openOrFocusStudio("/saved")`
+- The helper no longer depends on command-line `--load-extension` for the smoke copy.
+- It launches Chrome Dev with CDP and loads the unpacked smoke copy through:
+  - `Extensions.loadUnpacked`
+- It opens Studio through extension-owned paths:
+  - `Extensions.triggerAction`
+  - fixed service-worker fallback: `globalThis.__h2oSmokeOpenStudio()`
+- It requests `tab` targets explicitly for `Extensions.triggerAction`.
+- It still calls only the allowlisted Studio registry for smoke ops:
+  - `H2O.Studio.devSmoke.folderSync.run(op, payload)`
+
+Live retest proof:
+
+- Command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode launch \
+  --port 9243 \
+  --chrome-path "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev" \
+  --extension-path "$PWD/apps/extensions/chatgpt/chrome/studio-launcher" \
+  --user-data-dir "/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile-9243" \
+  --op diagnoseHealth \
+  --timeout-ms 30000
+```
+
+- Result:
+  - helper `ok:true`
+  - `studioTargetFound:true`
+  - `smokeUrlFlagPresent:true`
+  - `registryGatesEnabled:true`
+  - `extensionLoad.status: chrome-extension-loaded-via-cdp`
+  - `extensionAction.status: chrome-extension-action-triggered`
+  - `extensionServiceWorkerOpen.status: chrome-extension-service-worker-open-studio-called`
+  - Studio target URL:
+    - `chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/saved`
+  - Registry result returned `ok:true`.
+  - Registry health verdict was `blocked` only because the fresh smoke profile had no sync-folder File System Access handle:
+    - `permission-required`
+    - `no-folder-handle`
+
+Attach-mode proof:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode attach \
+  --port 9243 \
+  --op getFolderModel \
+  --timeout-ms 15000
+```
+
+- Result:
+  - helper `ok:true`
+  - `status: folder-model-read`
+  - `studioTargetFound:true`
+  - `registryGatesEnabled:true`
+  - `rowCount: 6`
+  - `canonicalRowCount: 6`
+  - `displayModelAvailable:true`
 
 ## Safety Guarantees
 
