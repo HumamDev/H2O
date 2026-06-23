@@ -36,6 +36,113 @@ const SYNC_FOLDER_DIAGNOSE_WRAPPER = "async function() { try { var api = globalT
 const SYNC_FOLDER_DIAGNOSE_EVALUATE_EXPRESSION = `(${SYNC_FOLDER_DIAGNOSE_WRAPPER})()`;
 const SMOKE_URL_FLAG_HISTORY_WRAPPER = "function(url) { var beforeHref = String(this.location && this.location.href || ''); this.history.replaceState(this.history.state, this.document && this.document.title || '', url); return { mode: 'history-replace-state', beforeHref: beforeHref, href: String(this.location && this.location.href || ''), changed: beforeHref !== String(this.location && this.location.href || '') }; }";
 const VISIBLE_MARKER_WRAPPER = "function() { var marker = globalThis.__H2O_SMOKE_VISIBLE_MARKER; if (!marker || typeof marker !== 'object') return { seen: false }; return { seen: true, at: String(marker.at || ''), href: String(marker.href || ''), connected: marker.connected === true, permission: String(marker.permission || ''), folderName: String(marker.folderName || '') }; }";
+const SMOKE_SERVICE_WORKER_OPEN_STUDIO_WRAPPER = `
+try {
+  globalThis.__h2oSmokeOpenStudio = async function() {
+    var url = chrome.runtime.getURL("surfaces/studio/studio.html") + "?${URL_FLAG}=${REQUIRED_VALUE}#/saved";
+    try {
+      var tab = await new Promise(function(resolve, reject) {
+        try {
+          chrome.tabs.create({ url: url }, function(createdTab) {
+            var lastError = chrome.runtime && chrome.runtime.lastError;
+            if (lastError) {
+              reject(new Error(String(lastError.message || lastError)));
+              return;
+            }
+            resolve(createdTab || {});
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+      return {
+        ok: true,
+        status: "smoke-studio-tab-created",
+        openMethod: "service-worker-tabs-create",
+        tabId: Number(tab && tab.id || 0),
+        url: url
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: "smoke-studio-tab-create-failed",
+        openMethod: "service-worker-tabs-create",
+        url: url,
+        error: String(error && (error.message || error) || "")
+      };
+    }
+  };
+} catch (error) {
+  globalThis.__h2oSmokeOpenStudio = function() {
+    return {
+      ok: false,
+      status: "smoke-open-wrapper-install-failed",
+      openMethod: "service-worker-tabs-create",
+      error: String(error && (error.message || error) || "")
+    };
+  };
+}
+`;
+
+function smokeServiceWorkerOpenStudioWrapperFor(extensionId) {
+  const id = String(extensionId || '').trim().replace(/[^a-p]/g, '');
+  const url = `chrome-extension://${id}/surfaces/studio/studio.html?${URL_FLAG}=${REQUIRED_VALUE}#/saved`;
+  return `
+try {
+  globalThis.__h2oSmokeOpenStudio = async function() {
+    var url = ${JSON.stringify(url)};
+    try {
+      if (!globalThis.chrome || !globalThis.chrome.tabs || typeof globalThis.chrome.tabs.create !== "function") {
+        return {
+          ok: false,
+          status: "smoke-chrome-tabs-api-unavailable",
+          openMethod: "service-worker-tabs-create",
+          url: url
+        };
+      }
+      var tab = await new Promise(function(resolve, reject) {
+        try {
+          globalThis.chrome.tabs.create({ url: url }, function(createdTab) {
+            var lastError = globalThis.chrome && globalThis.chrome.runtime && globalThis.chrome.runtime.lastError;
+            if (lastError) {
+              reject(new Error(String(lastError.message || lastError)));
+              return;
+            }
+            resolve(createdTab || {});
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+      return {
+        ok: true,
+        status: "smoke-studio-tab-created",
+        openMethod: "service-worker-tabs-create",
+        tabId: Number(tab && tab.id || 0),
+        url: url
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: "smoke-studio-tab-create-failed",
+        openMethod: "service-worker-tabs-create",
+        url: url,
+        error: String(error && (error.message || error) || "")
+      };
+    }
+  };
+} catch (error) {
+  globalThis.__h2oSmokeOpenStudio = function() {
+    return {
+      ok: false,
+      status: "smoke-open-wrapper-install-failed",
+      openMethod: "service-worker-tabs-create",
+      error: String(error && (error.message || error) || "")
+    };
+  };
+}
+`;
+}
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 
@@ -312,10 +419,40 @@ function patchSmokeLauncherBg(source) {
     smokeUrlFlagPatched = true;
   }
   if (!output.includes('__h2oSmokeOpenStudio')) {
-    output += '\ntry { globalThis.__h2oSmokeOpenStudio = function() { return openOrFocusStudio("/saved"); }; } catch (_) {}\n';
+    output += `\n${SMOKE_SERVICE_WORKER_OPEN_STUDIO_WRAPPER}\n`;
     smokeOpenWrapperPatched = true;
   }
   return { source: output, autoRestorePatched, smokeUrlFlagPatched, smokeOpenWrapperPatched };
+}
+
+function patchSmokeExtensionManifest(copyPath) {
+  const manifestPath = path.join(copyPath, 'manifest.json');
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (_) {
+    return { studioWebAccessiblePatched: false };
+  }
+  const resources = Array.isArray(manifest.web_accessible_resources)
+    ? manifest.web_accessible_resources.slice()
+    : [];
+  const smokeRule = {
+    resources: ['surfaces/studio/*'],
+    matches: ['<all_urls>'],
+  };
+  const alreadyPresent = resources.some((entry) => {
+    const item = entry && typeof entry === 'object' ? entry : {};
+    const entryResources = Array.isArray(item.resources) ? item.resources : [];
+    const entryMatches = Array.isArray(item.matches) ? item.matches : [];
+    return entryResources.includes('surfaces/studio/*') && entryMatches.includes('<all_urls>');
+  });
+  if (!alreadyPresent) resources.push(smokeRule);
+  manifest.web_accessible_resources = resources;
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return {
+    studioWebAccessiblePatched: true,
+    webAccessibleResourceCount: resources.length,
+  };
 }
 
 function prepareSmokeExtensionCopy(extensionInfo) {
@@ -337,6 +474,7 @@ function prepareSmokeExtensionCopy(extensionInfo) {
     smokeUrlFlagPatched = patched.smokeUrlFlagPatched;
     smokeOpenWrapperPatched = patched.smokeOpenWrapperPatched;
   }
+  const manifestPatch = patchSmokeExtensionManifest(copyPath);
 
   const copied = validateExtensionPath(copyPath);
   return {
@@ -347,6 +485,8 @@ function prepareSmokeExtensionCopy(extensionInfo) {
     studioAutoRestorePatched,
     smokeUrlFlagPatched,
     smokeOpenWrapperPatched,
+    studioWebAccessiblePatched: manifestPatch.studioWebAccessiblePatched === true,
+    webAccessibleResourceCount: Number(manifestPatch.webAccessibleResourceCount || 0),
     cdpLoadPreferred: true,
   };
 }
@@ -415,6 +555,19 @@ function summarizeTarget(target) {
     title: String(t.title || ''),
     url: String(t.url || ''),
     hasTargetWebSocket: !!t.webSocketDebuggerUrl,
+  };
+}
+
+function summarizeExceptionDetails(details) {
+  const d = details && typeof details === 'object' ? details : null;
+  if (!d) return null;
+  const exception = d.exception && typeof d.exception === 'object' ? d.exception : {};
+  return {
+    text: String(d.text || '').slice(0, 240),
+    lineNumber: Number(d.lineNumber || 0),
+    columnNumber: Number(d.columnNumber || 0),
+    exceptionDescription: String(exception.description || '').slice(0, 500),
+    exceptionClassName: String(exception.className || ''),
   };
 }
 
@@ -625,19 +778,53 @@ async function openStudioViaLauncherServiceWorker(cdpVersion, extensionId, optio
     control = await connectBrowserAttachedTarget(cdpVersion, {
       id: String(serviceWorker.targetId || serviceWorker.id || ''),
     }, options);
+    const installed = await control.send('Runtime.evaluate', {
+      expression: smokeServiceWorkerOpenStudioWrapperFor(extensionId),
+      objectGroup: 'h2o-folder-sync-smoke',
+      awaitPromise: false,
+      returnByValue: true,
+    });
+    if (installed.exceptionDetails) {
+      throw statusError('open-studio-service-worker-wrapper-install-threw', {
+        exceptionDetails: summarizeExceptionDetails(installed.exceptionDetails),
+      });
+    }
+    const wrapperType = await control.send('Runtime.evaluate', {
+      expression: "typeof globalThis.__h2oSmokeOpenStudio",
+      objectGroup: 'h2o-folder-sync-smoke',
+      awaitPromise: false,
+      returnByValue: true,
+    });
+    const wrapperTypeValue = String(wrapperType && wrapperType.result && wrapperType.result.value || '');
+    if (wrapperTypeValue !== 'function') {
+      throw statusError('open-studio-service-worker-wrapper-missing', {
+        wrapperType: wrapperTypeValue,
+      });
+    }
     const evaluated = await control.send('Runtime.evaluate', {
       expression: SERVICE_WORKER_OPEN_STUDIO_EXPRESSION,
       objectGroup: 'h2o-folder-sync-smoke',
       awaitPromise: true,
       returnByValue: true,
     });
-    if (evaluated.exceptionDetails) throw new Error('open-studio-service-worker-call-threw');
+    if (evaluated.exceptionDetails) {
+      throw statusError('open-studio-service-worker-call-threw', {
+        exceptionDetails: summarizeExceptionDetails(evaluated.exceptionDetails),
+      });
+    }
+    const openResult = evaluated && evaluated.result ? evaluated.result.value || null : null;
+    const openOk = !!(openResult && openResult.ok === true);
     return {
-      ok: !!(evaluated && evaluated.result && evaluated.result.value && evaluated.result.value.ok),
-      status: 'chrome-extension-service-worker-open-studio-called',
+      ok: openOk,
+      status: openOk
+        ? 'chrome-extension-service-worker-open-studio-called'
+        : String(openResult && openResult.status || 'chrome-extension-service-worker-open-studio-not-ok'),
       extensionId,
       targetId: String(serviceWorker.targetId || serviceWorker.id || ''),
-      result: evaluated && evaluated.result ? evaluated.result.value || null : null,
+      wrapperInstalled: true,
+      wrapperType: wrapperTypeValue,
+      openMethod: String(openResult && openResult.openMethod || 'service-worker-tabs-create'),
+      result: openResult,
     };
   } catch (error) {
     return {
@@ -645,6 +832,9 @@ async function openStudioViaLauncherServiceWorker(cdpVersion, extensionId, optio
       status: 'chrome-extension-service-worker-open-studio-failed',
       extensionId,
       rawErrorStatus: String(error && (error.status || error.message) || error),
+      wrapperInstalled: error && error.status ? false : undefined,
+      wrapperType: error && error.wrapperType || '',
+      exceptionDetails: error && error.exceptionDetails || null,
     };
   } finally {
     if (control) control.close();
@@ -1455,7 +1645,8 @@ async function run(options) {
     effectiveOptions = {
       ...options,
       extensionId: extensionBundle.extensionId,
-      externalStudioOpenAllowed: !(extensionInfo && extensionInfo.studioAutoRestorePatched),
+      externalStudioOpenAllowed: !!(extensionInfo && extensionInfo.studioWebAccessiblePatched) ||
+        !(extensionInfo && extensionInfo.studioAutoRestorePatched),
     };
     url = studioUrlFor(effectiveOptions, extensionBundle.extensionId);
     if (options.mode === 'launch' && extensionInfo && extensionInfo.smokeUrlFlagPatched && !(extensionAction && extensionAction.ok)) {
