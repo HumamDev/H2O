@@ -32,6 +32,7 @@ const REGISTRY_GATES_WRAPPER = 'function() { return this.diagnoseGates ? this.di
 const SERVICE_WORKER_OPEN_STUDIO_EXPRESSION = "globalThis.__h2oSmokeOpenStudio()";
 const LOCAL_STORAGE_OPT_IN_WRAPPER = "function() { this.localStorage.setItem('h2o:studio:smoke-bridge:enabled:v1', 'folder-sync-rc'); return { href: String(this.location && this.location.href || ''), optIn: this.localStorage.getItem('h2o:studio:smoke-bridge:enabled:v1') }; }";
 const PAGE_STATUS_WRAPPER = "function() { var body = this.document && this.document.body ? String(this.document.body.innerText || '') : ''; return { href: String(this.location && this.location.href || ''), title: String(this.document && this.document.title || ''), readyState: String(this.document && this.document.readyState || ''), bodyText: body.slice(0, 500) }; }";
+const SYNC_FOLDER_DIAGNOSE_WRAPPER = "function() { try { var api = this.H2O && this.H2O.Studio && this.H2O.Studio.sync && this.H2O.Studio.sync.folder; if (!api || typeof api.diagnose !== 'function') return { ok: false, status: 'sync-folder-diagnose-unavailable' }; var raw = api.diagnose() || {}; var blockers = raw.blockers || {}; var desktopToChrome = raw.desktopToChrome || {}; var chromeToDesktop = raw.chromeToDesktop || {}; return { ok: true, status: 'sync-folder-diagnosed', connected: raw.connected === true, permission: String(raw.permission || chromeToDesktop.permission || desktopToChrome.permission || ''), folderName: String(raw.folderName || ''), fileSystemAccessAvailable: raw.fileSystemAccessAvailable === true, chromeWritesSyncFolder: raw.chromeWritesSyncFolder === true || chromeToDesktop.chromeWritesSyncFolder === true, desktopToChromePermission: String(desktopToChrome.permission || ''), chromeToDesktopPermission: String(chromeToDesktop.permission || ''), permissionRequired: blockers.permissionRequired === true, noFolderHandle: blockers.noFolderHandle === true }; } catch (error) { return { ok: false, status: 'sync-folder-diagnose-threw', error: String(error && error.message || error) }; } }";
 const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 
@@ -683,9 +684,18 @@ async function findOrOpenStudioTarget(options, url, extensionId = options.extens
   let targets = [];
   while (Date.now() < deadline) {
     targets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-    const existing = Array.isArray(targets) ? targets.find((target) => isSmokeStudioTarget(target, options, extensionId)) : null;
-    if (existing) {
-      return { target: existing, diagnostics: summarizeTargets(targets, options), opened: false };
+    const existing = Array.isArray(targets)
+      ? targets.filter((target) => isSmokeStudioTarget(target, options, extensionId))
+      : [];
+    if (existing.length > 0) {
+      const selected = await selectBestStudioTarget(existing, options, extensionId);
+      return {
+        target: selected.target,
+        diagnostics: summarizeTargets(targets, options),
+        targetProbe: selected.probe,
+        targetProbeSummary: selected.summary,
+        opened: false,
+      };
     }
     if (options.externalStudioOpenAllowed === false) {
       await sleep(300);
@@ -705,15 +715,130 @@ async function findOrOpenStudioTarget(options, url, extensionId = options.extens
     return { target: opened, diagnostics: summarizeTargets([opened], options), opened: true };
   }
   const refreshedTargets = await cdpJson(options.port, '/json/list', { timeoutMs: 5000 });
-  const refreshed = Array.isArray(refreshedTargets) ? refreshedTargets.find((target) => isSmokeStudioTarget(target, options, extensionId)) : null;
-  if (refreshed) {
-    return { target: refreshed, diagnostics: summarizeTargets(refreshedTargets, options), opened: true };
+  const refreshed = Array.isArray(refreshedTargets)
+    ? refreshedTargets.filter((target) => isSmokeStudioTarget(target, options, extensionId))
+    : [];
+  if (refreshed.length > 0) {
+    const selected = await selectBestStudioTarget(refreshed, options, extensionId);
+    return {
+      target: selected.target,
+      diagnostics: summarizeTargets(refreshedTargets, options),
+      targetProbe: selected.probe,
+      targetProbeSummary: selected.summary,
+      opened: true,
+    };
   }
   const diagnostics = summarizeTargets(refreshedTargets, options);
   const error = new Error(diagnostics.extensionTargetFound ? 'chrome-studio-target-missing' : 'chrome-extension-not-loaded');
   error.status = error.message;
   error.targetDiagnostics = diagnostics;
   throw error;
+}
+
+async function readSyncFolderDiagnose(cdp, globalObjectId) {
+  const called = await cdp.send('Runtime.callFunctionOn', {
+    objectId: globalObjectId,
+    functionDeclaration: SYNC_FOLDER_DIAGNOSE_WRAPPER,
+    arguments: [],
+    awaitPromise: false,
+    returnByValue: true,
+  });
+  if (called.exceptionDetails) {
+    return { ok: false, status: 'sync-folder-diagnose-call-threw' };
+  }
+  return called && called.result ? called.result.value || null : null;
+}
+
+function scoreStudioTargetProbe(probe) {
+  if (!probe || probe.ok !== true) return 0;
+  const syncDiag = probe.syncFolderDiagnose || {};
+  let score = 10;
+  if (probe.smokeUrlFlagPresent === true) score += 10;
+  if (probe.readyState === 'complete') score += 5;
+  if (probe.registryPresent === true) score += 10;
+  if (probe.registryGatesEnabled === true) score += 10;
+  if (syncDiag.ok === true) score += 10;
+  if (syncDiag.connected === true) score += 25;
+  if (syncDiag.permission === 'granted') score += 25;
+  if (syncDiag.permissionRequired === false) score += 5;
+  if (syncDiag.noFolderHandle === false) score += 5;
+  if (syncDiag.chromeWritesSyncFolder === true) score += 5;
+  return score;
+}
+
+function summarizeTargetProbe(probes) {
+  const rows = Array.isArray(probes) ? probes : [];
+  return {
+    probedTargetCount: rows.length,
+    connectedGrantedTargetCount: rows.filter((row) => {
+      const syncDiag = row && row.syncFolderDiagnose || {};
+      return row && row.ok === true && syncDiag.connected === true && syncDiag.permission === 'granted';
+    }).length,
+    selectedTargetScore: rows.length ? Number(rows[0].score || 0) : 0,
+    selectedTargetSyncPermission: rows.length ? String(rows[0].syncFolderDiagnose && rows[0].syncFolderDiagnose.permission || '') : '',
+    selectedTargetSyncConnected: rows.length ? rows[0].syncFolderDiagnose && rows[0].syncFolderDiagnose.connected === true : false,
+  };
+}
+
+async function probeStudioTarget(target, options) {
+  let control = null;
+  try {
+    control = await connectTargetControl(await cdpJson(options.port, '/json/version', { timeoutMs: 3000 }), target, {
+      ...options,
+      timeoutMs: Math.min(options.timeoutMs, 5000),
+    });
+    const globalObjectId = await getGlobalObjectId(control.control);
+    if (!globalObjectId) throw new Error('chrome-global-object-missing');
+    const pageStatus = await inspectPageStatus(control.control, globalObjectId);
+    await setSmokeOptIn(control.control, globalObjectId).catch(() => null);
+    const registryObjectId = await getRegistryObjectId(control.control);
+    let registryGates = null;
+    if (registryObjectId) {
+      registryGates = await diagnoseRegistryGates(control.control, registryObjectId).catch(() => null);
+    }
+    const syncFolderDiagnose = await readSyncFolderDiagnose(control.control, globalObjectId).catch((error) => ({
+      ok: false,
+      status: 'sync-folder-diagnose-failed',
+      error: String(error && error.message || error),
+    }));
+    return {
+      ok: true,
+      targetId: String(target && target.id || ''),
+      targetUrl: String(target && target.url || ''),
+      readyState: String(pageStatus && pageStatus.readyState || ''),
+      smokeUrlFlagPresent: String(pageStatus && pageStatus.href || target && target.url || '').includes(`${URL_FLAG}=${REQUIRED_VALUE}`),
+      registryPresent: !!registryObjectId,
+      registryGatesEnabled: registryGates && registryGates.enabled === true,
+      syncFolderDiagnose,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      targetId: String(target && target.id || ''),
+      targetUrl: String(target && target.url || ''),
+      status: String(error && (error.status || error.message) || error),
+    };
+  } finally {
+    if (control && control.control) control.control.close();
+  }
+}
+
+async function selectBestStudioTarget(candidates, options) {
+  const rows = [];
+  for (const target of candidates) {
+    const probe = await probeStudioTarget(target, options);
+    probe.score = scoreStudioTargetProbe(probe);
+    rows.push(probe);
+  }
+  rows.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  const selectedProbe = rows[0] || null;
+  const target = candidates.find((candidate) => String(candidate && candidate.id || '') === String(selectedProbe && selectedProbe.targetId || '')) ||
+    candidates[0];
+  return {
+    target,
+    probe: selectedProbe,
+    summary: summarizeTargetProbe(rows),
+  };
 }
 
 class CdpClient {
@@ -1185,6 +1310,8 @@ async function run(options) {
         registryGatesEnabled: false,
         registryGates,
         targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+        targetProbe: targetBundle && targetBundle.targetProbe || null,
+        targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
         cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
         pageStatus: prepared.initialPageStatus || null,
         blockers: ['smoke-registry-disabled'],
@@ -1225,6 +1352,8 @@ async function run(options) {
       registryGatesEnabled: registryGates && registryGates.enabled === true,
       registryGates,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+      targetProbe: targetBundle && targetBundle.targetProbe || null,
+      targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: prepared.initialPageStatus || null,
       result: registryResult,
@@ -1258,6 +1387,8 @@ async function run(options) {
       extensionDiscovery: extensionBundle && extensionBundle.extensionDiscovery || null,
       expectedPageProbe: extensionBundle && extensionBundle.expectedPageProbe || null,
       targetDiagnostics: targetBundle && targetBundle.diagnostics || null,
+      targetProbe: targetBundle && targetBundle.targetProbe || null,
+      targetProbeSummary: targetBundle && targetBundle.targetProbeSummary || null,
       cdpControlDiagnostics: controlBundle && controlBundle.diagnostics || null,
       pageStatus: error && error.pageStatus || null,
       navigationStage: error && error.navigationStage || '',

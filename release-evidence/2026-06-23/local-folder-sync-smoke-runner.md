@@ -584,6 +584,41 @@ Verdict:
 - No tombstone propagation apply.
 - File System Access permission state is reported by the registry result as-is; the helper does not fake pass/fail.
 
+## Chrome Permission Target Selection Fix
+
+Follow-up issue:
+
+- Chrome console `H2O.Studio.sync.folder.diagnose()` could report the sync folder connected and permission granted.
+- The read-only smoke path could still return `permission-required` / `no-folder-handle` through `H2O.Studio.devSmoke.folderSync.run("diagnoseHealth", ...)`.
+
+Root cause:
+
+- The Chrome helper selected the first smoke Studio target with the URL flag.
+- If multiple matching extension pages existed, it did not check which target had the live File System Access folder handle.
+
+Fix:
+
+- Added a fixed CDP sync-diagnose wrapper that reads only `H2O.Studio.sync.folder.diagnose()` from candidate Studio targets.
+- The helper now scores matching smoke targets and prefers a target with:
+  - `registryGatesEnabled:true`
+  - `syncFolderDiagnose.connected:true`
+  - `syncFolderDiagnose.permission:"granted"`
+  - `syncFolderDiagnose.noFolderHandle:false`
+- Helper output now includes `targetProbe` and `targetProbeSummary` so future smoke evidence can show which target was selected and why.
+
+Safety:
+
+- This remains read-only.
+- No arbitrary JavaScript CLI was added.
+- The helper still calls only the fixed registry wrapper for allowed operations.
+- Slice 4A allowed ops remain `diagnoseHealth` and `getFolderModel`.
+
+Rerun command:
+
+```sh
+node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9243 --op diagnoseHealth --timeout-ms 30000
+```
+
 ## Validation
 
 Commands run:

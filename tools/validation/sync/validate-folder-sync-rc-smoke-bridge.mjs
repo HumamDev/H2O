@@ -46,6 +46,13 @@ assertContains(registry, 'noPurge: true', 'purge safety flag');
 assertContains(registry, 'noTombstonePropagationApply: true', 'tombstone propagation safety flag');
 assertContains(registry, 'noChatDelete: true', 'chat delete safety flag');
 assertContains(registry, 'noSnapshotDelete: true', 'snapshot delete safety flag');
+assertContains(registry, 'summarizeFolderSyncDiagnose', 'folder sync diagnose summary');
+assertContains(registry, 'reconcileChromeHealthWithSyncDiagnose', 'Chrome health permission reconciliation');
+assertContains(registry, 'permissionStateReconciledFromSyncDiagnose', 'permission reconciliation diagnostic');
+assertContains(registry, 'syncFolderDiagnose', 'sync folder diagnose output');
+assertContains(registry, "api && typeof api.diagnose === 'function'", 'live sync folder diagnose source');
+assertContains(registry, "permission === 'granted'", 'granted permission reconciliation gate');
+assertContains(registry, "'permission-required', 'no-folder-handle'", 'permission blocker reconciliation list');
 
 const expectedOps = [
   'getFolderModel',

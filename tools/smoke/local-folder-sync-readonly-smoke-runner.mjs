@@ -212,6 +212,9 @@ function commandSummary(runResult) {
       helper && helper.result && helper.result.registryGatesEnabled === true,
     blockers: [...blockersOf(helper), ...blockersOf(registry)],
     warnings: [...warningsOf(helper), ...warningsOf(registry)],
+    syncFolderDiagnose: registry && registry.syncFolderDiagnose && typeof registry.syncFolderDiagnose === 'object'
+      ? registry.syncFolderDiagnose
+      : null,
     rowCount: Number(registry && registry.rowCount || 0),
     canonicalRowCount: Number(registry && registry.canonicalRowCount || 0),
     displayModelAvailable: registry && registry.displayModelAvailable === true,
@@ -225,6 +228,23 @@ function permissionOnlyChromeHealthBlocked(summary) {
     if (blocker !== 'permission-required' && blocker !== 'no-folder-handle') return false;
   }
   return true;
+}
+
+function chromeSyncDiagnosePermissionGranted(summary) {
+  const diag = summary && summary.syncFolderDiagnose || {};
+  return diag.connected === true &&
+    diag.permission === 'granted' &&
+    diag.permissionRequired !== true &&
+    diag.noFolderHandle !== true;
+}
+
+function chromeSyncDiagnosePermissionMissing(summary) {
+  const diag = summary && summary.syncFolderDiagnose || {};
+  if (!diag || diag.available !== true) return false;
+  if (diag.connected === false || diag.noFolderHandle === true) return true;
+  if (diag.permissionRequired === true) return true;
+  if (diag.permission && diag.permission !== 'granted') return true;
+  return false;
 }
 
 function compareFolders(chromeModelOutput, desktopModelOutput) {
@@ -301,11 +321,20 @@ async function run(options) {
   if (!chromeDiagnoseSummary.registryGatesEnabled && !chromeModelSummary.registryGatesEnabled) blockers.push('chrome-registry-gates-missing');
   if (!desktopDiagnoseSummary.registryGatesEnabled && !desktopModelSummary.registryGatesEnabled) blockers.push('desktop-registry-gates-missing');
 
-  if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) && chromeModelSummary.registryOk) {
+  if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) &&
+      chromeModelSummary.registryOk &&
+      chromeSyncDiagnosePermissionGranted(chromeDiagnoseSummary)) {
+    // The real sync diagnostic has the live File System Access handle; do not
+    // downgrade the read-only smoke because an older health projection lagged.
+  } else if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) &&
+      chromeModelSummary.registryOk &&
+      chromeSyncDiagnosePermissionMissing(chromeDiagnoseSummary)) {
     warnings.push('chrome-health-permission-required');
     for (let i = blockers.length - 1; i >= 0; i -= 1) {
       if (blockers[i] === 'chrome-health-unavailable') blockers.splice(i, 1);
     }
+  } else if (permissionOnlyChromeHealthBlocked(chromeDiagnoseSummary) && chromeModelSummary.registryOk) {
+    blockers.push('chrome-health-permission-state-unconfirmed');
   } else if (!chromeDiagnoseSummary.helperOk || !chromeDiagnoseSummary.registryOk) {
     blockers.push('chrome-health-unavailable');
   }

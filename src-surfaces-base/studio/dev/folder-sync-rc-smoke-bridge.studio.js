@@ -412,6 +412,79 @@
     });
   }
 
+  function summarizeFolderSyncDiagnose(raw) {
+    var r = safeObject(raw);
+    var blockers = safeObject(r.blockers);
+    var desktopToChrome = safeObject(r.desktopToChrome);
+    var chromeToDesktop = safeObject(r.chromeToDesktop);
+    return {
+      available: !!raw,
+      connected: r.connected === true,
+      permission: cleanString(r.permission || chromeToDesktop.permission || desktopToChrome.permission),
+      folderName: cleanString(r.folderName),
+      fileSystemAccessAvailable: r.fileSystemAccessAvailable === true,
+      chromeWritesSyncFolder: r.chromeWritesSyncFolder === true || chromeToDesktop.chromeWritesSyncFolder === true,
+      desktopToChromePermission: cleanString(desktopToChrome.permission),
+      chromeToDesktopPermission: cleanString(chromeToDesktop.permission),
+      permissionRequired: blockers.permissionRequired === true,
+      noFolderHandle: blockers.noFolderHandle === true,
+    };
+  }
+
+  function chromeSyncDiagnosePermissionGranted(raw) {
+    var summary = summarizeFolderSyncDiagnose(raw);
+    var permission = cleanString(summary.permission || summary.chromeToDesktopPermission || summary.desktopToChromePermission);
+    return summary.connected === true &&
+      permission === 'granted' &&
+      summary.permissionRequired !== true &&
+      summary.noFolderHandle !== true;
+  }
+
+  function removeHealthCodes(codes, blocked) {
+    var blockedMap = blocked.reduce(function (acc, code) {
+      acc[code] = true;
+      return acc;
+    }, Object.create(null));
+    return codeList(codes).filter(function (code) { return !blockedMap[code]; });
+  }
+
+  function reconcileChromeHealthWithSyncDiagnose(health, rawDiagnose) {
+    var output = Object.assign({}, safeObject(health));
+    if (detectSurface().kind !== 'chrome-studio') return output;
+    if (!chromeSyncDiagnosePermissionGranted(rawDiagnose)) return output;
+
+    var permission = summarizeFolderSyncDiagnose(rawDiagnose).permission || 'granted';
+    var removedPermissionCodes = ['permission-required', 'no-folder-handle'];
+    output.blockers = removeHealthCodes(output.blockers, removedPermissionCodes);
+    output.statusCodes = removeHealthCodes(output.statusCodes, removedPermissionCodes);
+
+    var desktopToChrome = Object.assign({}, safeObject(output.desktopToChrome));
+    desktopToChrome.permission = permission;
+    output.desktopToChrome = desktopToChrome;
+
+    var rawChromeToDesktop = safeObject(safeObject(rawDiagnose).chromeToDesktop);
+    var chromeToDesktop = Object.assign({}, safeObject(output.chromeToDesktop));
+    chromeToDesktop.permission = cleanString(rawChromeToDesktop.permission || permission);
+    chromeToDesktop.chromeWritesSyncFolder = chromeToDesktop.chromeWritesSyncFolder === true ||
+      rawChromeToDesktop.chromeWritesSyncFolder === true ||
+      safeObject(rawDiagnose).chromeWritesSyncFolder === true;
+    output.chromeToDesktop = chromeToDesktop;
+
+    if (!output.blockers.length && cleanString(output.verdict) === 'blocked') {
+      output.verdict = codeList(output.warnings).length ? 'warning' : 'healthy';
+    }
+    if (!output.blockers.length && cleanString(output.status) === 'blocked') {
+      output.status = output.verdict;
+    }
+    if (!output.blockers.length && cleanString(output.summaryText).toLowerCase().indexOf('blocked') !== -1) {
+      output.summaryText = output.verdict === 'healthy'
+        ? 'Folder sync is current and no blockers are active.'
+        : 'Folder sync has warnings but no blockers are active.';
+    }
+    output.permissionStateReconciledFromSyncDiagnose = true;
+    return output;
+  }
+
   async function createFolder(payload) {
     var name = cleanString(payload.name || payload.folderName);
     if (!name) return unsupportedResult('createFolder', 'folder-name-required');
@@ -487,7 +560,13 @@
     var api = getPath(H2O, ['Studio', 'sync', 'folder']);
     var fn = api && (api.diagnoseHealth || (api.health && api.health.diagnose) || (api.diagnostics && api.diagnostics.diagnose));
     if (typeof fn !== 'function') return unsupportedResult('diagnoseHealth', 'folder-health-api-unavailable');
-    var result = safeObject(await fn.call(api));
+    var rawDiagnose = null;
+    try {
+      rawDiagnose = api && typeof api.diagnose === 'function' ? safeObject(await api.diagnose()) : null;
+    } catch (_) {
+      rawDiagnose = null;
+    }
+    var result = reconcileChromeHealthWithSyncDiagnose(safeObject(await fn.call(api)), rawDiagnose);
     return baseResult('diagnoseHealth', {
       ok: true,
       status: cleanString(result.verdict || result.status || 'diagnosed'),
@@ -499,6 +578,8 @@
       deferred: safeObject(result.deferred),
       desktopToChrome: safeObject(result.desktopToChrome),
       chromeToDesktop: safeObject(result.chromeToDesktop),
+      syncFolderDiagnose: summarizeFolderSyncDiagnose(rawDiagnose),
+      permissionStateReconciledFromSyncDiagnose: result.permissionStateReconciledFromSyncDiagnose === true,
       tombstoneLocalDelete: safeObject(result.tombstoneLocalDelete),
     });
   }

@@ -38,6 +38,12 @@ assertContains(runner, "'--op', 'diagnoseHealth'", 'diagnoseHealth execution pla
 assertContains(runner, "'--op', 'getFolderModel'", 'getFolderModel execution plan');
 assertContains(runner, 'chrome-health-permission-required', 'Chrome permission warning behavior');
 assertContains(runner, 'permissionOnlyChromeHealthBlocked', 'Chrome permission blocker classifier');
+assertContains(runner, 'syncFolderDiagnose', 'live sync folder diagnose summary');
+assertContains(runner, 'chromeSyncDiagnosePermissionGranted', 'granted sync permission classifier');
+assertContains(runner, 'chromeSyncDiagnosePermissionMissing', 'missing sync permission classifier');
+assertContains(runner, "diag.permission === 'granted'", 'granted permission check');
+assertContains(runner, "diag.available !== true", 'real diagnose required for missing permission warning');
+assertContains(runner, 'chrome-health-permission-state-unconfirmed', 'unconfirmed permission blocker');
 assertContains(runner, 'row-count-differs', 'row count warning behavior');
 assertContains(runner, 'comparisonIsInformational: true', 'informational comparison marker');
 assertContains(runner, 'chromeRowCount', 'Chrome row count comparison');

@@ -274,6 +274,59 @@ Slice 4C combined read-only smoke runner is live-proven.
 
 Next phase should prepare for full local RC smoke by either granting the Chrome smoke profile access to `/Users/hobayda/H2O Studio Sync`, or adding an explicit operator step/check for Chrome File System Access permission before mutation smoke.
 
+## Chrome Permission-State Alignment Fix
+
+Follow-up issue:
+
+- Chrome Dev smoke window console showed `H2O.Studio.sync.folder.diagnose()` with:
+  - `connected:true`
+  - `permission:"granted"`
+  - `folderName:"H2O Studio Sync"`
+  - `chromeWritesSyncFolder:true`
+  - `blockers.permissionRequired:false`
+  - `blockers.noFolderHandle:false`
+- The combined runner still reported `chrome-health-permission-required` because the smoke registry `diagnoseHealth` path returned:
+  - `permission-required`
+  - `no-folder-handle`
+  - `desktopToChrome.permission:"unknown"`
+  - `chromeToDesktop.permission:"unknown"`
+
+Root cause:
+
+- The dev smoke registry used the folder health projection as its only source for `diagnoseHealth`.
+- It did not reconcile that projection with the live `H2O.Studio.sync.folder.diagnose()` result that owns the current Chrome File System Access folder handle.
+- The Chrome CDP helper also selected the first matching smoke Studio target by URL alone. If multiple smoke tabs existed, it did not prefer the target whose live sync diagnose reported `connected:true` and `permission:"granted"`.
+
+Fix:
+
+- `H2O.Studio.devSmoke.folderSync.run("diagnoseHealth", ...)` now reads `H2O.Studio.sync.folder.diagnose()` in the same target.
+- On Chrome only, if the live sync diagnose reports `connected:true`, `permission:"granted"`, `permissionRequired:false`, and `noFolderHandle:false`, the registry removes stale permission blockers from the health projection and reports the reconciled permission state.
+- The Chrome CDP helper now probes matching Studio targets with a fixed read-only sync-diagnose wrapper and prefers the target with a connected/granted folder handle.
+- The combined read-only runner now only downgrades Chrome permission blockers to `chrome-health-permission-required` when the registry's live `syncFolderDiagnose` confirms the folder handle or permission is actually missing. If the live sync diagnose is granted, no permission warning is emitted.
+
+Corrected expected behavior:
+
+- When Chrome console `H2O.Studio.sync.folder.diagnose()` reports `connected:true` and `permission:"granted"`, the combined runner should not emit `chrome-health-permission-required`.
+- `row-count-differs` can remain as a Slice 4C informational warning until the later full convergence/mutation smoke stage.
+
+Validation for fix:
+
+- `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`: passed.
+- `node --check tools/smoke/chrome-cdp-studio.mjs`: passed.
+- `node --check tools/smoke/local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`: passed.
+- `node --check tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node --check tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`: passed.
+- `node tools/validation/sync/validate-folder-sync-rc-smoke-runner.mjs`: passed.
+- `node tools/validation/sync/validate-local-folder-sync-readonly-smoke-runner.mjs`: passed.
+
+Rerun command:
+
+```sh
+node tools/smoke/local-folder-sync-readonly-smoke-runner.mjs --chrome-port 9243 --timeout-ms 30000
+```
+
 ## Deferred
 
 - Full mutation smoke runner for create/rename/color.
