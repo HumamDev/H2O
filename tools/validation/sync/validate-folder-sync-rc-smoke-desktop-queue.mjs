@@ -8,6 +8,7 @@ const queuePath = path.join(root, 'src-surfaces-base/studio/dev/folder-sync-rc-s
 const registryPath = path.join(root, 'src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js');
 const studioHtmlPath = path.join(root, 'src-surfaces-base/studio/studio.html');
 const packStudioPath = path.join(root, 'tools/product/studio/pack-studio.mjs');
+const tauriCapabilityPath = path.join(root, 'apps/studio/desktop/src-tauri/capabilities/default.json');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -31,14 +32,19 @@ const queue = read(queuePath);
 const registry = read(registryPath);
 const html = read(studioHtmlPath);
 const packStudio = read(packStudioPath);
+const tauriCapability = JSON.parse(read(tauriCapabilityPath));
 
 assertContains(queue, 'H2O.Studio.devSmoke.folderSyncQueue', 'queue namespace');
 assertContains(queue, 'folder-sync-rc-smoke-desktop-queue', 'queue phase');
 assertContains(queue, '/Users/hobayda/H2O Studio Sync/.h2o-smoke', 'scoped smoke root');
+assertContains(queue, "H2O Studio Sync/.h2o-smoke", 'Tauri home-relative smoke root');
 assertContains(queue, "SMOKE_ROOT + '/desktop-command.json'", 'scoped command path');
+assertContains(queue, "SMOKE_ROOT_HOME_RELATIVE + '/desktop-command.json'", 'Tauri home-relative command path');
 assertContains(queue, "SMOKE_ROOT + '/results'", 'scoped result path');
+assertContains(queue, "SMOKE_ROOT_HOME_RELATIVE + '/results'", 'Tauri home-relative result path');
 assertContains(queue, "COMMAND_PATH.indexOf(SMOKE_ROOT + '/') === 0", 'command path scoped guard');
 assertContains(queue, "RESULTS_DIR.indexOf(SMOKE_ROOT + '/') === 0", 'result path scoped guard');
+assertContains(queue, 'tauriFsRootScoped', 'Tauri FS relative scope guard');
 
 assertContains(queue, 'detectTauri()', 'Desktop/Tauri guard');
 assertContains(queue, "registryGates.surface !== 'desktop-studio'", 'Desktop surface gate');
@@ -99,6 +105,29 @@ assertContains(packStudio, '"dev/folder-sync-rc-smoke-desktop-queue.tauri.js"', 
 const packEntryCount = (packStudio.match(/"dev\/folder-sync-rc-smoke-desktop-queue\.tauri\.js"/g) || []).length;
 assert(packEntryCount === 2, `Studio packer should contain source and output entries exactly once each; found ${packEntryCount}`);
 
+function permission(identifier) {
+  return tauriCapability.permissions.find((entry) => entry && typeof entry === 'object' && entry.identifier === identifier);
+}
+
+function permissionPaths(identifier) {
+  const entry = permission(identifier);
+  assert(entry, `Tauri capability missing ${identifier}`);
+  assert(Array.isArray(entry.allow), `Tauri capability ${identifier} missing allow array`);
+  return entry.allow.map((item) => item && item.path).filter(Boolean);
+}
+
+const readTextPaths = permissionPaths('fs:allow-read-text-file');
+const mkdirPaths = permissionPaths('fs:allow-mkdir');
+const writeTextPaths = permissionPaths('fs:allow-write-text-file');
+
+assert(readTextPaths.includes('$HOME/H2O Studio Sync/.h2o-smoke/desktop-command.json'), 'Tauri read scope missing desktop command file');
+assert(mkdirPaths.includes('$HOME/H2O Studio Sync/.h2o-smoke'), 'Tauri mkdir scope missing smoke root');
+assert(mkdirPaths.includes('$HOME/H2O Studio Sync/.h2o-smoke/results'), 'Tauri mkdir scope missing smoke results dir');
+assert(writeTextPaths.includes('$HOME/H2O Studio Sync/.h2o-smoke/results/*.json'), 'Tauri write scope missing smoke result json files');
+assert(!writeTextPaths.includes('$HOME/**'), 'Tauri write scope must not allow whole home');
+assert(!mkdirPaths.includes('$HOME/**'), 'Tauri mkdir scope must not allow whole home');
+assert(!writeTextPaths.includes('$HOME/H2O Studio Sync/.h2o-smoke/**'), 'Tauri write scope should stay limited to result JSON files');
+
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-folder-sync-rc-smoke-desktop-queue',
@@ -106,6 +135,8 @@ console.log(JSON.stringify({
   registryPath,
   studioHtmlPath,
   packStudioPath,
+  tauriCapabilityPath,
   queuePathScoped: true,
+  tauriFsScope: '$HOME/H2O Studio Sync/.h2o-smoke',
   dispatcher: 'H2O.Studio.devSmoke.folderSync.run',
 }, null, 2));

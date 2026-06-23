@@ -24,8 +24,11 @@
   var PHASE = 'folder-sync-rc-smoke-desktop-queue';
   var VERSION = '0.1.0-slice3';
   var SMOKE_ROOT = '/Users/hobayda/H2O Studio Sync/.h2o-smoke';
+  var SMOKE_ROOT_HOME_RELATIVE = 'H2O Studio Sync/.h2o-smoke';
   var COMMAND_PATH = SMOKE_ROOT + '/desktop-command.json';
+  var COMMAND_FS_PATH = SMOKE_ROOT_HOME_RELATIVE + '/desktop-command.json';
   var RESULTS_DIR = SMOKE_ROOT + '/results';
+  var RESULTS_FS_DIR = SMOKE_ROOT_HOME_RELATIVE + '/results';
   var POLL_INTERVAL_MS = 3000;
   var MAX_PROCESSED_IDS = 120;
   var DESKTOP_SURFACES = Object.freeze({
@@ -226,6 +229,10 @@
     return RESULTS_DIR + '/' + safeFileToken(commandId, 'command') + '.json';
   }
 
+  function resultFsPathForCommand(commandId) {
+    return RESULTS_FS_DIR + '/' + safeFileToken(commandId, 'command') + '.json';
+  }
+
   function safetyFlags() {
     return {
       privacy: { redacted: true },
@@ -239,6 +246,8 @@
       noBroadFilesystemAccess: true,
       commandPathScoped: COMMAND_PATH.indexOf(SMOKE_ROOT + '/') === 0,
       resultPathScoped: RESULTS_DIR.indexOf(SMOKE_ROOT + '/') === 0,
+      tauriFsRootScoped: COMMAND_FS_PATH.indexOf(SMOKE_ROOT_HOME_RELATIVE + '/') === 0 &&
+        RESULTS_FS_DIR.indexOf(SMOKE_ROOT_HOME_RELATIVE + '/') === 0,
     };
   }
 
@@ -257,7 +266,9 @@
       adapter: 'tauri',
       observedAt: nowIso(),
       commandPath: COMMAND_PATH,
+      commandFsPath: COMMAND_FS_PATH,
       resultsDir: RESULTS_DIR,
+      resultsFsDir: RESULTS_FS_DIR,
       registryGatesEnabled: !!(gates && gates.enabled),
     }, safetyFlags(), extra || {});
   }
@@ -292,7 +303,9 @@
       adapter: registryGates && registryGates.adapter || (detectTauri() ? 'tauri' : 'unknown'),
       observedAt: nowIso(),
       commandPath: COMMAND_PATH,
+      commandFsPath: COMMAND_FS_PATH,
       resultsDir: RESULTS_DIR,
+      resultsFsDir: RESULTS_FS_DIR,
       registryGates: registryGates,
       blockers: blockers,
       privacy: { redacted: true },
@@ -310,7 +323,9 @@
       inFlight: state.inFlight,
       pollIntervalMs: state.pollIntervalMs,
       commandPath: COMMAND_PATH,
+      commandFsPath: COMMAND_FS_PATH,
       resultsDir: RESULTS_DIR,
+      resultsFsDir: RESULTS_FS_DIR,
       lastStatus: state.lastStatus,
       lastError: state.lastError,
       lastCommandId: state.lastCommandId,
@@ -371,8 +386,9 @@
   async function writeResult(commandId, result) {
     var id = safeFileToken(commandId, 'command');
     var path = resultPathForCommand(id);
-    await fsMkdir(RESULTS_DIR);
-    await fsWriteTextFile(path, JSON.stringify(result, null, 2) + '\n');
+    var fsPath = resultFsPathForCommand(id);
+    await fsMkdir(RESULTS_FS_DIR);
+    await fsWriteTextFile(fsPath, JSON.stringify(result, null, 2) + '\n');
     state.writeCount += 1;
     state.lastResultPath = path;
     return path;
@@ -489,7 +505,7 @@
 
       var rawText = '';
       try {
-        rawText = await fsReadTextFile(COMMAND_PATH);
+        rawText = await fsReadTextFile(COMMAND_FS_PATH);
       } catch (readErr) {
         if (isMissingFileError(readErr)) {
           state.lastStatus = 'command-file-missing';

@@ -12,6 +12,7 @@ This slice does not add the Chrome CDP helper, full RC smoke runner, production 
 
 - `src-surfaces-base/studio/dev/folder-sync-rc-smoke-desktop-queue.tauri.js`
 - `src-surfaces-base/studio/studio.html`
+- `apps/studio/desktop/src-tauri/capabilities/default.json`
 - `tools/product/studio/pack-studio.mjs`
 - `tools/validation/sync/validate-folder-sync-rc-smoke-desktop-queue.mjs`
 - `release-evidence/2026-06-23/local-folder-sync-smoke-bridge-desktop-queue.md`
@@ -41,6 +42,38 @@ Malformed command files are written as:
 ```text
 /Users/hobayda/H2O Studio Sync/.h2o-smoke/results/malformed-<hash>.json
 ```
+
+## Tauri Filesystem Scope Fix
+
+Follow-up date: 2026-06-23
+
+Runtime issue:
+
+- `H2O.Studio.devSmoke.folderSyncQueue.diagnose()` showed `enabled:true`, `commandPathScoped:true`, and `resultPathScoped:true`.
+- `pollOnce()` failed with `status:"command-read-failed"`.
+- `lastError` included `forbidden path: /Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json`.
+
+Root cause:
+
+- The queue's internal scope checks were correct, but it called Tauri FS with an absolute path.
+- Tauri capability matching for the smoke queue needed an explicit `.h2o-smoke` scope and the queue should use `$HOME`-relative paths for Tauri FS calls.
+
+Fix:
+
+- Public diagnostics still report:
+  - `/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json`
+  - `/Users/hobayda/H2O Studio Sync/.h2o-smoke/results`
+- Tauri FS calls now use `$HOME`-relative paths:
+  - `H2O Studio Sync/.h2o-smoke/desktop-command.json`
+  - `H2O Studio Sync/.h2o-smoke/results`
+  - `H2O Studio Sync/.h2o-smoke/results/<commandId>.json`
+- Desktop Tauri capability scope now explicitly allows only:
+  - read text file: `$HOME/H2O Studio Sync/.h2o-smoke/desktop-command.json`
+  - mkdir: `$HOME/H2O Studio Sync/.h2o-smoke`
+  - mkdir: `$HOME/H2O Studio Sync/.h2o-smoke/results`
+  - write text file: `$HOME/H2O Studio Sync/.h2o-smoke/results/*.json`
+
+The fix does not grant whole-filesystem write access and does not broaden the smoke bridge beyond `.h2o-smoke/`.
 
 ## Gates
 
@@ -232,6 +265,7 @@ Commands run:
 - `node --check tools/product/studio/pack-studio.mjs`
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-desktop-queue.mjs`
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`
+- `node -e "JSON.parse(require('fs').readFileSync('apps/studio/desktop/src-tauri/capabilities/default.json','utf8')); console.log('capability json ok')"`
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-desktop-queue.mjs`
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs`
 - `git diff --check`
@@ -243,6 +277,7 @@ Results:
 - `node --check tools/product/studio/pack-studio.mjs` - pass
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-desktop-queue.mjs` - pass
 - `node --check tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass
+- `node -e "JSON.parse(require('fs').readFileSync('apps/studio/desktop/src-tauri/capabilities/default.json','utf8')); console.log('capability json ok')"` - pass
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-desktop-queue.mjs` - pass
 - `node tools/validation/sync/validate-folder-sync-rc-smoke-bridge.mjs` - pass
 - `git diff --check` - pass
