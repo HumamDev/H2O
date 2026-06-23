@@ -38,6 +38,8 @@
   var PEER_STATE_SCHEMA = 'h2o.studio.sync.peer-state.v1';
   var TOMBSTONE_SCHEMA_VERSION = 'h2o.studio.tombstone.v1';
   var TOMBSTONE_EXPORT_LIMIT = 5000;
+  var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
+  var FOLDER_DELETE_RECEIPT_LIMIT = 1000;
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1105,6 +1107,7 @@
       categories: !!(stores.categories && (typeof stores.categories.list === 'function' || typeof stores.categories.getAll === 'function')),
       labels: !!(stores.labels && (typeof stores.labels.list === 'function' || typeof stores.labels.getAll === 'function')),
       tags: !!(stores.tags && (typeof stores.tags.list === 'function' || typeof stores.tags.getAll === 'function')),
+      tombstoneReviews: !!(stores.tombstoneReviews && typeof stores.tombstoneReviews.listFolderDeleteReceipts === 'function'),
     };
   }
 
@@ -1135,6 +1138,21 @@
       skippedMalformed: Number(safeExtra.skippedMalformed) || 0,
       events: asArray(safeExtra.events),
       warnings: asArray(safeExtra.warnings),
+    };
+  }
+
+  function emptyFolderDeleteReceiptDiagnostics(warnings) {
+    return {
+      supported: true,
+      exported: false,
+      schema: FOLDER_DELETE_RECEIPT_SCHEMA,
+      total: 0,
+      exportedCount: 0,
+      statusOnly: true,
+      noTombstoneApply: true,
+      tombstonePropagation: 'deferred',
+      chromeHideDeferred: true,
+      warnings: asArray(warnings),
     };
   }
 
@@ -1347,6 +1365,65 @@
     }
   }
 
+  async function buildFolderDeleteReceiptPayloadSafely(stores) {
+    var api = stores && stores.tombstoneReviews;
+    if (!api || typeof api.listFolderDeleteReceipts !== 'function') {
+      return {
+        receipts: [],
+        diagnostics: emptyFolderDeleteReceiptDiagnostics([{
+          code: 'folder-delete-receipt-store-unavailable',
+          warning: 'store.tombstoneReviews.listFolderDeleteReceipts unavailable; exporting empty folderDeleteReceipts array',
+        }]),
+      };
+    }
+    try {
+      var receipts = await api.listFolderDeleteReceipts({
+        decision: 'applied-folder-delete-request',
+        limit: FOLDER_DELETE_RECEIPT_LIMIT,
+      });
+      if (!Array.isArray(receipts)) {
+        return {
+          receipts: [],
+          diagnostics: emptyFolderDeleteReceiptDiagnostics([{
+            code: 'folder-delete-receipt-list-malformed',
+            warning: 'store.tombstoneReviews.listFolderDeleteReceipts returned a non-array payload',
+          }]),
+        };
+      }
+      var projected = receipts.filter(function (receipt) {
+        return receipt && typeof receipt === 'object' &&
+          cleanString(receipt.schema) === FOLDER_DELETE_RECEIPT_SCHEMA &&
+          receipt.statusOnly === true &&
+          receipt.noTombstoneApply === true;
+      });
+      return {
+        receipts: projected,
+        diagnostics: {
+          supported: true,
+          exported: true,
+          schema: FOLDER_DELETE_RECEIPT_SCHEMA,
+          total: receipts.length,
+          exportedCount: projected.length,
+          skippedMalformed: Math.max(0, receipts.length - projected.length),
+          statusOnly: true,
+          noTombstoneApply: true,
+          tombstonePropagation: 'deferred',
+          chromeHideDeferred: true,
+          warnings: [],
+        },
+      };
+    } catch (e) {
+      return {
+        receipts: [],
+        diagnostics: emptyFolderDeleteReceiptDiagnostics([{
+          code: 'folder-delete-receipt-export-failed',
+          warning: 'folder delete receipt projection failed; exporting empty folderDeleteReceipts array',
+          error: String((e && e.message) || e),
+        }]),
+      };
+    }
+  }
+
   async function exportFullBundle(options) {
     var startedAt = Date.now();
     var warnings = [];
@@ -1368,6 +1445,8 @@
     var snapshotCount = collected.diagnostics.snapshotCount;
     var tombstoneExport = await buildTombstoneExportPayloadSafely(stores);
     var tombstoneDiagnostics = tombstoneExport.diagnostics || emptyTombstoneExportDiagnostics();
+    var folderDeleteReceiptExport = await buildFolderDeleteReceiptPayloadSafely(stores);
+    var folderDeleteReceiptDiagnostics = folderDeleteReceiptExport.diagnostics || emptyFolderDeleteReceiptDiagnostics();
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
     var summary = {
       chatCount: chatArchive.chatCount,
@@ -1387,6 +1466,7 @@
       tombstoneCount: Number(tombstoneDiagnostics.total) || 0,
       activeTombstoneCount: Number(tombstoneDiagnostics.active) || 0,
       restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
+      folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -1401,6 +1481,7 @@
       libraryKv: libraryKv,
       tombstoneSchemaVersion: TOMBSTONE_SCHEMA_VERSION,
       tombstones: asArray(tombstoneExport.tombstones),
+      folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
       diagnostics: {
         desktopExport: {
@@ -1417,6 +1498,7 @@
             bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
           },
           tombstones: tombstoneDiagnostics,
+          folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           applyEvents: {
             schema: cleanString(syncApplyEvents.schema) || APPLY_EVENTS_SCHEMA_VERSION,
             available: syncApplyEvents.available === true,
@@ -1562,6 +1644,7 @@
         snapshotCount: Number(bundle && bundle.summary && bundle.summary.snapshotCount) || 0,
         turnCount: Number(bundle && bundle.summary && bundle.summary.turnCount) || 0,
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
+        folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
         applyEventCount: Number(bundle && bundle.summary && bundle.summary.applyEventCount) || 0,
         applyEventExportedCount: asArray(bundle && bundle.syncApplyEvents && bundle.syncApplyEvents.events).length,
         checksum: checksum,

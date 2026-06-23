@@ -10,6 +10,8 @@ const files = {
   reviews: 'src-surfaces-base/studio/store/tombstone-reviews.mv3.js',
   desktopReviews: 'src-surfaces-base/studio/store/tombstone-reviews.tauri.js',
   chromeExport: 'src-surfaces-base/studio/sync/auto-import.mv3.js',
+  chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
+  desktopExport: 'src-surfaces-base/studio/ingestion/export-bundle.tauri.js',
   desktopImport: 'src-surfaces-base/studio/sync/folder-sync.tauri.js',
   actions: 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js',
   sidebar: 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js',
@@ -49,6 +51,8 @@ function assertIncludes(source, needle, label = needle) {
 const reviews = read(files.reviews);
 const desktopReviews = read(files.desktopReviews);
 const chromeExport = read(files.chromeExport);
+const chromeImport = read(files.chromeImport);
+const desktopExport = read(files.desktopExport);
 const desktopImport = read(files.desktopImport);
 const actions = read(files.actions);
 const sidebar = read(files.sidebar);
@@ -112,9 +116,11 @@ assert(!collectExportBody.includes('bindChat'), 'Chrome export must not bind cha
   'listFolderDeleteRequests',
   'ingestFolderDeleteRequests',
   'applyFolderDeleteRequest',
+  'listFolderDeleteReceipts',
   'validateFolderDeleteRequestReviewForApply',
   'desktop-approved-chrome-folder-delete-request',
   'applied-folder-delete-request',
+  'h2o.studio.folder-delete-receipt.v1',
   'folder-delete-request-imported-not-applied',
   'desktopApplyRequired: true',
   'noApply: true',
@@ -148,6 +154,53 @@ assert(!desktopApplyBody.includes('DELETE FROM'), 'Desktop apply must not use ra
 assert(!desktopApplyBody.includes('removeFolderFromStateMirror'), 'Desktop apply must not bypass folder store mirror handling');
 assert(!desktopApplyBody.includes('unbindChat'), 'Desktop apply must not unbind chats directly');
 assert(!desktopApplyBody.includes('bindChat'), 'Desktop apply must not bind chats directly');
+
+const receiptProjectionBody = functionBody(desktopReviews, 'folderDeleteReceiptFromReview');
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  'applied-folder-delete-request',
+  "status: 'applied'",
+  'statusOnly: true',
+  'noTombstoneApply: true',
+  "tombstonePropagation: 'deferred'",
+  'chromeHideDeferred: true',
+  'noHardDelete: true',
+  'noChatDelete: true',
+].forEach((needle) => assertIncludes(receiptProjectionBody, needle, `Desktop receipt projection ${needle}`));
+assert(!receiptProjectionBody.includes('softDeleteFolder'), 'Receipt projection must not apply soft delete');
+assert(!receiptProjectionBody.includes('createTombstone'), 'Receipt projection must not create tombstones');
+assert(!receiptProjectionBody.includes('DELETE FROM'), 'Receipt projection must not use raw SQL DELETE');
+assert(!receiptProjectionBody.includes('unbindChat'), 'Receipt projection must not unbind chats');
+assert(!receiptProjectionBody.includes('bindChat'), 'Receipt projection must not bind chats');
+
+const receiptListBody = functionBody(desktopReviews, 'listFolderDeleteReceipts');
+assert(receiptListBody.includes("status: 'resolved'"), 'Receipt list must read resolved reviews only');
+assert(receiptListBody.includes("classification: 'delete-request'"), 'Receipt list must read delete-request reviews only');
+assert(receiptListBody.includes('folderDeleteReceiptFromReview'), 'Receipt list must route rows through receipt projection');
+
+[
+  'FOLDER_DELETE_RECEIPT_SCHEMA',
+  'buildFolderDeleteReceiptPayloadSafely',
+  'listFolderDeleteReceipts',
+  'folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts)',
+  'folderDeleteReceiptCount',
+  'statusOnly: true',
+  'noTombstoneApply: true',
+  "tombstonePropagation: 'deferred'",
+  'chromeHideDeferred: true',
+].forEach((needle) => assertIncludes(desktopExport, needle, `Desktop receipt export ${needle}`));
+
+const receiptExportBody = functionBody(desktopExport, 'buildFolderDeleteReceiptPayloadSafely');
+assert(receiptExportBody.includes('listFolderDeleteReceipts'), 'Desktop export must source receipts from review store');
+assert(receiptExportBody.includes('folderDeleteReceipts'), 'Desktop export diagnostics must name the receipt section');
+assert(!receiptExportBody.includes('softDeleteFolder'), 'Desktop receipt export must not apply soft delete');
+assert(!receiptExportBody.includes('createTombstone'), 'Desktop receipt export must not create tombstones');
+assert(!receiptExportBody.includes('DELETE FROM'), 'Desktop receipt export must not use raw SQL DELETE');
+assert(!receiptExportBody.includes('unbindChat'), 'Desktop receipt export must not unbind chats');
+assert(!receiptExportBody.includes('bindChat'), 'Desktop receipt export must not bind chats');
+
+assert(!chromeImport.includes('folderDeleteReceipts'), 'Chrome import must not consume folderDeleteReceipts in Phase 4C.4a');
+assert(!chromeImport.includes('folder-delete-receipt'), 'Chrome import must not implement folder delete receipts in Phase 4C.4a');
 
 const desktopApplyValidationBody = functionBody(desktopReviews, 'validateFolderDeleteRequestReviewForApply');
 [
@@ -227,6 +280,8 @@ console.log(JSON.stringify({
   transportRequestOnly: true,
   desktopIngestReviewOnly: true,
   desktopApplyExplicitOnly: true,
+  desktopReceiptExportStatusOnly: true,
+  chromeReceiptImportDeferred: true,
   noHardDelete: true,
   noChatDelete: true,
   chromeReceiptDeferred: true,

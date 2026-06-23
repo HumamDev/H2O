@@ -37,6 +37,7 @@
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
+  var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -391,6 +392,10 @@
     return 'folder-delete-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
   }
 
+  function folderDeleteReceiptId(requestId) {
+    return 'folder-delete-receipt:' + encodeRecordPart(requestId);
+  }
+
   function parseFolderDeleteRequestPayload(input) {
     if (!input) return null;
     var raw = readField(input, 'rawTombstoneJson', 'raw_tombstone_json');
@@ -486,6 +491,83 @@
         var parsed = normalizeFolderDeleteRequest(row);
         if (!parsed.ok) return false;
         if (folderId && parsed.request.folderId !== folderId) return false;
+        return true;
+      });
+    });
+  }
+
+  function folderDeleteReceiptFromReview(review) {
+    if (!review) return null;
+    if (cleanScalar(review.classification) !== 'delete-request') return null;
+    if (cleanScalar(review.recordKind) !== 'folder') return null;
+    if (cleanScalar(review.status) !== 'resolved') return null;
+    if (cleanScalar(review.decision) !== 'applied-folder-delete-request') return null;
+
+    var parsed = normalizeFolderDeleteRequest(review);
+    if (!parsed.ok) return null;
+    var request = parsed.request;
+    var payload = parseFolderDeleteRequestPayload(review) || {};
+    var applyResult = isObject(payload.desktopApplyResult) ? payload.desktopApplyResult : {};
+    if (cleanScalar(applyResult.status) !== 'applied-folder-delete-request') return null;
+
+    var requestId = cleanScalar(request.requestId || review.reviewId);
+    var reviewId = cleanScalar(review.reviewId || request.reviewId || requestId);
+    var folderId = cleanScalar(request.folderId || review.recordId);
+    if (!requestId || !reviewId || !folderId) return null;
+
+    var affectedChatCount = Number(applyResult.affectedChatCount);
+    var bindingCount = Number(applyResult.bindingCount);
+    if (!Number.isFinite(affectedChatCount) || affectedChatCount < 0) affectedChatCount = 0;
+    if (!Number.isFinite(bindingCount) || bindingCount < 0) bindingCount = 0;
+
+    return {
+      schema: FOLDER_DELETE_RECEIPT_SCHEMA,
+      receiptId: folderDeleteReceiptId(requestId),
+      requestId: requestId,
+      reviewId: reviewId,
+      folderId: folderId,
+      folderName: nullableString(request.folderNameAtRequest || request.folderName),
+      folderNameAtRequest: nullableString(request.folderNameAtRequest || request.folderName),
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      decision: 'applied-folder-delete-request',
+      status: 'applied',
+      appliedAt: nullableString(applyResult.appliedAt || review.decidedAt),
+      appliedBy: 'desktop-studio',
+      appliedBySurface: 'desktop-studio',
+      appliedBySyncPeerIdPresent: applyResult.appliedBySyncPeerIdPresent === true || !!cleanScalar(review.decidedBySyncPeerId),
+      sourcePeerId: nullableString(request.sourcePeerId || review.remoteSyncPeerId || 'chrome-studio'),
+      tombstoneId: nullableString(applyResult.tombstoneId),
+      noHardDelete: true,
+      noChatDelete: true,
+      affectedChatCount: Math.floor(affectedChatCount),
+      bindingCount: Math.floor(bindingCount),
+      chromeReceipt: true,
+      statusOnly: true,
+      noTombstoneApply: true,
+      tombstonePropagation: 'deferred',
+      chromeHideDeferred: true,
+    };
+  }
+
+  function listFolderDeleteReceipts(filters) {
+    var f = isObject(filters) ? filters : {};
+    var folderId = cleanScalar(f.folderId || f.id || f.recordId || '');
+    var requestId = cleanScalar(f.requestId || '');
+    var reviewId = cleanScalar(f.reviewId || '');
+    var query = {
+      classification: 'delete-request',
+      status: 'resolved',
+      recordKind: 'folder',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (folderId) query.recordId = folderDeleteRequestRecordId(folderId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).map(folderDeleteReceiptFromReview).filter(function (receipt) {
+        if (!receipt) return false;
+        if (folderId && receipt.folderId !== folderId) return false;
+        if (requestId && receipt.requestId !== requestId) return false;
+        if (reviewId && receipt.reviewId !== reviewId) return false;
         return true;
       });
     });
@@ -4105,6 +4187,7 @@
     upsertReviewSighting: upsertReviewSighting,
     findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
     listFolderDeleteRequests: listFolderDeleteRequests,
+    listFolderDeleteReceipts: listFolderDeleteReceipts,
     ingestFolderDeleteRequests: ingestFolderDeleteRequests,
     applyFolderDeleteRequest: applyFolderDeleteRequest,
     getReview: getReview,
@@ -4130,6 +4213,7 @@
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
+      folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,
