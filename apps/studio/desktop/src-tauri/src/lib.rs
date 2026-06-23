@@ -1152,6 +1152,47 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v14 — Chat Saving Architecture Phase C C2b: saved-chat asset registry
+        // substrate. Adds the content-addressed `assets` registry and the
+        // `snapshot_turn_assets` join that future asset CAS work (binary writer,
+        // package materialization) will populate. Substrate only: no binary CAS
+        // writer, no image extraction, no package materialization, and no GC are
+        // added here. See docs/decisions/ADR-0010-saved-chat-asset-cas.md and
+        // docs/systems/archive/saved-chat-package-format.md.
+        Migration {
+            version: 14,
+            description: "init saved chat asset registry",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS assets (
+                  sha256     TEXT    PRIMARY KEY,
+                  mime_type  TEXT    NOT NULL DEFAULT '',
+                  ext        TEXT    NOT NULL DEFAULT '',
+                  byte_size  INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT    NOT NULL DEFAULT '',
+                  updated_at TEXT    NOT NULL DEFAULT '',
+                  refcount   INTEGER NOT NULL DEFAULT 0,
+                  meta_json  TEXT    NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS snapshot_turn_assets (
+                  snapshot_id TEXT    NOT NULL,
+                  turn_idx    INTEGER NOT NULL,
+                  sha256      TEXT    NOT NULL,
+                  relation    TEXT    NOT NULL DEFAULT 'inline',
+                  created_at  TEXT    NOT NULL DEFAULT '',
+                  meta_json   TEXT    NOT NULL DEFAULT '{}',
+                  PRIMARY KEY (snapshot_id, turn_idx, sha256)
+                );
+
+                -- sha256 lookups (refcount recompute, "which turns use asset X")
+                -- need their own index; queries by snapshot_id and
+                -- (snapshot_id, turn_idx) are already served by the leftmost
+                -- prefix of the composite PRIMARY KEY.
+                CREATE INDEX IF NOT EXISTS idx_snapshot_turn_assets_sha256
+                  ON snapshot_turn_assets(sha256);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

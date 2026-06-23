@@ -505,6 +505,12 @@
        snapshots + snapshot_turns tables (Migration v5). Same self-detect
        gating as chats.tauri.js. -->
   <script src="./store/snapshots.tauri.js"></script>
+  <!-- Desktop-only: SQLite-backed saved-chat asset registry (Phase C C2b).
+       Backs the assets + snapshot_turn_assets tables (Migration v14). Substrate
+       only: DB read/write surface for future asset CAS; no binary file IO, no
+       package materialization, no GC. Same self-detect gating as
+       snapshots.tauri.js. -->
+  <script src="./store/assets.tauri.js"></script>
   <!-- Desktop-only: SQLite-backed folders entity (M2a-3c). Backs the
        folders + folder_bindings tables (Migration v3). Same self-detect
        gating as chats.tauri.js. listChats() delegates to store.chats; load

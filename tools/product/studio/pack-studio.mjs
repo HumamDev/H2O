@@ -99,6 +99,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: SQLite-backed snapshots entity (M2a-3b). Same gating
   // as chats.tauri.js; backs snapshots + snapshot_turns tables.
   "store/snapshots.tauri.js",
+  // Desktop-only: SQLite-backed saved-chat asset registry (Phase C C2b). Same
+  // gating; backs assets + snapshot_turn_assets tables (Migration v14).
+  // Substrate only — no binary CAS file IO, no package materialization, no GC.
+  "store/assets.tauri.js",
   // Desktop-only: SQLite-backed folders entity (M2a-3c). Same gating;
   // backs folders + folder_bindings tables. Must load after chats.tauri.js
   // because listChats() delegates to store.chats.
@@ -1172,6 +1176,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/libraryIndex.js",
   "store/chats.tauri.js",
   "store/snapshots.tauri.js",
+  "store/assets.tauri.js",
   "store/folders.tauri.js",
   "store/labels.tauri.js",
   "store/tags.tauri.js",
