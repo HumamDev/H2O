@@ -173,3 +173,103 @@ Expected repeat result:
 - same review remains `resolved`
 - `alreadyResolvedCount >= 1`
 - folder still visible because Chrome hide remains deferred to Phase 4C.4c
+
+## Runtime Proof - 2026-06-23
+
+Implementation commit:
+
+- `80ec02ee4f484f6f49549aa477c517c8f3dffde9`
+- `feat(sync): import folder delete receipts on chrome`
+
+### Request / Receipt Under Test
+
+- `reviewId` / `requestId`: `folder-delete-request:bbcd0e2d-3b64-4957-9b52-18bb72178e9a`
+- `folderId`: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- Folder name: `zz-delete-ui-test`
+
+### Chrome Receipt Import Proof
+
+Ran in Chrome Studio:
+
+```js
+H2O.Studio.sync.folder.syncNow({
+  direction: "desktop-to-chrome",
+  reason: "phase4c4b-folder-delete-receipt-import-proof"
+});
+```
+
+Import result:
+
+- `ok`: `true`
+- `status`: `sync-folder-imported`
+
+`folderDeleteReceiptImport`:
+
+- `schema`: `h2o.studio.folder-delete-receipt-import.v1`
+- `phase`: `phase4c.4b`
+- `ok`: `true`
+- `attempted`: `true`
+- `found`: `1`
+- `receiptCount`: `1`
+- `resolvedCount`: `0`
+- `alreadyResolvedCount`: `1`
+- `skippedCount`: `0`
+- `blockerCount`: `0`
+- `warningCount`: `0`
+- `tombstonePropagation`: `deferred`
+
+### Review Status Proof
+
+- `beforeReview.status`: `resolved`
+- `beforeReview.decision`: `applied-folder-delete-request`
+- `afterReview.status`: `resolved`
+- `afterReview.decision`: `applied-folder-delete-request`
+
+`afterReview.warningsJson` contained:
+
+- `desktop-apply-required`
+- `folder-delete-receipt-imported`
+- `folder-delete-request-applied-on-desktop`
+- `chrome-hide-deferred`
+- `no-tombstone-apply`
+
+`beforePendingCount` was `0` because the request was already resolved before this proof run. This is acceptable for this runtime proof because idempotent re-import was proven by `alreadyResolvedCount: 1`.
+
+### No-Hide / No-Local-Apply Proof
+
+- `folderVisibleBefore`: `true`
+- `folderVisibleAfter`: `true`
+
+`folderAfter`:
+
+- `id`: `fold_eb5a9b09-ee47-494b-b08d-92da2e8471d7`
+- `name`: `zz-delete-ui-test`
+
+`folderDeleteReceiptImport` safety fields:
+
+- `noFolderHide`: `true`
+- `noFolderMutation`: `true`
+- `noBindingMutation`: `true`
+- `noChatMutation`: `true`
+- `noSnapshotMutation`: `true`
+- `noTombstoneApply`: `true`
+- `noHardDelete`: `true`
+- `noChatDelete`: `true`
+
+### Runtime Verdict
+
+Phase 4C.4b Chrome receipt import passed.
+
+- Chrome imports the status-only Desktop receipt.
+- The matching Chrome delete request/review remains resolved with decision `applied-folder-delete-request`.
+- Re-import is idempotent.
+- Chrome does not hide the folder yet.
+- Chrome does not apply tombstones.
+- Chrome does not mutate folders, chats, bindings, or snapshots.
+
+Still deferred:
+
+- Chrome hide remains deferred to Phase 4C.4c.
+- Restore receipts remain deferred.
+- Retention/purge remains deferred.
+- WebDAV/cloud/relay remain deferred.
