@@ -170,80 +170,22 @@
     return 'sha256-' + await sha256Hex(textOrBytes);
   }
 
-  function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+  /* HTML sanitization is centralized in the shared, surface-neutral module
+   * H2O.Studio.html.sanitize (platform/html-sanitizer.js) as of Phase C C3.1.
+   * These thin wrappers delegate to it; behavior is equivalent to the Phase B
+   * inline helpers this replaces. Fail closed if the module is absent so the
+   * projector never emits unsanitized HTML (load order: html-sanitizer.js must
+   * load before this file — enforced in studio.html and pack-studio.mjs). */
+  function htmlSanitizer() {
+    var api = H2O.Studio && H2O.Studio.html && H2O.Studio.html.sanitize;
+    if (!api || typeof api.sanitizeHtml !== 'function') {
+      throw new Error('H2O.Studio.html.sanitize is required; load platform/html-sanitizer.js before ingestion/saved-chat-package-v1.tauri.js');
+    }
+    return api;
   }
-
-  function decodeHtmlEntities(value) {
-    return String(value == null ? '' : value)
-      .replace(/&#x([0-9a-f]+);?/gi, function (_, hex) {
-        var code = parseInt(hex, 16);
-        return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-      })
-      .replace(/&#([0-9]+);?/g, function (_, dec) {
-        var code = parseInt(dec, 10);
-        return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-      })
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&apos;/gi, "'")
-      .replace(/&#39;/gi, "'");
-  }
-
-  function normalizeUrlForSafety(value) {
-    return decodeHtmlEntities(value).trim().replace(/\s+/g, '').toLowerCase();
-  }
-
-  function isUnsafeUrl(value) {
-    var normalized = normalizeUrlForSafety(value);
-    return normalized.indexOf('javascript:') === 0
-      || normalized.indexOf('vbscript:') === 0
-      || normalized.indexOf('data:text/html') === 0;
-  }
-
-  function stripDangerousTags(html) {
-    var out = String(html == null ? '' : html);
-    out = out.replace(/<!--[\s\S]*?-->/g, '');
-    out = out.replace(/<\s*(script|style|iframe|object|embed)\b[\s\S]*?<\s*\/\s*\1\s*>/gi, '');
-    out = out.replace(/<\s*\/?\s*(script|style|iframe|object|embed)\b[^>]*>/gi, '');
-    return out;
-  }
-
-  function sanitizeHtmlV1(htmlRaw) {
-    var html = cleanString(htmlRaw);
-    if (!html) return '';
-    var out = stripDangerousTags(html);
-    out = out.replace(/\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-    out = out.replace(/\s+srcdoc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-    out = out.replace(/\s+(href|src|xlink:href|formaction|action)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi,
-      function (match, attr, rawValue) {
-        var value = String(rawValue || '').trim();
-        var unquoted = value;
-        if ((unquoted[0] === '"' && unquoted[unquoted.length - 1] === '"')
-          || (unquoted[0] === "'" && unquoted[unquoted.length - 1] === "'")) {
-          unquoted = unquoted.slice(1, -1);
-        }
-        if (!isUnsafeUrl(unquoted)) return match;
-        return ' ' + attr.toLowerCase() + '="#"';
-      });
-    return out.trim();
-  }
-
-  function extractTextFromHtml(htmlRaw) {
-    var html = stripDangerousTags(htmlRaw);
-    html = html.replace(/<\s*br\s*\/?\s*>/gi, '\n');
-    html = html.replace(/<\s*\/\s*(p|div|li|h[1-6]|tr|section|article|blockquote)\s*>/gi, '\n');
-    html = html.replace(/<[^>]+>/g, ' ');
-    return decodeHtmlEntities(html).replace(/[ \t\r\f\v]+/g, ' ').replace(/\n\s+/g, '\n').trim();
-  }
+  function escapeHtml(value) { return htmlSanitizer().escapeHtml(value); }
+  function sanitizeHtmlV1(value) { return htmlSanitizer().sanitizeHtml(value); }
+  function extractTextFromHtml(value) { return htmlSanitizer().extractTextFromHtml(value); }
 
   function getTurnMeta(turn) {
     return safeObject(turn && turn.meta);

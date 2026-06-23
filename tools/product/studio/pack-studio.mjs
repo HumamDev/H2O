@@ -144,6 +144,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: full-bundle export. Reads SQLite-backed public store
   // adapters and emits Chrome-compatible h2o.studio.fullBundle.v2.
   "ingestion/export-bundle.tauri.js",
+  // Shared HTML sanitizer (Phase C C3.1). Surface-neutral; installs
+  // H2O.Studio.html.sanitize. Must precede the saved-chat package projector,
+  // which delegates sanitization to it.
+  "platform/html-sanitizer.js",
   // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
   // API only; no UI, import/recovery, sync transport, or CAS implementation.
   "ingestion/saved-chat-package-v1.tauri.js",
@@ -1188,6 +1192,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "store/tombstone-reviews.mv3.js",
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
+  "platform/html-sanitizer.js",
   "ingestion/saved-chat-package-v1.tauri.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",

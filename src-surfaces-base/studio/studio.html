@@ -565,6 +565,10 @@
        adapters and emits Chrome-compatible h2o.studio.fullBundle.v2
        without changing Chrome import logic or mutating Desktop data. -->
   <script src="./ingestion/export-bundle.tauri.js"></script>
+  <!-- Shared HTML sanitizer (Phase C C3.1). Surface-neutral; installs
+       H2O.Studio.html.sanitize. Must load BEFORE the saved-chat package
+       projector, which delegates its sanitization here. Interim regex+CSP. -->
+  <script src="./platform/html-sanitizer.js"></script>
   <!-- Desktop-only: saved-chat package v1 projector/writer. Private API
        only; reads through H2O.Studio.store adapters and writes deterministic
        projection files only when explicitly invoked. No UI, import, sync, or

@@ -17,6 +17,9 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const MODULE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
 const MODULE_PATH = path.join(REPO_ROOT, MODULE_REL);
+// C3.1: the projector delegates HTML sanitization to the shared module, which
+// must be loaded into the same VM context before the projector runs.
+const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 
@@ -224,6 +227,7 @@ function loadModuleWithEnv({ lang, timeZone, stores }) {
   };
   context.globalThis = context;
   const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(SANITIZER_REL), sandbox, { filename: SANITIZER_REL });
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion) throw new Error('H2O.Studio.ingestion did not register');
@@ -312,6 +316,7 @@ function loadModule() {
   };
   context.globalThis = context;
   const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(SANITIZER_REL), sandbox, { filename: SANITIZER_REL });
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion) throw new Error('H2O.Studio.ingestion did not register');
