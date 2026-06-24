@@ -1,0 +1,180 @@
+#!/usr/bin/env node
+// Validator for the C6.1 read-only Saved Chat Archive Health panel shell.
+//
+// Static-checks the helper module + the studio.js Settings wiring, and runs a
+// pure behavioral check of formatArchiveHealthSummary (no DOM needed). Proves
+// status-only shell, read-only boundaries, and that no C6.2/C6.3 surface (counts
+// grid, package details, Copy report JSON) was added.
+
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
+const HELPER_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
+const STUDIO_JS_REL = 'src-surfaces-base/studio/studio.js';
+const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
+const PACK_REL = 'tools/product/studio/pack-studio.mjs';
+
+const PASS = [];
+const FAIL = [];
+function check(label, fn) {
+  try { fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
+  catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
+}
+function readRepo(rel) { return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'); }
+
+const helperSrc = readRepo(HELPER_REL);
+const studioJs = readRepo(STUDIO_JS_REL);
+const studioHtml = readRepo(STUDIO_HTML_REL);
+const pack = readRepo(PACK_REL);
+
+// Strip comments so boundary scans test CODE, not the header prose (which names
+// the non-goals: repair/import/Copy report JSON, etc.).
+function stripComments(src) {
+  return String(src)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+const helperCode = stripComments(helperSrc);
+
+console.log('[archive-health-ui] static checks');
+
+check('helper module exists and registers the public API', () => {
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, HELPER_REL)));
+  assert.match(helperSrc, /H2O\.Studio\.archiveHealthUi/);
+  assert.match(helperSrc, /renderArchiveHealthCard/);
+  assert.match(helperSrc, /formatArchiveHealthSummary/);
+});
+
+check('helper renders the Run diagnostics button and the C6.1 status texts', () => {
+  assert.ok(helperSrc.includes('Run diagnostics'));
+  assert.ok(helperSrc.includes('Saved Chat Archive Health'));
+  for (const t of [
+    'Run diagnostics to check saved chat package health.',
+    'Reading saved chat archive diagnostics…',
+    'Archive diagnostics are available in Desktop Studio only.',
+    'No saved chat packages found yet.',
+    'Archive diagnostics completed.',
+    'Archive diagnostics completed with warnings. Saved packages may still be portable.',
+    'Archive diagnostics found package integrity problems.',
+    'Could not run archive diagnostics.',
+  ]) assert.ok(helperSrc.includes(t), `missing copy: ${t}`);
+});
+
+check('helper implements all six status-shell states', () => {
+  for (const s of ['idle', 'loading', 'unavailable', 'empty', 'ready', 'error']) {
+    assert.ok(new RegExp("'" + s + "'").test(helperSrc), `state literal missing: ${s}`);
+  }
+});
+
+check('helper is read-only: no mutation/repair/import/sync/CAS/DB-write/package-write', () => {
+  // Scan comment-stripped CODE (the header prose legitimately names the non-goals).
+  for (const banned of [
+    'repair', 'recover', 'import', 'delete', 'remove(', 'overwrite',
+    'writeSavedChatPackageV1', 'putAssetBytes', 'getAssetBytes',
+    'plugin:fs|write', 'plugin:sql', 'upsert', 'linkToTurn',
+    'H2O.Studio.sync', 'webdav', 'chrome.',
+  ]) {
+    assert.ok(!helperCode.includes(banned), `forbidden token in helper code: ${banned}`);
+  }
+});
+
+check('helper is C6.1 status-only (no counts grid / details table / Copy report JSON)', () => {
+  for (const deferred of ['Copy report JSON', 'packagePath', 'packagesTotal', 'packagesBlocked', 'manifestAssetCount', 'missingDbChats']) {
+    assert.ok(!helperCode.includes(deferred), `C6.2/C6.3 surface leaked into shell: ${deferred}`);
+  }
+});
+
+check('studio.js Settings adds the read-only archive health card container + title', () => {
+  assert.ok(studioJs.includes('wbSettingsArchiveHealthBox'), 'container id missing');
+  assert.ok(studioJs.includes('Saved Chat Archive Health'), 'section title missing');
+});
+
+check('studio.js wiring calls only the read-only diagnostic API with the C5.4A options', () => {
+  const marker = 'C6.1: read-only Saved Chat Archive Health card';
+  const idx = studioJs.indexOf(marker);
+  assert.ok(idx >= 0, 'C6.1 wiring marker not found');
+  // Bound the wiring block to the refreshSettingsDiagnostics call that follows it
+  // so the scan does not bleed into unrelated Settings code.
+  const end = studioJs.indexOf('refreshSettingsDiagnostics(panel);', idx);
+  const block = studioJs.slice(idx, end >= 0 ? end : idx + 1200);
+  assert.ok(block.includes('renderArchiveHealthCard'), 'wiring does not call the helper');
+  assert.ok(block.includes('diagnoseSavedChatArchiveV1'), 'wiring does not call diagnoseSavedChatArchiveV1');
+  for (const k of ['includeCasChecks', 'includeRendererChecks', 'includeDbChecks']) {
+    assert.ok(block.includes(k), `diagnose options missing ${k}`);
+  }
+  // the wiring block (comment-stripped) must not perform any mutation/repair
+  const blockCode = stripComments(block);
+  for (const banned of ['repair', 'writeSavedChatPackageV1', 'putAssetBytes', 'upsert', 'delete', 'overwrite', 'import']) {
+    assert.ok(!blockCode.includes(banned), `forbidden token in archive-health wiring: ${banned}`);
+  }
+});
+
+check('helper is loaded in studio.html and packed', () => {
+  assert.ok(studioHtml.includes('./ingestion/archive-health-ui.studio.js'), 'studio.html missing helper script');
+  const count = (pack.match(/ingestion\/archive-health-ui\.studio\.js/g) || []).length;
+  assert.ok(count >= 2, `expected source + mirror pack entries, got ${count}`);
+});
+
+console.log('[archive-health-ui] behavioral checks (pure formatArchiveHealthSummary)');
+
+function loadHelper() {
+  const context = { console };
+  context.globalThis = context; // no window, no document → renderArchiveHealthCard must no-op safely
+  const sandbox = vm.createContext(context);
+  vm.runInContext(helperSrc, sandbox, { filename: HELPER_REL });
+  const api = sandbox.H2O?.Studio?.archiveHealthUi;
+  if (!api) throw new Error('archiveHealthUi did not register');
+  return api;
+}
+
+check('formatArchiveHealthSummary maps statuses without scary warning wording', () => {
+  const api = loadHelper();
+
+  const ok = api.formatArchiveHealthSummary({ status: 'ok' });
+  assert.equal(ok.state, 'ready');
+  assert.equal(ok.pill.tone, 'ok');
+  assert.equal(ok.headline, 'Archive diagnostics completed.');
+
+  const warn = api.formatArchiveHealthSummary({ status: 'warning' });
+  assert.equal(warn.state, 'ready');
+  assert.equal(warn.pill.tone, 'warn');
+  assert.match(warn.headline, /may still be portable/);
+  assert.match(warn.explanation, /drift/i);
+  assert.match(warn.explanation, /portable|valid/i);
+  assert.doesNotMatch(warn.headline + ' ' + warn.explanation, /corrupt|broken|integrity problem/i);
+
+  const partial = api.formatArchiveHealthSummary({ status: 'partial' });
+  assert.equal(partial.pill.tone, 'block');
+
+  const blocked = api.formatArchiveHealthSummary({ status: 'blocked' });
+  assert.equal(blocked.pill.tone, 'block');
+  assert.match(blocked.headline, /integrity problems/i);
+
+  const empty = api.formatArchiveHealthSummary({ status: 'empty' });
+  assert.equal(empty.state, 'empty');
+  assert.match(empty.headline, /No saved chat packages/i);
+
+  // null / unknown must not throw
+  const none = api.formatArchiveHealthSummary(null);
+  assert.ok(none && typeof none.headline === 'string');
+});
+
+check('renderArchiveHealthCard is safe when no DOM is present (no crash, returns null)', () => {
+  const api = loadHelper();
+  assert.equal(typeof api.renderArchiveHealthCard, 'function');
+  const out = api.renderArchiveHealthCard({}, { diagnose: async () => ({ status: 'ok' }) });
+  assert.equal(out, null, 'must no-op without a document');
+});
+
+console.log('');
+if (FAIL.length) {
+  console.error(`[archive-health-ui] ${FAIL.length} failed, ${PASS.length} passed`);
+  process.exitCode = 1;
+} else {
+  console.log(`[archive-health-ui] all ${PASS.length} checks passed`);
+}

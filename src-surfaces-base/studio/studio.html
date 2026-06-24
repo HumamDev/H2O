@@ -590,6 +590,11 @@
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
        no import/recovery, no sync, no UI. -->
   <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
+  <!-- Read-only Saved Chat Archive Health UI shell (Phase C6.1). Renders the
+       C5 archive diagnostics into the Settings -> Diagnostics card via the
+       injected read-only API; no mutation/repair/import/sync/Chrome. Shows an
+       "available in Desktop Studio only" message when the API is absent. -->
+  <script src="./ingestion/archive-health-ui.studio.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
        enforceRedactionClass. No domain adoption, publication, replay,

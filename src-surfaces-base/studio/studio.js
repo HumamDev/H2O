@@ -7993,6 +7993,9 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
       <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
 
+    <h3 style="${sectionTitleStyle}">Saved Chat Archive Health</h3>
+    <div id="wbSettingsArchiveHealthBox" class="wbSettingsCard" style="${cardStyle};margin:0 0 28px"></div>
+
     <h3 style="${sectionTitleStyle}">Folder Parity</h3>
     <div id="wbSettingsFolderParityBox" class="wbSettingsCard" style="${cardStyle};margin:0 0 28px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
@@ -8432,6 +8435,23 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
 
   settingsBindFolderOperatorModeControls(panel);
   bindSettingsSyncControls(panel);
+  // C6.1: read-only Saved Chat Archive Health card (status-only). The helper
+  // owns the Run button + state; it calls only the read-only diagnostic API and
+  // must never break Settings if absent (e.g. non-Desktop / not loaded).
+  try {
+    const archiveHealthBox = panel.querySelector("#wbSettingsArchiveHealthBox");
+    if (archiveHealthBox) {
+      const archiveHealthUi = W?.H2O?.Studio?.archiveHealthUi;
+      if (archiveHealthUi && typeof archiveHealthUi.renderArchiveHealthCard === "function") {
+        archiveHealthUi.renderArchiveHealthCard(archiveHealthBox, {
+          diagnose: (opts) => W?.H2O?.Studio?.ingestion?.diagnoseSavedChatArchiveV1?.(opts),
+          diagnoseOptions: { includeCasChecks: true, includeRendererChecks: true, includeDbChecks: true, limit: 500 },
+        });
+      } else {
+        archiveHealthBox.textContent = "Archive diagnostics are available in Desktop Studio only.";
+      }
+    }
+  } catch (_) { /* read-only diagnostics card must never break Settings */ }
   refreshSettingsDiagnostics(panel);
 
   /* Phase I — restore the last-picked folder-state import path if one
