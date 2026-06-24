@@ -1,9 +1,8 @@
-/* H2O Studio — Saved Chat Archive Health UI (Desktop read-only, Phase C6.1)
+/* H2O Studio — Saved Chat Archive Health UI (Desktop read-only, Phase C6.2)
  *
  * Read-only operator surface shell that renders the existing C5 archive
- * diagnostics into a Settings -> Diagnostics card. C6.1 is STATUS-ONLY:
- * idle / loading / unavailable / empty / ready / error — no summary counts
- * grid (C6.2), no package details table (C6.3), no Copy report JSON, no runtime
+ * diagnostics into a Settings -> Diagnostics card. C6.2 adds compact summary
+ * cards/counts and Copy report JSON. No package details table (C6.3), no runtime
  * evidence (C6.4).
  *
  * Strictly read-only. It only calls the read-only diagnostic API
@@ -16,6 +15,9 @@
  * Public API (H2O.Studio.archiveHealthUi):
  *   renderArchiveHealthCard(container, { diagnose, diagnoseOptions })
  *   formatArchiveHealthSummary(result) -> pure { state, status, pill, headline, explanation }
+ *   formatArchiveHealthSections(result) -> pure [{ key, title, note, counts }]
+ *   renderArchiveHealthCounts(sections) -> html
+ *   copyArchiveHealthReport(result) -> Promise<{ ok, message }>
  *
  * Contracts: docs/decisions/ADR-0009-chat-saving-architecture.md
  *            release-evidence/2026-06-24/saved-chat-archive-diagnostics-c5-closure.md
@@ -27,7 +29,7 @@
   H2O.Studio = H2O.Studio || {};
   if (H2O.Studio.archiveHealthUi && H2O.Studio.archiveHealthUi.__installed) return;
 
-  var MODULE_VERSION = '0.1.0-phase-c-c6.1';
+  var MODULE_VERSION = '0.2.0-phase-c-c6.2';
 
   var TEXT = {
     title: 'Saved Chat Archive Health',
@@ -40,6 +42,9 @@
     blocked: 'Archive diagnostics found package integrity problems.',
     error: 'Could not run archive diagnostics.',
     runButton: 'Run diagnostics',
+    copyButton: 'Copy report JSON',
+    copied: 'Report JSON copied.',
+    copyError: 'Could not copy report JSON.',
   };
 
   /* Non-scary explanations: drift/warnings are not corruption. */
@@ -93,6 +98,116 @@
     return { state: 'ready', status: status || 'unknown', pill: { label: 'Completed', tone: 'neutral' }, headline: TEXT.ok, explanation: '' };
   }
 
+  function safeObject(value) {
+    return value && typeof value === 'object' ? value : {};
+  }
+
+  function countValue(source, key) {
+    var value = safeObject(source)[key];
+    return (typeof value === 'number' && isFinite(value)) ? value : 0;
+  }
+
+  function formatCount(label, key, value) {
+    return { label: label, key: key, value: value };
+  }
+
+  /* Pure: groups the diagnostic result into C6.2 summary sections. */
+  function formatArchiveHealthSections(result) {
+    var counts = safeObject(result && result.counts);
+    var dbChecks = safeObject(result && result.dbChecks);
+    return [
+      {
+        key: 'archive-health',
+        title: 'Archive health',
+        note: 'Saved chat package inventory by current diagnostic status.',
+        tone: 'neutral',
+        counts: [
+          formatCount('packagesTotal', 'packagesTotal', countValue(counts, 'packagesTotal')),
+          formatCount('packagesOk', 'packagesOk', countValue(counts, 'packagesOk')),
+          formatCount('packagesWarning', 'packagesWarning', countValue(counts, 'packagesWarning')),
+          formatCount('packagesBlocked', 'packagesBlocked', countValue(counts, 'packagesBlocked')),
+          formatCount('v1', 'v1', countValue(counts, 'v1')),
+          formatCount('v2', 'v2', countValue(counts, 'v2')),
+        ],
+      },
+      {
+        key: 'integrity',
+        title: 'Integrity',
+        note: 'Blockers are package integrity problems and need attention.',
+        tone: 'block',
+        counts: [
+          formatCount('brokenPackageAssets', 'brokenPackageAssets', countValue(counts, 'brokenPackageAssets')),
+          formatCount('assetRefMismatches', 'assetRefMismatches', countValue(counts, 'assetRefMismatches')),
+          formatCount('dataImageResidue', 'dataImageResidue', countValue(counts, 'dataImageResidue')),
+          formatCount('packagesBlocked', 'packagesBlocked', countValue(counts, 'packagesBlocked')),
+        ],
+      },
+      {
+        key: 'drift',
+        title: 'Drift / informational warnings',
+        note: 'Drift does not automatically mean a saved package is broken; the package may still be portable.',
+        tone: 'warn',
+        counts: [
+          formatCount('missingLiveCasAssets', 'missingLiveCasAssets', countValue(counts, 'missingLiveCasAssets')),
+          formatCount('missingDbChats', 'missingDbChats', countValue(counts, 'missingDbChats')),
+          formatCount('missingDbSnapshots', 'missingDbSnapshots', countValue(counts, 'missingDbSnapshots')),
+          formatCount('orphanedPackages', 'orphanedPackages', countValue(counts, 'orphanedPackages')),
+          formatCount('stalePackages', 'stalePackages', countValue(counts, 'stalePackages')),
+          formatCount('storeAssetMismatches', 'storeAssetMismatches', countValue(counts, 'storeAssetMismatches')),
+        ],
+      },
+      {
+        key: 'db-checks',
+        title: 'DB checks summary',
+        note: 'Read-only comparison between package identities and Desktop store rows.',
+        tone: 'neutral',
+        counts: [
+          formatCount('dbChecks passed', 'dbChecks.passed', countValue(dbChecks, 'passed')),
+          formatCount('dbChecks warnings', 'dbChecks.warnings', countValue(dbChecks, 'warnings')),
+          formatCount('dbChecks failed', 'dbChecks.failed', countValue(dbChecks, 'failed')),
+        ],
+      },
+    ];
+  }
+
+  function renderArchiveHealthCounts(sections) {
+    var list = Array.isArray(sections) ? sections : [];
+    if (!list.length) return '';
+    var out = '<div data-archive-health-counts="1" style="display:flex;flex-direction:column;gap:12px;margin-top:8px">';
+    list.forEach(function (section) {
+      var toneBorder = section.tone === 'block'
+        ? 'rgba(248,81,73,.25)'
+        : section.tone === 'warn' ? 'rgba(210,153,34,.22)' : 'rgba(255,255,255,.12)';
+      out += '<section data-archive-health-section="' + escapeHtml(section.key) + '" style="border:1px solid ' + toneBorder + ';border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+        + '<div style="font-weight:600;font-size:13px">' + escapeHtml(section.title) + '</div>'
+        + '<div style="opacity:.68;font-size:12px;margin-top:3px">' + escapeHtml(section.note) + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:9px">';
+      (section.counts || []).forEach(function (item) {
+        out += '<div data-archive-health-count="' + escapeHtml(item.key) + '" style="border:1px solid rgba(255,255,255,.10);border-radius:6px;padding:8px;background:rgba(0,0,0,.12)">'
+          + '<div style="font-size:18px;font-weight:700;line-height:1.15">' + escapeHtml(item.value) + '</div>'
+          + '<div style="opacity:.68;font-size:11px;word-break:break-word">' + escapeHtml(item.label) + '</div>'
+          + '</div>';
+      });
+      out += '</div></section>';
+    });
+    out += '</div>';
+    return out;
+  }
+
+  function copyArchiveHealthReport(result) {
+    return Promise.resolve().then(function () {
+      if (!result || typeof result !== 'object') return { ok: false, message: TEXT.copyError };
+      var nav = global.navigator;
+      var clipboard = nav && nav.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') return { ok: false, message: TEXT.copyError };
+      return clipboard.writeText(JSON.stringify(result, null, 2)).then(function () {
+        return { ok: true, message: TEXT.copied };
+      });
+    }).catch(function () {
+      return { ok: false, message: TEXT.copyError };
+    });
+  }
+
   function resolveDiagnose(options) {
     var opts = options || {};
     if (typeof opts.diagnose === 'function') return opts.diagnose;
@@ -118,6 +233,7 @@
       lastRunAt: null,
       error: null,
       busy: false,
+      copyStatus: 'idle',
     };
 
     function pillHtml(label, tone) {
@@ -144,10 +260,12 @@
       }
       // ready / empty
       var summary = formatArchiveHealthSummary(card.lastResult);
+      var countsHtml = summary.state === 'ready' ? renderArchiveHealthCounts(formatArchiveHealthSections(card.lastResult)) : '';
       return '<div style="display:flex;flex-direction:column;gap:6px">'
         + '<div>' + pillHtml(summary.pill.label, summary.pill.tone) + '</div>'
         + '<div style="font-size:13px">' + escapeHtml(summary.headline) + '</div>'
         + (summary.explanation ? '<div style="opacity:.7;font-size:12px">' + escapeHtml(summary.explanation) + '</div>' : '')
+        + countsHtml
         + '</div>';
     }
 
@@ -156,18 +274,37 @@
         ? '<div style="opacity:.55;font-size:11px">Last run: ' + escapeHtml(card.lastRunAt) + '</div>'
         : '';
       var disabled = (card.busy || card.state === 'unavailable') ? ' disabled' : '';
+      var copyDisabled = (!card.lastResult || card.busy) ? ' disabled' : '';
       var btnStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
         + ((card.busy || card.state === 'unavailable') ? 'opacity:.5;cursor:default;' : '');
+      var copyBtnStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
+        + ((!card.lastResult || card.busy) ? 'opacity:.5;cursor:default;' : '');
+      var copyStatusHtml = card.copyStatus === 'copied'
+        ? '<div data-archive-health-copy-status="1" style="opacity:.72;font-size:12px">' + escapeHtml(TEXT.copied) + '</div>'
+        : card.copyStatus === 'error'
+          ? '<div data-archive-health-copy-status="1" style="opacity:.72;font-size:12px">' + escapeHtml(TEXT.copyError) + '</div>'
+          : '';
+      var copyButtonHtml = card.lastResult
+        ? '<button type="button" data-archive-health-copy="1" style="' + copyBtnStyle + '"' + copyDisabled + '>' + escapeHtml(TEXT.copyButton) + '</button>'
+        : '';
       container.innerHTML = ''
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'
         +   '<div style="font-weight:600">' + escapeHtml(TEXT.title) + '</div>'
-        +   '<button type="button" data-archive-health-run="1" style="' + btnStyle + '"' + disabled + '>' + escapeHtml(TEXT.runButton) + '</button>'
+        +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +     copyButtonHtml
+        +     '<button type="button" data-archive-health-run="1" style="' + btnStyle + '"' + disabled + '>' + escapeHtml(TEXT.runButton) + '</button>'
+        +   '</div>'
         + '</div>'
         + '<div data-archive-health-body="1">' + bodyHtml() + '</div>'
+        + copyStatusHtml
         + lastRunLine;
       var btn = container.querySelector('[data-archive-health-run="1"]');
       if (btn && !(card.busy || card.state === 'unavailable')) {
         btn.addEventListener('click', run, { once: true });
+      }
+      var copyBtn = container.querySelector('[data-archive-health-copy="1"]');
+      if (copyBtn && card.lastResult && !card.busy) {
+        copyBtn.addEventListener('click', copyReport, { once: true });
       }
     }
 
@@ -176,6 +313,7 @@
       card.busy = true;
       card.state = 'loading';
       card.error = null;
+      card.copyStatus = 'idle';
       render();
       var p;
       try { p = diagnose(diagnoseOptions); }
@@ -191,6 +329,15 @@
       var status = result && typeof result === 'object' ? String(result.status || '') : '';
       card.state = status === 'empty' ? 'empty' : 'ready';
       render();
+    }
+
+    function copyReport() {
+      if (!card.lastResult || card.busy) return;
+      card.copyStatus = 'idle';
+      copyArchiveHealthReport(card.lastResult).then(function (out) {
+        card.copyStatus = out && out.ok ? 'copied' : 'error';
+        render();
+      });
     }
 
     function onError(err) {
@@ -210,5 +357,8 @@
     __version: MODULE_VERSION,
     renderArchiveHealthCard: renderArchiveHealthCard,
     formatArchiveHealthSummary: formatArchiveHealthSummary,
+    formatArchiveHealthSections: formatArchiveHealthSections,
+    renderArchiveHealthCounts: renderArchiveHealthCounts,
+    copyArchiveHealthReport: copyArchiveHealthReport,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Validator for the C6.1 read-only Saved Chat Archive Health panel shell.
+// Validator for the C6.2 read-only Saved Chat Archive Health panel summary.
 //
 // Static-checks the helper module + the studio.js Settings wiring, and runs a
-// pure behavioral check of formatArchiveHealthSummary (no DOM needed). Proves
-// status-only shell, read-only boundaries, and that no C6.2/C6.3 surface (counts
-// grid, package details, Copy report JSON) was added.
+// pure behavioral check of formatting/copy helpers (no DOM needed). Proves the
+// summary cards, read-only boundaries, and that no C6.3 package details surface
+// or mutation actions were added.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -23,6 +23,10 @@ const PASS = [];
 const FAIL = [];
 function check(label, fn) {
   try { fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
+  catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
+}
+async function checkAsync(label, fn) {
+  try { await fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
   catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
 }
 function readRepo(rel) { return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'); }
@@ -48,10 +52,16 @@ check('helper module exists and registers the public API', () => {
   assert.match(helperSrc, /H2O\.Studio\.archiveHealthUi/);
   assert.match(helperSrc, /renderArchiveHealthCard/);
   assert.match(helperSrc, /formatArchiveHealthSummary/);
+  assert.match(helperSrc, /formatArchiveHealthSections/);
+  assert.match(helperSrc, /renderArchiveHealthCounts/);
+  assert.match(helperSrc, /copyArchiveHealthReport/);
 });
 
-check('helper renders the Run diagnostics button and the C6.1 status texts', () => {
+check('helper renders the Run diagnostics button, Copy report JSON button, and status texts', () => {
   assert.ok(helperSrc.includes('Run diagnostics'));
+  assert.ok(helperSrc.includes('Copy report JSON'));
+  assert.ok(helperSrc.includes('Report JSON copied.'));
+  assert.ok(helperSrc.includes('Could not copy report JSON.'));
   assert.ok(helperSrc.includes('Saved Chat Archive Health'));
   for (const t of [
     'Run diagnostics to check saved chat package health.',
@@ -69,6 +79,9 @@ check('helper implements all six status-shell states', () => {
   for (const s of ['idle', 'loading', 'unavailable', 'empty', 'ready', 'error']) {
     assert.ok(new RegExp("'" + s + "'").test(helperSrc), `state literal missing: ${s}`);
   }
+  for (const s of ['copyStatus', 'copied']) {
+    assert.ok(helperSrc.includes(s), `copy state missing: ${s}`);
+  }
 });
 
 check('helper is read-only: no mutation/repair/import/sync/CAS/DB-write/package-write', () => {
@@ -83,9 +96,34 @@ check('helper is read-only: no mutation/repair/import/sync/CAS/DB-write/package-
   }
 });
 
-check('helper is C6.1 status-only (no counts grid / details table / Copy report JSON)', () => {
-  for (const deferred of ['Copy report JSON', 'packagePath', 'packagesTotal', 'packagesBlocked', 'manifestAssetCount', 'missingDbChats']) {
-    assert.ok(!helperCode.includes(deferred), `C6.2/C6.3 surface leaked into shell: ${deferred}`);
+check('helper has C6.2 summary count labels and separates integrity from drift', () => {
+  for (const label of [
+    'packagesTotal', 'packagesOk', 'packagesWarning', 'packagesBlocked', 'v1', 'v2',
+    'brokenPackageAssets', 'assetRefMismatches', 'dataImageResidue',
+    'missingLiveCasAssets', 'missingDbChats', 'missingDbSnapshots', 'orphanedPackages', 'stalePackages', 'storeAssetMismatches',
+    'dbChecks passed', 'dbChecks warnings', 'dbChecks failed',
+  ]) {
+    assert.ok(helperSrc.includes(label), `summary label missing: ${label}`);
+  }
+  assert.ok(helperSrc.includes('Integrity'), 'integrity section missing');
+  assert.ok(helperSrc.includes('Blockers are package integrity problems and need attention.'), 'blocker explanation missing');
+  assert.ok(helperSrc.includes('Drift / informational warnings'), 'drift section missing');
+  assert.ok(helperSrc.includes('Drift does not automatically mean a saved package is broken'), 'drift explanation missing');
+  assert.ok(helperSrc.includes('grid-template-columns:repeat(auto-fit,minmax(150px,1fr))'), 'compact counts grid missing');
+});
+
+check('helper copy path uses safe clipboard and does not create/download/save files', () => {
+  assert.ok(helperSrc.includes('navigator'));
+  assert.ok(helperSrc.includes('clipboard.writeText'));
+  assert.ok(helperSrc.includes('JSON.stringify(result, null, 2)'));
+  for (const banned of ["createElement('a'", 'createElement("a"', '.download', 'showSaveFilePicker', 'createObjectURL', 'writeSavedChatPackageV1']) {
+    assert.ok(!helperCode.includes(banned), `forbidden copy/download behavior: ${banned}`);
+  }
+});
+
+check('helper still has no package details table/list or repair actions', () => {
+  for (const deferred of ['<table', 'packagePath', 'data-archive-health-package', 'Repair', 'Import', 'Delete', 'Overwrite']) {
+    assert.ok(!helperCode.includes(deferred), `C6.3 or action surface leaked into helper: ${deferred}`);
   }
 });
 
@@ -122,8 +160,8 @@ check('helper is loaded in studio.html and packed', () => {
 
 console.log('[archive-health-ui] behavioral checks (pure formatArchiveHealthSummary)');
 
-function loadHelper() {
-  const context = { console };
+function loadHelper(extra) {
+  const context = Object.assign({ console }, extra || {});
   context.globalThis = context; // no window, no document → renderArchiveHealthCard must no-op safely
   const sandbox = vm.createContext(context);
   vm.runInContext(helperSrc, sandbox, { filename: HELPER_REL });
@@ -162,6 +200,58 @@ check('formatArchiveHealthSummary maps statuses without scary warning wording', 
   // null / unknown must not throw
   const none = api.formatArchiveHealthSummary(null);
   assert.ok(none && typeof none.headline === 'string');
+});
+
+check('formatArchiveHealthSections returns the four C6.2 count sections', () => {
+  const api = loadHelper();
+  const sections = api.formatArchiveHealthSections({
+    counts: {
+      packagesTotal: 9,
+      packagesOk: 8,
+      packagesWarning: 1,
+      packagesBlocked: 0,
+      v1: 2,
+      v2: 7,
+      brokenPackageAssets: 0,
+      assetRefMismatches: 0,
+      dataImageResidue: 0,
+      missingLiveCasAssets: 1,
+      missingDbChats: 0,
+      missingDbSnapshots: 0,
+      orphanedPackages: 0,
+      stalePackages: 1,
+      storeAssetMismatches: 0,
+    },
+    dbChecks: { passed: 8, warnings: 1, failed: 0 },
+  });
+  assert.equal(JSON.stringify(sections.map((section) => section.key)), JSON.stringify(['archive-health', 'integrity', 'drift', 'db-checks']));
+  const html = api.renderArchiveHealthCounts(sections);
+  assert.match(html, /data-archive-health-counts/);
+  assert.match(html, /packagesTotal/);
+  assert.match(html, /brokenPackageAssets/);
+  assert.match(html, /missingLiveCasAssets/);
+  assert.match(html, /dbChecks\.passed/);
+  assert.match(html, /repeat\(auto-fit,minmax\(150px,1fr\)\)/);
+});
+
+await checkAsync('copyArchiveHealthReport pretty-prints JSON via navigator.clipboard.writeText and fails softly', async () => {
+  let copied = '';
+  const api = loadHelper({
+    navigator: {
+      clipboard: {
+        writeText: async (text) => { copied = text; },
+      },
+    },
+  });
+  const ok = await api.copyArchiveHealthReport({ status: 'ok', counts: { packagesTotal: 1 } });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.message, 'Report JSON copied.');
+  assert.match(copied, /"packagesTotal": 1/);
+
+  const noClipboardApi = loadHelper();
+  const failed = await noClipboardApi.copyArchiveHealthReport({ status: 'ok' });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.message, 'Could not copy report JSON.');
 });
 
 check('renderArchiveHealthCard is safe when no DOM is present (no crash, returns null)', () => {
