@@ -590,6 +590,11 @@
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
        no import/recovery, no sync, no UI. -->
   <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
+  <!-- Desktop-only: saved-chat archive request intake (Phase D.2A).
+       Validates Chrome-to-Desktop save/archive request envelopes and resolves
+       existing Desktop store state read-only. No queue, package write, Chrome
+       runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
+  <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>
   <!-- Read-only Saved Chat Archive Health UI shell (Phase C6.1). Renders the
        C5 archive diagnostics into the Settings -> Diagnostics card via the
        injected read-only API; no mutation/repair/import/sync/Chrome. Shows an

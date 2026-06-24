@@ -163,6 +163,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // package inventory + manifest/snapshot/hash validation under archive/packages.
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
+  // Chrome-to-Desktop request envelopes and resolves Desktop store state
+  // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
+  // import/recovery, or UI.
+  "ingestion/saved-chat-archive-requests.tauri.js",
   // Read-only Saved Chat Archive Health UI shell (Phase C6.1). Renders C5
   // diagnostics into Settings -> Diagnostics via the injected read-only API; no
   // mutation/repair/import/sync/Chrome. Shows Desktop-only message when absent.
@@ -1213,6 +1218,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/archive-health-ui.studio.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",
