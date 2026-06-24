@@ -7435,6 +7435,15 @@ function settingsStorageDiagnosticsHtml(meta, cardStyle){
   `;
 }
 
+function settingsArchiveHealthCardHtml(cardStyle){
+  return `
+    <section data-settings-archive-health-section="1">
+      <h3 style="margin:0 0 8px;font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;opacity:.65">Saved Chat Archive Health</h3>
+      <div id="wbSettingsArchiveHealthBox" class="wbSettingsCard" style="${cardStyle}"></div>
+    </section>
+  `;
+}
+
 function settingsLegacySyncStatusHtml(cardStyle, btnStyle){
   return `
     <div id="wbSettingsSyncBox" class="wbSettingsCard" style="${cardStyle}">
@@ -7490,6 +7499,7 @@ function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
     return `
       <div style="display:flex;flex-direction:column;gap:12px">
         ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
+        ${settingsArchiveHealthCardHtml(cardStyle)}
         ${settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle)}
         ${settingsInfoCardHtml(
           "Folder Parity Diagnostics",
@@ -7736,6 +7746,23 @@ function settingsBindLegacySyncStatus(panel){
   }).catch(() => { /* ignore */ });
 }
 
+function mountSettingsArchiveHealthCard(panel){
+  try {
+    const archiveHealthBox = panel?.querySelector?.("#wbSettingsArchiveHealthBox");
+    if (!archiveHealthBox || archiveHealthBox.dataset.archiveHealthMounted === "1") return;
+    const archiveHealthUi = W?.H2O?.Studio?.archiveHealthUi;
+    if (archiveHealthUi && typeof archiveHealthUi.renderArchiveHealthCard === "function") {
+      archiveHealthUi.renderArchiveHealthCard(archiveHealthBox, {
+        diagnose: (opts) => W?.H2O?.Studio?.ingestion?.diagnoseSavedChatArchiveV1?.(opts),
+        diagnoseOptions: { includeCasChecks: true, includeRendererChecks: true, includeDbChecks: true, limit: 500 },
+      });
+      archiveHealthBox.dataset.archiveHealthMounted = "1";
+    } else {
+      archiveHealthBox.textContent = "Archive diagnostics are available in Desktop Studio only.";
+    }
+  } catch (_) { /* read-only diagnostics card must never break Settings */ }
+}
+
 function renderSettingsSectionShell(panel, section){
   const key = SETTINGS_TOP_LEVEL_ROUTES[section] ? section : "account";
   const meta = settingsTopLevelMeta(key);
@@ -7765,6 +7792,7 @@ function renderSettingsSectionShell(panel, section){
   `;
   settingsBindEvaluationControls(panel);
   settingsBindFolderOperatorModeControls(panel);
+  if (key === "diagnostics") mountSettingsArchiveHealthCard(panel);
   if (key === "diagnostics" || key === "about") refreshSettingsDiagnostics(panel);
 }
 
@@ -7774,6 +7802,7 @@ async function renderSettingsTopLevelRoute(panel, route){
     : "account";
   const routeKey = section;
   if (panel.dataset.settingsRendered === "1" && panel.dataset.settingsRenderedKey === routeKey && panel.firstChild) {
+    if (section === "diagnostics") mountSettingsArchiveHealthCard(panel);
     if (section === "diagnostics" || section === "about") refreshSettingsDiagnostics(panel);
     return;
   }
@@ -8435,23 +8464,7 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
 
   settingsBindFolderOperatorModeControls(panel);
   bindSettingsSyncControls(panel);
-  // C6.1: read-only Saved Chat Archive Health card (status-only). The helper
-  // owns the Run button + state; it calls only the read-only diagnostic API and
-  // must never break Settings if absent (e.g. non-Desktop / not loaded).
-  try {
-    const archiveHealthBox = panel.querySelector("#wbSettingsArchiveHealthBox");
-    if (archiveHealthBox) {
-      const archiveHealthUi = W?.H2O?.Studio?.archiveHealthUi;
-      if (archiveHealthUi && typeof archiveHealthUi.renderArchiveHealthCard === "function") {
-        archiveHealthUi.renderArchiveHealthCard(archiveHealthBox, {
-          diagnose: (opts) => W?.H2O?.Studio?.ingestion?.diagnoseSavedChatArchiveV1?.(opts),
-          diagnoseOptions: { includeCasChecks: true, includeRendererChecks: true, includeDbChecks: true, limit: 500 },
-        });
-      } else {
-        archiveHealthBox.textContent = "Archive diagnostics are available in Desktop Studio only.";
-      }
-    }
-  } catch (_) { /* read-only diagnostics card must never break Settings */ }
+  mountSettingsArchiveHealthCard(panel);
   refreshSettingsDiagnostics(panel);
 
   /* Phase I — restore the last-picked folder-state import path if one

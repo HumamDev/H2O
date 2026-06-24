@@ -45,6 +45,24 @@ function stripComments(src) {
 }
 const helperCode = stripComments(helperSrc);
 
+function functionBlock(src, name) {
+  const signature = `function ${name}`;
+  const idx = src.indexOf(signature);
+  assert.ok(idx >= 0, `${signature} missing`);
+  const start = src.indexOf('{', idx);
+  assert.ok(start >= 0, `${signature} body missing`);
+  let depth = 0;
+  for (let i = start; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(idx, i + 1);
+    }
+  }
+  throw new Error(`${signature} body did not close`);
+}
+
 console.log('[archive-health-ui] static checks');
 
 check('helper module exists and registers the public API', () => {
@@ -128,20 +146,30 @@ check('helper still has no package details table/list or repair actions', () => 
 });
 
 check('studio.js Settings adds the read-only archive health card container + title', () => {
-  assert.ok(studioJs.includes('wbSettingsArchiveHealthBox'), 'container id missing');
-  assert.ok(studioJs.includes('Saved Chat Archive Health'), 'section title missing');
+  const cardHtml = functionBlock(studioJs, 'settingsArchiveHealthCardHtml');
+  assert.ok(cardHtml.includes('wbSettingsArchiveHealthBox'), 'container id missing from archive card HTML helper');
+  assert.ok(cardHtml.includes('Saved Chat Archive Health'), 'section title missing from archive card HTML helper');
+  assert.ok(cardHtml.includes('data-settings-archive-health-section'), 'archive card section marker missing');
+});
+
+check('studio.js mounts the card in the active Diagnostics / Storage settings branch', () => {
+  const topLevel = functionBlock(studioJs, 'settingsTopLevelContentHtml');
+  const diagnosticsIdx = topLevel.indexOf('section === "diagnostics"');
+  assert.ok(diagnosticsIdx >= 0, 'diagnostics branch missing from active Settings renderer');
+  const libraryIdx = topLevel.indexOf('section === "library"', diagnosticsIdx);
+  assert.ok(libraryIdx > diagnosticsIdx, 'diagnostics branch boundary missing');
+  const diagnosticsBranch = topLevel.slice(diagnosticsIdx, libraryIdx);
+  assert.ok(diagnosticsBranch.includes('settingsStorageDiagnosticsHtml(meta, cardStyle)'), 'active diagnostics branch missing storage diagnostics');
+  assert.ok(diagnosticsBranch.includes('settingsArchiveHealthCardHtml(cardStyle)'), 'active diagnostics branch does not render archive health card');
+  assert.ok(diagnosticsBranch.includes('settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle)'), 'active diagnostics branch should preserve folder operator diagnostics');
+  assert.ok(diagnosticsBranch.indexOf('settingsStorageDiagnosticsHtml(meta, cardStyle)') < diagnosticsBranch.indexOf('settingsArchiveHealthCardHtml(cardStyle)'), 'archive health should render inside diagnostics branch after storage diagnostics');
 });
 
 check('studio.js wiring calls only the read-only diagnostic API with the C5.4A options', () => {
-  const marker = 'C6.1: read-only Saved Chat Archive Health card';
-  const idx = studioJs.indexOf(marker);
-  assert.ok(idx >= 0, 'C6.1 wiring marker not found');
-  // Bound the wiring block to the refreshSettingsDiagnostics call that follows it
-  // so the scan does not bleed into unrelated Settings code.
-  const end = studioJs.indexOf('refreshSettingsDiagnostics(panel);', idx);
-  const block = studioJs.slice(idx, end >= 0 ? end : idx + 1200);
+  const block = functionBlock(studioJs, 'mountSettingsArchiveHealthCard');
   assert.ok(block.includes('renderArchiveHealthCard'), 'wiring does not call the helper');
   assert.ok(block.includes('diagnoseSavedChatArchiveV1'), 'wiring does not call diagnoseSavedChatArchiveV1');
+  assert.ok(block.includes('archiveHealthMounted'), 'mount guard missing');
   for (const k of ['includeCasChecks', 'includeRendererChecks', 'includeDbChecks']) {
     assert.ok(block.includes(k), `diagnose options missing ${k}`);
   }
@@ -150,6 +178,16 @@ check('studio.js wiring calls only the read-only diagnostic API with the C5.4A o
   for (const banned of ['repair', 'writeSavedChatPackageV1', 'putAssetBytes', 'upsert', 'delete', 'overwrite', 'import']) {
     assert.ok(!blockCode.includes(banned), `forbidden token in archive-health wiring: ${banned}`);
   }
+});
+
+check('studio.js post-render wiring runs for the same active Diagnostics branch that renders the container', () => {
+  const shell = functionBlock(studioJs, 'renderSettingsSectionShell');
+  assert.ok(shell.includes('settingsTopLevelContentHtml(key, cardStyle, btnStyle, extensionMeta)'), 'active settings shell must render top-level content');
+  assert.ok(shell.includes('if (key === "diagnostics") mountSettingsArchiveHealthCard(panel);'), 'active diagnostics branch does not mount archive health after render');
+  assert.ok(shell.indexOf('settingsTopLevelContentHtml(key, cardStyle, btnStyle, extensionMeta)') < shell.indexOf('mountSettingsArchiveHealthCard(panel)'), 'mount should happen after active branch markup is rendered');
+
+  const route = functionBlock(studioJs, 'renderSettingsTopLevelRoute');
+  assert.ok(route.includes('if (section === "diagnostics") mountSettingsArchiveHealthCard(panel);'), 'same-route diagnostics refresh path does not mount archive health');
 });
 
 check('helper is loaded in studio.html and packed', () => {
