@@ -180,6 +180,40 @@ C4 applies the `.<ext>` when copying a CAS blob into a package. The live store i
 never required to know an asset's extension to read it back; `ext`/`mimeType` are
 registry/manifest metadata only.
 
+## Materialized Package Location & Write Form (C4.0, locked)
+
+C4 **materializes packages into the app-owned archive**, not a user folder. The
+binding decision (and the write order / boundary rules) is recorded in
+[ADR-0010 → "C4.0 — Package Materialization with Assets"](../../decisions/ADR-0010-saved-chat-asset-cas.md);
+summarized here:
+
+- **Materialization root:** `$APPLOCALDATA/archive/packages/<chatId>.h2ochat/`.
+
+  ```text
+  $APPLOCALDATA/archive/packages/<chatId>.h2ochat/
+  |-- manifest.json
+  |-- snapshot.json
+  |-- chat.md
+  |-- chat.html
+  `-- assets/
+      `-- sha256-<hash>.<ext>
+  ```
+
+- **Why app-owned, not a user folder:** reuses the C2a capability
+  (`$APPLOCALDATA/archive/**`) and avoids adding broad user-folder filesystem
+  permissions now. **User-folder export / save dialog is deferred.**
+- **Binary write only:** every package file under the archive is written with the
+  tauri-plugin-fs **v2 binary `write_file` body+headers form** (path/options in
+  headers, bytes in body) — `write_text_file` is **not** granted under the archive
+  scope. JSON/MD/HTML are written as UTF-8 bytes. The C3.3 real-Desktop smoke
+  proved this form works with `baseDir: 15` (commit `e3d5bb9`).
+- **Write order:** package asset files first, then `manifest.json` / `snapshot.json`
+  / `chat.md` / `chat.html` — so an interruption never yields a complete-looking
+  package whose `snapshot.json` references a missing asset.
+- **First C4 asset scope:** inline `data:image/*` (png, jpeg/jpg, gif, webp) already
+  present in sanitized `contentHtml`; no remote fetch, no PDFs/files, no
+  generated-file capture.
+
 ## Desktop Archive / Index Design (future ownership)
 
 Design-only; no table or migration is added in C1.
@@ -254,9 +288,13 @@ Design-only; no table or migration is added in C1.
 | **C2b** | **SQLite `assets` registry (landed as Migration v14)** + `snapshot_turn_assets` join + `H2O.Studio.store.assets` adapter (refcount recomputed from the join). _Note: v7–v13 were already taken, so the registry shipped as v14, not v7._ | Migration slice (done). |
 | **C3.0** | **Docs lock (this section + ADR-0010 "C3.0").** Freezes live CAS layout (`archive/assets/<aa>/sha256-<hex>`, extension-less, sharded), package-copy layout, base dir (`AppLocalData`=15), DB/CAS split, CAS module = filesystem-only, C4 write order, sanitizer module targets. | Docs only. |
 | **C3.1** | **Sanitizer centralization.** Create `platform/html-sanitizer.js` (`H2O.Studio.html.sanitize`); rewire projector to consume it (behavior-preserving). | Projector validator must stay green. |
-| **C3.2** | **CAS put/get module.** `ingestion/asset-cas.tauri.js` — content-addressed write/read/exists/describe, dedup, no GC; filesystem-only (no registry calls); headless validator. | — |
-| **C3.3 (optional)** | **Real-Tauri binary fs smoke** confirming the `write_file` + `baseDir` shape. | Only if a focused desktop smoke harness exists. |
-| **C4** | **Package materialization with assets.** Extend projector: extract images → CAS, emit `manifest.assets` + `assetRefs`, rewrite in-HTML refs, copy into package `assets/` (adding `.<ext>`), compute v2 `contentHash`; extend validator (asset integrity, dedup, v1 back-compat). | — |
+| **C3.2** | **CAS put/get module (landed).** `ingestion/asset-cas.tauri.js` — content-addressed write/read/exists/describe, dedup, no GC; filesystem-only (no registry calls); headless validator. | Done. |
+| **C3.3** | **Real-Tauri binary fs smoke (PASSED 2026-06-24).** Confirmed binary `write_file`/`read_file` with `baseDir: 15` after the `e3d5bb9` fix (body+headers form). | Evidence: `release-evidence/2026-06-24/saved-chat-asset-cas-runtime-smoke.md`. |
+| **C4.0** | **Docs lock (this "Materialized Package Location & Write Form" section + ADR-0010 "C4.0").** Package materialization root = `$APPLOCALDATA/archive/packages/<chatId>.h2ochat/`; binary `write_file` only; write order; first asset scope; v2/contentHash reaffirmed; user-folder export deferred. | Docs only. |
+| **C4.1** | **Data-image extraction / materialization helper + validator.** New `ingestion/saved-chat-package-assets.tauri.js`: scan→decode→`assetCas.putAssetBytes`→`store.assets.upsert`/`linkToTurn`→rewrite HTML→`manifest.assets`+`assetRefs`. Mock CAS+registry; no projector wiring, no FS write. | Orchestrates CAS+registry; reimplements neither. |
+| **C4.2** | **Projector v2 build wiring + validator.** Projector calls the helper; emits `schemaVersion`/`payloadVersion` 2 + `manifest.assets` + `assetRefs` + `contentHash` v2 in the in-memory build result. | v1 asset-less stays byte-identical; v1 validator green. |
+| **C4.3** | **App-owned package FS write with assets + validator.** Write under `$APPLOCALDATA/archive/packages/` via binary `write_file` (assets-first), copying CAS blobs to `assets/sha256-<hex>.<ext>`. | Missing-asset fails validation. |
+| **C4.4** | **Real-Desktop runtime smoke / evidence.** Materialize a package containing one inline image; verify files + `contentHash` v2 on disk; v1 path unaffected. | Evidence note. |
 | **C5** | **Archive/index diagnostics.** Index/search design + rebuild-from-store + CAS/archive health diagnostic. FTS implementation may be its own slice or slip to Phase D. | — |
 
 ## Deferred (explicitly out of scope for this C1 patch)

@@ -1,6 +1,6 @@
 # ADR-0010: Saved Chat Asset CAS + Capability Gate
 
-Status: Accepted (design); C2a capability gate landed 2026-06-23; C3.0 CAS layout locked 2026-06-23
+Status: Accepted (design); C2a capability gate landed 2026-06-23; C3.0 CAS layout locked 2026-06-23; C3.2/C3.3 CAS proven on real Desktop 2026-06-24; C4.0 package materialization locked 2026-06-24
 
 Date: 2026-06-23
 
@@ -244,9 +244,144 @@ No CAS code, no sanitizer code, no package asset materialization, no image
 extraction, no `manifest.assets` emission, no `contentHash` v2 implementation, no
 registry linking, no UI, no sync, no import/recovery, no WebDAV/cloud.
 
+## C4.0 — Package Materialization with Assets (locked)
+
+C4.0 is a **docs-only** slice that freezes how saved-chat packages are
+materialized **with** their binary assets, before any C4 code. It adds no code, no
+capability change, and no schema beyond what C1/C3.0 already specced. C4 connects
+the already-built pieces: `H2O.Studio.ingestion.assetCas` (C3.2/C3.3), the
+`H2O.Studio.store.assets` registry (C2b), the shared sanitizer (C3.1), the package
+projector (Phase B), and the v2 schema/`contentHash` contract
+(see [saved-chat-package-format.md](../systems/archive/saved-chat-package-format.md)).
+
+### Package materialization location (locked)
+
+- C4 materializes packages into the **app-owned archive**:
+  **`$APPLOCALDATA/archive/packages/<chatId>.h2ochat/`**.
+- C4 core materializes **into the app-owned archive first**; **user-folder
+  export / save dialog is deferred** (see Deferred).
+- Rationale: this **reuses the existing C2a capability** (`$APPLOCALDATA/archive/**`)
+  and **avoids adding broad user-folder filesystem permissions now**. Writing a
+  package to an arbitrary user folder would need the deferred save-location grant.
+
+### Binary-write decision (locked)
+
+- All package files under the app-owned archive **must be written with the
+  tauri-plugin-fs v2 binary `write_file` body+headers form**, not
+  `write_text_file`.
+- Reason: C2a grants binary `fs:allow-write-file` under `$APPLOCALDATA/archive/**`
+  but **does not grant `write-text-file` there**. The C3.3 real-Desktop smoke
+  proved binary `write_file`/`read_file` with `baseDir: 15` works after the
+  `e3d5bb9` fix (path/options in request **headers**, bytes in the **body**).
+- JSON/Markdown/HTML files are therefore written as UTF-8 **bytes** via the same
+  binary form.
+
+### Materialized package layout (locked)
+
+```text
+$APPLOCALDATA/archive/packages/<chatId>.h2ochat/
+|-- manifest.json
+|-- snapshot.json
+|-- chat.md
+|-- chat.html
+`-- assets/
+    `-- sha256-<hash>.<ext>
+```
+
+- **Live CAS blobs stay extension-less and sharded:**
+  `$APPLOCALDATA/archive/assets/<aa>/sha256-<hash>`.
+- **Package asset copies are flat and include the extension:**
+  `assets/sha256-<hash>.<ext>`.
+- The two layouts are **intentionally different** (live store vs portable copy);
+  C4 applies the `.<ext>` when copying a CAS blob into a package.
+
+### First C4 asset scope (locked)
+
+- Only **inline `data:image/*` already present in sanitized `contentHtml`**.
+- Supported image mime types: **png, jpeg/jpg, gif, webp**.
+- **No** remote-URL fetching, **no** PDFs/files, **no** generated-file capture.
+
+### C4 extraction & write order (locked, interruption-safe)
+
+Build / materialization phase (per the [C3.0 cross-component order](#safe-c4-cross-component-write-order-documented-now)):
+
+1. Start from the existing **v1 snapshot projection** (sanitized; `data:image`
+   still inline).
+2. Scan sanitized `contentHtml`; find inline `data:image/*`.
+3. Decode the bytes.
+4. `assetCas.putAssetBytes(bytes, …)` (hash-first; idempotent; CAS owns bytes).
+5. `store.assets.upsert(descriptor)` (registry row).
+6. `store.assets.linkToTurn({ snapshotId, turnIdx, sha256, relation: "inline" })`.
+7. Rewrite HTML refs `data:image/*` → `assets/sha256-<hash>.<ext>`.
+8. Collect per-message `assetRefs[]` and `manifest.assets[]`.
+
+Write / package phase:
+
+- Write the **package asset files first**, then `manifest.json`, `snapshot.json`,
+  `chat.md`, `chat.html`.
+
+Interruption safety: at worst an **orphan CAS blob** or a **partial, regenerable
+package** — **never a complete-looking package whose `snapshot.json` references a
+missing asset**.
+
+### v2 package contract (reaffirmed)
+
+- Asset-bearing packages use **`schemaVersion: 2` / `payloadVersion: 2`**.
+- Asset-less packages may remain **`schemaVersion: 1` / `payloadVersion: 1`** and
+  **byte-identical to Phase B**.
+- `manifest.assets[]` carries descriptors; messages carry **`assetRefs[]` as
+  `sha256-…` IDs only**; `contentHtml` and `chat.html` use package-relative asset
+  paths after rewrite. (Shapes: see the format spec's Asset Descriptor / Snapshot
+  Integration sections.)
+
+### `contentHash` v2 (reaffirmed)
+
+```text
+contentHash = sha256(canonicalJson({
+  "snapshot": "sha256-<snapshot.json hash>",
+  "assets": ["sha256-...", "..."]
+}))
+```
+
+- `assets` sorted by sha256; `originalName`, `mimeType`, `ext`, `byteLength`,
+  `path` **excluded** from `contentHash`.
+- Per-file (`files.*.sha256`) and per-asset (`assets[*].sha256`) hashes are still
+  recorded separately.
+- Validators **branch by `schemaVersion`/`payloadVersion`**; **v1 packages remain
+  valid**.
+
+### Boundary rules (locked)
+
+- `assetCas` remains **filesystem-only and registry-free**.
+- `store.assets` remains **database-only and filesystem-free**.
+- A **package materialization helper orchestrates both** (calls each; reimplements
+  neither).
+- **No sync ownership.** Chrome remains light; Desktop remains canonical/
+  professional.
+
+### C4 implementation slicing
+
+- **C4.0** — this docs-only lock.
+- **C4.1** — data-image extraction / materialization helper + validator (mock CAS
+  + registry; no projector wiring, no FS write).
+- **C4.2** — projector v2 build wiring + validator (in-memory v2 manifest/snapshot/
+  `contentHash`; v1 asset-less stays byte-identical).
+- **C4.3** — app-owned package FS write with assets + validator (binary
+  `write_file`, assets-first, under `archive/packages/`).
+- **C4.4** — real-Desktop runtime smoke / evidence.
+
+### Deferred explicitly in C4
+
+User-folder export / save dialog; remote-URL fetching; PDFs/files; generated-file
+capture; UI wiring; sync integration; import/recovery; WebDAV/cloud; automatic GC;
+any Chrome ownership / heavy archive work.
+
 ## Implementation Gate
 
 No CAS, capability, migration, or UI work may begin until the C1 design (this ADR +
 the umbrella spec) is accepted. The first implementing slice is **C2a**
 (capability/security review), not CAS code. Within C3, the first slice is **C3.0**
-(this docs lock), then **C3.1** (sanitizer), then **C3.2** (CAS code).
+(this docs lock), then **C3.1** (sanitizer), then **C3.2** (CAS code). Within C4,
+the first slice is **C4.0** (this docs lock), then **C4.1** (materialization
+helper), **C4.2** (projector v2 wiring), **C4.3** (app-owned FS write), **C4.4**
+(runtime smoke).
