@@ -1393,10 +1393,19 @@
 
   function retentionCountdownStatus(deletedAt, restoredAt) {
     if (!cleanString(deletedAt)) return 'unknown';
-    if (cleanString(restoredAt)) return 'deferred';
+    if (cleanString(restoredAt)) return 'restored';
     var expiresAt = Date.parse(isoAddDays(deletedAt, PHASE4D3_RETENTION_DAYS));
     if (!Number.isFinite(expiresAt)) return 'unknown';
     return Date.now() >= expiresAt ? 'expired' : 'active';
+  }
+
+  function restoreAvailableReasonForRetention(status, restoreAvailable, folderId) {
+    if (status === 'restored') return 'already-restored';
+    if (!folderId) return 'missing-folder-id';
+    if (!restoreAvailable) return 'restore-blocked';
+    if (status === 'expired') return 'retention-expired-but-purge-deferred';
+    if (status === 'active') return 'within-retention-window';
+    return 'retention-status-unknown';
   }
 
   function folderNameFromTombstone(tombstone) {
@@ -1426,6 +1435,8 @@
     var restoreAvailable = !restoredAt && !!folderId;
     var restoreStatus = restoredAt ? 'restored' : (restoreAvailable ? 'active' : 'blocked');
     var retentionExpiresAt = isoAddDays(deletedAt, PHASE4D3_RETENTION_DAYS);
+    var retentionStatus = retentionCountdownStatus(deletedAt, restoredAt);
+    var retentionExpired = retentionStatus === 'expired';
     return {
       tombstoneId: cleanString(t.tombstoneId),
       folderId: folderId,
@@ -1445,8 +1456,15 @@
       purgeBlocked: true,
       hardDeleteBlocked: true,
       retentionDays: PHASE4D3_RETENTION_DAYS,
+      retentionStartedAt: deletedAt,
       retentionExpiresAt: retentionExpiresAt,
-      retentionCountdownStatus: retentionCountdownStatus(deletedAt, restoredAt),
+      retentionExpired: retentionExpired,
+      retentionCountdownStatus: retentionStatus,
+      retentionEnforcement: 'deferred',
+      purgeEligible: false,
+      restorePolicy: 'allowed-while-purge-deferred',
+      restoreAvailableReason: restoreAvailableReasonForRetention(retentionStatus, restoreAvailable, folderId),
+      purgeBlockedReason: 'purge-phase-deferred',
     };
   }
 
@@ -1464,9 +1482,15 @@
       activeTombstoneCount: 0,
       restoredTombstoneCount: 0,
       folderTombstoneCount: 0,
+      activeRetentionCount: 0,
+      expiredRetentionCount: 0,
+      restoredRetentionCount: 0,
+      unknownRetentionCount: 0,
       restoreAvailableCount: 0,
+      purgeEligibleCount: 0,
       purgeBlockedCount: 0,
       hardDeleteBlockedCount: 0,
+      retentionEnforcement: 'deferred',
       noHardDelete: true,
       noPurge: true,
       noChatDelete: true,
@@ -1489,7 +1513,12 @@
       result.folderTombstoneCount = result.rows.length;
       result.activeTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'active'; }).length;
       result.restoredTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'restored'; }).length;
+      result.activeRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'active'; }).length;
+      result.expiredRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'expired'; }).length;
+      result.restoredRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'restored'; }).length;
+      result.unknownRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'unknown'; }).length;
       result.restoreAvailableCount = result.rows.filter(function (row) { return row.restoreAvailable === true; }).length;
+      result.purgeEligibleCount = 0;
       result.purgeBlockedCount = result.rows.filter(function (row) { return row.purgeBlocked === true; }).length;
       result.hardDeleteBlockedCount = result.rows.filter(function (row) { return row.hardDeleteBlocked === true; }).length;
       return result;
