@@ -235,6 +235,22 @@
     return (row?.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)) ? row.meta : {};
   }
 
+  function isHiddenFolderDisplayRow(row, hiddenFolderIds = null) {
+    const meta = folderMetaOf(row);
+    const id = folderIdOf(row);
+    return row?.hidden === true
+      || meta.hidden === true
+      || row?.hiddenByDesktopVisibleSet === true
+      || meta.hiddenByDesktopVisibleSet === true
+      || row?.desktopVisibleSetMissing === true
+      || meta.desktopVisibleSetMissing === true
+      || row?.hiddenByDesktopReceipt === true
+      || meta.hiddenByDesktopReceipt === true
+      || row?.deletedByDesktopReceipt === true
+      || meta.deletedByDesktopReceipt === true
+      || (!!id && hiddenFolderIds instanceof Set && hiddenFolderIds.has(id));
+  }
+
   function folderUpdatedAtMs(row) {
     const meta = folderMetaOf(row);
     const raw = row?.updatedAt ?? row?.updated_at ?? meta.updatedAt ?? meta.updated_at ?? '';
@@ -351,6 +367,11 @@
     if (row?.protectedCanonicalFallback === true || meta.protectedCanonicalFallback === true) out.protectedCanonicalFallback = true;
     if (row?.shownInNormalMode === true || meta.shownInNormalMode === true) out.shownInNormalMode = true;
     if (row?.isCanonical === true || meta.isCanonical === true) out.isCanonical = true;
+    if (row?.hidden === true || meta.hidden === true) out.hidden = true;
+    if (row?.hiddenByDesktopVisibleSet === true || meta.hiddenByDesktopVisibleSet === true) out.hiddenByDesktopVisibleSet = true;
+    if (row?.desktopVisibleSetMissing === true || meta.desktopVisibleSetMissing === true) out.desktopVisibleSetMissing = true;
+    if (row?.hiddenByDesktopReceipt === true || meta.hiddenByDesktopReceipt === true) out.hiddenByDesktopReceipt = true;
+    if (row?.deletedByDesktopReceipt === true || meta.deletedByDesktopReceipt === true) out.deletedByDesktopReceipt = true;
     const sourceKind = String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim();
     if (sourceKind) {
       out.sourceKind = sourceKind;
@@ -438,13 +459,22 @@
     const folders = (Array.isArray(src.folders) ? src.folders : [])
       .map((row, index) => normalizeFolderRow(row, index, source || src.source || 'folder-state'))
       .filter(Boolean);
+    const hiddenByDesktopVisibleSet = {};
+    const hiddenByDesktopVisibleSetIds = new Set();
+    Object.keys(src.hiddenByDesktopVisibleSet && typeof src.hiddenByDesktopVisibleSet === 'object' ? src.hiddenByDesktopVisibleSet : {}).forEach((folderId) => {
+      const id = folderIdOf({ folderId });
+      if (!id) return;
+      const marker = src.hiddenByDesktopVisibleSet[folderId];
+      hiddenByDesktopVisibleSet[id] = (marker && typeof marker === 'object' && !Array.isArray(marker)) ? { ...marker } : true;
+      hiddenByDesktopVisibleSetIds.add(id);
+    });
     const inputItems = src.items && typeof src.items === 'object' ? src.items : {};
     const items = {};
     for (const folder of folders) {
       const values = Array.isArray(inputItems[folder.id]) ? inputItems[folder.id] : [];
       items[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
     }
-    return { folders, items };
+    return { folders, items, hiddenByDesktopVisibleSet, hiddenByDesktopVisibleSetIds };
   }
 
   function mergeTrustedCanonicalFolderStates(primaryState, secondaryState, primaryLabel = '', secondaryLabel = '') {
@@ -647,6 +677,7 @@
     const id = folderIdOf(row);
     const name = normalizeFolderName(row?.normalizedName || folderNameOf(row));
     if (!id || !name || name === 'unfiled') return false;
+    if (isHiddenFolderDisplayRow(row)) return false;
     if (isPrimaryCanonicalFolder(row) || isF5DReviewFolder(row)) return false;
     const meta = folderMetaOf(row);
     if (row?.materializedUserFolder === true || meta.materializedUserFolder === true) return true;
@@ -663,15 +694,16 @@
   }
 
   function isCanonicalDisplayFolder(row) {
+    if (isHiddenFolderDisplayRow(row)) return false;
     return isPrimaryCanonicalFolder(row) || isProtectedCanonicalFallbackFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);
   }
 
   function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false) {
     const src = stateInput && typeof stateInput === 'object' ? stateInput : { folders: [], items: {} };
+    const hiddenFolderIds = src.hiddenByDesktopVisibleSetIds instanceof Set ? src.hiddenByDesktopVisibleSetIds : new Set();
     const folders = (Array.isArray(src.folders) ? src.folders : [])
       .filter((folder) => {
-        const meta = folderMetaOf(folder);
-        if (folder?.hidden === true || meta.hidden === true) return false;
+        if (isHiddenFolderDisplayRow(folder, hiddenFolderIds)) return false;
         return isPrimaryCanonicalFolder(folder) || (includeStoredDynamic && isStoredFolderStateRow(folder));
       });
     const ids = new Set(folders.map((folder) => folderIdOf(folder)).filter(Boolean));
@@ -1579,15 +1611,17 @@
     desktopBindings,
     duplicateGroups,
     testFolderCandidates,
+    hiddenDisplayFolderIds,
   }) {
     const canonicalRows = Array.isArray(canonicalFolders) ? canonicalFolders : [];
     const localRows = Array.isArray(localFolders) ? localFolders : [];
-    const primaryCanonicalRows = canonicalRows.filter(isCanonicalDisplayFolder);
+    const hiddenFolderIds = hiddenDisplayFolderIds instanceof Set ? hiddenDisplayFolderIds : new Set();
+    const primaryCanonicalRows = canonicalRows.filter((folder) => !isHiddenFolderDisplayRow(folder, hiddenFolderIds) && isCanonicalDisplayFolder(folder));
     const primaryCanonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
     const materializedLocalRows = localRows
       .filter((folder) => {
         const id = folderIdOf(folder);
-        return id && !primaryCanonicalIds.has(id) && isMaterializedUserFolder(folder);
+        return id && !hiddenFolderIds.has(id) && !primaryCanonicalIds.has(id) && isMaterializedUserFolder(folder);
       });
     primaryCanonicalRows.push(...materializedLocalRows);
     const canonicalIds = new Set(primaryCanonicalRows.map((folder) => folderIdOf(folder)).filter(Boolean));
@@ -2121,6 +2155,7 @@
       desktopBindings,
       duplicateGroups,
       testFolderCandidates,
+      hiddenDisplayFolderIds: storedState.hiddenByDesktopVisibleSetIds,
     });
     const rawCanonicalDisplayRowCount = rawFolderDisplayRows.filter((row) => row && row.isCanonical).length;
     let protectedCanonicalFallbackSource = '';

@@ -120,9 +120,16 @@ const diagnosticBody = functionBody(chromeImport, 'diagnoseVisibleFolderParity')
 
 const displayFilterBody = functionBody(folderParity, 'filterFolderStateForNormalDisplay');
 [
-  'folderMetaOf(folder)',
-  'folder?.hidden === true || meta.hidden === true',
+  'isHiddenFolderDisplayRow(folder, hiddenFolderIds)',
 ].forEach((needle) => assertContains(displayFilterBody, needle, `display filter ${needle}`));
+
+const hiddenDisplayBody = functionBody(folderParity, 'isHiddenFolderDisplayRow');
+[
+  'row?.hidden === true',
+  'meta.hidden === true',
+  'row?.hiddenByDesktopVisibleSet === true',
+  'meta.hiddenByDesktopVisibleSet === true',
+].forEach((needle) => assertContains(hiddenDisplayBody, needle, `shared display hidden predicate ${needle}`));
 
 [
   'Phase 5A.2',
