@@ -30,6 +30,12 @@
   const ITEM_LIMIT_DEFAULT = 8;
   const FOLDER_SIDEBAR_UI_STATE = {
     showFolderCountPills: false,
+    showCountsBySection: {
+      folders: false,
+      labels: true,
+      categories: true,
+      projects: true,
+    },
   };
   const FOLDER_CREATE_FLOW_STATE = {
     lastAt: 0,
@@ -230,6 +236,21 @@
     const display = String(item.displayCountLabel || '').trim();
     if (display) return display;
     return item.count != null ? formatNumber(item.count) : '';
+  }
+
+  function sidebarSectionCountValue(item = {}) {
+    const n = Number(item.count ?? item.nativeMembershipCount ?? item.canonicalCount ?? item.knownStudioCount ?? item.knownCount ?? 0) || 0;
+    return formatNumber(n);
+  }
+
+  function sidebarSectionCountsVisible(kind) {
+    const k = String(kind || '').trim();
+    if (!k) return true;
+    return FOLDER_SIDEBAR_UI_STATE.showCountsBySection[k] !== false;
+  }
+
+  function sidebarSectionHeaderButtonStyle(rightPx = 8) {
+    return `position:absolute;top:8px;right:${Number(rightPx) || 8}px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:0;border-radius:6px;background:transparent;color:rgba(255,255,255,.62);font:700 11px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer`;
   }
 
   function folderCountDetailsText(item = {}) {
@@ -756,6 +777,26 @@
     if (!studioIsTauri()) return false;
     const actions = desktopFolderActions();
     return typeof actions?.delete === 'function' || typeof actions?.remove === 'function';
+  }
+
+  function desktopFolderStore() {
+    try {
+      return W.H2O?.Studio?.store?.folders || null;
+    } catch { return null; }
+  }
+
+  function canUseDesktopRecentlyDeletedFolders() {
+    if (!studioIsTauri()) return false;
+    const store = desktopFolderStore();
+    return typeof store?.listRecentlyDeletedFolders === 'function' ||
+      typeof store?.diagnoseRecentlyDeletedFolders === 'function';
+  }
+
+  function canUseDesktopFolderRestore() {
+    if (!studioIsTauri()) return false;
+    const store = desktopFolderStore();
+    return typeof store?.restoreTombstonedFolder === 'function' ||
+      typeof store?.restoreFolder === 'function';
   }
 
   function chromeFolderDeleteRequestActions() {
@@ -1965,6 +2006,273 @@
       noChatDelete: true,
       crossPlatformSync: 'deferred',
     });
+  }
+
+  function recentlyDeletedText(value, fallback = '—') {
+    const text = String(value ?? '').trim();
+    return text || fallback;
+  }
+
+  function recentlyDeletedDateText(value) {
+    const text = String(value || '').trim();
+    if (!text) return '—';
+    const d = new Date(text);
+    if (!Number.isFinite(d.getTime())) return text;
+    try {
+      return d.toLocaleString([], {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return text;
+    }
+  }
+
+  function recentlyDeletedBoolLabel(value) {
+    return value === true ? 'true' : 'false';
+  }
+
+  function recentlyDeletedAggregateValue(source, key, fallback = 0) {
+    const nested = source?.recentlyDeletedDiagnostics && typeof source.recentlyDeletedDiagnostics === 'object'
+      ? source.recentlyDeletedDiagnostics
+      : {};
+    const n = Number(source?.[key] ?? nested?.[key]);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function recentlyDeletedRowsFromResult(result) {
+    const nested = result?.recentlyDeletedDiagnostics && typeof result.recentlyDeletedDiagnostics === 'object'
+      ? result.recentlyDeletedDiagnostics
+      : {};
+    const rows = result?.rows || result?.items || result?.list || nested?.rows || nested?.items || nested?.list;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async function restoreRecentlyDeletedFolder(row, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const target = String(row?.tombstoneId || row?.folderId || row?.id || '').trim();
+    if (!target) {
+      setStatus('Blocked: folder identity missing', 'blocked');
+      return { ok: false, status: 'folder-identity-missing', blockers: ['folder-identity-missing'] };
+    }
+    const store = desktopFolderStore();
+    const fn = typeof store?.restoreTombstonedFolder === 'function'
+      ? store.restoreTombstonedFolder
+      : (typeof store?.restoreFolder === 'function' ? store.restoreFolder : null);
+    if (!fn) {
+      setStatus('Restore deferred: safe restore API unavailable', 'blocked');
+      return { ok: false, status: 'restore-api-unavailable', blockers: ['restore-api-unavailable'] };
+    }
+    const name = recentlyDeletedText(row?.folderName || row?.name || row?.folderId, 'this folder');
+    const confirmed = W.confirm?.(`Restore "${name}" from Recently Deleted?\n\nThis restores the folder metadata and eligible bindings. It does not purge, hard-delete, or delete chats.`);
+    if (!confirmed) {
+      setStatus('Restore cancelled', '');
+      return { ok: false, status: 'restore-cancelled', blockers: [] };
+    }
+    setStatus('Restoring...', 'pending');
+    try {
+      const result = await fn.call(store, target, { source: 'desktop-recently-deleted-ui' });
+      if (result?.ok === true) {
+        setStatus('Folder restored', 'ok');
+        refreshAfterNativeFolderMetadataApply('folder-recently-deleted-restore');
+      } else {
+        const code = firstResultCode(result, String(result?.status || 'folder-restore-failed'));
+        setStatus(`Blocked: ${code}`, 'blocked');
+      }
+      return result || { ok: false, status: 'folder-restore-failed', blockers: ['folder-restore-failed'] };
+    } catch (e) {
+      err('recentlyDeleted.restore', e);
+      const message = String(e?.message || e || 'folder-restore-threw');
+      setStatus(`Blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-restore-threw', blockers: ['folder-restore-threw'], reason: message };
+    }
+  }
+
+  async function renderRecentlyDeletedFoldersPanel(host) {
+    if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
+    const persistKey = 'h2o:studio:sidebar:recently-deleted-folders:expanded:v1';
+    const details = el('details', {
+      class: 'wbFolderRecentlyDeleted',
+      'data-h2o-recently-deleted-folders': '1',
+      style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);',
+    });
+    try { details.open = W.localStorage.getItem(persistKey) === '1'; } catch {}
+    const summary = el('summary', {
+      class: 'wbSidebarLocalReviewSummary',
+      style: 'cursor:pointer;padding:6px 10px;font-size:11px;color:rgba(255,255,255,.62);letter-spacing:.04em;text-transform:uppercase;',
+    }, 'Recently Deleted');
+    details.appendChild(summary);
+    const body = el('div', {
+      class: 'wbFolderRecentlyDeletedBody',
+      style: 'display:flex;flex-direction:column;gap:8px;padding:0 8px 4px;',
+    });
+    const status = el('div', {
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);',
+    }, 'Loading recovery diagnostics...');
+    body.appendChild(status);
+    details.appendChild(body);
+    details.addEventListener('toggle', () => {
+      try { W.localStorage.setItem(persistKey, details.open ? '1' : '0'); } catch {}
+    });
+    host.appendChild(details);
+
+    const store = desktopFolderStore();
+    const listFn = typeof store?.listRecentlyDeletedFolders === 'function'
+      ? store.listRecentlyDeletedFolders
+      : store?.diagnoseRecentlyDeletedFolders;
+    let result = null;
+    try {
+      result = await listFn.call(store, { limit: 500, source: 'desktop-recently-deleted-ui' });
+    } catch (e) {
+      err('recentlyDeleted.list', e);
+      body.innerHTML = '';
+      body.appendChild(el('div', {
+        class: 'wbSideEmpty',
+        style: 'font-size:11px;line-height:1.4;color:rgba(255,255,255,.62);padding:4px 2px;',
+      }, `Recently Deleted unavailable: ${String(e?.message || e || 'list failed')}`));
+      return;
+    }
+
+    const rows = recentlyDeletedRowsFromResult(result);
+    const restoreApiAvailable = canUseDesktopFolderRestore();
+    const activeRetentionCount = recentlyDeletedAggregateValue(result, 'activeRetentionCount');
+    const expiredRetentionCount = recentlyDeletedAggregateValue(result, 'expiredRetentionCount');
+    const restoredRetentionCount = recentlyDeletedAggregateValue(result, 'restoredRetentionCount');
+    const purgeEligibleCount = recentlyDeletedAggregateValue(result, 'purgeEligibleCount');
+    const purgeBlockedCount = recentlyDeletedAggregateValue(result, 'purgeBlockedCount', rows.length);
+    const retentionDays = recentlyDeletedAggregateValue(result, 'retentionDays', 30);
+    const retentionEnforcement = recentlyDeletedText(result?.retentionEnforcement || result?.recentlyDeletedDiagnostics?.retentionEnforcement, 'deferred');
+    summary.textContent = `Recently Deleted · ${formatNumber(rows.length)}`;
+    body.innerHTML = '';
+    body.appendChild(el('div', {
+      style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;font-size:10.5px;line-height:1.25;',
+    }, [
+      el('span', { title: 'Active retention count' }, `Active ${formatNumber(activeRetentionCount)}`),
+      el('span', { title: 'Expired retention count' }, `Expired ${formatNumber(expiredRetentionCount)}`),
+      el('span', { title: 'Restored retention count' }, `Restored ${formatNumber(restoredRetentionCount)}`),
+      el('span', { title: 'Purge eligible count' }, `Purge eligible ${formatNumber(purgeEligibleCount)}`),
+      el('span', { title: 'Purge blocked count' }, `Purge blocked ${formatNumber(purgeBlockedCount)}`),
+      el('span', { title: 'Retention days' }, `Retention ${formatNumber(retentionDays)}d`),
+    ]));
+    body.appendChild(el('div', {
+      style: 'display:flex;flex-wrap:wrap;gap:4px;font-size:10px;line-height:1.2;',
+    }, [
+      el('span', {
+        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+      }, 'Purge deferred'),
+      el('span', {
+        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+      }, 'Hard delete blocked'),
+      el('span', {
+        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+      }, `Retention enforcement ${retentionEnforcement}`),
+    ]));
+
+    if (result?.ok === false) {
+      const blocker = firstResultCode(result, String(result?.status || 'recently-deleted-list-failed'));
+      body.appendChild(el('div', {
+        class: 'wbSideEmpty',
+        style: 'font-size:11px;line-height:1.4;color:rgba(255,255,255,.62);padding:4px 2px;',
+      }, `Recently Deleted blocked: ${blocker}`));
+      return;
+    }
+    if (!rows.length) {
+      body.appendChild(el('div', {
+        class: 'wbSideEmpty',
+        style: 'font-size:11px;line-height:1.4;color:rgba(255,255,255,.62);padding:4px 2px;',
+      }, 'No folder tombstones recorded.'));
+      return;
+    }
+
+    const visibleRows = rows.slice(0, 20);
+    visibleRows.forEach((raw) => {
+      const row = raw && typeof raw === 'object' ? raw : {};
+      const folderName = recentlyDeletedText(row.folderName || row.name || row.folderId, 'Folder');
+      const folderId = recentlyDeletedText(row.folderId || row.id, '');
+      const restoreAvailable = row.restoreAvailable === true;
+      const restoreStatus = recentlyDeletedText(row.restoreStatus, 'unknown');
+      const restoreDisabledReason = restoreApiAvailable
+        ? (restoreAvailable ? '' : 'Restore is unavailable for this tombstone state')
+        : 'Safe restore API unavailable';
+      const card = el('div', {
+        class: 'wbFolderRecentlyDeletedRow',
+        'data-h2o-recently-deleted-folder-id': folderId || null,
+        style: 'display:flex;flex-direction:column;gap:5px;padding:7px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);',
+      });
+      card.appendChild(el('div', {
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;',
+      }, [
+        el('span', {
+          style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:rgba(255,255,255,.86);',
+          title: folderName,
+        }, folderName),
+        el('span', {
+          style: 'flex:0 0 auto;font-size:10px;color:rgba(255,255,255,.55);',
+        }, restoreStatus),
+      ]));
+      const lines = [
+        ['Folder ID', folderId],
+        ['Deleted', recentlyDeletedDateText(row.deletedAt)],
+        ['Restore available', recentlyDeletedBoolLabel(restoreAvailable)],
+        ['Affected chats', formatNumber(Number(row.affectedChatCount) || 0)],
+        ['Retention', recentlyDeletedText(row.retentionCountdownStatus, 'unknown')],
+        ['Expires', recentlyDeletedDateText(row.retentionExpiresAt)],
+        ['Enforcement', recentlyDeletedText(row.retentionEnforcement, 'deferred')],
+        ['Purge blocked', recentlyDeletedBoolLabel(row.purgeBlocked !== false)],
+        ['Hard delete blocked', recentlyDeletedBoolLabel(row.hardDeleteBlocked !== false)],
+      ];
+      lines.forEach(([label, value]) => {
+        card.appendChild(el('div', {
+          style: 'display:flex;gap:8px;justify-content:space-between;align-items:flex-start;font-size:10.5px;line-height:1.25;color:rgba(255,255,255,.62);',
+        }, [
+          el('span', {}, label),
+          el('span', {
+            style: 'text-align:right;min-width:0;overflow-wrap:anywhere;color:rgba(255,255,255,.76);',
+          }, value),
+        ]));
+      });
+      const actionRow = el('div', {
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:2px;',
+      });
+      const rowStatus = el('span', {
+        style: 'min-width:0;font-size:10.5px;color:rgba(255,255,255,.58);',
+      }, row.restoreAvailableReason || row.purgeBlockedReason || 'No purge action available');
+      const restoreBtn = el('button', {
+        type: 'button',
+        class: 'wbSidebarNativeAction',
+        disabled: restoreAvailable && restoreApiAvailable ? null : 'disabled',
+        title: restoreAvailable && restoreApiAvailable ? 'Restore this folder safely' : restoreDisabledReason,
+        style: 'flex:0 0 auto;font-size:10.5px;padding:4px 7px;',
+      }, 'Restore');
+      if (!(restoreAvailable && restoreApiAvailable)) restoreBtn.classList.add('is-disabled');
+      restoreBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (restoreBtn.disabled) return;
+        restoreBtn.disabled = true;
+        restoreBtn.classList.add('is-disabled');
+        Promise.resolve(restoreRecentlyDeletedFolder(row, { setStatus: (message) => { rowStatus.textContent = message; } }))
+          .finally(() => {
+            W.setTimeout(() => {
+              try { renderFolders(); } catch (e) { err('recentlyDeleted.renderAfterRestore', e); }
+            }, 250);
+          });
+      });
+      actionRow.appendChild(rowStatus);
+      actionRow.appendChild(restoreBtn);
+      card.appendChild(actionRow);
+      body.appendChild(card);
+    });
+    if (rows.length > visibleRows.length) {
+      body.appendChild(el('div', {
+        style: 'font-size:10.5px;color:rgba(255,255,255,.54);padding:0 2px;',
+      }, `Showing ${formatNumber(visibleRows.length)} of ${formatNumber(rows.length)} folder tombstones.`));
+    }
   }
 
   function menuTitleForKind(kind) {
@@ -3485,7 +3793,7 @@
                     : kind === 'projects' ? 'project'
                     : kind === 'folders' ? 'folder'
                     : kind;
-    const compactFolderCounts = kind === 'folders' && !opts.review && !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
+    const compactSectionCounts = !opts.review && !sidebarSectionCountsVisible(kind);
 
     for (const item of visible) {
       const id = String(item.id || '').trim();
@@ -3494,14 +3802,12 @@
       const href = String(item.href || '').trim() || routeSvc?.buildLibraryHash?.(routeKind, id) || `#/library/explorer`;
       const color = normalizeHexColor(item.color || '');
       const folderDebugDetails = kind !== 'folders' || folderSidebarDebugDetailsVisible();
-      const countLabel = kind === 'folders' && !folderDebugDetails
-        ? folderSidebarSimpleCountLabel(item)
-        : countLabelForItem(item);
+      const countLabel = sidebarSectionCountValue(item);
       const hasDetailedCount = folderDebugDetails && !!String(item.displayCountLabel || '').trim();
       const countDetails = kind === 'folders' ? folderCountDetailsText(item) : countLabel;
-      const showInlineCount = !!countLabel && !compactFolderCounts;
+      const showInlineCount = !!countLabel && !compactSectionCounts;
       const countPillStyle = showInlineCount
-        ? 'display:block;box-sizing:border-box;min-width:0;max-width:108px;padding:1px 5px;font-size:10px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;'
+        ? 'display:block;box-sizing:border-box;min-width:0;max-width:42px;padding:0 2px;font-size:10.5px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;align-self:center;'
         : null;
       const badges = Array.isArray(item.badges) ? item.badges.map((badge) => String(badge || '').trim()).filter(Boolean) : [];
       const deleteRequestBadge = kind === 'folders' ? folderDeleteRequestBadgeNode(item) : null;
@@ -3509,7 +3815,6 @@
       const ariaLabel = countDetails ? `${name}, ${countDetails}` : name;
       const rowStyle = [
         color ? `--wb-sidebar-item-color:${color};` : '',
-        compactFolderCounts ? 'grid-template-columns:16px minmax(0,1fr) 24px;' : '',
       ].filter(Boolean).join('');
       const menuButton = !opts.disableMenu && !item.disableMenu && (kind === 'categories' || kind === 'folders')
         ? el('button', {
@@ -3557,7 +3862,7 @@
         'data-canonical-count': item.canonicalCount != null ? item.canonicalCount : null,
         'data-known-count': item.knownCount != null ? item.knownCount : null,
         'data-local-binding-count': item.localBindingCount != null ? item.localBindingCount : null,
-        'data-count-mode': compactFolderCounts ? 'compact' : (showInlineCount ? 'inline' : null),
+        'data-count-mode': compactSectionCounts ? 'compact' : (showInlineCount ? 'inline' : null),
         'data-system-row': item.isSystem === true ? 'true' : null,
         'data-color-source': item.isCanonical === true ? 'canonical' : (color ? 'local' : null),
         'data-h2o-folder-sidebar-row': kind === 'folders' ? '1' : null,
@@ -3574,7 +3879,10 @@
         'data-h2o-folder-protected': kind === 'folders' && item.protectedCanonicalFallback === true ? 'true' : null,
         'data-h2o-folder-shown-normal': kind === 'folders' && item.shownInNormalMode === true ? 'true' : null,
         'data-h2o-folder-normalized-name': kind === 'folders' ? String(item.normalizedName || name || '').trim().replace(/\s+/g, ' ').toLowerCase() : null,
-        style: rowStyle,
+        style: [
+          rowStyle,
+          compactSectionCounts ? 'grid-template-columns:16px minmax(0,1fr) 24px;' : '',
+        ].filter(Boolean).join(''),
       }, [
         makeItemIcon(item, kind),
         opts.review ? el('span', {
@@ -3639,8 +3947,8 @@
     if (!ws) return;
     const host = D.getElementById('folderList');
     if (!host) return;
-    ensureFolderCountToggle();
     ensureFolderCreateButton();
+    ensureFolderCountToggle();
     let model = null;
     try {
       model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: true });
@@ -3762,6 +4070,12 @@
       host.appendChild(details);
     }
 
+    try {
+      await renderRecentlyDeletedFoldersPanel(host);
+    } catch (e) {
+      err('renderRecentlyDeletedFoldersPanel', e);
+    }
+
     step('renderFolders.parity', `canonical=${mainItems.length} review=${reviewItems.length}`);
   }
 
@@ -3784,6 +4098,7 @@
     renderSectionList(host, 'labels', items, { emptyText: 'No labels yet' });
     // R4.5.3 — mount the Desktop label-create button. Tauri-gated; no-op on MV3.
     try { ensureLabelCreateButton(); } catch (e) { err('ensureLabelCreateButton', e); }
+    try { ensureSectionCountToggle('labels'); } catch (e) { err('ensureLabelCountToggle', e); }
     // R4.5.3 — defensive: also call the tag-create-button helper.
     // It targets `.wbSidebarSection--tags`, which doesn't exist in
     // S0Z1g today (no renderTags). The helper bails on missing
@@ -3817,6 +4132,7 @@
     // the categories section header. Tauri-gated through the helper —
     // returns null on MV3, leaving the section unchanged.
     try { ensureCategoryCreateButton(); } catch (e) { err('ensureCategoryCreateButton', e); }
+    try { ensureSectionCountToggle('categories'); } catch (e) { err('ensureCategoryCountToggle', e); }
     step('renderCategories', String(items.length));
   }
 
@@ -3841,17 +4157,17 @@
     if (!button) {
       try {
         sec.style.position = 'relative';
-        label.style.paddingRight = '40px';
+        label.style.paddingRight = '68px';
       } catch {}
       button = el('button', {
-        class: 'wbSidebarCategoryCreateButton',
+        class: 'wbSidebarHeaderActionButton wbSidebarCategoryCreateButton',
         type: 'button',
         title: 'Create category',
         'aria-label': 'Create category',
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
         'data-h2o-category-create-button': '1',
-        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+        style: sidebarSectionHeaderButtonStyle(36),
       });
       button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
       button.querySelectorAll('svg').forEach((svg) => {
@@ -3884,7 +4200,8 @@
     }
     try {
       sec.style.position = 'relative';
-      label.style.paddingRight = '40px';
+      label.style.paddingRight = '68px';
+      button.style.cssText = sidebarSectionHeaderButtonStyle(36);
     } catch {}
     return button;
   }
@@ -3908,17 +4225,17 @@
     if (!button) {
       try {
         sec.style.position = 'relative';
-        label.style.paddingRight = '40px';
+        label.style.paddingRight = '68px';
       } catch {}
       button = el('button', {
-        class: 'wbSidebarLabelCreateButton',
+        class: 'wbSidebarHeaderActionButton wbSidebarLabelCreateButton',
         type: 'button',
         title: 'Create label',
         'aria-label': 'Create label',
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
         'data-h2o-label-create-button': '1',
-        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+        style: sidebarSectionHeaderButtonStyle(36),
       });
       button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
       button.querySelectorAll('svg').forEach((svg) => {
@@ -3951,7 +4268,8 @@
     }
     try {
       sec.style.position = 'relative';
-      label.style.paddingRight = '40px';
+      label.style.paddingRight = '68px';
+      button.style.cssText = sidebarSectionHeaderButtonStyle(36);
     } catch {}
     return button;
   }
@@ -3985,14 +4303,14 @@
         label.style.paddingRight = '40px';
       } catch {}
       button = el('button', {
-        class: 'wbSidebarTagCreateButton',
+        class: 'wbSidebarHeaderActionButton wbSidebarTagCreateButton',
         type: 'button',
         title: 'Create tag',
         'aria-label': 'Create tag',
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
         'data-h2o-tag-create-button': '1',
-        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+        style: sidebarSectionHeaderButtonStyle(36),
       });
       button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
       button.querySelectorAll('svg').forEach((svg) => {
@@ -4046,6 +4364,7 @@
       .filter((p) => p.id)
       .sort((a, b) => b.count - a.count);
     renderSectionList(host, 'projects', items, { emptyText: 'No projects yet' });
+    try { ensureSectionCountToggle('projects'); } catch (e) { err('ensureProjectCountToggle', e); }
     step('renderProjects', String(items.length));
   }
 
@@ -4083,48 +4402,67 @@
     });
   }
 
-  function updateFolderCountToggleButton(button) {
+  function updateSectionCountToggleButton(button, kind = 'folders') {
     if (!button) return;
-    const enabled = !!FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
+    const section = String(kind || button.dataset.h2oSectionCountToggle || 'folders').trim() || 'folders';
+    const enabled = sidebarSectionCountsVisible(section);
     button.textContent = '#';
-    button.title = enabled ? 'Hide folder counts' : 'Show folder counts';
+    button.title = enabled ? 'Hide counts' : 'Show counts';
     button.setAttribute('aria-pressed', String(enabled));
-    button.setAttribute('aria-label', enabled ? 'Hide folder counts' : 'Show folder counts');
-    button.style.background = enabled ? 'rgba(59,130,246,.18)' : 'rgba(255,255,255,.035)';
-    button.style.borderColor = enabled ? 'rgba(125,211,252,.35)' : 'rgba(255,255,255,.12)';
-    button.style.color = enabled ? 'rgba(191,219,254,.95)' : 'rgba(255,255,255,.62)';
+    button.setAttribute('aria-label', enabled ? `Hide ${section} counts` : `Show ${section} counts`);
+    button.style.background = 'transparent';
+    button.style.borderColor = 'transparent';
+    button.style.color = enabled ? 'rgba(210,210,210,.82)' : 'rgba(145,145,145,.58)';
   }
 
-  function ensureFolderCountToggle() {
-    const sec = D.querySelector('.wbSidebarSection--folders');
+  function ensureSectionCountToggle(kind = 'folders') {
+    const section = String(kind || 'folders').trim() || 'folders';
+    const sec = D.querySelector(`.wbSidebarSection--${section}`);
     const label = sec?.querySelector?.('.wbSideLabel');
     if (!sec || !label) return null;
-    let button = sec.querySelector('[data-h2o-folder-count-toggle="1"]');
+    const hasCreateButton = !!sec.querySelector('[data-h2o-folder-create-button="1"], [data-h2o-label-create-button="1"], [data-h2o-category-create-button="1"], [data-h2o-tag-create-button="1"]');
+    let button = sec.querySelector(`[data-h2o-section-count-toggle="${section}"]`);
     if (button && button.parentElement !== sec) sec.insertBefore(button, label.nextSibling);
     if (!button) {
       try {
         sec.style.position = 'relative';
-        label.style.paddingRight = '40px';
+        label.style.paddingRight = hasCreateButton ? '68px' : '40px';
       } catch {}
+      const legacyCountClass = section === 'folders' ? ' wbSidebarFolderCountToggle' : '';
       button = el('button', {
-        class: 'wbSidebarFolderCountToggle',
+        class: `wbSidebarHeaderActionButton wbSidebarCountToggle wbSidebar${section[0].toUpperCase()}${section.slice(1)}CountToggle${legacyCountClass}`,
         type: 'button',
-        'data-h2o-folder-count-toggle': '1',
-        style: 'position:absolute;top:8px;right:8px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.62);font:700 11px/1 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0;text-transform:none;cursor:pointer',
+        'data-h2o-section-count-toggle': section,
+        style: sidebarSectionHeaderButtonStyle(8),
       });
       button.addEventListener('pointerdown', (ev) => ev.stopPropagation());
       button.addEventListener('keydown', (ev) => ev.stopPropagation());
       button.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        FOLDER_SIDEBAR_UI_STATE.showFolderCountPills = !FOLDER_SIDEBAR_UI_STATE.showFolderCountPills;
-        updateFolderCountToggleButton(button);
-        renderFolders().catch((e) => err('renderFolders.countToggle', e));
+        FOLDER_SIDEBAR_UI_STATE.showCountsBySection[section] = !sidebarSectionCountsVisible(section);
+        FOLDER_SIDEBAR_UI_STATE.showFolderCountPills = sidebarSectionCountsVisible('folders');
+        updateSectionCountToggleButton(button, section);
+        renderAllSections();
       });
       sec.insertBefore(button, label.nextSibling);
     }
-    updateFolderCountToggleButton(button);
+    const hasCreateButtonNow = !!sec.querySelector('[data-h2o-folder-create-button="1"], [data-h2o-label-create-button="1"], [data-h2o-category-create-button="1"], [data-h2o-tag-create-button="1"]');
+    try {
+      sec.style.position = 'relative';
+      label.style.paddingRight = hasCreateButtonNow ? '68px' : '40px';
+    } catch {}
+    button.style.cssText = sidebarSectionHeaderButtonStyle(8);
+    updateSectionCountToggleButton(button, section);
     return button;
+  }
+
+  function updateFolderCountToggleButton(button) {
+    updateSectionCountToggleButton(button, 'folders');
+  }
+
+  function ensureFolderCountToggle() {
+    return ensureSectionCountToggle('folders');
   }
 
   function ensureFolderCreateButton() {
@@ -4143,14 +4481,14 @@
         label.style.paddingRight = '68px';
       } catch {}
       button = el('button', {
-        class: 'wbSidebarFolderCreateButton',
+        class: 'wbSidebarHeaderActionButton wbSidebarFolderCreateButton',
         type: 'button',
         title: 'Create folder',
         'aria-label': 'Create folder',
         'aria-haspopup': 'dialog',
         'aria-expanded': 'false',
         'data-h2o-folder-create-button': '1',
-        style: 'position:absolute;top:8px;right:36px;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.72);cursor:pointer',
+        style: sidebarSectionHeaderButtonStyle(36),
       });
       button.innerHTML = SIDEBAR_MENU_ACTION_SVGS.plus;
       button.querySelectorAll('svg').forEach((svg) => {
@@ -4174,6 +4512,7 @@
     try {
       sec.style.position = 'relative';
       label.style.paddingRight = '68px';
+      button.style.cssText = sidebarSectionHeaderButtonStyle(36);
     } catch {}
     return button;
   }
