@@ -1,11 +1,12 @@
 /* H2O Studio Saved Chat Archive Diagnostics (Desktop / Tauri)
  *
- * C5.1 + C5.2: read-only inventory and package hash validation for saved-chat
- * packages under $APPLOCALDATA/archive/packages.
+ * C5.1-C5.3: read-only inventory, package hash validation, package asset
+ * validation, and live-CAS presence comparison for saved-chat packages under
+ * $APPLOCALDATA/archive/packages.
  *
  * Boundaries: Desktop-only, AppLocalData only, read-only fs calls only. This
- * module does not touch DB/store rows, live CAS, Sync, Chrome, import/recovery,
- * user export locations, package materialization, or UI.
+ * module does not touch DB/store rows, mutate live CAS, Sync, Chrome,
+ * import/recovery, user export locations, package materialization, or UI.
  */
 (function (global) {
   'use strict';
@@ -215,6 +216,11 @@
       blockers: [],
       warnings: [],
       counts: {},
+      assetChecks: {
+        passed: 0,
+        warnings: 0,
+        failed: 0,
+      },
       packages: [],
     };
   }
@@ -282,6 +288,15 @@
       packagesBlocked: 0,
       v1: 0,
       v2: 0,
+      missingLiveCasAssets: 0,
+      brokenPackageAssets: 0,
+      assetRefMismatches: 0,
+      dataImageResidue: 0,
+    };
+    var assetSummary = {
+      passed: 0,
+      warnings: 0,
+      failed: 0,
     };
     packages.forEach(function (pkg) {
       if (pkg.status === STATUS_BLOCKED) counts.packagesBlocked += 1;
@@ -289,8 +304,30 @@
       else if (pkg.status === STATUS_OK) counts.packagesOk += 1;
       if (pkg.schemaVersion === 1) counts.v1 += 1;
       if (pkg.schemaVersion === 2) counts.v2 += 1;
+      var checks = pkg.assetChecks || {};
+      var broken =
+        asArray(checks.missingPackageAssets).length +
+        asArray(checks.unreadablePackageAssets).length +
+        asArray(checks.hashMismatches).length +
+        asArray(checks.byteLengthMismatches).length;
+      var warnings =
+        asArray(checks.extraPackageAssets).length +
+        asArray(checks.unreferencedManifestAssets).length +
+        asArray(checks.missingLiveCasAssets).length;
+      counts.missingLiveCasAssets += asArray(checks.missingLiveCasAssets).length;
+      counts.brokenPackageAssets += broken;
+      counts.assetRefMismatches += asArray(checks.assetRefMismatches).length + asArray(checks.rendererAssetRefMismatches).length;
+      counts.dataImageResidue += asArray(checks.dataImageResidue).length;
+      if (broken || asArray(checks.assetRefMismatches).length || asArray(checks.rendererAssetRefMismatches).length || asArray(checks.dataImageResidue).length) {
+        assetSummary.failed += 1;
+      } else if (warnings || pkg.status === STATUS_WARNING) {
+        assetSummary.warnings += 1;
+      } else if (checks.packageAssetsOk === true || pkg.schemaVersion === 1 || pkg.schemaVersion === 2) {
+        assetSummary.passed += 1;
+      }
     });
     result.counts = Object.assign({}, result.counts || {}, counts);
+    result.assetChecks = assetSummary;
     return result;
   }
 
@@ -384,6 +421,7 @@
         expectedContentHash: '',
         actualContentHash: '',
       },
+      assetChecks: defaultAssetChecks(),
     };
   }
 
@@ -403,9 +441,354 @@
     return '';
   }
 
+  function defaultAssetChecks() {
+    return {
+      manifestAssetCount: 0,
+      packageAssetCount: 0,
+      packageAssetsOk: false,
+      missingPackageAssets: [],
+      unreadablePackageAssets: [],
+      hashMismatches: [],
+      byteLengthMismatches: [],
+      extraPackageAssets: [],
+      unreferencedManifestAssets: [],
+      assetRefMismatches: [],
+      dataImageResidue: [],
+      rendererAssetRefMismatches: [],
+      missingLiveCasAssets: [],
+      liveCasChecked: false,
+      liveCasAvailable: false,
+    };
+  }
+
+  function addAssetBlocker(diag, bucket, code, message, detail) {
+    var issue = makeIssue(code, message, detail);
+    if (diag.assetChecks && Array.isArray(diag.assetChecks[bucket])) diag.assetChecks[bucket].push(issue);
+    diag.blockers.push(issue);
+    return issue;
+  }
+
+  function addAssetWarning(diag, bucket, code, message, detail) {
+    var issue = makeIssue(code, message, detail);
+    if (diag.assetChecks && Array.isArray(diag.assetChecks[bucket])) diag.assetChecks[bucket].push(issue);
+    diag.warnings.push(issue);
+    return issue;
+  }
+
+  function normalizeAssetSha(shaInput) {
+    var sha = cleanString(shaInput).toLowerCase();
+    if (/^sha256-[0-9a-f]{64}$/.test(sha)) return sha;
+    if (/^[0-9a-f]{64}$/.test(sha)) return 'sha256-' + sha;
+    return '';
+  }
+
+  function normalizeAssetExt(extInput) {
+    return cleanString(extInput).toLowerCase().replace(/^\.+/, '').replace(/[^a-z0-9]/g, '');
+  }
+
+  function assetPathParts(pathInput) {
+    var path = cleanString(pathInput);
+    var match = /^assets\/(sha256-[0-9a-f]{64})\.([a-z0-9]+)$/i.exec(path);
+    if (!match) return null;
+    return { sha256: normalizeAssetSha(match[1]), ext: normalizeAssetExt(match[2]) };
+  }
+
+  function packageRelativePathIsSafe(pathInput) {
+    var path = cleanString(pathInput);
+    if (!path) return false;
+    if (path.charAt(0) === '/' || /\\/.test(path) || path.indexOf('..') >= 0 || path.indexOf(':') >= 0) return false;
+    return path.indexOf('assets/') === 0;
+  }
+
+  function assetPathMatchesDescriptor(asset, diag, index) {
+    var sha = normalizeAssetSha(asset && asset.sha256);
+    var path = cleanString(asset && asset.path);
+    var ext = normalizeAssetExt(asset && asset.ext);
+    var mimeType = cleanString(asset && asset.mimeType);
+    var byteLength = asset && asset.byteLength;
+    var detail = { index: index, sha256: sha || cleanString(asset && asset.sha256), path: path };
+    if (!sha) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-sha-invalid', 'manifest.assets[] entry has an invalid sha256', detail);
+      return null;
+    }
+    if (!path || !packageRelativePathIsSafe(path)) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-unsafe', 'manifest.assets[] path must be package-relative under assets/', detail);
+      return null;
+    }
+    var parts = assetPathParts(path);
+    if (!parts) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-invalid', 'manifest.assets[] path must match assets/sha256-<hash>.<ext>', detail);
+      return null;
+    }
+    if (parts.sha256 !== sha) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-sha-mismatch', 'manifest asset path sha does not match asset.sha256', detail);
+    }
+    if (!ext) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-ext-missing', 'manifest.assets[] entry is missing ext', detail);
+    } else if (parts.ext !== ext) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-ext-mismatch', 'manifest asset path extension does not match ext', Object.assign({}, detail, { ext: ext, pathExt: parts.ext }));
+    }
+    if (!mimeType) {
+      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-mime-missing', 'manifest.assets[] entry is missing mimeType', detail);
+    }
+    if (!isFiniteNumber(byteLength) || byteLength < 0) {
+      addAssetBlocker(diag, 'byteLengthMismatches', 'manifest-asset-byte-length-invalid', 'manifest.assets[] entry has invalid byteLength', Object.assign({}, detail, { byteLength: byteLength }));
+    }
+    if (!cleanString(asset && asset.source)) {
+      addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-source-missing', 'manifest.assets[] entry is missing source provenance', detail);
+    }
+    return {
+      index: index,
+      sha256: sha,
+      path: path,
+      ext: ext || (parts && parts.ext) || '',
+      mimeType: mimeType,
+      byteLength: isFiniteNumber(byteLength) ? byteLength : null,
+    };
+  }
+
+  function entryIsFile(entry) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (entry.isFile === true || entry.is_file === true) return true;
+    if (entry.isDirectory === true || entry.is_dir === true) return false;
+    var type = cleanString(entry.type).toLowerCase();
+    return type === 'file';
+  }
+
+  async function listPackageAssetRelativePaths(packagePath, diag) {
+    var out = [];
+    if (!diag.assetsDirPresent) return out;
+    try {
+      var entries = asArray(await fsReadDir(joinPath(packagePath, 'assets')));
+      entries.forEach(function (entry) {
+        var name = entryName(entry);
+        if (!name) return;
+        if (entryIsDirectory(entry)) {
+          addAssetWarning(diag, 'extraPackageAssets', 'nested-package-asset-entry', 'assets/ contains a nested directory that C5.3 does not recurse into', { path: 'assets/' + name });
+          return;
+        }
+        if (!entryIsFile(entry) && entryIsDirectory(entry) !== false) return;
+        out.push('assets/' + name);
+      });
+    } catch (err) {
+      addAssetWarning(diag, 'extraPackageAssets', 'assets-dir-read-failed', 'assets/ directory could not be listed', String((err && err.message) || err));
+    }
+    return out;
+  }
+
+  function collectMessageAssetRefs(snapshot) {
+    var refs = [];
+    var duplicates = [];
+    var seen = Object.create(null);
+    asArray(snapshot && snapshot.messages).forEach(function (message, messageIndex) {
+      asArray(message && message.assetRefs).forEach(function (ref, refIndex) {
+        var sha = normalizeAssetSha(typeof ref === 'string' ? ref : (ref && (ref.sha256 || ref.id || ref.assetId)));
+        if (!sha) {
+          refs.push({ sha256: '', messageIndex: messageIndex, refIndex: refIndex, invalid: true, raw: ref });
+          return;
+        }
+        if (seen[sha]) duplicates.push({ sha256: sha, messageIndex: messageIndex, refIndex: refIndex });
+        seen[sha] = true;
+        refs.push({ sha256: sha, messageIndex: messageIndex, refIndex: refIndex });
+      });
+    });
+    return { refs: refs, duplicates: duplicates };
+  }
+
+  function snapshotHtmlTexts(snapshot) {
+    var texts = [];
+    asArray(snapshot && snapshot.messages).forEach(function (message, messageIndex) {
+      if (typeof message.contentHtml === 'string' && message.contentHtml) {
+        texts.push({ label: 'snapshot.messages[' + messageIndex + '].contentHtml', text: message.contentHtml });
+      }
+      asArray(message && message.content).forEach(function (entry, entryIndex) {
+        if (entry && entry.type === 'html' && typeof entry.html === 'string' && entry.html) {
+          texts.push({ label: 'snapshot.messages[' + messageIndex + '].content[' + entryIndex + '].html', text: entry.html });
+        }
+      });
+    });
+    return texts;
+  }
+
+  function collectPackageAssetRefsFromHtml(text) {
+    var refs = [];
+    var seen = Object.create(null);
+    var re = /assets\/sha256-[0-9a-f]{64}\.[a-z0-9]+/ig;
+    var match;
+    while ((match = re.exec(String(text || ''))) !== null) {
+      var ref = match[0];
+      if (!seen[ref]) { seen[ref] = true; refs.push(ref); }
+    }
+    return refs;
+  }
+
+  function containsDataImage(text) {
+    return /data:image\//i.test(String(text || ''));
+  }
+
+  function getAssetCas() {
+    try {
+      var ingestion = H2O && H2O.Studio && H2O.Studio.ingestion;
+      return ingestion && ingestion.assetCas ? ingestion.assetCas : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function validateManifestAssets(manifest, diag) {
+    var manifestAssets = asArray(manifest && manifest.assets);
+    var out = [];
+    var bySha = Object.create(null);
+    diag.assetChecks.manifestAssetCount = manifestAssets.length;
+    manifestAssets.forEach(function (asset, index) {
+      var desc = assetPathMatchesDescriptor(asset, diag, index);
+      if (!desc) return;
+      if (bySha[desc.sha256]) {
+        addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-duplicate', 'manifest.assets[] contains a duplicate sha256', { sha256: desc.sha256, path: desc.path, index: index });
+      } else {
+        bySha[desc.sha256] = desc;
+      }
+      out.push(desc);
+    });
+    return { list: out, bySha: bySha };
+  }
+
+  async function validatePackageAssetFiles(packagePath, manifestAssets, diag) {
+    var actualPaths = await listPackageAssetRelativePaths(packagePath, diag);
+    var manifestPathSet = Object.create(null);
+    manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
+    actualPaths.forEach(function (path) {
+      if (!manifestPathSet[path]) {
+        addAssetWarning(diag, 'extraPackageAssets', 'extra-package-asset', 'assets/ contains a file not listed in manifest.assets[]', { path: path });
+      }
+    });
+    diag.assetChecks.packageAssetCount = actualPaths.length;
+    for (var i = 0; i < manifestAssets.length; i += 1) {
+      var asset = manifestAssets[i];
+      var fullPath = joinPath(packagePath, asset.path);
+      var exists = false;
+      try { exists = await fsExists(fullPath); }
+      catch (err) {
+        addAssetBlocker(diag, 'missingPackageAssets', 'package-asset-exists-check-failed', 'package asset existence check failed', { sha256: asset.sha256, path: asset.path, error: String((err && err.message) || err) });
+        continue;
+      }
+      if (!exists) {
+        addAssetBlocker(diag, 'missingPackageAssets', 'package-asset-missing', 'package asset file is missing', { sha256: asset.sha256, path: asset.path });
+        continue;
+      }
+      var bytes = null;
+      try { bytes = await fsReadBytes(fullPath); }
+      catch (err2) {
+        addAssetBlocker(diag, 'unreadablePackageAssets', 'package-asset-unreadable', 'package asset file could not be read', { sha256: asset.sha256, path: asset.path, error: String((err2 && err2.message) || err2) });
+        continue;
+      }
+      var actualSha = await sha256Prefixed(bytes);
+      if (actualSha !== asset.sha256) {
+        addAssetBlocker(diag, 'hashMismatches', 'package-asset-sha-mismatch', 'package asset bytes do not match manifest sha256', { sha256: asset.sha256, actualSha256: actualSha, path: asset.path });
+      }
+      if (isFiniteNumber(asset.byteLength) && bytes.length !== asset.byteLength) {
+        addAssetBlocker(diag, 'byteLengthMismatches', 'package-asset-byte-length-mismatch', 'package asset byte length does not match manifest byteLength', { sha256: asset.sha256, path: asset.path, expected: asset.byteLength, actual: bytes.length });
+      }
+    }
+    diag.assetChecks.packageAssetsOk =
+      diag.assetChecks.missingPackageAssets.length === 0 &&
+      diag.assetChecks.unreadablePackageAssets.length === 0 &&
+      diag.assetChecks.hashMismatches.length === 0 &&
+      diag.assetChecks.byteLengthMismatches.length === 0;
+  }
+
+  function validateSnapshotAssetRefs(snapshot, manifestAssets, diag) {
+    var refs = collectMessageAssetRefs(snapshot);
+    var manifestBySha = Object.create(null);
+    var referenced = Object.create(null);
+    manifestAssets.forEach(function (asset) { manifestBySha[asset.sha256] = asset; });
+    refs.refs.forEach(function (ref) {
+      if (ref.invalid || !ref.sha256) {
+        addAssetBlocker(diag, 'assetRefMismatches', 'snapshot-asset-ref-invalid', 'snapshot message assetRef is not a valid sha256 id', { messageIndex: ref.messageIndex, refIndex: ref.refIndex });
+        return;
+      }
+      referenced[ref.sha256] = true;
+      if (!manifestBySha[ref.sha256]) {
+        addAssetBlocker(diag, 'assetRefMismatches', 'snapshot-asset-ref-missing-manifest', 'snapshot message assetRef is not present in manifest.assets[]', { sha256: ref.sha256, messageIndex: ref.messageIndex, refIndex: ref.refIndex });
+      }
+    });
+    refs.duplicates.forEach(function (dup) {
+      addAssetWarning(diag, 'assetRefMismatches', 'snapshot-asset-ref-duplicate', 'snapshot message assetRef is duplicated', dup);
+    });
+    if (manifestAssets.length && refs.refs.length === 0) {
+      addAssetWarning(diag, 'assetRefMismatches', 'v2-assets-without-assetRefs', 'v2 package has manifest assets but no message assetRefs');
+    }
+    manifestAssets.forEach(function (asset) {
+      if (!referenced[asset.sha256]) {
+        addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-unreferenced', 'manifest asset is not referenced by any snapshot message assetRefs', { sha256: asset.sha256, path: asset.path });
+      }
+    });
+  }
+
+  async function validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssets, diag) {
+    var manifestPathSet = Object.create(null);
+    manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
+    var htmlTexts = snapshotHtmlTexts(snapshot);
+    if (typeof chatHtmlText === 'string') htmlTexts.push({ label: 'chat.html', text: chatHtmlText });
+    for (var i = 0; i < htmlTexts.length; i += 1) {
+      var item = htmlTexts[i];
+      if (containsDataImage(item.text)) {
+        addAssetBlocker(diag, 'dataImageResidue', 'data-image-residue-v2', 'v2 package renderer content still contains data:image', { location: item.label });
+      }
+      var refs = collectPackageAssetRefsFromHtml(item.text);
+      for (var r = 0; r < refs.length; r += 1) {
+        var refPath = refs[r];
+        if (!manifestPathSet[refPath]) {
+          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-not-in-manifest', 'renderer asset reference is not listed in manifest.assets[]', { location: item.label, path: refPath });
+          continue;
+        }
+        var exists = false;
+        try { exists = await fsExists(joinPath(packagePath, refPath)); }
+        catch (err) {
+          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-exists-check-failed', 'renderer asset reference existence check failed', { location: item.label, path: refPath, error: String((err && err.message) || err) });
+          continue;
+        }
+        if (!exists) {
+          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-missing-file', 'renderer asset reference does not resolve to an existing package asset', { location: item.label, path: refPath });
+        }
+      }
+    }
+  }
+
+  async function compareLiveCasAssets(manifestAssets, diag, includeCasChecks) {
+    if (!includeCasChecks) return;
+    diag.assetChecks.liveCasChecked = true;
+    var assetCas = getAssetCas();
+    if (!assetCas || (typeof assetCas.exists !== 'function' && typeof assetCas.describe !== 'function')) {
+      diag.assetChecks.liveCasAvailable = false;
+      addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-diagnostic-unavailable', 'live CAS read-only diagnostic helper is unavailable');
+      return;
+    }
+    diag.assetChecks.liveCasAvailable = true;
+    for (var i = 0; i < manifestAssets.length; i += 1) {
+      var asset = manifestAssets[i];
+      var exists = false;
+      try {
+        if (typeof assetCas.exists === 'function') exists = !!(await assetCas.exists(asset.sha256));
+        else {
+          var desc = await assetCas.describe(asset.sha256);
+          exists = !!(desc && desc.exists);
+        }
+      } catch (err) {
+        addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-check-failed', 'live CAS existence check failed', { sha256: asset.sha256, error: String((err && err.message) || err) });
+        continue;
+      }
+      if (!exists) {
+        addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-missing-package-portable', 'live CAS asset is missing, but package remains portable when the package asset is valid', { sha256: asset.sha256, path: asset.path });
+      }
+    }
+  }
+
   async function validateSavedChatPackageV1(options) {
     var opts = safeObject(options);
     var packagePath = firstString(opts.packagePath, opts.path);
+    var includeCasChecks = opts.includeCasChecks !== false;
+    var includeRendererChecks = opts.includeRendererChecks !== false;
     var diag = packageDiagnostic(packagePath);
     try {
       if (!packagePath) {
@@ -430,12 +813,19 @@
       var manifest = null;
       var snapshot = null;
       var snapshotBytes = null;
+      var chatHtmlText = '';
       if (diag.manifestPresent) {
         manifest = parseJsonFile(bytesToText(await fsReadBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', diag);
       }
       if (diag.snapshotPresent) {
         snapshotBytes = await fsReadBytes(joinPath(packagePath, 'snapshot.json'));
         snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+      }
+      if (includeRendererChecks && diag.htmlPresent) {
+        try { chatHtmlText = bytesToText(await fsReadBytes(joinPath(packagePath, 'chat.html'))); }
+        catch (err) {
+          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'chat-html-unreadable', 'chat.html could not be read for renderer asset diagnostics', String((err && err.message) || err));
+        }
       }
 
       if (manifest) {
@@ -493,6 +883,23 @@
         }
       }
 
+      if (manifest) {
+        if (diag.schemaVersion === 1) {
+          diag.assetChecks.manifestAssetCount = asArray(manifest.assets).length;
+          if (diag.assetsDirPresent) {
+            addAssetWarning(diag, 'extraPackageAssets', 'unexpected-assets-dir-v1', 'v1 asset-less package should normally omit assets/');
+            diag.assetChecks.packageAssetCount = (await listPackageAssetRelativePaths(packagePath, diag)).length;
+          }
+          diag.assetChecks.packageAssetsOk = true;
+        } else if (diag.schemaVersion === 2) {
+          var manifestAssetInfo = validateManifestAssets(manifest, diag);
+          await validatePackageAssetFiles(packagePath, manifestAssetInfo.list, diag);
+          if (snapshot) validateSnapshotAssetRefs(snapshot, manifestAssetInfo.list, diag);
+          if (includeRendererChecks && snapshot) await validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssetInfo.list, diag);
+          if (manifestAssetInfo.list.length) await compareLiveCasAssets(manifestAssetInfo.list, diag, includeCasChecks);
+        }
+      }
+
       diag.status = statusFromIssues(diag.blockers, diag.warnings);
       diag.ok = diag.status === STATUS_OK;
       state.lastRunAt = nowIso();
@@ -508,11 +915,16 @@
 
   async function diagnoseSavedChatArchiveV1(options) {
     var list = await listSavedChatArchivePackagesV1(options);
+    var opts = safeObject(options);
     var result = rootResult(list.generatedAt);
     result.blockers = list.blockers.slice();
     result.warnings = list.warnings.slice();
     for (var i = 0; i < list.packages.length; i += 1) {
-      result.packages.push(await validateSavedChatPackageV1({ packagePath: list.packages[i].packagePath }));
+      result.packages.push(await validateSavedChatPackageV1({
+        packagePath: list.packages[i].packagePath,
+        includeCasChecks: opts.includeCasChecks,
+        includeRendererChecks: opts.includeRendererChecks,
+      }));
     }
     state.lastRunAt = result.generatedAt;
     return setAggregateStatus(result, true);
@@ -538,7 +950,7 @@
       ],
       boundaries: {
         dbChecks: false,
-        casChecks: false,
+        casChecks: 'read-only-exists-describe',
         sync: false,
         chrome: false,
         ui: false,

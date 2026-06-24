@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Validator for C5.1/C5.2 saved-chat archive diagnostics.
+// Validator for C5.1-C5.3 saved-chat archive diagnostics.
 //
 // This check keeps the diagnostics lane read-only: package inventory and
-// manifest/snapshot/hash validation under AppLocalData archive/packages only.
+// manifest/snapshot/hash/asset validation under AppLocalData archive/packages
+// only, plus optional read-only live CAS presence comparison.
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -80,7 +81,13 @@ function encode(text) {
   return new TextEncoder().encode(text);
 }
 
-function makePackage({ chatId, snapshotId, schemaVersion, assetSha }) {
+const ASSET_BYTES = Buffer.from('archive-diagnostic-asset');
+const ASSET_SHA = sha256Prefixed(ASSET_BYTES);
+const ASSET_PATH = `assets/${ASSET_SHA}.png`;
+
+function makePackage({ chatId, snapshotId, schemaVersion, assetSha = ASSET_SHA, dataImageResidue = false }) {
+  const assetPath = `assets/${assetSha}.png`;
+  const htmlRef = dataImageResidue ? 'data:image/png;base64,AAAA' : assetPath;
   const snapshot = {
     schema: 'h2o.savedChatSnapshot',
     schemaVersion,
@@ -89,15 +96,16 @@ function makePackage({ chatId, snapshotId, schemaVersion, assetSha }) {
     title: schemaVersion === 2 ? 'Archive diagnostics v2' : 'Archive diagnostics v1',
     capturedAt: '2026-06-24T00:00:00.000Z',
     messages: schemaVersion === 2
-      ? [{ index: 0, role: 'assistant', contentText: 'image', assetRefs: [{ sha256: assetSha, path: `assets/${assetSha}.png` }] }]
+      ? [{ index: 0, role: 'assistant', contentText: 'image', contentHtml: `<p><img src="${htmlRef}"></p>`, assetRefs: [assetSha] }]
       : [{ index: 0, role: 'assistant', contentText: 'plain' }],
   };
   const snapshotText = canonicalJson(snapshot);
   const snapshotSha = sha256Prefixed(snapshotText);
-  const assets = schemaVersion === 2 ? [{ sha256: assetSha, path: `assets/${assetSha}.png`, ext: 'png', mimeType: 'image/png', byteLength: 5 }] : [];
+  const assets = schemaVersion === 2 ? [{ sha256: assetSha, path: assetPath, ext: 'png', mimeType: 'image/png', byteLength: ASSET_BYTES.length, source: 'chatgpt-capture' }] : [];
   const contentHash = schemaVersion === 2
     ? sha256Prefixed(canonicalJson({ snapshot: snapshotSha, assets: assets.map((asset) => asset.sha256).sort() }))
     : snapshotSha;
+  const htmlText = schemaVersion === 2 ? `<!doctype html><img src="${htmlRef}">` : '<!doctype html>';
   const manifest = {
     schema: 'h2o.savedChatPackage',
     schemaVersion,
@@ -107,7 +115,7 @@ function makePackage({ chatId, snapshotId, schemaVersion, assetSha }) {
     files: {
       snapshot: { path: 'snapshot.json', sha256: snapshotSha, byteLength: encode(snapshotText).byteLength },
       markdown: { path: 'chat.md', sha256: sha256Prefixed(`# ${chatId}\n`), byteLength: encode(`# ${chatId}\n`).byteLength },
-      html: { path: 'chat.html', sha256: sha256Prefixed('<!doctype html>'), byteLength: encode('<!doctype html>').byteLength },
+      html: { path: 'chat.html', sha256: sha256Prefixed(htmlText), byteLength: encode(htmlText).byteLength },
     },
     assets,
   };
@@ -115,31 +123,38 @@ function makePackage({ chatId, snapshotId, schemaVersion, assetSha }) {
   return {
     manifestText: canonicalJson(manifest),
     snapshotText,
+    htmlText,
     manifest,
     snapshot,
   };
 }
 
-function createFixtureFs({ missingRoot = false } = {}) {
+function createFixtureFs({ missingRoot = false, liveCasMissing = false } = {}) {
   const dirs = new Set();
   const files = new Map();
   const readCalls = [];
   const mutationCalls = [];
   const v1 = makePackage({ chatId: 'chat_diag_v1', snapshotId: 'snap_diag_v1', schemaVersion: 1 });
-  const assetSha = 'sha256-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
-  const v2 = makePackage({ chatId: 'chat_diag_v2', snapshotId: 'snap_diag_v2', schemaVersion: 2, assetSha });
+  const v2 = makePackage({ chatId: 'chat_diag_v2', snapshotId: 'snap_diag_v2', schemaVersion: 2 });
   const bad = makePackage({ chatId: 'chat_diag_bad', snapshotId: 'snap_diag_bad', schemaVersion: 1 });
+  const badAsset = makePackage({ chatId: 'chat_diag_bad_asset', snapshotId: 'snap_diag_bad_asset', schemaVersion: 2, dataImageResidue: true });
 
   function addDir(p) { dirs.add(p); }
-  function addFile(p, text) { files.set(p, encode(text)); }
-  function addPackage(chatId, pkg, { omitHtml = false } = {}) {
+  function addFile(p, value) { files.set(p, typeof value === 'string' ? encode(value) : new Uint8Array(value)); }
+  function addPackage(chatId, pkg, { omitHtml = false, omitAsset = false, corruptAsset = false } = {}) {
     const dir = `${PACKAGE_ROOT}/${chatId}.h2ochat`;
     addDir(dir);
     addFile(`${dir}/manifest.json`, pkg.manifestText);
     addFile(`${dir}/snapshot.json`, pkg.snapshotText);
     addFile(`${dir}/chat.md`, `# ${chatId}\n`);
-    if (!omitHtml) addFile(`${dir}/chat.html`, '<!doctype html>');
-    if (pkg.manifest.assets.length) addDir(`${dir}/assets`);
+    if (!omitHtml) addFile(`${dir}/chat.html`, pkg.htmlText);
+    if (pkg.manifest.assets.length) {
+      addDir(`${dir}/assets`);
+      if (!omitAsset) {
+        const asset = pkg.manifest.assets[0];
+        addFile(`${dir}/${asset.path}`, corruptAsset ? Buffer.from('wrong-asset-bytes') : ASSET_BYTES);
+      }
+    }
     return dir;
   }
 
@@ -148,6 +163,7 @@ function createFixtureFs({ missingRoot = false } = {}) {
     addPackage('chat_diag_v1', v1);
     addPackage('chat_diag_v2', v2);
     addPackage('chat_diag_bad', bad, { omitHtml: true });
+    addPackage('chat_diag_bad_asset', badAsset, { corruptAsset: true });
     addDir(`${PACKAGE_ROOT}/not_a_package`);
     addFile(`${PACKAGE_ROOT}/loose.txt`, 'not a package');
   }
@@ -156,6 +172,7 @@ function createFixtureFs({ missingRoot = false } = {}) {
     { name: 'chat_diag_v1.h2ochat', isDirectory: true },
     { name: 'chat_diag_v2.h2ochat', isDirectory: true },
     { name: 'chat_diag_bad.h2ochat', isDirectory: true },
+    { name: 'chat_diag_bad_asset.h2ochat', isDirectory: true },
     { name: 'not_a_package', isDirectory: true },
     { name: 'loose.txt', isFile: true },
   ];
@@ -173,6 +190,14 @@ function createFixtureFs({ missingRoot = false } = {}) {
     if (cmd === 'plugin:fs|exists') return dirs.has(p) || files.has(p);
     if (cmd === 'plugin:fs|read_dir') {
       if (!dirs.has(p)) throw new Error(`not found: ${p}`);
+      if (p.endsWith('/assets')) {
+        const prefix = `${p}/`;
+        return [...files.keys()]
+          .filter((key) => key.startsWith(prefix))
+          .map((key) => key.slice(prefix.length))
+          .filter((name) => name && !name.includes('/'))
+          .map((name) => ({ name, isFile: true }));
+      }
       return entries;
     }
     if (cmd === 'plugin:fs|read_file') {
@@ -190,6 +215,11 @@ function createFixtureFs({ missingRoot = false } = {}) {
       v1: `${PACKAGE_ROOT}/chat_diag_v1.h2ochat`,
       v2: `${PACKAGE_ROOT}/chat_diag_v2.h2ochat`,
       bad: `${PACKAGE_ROOT}/chat_diag_bad.h2ochat`,
+      badAsset: `${PACKAGE_ROOT}/chat_diag_bad_asset.h2ochat`,
+    },
+    assetCas: {
+      exists: async (sha256) => !liveCasMissing && sha256 === ASSET_SHA,
+      describe: async (sha256) => ({ sha256, exists: !liveCasMissing && sha256 === ASSET_SHA, path: `archive/assets/${sha256.slice(7, 9)}/${sha256}`, byteLength: ASSET_BYTES.length }),
     },
   };
 }
@@ -204,7 +234,7 @@ function loadModule(fixture) {
     crypto: globalThis.crypto || crypto.webcrypto,
     setTimeout,
     __TAURI_INTERNALS__: { invoke: fixture.invoke },
-    H2O: { Studio: { ingestion: {} } },
+    H2O: { Studio: { ingestion: { assetCas: fixture.assetCas } } },
   };
   context.globalThis = context;
   context.window = context;
@@ -244,6 +274,7 @@ check('module is Desktop/Tauri gated', () => {
 check('module uses AppLocalData baseDir 15 and archive/packages root', () => {
   assert.match(moduleSource, /APP_LOCAL_DATA\s*=\s*15/);
   assert.match(moduleSource, /PACKAGE_ROOT\s*=\s*'archive\/packages'/);
+  assert.match(moduleSource, /LIVE_CAS_ROOT\s*=\s*'archive\/assets'/);
 });
 
 check('module has v1 and v2 contentHash validation logic', () => {
@@ -251,6 +282,44 @@ check('module has v1 and v2 contentHash validation logic', () => {
   assert.match(moduleSource, /diag\.schemaVersion === 2/);
   assert.match(moduleSource, /canonicalJson\(\{ snapshot: fileSnapshotSha, assets: assetShas \}\)/);
   assert.match(moduleSource, /sha256Prefixed/);
+});
+
+check('module has C5.3 assetChecks schema and asset validation logic', () => {
+  for (const marker of [
+    'assetChecks',
+    'manifestAssetCount',
+    'packageAssetsOk',
+    'missingPackageAssets',
+    'hashMismatches',
+    'byteLengthMismatches',
+    'unreferencedManifestAssets',
+    'assetRefMismatches',
+    'dataImageResidue',
+    'rendererAssetRefMismatches',
+    'missingLiveCasAssets',
+    'validateManifestAssets',
+    'validatePackageAssetFiles',
+    'validateSnapshotAssetRefs',
+    'validateRendererAssetRefs',
+    'compareLiveCasAssets',
+  ]) {
+    assert.ok(moduleSource.includes(marker), `missing marker: ${marker}`);
+  }
+});
+
+check('module validates package-relative asset path safety and byte hashes', () => {
+  assert.match(moduleSource, /packageRelativePathIsSafe/);
+  assert.match(moduleSource, /assets\/sha256-<hash>\.<ext>/);
+  assert.match(moduleSource, /sha256Prefixed\(bytes\)/);
+  assert.match(moduleSource, /package-asset-sha-mismatch/);
+  assert.match(moduleSource, /package-asset-byte-length-mismatch/);
+});
+
+check('module checks v2 data:image residue and renderer asset references', () => {
+  assert.match(moduleSource, /data:image/);
+  assert.match(moduleSource, /data-image-residue-v2/);
+  assert.match(moduleSource, /renderer-asset-ref-not-in-manifest/);
+  assert.match(moduleSource, /renderer-asset-ref-missing-file/);
 });
 
 check('module treats missing archive root as empty warning, not blocker', () => {
@@ -270,10 +339,17 @@ check('module contains no mutation filesystem commands', () => {
   }
 });
 
-check('module does not implement DB, CAS, Sync, Chrome, import, or export reconciliation', () => {
+check('module uses only read-only live CAS presence checks', () => {
+  assert.match(moduleSource, /assetCas\.exists/);
+  assert.match(moduleSource, /assetCas\.describe/);
+  assert.ok(!moduleSource.includes('assetCas.putAssetBytes'));
+  assert.ok(!moduleSource.includes('assetCas.getAssetBytes'));
+  assert.ok(moduleSource.includes('live-cas-missing-package-portable'));
+});
+
+check('module does not implement DB, CAS write-back, Sync, Chrome, import, or export reconciliation', () => {
   for (const forbidden of [
     'H2O.Studio.store',
-    'assetCas.',
     'putAssetBytes',
     'getAssetBytes',
     'H2O.Studio.sync',
@@ -332,7 +408,7 @@ await checkAsync('capability diagnostic reports read-only Desktop archive scope'
   assert.equal(result.baseDir, APP_LOCAL_DATA);
   assert.equal(result.roots.packages, PACKAGE_ROOT);
   assert.equal(result.boundaries.dbChecks, false);
-  assert.equal(result.boundaries.casChecks, false);
+  assert.equal(result.boundaries.casChecks, 'read-only-exists-describe');
   assert.equal(result.boundaries.sync, false);
   assert.equal(result.boundaries.chrome, false);
   assert.equal(result.boundaries.ui, false);
@@ -353,7 +429,7 @@ await checkAsync('inventory lists package folders and warns on non-package entri
   const fixture = createFixtureFs();
   const ingestion = loadModule(fixture);
   const result = await ingestion.listSavedChatArchivePackagesV1({ limit: 20 });
-  assert.equal(result.packages.length, 3);
+  assert.equal(result.packages.length, 4);
   assert.ok(result.packages.some((pkg) => pkg.packageDirName === 'chat_diag_v1.h2ochat'));
   assert.ok(result.packages.some((pkg) => pkg.packageDirName === 'chat_diag_v2.h2ochat'));
   assert.ok(result.warnings.some((issue) => issue.code === 'archive-entry-not-package'));
@@ -372,7 +448,7 @@ await checkAsync('v1 package validation passes snapshot and content hash checks'
   assert.equal(result.hashChecks.contentHashOk, true);
 });
 
-await checkAsync('v2 package validation uses locked descriptor content hash', async () => {
+await checkAsync('v2 package validation uses locked descriptor content hash and asset checks', async () => {
   const fixture = createFixtureFs();
   const ingestion = loadModule(fixture);
   const result = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
@@ -383,6 +459,14 @@ await checkAsync('v2 package validation uses locked descriptor content hash', as
   assert.equal(result.hashChecks.snapshotShaOk, true);
   assert.equal(result.hashChecks.contentHashOk, true);
   assert.match(result.hashChecks.expectedContentHash, /^sha256-[0-9a-f]{64}$/);
+  assert.equal(result.assetChecks.manifestAssetCount, 1);
+  assert.equal(result.assetChecks.packageAssetCount, 1);
+  assert.equal(result.assetChecks.packageAssetsOk, true);
+  assert.equal(result.assetChecks.liveCasChecked, true);
+  assert.equal(result.assetChecks.liveCasAvailable, true);
+  assert.equal(result.assetChecks.missingPackageAssets.length, 0);
+  assert.equal(result.assetChecks.hashMismatches.length, 0);
+  assert.equal(result.assetChecks.dataImageResidue.length, 0);
 });
 
 await checkAsync('missing renderer file blocks package validation', async () => {
@@ -394,16 +478,42 @@ await checkAsync('missing renderer file blocks package validation', async () => 
   assert.ok(result.blockers.some((issue) => issue.code === 'html-missing'));
 });
 
+await checkAsync('live CAS missing warns but does not block portable package asset', async () => {
+  const fixture = createFixtureFs({ liveCasMissing: true });
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
+  assert.equal(result.status, 'warning');
+  assert.equal(result.blockers.length, 0);
+  assert.equal(result.assetChecks.packageAssetsOk, true);
+  assert.equal(result.assetChecks.missingLiveCasAssets.length, 1);
+  assert.ok(result.warnings.some((issue) => issue.code === 'live-cas-missing-package-portable'));
+});
+
+await checkAsync('corrupt package asset and data:image residue block v2 validation', async () => {
+  const fixture = createFixtureFs();
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.badAsset });
+  assert.equal(result.status, 'blocked');
+  assert.ok(result.assetChecks.hashMismatches.some((issue) => issue.code === 'package-asset-sha-mismatch'));
+  assert.ok(result.assetChecks.byteLengthMismatches.some((issue) => issue.code === 'package-asset-byte-length-mismatch'));
+  assert.ok(result.assetChecks.dataImageResidue.some((issue) => issue.code === 'data-image-residue-v2'));
+});
+
 await checkAsync('aggregate diagnostic returns partial for mixed package health', async () => {
   const fixture = createFixtureFs();
   const ingestion = loadModule(fixture);
   const result = await ingestion.diagnoseSavedChatArchiveV1({ limit: 20 });
   assert.equal(result.status, 'partial');
-  assert.equal(result.counts.packagesTotal, 3);
+  assert.equal(result.counts.packagesTotal, 4);
   assert.equal(result.counts.packagesOk, 2);
-  assert.equal(result.counts.packagesBlocked, 1);
+  assert.equal(result.counts.packagesBlocked, 2);
   assert.equal(result.counts.v1, 2);
-  assert.equal(result.counts.v2, 1);
+  assert.equal(result.counts.v2, 2);
+  assert.ok(result.counts.brokenPackageAssets >= 2);
+  assert.ok(result.counts.dataImageResidue >= 2);
+  assert.equal(result.counts.assetRefMismatches, 0);
+  assert.ok(result.assetChecks.passed >= 2);
+  assert.ok(result.assetChecks.failed >= 1);
   assert.equal(fixture.mutationCalls.length, 0);
 });
 
