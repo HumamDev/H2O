@@ -181,6 +181,7 @@
     lastChromePostImportChangedFolderIds: [],
     lastFolderDeleteReceiptImport: null,
     lastFolderRestoreReceiptImport: null,
+    desktopVisibleFolderSet: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -380,6 +381,7 @@
     state.lastChromeExportBlockers = Array.isArray(saved.lastChromeExportBlockers)
       ? saved.lastChromeExportBlockers.map(cleanString).filter(Boolean).slice(0, 8)
       : [];
+    state.desktopVisibleFolderSet = normalizeDesktopVisibleFolderSetSnapshot(saved.desktopVisibleFolderSet);
   }
 
   async function persistState(patch) {
@@ -419,6 +421,7 @@
       lastChromeExportBytes: state.lastChromeExportBytes,
       lastChromeExportPermission: state.lastChromeExportPermission,
       lastChromeExportBlockers: state.lastChromeExportBlockers.slice(),
+      desktopVisibleFolderSet: state.desktopVisibleFolderSet,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
@@ -1020,6 +1023,78 @@
     return map;
   }
 
+  function normalizeDesktopVisibleFolderSetSnapshot(value) {
+    var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    var rows = Array.isArray(input.rows) ? input.rows : [];
+    var safeRows = [];
+    var ids = [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] && typeof rows[i] === 'object' && !Array.isArray(rows[i]) ? rows[i] : null;
+      var id = normalizeFolderRecordId(folderMetadataRowId(row));
+      if (!row || !id || ids.indexOf(id) !== -1) continue;
+      ids.push(id);
+      safeRows.push({
+        folderId: id,
+        id: id,
+        name: folderMetadataRowName(row),
+        color: folderMetadataRowColor(row),
+        iconColor: folderMetadataRowColor(row),
+        source: cleanString(row.source),
+        sourceKind: cleanString(row.sourceKind),
+        updatedAt: cleanString(row.updatedAt),
+        hidden: false
+      });
+    }
+    ids.sort();
+    safeRows.sort(function (a, b) {
+      return cleanString(a.folderId).localeCompare(cleanString(b.folderId));
+    });
+    return {
+      schema: 'h2o.studio.folder-visible-set.desktop.v1',
+      source: cleanString(input.source || 'desktop-latest-visible-set'),
+      status: cleanString(input.status || 'imported'),
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt),
+      sourceKind: cleanString(input.sourceKind),
+      desktopVisibleFolderIds: ids,
+      desktopVisibleFolderCount: ids.length,
+      rows: safeRows,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true
+    };
+  }
+
+  function buildDesktopVisibleFolderSetSnapshot(bundle, importedAt) {
+    var rowsInfo = folderMetadataRowsFromBundle(bundle);
+    var map = visibleParityRowMap(rowsInfo.rows);
+    var ids = Object.keys(map).sort();
+    var rows = ids.map(function (id) {
+      return summarizeVisibleParityFolder(map[id], {
+        hidden: false,
+        protected: isProtectedFolderForVisibleParity(map[id])
+      });
+    });
+    return normalizeDesktopVisibleFolderSetSnapshot({
+      source: 'desktop-latest-visible-set',
+      status: 'imported',
+      importedAt: cleanString(importedAt) || nowIso(),
+      sourceExportedAt: cleanString(bundle && bundle.exportedAt),
+      sourceKind: rowsInfo.sourceKind,
+      rows: rows
+    });
+  }
+
+  function importDesktopVisibleFolderSetSnapshot(bundle, importedAt) {
+    var snapshot = buildDesktopVisibleFolderSetSnapshot(bundle, importedAt);
+    state.desktopVisibleFolderSet = snapshot;
+    return snapshot;
+  }
+
   async function readLatestBundleForVisibleParityDiagnostics() {
     if (!state.handle) {
       return {
@@ -1091,8 +1166,10 @@
       };
     }
     var bundle = latest.bundle;
-    var desktopRowsInfo = folderMetadataRowsFromBundle(bundle);
-    var desktopVisibleMap = visibleParityRowMap(desktopRowsInfo.rows);
+    var latestSnapshot = buildDesktopVisibleFolderSetSnapshot(bundle, '');
+    var storedSnapshot = normalizeDesktopVisibleFolderSetSnapshot(state.desktopVisibleFolderSet);
+    var desktopSnapshot = storedSnapshot || latestSnapshot;
+    var desktopVisibleMap = visibleParityRowMap(desktopSnapshot && desktopSnapshot.rows);
     var desktopIds = Object.keys(desktopVisibleMap).sort();
     var provider = H2O && H2O.Library && H2O.Library.FolderParity;
     var model = provider && typeof provider.getDisplayModel === 'function'
@@ -1145,12 +1222,21 @@
       mode: MODE,
       readOnly: true,
       source: 'desktop-latest-json-vs-chrome-folder-parity-display-model',
+      desktopVisibleSetStored: !!storedSnapshot,
+      desktopVisibleSetImportedAt: cleanString(desktopSnapshot && desktopSnapshot.importedAt),
+      desktopVisibleSetSource: cleanString(desktopSnapshot && desktopSnapshot.source),
+      desktopVisibleSetStatus: cleanString(desktopSnapshot && desktopSnapshot.status),
+      desktopVisibleSetSourceExportedAt: cleanString(desktopSnapshot && desktopSnapshot.sourceExportedAt),
       desktopLatestPath: latest.path,
       desktopLatestExportedAt: latest.exportedAt,
       desktopLatestFileLastModified: latest.fileLastModified,
       desktopLatestFileSize: latest.fileSize,
-      desktopVisibleSourceKind: desktopRowsInfo.sourceKind,
-      desktopVisibleFolderCount: desktopIds.length,
+      desktopVisibleSourceKind: cleanString(desktopSnapshot && desktopSnapshot.sourceKind),
+      desktopLatestVisibleFolderCount: Number(latestSnapshot && latestSnapshot.desktopVisibleFolderCount) || 0,
+      desktopVisibleFolderCount: Number(desktopSnapshot && desktopSnapshot.desktopVisibleFolderCount) || desktopIds.length,
+      desktopVisibleFolderIds: Array.isArray(desktopSnapshot && desktopSnapshot.desktopVisibleFolderIds)
+        ? desktopSnapshot.desktopVisibleFolderIds.slice()
+        : desktopIds,
       chromeVisibleFolderCount: chromeIds.length,
       chromeOnlyVisibleFolderCount: chromeOnly.length,
       desktopOnlyVisibleFolderCount: desktopOnly.length,
@@ -4205,6 +4291,7 @@
           var alreadyRefreshSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, alreadyReceiptHide);
           var alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle);
           alreadyRefreshSummary = mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport);
+          var alreadyDesktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, nowIso());
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
@@ -4254,6 +4341,7 @@
             },
             folderDeleteReceiptImport: alreadyReceiptImport,
             folderRestoreReceiptImport: alreadyRestoreReceiptImport,
+            desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -4303,6 +4391,7 @@
             folderDeleteReceiptImport: alreadyPropagation.folderDeleteReceiptImport,
             folderRestoreReceiptImport: alreadyPropagation.folderRestoreReceiptImport,
             convergence: alreadyPropagation.convergence,
+            desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
@@ -4457,6 +4546,7 @@
       state.lastAppliedExportedAt = cleanString(bundle.exportedAt || '');
       state.lastAppliedAt = nowIso();
       state.lastDesktopToChromeImportAppliedAt = state.lastAppliedAt;
+      var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, state.lastAppliedAt);
       state.lastChecksum = checksum || cleanString(bundle.checksum);
       state.lastSummarySignature = signature;
       state.lastSyncStatus = propagation && propagation.ok ? 'sync-folder-imported' : 'sync-folder-import-blocked';
@@ -4472,6 +4562,7 @@
         lastSyncError: state.lastSyncError,
         lastFileLastModified: state.lastFileLastModified,
         lastFileSize: state.lastFileSize,
+        desktopVisibleFolderSet: desktopVisibleFolderSet,
       });
 
       var result = {
@@ -4498,6 +4589,7 @@
         importSummary: propagation && propagation.importSummary,
         folderDeleteReceiptImport: propagation && propagation.folderDeleteReceiptImport,
         folderRestoreReceiptImport: propagation && propagation.folderRestoreReceiptImport,
+        desktopVisibleFolderSet: desktopVisibleFolderSet,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,

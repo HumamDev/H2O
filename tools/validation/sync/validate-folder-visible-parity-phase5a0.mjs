@@ -53,7 +53,7 @@ const evidence = read(evidencePath);
 const diagnosticBody = functionBody(chromeImport, 'diagnoseVisibleFolderParity');
 [
   'readLatestBundleForVisibleParityDiagnostics',
-  'folderMetadataRowsFromBundle(bundle)',
+  'buildDesktopVisibleFolderSetSnapshot(bundle',
   'provider.getDisplayModel',
   'desktopVisibleFolderCount',
   'chromeVisibleFolderCount',
