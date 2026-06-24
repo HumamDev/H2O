@@ -1170,16 +1170,31 @@
     var fn = store && (store.listRecentlyDeletedFolders || store.diagnoseRecentlyDeletedFolders);
     if (typeof fn !== 'function') return unsupportedResult('listRecentlyDeletedFolders', 'recently-deleted-diagnostics-unavailable');
     var result = safeObject(await fn.call(store, Object.assign({ limit: 500 }, safeObject(payload))));
-    return baseResult('listRecentlyDeletedFolders', Object.assign({
+    var rows = safeArray(result.rows || result.items || result.list);
+    var diagnostics = Object.assign({}, result, {
+      rows: rows,
+    });
+    return baseResult('listRecentlyDeletedFolders', Object.assign({}, result, {
       ok: result.ok === true,
       status: cleanString(result.status || 'recently-deleted-folders-listed'),
       blockers: codeList(result.blockers),
       warnings: codeList(result.warnings),
+      recentlyDeletedDiagnostics: diagnostics,
+      rows: rows,
+      items: rows,
+      list: rows,
+      activeTombstoneCount: Number(result.activeTombstoneCount) || 0,
+      restoredTombstoneCount: Number(result.restoredTombstoneCount) || 0,
+      folderTombstoneCount: Number(result.folderTombstoneCount) || 0,
+      restoreAvailableCount: Number(result.restoreAvailableCount) || 0,
+      purgeBlockedCount: Number(result.purgeBlockedCount) || 0,
+      hardDeleteBlockedCount: Number(result.hardDeleteBlockedCount) || 0,
+      retentionDays: Number(result.retentionDays) || 30,
       noHardDelete: true,
       noPurge: true,
       noChatDelete: true,
       noSnapshotDelete: true,
-    }, result));
+    }));
   }
 
   async function countChatsSnapshots() {

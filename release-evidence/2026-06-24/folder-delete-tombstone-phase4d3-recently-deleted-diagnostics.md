@@ -146,6 +146,33 @@ Result before Desktop relaunch:
 
 - The external Desktop queue client accepted `listRecentlyDeletedFolders` as read-only.
 - The running Desktop Studio page still had the previous in-memory smoke registry and returned `op-not-allowlisted`.
+- Root cause: the live Desktop WebView had not reloaded the rebuilt `folder-sync-rc-smoke-bridge.studio.js`; source and prepared dist did include `listRecentlyDeletedFolders`.
+
+## Runtime Surfacing Fix
+
+The smoke registry now returns the Recently Deleted diagnostics in a stable top-level shape:
+
+- `recentlyDeletedDiagnostics`
+- `rows`
+- `items`
+- `list`
+- `activeTombstoneCount`
+- `restoredTombstoneCount`
+- `folderTombstoneCount`
+- `restoreAvailableCount`
+- `purgeBlockedCount`
+- `hardDeleteBlockedCount`
+- `retentionDays`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+
+The Phase 4D.3 validator now asserts:
+
+- `listRecentlyDeletedFolders` is present in the smoke registry `ALLOWED_OPS`.
+- the registry dispatch path calls the Recently Deleted diagnostics API.
+- the stable diagnostics fields above are surfaced.
 
 After `npm run dev:all` and `prepare-dist`, the packaged Desktop app was relaunched with:
 

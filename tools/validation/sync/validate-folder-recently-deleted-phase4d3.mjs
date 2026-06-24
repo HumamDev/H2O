@@ -122,14 +122,28 @@ const rowBody = functionBody(folders, 'recentlyDeletedRowFromTombstone');
 
 [
   "'listRecentlyDeletedFolders'",
+  'ALLOWED_OPS',
   'DESKTOP_ONLY_OPS',
   'recently-deleted-diagnostics-unavailable',
   'listRecentlyDeletedFolders(payload)',
+  'recentlyDeletedDiagnostics',
+  'items: rows',
+  'list: rows',
+  'activeTombstoneCount',
+  'restoredTombstoneCount',
+  'folderTombstoneCount',
+  'restoreAvailableCount',
+  'purgeBlockedCount',
+  'hardDeleteBlockedCount',
+  'retentionDays',
   'noHardDelete: true',
   'noPurge: true',
   'noChatDelete: true',
   'noSnapshotDelete: true',
 ].forEach((needle) => assertIncludes(smokeBridge, needle, `smoke Recently Deleted ${needle}`));
+
+const allowedOpsMatch = smokeBridge.match(/ALLOWED_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
+assert(allowedOpsMatch && allowedOpsMatch[1].includes("'listRecentlyDeletedFolders'"), 'smoke registry ALLOWED_OPS must include listRecentlyDeletedFolders');
 
 [
   "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders'])",
