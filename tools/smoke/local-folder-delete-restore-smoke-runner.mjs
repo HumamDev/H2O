@@ -425,18 +425,27 @@ function findRecentRow(summary, folderId) {
   }) || null;
 }
 
-function countMatches(before, after) {
+function countDiagnostics(before, after, surface) {
   const chatBefore = Number.isFinite(before && before.chatCount) ? before.chatCount : null;
   const chatAfter = Number.isFinite(after && after.chatCount) ? after.chatCount : null;
   const snapshotBefore = Number.isFinite(before && before.snapshotCount) ? before.snapshotCount : null;
   const snapshotAfter = Number.isFinite(after && after.snapshotCount) ? after.snapshotCount : null;
+  const chatDelta = chatBefore === null || chatAfter === null ? null : chatAfter - chatBefore;
+  const snapshotDelta = snapshotBefore === null || snapshotAfter === null ? null : snapshotAfter - snapshotBefore;
   return {
+    surface,
     chatCountBefore: chatBefore,
     chatCountAfter: chatAfter,
     snapshotCountBefore: snapshotBefore,
     snapshotCountAfter: snapshotAfter,
-    noChatDelete: chatBefore === null || chatAfter === null || chatBefore === chatAfter,
-    noSnapshotDelete: snapshotBefore === null || snapshotAfter === null || snapshotBefore === snapshotAfter,
+    chatCountDelta: chatDelta,
+    snapshotCountDelta: snapshotDelta,
+    chatCountDecreased: chatDelta !== null && chatDelta < 0,
+    chatCountIncreased: chatDelta !== null && chatDelta > 0,
+    snapshotCountDecreased: snapshotDelta !== null && snapshotDelta < 0,
+    snapshotCountIncreased: snapshotDelta !== null && snapshotDelta > 0,
+    noChatDelete: chatDelta === null || chatDelta >= 0,
+    noSnapshotDelete: snapshotDelta === null || snapshotDelta >= 0,
   };
 }
 
@@ -461,10 +470,14 @@ async function run(options) {
       for (const blocker of step.blockers || []) blockers.push(blocker);
       for (const warning of step.warnings || []) warnings.push(warning);
     }
-    const chromeCounts = countMatches(baselineChromeCounts, finalChromeCounts);
-    const desktopCounts = countMatches(baselineDesktopCounts, finalDesktopCounts);
+    const chromeCounts = countDiagnostics(baselineChromeCounts, finalChromeCounts, 'chrome-studio');
+    const desktopCounts = countDiagnostics(baselineDesktopCounts, finalDesktopCounts, 'desktop-studio');
     if (!chromeCounts.noChatDelete || !desktopCounts.noChatDelete) blockers.push('chat-count-changed');
     if (!chromeCounts.noSnapshotDelete || !desktopCounts.noSnapshotDelete) blockers.push('snapshot-count-changed');
+    if (chromeCounts.chatCountIncreased) warnings.push('chrome-chat-count-increased');
+    if (desktopCounts.chatCountIncreased) warnings.push('desktop-chat-count-increased');
+    if (chromeCounts.snapshotCountIncreased) warnings.push('chrome-snapshot-count-increased');
+    if (desktopCounts.snapshotCountIncreased) warnings.push('desktop-snapshot-count-increased');
     const deleteImportStep = stepResults.find((step) => step.key === 'chrome-import-delete-receipt');
     const restoreImportStep = stepResults.find((step) => step.key === 'chrome-import-restore-receipt');
     const deleteImport = registryResult(deleteImportStep && deleteImportStep.helper);
@@ -508,6 +521,18 @@ async function run(options) {
       noChatDelete: chromeCounts.noChatDelete && desktopCounts.noChatDelete,
       noSnapshotDelete: chromeCounts.noSnapshotDelete && desktopCounts.noSnapshotDelete,
       noTombstoneApplyOnChrome,
+      baselineChromeChatCount: chromeCounts.chatCountBefore,
+      baselineDesktopChatCount: desktopCounts.chatCountBefore,
+      finalChromeChatCount: chromeCounts.chatCountAfter,
+      finalDesktopChatCount: desktopCounts.chatCountAfter,
+      baselineChromeSnapshotCount: chromeCounts.snapshotCountBefore,
+      baselineDesktopSnapshotCount: desktopCounts.snapshotCountBefore,
+      finalChromeSnapshotCount: chromeCounts.snapshotCountAfter,
+      finalDesktopSnapshotCount: desktopCounts.snapshotCountAfter,
+      chromeChatCountDelta: chromeCounts.chatCountDelta,
+      desktopChatCountDelta: desktopCounts.chatCountDelta,
+      chromeSnapshotCountDelta: chromeCounts.snapshotCountDelta,
+      desktopSnapshotCountDelta: desktopCounts.snapshotCountDelta,
       chromeCounts,
       desktopCounts,
       folderDeleteReceiptImport: deleteReceiptImport,
@@ -515,6 +540,7 @@ async function run(options) {
       blockers: uniqueBlockers,
       warnings: uniqueWarnings,
       firstFailedStep,
+      steps: stepResults,
       stepResults,
       inputs: {
         chromePort: options.chromePort,

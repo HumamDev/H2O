@@ -74,6 +74,23 @@ Follow-up export fix: a live Phase 4D.4 run created a Chrome pending folder dele
 
 Follow-up Desktop hidden verification fix: after the export fix, the runner reached Desktop soft-delete apply and tombstone creation, but `desktop-verify-hidden` failed with `empty-json-stdout` / timeout. A direct Desktop queue command proved `verifyFolderHidden` itself was correct and returned `ok:true`, `status:"folder-hidden-or-missing"`, `visible:false`, and `row:null`. The runner was the problem: retried steps capped each helper attempt at 10 seconds, even when the runner was invoked with a longer timeout, and the Desktop queue client therefore killed the verification before it could return. The runner now gives Desktop hidden verification a minimum 60 second timeout, passes that timeout through to the Desktop queue client, and treats both `folder-hidden` and `folder-hidden-or-missing` as valid hidden states. It does not require a row after Desktop soft delete; `row:null` is valid for hidden/missing.
 
+Follow-up count diagnostics fix: a later full lifecycle run completed the main delete/restore path but ended with `chat-count-changed` and `noChatDelete:false` without enough count evidence to tell whether a chat was actually deleted. The runner now always exposes same-surface count fields and deltas:
+
+- `baselineChromeChatCount`
+- `baselineDesktopChatCount`
+- `finalChromeChatCount`
+- `finalDesktopChatCount`
+- `baselineChromeSnapshotCount`
+- `baselineDesktopSnapshotCount`
+- `finalChromeSnapshotCount`
+- `finalDesktopSnapshotCount`
+- `chromeChatCountDelta`
+- `desktopChatCountDelta`
+- `chromeSnapshotCountDelta`
+- `desktopSnapshotCountDelta`
+
+The no-chat/no-snapshot guards now compare Chrome baseline only to Chrome final, and Desktop baseline only to Desktop final. Count increases do not fail the safety guard; they are reported as warnings at most. Only a same-surface count decrease blocks as possible deletion. The runner also exposes `steps` as an alias of `stepResults` so count read steps can be extracted by key: `chrome-baseline-counts`, `desktop-baseline-counts`, `chrome-final-counts`, and `desktop-final-counts`.
+
 ## Safety
 
 The runner and bridge enforce:
@@ -112,6 +129,7 @@ The final JSON summary includes:
 - `noChatDelete`
 - `noSnapshotDelete`
 - `noTombstoneApplyOnChrome`
+- same-surface chat/snapshot baseline/final counts and deltas
 - `blockers`
 - `warnings`
 
@@ -228,12 +246,49 @@ The run confirmed the earlier Chrome side remained healthy but again did not rea
 
 This attempt did not disprove the hidden-verification fix. It shows the live Desktop queue was unavailable before the runner could reach the hidden-verification step. A separate direct Desktop proof supplied for the failing folder showed `verifyFolderHidden` returns `ok:true`, `status:"folder-hidden-or-missing"`, `visible:false`, `row:null`, and the no-delete/no-purge/no-chat/no-snapshot flags.
 
+Runtime attempt 7 after the count diagnostics fix was invoked with:
+
+```bash
+rm -f "/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json"
+node tools/smoke/desktop-folder-sync-queue-client.mjs \
+  --op diagnoseHealth \
+  --timeout-ms 60000
+node tools/smoke/local-folder-delete-restore-smoke-runner.mjs \
+  --allow-mutation \
+  --chrome-port 9247 \
+  --timeout-ms 120000 > /tmp/h2o-4d4-runner-final.json
+```
+
+The Desktop queue preflight returned through the queue with `ok:true`, `registryGatesEnabled:true`, and no blockers. The full runner then emitted the new count diagnostics but did not reach final counts because it failed earlier at `desktop-list-delete-request` with `matching-delete-request-missing`:
+
+- `folderId:"fold_smoke_zz-4d4-delete-restore-mqs1305z_mqs130eg_afebeefe6336"`
+- `deleteRequestCreated:true`
+- `firstFailedStep:"desktop-list-delete-request"`
+- `blockers:["matching-delete-request-missing"]`
+- `baselineChromeChatCount:30`
+- `baselineDesktopChatCount:32`
+- `finalChromeChatCount:null`
+- `finalDesktopChatCount:null`
+- `baselineChromeSnapshotCount:0`
+- `baselineDesktopSnapshotCount:20`
+- `finalChromeSnapshotCount:null`
+- `finalDesktopSnapshotCount:null`
+- `chromeChatCountDelta:null`
+- `desktopChatCountDelta:null`
+- `chromeSnapshotCountDelta:null`
+- `desktopSnapshotCountDelta:null`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+
+This proves the requested count fields are now present and the no-chat/no-snapshot guards no longer compare Chrome counts against Desktop counts. Because the runner failed before final count reads, the deltas are intentionally `null` and the count guard did not create a false `chat-count-changed` blocker.
+
 Current runtime status:
 
 - Implementation and static validation are complete.
 - Chrome pending delete-request export is runtime-verified through `folderDeleteRequestExport.requestCount:3` and export diagnostics in the smoke result.
 - Desktop hidden-verification handling is statically fixed to use the mutation-gated Desktop op, pass a minimum 60000ms queue timeout, and accept `folder-hidden-or-missing` / `visible:false` with `row:null`.
-- Full end-to-end lifecycle proof is currently blocked by Desktop smoke queue liveness before Desktop import/verify.
+- Count diagnostics are now surfaced at top level and through `steps` / `stepResults`; same-surface decreases are the only chat/snapshot count blockers.
+- Full end-to-end lifecycle proof is currently blocked before Desktop delete-apply in the latest run by `matching-delete-request-missing`.
 - Re-run after Desktop queue is enabled:
 
 ```bash
