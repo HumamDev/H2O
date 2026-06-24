@@ -799,6 +799,13 @@
       typeof store?.restoreFolder === 'function';
   }
 
+  function canUseDesktopFolderPurge() {
+    if (!studioIsTauri()) return false;
+    const store = desktopFolderStore();
+    return typeof store?.previewRecentlyDeletedFolderPurge === 'function' &&
+      typeof store?.purgeRecentlyDeletedFolders === 'function';
+  }
+
   function chromeFolderDeleteRequestActions() {
     try {
       const actions = W.H2O?.Studio?.actions?.folders;
@@ -2091,6 +2098,86 @@
     }
   }
 
+  async function permanentlyDeleteRecentlyDeletedFolders(controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const refreshPanel = typeof controls.refresh === 'function' ? controls.refresh : null;
+    const store = desktopFolderStore();
+    const previewFn = store?.previewRecentlyDeletedFolderPurge;
+    const commitFn = store?.purgeRecentlyDeletedFolders;
+    if (!canUseDesktopFolderPurge() || typeof previewFn !== 'function' || typeof commitFn !== 'function') {
+      setStatus('Delete permanently unavailable on this surface', 'blocked');
+      return { ok: false, status: 'folder-purge-api-unavailable', blockers: ['folder-purge-api-unavailable'] };
+    }
+    setStatus('Checking purge candidates...', 'pending');
+    let preview = null;
+    try {
+      preview = await previewFn.call(store, { reason: 'desktop-recently-deleted-ui-preview' });
+    } catch (e) {
+      err('recentlyDeleted.purgePreview', e);
+      const message = String(e?.message || e || 'folder-purge-preview-threw');
+      setStatus(`Blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-purge-preview-threw', blockers: ['folder-purge-preview-threw'], reason: message };
+    }
+    if (preview?.ok !== true) {
+      const code = firstResultCode(preview, String(preview?.status || 'folder-purge-preview-failed'));
+      setStatus(`Blocked: ${code}`, 'blocked');
+      return preview || { ok: false, status: 'folder-purge-preview-failed', blockers: ['folder-purge-preview-failed'] };
+    }
+    const expectedCount = Number(preview?.candidateCount) || 0;
+    if (!expectedCount) {
+      setStatus('No purge-eligible deleted folders', '');
+      return preview;
+    }
+    const confirmText = [
+      `Delete permanently ${formatNumber(expectedCount)} folder${expectedCount === 1 ? '' : 's'} from Recently Deleted?`,
+      '',
+      'Restore will no longer be possible for those folder tombstones.',
+      'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
+      '',
+      'Type DELETE PERMANENTLY to continue.',
+    ].join('\n');
+    const typed = String(W.prompt?.(confirmText, '') || '').trim();
+    if (typed !== 'DELETE PERMANENTLY') {
+      setStatus('Delete permanently cancelled', '');
+      return { ok: false, status: 'folder-purge-cancelled', blockers: [] };
+    }
+    setStatus('Deleting permanently...', 'pending');
+    try {
+      const result = await commitFn.call(store, {
+        dryRun: false,
+        confirmationToken: preview.previewToken,
+        expectedCount,
+        reason: 'desktop-recently-deleted-ui-delete-permanently',
+        deleteChats: false,
+        deleteSnapshots: false,
+        deleteAssets: false,
+      });
+      if (result?.ok === true) {
+        const purged = Number(result?.purgedCount ?? result?.purgedTombstoneCount) || 0;
+        const skipped = Number(result?.skippedCount) || 0;
+        setStatus(
+          `Deleted permanently ${formatNumber(purged)} · skipped ${formatNumber(skipped)} · chats ${formatNumber(Number(result?.chatDeletedCount) || 0)} · snapshots ${formatNumber(Number(result?.snapshotDeletedCount) || 0)} · hard rows ${formatNumber(Number(result?.hardDeletedFolderRowCount) || 0)}`,
+          'ok'
+        );
+        refreshAfterNativeFolderMetadataApply('folder-recently-deleted-purge');
+        if (refreshPanel) {
+          W.setTimeout(() => {
+            try { refreshPanel(); } catch (e) { err('recentlyDeleted.purgeRefresh', e); }
+          }, 250);
+        }
+      } else {
+        const code = firstResultCode(result, String(result?.status || 'folder-purge-failed'));
+        setStatus(`Blocked: ${code}`, 'blocked');
+      }
+      return result || { ok: false, status: 'folder-purge-failed', blockers: ['folder-purge-failed'] };
+    } catch (e) {
+      err('recentlyDeleted.purgeCommit', e);
+      const message = String(e?.message || e || 'folder-purge-threw');
+      setStatus(`Blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-purge-threw', blockers: ['folder-purge-threw'], reason: message };
+    }
+  }
+
   async function renderRecentlyDeletedFoldersPanel(host, opts = {}) {
     if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
     const placement = String(opts?.placement || '').trim() === 'main' ? 'main' : 'sidebar';
@@ -2155,6 +2242,7 @@
 
     const rows = recentlyDeletedRowsFromResult(result);
     const restoreApiAvailable = canUseDesktopFolderRestore();
+    const purgeApiAvailable = canUseDesktopFolderPurge();
     const activeRetentionCount = recentlyDeletedAggregateValue(result, 'activeRetentionCount');
     const expiredRetentionCount = recentlyDeletedAggregateValue(result, 'expiredRetentionCount');
     const restoredRetentionCount = recentlyDeletedAggregateValue(result, 'restoredRetentionCount');
@@ -2164,6 +2252,48 @@
     const retentionEnforcement = recentlyDeletedText(result?.retentionEnforcement || result?.recentlyDeletedDiagnostics?.retentionEnforcement, 'deferred');
     summary.textContent = `Recently Deleted · ${formatNumber(rows.length)}`;
     body.innerHTML = '';
+    const purgeStatus = el('div', {
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);',
+    }, purgeEligibleCount > 0 ? `${formatNumber(purgeEligibleCount)} folder${purgeEligibleCount === 1 ? '' : 's'} can be permanently deleted.` : 'No purge-eligible deleted folders.');
+    if (isMainPlacement) {
+      const purgeHeader = el('div', {
+        class: 'wbFolderRecentlyDeletedPurgeHeader',
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 0 2px;',
+      });
+      const purgeBtn = el('button', {
+        type: 'button',
+        class: 'wbSidebarNativeAction wbSidebarNativeAction--danger',
+        disabled: purgeEligibleCount > 0 && purgeApiAvailable ? null : 'disabled',
+        title: purgeEligibleCount > 0 && purgeApiAvailable
+          ? 'Preview and confirm permanent deletion for purge-eligible folder tombstones'
+          : (purgeApiAvailable ? 'No purge-eligible deleted folders' : 'Desktop purge API unavailable'),
+        style: 'flex:0 0 auto;font-size:11px;padding:5px 8px;',
+      }, `Delete permanently (${formatNumber(purgeEligibleCount)})`);
+      if (!(purgeEligibleCount > 0 && purgeApiAvailable)) purgeBtn.classList.add('is-disabled');
+      purgeBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (purgeBtn.disabled) return;
+        purgeBtn.disabled = true;
+        purgeBtn.classList.add('is-disabled');
+        Promise.resolve(permanentlyDeleteRecentlyDeletedFolders({
+          setStatus: (message) => { purgeStatus.textContent = message; },
+          refresh: () => renderRecentlyDeletedFoldersPanel(host, { placement: 'main' }).catch((e) => err('recentlyDeleted.renderMainAfterPurge', e)),
+        })).finally(() => {
+          W.setTimeout(() => {
+            if (purgeBtn.isConnected) {
+              purgeBtn.disabled = !(purgeEligibleCount > 0 && purgeApiAvailable);
+              if (!purgeBtn.disabled) purgeBtn.classList.remove('is-disabled');
+            }
+          }, 350);
+        });
+      });
+      purgeHeader.appendChild(purgeStatus);
+      purgeHeader.appendChild(purgeBtn);
+      body.appendChild(purgeHeader);
+    }
     body.appendChild(el('div', {
       style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;font-size:10.5px;line-height:1.25;',
     }, [
