@@ -77,6 +77,8 @@
   var PHASE6A_PURGE_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-preview.v1';
   var PHASE6A_PURGE_RESULT_SCHEMA = 'h2o.studio.folder-purge-result.v1';
   var PHASE6A_PURGE_TOKEN_TTL_MS = 5 * 60 * 1000;
+  var PHASE6A_PERMANENT_PURGE_META_KEY = 'phase6aPermanentlyPurged';
+  var PHASE6A_PERMANENT_PURGE_SOURCE = 'desktop-recently-deleted-operator-purge';
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
@@ -1092,32 +1094,44 @@
     }
     /* Tie-break by name to keep ordering deterministic when sort_order matches. */
     var includeTombstoned = opts.includeTombstoned === true || opts.includeDeleted === true;
-    var where = includeTombstoned ? '' : (
-      ' WHERE NOT EXISTS (' +
-      'SELECT 1 FROM sync_tombstones t ' +
-      'WHERE t.record_kind = \'folder\' ' +
-      'AND t.record_id = \'folder:\' || folders.id ' +
-      'AND t.restored_at IS NULL)'
-    );
+    var includePurged = opts.includePurged === true || opts.includePermanentlyPurged === true;
+    var clauses = [];
+    var values = [];
+    if (!includeTombstoned) {
+      clauses.push(
+        'NOT EXISTS (' +
+        'SELECT 1 FROM sync_tombstones t ' +
+        'WHERE t.record_kind = \'folder\' ' +
+        'AND t.record_id = \'folder:\' || folders.id ' +
+        'AND t.restored_at IS NULL)'
+      );
+    }
+    if (!includePurged) {
+      clauses.push(phase6aPermanentPurgeWhereClause());
+      values = values.concat(phase6aPermanentPurgeWhereValues());
+    }
+    var where = clauses.length ? (' WHERE ' + clauses.join(' AND ')) : '';
     var sql = 'SELECT * FROM folders' + where + ' ORDER BY ' + sortCol + ' ' + sortDir + ', name ASC';
     if (typeof opts.limit === 'number' && opts.limit > 0) {
       sql += ' LIMIT ' + Math.floor(opts.limit);
       if (typeof opts.offset === 'number' && opts.offset > 0) sql += ' OFFSET ' + Math.floor(opts.offset);
     }
-    return sqlSelect(sql, [])
+    return sqlSelect(sql, values)
       .then(function (rows) { return (rows || []).map(rowToJs).filter(function (r) { return r != null; }); })
       .catch(function (e) { recordError('list', e); return []; });
   }
 
   function countFolders() {
+    var values = phase6aPermanentPurgeWhereValues();
     return sqlSelect(
       'SELECT COUNT(*) AS n FROM folders ' +
       'WHERE NOT EXISTS (' +
       'SELECT 1 FROM sync_tombstones t ' +
       'WHERE t.record_kind = \'folder\' ' +
       'AND t.record_id = \'folder:\' || folders.id ' +
-      'AND t.restored_at IS NULL)',
-      []
+      'AND t.restored_at IS NULL) ' +
+      'AND ' + phase6aPermanentPurgeWhereClause(),
+      values
     )
       .then(function (rows) {
         if (Array.isArray(rows) && rows.length > 0 && typeof rows[0].n === 'number') return rows[0].n;
@@ -1496,13 +1510,22 @@
       chromeAuthority: false,
       automaticPurge: false,
       operatorConfirmedPurge: false,
-      purgeDeletesTombstoneRecoveryRecordsOnly: true,
+      purgeDeletesTombstoneRecoveryRecordsOnly: false,
+      purgeDeletesActiveTombstones: true,
+      purgePermanentlySuppressesFolderRows: true,
+      purgeDeletesFolderRows: false,
       noChromeRowsDeleted: true,
       noActiveVisibleFolderDelete: true,
       noProtectedSystemFolderDelete: true,
+      permanentFolderRowSuppression: true,
       beforeCount: 0,
       candidateCount: 0,
       purgedCount: 0,
+      purgedTombstoneCount: 0,
+      purgedFolderRowCount: 0,
+      permanentlyHiddenFolderRowCount: 0,
+      folderRowAlreadyMissingCount: 0,
+      folderRowAlreadySuppressedCount: 0,
       skippedCount: 0,
       protectedSkippedCount: 0,
       activeVisibleSkippedCount: 0,
@@ -1516,6 +1539,17 @@
       blockers: [],
       warnings: [],
     };
+  }
+
+  function phase6aPermanentPurgeWhereClause() {
+    return '(folders.meta_json IS NULL OR (folders.meta_json NOT LIKE ? AND folders.meta_json NOT LIKE ?))';
+  }
+
+  function phase6aPermanentPurgeWhereValues() {
+    return [
+      '%"' + PHASE6A_PERMANENT_PURGE_META_KEY + '":true%',
+      '%"' + PHASE6A_PERMANENT_PURGE_META_KEY + '": true%',
+    ];
   }
 
   function addWarning(list, code, extra) {
@@ -1560,6 +1594,183 @@
       });
       return set;
     });
+  }
+
+  function isPhase6aPermanentlyPurged(folder) {
+    var meta = safeMeta(folder && folder.meta);
+    return meta[PHASE6A_PERMANENT_PURGE_META_KEY] === true;
+  }
+
+  async function permanentlySuppressPurgedFolderRows(candidates, opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var rows = Array.isArray(candidates) ? candidates : [];
+    var result = {
+      ok: false,
+      status: 'not-run',
+      attemptedCount: rows.length,
+      permanentlyHiddenFolderRowCount: 0,
+      folderRowAlreadyMissingCount: 0,
+      folderRowAlreadySuppressedCount: 0,
+      activeVisibleSkippedCount: 0,
+      protectedSkippedCount: 0,
+      skippedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      receiptDeletedCount: 0,
+      noActiveVisibleFolderDelete: true,
+      noProtectedSystemFolderDelete: true,
+      noHardDelete: true,
+      noPurgeOfChatsSnapshotsAssets: true,
+      blockers: [],
+      warnings: [],
+      rows: [],
+    };
+    try {
+      var visibleSet = await readVisibleFolderIdSet();
+      for (var i = 0; i < rows.length; i += 1) {
+        var candidate = rows[i] || {};
+        var folderId = cleanString(candidate.folderId);
+        var tombstoneId = cleanString(candidate.tombstoneId);
+        var summary = {
+          folderId: folderId,
+          tombstoneId: tombstoneId,
+          status: 'not-run',
+        };
+        if (!folderId || !tombstoneId) {
+          result.skippedCount += 1;
+          summary.status = 'folder-identity-missing';
+          addBlocker(result.blockers, 'folder-identity-missing');
+          result.rows.push(summary);
+          continue;
+        }
+        if (visibleSet[folderId]) {
+          result.activeVisibleSkippedCount += 1;
+          result.skippedCount += 1;
+          summary.status = 'active-visible-folder';
+          addBlocker(result.blockers, 'active-visible-folder');
+          result.rows.push(summary);
+          continue;
+        }
+        var folder = await getById(folderId);
+        if (!folder) {
+          result.folderRowAlreadyMissingCount += 1;
+          summary.status = 'folder-row-already-missing';
+          result.rows.push(summary);
+          continue;
+        }
+        var protectionCodes = folderPurgeProtectionCodes(folderId, folder, candidate);
+        if (protectionCodes.length) {
+          result.protectedSkippedCount += 1;
+          result.skippedCount += 1;
+          summary.status = protectionCodes[0];
+          addBlocker(result.blockers, protectionCodes[0]);
+          result.rows.push(summary);
+          continue;
+        }
+        if (isPhase6aPermanentlyPurged(folder)) {
+          result.folderRowAlreadySuppressedCount += 1;
+          summary.status = 'folder-row-already-suppressed';
+          result.rows.push(summary);
+          continue;
+        }
+        await patchOne(folderId, {
+          meta: {
+            phase6aPermanentlyPurged: true,
+            phase6aPurgedAt: new Date().toISOString(),
+            phase6aPurgeReason: cleanString(options.reason),
+            phase6aPurgeSource: PHASE6A_PERMANENT_PURGE_SOURCE,
+            phase6aPurgeTombstoneId: tombstoneId,
+          },
+        });
+        result.permanentlyHiddenFolderRowCount += 1;
+        summary.status = 'folder-row-permanently-hidden';
+        result.rows.push(summary);
+      }
+      if (result.blockers.length) {
+        result.status = 'folder-row-suppression-blocked';
+        return result;
+      }
+      result.ok = true;
+      result.status = 'folder-rows-permanently-hidden';
+      return result;
+    } catch (e) {
+      recordError('permanentlySuppressPurgedFolderRows', e);
+      result.status = 'folder-row-suppression-failed';
+      result.reason = String((e && e.message) || e);
+      addBlocker(result.blockers, 'folder-row-suppression-failed');
+      return result;
+    }
+  }
+
+  function looksLikeResurrectedPurgeCandidate(folder) {
+    var name = cleanString(folder && folder.name);
+    return /^zz-4d4-delete-restore-/i.test(name) ||
+      /^zz-5c-/i.test(name) ||
+      /^zz-delete-/i.test(name) ||
+      /^F5D(\.1)? Test Folder/i.test(name) ||
+      /^New 9$/i.test(name);
+  }
+
+  async function diagnosePurgedFolderResurrectionCandidates(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var limit = Math.max(1, Math.min(1000, Number(options.limit) || 500));
+    var result = {
+      schema: 'h2o.studio.folder-purge-resurrection-diagnostics.v1',
+      phase: 'phase6a.1b.desktop-folder-purge-resurrection',
+      ok: false,
+      status: 'not-run',
+      observedAt: new Date().toISOString(),
+      desktopOnly: true,
+      chromeAuthority: false,
+      readOnly: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noReceiptDelete: true,
+      candidateNamePatterns: [
+        'zz-4d4-delete-restore-*',
+        'zz-5c-*',
+        'F5D Test Folder*',
+        'F5D.1 Test Folder*',
+        'New 9',
+        'zz-delete-*',
+      ],
+      visibleFolderCount: 0,
+      resurrectedCandidateCount: 0,
+      candidates: [],
+      blockers: [],
+      warnings: [],
+    };
+    try {
+      var rows = await listFolders({ limit: limit });
+      result.visibleFolderCount = Array.isArray(rows) ? rows.length : 0;
+      result.candidates = (Array.isArray(rows) ? rows : []).filter(looksLikeResurrectedPurgeCandidate).map(function (folder) {
+        var folderId = getFolderId(folder);
+        return {
+          folderId: folderId,
+          id: folderId,
+          name: cleanString(folder && folder.name),
+          color: cleanString(folder && (folder.iconColor || folder.color)),
+          source: cleanString(folder && folder.source),
+          sourceKind: cleanString(folder && folder.sourceKind),
+          phase6aPermanentlyPurged: isPhase6aPermanentlyPurged(folder),
+        };
+      });
+      result.resurrectedCandidateCount = result.candidates.length;
+      result.ok = true;
+      result.status = 'purge-resurrection-candidates-diagnosed';
+      return result;
+    } catch (e) {
+      recordError('diagnosePurgedFolderResurrectionCandidates', e);
+      result.status = 'purge-resurrection-diagnostics-failed';
+      result.reason = String((e && e.message) || e);
+      addBlocker(result.blockers, 'purge-resurrection-diagnostics-failed');
+      return result;
+    }
   }
 
   async function buildRecentlyDeletedPurgePlan(opts) {
@@ -1701,6 +1912,22 @@
       state.phase6a.lastCommit = result;
       return result;
     }
+    var suppressionResult = await permanentlySuppressPurgedFolderRows(plan.candidates, {
+      reason: result.reason,
+      source: PHASE6A_PERMANENT_PURGE_SOURCE,
+    });
+    result.folderRowSuppression = suppressionResult;
+    result.permanentlyHiddenFolderRowCount = Number(suppressionResult && suppressionResult.permanentlyHiddenFolderRowCount) || 0;
+    result.folderRowAlreadyMissingCount = Number(suppressionResult && suppressionResult.folderRowAlreadyMissingCount) || 0;
+    result.folderRowAlreadySuppressedCount = Number(suppressionResult && suppressionResult.folderRowAlreadySuppressedCount) || 0;
+    if (!suppressionResult || suppressionResult.ok !== true) {
+      result.status = cleanString(suppressionResult && suppressionResult.status) || 'folder-row-suppression-failed';
+      (Array.isArray(suppressionResult && suppressionResult.blockers) ? suppressionResult.blockers : []).forEach(function (code) {
+        addBlocker(result.blockers, code && (code.code || code));
+      });
+      if (!result.blockers.length) addBlocker(result.blockers, 'folder-row-suppression-failed');
+      return result;
+    }
     var tombstones = getTombstoneStore();
     if (!tombstones || typeof tombstones.purgeFolderTombstonesByIds !== 'function') {
       result.status = 'tombstone-purge-api-unavailable';
@@ -1714,6 +1941,7 @@
     });
     result.tombstoneStoreResult = purgeResult;
     result.purgedCount = Number(purgeResult && purgeResult.purgedCount) || 0;
+    result.purgedTombstoneCount = result.purgedCount;
     result.alreadyPurgedSkippedCount = Number(purgeResult && purgeResult.alreadyPurgedSkippedCount) || 0;
     if (!purgeResult || purgeResult.ok !== true) {
       result.status = cleanString(purgeResult && purgeResult.status) || 'folder-purge-failed';
@@ -1825,6 +2053,12 @@
         protectedSkippedCount: purgePlan.protectedSkippedCount,
         activeVisibleSkippedCount: purgePlan.activeVisibleSkippedCount,
         restoredSkippedCount: purgePlan.restoredSkippedCount,
+        permanentFolderRowSuppression: true,
+        purgedTombstoneCount: 0,
+        permanentlyHiddenFolderRowCount: 0,
+        purgedFolderRowCount: 0,
+        folderRowAlreadyMissingCount: 0,
+        folderRowAlreadySuppressedCount: 0,
         chatDeletedCount: 0,
         snapshotDeletedCount: 0,
         assetDeletedCount: 0,
@@ -2496,6 +2730,7 @@
     diagnosePhase4aTombstones: diagnosePhase4aTombstones,
     listRecentlyDeletedFolders: listRecentlyDeletedFolders,
     diagnoseRecentlyDeletedFolders: listRecentlyDeletedFolders,
+    diagnosePurgedFolderResurrectionCandidates: diagnosePurgedFolderResurrectionCandidates,
     previewRecentlyDeletedFolderPurge: previewRecentlyDeletedFolderPurge,
     purgeRecentlyDeletedFolders: purgeRecentlyDeletedFolders,
     remove: softDeleteEmptyFolder,

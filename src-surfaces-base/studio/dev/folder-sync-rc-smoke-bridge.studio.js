@@ -39,6 +39,7 @@
     'listFolderDeleteReceipts',
     'listActiveFolderTombstones',
     'listRecentlyDeletedFolders',
+    'diagnosePurgedFolderResurrectionCandidates',
     'restoreFolder',
     'countChatsSnapshots',
     'verifyFolderVisible',
@@ -52,6 +53,7 @@
     applyFolderDeleteRequest: true,
     listActiveFolderTombstones: true,
     listRecentlyDeletedFolders: true,
+    diagnosePurgedFolderResurrectionCandidates: true,
     restoreFolder: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
@@ -1348,6 +1350,30 @@
     }));
   }
 
+  async function diagnosePurgedFolderResurrectionCandidates(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    var fn = store && store.diagnosePurgedFolderResurrectionCandidates;
+    if (typeof fn !== 'function') {
+      return unsupportedResult('diagnosePurgedFolderResurrectionCandidates', 'purge-resurrection-diagnostics-unavailable');
+    }
+    var result = safeObject(await fn.call(store, Object.assign({ limit: 500 }, safeObject(payload))));
+    return baseResult('diagnosePurgedFolderResurrectionCandidates', Object.assign({}, result, {
+      ok: result.ok === true,
+      status: cleanString(result.status || 'purge-resurrection-candidates-diagnosed'),
+      blockers: codeList(result.blockers),
+      warnings: codeList(result.warnings),
+      readOnly: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noReceiptDelete: true,
+      candidates: safeArray(result.candidates),
+      resurrectedCandidateCount: Number(result.resurrectedCandidateCount) || 0,
+    }));
+  }
+
   async function countChatsSnapshots() {
     var store = getPath(H2O, ['Studio', 'store']) || {};
     var chatCount = null;
@@ -1408,6 +1434,7 @@
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
     if (op === 'listActiveFolderTombstones') return listActiveFolderTombstones(payload);
     if (op === 'listRecentlyDeletedFolders') return listRecentlyDeletedFolders(payload);
+    if (op === 'diagnosePurgedFolderResurrectionCandidates') return diagnosePurgedFolderResurrectionCandidates(payload);
     if (op === 'restoreFolder') return restoreFolder(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
