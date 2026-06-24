@@ -1290,6 +1290,49 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v17 — Chat Saving Architecture Phase D.2B: Desktop-owned saved-chat
+        // archive request queue/status model. This table persists Chrome intent
+        // envelopes after the D.2A Desktop validator/resolver runs. It is not a
+        // package writer trigger, not a sync transport, and not an import or
+        // recovery path. The only allowed mutation is inserting request/status
+        // rows into this queue; package materialization remains deferred.
+        Migration {
+            version: 17,
+            description: "init saved chat archive request queue",
+            sql: r#"
+                CREATE TABLE IF NOT EXISTS saved_chat_archive_requests (
+                  request_id                          TEXT    PRIMARY KEY,
+                  dedupe_key                          TEXT    NOT NULL UNIQUE,
+                  schema                              TEXT    NOT NULL,
+                  status                              TEXT    NOT NULL,
+                  source_surface                      TEXT,
+                  native_conversation_id              TEXT,
+                  source_href                         TEXT,
+                  source_title                        TEXT,
+                  studio_chat_id                      TEXT,
+                  snapshot_id                         TEXT,
+                  can_materialize_from_desktop_store  INTEGER NOT NULL DEFAULT 0,
+                  normalized_request_json             TEXT    NOT NULL,
+                  resolution_json                     TEXT    NOT NULL,
+                  created_at                          TEXT,
+                  received_at                         TEXT    NOT NULL,
+                  updated_at                          TEXT    NOT NULL,
+                  meta_json                           TEXT    NOT NULL DEFAULT '{}'
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_chat_archive_requests_dedupe_key
+                  ON saved_chat_archive_requests(dedupe_key);
+                CREATE INDEX IF NOT EXISTS idx_saved_chat_archive_requests_status
+                  ON saved_chat_archive_requests(status);
+                CREATE INDEX IF NOT EXISTS idx_saved_chat_archive_requests_snapshot_id
+                  ON saved_chat_archive_requests(snapshot_id);
+                CREATE INDEX IF NOT EXISTS idx_saved_chat_archive_requests_studio_chat_id
+                  ON saved_chat_archive_requests(studio_chat_id);
+                CREATE INDEX IF NOT EXISTS idx_saved_chat_archive_requests_updated_at
+                  ON saved_chat_archive_requests(updated_at);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -2533,6 +2576,50 @@ mod tests {
                 && !migration.sql.contains("UPDATE sync_conflicts")
                 && !migration.sql.contains("DELETE FROM sync_conflicts"),
             "F6.1b.0 migration must not seed, mutate, or delete conflict rows"
+        );
+    }
+
+    #[test]
+    fn saved_chat_archive_request_queue_migration_defines_table_and_indexes() {
+        let migrations = studio_migrations();
+        let migration = migrations
+            .iter()
+            .find(|m| m.version == 17)
+            .expect("D.2B saved_chat_archive_requests migration exists");
+        assert_eq!(migration.description, "init saved chat archive request queue");
+        assert!(migration
+            .sql
+            .contains("CREATE TABLE IF NOT EXISTS saved_chat_archive_requests"));
+        for column in [
+            "request_id                          TEXT    PRIMARY KEY",
+            "dedupe_key                          TEXT    NOT NULL UNIQUE",
+            "status                              TEXT    NOT NULL",
+            "normalized_request_json             TEXT    NOT NULL",
+            "resolution_json                     TEXT    NOT NULL",
+            "can_materialize_from_desktop_store  INTEGER NOT NULL DEFAULT 0",
+        ] {
+            assert!(
+                migration.sql.contains(column),
+                "saved_chat_archive_requests migration missing {column}"
+            );
+        }
+        for index in [
+            "idx_saved_chat_archive_requests_dedupe_key",
+            "idx_saved_chat_archive_requests_status",
+            "idx_saved_chat_archive_requests_snapshot_id",
+            "idx_saved_chat_archive_requests_studio_chat_id",
+            "idx_saved_chat_archive_requests_updated_at",
+        ] {
+            assert!(
+                migration.sql.contains(index),
+                "saved_chat_archive_requests migration missing {index}"
+            );
+        }
+        assert!(
+            !migration.sql.contains("writeSavedChatPackageV1")
+                && !migration.sql.contains("buildSavedChatPackageV1")
+                && !migration.sql.contains("archive/packages"),
+            "D.2B migration must not couple the request queue to package materialization"
         );
     }
 

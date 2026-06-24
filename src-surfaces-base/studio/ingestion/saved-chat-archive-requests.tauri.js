@@ -1,11 +1,13 @@
 /* H2O Studio Saved Chat Archive Requests (Desktop / Tauri)
  *
- * Phase D.2A: Desktop-only request envelope validation and read-only store
- * resolution for Chrome-to-Desktop saved-chat archive intent.
+ * Phase D.2A/D.2B: Desktop-only request envelope validation, read-only store
+ * resolution, and a Desktop-owned durable request/status queue for
+ * Chrome-to-Desktop saved-chat archive intent.
  *
- * Boundaries: this module validates request metadata and reads Desktop store
- * adapters only. It does not create a queue, persist status, materialize
- * packages, mutate SQLite, touch CAS, call Sync, import/recover data, or wire UI.
+ * Boundaries: this module validates request metadata, reads Desktop store
+ * adapters, and writes only the saved_chat_archive_requests queue table. It
+ * does not materialize packages, mutate chat/snapshot/asset rows, touch CAS,
+ * call Sync, import/recover data, invoke Chrome runtime, or wire UI.
  */
 (function (global) {
   'use strict';
@@ -25,12 +27,16 @@
 
   var REQUEST_SCHEMA = 'h2o.savedChatArchiveRequest.v1';
   var RESOLUTION_SCHEMA = 'h2o.savedChatArchiveRequestResolution.v1';
-  var MODULE_VERSION = '0.1.0-d2a';
+  var QUEUE_SCHEMA = 'h2o.savedChatArchiveRequestQueue.v1';
+  var DB_URL = 'sqlite:studio-v1.db';
+  var QUEUE_TABLE = 'saved_chat_archive_requests';
+  var MODULE_VERSION = '0.2.0-d2b';
   var STATUS_VALIDATED = 'validated';
   var STATUS_NEEDS_DESKTOP_SNAPSHOT = 'needs-desktop-snapshot';
   var STATUS_REJECTED = 'rejected';
   var STATUS_DB_UNAVAILABLE = 'db-unavailable';
   var STATUS_UNSUPPORTED = 'unsupported';
+  var STATUS_DUPLICATE = 'duplicate';
   var ALLOWED_SURFACES = { 'chrome-studio': true };
   var ALLOWED_INTENTS = { 'save-to-folder': true };
 
@@ -38,6 +44,7 @@
     installedAt: Date.now(),
     lastValidatedAt: null,
     lastResolvedAt: null,
+    lastEnqueuedAt: null,
     lastError: null,
   };
 
@@ -66,6 +73,29 @@
     if (typeof value === 'undefined') return null;
     try { return JSON.parse(JSON.stringify(value)); }
     catch (_) { return null; }
+  }
+
+  function jsonText(value) {
+    try { return JSON.stringify(value == null ? null : value); }
+    catch (_) { return 'null'; }
+  }
+
+  function parseJsonObject(text) {
+    if (!text) return null;
+    try {
+      var value = JSON.parse(text);
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function numberFlag(value) {
+    return value ? 1 : 0;
+  }
+
+  function boolFromDb(value) {
+    return value === true || value === 1 || value === '1';
   }
 
   function makeIssue(code, message, detail) {
@@ -105,6 +135,31 @@
       normalizedRequest: null,
       resolution: createResolutionBase(),
     };
+  }
+
+  function getInvoke() {
+    try {
+      var internals = global.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') return internals.invoke.bind(internals);
+    } catch (_) { /* ignore */ }
+    try {
+      var tauri = global.__TAURI__;
+      if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return tauri.core.invoke.bind(tauri.core);
+      if (tauri && typeof tauri.invoke === 'function') return tauri.invoke.bind(tauri);
+    } catch (_) { /* ignore */ }
+    return null;
+  }
+
+  function sqlSelect(query, values) {
+    var invoke = getInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
+    return invoke('plugin:sql|select', { db: DB_URL, query: query, values: values || [] });
+  }
+
+  function sqlExecute(query, values) {
+    var invoke = getInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
+    return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
   }
 
   function firstString() {
@@ -435,6 +490,277 @@
     }
   }
 
+  function requestRowToResult(row) {
+    if (!row || typeof row !== 'object') return null;
+    var request = parseJsonObject(row.normalized_request_json);
+    var resolution = parseJsonObject(row.resolution_json);
+    return {
+      ok: !!row.request_id,
+      found: !!row.request_id,
+      requestId: row.request_id || null,
+      dedupeKey: row.dedupe_key || null,
+      schema: row.schema || REQUEST_SCHEMA,
+      status: row.status || '',
+      request: request,
+      resolution: resolution,
+      source: {
+        surface: row.source_surface || '',
+        nativeConversationId: row.native_conversation_id || '',
+        href: row.source_href || '',
+        title: row.source_title || '',
+      },
+      desktopResolution: {
+        studioChatId: row.studio_chat_id || null,
+        snapshotId: row.snapshot_id || null,
+        canMaterializeFromDesktopStore: boolFromDb(row.can_materialize_from_desktop_store),
+      },
+      createdAt: row.created_at || '',
+      receivedAt: row.received_at || '',
+      updatedAt: row.updated_at || '',
+      packageWriteDeferred: true,
+      queueEnabled: true,
+    };
+  }
+
+  function notFoundStatus(requestId) {
+    return {
+      ok: false,
+      found: false,
+      requestId: cleanString(requestId) || null,
+      dedupeKey: null,
+      status: 'not-found',
+      request: null,
+      resolution: null,
+      createdAt: null,
+      receivedAt: null,
+      updatedAt: null,
+      packageWriteDeferred: true,
+      queueEnabled: true,
+    };
+  }
+
+  async function findQueueRowByDedupeKey(dedupeKey) {
+    var rows = await sqlSelect(
+      'SELECT * FROM ' + QUEUE_TABLE + ' WHERE dedupe_key = ? LIMIT 1',
+      [dedupeKey]
+    );
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  }
+
+  async function findQueueRowByRequestId(requestId) {
+    var rows = await sqlSelect(
+      'SELECT * FROM ' + QUEUE_TABLE + ' WHERE request_id = ? LIMIT 1',
+      [requestId]
+    );
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  }
+
+  async function insertQueueRow(resolveResult, envelope, receivedAt) {
+    var normalized = resolveResult.normalizedRequest || null;
+    var source = safeObject(normalized && normalized.source);
+    var desktopResolution = safeObject(normalized && normalized.desktopResolution);
+    var resolution = safeObject(resolveResult.resolution);
+    var requestId = cleanString(resolveResult.requestId);
+    var dedupeKey = cleanString(resolveResult.dedupeKey);
+    var createdAt = cleanString(normalized && normalized.createdAt) || cleanString(envelope && envelope.createdAt);
+    var status = cleanString(resolveResult.status) || STATUS_REJECTED;
+    await sqlExecute(
+      'INSERT INTO ' + QUEUE_TABLE + ' (' +
+        'request_id, dedupe_key, schema, status, source_surface, native_conversation_id, source_href, source_title, ' +
+        'studio_chat_id, snapshot_id, can_materialize_from_desktop_store, normalized_request_json, resolution_json, ' +
+        'created_at, received_at, updated_at, meta_json' +
+      ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        requestId,
+        dedupeKey,
+        REQUEST_SCHEMA,
+        status,
+        cleanString(source.surface),
+        cleanString(source.nativeConversationId),
+        cleanString(source.href),
+        cleanString(source.title),
+        cleanString(desktopResolution.studioChatId || resolution.chatId),
+        cleanString(desktopResolution.snapshotId || resolution.snapshotId),
+        numberFlag(resolution.canMaterializeFromDesktopStore),
+        jsonText(normalized),
+        jsonText(resolveResult),
+        createdAt,
+        receivedAt,
+        receivedAt,
+        jsonText({
+          phase: 'D.2B',
+          packageWriteDeferred: true,
+          queueEnabled: true,
+          persistedFromStatus: status,
+        }),
+      ]
+    );
+  }
+
+  function enqueueResultFromRow(row, status, duplicateOf) {
+    var persisted = requestRowToResult(row);
+    return {
+      ok: status === STATUS_VALIDATED,
+      status: status,
+      requestId: persisted && persisted.requestId,
+      dedupeKey: persisted && persisted.dedupeKey,
+      duplicateOf: duplicateOf || null,
+      persisted: status !== STATUS_DUPLICATE,
+      request: persisted ? persisted.request : null,
+      resolution: persisted ? persisted.resolution : null,
+      packageWriteDeferred: true,
+      queueEnabled: true,
+    };
+  }
+
+  async function enqueueSavedChatArchiveRequestV1(envelope, options) {
+    void options;
+    state.lastEnqueuedAt = Date.now();
+    var resolved = await resolveSavedChatArchiveRequestV1(envelope, options);
+    var requestId = cleanString(resolved.requestId);
+    var dedupeKey = cleanString(resolved.dedupeKey);
+    if (!requestId || !dedupeKey) {
+      return {
+        ok: false,
+        status: resolved.status || STATUS_REJECTED,
+        requestId: requestId || null,
+        dedupeKey: dedupeKey || null,
+        duplicateOf: null,
+        persisted: false,
+        request: resolved.normalizedRequest || null,
+        resolution: resolved,
+        packageWriteDeferred: true,
+        queueEnabled: true,
+      };
+    }
+
+    try {
+      var existing = await findQueueRowByDedupeKey(dedupeKey);
+      if (existing) {
+        var duplicate = enqueueResultFromRow(existing, STATUS_DUPLICATE, existing.request_id || null);
+        duplicate.ok = false;
+        duplicate.persisted = false;
+        return duplicate;
+      }
+      var receivedAt = nowIso();
+      await insertQueueRow(resolved, envelope, receivedAt);
+      var inserted = await findQueueRowByRequestId(requestId);
+      return enqueueResultFromRow(inserted, resolved.status || STATUS_REJECTED, null);
+    } catch (err) {
+      state.lastError = String((err && err.message) || err || '');
+      return {
+        ok: false,
+        status: STATUS_DB_UNAVAILABLE,
+        requestId: requestId,
+        dedupeKey: dedupeKey,
+        duplicateOf: null,
+        persisted: false,
+        request: resolved.normalizedRequest || null,
+        resolution: resolved,
+        packageWriteDeferred: true,
+        queueEnabled: true,
+        warnings: [makeIssue('queue-persistence-failed', 'Could not persist saved-chat archive request queue row.', { error: state.lastError })],
+      };
+    }
+  }
+
+  async function getSavedChatArchiveRequestStatusV1(options) {
+    var requestId = cleanString(options && options.requestId);
+    if (!requestId) return notFoundStatus(null);
+    try {
+      var row = await findQueueRowByRequestId(requestId);
+      return requestRowToResult(row) || notFoundStatus(requestId);
+    } catch (err) {
+      state.lastError = String((err && err.message) || err || '');
+      return notFoundStatus(requestId);
+    }
+  }
+
+  async function listSavedChatArchiveRequestsV1(options) {
+    options = options || {};
+    var status = cleanString(options.status);
+    var limit = Number(options.limit);
+    if (!isFinite(limit) || limit <= 0) limit = 100;
+    limit = Math.max(1, Math.min(500, Math.floor(limit)));
+    var rows;
+    if (status) {
+      rows = await sqlSelect(
+        'SELECT * FROM ' + QUEUE_TABLE + ' WHERE status = ? ORDER BY updated_at DESC, received_at DESC LIMIT ' + limit,
+        [status]
+      );
+    } else {
+      rows = await sqlSelect(
+        'SELECT * FROM ' + QUEUE_TABLE + ' ORDER BY updated_at DESC, received_at DESC LIMIT ' + limit,
+        []
+      );
+    }
+    return {
+      ok: true,
+      schema: QUEUE_SCHEMA,
+      status: 'ok',
+      limit: limit,
+      filterStatus: status || null,
+      requests: asArray(rows).map(requestRowToResult).filter(function (row) { return !!row; }),
+      packageWriteDeferred: true,
+      queueEnabled: true,
+    };
+  }
+
+  async function diagnoseSavedChatArchiveRequestQueueV1() {
+    var result = {
+      installed: true,
+      desktopOnly: true,
+      queueEnabled: true,
+      packageWriteDeferred: true,
+      schema: QUEUE_SCHEMA,
+      table: QUEUE_TABLE,
+      generatedAt: nowIso(),
+      counts: {
+        total: 0,
+        validated: 0,
+        needsDesktopSnapshot: 0,
+        rejected: 0,
+        dbUnavailable: 0,
+        duplicate: 0,
+      },
+      boundaries: {
+        chromeRuntime: false,
+        syncTransport: false,
+        packageWriter: false,
+        archivePackageMutation: false,
+        casWrites: false,
+        chatSnapshotAssetMutation: false,
+        importRecovery: false,
+        ui: false,
+      },
+      state: {
+        installedAt: state.installedAt,
+        lastEnqueuedAt: state.lastEnqueuedAt,
+        lastError: state.lastError,
+      },
+    };
+    try {
+      var rows = await sqlSelect(
+        'SELECT status, COUNT(*) AS n FROM ' + QUEUE_TABLE + ' GROUP BY status',
+        []
+      );
+      asArray(rows).forEach(function (row) {
+        var n = Number(row.n || row.count || 0) || 0;
+        result.counts.total += n;
+        if (row.status === STATUS_VALIDATED) result.counts.validated += n;
+        if (row.status === STATUS_NEEDS_DESKTOP_SNAPSHOT) result.counts.needsDesktopSnapshot += n;
+        if (row.status === STATUS_REJECTED) result.counts.rejected += n;
+        if (row.status === STATUS_DB_UNAVAILABLE) result.counts.dbUnavailable += n;
+      });
+      return result;
+    } catch (err) {
+      state.lastError = String((err && err.message) || err || '');
+      result.queueEnabled = false;
+      result.error = state.lastError;
+      return result;
+    }
+  }
+
   function diagnoseSavedChatArchiveRequestIntakeV1() {
     var apis = getStoreApis();
     return {
@@ -452,22 +778,23 @@
         snapshotsListByChat: !!apis.snapshotsListByChat,
       },
       boundaries: {
-        queuePersistence: false,
-        statusPersistence: false,
+        queuePersistence: true,
+        statusPersistence: true,
         packageMaterialization: false,
         packageWriteDeferred: true,
-        queueDeferred: true,
+        queueDeferred: false,
         chromeRuntime: false,
         syncTransport: false,
         importRecovery: false,
         casWrites: false,
-        dbWrites: false,
+        dbWrites: 'saved_chat_archive_requests-only',
         ui: false,
       },
       state: {
         installedAt: state.installedAt,
         lastValidatedAt: state.lastValidatedAt,
         lastResolvedAt: state.lastResolvedAt,
+        lastEnqueuedAt: state.lastEnqueuedAt,
         lastError: state.lastError,
       },
     };
@@ -476,4 +803,8 @@
   H2O.Studio.ingestion.validateSavedChatArchiveRequestV1 = validateSavedChatArchiveRequestV1;
   H2O.Studio.ingestion.resolveSavedChatArchiveRequestV1 = resolveSavedChatArchiveRequestV1;
   H2O.Studio.ingestion.diagnoseSavedChatArchiveRequestIntakeV1 = diagnoseSavedChatArchiveRequestIntakeV1;
+  H2O.Studio.ingestion.enqueueSavedChatArchiveRequestV1 = enqueueSavedChatArchiveRequestV1;
+  H2O.Studio.ingestion.getSavedChatArchiveRequestStatusV1 = getSavedChatArchiveRequestStatusV1;
+  H2O.Studio.ingestion.listSavedChatArchiveRequestsV1 = listSavedChatArchiveRequestsV1;
+  H2O.Studio.ingestion.diagnoseSavedChatArchiveRequestQueueV1 = diagnoseSavedChatArchiveRequestQueueV1;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
