@@ -2,9 +2,11 @@
 
 Date: 2026-06-24
 
-Status: PREPARED - NOT EXECUTED
+Status: PREPARED - RERUN REQUIRED
 
 Reason not executed in this shell: the repository checkout contains Desktop runtime binaries, but this Codex shell session does not expose an attachable Desktop WebView DevTools console automation channel for invoking `window.H2O.Studio.*` in the live Tauri runtime. This smoke is therefore recorded as an operator-run DevTools evidence script, matching the C3.3 runtime-smoke pattern.
+
+2026-06-24 update: the first manual Desktop DevTools run reached v2 package validation and failed at `v2 contentHash validates`. The runtime package used the locked C4.0 contract correctly, but the smoke snippet compared a raw hex hash and used a newline-terminated canonical JSON helper. The snippet below is updated to use no top-level `await`, handle `read_file` `ArrayBuffer` results, compare prefixed snapshot hashes, and validate `contentHash` as a prefixed `sha256-` digest over the no-newline canonical descriptor.
 
 ## Scope
 
@@ -29,7 +31,7 @@ The package writer must use Tauri `BaseDirectory.AppLocalData` token `15` and bi
 ## DevTools Console Snippet
 
 ```js
-await (async () => {
+(async () => {
   const BaseDirectoryAppLocalData = 15;
   const RUN_OVERWRITE_REMOVE = false;
   const suffix = String(Date.now());
@@ -64,7 +66,7 @@ await (async () => {
   }
 
   function canonicalJson(value) {
-    return `${JSON.stringify(canonicalize(value))}\n`;
+    return JSON.stringify(canonicalize(value));
   }
 
   async function sha256Hex(textOrBytes) {
@@ -73,8 +75,14 @@ await (async () => {
     return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
+  async function sha256Prefixed(textOrBytes) {
+    return `sha256-${await sha256Hex(textOrBytes)}`;
+  }
+
   function toUint8Array(raw) {
     if (raw instanceof Uint8Array) return raw;
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (ArrayBuffer.isView(raw)) return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
     if (Array.isArray(raw)) return Uint8Array.from(raw);
     if (raw && Array.isArray(raw.data)) return Uint8Array.from(raw.data);
     throw new Error(`Unexpected read_file payload: ${Object.prototype.toString.call(raw)}`);
@@ -231,9 +239,9 @@ await (async () => {
     record("chat.html no longer contains data image URI", !v2ChatHtml.includes("data:image"), "chat.html checked");
     record("package asset bytes match original inline bytes", v2PackageAssetBytes.length === imageBytes.length && v2PackageAssetBytes.every((byte, index) => byte === imageBytes[index]), String(v2PackageAssetBytes.length));
 
-    const v2SnapshotSha = await sha256Hex(v2SnapshotText);
+    const v2SnapshotSha = await sha256Prefixed(v2SnapshotText);
     record("v2 manifest files.snapshot.sha256 matches canonical snapshot bytes", v2Manifest.files.snapshot.sha256 === v2SnapshotSha, JSON.stringify({ expected: v2SnapshotSha, actual: v2Manifest.files.snapshot.sha256 }));
-    const v2ExpectedContentHash = await sha256Hex(canonicalJson({
+    const v2ExpectedContentHash = await sha256Prefixed(canonicalJson({
       assets: v2Manifest.assets.map((asset) => asset.sha256).sort(),
       snapshot: v2Manifest.files.snapshot.sha256,
     }));
@@ -310,7 +318,9 @@ await (async () => {
     invokeHost.invoke = originalInvoke;
     ingestion.assetCas.getAssetBytes = originalGetAssetBytes;
   }
-})();
+})().catch((err) => {
+  console.error("[saved-chat-package-v2-smoke] FAILED", err);
+});
 ```
 
 ## PASS Criteria
@@ -330,6 +340,18 @@ The smoke passes only if the console reports `ALL PASS` and the results table co
 11. Package writes use binary `write_file` calls with `baseDir: 15`.
 12. No path contains `$HOME/H2O Studio Sync`.
 13. No user-folder export/save dialog is invoked.
+
+The exact v2 `contentHash` check is equivalent to:
+
+```js
+const descriptor = JSON.stringify(canonicalize({
+  snapshot: manifest.files.snapshot.sha256,
+  assets: manifest.assets.map((asset) => asset.sha256).sort(),
+}));
+const expectedContentHash = `sha256-${await sha256Hex(descriptor)}`;
+```
+
+`manifest.files.snapshot.sha256` and every entry in the sorted `assets` array are prefixed `sha256-<hex>` strings. Descriptor metadata such as `path`, `mimeType`, `ext`, `originalName`, and `byteLength` is excluded from this hash.
 
 ## Overwrite Behavior
 
