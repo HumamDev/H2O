@@ -1242,6 +1242,54 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v16 — F15.8.f runtime repair follow-up. SQLite resolves trigger
+        // body functions when compiling the table write statement, so the
+        // v15 WHEN clauses alone still require h2o_writer_identity() to exist
+        // on normal plugin-sql connections. Runtime startup now installs an
+        // empty process-wide h2o_writer_identity() auto-extension for new
+        // SQLite connections. This migration leaves the same guarded trigger
+        // scope in place for existing DBs after that connection fix lands:
+        // ordinary chat inserts/updates are allowed, real category_id
+        // insert/change remains protected by the writer identity model.
+        Migration {
+            version: 16,
+            description: "reaffirm chats category writer trigger scope",
+            sql: r#"
+                DROP TRIGGER IF EXISTS f15_protect_chats_category_id_update;
+                DROP TRIGGER IF EXISTS f15_protect_chats_category_id_insert;
+
+                CREATE TRIGGER f15_protect_chats_category_id_update
+                BEFORE UPDATE OF category_id ON chats
+                WHEN COALESCE(OLD.category_id, '') != COALESCE(NEW.category_id, '')
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
+
+                CREATE TRIGGER f15_protect_chats_category_id_insert
+                BEFORE INSERT ON chats
+                WHEN NEW.category_id IS NOT NULL AND NEW.category_id != ''
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -2426,6 +2474,9 @@ macro_rules! h2o_studio_invoke_handler {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    sqlite_writer_identity::install_writer_identity_auto_extension()
+        .expect("failed to install SQLite writer identity auto-extension");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())

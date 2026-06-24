@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::{Connection, SqliteConnection};
 use std::ffi::CString;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use tauri::State;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
@@ -154,43 +154,66 @@ unsafe extern "C" fn drop_writer_identity_state(ptr: *mut c_void) {
     }
 }
 
+unsafe fn register_writer_identity_function_on_raw(
+    raw_handle: *mut libsqlite3_sys::sqlite3,
+    identity: &str,
+) -> Result<(), c_int> {
+    if raw_handle.is_null() {
+        return Err(libsqlite3_sys::SQLITE_MISUSE);
+    }
+    let function_name = CString::new(FUNCTION_NAME).map_err(|_| libsqlite3_sys::SQLITE_MISUSE)?;
+    let state = Box::new(WriterIdentityState {
+        value: CString::new(identity).map_err(|_| libsqlite3_sys::SQLITE_MISUSE)?,
+    });
+    let state_ptr = Box::into_raw(state) as *mut c_void;
+    let rc = libsqlite3_sys::sqlite3_create_function_v2(
+        raw_handle,
+        function_name.as_ptr(),
+        0,
+        libsqlite3_sys::SQLITE_UTF8 | libsqlite3_sys::SQLITE_DETERMINISTIC,
+        state_ptr,
+        Some(writer_identity_fn),
+        None,
+        None,
+        Some(drop_writer_identity_state),
+    );
+    if rc != libsqlite3_sys::SQLITE_OK {
+        let _ = Box::from_raw(state_ptr as *mut WriterIdentityState);
+        return Err(rc);
+    }
+    Ok(())
+}
+
+unsafe extern "C" fn writer_identity_auto_extension(
+    db: *mut libsqlite3_sys::sqlite3,
+    _pz_err_msg: *mut *mut c_char,
+    _api: *const libsqlite3_sys::sqlite3_api_routines,
+) -> c_int {
+    match register_writer_identity_function_on_raw(db, "") {
+        Ok(()) => libsqlite3_sys::SQLITE_OK,
+        Err(rc) => rc,
+    }
+}
+
+pub fn install_writer_identity_auto_extension() -> Result<(), String> {
+    let rc =
+        unsafe { libsqlite3_sys::sqlite3_auto_extension(Some(writer_identity_auto_extension)) };
+    if rc != libsqlite3_sys::SQLITE_OK {
+        return Err(format!("sqlite-writer-identity-auto-extension-failed:{rc}"));
+    }
+    Ok(())
+}
+
 pub async fn install_writer_identity_function(
     conn: &mut SqliteConnection,
     identity: &str,
 ) -> Result<(), String> {
-    let function_name = CString::new(FUNCTION_NAME)
-        .map_err(|_| "sqlite-writer-identity-function-name-invalid".to_string())?;
     let mut handle = conn
         .lock_handle()
         .await
         .map_err(|e| format!("sqlite-writer-identity-lock-failed:{e}"))?;
-    let state = Box::new(WriterIdentityState {
-        value: CString::new(identity)
-            .map_err(|_| "sqlite-writer-identity-value-invalid".to_string())?,
-    });
-    let state_ptr = Box::into_raw(state) as *mut c_void;
-    let rc = {
-        unsafe {
-            libsqlite3_sys::sqlite3_create_function_v2(
-                handle.as_raw_handle().as_ptr(),
-                function_name.as_ptr(),
-                0,
-                libsqlite3_sys::SQLITE_UTF8 | libsqlite3_sys::SQLITE_DETERMINISTIC,
-                state_ptr,
-                Some(writer_identity_fn),
-                None,
-                None,
-                Some(drop_writer_identity_state),
-            )
-        }
-    };
-    if rc != libsqlite3_sys::SQLITE_OK {
-        unsafe {
-            let _ = Box::from_raw(state_ptr as *mut WriterIdentityState);
-        }
-        return Err(format!("sqlite-writer-identity-register-failed:{rc}"));
-    }
-    Ok(())
+    unsafe { register_writer_identity_function_on_raw(handle.as_raw_handle().as_ptr(), identity) }
+        .map_err(|rc| format!("sqlite-writer-identity-register-failed:{rc}"))
 }
 
 fn validate_identity(payload: &F15AuthorizedSqlPayload) -> Result<Option<String>, String> {
