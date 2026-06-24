@@ -1193,6 +1193,55 @@ fn studio_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        // v15 — F15.8.f runtime repair: older development DBs may already
+        // have the chats.category_id protection triggers installed from a
+        // pre-WHEN definition. `CREATE TRIGGER IF NOT EXISTS` in v12 cannot
+        // replace those stale triggers, so ordinary chat inserts can fail on
+        // plugin-sql connections with "no such function: h2o_writer_identity".
+        //
+        // Recreate only the chats.category_id triggers with the locked scope:
+        // normal chat metadata writes do not call h2o_writer_identity(), while
+        // category cache inserts/updates still fail closed unless they go
+        // through an authorized writer identity path.
+        Migration {
+            version: 15,
+            description: "repair chats category writer identity triggers",
+            sql: r#"
+                DROP TRIGGER IF EXISTS f15_protect_chats_category_id_update;
+                DROP TRIGGER IF EXISTS f15_protect_chats_category_id_insert;
+
+                CREATE TRIGGER f15_protect_chats_category_id_update
+                BEFORE UPDATE OF category_id ON chats
+                WHEN COALESCE(OLD.category_id, '') != COALESCE(NEW.category_id, '')
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
+
+                CREATE TRIGGER f15_protect_chats_category_id_insert
+                BEFORE INSERT ON chats
+                WHEN NEW.category_id IS NOT NULL AND NEW.category_id != ''
+                BEGIN
+                  SELECT CASE
+                    WHEN COALESCE(h2o_writer_identity(), '') NOT IN (
+                      'f15.execute-settlement-writer',
+                      'f15.bulk-migration',
+                      'f15.debug-bypass',
+                      'f15.emergency-repair'
+                    )
+                    THEN RAISE(ABORT, 'f15-store-write-protected:chats.category_id')
+                  END;
+                END;
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
