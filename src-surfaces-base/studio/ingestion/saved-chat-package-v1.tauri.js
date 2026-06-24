@@ -404,11 +404,15 @@
     var provenance = safeObject(src.provenance);
     var generatedAt = firstString(provenance.generatedAt, nowIso());
     var manifestInfo = getManifestInfo();
-    var contentHash = firstString(files && files.snapshot && files.snapshot.sha256);
+    /* C4.2: defaults reproduce the v1 (asset-less) manifest byte-for-byte.
+     * v2 callers override schemaVersion/payloadVersion/assets/contentHash. */
+    var schemaVersion = isFiniteNumber(src.schemaVersion) ? src.schemaVersion : SCHEMA_VERSION;
+    var assets = Array.isArray(src.assets) ? src.assets : [];
+    var contentHash = firstString(src.contentHash, files && files.snapshot && files.snapshot.sha256);
     if (!contentHash) throw new Error('files.snapshot.sha256 is required for manifest');
-    return {
+    var manifest = {
       schema: MANIFEST_SCHEMA,
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: schemaVersion,
       packageId: firstString(provenance.packageId, 'pkg_' + snapshotJson.snapshotId + '_' + contentHash.slice(7, 19)),
       chatId: firstString(snapshotJson.chatId),
       snapshotId: firstString(snapshotJson.snapshotId),
@@ -430,7 +434,7 @@
         exportedFrom: 'desktop',
       },
       files: files,
-      assets: [],
+      assets: assets,
       contentHash: contentHash,
       provenance: {
         createdBy: firstString(provenance.createdBy, 'save-to-folder'),
@@ -438,6 +442,10 @@
         projectionOnly: true,
       },
     };
+    /* payloadVersion is emitted only for asset-bearing (v2) packages; v1
+     * manifests stay byte-identical to Phase B (no payloadVersion key). */
+    if (isFiniteNumber(src.payloadVersion)) manifest.payloadVersion = src.payloadVersion;
+    return manifest;
   }
 
   function markdownRole(role) {
@@ -595,6 +603,46 @@
     return { snapshot: combined, turns: [] };
   }
 
+  /* Resolve the C4 asset stack (all injected via globals, never required). */
+  function getAssetStack() {
+    var ing = (H2O.Studio && H2O.Studio.ingestion) || {};
+    var store = (H2O.Studio && H2O.Studio.store) || {};
+    return { materializer: ing.savedChatPackageAssets, assetCas: ing.assetCas, assetStore: store.assets };
+  }
+
+  /* C4.2 hook: between v1 projection and hashing, optionally extract inline
+   * data:image assets into the CAS + registry and rewrite the snapshot to v2.
+   * Graceful no-op (byte-identical v1) when opted out or when the asset stack is
+   * unavailable (e.g. headless v1 tests). Returns { snapshotJson, manifestAssets,
+   * changed, status }. This calls the C4.1 materializer (which writes CAS blobs +
+   * registry rows); it does NOT write package files or call write_file. */
+  async function maybeMaterializeAssetsV2(snapshotJson, opts) {
+    var o = safeObject(opts);
+    if (o.skipAssetMaterialization === true) {
+      return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-opt-out' };
+    }
+    var stack = getAssetStack();
+    var ok = stack.materializer && typeof stack.materializer.materializeInlineImageAssetsV2 === 'function'
+      && stack.assetCas && typeof stack.assetCas.putAssetBytes === 'function'
+      && stack.assetStore && typeof stack.assetStore.upsert === 'function'
+      && typeof stack.assetStore.linkToTurn === 'function';
+    if (!ok) {
+      return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-no-deps' };
+    }
+    var out = await stack.materializer.materializeInlineImageAssetsV2({
+      snapshotJson: snapshotJson,
+      assetCas: stack.assetCas,
+      assetStore: stack.assetStore,
+      source: firstString(o.assetSource) || undefined,
+    });
+    return {
+      snapshotJson: (out && out.snapshotJson) || snapshotJson,
+      manifestAssets: asArray(out && out.manifestAssets),
+      changed: !!(out && out.changed),
+      status: (out && out.changed) ? 'applied' : 'no-assets',
+    };
+  }
+
   async function buildSavedChatPackageV1(options) {
     var opts = safeObject(options);
     var stores = getStores();
@@ -606,13 +654,29 @@
     if (!chat) chat = { chatId: chatId || firstString(snapshot.chatId) };
     var related = await collectRelated(stores, chat);
     var generatedAt = nowIso();
-    var snapshotJson = projectSnapshotJsonV1({ chat: chat, snapshot: snapshot, turns: turns, related: related });
+    var v1SnapshotJson = projectSnapshotJsonV1({ chat: chat, snapshot: snapshot, turns: turns, related: related });
+    /* C4.2: optionally upgrade to v2 by extracting inline data:image assets. */
+    var materialized = await maybeMaterializeAssetsV2(v1SnapshotJson, opts);
+    var isV2 = !!materialized.changed;
+    var snapshotJson = isV2 ? materialized.snapshotJson : v1SnapshotJson;
+    var manifestAssets = isV2 ? asArray(materialized.manifestAssets) : [];
+    if (isV2) snapshotJson.schemaVersion = 2;
     var snapshotText = canonicalJson(snapshotJson);
     var markdownText = renderChatMarkdownV1(snapshotJson);
     var htmlText = renderChatHtmlV1(snapshotJson);
     var snapshotHash = await sha256Prefixed(snapshotText);
     var markdownHash = await sha256Prefixed(markdownText);
     var htmlHash = await sha256Prefixed(htmlText);
+    /* contentHash: v1 = snapshot hash; v2 = sha256 of the canonical preservation
+     * descriptor { snapshot, assets:[sorted sha] } (ADR-0010 C3.0/C4.0). */
+    var contentHash = snapshotHash;
+    if (isV2) {
+      var sortedAssetShas = manifestAssets
+        .map(function (a) { return cleanString(a && a.sha256); })
+        .filter(Boolean)
+        .sort();
+      contentHash = await sha256Prefixed(canonicalJson({ snapshot: snapshotHash, assets: sortedAssetShas }));
+    }
     var files = {
       snapshot: fileDescriptor('snapshot.json', snapshotText, snapshotHash),
       markdown: Object.assign(fileDescriptor('chat.md', markdownText, markdownHash), { derivedFrom: 'snapshot.json' }),
@@ -622,6 +686,10 @@
       snapshotJson: snapshotJson,
       files: files,
       provenance: Object.assign({}, safeObject(opts.provenance), { generatedAt: generatedAt }),
+      schemaVersion: isV2 ? 2 : SCHEMA_VERSION,
+      payloadVersion: isV2 ? 2 : undefined,
+      assets: manifestAssets,
+      contentHash: contentHash,
     });
     var manifestText = JSON.stringify(manifestJson, null, 2) + '\n';
     var expectedPackageDirName = safePackageDirName(snapshotJson.chatId);
@@ -634,13 +702,14 @@
     var result = {
       ok: true,
       schema: MANIFEST_SCHEMA,
-      schemaVersion: SCHEMA_VERSION,
+      schemaVersion: isV2 ? 2 : SCHEMA_VERSION,
+      payloadVersion: isV2 ? 2 : 1,
       packageDirName: packageDirName,
       packagePath: packagePath,
       chatId: snapshotJson.chatId,
       snapshotId: snapshotJson.snapshotId,
-      contentHash: snapshotHash,
-      assets: [],
+      contentHash: contentHash,
+      assets: manifestAssets,
       manifest: manifestJson,
       snapshot: snapshotJson,
       files: {
@@ -674,7 +743,9 @@
       metadata: {
         generatedAt: generatedAt,
         projectionOnly: true,
-        assetsDirectoryRequired: false,
+        assetsDirectoryRequired: isV2,
+        assetMaterialization: materialized.status,
+        assetCount: manifestAssets.length,
       },
     };
     state.lastBuildAt = generatedAt;
@@ -682,7 +753,9 @@
       packageDirName: packageDirName,
       chatId: result.chatId,
       snapshotId: result.snapshotId,
+      schemaVersion: result.schemaVersion,
       contentHash: result.contentHash,
+      assetCount: manifestAssets.length,
     };
     return result;
   }
