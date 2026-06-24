@@ -1143,6 +1143,8 @@
       if (id) desktopIds[id] = true;
     }
     var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var existingSnapshot = normalizeDesktopVisibleFolderSetSnapshot(current.desktopVisibleFolderSet);
+    var snapshotChanged = JSON.stringify(safeObject(existingSnapshot)) !== JSON.stringify(safeObject(snapshot));
     var rows = Array.isArray(current.folders) ? current.folders : [];
     var hiddenBag = Object.assign({}, safeObject(current.hiddenByDesktopVisibleSet));
     var now = nowIso();
@@ -1231,15 +1233,17 @@
     });
     result.hiddenByDesktopVisibleSetRows = result.hiddenByDesktopVisibleSetRows.slice(0, 80);
     result.reShownByDesktopVisibleSetRows = result.reShownByDesktopVisibleSetRows.slice(0, 80);
-    if (changed) {
+    if (changed || snapshotChanged) {
       var next = Object.assign({}, current, {
         folders: nextRows,
         hiddenByDesktopVisibleSet: hiddenBag,
+        desktopVisibleFolderSet: snapshot,
         updatedAt: now
       });
       await writeKv(FOLDER_STATE_KEY_LOCAL, next);
     }
-    result.writesPerformed = changed ? 1 : 0;
+    result.desktopVisibleSetStored = true;
+    result.writesPerformed = (changed || snapshotChanged) ? 1 : 0;
     return result;
   }
 
@@ -1416,6 +1420,10 @@
       desktopOnlyVisibleFolderCount: desktopOnly.length,
       chromeOnlyVisibleFolders: chromeOnly,
       desktopOnlyVisibleFolders: desktopOnly,
+      importedDesktopVisibleFolderCount: numberOrZero(model && model.importedDesktopVisibleFolderCount),
+      importedDesktopVisibleFolders: Array.isArray(model && model.importedDesktopVisibleFolders)
+        ? model.importedDesktopVisibleFolders.slice(0, 80)
+        : [],
       candidateStaleFolderCount: candidateStaleRows.length,
       candidateStaleRows: candidateStaleRows,
       hiddenByDeleteReceiptCount: hiddenByDeleteReceiptCount,

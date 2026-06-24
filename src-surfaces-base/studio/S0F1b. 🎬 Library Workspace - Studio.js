@@ -367,6 +367,9 @@
     if (row?.protectedCanonicalFallback === true || meta.protectedCanonicalFallback === true) out.protectedCanonicalFallback = true;
     if (row?.shownInNormalMode === true || meta.shownInNormalMode === true) out.shownInNormalMode = true;
     if (row?.isCanonical === true || meta.isCanonical === true) out.isCanonical = true;
+    if (row?.desktopVisibleSetImported === true || meta.desktopVisibleSetImported === true) out.desktopVisibleSetImported = true;
+    if (row?.desktopDerivedDisplay === true || meta.desktopDerivedDisplay === true) out.desktopDerivedDisplay = true;
+    if (row?.visibleStateOnlyAdoption === true || meta.visibleStateOnlyAdoption === true) out.visibleStateOnlyAdoption = true;
     if (row?.hidden === true || meta.hidden === true) out.hidden = true;
     if (row?.hiddenByDesktopVisibleSet === true || meta.hiddenByDesktopVisibleSet === true) out.hiddenByDesktopVisibleSet = true;
     if (row?.desktopVisibleSetMissing === true || meta.desktopVisibleSetMissing === true) out.desktopVisibleSetMissing = true;
@@ -474,7 +477,117 @@
       const values = Array.isArray(inputItems[folder.id]) ? inputItems[folder.id] : [];
       items[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
     }
-    return { folders, items, hiddenByDesktopVisibleSet, hiddenByDesktopVisibleSetIds };
+    return {
+      folders,
+      items,
+      hiddenByDesktopVisibleSet,
+      hiddenByDesktopVisibleSetIds,
+      desktopVisibleFolderSet: normalizeDesktopVisibleSetForDisplay(src.desktopVisibleFolderSet),
+    };
+  }
+
+  function normalizeDesktopVisibleSetForDisplay(value) {
+    const input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    const seen = new Set();
+    const source = String(input.source || 'desktop-latest-visible-set').trim() || 'desktop-latest-visible-set';
+    const importedAt = String(input.importedAt || '').trim();
+    const sourceExportedAt = String(input.sourceExportedAt || '').trim();
+    const rows = (Array.isArray(input.rows) ? input.rows : [])
+      .map((row, index) => {
+        const id = folderIdOf(row);
+        if (!id || seen.has(id)) return null;
+        seen.add(id);
+        const name = folderNameOf(row);
+        const color = folderColorOf(row);
+        const meta = {
+          ...folderMetaOf(row),
+          desktopVisibleSetImported: true,
+          desktopDerivedDisplay: true,
+          visibleStateOnlyAdoption: true,
+          trustedFolderDisplay: true,
+          shownInNormalMode: true,
+          isCanonical: true,
+          sourceKind: 'desktop-visible-set-display-adoption',
+          desktopVisibleSetImportedAt: importedAt,
+          desktopVisibleSetSourceExportedAt: sourceExportedAt,
+          noTombstoneApply: true,
+          noTombstoneCreate: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+        };
+        return normalizeFolderRow({
+          ...row,
+          id,
+          folderId: id,
+          name,
+          title: name,
+          color,
+          iconColor: color,
+          source,
+          stateSource: 'desktop-visible-set-display-adoption',
+          sourceKind: 'desktop-visible-set-display-adoption',
+          kind: 'desktop-visible-set-display-adoption',
+          sortOrder: canonicalFolderDisplayOrder({ ...row, id, folderId: id, name }),
+          index,
+          materializedUserFolder: true,
+          trustedFolderDisplay: true,
+          shownInNormalMode: true,
+          isCanonical: true,
+          desktopVisibleSetImported: true,
+          desktopDerivedDisplay: true,
+          visibleStateOnlyAdoption: true,
+          updatedAt: String(row?.updatedAt || row?.updated_at || sourceExportedAt || importedAt || '').trim(),
+          meta,
+        }, index, 'desktop-visible-set-display-adoption');
+      })
+      .filter(Boolean);
+    return {
+      schema: 'h2o.studio.folder-visible-set.desktop.v1',
+      source,
+      status: String(input.status || 'imported').trim() || 'imported',
+      importedAt,
+      sourceExportedAt,
+      sourceKind: String(input.sourceKind || '').trim(),
+      desktopVisibleFolderIds: rows.map((row) => row.id).sort(),
+      desktopVisibleFolderCount: rows.length,
+      rows,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    };
+  }
+
+  function buildDesktopVisibleSetAdoptionRows(snapshot, existingRows, hiddenFolderIds = null) {
+    const snap = snapshot && typeof snapshot === 'object' ? snapshot : null;
+    if (!snap || !Array.isArray(snap.rows)) return [];
+    const existingIds = new Set((Array.isArray(existingRows) ? existingRows : []).map((row) => folderIdOf(row)).filter(Boolean));
+    const hiddenIds = hiddenFolderIds instanceof Set ? hiddenFolderIds : new Set();
+    return snap.rows
+      .filter((row) => {
+        const id = folderIdOf(row);
+        if (!id || existingIds.has(id) || hiddenIds.has(id)) return false;
+        if (isHiddenFolderDisplayRow(row, hiddenIds)) return false;
+        return true;
+      })
+      .map((row, index) => ({
+        ...row,
+        index: Number.isFinite(Number(row.index)) ? Number(row.index) : index,
+        sortOrder: canonicalFolderDisplayOrder({ ...row, index }),
+        source: 'desktop-visible-set-display-adoption',
+        stateSource: 'desktop-visible-set-display-adoption',
+        sourceKind: 'desktop-visible-set-display-adoption',
+        kind: 'desktop-visible-set-display-adoption',
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
+        isCanonical: true,
+      }));
   }
 
   function mergeTrustedCanonicalFolderStates(primaryState, secondaryState, primaryLabel = '', secondaryLabel = '') {
@@ -1693,6 +1806,9 @@
         trustedFolderDisplay: folder?.trustedFolderDisplay === true,
         protectedCanonicalFallback: folder?.protectedCanonicalFallback === true,
         shownInNormalMode: folder?.shownInNormalMode === true,
+        desktopVisibleSetImported: folder?.desktopVisibleSetImported === true || folderMetaOf(folder).desktopVisibleSetImported === true,
+        desktopDerivedDisplay: folder?.desktopDerivedDisplay === true || folderMetaOf(folder).desktopDerivedDisplay === true,
+        visibleStateOnlyAdoption: folder?.visibleStateOnlyAdoption === true || folderMetaOf(folder).visibleStateOnlyAdoption === true,
         index: Number.isFinite(folderIndex) ? folderIndex : 0,
         sortOrder: rowSortOrder,
         isCanonical,
@@ -2053,13 +2169,22 @@
     const canonicalFoldersRaw = mergedTrustedCanonical.folders.length
       ? mergedTrustedCanonical.folders
       : fallbackCanonical.rows;
+    const desktopVisibleSetAdoptionRows = buildDesktopVisibleSetAdoptionRows(
+      storedState.desktopVisibleFolderSet,
+      canonicalFoldersRaw,
+      storedState.hiddenByDesktopVisibleSetIds
+    );
     const storedById = indexFoldersById(storedState.folders);
     const nativeById = indexFoldersById(nativeState.folders);
-    const canonicalFolders = canonicalFoldersRaw.map((folder) => (
+    const canonicalFoldersBase = canonicalFoldersRaw.map((folder) => (
       isPrimaryCanonicalFolder(folder)
         ? decorateCanonicalFolderColorSources(folder, storedById, nativeById)
         : folder
     ));
+    const canonicalFolders = [
+      ...canonicalFoldersBase,
+      ...desktopVisibleSetAdoptionRows,
+    ];
     const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
@@ -2201,6 +2326,17 @@
       : rawFolderDisplayRows;
     const canonicalDisplayRowCount = folderDisplayRows.filter((row) => row && row.isCanonical).length;
     const displayModelAvailable = canonicalDisplayRowCount > 0;
+    const importedDesktopVisibleDisplayRows = folderDisplayRows.filter((row) => {
+      const meta = folderMetaOf(row);
+      const sourceKind = String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim();
+      return row?.desktopVisibleSetImported === true
+        || row?.desktopDerivedDisplay === true
+        || row?.visibleStateOnlyAdoption === true
+        || meta.desktopVisibleSetImported === true
+        || meta.desktopDerivedDisplay === true
+        || meta.visibleStateOnlyAdoption === true
+        || sourceKind === 'desktop-visible-set-display-adoption';
+    });
     knownFallbackFinalDisplayCount = folderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true).length || knownFallbackFinalDisplayCount;
     if (knownFallbackRawCount > 0 && knownFallbackFinalDisplayCount <= 0 && !knownFallbackDropReasons.length) {
       knownFallbackDropReasons = ['known-canonical-fallback-final-display-empty'];
@@ -2218,6 +2354,7 @@
       localSqlite: localFolders,
       storedFolderState: storedState.folders,
       nativeBroadcast: nativeState.folders,
+      desktopVisibleSetAdoption: desktopVisibleSetAdoptionRows,
       displayModel: folderDisplayRows,
       protectedCanonicalFallback: protectedFallbackRows,
       materializedUserFolders,
@@ -2312,6 +2449,23 @@
       },
       nativeOnlyDisplaySuppressedFolders,
       hiddenDynamicNativeOnlyCount: nativeOnlyDisplaySuppressedFolders.length,
+      desktopVisibleSetStored: !!storedState.desktopVisibleFolderSet,
+      desktopVisibleSetImportedAt: storedState.desktopVisibleFolderSet?.importedAt || '',
+      desktopVisibleSetSourceExportedAt: storedState.desktopVisibleFolderSet?.sourceExportedAt || '',
+      importedDesktopVisibleFolderCount: importedDesktopVisibleDisplayRows.length,
+      importedDesktopVisibleFolders: importedDesktopVisibleDisplayRows.map((folder) => ({
+        id: folder.id,
+        folderId: folder.id,
+        name: folder.name,
+        normalizedName: folder.normalizedName,
+        color: folder.color || folder.iconColor || '',
+        iconColor: folder.iconColor || folder.color || '',
+        source: folder.source || 'desktop-visible-set-display-adoption',
+        sourceKind: folder.sourceKind || 'desktop-visible-set-display-adoption',
+        desktopVisibleSetImported: folder.desktopVisibleSetImported === true || folderMetaOf(folder).desktopVisibleSetImported === true,
+        desktopDerivedDisplay: folder.desktopDerivedDisplay === true || folderMetaOf(folder).desktopDerivedDisplay === true,
+        visibleStateOnlyAdoption: folder.visibleStateOnlyAdoption === true || folderMetaOf(folder).visibleStateOnlyAdoption === true,
+      })),
       hiddenLocalOnlyFolders,
       hiddenLocalOnlyCount: hiddenLocalOnlyFolders.length,
       materializedUserFolders,
@@ -2619,6 +2773,35 @@
       const canonicalColorTokens = canonicalRows.map((row) => `${String(row.folderId || row.id || '').trim()}:${String(row.iconColor || row.color || '').trim()}`);
       const materializedUserFolders = Array.isArray(report?.materializedUserFolders) ? report.materializedUserFolders : [];
       const hiddenLocalOnlyFolders = Array.isArray(report?.hiddenLocalOnlyFolders) ? report.hiddenLocalOnlyFolders : [];
+      const importedDesktopVisibleRowsFromReport = Array.isArray(report?.importedDesktopVisibleFolders)
+        ? report.importedDesktopVisibleFolders
+        : [];
+      const importedDesktopVisibleRowsFromDisplay = canonicalRows.filter((row) => {
+        const meta = folderMetaOf(row);
+        const sourceKind = String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim();
+        return row?.desktopVisibleSetImported === true
+          || row?.desktopDerivedDisplay === true
+          || row?.visibleStateOnlyAdoption === true
+          || meta.desktopVisibleSetImported === true
+          || meta.desktopDerivedDisplay === true
+          || meta.visibleStateOnlyAdoption === true
+          || sourceKind === 'desktop-visible-set-display-adoption';
+      });
+      const importedDesktopVisibleFolders = importedDesktopVisibleRowsFromReport.length
+        ? importedDesktopVisibleRowsFromReport
+        : importedDesktopVisibleRowsFromDisplay.map((row) => ({
+          id: row.id,
+          folderId: row.folderId || row.id,
+          name: row.name,
+          normalizedName: row.normalizedName,
+          color: row.color || row.iconColor || '',
+          iconColor: row.iconColor || row.color || '',
+          source: row.source || 'desktop-visible-set-display-adoption',
+          sourceKind: row.sourceKind || 'desktop-visible-set-display-adoption',
+          desktopVisibleSetImported: row.desktopVisibleSetImported === true || folderMetaOf(row).desktopVisibleSetImported === true,
+          desktopDerivedDisplay: row.desktopDerivedDisplay === true || folderMetaOf(row).desktopDerivedDisplay === true,
+          visibleStateOnlyAdoption: row.visibleStateOnlyAdoption === true || folderMetaOf(row).visibleStateOnlyAdoption === true,
+        }));
       const displayModelAvailable = canonicalRows.length > 0;
       const finalProtectedFallbackCount = canonicalRows.filter((row) => row && row.protectedCanonicalFallback === true).length;
       const reportProtectedFallbackCount = Number(report?.protectedCanonicalFallbackCount || 0) || 0;
@@ -2717,6 +2900,11 @@
         hiddenDynamicNativeOnlyCount: Number(report?.hiddenDynamicNativeOnlyCount || 0) || 0,
         hiddenLocalOnlyCount: Number(report?.hiddenLocalOnlyCount || hiddenLocalOnlyFolders.length) || 0,
         hiddenLocalOnlyFolders,
+        desktopVisibleSetStored: report?.desktopVisibleSetStored === true,
+        desktopVisibleSetImportedAt: report?.desktopVisibleSetImportedAt || '',
+        desktopVisibleSetSourceExportedAt: report?.desktopVisibleSetSourceExportedAt || '',
+        importedDesktopVisibleFolderCount: importedDesktopVisibleFolders.length,
+        importedDesktopVisibleFolders,
         folderNameProbe: report?.folderNameProbe || {},
         canonicalRows,
         localReviewRows,

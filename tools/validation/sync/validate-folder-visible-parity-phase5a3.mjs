@@ -70,7 +70,7 @@ const normalizeStateBody = functionBody(folderParity, 'normalizeFolderStateForPa
   'hiddenByDesktopVisibleSetIds = new Set()',
   'src.hiddenByDesktopVisibleSet',
   'hiddenByDesktopVisibleSetIds.add(id)',
-  'return { folders, items, hiddenByDesktopVisibleSet, hiddenByDesktopVisibleSetIds }',
+  'hiddenByDesktopVisibleSetIds,',
 ].forEach((needle) => assertContains(normalizeStateBody, needle, `stored hidden marker normalization ${needle}`));
 
 const normalizeBody = functionBody(folderParity, 'normalizeFolderRow');
