@@ -579,6 +579,12 @@
        registry/DB coupling, no materialization, no GC, no UI/sync. Self-detect
        gating like the projector. -->
   <script src="./ingestion/asset-cas.tauri.js"></script>
+  <!-- Desktop-only: saved-chat package asset materializer (Phase C C4.1).
+       Extracts inline data:image/* from sanitized HTML, orchestrates the CAS +
+       registry (injected), rewrites refs to package-relative paths. Pure
+       transform; no file writes, no projector wiring (C4.2), no contentHash v2.
+       Loads after asset-cas + store/assets so C4.2 can wire it. -->
+  <script src="./ingestion/saved-chat-package-assets.tauri.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
        enforceRedactionClass. No domain adoption, publication, replay,
