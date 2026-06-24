@@ -585,6 +585,11 @@
        transform; no file writes, no projector wiring (C4.2), no contentHash v2.
        Loads after asset-cas + store/assets so C4.2 can wire it. -->
   <script src="./ingestion/saved-chat-package-assets.tauri.js"></script>
+  <!-- Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2).
+       Read-only package inventory + manifest/snapshot/hash validation under
+       $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
+       no import/recovery, no sync, no UI. -->
+  <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
        enforceRedactionClass. No domain adoption, publication, replay,

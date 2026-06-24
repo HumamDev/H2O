@@ -159,6 +159,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // inline data:image/*, orchestrates CAS + registry (injected), rewrites refs.
   // Pure transform; no file writes, no projector wiring yet, no contentHash v2.
   "ingestion/saved-chat-package-assets.tauri.js",
+  // Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2). Read-only
+  // package inventory + manifest/snapshot/hash validation under archive/packages.
+  // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
+  "ingestion/saved-chat-archive-diagnostics.tauri.js",
   // F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Inert shared
   // scanner/enforcer only; no domain adoption, publication, replay,
   // watermark, apply, convergence, storage, network, or mobile behavior.
@@ -1204,6 +1208,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-package-v1.tauri.js",
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",
+  "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",
   "sync/kernel/blockers.tauri.js",
