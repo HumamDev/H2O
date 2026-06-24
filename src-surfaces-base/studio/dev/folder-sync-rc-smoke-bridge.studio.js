@@ -31,6 +31,7 @@
     'setFolderColor',
     'syncNow',
     'diagnoseHealth',
+    'diagnoseVisibleFolderParity',
     'requestFolderDelete',
     'listFolderDeleteRequests',
     'applyFolderDeleteRequest',
@@ -54,6 +55,7 @@
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
+    diagnoseVisibleFolderParity: true,
   });
   var FORBIDDEN_OPS = Object.freeze([
     'eval',
@@ -1103,6 +1105,28 @@
     });
   }
 
+  async function diagnoseVisibleFolderParity(payload) {
+    var api = getPath(H2O, ['Studio', 'sync', 'folder']);
+    var fn = api && api.diagnoseVisibleFolderParity;
+    if (typeof fn !== 'function') {
+      return unsupportedResult('diagnoseVisibleFolderParity', 'visible-folder-parity-diagnostic-unavailable');
+    }
+    var result = safeObject(await fn.call(api, safeObject(payload)));
+    return baseResult('diagnoseVisibleFolderParity', Object.assign({}, result, {
+      ok: result.ok === true,
+      status: cleanString(result.status || 'visible-folder-parity-diagnosed'),
+      blockers: codeList(result.blockers),
+      warnings: codeList(result.warnings),
+      readOnly: true,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    }));
+  }
+
   async function requestFolderDelete(payload) {
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     var fn = actions && (actions.requestDelete || actions.requestFolderDelete);
@@ -1353,6 +1377,7 @@
     if (op === 'setFolderColor') return setFolderColor(payload);
     if (op === 'syncNow') return syncNow(payload);
     if (op === 'diagnoseHealth') return diagnoseHealth(payload);
+    if (op === 'diagnoseVisibleFolderParity') return diagnoseVisibleFolderParity(payload);
     if (op === 'requestFolderDelete') return requestFolderDelete(payload);
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);

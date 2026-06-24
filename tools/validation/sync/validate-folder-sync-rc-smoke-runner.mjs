@@ -51,7 +51,7 @@ assertContains(helper, 'waitForSyncFolderDiagnose', 'bounded sync folder diagnos
 assertContains(helper, 'syncFolderDiagnoseGranted', 'granted folder handle classifier');
 assertContains(helper, 'syncFolderDiagnoseLost', 'lost folder handle classifier');
 assertContains(helper, 'arguments: [{ value: op }, { value: payload }]', 'structured CDP arguments');
-assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots'])", 'read-only allowlist');
+assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity'])", 'read-only allowlist');
 assertContains(helper, "MUTATION_OPS = Object.freeze", 'Slice 5A mutation allowlist');
 assertContains(helper, 'classifyOp(options.op, options.allowMutation)', 'operation classifier guard');
 assertContains(helper, 'mutation-op-requires-allow-mutation', 'mutation opt-in rejection status');
@@ -194,7 +194,7 @@ assertNotContains(helper, 'TRUNCATE TABLE', 'Chrome CDP helper');
 const allowlistMatch = helper.match(/READ_ONLY_OPS = Object\.freeze\(\[([^\]]+)\]\)/);
 assert(allowlistMatch, 'READ_ONLY_OPS declaration missing');
 const allowlistBlock = allowlistMatch[1];
-for (const op of ['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots']) {
+for (const op of ['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity']) {
   assert(allowlistBlock.includes(`'${op}'`), `READ_ONLY_OPS missing ${op}`);
 }
 for (const op of [
@@ -238,6 +238,6 @@ console.log(JSON.stringify({
   defaultProfile: '/private/tmp/h2o-folder-sync-smoke-chrome-profile',
   chromeDevPort: 9225,
   chromeDevProfile: '/private/tmp/h2o-folder-sync-smoke-chrome-dev-profile',
-  readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots'],
+  readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity'],
   mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'requestFolderDelete', 'verifyFolderVisible', 'verifyFolderHidden'],
 }, null, 2));

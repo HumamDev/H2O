@@ -954,6 +954,235 @@
     };
   }
 
+  function isFolderVisibleForParity(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
+    if (!row || typeof row !== 'object') return false;
+    if (row.hidden === true || meta.hidden === true) return false;
+    if (row.hiddenByDesktopReceipt === true || meta.hiddenByDesktopReceipt === true) return false;
+    if (row.deleted === true || meta.deleted === true) return false;
+    if (cleanString(row.deletedAt || row.deleted_at || meta.deletedAt || meta.deleted_at)) return false;
+    return !!folderMetadataRowId(row);
+  }
+
+  function isProtectedFolderForVisibleParity(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
+    var id = normalizeFolderRecordId(folderMetadataRowId(row)).toLowerCase();
+    var name = folderMetadataRowName(row).toLowerCase();
+    return id === 'unfiled' ||
+      id === '__unfiled__' ||
+      name === 'unfiled' ||
+      row?.isUnfiled === true ||
+      row?.isSystem === true ||
+      row?.protected === true ||
+      row?.isProtected === true ||
+      row?.protectedCanonicalFallback === true ||
+      meta.isUnfiled === true ||
+      meta.isSystem === true ||
+      meta.protected === true ||
+      meta.isProtected === true ||
+      meta.protectedCanonicalFallback === true;
+  }
+
+  function isChromeCreatedFolderForVisibleParity(row) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
+    var sourceKind = cleanString(row && (row.sourceKind || row.kind || meta.sourceKind || meta.kind)).toLowerCase();
+    var source = cleanString(row && (row.source || meta.source)).toLowerCase();
+    return sourceKind.indexOf('chrome') !== -1 ||
+      source === 'chrome-studio' ||
+      row?.createdBy === 'chrome-studio' ||
+      meta.createdBy === 'chrome-studio';
+  }
+
+  function summarizeVisibleParityFolder(row, extra) {
+    var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
+    return Object.assign({
+      folderId: normalizeFolderRecordId(folderMetadataRowId(row)),
+      id: normalizeFolderRecordId(folderMetadataRowId(row)),
+      name: folderMetadataRowName(row),
+      color: folderMetadataRowColor(row),
+      source: cleanString(row && (row.source || meta.source)),
+      sourceKind: cleanString(row && (row.sourceKind || row.kind || meta.sourceKind || meta.kind)),
+      updatedAt: cleanString(row && (row.updatedAt || row.updated_at || meta.updatedAt || meta.updated_at)),
+      hidden: !isFolderVisibleForParity(row),
+      protected: isProtectedFolderForVisibleParity(row),
+      chromeCreated: isChromeCreatedFolderForVisibleParity(row)
+    }, extra || {});
+  }
+
+  function visibleParityRowMap(rows) {
+    var map = Object.create(null);
+    var list = Array.isArray(rows) ? rows : [];
+    for (var i = 0; i < list.length; i += 1) {
+      if (!isFolderVisibleForParity(list[i])) continue;
+      var id = normalizeFolderRecordId(folderMetadataRowId(list[i]));
+      if (id && !map[id]) map[id] = list[i];
+    }
+    return map;
+  }
+
+  async function readLatestBundleForVisibleParityDiagnostics() {
+    if (!state.handle) {
+      return {
+        ok: false,
+        status: 'sync-folder-not-connected',
+        blockers: [F19_SYNC_HARDENING_CODES.syncFolderMissing],
+        path: LATEST_FILE
+      };
+    }
+    var permission = await queryPermission(state.handle);
+    if (permission !== 'granted') {
+      return {
+        ok: false,
+        status: 'sync-folder-reconnect-required',
+        permission: permission,
+        blockers: [F19_SYNC_HARDENING_CODES.permissionDenied],
+        path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE
+      };
+    }
+    try {
+      var fileHandle = await state.handle.getFileHandle(LATEST_FILE, { create: false });
+      var file = await fileHandle.getFile();
+      var text = await file.text();
+      var bundle = JSON.parse(text);
+      return {
+        ok: true,
+        status: 'latest-json-read',
+        permission: permission,
+        path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+        fileLastModified: numberOrZero(file.lastModified),
+        fileSize: numberOrZero(file.size),
+        exportedAt: cleanString(bundle && bundle.exportedAt),
+        bundle: bundle
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'latest-json-read-failed',
+        permission: permission,
+        blockers: ['latest-json-read-failed'],
+        path: (state.folderName ? state.folderName + '/' : '') + LATEST_FILE,
+        error: cleanString(error && (error.message || error)).slice(0, 240)
+      };
+    }
+  }
+
+  async function diagnoseVisibleFolderParity(options) {
+    var opts = options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+    var blockers = [];
+    var warnings = [];
+    var latest = await readLatestBundleForVisibleParityDiagnostics();
+    if (!latest.ok) {
+      return {
+        ok: false,
+        status: 'visible-folder-parity-diagnostic-blocked',
+        phase: PHASE,
+        mode: MODE,
+        readOnly: true,
+        blockers: Array.isArray(latest.blockers) ? latest.blockers.slice() : [latest.status],
+        warnings: warnings,
+        desktopLatestStatus: latest.status,
+        desktopLatestPath: cleanString(latest.path),
+        noTombstoneApplyOnChrome: true,
+        noTombstoneCreateOnChrome: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true
+      };
+    }
+    var bundle = latest.bundle;
+    var desktopRowsInfo = folderMetadataRowsFromBundle(bundle);
+    var desktopVisibleMap = visibleParityRowMap(desktopRowsInfo.rows);
+    var desktopIds = Object.keys(desktopVisibleMap).sort();
+    var provider = H2O && H2O.Library && H2O.Library.FolderParity;
+    var model = provider && typeof provider.getDisplayModel === 'function'
+      ? await provider.getDisplayModel({ fresh: opts.fresh !== false, reason: cleanString(opts.reason) || 'phase5a0-visible-folder-parity' })
+      : null;
+    var canonicalRows = Array.isArray(model && model.canonicalRows) ? model.canonicalRows : [];
+    var chromeVisibleMap = visibleParityRowMap(canonicalRows);
+    var chromeIds = Object.keys(chromeVisibleMap).sort();
+    var exportedAtMs = parseTimeMs(latest.exportedAt);
+    var chromeOnly = [];
+    var desktopOnly = [];
+    var protectedRows = [];
+    var pendingChromeCreatedRows = [];
+    var candidateStaleRows = [];
+    for (var c = 0; c < chromeIds.length; c += 1) {
+      var chromeId = chromeIds[c];
+      var chromeRow = chromeVisibleMap[chromeId];
+      var protectedRow = isProtectedFolderForVisibleParity(chromeRow);
+      if (protectedRow) protectedRows.push(summarizeVisibleParityFolder(chromeRow, { reason: 'protected-system-folder' }));
+      if (desktopVisibleMap[chromeId]) continue;
+      var rowUpdatedMs = folderMetadataRowTimestampMs(chromeRow);
+      var pendingChromeCreated = isChromeCreatedFolderForVisibleParity(chromeRow) &&
+        (!exportedAtMs || (rowUpdatedMs && rowUpdatedMs > exportedAtMs));
+      var summary = summarizeVisibleParityFolder(chromeRow, {
+        protected: protectedRow,
+        pendingChromeCreated: pendingChromeCreated,
+        candidateStale: !protectedRow && !pendingChromeCreated,
+        smokeDeleteRestoreCandidate: folderMetadataRowName(chromeRow).indexOf('zz-4d4-delete-restore') === 0
+      });
+      if (pendingChromeCreated) pendingChromeCreatedRows.push(summary);
+      if (!protectedRow && !pendingChromeCreated) candidateStaleRows.push(summary);
+      if (!protectedRow) chromeOnly.push(summary);
+    }
+    for (var d = 0; d < desktopIds.length; d += 1) {
+      var desktopId = desktopIds[d];
+      if (!chromeVisibleMap[desktopId]) {
+        desktopOnly.push(summarizeVisibleParityFolder(desktopVisibleMap[desktopId], {
+          missingFromChromeVisibleModel: true
+        }));
+      }
+    }
+    var deleteImport = state.lastFolderDeleteReceiptImport || {};
+    var restoreImport = state.lastFolderRestoreReceiptImport || {};
+    var hiddenByDeleteReceiptCount = numberOrZero(deleteImport.hiddenCount || deleteImport.reconciledHideCount || deleteImport.appliedCount);
+    var reShownByRestoreReceiptCount = numberOrZero(restoreImport.reShownCount || restoreImport.alreadyVisibleCount);
+    return {
+      ok: true,
+      status: 'visible-folder-parity-diagnosed',
+      phase: PHASE,
+      mode: MODE,
+      readOnly: true,
+      source: 'desktop-latest-json-vs-chrome-folder-parity-display-model',
+      desktopLatestPath: latest.path,
+      desktopLatestExportedAt: latest.exportedAt,
+      desktopLatestFileLastModified: latest.fileLastModified,
+      desktopLatestFileSize: latest.fileSize,
+      desktopVisibleSourceKind: desktopRowsInfo.sourceKind,
+      desktopVisibleFolderCount: desktopIds.length,
+      chromeVisibleFolderCount: chromeIds.length,
+      chromeOnlyVisibleFolderCount: chromeOnly.length,
+      desktopOnlyVisibleFolderCount: desktopOnly.length,
+      chromeOnlyVisibleFolders: chromeOnly,
+      desktopOnlyVisibleFolders: desktopOnly,
+      candidateStaleFolderCount: candidateStaleRows.length,
+      candidateStaleRows: candidateStaleRows,
+      hiddenByDeleteReceiptCount: hiddenByDeleteReceiptCount,
+      reShownByRestoreReceiptCount: reShownByRestoreReceiptCount,
+      hiddenByDesktopVisibleSetCount: 0,
+      pendingChromeCreatedCount: pendingChromeCreatedRows.length,
+      pendingChromeCreatedRows: pendingChromeCreatedRows,
+      protectedFolderCount: protectedRows.length,
+      protectedFolders: protectedRows,
+      displayModelAvailable: !!(model && model.displayModelAvailable),
+      canonicalSource: cleanString(model && model.canonicalSource),
+      canonicalFolderCount: Number(model && model.canonicalFolderCount) || canonicalRows.length,
+      hiddenLocalOnlyCount: Number(model && model.hiddenLocalOnlyCount) || 0,
+      hiddenDynamicNativeOnlyCount: Number(model && model.hiddenDynamicNativeOnlyCount) || 0,
+      folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
+      folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+      blockers: blockers,
+      warnings: warnings,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true
+    };
+  }
+
   async function analyzeFolderMetadataAutoConflict(bundle) {
     var incoming = folderMetadataRowsFromBundle(bundle);
     if (!incoming.rows.length) {
@@ -4627,6 +4856,7 @@
     scheduleAutoSync: scheduleAutoSync,
     diagnose: diagnose,
     diagnoseHealth: diagnoseHealth,
+    diagnoseVisibleFolderParity: diagnoseVisibleFolderParity,
     health: {
       diagnose: diagnoseHealth,
     },
