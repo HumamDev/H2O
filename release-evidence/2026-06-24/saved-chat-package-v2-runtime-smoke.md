@@ -2,11 +2,54 @@
 
 Date: 2026-06-24
 
-Status: PREPARED - RERUN REQUIRED
+Status: EXECUTED - PASSED
 
-Reason not executed in this shell: the repository checkout contains Desktop runtime binaries, but this Codex shell session does not expose an attachable Desktop WebView DevTools console automation channel for invoking `window.H2O.Studio.*` in the live Tauri runtime. This smoke is therefore recorded as an operator-run DevTools evidence script, matching the C3.3 runtime-smoke pattern.
+Execution note: this Codex shell session does not expose an attachable Desktop WebView DevTools console automation channel for invoking `window.H2O.Studio.*` in the live Tauri runtime. The smoke was executed manually in the real Desktop Studio DevTools console.
 
 2026-06-24 update: the first manual Desktop DevTools run reached v2 package validation and failed at `v2 contentHash validates`. The runtime package used the locked C4.0 contract correctly, but the smoke snippet compared a raw hex hash and used a newline-terminated canonical JSON helper. The snippet below is updated to use no top-level `await`, handle `read_file` `ArrayBuffer` results, compare prefixed snapshot hashes, and validate `contentHash` as a prefixed `sha256-` digest over the no-newline canonical descriptor.
+
+2026-06-24 final runtime result: after running on the dev Desktop app with the current migration/function fixes applied, the real Desktop DevTools smoke reported:
+
+```text
+[saved-chat-package-v2-smoke] ALL PASS
+```
+
+## Runtime Evidence
+
+Observed package outputs:
+
+- `v2PackagePath`: `archive/packages/c4_4_pkg_v2_smoke_1782302682904.h2ochat`
+- `v1PackagePath`: `archive/packages/c4_4_pkg_v1_smoke_1782302682904.h2ochat`
+- `v2AssetPath`: `archive/packages/c4_4_pkg_v2_smoke_1782302682904.h2ochat/assets/sha256-c10719804d2b4888a54524228adfae6451d2d6d4a59477cee38acca2b9940e97.png`
+- `v2 asset sha256`: `sha256-c10719804d2b4888a54524228adfae6451d2d6d4a59477cee38acca2b9940e97`
+- `contentHash`: `sha256-2a1da956a6e809c80bf20c57a24f0c673012bfd826b10c4fb3f72bde91a57745`
+
+Observed PASS summary:
+
+- All rows in the console table passed.
+- The v2 package path was under the AppLocalData archive root.
+- The v2 manifest selected `schemaVersion: 2`.
+- The v2 manifest had one asset.
+- The package asset path matched `assets/sha256-<hash>.png`.
+- `manifest.json`, `snapshot.json`, `chat.md`, `chat.html`, and the package asset file existed.
+- `manifest.assets[]` matched the package asset file.
+- Message `assetRefs[]` were present.
+- `contentHtml` and `chat.html` used package-relative asset references.
+- No `data:image` URI remained in `contentHtml` or `chat.html`.
+- Package asset bytes matched the original inline bytes.
+- `files.snapshot.sha256` matched canonical snapshot bytes.
+- The v2 `contentHash` validated.
+- Package paths did not use the Sync folder.
+- The v1 asset-less package still used `schemaVersion: 1` and had no assets directory.
+- Default overwrite behavior failed closed when the package already existed.
+- `overwrite: true` remove behavior was not executed and remains deferred/security-sensitive.
+
+Runtime debugging chain:
+
+- Initial smoke execution exposed a `read_file` `ArrayBuffer` handling issue in the smoke snippet.
+- A later smoke execution exposed the `contentHash` expectation mismatch in the smoke snippet.
+- The writer identity blocker was fixed separately in commit `5d9fcd8`.
+- The final smoke passed after running on the dev Desktop app with the current migration/function fixes applied.
 
 ## Scope
 
