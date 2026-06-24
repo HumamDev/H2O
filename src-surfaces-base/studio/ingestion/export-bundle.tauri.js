@@ -40,6 +40,8 @@
   var TOMBSTONE_EXPORT_LIMIT = 5000;
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_DELETE_RECEIPT_LIMIT = 1000;
+  var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
+  var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1156,6 +1158,21 @@
     };
   }
 
+  function emptyFolderRestoreReceiptDiagnostics(warnings) {
+    return {
+      supported: true,
+      exported: false,
+      schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+      total: 0,
+      exportedCount: 0,
+      statusOnly: true,
+      noTombstoneApply: true,
+      tombstonePropagation: 'deferred',
+      chromeReShowDeferred: true,
+      warnings: asArray(warnings),
+    };
+  }
+
   function warningCode(code) {
     return { code: cleanString(code) || 'warning' };
   }
@@ -1424,6 +1441,124 @@
     }
   }
 
+  function folderIdFromTombstoneRecordId(recordIdInput) {
+    var recordId = cleanString(recordIdInput);
+    if (recordId.indexOf('folder:') === 0) return cleanString(recordId.slice('folder:'.length));
+    return recordId;
+  }
+
+  function nonNegativeIntegerOrNull(value) {
+    var number = Number(value);
+    if (!Number.isFinite(number) || number < 0) return null;
+    return Math.floor(number);
+  }
+
+  function readRestoreCount(meta, recoverySnapshot, keys, fallback) {
+    var candidates = asArray(keys);
+    for (var i = 0; i < candidates.length; i += 1) {
+      var key = candidates[i];
+      if (Object.prototype.hasOwnProperty.call(meta, key)) {
+        var count = nonNegativeIntegerOrNull(meta[key]);
+        if (count != null) return count;
+      }
+      if (Object.prototype.hasOwnProperty.call(recoverySnapshot, key)) {
+        var recoveryCount = nonNegativeIntegerOrNull(recoverySnapshot[key]);
+        if (recoveryCount != null) return recoveryCount;
+      }
+    }
+    var fallbackCount = nonNegativeIntegerOrNull(fallback);
+    return fallbackCount == null ? null : fallbackCount;
+  }
+
+  function folderRestoreReceiptId(tombstoneId) {
+    return 'folder-restore-receipt:' + encodeURIComponent(cleanString(tombstoneId));
+  }
+
+  function folderRestoreReceiptFromTombstone(tombstone) {
+    if (!tombstone || typeof tombstone !== 'object') return null;
+    if (cleanString(tombstone.schema) !== TOMBSTONE_SCHEMA_VERSION) return null;
+    if (cleanString(tombstone.recordKind) !== 'folder') return null;
+    if (!cleanString(tombstone.restoredAt)) return null;
+
+    var meta = safeObject(tombstone.meta);
+    var recoverySnapshot = safeObject(meta.recoverySnapshot);
+    var recoveryFolder = safeObject(recoverySnapshot.folder);
+    var folderId = cleanString(recoveryFolder.folderId || recoveryFolder.id || folderIdFromTombstoneRecordId(tombstone.recordId));
+    var tombstoneId = cleanString(tombstone.tombstoneId);
+    if (!folderId || !tombstoneId) return null;
+
+    var bindings = asArray(recoverySnapshot.bindings);
+    var attemptedCount = readRestoreCount(meta, recoverySnapshot, [
+      'bindingRestoreAttemptedCount',
+      'lastBindingRestoreAttemptedCount',
+    ], bindings.length);
+    var restoredCount = readRestoreCount(meta, recoverySnapshot, [
+      'bindingRestoredCount',
+      'lastBindingRestoredCount',
+    ], null);
+    var skippedCount = readRestoreCount(meta, recoverySnapshot, [
+      'bindingSkippedCount',
+      'lastBindingSkippedCount',
+    ], null);
+    var restoreWarnings = asArray(meta.restoreWarnings).concat(asArray(meta.lastRestoreWarnings));
+
+    return {
+      schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+      receiptId: folderRestoreReceiptId(tombstoneId),
+      tombstoneId: tombstoneId,
+      folderId: folderId,
+      folderName: cleanString(recoveryFolder.name || recoveryFolder.title || meta.folderName),
+      recordKind: 'folder',
+      status: 'restored',
+      decision: 'desktop-folder-restored',
+      restoredAt: cleanString(tombstone.restoredAt),
+      restoredBy: 'desktop-studio',
+      restoredBySurface: 'desktop-studio',
+      restoredBySyncPeerIdPresent: !!cleanString(tombstone.restoredBySyncPeerId),
+      sourcePeerId: null,
+      statusOnly: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      bindingRestoreAttemptedCount: attemptedCount,
+      bindingRestoredCount: restoredCount,
+      bindingSkippedCount: skippedCount,
+      restoreWarnings: restoreWarnings,
+      chromeReShowDeferred: true,
+      tombstonePropagation: 'deferred',
+    };
+  }
+
+  function buildFolderRestoreReceiptPayloadFromTombstones(tombstones) {
+    var rows = asArray(tombstones);
+    var receipts = rows.map(folderRestoreReceiptFromTombstone).filter(function (receipt) {
+      return receipt && typeof receipt === 'object' &&
+        cleanString(receipt.schema) === FOLDER_RESTORE_RECEIPT_SCHEMA &&
+        receipt.statusOnly === true &&
+        receipt.noTombstoneApply === true;
+    }).slice(0, FOLDER_RESTORE_RECEIPT_LIMIT);
+    return {
+      receipts: receipts,
+      diagnostics: {
+        supported: true,
+        exported: true,
+        schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+        total: rows.filter(function (row) {
+          return row && cleanString(row.recordKind) === 'folder' && !!cleanString(row.restoredAt);
+        }).length,
+        exportedCount: receipts.length,
+        skippedMalformed: Math.max(0, rows.filter(function (row) {
+          return row && cleanString(row.recordKind) === 'folder' && !!cleanString(row.restoredAt);
+        }).length - receipts.length),
+        statusOnly: true,
+        noTombstoneApply: true,
+        tombstonePropagation: 'deferred',
+        chromeReShowDeferred: true,
+        warnings: [],
+      },
+    };
+  }
+
   async function exportFullBundle(options) {
     var startedAt = Date.now();
     var warnings = [];
@@ -1447,6 +1582,8 @@
     var tombstoneDiagnostics = tombstoneExport.diagnostics || emptyTombstoneExportDiagnostics();
     var folderDeleteReceiptExport = await buildFolderDeleteReceiptPayloadSafely(stores);
     var folderDeleteReceiptDiagnostics = folderDeleteReceiptExport.diagnostics || emptyFolderDeleteReceiptDiagnostics();
+    var folderRestoreReceiptExport = buildFolderRestoreReceiptPayloadFromTombstones(tombstoneExport.tombstones);
+    var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
     var summary = {
       chatCount: chatArchive.chatCount,
@@ -1467,6 +1604,7 @@
       activeTombstoneCount: Number(tombstoneDiagnostics.active) || 0,
       restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
       folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
+      folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -1482,6 +1620,7 @@
       tombstoneSchemaVersion: TOMBSTONE_SCHEMA_VERSION,
       tombstones: asArray(tombstoneExport.tombstones),
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
+      folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
       diagnostics: {
         desktopExport: {
@@ -1499,6 +1638,7 @@
           },
           tombstones: tombstoneDiagnostics,
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
+          folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           applyEvents: {
             schema: cleanString(syncApplyEvents.schema) || APPLY_EVENTS_SCHEMA_VERSION,
             available: syncApplyEvents.available === true,
@@ -1645,6 +1785,7 @@
         turnCount: Number(bundle && bundle.summary && bundle.summary.turnCount) || 0,
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
         folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
+        folderRestoreReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderRestoreReceiptCount) || 0,
         applyEventCount: Number(bundle && bundle.summary && bundle.summary.applyEventCount) || 0,
         applyEventExportedCount: asArray(bundle && bundle.syncApplyEvents && bundle.syncApplyEvents.events).length,
         checksum: checksum,

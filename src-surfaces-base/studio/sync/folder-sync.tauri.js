@@ -1941,7 +1941,8 @@
           sourceSurfaceKind: String(raw && raw.sourceSurfaceKind || ''),
           sourceStoreKind: String(raw && raw.sourceStoreKind || ''),
           folderCount: Number(raw && raw.folderCount) || null,
-          folderDeleteReceiptCount: Number(raw && raw.folderDeleteReceiptCount) || 0
+          folderDeleteReceiptCount: Number(raw && raw.folderDeleteReceiptCount) || 0,
+          folderRestoreReceiptCount: Number(raw && raw.folderRestoreReceiptCount) || 0
         }
       });
     } catch (error) {
