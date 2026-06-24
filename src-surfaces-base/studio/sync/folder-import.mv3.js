@@ -996,6 +996,13 @@
       meta.createdBy === 'chrome-studio';
   }
 
+  function isPendingChromeCreatedForVisibleParity(row, snapshot) {
+    if (!isChromeCreatedFolderForVisibleParity(row)) return false;
+    var sourceExportedAtMs = parseTimeMs(snapshot && snapshot.sourceExportedAt);
+    var rowUpdatedMs = folderMetadataRowTimestampMs(row);
+    return !sourceExportedAtMs || (rowUpdatedMs && rowUpdatedMs > sourceExportedAtMs);
+  }
+
   function summarizeVisibleParityFolder(row, extra) {
     var meta = row && row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta) ? row.meta : {};
     return Object.assign({
@@ -1095,6 +1102,168 @@
     return snapshot;
   }
 
+  function makeDesktopVisibleSetHideResult() {
+    return {
+      schema: 'h2o.studio.folder-visible-set.desktop-hide.v1',
+      phase: 'phase5a.2',
+      attempted: true,
+      ok: true,
+      status: 'desktop-visible-set-hide-applied',
+      hiddenByDesktopVisibleSetCount: 0,
+      reShownByDesktopVisibleSetCount: 0,
+      skippedProtectedCount: 0,
+      skippedPendingChromeCreatedCount: 0,
+      hiddenByDesktopVisibleSetRows: [],
+      reShownByDesktopVisibleSetRows: [],
+      warnings: [],
+      blockers: [],
+      visibleStateOnlyHide: true,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true
+    };
+  }
+
+  async function applyDesktopVisibleSetHideOverlay(snapshotInput) {
+    var snapshot = normalizeDesktopVisibleFolderSetSnapshot(snapshotInput);
+    var result = makeDesktopVisibleSetHideResult();
+    if (!snapshot) {
+      result.ok = false;
+      result.status = 'desktop-visible-set-missing';
+      result.blockers.push('desktop-visible-set-missing');
+      return result;
+    }
+    var desktopIds = Object.create(null);
+    var ids = Array.isArray(snapshot.desktopVisibleFolderIds) ? snapshot.desktopVisibleFolderIds : [];
+    for (var i = 0; i < ids.length; i += 1) {
+      var id = normalizeFolderRecordId(ids[i]);
+      if (id) desktopIds[id] = true;
+    }
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var rows = Array.isArray(current.folders) ? current.folders : [];
+    var hiddenBag = Object.assign({}, safeObject(current.hiddenByDesktopVisibleSet));
+    var now = nowIso();
+    var changed = false;
+    var nextRows = rows.map(function (row) {
+      var folderId = normalizeFolderRecordId(folderMetadataRowId(row));
+      if (!folderId) return row;
+      var hasDesktopVisibleRow = desktopIds[folderId] === true;
+      var marker = safeObject(hiddenBag[folderId]);
+      if (hasDesktopVisibleRow) {
+        if (marker.hiddenByDesktopVisibleSet === true || row.hiddenByDesktopVisibleSet === true || safeObject(row.meta).hiddenByDesktopVisibleSet === true) {
+          var restoredRow = Object.assign({}, row, {
+            hidden: false,
+            hiddenByDesktopVisibleSet: false,
+            reShownByDesktopVisibleSetAt: now,
+            updatedAt: cleanString(row.updatedAt || row.updated_at || now),
+            meta: Object.assign({}, safeObject(row.meta), {
+              hidden: false,
+              hiddenByDesktopVisibleSet: false,
+              reShownByDesktopVisibleSetAt: now
+            })
+          });
+          delete hiddenBag[folderId];
+          result.reShownByDesktopVisibleSetCount += 1;
+          result.reShownByDesktopVisibleSetRows.push(summarizeVisibleParityFolder(restoredRow, {
+            reShownByDesktopVisibleSet: true
+          }));
+          changed = true;
+          return restoredRow;
+        }
+        return row;
+      }
+      if (!isFolderVisibleForParity(row)) return row;
+      if (isProtectedFolderForVisibleParity(row)) {
+        result.skippedProtectedCount += 1;
+        return row;
+      }
+      if (isPendingChromeCreatedForVisibleParity(row, snapshot)) {
+        result.skippedPendingChromeCreatedCount += 1;
+        return row;
+      }
+      var hiddenRow = Object.assign({}, row, {
+        hidden: true,
+        hiddenByDesktopVisibleSet: true,
+        desktopVisibleSetMissing: true,
+        hiddenByDesktopVisibleSetAt: now,
+        desktopVisibleSetImportedAt: cleanString(snapshot.importedAt),
+        desktopVisibleSetSourceExportedAt: cleanString(snapshot.sourceExportedAt),
+        meta: Object.assign({}, safeObject(row.meta), {
+          hidden: true,
+          hiddenByDesktopVisibleSet: true,
+          desktopVisibleSetMissing: true,
+          hiddenByDesktopVisibleSetAt: now,
+          desktopVisibleSetImportedAt: cleanString(snapshot.importedAt),
+          desktopVisibleSetSourceExportedAt: cleanString(snapshot.sourceExportedAt),
+          visibleStateOnlyHide: true,
+          noTombstoneApply: true,
+          noTombstoneCreate: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true
+        })
+      });
+      hiddenBag[folderId] = Object.assign({}, marker, summarizeVisibleParityFolder(row, {
+        hiddenByDesktopVisibleSet: true,
+        desktopVisibleSetMissing: true,
+        hiddenAt: now,
+        desktopVisibleSetImportedAt: cleanString(snapshot.importedAt),
+        desktopVisibleSetSourceExportedAt: cleanString(snapshot.sourceExportedAt),
+        visibleStateOnlyHide: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true
+      }));
+      result.hiddenByDesktopVisibleSetCount += 1;
+      result.hiddenByDesktopVisibleSetRows.push(summarizeVisibleParityFolder(hiddenRow, {
+        hiddenByDesktopVisibleSet: true,
+        desktopVisibleSetMissing: true
+      }));
+      changed = true;
+      return hiddenRow;
+    });
+    result.hiddenByDesktopVisibleSetRows = result.hiddenByDesktopVisibleSetRows.slice(0, 80);
+    result.reShownByDesktopVisibleSetRows = result.reShownByDesktopVisibleSetRows.slice(0, 80);
+    if (changed) {
+      var next = Object.assign({}, current, {
+        folders: nextRows,
+        hiddenByDesktopVisibleSet: hiddenBag,
+        updatedAt: now
+      });
+      await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    }
+    result.writesPerformed = changed ? 1 : 0;
+    return result;
+  }
+
+  function mergeDesktopVisibleSetHideSummary(metadataSummary, hideResult) {
+    var summary = Object.assign({}, safeObject(metadataSummary));
+    var hide = safeObject(hideResult);
+    var changedFolderIds = Array.isArray(summary.changedFolderIds) ? summary.changedFolderIds.slice() : [];
+    var changedFields = Array.isArray(summary.changedFields) ? summary.changedFields.slice() : [];
+    var rows = []
+      .concat(Array.isArray(hide.hiddenByDesktopVisibleSetRows) ? hide.hiddenByDesktopVisibleSetRows : [])
+      .concat(Array.isArray(hide.reShownByDesktopVisibleSetRows) ? hide.reShownByDesktopVisibleSetRows : []);
+    rows.forEach(function (row) { addUniqueFolderId(changedFolderIds, row && row.folderId); });
+    if (numberOrZero(hide.hiddenByDesktopVisibleSetCount) > 0) addUnique(changedFields, 'desktop-visible-set-hide');
+    if (numberOrZero(hide.reShownByDesktopVisibleSetCount) > 0) addUnique(changedFields, 'desktop-visible-set-reshow');
+    summary.changedFolderIds = changedFolderIds;
+    summary.changedFields = changedFields;
+    summary.changedFolderCount = changedFolderIds.length || numberOrZero(summary.changedFolderCount);
+    if (numberOrZero(hide.hiddenByDesktopVisibleSetCount) > 0 || numberOrZero(hide.reShownByDesktopVisibleSetCount) > 0) {
+      summary.hasDesktopVisibleSetOverlay = true;
+      summary.hasOnlyVisualUpdates = false;
+    }
+    return summary;
+  }
+
   async function readLatestBundleForVisibleParityDiagnostics() {
     if (!state.handle) {
       return {
@@ -1171,6 +1340,14 @@
     var desktopSnapshot = storedSnapshot || latestSnapshot;
     var desktopVisibleMap = visibleParityRowMap(desktopSnapshot && desktopSnapshot.rows);
     var desktopIds = Object.keys(desktopVisibleMap).sort();
+    var localMirrorForOverlay = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var hiddenByDesktopVisibleSetBag = safeObject(localMirrorForOverlay.hiddenByDesktopVisibleSet);
+    var hiddenByDesktopVisibleSetRows = Object.keys(hiddenByDesktopVisibleSetBag).sort().map(function (folderId) {
+      return summarizeVisibleParityFolder(Object.assign({ folderId: folderId, id: folderId }, safeObject(hiddenByDesktopVisibleSetBag[folderId])), {
+        hiddenByDesktopVisibleSet: true,
+        desktopVisibleSetMissing: true
+      });
+    });
     var provider = H2O && H2O.Library && H2O.Library.FolderParity;
     var model = provider && typeof provider.getDisplayModel === 'function'
       ? await provider.getDisplayModel({ fresh: opts.fresh !== false, reason: cleanString(opts.reason) || 'phase5a0-visible-folder-parity' })
@@ -1178,7 +1355,6 @@
     var canonicalRows = Array.isArray(model && model.canonicalRows) ? model.canonicalRows : [];
     var chromeVisibleMap = visibleParityRowMap(canonicalRows);
     var chromeIds = Object.keys(chromeVisibleMap).sort();
-    var exportedAtMs = parseTimeMs(latest.exportedAt);
     var chromeOnly = [];
     var desktopOnly = [];
     var protectedRows = [];
@@ -1190,9 +1366,7 @@
       var protectedRow = isProtectedFolderForVisibleParity(chromeRow);
       if (protectedRow) protectedRows.push(summarizeVisibleParityFolder(chromeRow, { reason: 'protected-system-folder' }));
       if (desktopVisibleMap[chromeId]) continue;
-      var rowUpdatedMs = folderMetadataRowTimestampMs(chromeRow);
-      var pendingChromeCreated = isChromeCreatedFolderForVisibleParity(chromeRow) &&
-        (!exportedAtMs || (rowUpdatedMs && rowUpdatedMs > exportedAtMs));
+      var pendingChromeCreated = isPendingChromeCreatedForVisibleParity(chromeRow, desktopSnapshot || { sourceExportedAt: latest.exportedAt });
       var summary = summarizeVisibleParityFolder(chromeRow, {
         protected: protectedRow,
         pendingChromeCreated: pendingChromeCreated,
@@ -1246,7 +1420,8 @@
       candidateStaleRows: candidateStaleRows,
       hiddenByDeleteReceiptCount: hiddenByDeleteReceiptCount,
       reShownByRestoreReceiptCount: reShownByRestoreReceiptCount,
-      hiddenByDesktopVisibleSetCount: 0,
+      hiddenByDesktopVisibleSetCount: hiddenByDesktopVisibleSetRows.length,
+      hiddenByDesktopVisibleSetRows: hiddenByDesktopVisibleSetRows,
       pendingChromeCreatedCount: pendingChromeCreatedRows.length,
       pendingChromeCreatedRows: pendingChromeCreatedRows,
       protectedFolderCount: protectedRows.length,
@@ -2244,6 +2419,9 @@
     var folderRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundleInput);
     state.lastFolderRestoreReceiptImport = folderRestoreReceiptImport;
     folderMetadataChangeSummary = mergeFolderRestoreReceiptReShowSummary(folderMetadataChangeSummary, folderRestoreReceiptImport);
+    var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(normalized.bundle, nowIso());
+    var desktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(desktopVisibleFolderSet);
+    folderMetadataChangeSummary = mergeDesktopVisibleSetHideSummary(folderMetadataChangeSummary, desktopVisibleSetHide);
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2273,6 +2451,8 @@
       importSummary: importSummary,
       folderDeleteReceiptImport: folderDeleteReceiptImport,
       folderRestoreReceiptImport: folderRestoreReceiptImport,
+      desktopVisibleFolderSet: desktopVisibleFolderSet,
+      desktopVisibleSetHide: desktopVisibleSetHide,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -4292,6 +4472,8 @@
           var alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle);
           alreadyRefreshSummary = mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport);
           var alreadyDesktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, nowIso());
+          var alreadyDesktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(alreadyDesktopVisibleFolderSet);
+          alreadyRefreshSummary = mergeDesktopVisibleSetHideSummary(alreadyRefreshSummary, alreadyDesktopVisibleSetHide);
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
@@ -4342,6 +4524,7 @@
             folderDeleteReceiptImport: alreadyReceiptImport,
             folderRestoreReceiptImport: alreadyRestoreReceiptImport,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
+            desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -4392,6 +4575,7 @@
             folderRestoreReceiptImport: alreadyPropagation.folderRestoreReceiptImport,
             convergence: alreadyPropagation.convergence,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
+            desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
@@ -4590,6 +4774,7 @@
         folderDeleteReceiptImport: propagation && propagation.folderDeleteReceiptImport,
         folderRestoreReceiptImport: propagation && propagation.folderRestoreReceiptImport,
         desktopVisibleFolderSet: desktopVisibleFolderSet,
+        desktopVisibleSetHide: propagation && propagation.desktopVisibleSetHide,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,

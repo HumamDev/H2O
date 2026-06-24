@@ -63,7 +63,7 @@ const diagnosticBody = functionBody(chromeImport, 'diagnoseVisibleFolderParity')
   'zz-4d4-delete-restore',
   'hiddenByDeleteReceiptCount',
   'reShownByRestoreReceiptCount',
-  'hiddenByDesktopVisibleSetCount: 0',
+  'hiddenByDesktopVisibleSetCount',
   'pendingChromeCreatedCount',
   'protectedFolderCount',
   'noTombstoneApplyOnChrome: true',

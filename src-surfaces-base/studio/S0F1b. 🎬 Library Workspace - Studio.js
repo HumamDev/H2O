@@ -669,7 +669,11 @@
   function filterFolderStateForNormalDisplay(stateInput, includeStoredDynamic = false) {
     const src = stateInput && typeof stateInput === 'object' ? stateInput : { folders: [], items: {} };
     const folders = (Array.isArray(src.folders) ? src.folders : [])
-      .filter((folder) => isPrimaryCanonicalFolder(folder) || (includeStoredDynamic && isStoredFolderStateRow(folder)));
+      .filter((folder) => {
+        const meta = folderMetaOf(folder);
+        if (folder?.hidden === true || meta.hidden === true) return false;
+        return isPrimaryCanonicalFolder(folder) || (includeStoredDynamic && isStoredFolderStateRow(folder));
+      });
     const ids = new Set(folders.map((folder) => folderIdOf(folder)).filter(Boolean));
     const items = {};
     Object.keys(src.items || {}).forEach((folderId) => {

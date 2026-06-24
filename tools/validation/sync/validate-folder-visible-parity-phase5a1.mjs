@@ -97,7 +97,7 @@ const diagnosticBody = functionBody(chromeImport, 'diagnoseVisibleFolderParity')
   'desktopVisibleSetImportedAt',
   'desktopVisibleSetSourceExportedAt',
   'desktopVisibleFolderIds',
-  'hiddenByDesktopVisibleSetCount: 0',
+  'hiddenByDesktopVisibleSetCount',
   'noTombstoneApplyOnChrome: true',
   'noTombstoneCreateOnChrome: true',
 ].forEach((needle) => assertContains(diagnosticBody, needle, `visible parity diagnostic stored set ${needle}`));
