@@ -446,6 +446,101 @@
 
   function getAll() { return listTombstones(); }
 
+  function normalizeExactIdList(ids) {
+    if (!Array.isArray(ids)) return [];
+    var seen = Object.create(null);
+    var out = [];
+    ids.forEach(function (value) {
+      var id = cleanString(value);
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      out.push(id);
+    });
+    return out;
+  }
+
+  function purgeFolderTombstonesByIds(ids, options) {
+    var requestedIds = normalizeExactIdList(ids);
+    var opts = options && typeof options === 'object' ? options : {};
+    var result = {
+      schema: 'h2o.studio.folder-tombstone-purge.v1',
+      ok: false,
+      status: 'not-run',
+      desktopOnly: true,
+      exactTombstoneIdsOnly: true,
+      recordKind: 'folder',
+      restoredRowsRejected: true,
+      receiptDeletedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      requestedCount: requestedIds.length,
+      matchedCount: 0,
+      purgedCount: 0,
+      alreadyPurgedSkippedCount: 0,
+      blockers: [],
+      warnings: [],
+    };
+    if (opts.dryRun !== false) {
+      result.status = 'dry-run-false-required';
+      result.blockers.push('dry-run-false-required');
+      return Promise.resolve(result);
+    }
+    if (!requestedIds.length) {
+      result.status = 'no-tombstone-ids';
+      result.blockers.push('no-tombstone-ids');
+      return Promise.resolve(result);
+    }
+    if (requestedIds.length > MAX_LIST_LIMIT) {
+      result.status = 'too-many-tombstone-ids';
+      result.blockers.push('too-many-tombstone-ids');
+      return Promise.resolve(result);
+    }
+    return ensureReady()
+      .then(function () {
+        var placeholders = requestedIds.map(function () { return '?'; }).join(', ');
+        return sqlSelect(
+          'SELECT tombstone_id FROM ' + TABLE + ' WHERE record_kind = ? AND restored_at IS NULL AND tombstone_id IN (' + placeholders + ')',
+          ['folder'].concat(requestedIds)
+        ).then(function (rows) {
+          var matched = (Array.isArray(rows) ? rows : []).map(function (row) { return cleanString(row.tombstone_id); }).filter(Boolean);
+          result.matchedCount = matched.length;
+          result.alreadyPurgedSkippedCount = Math.max(0, requestedIds.length - matched.length);
+          if (!matched.length) {
+            result.ok = true;
+            result.status = 'folder-tombstones-already-purged';
+            result.purgedCount = 0;
+            return result;
+          }
+          var deletePlaceholders = matched.map(function () { return '?'; }).join(', ');
+          return sqlExecute(
+            'DELETE FROM ' + TABLE + ' WHERE record_kind = ? AND restored_at IS NULL AND tombstone_id IN (' + deletePlaceholders + ')',
+            ['folder'].concat(matched)
+          ).then(function (deleteResult) {
+            result.purgedCount = readRowsAffected(deleteResult);
+            result.ok = true;
+            result.status = 'folder-tombstones-purged';
+            recordWrite('purgeFolderTombstonesByIds');
+            notifySubscribers({
+              source: 'desktop-operator-purge',
+              op: 'purgeFolderTombstonesByIds',
+              recordKind: 'folder',
+              purgedCount: result.purgedCount,
+            });
+            return result;
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('purgeFolderTombstonesByIds', e);
+        result.status = 'folder-tombstone-purge-failed';
+        result.blockers.push('folder-tombstone-purge-failed');
+        result.reason = String((e && e.message) || e);
+        return result;
+      });
+  }
+
   function countByKind(filters) {
     return ensureReady()
       .then(function () {
@@ -773,6 +868,7 @@
     getTombstone: getTombstone,
     getById: getById,
     listTombstones: listTombstones,
+    purgeFolderTombstonesByIds: purgeFolderTombstonesByIds,
     countByKind: countByKind,
     markRestored: markRestored,
     validateTombstone: validateTombstone,

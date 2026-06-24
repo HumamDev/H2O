@@ -74,6 +74,9 @@
   var PHASE4A_FOLDER_SOFT_DELETE_PHASE = 'desktop-local-soft-delete';
   var PHASE4D3_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted-diagnostics.v1';
   var PHASE4D3_RETENTION_DAYS = 30;
+  var PHASE6A_PURGE_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-preview.v1';
+  var PHASE6A_PURGE_RESULT_SCHEMA = 'h2o.studio.folder-purge-result.v1';
+  var PHASE6A_PURGE_TOKEN_TTL_MS = 5 * 60 * 1000;
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
@@ -117,6 +120,10 @@
       lastBindingSkippedCount: 0,
       lastRestoreWarnings: [],
       purgeBlocked: true,
+    },
+    phase6a: {
+      lastPreview: null,
+      lastCommit: null,
     },
   };
 
@@ -1462,10 +1469,275 @@
       retentionCountdownStatus: retentionStatus,
       retentionEnforcement: 'deferred',
       purgeEligible: false,
+      operatorPurgeAvailable: false,
+      automaticPurge: false,
       restorePolicy: 'allowed-while-purge-deferred',
       restoreAvailableReason: restoreAvailableReasonForRetention(retentionStatus, restoreAvailable, folderId),
       purgeBlockedReason: 'purge-phase-deferred',
     };
+  }
+
+  function makePurgeToken() {
+    try {
+      var c = global.crypto || null;
+      if (c && typeof c.randomUUID === 'function') return 'folder-purge-preview:' + c.randomUUID();
+    } catch (_) { /* ignore */ }
+    return 'folder-purge-preview:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+
+  function makePurgeBase(schema, status) {
+    return {
+      schema: schema,
+      phase: 'phase6a.desktop-folder-purge',
+      ok: false,
+      status: status || 'not-run',
+      observedAt: new Date().toISOString(),
+      desktopOnly: true,
+      chromeAuthority: false,
+      automaticPurge: false,
+      operatorConfirmedPurge: false,
+      purgeDeletesTombstoneRecoveryRecordsOnly: true,
+      noChromeRowsDeleted: true,
+      noActiveVisibleFolderDelete: true,
+      noProtectedSystemFolderDelete: true,
+      beforeCount: 0,
+      candidateCount: 0,
+      purgedCount: 0,
+      skippedCount: 0,
+      protectedSkippedCount: 0,
+      activeVisibleSkippedCount: 0,
+      restoredSkippedCount: 0,
+      alreadyPurgedSkippedCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      receiptDeletedCount: 0,
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function addWarning(list, code, extra) {
+    var clean = cleanString(code);
+    if (!clean) return;
+    var item = Object.assign({ code: clean }, safeMeta(extra));
+    list.push(item);
+  }
+
+  function folderPurgeProtectionCodes(folderId, folder, row) {
+    var codes = [];
+    var id = cleanString(folderId);
+    var nameKey = normalizeFolderName((folder && folder.name) || (row && row.folderName) || id);
+    if (!id) addBlocker(codes, 'folder-identity-missing');
+    if (id === 'unfiled' || nameKey === 'unfiled') addBlocker(codes, 'unfiled-folder');
+    if (RESERVED_FOLDER_NAME_KEYS[nameKey]) addBlocker(codes, 'system-folder');
+    folderPhase4aBlockers(folder || { id: id, name: row && row.folderName }, id).forEach(function (code) {
+      addBlocker(codes, code);
+    });
+    return codes;
+  }
+
+  function summarizePurgeRow(row, reason) {
+    return {
+      tombstoneId: cleanString(row && row.tombstoneId),
+      folderId: cleanString(row && row.folderId),
+      folderName: cleanString(row && row.folderName),
+      deletedAt: cleanString(row && row.deletedAt),
+      retentionCountdownStatus: cleanString(row && row.retentionCountdownStatus),
+      purgeEligible: row && row.purgeEligible === true,
+      operatorPurgeAvailable: row && row.operatorPurgeAvailable === true,
+      skipReason: cleanString(reason),
+    };
+  }
+
+  function readVisibleFolderIdSet() {
+    return listFolders({ limit: 5000 }).then(function (rows) {
+      var set = Object.create(null);
+      (Array.isArray(rows) ? rows : []).forEach(function (folder) {
+        var id = getFolderId(folder);
+        if (id) set[id] = true;
+      });
+      return set;
+    });
+  }
+
+  async function buildRecentlyDeletedPurgePlan(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var tombstones = getTombstoneStore();
+    var limit = Math.max(1, Math.min(1000, Number(options.limit) || 500));
+    var base = makePurgeBase(PHASE6A_PURGE_PREVIEW_SCHEMA, 'folder-purge-previewed');
+    base.preview = true;
+    base.reason = cleanString(options.reason);
+    base.candidates = [];
+    base.skipped = [];
+    if (!tombstones || typeof tombstones.list !== 'function') {
+      addBlocker(base.blockers, 'tombstone-store-unavailable');
+      base.status = 'tombstone-store-unavailable';
+      return base;
+    }
+    try {
+      var visibleSet = await readVisibleFolderIdSet();
+      var rawRows = await tombstones.list({ recordKind: 'folder', includeRestored: true, limit: limit });
+      var rows = (Array.isArray(rawRows) ? rawRows : [])
+        .filter(function (row) { return cleanString(row && row.recordKind) === 'folder'; })
+        .map(recentlyDeletedRowFromTombstone);
+      base.beforeCount = rows.length;
+      for (var i = 0; i < rows.length; i += 1) {
+        var row = rows[i];
+        var folderId = cleanString(row.folderId);
+        var tombstoneId = cleanString(row.tombstoneId);
+        var restored = !!cleanString(row.restoredAt) || row.restoreStatus === 'restored';
+        if (restored) {
+          base.restoredSkippedCount += 1;
+          base.skipped.push(summarizePurgeRow(row, 'already-restored'));
+          continue;
+        }
+        if (!folderId || !tombstoneId) {
+          base.skippedCount += 1;
+          base.skipped.push(summarizePurgeRow(row, 'folder-identity-missing'));
+          continue;
+        }
+        if (visibleSet[folderId]) {
+          base.activeVisibleSkippedCount += 1;
+          base.skipped.push(summarizePurgeRow(row, 'active-visible-folder'));
+          continue;
+        }
+        var folder = await getById(folderId);
+        var protectionCodes = folderPurgeProtectionCodes(folderId, folder, row);
+        if (protectionCodes.length) {
+          base.protectedSkippedCount += 1;
+          base.skipped.push(summarizePurgeRow(row, protectionCodes[0]));
+          continue;
+        }
+        row.purgeEligible = true;
+        row.operatorPurgeAvailable = true;
+        row.purgeBlocked = true;
+        row.automaticPurge = false;
+        row.purgeBlockedReason = 'automatic-purge-deferred-operator-confirmation-required';
+        base.candidates.push(summarizePurgeRow(row, ''));
+      }
+      base.candidateCount = base.candidates.length;
+      base.skippedCount = base.skipped.length;
+      base.ok = true;
+      base.status = 'folder-purge-previewed';
+      return base;
+    } catch (e) {
+      recordError('buildRecentlyDeletedPurgePlan', e);
+      base.status = 'folder-purge-preview-failed';
+      addBlocker(base.blockers, 'folder-purge-preview-failed');
+      base.reason = String((e && e.message) || e);
+      return base;
+    }
+  }
+
+  async function previewRecentlyDeletedFolderPurge(opts) {
+    var result = await buildRecentlyDeletedPurgePlan(opts);
+    if (result.ok === true) {
+      var token = makePurgeToken();
+      result.previewToken = token;
+      result.previewExpiresAt = new Date(Date.now() + PHASE6A_PURGE_TOKEN_TTL_MS).toISOString();
+      state.phase6a.lastPreview = {
+        token: token,
+        createdAt: Date.now(),
+        candidateCount: result.candidateCount,
+        candidateTombstoneIds: result.candidates.map(function (row) { return row.tombstoneId; }),
+      };
+    }
+    return result;
+  }
+
+  async function purgeRecentlyDeletedFolders(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var result = makePurgeBase(PHASE6A_PURGE_RESULT_SCHEMA, 'not-run');
+    result.reason = cleanString(opts.reason);
+    var previewToken = cleanString(opts.previewToken || opts.confirmationToken);
+    var expectedCount = Number(opts.expectedCount ?? opts.expectedPurgeCandidateCount ?? opts.expectedCandidateCount);
+    if (opts.dryRun !== false) addBlocker(result.blockers, 'dry-run-false-required');
+    if (!result.reason || result.reason.length < 8) addBlocker(result.blockers, 'explicit-reason-required');
+    if (!previewToken) addBlocker(result.blockers, 'preview-token-required');
+    if (!Number.isFinite(expectedCount) || Math.floor(expectedCount) !== expectedCount || expectedCount < 0) {
+      addBlocker(result.blockers, 'expected-count-required');
+    }
+    var last = state.phase6a.lastPreview;
+    if (!last || last.token !== previewToken) addBlocker(result.blockers, 'invalid-preview-token');
+    if (last && Date.now() - Number(last.createdAt || 0) > PHASE6A_PURGE_TOKEN_TTL_MS) {
+      addBlocker(result.blockers, 'preview-token-expired');
+    }
+    if (result.blockers.length) {
+      result.status = result.blockers[0];
+      return result;
+    }
+    var plan = await buildRecentlyDeletedPurgePlan({ limit: 1000, reason: result.reason });
+    result.beforeCount = plan.beforeCount;
+    result.candidateCount = plan.candidateCount;
+    result.skippedCount = plan.skippedCount;
+    result.protectedSkippedCount = plan.protectedSkippedCount;
+    result.activeVisibleSkippedCount = plan.activeVisibleSkippedCount;
+    result.restoredSkippedCount = plan.restoredSkippedCount;
+    result.candidates = plan.candidates;
+    result.skipped = plan.skipped;
+    if (plan.ok !== true) {
+      result.status = plan.status || 'folder-purge-preview-failed';
+      plan.blockers.forEach(function (code) { addBlocker(result.blockers, code); });
+      return result;
+    }
+    if (plan.candidateCount !== expectedCount || plan.candidateCount !== last.candidateCount) {
+      result.status = 'expected-count-mismatch';
+      addBlocker(result.blockers, 'expected-count-mismatch');
+      return result;
+    }
+    var currentIds = plan.candidates.map(function (row) { return row.tombstoneId; }).sort();
+    var previewIds = last.candidateTombstoneIds.slice().sort();
+    if (currentIds.join('\n') !== previewIds.join('\n')) {
+      result.status = 'preview-candidate-set-changed';
+      addBlocker(result.blockers, 'preview-candidate-set-changed');
+      return result;
+    }
+    if (!currentIds.length) {
+      result.ok = true;
+      result.status = 'no-purge-candidates';
+      result.operatorConfirmedPurge = true;
+      state.phase6a.lastCommit = result;
+      return result;
+    }
+    var tombstones = getTombstoneStore();
+    if (!tombstones || typeof tombstones.purgeFolderTombstonesByIds !== 'function') {
+      result.status = 'tombstone-purge-api-unavailable';
+      addBlocker(result.blockers, 'tombstone-purge-api-unavailable');
+      return result;
+    }
+    var purgeResult = await tombstones.purgeFolderTombstonesByIds(currentIds, {
+      dryRun: false,
+      reason: result.reason,
+      source: 'desktop-recently-deleted-operator-purge',
+    });
+    result.tombstoneStoreResult = purgeResult;
+    result.purgedCount = Number(purgeResult && purgeResult.purgedCount) || 0;
+    result.alreadyPurgedSkippedCount = Number(purgeResult && purgeResult.alreadyPurgedSkippedCount) || 0;
+    if (!purgeResult || purgeResult.ok !== true) {
+      result.status = cleanString(purgeResult && purgeResult.status) || 'folder-purge-failed';
+      (Array.isArray(purgeResult && purgeResult.blockers) ? purgeResult.blockers : []).forEach(function (code) {
+        addBlocker(result.blockers, code && (code.code || code));
+      });
+      if (!result.blockers.length) addBlocker(result.blockers, 'folder-purge-failed');
+      return result;
+    }
+    result.ok = true;
+    result.status = 'folder-tombstones-purged';
+    result.operatorConfirmedPurge = true;
+    state.phase6a.lastPreview = null;
+    state.phase6a.lastCommit = result;
+    recordWrite('purgeRecentlyDeletedFolders');
+    setPhase4aState('purgeRecentlyDeletedFolders', result.status, '', '', -result.purgedCount);
+    notifySubscribers({
+      source: 'desktop-recently-deleted-operator-purge',
+      op: 'purgeRecentlyDeletedFolders',
+      purgedCount: result.purgedCount,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    });
+    return result;
   }
 
   async function listRecentlyDeletedFolders(opts) {
@@ -1510,6 +1782,22 @@
       result.rows = (Array.isArray(rows) ? rows : [])
         .filter(function (row) { return cleanString(row && row.recordKind) === 'folder'; })
         .map(recentlyDeletedRowFromTombstone);
+      var purgePlan = await buildRecentlyDeletedPurgePlan({ limit: limit, reason: 'recently-deleted-diagnostics' });
+      var purgeCandidateSet = Object.create(null);
+      (Array.isArray(purgePlan.candidates) ? purgePlan.candidates : []).forEach(function (candidate) {
+        var id = cleanString(candidate && candidate.tombstoneId);
+        if (id) purgeCandidateSet[id] = true;
+      });
+      result.rows = result.rows.map(function (row) {
+        if (!purgeCandidateSet[cleanString(row && row.tombstoneId)]) return row;
+        return Object.assign({}, row, {
+          purgeEligible: true,
+          operatorPurgeAvailable: true,
+          automaticPurge: false,
+          purgeBlocked: true,
+          purgeBlockedReason: 'automatic-purge-deferred-operator-confirmation-required',
+        });
+      });
       result.folderTombstoneCount = result.rows.length;
       result.activeTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'active'; }).length;
       result.restoredTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'restored'; }).length;
@@ -1518,9 +1806,34 @@
       result.restoredRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'restored'; }).length;
       result.unknownRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'unknown'; }).length;
       result.restoreAvailableCount = result.rows.filter(function (row) { return row.restoreAvailable === true; }).length;
-      result.purgeEligibleCount = 0;
+      result.purgeEligibleCount = result.rows.filter(function (row) { return row.purgeEligible === true; }).length;
       result.purgeBlockedCount = result.rows.filter(function (row) { return row.purgeBlocked === true; }).length;
       result.hardDeleteBlockedCount = result.rows.filter(function (row) { return row.hardDeleteBlocked === true; }).length;
+      result.operatorPurgeAvailableCount = result.purgeEligibleCount;
+      result.automaticPurge = false;
+      result.automaticPurgeBlocked = true;
+      result.operatorPurgeAvailable = result.purgeEligibleCount > 0;
+      result.purgePolicy = 'operator-confirmed-tombstone-recovery-record-purge';
+      result.purgePreviewApi = 'previewRecentlyDeletedFolderPurge';
+      result.purgeCommitApi = 'purgeRecentlyDeletedFolders';
+      result.purgeDiagnostics = {
+        schema: PHASE6A_PURGE_PREVIEW_SCHEMA,
+        phase: 'phase6a.desktop-folder-purge',
+        beforeCount: purgePlan.beforeCount,
+        candidateCount: purgePlan.candidateCount,
+        skippedCount: purgePlan.skippedCount,
+        protectedSkippedCount: purgePlan.protectedSkippedCount,
+        activeVisibleSkippedCount: purgePlan.activeVisibleSkippedCount,
+        restoredSkippedCount: purgePlan.restoredSkippedCount,
+        chatDeletedCount: 0,
+        snapshotDeletedCount: 0,
+        assetDeletedCount: 0,
+        hardDeletedFolderRowCount: 0,
+        receiptDeletedCount: 0,
+        desktopOnly: true,
+        chromeAuthority: false,
+        automaticPurge: false,
+      };
       return result;
     } catch (e) {
       recordWarning('Phase4D.3 recently deleted diagnose failed: ' + ((e && e.message) || e));
@@ -2183,6 +2496,8 @@
     diagnosePhase4aTombstones: diagnosePhase4aTombstones,
     listRecentlyDeletedFolders: listRecentlyDeletedFolders,
     diagnoseRecentlyDeletedFolders: listRecentlyDeletedFolders,
+    previewRecentlyDeletedFolderPurge: previewRecentlyDeletedFolderPurge,
+    purgeRecentlyDeletedFolders: purgeRecentlyDeletedFolders,
     remove: softDeleteEmptyFolder,
     'delete': softDeleteEmptyFolder,
     bindChat: bindChat,
