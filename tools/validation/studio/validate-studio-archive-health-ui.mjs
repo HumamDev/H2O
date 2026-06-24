@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Validator for the C6.2 read-only Saved Chat Archive Health panel summary.
+// Validator for the C6.3 read-only Saved Chat Archive Health panel details.
 //
 // Static-checks the helper module + the studio.js Settings wiring, and runs a
 // pure behavioral check of formatting/copy helpers (no DOM needed). Proves the
-// summary cards, read-only boundaries, and that no C6.3 package details surface
-// or mutation actions were added.
+// summary cards, package details list, read-only boundaries, and that no
+// mutation/action surface was added.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -72,6 +72,10 @@ check('helper module exists and registers the public API', () => {
   assert.match(helperSrc, /formatArchiveHealthSummary/);
   assert.match(helperSrc, /formatArchiveHealthSections/);
   assert.match(helperSrc, /renderArchiveHealthCounts/);
+  assert.match(helperSrc, /formatPackageDetailsRows/);
+  assert.match(helperSrc, /renderPackageDetails/);
+  assert.match(helperSrc, /summarizePackageDbChecks/);
+  assert.match(helperSrc, /summarizePackageAssetChecks/);
   assert.match(helperSrc, /copyArchiveHealthReport/);
 });
 
@@ -100,12 +104,15 @@ check('helper implements all six status-shell states', () => {
   for (const s of ['copyStatus', 'copied']) {
     assert.ok(helperSrc.includes(s), `copy state missing: ${s}`);
   }
+  for (const s of ['detailsExpanded', 'visibleLimit']) {
+    assert.ok(helperSrc.includes(s), `details state missing: ${s}`);
+  }
 });
 
 check('helper is read-only: no mutation/repair/import/sync/CAS/DB-write/package-write', () => {
   // Scan comment-stripped CODE (the header prose legitimately names the non-goals).
   for (const banned of [
-    'repair', 'recover', 'import', 'delete', 'remove(', 'overwrite',
+    'repair', 'recover', 'import', 'delete', 'remove(', 'overwrite', 'restore', 'rebuild',
     'writeSavedChatPackageV1', 'putAssetBytes', 'getAssetBytes',
     'plugin:fs|write', 'plugin:sql', 'upsert', 'linkToTurn',
     'H2O.Studio.sync', 'webdav', 'chrome.',
@@ -139,9 +146,32 @@ check('helper copy path uses safe clipboard and does not create/download/save fi
   }
 });
 
-check('helper still has no package details table/list or repair actions', () => {
-  for (const deferred of ['<table', 'packagePath', 'data-archive-health-package', 'Repair', 'Import', 'Delete', 'Overwrite']) {
-    assert.ok(!helperCode.includes(deferred), `C6.3 or action surface leaked into helper: ${deferred}`);
+check('helper has C6.3 read-only package details list, toggle, labels, and cap', () => {
+  assert.ok(helperSrc.includes('Package details'), 'Package details title missing');
+  assert.ok(helperSrc.includes('Show package details'), 'show details toggle missing');
+  assert.ok(helperSrc.includes('Hide package details'), 'hide details toggle missing');
+  assert.ok(helperSrc.includes('data-archive-health-package-details'), 'package details section marker missing');
+  assert.ok(helperSrc.includes('data-archive-health-package-list'), 'package details list marker missing');
+  assert.ok(helperSrc.includes('Showing '), 'Showing N of M packages behavior missing');
+  assert.ok(helperSrc.includes('visibleLimit: 50'), 'visible package cap missing');
+  assert.ok(helperSrc.includes('user-select:text'), 'package path should be selectable/copyable text');
+  assert.ok(!helperCode.includes('<table'), 'package details should not add a table surface');
+  assert.ok(helperSrc.includes('Blockers mean package integrity problems.'), 'blocker wording missing');
+  assert.ok(helperSrc.includes('Warnings usually mean DB/CAS drift. The saved package may still be portable.'), 'calm warning wording missing');
+  for (const label of [
+    'packagePath', 'schemaVersion', 'status', 'chatId', 'snapshotId',
+    'blockers', 'warnings',
+    'chatExists', 'snapshotExists', 'packageIsLatest', 'storeAssetCount',
+    'manifestAssetCount', 'packageAssetCount', 'missingPackageAssets',
+    'missingLiveCasAssets', 'dataImageResidue', 'assetRefMismatches',
+  ]) {
+    assert.ok(helperSrc.includes(label), `package details label missing: ${label}`);
+  }
+});
+
+check('helper has no package action buttons or action labels', () => {
+  for (const deferred of ['Repair', 'Fix', 'Import', 'Recovery', 'Delete', 'Overwrite', 'Open package', 'Restore', 'Rebuild', 'Sync now']) {
+    assert.ok(!helperCode.includes(deferred), `forbidden package action leaked into helper: ${deferred}`);
   }
 });
 
@@ -270,6 +300,104 @@ check('formatArchiveHealthSections returns the four C6.2 count sections', () => 
   assert.match(html, /missingLiveCasAssets/);
   assert.match(html, /dbChecks\.passed/);
   assert.match(html, /repeat\(auto-fit,minmax\(150px,1fr\)\)/);
+});
+
+check('formatPackageDetailsRows sorts by severity and summarizes DB/asset checks defensively', () => {
+  const api = loadHelper();
+  const rows = api.formatPackageDetailsRows({
+    packages: [
+      {
+        packagePath: 'archive/packages/ok.h2ochat',
+        schemaVersion: 2,
+        status: 'ok',
+        chatId: 'chat-ok',
+        snapshotId: 'snap-ok',
+        warnings: [],
+        blockers: [],
+        dbChecks: { chatExists: true, snapshotExists: true, packageIsLatest: true, storeAssetCount: 1 },
+        assetChecks: {
+          manifestAssetCount: 1,
+          packageAssetCount: 1,
+          missingPackageAssets: [],
+          missingLiveCasAssets: [],
+          dataImageResidue: [],
+          assetRefMismatches: [],
+        },
+      },
+      {
+        packagePath: 'archive/packages/blocked.h2ochat',
+        schemaVersion: 2,
+        status: 'blocked',
+        chatId: 'chat-blocked',
+        snapshotId: 'snap-blocked',
+        warnings: [{ code: 'warn' }],
+        blockers: [{ code: 'broken' }],
+        dbChecks: { chatExists: false, snapshotExists: false, packageIsLatest: false, storeAssetCount: 0 },
+        assetChecks: {
+          manifestAssetCount: 2,
+          packageAssetCount: 1,
+          missingPackageAssets: [{ sha256: 'sha256-a' }],
+          missingLiveCasAssets: [{ sha256: 'sha256-b' }],
+          dataImageResidue: [{ path: 'chat.html' }],
+          assetRefMismatches: [{ sha256: 'sha256-c' }],
+        },
+      },
+      {
+        packagePath: 'archive/packages/warn.h2ochat',
+        schemaVersion: 1,
+        status: 'warning',
+        chatId: 'chat-warning',
+        snapshotId: 'snap-warning',
+        warnings: [{ code: 'drift' }],
+        blockers: [],
+      },
+    ],
+  });
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].status, 'blocked');
+  assert.equal(rows[1].status, 'warning');
+  assert.equal(rows[2].status, 'ok');
+  assert.equal(rows[0].blockersCount, 1);
+  assert.equal(rows[0].warningsCount, 1);
+  assert.equal(rows[0].dbChecks.chatExists, false);
+  assert.equal(rows[0].dbChecks.snapshotExists, false);
+  assert.equal(rows[0].dbChecks.packageIsLatest, false);
+  assert.equal(rows[0].dbChecks.storeAssetCount, 0);
+  assert.equal(rows[0].assetChecks.manifestAssetCount, 2);
+  assert.equal(rows[0].assetChecks.packageAssetCount, 1);
+  assert.equal(rows[0].assetChecks.missingPackageAssets, 1);
+  assert.equal(rows[0].assetChecks.missingLiveCasAssets, 1);
+  assert.equal(rows[0].assetChecks.dataImageResidue, 1);
+  assert.equal(rows[0].assetChecks.assetRefMismatches, 1);
+});
+
+check('renderPackageDetails is collapsed by default and expands capped read-only rows', () => {
+  const api = loadHelper();
+  const result = {
+    packages: Array.from({ length: 55 }, (_, i) => ({
+      packagePath: `archive/packages/pkg-${i}.h2ochat`,
+      schemaVersion: i % 2 ? 1 : 2,
+      status: i === 0 ? 'blocked' : i === 1 ? 'warning' : 'ok',
+      chatId: `chat-${i}`,
+      snapshotId: `snap-${i}`,
+      warnings: i === 1 ? [{ code: 'drift' }] : [],
+      blockers: i === 0 ? [{ code: 'broken' }] : [],
+      dbChecks: { chatExists: true, snapshotExists: true, packageIsLatest: true, storeAssetCount: i },
+      assetChecks: { manifestAssetCount: 0, packageAssetCount: 0 },
+    })),
+  };
+  const collapsed = api.renderPackageDetails(result, { detailsExpanded: false, visibleLimit: 50 });
+  assert.match(collapsed, /Package details/);
+  assert.match(collapsed, /Show package details/);
+  assert.doesNotMatch(collapsed, /data-archive-health-package-row/);
+
+  const expanded = api.renderPackageDetails(result, { detailsExpanded: true, visibleLimit: 50 });
+  assert.match(expanded, /Hide package details/);
+  assert.match(expanded, /Showing 50 of 55 packages/);
+  assert.match(expanded, /data-archive-health-package-row/);
+  for (const label of ['packagePath', 'schemaVersion', 'status', 'chatId', 'snapshotId', 'chatExists', 'snapshotExists', 'packageIsLatest', 'storeAssetCount', 'manifestAssetCount', 'packageAssetCount', 'missingPackageAssets', 'missingLiveCasAssets', 'dataImageResidue', 'assetRefMismatches']) {
+    assert.match(expanded, new RegExp(label.replace('.', '\\\\.')));
+  }
 });
 
 await checkAsync('copyArchiveHealthReport pretty-prints JSON via navigator.clipboard.writeText and fails softly', async () => {

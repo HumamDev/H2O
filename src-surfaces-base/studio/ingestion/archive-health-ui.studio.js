@@ -1,9 +1,9 @@
-/* H2O Studio — Saved Chat Archive Health UI (Desktop read-only, Phase C6.2)
+/* H2O Studio — Saved Chat Archive Health UI (Desktop read-only, Phase C6.3)
  *
  * Read-only operator surface shell that renders the existing C5 archive
  * diagnostics into a Settings -> Diagnostics card. C6.2 adds compact summary
- * cards/counts and Copy report JSON. No package details table (C6.3), no runtime
- * evidence (C6.4).
+ * cards/counts and Copy report JSON. C6.3 adds a collapsed read-only package
+ * details list. No runtime evidence (C6.4).
  *
  * Strictly read-only. It only calls the read-only diagnostic API
  * H2O.Studio.ingestion.diagnoseSavedChatArchiveV1 (injected by the caller). It
@@ -17,6 +17,8 @@
  *   formatArchiveHealthSummary(result) -> pure { state, status, pill, headline, explanation }
  *   formatArchiveHealthSections(result) -> pure [{ key, title, note, counts }]
  *   renderArchiveHealthCounts(sections) -> html
+ *   formatPackageDetailsRows(result) -> pure [{ packagePath, status, ... }]
+ *   renderPackageDetails(result, state) -> html
  *   copyArchiveHealthReport(result) -> Promise<{ ok, message }>
  *
  * Contracts: docs/decisions/ADR-0009-chat-saving-architecture.md
@@ -29,7 +31,7 @@
   H2O.Studio = H2O.Studio || {};
   if (H2O.Studio.archiveHealthUi && H2O.Studio.archiveHealthUi.__installed) return;
 
-  var MODULE_VERSION = '0.2.0-phase-c-c6.2';
+  var MODULE_VERSION = '0.3.0-phase-c-c6.3';
 
   var TEXT = {
     title: 'Saved Chat Archive Health',
@@ -45,6 +47,8 @@
     copyButton: 'Copy report JSON',
     copied: 'Report JSON copied.',
     copyError: 'Could not copy report JSON.',
+    showDetails: 'Show package details',
+    hideDetails: 'Hide package details',
   };
 
   /* Non-scary explanations: drift/warnings are not corruption. */
@@ -104,6 +108,11 @@
 
   function countValue(source, key) {
     var value = safeObject(source)[key];
+    return (typeof value === 'number' && isFinite(value)) ? value : 0;
+  }
+
+  function listCount(value) {
+    if (Array.isArray(value)) return value.length;
     return (typeof value === 'number' && isFinite(value)) ? value : 0;
   }
 
@@ -194,6 +203,131 @@
     return out;
   }
 
+  function summarizePackageDbChecks(packageDiagnostic) {
+    var db = safeObject(packageDiagnostic && packageDiagnostic.dbChecks);
+    return {
+      chatExists: db.chatExists === true,
+      snapshotExists: db.snapshotExists === true,
+      packageIsLatest: db.packageIsLatest === true ? true : db.packageIsLatest === false ? false : null,
+      storeAssetCount: typeof db.storeAssetCount === 'number' && isFinite(db.storeAssetCount) ? db.storeAssetCount : null,
+    };
+  }
+
+  function summarizePackageAssetChecks(packageDiagnostic) {
+    var assets = safeObject(packageDiagnostic && packageDiagnostic.assetChecks);
+    return {
+      manifestAssetCount: countValue(assets, 'manifestAssetCount'),
+      packageAssetCount: countValue(assets, 'packageAssetCount'),
+      missingPackageAssets: listCount(assets.missingPackageAssets),
+      missingLiveCasAssets: listCount(assets.missingLiveCasAssets),
+      dataImageResidue: listCount(assets.dataImageResidue),
+      assetRefMismatches: listCount(assets.assetRefMismatches),
+    };
+  }
+
+  function packageSeverity(status) {
+    status = String(status || '').toLowerCase();
+    if (status === 'blocked') return 0;
+    if (status === 'warning' || status === 'partial') return 1;
+    if (status === 'ok') return 2;
+    if (status === 'empty') return 3;
+    return 4;
+  }
+
+  function formatPackageDetailsRows(result) {
+    var packages = Array.isArray(result && result.packages) ? result.packages : [];
+    return packages.map(function (pkg, index) {
+      pkg = safeObject(pkg);
+      var blockers = Array.isArray(pkg.blockers) ? pkg.blockers : [];
+      var warnings = Array.isArray(pkg.warnings) ? pkg.warnings : [];
+      return {
+        index: index,
+        packagePath: String(pkg.packagePath || ''),
+        schemaVersion: pkg.schemaVersion == null ? '' : String(pkg.schemaVersion),
+        status: String(pkg.status || 'unknown'),
+        blockersCount: blockers.length,
+        warningsCount: warnings.length,
+        chatId: String(pkg.chatId || ''),
+        snapshotId: String(pkg.snapshotId || ''),
+        dbChecks: summarizePackageDbChecks(pkg),
+        assetChecks: summarizePackageAssetChecks(pkg),
+      };
+    }).sort(function (a, b) {
+      var severity = packageSeverity(a.status) - packageSeverity(b.status);
+      if (severity) return severity;
+      if (b.blockersCount !== a.blockersCount) return b.blockersCount - a.blockersCount;
+      if (b.warningsCount !== a.warningsCount) return b.warningsCount - a.warningsCount;
+      return a.index - b.index;
+    });
+  }
+
+  function renderBool(value) {
+    if (value === true) return 'yes';
+    if (value === false) return 'no';
+    return 'n/a';
+  }
+
+  function renderPackageDetailsCell(label, value) {
+    return '<span data-archive-health-detail-field="' + escapeHtml(label) + '" style="display:flex;flex-direction:column;gap:2px;min-width:0">'
+      + '<span style="opacity:.58;font-size:10px">' + escapeHtml(label) + '</span>'
+      + '<span style="font-size:12px;word-break:break-word">' + escapeHtml(value == null || value === '' ? 'n/a' : value) + '</span>'
+      + '</span>';
+  }
+
+  function renderPackageDetails(result, state) {
+    var rows = formatPackageDetailsRows(result);
+    if (!rows.length) return '';
+    var view = safeObject(state);
+    var expanded = view.detailsExpanded === true;
+    var limit = typeof view.visibleLimit === 'number' && isFinite(view.visibleLimit) ? Math.max(1, view.visibleLimit) : 50;
+    var visible = expanded ? rows.slice(0, limit) : [];
+    var capped = expanded && rows.length > visible.length;
+    var toggleLabel = expanded ? TEXT.hideDetails : TEXT.showDetails;
+    var out = '<section data-archive-health-package-details="1" style="border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025);margin-top:8px">'
+      + '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+      + '<div>'
+      + '<div style="font-weight:600;font-size:13px">Package details</div>'
+      + '<div style="opacity:.68;font-size:12px;margin-top:3px">Show saved package status, warnings, blockers, and read-only DB/asset check summaries.</div>'
+      + '<div style="opacity:.68;font-size:12px;margin-top:5px">Warnings usually mean DB/CAS drift. The saved package may still be portable. Blockers mean package integrity problems.</div>'
+      + '</div>'
+      + '<button type="button" data-archive-health-details-toggle="1" aria-expanded="' + (expanded ? 'true' : 'false') + '" style="padding:7px 12px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit">' + escapeHtml(toggleLabel) + '</button>'
+      + '</div>';
+    if (expanded) {
+      out += '<div style="opacity:.6;font-size:12px;margin-top:8px">Showing ' + escapeHtml(visible.length) + ' of ' + escapeHtml(rows.length) + ' packages' + (capped ? ' (capped)' : '') + '.</div>'
+        + '<div role="list" data-archive-health-package-list="1" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">';
+      visible.forEach(function (row) {
+        var db = row.dbChecks;
+        var assets = row.assetChecks;
+        out += '<article role="listitem" data-archive-health-package-row="1" data-archive-health-package-status="' + escapeHtml(row.status) + '" style="border:1px solid rgba(255,255,255,.10);border-radius:7px;padding:9px;background:rgba(0,0,0,.12)">'
+          + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:start">'
+          + renderPackageDetailsCell('status', row.status)
+          + renderPackageDetailsCell('schemaVersion', row.schemaVersion)
+          + renderPackageDetailsCell('blockers', row.blockersCount)
+          + renderPackageDetailsCell('warnings', row.warningsCount)
+          + renderPackageDetailsCell('chatId', row.chatId)
+          + renderPackageDetailsCell('snapshotId', row.snapshotId)
+          + renderPackageDetailsCell('chatExists', renderBool(db.chatExists))
+          + renderPackageDetailsCell('snapshotExists', renderBool(db.snapshotExists))
+          + renderPackageDetailsCell('packageIsLatest', renderBool(db.packageIsLatest))
+          + renderPackageDetailsCell('storeAssetCount', db.storeAssetCount)
+          + renderPackageDetailsCell('manifestAssetCount', assets.manifestAssetCount)
+          + renderPackageDetailsCell('packageAssetCount', assets.packageAssetCount)
+          + renderPackageDetailsCell('missingPackageAssets', assets.missingPackageAssets)
+          + renderPackageDetailsCell('missingLiveCasAssets', assets.missingLiveCasAssets)
+          + renderPackageDetailsCell('dataImageResidue', assets.dataImageResidue)
+          + renderPackageDetailsCell('assetRefMismatches', assets.assetRefMismatches)
+          + '</div>'
+          + '<div data-archive-health-package-path="1" style="margin-top:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;line-height:1.45;word-break:break-all;user-select:text;opacity:.82">'
+          + '<span style="opacity:.58">packagePath</span> ' + escapeHtml(row.packagePath || 'n/a')
+          + '</div>'
+          + '</article>';
+      });
+      out += '</div>';
+    }
+    out += '</section>';
+    return out;
+  }
+
   function copyArchiveHealthReport(result) {
     return Promise.resolve().then(function () {
       if (!result || typeof result !== 'object') return { ok: false, message: TEXT.copyError };
@@ -234,6 +368,8 @@
       error: null,
       busy: false,
       copyStatus: 'idle',
+      detailsExpanded: false,
+      visibleLimit: 50,
     };
 
     function pillHtml(label, tone) {
@@ -261,11 +397,13 @@
       // ready / empty
       var summary = formatArchiveHealthSummary(card.lastResult);
       var countsHtml = summary.state === 'ready' ? renderArchiveHealthCounts(formatArchiveHealthSections(card.lastResult)) : '';
+      var packageDetailsHtml = summary.state === 'ready' ? renderPackageDetails(card.lastResult, card) : '';
       return '<div style="display:flex;flex-direction:column;gap:6px">'
         + '<div>' + pillHtml(summary.pill.label, summary.pill.tone) + '</div>'
         + '<div style="font-size:13px">' + escapeHtml(summary.headline) + '</div>'
         + (summary.explanation ? '<div style="opacity:.7;font-size:12px">' + escapeHtml(summary.explanation) + '</div>' : '')
         + countsHtml
+        + packageDetailsHtml
         + '</div>';
     }
 
@@ -306,6 +444,10 @@
       if (copyBtn && card.lastResult && !card.busy) {
         copyBtn.addEventListener('click', copyReport, { once: true });
       }
+      var detailsBtn = container.querySelector('[data-archive-health-details-toggle="1"]');
+      if (detailsBtn && card.lastResult && !card.busy) {
+        detailsBtn.addEventListener('click', toggleDetails, { once: true });
+      }
     }
 
     function run() {
@@ -314,6 +456,7 @@
       card.state = 'loading';
       card.error = null;
       card.copyStatus = 'idle';
+      card.detailsExpanded = false;
       render();
       var p;
       try { p = diagnose(diagnoseOptions); }
@@ -340,6 +483,12 @@
       });
     }
 
+    function toggleDetails() {
+      if (!card.lastResult || card.busy) return;
+      card.detailsExpanded = !card.detailsExpanded;
+      render();
+    }
+
     function onError(err) {
       card.busy = false;
       card.error = String((err && (err.message || err)) || 'unknown error');
@@ -359,6 +508,10 @@
     formatArchiveHealthSummary: formatArchiveHealthSummary,
     formatArchiveHealthSections: formatArchiveHealthSections,
     renderArchiveHealthCounts: renderArchiveHealthCounts,
+    formatPackageDetailsRows: formatPackageDetailsRows,
+    renderPackageDetails: renderPackageDetails,
+    summarizePackageDbChecks: summarizePackageDbChecks,
+    summarizePackageAssetChecks: summarizePackageAssetChecks,
     copyArchiveHealthReport: copyArchiveHealthReport,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
