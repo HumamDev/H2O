@@ -72,6 +72,8 @@
   var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFAULT_ENABLED = false;
   var PHASE4A_FOLDER_SOFT_DELETE_ENABLED = true;
   var PHASE4A_FOLDER_SOFT_DELETE_PHASE = 'desktop-local-soft-delete';
+  var PHASE4D3_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted-diagnostics.v1';
+  var PHASE4D3_RETENTION_DAYS = 30;
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
@@ -1377,6 +1379,130 @@
     );
   }
 
+  function numberOrZero(value) {
+    var n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function isoAddDays(value, days) {
+    var at = Date.parse(cleanString(value));
+    if (!Number.isFinite(at)) return '';
+    try { return new Date(at + (numberOrZero(days) * 24 * 60 * 60 * 1000)).toISOString(); }
+    catch (_) { return ''; }
+  }
+
+  function retentionCountdownStatus(deletedAt, restoredAt) {
+    if (!cleanString(deletedAt)) return 'unknown';
+    if (cleanString(restoredAt)) return 'deferred';
+    var expiresAt = Date.parse(isoAddDays(deletedAt, PHASE4D3_RETENTION_DAYS));
+    if (!Number.isFinite(expiresAt)) return 'unknown';
+    return Date.now() >= expiresAt ? 'expired' : 'active';
+  }
+
+  function folderNameFromTombstone(tombstone) {
+    var meta = tombstoneMeta(tombstone);
+    var recovery = safeMeta(meta.recoverySnapshot);
+    var folder = safeMeta(recovery.folder);
+    return cleanString(folder.name || folder.title || meta.folderName || tombstone && tombstone.folderName);
+  }
+
+  function restoreWarningsFromMeta(meta) {
+    var warnings = meta && (meta.restoreWarnings || meta.bindingRestoreWarnings || meta.warnings);
+    return Array.isArray(warnings) ? warnings.slice(0, 20).map(function (warning) {
+      if (typeof warning === 'string') return { code: cleanString(warning) };
+      var w = safeMeta(warning);
+      return { code: cleanString(w.code || w.reason || w.status || 'restore-warning') };
+    }).filter(function (warning) { return !!warning.code; }) : [];
+  }
+
+  function recentlyDeletedRowFromTombstone(tombstone) {
+    var t = tombstone || {};
+    var meta = tombstoneMeta(t);
+    var recovery = safeMeta(meta.recoverySnapshot);
+    var counts = safeMeta(recovery.counts);
+    var restoredAt = cleanString(t.restoredAt);
+    var deletedAt = cleanString(t.deletedAt);
+    var folderId = folderIdFromTombstone(t);
+    var restoreAvailable = !restoredAt && !!folderId;
+    var restoreStatus = restoredAt ? 'restored' : (restoreAvailable ? 'active' : 'blocked');
+    var retentionExpiresAt = isoAddDays(deletedAt, PHASE4D3_RETENTION_DAYS);
+    return {
+      tombstoneId: cleanString(t.tombstoneId),
+      folderId: folderId,
+      folderName: folderNameFromTombstone(t),
+      recordKind: 'folder',
+      deletedAt: deletedAt,
+      deletedBy: cleanString(t.deletedBySyncPeerId),
+      deletedBySurface: cleanString(meta.deletedBySurface || meta.sourceSurface || t.deletedBySurface),
+      restoredAt: restoredAt,
+      restoreAvailable: restoreAvailable,
+      restoreStatus: restoreStatus,
+      affectedChatCount: affectedChatCountFromTombstone(t),
+      bindingRestoreAttemptedCount: numberOrZero(meta.bindingRestoreAttemptedCount || recovery.bindingRestoreAttemptedCount || counts.bindingRestoreAttemptedCount),
+      bindingRestoredCount: numberOrZero(meta.bindingRestoredCount || recovery.bindingRestoredCount || counts.bindingRestoredCount),
+      bindingSkippedCount: numberOrZero(meta.bindingSkippedCount || recovery.bindingSkippedCount || counts.bindingSkippedCount),
+      restoreWarnings: restoreWarningsFromMeta(meta),
+      purgeBlocked: true,
+      hardDeleteBlocked: true,
+      retentionDays: PHASE4D3_RETENTION_DAYS,
+      retentionExpiresAt: retentionExpiresAt,
+      retentionCountdownStatus: retentionCountdownStatus(deletedAt, restoredAt),
+    };
+  }
+
+  async function listRecentlyDeletedFolders(opts) {
+    var tombstones = getTombstoneStore();
+    var limit = Math.max(1, Math.min(1000, Number(opts && opts.limit) || 500));
+    var result = {
+      schema: PHASE4D3_RECENTLY_DELETED_SCHEMA,
+      phase: 'phase4d.3',
+      ok: true,
+      status: 'recently-deleted-folders-listed',
+      observedAt: new Date().toISOString(),
+      tombstoneStoreAvailable: !!(tombstones && typeof tombstones.list === 'function'),
+      retentionDays: PHASE4D3_RETENTION_DAYS,
+      activeTombstoneCount: 0,
+      restoredTombstoneCount: 0,
+      folderTombstoneCount: 0,
+      restoreAvailableCount: 0,
+      purgeBlockedCount: 0,
+      hardDeleteBlockedCount: 0,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      blockers: [],
+      warnings: [],
+      rows: [],
+    };
+    if (!result.tombstoneStoreAvailable) {
+      addBlocker(result.blockers, 'tombstone-store-unavailable');
+      result.ok = false;
+      result.status = 'tombstone-store-unavailable';
+      return result;
+    }
+    try {
+      var rows = await tombstones.list({ recordKind: 'folder', includeRestored: true, limit: limit });
+      result.rows = (Array.isArray(rows) ? rows : [])
+        .filter(function (row) { return cleanString(row && row.recordKind) === 'folder'; })
+        .map(recentlyDeletedRowFromTombstone);
+      result.folderTombstoneCount = result.rows.length;
+      result.activeTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'active'; }).length;
+      result.restoredTombstoneCount = result.rows.filter(function (row) { return row.restoreStatus === 'restored'; }).length;
+      result.restoreAvailableCount = result.rows.filter(function (row) { return row.restoreAvailable === true; }).length;
+      result.purgeBlockedCount = result.rows.filter(function (row) { return row.purgeBlocked === true; }).length;
+      result.hardDeleteBlockedCount = result.rows.filter(function (row) { return row.hardDeleteBlocked === true; }).length;
+      return result;
+    } catch (e) {
+      recordWarning('Phase4D.3 recently deleted diagnose failed: ' + ((e && e.message) || e));
+      result.ok = false;
+      result.status = 'recently-deleted-list-failed';
+      result.blockers.push('recently-deleted-list-failed');
+      result.warnings.push({ code: 'recently-deleted-list-failed' });
+      return result;
+    }
+  }
+
   function folderPatchFromRecoverySnapshot(snapshot) {
     var recovery = safeMeta(snapshot);
     var folder = safeMeta(recovery.folder);
@@ -2026,6 +2152,8 @@
     restoreTombstonedFolder: restoreTombstonedFolder,
     restoreFolder: restoreTombstonedFolder,
     diagnosePhase4aTombstones: diagnosePhase4aTombstones,
+    listRecentlyDeletedFolders: listRecentlyDeletedFolders,
+    diagnoseRecentlyDeletedFolders: listRecentlyDeletedFolders,
     remove: softDeleteEmptyFolder,
     'delete': softDeleteEmptyFolder,
     bindChat: bindChat,

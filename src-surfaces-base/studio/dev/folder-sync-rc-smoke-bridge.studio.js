@@ -36,6 +36,7 @@
     'applyFolderDeleteRequest',
     'listFolderDeleteReceipts',
     'listActiveFolderTombstones',
+    'listRecentlyDeletedFolders',
     'countChatsSnapshots',
     'verifyFolderVisible',
     'verifyFolderHidden',
@@ -47,6 +48,7 @@
   var DESKTOP_ONLY_OPS = Object.freeze({
     applyFolderDeleteRequest: true,
     listActiveFolderTombstones: true,
+    listRecentlyDeletedFolders: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
@@ -1163,6 +1165,23 @@
     });
   }
 
+  async function listRecentlyDeletedFolders(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    var fn = store && (store.listRecentlyDeletedFolders || store.diagnoseRecentlyDeletedFolders);
+    if (typeof fn !== 'function') return unsupportedResult('listRecentlyDeletedFolders', 'recently-deleted-diagnostics-unavailable');
+    var result = safeObject(await fn.call(store, Object.assign({ limit: 500 }, safeObject(payload))));
+    return baseResult('listRecentlyDeletedFolders', Object.assign({
+      ok: result.ok === true,
+      status: cleanString(result.status || 'recently-deleted-folders-listed'),
+      blockers: codeList(result.blockers),
+      warnings: codeList(result.warnings),
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    }, result));
+  }
+
   async function countChatsSnapshots() {
     var store = getPath(H2O, ['Studio', 'store']) || {};
     var chatCount = null;
@@ -1218,6 +1237,7 @@
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
     if (op === 'listActiveFolderTombstones') return listActiveFolderTombstones(payload);
+    if (op === 'listRecentlyDeletedFolders') return listRecentlyDeletedFolders(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
     return unsupportedResult(op, 'unsupported-op');
