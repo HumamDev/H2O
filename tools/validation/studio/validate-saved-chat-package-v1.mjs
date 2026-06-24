@@ -220,8 +220,7 @@ function loadModuleWithEnv({ lang, timeZone, stores }) {
     Intl: makeIntl(timeZone),
     navigator: { language: lang },
     crypto: globalThis.crypto || crypto.webcrypto,
-    __TAURI_INTERNALS__: { invoke: async () => { throw new Error('mock invoke unused'); } },
-    __TAURI__: { fs: mockFs.api },
+    __TAURI_INTERNALS__: { invoke: mockFs.invoke },
     H2O: { Studio: { store: stores } },
     chrome: { runtime: { id: 'desktop-test', getManifest: () => ({ name: 'H2O Studio Test', version: '0.0.0-test' }) } },
   };
@@ -237,16 +236,37 @@ function loadModuleWithEnv({ lang, timeZone, stores }) {
 function createMockFs() {
   const dirs = new Set();
   const files = new Map();
+  function requireBaseDir(args, cmd) {
+    const options = args?.options || {};
+    if (options.baseDir !== 15) throw new Error(`${cmd}: expected baseDir 15, got ${JSON.stringify(options.baseDir)}`);
+    return { path: args?.path, options };
+  }
+  function parseWriteHeaders(meta) {
+    const headers = meta?.headers || {};
+    if (!headers.path) throw new Error('write_file: missing file path header');
+    const target = decodeURIComponent(headers.path);
+    let options = {};
+    try { options = JSON.parse(headers.options || '{}'); }
+    catch (_) { throw new Error('write_file: options header must be JSON'); }
+    if (options.baseDir !== 15) throw new Error(`write_file: expected baseDir 15, got ${JSON.stringify(options.baseDir)}`);
+    return { path: target, options };
+  }
   return {
     dirs,
     files,
-    api: {
-      exists: async (target) => dirs.has(target) || files.has(target),
-      mkdir: async (target) => {
+    invoke: async (cmd, args, meta) => {
+      if (cmd === 'plugin:fs|write_text_file') throw new Error('write_text_file must not be used for saved-chat packages');
+      if (cmd === 'plugin:fs|exists') {
+        const { path: target } = requireBaseDir(args, cmd);
+        return dirs.has(target) || files.has(target);
+      }
+      if (cmd === 'plugin:fs|mkdir') {
+        const { path: target } = requireBaseDir(args, cmd);
         dirs.add(target);
         return true;
-      },
-      remove: async (target) => {
+      }
+      if (cmd === 'plugin:fs|remove') {
+        const { path: target } = requireBaseDir(args, cmd);
         dirs.delete(target);
         for (const key of Array.from(files.keys())) {
           if (key === target || key.startsWith(target + '/')) files.delete(key);
@@ -255,15 +275,19 @@ function createMockFs() {
           if (key.startsWith(target + '/')) dirs.delete(key);
         }
         return true;
-      },
-      writeTextFile: async (target, text) => {
-        files.set(target, String(text));
-        return true;
-      },
-      readTextFile: async (target) => {
+      }
+      if (cmd === 'plugin:fs|read_file') {
+        const { path: target } = requireBaseDir(args, cmd);
         if (!files.has(target)) throw new Error('not found: ' + target);
         return files.get(target);
-      },
+      }
+      if (cmd === 'plugin:fs|write_file') {
+        const { path: target } = parseWriteHeaders(meta);
+        if (!(args instanceof Uint8Array)) throw new Error('write_file body must be Uint8Array');
+        files.set(target, new Uint8Array(args));
+        return true;
+      }
+      throw new Error('unexpected fs command: ' + cmd);
     },
   };
 }
@@ -294,14 +318,7 @@ function loadModule() {
     Intl,
     navigator: { language: 'en-US' },
     crypto: globalThis.crypto || crypto.webcrypto,
-    __TAURI_INTERNALS__: {
-      invoke: async () => {
-        throw new Error('mock invoke should not be used when __TAURI__.fs facade is present');
-      },
-    },
-    __TAURI__: {
-      fs: mockFs.api,
-    },
+    __TAURI_INTERNALS__: { invoke: mockFs.invoke },
     H2O: {
       Studio: {
         store: stores,
@@ -439,26 +456,25 @@ async function main() {
     assert.equal(snap.savedAt, '', 'savedAt must be empty when not stored (no nowIso fallback)');
   });
 
-  await checkAsync('writeSavedChatPackageV1 writes explicit target folder only', async () => {
+  await checkAsync('writeSavedChatPackageV1 writes app-owned archive package path only', async () => {
     const written = await ingestion.writeSavedChatPackageV1({
       snapshotId: 'snap_phase_b',
-      targetDir: '/tmp/h2o-saved-chat-test',
     });
     assert.equal(written.written, true);
-    assert.equal(mockFs.dirs.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat'), true);
-    assert.equal(mockFs.files.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/manifest.json'), true);
-    assert.equal(mockFs.files.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/snapshot.json'), true);
-    assert.equal(mockFs.files.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/chat.md'), true);
-    assert.equal(mockFs.files.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/chat.html'), true);
-    assert.equal(mockFs.dirs.has('/tmp/h2o-saved-chat-test/chat_phase_b.h2ochat/assets'), false);
+    assert.equal(written.packagePath, 'archive/packages/chat_phase_b.h2ochat');
+    assert.equal(mockFs.dirs.has('archive/packages/chat_phase_b.h2ochat'), true);
+    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/manifest.json'), true);
+    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/snapshot.json'), true);
+    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/chat.md'), true);
+    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/chat.html'), true);
+    assert.equal(mockFs.dirs.has('archive/packages/chat_phase_b.h2ochat/assets'), false);
   });
 
   await checkAsync('written snapshot.json bytes re-hash to manifest contentHash', async () => {
-    const targetDir = '/tmp/h2o-readback-test';
-    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', targetDir });
-    const root = `${targetDir}/chat_phase_b.h2ochat`;
-    const onDiskSnapshot = mockFs.files.get(`${root}/snapshot.json`);
-    const onDiskManifest = JSON.parse(mockFs.files.get(`${root}/manifest.json`));
+    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', overwrite: true });
+    const root = 'archive/packages/chat_phase_b.h2ochat';
+    const onDiskSnapshot = new TextDecoder().decode(mockFs.files.get(`${root}/snapshot.json`));
+    const onDiskManifest = JSON.parse(new TextDecoder().decode(mockFs.files.get(`${root}/manifest.json`)));
     assert.equal(typeof onDiskSnapshot, 'string', 'snapshot.json must have been written to disk');
     const rehash = sha256Prefixed(onDiskSnapshot);
     assert.equal(rehash, onDiskManifest.contentHash, 'rehash of written snapshot.json must equal manifest.contentHash');
@@ -469,12 +485,11 @@ async function main() {
 
   await checkAsync('writer fails when package exists unless overwrite is explicit', async () => {
     await assert.rejects(
-      () => ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', targetDir: '/tmp/h2o-saved-chat-test' }),
+      () => ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b' }),
       /already exists/
     );
     const overwritten = await ingestion.writeSavedChatPackageV1({
       snapshotId: 'snap_phase_b',
-      targetDir: '/tmp/h2o-saved-chat-test',
       overwrite: true,
     });
     assert.equal(overwritten.written, true);

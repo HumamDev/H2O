@@ -27,6 +27,8 @@
   var SCHEMA_VERSION = 1;
   var RENDERER_VERSION = 'saved-chat-package-v1';
   var MODULE_VERSION = '0.1.0-phase-b';
+  var APP_LOCAL_DATA = 15;                 /* Tauri BaseDirectory.AppLocalData */
+  var PACKAGE_ROOT = 'archive/packages';   /* relative to AppLocalData */
 
   var state = {
     installedAt: Date.now(),
@@ -697,8 +699,7 @@
     if (packageDirName !== expectedPackageDirName) {
       throw new Error('packageDirName must match chatId basename: ' + expectedPackageDirName);
     }
-    var targetDir = firstString(opts.targetDir, opts.targetFolder);
-    var packagePath = targetDir ? joinPath(targetDir, packageDirName) : packageDirName;
+    var packagePath = joinPath(PACKAGE_ROOT, packageDirName);
     var result = {
       ok: true,
       schema: MANIFEST_SCHEMA,
@@ -773,27 +774,19 @@
     return null;
   }
 
-  function getTauriFsFacade() {
-    try {
-      var tauri = global.__TAURI__;
-      if (tauri && tauri.fs) return tauri.fs;
-    } catch (_) { /* ignore */ }
-    return null;
-  }
-
-  function fsOptions(options) {
-    var opts = safeObject(options);
-    var out = Object.assign({}, safeObject(opts.fsOptions));
-    if (typeof opts.baseDir !== 'undefined') out.baseDir = opts.baseDir;
+  function fsOptions(extra) {
+    var out = { baseDir: APP_LOCAL_DATA };
+    var src = safeObject(extra);
+    Object.keys(src).forEach(function (key) {
+      if (key !== 'baseDir') out[key] = src[key];
+    });
     return out;
   }
 
   async function fsExists(path, options) {
-    var fs = getTauriFsFacade();
-    if (fs && typeof fs.exists === 'function') return !!(await fs.exists(path, options || {}));
     var invoke = getTauriInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs exists');
-    try { return !!(await invoke('plugin:fs|exists', { path: path, options: options || {} })); }
+    try { return !!(await invoke('plugin:fs|exists', { path: path, options: options || fsOptions() })); }
     catch (e) {
       var msg = String((e && e.message) || e).toLowerCase();
       if (msg.indexOf('not found') >= 0 || msg.indexOf('no such') >= 0) return false;
@@ -802,33 +795,30 @@
   }
 
   async function fsMkdir(path, options) {
-    var fs = getTauriFsFacade();
-    if (fs && typeof fs.mkdir === 'function') return fs.mkdir(path, options || {});
     var invoke = getTauriInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs mkdir');
-    return invoke('plugin:fs|mkdir', { path: path, options: options || {} });
+    return invoke('plugin:fs|mkdir', { path: path, options: options || fsOptions() });
   }
 
   async function fsRemove(path, options) {
-    var fs = getTauriFsFacade();
-    if (fs && typeof fs.remove === 'function') return fs.remove(path, options || {});
     var invoke = getTauriInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs remove');
-    return invoke('plugin:fs|remove', { path: path, options: options || {} });
+    return invoke('plugin:fs|remove', { path: path, options: options || fsOptions() });
   }
 
-  async function fsWriteTextFile(path, text, options) {
-    var fs = getTauriFsFacade();
-    if (fs && typeof fs.writeTextFile === 'function') return fs.writeTextFile(path, text, options || {});
+  async function fsWriteFile(path, bytes, options) {
     var invoke = getTauriInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs write_text_file');
-    var bytes = bytesFor(String(text == null ? '' : text));
-    return invoke('plugin:fs|write_text_file', bytes, {
+    if (!invoke) throw new Error('tauri invoke unavailable for fs write_file');
+    return invoke('plugin:fs|write_file', bytesFor(bytes), {
       headers: {
         path: encodeURIComponent(path),
-        options: JSON.stringify(options || {}),
+        options: JSON.stringify(options || fsOptions()),
       },
     });
+  }
+
+  function textBytes(text) {
+    return bytesFor(String(text == null ? '' : text));
   }
 
   function getTextDecoder() {
@@ -853,11 +843,9 @@
   }
 
   async function fsReadTextFile(path, options) {
-    var fs = getTauriFsFacade();
-    if (fs && typeof fs.readTextFile === 'function') return decodeFsText(await fs.readTextFile(path, options || {}));
     var invoke = getTauriInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs read_text_file');
-    return decodeFsText(await invoke('plugin:fs|read_text_file', { path: path, options: options || {} }));
+    if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
+    return decodeFsText(await invoke('plugin:fs|read_file', { path: path, options: options || fsOptions() }));
   }
 
   /* Conservative guard before a recursive overwrite delete: only ever delete a
@@ -869,6 +857,9 @@
    * limitation: we do not deep-verify packages whose manifest cannot be read. */
   async function assertOverwritableSavedChatPackage(packagePath, options) {
     var base = cleanString(packagePath).replace(/[\/\\]+$/g, '');
+    if (base.indexOf(PACKAGE_ROOT + '/') !== 0) {
+      throw new Error('refusing recursive overwrite outside app archive packages root: ' + packagePath);
+    }
     var basename = base.slice(base.lastIndexOf('/') + 1);
     basename = basename.slice(basename.lastIndexOf('\\') + 1);
     if (!/\.h2ochat$/.test(basename)) {
@@ -887,13 +878,78 @@
     }
   }
 
+  function normalizeAssetSha(shaInput) {
+    var sha = cleanString(shaInput).toLowerCase();
+    if (/^sha256-[0-9a-f]{64}$/.test(sha)) return sha;
+    if (/^[0-9a-f]{64}$/.test(sha)) return 'sha256-' + sha;
+    return '';
+  }
+
+  function normalizeAssetExt(extInput, pathInput) {
+    var ext = cleanString(extInput).toLowerCase().replace(/^\.+/, '');
+    if (!ext) {
+      var path = cleanString(pathInput);
+      var idx = path.lastIndexOf('.');
+      if (idx >= 0) ext = path.slice(idx + 1).toLowerCase();
+    }
+    ext = ext.replace(/[^a-z0-9]/g, '');
+    return ext || 'bin';
+  }
+
+  function packageAssetPathForDescriptor(asset) {
+    var sha = normalizeAssetSha(asset && asset.sha256);
+    if (!sha) throw new Error('invalid package asset sha256');
+    var ext = normalizeAssetExt(asset && asset.ext, asset && asset.path);
+    var expected = 'assets/' + sha + '.' + ext;
+    var path = cleanString(asset && asset.path) || expected;
+    if (path !== expected) {
+      throw new Error('package asset path must be ' + expected + ' for ' + sha);
+    }
+    if (path.indexOf('..') >= 0 || path.charAt(0) === '/' || /\\/.test(path)) {
+      throw new Error('unsafe package asset path: ' + path);
+    }
+    return path;
+  }
+
+  async function readPackageAssetBytes(asset) {
+    var stack = getAssetStack();
+    if (!stack.assetCas || typeof stack.assetCas.getAssetBytes !== 'function') {
+      throw new Error('H2O.Studio.ingestion.assetCas.getAssetBytes unavailable for package asset copy');
+    }
+    var sha = normalizeAssetSha(asset && asset.sha256);
+    if (!sha) throw new Error('invalid package asset sha256');
+    var bytes = await stack.assetCas.getAssetBytes(sha);
+    if (!bytes) throw new Error('missing CAS asset for package copy: ' + sha);
+    var u8 = bytesFor(bytes);
+    if (!u8 || u8.length <= 0) throw new Error('missing CAS asset bytes for package copy: ' + sha);
+    return u8;
+  }
+
+  async function writePackageAssetCopies(packagePath, assets, options) {
+    var list = asArray(assets);
+    if (!list.length) return [];
+    var assetsPath = joinPath(packagePath, 'assets');
+    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
+    var written = [];
+    for (var i = 0; i < list.length; i += 1) {
+      var asset = list[i] || {};
+      var relativePath = packageAssetPathForDescriptor(asset);
+      var bytes = await readPackageAssetBytes(asset);
+      var path = joinPath(packagePath, relativePath);
+      await fsWriteFile(path, bytes, options);
+      written.push({ path: path, relativePath: relativePath, sha256: normalizeAssetSha(asset.sha256), byteLength: bytes.length });
+    }
+    return written;
+  }
+
   async function writeSavedChatPackageV1(options) {
     var opts = safeObject(options);
-    var targetDir = firstString(opts.targetDir, opts.targetFolder);
-    if (!targetDir) throw new Error('targetDir is required');
+    if (firstString(opts.targetDir, opts.targetFolder)) {
+      throw new Error('targetDir/targetFolder is deferred; saved chat packages write under AppLocalData archive/packages in C4.3');
+    }
     var built = await buildSavedChatPackageV1(opts);
-    var baseOptions = fsOptions(opts);
-    var packagePath = joinPath(targetDir, built.packageDirName);
+    var baseOptions = fsOptions();
+    var packagePath = joinPath(PACKAGE_ROOT, built.packageDirName);
     var exists = await fsExists(packagePath, baseOptions);
     if (exists && !opts.overwrite) {
       throw new Error('saved chat package already exists: ' + packagePath);
@@ -903,13 +959,11 @@
       await fsRemove(packagePath, Object.assign({}, baseOptions, { recursive: true }));
     }
     await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
-    await fsWriteTextFile(joinPath(packagePath, 'manifest.json'), built.files['manifest.json'].text, baseOptions);
-    await fsWriteTextFile(joinPath(packagePath, 'snapshot.json'), built.files['snapshot.json'].text, baseOptions);
-    await fsWriteTextFile(joinPath(packagePath, 'chat.md'), built.files['chat.md'].text, baseOptions);
-    await fsWriteTextFile(joinPath(packagePath, 'chat.html'), built.files['chat.html'].text, baseOptions);
-    if (opts.includeEmptyAssetsDir === true) {
-      await fsMkdir(joinPath(packagePath, 'assets'), Object.assign({}, baseOptions, { recursive: true }));
-    }
+    var writtenAssets = await writePackageAssetCopies(packagePath, built.manifest.assets, baseOptions);
+    await fsWriteFile(joinPath(packagePath, 'manifest.json'), textBytes(built.files['manifest.json'].text), baseOptions);
+    await fsWriteFile(joinPath(packagePath, 'snapshot.json'), textBytes(built.files['snapshot.json'].text), baseOptions);
+    await fsWriteFile(joinPath(packagePath, 'chat.md'), textBytes(built.files['chat.md'].text), baseOptions);
+    await fsWriteFile(joinPath(packagePath, 'chat.html'), textBytes(built.files['chat.html'].text), baseOptions);
     var writtenAt = nowIso();
     state.lastWriteAt = writtenAt;
     return Object.assign({}, built, {
@@ -922,8 +976,9 @@
         snapshot: joinPath(packagePath, 'snapshot.json'),
         markdown: joinPath(packagePath, 'chat.md'),
         html: joinPath(packagePath, 'chat.html'),
-        assets: opts.includeEmptyAssetsDir === true ? joinPath(packagePath, 'assets') : '',
+        assets: writtenAssets.length ? joinPath(packagePath, 'assets') : '',
       },
+      writtenAssets: writtenAssets,
     });
   }
 
