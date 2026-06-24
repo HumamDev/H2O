@@ -7920,6 +7920,9 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
         <button id="wbSettingsSyncRefresh" type="button" style="${btnStyle}">Refresh Status</button>
       </div>
       <div id="wbSettingsSyncStatus" style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace"></div>
+      <div id="wbSettingsFolderSyncHealthDashboard" style="display:flex;flex-direction:column;gap:10px;padding-top:10px;margin-top:4px;border-top:1px solid rgba(255,255,255,.08)">
+        <div style="opacity:.7;font-size:12px">Reading Folder Sync Health diagnostics...</div>
+      </div>
       <div id="wbSettingsSyncDesktopControls" style="display:none;gap:8px;flex-wrap:wrap">
         <button id="wbSettingsSyncExportLatest" type="button" style="${btnStyle}">Write latest.json</button>
         <button id="wbSettingsSyncEnableDesktopAuto" type="button" style="${btnStyle}">Enable Auto Export</button>
@@ -8514,6 +8517,140 @@ function settingsSyncRowsHtml(rows){
     <div style="opacity:.6">${esc(label)}</div>
     <div>${esc(value == null || value === "" ? "—" : value)}</div>
   `).join("");
+}
+
+function settingsFolderSyncHealthStatus(raw, fallback = "not-tested"){
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "healthy" || value === "ok" || value === "passed" || value === "current") return "works";
+  if (value === "warning" || value === "warn" || value === "needs-attention") return "warning";
+  if (value === "blocked" || value === "failed" || value === "error") return "failed";
+  if (value === "deferred" || value === "disabled" || value === "not-applicable") return "disabled";
+  return fallback;
+}
+
+function settingsFolderSyncBoolText(value){
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "—";
+}
+
+function settingsFolderSyncNumber(source, key, fallback = 0){
+  const n = Number(source && source[key]);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function settingsFolderSyncHealthCardHtml(title, status, detail = "", label = ""){
+  return `
+    <div style="display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:rgba(255,255,255,.03);min-width:170px">
+      <div style="font-size:12px;opacity:.72">${esc(title)}</div>
+      <div>${settingsFolderParityStatusBadgeHtml(status, label)}${detail ? ` <span style="opacity:.72">${esc(detail)}</span>` : ""}</div>
+    </div>
+  `;
+}
+
+function settingsFolderSyncHealthBadgeHtml(label, status = "works"){
+  return settingsFolderParityStatusBadgeHtml(status, label);
+}
+
+function settingsFolderSyncDeferredItemsHtml(){
+  const items = [
+    "purge design deferred",
+    "WebDAV/cloud/relay deferred",
+    "full chat-folder binding sync deferred",
+    "cross-device retention ledger deferred",
+  ];
+  return items.map((item) => settingsFolderSyncHealthBadgeHtml(item, "disabled")).join(" ");
+}
+
+function settingsFolderSyncHealthRender(panel, data = {}){
+  const host = panel?.querySelector?.("#wbSettingsFolderSyncHealthDashboard");
+  if (!host) return;
+  const health = data.health && typeof data.health === "object" ? data.health : {};
+  const recently = data.recentlyDeleted && typeof data.recentlyDeleted === "object" ? data.recentlyDeleted : {};
+  const deleteState = health.tombstoneLocalDelete && typeof health.tombstoneLocalDelete === "object" ? health.tombstoneLocalDelete : {};
+  const desktopToChrome = health.desktopToChrome && typeof health.desktopToChrome === "object" ? health.desktopToChrome : {};
+  const chromeToDesktop = health.chromeToDesktop && typeof health.chromeToDesktop === "object" ? health.chromeToDesktop : {};
+  const blockers = Array.isArray(health.blockers) ? health.blockers : [];
+  const warnings = Array.isArray(health.warnings) ? health.warnings : [];
+  const healthVerdict = String(health.verdict || (blockers.length ? "blocked" : warnings.length ? "warning" : "healthy"));
+  const lifecycleHealthy = deleteState.tombstoneStoreAvailable === false
+    ? "warning"
+    : (deleteState.hardDeleteBlocked === true && deleteState.purgeBlocked === true ? "healthy" : "blocked");
+  const recentlyAvailable = recently.ok === true && Array.isArray(recently.rows);
+  const retentionEnforcement = String(recently.retentionEnforcement || "deferred");
+  const purgeEligibleCount = settingsFolderSyncNumber(recently, "purgeEligibleCount", 0);
+  const safety = {
+    noHardDelete: deleteState.hardDeleteBlocked === true || recently.noHardDelete === true,
+    noPurge: deleteState.purgeBlocked === true || recently.noPurge === true,
+    noChatDelete: deleteState.chatDeleteBlocked === true || recently.noChatDelete === true,
+    noSnapshotDelete: recently.noSnapshotDelete === true,
+    noTombstoneApplyOnChrome: true,
+  };
+  const safetyOk = Object.values(safety).every(Boolean);
+  const cards = [
+    settingsFolderSyncHealthCardHtml("Create / Rename / Color", settingsFolderSyncHealthStatus(healthVerdict), health.summaryText || healthVerdict, healthVerdict),
+    settingsFolderSyncHealthCardHtml("Delete / Restore Lifecycle", settingsFolderSyncHealthStatus(lifecycleHealthy), "Desktop authoritative soft delete / restore", lifecycleHealthy),
+    settingsFolderSyncHealthCardHtml("Desktop Authority", deleteState.tombstoneStoreAvailable === false ? "warning" : "works", deleteState.lastStatus || "soft delete and restore paths available"),
+    settingsFolderSyncHealthCardHtml("Chrome Receipts", "disabled", "visible-state-only delete/restore receipts", "deferred"),
+    settingsFolderSyncHealthCardHtml("Recently Deleted", recentlyAvailable ? "works" : "warning", recentlyAvailable ? `${settingsFolderSyncNumber(recently, "folderTombstoneCount", 0)} folder tombstones` : "diagnostics unavailable"),
+    settingsFolderSyncHealthCardHtml("Retention Policy", retentionEnforcement === "deferred" ? "disabled" : "warning", `${settingsFolderSyncNumber(recently, "retentionDays", 30)} days`, retentionEnforcement || "deferred"),
+  ];
+  const metricRows = [
+    ["Desktop -> Chrome auto export", desktopToChrome.autoExportEnabled === true ? "enabled" : "disabled"],
+    ["Chrome -> Desktop auto import", chromeToDesktop.desktopAutoImportEnabled === true ? "enabled" : "disabled"],
+    ["retentionEnforcement", retentionEnforcement],
+    ["retentionDays", String(settingsFolderSyncNumber(recently, "retentionDays", 30))],
+    ["purgeEligibleCount", String(purgeEligibleCount)],
+    ["purgeBlockedCount", String(settingsFolderSyncNumber(recently, "purgeBlockedCount", 0))],
+    ["hardDeleteBlockedCount", String(settingsFolderSyncNumber(recently, "hardDeleteBlockedCount", 0))],
+    ["activeRetentionCount", String(settingsFolderSyncNumber(recently, "activeRetentionCount", 0))],
+    ["expiredRetentionCount", String(settingsFolderSyncNumber(recently, "expiredRetentionCount", 0))],
+    ["restoredRetentionCount", String(settingsFolderSyncNumber(recently, "restoredRetentionCount", 0))],
+  ];
+  const safetyBadges = [
+    settingsFolderSyncHealthBadgeHtml(`noHardDelete:${settingsFolderSyncBoolText(safety.noHardDelete)}`, safety.noHardDelete ? "works" : "failed"),
+    settingsFolderSyncHealthBadgeHtml(`noPurge:${settingsFolderSyncBoolText(safety.noPurge)}`, safety.noPurge ? "works" : "failed"),
+    settingsFolderSyncHealthBadgeHtml(`noChatDelete:${settingsFolderSyncBoolText(safety.noChatDelete)}`, safety.noChatDelete ? "works" : "failed"),
+    settingsFolderSyncHealthBadgeHtml(`noSnapshotDelete:${settingsFolderSyncBoolText(safety.noSnapshotDelete)}`, safety.noSnapshotDelete ? "works" : "failed"),
+    settingsFolderSyncHealthBadgeHtml(`noTombstoneApplyOnChrome:${settingsFolderSyncBoolText(safety.noTombstoneApplyOnChrome)}`, safety.noTombstoneApplyOnChrome ? "works" : "failed"),
+  ].join(" ");
+  host.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600">Folder Sync Health</div>
+        <div style="opacity:.7;font-size:12px">Read-only local sync, delete/restore, retention, and deferred-item diagnostics.</div>
+      </div>
+      ${settingsFolderParityStatusBadgeHtml(safetyOk && !blockers.length ? "works" : "warning", safetyOk && !blockers.length ? "healthy" : "warning")}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px">${cards.join("")}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:12px;opacity:.72">Safety invariants</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${safetyBadges}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:12px;opacity:.72">Deferred items</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${settingsFolderSyncDeferredItemsHtml()}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">
+      ${settingsSyncRowsHtml(metricRows)}
+    </div>
+    ${blockers.length || warnings.length ? `<div style="font-size:12px;opacity:.72">Blockers: ${esc(blockers.join(", ") || "none")} · Warnings: ${esc(warnings.join(", ") || "none")}</div>` : ""}
+  `;
+}
+
+function settingsFolderSyncHealthUnavailable(panel, message){
+  const host = panel?.querySelector?.("#wbSettingsFolderSyncHealthDashboard");
+  if (!host) return;
+  host.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-weight:600">Folder Sync Health</div>
+      <div style="opacity:.72;font-size:12px">${esc(message || "Diagnostics unavailable.")}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${settingsFolderParityStatusBadgeHtml("warning", "warning")}
+        ${settingsFolderParityStatusBadgeHtml("disabled", "deferred")}
+      </div>
+    </div>
+  `;
 }
 
 function settingsFolderParityLog(panel, message){
@@ -13708,6 +13845,35 @@ async function refreshSettingsSync(panel){
     const exportDiag = typeof ingestion.diagnose === "function" ? (ingestion.diagnose() || {}) : {};
     const autoDiag = autoExport && typeof autoExport.diagnose === "function" ? (autoExport.diagnose() || {}) : {};
     const last = autoDiag.lastResult || exportDiag.lastSyncExport || {};
+    let folderHealth = null;
+    let recentlyDeletedDiagnostics = null;
+    try {
+      const folderApi = sync && sync.folder;
+      if (folderApi && typeof folderApi.diagnoseHealth === "function") {
+        folderHealth = await folderApi.diagnoseHealth();
+      } else if (folderApi && folderApi.health && typeof folderApi.health.diagnose === "function") {
+        folderHealth = await folderApi.health.diagnose();
+      }
+    } catch (err) {
+      folderHealth = { verdict: "warning", blockers: [], warnings: [String(err && (err.message || err))], summaryText: "Folder Sync Health diagnostics failed." };
+    }
+    try {
+      const folderStore = W.H2O?.Studio?.store?.folders;
+      const recentlyFn = folderStore && (folderStore.listRecentlyDeletedFolders || folderStore.diagnoseRecentlyDeletedFolders);
+      if (typeof recentlyFn === "function") {
+        recentlyDeletedDiagnostics = await recentlyFn.call(folderStore, { limit: 500, source: "folder-sync-health-dashboard" });
+      }
+    } catch (err) {
+      recentlyDeletedDiagnostics = { ok: false, status: "recently-deleted-diagnostics-failed", blockers: [String(err && (err.message || err))] };
+    }
+    if (folderHealth || recentlyDeletedDiagnostics) {
+      settingsFolderSyncHealthRender(panel, {
+        health: folderHealth || {},
+        recentlyDeleted: recentlyDeletedDiagnostics || {},
+      });
+    } else {
+      settingsFolderSyncHealthUnavailable(panel, "Folder Sync Health diagnostics are unavailable on this Desktop surface.");
+    }
     /* Phase E — pull the last import's routedVia from the ledger (last
      * entry is always most recent — append-only with MAX cap), and the
      * orphan-binding state from sync.diagnose() (Phase D). Both wrapped
@@ -13784,6 +13950,7 @@ async function refreshSettingsSync(panel){
     return;
   }
 
+  settingsFolderSyncHealthUnavailable(panel, "Folder Sync Health dashboard is Desktop-only. Chrome remains visible-state-only for delete/restore receipts.");
   if (title) title.textContent = "Chrome Sync Folder";
   if (summary) summary.textContent = "Connect the local sync folder, run manual Sync Now, and control existing safe auto-sync triggers.";
   let statusError = "";
