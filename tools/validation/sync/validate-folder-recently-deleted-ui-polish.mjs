@@ -7,7 +7,9 @@ const root = process.cwd();
 const failures = [];
 
 const sidebarPath = 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js';
+const studioPath = 'src-surfaces-base/studio/studio.js';
 const evidencePath = 'release-evidence/2026-06-24/folder-delete-restore-recently-deleted-ui-polish.md';
+const placementEvidencePath = 'release-evidence/2026-06-24/folder-delete-restore-recently-deleted-ui-placement.md';
 
 function read(file) {
   return fs.readFileSync(path.join(root, file), 'utf8');
@@ -45,19 +47,42 @@ function functionBody(source, name) {
 }
 
 const sidebar = read(sidebarPath);
+const studio = read(studioPath);
 const renderBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersPanel');
+const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSidebarEntry');
 const restoreBody = functionBody(sidebar, 'restoreRecentlyDeletedFolder');
+const renderFoldersBody = functionBody(sidebar, 'renderFolders');
+const mainHostBody = functionBody(studio, 'appendVisibleStudioRecentlyDeletedFoldersPanel');
+const foldersPageBody = functionBody(studio, 'renderVisibleStudioFoldersPageBody');
 
 [
   'canUseDesktopRecentlyDeletedFolders',
   'canUseDesktopFolderRestore',
-  'renderRecentlyDeletedFoldersPanel(host)',
-  'await renderRecentlyDeletedFoldersPanel(host)',
+  'renderRecentlyDeletedFoldersPanel(host, opts = {})',
+  'renderRecentlyDeletedFoldersSidebarEntry(host)',
   'listRecentlyDeletedFolders',
   'diagnoseRecentlyDeletedFolders',
   'restoreTombstonedFolder',
   'restoreFolder',
 ].forEach((needle) => assertIncludes(sidebar, needle, `Recently Deleted UI wiring ${needle}`));
+
+[
+  'data-h2o-recently-deleted-folders-sidebar-entry',
+  'Recently Deleted ·',
+  '#/library/folders',
+  'desktop-recently-deleted-sidebar-counter',
+].forEach((needle) => assertIncludes(sidebarEntryBody, needle, `compact sidebar Recently Deleted entry ${needle}`));
+
+[
+  'appendVisibleStudioRecentlyDeletedFoldersPanel(page)',
+  'wbFolderPageRecentlyDeletedHost',
+  'data-h2o-recently-deleted-folders="main"',
+  'api.renderRecentlyDeletedFoldersPanel(host, { placement: "main" })',
+].forEach((needle) => assertIncludes(studio, needle, `main Folders page Recently Deleted placement ${needle}`));
+
+assertIncludes(foldersPageBody, 'await appendVisibleStudioRecentlyDeletedFoldersPanel(page)', 'Folders page appends Recently Deleted panel');
+assertIncludes(renderFoldersBody, 'await renderRecentlyDeletedFoldersSidebarEntry(host)', 'sidebar renders compact Recently Deleted entry');
+assertNotIncludes(renderFoldersBody, 'await renderRecentlyDeletedFoldersPanel(host)', 'sidebar must not render full Recently Deleted panel');
 
 [
   'folderName',
@@ -100,6 +125,7 @@ const restoreBody = functionBody(sidebar, 'restoreRecentlyDeletedFolder');
 ].forEach((needle) => assertNotIncludes(renderBody + restoreBody, needle, `forbidden UI action ${needle}`));
 
 assert(fs.existsSync(path.join(root, evidencePath)), 'evidence file must exist');
+assert(fs.existsSync(path.join(root, placementEvidencePath)), 'placement evidence file must exist');
 
 if (failures.length) {
   console.error('validate-folder-recently-deleted-ui-polish failed:');

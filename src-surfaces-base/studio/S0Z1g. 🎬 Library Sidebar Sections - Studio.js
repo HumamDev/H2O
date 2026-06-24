@@ -2091,23 +2091,36 @@
     }
   }
 
-  async function renderRecentlyDeletedFoldersPanel(host) {
+  async function renderRecentlyDeletedFoldersPanel(host, opts = {}) {
     if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
+    const placement = String(opts?.placement || '').trim() === 'main' ? 'main' : 'sidebar';
+    const isMainPlacement = placement === 'main';
+    if (isMainPlacement) host.innerHTML = '';
     const persistKey = 'h2o:studio:sidebar:recently-deleted-folders:expanded:v1';
     const details = el('details', {
-      class: 'wbFolderRecentlyDeleted',
-      'data-h2o-recently-deleted-folders': '1',
-      style: 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);',
+      class: `wbFolderRecentlyDeleted${isMainPlacement ? ' wbFolderRecentlyDeleted--main' : ''}`,
+      'data-h2o-recently-deleted-folders': isMainPlacement ? 'main' : 'sidebar',
+      style: isMainPlacement
+        ? 'display:flex;flex-direction:column;gap:10px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:0;overflow:hidden;'
+        : 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);',
     });
-    try { details.open = W.localStorage.getItem(persistKey) === '1'; } catch {}
+    if (isMainPlacement) {
+      details.open = true;
+    } else {
+      try { details.open = W.localStorage.getItem(persistKey) === '1'; } catch {}
+    }
     const summary = el('summary', {
       class: 'wbSidebarLocalReviewSummary',
-      style: 'cursor:pointer;padding:6px 10px;font-size:11px;color:rgba(255,255,255,.62);letter-spacing:.04em;text-transform:uppercase;',
+      style: isMainPlacement
+        ? 'cursor:default;list-style:none;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.07);font-size:11px;color:rgba(255,255,255,.64);letter-spacing:.04em;text-transform:uppercase;'
+        : 'cursor:pointer;padding:6px 10px;font-size:11px;color:rgba(255,255,255,.62);letter-spacing:.04em;text-transform:uppercase;',
     }, 'Recently Deleted');
     details.appendChild(summary);
     const body = el('div', {
       class: 'wbFolderRecentlyDeletedBody',
-      style: 'display:flex;flex-direction:column;gap:8px;padding:0 8px 4px;',
+      style: isMainPlacement
+        ? 'display:flex;flex-direction:column;gap:10px;padding:12px 14px 14px;'
+        : 'display:flex;flex-direction:column;gap:8px;padding:0 8px 4px;',
     });
     const status = el('div', {
       role: 'status',
@@ -2116,9 +2129,11 @@
     }, 'Loading recovery diagnostics...');
     body.appendChild(status);
     details.appendChild(body);
-    details.addEventListener('toggle', () => {
-      try { W.localStorage.setItem(persistKey, details.open ? '1' : '0'); } catch {}
-    });
+    if (!isMainPlacement) {
+      details.addEventListener('toggle', () => {
+        try { W.localStorage.setItem(persistKey, details.open ? '1' : '0'); } catch {}
+      });
+    }
     host.appendChild(details);
 
     const store = desktopFolderStore();
@@ -2127,7 +2142,7 @@
       : store?.diagnoseRecentlyDeletedFolders;
     let result = null;
     try {
-      result = await listFn.call(store, { limit: 500, source: 'desktop-recently-deleted-ui' });
+      result = await listFn.call(store, { limit: 500, source: isMainPlacement ? 'desktop-recently-deleted-main-ui' : 'desktop-recently-deleted-ui' });
     } catch (e) {
       err('recentlyDeleted.list', e);
       body.innerHTML = '';
@@ -2189,7 +2204,7 @@
       return;
     }
 
-    const visibleRows = rows.slice(0, 20);
+    const visibleRows = rows.slice(0, isMainPlacement ? 50 : 20);
     visibleRows.forEach((raw) => {
       const row = raw && typeof raw === 'object' ? raw : {};
       const folderName = recentlyDeletedText(row.folderName || row.name || row.folderId, 'Folder');
@@ -2202,7 +2217,9 @@
       const card = el('div', {
         class: 'wbFolderRecentlyDeletedRow',
         'data-h2o-recently-deleted-folder-id': folderId || null,
-        style: 'display:flex;flex-direction:column;gap:5px;padding:7px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);',
+        style: isMainPlacement
+          ? 'display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);'
+          : 'display:flex;flex-direction:column;gap:5px;padding:7px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);',
       });
       card.appendChild(el('div', {
         style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;',
@@ -2259,7 +2276,13 @@
         Promise.resolve(restoreRecentlyDeletedFolder(row, { setStatus: (message) => { rowStatus.textContent = message; } }))
           .finally(() => {
             W.setTimeout(() => {
-              try { renderFolders(); } catch (e) { err('recentlyDeleted.renderAfterRestore', e); }
+              try {
+                if (isMainPlacement) {
+                  renderRecentlyDeletedFoldersPanel(host, { placement: 'main' }).catch((e) => err('recentlyDeleted.renderMainAfterRestore', e));
+                } else {
+                  renderFolders();
+                }
+              } catch (e) { err('recentlyDeleted.renderAfterRestore', e); }
             }, 250);
           });
       });
@@ -2273,6 +2296,38 @@
         style: 'font-size:10.5px;color:rgba(255,255,255,.54);padding:0 2px;',
       }, `Showing ${formatNumber(visibleRows.length)} of ${formatNumber(rows.length)} folder tombstones.`));
     }
+  }
+
+  async function renderRecentlyDeletedFoldersSidebarEntry(host) {
+    if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
+    const entry = el('a', {
+      class: 'wbSidebarSectionMore wbFolderRecentlyDeletedSidebarEntry',
+      href: '#/library/folders',
+      'data-h2o-recently-deleted-folders-sidebar-entry': '1',
+      style: 'margin-top:6px',
+      title: 'Open Recently Deleted in the main Folders page',
+    }, 'Recently Deleted');
+    host.appendChild(entry);
+
+    const store = desktopFolderStore();
+    const listFn = typeof store?.listRecentlyDeletedFolders === 'function'
+      ? store.listRecentlyDeletedFolders
+      : store?.diagnoseRecentlyDeletedFolders;
+    try {
+      const result = await listFn.call(store, { limit: 500, source: 'desktop-recently-deleted-sidebar-counter' });
+      const rows = recentlyDeletedRowsFromResult(result);
+      entry.textContent = `Recently Deleted · ${formatNumber(rows.length)}`;
+    } catch (e) {
+      err('recentlyDeleted.sidebarEntry', e);
+      entry.title = `Recently Deleted diagnostics unavailable: ${String(e?.message || e || 'list failed')}`;
+    }
+    entry.addEventListener('click', () => {
+      W.setTimeout(() => {
+        try {
+          D.querySelector('[data-h2o-recently-deleted-folders="main"]')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+        } catch {}
+      }, 160);
+    });
   }
 
   function menuTitleForKind(kind) {
@@ -4071,9 +4126,9 @@
     }
 
     try {
-      await renderRecentlyDeletedFoldersPanel(host);
+      await renderRecentlyDeletedFoldersSidebarEntry(host);
     } catch (e) {
-      err('renderRecentlyDeletedFoldersPanel', e);
+      err('renderRecentlyDeletedFoldersSidebarEntry', e);
     }
 
     step('renderFolders.parity', `canonical=${mainItems.length} review=${reviewItems.length}`);
@@ -5017,6 +5072,8 @@
     refresh: renderAllSections,
     openRowMenu,
     closeRowMenu,
+    renderRecentlyDeletedFoldersPanel,
+    renderRecentlyDeletedFoldersSidebarEntry,
     getRowAppearance,
     setCollapsed,
     diagnose() {

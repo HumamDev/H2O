@@ -6387,6 +6387,38 @@ function makeVisibleStudioFolderPageRow(row){
   return rowEl;
 }
 
+async function appendVisibleStudioRecentlyDeletedFoldersPanel(page){
+  if (!page) return false;
+  const host = document.createElement("section");
+  host.className = "wbFolderPageRecentlyDeletedHost";
+  host.dataset.h2oFolderPageRecentlyDeletedHost = "1";
+  host.style.cssText = "display:flex;flex-direction:column;min-width:0";
+  page.appendChild(host);
+  const api = W.H2O?.Library?.SidebarSections;
+  if (!api || typeof api.renderRecentlyDeletedFoldersPanel !== "function") {
+    host.innerHTML = `
+      <section class="wbFolderRecentlyDeleted wbFolderRecentlyDeleted--main" data-h2o-recently-deleted-folders="main" style="display:flex;flex-direction:column;gap:8px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:12px 14px">
+        <div style="font-size:11px;color:rgba(255,255,255,.64);letter-spacing:.04em;text-transform:uppercase">Recently Deleted</div>
+        <div class="wbState" style="padding:0;text-align:left">Recently Deleted diagnostics are loading.</div>
+      </section>
+    `;
+    return false;
+  }
+  try {
+    await api.renderRecentlyDeletedFoldersPanel(host, { placement: "main" });
+    return true;
+  } catch (error) {
+    console.warn("[H2O.Studio] Recently Deleted main panel failed", error);
+    host.innerHTML = `
+      <section class="wbFolderRecentlyDeleted wbFolderRecentlyDeleted--main" data-h2o-recently-deleted-folders="main" style="display:flex;flex-direction:column;gap:8px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:12px 14px">
+        <div style="font-size:11px;color:rgba(255,255,255,.64);letter-spacing:.04em;text-transform:uppercase">Recently Deleted</div>
+        <div class="wbState" style="padding:0;text-align:left">Recently Deleted diagnostics are unavailable.</div>
+      </section>
+    `;
+    return false;
+  }
+}
+
 function prepareVisibleStudioFoldersBody(){
   const listPanel = $("#viewListPanel");
   const listEl = $("#viewList");
@@ -6615,6 +6647,8 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
     rowsToRender.forEach((row) => list.appendChild(makeVisibleStudioFolderPageRow(row)));
   }
   page.appendChild(list);
+
+  await appendVisibleStudioRecentlyDeletedFoldersPanel(page);
 
   if (reviewRows.length) {
     const review = document.createElement("section");
