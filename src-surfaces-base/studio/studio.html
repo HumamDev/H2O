@@ -595,6 +595,12 @@
        existing Desktop store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>
+  <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
+       Triggers the existing Desktop package writer for a validated queued
+       request (re-resolves Desktop store state first). Updates only the
+       saved_chat_archive_requests row; no migration, no overwrite by default,
+       no Chrome runtime, sync, import/recovery, CAS, or UI. -->
+  <script src="./ingestion/saved-chat-archive-materializer.tauri.js"></script>
   <!-- Read-only Saved Chat Archive Health UI shell (Phase C6.1). Renders the
        C5 archive diagnostics into the Settings -> Diagnostics card via the
        injected read-only API; no mutation/repair/import/sync/Chrome. Shows an
