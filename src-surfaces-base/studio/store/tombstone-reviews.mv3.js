@@ -51,6 +51,8 @@
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-delete-receipt-import.v1';
   var FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-delete-receipt-apply-result.v1';
+  var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
+  var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -155,6 +157,48 @@
   function recordWrite(/* op */) {
     state.writesSinceBoot += 1;
     state.lastWriteAt = Date.now();
+  }
+
+  function getChromeStorageLocal() {
+    try {
+      return global.chrome && global.chrome.storage && global.chrome.storage.local;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function readKv(key) {
+    return new Promise(function (resolve) {
+      var storage = getChromeStorageLocal();
+      if (!storage || typeof storage.get !== 'function') { resolve(null); return; }
+      try {
+        storage.get([key], function (items) {
+          resolve(items && Object.prototype.hasOwnProperty.call(items, key) ? items[key] : null);
+        });
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  }
+
+  function writeKv(key, value) {
+    return new Promise(function (resolve, reject) {
+      var storage = getChromeStorageLocal();
+      if (!storage || typeof storage.set !== 'function') {
+        reject(new Error('chrome.storage.local unavailable'));
+        return;
+      }
+      try {
+        var item = {}; item[key] = value;
+        storage.set(item, function () {
+          var lastErr = global.chrome && global.chrome.runtime && global.chrome.runtime.lastError;
+          if (lastErr) reject(new Error(String(lastErr.message || lastErr)));
+          else resolve();
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
   }
 
   function notifySubscribers(change) {
@@ -407,6 +451,109 @@
         stateSource: nullableString(data.stateSource),
       },
     };
+  }
+
+  function folderDeleteRequestExportIdentity(payload) {
+    var p = isObject(payload) ? payload : {};
+    return cleanScalar(p.requestId || p.reviewId) + '|' + cleanScalar(p.folderId || p.recordId);
+  }
+
+  function sanitizeFolderDeleteRequestExportPayload(payload) {
+    var p = isObject(payload) ? payload : {};
+    if (cleanScalar(p.schema) !== FOLDER_DELETE_REQUEST_SCHEMA) return null;
+    if (cleanScalar(p.intent) !== 'folder-soft-delete-request') return null;
+    if (cleanScalar(p.status) !== 'pending') return null;
+    if (p.desktopApplyRequired !== true) return null;
+    var requestId = cleanScalar(p.requestId || p.reviewId);
+    var folderId = cleanScalar(p.folderId || p.recordId);
+    if (!requestId || !folderId) return null;
+    return {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanScalar(p.reviewId || requestId) || requestId,
+      recordKind: 'folder',
+      intent: 'folder-soft-delete-request',
+      classification: 'delete-request',
+      folderId: folderId,
+      folderName: nullableString(p.folderName || p.folderNameAtRequest),
+      folderNameAtRequest: nullableString(p.folderNameAtRequest || p.folderName),
+      normalizedNameAtRequest: nullableString(p.normalizedNameAtRequest),
+      requestedAt: nullableString(p.requestedAt),
+      requestedBy: nullableString(p.requestedBy || 'chrome-studio'),
+      sourceSurface: nullableString(p.sourceSurface || 'chrome-studio'),
+      sourcePeerId: nullableString(p.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: nullableString(p.reason || 'user-requested-folder-delete'),
+      noHardDelete: true,
+      noChatDelete: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: isObject(p.advisory) ? Object.assign({}, p.advisory) : null,
+      mirroredAt: nowIso(),
+    };
+  }
+
+  function upsertFolderDeleteRequestExportMirror(payload) {
+    var request = sanitizeFolderDeleteRequestExportPayload(payload);
+    if (!request) return Promise.resolve({ ok: false, status: 'folder-delete-request-export-mirror-invalid' });
+    return readKv(FOLDER_DELETE_REQUEST_EXPORT_KEY).then(function (current) {
+      var rows = Array.isArray(current && current.requests) ? current.requests.slice() : [];
+      var key = folderDeleteRequestExportIdentity(request);
+      rows = rows.filter(function (row) {
+        return folderDeleteRequestExportIdentity(row) !== key;
+      });
+      rows.push(request);
+      if (rows.length > MAX_LIST_LIMIT) rows = rows.slice(rows.length - MAX_LIST_LIMIT);
+      return writeKv(FOLDER_DELETE_REQUEST_EXPORT_KEY, {
+        schema: FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA,
+        version: 1,
+        updatedAt: nowIso(),
+        requestCount: rows.length,
+        requests: rows,
+      }).then(function () {
+        return { ok: true, status: 'folder-delete-request-export-mirror-updated', requestCount: rows.length };
+      });
+    }).catch(function (e) {
+      recordError('folderDeleteRequest.exportMirror.upsert', e);
+      return { ok: false, status: 'folder-delete-request-export-mirror-failed', reason: String((e && e.message) || e) };
+    });
+  }
+
+  function pruneFolderDeleteRequestExportMirror(payload) {
+    var p = isObject(payload) ? payload : {};
+    var ids = [
+      cleanScalar(p.requestId),
+      cleanScalar(p.reviewId),
+    ].filter(Boolean);
+    var folderId = cleanScalar(p.folderId || p.recordId);
+    if (!ids.length && !folderId) return Promise.resolve({ ok: true, status: 'folder-delete-request-export-mirror-noop' });
+    return readKv(FOLDER_DELETE_REQUEST_EXPORT_KEY).then(function (current) {
+      var rows = Array.isArray(current && current.requests) ? current.requests.slice() : [];
+      var before = rows.length;
+      rows = rows.filter(function (row) {
+        var rowIds = [cleanScalar(row.requestId), cleanScalar(row.reviewId)].filter(Boolean);
+        var idMatch = ids.length && rowIds.some(function (id) { return ids.indexOf(id) !== -1; });
+        var folderMatch = folderId && cleanScalar(row.folderId || row.recordId) === folderId;
+        return !(idMatch || folderMatch);
+      });
+      if (rows.length === before) return { ok: true, status: 'folder-delete-request-export-mirror-unchanged', requestCount: rows.length };
+      return writeKv(FOLDER_DELETE_REQUEST_EXPORT_KEY, {
+        schema: FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA,
+        version: 1,
+        updatedAt: nowIso(),
+        requestCount: rows.length,
+        requests: rows,
+      }).then(function () {
+        return { ok: true, status: 'folder-delete-request-export-mirror-pruned', requestCount: rows.length };
+      });
+    }).catch(function (e) {
+      recordError('folderDeleteRequest.exportMirror.prune', e);
+      return { ok: false, status: 'folder-delete-request-export-mirror-prune-failed', reason: String((e && e.message) || e) };
+    });
   }
 
   function readField(input, camel, snake) {
@@ -1174,11 +1321,13 @@
       .then(function () { return findPendingFolderDeleteRequest(folderId); })
       .then(function (existing) {
         if (existing) {
+          var existingPayload = parseRequestPayload(existing);
           state.folderDeleteRequestDuplicates += 1;
           state.lastFolderDeleteRequestAt = requestedAt;
           state.lastFolderDeleteRequestFolderId = folderId;
           state.lastFolderDeleteRequestStatus = 'pending-existing';
-          return {
+          return upsertFolderDeleteRequestExportMirror(existingPayload || existing).then(function (mirror) {
+            return {
             ok: true,
             status: 'pending-existing',
             duplicate: true,
@@ -1186,11 +1335,13 @@
             requestId: cleanScalar(existing.reviewId),
             reviewId: cleanScalar(existing.reviewId),
             review: existing,
-            payload: parseRequestPayload(existing),
+            payload: existingPayload,
+            exportMirror: mirror,
             noHardDelete: true,
             noChatDelete: true,
             desktopApplyRequired: true,
-          };
+            };
+          });
         }
         var requestId = generateFolderDeleteRequestId();
         var payload = shapeFolderDeleteRequestInput(input, options, requestId, requestedAt);
@@ -1223,19 +1374,22 @@
             reviewId: requestId,
             status: 'pending',
           });
-          return {
-            ok: true,
-            status: 'pending-created',
-            duplicate: false,
-            folderId: folderId,
-            requestId: requestId,
-            reviewId: requestId,
-            review: created,
-            payload: payload,
-            noHardDelete: true,
-            noChatDelete: true,
-            desktopApplyRequired: true,
-          };
+          return upsertFolderDeleteRequestExportMirror(payload).then(function (mirror) {
+            return {
+              ok: true,
+              status: 'pending-created',
+              duplicate: false,
+              folderId: folderId,
+              requestId: requestId,
+              reviewId: requestId,
+              review: created,
+              payload: payload,
+              exportMirror: mirror,
+              noHardDelete: true,
+              noChatDelete: true,
+              desktopApplyRequired: true,
+            };
+          });
         });
       })
       .catch(function (e) {
@@ -1469,7 +1623,14 @@
           result.decidedAt = importedAt;
           result.reviewUpdated = true;
           result.writesPerformed = 1;
-          return result;
+          return pruneFolderDeleteRequestExportMirror({
+            requestId: receipt.requestId,
+            reviewId: receipt.reviewId,
+            folderId: receipt.folderId,
+          }).then(function (mirror) {
+            result.exportMirror = mirror;
+            return result;
+          });
         });
       })
       .catch(function (e) {

@@ -16,6 +16,8 @@ This is a smoke harness only. It does not add production UI, WebDAV/cloud/relay,
 - `tools/smoke/chrome-cdp-studio.mjs`
 - `tools/smoke/desktop-folder-sync-queue-client.mjs`
 - `src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
+- `src-surfaces-base/studio/store/tombstone-reviews.mv3.js`
+- `src-surfaces-base/studio/sync/auto-import.mv3.js`
 - `src-surfaces-base/studio/sync/folder-import.mv3.js`
 - `tools/validation/sync/validate-folder-delete-restore-phase4d4.mjs`
 - existing helper validators updated for the new bounded lifecycle smoke allowlists
@@ -68,6 +70,8 @@ The Desktop queue client now permits the read-only review/tombstone/list/count o
 
 Chrome restore receipt re-show preserves the removed visible-mirror row metadata when the delete receipt hides the folder and rebuilds restored rows with the same display hints used by Chrome-created mirror rows. The smoke registry visibility verifier also has a read-only fallback to inspect the Chrome folder-state mirror when `FolderParity` has not refreshed yet.
 
+Follow-up export fix: a live Phase 4D.4 run created a Chrome pending folder delete request, but the next Chrome export wrote `chrome-latest.json` without that request. The request existed in Chrome runtime, but Desktop could not review/apply a request that was absent from the transport file. The MV3 review store now writes a pending, status-only export mirror at request creation time and prunes it when a Desktop delete receipt resolves the request. The Chrome export collector merges the IndexedDB review rows with this mirror, dedupes by request/folder identity, and skips mirror entries when the review store says the request is no longer pending. The runner now treats a zero `folderDeleteRequestExport.requestCount` during the delete-request export step as a hard blocker.
+
 ## Safety
 
 The runner and bridge enforce:
@@ -115,6 +119,8 @@ Passed:
 
 - `node --check tools/smoke/local-folder-delete-restore-smoke-runner.mjs`
 - `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
+- `node --check src-surfaces-base/studio/store/tombstone-reviews.mv3.js`
+- `node --check src-surfaces-base/studio/sync/auto-import.mv3.js`
 - `node --check src-surfaces-base/studio/sync/folder-import.mv3.js`
 - `node --check tools/smoke/chrome-cdp-studio.mjs`
 - `node --check tools/smoke/desktop-folder-sync-queue-client.mjs`
@@ -165,10 +171,47 @@ Runtime attempt 3 after rebuilding and adding the smoke verifier mirror fallback
 - Queue client returned `desktop-queue-timeout`.
 - Next action from the helper: open Desktop Studio with `?h2oSmokeBridge=folder-sync-rc`, set `localStorage` key `h2o:studio:smoke-bridge:enabled:v1` to `folder-sync-rc`, and confirm `H2O.Studio.devSmoke.folderSyncQueue.diagnose().started === true`.
 
+Runtime attempt 4 after Desktop queue was re-enabled reached Chrome request/export and Desktop import, but failed when Desktop listed pending requests:
+
+- Chrome `requestFolderDelete` returned `ok:true` and `status:"pending-created"`.
+- Chrome `syncNow({ direction:"chrome-to-desktop" })` returned `ok:true` and `status:"chrome-to-desktop-exported"`.
+- Desktop import returned `ok:true` and `status:"imported"`.
+- Desktop `listFolderDeleteRequests` did not include the new folder request.
+- Direct inspection of `/Users/hobayda/H2O Studio Sync/chrome-latest.json` showed `matchCount:0` for the runner-created `folderId`.
+
+Root cause: Chrome request creation and Chrome export were not guaranteed to serialize the same pending request source into `chrome-latest.json`. The export path depended on live review-store enumeration only, and the smoke runner did not assert `folderDeleteRequestExport.requestCount` before Desktop import. The fix adds the pending export mirror and export-count gate described above.
+
+Runtime attempt 5 after rebuilding and relaunching the Chrome smoke profile verified the export fix:
+
+- Chrome smoke helper relaunched on port `9247` with current smoke registry source hash.
+- Chrome `diagnoseHealth` returned `ok:true`, `status:"healthy"`, `connected:true`, `permission:"granted"`, and `chromeWritesSyncFolder:true`.
+- Chrome created a safe smoke folder:
+  - `folderId:"fold_smoke_zz-4d4-delete-restore-mqrzfy35_mqrzfy7l_86963c8c53fd"`
+  - `name:"zz-4d4-delete-restore-mqrzfy35"`
+  - `color:"#38BDF8"`
+- Chrome export before the delete request reported:
+  - `status:"chrome-to-desktop-exported"`
+  - `folderDeleteRequestExport.requestCount:3`
+  - `folderDeleteRequestExport.reviewRequestCount:3`
+  - `folderDeleteRequestExport.mirrorRequestCount:0`
+  - `folderDeleteRequestExport.staleMirrorSkippedCount:0`
+  - `folderDeleteRequestExport.desktopApplyRequired:true`
+  - `preExportFolderModel.status:"folder-model-read"`
+  - `preExportFolderModel.rowCount:33`
+- This proves the Chrome export path now surfaces pending folder delete request export diagnostics and no longer writes a silent zero-request export.
+
+The full lifecycle runner did not proceed beyond the first Desktop import/verify step in attempt 5 because the Desktop smoke queue stopped consuming commands:
+
+- Desktop `syncNow({ direction:"chrome-to-desktop" })` returned through the queue client as `status:"desktop-queue-timeout"`.
+- A direct Desktop queue `diagnoseHealth` command also returned `status:"desktop-queue-timeout"`.
+- The running Desktop app had the smoke URL flag, but the queue was not processing `/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json`.
+- This is a live Desktop smoke-gate/queue enablement blocker, not a Chrome delete-request export blocker.
+
 Current runtime status:
 
 - Implementation and static validation are complete.
-- Live proof is blocked by Desktop smoke queue enablement, not by the runner code.
+- Chrome pending delete-request export is runtime-verified through `folderDeleteRequestExport.requestCount:3` and export diagnostics in the smoke result.
+- Full end-to-end lifecycle proof is currently blocked by Desktop smoke queue liveness before Desktop import/verify.
 - Re-run after Desktop queue is enabled:
 
 ```bash

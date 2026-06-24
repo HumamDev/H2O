@@ -47,6 +47,8 @@ assertContains(runner, 'phase4d.4-delete-restore-smoke-runner', 'runner phase');
 assertContains(runner, '--allow-mutation', 'runner mutation gate');
 assertContains(runner, 'zz-4d4-delete-restore-', 'unique smoke folder name');
 assertContains(runner, 'requestFolderDelete', 'Chrome delete request step');
+assertContains(runner, 'expectDeleteRequestExported', 'Chrome delete request export count gate');
+assertContains(runner, 'folder-delete-request-export-missing', 'Chrome delete request export missing blocker');
 assertContains(runner, 'applyFolderDeleteRequest', 'Desktop delete apply step');
 assertContains(runner, 'restoreFolder', 'Desktop restore step');
 assertContains(runner, 'folderDeleteReceiptImport', 'delete receipt import diagnostics');
@@ -110,6 +112,9 @@ for (const op of ['syncNow', 'applyFolderDeleteRequest', 'restoreFolder', 'verif
 assert(!desktopMutation.includes('requestFolderDelete'), 'Desktop MUTATION_OPS must not include requestFolderDelete');
 
 assertContains(registry, "'restoreFolder'", 'registry allowlist restore op');
+assertContains(registry, 'folderDeleteRequestExport', 'registry syncNow delete request export diagnostics');
+assertContains(registry, 'preExportFolderModel', 'registry syncNow pre-export folder model diagnostics');
+assertContains(registry, 'folder-sync-rc-smoke-sync-export-refresh', 'registry Chrome export refresh marker');
 assertContains(registry, 'restoreFolder: true', 'Desktop-only restore op');
 assertContains(registry, 'store.restoreTombstonedFolder || store.restoreFolder', 'existing restore API delegation');
 assertContains(registry, "if (op === 'restoreFolder') return restoreFolder(payload);", 'restore dispatch');

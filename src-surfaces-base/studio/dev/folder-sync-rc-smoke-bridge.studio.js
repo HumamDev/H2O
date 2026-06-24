@@ -1036,6 +1036,17 @@
   async function syncNow(payload) {
     var api = getPath(H2O, ['Studio', 'sync', 'folder']);
     if (!api || typeof api.syncNow !== 'function') return unsupportedResult('syncNow', 'folder-sync-api-unavailable');
+    var preExportFolderModel = null;
+    if (detectSurface().kind === 'chrome-studio' && cleanString(payload.direction) === 'chrome-to-desktop') {
+      dispatchFolderStateRefresh(cleanString(payload.reason) || 'folder-sync-rc-smoke-sync-export-refresh');
+      try {
+        preExportFolderModel = await getFolderModel({
+          reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-sync-export-refresh',
+        });
+      } catch (_) {
+        preExportFolderModel = null;
+      }
+    }
     var result = safeObject(await api.syncNow(safeObject(payload)));
     return baseResult('syncNow', {
       ok: result.ok === true,
@@ -1047,6 +1058,12 @@
       bytes: Number(result.bytes || result.lastExportBytes) || 0,
       blockers: codeList(result.blockers),
       warnings: codeList(result.warnings),
+      folderDeleteRequestExport: safeObject(result.folderDeleteRequestExport),
+      preExportFolderModel: preExportFolderModel ? {
+        status: cleanString(preExportFolderModel.status),
+        rowCount: Number(preExportFolderModel.rowCount || 0),
+        canonicalRowCount: Number(preExportFolderModel.canonicalRowCount || 0),
+      } : null,
       folderDeleteReceiptImport: safeObject(result.folderDeleteReceiptImport),
       folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport),
     });

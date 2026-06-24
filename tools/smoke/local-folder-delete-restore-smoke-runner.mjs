@@ -245,6 +245,7 @@ function helperSummary(runResult) {
     tombstoneId: String(registry && registry.tombstoneId || '').trim(),
     chatCount: Number(registry && registry.chatCount),
     snapshotCount: Number(registry && registry.snapshotCount),
+    folderDeleteRequestExport: registry && registry.folderDeleteRequestExport || null,
     blockers: [...codeList(helper && helper.blockers), ...codeList(registry && registry.blockers)],
     warnings: [...codeList(helper && helper.warnings), ...codeList(registry && registry.warnings)],
     raw: helper,
@@ -302,6 +303,7 @@ function recordStep(stepResults, key, label, surface, runResult, check, retry = 
     tombstoneId: summary.tombstoneId,
     chatCount: Number.isFinite(summary.chatCount) ? summary.chatCount : null,
     snapshotCount: Number.isFinite(summary.snapshotCount) ? summary.snapshotCount : null,
+    folderDeleteRequestExport: summary.folderDeleteRequestExport,
     blockers,
     warnings,
     startedAt: runResult.startedAt,
@@ -361,6 +363,16 @@ function expectOk(key) {
   return (summary) => {
     if (summary.helperOk && summary.registryOk) return { ok: true };
     return { ok: false, blockers: [`${key}-not-ok`] };
+  };
+}
+
+function expectDeleteRequestExported(key) {
+  return (summary) => {
+    const blockers = [];
+    if (!summary.helperOk || !summary.registryOk) blockers.push(`${key}-not-ok`);
+    const exportSummary = summary.folderDeleteRequestExport || {};
+    if (Number(exportSummary.requestCount || 0) < 1) blockers.push('folder-delete-request-export-missing');
+    return { ok: blockers.length === 0, blockers };
   };
 }
 
@@ -560,7 +572,7 @@ async function run(options) {
   const chromeExportDeleteRequest = await runStep(stepResults, 'chrome-export-delete-request', 'Chrome export delete request', 'chrome-studio', CHROME_HELPER,
     buildChromeArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'phase4d4-export-delete-request' }),
     options.timeoutMs,
-    expectOk('chrome-export-delete-request'));
+    expectDeleteRequestExported('chrome-export-delete-request'));
   if (requireStep(chromeExportDeleteRequest)) return finish();
 
   await runStep(stepResults, 'desktop-import-delete-request', 'Desktop import delete request', 'desktop-studio', DESKTOP_HELPER,

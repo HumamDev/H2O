@@ -84,6 +84,8 @@
   var PHASE                = 'R3-phase1';
   var FULL_BUNDLE_SCHEMA   = 'h2o.studio.fullBundle.v2';
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
+  var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
+  var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
   var EXPORT_COVERAGE_SCHEMA = 'h2o.studio.sync.chrome-export-coverage.v1';
   var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
   var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
@@ -484,27 +486,115 @@
     };
   }
 
+  function folderDeleteRequestExportIdentity(request) {
+    var row = isPlainObject(request) ? request : {};
+    return cleanString(row.requestId || row.reviewId) + '|' + cleanString(row.folderId || row.recordId);
+  }
+
+  async function readFolderDeleteRequestExportMirror() {
+    var empty = {
+      ok: true,
+      schema: FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA,
+      found: false,
+      requestCount: 0,
+      requests: [],
+    };
+    try {
+      var mirror = await readKv(FOLDER_DELETE_REQUEST_EXPORT_KEY);
+      if (!mirror || typeof mirror !== 'object') return empty;
+      if (cleanString(mirror.schema) !== FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA) {
+        return Object.assign({}, empty, { ok: false, found: true, warning: 'folder-delete-request-export-mirror-schema-invalid' });
+      }
+      var rows = Array.isArray(mirror.requests) ? mirror.requests : [];
+      return {
+        ok: true,
+        schema: FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA,
+        found: true,
+        updatedAt: cleanString(mirror.updatedAt),
+        requestCount: rows.length,
+        requests: rows,
+      };
+    } catch (e) {
+      pushError('folderDeleteRequests.exportMirror.read', e);
+      return Object.assign({}, empty, {
+        ok: false,
+        found: false,
+        warning: 'folder-delete-request-export-mirror-read-failed',
+        error: String((e && e.message) || e),
+      });
+    }
+  }
+
   async function collectFolderDeleteRequestsForExport() {
     var result = {
       ok: true,
       schema: FOLDER_DELETE_REQUEST_SCHEMA + '.export.v1',
       requestCount: 0,
       skippedCount: 0,
+      reviewRequestCount: 0,
+      mirrorRequestCount: 0,
+      staleMirrorSkippedCount: 0,
       warnings: [],
       requests: [],
     };
     try {
+      var byIdentity = Object.create(null);
+      function addRequest(row, source) {
+        var request = sanitizeFolderDeleteRequestForExport(row);
+        if (!request) {
+          result.skippedCount += 1;
+          return null;
+        }
+        var key = folderDeleteRequestExportIdentity(request);
+        if (!key || key === '|') {
+          result.skippedCount += 1;
+          return null;
+        }
+        if (!byIdentity[key]) {
+          request.exportSource = source;
+          byIdentity[key] = request;
+          result.requests.push(request);
+        }
+        return request;
+      }
       var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      var reviewStatusByIdentity = Object.create(null);
       if (!reviews || typeof reviews.listFolderDeleteRequests !== 'function') {
         result.storeAvailable = false;
-        return result;
+      } else {
+        result.storeAvailable = true;
+        var allRows = await reviews.listFolderDeleteRequests({ limit: 1000 });
+        (Array.isArray(allRows) ? allRows : []).forEach(function (row) {
+          var payload = parseFolderDeleteRequestPayload(row);
+          var status = cleanString((payload && payload.status) || row.status);
+          var key = folderDeleteRequestExportIdentity({
+            requestId: payload && (payload.requestId || payload.reviewId) || row.reviewId,
+            reviewId: payload && (payload.reviewId || payload.requestId) || row.reviewId,
+            folderId: payload && payload.folderId || row.recordId,
+          });
+          if (key && key !== '|') reviewStatusByIdentity[key] = status || 'unknown';
+          if (status === 'pending') addRequest(row, 'review-store');
+        });
+        result.reviewRequestCount = result.requests.length;
       }
-      result.storeAvailable = true;
-      var rows = await reviews.listFolderDeleteRequests({ status: 'pending', limit: 1000 });
-      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+      var mirror = await readFolderDeleteRequestExportMirror();
+      result.mirrorAvailable = mirror.found === true;
+      result.mirrorOk = mirror.ok === true;
+      result.mirrorRequestCount = Number(mirror.requestCount || 0);
+      if (mirror.warning) result.warnings.push(mirror.warning);
+      (Array.isArray(mirror.requests) ? mirror.requests : []).forEach(function (row) {
         var request = sanitizeFolderDeleteRequestForExport(row);
-        if (request) result.requests.push(request);
-        else result.skippedCount += 1;
+        if (!request) {
+          result.skippedCount += 1;
+          return;
+        }
+        var key = folderDeleteRequestExportIdentity(request);
+        var knownStatus = reviewStatusByIdentity[key];
+        if (knownStatus && knownStatus !== 'pending') {
+          result.staleMirrorSkippedCount += 1;
+          return;
+        }
+        addRequest(request, 'pending-export-mirror');
       });
       result.requestCount = result.requests.length;
       return result;
@@ -1971,6 +2061,12 @@
         folderDeleteRequestExport: {
           requestCount: Number(folderDeleteRequestExport.requestCount || 0),
           skippedCount: Number(folderDeleteRequestExport.skippedCount || 0),
+          reviewRequestCount: Number(folderDeleteRequestExport.reviewRequestCount || 0),
+          mirrorRequestCount: Number(folderDeleteRequestExport.mirrorRequestCount || 0),
+          staleMirrorSkippedCount: Number(folderDeleteRequestExport.staleMirrorSkippedCount || 0),
+          storeAvailable: folderDeleteRequestExport.storeAvailable === true,
+          mirrorAvailable: folderDeleteRequestExport.mirrorAvailable === true,
+          mirrorOk: folderDeleteRequestExport.mirrorOk === true,
           noApply: true,
           desktopApplyRequired: true,
         },

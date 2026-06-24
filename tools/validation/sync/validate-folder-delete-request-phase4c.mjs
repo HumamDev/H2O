@@ -89,6 +89,8 @@ assert(!requestBody.includes('bindChat'), 'Chrome request must not bind chats');
 [
   'FOLDER_DELETE_REQUEST_SCHEMA',
   'collectFolderDeleteRequestsForExport',
+  'FOLDER_DELETE_REQUEST_EXPORT_KEY',
+  'pending-export-mirror',
   'sanitizeFolderDeleteRequestForExport',
   'listFolderDeleteRequests',
   'bundle.folderDeleteRequests',
@@ -103,6 +105,8 @@ assert(!requestBody.includes('bindChat'), 'Chrome request must not bind chats');
 
 const collectExportBody = functionBody(chromeExport, 'collectFolderDeleteRequestsForExport');
 assert(collectExportBody.includes('listFolderDeleteRequests'), 'Chrome export must source requests from review store');
+assert(collectExportBody.includes('readFolderDeleteRequestExportMirror'), 'Chrome export must merge pending request export mirror');
+assert(collectExportBody.includes('staleMirrorSkippedCount'), 'Chrome export must skip stale mirror requests');
 assert(!collectExportBody.includes('softDeleteFolder'), 'Chrome export must not apply soft delete');
 assert(!collectExportBody.includes('createTombstone'), 'Chrome export must not create tombstones');
 assert(!collectExportBody.includes('unbindChat'), 'Chrome export must not unbind chats');
