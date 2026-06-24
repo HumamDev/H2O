@@ -151,7 +151,71 @@ if (preparedDesktopExport) {
   );
 }
 
-assertNotIncludes(chromeImport, 'folderRestoreReceipts', 'Chrome restore receipt import is intentionally deferred in 4D.1');
+[
+  'FOLDER_RESTORE_RECEIPT_SCHEMA',
+  'folderRestoreReceipts',
+  'normalizeFolderRestoreReceiptForChromeReShow',
+  'reShowFolderByDesktopRestoreReceiptInMirror',
+  'importFolderRestoreReceiptsFromDesktopBundle',
+  'mergeFolderRestoreReceiptReShowSummary',
+  'folderRestoreReceiptImport',
+  'visibleStateOnlyReShow: true',
+  'noTombstoneApply: true',
+  'noTombstoneCreate: true',
+  'noHardDelete: true',
+  'noChatDelete: true',
+  'noBindingMutation: true',
+  'noChatMutation: true',
+  'noSnapshotMutation: true',
+  "tombstonePropagation: 'deferred'",
+].forEach((needle) => assertIncludes(chromeImport, needle, `Chrome restore receipt import ${needle}`));
+
+const chromeRestoreNormalizeBody = functionBody(chromeImport, 'normalizeFolderRestoreReceiptForChromeReShow');
+[
+  'FOLDER_RESTORE_RECEIPT_SCHEMA',
+  "receipt.status) !== 'restored'",
+  "receipt.decision) !== 'desktop-folder-restored'",
+  'receipt.statusOnly !== true',
+  'receipt.noTombstoneApply !== true',
+  'receipt.noHardDelete !== true',
+  'receipt.noChatDelete !== true',
+  'restore-receipt-folder-identity-missing',
+].forEach((needle) => assertIncludes(chromeRestoreNormalizeBody, needle, `Chrome restore receipt validation ${needle}`));
+
+const chromeRestoreReShowBody = functionBody(chromeImport, 'reShowFolderByDesktopRestoreReceiptInMirror');
+[
+  'FOLDER_STATE_KEY_LOCAL',
+  'hiddenByDesktopReceipt',
+  'restoredByDesktopReceipt',
+  'folder-restore-receipt-folder-already-visible',
+  'folder-restore-receipt-hidden-row-missing',
+  'folder-restore-receipt-folder-re-shown',
+  'writeKv(FOLDER_STATE_KEY_LOCAL, next)',
+].forEach((needle) => assertIncludes(chromeRestoreReShowBody, needle, `Chrome restore re-show mirror ${needle}`));
+
+[
+  'softDeleteFolder',
+  'softDeleteEmptyFolder',
+  'createTombstone',
+  'markRestored',
+  'DELETE FROM',
+  'unbindChat',
+  'bindChat',
+  'purge',
+  'hardDelete',
+].forEach((needle) => assertNotIncludes(chromeRestoreReShowBody, needle, `mutation in Chrome restore re-show: ${needle}`));
+
+const chromeRestoreImportBody = functionBody(chromeImport, 'importFolderRestoreReceiptsFromDesktopBundle');
+[
+  'folderRestoreReceipts',
+  'reShownCount',
+  'alreadyVisibleCount',
+  'malformedCount',
+  'blockerCount',
+  'warningCount',
+  'state.lastFolderRestoreReceiptImport',
+].forEach((needle) => assertIncludes(chromeRestoreImportBody, needle, `Chrome restore receipt import result ${needle}`));
+
 assertNotIncludes(chromeReviews, 'folder-restore-receipt', 'Chrome restore receipt review handling is intentionally deferred in 4D.1');
 
 if (failures.length) {

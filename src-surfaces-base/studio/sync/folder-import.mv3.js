@@ -50,6 +50,7 @@
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
+  var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
@@ -179,6 +180,7 @@
     lastChromePostImportChangedFields: [],
     lastChromePostImportChangedFolderIds: [],
     lastFolderDeleteReceiptImport: null,
+    lastFolderRestoreReceiptImport: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -1391,6 +1393,7 @@
         folderFacetConvergenceRequired: false,
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
         folderDeleteReceiptCount: Array.isArray(bundle.folderDeleteReceipts) ? bundle.folderDeleteReceipts.length : 0,
+        folderRestoreReceiptCount: Array.isArray(bundle.folderRestoreReceipts) ? bundle.folderRestoreReceipts.length : 0,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
         hasContentSha256: !!supported.contentSha256
@@ -1790,6 +1793,7 @@
       folderStateSource: cleanString(f.sourceSummary && f.sourceSummary.folderStateSource),
       importSummary: f.importSummary || null,
       folderDeleteReceiptImport: f.folderDeleteReceiptImport || null,
+      folderRestoreReceiptImport: f.folderRestoreReceiptImport || null,
       convergence: f.convergence || null,
       postImportRefresh: f.postImportRefresh ? redactedPostImportRefreshSummary(f.postImportRefresh) : null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
@@ -1922,6 +1926,9 @@
     folderDeleteReceiptImport = mergeFolderDeleteReceiptHideResult(folderDeleteReceiptImport, folderDeleteReceiptHide);
     state.lastFolderDeleteReceiptImport = folderDeleteReceiptImport;
     folderMetadataChangeSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, folderDeleteReceiptHide);
+    var folderRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundleInput);
+    state.lastFolderRestoreReceiptImport = folderRestoreReceiptImport;
+    folderMetadataChangeSummary = mergeFolderRestoreReceiptReShowSummary(folderMetadataChangeSummary, folderRestoreReceiptImport);
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -1938,6 +1945,9 @@
     var blockers = [];
     var redactedErrors = importSummary.redactedErrorCategories;
     if (numberOrZero(importSummary.shellRowsFailed) > 0) addUnique(blockers, 'desktop-shell-row-import-unsupported');
+    if (numberOrZero(folderRestoreReceiptImport && folderRestoreReceiptImport.blockerCount) > 0) {
+      addUnique(blockers, 'folder-restore-receipt-import-blocked');
+    }
     var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity, importSummary);
     if (!convergence.ok) addUnique(blockers, convergence.blocker);
     return propagationResult(blockers.length === 0, {
@@ -1947,6 +1957,7 @@
       sourceSummary: normalized.sourceSummary,
       importSummary: importSummary,
       folderDeleteReceiptImport: folderDeleteReceiptImport,
+      folderRestoreReceiptImport: folderRestoreReceiptImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -2354,6 +2365,258 @@
     summary.changedFolderCount = changedFolderIds.length || (numberOrZero(summary.changedFolderCount) + numberOrZero(hide.hiddenCount));
     if (numberOrZero(hide.hiddenCount) > 0) {
       summary.hasDeleteReceiptHide = true;
+      summary.hasOnlyVisualUpdates = false;
+    }
+    return summary;
+  }
+
+  function normalizeFolderRestoreReceiptForChromeReShow(receiptInput) {
+    var receipt = safeObject(receiptInput);
+    var folderId = normalizeFolderRecordId(receipt.folderId);
+    if (cleanString(receipt.schema) !== FOLDER_RESTORE_RECEIPT_SCHEMA) return { ok: false, code: 'restore-receipt-schema-invalid' };
+    if (cleanString(receipt.status) !== 'restored') return { ok: false, code: 'restore-receipt-status-not-restored' };
+    if (cleanString(receipt.decision) !== 'desktop-folder-restored') return { ok: false, code: 'restore-receipt-decision-invalid' };
+    if (receipt.statusOnly !== true) return { ok: false, code: 'restore-receipt-not-status-only' };
+    if (receipt.noTombstoneApply !== true) return { ok: false, code: 'restore-receipt-tombstone-apply-not-blocked' };
+    if (receipt.noHardDelete !== true) return { ok: false, code: 'restore-receipt-hard-delete-not-blocked' };
+    if (receipt.noChatDelete !== true) return { ok: false, code: 'restore-receipt-chat-delete-not-blocked' };
+    if (!folderId) return { ok: false, code: 'restore-receipt-folder-identity-missing' };
+    return {
+      ok: true,
+      receipt: Object.assign({}, receipt, {
+        folderId: folderId,
+        receiptId: cleanString(receipt.receiptId),
+        tombstoneId: cleanString(receipt.tombstoneId),
+        folderName: cleanString(receipt.folderName),
+        restoredAt: cleanString(receipt.restoredAt),
+      })
+    };
+  }
+
+  function makeFolderRestoreReceiptImportResult() {
+    return {
+      schema: FOLDER_RESTORE_RECEIPT_SCHEMA + '.chrome-import',
+      phase: 'phase4d.2',
+      attempted: true,
+      ok: true,
+      found: 0,
+      receiptCount: 0,
+      reShownCount: 0,
+      alreadyVisibleCount: 0,
+      skippedCount: 0,
+      malformedCount: 0,
+      blockerCount: 0,
+      warningCount: 0,
+      visibleStateOnlyReShow: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noFolderDestructiveMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      reShownFolderIds: [],
+      alreadyVisibleFolderIds: [],
+      warnings: [],
+      blockers: []
+    };
+  }
+
+  function addFolderRestoreReceiptCode(result, field, code) {
+    var list = Array.isArray(result && result[field]) ? result[field] : null;
+    var c = cleanString(code);
+    if (!list || !c) return;
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].code === c) {
+        list[i].count = numberOrZero(list[i].count || 1) + 1;
+        return;
+      }
+    }
+    list.push({ code: c });
+  }
+
+  function buildFolderRowFromRestoreReceipt(receipt, hiddenMarker) {
+    var marker = safeObject(hiddenMarker);
+    var folderId = normalizeFolderRecordId(receipt && receipt.folderId);
+    if (!folderId) return null;
+    var name = cleanString(receipt && receipt.folderName) || cleanString(marker.folderName) || folderId;
+    var color = cleanString(receipt && (receipt.color || receipt.iconColor)) || cleanString(marker.color || marker.iconColor);
+    var restoredAt = cleanString(receipt && receipt.restoredAt) || nowIso();
+    var row = {
+      id: folderId,
+      folderId: folderId,
+      name: name,
+      title: name,
+      kind: 'local',
+      source: 'desktop-folder-restore-receipt',
+      restoredByDesktopReceipt: true,
+      hidden: false,
+      deletedByDesktopReceipt: false,
+      receiptId: cleanString(receipt && receipt.receiptId),
+      tombstoneId: cleanString(receipt && receipt.tombstoneId),
+      updatedAt: restoredAt,
+      meta: Object.assign({}, safeObject(marker.meta), {
+        source: 'desktop-folder-restore-receipt',
+        restoredByDesktopReceipt: true,
+        hiddenByDesktopReceipt: false,
+        deletedByDesktopReceipt: false,
+        receiptId: cleanString(receipt && receipt.receiptId),
+        tombstoneId: cleanString(receipt && receipt.tombstoneId),
+        restoredAt: restoredAt,
+        statusOnly: true,
+        noTombstoneApply: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        tombstonePropagation: 'deferred'
+      })
+    };
+    if (color) {
+      row.color = color;
+      row.iconColor = color;
+    }
+    return row;
+  }
+
+  async function reShowFolderByDesktopRestoreReceiptInMirror(receipt) {
+    var folderId = normalizeFolderRecordId(receipt && receipt.folderId);
+    if (!folderId) return { ok: false, reShown: false, status: 'restore-receipt-folder-identity-missing' };
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var rows = Array.isArray(current.folders) ? current.folders : [];
+    var visibleIndex = -1;
+    for (var i = 0; i < rows.length; i += 1) {
+      if (normalizeFolderRecordId(folderMetadataRowId(rows[i])) === folderId) {
+        visibleIndex = i;
+        break;
+      }
+    }
+    if (visibleIndex !== -1) {
+      return {
+        ok: true,
+        reShown: false,
+        alreadyVisible: true,
+        status: 'folder-restore-receipt-folder-already-visible',
+        writesPerformed: 0,
+        folderId: folderId
+      };
+    }
+
+    var hidden = safeObject(current.hiddenByDesktopReceipt);
+    var marker = safeObject(hidden[folderId]);
+    if (!marker.hiddenByDesktopReceipt && !marker.deletedByDesktopReceipt) {
+      return {
+        ok: false,
+        reShown: false,
+        status: 'folder-restore-receipt-hidden-row-missing',
+        writesPerformed: 0,
+        folderId: folderId
+      };
+    }
+
+    var row = buildFolderRowFromRestoreReceipt(receipt, marker);
+    if (!row) {
+      return {
+        ok: false,
+        reShown: false,
+        status: 'folder-restore-receipt-row-build-failed',
+        writesPerformed: 0,
+        folderId: folderId
+      };
+    }
+    var next = cloneJson(current) || {};
+    var nextRows = Array.isArray(next.folders) ? next.folders.slice() : [];
+    nextRows.push(row);
+    next.folders = nextRows;
+    var nextItems = Object.assign({}, safeObject(next.items));
+    if (!Array.isArray(nextItems[folderId])) nextItems[folderId] = [];
+    next.items = nextItems;
+    var nextHidden = Object.assign({}, safeObject(next.hiddenByDesktopReceipt));
+    delete nextHidden[folderId];
+    next.hiddenByDesktopReceipt = nextHidden;
+    var restored = Object.assign({}, safeObject(next.restoredByDesktopReceipt));
+    restored[folderId] = {
+      folderId: folderId,
+      receiptId: cleanString(receipt.receiptId),
+      tombstoneId: cleanString(receipt.tombstoneId),
+      restoredAt: cleanString(receipt.restoredAt) || nowIso(),
+      statusOnly: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      tombstonePropagation: 'deferred'
+    };
+    next.restoredByDesktopReceipt = restored;
+    next.updatedAt = nowIso();
+    await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    return {
+      ok: true,
+      reShown: true,
+      alreadyVisible: false,
+      status: 'folder-restore-receipt-folder-re-shown',
+      writesPerformed: 1,
+      folderId: folderId
+    };
+  }
+
+  async function importFolderRestoreReceiptsFromDesktopBundle(bundle) {
+    var result = makeFolderRestoreReceiptImportResult();
+    var receipts = Array.isArray(bundle && bundle.folderRestoreReceipts) ? bundle.folderRestoreReceipts : [];
+    result.found = receipts.length;
+    result.receiptCount = receipts.length;
+    if (!receipts.length) {
+      state.lastFolderRestoreReceiptImport = result;
+      return result;
+    }
+    for (var i = 0; i < receipts.length; i += 1) {
+      try {
+        var normalized = normalizeFolderRestoreReceiptForChromeReShow(receipts[i]);
+        if (!normalized.ok) {
+          result.malformedCount += 1;
+          result.skippedCount += 1;
+          result.warningCount += 1;
+          addFolderRestoreReceiptCode(result, 'warnings', normalized.code || 'folder-restore-receipt-malformed');
+          continue;
+        }
+        var reShow = await reShowFolderByDesktopRestoreReceiptInMirror(normalized.receipt);
+        if (reShow && reShow.reShown) {
+          result.reShownCount += 1;
+          addUniqueFolderId(result.reShownFolderIds, reShow.folderId);
+        } else if (reShow && reShow.alreadyVisible) {
+          result.alreadyVisibleCount += 1;
+          addUniqueFolderId(result.alreadyVisibleFolderIds, reShow.folderId);
+        } else {
+          result.skippedCount += 1;
+          result.warningCount += 1;
+          addFolderRestoreReceiptCode(result, 'warnings', cleanString(reShow && reShow.status) || 'folder-restore-receipt-skipped');
+        }
+      } catch (error) {
+        pushError('folder-restore-receipt-import', error);
+        result.skippedCount += 1;
+        result.blockerCount += 1;
+        addFolderRestoreReceiptCode(result, 'blockers', 'folder-restore-receipt-import-failed');
+      }
+    }
+    result.warningCount = result.warnings.length || result.warningCount;
+    result.blockerCount = result.blockers.length || result.blockerCount;
+    result.ok = result.blockerCount === 0;
+    state.lastFolderRestoreReceiptImport = result;
+    return result;
+  }
+
+  function mergeFolderRestoreReceiptReShowSummary(metadataSummary, restoreResult) {
+    var summary = Object.assign({}, safeObject(metadataSummary));
+    var restore = safeObject(restoreResult);
+    var changedFolderIds = Array.isArray(summary.changedFolderIds) ? summary.changedFolderIds.slice() : [];
+    var changedFields = Array.isArray(summary.changedFields) ? summary.changedFields.slice() : [];
+    var reShownIds = Array.isArray(restore.reShownFolderIds) ? restore.reShownFolderIds : [];
+    reShownIds.forEach(function (folderId) { addUniqueFolderId(changedFolderIds, folderId); });
+    if (numberOrZero(restore.reShownCount) > 0) addUnique(changedFields, 'restore-receipt-re-show');
+    summary.changedFolderIds = changedFolderIds;
+    summary.changedFields = changedFields;
+    summary.changedFolderCount = changedFolderIds.length || (numberOrZero(summary.changedFolderCount) + numberOrZero(restore.reShownCount));
+    if (numberOrZero(restore.reShownCount) > 0) {
+      summary.hasRestoreReceiptReShow = true;
       summary.hasOnlyVisualUpdates = false;
     }
     return summary;
@@ -3013,6 +3276,7 @@
       chromePostImportRefreshMode: state.lastChromePostImportRefreshMode,
       changedFolderCount: state.lastChromePostImportChangedFolderCount,
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
+      folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
       cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
       refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
@@ -3739,6 +4003,7 @@
               redactedErrorCategories: []
             },
             folderDeleteReceiptImport: alreadyReceiptImport,
+            folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -3786,6 +4051,7 @@
             sourceSummary: alreadyPropagation.sourceSummary,
             importSummary: alreadyPropagation.importSummary,
             folderDeleteReceiptImport: alreadyPropagation.folderDeleteReceiptImport,
+            folderRestoreReceiptImport: alreadyPropagation.folderRestoreReceiptImport,
             convergence: alreadyPropagation.convergence,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
@@ -3981,6 +4247,7 @@
         sourceSummary: propagation && propagation.sourceSummary,
         importSummary: propagation && propagation.importSummary,
         folderDeleteReceiptImport: propagation && propagation.folderDeleteReceiptImport,
+        folderRestoreReceiptImport: propagation && propagation.folderRestoreReceiptImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,
@@ -4109,6 +4376,7 @@
           selfOriginSkipped: state.selfOriginSkippedCount,
         },
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
+        folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,
