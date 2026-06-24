@@ -85,6 +85,16 @@ Recently Deleted diagnostics include:
 - `noChatDelete:true`
 - `noSnapshotDelete:true`
 
+The smoke registry mirrors these aggregate fields in both places used by
+runtime evidence:
+
+- top-level `listRecentlyDeletedFolders` result fields
+- nested `recentlyDeletedDiagnostics` fields
+
+The registry also tolerates older/nested 4D.3-style store output and recomputes
+retention counts from row-level `retentionCountdownStatus` values when an
+aggregate field is missing.
+
 ## Runtime Commands
 
 Before runtime proof, the Desktop Studio URL must include:
@@ -167,6 +177,143 @@ Interpretation:
 - Static implementation and validators are green.
 - Live Recently Deleted proof could not run because the Desktop smoke queue was not consuming commands in the current app instance.
 - Re-run after Desktop Studio is opened with `?h2oSmokeBridge=folder-sync-rc`, localStorage opt-in `h2o:studio:smoke-bridge:enabled:v1 = folder-sync-rc`, and `H2O.Studio.devSmoke.folderSyncQueue.diagnose().started === true`.
+
+## Runtime Surfacing Fix
+
+After the queue was healthy, `listRecentlyDeletedFolders` returned the expected
+4D.3 Recently Deleted list but did not surface Phase 4E aggregate fields at
+runtime:
+
+- `retentionEnforcement:null`
+- `activeRetentionCount:null`
+- `expiredRetentionCount:null`
+- `restoredRetentionCount:null`
+- `unknownRetentionCount:null`
+- `purgeEligibleCount:null`
+
+Root cause:
+
+- The Desktop store source computed the 4E policy fields, but the smoke registry
+  wrapper only copied aggregate values from the direct store result.
+- Live diagnostics can arrive in an older/nested shape under
+  `recentlyDeletedDiagnostics`, so the wrapper did not consistently project the
+  4E aggregate fields into the runtime evidence result.
+
+Fix:
+
+- `listRecentlyDeletedFolders` now normalizes retention aggregates from the
+  direct result, nested `recentlyDeletedDiagnostics`, or row-level fallback
+  counts.
+- The normalized fields are surfaced both top-level and inside
+  `recentlyDeletedDiagnostics`.
+- `purgeEligibleCount` remains fixed at `0`.
+- `retentionEnforcement` remains fixed at `"deferred"`.
+
+Expected runtime result after rebuild/reload:
+
+- `ok:true`
+- `blockers:[]`
+- `retentionEnforcement:"deferred"`
+- `retentionDays:30`
+- `activeRetentionCount` present
+- `expiredRetentionCount` present
+- `restoredRetentionCount` present
+- `unknownRetentionCount` present
+- `purgeEligibleCount:0`
+- `purgeBlockedCount` present
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+
+## Runtime Proof
+
+Asset refresh:
+
+```bash
+npm run dev:all
+node apps/studio/desktop/build-tools/prepare-dist.mjs
+```
+
+Queue health:
+
+```bash
+rm -f "/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json"
+node tools/smoke/desktop-folder-sync-queue-client.mjs \
+  --op diagnoseHealth \
+  --timeout-ms 60000
+```
+
+Result:
+
+- `ok:true`
+- `status:"healthy"`
+- `registryGatesEnabled:true`
+- `blockers:[]`
+
+Recently Deleted command:
+
+```bash
+node tools/smoke/desktop-folder-sync-queue-client.mjs \
+  --op listRecentlyDeletedFolders \
+  --timeout-ms 60000
+```
+
+Result file:
+
+- `/Users/hobayda/H2O Studio Sync/.h2o-smoke/results/desktop-listRecentlyDeletedFolders-mqs2s4a0.json`
+
+Summary:
+
+- `ok:true`
+- `status:"recently-deleted-folders-listed"`
+- `registryOk:true`
+- `registryStatus:"recently-deleted-folders-listed"`
+- `blockers:[]`
+- `retentionEnforcement:"deferred"`
+- `retentionDays:30`
+- `activeRetentionCount:24`
+- `expiredRetentionCount:4`
+- `restoredRetentionCount:10`
+- `unknownRetentionCount:0`
+- `purgeEligibleCount:0`
+- `purgeBlockedCount:38`
+- `hardDeleteBlockedCount:38`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+
+Sample active row policy:
+
+- `retentionCountdownStatus:"active"`
+- `retentionEnforcement:"deferred"`
+- `purgeEligible:false`
+- `purgeBlocked:true`
+- `restorePolicy:"allowed-while-purge-deferred"`
+- `restoreAvailableReason:"within-retention-window"`
+- `purgeBlockedReason:"purge-phase-deferred"`
+
+Sample restored row policy:
+
+- `retentionCountdownStatus:"restored"`
+- `retentionEnforcement:"deferred"`
+- `purgeEligible:false`
+- `purgeBlocked:true`
+- `restorePolicy:"allowed-while-purge-deferred"`
+- `restoreAvailableReason:"already-restored"`
+- `purgeBlockedReason:"purge-phase-deferred"`
+
+Sample expired row policy:
+
+- `retentionCountdownStatus:"expired"`
+- `retentionExpired:true`
+- `retentionEnforcement:"deferred"`
+- `purgeEligible:false`
+- `purgeBlocked:true`
+- `restorePolicy:"allowed-while-purge-deferred"`
+- `restoreAvailableReason:"retention-expired-but-purge-deferred"`
+- `purgeBlockedReason:"purge-phase-deferred"`
 
 ## Verdict
 

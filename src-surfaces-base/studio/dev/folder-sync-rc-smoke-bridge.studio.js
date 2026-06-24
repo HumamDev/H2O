@@ -1237,16 +1237,51 @@
     });
   }
 
+  function summarizeRecentlyDeletedRetention(result, rows) {
+    var source = safeObject(result);
+    var nested = safeObject(source.recentlyDeletedDiagnostics);
+    var rowList = safeArray(rows);
+    function countByStatus(status) {
+      return rowList.filter(function (row) {
+        return cleanString(row && row.retentionCountdownStatus) === status;
+      }).length;
+    }
+    return {
+      activeRetentionCount: Number(source.activeRetentionCount ?? nested.activeRetentionCount) || countByStatus('active'),
+      expiredRetentionCount: Number(source.expiredRetentionCount ?? nested.expiredRetentionCount) || countByStatus('expired'),
+      restoredRetentionCount: Number(source.restoredRetentionCount ?? nested.restoredRetentionCount) || countByStatus('restored'),
+      unknownRetentionCount: Number(source.unknownRetentionCount ?? nested.unknownRetentionCount) || countByStatus('unknown'),
+      purgeEligibleCount: 0,
+      purgeBlockedCount: Number(source.purgeBlockedCount ?? nested.purgeBlockedCount) ||
+        rowList.filter(function (row) { return row && row.purgeBlocked === true; }).length,
+      hardDeleteBlockedCount: Number(source.hardDeleteBlockedCount ?? nested.hardDeleteBlockedCount) ||
+        rowList.filter(function (row) { return row && row.hardDeleteBlocked === true; }).length,
+      retentionDays: Number(source.retentionDays ?? nested.retentionDays) || 30,
+      retentionEnforcement: cleanString(source.retentionEnforcement || nested.retentionEnforcement || 'deferred'),
+    };
+  }
+
   async function listRecentlyDeletedFolders(payload) {
     var store = getPath(H2O, ['Studio', 'store', 'folders']);
     var fn = store && (store.listRecentlyDeletedFolders || store.diagnoseRecentlyDeletedFolders);
     if (typeof fn !== 'function') return unsupportedResult('listRecentlyDeletedFolders', 'recently-deleted-diagnostics-unavailable');
     var result = safeObject(await fn.call(store, Object.assign({ limit: 500 }, safeObject(payload))));
-    var rows = safeArray(result.rows || result.items || result.list);
-    var diagnostics = Object.assign({}, result, {
+    var rawDiagnostics = safeObject(result.recentlyDeletedDiagnostics);
+    var rows = safeArray(result.rows || result.items || result.list ||
+      rawDiagnostics.rows || rawDiagnostics.items || rawDiagnostics.list);
+    var retention = summarizeRecentlyDeletedRetention(result, rows);
+    var diagnostics = Object.assign({}, rawDiagnostics, result, retention, {
       rows: rows,
+      items: rows,
+      list: rows,
+      retentionEnforcement: retention.retentionEnforcement,
+      purgeEligibleCount: retention.purgeEligibleCount,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
     });
-    return baseResult('listRecentlyDeletedFolders', Object.assign({}, result, {
+    return baseResult('listRecentlyDeletedFolders', Object.assign({}, result, retention, {
       ok: result.ok === true,
       status: cleanString(result.status || 'recently-deleted-folders-listed'),
       blockers: codeList(result.blockers),
@@ -1258,16 +1293,7 @@
       activeTombstoneCount: Number(result.activeTombstoneCount) || 0,
       restoredTombstoneCount: Number(result.restoredTombstoneCount) || 0,
       folderTombstoneCount: Number(result.folderTombstoneCount) || 0,
-      activeRetentionCount: Number(result.activeRetentionCount) || 0,
-      expiredRetentionCount: Number(result.expiredRetentionCount) || 0,
-      restoredRetentionCount: Number(result.restoredRetentionCount) || 0,
-      unknownRetentionCount: Number(result.unknownRetentionCount) || 0,
       restoreAvailableCount: Number(result.restoreAvailableCount) || 0,
-      purgeEligibleCount: Number(result.purgeEligibleCount) || 0,
-      purgeBlockedCount: Number(result.purgeBlockedCount) || 0,
-      hardDeleteBlockedCount: Number(result.hardDeleteBlockedCount) || 0,
-      retentionDays: Number(result.retentionDays) || 30,
-      retentionEnforcement: cleanString(result.retentionEnforcement || 'deferred'),
       noHardDelete: true,
       noPurge: true,
       noChatDelete: true,

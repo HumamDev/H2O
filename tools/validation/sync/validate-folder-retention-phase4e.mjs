@@ -105,13 +105,35 @@ const listBody = functionBody(folders, 'listRecentlyDeletedFolders');
 ].forEach((needle) => assertContains(listBody, needle, `recently deleted aggregate ${needle}`));
 
 [
+  'summarizeRecentlyDeletedRetention',
   'activeRetentionCount',
   'expiredRetentionCount',
   'restoredRetentionCount',
   'unknownRetentionCount',
   'purgeEligibleCount',
   'retentionEnforcement',
+  'rawDiagnostics',
+  'recentlyDeletedDiagnostics: diagnostics',
 ].forEach((needle) => assertContains(smokeBridge, needle, `smoke bridge retention field ${needle}`));
+
+const smokeListBody = functionBody(smokeBridge, 'listRecentlyDeletedFolders');
+[
+  'var rawDiagnostics = safeObject(result.recentlyDeletedDiagnostics)',
+  'var retention = summarizeRecentlyDeletedRetention(result, rows)',
+  'Object.assign({}, rawDiagnostics, result, retention',
+  'recentlyDeletedDiagnostics: diagnostics',
+  'Object.assign({}, result, retention',
+].forEach((needle) => assertContains(smokeListBody, needle, `smoke bridge runtime surfacing ${needle}`));
+
+const smokeRetentionBody = functionBody(smokeBridge, 'summarizeRecentlyDeletedRetention');
+[
+  "countByStatus('active')",
+  "countByStatus('expired')",
+  "countByStatus('restored')",
+  "countByStatus('unknown')",
+  'purgeEligibleCount: 0',
+  "nested.retentionEnforcement || 'deferred'",
+].forEach((needle) => assertContains(smokeRetentionBody, needle, `smoke bridge retention normalizer ${needle}`));
 
 for (const forbidden of [
   'purgeTombstone',
