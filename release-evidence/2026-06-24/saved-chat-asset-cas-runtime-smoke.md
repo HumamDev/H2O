@@ -8,7 +8,11 @@ cannot: that the **installed Tauri FS plugin accepts binary `write_file` /
 `$APPLOCALDATA/archive/assets`, using the existing private API
 `H2O.Studio.ingestion.assetCas` (commit `cd8a468`).
 
-Status: **READY TO RERUN after the C3.2 mkdir/write runtime hardening fix.**
+Status: **EXECUTED — PASSED** on real Desktop Studio (2026-06-24), after the C3.2
+runtime hardening fix (commit `e3d5bb9`). The real Tauri FS plugin accepted binary
+`write_file` / `read_file` using `BaseDirectory.AppLocalData` (`baseDir: 15`) under
+`$APPLOCALDATA/archive/assets`. **C3.3 is proven; C3 can be closed.** See the
+Evidence section below for the captured `ALL PASS` output.
 
 Runtime-fix history:
 
@@ -21,15 +25,10 @@ Runtime-fix history:
   no `path` header → "missing file path". (`exists`/`mkdir` use normal JSON args
   and were already correct — `exists` succeeding proved `mkdir`'s identical shape
   was fine too; the failure was specifically `write_file`.)
-- **Fix (commit on this lane):** `fsWriteFile` now uses the body+headers form,
+- **Fix (commit `e3d5bb9`):** `fsWriteFile` now uses the body+headers form,
   mirroring the proven `write_text_file` form in `ingestion/export-bundle.tauri.js`.
-- **Rerun the SAME snippet below UNCHANGED** — it only uses the public
-  `assetCas` API; the fix is internal. Paste the console output into the Evidence
-  section as proof.
-
-No running Desktop/Tauri webview is reachable from the build host, so this fix is
-verified by the headless validator (PASS) and must be re-confirmed by rerunning
-the snippet on a real Desktop build.
+- **Second real run PASSED** with the SAME snippet, unchanged (public `assetCas`
+  API only; the fix is internal). Captured output recorded in Evidence below.
 
 ## Scope / boundaries
 
@@ -155,8 +154,57 @@ single tiny `sha256-3665d0a7…` blob it leaves under `archive/assets/36/` is
 **acceptable, expected CAS data** — not a leak. Re-running the smoke is safe and
 idempotent (the second-or-later run simply dedupes).
 
-## Evidence (fill in after a real run)
+## Evidence — EXECUTED, PASSED (2026-06-24)
+
+Executed in real Desktop Studio DevTools after commit `e3d5bb9`
+(`fix(studio): harden asset cas mkdir runtime path`). Every `console.table` row
+reported `PASS`, ending with:
 
 ```
-(paste the console.table + ALL PASS / FAIL line here, with Desktop build id/date)
+[cas-smoke] ALL PASS
 ```
+
+Key confirmed values:
+
+| field | value |
+|---|---|
+| `sha256` | `sha256-3665d0a7e01ab20f0a0a3447e87ca5b6dd0b5a328f8a78fba212c1c3d1b375f2` |
+| `path` | `archive/assets/36/sha256-3665d0a7e01ab20f0a0a3447e87ca5b6dd0b5a328f8a78fba212c1c3d1b375f2` |
+| `byteLength` | `16` |
+| first put | `wrote: true`, `deduped: false` |
+| second put | `wrote: false`, `deduped: true` |
+| `diagnose.baseDir` | `15` |
+| `diagnose.casRoot` | `archive/assets` |
+| `diagnose.ready` | `true` |
+| `diagnose.mutatesDb` | `false` |
+| `diagnose.registryCoupled` | `false` |
+| `diagnose.removeRenameExposed` | `false` |
+
+The returned `sha256` and `path` match the deterministic constants embedded in the
+snippet, and `byteLength: 16` matches the 16-byte payload — confirming correct
+hashing, the locked `archive/assets/<aa>/sha256-<hex>` layout, byte-exact
+roundtrip, and content-addressed dedup on the second put.
+
+## What this proves
+
+- The installed **tauri-plugin-fs v2 accepts binary `write_file` / `read_file`
+  using `BaseDirectory.AppLocalData` (`baseDir: 15`)** under
+  `$APPLOCALDATA/archive/assets`, via the body+headers form (no absolute-path /
+  `plugin:path` fallback was needed).
+- The C2a `archive-cas` capability scope is sufficient and correctly applied.
+- The CAS stays filesystem-only: `mutatesDb: false`, `registryCoupled: false`,
+  `removeRenameExposed: false`.
+
+**C3.3 is proven. C3 (Desktop CAS put/get + validator + sanitizer centralization)
+can be closed.** It leaves one immutable content-addressed blob at
+`archive/assets/36/sha256-3665d0a7…` — acceptable, expected CAS data (C2a grants
+no remove/rename).
+
+## Next step
+
+**C4 — planning only** (package materialization with assets): wire
+`assetCas.putAssetBytes` → `store.assets.upsert` → `store.assets.linkToTurn`,
+extract inline `data:image/*` from captured `contentHtml`, emit `manifest.assets`
++ per-message `assetRefs`, copy CAS blobs into the package `assets/` adding
+`.<ext>`, and implement `contentHash` v2 (`payloadVersion: 2`) with v1 back-compat.
+No C4 implementation begins until C4 is planned and accepted.
