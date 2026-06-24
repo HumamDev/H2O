@@ -1007,6 +1007,7 @@
       blockers: codeList(result.blockers),
       warnings: codeList(result.warnings),
       folderDeleteReceiptImport: safeObject(result.folderDeleteReceiptImport),
+      folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport),
     });
   }
 
@@ -1033,6 +1034,12 @@
       desktopToChrome: safeObject(result.desktopToChrome),
       chromeToDesktop: safeObject(result.chromeToDesktop),
       syncFolderDiagnose: summarizeFolderSyncDiagnose(rawDiagnose),
+      folderDeleteReceiptImport: safeObject(result.folderDeleteReceiptImport ||
+        rawDiagnose && (rawDiagnose.folderDeleteReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderDeleteReceiptImport)),
+      folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport ||
+        rawDiagnose && (rawDiagnose.folderRestoreReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport)),
+      lastFolderRestoreReceiptImport: safeObject(rawDiagnose &&
+        (rawDiagnose.folderRestoreReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport)),
       permissionStateReconciledFromSyncDiagnose: result.permissionStateReconciledFromSyncDiagnose === true,
       tombstoneLocalDelete: safeObject(result.tombstoneLocalDelete),
     });

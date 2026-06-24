@@ -15,6 +15,7 @@ Phase 4D.2 imports Desktop status-only folder restore receipts on Chrome and re-
 ## Files Changed
 
 - `src-surfaces-base/studio/sync/folder-import.mv3.js`
+- `src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js`
 - `tools/validation/sync/validate-folder-restore-receipt-phase4d.mjs`
 - `release-evidence/2026-06-24/folder-delete-tombstone-phase4d2-restore-receipt-import.md`
 
@@ -70,6 +71,21 @@ The import result exposes:
 - `noSnapshotMutation: true`
 - `tombstonePropagation: "deferred"`
 
+## Diagnostics Surfacing Fix
+
+Runtime proof after the initial 4D.2 implementation showed `syncNow({ direction:"desktop-to-chrome" })` succeeding but omitting `folderRestoreReceiptImport` from the Chrome smoke result and health diagnostics. The root cause was diagnostic routing, not restore receipt logic:
+
+- Normal Desktop-to-Chrome import processed restore receipts, but the duplicate/idempotent import branch replayed delete receipt diagnostics only.
+- The smoke registry `syncNow` wrapper surfaced `folderDeleteReceiptImport` but did not include `folderRestoreReceiptImport`.
+- Chrome health diagnostics did not expose `state.lastFolderRestoreReceiptImport` at the top level or under `desktopToChrome`.
+
+The fix keeps behavior status-only and non-destructive:
+
+- Duplicate/idempotent imports now call `importFolderRestoreReceiptsFromDesktopBundle(bundle)` and return `folderRestoreReceiptImport` in the propagation result.
+- Chrome health diagnostics expose `folderRestoreReceiptImport` / `lastFolderRestoreReceiptImport`.
+- The dev smoke registry returns `folderRestoreReceiptImport` from `syncNow` and `diagnoseHealth`.
+- The Phase 4D validator now asserts the duplicate replay and smoke diagnostic paths.
+
 ## Safety Guarantees
 
 - No Chrome tombstone apply.
@@ -98,6 +114,7 @@ Results:
 
 - `npm run dev:all` passed.
 - `node --check src-surfaces-base/studio/sync/folder-import.mv3.js` passed.
+- `node --check src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js` passed.
 - `node --check tools/validation/sync/validate-folder-restore-receipt-phase4d.mjs` passed.
 - `node tools/validation/sync/validate-folder-restore-receipt-phase4d.mjs` passed.
 - `node tools/validation/sync/validate-folder-delete-request-phase4c.mjs` passed.
@@ -128,12 +145,52 @@ Expected import result:
 - `folderRestoreReceiptImport.noChatDelete === true`
 - `folderRestoreReceiptImport.visibleStateOnlyReShow === true`
 
-Runtime attempt:
+Runtime proof:
 
-- The requested Chrome command was attempted against CDP port `9247`.
-- Result: `ok:false`, `status:"chrome-cdp-unavailable"`, blocker `chrome-cdp-unavailable`.
-- Port scan of `9240..9250` found no reachable CDP endpoint.
-- A live proof still requires reopening/reloading Chrome Dev with remote debugging and the rebuilt Studio extension assets.
+- `npm run dev:all` rebuilt the Studio Launcher extension.
+- The first attach attempt against port `9247` was blocked by sandboxed localhost CDP access and returned `chrome-cdp-unavailable`.
+- After rerunning the helper with local CDP access and reloading the Studio target so the rebuilt scripts were active, the import proof passed.
+
+Command:
+
+```bash
+node tools/smoke/chrome-cdp-studio.mjs \
+  --mode attach \
+  --port 9247 \
+  --op syncNow \
+  --allow-mutation \
+  --payload-json '{"direction":"desktop-to-chrome","reason":"phase4d2-restore-receipt-import"}' \
+  --timeout-ms 30000
+```
+
+Result summary:
+
+- top-level `ok:true`
+- top-level `status:"sync-folder-imported"`
+- top-level/result `blockers:[]`
+- Chrome target connected to `/Users/hobayda/H2O Studio Sync`
+- `folderRestoreReceiptImport.schema:"h2o.studio.folder-restore-receipt.v1.chrome-import"`
+- `folderRestoreReceiptImport.phase:"phase4d.2"`
+- `folderRestoreReceiptImport.attempted:true`
+- `folderRestoreReceiptImport.ok:true`
+- `folderRestoreReceiptImport.found:5`
+- `folderRestoreReceiptImport.receiptCount:5`
+- `folderRestoreReceiptImport.reShownCount:0`
+- `folderRestoreReceiptImport.alreadyVisibleCount:3`
+- `folderRestoreReceiptImport.skippedCount:2`
+- `folderRestoreReceiptImport.malformedCount:0`
+- `folderRestoreReceiptImport.blockerCount:0`
+- `folderRestoreReceiptImport.warningCount:1`
+- `folderRestoreReceiptImport.visibleStateOnlyReShow:true`
+- `folderRestoreReceiptImport.noTombstoneApply:true`
+- `folderRestoreReceiptImport.noTombstoneCreate:true`
+- `folderRestoreReceiptImport.noHardDelete:true`
+- `folderRestoreReceiptImport.noChatDelete:true`
+- `folderRestoreReceiptImport.noBindingMutation:true`
+- `folderRestoreReceiptImport.noChatMutation:true`
+- `folderRestoreReceiptImport.noSnapshotMutation:true`
+- `folderRestoreReceiptImport.tombstonePropagation:"deferred"`
+- warning was `folder-restore-receipt-hidden-row-missing` for two receipts without matching hidden Chrome rows; this is non-blocking because Chrome must not create folders from restore receipts in 4D.2.
 
 ## Deferred
 

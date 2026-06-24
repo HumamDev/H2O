@@ -3955,10 +3955,12 @@
           alreadyReceiptImport = mergeFolderDeleteReceiptHideResult(alreadyReceiptImport, alreadyReceiptHide);
           state.lastFolderDeleteReceiptImport = alreadyReceiptImport;
           var alreadyRefreshSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, alreadyReceiptHide);
+          var alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle);
+          alreadyRefreshSummary = mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport);
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
-          if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0) {
+          if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0 || numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0) {
             alreadyPostImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
               alreadyRefreshSummary,
               opts.reason || 'desktop-chrome-propagation-import',
@@ -4003,7 +4005,7 @@
               redactedErrorCategories: []
             },
             folderDeleteReceiptImport: alreadyReceiptImport,
-            folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+            folderRestoreReceiptImport: alreadyRestoreReceiptImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -4522,6 +4524,8 @@
         rawTitlesReturned: false,
         rawContentReturned: false
       },
+      folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
+      folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
       desktopToChrome: {
         autoExportEnabled: !!desktopToChromeRaw.autoExportEnabled,
         autoImportEnabled: !!desktopToChromeRaw.autoImportEnabled,
@@ -4541,7 +4545,9 @@
         refreshSuppressedCount: numberOrZero(latency.refreshSuppressedCount),
         changedFolderCount: numberOrZero(latency.changedFolderCount),
         changedFolderIds: [],
-        changedFolderIdsRedacted: true
+        changedFolderIdsRedacted: true,
+        folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
+        folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null
       },
       chromeToDesktop: {
         chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,

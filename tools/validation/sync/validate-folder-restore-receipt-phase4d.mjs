@@ -11,6 +11,7 @@ const files = {
   desktopSync: 'src-surfaces-base/studio/sync/folder-sync.tauri.js',
   preparedDesktopExport: 'apps/studio/desktop/dist/ingestion/export-bundle.tauri.js',
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
+  smokeBridge: 'src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js',
   chromeReviews: 'src-surfaces-base/studio/store/tombstone-reviews.mv3.js',
 };
 
@@ -59,6 +60,7 @@ const desktopExport = read(files.desktopExport);
 const desktopSync = read(files.desktopSync);
 const preparedDesktopExport = readIfExists(files.preparedDesktopExport);
 const chromeImport = read(files.chromeImport);
+const smokeBridge = read(files.smokeBridge);
 const chromeReviews = read(files.chromeReviews);
 
 [
@@ -215,6 +217,20 @@ const chromeRestoreImportBody = functionBody(chromeImport, 'importFolderRestoreR
   'warningCount',
   'state.lastFolderRestoreReceiptImport',
 ].forEach((needle) => assertIncludes(chromeRestoreImportBody, needle, `Chrome restore receipt import result ${needle}`));
+
+[
+  'alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle)',
+  'mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport)',
+  'folderRestoreReceiptImport: alreadyRestoreReceiptImport',
+  'numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0',
+].forEach((needle) => assertIncludes(chromeImport, needle, `Chrome duplicate import restore receipt replay ${needle}`));
+
+[
+  'folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport)',
+  'lastFolderRestoreReceiptImport',
+  'rawDiagnose.folderRestoreReceiptImport',
+  'safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport',
+].forEach((needle) => assertIncludes(smokeBridge, needle, `smoke restore receipt diagnostics ${needle}`));
 
 assertNotIncludes(chromeReviews, 'folder-restore-receipt', 'Chrome restore receipt review handling is intentionally deferred in 4D.1');
 
