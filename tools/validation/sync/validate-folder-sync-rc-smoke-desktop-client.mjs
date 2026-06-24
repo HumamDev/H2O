@@ -30,7 +30,7 @@ assertContains(helper, 'folder-sync-rc-smoke-desktop-queue-client', 'client phas
 assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke', 'scoped smoke root');
 assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json', 'scoped command path');
 assertContains(helper, '/Users/hobayda/H2O Studio Sync/.h2o-smoke/results', 'scoped result path');
-assertContains(helper, "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders'])", 'read-only allowlist');
+assertContains(helper, 'READ_ONLY_OPS = Object.freeze', 'read-only allowlist');
 assertContains(helper, 'MUTATION_OPS = Object.freeze', 'mutation allowlist');
 assertContains(helper, 'classifyOp(options.op, options.allowMutation)', 'operation classifier guard');
 assertContains(helper, 'mutation-op-requires-allow-mutation', 'mutation opt-in rejection status');
@@ -58,8 +58,11 @@ assertContains(helper, 'noBroadFilesystemAccess: true', 'broad filesystem safety
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 30000', 'diagnoseHealth usage example');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op getFolderModel --timeout-ms 30000', 'getFolderModel usage example');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op listRecentlyDeletedFolders --timeout-ms 30000', 'listRecentlyDeletedFolders usage example');
+assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op listFolderDeleteRequests --timeout-ms 30000', 'listFolderDeleteRequests usage example');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op renameFolder --allow-mutation', 'renameFolder mutation usage example');
 assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op setFolderColor --allow-mutation', 'setFolderColor mutation usage example');
+assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op applyFolderDeleteRequest --allow-mutation', 'applyFolderDeleteRequest mutation usage example');
+assertContains(helper, 'node tools/smoke/desktop-folder-sync-queue-client.mjs --op restoreFolder --allow-mutation', 'restoreFolder mutation usage example');
 
 assertNotContains(helper, 'eval(', 'Desktop queue client');
 assertNotContains(helper, 'new Function', 'Desktop queue client');
@@ -73,22 +76,24 @@ assertNotContains(helper, 'purgeFolder', 'Desktop queue client');
 assertNotContains(helper, 'deleteChat(', 'Desktop queue client');
 assertNotContains(helper, 'deleteSnapshot(', 'Desktop queue client');
 assertNotContains(helper, 'requestFolderDelete', 'Desktop queue client');
-assertNotContains(helper, 'applyFolderDeleteRequest', 'Desktop queue client');
-assertNotContains(helper, 'listFolderDeleteRequests', 'Desktop queue client');
-assertNotContains(helper, 'listFolderDeleteReceipts', 'Desktop queue client');
-assertNotContains(helper, 'listActiveFolderTombstones', 'Desktop queue client');
 assertNotContains(helper, 'deleteFolder', 'Desktop queue client');
-assertNotContains(helper, 'restoreFolder', 'Desktop queue client');
 
 const allowlistMatch = helper.match(/READ_ONLY_OPS = Object\.freeze\(\[([^\]]+)\]\)/);
 assert(allowlistMatch, 'READ_ONLY_OPS declaration missing');
 const allowlistBlock = allowlistMatch[1];
-for (const op of ['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders']) {
+for (const op of [
+  'diagnoseHealth',
+  'getFolderModel',
+  'listFolderDeleteRequests',
+  'listFolderDeleteReceipts',
+  'listActiveFolderTombstones',
+  'listRecentlyDeletedFolders',
+  'countChatsSnapshots',
+]) {
   assert(allowlistBlock.includes(`'${op}'`), `READ_ONLY_OPS missing ${op}`);
 }
 for (const op of [
   'requestFolderDelete',
-  'applyFolderDeleteRequest',
   'hardDelete',
   'purge',
   'rawSql',
@@ -101,16 +106,23 @@ for (const op of [
 const mutationAllowlistMatch = helper.match(/MUTATION_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
 assert(mutationAllowlistMatch, 'MUTATION_OPS declaration missing');
 const mutationAllowlistBlock = mutationAllowlistMatch[1];
-for (const op of ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden']) {
+for (const op of [
+  'createFolder',
+  'renameFolder',
+  'setFolderColor',
+  'syncNow',
+  'applyFolderDeleteRequest',
+  'restoreFolder',
+  'verifyFolderVisible',
+  'verifyFolderHidden',
+]) {
   assert(mutationAllowlistBlock.includes(`'${op}'`), `MUTATION_OPS missing ${op}`);
 }
 for (const op of [
   'requestFolderDelete',
-  'applyFolderDeleteRequest',
   'listFolderDeleteRequests',
   'listFolderDeleteReceipts',
   'listActiveFolderTombstones',
-  'restoreFolder',
   'deleteFolder',
   'hardDelete',
   'purge',
@@ -127,6 +139,6 @@ console.log(JSON.stringify({
   helperPath,
   commandPath: '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json',
   resultsDir: '/Users/hobayda/H2O Studio Sync/.h2o-smoke/results',
-  readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders'],
-  mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'verifyFolderVisible', 'verifyFolderHidden'],
+  readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'listFolderDeleteRequests', 'listFolderDeleteReceipts', 'listActiveFolderTombstones', 'listRecentlyDeletedFolders', 'countChatsSnapshots'],
+  mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'applyFolderDeleteRequest', 'restoreFolder', 'verifyFolderVisible', 'verifyFolderHidden'],
 }, null, 2));

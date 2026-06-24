@@ -146,13 +146,14 @@ try {
 }
 `;
 }
-const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel']);
+const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 const MUTATION_OPS = Object.freeze([
   'createFolder',
   'renameFolder',
   'setFolderColor',
   'syncNow',
+  'requestFolderDelete',
   'verifyFolderVisible',
   'verifyFolderHidden',
 ]);

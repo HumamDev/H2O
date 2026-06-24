@@ -37,6 +37,7 @@
     'listFolderDeleteReceipts',
     'listActiveFolderTombstones',
     'listRecentlyDeletedFolders',
+    'restoreFolder',
     'countChatsSnapshots',
     'verifyFolderVisible',
     'verifyFolderHidden',
@@ -49,6 +50,7 @@
     applyFolderDeleteRequest: true,
     listActiveFolderTombstones: true,
     listRecentlyDeletedFolders: true,
+    restoreFolder: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
@@ -484,6 +486,32 @@
         break;
       }
     }
+    if (!row && hasChromeStorageLocal()) {
+      try {
+        var mirror = safeObject(await chromeStorageGet(FOLDER_STATE_DATA_KEY));
+        var mirrorRows = safeArray(mirror.folders).map(summarizeFolderRow).filter(function (candidate) {
+          return !!(candidate && candidate.folderId);
+        });
+        for (var j = 0; j < mirrorRows.length; j += 1) {
+          if (targetId && mirrorRows[j].folderId === targetId) {
+            row = mirrorRows[j];
+            break;
+          }
+          if (!targetId && targetName && mirrorRows[j].name === targetName) {
+            row = mirrorRows[j];
+            break;
+          }
+          if (!targetId && targetNameKey && folderNameKey(mirrorRows[j].name) === targetNameKey) {
+            row = mirrorRows[j];
+            break;
+          }
+        }
+        if (row && modelResult) {
+          modelResult.mirrorFallbackUsed = true;
+          modelResult.mirrorRowCount = mirrorRows.length;
+        }
+      } catch (_) { /* ignore mirror fallback failures */ }
+    }
     return { model: modelResult, row: row, folderId: targetId || cleanString(row && row.folderId) };
   }
 
@@ -535,11 +563,22 @@
       ok: r.ok === true,
       status: cleanString(r.status || r.action || (r.ok === true ? 'ok' : 'not-ok')),
       action: cleanString(r.action),
+      reviewId: cleanString(r.reviewId || r.requestId || r.id),
+      requestId: cleanString(r.requestId || r.reviewId || r.id),
       folderId: cleanString(r.folderId || r.id || (r.after && (r.after.folderId || r.after.id))),
+      tombstoneId: cleanString(r.tombstoneId || r.tombstone_id),
       name: cleanString(r.name || (r.after && (r.after.name || r.after.title))),
       color: cleanString(r.color || r.iconColor || (r.after && (r.after.iconColor || r.after.color))),
       applied: r.applied === true,
+      alreadyApplied: r.alreadyApplied === true,
+      alreadyRestored: r.alreadyRestored === true,
       duplicate: r.duplicate === true,
+      affectedChatCount: Number(r.affectedChatCount) || 0,
+      bindingCount: Number(r.bindingCount) || 0,
+      bindingRestoreAttemptedCount: Number(r.bindingRestoreAttemptedCount) || 0,
+      bindingRestoredCount: Number(r.bindingRestoredCount) || 0,
+      bindingSkippedCount: Number(r.bindingSkippedCount) || 0,
+      restoreWarnings: codeList(r.restoreWarnings),
       blockers: codeList(r.blockers),
       warnings: codeList(r.warnings),
       noHardDelete: true,
@@ -1086,6 +1125,22 @@
     return summarizeMutationResult('applyFolderDeleteRequest', result);
   }
 
+  async function restoreFolder(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    var fn = store && (store.restoreTombstonedFolder || store.restoreFolder);
+    if (typeof fn !== 'function') return unsupportedResult('restoreFolder', 'folder-restore-api-unavailable');
+    var target = {
+      tombstoneId: cleanString(payload.tombstoneId),
+      folderId: cleanString(payload.folderId || payload.id),
+      id: cleanString(payload.tombstoneId || payload.folderId || payload.id),
+    };
+    var result = await fn.call(store, target, {
+      reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge',
+      restoredBySyncPeerId: cleanString(payload.restoredBySyncPeerId) || 'desktop-smoke-phase4d4',
+    });
+    return summarizeMutationResult('restoreFolder', result);
+  }
+
   async function listFolderDeleteReceipts(payload) {
     var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
     var fn = store && store.listFolderDeleteReceipts;
@@ -1237,6 +1292,8 @@
       folderName: cleanString(payload.name || payload.folderName || (found.row && found.row.name)),
       row: found.row || null,
       modelRowCount: Number(found.model && found.model.rowCount) || 0,
+      mirrorFallbackUsed: found.model && found.model.mirrorFallbackUsed === true,
+      mirrorRowCount: Number(found.model && found.model.mirrorRowCount) || 0,
     });
   }
 
@@ -1253,6 +1310,7 @@
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
     if (op === 'listActiveFolderTombstones') return listActiveFolderTombstones(payload);
     if (op === 'listRecentlyDeletedFolders') return listRecentlyDeletedFolders(payload);
+    if (op === 'restoreFolder') return restoreFolder(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
     return unsupportedResult(op, 'unsupported-op');

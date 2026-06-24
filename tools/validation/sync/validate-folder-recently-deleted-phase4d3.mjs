@@ -145,10 +145,17 @@ const rowBody = functionBody(folders, 'recentlyDeletedRowFromTombstone');
 const allowedOpsMatch = smokeBridge.match(/ALLOWED_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
 assert(allowedOpsMatch && allowedOpsMatch[1].includes("'listRecentlyDeletedFolders'"), 'smoke registry ALLOWED_OPS must include listRecentlyDeletedFolders');
 
-[
-  "READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders'])",
+const desktopReadOnlyMatch = desktopClient.match(/READ_ONLY_OPS = Object\.freeze\(\[([\s\S]*?)\]\)/);
+assert(desktopReadOnlyMatch, 'Desktop queue client READ_ONLY_OPS declaration missing');
+assert(
+  desktopReadOnlyMatch && desktopReadOnlyMatch[1].includes("'listRecentlyDeletedFolders'"),
+  'Desktop queue client READ_ONLY_OPS must include listRecentlyDeletedFolders'
+);
+assertIncludes(
+  desktopClient,
   'node tools/smoke/desktop-folder-sync-queue-client.mjs --op listRecentlyDeletedFolders --timeout-ms 30000',
-].forEach((needle) => assertIncludes(desktopClient, needle, `Desktop queue client Recently Deleted ${needle}`));
+  'Desktop queue client Recently Deleted usage example'
+);
 
 if (failures.length) {
   console.error('validate-folder-recently-deleted-phase4d3 failed:');

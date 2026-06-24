@@ -8,13 +8,23 @@ const PHASE = 'folder-sync-rc-smoke-desktop-queue-client';
 const SMOKE_ROOT = '/Users/hobayda/H2O Studio Sync/.h2o-smoke';
 const COMMAND_PATH = '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json';
 const RESULTS_DIR = '/Users/hobayda/H2O Studio Sync/.h2o-smoke/results';
-const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'listRecentlyDeletedFolders']);
+const READ_ONLY_OPS = Object.freeze([
+  'diagnoseHealth',
+  'getFolderModel',
+  'listFolderDeleteRequests',
+  'listFolderDeleteReceipts',
+  'listActiveFolderTombstones',
+  'listRecentlyDeletedFolders',
+  'countChatsSnapshots',
+]);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 const MUTATION_OPS = Object.freeze([
   'createFolder',
   'renameFolder',
   'setFolderColor',
   'syncNow',
+  'applyFolderDeleteRequest',
+  'restoreFolder',
   'verifyFolderVisible',
   'verifyFolderHidden',
 ]);
@@ -71,12 +81,15 @@ function usage() {
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op getFolderModel --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op listRecentlyDeletedFolders --timeout-ms 30000',
+    '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op listFolderDeleteRequests --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op renameFolder --allow-mutation --payload-json \'{"folderId":"...","name":"zz-5a-renamed"}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op setFolderColor --allow-mutation --payload-json \'{"folderId":"...","color":"#10B981"}\' --timeout-ms 30000',
+    '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op applyFolderDeleteRequest --allow-mutation --payload-json \'{"reviewId":"..."}\' --timeout-ms 30000',
+    '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op restoreFolder --allow-mutation --payload-json \'{"tombstoneId":"..."}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op verifyFolderVisible --allow-mutation --payload-file /private/tmp/h2o-folder-visible-payload.json --timeout-ms 30000',
     '',
-    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, listRecentlyDeletedFolders.',
-    'Slice 5A mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, verifyFolderVisible, verifyFolderHidden.',
+    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, listFolderDeleteRequests, listFolderDeleteReceipts, listActiveFolderTombstones, listRecentlyDeletedFolders, countChatsSnapshots.',
+    'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, applyFolderDeleteRequest, restoreFolder, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }
 

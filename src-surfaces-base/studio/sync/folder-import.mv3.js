@@ -2212,8 +2212,11 @@
     }
     var next = cloneJson(current) || {};
     var rows = Array.isArray(next.folders) ? next.folders : [];
+    var removedRow = null;
     next.folders = rows.filter(function (row) {
-      return normalizeFolderRecordId(folderMetadataRowId(row)) !== folderId;
+      var matches = normalizeFolderRecordId(folderMetadataRowId(row)) === folderId;
+      if (matches && !removedRow) removedRow = safeObject(row);
+      return !matches;
     });
     if (next.items && typeof next.items === 'object' && !Array.isArray(next.items)) {
       var nextItems = Object.assign({}, next.items);
@@ -2225,6 +2228,10 @@
       hiddenByDesktopReceipt: true,
       deletedByDesktopReceipt: true,
       folderId: folderId,
+      folderName: cleanString(removedRow.name || removedRow.title || safeObject(removedRow.meta).name),
+      color: cleanString(removedRow.color || removedRow.iconColor || safeObject(removedRow.meta).color || safeObject(removedRow.meta).iconColor),
+      iconColor: cleanString(removedRow.iconColor || removedRow.color || safeObject(removedRow.meta).iconColor || safeObject(removedRow.meta).color),
+      meta: safeObject(removedRow.meta),
       receiptId: cleanString(receipt.receiptId),
       requestId: cleanString(receipt.requestId),
       reviewId: cleanString(receipt.reviewId),
@@ -2444,13 +2451,19 @@
     var name = cleanString(receipt && receipt.folderName) || cleanString(marker.folderName) || folderId;
     var color = cleanString(receipt && (receipt.color || receipt.iconColor)) || cleanString(marker.color || marker.iconColor);
     var restoredAt = cleanString(receipt && receipt.restoredAt) || nowIso();
+    var sourceKind = cleanString(marker.sourceKind || marker.kind || safeObject(marker.meta).sourceKind || safeObject(marker.meta).kind || 'desktop-folder-restore-receipt');
     var row = {
       id: folderId,
       folderId: folderId,
       name: name,
       title: name,
-      kind: 'local',
+      kind: sourceKind,
       source: 'desktop-folder-restore-receipt',
+      sourceKind: sourceKind,
+      stateSource: 'stored-folder-state',
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
       restoredByDesktopReceipt: true,
       hidden: false,
       deletedByDesktopReceipt: false,
@@ -2459,6 +2472,12 @@
       updatedAt: restoredAt,
       meta: Object.assign({}, safeObject(marker.meta), {
         source: 'desktop-folder-restore-receipt',
+        sourceKind: sourceKind,
+        kind: sourceKind,
+        stateSource: 'stored-folder-state',
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
         restoredByDesktopReceipt: true,
         hiddenByDesktopReceipt: false,
         deletedByDesktopReceipt: false,

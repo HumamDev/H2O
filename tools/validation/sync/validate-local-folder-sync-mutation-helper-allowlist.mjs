@@ -4,26 +4,21 @@ import path from 'node:path';
 import process from 'node:process';
 
 const root = process.cwd();
-const helperPaths = [
-  path.join(root, 'tools/smoke/chrome-cdp-studio.mjs'),
-  path.join(root, 'tools/smoke/desktop-folder-sync-queue-client.mjs'),
-];
-const readOnlyOps = ['diagnoseHealth', 'getFolderModel'];
-const mutationOps = [
-  'createFolder',
-  'renameFolder',
-  'setFolderColor',
-  'syncNow',
-  'verifyFolderVisible',
-  'verifyFolderHidden',
+const helperConfigs = [
+  {
+    path: path.join(root, 'tools/smoke/chrome-cdp-studio.mjs'),
+    readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots'],
+    mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'requestFolderDelete', 'verifyFolderVisible', 'verifyFolderHidden'],
+    forbiddenOps: ['applyFolderDeleteRequest', 'listFolderDeleteRequests', 'listFolderDeleteReceipts', 'listActiveFolderTombstones', 'restoreFolder'],
+  },
+  {
+    path: path.join(root, 'tools/smoke/desktop-folder-sync-queue-client.mjs'),
+    readOnlyOps: ['diagnoseHealth', 'getFolderModel', 'listFolderDeleteRequests', 'listFolderDeleteReceipts', 'listActiveFolderTombstones', 'listRecentlyDeletedFolders', 'countChatsSnapshots'],
+    mutationOps: ['createFolder', 'renameFolder', 'setFolderColor', 'syncNow', 'applyFolderDeleteRequest', 'restoreFolder', 'verifyFolderVisible', 'verifyFolderHidden'],
+    forbiddenOps: ['requestFolderDelete'],
+  },
 ];
 const forbiddenOps = [
-  'requestFolderDelete',
-  'applyFolderDeleteRequest',
-  'listFolderDeleteRequests',
-  'listFolderDeleteReceipts',
-  'listActiveFolderTombstones',
-  'restoreFolder',
   'deleteFolder',
   'hardDelete',
   'purge',
@@ -54,7 +49,8 @@ function listBlock(source, name) {
   return match[1];
 }
 
-for (const helperPath of helperPaths) {
+for (const config of helperConfigs) {
+  const helperPath = config.path;
   assert(fs.existsSync(helperPath), `${helperPath} missing`);
   const source = read(helperPath);
   const label = path.relative(root, helperPath);
@@ -84,14 +80,14 @@ for (const helperPath of helperPaths) {
   assertNotContains(source, 'TRUNCATE TABLE', label);
 
   const readOnlyBlock = listBlock(source, 'READ_ONLY_OPS');
-  for (const op of readOnlyOps) assert(readOnlyBlock.includes(`'${op}'`), `${label} READ_ONLY_OPS missing ${op}`);
-  for (const op of [...mutationOps, ...forbiddenOps]) {
+  for (const op of config.readOnlyOps) assert(readOnlyBlock.includes(`'${op}'`), `${label} READ_ONLY_OPS missing ${op}`);
+  for (const op of [...config.mutationOps, ...config.forbiddenOps, ...forbiddenOps]) {
     assert(!readOnlyBlock.includes(op), `${label} READ_ONLY_OPS must not include ${op}`);
   }
 
   const mutationBlock = listBlock(source, 'MUTATION_OPS');
-  for (const op of mutationOps) assert(mutationBlock.includes(`'${op}'`), `${label} MUTATION_OPS missing ${op}`);
-  for (const op of forbiddenOps) {
+  for (const op of config.mutationOps) assert(mutationBlock.includes(`'${op}'`), `${label} MUTATION_OPS missing ${op}`);
+  for (const op of [...config.forbiddenOps, ...forbiddenOps]) {
     assert(!mutationBlock.includes(op), `${label} MUTATION_OPS must not include ${op}`);
   }
 }
@@ -99,8 +95,11 @@ for (const helperPath of helperPaths) {
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-local-folder-sync-mutation-helper-allowlist',
-  helpers: helperPaths.map((file) => path.relative(root, file)),
-  readOnlyOps,
-  mutationOps,
+  helpers: helperConfigs.map((config) => ({
+    path: path.relative(root, config.path),
+    readOnlyOps: config.readOnlyOps,
+    mutationOps: config.mutationOps,
+    forbiddenOps: config.forbiddenOps,
+  })),
   forbiddenOps,
 }, null, 2));
