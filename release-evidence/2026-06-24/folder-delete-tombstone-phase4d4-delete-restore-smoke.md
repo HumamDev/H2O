@@ -91,6 +91,23 @@ Follow-up count diagnostics fix: a later full lifecycle run completed the main d
 
 The no-chat/no-snapshot guards now compare Chrome baseline only to Chrome final, and Desktop baseline only to Desktop final. Count increases do not fail the safety guard; they are reported as warnings at most. Only a same-surface count decrease blocks as possible deletion. The runner also exposes `steps` as an alias of `stepResults` so count read steps can be extracted by key: `chrome-baseline-counts`, `desktop-baseline-counts`, `chrome-final-counts`, and `desktop-final-counts`.
 
+Follow-up request handoff fix: the runner previously trusted generic Chrome export and Desktop import success, then failed later with `matching-delete-request-missing` when Desktop did not list the exact pending request. The runner now keeps the exact `requestId`, `reviewId`, and `folderId` from `requestFolderDelete`; after Chrome export it reads `/Users/hobayda/H2O Studio Sync/chrome-latest.json` and verifies the exact request is present before Desktop import continues. After Desktop import, it verifies the exact request by request id first, then folder id, and only allows `status:"pending"` before the apply step. The runner now reports precise handoff diagnostics:
+
+- `chromeLatestHasRequest`
+- `chromeLatestRequestPath`
+- `chromeLatestRequestCount`
+- `chromeLatestRequestDiagnostics`
+- `desktopDeleteRequestImported`
+- `desktopDeleteRequestStatus`
+- `desktopDeleteRequestDecision`
+- `desktopDeleteRequestDiagnostics`
+
+Precise handoff blockers are now:
+
+- `chrome-delete-request-not-exported`
+- `desktop-delete-request-not-imported`
+- `desktop-delete-request-wrong-status`
+
 ## Safety
 
 The runner and bridge enforce:
@@ -130,6 +147,7 @@ The final JSON summary includes:
 - `noSnapshotDelete`
 - `noTombstoneApplyOnChrome`
 - same-surface chat/snapshot baseline/final counts and deltas
+- exact delete-request export/import handoff diagnostics
 - `blockers`
 - `warnings`
 
@@ -282,36 +300,83 @@ The Desktop queue preflight returned through the queue with `ok:true`, `registry
 
 This proves the requested count fields are now present and the no-chat/no-snapshot guards no longer compare Chrome counts against Desktop counts. Because the runner failed before final count reads, the deltas are intentionally `null` and the count guard did not create a false `chat-count-changed` blocker.
 
-Current runtime status:
-
-- Implementation and static validation are complete.
-- Chrome pending delete-request export is runtime-verified through `folderDeleteRequestExport.requestCount:3` and export diagnostics in the smoke result.
-- Desktop hidden-verification handling is statically fixed to use the mutation-gated Desktop op, pass a minimum 60000ms queue timeout, and accept `folder-hidden-or-missing` / `visible:false` with `row:null`.
-- Count diagnostics are now surfaced at top level and through `steps` / `stepResults`; same-surface decreases are the only chat/snapshot count blockers.
-- Full end-to-end lifecycle proof is currently blocked before Desktop delete-apply in the latest run by `matching-delete-request-missing`.
-- Re-run after Desktop queue is enabled:
+Runtime attempt 8 after the exact request handoff fix passed end to end:
 
 ```bash
+rm -f "/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json"
+node tools/smoke/desktop-folder-sync-queue-client.mjs \
+  --op diagnoseHealth \
+  --timeout-ms 60000
 node tools/smoke/local-folder-delete-restore-smoke-runner.mjs \
   --allow-mutation \
   --chrome-port 9247 \
-  --timeout-ms 30000
+  --timeout-ms 120000 > /tmp/h2o-4d4-runner-final.json
 ```
 
-Expected green result:
+Preflight:
+
+- Desktop queue `diagnoseHealth` returned `ok:true`, `status:"healthy"`, `registryGatesEnabled:true`, and no blockers.
+
+Final runner result:
 
 - `ok:true`
-- `blockers:[]`
+- `status:"delete-restore-smoke-passed"`
+- `folderId:"fold_smoke_zz-4d4-delete-restore-mqs1gw5f_mqs1gwcx_49255746c5af"`
+- `requestId:"folder-delete-request:35954499-0647-4803-8a11-d794bf733c3e"`
+- `reviewId:"folder-delete-request:35954499-0647-4803-8a11-d794bf733c3e"`
+- `deleteRequestCreated:true`
+- `chromeLatestHasRequest:true`
+- `chromeLatestRequestPath:"folderDeleteRequests[0]"`
+- `chromeLatestRequestCount:5`
+- `desktopDeleteRequestImported:true`
+- `desktopDeleteRequestStatus:"pending"`
+- `desktopDeleteApplied:true`
 - `chromeHidden:true`
+- `desktopRestoreApplied:true`
+- `restoreReceiptExported:true`
 - `chromeReShown:true`
 - `finalChromeVisible:true`
 - `finalDesktopVisible:true`
+- `folderIdMatch:true`
 - `noHardDelete:true`
 - `noPurge:true`
 - `noChatDelete:true`
 - `noSnapshotDelete:true`
 - `noTombstoneApplyOnChrome:true`
+- `blockers:[]`
+
+Exact handoff diagnostics:
+
+- Chrome request step returned `status:"pending-created"` for the exact request id above.
+- Chrome export step read `/Users/hobayda/H2O Studio Sync/chrome-latest.json` and found the exact request at `folderDeleteRequests[0]`.
+- Chrome export diagnostics reported `folderDeleteRequestExport.requestCount:5`, `reviewRequestCount:5`, `mirrorRequestCount:2`, `staleMirrorSkippedCount:0`, `storeAvailable:true`, `mirrorAvailable:true`, and `mirrorOk:true`.
+- Desktop list step found the exact request by request id/folder id with `desktopDeleteRequestStatus:"pending"` and `listedRequestCount:1`.
+
+Count proof:
+
+- `baselineChromeChatCount:32`
+- `baselineDesktopChatCount:32`
+- `finalChromeChatCount:32`
+- `finalDesktopChatCount:32`
+- `chromeChatCountDelta:0`
+- `desktopChatCountDelta:0`
+- `baselineChromeSnapshotCount:0`
+- `baselineDesktopSnapshotCount:20`
+- `finalChromeSnapshotCount:0`
+- `finalDesktopSnapshotCount:20`
+- `chromeSnapshotCountDelta:0`
+- `desktopSnapshotCountDelta:0`
+
+Non-blocking warnings remained for deferred labels/tombstones/apply-events/tags/chat-folder-bindings/source-metadata and approved simultaneous conflict notes. They were non-blocking because `blockers:[]` and the final folder/state/safety checks passed.
+
+Current runtime status:
+
+- Implementation, static validation, and live runtime proof are complete.
+- Chrome pending delete-request export is runtime-verified through `folderDeleteRequestExport.requestCount:3` and export diagnostics in the smoke result.
+- Desktop hidden-verification handling is statically fixed to use the mutation-gated Desktop op, pass a minimum 60000ms queue timeout, and accept `folder-hidden-or-missing` / `visible:false` with `row:null`.
+- Count diagnostics are now surfaced at top level and through `steps` / `stepResults`; same-surface decreases are the only chat/snapshot count blockers.
+- Full end-to-end lifecycle proof passed with exact delete-request handoff diagnostics.
 
 ## Verdict
 
-Phase 4D.4 implementation adds the local lifecycle smoke harness and keeps delete/restore authority on Desktop. Static validation is green. Runtime proof is pending a re-enabled Desktop smoke queue; the latest live run was blocked before Desktop import with `desktop-queue-timeout`.
+Phase 4D.4 implementation adds the local lifecycle smoke harness and keeps delete/restore authority on Desktop. Static validation is green. Runtime proof is green: Chrome request -> Chrome export -> Desktop import/list/apply -> Desktop delete receipt export -> Chrome hide -> Desktop restore -> Desktop restore receipt export -> Chrome re-show passed with exact handoff diagnostics and no destructive safety violations.

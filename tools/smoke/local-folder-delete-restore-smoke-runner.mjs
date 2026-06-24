@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { execFile } from 'node:child_process';
@@ -16,6 +17,8 @@ const DEFAULT_CHROME_PORT = 9247;
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_COLOR = '#38BDF8';
 const VERIFY_RETRY_INTERVAL_MS = 2000;
+const LOCAL_SYNC_DIR = '/Users/hobayda/H2O Studio Sync';
+const CHROME_LATEST_PATH = path.join(LOCAL_SYNC_DIR, 'chrome-latest.json');
 
 function nowIso() {
   return new Date().toISOString();
@@ -154,6 +157,23 @@ function redactValue(value, depth = 0) {
     output[key] = redactValue(entry, depth + 1);
   }
   return output;
+}
+
+function readJsonFile(filePath) {
+  try {
+    return {
+      ok: true,
+      path: filePath,
+      value: JSON.parse(fs.readFileSync(filePath, 'utf8')),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      path: filePath,
+      error: String(error && error.message || error),
+      value: null,
+    };
+  }
 }
 
 function execNodeJson(label, helperPath, args, timeoutMs) {
@@ -304,6 +324,7 @@ function recordStep(stepResults, key, label, surface, runResult, check, retry = 
     chatCount: Number.isFinite(summary.chatCount) ? summary.chatCount : null,
     snapshotCount: Number.isFinite(summary.snapshotCount) ? summary.snapshotCount : null,
     folderDeleteRequestExport: summary.folderDeleteRequestExport,
+    diagnostics: checkResult.diagnostics && typeof checkResult.diagnostics === 'object' ? redactValue(checkResult.diagnostics) : null,
     blockers,
     warnings,
     startedAt: runResult.startedAt,
@@ -378,6 +399,83 @@ function expectDeleteRequestExported(key) {
     if (Number(exportSummary.requestCount || 0) < 1) blockers.push('folder-delete-request-export-missing');
     return { ok: blockers.length === 0, blockers };
   };
+}
+
+function identityMatches(row, requestId, folderId) {
+  if (!row || typeof row !== 'object') return false;
+  const rowRequestId = String(row.requestId || row.reviewId || '').trim();
+  const rowReviewId = String(row.reviewId || row.requestId || '').trim();
+  const rowFolderId = String(row.folderId || row.recordId || '').replace(/^folder:/, '').trim();
+  const requestMatches = requestId ? rowRequestId === requestId || rowReviewId === requestId : true;
+  const folderMatches = folderId ? rowFolderId === folderId : true;
+  return requestMatches && folderMatches;
+}
+
+function requestStatusOf(row) {
+  if (!row || typeof row !== 'object') return '';
+  const payload = row.payload && typeof row.payload === 'object' ? row.payload : null;
+  return String(row.status || payload && payload.status || '').trim();
+}
+
+function requestDecisionOf(row) {
+  if (!row || typeof row !== 'object') return '';
+  const payload = row.result && typeof row.result === 'object' ? row.result : null;
+  return String(row.decision || payload && payload.decision || '').trim();
+}
+
+function findExactRequest(rows, requestId, folderId) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list.find((row) => identityMatches(row, requestId, folderId)) ||
+    list.find((row) => identityMatches(row, requestId, '')) ||
+    list.find((row) => identityMatches(row, '', folderId)) ||
+    null;
+}
+
+function collectRequestObjects(value, pathName = '', output = []) {
+  if (!value || typeof value !== 'object') return output;
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => collectRequestObjects(entry, `${pathName}[${index}]`, output));
+    return output;
+  }
+  const schema = String(value.schema || '').trim();
+  if (schema === 'h2o.studio.folder-delete-request.v1' || value.intent === 'folder-soft-delete-request') {
+    output.push({ path: pathName || '$', value });
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry && typeof entry === 'object') collectRequestObjects(entry, pathName ? `${pathName}.${key}` : key, output);
+  }
+  return output;
+}
+
+function inspectChromeLatestForRequest(requestId, folderId) {
+  const file = readJsonFile(CHROME_LATEST_PATH);
+  const diagnostics = {
+    chromeLatestPath: CHROME_LATEST_PATH,
+    chromeLatestReadable: file.ok === true,
+    chromeLatestHasRequest: false,
+    chromeLatestRequestPath: '',
+    chromeLatestRequestCount: 0,
+    chromeLatestRequestStatus: '',
+    chromeLatestRequestDecision: '',
+    requestId,
+    folderId,
+  };
+  if (!file.ok) {
+    diagnostics.chromeLatestError = file.error;
+    return diagnostics;
+  }
+  const requests = collectRequestObjects(file.value);
+  diagnostics.chromeLatestRequestCount = requests.length;
+  const exact = requests.find((entry) => identityMatches(entry.value, requestId, folderId)) ||
+    requests.find((entry) => identityMatches(entry.value, requestId, '')) ||
+    requests.find((entry) => identityMatches(entry.value, '', folderId));
+  if (exact) {
+    diagnostics.chromeLatestHasRequest = true;
+    diagnostics.chromeLatestRequestPath = exact.path;
+    diagnostics.chromeLatestRequestStatus = requestStatusOf(exact.value);
+    diagnostics.chromeLatestRequestDecision = requestDecisionOf(exact.value);
+  }
+  return diagnostics;
 }
 
 function expectVisible(folderId, expectedName = '', expectedColor = '') {
@@ -464,6 +562,8 @@ async function run(options) {
   let baselineDesktopCounts = null;
   let finalChromeCounts = null;
   let finalDesktopCounts = null;
+  let chromeLatestRequestDiagnostics = null;
+  let desktopDeleteRequestDiagnostics = null;
 
   function finish() {
     for (const step of stepResults) {
@@ -521,6 +621,14 @@ async function run(options) {
       noChatDelete: chromeCounts.noChatDelete && desktopCounts.noChatDelete,
       noSnapshotDelete: chromeCounts.noSnapshotDelete && desktopCounts.noSnapshotDelete,
       noTombstoneApplyOnChrome,
+      chromeLatestHasRequest: !!(chromeLatestRequestDiagnostics && chromeLatestRequestDiagnostics.chromeLatestHasRequest),
+      chromeLatestRequestPath: String(chromeLatestRequestDiagnostics && chromeLatestRequestDiagnostics.chromeLatestRequestPath || ''),
+      chromeLatestRequestCount: Number(chromeLatestRequestDiagnostics && chromeLatestRequestDiagnostics.chromeLatestRequestCount || 0),
+      chromeLatestRequestDiagnostics: chromeLatestRequestDiagnostics || {},
+      desktopDeleteRequestImported: !!(desktopDeleteRequestDiagnostics && desktopDeleteRequestDiagnostics.desktopDeleteRequestImported),
+      desktopDeleteRequestStatus: String(desktopDeleteRequestDiagnostics && desktopDeleteRequestDiagnostics.desktopDeleteRequestStatus || ''),
+      desktopDeleteRequestDecision: String(desktopDeleteRequestDiagnostics && desktopDeleteRequestDiagnostics.desktopDeleteRequestDecision || ''),
+      desktopDeleteRequestDiagnostics: desktopDeleteRequestDiagnostics || {},
       baselineChromeChatCount: chromeCounts.chatCountBefore,
       baselineDesktopChatCount: desktopCounts.chatCountBefore,
       finalChromeChatCount: chromeCounts.chatCountAfter,
@@ -605,7 +713,21 @@ async function run(options) {
   const chromeExportDeleteRequest = await runStep(stepResults, 'chrome-export-delete-request', 'Chrome export delete request', 'chrome-studio', CHROME_HELPER,
     buildChromeArgs(options, 'syncNow', { direction: 'chrome-to-desktop', reason: 'phase4d4-export-delete-request' }),
     options.timeoutMs,
-    expectDeleteRequestExported('chrome-export-delete-request'));
+    (summary) => {
+      const base = expectDeleteRequestExported('chrome-export-delete-request')(summary);
+      chromeLatestRequestDiagnostics = inspectChromeLatestForRequest(requestId || reviewId, folderId);
+      const blockers = [...codeList(base.blockers)];
+      if (chromeLatestRequestDiagnostics.chromeLatestHasRequest !== true) blockers.push('chrome-delete-request-not-exported');
+      return {
+        ok: blockers.length === 0,
+        blockers,
+        warnings: codeList(base.warnings),
+        diagnostics: {
+          ...chromeLatestRequestDiagnostics,
+          folderDeleteRequestExport: summary.folderDeleteRequestExport || {},
+        },
+      };
+    });
   if (requireStep(chromeExportDeleteRequest)) return finish();
 
   await runStep(stepResults, 'desktop-import-delete-request', 'Desktop import delete request', 'desktop-studio', DESKTOP_HELPER,
@@ -614,17 +736,32 @@ async function run(options) {
     expectOk('desktop-import-delete-request'));
 
   const listRequests = await runRetriedStep(stepResults, 'desktop-list-delete-request', 'Desktop list pending delete request', 'desktop-studio', DESKTOP_HELPER,
-    buildDesktopArgs(options, 'listFolderDeleteRequests', { folderId, status: 'pending', limit: 100 }),
+    buildDesktopArgs(options, 'listFolderDeleteRequests', { folderId, requestId: requestId || reviewId, status: 'pending', limit: 100 }),
     options.timeoutMs,
     (summary) => {
-      const row = findRequest(summary, folderId);
+      const rows = extractRequests(summary.registry);
+      const row = findExactRequest(rows, requestId || reviewId, folderId);
+      const status = requestStatusOf(row);
+      const decision = requestDecisionOf(row);
+      desktopDeleteRequestDiagnostics = {
+        desktopDeleteRequestImported: !!row,
+        desktopDeleteRequestStatus: status,
+        desktopDeleteRequestDecision: decision,
+        desktopDeleteRequestId: String(row && (row.requestId || row.reviewId) || ''),
+        desktopDeleteRequestReviewId: String(row && (row.reviewId || row.requestId) || ''),
+        desktopDeleteRequestFolderId: String(row && (row.folderId || row.recordId) || '').replace(/^folder:/, ''),
+        requestId: requestId || reviewId,
+        folderId,
+        listedRequestCount: rows.length,
+      };
       const blockers = [];
       if (!summary.helperOk || !summary.registryOk) blockers.push('list-delete-requests-not-ok');
-      if (!row) blockers.push('matching-delete-request-missing');
-      return { ok: blockers.length === 0, blockers };
+      if (!row) blockers.push('desktop-delete-request-not-imported');
+      else if (status !== 'pending') blockers.push('desktop-delete-request-wrong-status');
+      return { ok: blockers.length === 0, blockers, diagnostics: desktopDeleteRequestDiagnostics };
     });
   if (requireStep(listRequests)) return finish();
-  const matchingRequest = findRequest(listRequests.summary, folderId);
+  const matchingRequest = findExactRequest(extractRequests(listRequests.summary.registry), requestId || reviewId, folderId);
   reviewId = reviewId || String(matchingRequest && (matchingRequest.reviewId || matchingRequest.requestId) || '');
   requestId = requestId || String(matchingRequest && (matchingRequest.requestId || matchingRequest.reviewId) || '');
 
