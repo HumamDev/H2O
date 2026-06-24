@@ -265,11 +265,11 @@ function buildChromeArgs(options, op, payload, allowMutation = true) {
   return args;
 }
 
-function buildDesktopArgs(options, op, payload, allowMutation = true) {
+function buildDesktopArgs(options, op, payload, allowMutation = true, timeoutMs = options.timeoutMs) {
   const args = [
     '--op', op,
     '--payload-json', JSON.stringify(payload || {}),
-    '--timeout-ms', String(options.timeoutMs),
+    '--timeout-ms', String(timeoutMs),
   ];
   if (allowMutation) args.splice(2, 0, '--allow-mutation');
   return args;
@@ -320,17 +320,20 @@ async function runStep(stepResults, key, label, surface, helperPath, args, timeo
   return recordStep(stepResults, key, label, surface, runResult, check);
 }
 
-async function runRetriedStep(stepResults, key, label, surface, helperPath, args, timeoutMs, check) {
+async function runRetriedStep(stepResults, key, label, surface, helperPath, args, timeoutMs, check, options = {}) {
   const startedAt = nowIso();
   const deadline = Date.now() + timeoutMs;
   const attempts = [];
+  const perAttemptTimeoutMs = Number.isFinite(options.perAttemptTimeoutMs)
+    ? Math.max(1, options.perAttemptTimeoutMs)
+    : Math.min(timeoutMs, 10000);
   let finalRunResult = null;
   let finalSummary = null;
   let finalCheckResult = null;
   let attempt = 0;
   while (Date.now() < deadline) {
     attempt += 1;
-    finalRunResult = await execNodeJson(`${label} attempt ${attempt}`, helperPath, args, Math.min(timeoutMs, 10000));
+    finalRunResult = await execNodeJson(`${label} attempt ${attempt}`, helperPath, args, perAttemptTimeoutMs);
     finalSummary = helperSummary(finalRunResult);
     finalCheckResult = typeof check === 'function' ? check(finalSummary) : { ok: finalSummary.helperOk && finalSummary.registryOk };
     attempts.push({
@@ -355,6 +358,7 @@ async function runRetriedStep(stepResults, key, label, surface, helperPath, args
     completedAt: nowIso(),
     attemptCount: attempts.length,
     intervalMs: VERIFY_RETRY_INTERVAL_MS,
+    perAttemptTimeoutMs,
     attempts,
   });
 }
@@ -393,7 +397,10 @@ function expectHidden(folderId) {
     if (!summary.helperOk || !summary.registryOk) blockers.push('verify-not-ok');
     if (summary.folderId && summary.folderId !== folderId) blockers.push('folder-id-mismatch');
     const visible = summary.registry && summary.registry.visible === true;
+    const status = String(summary.registryStatus || summary.status || '');
+    const acceptedHiddenStatus = status === 'folder-hidden' || status === 'folder-hidden-or-missing';
     if (visible) blockers.push('folder-still-visible');
+    if (!acceptedHiddenStatus && visible !== false) blockers.push('folder-hidden-state-unconfirmed');
     return { ok: blockers.length === 0, blockers };
   };
 }
@@ -602,10 +609,12 @@ async function run(options) {
   tombstoneId = desktopApplyDelete.summary.tombstoneId;
   if (requireStep(desktopApplyDelete)) return finish();
 
+  const desktopHiddenVerifyTimeoutMs = Math.max(options.timeoutMs, 60000);
   const desktopVerifyHidden = await runRetriedStep(stepResults, 'desktop-verify-hidden', 'Desktop verify folder hidden after soft delete', 'desktop-studio', DESKTOP_HELPER,
-    buildDesktopArgs(options, 'verifyFolderHidden', { folderId }),
-    options.timeoutMs,
-    expectHidden(folderId));
+    buildDesktopArgs(options, 'verifyFolderHidden', { folderId }, true, desktopHiddenVerifyTimeoutMs),
+    desktopHiddenVerifyTimeoutMs,
+    expectHidden(folderId),
+    { perAttemptTimeoutMs: desktopHiddenVerifyTimeoutMs });
   if (requireStep(desktopVerifyHidden)) return finish();
 
   const recentlyDeleted = await runRetriedStep(stepResults, 'desktop-list-recently-deleted', 'Desktop list Recently Deleted row', 'desktop-studio', DESKTOP_HELPER,

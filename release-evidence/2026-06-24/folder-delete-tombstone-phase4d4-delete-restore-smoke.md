@@ -72,6 +72,8 @@ Chrome restore receipt re-show preserves the removed visible-mirror row metadata
 
 Follow-up export fix: a live Phase 4D.4 run created a Chrome pending folder delete request, but the next Chrome export wrote `chrome-latest.json` without that request. The request existed in Chrome runtime, but Desktop could not review/apply a request that was absent from the transport file. The MV3 review store now writes a pending, status-only export mirror at request creation time and prunes it when a Desktop delete receipt resolves the request. The Chrome export collector merges the IndexedDB review rows with this mirror, dedupes by request/folder identity, and skips mirror entries when the review store says the request is no longer pending. The runner now treats a zero `folderDeleteRequestExport.requestCount` during the delete-request export step as a hard blocker.
 
+Follow-up Desktop hidden verification fix: after the export fix, the runner reached Desktop soft-delete apply and tombstone creation, but `desktop-verify-hidden` failed with `empty-json-stdout` / timeout. A direct Desktop queue command proved `verifyFolderHidden` itself was correct and returned `ok:true`, `status:"folder-hidden-or-missing"`, `visible:false`, and `row:null`. The runner was the problem: retried steps capped each helper attempt at 10 seconds, even when the runner was invoked with a longer timeout, and the Desktop queue client therefore killed the verification before it could return. The runner now gives Desktop hidden verification a minimum 60 second timeout, passes that timeout through to the Desktop queue client, and treats both `folder-hidden` and `folder-hidden-or-missing` as valid hidden states. It does not require a row after Desktop soft delete; `row:null` is valid for hidden/missing.
+
 ## Safety
 
 The runner and bridge enforce:
@@ -207,10 +209,30 @@ The full lifecycle runner did not proceed beyond the first Desktop import/verify
 - The running Desktop app had the smoke URL flag, but the queue was not processing `/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json`.
 - This is a live Desktop smoke-gate/queue enablement blocker, not a Chrome delete-request export blocker.
 
+Runtime attempt 6 after the Desktop hidden-verification hardening was invoked with:
+
+```bash
+node tools/smoke/local-folder-delete-restore-smoke-runner.mjs \
+  --allow-mutation \
+  --chrome-port 9247 \
+  --timeout-ms 60000
+```
+
+The run confirmed the earlier Chrome side remained healthy but again did not reach `desktop-verify-hidden` because the Desktop queue was not consuming commands:
+
+- Chrome created `folderId:"fold_smoke_zz-4d4-delete-restore-mqs0gfkf_mqs0gfra_851cb38a2b02"`.
+- Chrome export returned `status:"chrome-to-desktop-exported"`.
+- Chrome export diagnostics included `folderDeleteRequestExport.requestCount:3`, `reviewRequestCount:3`, `mirrorRequestCount:0`, and `desktopApplyRequired:true`.
+- Desktop `syncNow({ direction:"chrome-to-desktop" })` returned through the queue client as `status:"desktop-queue-timeout"` with a 60000ms timeout.
+- The first failed step was `desktop-verify-created-visible`, also due to Desktop queue timeout / empty stdout.
+
+This attempt did not disprove the hidden-verification fix. It shows the live Desktop queue was unavailable before the runner could reach the hidden-verification step. A separate direct Desktop proof supplied for the failing folder showed `verifyFolderHidden` returns `ok:true`, `status:"folder-hidden-or-missing"`, `visible:false`, `row:null`, and the no-delete/no-purge/no-chat/no-snapshot flags.
+
 Current runtime status:
 
 - Implementation and static validation are complete.
 - Chrome pending delete-request export is runtime-verified through `folderDeleteRequestExport.requestCount:3` and export diagnostics in the smoke result.
+- Desktop hidden-verification handling is statically fixed to use the mutation-gated Desktop op, pass a minimum 60000ms queue timeout, and accept `folder-hidden-or-missing` / `visible:false` with `row:null`.
 - Full end-to-end lifecycle proof is currently blocked by Desktop smoke queue liveness before Desktop import/verify.
 - Re-run after Desktop queue is enabled:
 
