@@ -44,24 +44,44 @@ function createFsShim() {
     if (opts.baseDir !== 15) throw new Error(`${cmd}: expected options.baseDir===15, got ${JSON.stringify(opts.baseDir)}`);
   }
 
-  const invoke = async (cmd, args) => {
-    const p = args && args.path;
-    calls.push({ cmd, path: p, baseDir: args && args.options && args.options.baseDir });
-    if (cmd === 'plugin:fs|exists') { requireBaseDir15(args, cmd); return files.has(p) || dirs.has(p); }
+  // Mirrors real tauri-plugin-fs v2 marshaling: exists/mkdir/read_file take
+  // normal JSON args `{ path, options }`; write_file takes the bytes as the
+  // request BODY (2nd invoke arg) with path/options in request HEADERS (3rd).
+  const invoke = async (cmd, a, b) => {
+    if (cmd === 'plugin:fs|exists') {
+      const p = a && a.path; requireBaseDir15(a, cmd);
+      calls.push({ cmd, path: p, baseDir: a.options.baseDir });
+      return files.has(p) || dirs.has(p);
+    }
     if (cmd === 'plugin:fs|mkdir') {
-      requireBaseDir15(args, cmd);
-      if (!args.options || args.options.recursive !== true) throw new Error('mkdir: expected recursive:true');
+      const p = a && a.path; requireBaseDir15(a, cmd);
+      if (!a.options || a.options.recursive !== true) throw new Error('mkdir: expected recursive:true');
+      calls.push({ cmd, path: p, baseDir: a.options.baseDir });
       dirs.add(p); return true;
     }
-    if (cmd === 'plugin:fs|write_file') {
-      requireBaseDir15(args, cmd);
-      if (!Array.isArray(args.contents)) throw new Error('write_file: contents must be a number[]');
-      files.set(p, args.contents.slice()); writes.push(p); return null;
-    }
     if (cmd === 'plugin:fs|read_file') {
-      requireBaseDir15(args, cmd);
+      const p = a && a.path; requireBaseDir15(a, cmd);
+      calls.push({ cmd, path: p, baseDir: a.options.baseDir });
       if (!files.has(p)) throw new Error('not found: ' + p);
-      return files.get(p).slice(); // return number[], like Tauri Vec<u8> over JSON
+      return files.get(p).slice(); // number[], like Tauri Vec<u8> over JSON
+    }
+    if (cmd === 'plugin:fs|write_file') {
+      // Real plugin reads `path` from a request header; the JSON object form
+      // ({ path, contents }) yields "missing file path". Enforce that here.
+      const headers = (b && b.headers) || {};
+      if (!headers.path) throw new Error('write_file: missing file path (request body+headers form required; JSON {path,contents} is rejected by the plugin)');
+      const p = decodeURIComponent(headers.path);
+      let opts = {};
+      try { opts = JSON.parse(headers.options || '{}'); } catch (_) { throw new Error('write_file: options header must be JSON'); }
+      if (opts.baseDir !== 15) throw new Error(`write_file: expected options.baseDir===15 in headers, got ${JSON.stringify(opts.baseDir)}`);
+      let bytes = null;
+      if (a instanceof Uint8Array) bytes = Array.from(a);
+      else if (Array.isArray(a)) bytes = a.slice();
+      else if (a && a.buffer) bytes = Array.from(new Uint8Array(a.buffer, a.byteOffset || 0, a.byteLength));
+      if (!bytes) throw new Error('write_file: body must be bytes (Uint8Array)');
+      files.set(p, bytes); writes.push(p);
+      calls.push({ cmd, path: p, baseDir: opts.baseDir });
+      return null;
     }
     throw new Error('shim: unhandled invoke command: ' + cmd);
   };
@@ -141,6 +161,18 @@ async function main() {
     const got = await api.getAssetBytes(helloSha);
     assert.ok(got instanceof Uint8Array, 'getAssetBytes must return a Uint8Array');
     assert.deepEqual([...got], [...helloBytes], 'roundtrip bytes differ');
+  });
+
+  await checkAsync('write_file used the request body+headers form; legacy JSON object form is rejected', async () => {
+    // putAssetBytes above must have written via the body+headers form (the shim
+    // only accepts that form), so a write was recorded.
+    assert.ok(shim.writes.length >= 1, 'putAssetBytes must write via the body+headers form');
+    // Regression guard for the real "missing file path" failure: the legacy
+    // JSON object form must be rejected exactly like the real plugin.
+    await assert.rejects(
+      () => shim.invoke('plugin:fs|write_file', { path: 'archive/assets/aa/sha256-x', contents: [1, 2, 3], options: { baseDir: 15 } }),
+      /missing file path/i,
+    );
   });
 
   await checkAsync('same bytes → same sha256 + same path; second put dedupes (no 2nd write)', async () => {

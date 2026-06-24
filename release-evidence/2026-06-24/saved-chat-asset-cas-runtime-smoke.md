@@ -8,11 +8,28 @@ cannot: that the **installed Tauri FS plugin accepts binary `write_file` /
 `$APPLOCALDATA/archive/assets`, using the existing private API
 `H2O.Studio.ingestion.assetCas` (commit `cd8a468`).
 
-Status: **PREPARED — not executed in this environment.** No running Desktop/Tauri
-webview is reachable from the build host (a built `h2o-studio-desktop` binary
-exists, but its GUI webview console cannot be driven headlessly here). Run the
-snippet below on a real Desktop build and paste the console output back into this
-note as evidence.
+Status: **READY TO RERUN after the C3.2 mkdir/write runtime hardening fix.**
+
+Runtime-fix history:
+
+- **First real run FAILED** in Desktop Studio DevTools: `putAssetBytes()` threw
+  `missing file path` (`diagnose.lastError.op === "putAssetBytes"`,
+  `writeCount === 0`); `exists()` worked.
+- **Root cause:** `plugin:fs|write_file` in tauri-plugin-fs **v2** takes the bytes
+  as the request **body** with `path`/`options` in request **headers**; the CAS
+  had sent the JSON object form `{ path, contents, options }`, so the plugin found
+  no `path` header → "missing file path". (`exists`/`mkdir` use normal JSON args
+  and were already correct — `exists` succeeding proved `mkdir`'s identical shape
+  was fine too; the failure was specifically `write_file`.)
+- **Fix (commit on this lane):** `fsWriteFile` now uses the body+headers form,
+  mirroring the proven `write_text_file` form in `ingestion/export-bundle.tauri.js`.
+- **Rerun the SAME snippet below UNCHANGED** — it only uses the public
+  `assetCas` API; the fix is internal. Paste the console output into the Evidence
+  section as proof.
+
+No running Desktop/Tauri webview is reachable from the build host, so this fix is
+verified by the headless validator (PASS) and must be re-confirmed by rerunning
+the snippet on a real Desktop build.
 
 ## Scope / boundaries
 

@@ -165,8 +165,17 @@
   }
   async function fsWriteFile(path, u8) {
     var invoke = invokeOrThrow();
-    /* write_file expects a Vec<u8>; send number[] for max plugin-version compat. */
-    return invoke('plugin:fs|write_file', { path: path, contents: Array.from(u8), options: fsOptions() });
+    /* tauri-plugin-fs v2 `write_file` takes the bytes as the request BODY and
+     * the path/options as request HEADERS. The JSON object form
+     * ({ path, contents, options }) is rejected by the plugin with
+     * "missing file path" because it reads `path` from a header. This mirrors
+     * the proven write form in ingestion/export-bundle.tauri.js. */
+    return invoke('plugin:fs|write_file', u8, {
+      headers: {
+        path: encodeURIComponent(path),
+        options: JSON.stringify(fsOptions()),
+      },
+    });
   }
   async function fsReadFile(path) {
     var invoke = invokeOrThrow();
