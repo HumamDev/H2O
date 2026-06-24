@@ -9,12 +9,19 @@ const failures = [];
 const files = {
   desktopExport: 'src-surfaces-base/studio/ingestion/export-bundle.tauri.js',
   desktopSync: 'src-surfaces-base/studio/sync/folder-sync.tauri.js',
+  preparedDesktopExport: 'apps/studio/desktop/dist/ingestion/export-bundle.tauri.js',
   chromeImport: 'src-surfaces-base/studio/sync/folder-import.mv3.js',
   chromeReviews: 'src-surfaces-base/studio/store/tombstone-reviews.mv3.js',
 };
 
 function read(file) {
   return fs.readFileSync(path.join(root, file), 'utf8');
+}
+
+function readIfExists(file) {
+  const fullPath = path.join(root, file);
+  if (!fs.existsSync(fullPath)) return '';
+  return fs.readFileSync(fullPath, 'utf8');
 }
 
 function assert(condition, message) {
@@ -50,6 +57,7 @@ function functionBody(source, name) {
 
 const desktopExport = read(files.desktopExport);
 const desktopSync = read(files.desktopSync);
+const preparedDesktopExport = readIfExists(files.preparedDesktopExport);
 const chromeImport = read(files.chromeImport);
 const chromeReviews = read(files.chromeReviews);
 
@@ -75,6 +83,11 @@ const chromeReviews = read(files.chromeReviews);
   'chromeReShowDeferred: true',
   "tombstonePropagation: 'deferred'",
 ].forEach((needle) => assertIncludes(desktopExport, needle, `Desktop restore receipt export ${needle}`));
+
+assert(
+  desktopExport.includes('folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts)'),
+  'Desktop latest.json export must always include top-level folderRestoreReceipts as an array, including the empty-array case',
+);
 
 const receiptProjectionBody = functionBody(desktopExport, 'folderRestoreReceiptFromTombstone');
 [
@@ -124,6 +137,19 @@ const restorePayloadBody = functionBody(desktopExport, 'buildFolderRestoreReceip
 ].forEach((needle) => assertNotIncludes(restorePayloadBody, needle, `mutation in restore receipt export: ${needle}`));
 
 assertIncludes(desktopSync, 'folderRestoreReceiptCount', 'Desktop syncNow source summary restore receipt count');
+
+if (preparedDesktopExport) {
+  assertIncludes(
+    preparedDesktopExport,
+    'folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts)',
+    'prepared Desktop dist restore receipt export; run prepare-dist if this is missing',
+  );
+  assertIncludes(
+    preparedDesktopExport,
+    'h2o.studio.folder-restore-receipt.v1',
+    'prepared Desktop dist restore receipt schema; run prepare-dist if this is missing',
+  );
+}
 
 assertNotIncludes(chromeImport, 'folderRestoreReceipts', 'Chrome restore receipt import is intentionally deferred in 4D.1');
 assertNotIncludes(chromeReviews, 'folder-restore-receipt', 'Chrome restore receipt review handling is intentionally deferred in 4D.1');
