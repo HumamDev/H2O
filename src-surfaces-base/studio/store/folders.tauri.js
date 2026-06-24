@@ -76,9 +76,12 @@
   var PHASE4D3_RETENTION_DAYS = 30;
   var PHASE6A_PURGE_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-preview.v1';
   var PHASE6A_PURGE_RESULT_SCHEMA = 'h2o.studio.folder-purge-result.v1';
+  var PHASE6A_REPAIR_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-resurrection-repair-preview.v1';
+  var PHASE6A_REPAIR_RESULT_SCHEMA = 'h2o.studio.folder-purge-resurrection-repair-result.v1';
   var PHASE6A_PURGE_TOKEN_TTL_MS = 5 * 60 * 1000;
   var PHASE6A_PERMANENT_PURGE_META_KEY = 'phase6aPermanentlyPurged';
   var PHASE6A_PERMANENT_PURGE_SOURCE = 'desktop-recently-deleted-operator-purge';
+  var PHASE6A_REPAIR_SOURCE = 'desktop-recently-deleted-resurrection-repair';
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
@@ -126,6 +129,8 @@
     phase6a: {
       lastPreview: null,
       lastCommit: null,
+      lastRepairPreview: null,
+      lastRepairCommit: null,
     },
   };
 
@@ -1713,6 +1718,222 @@
       /^New 9$/i.test(name);
   }
 
+  function makeResurrectionRepairBase(schema, status) {
+    return {
+      schema: schema,
+      phase: 'phase6a.1c.desktop-folder-purge-resurrection-repair',
+      ok: false,
+      status: status || 'not-run',
+      observedAt: new Date().toISOString(),
+      desktopOnly: true,
+      chromeAuthority: false,
+      automaticRepair: false,
+      operatorConfirmedRepair: false,
+      permanentFolderRowSuppression: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noReceiptDelete: true,
+      beforeVisibleFolderCount: 0,
+      candidateCount: 0,
+      repairedCount: 0,
+      permanentlyHiddenFolderRowCount: 0,
+      skippedCount: 0,
+      protectedSkippedCount: 0,
+      activeRealUserSkippedCount: 0,
+      alreadySuppressedSkippedCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      receiptDeletedCount: 0,
+      candidates: [],
+      skipped: [],
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function summarizeResurrectionRepairFolder(folder, reason) {
+    var folderId = getFolderId(folder);
+    return {
+      folderId: folderId,
+      id: folderId,
+      folderName: cleanString(folder && folder.name),
+      name: cleanString(folder && folder.name),
+      color: cleanString(folder && (folder.iconColor || folder.color)),
+      source: cleanString(folder && folder.source),
+      sourceKind: cleanString(folder && folder.sourceKind),
+      phase6aPermanentlyPurged: isPhase6aPermanentlyPurged(folder),
+      skipReason: cleanString(reason),
+    };
+  }
+
+  async function buildPurgedFolderResurrectionRepairPlan(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var limit = Math.max(1, Math.min(1000, Number(options.limit) || 500));
+    var result = makeResurrectionRepairBase(PHASE6A_REPAIR_PREVIEW_SCHEMA, 'purged-folder-resurrection-repair-previewed');
+    result.preview = true;
+    result.reason = cleanString(options.reason);
+    try {
+      var rows = await listFolders({ limit: limit });
+      rows = Array.isArray(rows) ? rows : [];
+      result.beforeVisibleFolderCount = rows.length;
+      for (var i = 0; i < rows.length; i += 1) {
+        var folder = rows[i];
+        if (!looksLikeResurrectedPurgeCandidate(folder)) {
+          result.activeRealUserSkippedCount += 1;
+          continue;
+        }
+        var folderId = getFolderId(folder);
+        if (!folderId) {
+          result.skippedCount += 1;
+          result.skipped.push(summarizeResurrectionRepairFolder(folder, 'folder-identity-missing'));
+          continue;
+        }
+        var protectionCodes = folderPurgeProtectionCodes(folderId, folder, { folderName: folder && folder.name });
+        if (protectionCodes.length) {
+          result.protectedSkippedCount += 1;
+          result.skippedCount += 1;
+          result.skipped.push(summarizeResurrectionRepairFolder(folder, protectionCodes[0]));
+          continue;
+        }
+        if (isPhase6aPermanentlyPurged(folder)) {
+          result.alreadySuppressedSkippedCount += 1;
+          result.skippedCount += 1;
+          result.skipped.push(summarizeResurrectionRepairFolder(folder, 'already-suppressed'));
+          continue;
+        }
+        result.candidates.push(summarizeResurrectionRepairFolder(folder, ''));
+      }
+      result.candidateCount = result.candidates.length;
+      result.ok = true;
+      result.status = 'purged-folder-resurrection-repair-previewed';
+      return result;
+    } catch (e) {
+      recordError('buildPurgedFolderResurrectionRepairPlan', e);
+      result.status = 'purged-folder-resurrection-repair-preview-failed';
+      result.reason = String((e && e.message) || e);
+      addBlocker(result.blockers, 'purged-folder-resurrection-repair-preview-failed');
+      return result;
+    }
+  }
+
+  async function previewPurgedFolderResurrectionRepair(opts) {
+    var result = await buildPurgedFolderResurrectionRepairPlan(opts);
+    if (result.ok === true) {
+      var token = makePurgeToken().replace('folder-purge-preview:', 'folder-resurrection-repair-preview:');
+      result.previewToken = token;
+      result.previewExpiresAt = new Date(Date.now() + PHASE6A_PURGE_TOKEN_TTL_MS).toISOString();
+      state.phase6a.lastRepairPreview = {
+        token: token,
+        createdAt: Date.now(),
+        candidateCount: result.candidateCount,
+        candidateFolderIds: result.candidates.map(function (row) { return row.folderId; }),
+      };
+    }
+    return result;
+  }
+
+  async function repairPurgedFolderResurrections(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var result = makeResurrectionRepairBase(PHASE6A_REPAIR_RESULT_SCHEMA, 'not-run');
+    result.reason = cleanString(opts.reason);
+    var previewToken = cleanString(opts.previewToken || opts.confirmationToken);
+    var expectedCount = Number(opts.expectedCount ?? opts.expectedRepairCandidateCount ?? opts.expectedCandidateCount);
+    if (opts.dryRun !== false) addBlocker(result.blockers, 'dry-run-false-required');
+    if (!result.reason || result.reason.length < 8) addBlocker(result.blockers, 'explicit-reason-required');
+    if (!previewToken) addBlocker(result.blockers, 'preview-token-required');
+    if (!Number.isFinite(expectedCount) || Math.floor(expectedCount) !== expectedCount || expectedCount < 0) {
+      addBlocker(result.blockers, 'expected-count-required');
+    }
+    var last = state.phase6a.lastRepairPreview;
+    if (!last || last.token !== previewToken) addBlocker(result.blockers, 'invalid-preview-token');
+    if (last && Date.now() - Number(last.createdAt || 0) > PHASE6A_PURGE_TOKEN_TTL_MS) {
+      addBlocker(result.blockers, 'preview-token-expired');
+    }
+    if (result.blockers.length) {
+      result.status = result.blockers[0];
+      return result;
+    }
+    var plan = await buildPurgedFolderResurrectionRepairPlan({ limit: 1000, reason: result.reason });
+    result.beforeVisibleFolderCount = plan.beforeVisibleFolderCount;
+    result.candidateCount = plan.candidateCount;
+    result.skippedCount = plan.skippedCount;
+    result.protectedSkippedCount = plan.protectedSkippedCount;
+    result.activeRealUserSkippedCount = plan.activeRealUserSkippedCount;
+    result.alreadySuppressedSkippedCount = plan.alreadySuppressedSkippedCount;
+    result.candidates = plan.candidates;
+    result.skipped = plan.skipped;
+    if (plan.ok !== true) {
+      result.status = plan.status || 'purged-folder-resurrection-repair-preview-failed';
+      plan.blockers.forEach(function (code) { addBlocker(result.blockers, code); });
+      return result;
+    }
+    if (plan.candidateCount !== expectedCount || plan.candidateCount !== last.candidateCount) {
+      result.status = 'expected-count-mismatch';
+      addBlocker(result.blockers, 'expected-count-mismatch');
+      return result;
+    }
+    var currentIds = plan.candidates.map(function (row) { return row.folderId; }).sort();
+    var previewIds = last.candidateFolderIds.slice().sort();
+    if (currentIds.join('\n') !== previewIds.join('\n')) {
+      result.status = 'preview-candidate-set-changed';
+      addBlocker(result.blockers, 'preview-candidate-set-changed');
+      return result;
+    }
+    for (var i = 0; i < plan.candidates.length; i += 1) {
+      var candidate = plan.candidates[i];
+      var folderId = cleanString(candidate && candidate.folderId);
+      if (!folderId) continue;
+      var folder = await getById(folderId);
+      if (!folder || !looksLikeResurrectedPurgeCandidate(folder)) {
+        result.skippedCount += 1;
+        result.skipped.push(Object.assign({}, candidate, { skipReason: 'candidate-no-longer-visible-or-safe' }));
+        continue;
+      }
+      var protectionCodes = folderPurgeProtectionCodes(folderId, folder, { folderName: folder && folder.name });
+      if (protectionCodes.length) {
+        result.protectedSkippedCount += 1;
+        result.skippedCount += 1;
+        result.skipped.push(Object.assign({}, candidate, { skipReason: protectionCodes[0] }));
+        addBlocker(result.blockers, protectionCodes[0]);
+        continue;
+      }
+      await patchOne(folderId, {
+        meta: {
+          phase6aPermanentlyPurged: true,
+          phase6aPurgedAt: new Date().toISOString(),
+          phase6aPurgeReason: result.reason,
+          phase6aPurgeSource: PHASE6A_REPAIR_SOURCE,
+          phase6aPurgeRepair: true,
+        },
+      });
+      result.repairedCount += 1;
+      result.permanentlyHiddenFolderRowCount += 1;
+    }
+    if (result.blockers.length) {
+      result.status = result.blockers[0];
+      return result;
+    }
+    result.ok = true;
+    result.status = 'purged-folder-resurrections-repaired';
+    result.operatorConfirmedRepair = true;
+    state.phase6a.lastRepairPreview = null;
+    state.phase6a.lastRepairCommit = result;
+    recordWrite('repairPurgedFolderResurrections');
+    notifySubscribers({
+      source: PHASE6A_REPAIR_SOURCE,
+      op: 'repairPurgedFolderResurrections',
+      repairedCount: result.repairedCount,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    });
+    return result;
+  }
+
   async function diagnosePurgedFolderResurrectionCandidates(opts) {
     var options = opts && typeof opts === 'object' ? opts : {};
     var limit = Math.max(1, Math.min(1000, Number(options.limit) || 500));
@@ -2731,6 +2952,8 @@
     listRecentlyDeletedFolders: listRecentlyDeletedFolders,
     diagnoseRecentlyDeletedFolders: listRecentlyDeletedFolders,
     diagnosePurgedFolderResurrectionCandidates: diagnosePurgedFolderResurrectionCandidates,
+    previewPurgedFolderResurrectionRepair: previewPurgedFolderResurrectionRepair,
+    repairPurgedFolderResurrections: repairPurgedFolderResurrections,
     previewRecentlyDeletedFolderPurge: previewRecentlyDeletedFolderPurge,
     purgeRecentlyDeletedFolders: purgeRecentlyDeletedFolders,
     remove: softDeleteEmptyFolder,
