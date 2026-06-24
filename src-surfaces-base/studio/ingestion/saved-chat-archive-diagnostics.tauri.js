@@ -292,8 +292,18 @@
       brokenPackageAssets: 0,
       assetRefMismatches: 0,
       dataImageResidue: 0,
+      orphanedPackages: 0,
+      missingDbChats: 0,
+      missingDbSnapshots: 0,
+      stalePackages: 0,
+      storeAssetMismatches: 0,
     };
     var assetSummary = {
+      passed: 0,
+      warnings: 0,
+      failed: 0,
+    };
+    var dbSummary = {
       passed: 0,
       warnings: 0,
       failed: 0,
@@ -304,6 +314,19 @@
       else if (pkg.status === STATUS_OK) counts.packagesOk += 1;
       if (pkg.schemaVersion === 1) counts.v1 += 1;
       if (pkg.schemaVersion === 2) counts.v2 += 1;
+      var db = pkg.dbChecks || {};
+      if (db.checked && db.available) {
+        if (db.chatExists === false) counts.missingDbChats += 1;
+        if (db.snapshotExists === false) counts.missingDbSnapshots += 1;
+        if (db.packageIsLatest === false) counts.stalePackages += 1;
+        if (db.packageAssetSetMatchesStore === false) counts.storeAssetMismatches += 1;
+        if (db.chatExists === false && db.snapshotExists === false) counts.orphanedPackages += 1;
+      }
+      if (db.checked) {
+        if (asArray(db.blockers).length) dbSummary.failed += 1;
+        else if (asArray(db.warnings).length) dbSummary.warnings += 1;
+        else if (db.available) dbSummary.passed += 1;
+      }
       var checks = pkg.assetChecks || {};
       var broken =
         asArray(checks.missingPackageAssets).length +
@@ -328,6 +351,7 @@
     });
     result.counts = Object.assign({}, result.counts || {}, counts);
     result.assetChecks = assetSummary;
+    result.dbChecks = dbSummary;
     return result;
   }
 
@@ -422,6 +446,7 @@
         actualContentHash: '',
       },
       assetChecks: defaultAssetChecks(),
+      dbChecks: defaultDbChecks(),
     };
   }
 
@@ -635,6 +660,150 @@
     }
   }
 
+  /* C5.4A: read-only store adapter namespace for package/DB reconciliation. */
+  function getStores() {
+    try {
+      var store = H2O && H2O.Studio && H2O.Studio.store;
+      return store || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function uniqStrings(values) {
+    var seen = Object.create(null);
+    var out = [];
+    asArray(values).forEach(function (value) {
+      var text = cleanString(value);
+      if (text && !seen[text]) { seen[text] = true; out.push(text); }
+    });
+    return out;
+  }
+
+  function defaultDbChecks() {
+    return {
+      checked: false,
+      available: false,
+      chatExists: false,
+      snapshotExists: false,
+      latestSnapshotId: null,
+      packageIsLatest: null,
+      storeSnapshotCount: null,
+      storeAssetCount: null,
+      packageAssetSetMatchesStore: null,
+      missingStoreAssets: [],
+      extraStoreAssets: [],
+      warnings: [],
+      blockers: [],
+    };
+  }
+
+  /* DB reconciliation warnings never block: package validity is structural
+   * (C5.2/C5.3). Recorded on dbChecks.warnings AND mirrored to the package
+   * warnings so the package status can degrade to "warning". */
+  function addDbWarning(diag, code, message, detail) {
+    var issue = makeIssue(code, message, detail);
+    diag.dbChecks.warnings.push(issue);
+    diag.warnings.push(issue);
+    return issue;
+  }
+
+  /* C5.4A read-only, package-centric DB reconciliation. Uses ONLY
+   * store.chats.get / store.snapshots.get / store.snapshots.listByChat /
+   * store.assets.listBySnapshot. Never mutates the DB, never writes packages or
+   * CAS, never repairs/imports. Missing rows / drift are warnings, not blockers;
+   * a missing namespace, missing method, or thrown read degrades to a warning. */
+  async function validateDbChecks(diag, manifest, includeDbChecks) {
+    if (includeDbChecks === false) return;
+    var db = diag.dbChecks;
+    db.checked = true;
+    var stores = getStores();
+    if (!stores) {
+      db.available = false;
+      addDbWarning(diag, 'db-api-missing', 'H2O.Studio.store is unavailable for DB reconciliation');
+      return;
+    }
+    db.available = true;
+    var chatId = cleanString(diag.chatId);
+    var snapshotId = cleanString(diag.snapshotId);
+    if (!chatId && !snapshotId) return; /* no identity to reconcile (already-blocked package) */
+
+    /* chat existence */
+    if (chatId) {
+      if (stores.chats && typeof stores.chats.get === 'function') {
+        try {
+          var chatRow = await stores.chats.get(chatId);
+          db.chatExists = !!chatRow;
+          if (!chatRow) addDbWarning(diag, 'missing-db-chat', 'package chatId has no DB chat row', { chatId: chatId });
+        } catch (err) {
+          addDbWarning(diag, 'db-check-failed', 'store.chats.get failed', { chatId: chatId, error: String((err && err.message) || err) });
+        }
+      } else {
+        addDbWarning(diag, 'db-api-missing', 'store.chats.get is unavailable');
+      }
+    }
+
+    /* snapshot existence (store.snapshots.get returns { snapshot, turns } | row | null) */
+    if (snapshotId) {
+      if (stores.snapshots && typeof stores.snapshots.get === 'function') {
+        try {
+          var snapRow = await stores.snapshots.get(snapshotId);
+          db.snapshotExists = !!(snapRow && (snapRow.snapshot || snapRow.snapshotId || snapRow.id));
+          if (!db.snapshotExists) addDbWarning(diag, 'missing-db-snapshot', 'package snapshotId has no DB snapshot row', { snapshotId: snapshotId });
+        } catch (err) {
+          addDbWarning(diag, 'db-check-failed', 'store.snapshots.get failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
+        }
+      } else {
+        addDbWarning(diag, 'db-api-missing', 'store.snapshots.get is unavailable');
+      }
+    }
+
+    /* latest-snapshot / stale-package: first row is treated as latest; an
+     * indeterminate row shape is handled safely (packageIsLatest stays null). */
+    if (chatId && stores.snapshots && typeof stores.snapshots.listByChat === 'function') {
+      try {
+        var rows = asArray(await stores.snapshots.listByChat(chatId));
+        db.storeSnapshotCount = rows.length;
+        if (rows.length) {
+          var latestId = firstString(rows[0] && (rows[0].snapshotId || rows[0].id));
+          db.latestSnapshotId = latestId || null;
+          if (latestId && snapshotId) {
+            db.packageIsLatest = latestId === snapshotId;
+            if (!db.packageIsLatest) addDbWarning(diag, 'stale-package', 'package snapshot is not the latest DB snapshot for this chat', { packageSnapshotId: snapshotId, latestSnapshotId: latestId });
+          }
+        }
+      } catch (err) {
+        addDbWarning(diag, 'db-check-failed', 'store.snapshots.listByChat failed', { chatId: chatId, error: String((err && err.message) || err) });
+      }
+    } else if (chatId && (!stores.snapshots || typeof stores.snapshots.listByChat !== 'function')) {
+      addDbWarning(diag, 'db-api-missing', 'store.snapshots.listByChat is unavailable');
+    }
+
+    /* store asset registry vs package manifest.assets[] */
+    if (snapshotId) {
+      if (stores.assets && typeof stores.assets.listBySnapshot === 'function') {
+        try {
+          var storeAssetRows = asArray(await stores.assets.listBySnapshot(snapshotId));
+          var storeShas = uniqStrings(storeAssetRows.map(function (row) { return row && row.sha256; }));
+          db.storeAssetCount = storeShas.length;
+          var manifestShas = uniqStrings(asArray(manifest && manifest.assets).map(function (asset) { return asset && asset.sha256; }));
+          var missing = manifestShas.filter(function (sha) { return storeShas.indexOf(sha) < 0; });
+          var extra = storeShas.filter(function (sha) { return manifestShas.indexOf(sha) < 0; });
+          db.missingStoreAssets = missing;
+          db.extraStoreAssets = extra;
+          db.packageAssetSetMatchesStore = missing.length === 0 && extra.length === 0;
+          if (!db.packageAssetSetMatchesStore) {
+            addDbWarning(diag, 'store-asset-registry-mismatch', 'store asset registry differs from package manifest assets', { missingStoreAssets: missing, extraStoreAssets: extra });
+          }
+        } catch (err) {
+          addDbWarning(diag, 'db-check-failed', 'store.assets.listBySnapshot failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
+        }
+      } else {
+        addDbWarning(diag, 'db-api-missing', 'store.assets.listBySnapshot is unavailable');
+      }
+    }
+  }
+
   function validateManifestAssets(manifest, diag) {
     var manifestAssets = asArray(manifest && manifest.assets);
     var out = [];
@@ -789,6 +958,7 @@
     var packagePath = firstString(opts.packagePath, opts.path);
     var includeCasChecks = opts.includeCasChecks !== false;
     var includeRendererChecks = opts.includeRendererChecks !== false;
+    var includeDbChecks = opts.includeDbChecks !== false;
     var diag = packageDiagnostic(packagePath);
     try {
       if (!packagePath) {
@@ -900,6 +1070,10 @@
         }
       }
 
+      /* C5.4A: read-only DB reconciliation (warnings only; never blocks). Runs
+       * after package identity is resolved so chatId/snapshotId are available. */
+      await validateDbChecks(diag, manifest, includeDbChecks);
+
       diag.status = statusFromIssues(diag.blockers, diag.warnings);
       diag.ok = diag.status === STATUS_OK;
       state.lastRunAt = nowIso();
@@ -924,6 +1098,7 @@
         packagePath: list.packages[i].packagePath,
         includeCasChecks: opts.includeCasChecks,
         includeRendererChecks: opts.includeRendererChecks,
+        includeDbChecks: opts.includeDbChecks,
       }));
     }
     state.lastRunAt = result.generatedAt;
@@ -949,12 +1124,18 @@
         'diagnoseSavedChatArchiveV1',
       ],
       boundaries: {
-        dbChecks: false,
+        dbChecks: 'read-only-store-adapters',
         casChecks: 'read-only-exists-describe',
         sync: false,
         chrome: false,
         ui: false,
       },
+      storeReads: [
+        'chats.get',
+        'snapshots.get',
+        'snapshots.listByChat',
+        'assets.listBySnapshot',
+      ],
       lastRunAt: state.lastRunAt,
       errors: state.errors.slice(),
     };

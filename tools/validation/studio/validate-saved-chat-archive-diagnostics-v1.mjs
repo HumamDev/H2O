@@ -129,7 +129,60 @@ function makePackage({ chatId, snapshotId, schemaVersion, assetSha = ASSET_SHA, 
   };
 }
 
-function createFixtureFs({ missingRoot = false, liveCasMissing = false } = {}) {
+// C5.4A: read-only store adapter mock for DB reconciliation. Default is
+// "consistent" for the standard fixtures (chat+snapshot exist, package is the
+// latest snapshot, store asset registry matches the manifest) so existing tests
+// stay green; config knobs inject the drift cases.
+const SNAP_BY_CHAT = {
+  chat_diag_v1: 'snap_diag_v1',
+  chat_diag_v2: 'snap_diag_v2',
+  chat_diag_bad: 'snap_diag_bad',
+  chat_diag_bad_asset: 'snap_diag_bad_asset',
+};
+const ASSETS_BY_SNAP = {
+  snap_diag_v2: [ASSET_SHA],
+  snap_diag_bad_asset: [ASSET_SHA],
+};
+
+function buildDiagStore(config = {}) {
+  const missingChats = new Set(config.missingChats || []);
+  const missingSnapshots = new Set(config.missingSnapshots || []);
+  const staleLatest = config.staleLatest || {}; // chatId -> fake latest snapshotId
+  const assetOverride = config.assetOverride || {}; // snapshotId -> [sha...]
+  const omit = new Set(config.omitMethods || []); // e.g. 'assets.listBySnapshot'
+  const throwOn = new Set(config.throwOn || []); // method names that should throw
+
+  const store = { chats: {}, snapshots: {}, assets: {} };
+  if (!omit.has('chats.get')) {
+    store.chats.get = async (id) => {
+      if (throwOn.has('chats.get')) throw new Error('boom chats.get');
+      return missingChats.has(id) ? null : { chatId: id, title: 't' };
+    };
+  }
+  if (!omit.has('snapshots.get')) {
+    store.snapshots.get = async (id) => {
+      if (throwOn.has('snapshots.get')) throw new Error('boom snapshots.get');
+      return missingSnapshots.has(id) ? null : { snapshot: { snapshotId: id } };
+    };
+  }
+  if (!omit.has('snapshots.listByChat')) {
+    store.snapshots.listByChat = async (chatId) => {
+      if (throwOn.has('snapshots.listByChat')) throw new Error('boom listByChat');
+      const latest = Object.prototype.hasOwnProperty.call(staleLatest, chatId) ? staleLatest[chatId] : SNAP_BY_CHAT[chatId];
+      return latest ? [{ snapshotId: latest }] : [];
+    };
+  }
+  if (!omit.has('assets.listBySnapshot')) {
+    store.assets.listBySnapshot = async (snapshotId) => {
+      if (throwOn.has('assets.listBySnapshot')) throw new Error('boom listBySnapshot');
+      const shas = Object.prototype.hasOwnProperty.call(assetOverride, snapshotId) ? assetOverride[snapshotId] : (ASSETS_BY_SNAP[snapshotId] || []);
+      return shas.map((sha) => ({ sha256: sha, turnIdx: 0, relation: 'inline' }));
+    };
+  }
+  return store;
+}
+
+function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOptions = {} } = {}) {
   const dirs = new Set();
   const files = new Map();
   const readCalls = [];
@@ -221,6 +274,7 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false } = {}) {
       exists: async (sha256) => !liveCasMissing && sha256 === ASSET_SHA,
       describe: async (sha256) => ({ sha256, exists: !liveCasMissing && sha256 === ASSET_SHA, path: `archive/assets/${sha256.slice(7, 9)}/${sha256}`, byteLength: ASSET_BYTES.length }),
     },
+    store: buildDiagStore(storeOptions),
   };
 }
 
@@ -234,7 +288,7 @@ function loadModule(fixture) {
     crypto: globalThis.crypto || crypto.webcrypto,
     setTimeout,
     __TAURI_INTERNALS__: { invoke: fixture.invoke },
-    H2O: { Studio: { ingestion: { assetCas: fixture.assetCas } } },
+    H2O: { Studio: { ingestion: { assetCas: fixture.assetCas }, store: fixture.store } },
   };
   context.globalThis = context;
   context.window = context;
@@ -347,9 +401,8 @@ check('module uses only read-only live CAS presence checks', () => {
   assert.ok(moduleSource.includes('live-cas-missing-package-portable'));
 });
 
-check('module does not implement DB, CAS write-back, Sync, Chrome, import, or export reconciliation', () => {
+check('module does not implement CAS write-back, Sync, Chrome, import, or export reconciliation', () => {
   for (const forbidden of [
-    'H2O.Studio.store',
     'putAssetBytes',
     'getAssetBytes',
     'H2O.Studio.sync',
@@ -359,6 +412,32 @@ check('module does not implement DB, CAS write-back, Sync, Chrome, import, or ex
     'writeSavedChatPackageV1',
   ]) {
     assert.ok(!moduleSource.includes(forbidden), `forbidden coupling present: ${forbidden}`);
+  }
+});
+
+check('module reads DB only via read-only store adapters (no store mutation)', () => {
+  // C5.4A reads
+  assert.match(moduleSource, /\.chats\.get\b/);
+  assert.match(moduleSource, /\.snapshots\.get\b/);
+  assert.match(moduleSource, /\.snapshots\.listByChat\b/);
+  assert.match(moduleSource, /\.assets\.listBySnapshot\b/);
+  // unambiguous store-mutation method names must be absent entirely
+  for (const banned of ['upsert', 'bulkUpsert', 'linkToTurn', 'unlinkFromTurn']) {
+    assert.ok(!moduleSource.includes(banned), `store mutation referenced: ${banned}`);
+  }
+  // generic mutators must not be called on store namespaces
+  const storeMutation = /\.(chats|snapshots|assets)\.(upsert|update|delete|remove|insert|write|patch|create|saveNow|bulkUpsert|linkToTurn|unlinkFromTurn)\s*\(/;
+  assert.ok(!storeMutation.test(moduleSource), 'store mutation method call present on a store namespace');
+});
+
+check('module declares includeDbChecks option and dbChecks schema', () => {
+  assert.match(moduleSource, /includeDbChecks/);
+  assert.match(moduleSource, /function defaultDbChecks/);
+  for (const field of ['chatExists', 'snapshotExists', 'latestSnapshotId', 'packageIsLatest', 'storeSnapshotCount', 'storeAssetCount', 'packageAssetSetMatchesStore', 'missingStoreAssets', 'extraStoreAssets']) {
+    assert.match(moduleSource, new RegExp(field), `dbChecks field missing: ${field}`);
+  }
+  for (const code of ['missing-db-chat', 'missing-db-snapshot', 'stale-package', 'store-asset-registry-mismatch', 'db-api-missing', 'db-check-failed']) {
+    assert.ok(moduleSource.includes(code), `db warning code missing: ${code}`);
   }
 });
 
@@ -407,7 +486,7 @@ await checkAsync('capability diagnostic reports read-only Desktop archive scope'
   assert.equal(result.readOnly, true);
   assert.equal(result.baseDir, APP_LOCAL_DATA);
   assert.equal(result.roots.packages, PACKAGE_ROOT);
-  assert.equal(result.boundaries.dbChecks, false);
+  assert.equal(result.boundaries.dbChecks, 'read-only-store-adapters');
   assert.equal(result.boundaries.casChecks, 'read-only-exists-describe');
   assert.equal(result.boundaries.sync, false);
   assert.equal(result.boundaries.chrome, false);
@@ -515,6 +594,137 @@ await checkAsync('aggregate diagnostic returns partial for mixed package health'
   assert.ok(result.assetChecks.passed >= 2);
   assert.ok(result.assetChecks.failed >= 1);
   assert.equal(fixture.mutationCalls.length, 0);
+});
+
+console.log('[saved-chat-archive-diagnostics-v1] C5.4A db-reconciliation checks');
+
+const DB_CODES = new Set(['missing-db-chat', 'missing-db-snapshot', 'stale-package', 'store-asset-registry-mismatch', 'db-api-missing', 'db-check-failed']);
+
+await checkAsync('capability advertises read-only store-adapter DB checks', async () => {
+  const ingestion = loadModule(createFixtureFs());
+  const caps = ingestion.diagnoseSavedChatArchiveCapabilitiesV1();
+  assert.equal(caps.boundaries.dbChecks, 'read-only-store-adapters');
+  assert.deepEqual([...caps.storeReads].sort(), ['assets.listBySnapshot', 'chats.get', 'snapshots.get', 'snapshots.listByChat']);
+});
+
+await checkAsync('consistent store: v2 dbChecks pass with no DB warnings', async () => {
+  const fixture = createFixtureFs();
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
+  const db = r.dbChecks;
+  assert.equal(db.checked, true);
+  assert.equal(db.available, true);
+  assert.equal(db.chatExists, true);
+  assert.equal(db.snapshotExists, true);
+  assert.equal(db.packageIsLatest, true);
+  assert.equal(db.storeAssetCount, 1);
+  assert.equal(db.packageAssetSetMatchesStore, true);
+  assert.equal(db.warnings.length, 0);
+  assert.ok(!r.warnings.some((i) => DB_CODES.has(i.code)), 'no DB warning codes on a consistent package');
+});
+
+await checkAsync('missing DB chat is a warning, not a blocker', async () => {
+  const fixture = createFixtureFs({ storeOptions: { missingChats: ['chat_diag_v1'] } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v1 });
+  assert.equal(r.dbChecks.chatExists, false);
+  assert.ok(r.warnings.some((i) => i.code === 'missing-db-chat'));
+  assert.equal(r.dbChecks.blockers.length, 0, 'DB drift must not add blockers');
+  assert.equal(r.blockers.length, 0, 'package must remain structurally valid');
+  assert.equal(r.status, 'warning');
+  assert.equal(r.ok, false);
+});
+
+await checkAsync('stale package (not latest DB snapshot) is a warning', async () => {
+  const fixture = createFixtureFs({ storeOptions: { staleLatest: { chat_diag_v2: 'snap_newer' } } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
+  assert.equal(r.dbChecks.packageIsLatest, false);
+  assert.equal(r.dbChecks.latestSnapshotId, 'snap_newer');
+  assert.ok(r.warnings.some((i) => i.code === 'stale-package'));
+  assert.equal(r.blockers.length, 0);
+  assert.equal(r.status, 'warning');
+});
+
+await checkAsync('store asset registry mismatch is a warning', async () => {
+  const fakeSha = 'sha256-' + 'b'.repeat(64);
+  const fixture = createFixtureFs({ storeOptions: { assetOverride: { snap_diag_v2: [fakeSha] } } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
+  assert.equal(r.dbChecks.packageAssetSetMatchesStore, false);
+  assert.ok(r.dbChecks.missingStoreAssets.includes(ASSET_SHA), 'manifest asset missing from store registry');
+  assert.ok(r.dbChecks.extraStoreAssets.includes(fakeSha), 'store registry has an extra asset');
+  assert.ok(r.warnings.some((i) => i.code === 'store-asset-registry-mismatch'));
+  assert.equal(r.blockers.length, 0);
+});
+
+await checkAsync('v1 asset-less package with store assets present warns (mismatch, not blocker)', async () => {
+  const fixture = createFixtureFs({ storeOptions: { assetOverride: { snap_diag_v1: ['sha256-' + 'c'.repeat(64)] } } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v1 });
+  assert.equal(r.dbChecks.packageAssetSetMatchesStore, false);
+  assert.ok(r.dbChecks.extraStoreAssets.length >= 1);
+  assert.ok(r.warnings.some((i) => i.code === 'store-asset-registry-mismatch'));
+  assert.equal(r.blockers.length, 0);
+});
+
+await checkAsync('missing store namespace degrades to warning (db-api-missing), no crash/blocker', async () => {
+  const fixture = createFixtureFs();
+  fixture.store = null;
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v1 });
+  assert.equal(r.dbChecks.checked, true);
+  assert.equal(r.dbChecks.available, false);
+  assert.ok(r.warnings.some((i) => i.code === 'db-api-missing'));
+  assert.equal(r.blockers.length, 0);
+  assert.equal(r.status, 'warning');
+});
+
+await checkAsync('partial store API (no assets.listBySnapshot) degrades to warning, no crash', async () => {
+  const fixture = createFixtureFs({ storeOptions: { omitMethods: ['assets.listBySnapshot'] } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2 });
+  assert.equal(r.dbChecks.available, true);
+  assert.equal(r.dbChecks.chatExists, true, 'other store reads still ran');
+  assert.equal(r.dbChecks.storeAssetCount, null, 'asset comparison skipped');
+  assert.ok(r.warnings.some((i) => i.code === 'db-api-missing'));
+  assert.equal(r.blockers.length, 0);
+});
+
+await checkAsync('store read throw degrades to warning (db-check-failed), no crash', async () => {
+  const fixture = createFixtureFs({ storeOptions: { throwOn: ['chats.get'] } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v1 });
+  assert.ok(r.warnings.some((i) => i.code === 'db-check-failed'));
+  assert.equal(r.blockers.length, 0);
+  assert.equal(r.status, 'warning');
+});
+
+await checkAsync('includeDbChecks:false skips DB reconciliation entirely', async () => {
+  const fixture = createFixtureFs({ storeOptions: { missingChats: ['chat_diag_v2'] } });
+  const ingestion = loadModule(fixture);
+  const r = await ingestion.validateSavedChatPackageV1({ packagePath: fixture.paths.v2, includeDbChecks: false });
+  assert.equal(r.dbChecks.checked, false);
+  assert.ok(!r.warnings.some((i) => DB_CODES.has(i.code)), 'no DB warnings when DB checks are disabled');
+});
+
+await checkAsync('aggregate exposes dbChecks summary + DB drift counts (orphaned/missing/stale)', async () => {
+  const fixture = createFixtureFs({
+    storeOptions: {
+      missingChats: ['chat_diag_v1'],
+      missingSnapshots: ['snap_diag_v1'],
+      staleLatest: { chat_diag_v2: 'snap_newer' },
+    },
+  });
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.diagnoseSavedChatArchiveV1({ limit: 20 });
+  assert.ok(result.dbChecks && typeof result.dbChecks.passed === 'number' && typeof result.dbChecks.warnings === 'number' && typeof result.dbChecks.failed === 'number');
+  assert.ok(result.counts.missingDbChats >= 1, 'missingDbChats counted');
+  assert.ok(result.counts.missingDbSnapshots >= 1, 'missingDbSnapshots counted');
+  assert.ok(result.counts.orphanedPackages >= 1, 'orphaned (chat+snapshot missing) classified');
+  assert.ok(result.counts.stalePackages >= 1, 'stalePackages counted');
+  assert.equal(typeof result.counts.storeAssetMismatches, 'number');
+  assert.equal(fixture.mutationCalls.length, 0, 'no fs mutation during diagnostics');
 });
 
 if (FAIL.length) {
