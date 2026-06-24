@@ -32,6 +32,7 @@
     'syncNow',
     'diagnoseHealth',
     'diagnoseVisibleFolderParity',
+    'diagnoseCanonicalVisibleFolderSet',
     'requestFolderDelete',
     'listFolderDeleteRequests',
     'applyFolderDeleteRequest',
@@ -1127,6 +1128,28 @@
     }));
   }
 
+  async function diagnoseCanonicalVisibleFolderSet(payload) {
+    var provider = getPath(H2O, ['Library', 'FolderParity']);
+    var fn = provider && provider.diagnoseCanonicalVisibleFolderSet;
+    if (typeof fn !== 'function') {
+      return unsupportedResult('diagnoseCanonicalVisibleFolderSet', 'canonical-visible-folder-set-diagnostic-unavailable');
+    }
+    var result = safeObject(await fn.call(provider, safeObject(payload)));
+    return baseResult('diagnoseCanonicalVisibleFolderSet', Object.assign({}, result, {
+      ok: result.ok === true,
+      status: cleanString(result.status || 'canonical-visible-folder-set-diagnosed'),
+      blockers: codeList(result.blockers),
+      warnings: codeList(result.warnings),
+      readOnly: true,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    }));
+  }
+
   async function requestFolderDelete(payload) {
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     var fn = actions && (actions.requestDelete || actions.requestFolderDelete);
@@ -1378,6 +1401,7 @@
     if (op === 'syncNow') return syncNow(payload);
     if (op === 'diagnoseHealth') return diagnoseHealth(payload);
     if (op === 'diagnoseVisibleFolderParity') return diagnoseVisibleFolderParity(payload);
+    if (op === 'diagnoseCanonicalVisibleFolderSet') return diagnoseCanonicalVisibleFolderSet(payload);
     if (op === 'requestFolderDelete') return requestFolderDelete(payload);
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);

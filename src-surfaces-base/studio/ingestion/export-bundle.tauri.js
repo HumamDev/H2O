@@ -435,15 +435,13 @@
       byId[id] = folder;
       order.push(id);
     });
-    var addedFolderCount = 0;
+    var skippedFallbackVisibleFolderCount = 0;
     var filledVisualMetadataCount = 0;
     fallback.folders.forEach(function (folder) {
       var id = cleanString(folder && folder.id);
       if (!id) return;
       if (!byId[id]) {
-        byId[id] = mergeFolderRows(null, folder);
-        order.push(id);
-        addedFolderCount += 1;
+        skippedFallbackVisibleFolderCount += 1;
         return;
       }
       var before = byId[id];
@@ -454,14 +452,16 @@
       byId[id] = merged || before;
     });
     var items = Object.create(null);
-    var addItems = function (rawItems) {
+    var primaryFolderIds = new Set(order);
+    var addItems = function (rawItems, allowedFolderIds) {
       var normalized = normalizeFolderItems(rawItems);
       Object.keys(normalized).forEach(function (folderId) {
+        if (allowedFolderIds instanceof Set && !allowedFolderIds.has(folderId)) return;
         items[folderId] = uniqStrings((items[folderId] || []).concat(normalized[folderId]));
       });
     };
     addItems(primary.items);
-    addItems(fallback.items);
+    addItems(fallback.items, primaryFolderIds);
     order.forEach(function (folderId) {
       if (!Object.prototype.hasOwnProperty.call(items, folderId)) items[folderId] = [];
     });
@@ -471,11 +471,8 @@
     var mergedBindingCount = countFolderBindings(items);
     var fallbackAvailable = fallback.folders.length > 0 || fallbackBindingCount > 0;
     var fallbackUsed = fallbackAvailable && (
-      addedFolderCount > 0 ||
-      fallbackBindingCount > primaryBindingCount ||
       mergedBindingCount > primaryBindingCount ||
-      filledVisualMetadataCount > 0 ||
-      primary.folders.length === 0
+      filledVisualMetadataCount > 0
     );
     var exportedFrom = fallbackUsed
       ? (primary.folders.length ? 'desktop-sqlite+folder-state-cache' : fallback.exportedFrom)
@@ -502,7 +499,9 @@
         fallbackFolderCount: fallback.folders.length,
         fallbackBindingCount: fallbackBindingCount,
         fallbackUsed: fallbackUsed,
-        addedFolderCount: addedFolderCount,
+        addedFolderCount: 0,
+        skippedFallbackVisibleFolderCount: skippedFallbackVisibleFolderCount,
+        fallbackVisibleAuthority: false,
         filledVisualMetadataCount: filledVisualMetadataCount,
         mergedFolderCount: folders.length,
         mergedBindingCount: mergedBindingCount,

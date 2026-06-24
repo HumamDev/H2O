@@ -808,6 +808,8 @@
 
   function isCanonicalDisplayFolder(row) {
     if (isHiddenFolderDisplayRow(row)) return false;
+    const meta = folderMetaOf(row);
+    if (row?.desktopAuthoritativeVisible === true || meta.desktopAuthoritativeVisible === true) return true;
     return isPrimaryCanonicalFolder(row) || isProtectedCanonicalFallbackFolder(row) || isStoredFolderStateRow(row) || isMaterializedUserFolder(row);
   }
 
@@ -826,6 +828,62 @@
       items[folderId] = Array.isArray(src.items[folderId]) ? src.items[folderId].slice() : [];
     });
     return { folders, items };
+  }
+
+  function isUnfiledSystemFolder(row) {
+    const id = folderIdOf(row).toLowerCase();
+    const name = normalizeFolderName(row?.normalizedName || folderNameOf(row));
+    return id === 'unfiled' || name === 'unfiled';
+  }
+
+  function buildDesktopStoreVisibleFolderState(localFolders, storedStateInput) {
+    const stored = storedStateInput && typeof storedStateInput === 'object' ? storedStateInput : { folders: [], items: {} };
+    const hiddenIds = stored.hiddenByDesktopVisibleSetIds instanceof Set ? stored.hiddenByDesktopVisibleSetIds : new Set();
+    const folders = (Array.isArray(localFolders) ? localFolders : [])
+      .filter((row) => {
+        const id = folderIdOf(row);
+        if (!id || hiddenIds.has(id)) return false;
+        if (isUnfiledSystemFolder(row)) return false;
+        if (isHiddenFolderDisplayRow(row, hiddenIds)) return false;
+        return true;
+      })
+      .map((row, index) => normalizeFolderRow({
+        ...row,
+        id: folderIdOf(row),
+        folderId: folderIdOf(row),
+        source: String(row?.source || 'desktop-sqlite').trim() || 'desktop-sqlite',
+        stateSource: 'desktop-store-visible',
+        sourceKind: 'desktop-store-visible',
+        kind: 'desktop-store-visible',
+        index,
+        sortOrder: canonicalFolderDisplayOrder({ ...row, index }),
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
+        isCanonical: true,
+        desktopAuthoritativeVisible: true,
+        meta: {
+          ...folderMetaOf(row),
+          trustedFolderDisplay: true,
+          shownInNormalMode: true,
+          isCanonical: true,
+          desktopAuthoritativeVisible: true,
+          sourceKind: 'desktop-store-visible',
+        },
+      }, index, 'desktop-store-visible'))
+      .filter(Boolean);
+    const ids = new Set(folders.map((row) => row.id).filter(Boolean));
+    const items = {};
+    folders.forEach((folder) => {
+      const values = Array.isArray(stored.items?.[folder.id]) ? stored.items[folder.id] : [];
+      items[folder.id] = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+    });
+    return {
+      folders,
+      items,
+      desktopVisibleFolderIds: Array.from(ids).sort(),
+      desktopVisibleFolderCount: ids.size,
+      source: 'desktop-store-visible',
+    };
   }
 
   function mergeCanonicalFolderDisplaySource(localRow, canonicalRow, canonicalMirrorAvailable) {
@@ -2076,6 +2134,7 @@
       runtimeMarkers: folderParityRuntimeMarkers,
       getRuntimeMarkers: folderParityRuntimeMarkers,
       diagnose: diagnoseFolderParity,
+      diagnoseCanonicalVisibleFolderSet,
       selfCheck: selfCheckFolderParity,
       formatCanonicalCountLabel,
       getDisplayModel: FolderParity.getDisplayModel,
@@ -2157,23 +2216,31 @@
     if (nativeRead.error) warnings.push('Native broadcast read failed: ' + nativeRead.error);
     const nativePayload = normalizeNativeBroadcastPayload(nativeRead.value);
     const nativeState = normalizeFolderStateForParity(nativePayload?.folderState, 'native-broadcast');
+    const desktopStoreVisibleState = LW_isTauri()
+      ? buildDesktopStoreVisibleFolderState(localFolders, storedState)
+      : null;
+    const desktopStoreVisibleAuthoritative = !!(desktopStoreVisibleState && desktopStoreVisibleState.folders.length);
 
     const canonicalFromBroadcast = nativeState.folders.length > 0;
     const canonicalFromStoredMirror = storedState.folders.length > 0;
-    const mergedTrustedCanonical = canonicalFromStoredMirror
-      ? filterFolderStateForNormalDisplay(storedState, true)
-      : (canonicalFromBroadcast ? filterFolderStateForNormalDisplay(nativeState, false) : { folders: [], items: {} });
+    const mergedTrustedCanonical = desktopStoreVisibleAuthoritative
+      ? desktopStoreVisibleState
+      : canonicalFromStoredMirror
+        ? filterFolderStateForNormalDisplay(storedState, true)
+        : (canonicalFromBroadcast ? filterFolderStateForNormalDisplay(nativeState, false) : { folders: [], items: {} });
     const knownCanonicalFallbackPipeline = buildProtectedCanonicalFallbackNormalizationResults('known-current-canonical-fallback');
     const knownCanonicalFallbackRows = knownCanonicalFallbackPipeline.normalizedRows;
     const fallbackCanonical = enrichKnownCanonicalFallbackRows(knownCanonicalFallbackRows, storedState.folders);
     const canonicalFoldersRaw = mergedTrustedCanonical.folders.length
       ? mergedTrustedCanonical.folders
       : fallbackCanonical.rows;
-    const desktopVisibleSetAdoptionRows = buildDesktopVisibleSetAdoptionRows(
-      storedState.desktopVisibleFolderSet,
-      canonicalFoldersRaw,
-      storedState.hiddenByDesktopVisibleSetIds
-    );
+    const desktopVisibleSetAdoptionRows = desktopStoreVisibleAuthoritative
+      ? []
+      : buildDesktopVisibleSetAdoptionRows(
+        storedState.desktopVisibleFolderSet,
+        canonicalFoldersRaw,
+        storedState.hiddenByDesktopVisibleSetIds
+      );
     const storedById = indexFoldersById(storedState.folders);
     const nativeById = indexFoldersById(nativeState.folders);
     const canonicalFoldersBase = canonicalFoldersRaw.map((folder) => (
@@ -2188,15 +2255,20 @@
     const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
-    const canonicalBindingCount = canonicalFromBroadcast
+    const canonicalBindingCount = desktopStoreVisibleAuthoritative
       ? countFolderStateBindings(mergedTrustedCanonical.items)
-      : canonicalFromStoredMirror
+      : canonicalFromBroadcast
+        ? countFolderStateBindings(mergedTrustedCanonical.items)
+        : canonicalFromStoredMirror
         ? countFolderStateBindings(storedState.items)
       : Number(syncDiag?.projection?.nativeBroadcast?.folderBindingCount
         || syncDiag?.projection?.nativeFolderStateMerge?.incomingBindingCount
         || KNOWN_NATIVE_CANONICAL_BINDING_COUNT
         || 0);
     if (!mergedTrustedCanonical.folders.length) warnings.push('Canonical folders are using the current known native fallback list; run native probes if this differs from live ChatGPT.');
+    if (desktopStoreVisibleAuthoritative && canonicalFromStoredMirror && storedState.folders.length !== desktopStoreVisibleState.folders.length) {
+      warnings.push('Desktop canonical visible folders are using the live Desktop store; stored folder-state mirror count differs.');
+    }
 
     const rowStatsByFolder = summarizeIndexRowsByFolder();
     const knownStudioRowCountByFolder = Object.fromEntries(Object.entries(rowStatsByFolder).map(([folderId, stats]) => [folderId, Number(stats.known || 0)]));
@@ -2341,7 +2413,7 @@
     if (knownFallbackRawCount > 0 && knownFallbackFinalDisplayCount <= 0 && !knownFallbackDropReasons.length) {
       knownFallbackDropReasons = ['known-canonical-fallback-final-display-empty'];
     }
-    const fallbackUsed = !mergedTrustedCanonical.folders.length || protectedFallbackRows.length > 0;
+    const fallbackUsed = !desktopStoreVisibleAuthoritative && (!mergedTrustedCanonical.folders.length || protectedFallbackRows.length > 0);
     const renderBlockedReason = displayModelAvailable
       ? ''
       : (folderDisplayRows.length ? 'folder-display-model-has-no-canonical-rows' : 'folder-display-model-empty');
@@ -2393,8 +2465,10 @@
       surface,
       generatedAt: new Date().toISOString(),
       canonicalSource: canonicalFromBroadcast
-        ? (canonicalFromStoredMirror && storedState.folders.length > nativeState.folders.length ? 'native-broadcast+stored-folder-state' : 'native-broadcast')
-        : (canonicalFromStoredMirror ? 'stored-folder-state' : 'known-current-canonical-fallback'),
+        ? (desktopStoreVisibleAuthoritative
+          ? 'desktop-store-visible'
+          : (canonicalFromStoredMirror && storedState.folders.length > nativeState.folders.length ? 'native-broadcast+stored-folder-state' : 'native-broadcast'))
+        : (desktopStoreVisibleAuthoritative ? 'desktop-store-visible' : (canonicalFromStoredMirror ? 'stored-folder-state' : 'known-current-canonical-fallback')),
       fallbackVisualsEnriched,
       folderCatalogReady: canonicalMirrorAvailable,
       displayModelAvailable,
@@ -2429,6 +2503,12 @@
         folderCount: storedState.folders.length,
         bindingCount: storedBindingCount,
       },
+      desktopStoreVisible: {
+        source: 'H2O.Studio.store.folders.list',
+        authoritative: desktopStoreVisibleAuthoritative,
+        folderCount: Number(desktopStoreVisibleState?.folders?.length || 0) || 0,
+        folderIds: Array.isArray(desktopStoreVisibleState?.desktopVisibleFolderIds) ? desktopStoreVisibleState.desktopVisibleFolderIds.slice() : [],
+      },
       nativeBroadcast: {
         key: NATIVE_BROADCAST_KEY,
         source: nativeRead.source || '',
@@ -2438,6 +2518,8 @@
         sourceExtensionId: nativePayload?.sourceExtensionId || '',
       },
       canonicalMerge: {
+        desktopStoreVisibleAuthoritative,
+        desktopStoreVisibleFolderCount: Number(desktopStoreVisibleState?.folders?.length || 0) || 0,
         trustedNativeFolderCount: nativeState.folders.length,
         trustedStoredFolderCount: storedState.folders.length,
         mergedFolderCount: mergedTrustedCanonical.folders.length,
@@ -2693,6 +2775,154 @@
     };
   }
 
+  function summarizeCanonicalVisibleFolder(row) {
+    const id = folderIdOf(row);
+    const meta = folderMetaOf(row);
+    return {
+      id,
+      folderId: id,
+      name: folderNameOf(row),
+      normalizedName: normalizeFolderName(row?.normalizedName || folderNameOf(row)),
+      color: String(row?.color || row?.iconColor || meta.color || meta.iconColor || '').trim(),
+      iconColor: String(row?.iconColor || row?.color || meta.iconColor || meta.color || '').trim(),
+      source: String(row?.source || meta.source || '').trim(),
+      sourceKind: String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim(),
+      hidden: isHiddenFolderDisplayRow(row),
+      system: isUnfiledSystemFolder(row),
+      desktopAuthoritativeVisible: row?.desktopAuthoritativeVisible === true || meta.desktopAuthoritativeVisible === true,
+      desktopVisibleSetImported: row?.desktopVisibleSetImported === true || meta.desktopVisibleSetImported === true,
+    };
+  }
+
+  function visibleFolderIds(rows) {
+    return new Set((Array.isArray(rows) ? rows : []).map((row) => folderIdOf(row)).filter(Boolean));
+  }
+
+  function summarizeVisibleFolderSet(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .map(summarizeCanonicalVisibleFolder)
+      .filter((row) => row.id);
+  }
+
+  function diffVisibleFolderSets(leftRows, rightRows) {
+    const right = visibleFolderIds(rightRows);
+    return summarizeVisibleFolderSet(leftRows).filter((row) => !right.has(row.id));
+  }
+
+  function duplicateVisibleFolderNames(rows) {
+    const groups = new Map();
+    summarizeVisibleFolderSet(rows).forEach((row) => {
+      const key = row.normalizedName;
+      if (!key || row.system) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    });
+    return Array.from(groups.entries())
+      .filter(([, values]) => new Set(values.map((row) => row.id)).size > 1)
+      .map(([normalizedName, values]) => ({
+        normalizedName,
+        name: values[0]?.name || normalizedName,
+        ids: values.map((row) => row.id),
+        rows: values,
+      }));
+  }
+
+  function latestFolderParityRowsFromExportDiagnostics() {
+    try {
+      const diag = H2O.Studio?.ingestion?.diagnoseExportBundle?.();
+      const parity = diag?.lastFolderParity || {};
+      if (Array.isArray(parity.folders)) return parity.folders;
+      const lastResult = diag?.syncLatest?.lastResult || diag?.lastSyncExport || {};
+      const fromResult = lastResult?.folderParity?.folders || lastResult?.summary?.folderParity?.folders;
+      if (Array.isArray(fromResult)) return fromResult;
+    } catch (_) { /* optional diagnostic only */ }
+    return [];
+  }
+
+  async function diagnoseCanonicalVisibleFolderSet(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const surface = LW_isTauri() ? 'desktop-studio' : 'chrome-studio';
+    const localFoldersRaw = await getFolders({ fresh: opts.fresh !== false });
+    const localFolders = (Array.isArray(localFoldersRaw) ? localFoldersRaw : [])
+      .map((folder, index) => normalizeFolderRow(folder, index, surface))
+      .filter(Boolean);
+    const storedRead = await readStorageKey(FOLDER_STATE_DATA_KEY);
+    const storedState = normalizeFolderStateForParity(storedRead.value, storedRead.source || 'stored-folder-state');
+    const desktopStoreVisibleState = LW_isTauri()
+      ? buildDesktopStoreVisibleFolderState(localFolders, storedState)
+      : { folders: [], items: {}, desktopVisibleFolderIds: [], desktopVisibleFolderCount: 0 };
+    const model = await FolderParity.getDisplayModel({
+      fresh: opts.fresh !== false,
+      reason: String(opts.reason || 'phase5a5-canonical-visible-set-diagnostic'),
+    });
+    const displayRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
+    const desktopLatestRows = LW_isTauri()
+      ? latestFolderParityRowsFromExportDiagnostics()
+      : (Array.isArray(storedState.desktopVisibleFolderSet?.rows) ? storedState.desktopVisibleFolderSet.rows : []);
+    const chromeStoredDesktopVisibleSetRows = !LW_isTauri() && Array.isArray(storedState.desktopVisibleFolderSet?.rows)
+      ? storedState.desktopVisibleFolderSet.rows
+      : [];
+    const desktopStoreRows = Array.isArray(desktopStoreVisibleState?.folders) ? desktopStoreVisibleState.folders : [];
+    const desktopUiRows = displayRows;
+    const chromeDisplayRows = LW_isTauri() ? [] : displayRows;
+    const hiddenButExported = summarizeVisibleFolderSet(desktopLatestRows).filter((row) => row.hidden);
+    const visibleButNotExported = diffVisibleFolderSets(desktopUiRows, desktopLatestRows);
+    const systemRows = summarizeVisibleFolderSet([
+      ...desktopStoreRows,
+      ...desktopUiRows,
+      ...desktopLatestRows,
+      ...chromeDisplayRows,
+      ...chromeStoredDesktopVisibleSetRows,
+    ]).filter((row) => row.system);
+
+    return {
+      ...folderParityRuntimeMarkers({
+        phase: 'phase5a5-canonical-visible-set',
+      }),
+      ok: true,
+      status: 'canonical-visible-folder-set-diagnosed',
+      readOnly: true,
+      surface,
+      generatedAt: new Date().toISOString(),
+      desktopStoreVisibleCount: desktopStoreRows.length,
+      desktopStoreVisibleFolders: summarizeVisibleFolderSet(desktopStoreRows),
+      desktopUiDisplayCount: desktopUiRows.length,
+      desktopUiDisplayFolders: summarizeVisibleFolderSet(desktopUiRows),
+      desktopLatestVisibleCount: desktopLatestRows.length,
+      desktopLatestVisibleFolders: summarizeVisibleFolderSet(desktopLatestRows),
+      chromeDisplayCount: chromeDisplayRows.length,
+      chromeDisplayFolders: summarizeVisibleFolderSet(chromeDisplayRows),
+      chromeStoredDesktopVisibleSetCount: chromeStoredDesktopVisibleSetRows.length,
+      chromeStoredDesktopVisibleSetFolders: summarizeVisibleFolderSet(chromeStoredDesktopVisibleSetRows),
+      desktopUiOnly: diffVisibleFolderSets(desktopUiRows, desktopLatestRows),
+      desktopExportOnly: diffVisibleFolderSets(desktopLatestRows, desktopUiRows),
+      chromeOnly: diffVisibleFolderSets(chromeDisplayRows, chromeStoredDesktopVisibleSetRows.length ? chromeStoredDesktopVisibleSetRows : desktopLatestRows),
+      latestOnly: diffVisibleFolderSets(desktopLatestRows, chromeDisplayRows.length ? chromeDisplayRows : desktopUiRows),
+      duplicateNamesDifferentIds: duplicateVisibleFolderNames([
+        ...desktopStoreRows,
+        ...desktopUiRows,
+        ...desktopLatestRows,
+        ...chromeDisplayRows,
+      ]),
+      hiddenButExported,
+      visibleButNotExported,
+      systemFolderCount: systemRows.length,
+      systemFolders: systemRows,
+      desktopStoreVisibleAuthoritative: LW_isTauri(),
+      desktopVisibleAuthority: LW_isTauri() ? 'H2O.Studio.store.folders.list' : 'stored desktop visible set',
+      desktopFallbackMirrorVisibleAuthority: false,
+      desktopFallbackMirrorMetadataFillOnly: true,
+      blockers: [],
+      warnings: storedRead.error ? ['stored-folder-state-read-failed'] : [],
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    };
+  }
+
   const FolderParity = {
     surface: 'studio',
     version: FOLDER_PARITY_RUNTIME_VERSION,
@@ -2715,6 +2945,7 @@
     runtimeMarkers: folderParityRuntimeMarkers,
     getRuntimeMarkers: folderParityRuntimeMarkers,
     diagnose: diagnoseFolderParity,
+    diagnoseCanonicalVisibleFolderSet,
     selfCheck: selfCheckFolderParity,
     formatCanonicalCountLabel,
     async getDisplayModel(options = {}) {
