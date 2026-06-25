@@ -731,7 +731,25 @@
                 resolve({ source: 'chrome.storage.local', error: String(lastError.message || lastError) });
                 return;
               }
-              resolve({ source: 'chrome.storage.local', value: items ? items[key] : undefined });
+              const chromeValue = items ? items[key] : undefined;
+              if (key === FOLDER_STATE_DATA_KEY && chromeValue && typeof chromeValue === 'object' && !Array.isArray(chromeValue)) {
+                try {
+                  const raw = W.localStorage?.getItem?.(key);
+                  const localValue = raw ? JSON.parse(raw) : undefined;
+                  if (localValue && typeof localValue === 'object' && !Array.isArray(localValue)) {
+                    const merged = { ...localValue, ...chromeValue };
+                    ['hiddenByChromePendingDelete', 'hiddenByDesktopReceipt', 'hiddenByDesktopVisibleSet'].forEach((bagKey) => {
+                      merged[bagKey] = {
+                        ...(localValue[bagKey] && typeof localValue[bagKey] === 'object' && !Array.isArray(localValue[bagKey]) ? localValue[bagKey] : {}),
+                        ...(chromeValue[bagKey] && typeof chromeValue[bagKey] === 'object' && !Array.isArray(chromeValue[bagKey]) ? chromeValue[bagKey] : {}),
+                      };
+                    });
+                    resolve({ source: 'chrome.storage.local+localStorage', value: merged });
+                    return;
+                  }
+                } catch {}
+              }
+              resolve({ source: 'chrome.storage.local', value: chromeValue });
             } catch (e) {
               resolve({ source: 'chrome.storage.local', error: String(e?.message || e) });
             }
