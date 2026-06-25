@@ -2255,13 +2255,16 @@
     const purgeStatus = el('div', {
       role: 'status',
       'aria-live': 'polite',
-      style: 'min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);',
+      style: 'grid-column:1 / -1;min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);overflow-wrap:anywhere;',
     }, purgeEligibleCount > 0 ? `${formatNumber(purgeEligibleCount)} folder${purgeEligibleCount === 1 ? '' : 's'} can be permanently deleted.` : 'No purge-eligible deleted folders.');
     if (isMainPlacement) {
       const purgeHeader = el('div', {
         class: 'wbFolderRecentlyDeletedPurgeHeader',
-        style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 0 2px;',
+        style: 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;align-items:center;padding:0 0 4px;',
       });
+      purgeHeader.appendChild(el('div', {
+        style: 'min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.72);',
+      }, 'Permanent delete'));
       const purgeBtn = el('button', {
         type: 'button',
         class: 'wbSidebarNativeAction wbSidebarNativeAction--danger',
@@ -2269,7 +2272,7 @@
         title: purgeEligibleCount > 0 && purgeApiAvailable
           ? 'Preview and confirm permanent deletion for purge-eligible folder tombstones'
           : (purgeApiAvailable ? 'No purge-eligible deleted folders' : 'Desktop purge API unavailable'),
-        style: 'flex:0 0 auto;font-size:11px;padding:5px 8px;',
+        style: 'justify-self:end;max-width:100%;font-size:11px;padding:5px 8px;white-space:nowrap;',
       }, `Delete permanently (${formatNumber(purgeEligibleCount)})`);
       if (!(purgeEligibleCount > 0 && purgeApiAvailable)) purgeBtn.classList.add('is-disabled');
       purgeBtn.addEventListener('click', (ev) => {
@@ -2290,8 +2293,8 @@
           }, 350);
         });
       });
-      purgeHeader.appendChild(purgeStatus);
       purgeHeader.appendChild(purgeBtn);
+      purgeHeader.appendChild(purgeStatus);
       body.appendChild(purgeHeader);
     }
     body.appendChild(el('div', {
@@ -2384,40 +2387,48 @@
         ]));
       });
       const actionRow = el('div', {
-        style: 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:2px;',
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:2px;flex-wrap:wrap;',
       });
       const rowStatus = el('span', {
-        style: 'min-width:0;font-size:10.5px;color:rgba(255,255,255,.58);',
+        style: 'flex:1 1 160px;min-width:0;font-size:10.5px;line-height:1.3;color:rgba(255,255,255,.58);overflow-wrap:anywhere;',
       }, row.restoreAvailableReason || row.purgeBlockedReason || 'No purge action available');
-      const restoreBtn = el('button', {
-        type: 'button',
-        class: 'wbSidebarNativeAction',
-        disabled: restoreAvailable && restoreApiAvailable ? null : 'disabled',
-        title: restoreAvailable && restoreApiAvailable ? 'Restore this folder safely' : restoreDisabledReason,
-        style: 'flex:0 0 auto;font-size:10.5px;padding:4px 7px;',
-      }, 'Restore');
-      if (!(restoreAvailable && restoreApiAvailable)) restoreBtn.classList.add('is-disabled');
-      restoreBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (restoreBtn.disabled) return;
-        restoreBtn.disabled = true;
-        restoreBtn.classList.add('is-disabled');
-        Promise.resolve(restoreRecentlyDeletedFolder(row, { setStatus: (message) => { rowStatus.textContent = message; } }))
-          .finally(() => {
-            W.setTimeout(() => {
-              try {
-                if (isMainPlacement) {
-                  renderRecentlyDeletedFoldersPanel(host, { placement: 'main' }).catch((e) => err('recentlyDeleted.renderMainAfterRestore', e));
-                } else {
-                  renderFolders();
-                }
-              } catch (e) { err('recentlyDeleted.renderAfterRestore', e); }
-            }, 250);
-          });
-      });
       actionRow.appendChild(rowStatus);
-      actionRow.appendChild(restoreBtn);
+      if (restoreStatus === 'restored') {
+        actionRow.appendChild(el('span', {
+          class: 'wbFolderRecentlyDeletedRestorePill',
+          title: 'This folder tombstone has already been restored',
+          style: 'flex:0 0 auto;font-size:10.5px;line-height:1.2;padding:4px 7px;border-radius:999px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.7);white-space:nowrap;',
+        }, 'Already restored'));
+      } else {
+        const restoreBtn = el('button', {
+          type: 'button',
+          class: 'wbSidebarNativeAction',
+          disabled: restoreAvailable && restoreApiAvailable ? null : 'disabled',
+          title: restoreAvailable && restoreApiAvailable ? 'Restore this folder safely' : restoreDisabledReason,
+          style: 'flex:0 0 auto;font-size:10.5px;padding:4px 7px;white-space:nowrap;',
+        }, 'Restore');
+        if (!(restoreAvailable && restoreApiAvailable)) restoreBtn.classList.add('is-disabled');
+        restoreBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (restoreBtn.disabled) return;
+          restoreBtn.disabled = true;
+          restoreBtn.classList.add('is-disabled');
+          Promise.resolve(restoreRecentlyDeletedFolder(row, { setStatus: (message) => { rowStatus.textContent = message; } }))
+            .finally(() => {
+              W.setTimeout(() => {
+                try {
+                  if (isMainPlacement) {
+                    renderRecentlyDeletedFoldersPanel(host, { placement: 'main' }).catch((e) => err('recentlyDeleted.renderMainAfterRestore', e));
+                  } else {
+                    renderFolders();
+                  }
+                } catch (e) { err('recentlyDeleted.renderAfterRestore', e); }
+              }, 250);
+            });
+        });
+        actionRow.appendChild(restoreBtn);
+      }
       card.appendChild(actionRow);
       body.appendChild(card);
     });
