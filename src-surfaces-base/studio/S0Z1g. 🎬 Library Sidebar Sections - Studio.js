@@ -1295,8 +1295,8 @@
     }
     FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId);
     setStatus(result.duplicate
-      ? 'Delete already pending Desktop review.'
-      : 'Delete pending Desktop review. This folder stays visible until Desktop confirms.',
+      ? 'Already pending'
+      : 'Delete pending',
       'ok');
     W.requestAnimationFrame(() => {
       try { renderFolders(); } catch (e) { err('folderDeleteRequest.renderPending', e); }
@@ -3347,12 +3347,11 @@
   function makeChromeFolderDeleteRequestPanel(item, pop, anchorEl) {
     const blocker = chromeFolderDeleteRequestBlocker(item);
     const label = 'Delete';
-    const confirmText = 'Move this folder to Recently Deleted? Desktop Studio will apply the soft delete. No chats or snapshots are deleted.';
     if (blocker) {
       return [makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, null, {
         danger: true,
         disabled: true,
-        title: `This folder cannot be deleted. ${blocker}`,
+        title: 'Cannot delete this folder.',
       })];
     }
     let pending = false;
@@ -3362,15 +3361,11 @@
       'data-menu-item': 'chrome-folder-delete-request-panel',
       style: 'display:none;flex-direction:column;gap:6px;',
     });
-    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Delete pending'));
-    panel.appendChild(el('div', {
-      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);margin-bottom:4px;',
-    }, 'Desktop Studio applies the soft delete. Chrome creates a request only; no chats or snapshots are deleted.'));
     const status = el('div', {
       class: 'wbSidebarNativePickerStatus',
       role: 'status',
       'aria-live': 'polite',
-      style: 'display:none;margin-top:2px;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62)',
+      style: 'display:none;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.68)',
     });
     panel.appendChild(status);
     const setStatus = (message, kind = '') => {
@@ -3381,19 +3376,8 @@
     };
     action = makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, () => {
       if (pending) return;
-      let confirmed = true;
-      if (typeof W.confirm === 'function') {
-        confirmed = W.confirm(confirmText);
-      }
       panel.style.display = 'flex';
       action.setAttribute('aria-expanded', 'true');
-      if (confirmed === false) {
-        setStatus('Delete cancelled.', '');
-        W.requestAnimationFrame(() => {
-          try { positionRowMenu(pop, anchorEl); } catch {}
-        });
-        return;
-      }
       pending = true;
       Promise.resolve(requestChromeFolderDelete(item, { setStatus }))
         .finally(() => {

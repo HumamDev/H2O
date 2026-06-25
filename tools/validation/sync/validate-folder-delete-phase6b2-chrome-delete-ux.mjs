@@ -6,7 +6,7 @@ import process from 'node:process';
 const root = process.cwd();
 const sidebarPath = path.join(root, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js');
 const actionsPath = path.join(root, 'src-surfaces-base/studio/S0F3b. 🎬 Folders Actions - Studio.js');
-const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-phase6b1-chrome-soft-delete-ui.md');
+const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-phase6b2-chrome-delete-ux.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -52,23 +52,26 @@ const evidence = read(evidencePath);
 const chromePanelBody = functionBody(sidebar, 'makeChromeFolderDeleteRequestPanel');
 const requestBody = functionBody(sidebar, 'requestChromeFolderDelete');
 const badgeBody = functionBody(sidebar, 'folderDeleteRequestBadgeNode');
-const desktopSoftDeleteBody = functionBody(sidebar, 'makeDesktopFolderSoftDeletePanel');
 const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
 
 [
   "const label = 'Delete'",
   'requestChromeFolderDelete(item, { setStatus })',
+  'panel.style.display = \'flex\'',
   'Cannot delete this folder.',
   'Move to Recently Deleted through Desktop review',
-].forEach((needle) => assertContains(chromePanelBody, needle, `6B.1 Chrome soft-delete panel ${needle}`));
+].forEach((needle) => assertContains(chromePanelBody, needle, `6B.2 simplified Chrome delete panel ${needle}`));
 
 [
-  'Request delete (review on Desktop)',
-  'Desktop Studio applies the soft delete. Chrome creates a request only; no chats or snapshots are deleted.',
-  'Move this folder to Recently Deleted? Desktop Studio will apply the soft delete. No chats or snapshots are deleted.',
   'confirmText',
   'W.confirm',
   'window.confirm',
+  'Delete cancelled.',
+  'Request delete (review on Desktop)',
+  'Desktop Studio applies the soft delete. Chrome creates a request only; no chats or snapshots are deleted.',
+  'Move this folder to Recently Deleted? Desktop Studio will apply the soft delete. No chats or snapshots are deleted.',
+  'Desktop review request',
+  'Chrome only creates a pending request',
   'Permanent delete',
   'Delete permanently',
   'Restore from Desktop Studio',
@@ -81,7 +84,7 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
   'deleteChat(',
   'deleteSnapshot(',
   'DELETE FROM',
-].forEach((needle) => assertNotContains(chromePanelBody, needle, `6B.1 forbidden Chrome soft-delete panel ${needle}`));
+].forEach((needle) => assertNotContains(chromePanelBody, needle, `6B.2 forbidden Chrome delete panel ${needle}`));
 
 [
   'actions.requestDelete.bind(actions)',
@@ -90,7 +93,7 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
   'FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId)',
   'Already pending',
   'Delete pending',
-].forEach((needle) => assertContains(requestBody, needle, `6B.1 Chrome request path ${needle}`));
+].forEach((needle) => assertContains(requestBody, needle, `6B.2 Chrome request path ${needle}`));
 
 [
   'remove(',
@@ -101,14 +104,12 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
   'deleteChat(',
   'deleteSnapshot(',
   'DELETE FROM',
-].forEach((needle) => assertNotContains(requestBody, needle, `6B.1 forbidden Chrome request path ${needle}`));
+].forEach((needle) => assertNotContains(requestBody, needle, `6B.2 forbidden Chrome request path ${needle}`));
 
 [
   'Delete pending',
   'Delete pending Desktop review',
-].forEach((needle) => assertContains(badgeBody, needle, `6B.1 pending badge ${needle}`));
-
-assertContains(desktopSoftDeleteBody, 'Move to Recently Deleted', 'Desktop soft delete remains unchanged');
+].forEach((needle) => assertContains(badgeBody, needle, `6B.2 pending badge ${needle}`));
 
 [
   'requestFolderDelete',
@@ -116,21 +117,17 @@ assertContains(desktopSoftDeleteBody, 'Move to Recently Deleted', 'Desktop soft 
   'noHardDelete: true',
   'noChatDelete: true',
   'does not expose remove/delete/apply and does not mutate folders',
-].forEach((needle) => assertContains(chromeRequestDeleteBody + actions, needle, `6B.1 actions request-only ${needle}`));
+].forEach((needle) => assertContains(chromeRequestDeleteBody + actions, needle, `6B.2 actions request-only ${needle}`));
 
 [
-  'existing.requestDelete = chromeRequestDelete',
-  'installChromeFolderDeleteRequestActions',
-].forEach((needle) => assertContains(actions, needle, `6B.1 Chrome actions ${needle}`));
-
-[
-  'Phase 6B.1',
-  'Chrome folder menu',
-  'Delete',
-  'request-only',
-  'Move this folder to Recently Deleted?',
+  'Phase 6B.2',
+  'Chrome folder Delete',
+  'no browser/native confirmation popup',
   'Delete pending',
+  'Already pending',
+  'Cannot delete this folder.',
   'Permanent delete is only available from Desktop Studio.',
+  'request-only',
   'no Chrome permanent delete',
   'no Chrome restore action',
   'no tombstone apply/create on Chrome',
@@ -138,15 +135,15 @@ assertContains(desktopSoftDeleteBody, 'Move to Recently Deleted', 'Desktop soft 
   'no chat deletion',
   'no snapshot deletion',
   'no asset deletion',
-].forEach((needle) => assertContains(evidence, needle, `6B.1 evidence ${needle}`));
+].forEach((needle) => assertContains(evidence, needle, `6B.2 evidence ${needle}`));
 
 console.log(JSON.stringify({
   ok: true,
-  validator: 'validate-folder-delete-phase6b1-chrome-soft-delete-ui',
+  validator: 'validate-folder-delete-phase6b2-chrome-delete-ux',
   ui: path.relative(root, sidebarPath),
   actions: path.relative(root, actionsPath),
   evidence: path.relative(root, evidencePath),
-  chromeMenuLabel: 'Delete',
+  nativeConfirmRemoved: true,
   requestOnly: true,
   chromePermanentDelete: false,
   chromeRestore: false,
