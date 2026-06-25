@@ -590,6 +590,11 @@
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
        no import/recovery, no sync, no UI. -->
   <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
+  <!-- Chrome/MV3: saved-chat archive request builder (Phase D.3A).
+       Builds metadata-only h2o.savedChatArchiveRequest.v1 envelopes from
+       intent. No transport, Desktop queue call, package writer, CAS, Sync,
+       file drop, native messaging, localhost relay, or user export. -->
+  <script src="./ingestion/saved-chat-archive-request-builder.mv3.js"></script>
   <!-- Desktop-only: saved-chat archive request intake (Phase D.2A).
        Validates Chrome-to-Desktop save/archive request envelopes and resolves
        existing Desktop store state read-only. No queue, package write, Chrome

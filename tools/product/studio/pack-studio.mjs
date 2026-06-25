@@ -163,6 +163,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // package inventory + manifest/snapshot/hash validation under archive/packages.
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  // Chrome/MV3: saved-chat archive request builder (Phase D.3A). Builds
+  // metadata-only h2o.savedChatArchiveRequest.v1 envelopes from intent. No
+  // transport, Desktop queue call, package writer, CAS, Sync, file drop,
+  // native messaging, localhost relay, or user export.
+  "ingestion/saved-chat-archive-request-builder.mv3.js",
   // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
   // Chrome-to-Desktop request envelopes and resolves Desktop store state
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
@@ -1223,6 +1228,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
