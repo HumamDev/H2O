@@ -6395,6 +6395,21 @@ async function appendVisibleStudioRecentlyDeletedFoldersPanel(page){
   host.style.cssText = "display:flex;flex-direction:column;min-width:0";
   page.appendChild(host);
   const api = W.H2O?.Library?.SidebarSections;
+  if (!STUDIO_isTauri() && api && typeof api.renderChromeRecentlyDeletedCompanionPanel === "function") {
+    try {
+      await api.renderChromeRecentlyDeletedCompanionPanel(host, { placement: "main", model: null });
+      return true;
+    } catch (error) {
+      console.warn("[H2O.Studio] Chrome Recently Deleted companion failed", error);
+      host.innerHTML = `
+        <section class="wbFolderRecentlyDeleted wbFolderRecentlyDeleted--chromeCompanion" data-h2o-chrome-recently-deleted-companion="1" style="display:flex;flex-direction:column;gap:8px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:12px 14px">
+          <div style="font-size:11px;color:rgba(255,255,255,.64);letter-spacing:.04em;text-transform:uppercase">Recently Deleted</div>
+          <div class="wbState" style="padding:0;text-align:left">Chrome Recently Deleted companion is unavailable.</div>
+        </section>
+      `;
+      return false;
+    }
+  }
   if (!api || typeof api.renderRecentlyDeletedFoldersPanel !== "function") {
     host.innerHTML = `
       <section class="wbFolderRecentlyDeleted wbFolderRecentlyDeleted--main" data-h2o-recently-deleted-folders="main" style="display:flex;flex-direction:column;gap:8px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:12px 14px">

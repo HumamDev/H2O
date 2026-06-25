@@ -50,6 +50,10 @@
     pendingFolderIds: new Set(),
     lastLoadedAt: 0,
   };
+  const FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const CHROME_PENDING_DELETE_HIDDEN_REASON = 'chrome-soft-delete-request-pending';
+  const CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE = 'Permanent delete is only available from Desktop Studio.';
+  const CHROME_RESTORE_DEFERRED_MESSAGE = 'Restore from Desktop Studio.';
   let folderActionDelegationBound = false;
   const FOLDERS_UI_KEYS = [
     'h2o:prm:cgx:fldrs:state:ui:v1',
@@ -302,6 +306,7 @@
   }
 
   function folderDeleteRequestBadgeNode(item = {}) {
+    if (studioPlatformAdapter() === 'mv3') return null;
     const badges = new Set((Array.isArray(item.badges) ? item.badges : [])
       .map((badge) => String(badge || '').trim().toLowerCase())
       .filter(Boolean));
@@ -336,6 +341,162 @@
       err(`writeJson:${key}`, e);
       return false;
     }
+  }
+
+  function plainObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function chromeStorageLocal() {
+    try {
+      const storage = W.chrome?.storage?.local;
+      return storage && typeof storage.get === 'function' && typeof storage.set === 'function' ? storage : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function chromeStorageGet(key) {
+    return new Promise((resolve) => {
+      const storage = chromeStorageLocal();
+      if (!storage) { resolve(null); return; }
+      try {
+        storage.get([key], (items) => {
+          resolve(items && Object.prototype.hasOwnProperty.call(items, key) ? items[key] : null);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  function chromeStorageSet(key, value) {
+    return new Promise((resolve) => {
+      const storage = chromeStorageLocal();
+      if (!storage) { resolve(false); return; }
+      try {
+        const item = {};
+        item[key] = value;
+        storage.set(item, () => resolve(true));
+      } catch (e) {
+        err(`chromeStorageSet:${key}`, e);
+        resolve(false);
+      }
+    });
+  }
+
+  async function readChromeFolderStateMirror() {
+    if (studioPlatformAdapter() !== 'mv3') return {};
+    const fromChromeStorage = await chromeStorageGet(FOLDER_STATE_KEY_LOCAL);
+    if (fromChromeStorage && typeof fromChromeStorage === 'object' && !Array.isArray(fromChromeStorage)) {
+      return fromChromeStorage;
+    }
+    return plainObject(readJson(FOLDER_STATE_KEY_LOCAL, {}));
+  }
+
+  async function writeChromeFolderStateMirror(next) {
+    if (studioPlatformAdapter() !== 'mv3') return false;
+    const payload = plainObject(next);
+    const wroteChromeStorage = await chromeStorageSet(FOLDER_STATE_KEY_LOCAL, payload);
+    if (!wroteChromeStorage) writeJson(FOLDER_STATE_KEY_LOCAL, payload);
+    return true;
+  }
+
+  function chromePendingDeleteHiddenRowsFromState(state) {
+    const bag = plainObject(state?.hiddenByChromePendingDelete);
+    return Object.keys(bag).sort().map((folderId) => {
+      const row = plainObject(bag[folderId]);
+      return {
+        ...row,
+        id: String(row.id || row.folderId || folderId).trim(),
+        folderId: String(row.folderId || row.id || folderId).trim(),
+        name: String(row.name || row.folderName || row.title || folderId).trim(),
+        folderName: String(row.folderName || row.name || row.title || folderId).trim(),
+        hiddenByChromePendingDelete: true,
+        pendingDeleteHidden: true,
+        status: String(row.status || 'pending-delete').trim() || 'pending-delete',
+      };
+    }).filter((row) => row.folderId);
+  }
+
+  async function loadChromePendingDeleteHiddenRows() {
+    if (studioPlatformAdapter() !== 'mv3') return [];
+    try {
+      return chromePendingDeleteHiddenRowsFromState(await readChromeFolderStateMirror());
+    } catch (e) {
+      err('chromePendingDeleteHidden.load', e);
+      return [];
+    }
+  }
+
+  function summarizeChromePendingDeleteHiddenRow(item = {}, result = {}) {
+    const folderId = String(item?.id || item?.folderId || result?.folderId || '').trim();
+    const name = String(item?.name || item?.folderName || item?.title || result?.folderName || folderId).trim();
+    const color = normalizeHexColor(item?.color || item?.iconColor || '');
+    const requestId = String(result?.requestId || result?.reviewId || '').trim();
+    return {
+      schema: 'h2o.studio.chrome-folder-pending-delete-hidden.v1',
+      id: folderId,
+      folderId,
+      name,
+      folderName: name,
+      color,
+      iconColor: color,
+      requestId,
+      reviewId: String(result?.reviewId || result?.requestId || '').trim(),
+      requestedAt: String(result?.requestedAt || result?.createdAt || new Date().toISOString()).trim(),
+      hiddenAt: new Date().toISOString(),
+      status: 'pending-delete',
+      source: 'chrome-folder-delete-request',
+      sourceKind: 'chrome-pending-soft-delete',
+      reason: CHROME_PENDING_DELETE_HIDDEN_REASON,
+      hiddenByChromePendingDelete: true,
+      pendingDeleteHidden: true,
+      visibleStateOnly: true,
+      desktopAuthorityRequired: true,
+      noTombstoneApplyOnChrome: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
+  async function markChromeFolderPendingDeleteHidden(item = {}, result = {}) {
+    if (studioPlatformAdapter() !== 'mv3') return { ok: true, skipped: true, status: 'not-chrome-studio' };
+    const row = summarizeChromePendingDeleteHiddenRow(item, result);
+    if (!row.folderId) return { ok: false, status: 'folder-identity-missing', blockers: ['folder-identity-missing'] };
+    const current = await readChromeFolderStateMirror();
+    const next = { ...plainObject(current) };
+    const hidden = { ...plainObject(next.hiddenByChromePendingDelete) };
+    hidden[row.folderId] = {
+      ...plainObject(hidden[row.folderId]),
+      ...row,
+    };
+    next.hiddenByChromePendingDelete = hidden;
+    next.updatedAt = new Date().toISOString();
+    await writeChromeFolderStateMirror(next);
+    return {
+      ok: true,
+      status: 'chrome-folder-pending-delete-hidden',
+      folderId: row.folderId,
+      hiddenByChromePendingDelete: true,
+      visibleStateOnly: true,
+      noTombstoneApplyOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
+  function chromePendingDeleteHiddenIdsFromRows(rows) {
+    return new Set((Array.isArray(rows) ? rows : [])
+      .map((row) => String(row?.folderId || row?.id || '').trim())
+      .filter(Boolean));
   }
 
   function emitLibraryAppearanceChanged(detail = {}) {
@@ -1294,14 +1455,26 @@
       return result || { ok: false, status: code, blockers: [code] };
     }
     FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId);
-    setStatus(result.duplicate
-      ? 'Already pending'
-      : 'Delete pending',
-      'ok');
+    const hideResult = await markChromeFolderPendingDeleteHidden(item, result);
+    setStatus('');
+    if (hideResult?.ok === true) {
+      try { navigateAfterDeletedFolder(folderId); } catch {}
+      try { closeRowMenu(); } catch {}
+    }
     W.requestAnimationFrame(() => {
       try { renderFolders(); } catch (e) { err('folderDeleteRequest.renderPending', e); }
     });
-    return result;
+    return Object.assign({}, result, {
+      chromePendingDeleteHidden: hideResult?.ok === true,
+      hiddenByChromePendingDelete: hideResult?.ok === true,
+      visibleStateOnly: true,
+      noTombstoneApplyOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    });
   }
 
   function navigateAfterDeletedFolder(folderId) {
@@ -2650,6 +2823,213 @@
     }
   }
 
+  function chromeDesktopReceiptHiddenRowsFromState(state) {
+    const bag = plainObject(state?.hiddenByDesktopReceipt);
+    return Object.keys(bag).sort().map((folderId) => {
+      const row = plainObject(bag[folderId]);
+      return {
+        ...row,
+        id: String(row.id || row.folderId || folderId).trim(),
+        folderId: String(row.folderId || row.id || folderId).trim(),
+        name: String(row.name || row.folderName || row.title || folderId).trim(),
+        folderName: String(row.folderName || row.name || row.title || folderId).trim(),
+        status: 'deleted',
+        hiddenByDesktopReceipt: true,
+        deletedByDesktopReceipt: true,
+        companionStatusLabel: 'Deleted on Desktop',
+      };
+    }).filter((row) => row.folderId);
+  }
+
+  async function chromeRecentlyDeletedCompanionRows(model = null) {
+    if (studioPlatformAdapter() !== 'mv3') return [];
+    const state = await readChromeFolderStateMirror();
+    const pendingRows = chromePendingDeleteHiddenRowsFromState(state).map((row) => ({
+      ...row,
+      companionStatusLabel: 'Delete pending',
+    }));
+    const confirmedRows = chromeDesktopReceiptHiddenRowsFromState(state);
+    const byId = new Map();
+    for (const row of confirmedRows) byId.set(row.folderId, row);
+    for (const row of pendingRows) {
+      const existing = byId.get(row.folderId);
+      byId.set(row.folderId, existing ? { ...row, ...existing, companionStatusLabel: existing.companionStatusLabel || 'Deleted on Desktop' } : row);
+    }
+    const modelRows = Array.isArray(model?.chromePendingDeleteHiddenRows) ? model.chromePendingDeleteHiddenRows : [];
+    for (const row of modelRows) {
+      const folderId = String(row?.folderId || row?.id || '').trim();
+      if (folderId && !byId.has(folderId)) byId.set(folderId, { ...row, folderId, companionStatusLabel: 'Delete pending' });
+    }
+    return Array.from(byId.values()).sort((a, b) => String(a.folderName || a.name || '').localeCompare(String(b.folderName || b.name || '')));
+  }
+
+  async function diagnoseChromeRecentlyDeletedCompanion(options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    let model = opts.model && typeof opts.model === 'object' ? opts.model : null;
+    if (!model) {
+      try { model = await H2O.Library?.FolderParity?.getDisplayModel?.({ fresh: opts.fresh !== false }); }
+      catch (e) { err('chromeRecentlyDeleted.diagnoseModel', e); }
+    }
+    const canonicalRows = Array.isArray(model?.canonicalRows) ? model.canonicalRows : [];
+    const companionRows = await chromeRecentlyDeletedCompanionRows(model);
+    const pendingDeleteHiddenCount = companionRows.filter((row) => row?.pendingDeleteHidden === true || row?.hiddenByChromePendingDelete === true).length;
+    const desktopReceiptHiddenCount = companionRows.filter((row) => row?.hiddenByDesktopReceipt === true || row?.deletedByDesktopReceipt === true).length;
+    return {
+      ok: true,
+      status: 'chrome-recently-deleted-companion-diagnosed',
+      surface: studioPlatformAdapter() === 'mv3' ? 'chrome-studio' : 'non-chrome-surface',
+      readOnly: true,
+      chromeNormalVisibleFolderCount: canonicalRows.length,
+      chromeRecentlyDeletedCount: companionRows.length,
+      pendingDeleteHiddenCount,
+      desktopReceiptHiddenCount,
+      rows: companionRows.slice(0, 80).map((row) => ({
+        folderId: row.folderId || row.id || '',
+        folderName: row.folderName || row.name || '',
+        status: row.status || '',
+        companionStatusLabel: row.companionStatusLabel || '',
+        pendingDeleteHidden: row.pendingDeleteHidden === true || row.hiddenByChromePendingDelete === true,
+        desktopReceiptHidden: row.hiddenByDesktopReceipt === true || row.deletedByDesktopReceipt === true,
+      })),
+      chromePermanentDeleteBlocked: true,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function setChromeRecentlyDeletedStatus(node, message, kind = '') {
+    if (!node) return;
+    node.textContent = String(message || '');
+    node.dataset.kind = String(kind || '');
+  }
+
+  async function renderChromeRecentlyDeletedCompanionPanel(host, opts = {}) {
+    if (!host || studioPlatformAdapter() !== 'mv3') return { ok: true, skipped: true, status: 'not-chrome-studio' };
+    const model = opts?.model && typeof opts.model === 'object' ? opts.model : null;
+    const rows = await chromeRecentlyDeletedCompanionRows(model);
+    host.innerHTML = '';
+    const section = el('section', {
+      class: 'wbFolderRecentlyDeleted wbFolderRecentlyDeleted--chromeCompanion',
+      'data-h2o-chrome-recently-deleted-companion': '1',
+      style: 'display:flex;flex-direction:column;gap:10px;border:1px solid rgba(255,255,255,.08);border-radius:10px;background:rgba(255,255,255,.018);padding:12px 14px;min-width:0;',
+    });
+    section.appendChild(el('div', {
+      style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0;',
+    }, [
+      el('div', { style: 'display:flex;flex-direction:column;gap:2px;min-width:0;' }, [
+        el('div', {
+          style: 'font-size:11px;color:rgba(255,255,255,.72);letter-spacing:.04em;text-transform:uppercase;font-weight:700;',
+        }, `Recently Deleted · ${formatNumber(rows.length)}`),
+        el('div', {
+          style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.5);',
+        }, 'Chrome companion status. Desktop Studio remains the delete, restore, and permanent delete authority.'),
+      ]),
+      el('span', {
+        style: 'flex:0 0 auto;border:1px solid rgba(125,211,252,.18);border-radius:999px;padding:3px 7px;font-size:10px;line-height:1.2;color:rgba(186,230,253,.86);background:rgba(14,165,233,.08);',
+      }, 'Companion'),
+    ]));
+    const status = el('div', {
+      class: 'wbSidebarNativePickerStatus',
+      role: 'status',
+      'aria-live': 'polite',
+      style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.66);min-height:1em;',
+    });
+    section.appendChild(status);
+    if (!rows.length) {
+      section.appendChild(el('div', {
+        class: 'wbState',
+        style: 'padding:4px 0;text-align:left;color:rgba(255,255,255,.5);font-size:11px;',
+      }, 'No Recently Deleted folders in Chrome.'));
+      host.appendChild(section);
+      return { ok: true, status: 'chrome-recently-deleted-companion-rendered', total: 0 };
+    }
+    const list = el('div', {
+      class: 'wbFolderRecentlyDeletedChromeList',
+      style: 'display:flex;flex-direction:column;gap:7px;min-width:0;',
+    });
+    rows.forEach((row) => {
+      const folderName = recentlyDeletedText(row.folderName || row.name || row.folderId, 'Folder');
+      const folderId = recentlyDeletedText(row.folderId || row.id, '');
+      const pending = row.pendingDeleteHidden === true || row.hiddenByChromePendingDelete === true;
+      const statusLabel = row.companionStatusLabel || (pending ? 'Delete pending' : 'Deleted on Desktop');
+      const item = el('article', {
+        class: 'wbFolderRecentlyDeletedChromeRow',
+        'data-h2o-chrome-recently-deleted-row': '1',
+        'data-h2o-folder-id': folderId,
+        style: 'display:flex;flex-direction:column;gap:8px;min-width:0;border:1px solid rgba(255,255,255,.075);border-radius:8px;background:rgba(255,255,255,.025);padding:9px 10px;',
+      });
+      item.appendChild(el('div', {
+        style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-width:0;',
+      }, [
+        el('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:2px;' }, [
+          el('div', {
+            title: folderName,
+            style: 'font-size:12px;font-weight:650;color:rgba(255,255,255,.84);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;',
+          }, folderName),
+          el('div', {
+            title: folderId,
+            style: 'font-size:10px;color:rgba(255,255,255,.42);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;',
+          }, folderId),
+        ]),
+        el('span', {
+          style: 'flex:0 0 auto;border-radius:999px;padding:3px 7px;font-size:10px;line-height:1.2;background:rgba(250,204,21,.08);color:rgba(254,240,138,.9);border:1px solid rgba(250,204,21,.18);',
+        }, statusLabel),
+      ]));
+      const actions = el('div', {
+        style: 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;',
+      });
+      const restore = el('button', {
+        type: 'button',
+        class: 'wbFolderRecentlyDeletedChromeRestoreBlocked',
+        'data-h2o-chrome-restore-blocked': '1',
+        style: 'border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.04);color:rgba(255,255,255,.72);font-size:10.5px;line-height:1.2;padding:6px 8px;',
+      }, 'Restore');
+      restore.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setChromeRecentlyDeletedStatus(status, CHROME_RESTORE_DEFERRED_MESSAGE, 'blocked');
+      });
+      const permanentDelete = el('button', {
+        type: 'button',
+        class: 'wbFolderRecentlyDeletedChromePermanentDeleteBlocked',
+        'data-h2o-chrome-permanent-delete-blocked': '1',
+        style: 'border:1px solid rgba(248,113,113,.22);border-radius:7px;background:rgba(127,29,29,.14);color:rgba(254,202,202,.84);font-size:10.5px;line-height:1.2;padding:6px 8px;',
+      }, 'Permanent Delete');
+      permanentDelete.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setChromeRecentlyDeletedStatus(status, CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE, 'blocked');
+      });
+      actions.appendChild(restore);
+      actions.appendChild(permanentDelete);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+    section.appendChild(list);
+    host.appendChild(section);
+    return {
+      ok: true,
+      status: 'chrome-recently-deleted-companion-rendered',
+      total: rows.length,
+      chromePermanentDeleteBlocked: true,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
   async function renderRecentlyDeletedFoldersSidebarEntry(host) {
     if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
     const entry = el('a', {
@@ -3355,31 +3735,10 @@
       })];
     }
     let pending = false;
-    let action = null;
-    const panel = el('div', {
-      class: 'wbSidebarNativePickerSection',
-      'data-menu-item': 'chrome-folder-delete-request-panel',
-      style: 'display:none;flex-direction:column;gap:6px;',
-    });
-    const status = el('div', {
-      class: 'wbSidebarNativePickerStatus',
-      role: 'status',
-      'aria-live': 'polite',
-      style: 'display:none;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.68)',
-    });
-    panel.appendChild(status);
-    const setStatus = (message, kind = '') => {
-      const text = String(message || '');
-      status.textContent = text;
-      status.dataset.kind = String(kind || '');
-      status.style.display = text ? 'block' : 'none';
-    };
-    action = makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, () => {
+    const action = makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, () => {
       if (pending) return;
-      panel.style.display = 'flex';
-      action.setAttribute('aria-expanded', 'true');
       pending = true;
-      Promise.resolve(requestChromeFolderDelete(item, { setStatus }))
+      Promise.resolve(requestChromeFolderDelete(item, { setStatus: () => {} }))
         .finally(() => {
           pending = false;
           W.requestAnimationFrame(() => {
@@ -3391,9 +3750,7 @@
       danger: true,
       title: 'Move to Recently Deleted through Desktop review',
     });
-    action.setAttribute('aria-haspopup', 'true');
-    action.setAttribute('aria-expanded', 'false');
-    return [action, panel];
+    return [action];
   }
 
   function folderHrefForId(folderId) {
@@ -4372,6 +4729,8 @@
     host.dataset.h2oFolderDisplayModelAvailable = displayModelAvailable ? 'true' : 'false';
     host.dataset.h2oFolderRenderBlockedReason = renderBlockedReason;
     const pendingDeleteRequestIds = await loadPendingChromeFolderDeleteRequestIds();
+    const chromePendingDeleteHiddenRows = await loadChromePendingDeleteHiddenRows();
+    const chromePendingDeleteHiddenIds = chromePendingDeleteHiddenIdsFromRows(chromePendingDeleteHiddenRows);
 
     const toSidebarItem = (row) => {
       const id = String(row?.folderId || row?.id || '').trim();
@@ -4425,7 +4784,10 @@
     };
 
     const mainItems = [buildUnfiledSidebarItem()];
-    mainItems.push(...canonicalRows
+    const normalCanonicalRows = studioPlatformAdapter() === 'mv3'
+      ? canonicalRows.filter((row) => !chromePendingDeleteHiddenIds.has(String(row?.folderId || row?.id || '').trim()))
+      : canonicalRows;
+    mainItems.push(...normalCanonicalRows
       .map(toSidebarItem)
       .filter((item) => item && item.id !== FOLDER_FILTER_NONE));
     const reviewItems = showLocalReview ? localReviewRows.map(toSidebarItem).filter(Boolean) : [];
@@ -5423,6 +5785,7 @@
     openRowMenu,
     closeRowMenu,
     renderRecentlyDeletedFoldersPanel,
+    renderChromeRecentlyDeletedCompanionPanel,
     renderRecentlyDeletedFoldersSidebarEntry,
     getRowAppearance,
     setCollapsed,
@@ -5450,6 +5813,7 @@
       };
     },
     diagnoseFolderSidebarParity,
+    diagnoseChromeRecentlyDeletedCompanion,
   };
 
   try {
@@ -5457,6 +5821,7 @@
     preserveSidebarDiagnosticOnProvider(providerUpgrade.provider);
     H2O.Studio = H2O.Studio || {};
     H2O.Studio.diagnoseFolderSidebarParity = diagnoseFolderSidebarParity;
+    H2O.Studio.diagnoseChromeRecentlyDeletedCompanion = diagnoseChromeRecentlyDeletedCompanion;
   } catch {}
 
   step('boot', 'studio-library-sidebar-sections-ready');

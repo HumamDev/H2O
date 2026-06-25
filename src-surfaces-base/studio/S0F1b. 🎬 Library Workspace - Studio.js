@@ -244,6 +244,10 @@
       || meta.hiddenByDesktopVisibleSet === true
       || row?.desktopVisibleSetMissing === true
       || meta.desktopVisibleSetMissing === true
+      || row?.hiddenByChromePendingDelete === true
+      || meta.hiddenByChromePendingDelete === true
+      || row?.pendingDeleteHidden === true
+      || meta.pendingDeleteHidden === true
       || row?.hiddenByDesktopReceipt === true
       || meta.hiddenByDesktopReceipt === true
       || row?.deletedByDesktopReceipt === true
@@ -373,6 +377,8 @@
     if (row?.hidden === true || meta.hidden === true) out.hidden = true;
     if (row?.hiddenByDesktopVisibleSet === true || meta.hiddenByDesktopVisibleSet === true) out.hiddenByDesktopVisibleSet = true;
     if (row?.desktopVisibleSetMissing === true || meta.desktopVisibleSetMissing === true) out.desktopVisibleSetMissing = true;
+    if (row?.hiddenByChromePendingDelete === true || meta.hiddenByChromePendingDelete === true) out.hiddenByChromePendingDelete = true;
+    if (row?.pendingDeleteHidden === true || meta.pendingDeleteHidden === true) out.pendingDeleteHidden = true;
     if (row?.hiddenByDesktopReceipt === true || meta.hiddenByDesktopReceipt === true) out.hiddenByDesktopReceipt = true;
     if (row?.deletedByDesktopReceipt === true || meta.deletedByDesktopReceipt === true) out.deletedByDesktopReceipt = true;
     const sourceKind = String(row?.sourceKind || row?.kind || meta.sourceKind || meta.kind || '').trim();
@@ -471,6 +477,15 @@
       hiddenByDesktopVisibleSet[id] = (marker && typeof marker === 'object' && !Array.isArray(marker)) ? { ...marker } : true;
       hiddenByDesktopVisibleSetIds.add(id);
     });
+    const hiddenByChromePendingDelete = {};
+    const hiddenByChromePendingDeleteIds = new Set();
+    Object.keys(src.hiddenByChromePendingDelete && typeof src.hiddenByChromePendingDelete === 'object' ? src.hiddenByChromePendingDelete : {}).forEach((folderId) => {
+      const id = folderIdOf({ folderId });
+      if (!id) return;
+      const marker = src.hiddenByChromePendingDelete[folderId];
+      hiddenByChromePendingDelete[id] = (marker && typeof marker === 'object' && !Array.isArray(marker)) ? { ...marker } : true;
+      hiddenByChromePendingDeleteIds.add(id);
+    });
     const inputItems = src.items && typeof src.items === 'object' ? src.items : {};
     const items = {};
     for (const folder of folders) {
@@ -482,6 +497,8 @@
       items,
       hiddenByDesktopVisibleSet,
       hiddenByDesktopVisibleSetIds,
+      hiddenByChromePendingDelete,
+      hiddenByChromePendingDeleteIds,
       desktopVisibleFolderSet: normalizeDesktopVisibleSetForDisplay(src.desktopVisibleFolderSet),
     };
   }
@@ -2332,6 +2349,13 @@
       : 'ok';
     const canonicalMirrorAvailable = mergedTrustedCanonical.folders.length > 0;
     const canonicalItems = mergedTrustedCanonical.folders.length ? mergedTrustedCanonical.items : storedState.items;
+    const chromePendingDeleteHiddenIds = storedState.hiddenByChromePendingDeleteIds instanceof Set
+      ? storedState.hiddenByChromePendingDeleteIds
+      : new Set();
+    const hiddenDisplayFolderIds = new Set([
+      ...Array.from(storedState.hiddenByDesktopVisibleSetIds instanceof Set ? storedState.hiddenByDesktopVisibleSetIds : new Set()),
+      ...Array.from(chromePendingDeleteHiddenIds),
+    ]);
     const nativeOnlyDisplaySuppressedFolders = nativeState.folders
       .filter((folder) => !isPrimaryCanonicalFolder(folder) && !storedState.folders.some((stored) => stored.id === folder.id))
       .map((folder) => ({
@@ -2352,7 +2376,7 @@
       desktopBindings,
       duplicateGroups,
       testFolderCandidates,
-      hiddenDisplayFolderIds: storedState.hiddenByDesktopVisibleSetIds,
+      hiddenDisplayFolderIds,
     });
     const rawCanonicalDisplayRowCount = rawFolderDisplayRows.filter((row) => row && row.isCanonical).length;
     let protectedCanonicalFallbackSource = '';
@@ -2409,6 +2433,22 @@
         || meta.visibleStateOnlyAdoption === true
         || sourceKind === 'desktop-visible-set-display-adoption';
     });
+    const chromePendingDeleteHiddenRows = Object.keys(storedState.hiddenByChromePendingDelete || {}).sort().map((folderId) => {
+      const marker = storedState.hiddenByChromePendingDelete[folderId];
+      const row = marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : { folderId };
+      return {
+        id: folderIdOf(row) || folderId,
+        folderId: folderIdOf(row) || folderId,
+        name: folderNameOf(row) || folderId,
+        normalizedName: normalizeFolderName(folderNameOf(row) || folderId),
+        status: String(row?.status || 'pending-delete').trim() || 'pending-delete',
+        source: String(row?.source || 'chrome-folder-delete-request').trim() || 'chrome-folder-delete-request',
+        requestId: String(row?.requestId || row?.reviewId || '').trim(),
+        hiddenByChromePendingDelete: true,
+        pendingDeleteHidden: true,
+        visibleStateOnly: true,
+      };
+    }).filter((row) => row.folderId);
     knownFallbackFinalDisplayCount = folderDisplayRows.filter((row) => row && row.protectedCanonicalFallback === true && row.isCanonical === true).length || knownFallbackFinalDisplayCount;
     if (knownFallbackRawCount > 0 && knownFallbackFinalDisplayCount <= 0 && !knownFallbackDropReasons.length) {
       knownFallbackDropReasons = ['known-canonical-fallback-final-display-empty'];
@@ -2550,6 +2590,8 @@
       })),
       hiddenLocalOnlyFolders,
       hiddenLocalOnlyCount: hiddenLocalOnlyFolders.length,
+      chromePendingDeleteHiddenCount: chromePendingDeleteHiddenRows.length,
+      chromePendingDeleteHiddenRows,
       materializedUserFolders,
       materializedUserFolderCount: materializedUserFolders.length,
       folderNameProbe,
@@ -3131,6 +3173,8 @@
         hiddenDynamicNativeOnlyCount: Number(report?.hiddenDynamicNativeOnlyCount || 0) || 0,
         hiddenLocalOnlyCount: Number(report?.hiddenLocalOnlyCount || hiddenLocalOnlyFolders.length) || 0,
         hiddenLocalOnlyFolders,
+        chromePendingDeleteHiddenCount: Number(report?.chromePendingDeleteHiddenCount || 0) || 0,
+        chromePendingDeleteHiddenRows: Array.isArray(report?.chromePendingDeleteHiddenRows) ? report.chromePendingDeleteHiddenRows.slice(0, 80) : [],
         desktopVisibleSetStored: report?.desktopVisibleSetStored === true,
         desktopVisibleSetImportedAt: report?.desktopVisibleSetImportedAt || '',
         desktopVisibleSetSourceExportedAt: report?.desktopVisibleSetSourceExportedAt || '',

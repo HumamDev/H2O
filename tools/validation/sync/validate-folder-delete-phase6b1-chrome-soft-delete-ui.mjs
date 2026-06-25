@@ -57,7 +57,7 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
 
 [
   "const label = 'Delete'",
-  'requestChromeFolderDelete(item, { setStatus })',
+  'requestChromeFolderDelete(item, { setStatus: () => {} })',
   'Cannot delete this folder.',
   'Move to Recently Deleted through Desktop review',
 ].forEach((needle) => assertContains(chromePanelBody, needle, `6B.1 Chrome soft-delete panel ${needle}`));
@@ -69,6 +69,7 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
   'confirmText',
   'W.confirm',
   'window.confirm',
+  'Already pending',
   'Permanent delete',
   'Delete permanently',
   'Restore from Desktop Studio',
@@ -88,8 +89,8 @@ const chromeRequestDeleteBody = functionBody(actions, 'chromeRequestDelete');
   'store.requestFolderDelete.bind(store)',
   "reason: 'user-requested-folder-delete'",
   'FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId)',
-  'Already pending',
-  'Delete pending',
+  'markChromeFolderPendingDeleteHidden(item, result)',
+  'hiddenByChromePendingDelete',
 ].forEach((needle) => assertContains(requestBody, needle, `6B.1 Chrome request path ${needle}`));
 
 [

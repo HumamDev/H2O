@@ -33,6 +33,7 @@
     'diagnoseHealth',
     'diagnoseVisibleFolderParity',
     'diagnoseCanonicalVisibleFolderSet',
+    'diagnoseChromeRecentlyDeletedCompanion',
     'requestFolderDelete',
     'listFolderDeleteRequests',
     'applyFolderDeleteRequest',
@@ -59,6 +60,7 @@
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
     diagnoseVisibleFolderParity: true,
+    diagnoseChromeRecentlyDeletedCompanion: true,
   });
   var FORBIDDEN_OPS = Object.freeze([
     'eval',
@@ -1130,6 +1132,31 @@
     }));
   }
 
+  async function diagnoseChromeRecentlyDeletedCompanion(payload) {
+    var fn = getPath(H2O, ['Studio', 'diagnoseChromeRecentlyDeletedCompanion']);
+    if (typeof fn !== 'function') {
+      return unsupportedResult('diagnoseChromeRecentlyDeletedCompanion', 'chrome-recently-deleted-diagnostic-unavailable');
+    }
+    var result = safeObject(await fn.call(H2O.Studio, safeObject(payload)));
+    return baseResult('diagnoseChromeRecentlyDeletedCompanion', Object.assign({}, result, {
+      ok: result.ok === true,
+      status: cleanString(result.status || 'chrome-recently-deleted-companion-diagnosed'),
+      blockers: codeList(result.blockers),
+      warnings: codeList(result.warnings),
+      readOnly: true,
+      chromePermanentDeleteBlocked: true,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noTombstoneApplyOnChrome: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    }));
+  }
+
   async function diagnoseCanonicalVisibleFolderSet(payload) {
     var provider = getPath(H2O, ['Library', 'FolderParity']);
     var fn = provider && provider.diagnoseCanonicalVisibleFolderSet;
@@ -1428,6 +1455,7 @@
     if (op === 'diagnoseHealth') return diagnoseHealth(payload);
     if (op === 'diagnoseVisibleFolderParity') return diagnoseVisibleFolderParity(payload);
     if (op === 'diagnoseCanonicalVisibleFolderSet') return diagnoseCanonicalVisibleFolderSet(payload);
+    if (op === 'diagnoseChromeRecentlyDeletedCompanion') return diagnoseChromeRecentlyDeletedCompanion(payload);
     if (op === 'requestFolderDelete') return requestFolderDelete(payload);
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);
