@@ -163,6 +163,7 @@
     lastPostImportRefreshMode:     '',
     lastPostImportRefreshChangedFolderCount: 0,
     lastFolderDeleteRequestImport: null,
+    lastFolderDeleteRequestAutoApply: null,
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -1358,6 +1359,7 @@
       sourceSummary: f.sourceSummary || null,
       importSummary: f.importSummary || null,
       folderDeleteRequestImport: f.folderDeleteRequestImport || null,
+      folderDeleteRequestAutoApply: f.folderDeleteRequestAutoApply || null,
       parity: f.parity || {
         snapshotCaptured: false,
         paritySnapshotHash: '',
@@ -1512,6 +1514,187 @@
     }
   }
 
+  function folderDeleteRequestIdentityMatchesRow(row, request) {
+    var reviewId = cleanString(row && (row.reviewId || row.requestId));
+    var requestId = cleanString(row && (row.requestId || row.reviewId));
+    var recordId = cleanString(row && (row.recordId || row.folderId)).replace(/^folder:/, '');
+    var targetRequestId = cleanString(request && (request.requestId || request.reviewId));
+    var targetReviewId = cleanString(request && (request.reviewId || request.requestId));
+    var targetFolderId = cleanString(request && request.folderId);
+    var requestMatches = !targetRequestId || requestId === targetRequestId || reviewId === targetRequestId ||
+      reviewId === targetReviewId || requestId === targetReviewId;
+    var folderMatches = !targetFolderId || recordId === targetFolderId;
+    return requestMatches && folderMatches;
+  }
+
+  async function findFolderDeleteRequestReviewForAutoApply(reviews, request, status) {
+    if (!reviews || typeof reviews.listFolderDeleteRequests !== 'function') return null;
+    var rows = await reviews.listFolderDeleteRequests({
+      folderId: request.folderId,
+      status: status || '',
+      limit: 100,
+    });
+    var list = Array.isArray(rows) ? rows : [];
+    return list.find(function (row) {
+      return folderDeleteRequestIdentityMatchesRow(row, request);
+    }) || null;
+  }
+
+  async function autoApplyFolderDeleteRequestsFromChromeBundle(normalized, importResult, options) {
+    var bundle = normalized && normalized.bundle && typeof normalized.bundle === 'object'
+      ? normalized.bundle : null;
+    var sourceRequests = bundle && Array.isArray(bundle.folderDeleteRequests)
+      ? bundle.folderDeleteRequests : [];
+    var requests = sourceRequests.map(sanitizeFolderDeleteRequestForChromeDesktop).filter(function (request) {
+      return !!request;
+    });
+    var result = {
+      schema: FOLDER_DELETE_REQUEST_SCHEMA + '.desktop-auto-apply.v1',
+      ok: true,
+      phase: 'phase6b.4',
+      status: requests.length ? 'folder-delete-request-auto-apply-pending' : 'no-folder-delete-requests',
+      model: 'desktop-auto-apply-safe-chrome-soft-delete',
+      found: sourceRequests.length,
+      requestCount: requests.length,
+      importedCount: numberOrZero(importResult && importResult.inserted) + numberOrZero(importResult && importResult.updated),
+      desktopImportedFolderDeleteRequestCount: numberOrZero(importResult && importResult.inserted) + numberOrZero(importResult && importResult.updated),
+      attemptedCount: 0,
+      appliedCount: 0,
+      alreadyAppliedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      receiptExportReadyCount: 0,
+      appliedRequests: [],
+      skippedRequests: [],
+      failedRequests: [],
+      warnings: [],
+      blockers: [],
+      desktopAppliedFolderDeleteRequestCount: 0,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noPurge: true,
+    };
+    if (!requests.length) {
+      state.lastFolderDeleteRequestAutoApply = result;
+      return result;
+    }
+    if (!importResult || importResult.ok === false) {
+      result.ok = false;
+      result.status = 'folder-delete-request-import-not-ok';
+      result.blockers.push('folder-delete-request-import-not-ok');
+      result.failedCount = requests.length;
+      state.lastFolderDeleteRequestAutoApply = result;
+      return result;
+    }
+    var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+    if (!reviews || typeof reviews.listFolderDeleteRequests !== 'function' || typeof reviews.applyFolderDeleteRequest !== 'function') {
+      result.ok = false;
+      result.status = 'folder-delete-request-auto-apply-unavailable';
+      result.blockers.push('folder-delete-request-auto-apply-unavailable');
+      result.failedCount = requests.length;
+      state.lastFolderDeleteRequestAutoApply = result;
+      return result;
+    }
+    for (var i = 0; i < requests.length; i += 1) {
+      var request = requests[i];
+      var row = null;
+      try {
+        row = await findFolderDeleteRequestReviewForAutoApply(reviews, request, 'pending');
+        if (!row) {
+          var resolved = await findFolderDeleteRequestReviewForAutoApply(reviews, request, 'resolved');
+          if (resolved && cleanString(resolved.decision) === 'applied-folder-delete-request') {
+            result.alreadyAppliedCount += 1;
+            result.receiptExportReadyCount += 1;
+            result.appliedRequests.push({
+              requestId: request.requestId,
+              reviewId: cleanString(resolved.reviewId || request.reviewId || request.requestId),
+              folderId: request.folderId,
+              status: 'already-applied',
+            });
+            continue;
+          }
+          result.skippedCount += 1;
+          result.skippedRequests.push({
+            requestId: request.requestId,
+            reviewId: request.reviewId,
+            folderId: request.folderId,
+            status: 'pending-review-not-found',
+          });
+          addUnique(result.warnings, 'folder-delete-request-pending-review-not-found');
+          continue;
+        }
+        result.attemptedCount += 1;
+        var applyResult = await reviews.applyFolderDeleteRequest({
+          reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
+          requestId: request.requestId,
+        }, {
+          reason: 'phase6b4-auto-apply-chrome-soft-delete',
+          deleteReason: 'phase6b4-auto-apply-chrome-soft-delete',
+        });
+        if (applyResult && applyResult.ok === true) {
+          result.appliedCount += 1;
+          result.receiptExportReadyCount += 1;
+          result.appliedRequests.push({
+            requestId: request.requestId,
+            reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
+            folderId: request.folderId,
+            status: cleanString(applyResult.status) || 'folder-delete-request-applied',
+            tombstoneId: cleanString(applyResult.tombstoneId),
+          });
+        } else if (applyResult && applyResult.alreadyApplied === true) {
+          result.alreadyAppliedCount += 1;
+          result.receiptExportReadyCount += 1;
+          result.appliedRequests.push({
+            requestId: request.requestId,
+            reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
+            folderId: request.folderId,
+            status: 'already-applied',
+          });
+        } else {
+          result.failedCount += 1;
+          result.failedRequests.push({
+            requestId: request.requestId,
+            reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
+            folderId: request.folderId,
+            status: cleanString(applyResult && applyResult.status) || 'folder-delete-request-apply-failed',
+            blockers: Array.isArray(applyResult && applyResult.blockers) ? applyResult.blockers.slice() : [],
+          });
+          (Array.isArray(applyResult && applyResult.blockers) ? applyResult.blockers : []).forEach(function (code) {
+            addUnique(result.blockers, code && (code.code || code));
+          });
+        }
+      } catch (e) {
+        result.failedCount += 1;
+        result.failedRequests.push({
+          requestId: request.requestId,
+          reviewId: request.reviewId,
+          folderId: request.folderId,
+          status: 'folder-delete-request-auto-apply-threw',
+        });
+        addUnique(result.blockers, 'folder-delete-request-auto-apply-threw');
+        pushErr('folderDeleteRequests.autoApply', e);
+      }
+    }
+    result.desktopAppliedFolderDeleteRequestCount = result.appliedCount + result.alreadyAppliedCount;
+    if (result.failedCount > 0) {
+      result.ok = false;
+      if (!result.blockers.length) result.blockers.push('folder-delete-request-auto-apply-failed');
+      result.status = result.appliedCount || result.alreadyAppliedCount
+        ? 'folder-delete-request-auto-apply-partial'
+        : 'folder-delete-request-auto-apply-failed';
+    } else if (result.appliedCount || result.alreadyAppliedCount) {
+      result.status = 'folder-delete-request-auto-applied';
+    } else {
+      result.status = 'folder-delete-request-auto-apply-skipped';
+    }
+    state.lastFolderDeleteRequestAutoApply = result;
+    return result;
+  }
+
   async function importChromeLatestBundle(bundleInput, options) {
     var normalized = buildChromeDesktopSupportedBundle(bundleInput);
     if (!normalized.ok) {
@@ -1551,6 +1734,7 @@
       });
     }
     var warnings = normalized.warnings.slice();
+    var blockers = [];
     var importSummary = redactedImportSummary(imported);
     var staleMinimalRowsCovered = staleMinimalRowErrorsAreCovered(importSummary, normalized.sourceSummary);
     if (staleMinimalRowsCovered) {
@@ -1580,6 +1764,18 @@
     (folderDeleteRequestImport.warnings || []).forEach(function (code) {
       addUnique(warnings, code);
     });
+    var folderDeleteRequestAutoApply = await autoApplyFolderDeleteRequestsFromChromeBundle(normalized, folderDeleteRequestImport, options);
+    (folderDeleteRequestAutoApply.warnings || []).forEach(function (code) {
+      addUnique(warnings, code);
+    });
+    if (folderDeleteRequestAutoApply.ok === false) {
+      var autoApplyBlockers = Array.isArray(folderDeleteRequestAutoApply.blockers) && folderDeleteRequestAutoApply.blockers.length
+        ? folderDeleteRequestAutoApply.blockers
+        : ['folder-delete-request-auto-apply-failed'];
+      autoApplyBlockers.forEach(function (code) {
+        addUnique(blockers, code);
+      });
+    }
     try {
       if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
         await H2O.LibraryIndex.refresh('f19-chrome-desktop-import');
@@ -1591,10 +1787,12 @@
     if (parity.warning) addUnique(warnings, parity.warning);
     return propagationResult(true, {
       status: 'imported',
+      blockers: blockers,
       warnings: warnings,
       sourceSummary: normalized.sourceSummary,
       importSummary: importSummary,
       folderDeleteRequestImport: folderDeleteRequestImport,
+      folderDeleteRequestAutoApply: folderDeleteRequestAutoApply,
       parity: parity,
       idempotency: {
         fileFingerprintChecked: false,
@@ -2591,6 +2789,29 @@
           noApply: state.lastFolderDeleteRequestImport.noApply === true,
           desktopApplyDeferred: state.lastFolderDeleteRequestImport.desktopApplyDeferred === true,
           tombstonePropagation: cleanString(state.lastFolderDeleteRequestImport.tombstonePropagation),
+        } : null,
+        lastFolderDeleteRequestAutoApply: state.lastFolderDeleteRequestAutoApply ? {
+          ok: state.lastFolderDeleteRequestAutoApply.ok === true,
+          phase: cleanString(state.lastFolderDeleteRequestAutoApply.phase),
+          status: cleanString(state.lastFolderDeleteRequestAutoApply.status),
+          model: cleanString(state.lastFolderDeleteRequestAutoApply.model),
+          found: numberOrZero(state.lastFolderDeleteRequestAutoApply.found),
+          requestCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.requestCount),
+          importedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.importedCount),
+          attemptedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.attemptedCount),
+          appliedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.appliedCount),
+          alreadyAppliedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.alreadyAppliedCount),
+          skippedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.skippedCount),
+          failedCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.failedCount),
+          receiptExportReadyCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.receiptExportReadyCount),
+          desktopImportedFolderDeleteRequestCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.desktopImportedFolderDeleteRequestCount),
+          desktopAppliedFolderDeleteRequestCount: numberOrZero(state.lastFolderDeleteRequestAutoApply.desktopAppliedFolderDeleteRequestCount),
+          noChromePurgeAuthority: state.lastFolderDeleteRequestAutoApply.noChromePurgeAuthority === true,
+          noChromeTombstoneApply: state.lastFolderDeleteRequestAutoApply.noChromeTombstoneApply === true,
+          noHardDelete: state.lastFolderDeleteRequestAutoApply.noHardDelete === true,
+          noChatDelete: state.lastFolderDeleteRequestAutoApply.noChatDelete === true,
+          noSnapshotDelete: state.lastFolderDeleteRequestAutoApply.noSnapshotDelete === true,
+          noAssetDelete: state.lastFolderDeleteRequestAutoApply.noAssetDelete === true,
         } : null,
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),

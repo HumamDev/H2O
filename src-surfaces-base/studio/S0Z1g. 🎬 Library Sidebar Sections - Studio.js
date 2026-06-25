@@ -3018,6 +3018,8 @@
       pendingDeleteHiddenCount,
       pendingDeleteRequestCount: requestRows.length,
       desktopReceiptHiddenCount,
+      chromeReceiptImportedCount: desktopReceiptHiddenCount,
+      chromePendingStillWaitingCount: Math.max(0, pendingDeleteHiddenCount - desktopReceiptHiddenCount),
       companionStateSource: 'merged-folder-state-mirror+pending-delete-request-store',
       probeName,
       probe: {

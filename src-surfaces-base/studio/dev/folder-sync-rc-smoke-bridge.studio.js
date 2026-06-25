@@ -1066,6 +1066,8 @@
       blockers: codeList(result.blockers),
       warnings: codeList(result.warnings),
       folderDeleteRequestExport: safeObject(result.folderDeleteRequestExport),
+      folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport),
+      folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
       preExportFolderModel: preExportFolderModel ? {
         status: cleanString(preExportFolderModel.status),
         rowCount: Number(preExportFolderModel.rowCount || 0),
@@ -1101,6 +1103,10 @@
       syncFolderDiagnose: summarizeFolderSyncDiagnose(rawDiagnose),
       folderDeleteReceiptImport: safeObject(result.folderDeleteReceiptImport ||
         rawDiagnose && (rawDiagnose.folderDeleteReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderDeleteReceiptImport)),
+      folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport ||
+        rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestImport)),
+      folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply ||
+        rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestAutoApply)),
       folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport ||
         rawDiagnose && (rawDiagnose.folderRestoreReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport)),
       lastFolderRestoreReceiptImport: safeObject(rawDiagnose &&
