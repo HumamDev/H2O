@@ -173,6 +173,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
   // import/recovery, or UI.
   "ingestion/saved-chat-archive-requests.tauri.js",
+  // Desktop-only: saved-chat archive request inbox (Phase D.3B.1). Reads the
+  // dedicated $HOME/H2O Studio Archive Requests inbox and enqueues through D.2B
+  // only. Writes receipts; no materialization, package writer, CAS, sync,
+  // Chrome delivery, import/recovery, or UI.
+  "ingestion/saved-chat-archive-request-inbox.tauri.js",
   // Desktop-only: saved-chat archive request materializer (Phase D.2C). Triggers
   // the existing package writer for a validated queued request (re-resolves
   // first); updates only the saved_chat_archive_requests row. No migration,
@@ -1230,6 +1235,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
+  "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
   "sync/kernel/privacy-scan.tauri.js",

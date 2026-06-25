@@ -600,6 +600,11 @@
        existing Desktop store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>
+  <!-- Desktop-only: saved-chat archive request inbox (Phase D.3B.1).
+       Reads dedicated $HOME/H2O Studio Archive Requests inbox files and
+       enqueues through D.2B only. Writes receipts; no materialization, package
+       writer, CAS, sync transport, Chrome delivery, import/recovery, or UI. -->
+  <script src="./ingestion/saved-chat-archive-request-inbox.tauri.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the

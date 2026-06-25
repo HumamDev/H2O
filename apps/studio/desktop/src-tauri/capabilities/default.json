@@ -18,14 +18,16 @@
       "allow": [
         { "path": "$DOWNLOAD/**" },
         { "path": "$HOME/**" },
-        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/desktop-command.json" }
+        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/desktop-command.json" },
+        { "path": "$HOME/H2O Studio Archive Requests/inbox/*.request.json" }
       ]
     },
     {
       "identifier": "fs:allow-read-dir",
       "allow": [
         { "path": "$DOWNLOAD/**" },
-        { "path": "$HOME/**" }
+        { "path": "$HOME/**" },
+        { "path": "$HOME/H2O Studio Archive Requests/inbox" }
       ]
     },
     {
@@ -36,7 +38,9 @@
         { "path": "$HOME/H2O Studio Sync/devices/*" },
         { "path": "$HOME/H2O Studio Sync/devices/**" },
         { "path": "$HOME/H2O Studio Sync/.h2o-smoke" },
-        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/results" }
+        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/results" },
+        { "path": "$HOME/H2O Studio Archive Requests" },
+        { "path": "$HOME/H2O Studio Archive Requests/receipts" }
       ]
     },
     {
@@ -51,7 +55,8 @@
         { "path": "$HOME/H2O Studio Sync/devices/*/latest.sha256" },
         { "path": "$HOME/H2O Studio Sync/devices/*/state.json" },
         { "path": "$HOME/H2O Studio Sync/devices/**" },
-        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/results/*.json" }
+        { "path": "$HOME/H2O Studio Sync/.h2o-smoke/results/*.json" },
+        { "path": "$HOME/H2O Studio Archive Requests/receipts/*.receipt.json" }
       ]
     },
     {
