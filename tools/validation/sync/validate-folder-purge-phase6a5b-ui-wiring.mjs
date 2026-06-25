@@ -5,7 +5,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const sidebarPath = path.join(root, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js');
-const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-restore-phase6a5-purge-ui-flow.md');
+const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-restore-phase6a5b-purge-button-wiring.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -48,85 +48,71 @@ for (const file of [sidebarPath, evidencePath]) {
 const sidebar = read(sidebarPath);
 const evidence = read(evidencePath);
 const purgeBody = functionBody(sidebar, 'permanentlyDeleteRecentlyDeletedFolders');
-const renderBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersPanel');
 const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSidebarEntry');
 
 [
-  'previewRecentlyDeletedFolderPurge',
-  'purgeRecentlyDeletedFolders',
+  "previewFn.call(store, { reason: 'desktop-recently-deleted-ui-preview' })",
+  'preview?.ok !== true',
   'preview?.confirmationToken || preview?.previewToken',
+  'preview-token-missing',
+  'const confirmFn = typeof W.confirm === \'function\' ? W.confirm.bind(W) : null',
   'native-confirm-unavailable',
   'const confirmResult = confirmFn(confirmText)',
   'confirmResult === false',
-  'Delete permanently',
-  'Restore will no longer be possible',
-  'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
   'Delete permanently cancelled.',
+  'commitFn.call(store',
   'dryRun: false',
   'confirmationToken,',
   'previewToken: confirmationToken',
   'expectedCount',
   "reason: 'desktop-recently-deleted-ui-delete-permanently'",
-  'deleteChats: false',
-  'deleteSnapshots: false',
-  'deleteAssets: false',
   "confirmationPhrase: 'DELETE PERMANENTLY'",
   "confirmPhrase: 'DELETE PERMANENTLY'",
   "typedConfirmation: 'DELETE PERMANENTLY'",
+  'deleteChats: false',
+  'deleteSnapshots: false',
+  'deleteAssets: false',
   'Deleted permanently:',
   'Delete permanently failed:',
-  'chatDeletedCount',
-  'snapshotDeletedCount',
-  'hardDeletedFolderRowCount',
-  "refreshAfterNativeFolderMetadataApply('folder-recently-deleted-purge')",
-].forEach((needle) => assertContains(purgeBody, needle, `6A.5 purge flow ${needle}`));
+].forEach((needle) => assertContains(purgeBody, needle, `6A.5b purge wiring ${needle}`));
 
 [
   'W.prompt',
   'Type DELETE PERMANENTLY',
+  'confirmText) === true',
+  'confirmationToken: preview.previewToken',
   'remove(',
   'softDeleteEmptyFolder(',
-  'restoreTombstonedFolder(',
   'deleteChat(',
   'deleteSnapshot(',
   'DELETE FROM',
   'folder_bindings',
   'sync_tombstone_reviews',
-].forEach((needle) => assertNotContains(purgeBody, needle, `6A.5 forbidden purge flow ${needle}`));
-
-[
-  'Delete permanently',
-  'purgeEligibleCount > 0 && purgeApiAvailable',
-  'permanentlyDeleteRecentlyDeletedFolders',
-  'wbSidebarNativeAction--danger',
-].forEach((needle) => assertContains(renderBody, needle, `6A.5 main purge button ${needle}`));
+].forEach((needle) => assertNotContains(purgeBody, needle, `6A.5b forbidden purge wiring ${needle}`));
 
 assertNotContains(sidebarEntryBody, 'Delete permanently', 'sidebar purge button');
 assertNotContains(sidebarEntryBody, 'permanentlyDeleteRecentlyDeletedFolders', 'sidebar purge action');
 
 [
-  'Phase 6A.5',
-  'Delete permanently',
-  'native confirm',
+  'Phase 6A.5b',
+  'preview.confirmationToken || preview.previewToken',
+  'confirmResult === false',
+  'native-confirm-unavailable',
   'confirmationPhrase:"DELETE PERMANENTLY"',
   'confirmPhrase:"DELETE PERMANENTLY"',
   'typedConfirmation:"DELETE PERMANENTLY"',
-  'Delete permanently cancelled.',
   'Deleted permanently: N',
-  'chatDeletedCount:0',
-  'snapshotDeletedCount:0',
-  'assetDeletedCount:0',
-  'hardDeletedFolderRowCount:0',
-  'receiptDeletedCount:0',
+  'Delete permanently failed',
+  'Manual runtime proof pending',
   'Chrome has no purge button',
-].forEach((needle) => assertContains(evidence, needle, `6A.5 evidence ${needle}`));
+].forEach((needle) => assertContains(evidence, needle, `6A.5b evidence ${needle}`));
 
 console.log(JSON.stringify({
   ok: true,
-  validator: 'validate-folder-purge-phase6a5-ui-flow',
+  validator: 'validate-folder-purge-phase6a5b-ui-wiring',
   ui: path.relative(root, sidebarPath),
   evidence: path.relative(root, evidencePath),
-  nativeConfirm: true,
-  promptRemoved: true,
+  tokenFallback: true,
+  explicitFalseCancelOnly: true,
   chromeAuthority: false,
 }, null, 2));

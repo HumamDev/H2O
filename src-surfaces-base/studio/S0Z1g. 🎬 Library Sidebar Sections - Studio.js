@@ -2135,14 +2135,24 @@
       setStatus('No purge-eligible deleted folders', '');
       return preview;
     }
+    const confirmationToken = String(preview?.confirmationToken || preview?.previewToken || '').trim();
+    if (!confirmationToken) {
+      setStatus('Delete permanently failed: preview token missing', 'blocked');
+      return { ok: false, status: 'preview-token-missing', blockers: ['preview-token-missing'] };
+    }
     const confirmText = [
       `Delete permanently ${formatNumber(expectedCount)} folder${expectedCount === 1 ? '' : 's'} from Recently Deleted?`,
       '',
       'Restore will no longer be possible for those folder tombstones.',
       'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
     ].join('\n');
-    const confirmed = W.confirm?.(confirmText) === true;
-    if (!confirmed) {
+    const confirmFn = typeof W.confirm === 'function' ? W.confirm.bind(W) : null;
+    if (!confirmFn) {
+      setStatus('Delete permanently failed: native confirmation unavailable', 'blocked');
+      return { ok: false, status: 'native-confirm-unavailable', blockers: ['native-confirm-unavailable'] };
+    }
+    const confirmResult = confirmFn(confirmText);
+    if (confirmResult === false) {
       setStatus('Delete permanently cancelled.', '');
       return { ok: false, status: 'folder-purge-cancelled', blockers: [] };
     }
@@ -2150,7 +2160,8 @@
     try {
       const result = await commitFn.call(store, {
         dryRun: false,
-        confirmationToken: preview.previewToken,
+        confirmationToken,
+        previewToken: confirmationToken,
         expectedCount,
         reason: 'desktop-recently-deleted-ui-delete-permanently',
         deleteChats: false,
@@ -2175,7 +2186,7 @@
         }
       } else {
         const code = firstResultCode(result, String(result?.status || 'folder-purge-failed'));
-        setStatus(`Blocked: ${code}`, 'blocked');
+        setStatus(`Delete permanently failed: ${code}`, 'blocked');
       }
       return result || { ok: false, status: 'folder-purge-failed', blockers: ['folder-purge-failed'] };
     } catch (e) {
