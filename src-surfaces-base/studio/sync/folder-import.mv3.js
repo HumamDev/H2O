@@ -385,6 +385,7 @@
   }
 
   async function persistState(patch) {
+    var chromeExportReady = !!state.handle && getChromeExportWriteGate().effectiveFlagEnabled === true;
     var next = Object.assign({
       schemaVersion: 1,
       phase: PHASE,
@@ -424,7 +425,7 @@
       desktopVisibleFolderSet: state.desktopVisibleFolderSet,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
-      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
+      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' || chromeExportReady,
     }, safeObject(patch));
     await writeKv(STATE_KEY, next);
   }
@@ -3825,7 +3826,8 @@
       lastExportPermission: state.lastChromeExportPermission,
       lastExportBlockers: state.lastChromeExportBlockers.slice(),
       backgroundAutoImport: false,
-      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
+      chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' ||
+        (!!state.handle && getChromeExportWriteGate().effectiveFlagEnabled === true),
       chromeDesktopExportApiAvailable: !!getChromeAutoImportApi(),
     };
   }
@@ -4922,7 +4924,9 @@
       },
       chromeToDesktop: {
         autoExportEnabled: true,
-        chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported',
+        chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' ||
+          (!!state.handle && chromeExportWriteGate.effectiveFlagEnabled === true),
+        exportReady: !!state.handle && chromeExportWriteGate.effectiveFlagEnabled === true,
         exportApiAvailable: !!getChromeAutoImportApi(),
         exportFlagKey: cleanString(chromeExportWriteGate.flagKey || 'sync.chromeAutoImport'),
         exportFlagEnabled: chromeExportWriteGate.effectiveFlagEnabled === true,

@@ -19,6 +19,7 @@
   var VERSION = '0.1.0-slice2';
   var URL_FLAG = 'h2oSmokeBridge';
   var OPT_IN_KEY = 'h2o:studio:smoke-bridge:enabled:v1';
+  var SMOKE_CHROME_EXPORT_OPT_IN_KEY = 'h2o:studio:smoke-bridge:chrome-export-enabled:v1';
   var REQUIRED_VALUE = 'folder-sync-rc';
   var FOLDER_METADATA_OPERATION_SCHEMA = 'h2o.folder-metadata-operation.v1';
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
@@ -182,6 +183,20 @@
       if (root && root.getAttribute('data-h2o-public-release') === '1') return true;
     } catch (_) { /* ignore */ }
     return false;
+  }
+
+  function ensureChromeSmokeExportOptIn() {
+    var surface = detectSurface();
+    if (surface.kind !== 'chrome-studio') return false;
+    if (readLocalOptIn() !== REQUIRED_VALUE) return false;
+    if (publicReleaseFlagActive()) return false;
+    try {
+      if (!global.localStorage || typeof global.localStorage.setItem !== 'function') return false;
+      global.localStorage.setItem(SMOKE_CHROME_EXPORT_OPT_IN_KEY, REQUIRED_VALUE);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function diagnoseGates() {
@@ -1044,7 +1059,9 @@
     var api = getPath(H2O, ['Studio', 'sync', 'folder']);
     if (!api || typeof api.syncNow !== 'function') return unsupportedResult('syncNow', 'folder-sync-api-unavailable');
     var preExportFolderModel = null;
+    var chromeExportSmokeOptInEnsured = false;
     if (detectSurface().kind === 'chrome-studio' && cleanString(payload.direction) === 'chrome-to-desktop') {
+      chromeExportSmokeOptInEnsured = ensureChromeSmokeExportOptIn();
       dispatchFolderStateRefresh(cleanString(payload.reason) || 'folder-sync-rc-smoke-sync-export-refresh');
       try {
         preExportFolderModel = await getFolderModel({
@@ -1068,6 +1085,7 @@
       folderDeleteRequestExport: safeObject(result.folderDeleteRequestExport),
       folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
+      chromeExportSmokeOptInEnsured: chromeExportSmokeOptInEnsured,
       preExportFolderModel: preExportFolderModel ? {
         status: cleanString(preExportFolderModel.status),
         rowCount: Number(preExportFolderModel.rowCount || 0),
@@ -1082,6 +1100,7 @@
     var api = getPath(H2O, ['Studio', 'sync', 'folder']);
     var fn = api && (api.diagnoseHealth || (api.health && api.health.diagnose) || (api.diagnostics && api.diagnostics.diagnose));
     if (typeof fn !== 'function') return unsupportedResult('diagnoseHealth', 'folder-health-api-unavailable');
+    var chromeExportSmokeOptInEnsured = ensureChromeSmokeExportOptIn();
     var rawDiagnose = null;
     try {
       rawDiagnose = api && typeof api.diagnose === 'function' ? safeObject(await api.diagnose()) : null;
@@ -1100,6 +1119,7 @@
       deferred: safeObject(result.deferred),
       desktopToChrome: safeObject(result.desktopToChrome),
       chromeToDesktop: safeObject(result.chromeToDesktop),
+      chromeExportSmokeOptInEnsured: chromeExportSmokeOptInEnsured,
       syncFolderDiagnose: summarizeFolderSyncDiagnose(rawDiagnose),
       folderDeleteReceiptImport: safeObject(result.folderDeleteReceiptImport ||
         rawDiagnose && (rawDiagnose.folderDeleteReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderDeleteReceiptImport)),

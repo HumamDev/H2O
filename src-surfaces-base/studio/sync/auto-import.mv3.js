@@ -243,6 +243,16 @@
     } catch (_) { /* fall through */ }
     return false;
   }
+  function setMasterFlag(next) {
+    try {
+      var flags = H2O.flags;
+      if (flags && typeof flags.set === 'function') {
+        flags.set(FLAG_KEY, !!next);
+        return true;
+      }
+    } catch (e) { pushError('setMasterFlag', e); }
+    return false;
+  }
 
   function smokeChromeExportEnabled() {
     return chromeExtensionSurface() &&
@@ -2334,13 +2344,26 @@
   }
 
   function isEnabled() { return reconcileEventTriggerBinding('isEnabled'); }
+  async function enableChromeExport() {
+    setMasterFlag(true);
+    return diagnoseChromeExportWriteGate();
+  }
+  async function disableChromeExport() {
+    setMasterFlag(false);
+    unbindEventListeners();
+    setEventTriggerFlag(false);
+    state.enabled = false;
+    return diagnoseChromeExportWriteGate();
+  }
   async function enable()  {
+    setMasterFlag(true);
     setEventTriggerFlag(true);
     reconcileEventTriggerBinding('enable');
     return isEnabled();
   }
   async function disable() {
     unbindEventListeners();
+    setMasterFlag(false);
     setEventTriggerFlag(false);
     state.enabled = false;
     return isEnabled();
@@ -2486,6 +2509,8 @@
     __version: '0.1.0',
     exportNow: exportNow,
     isEnabled: isEnabled,
+    enableChromeExport: enableChromeExport,
+    disableChromeExport: disableChromeExport,
     enable: enable,
     disable: disable,
     trigger: trigger,

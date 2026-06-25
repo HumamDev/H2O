@@ -7497,11 +7497,11 @@ function settingsLegacySyncStatusHtml(cardStyle, btnStyle){
         <button id="wbSettingsSyncConnectFolder" type="button" style="${btnStyle}">Connect Folder</button>
         <button id="wbSettingsSyncDisconnectFolder" type="button" style="${btnStyle}">Disconnect</button>
         <button id="wbSettingsSyncNow" type="button" style="${btnStyle}">Sync Now</button>
-        <button id="wbSettingsSyncChromeExportNow" type="button" style="${btnStyle}" title="Write h2o.studio.fullBundle.v2 to chrome-latest.json in the connected sync folder. Behind the sync.chromeAutoImport feature flag (OFF by default). See R2D Gate R3.">Export to Desktop sync folder</button>
+        <button id="wbSettingsSyncChromeExportNow" type="button" style="${btnStyle}" title="Write h2o.studio.fullBundle.v2 to chrome-latest.json in the connected sync folder. Requires Chrome export to be enabled.">Export to Desktop sync folder</button>
         <button id="wbSettingsSyncEnableChromeAuto" type="button" style="${btnStyle}">Enable Auto Sync</button>
         <button id="wbSettingsSyncDisableChromeAuto" type="button" style="${btnStyle}">Disable Auto Sync</button>
-        <button id="wbSettingsSyncEnableChromeAutoExport" type="button" style="${btnStyle}" title="When library state changes (cross-surface broadcast or LibraryIndex update), trigger a debounced exportNow() to write chrome-latest.json. Requires sync.chromeAutoImport=true AND sync.chromeAutoImport.eventTrigger=true. 2s debounce. No polling.">Enable Export on Save</button>
-        <button id="wbSettingsSyncDisableChromeAutoExport" type="button" style="${btnStyle}">Disable Export on Save</button>
+        <button id="wbSettingsSyncEnableChromeAutoExport" type="button" style="${btnStyle}" title="Enable Chrome export to write chrome-latest.json, and wire library changes to trigger debounced exportNow(). 2s debounce. No polling.">Enable Chrome Export</button>
+        <button id="wbSettingsSyncDisableChromeAutoExport" type="button" style="${btnStyle}">Disable Chrome Export</button>
       </div>
       <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -8028,11 +8028,11 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
         <button id="wbSettingsSyncConnectFolder" type="button" style="${btnStyle}">Connect Folder</button>
         <button id="wbSettingsSyncDisconnectFolder" type="button" style="${btnStyle}">Disconnect</button>
         <button id="wbSettingsSyncNow" type="button" style="${btnStyle}">Sync Now</button>
-        <button id="wbSettingsSyncChromeExportNow" type="button" style="${btnStyle}" title="Write h2o.studio.fullBundle.v2 to chrome-latest.json in the connected sync folder. Behind the sync.chromeAutoImport feature flag (OFF by default). See R2D Gate R3.">Export to Desktop sync folder</button>
+        <button id="wbSettingsSyncChromeExportNow" type="button" style="${btnStyle}" title="Write h2o.studio.fullBundle.v2 to chrome-latest.json in the connected sync folder. Requires Chrome export to be enabled.">Export to Desktop sync folder</button>
         <button id="wbSettingsSyncEnableChromeAuto" type="button" style="${btnStyle}">Enable Auto Sync</button>
         <button id="wbSettingsSyncDisableChromeAuto" type="button" style="${btnStyle}">Disable Auto Sync</button>
-        <button id="wbSettingsSyncEnableChromeAutoExport" type="button" style="${btnStyle}" title="When library state changes (cross-surface broadcast or LibraryIndex update), trigger a debounced exportNow() to write chrome-latest.json. Requires sync.chromeAutoImport=true AND sync.chromeAutoImport.eventTrigger=true. 2s debounce. No polling.">Enable Export on Save</button>
-        <button id="wbSettingsSyncDisableChromeAutoExport" type="button" style="${btnStyle}">Disable Export on Save</button>
+        <button id="wbSettingsSyncEnableChromeAutoExport" type="button" style="${btnStyle}" title="Enable Chrome export to write chrome-latest.json, and wire library changes to trigger debounced exportNow(). 2s debounce. No polling.">Enable Chrome Export</button>
+        <button id="wbSettingsSyncDisableChromeAutoExport" type="button" style="${btnStyle}">Disable Chrome Export</button>
       </div>
       <pre id="wbSettingsSyncLog" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
     </div>
@@ -14086,10 +14086,10 @@ async function refreshSettingsSync(panel){
   const syncNowBtn = panel.querySelector("#wbSettingsSyncNow");
   const enableBtn = panel.querySelector("#wbSettingsSyncEnableChromeAuto");
   const disableBtn = panel.querySelector("#wbSettingsSyncDisableChromeAuto");
-  /* R3 phase 1 — Chrome → chrome-latest.json export button.
+  /* Chrome → chrome-latest.json export button.
    * Enabled only when: (a) the autoImport module is registered,
    * (b) the sync folder is currently connected, and
-   * (c) the sync.chromeAutoImport feature flag is ON. */
+   * (c) Chrome export is enabled. */
   const chromeExportBtn = panel.querySelector("#wbSettingsSyncChromeExportNow");
   if (chromeExportBtn) {
     const autoImport = W.H2O?.Studio?.sync?.autoImport;
@@ -14103,7 +14103,7 @@ async function refreshSettingsSync(panel){
       : !diag.connected
         ? "Connect the sync folder first."
         : !flagOn
-          ? "Feature flag sync.chromeAutoImport is OFF. Use H2O.flags.set('sync.chromeAutoImport', true) to enable (R2D Gate R3, opt-in)."
+          ? "Chrome export is disabled. Use Enable Chrome Export."
           : "Write h2o.studio.fullBundle.v2 to chrome-latest.json in the connected sync folder.";
   }
   if (connectBtn) connectBtn.disabled = !(folder && typeof folder.connectFolder === "function");
@@ -14111,13 +14111,8 @@ async function refreshSettingsSync(panel){
   if (syncNowBtn) syncNowBtn.disabled = !(folder && typeof folder.syncNow === "function" && diag.connected);
   if (enableBtn) enableBtn.disabled = !(folder && typeof folder.enableAutoSync === "function") || !!diag.autoSyncEnabled;
   if (disableBtn) disableBtn.disabled = !(folder && typeof folder.disableAutoSync === "function") || !diag.autoSyncEnabled;
-  /* R3 phase 2 — Chrome event-triggered export buttons.
-   * The Enable/Disable pair toggles sync.chromeAutoImport.eventTrigger.
-   * For the trigger to actually fire, BOTH that flag AND the master
-   * sync.chromeAutoImport flag must be ON, AND the folder must be
-   * connected. Disabled-state mirrors the master button: visible to
-   * confirm the API exists, but disabled when the prerequisites aren't
-   * met so users see exactly which gate is failing via the title text. */
+  /* Chrome export buttons. The Enable/Disable pair toggles the master
+   * Chrome export gate and the event-triggered export binding together. */
   const chromeAutoExportEnableBtn = panel.querySelector("#wbSettingsSyncEnableChromeAutoExport");
   const chromeAutoExportDisableBtn = panel.querySelector("#wbSettingsSyncDisableChromeAutoExport");
   if (chromeAutoExportEnableBtn || chromeAutoExportDisableBtn) {
@@ -14129,20 +14124,17 @@ async function refreshSettingsSync(panel){
     catch (_) { masterFlagOn = false; }
     try { eventTriggerOn = apiReady && autoImport.isEnabled() === true; }
     catch (_) { eventTriggerOn = false; }
+    const chromeExportFullyEnabled = masterFlagOn && eventTriggerOn;
     if (chromeAutoExportEnableBtn) {
-      chromeAutoExportEnableBtn.disabled = !apiReady || eventTriggerOn;
+      chromeAutoExportEnableBtn.disabled = !apiReady || chromeExportFullyEnabled;
       chromeAutoExportEnableBtn.title = !apiReady
         ? "autoImport module not loaded"
-        : !masterFlagOn
-          ? "Master flag sync.chromeAutoImport is OFF. Event trigger will be wired but no exports will fire until the master flag is ON."
-          : !diag.connected
-            ? "Connect the sync folder first."
-            : eventTriggerOn
-              ? "Already enabled. Use Disable to turn off."
-              : "Wire library-save events to autoImport.exportNow() with 2s debounce.";
+        : chromeExportFullyEnabled
+          ? "Already enabled. Use Disable to turn off."
+          : "Enable Chrome export to write chrome-latest.json and wire library-save events to autoImport.exportNow().";
     }
     if (chromeAutoExportDisableBtn) {
-      chromeAutoExportDisableBtn.disabled = !apiReady || !eventTriggerOn;
+      chromeAutoExportDisableBtn.disabled = !apiReady || !(masterFlagOn || eventTriggerOn);
     }
   }
 }
@@ -14519,16 +14511,15 @@ function bindSettingsSyncControls(panel){
     return fn();
   }));
 
-  /* R3 phase 2 — Chrome event-triggered export opt-in. Toggles
-   * sync.chromeAutoImport.eventTrigger and binds/unbinds the actual
-   * library-save event listeners that trigger debounced exportNow(). */
-  panel.querySelector("#wbSettingsSyncEnableChromeAutoExport")?.addEventListener("click", () => run("Enabling Chrome export on save", async () => {
+  /* Chrome export opt-in. Toggles the master chrome-latest.json export
+   * gate and binds/unbinds the library-save event listeners together. */
+  panel.querySelector("#wbSettingsSyncEnableChromeAutoExport")?.addEventListener("click", () => run("Enabling Chrome export", async () => {
     const fn = W.H2O?.Studio?.sync?.autoImport?.enable;
     if (typeof fn !== "function") throw new Error("autoImport.enable unavailable");
     return fn();
   }));
 
-  panel.querySelector("#wbSettingsSyncDisableChromeAutoExport")?.addEventListener("click", () => run("Disabling Chrome export on save", async () => {
+  panel.querySelector("#wbSettingsSyncDisableChromeAutoExport")?.addEventListener("click", () => run("Disabling Chrome export", async () => {
     const fn = W.H2O?.Studio?.sync?.autoImport?.disable;
     if (typeof fn !== "function") throw new Error("autoImport.disable unavailable");
     return fn();
