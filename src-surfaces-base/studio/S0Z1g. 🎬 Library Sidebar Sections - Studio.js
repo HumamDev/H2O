@@ -310,8 +310,8 @@
     return el('span', {
       class: 'wbSidebarFolderDeleteRequestBadge',
       style: 'display:inline-flex;align-items:center;max-width:100%;border:1px solid rgba(250,204,21,.22);border-radius:999px;padding:1px 5px;font-size:9.5px;line-height:1.25;color:rgba(254,240,138,.92);background:rgba(250,204,21,.08);text-transform:none;letter-spacing:0',
-      title: 'Folder delete request pending Desktop review',
-    }, 'delete requested');
+      title: 'Delete pending Desktop review',
+    }, 'Delete pending');
   }
 
   function normalizeHexColor(raw = '') {
@@ -1294,7 +1294,10 @@
       return result || { ok: false, status: code, blockers: [code] };
     }
     FOLDER_DELETE_REQUEST_UI_STATE.pendingFolderIds.add(folderId);
-    setStatus(result.duplicate ? 'Delete request already pending for Desktop review' : 'Delete request pending for Desktop review', 'ok');
+    setStatus(result.duplicate
+      ? 'Delete already pending Desktop review.'
+      : 'Delete pending Desktop review. This folder stays visible until Desktop confirms.',
+      'ok');
     W.requestAnimationFrame(() => {
       try { renderFolders(); } catch (e) { err('folderDeleteRequest.renderPending', e); }
     });
@@ -3343,11 +3346,13 @@
 
   function makeChromeFolderDeleteRequestPanel(item, pop, anchorEl) {
     const blocker = chromeFolderDeleteRequestBlocker(item);
-    const label = 'Request delete (review on Desktop)';
+    const label = 'Delete';
+    const confirmText = 'Move this folder to Recently Deleted? Desktop Studio will apply the soft delete. No chats or snapshots are deleted.';
     if (blocker) {
       return [makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, null, {
+        danger: true,
         disabled: true,
-        title: `Blocked: ${blocker}`,
+        title: `This folder cannot be deleted. ${blocker}`,
       })];
     }
     let pending = false;
@@ -3357,10 +3362,10 @@
       'data-menu-item': 'chrome-folder-delete-request-panel',
       style: 'display:none;flex-direction:column;gap:6px;',
     });
-    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Desktop review request'));
+    panel.appendChild(el('div', { class: 'wbSidebarNativePickerLabel' }, 'Delete pending'));
     panel.appendChild(el('div', {
       style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);margin-bottom:4px;',
-    }, 'Chrome only creates a pending request. Desktop must review and apply the soft delete. No chats are deleted.'));
+    }, 'Desktop Studio applies the soft delete. Chrome creates a request only; no chats or snapshots are deleted.'));
     const status = el('div', {
       class: 'wbSidebarNativePickerStatus',
       role: 'status',
@@ -3375,9 +3380,20 @@
       status.style.display = text ? 'block' : 'none';
     };
     action = makeMenuAction(label, SIDEBAR_MENU_ACTION_SVGS.delete, () => {
-      panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
-      action.setAttribute('aria-expanded', panel.style.display === 'none' ? 'false' : 'true');
-      if (pending || panel.style.display === 'none') return;
+      if (pending) return;
+      let confirmed = true;
+      if (typeof W.confirm === 'function') {
+        confirmed = W.confirm(confirmText);
+      }
+      panel.style.display = 'flex';
+      action.setAttribute('aria-expanded', 'true');
+      if (confirmed === false) {
+        setStatus('Delete cancelled.', '');
+        W.requestAnimationFrame(() => {
+          try { positionRowMenu(pop, anchorEl); } catch {}
+        });
+        return;
+      }
       pending = true;
       Promise.resolve(requestChromeFolderDelete(item, { setStatus }))
         .finally(() => {
@@ -3388,7 +3404,8 @@
         });
     }, {
       keepOpen: true,
-      title: 'Create a non-destructive Desktop review request',
+      danger: true,
+      title: 'Move to Recently Deleted through Desktop review',
     });
     action.setAttribute('aria-haspopup', 'true');
     action.setAttribute('aria-expanded', 'false');
