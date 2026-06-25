@@ -2140,12 +2140,10 @@
       '',
       'Restore will no longer be possible for those folder tombstones.',
       'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
-      '',
-      'Type DELETE PERMANENTLY to continue.',
     ].join('\n');
-    const typed = String(W.prompt?.(confirmText, '') || '').trim();
-    if (typed !== 'DELETE PERMANENTLY') {
-      setStatus('Delete permanently cancelled', '');
+    const confirmed = W.confirm?.(confirmText) === true;
+    if (!confirmed) {
+      setStatus('Delete permanently cancelled.', '');
       return { ok: false, status: 'folder-purge-cancelled', blockers: [] };
     }
     setStatus('Deleting permanently...', 'pending');
@@ -2158,12 +2156,15 @@
         deleteChats: false,
         deleteSnapshots: false,
         deleteAssets: false,
+        confirmationPhrase: 'DELETE PERMANENTLY',
+        confirmPhrase: 'DELETE PERMANENTLY',
+        typedConfirmation: 'DELETE PERMANENTLY',
       });
       if (result?.ok === true) {
         const purged = Number(result?.purgedCount ?? result?.purgedTombstoneCount) || 0;
         const skipped = Number(result?.skippedCount) || 0;
         setStatus(
-          `Deleted permanently ${formatNumber(purged)} · skipped ${formatNumber(skipped)} · chats ${formatNumber(Number(result?.chatDeletedCount) || 0)} · snapshots ${formatNumber(Number(result?.snapshotDeletedCount) || 0)} · hard rows ${formatNumber(Number(result?.hardDeletedFolderRowCount) || 0)}`,
+          `Deleted permanently: ${formatNumber(purged)} · skipped ${formatNumber(skipped)} · chats ${formatNumber(Number(result?.chatDeletedCount) || 0)} · snapshots ${formatNumber(Number(result?.snapshotDeletedCount) || 0)} · hard rows ${formatNumber(Number(result?.hardDeletedFolderRowCount) || 0)}`,
           'ok'
         );
         refreshAfterNativeFolderMetadataApply('folder-recently-deleted-purge');
