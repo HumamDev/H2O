@@ -2252,19 +2252,29 @@
     const retentionEnforcement = recentlyDeletedText(result?.retentionEnforcement || result?.recentlyDeletedDiagnostics?.retentionEnforcement, 'deferred');
     summary.textContent = `Recently Deleted · ${formatNumber(rows.length)}`;
     body.innerHTML = '';
+    const purgeEnabled = purgeEligibleCount > 0 && purgeApiAvailable;
+    const purgeHelperText = purgeEligibleCount > 0
+      ? 'Permanently removes restore records for eligible deleted folders. Chats and snapshots are not deleted.'
+      : 'No purge-eligible deleted folders.';
     const purgeStatus = el('div', {
       role: 'status',
       'aria-live': 'polite',
-      style: 'grid-column:1 / -1;min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.62);overflow-wrap:anywhere;',
-    }, purgeEligibleCount > 0 ? `${formatNumber(purgeEligibleCount)} folder${purgeEligibleCount === 1 ? '' : 's'} can be permanently deleted.` : 'No purge-eligible deleted folders.');
+      class: 'wbFolderRecentlyDeletedPurgeHelper',
+      style: 'min-width:0;font-size:11px;line-height:1.45;color:rgba(255,255,255,.66);overflow-wrap:anywhere;',
+    }, purgeHelperText);
     if (isMainPlacement) {
       const purgeHeader = el('div', {
         class: 'wbFolderRecentlyDeletedPurgeHeader',
-        style: 'display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 10px;align-items:center;padding:0 0 4px;',
+        style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;min-width:0;padding:12px;border:1px solid rgba(248,113,113,.18);border-radius:9px;background:linear-gradient(180deg,rgba(127,29,29,.13),rgba(255,255,255,.018));box-sizing:border-box;',
       });
-      purgeHeader.appendChild(el('div', {
-        style: 'min-width:0;font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.72);',
+      const purgeCopy = el('div', {
+        class: 'wbFolderRecentlyDeletedPurgeCopy',
+        style: 'flex:1 1 220px;min-width:0;display:flex;flex-direction:column;gap:4px;',
+      });
+      purgeCopy.appendChild(el('div', {
+        style: 'font-size:10.5px;line-height:1.2;letter-spacing:.04em;text-transform:uppercase;font-weight:700;color:rgba(255,214,214,.82);',
       }, 'Permanent delete'));
+      purgeCopy.appendChild(purgeStatus);
       const purgeBtn = el('button', {
         type: 'button',
         class: 'wbSidebarNativeAction wbSidebarNativeAction--danger',
@@ -2272,7 +2282,7 @@
         title: purgeEligibleCount > 0 && purgeApiAvailable
           ? 'Preview and confirm permanent deletion for purge-eligible folder tombstones'
           : (purgeApiAvailable ? 'No purge-eligible deleted folders' : 'Desktop purge API unavailable'),
-        style: 'justify-self:end;max-width:100%;font-size:11px;padding:5px 8px;white-space:nowrap;',
+        style: `flex:0 1 auto;align-self:flex-start;max-width:100%;box-sizing:border-box;font-size:11px;font-weight:700;padding:7px 10px;border-radius:7px;white-space:normal;text-align:center;line-height:1.15;border:1px solid ${purgeEnabled ? 'rgba(248,113,113,.58)' : 'rgba(255,255,255,.13)'};background:${purgeEnabled ? 'linear-gradient(180deg,rgba(220,38,38,.36),rgba(127,29,29,.24))' : 'rgba(127,29,29,.12)'};color:${purgeEnabled ? 'rgba(255,245,245,.96)' : 'rgba(255,210,210,.58)'};`,
       }, `Delete permanently (${formatNumber(purgeEligibleCount)})`);
       if (!(purgeEligibleCount > 0 && purgeApiAvailable)) purgeBtn.classList.add('is-disabled');
       purgeBtn.addEventListener('click', (ev) => {
@@ -2293,31 +2303,44 @@
           }, 350);
         });
       });
+      purgeHeader.appendChild(purgeCopy);
       purgeHeader.appendChild(purgeBtn);
-      purgeHeader.appendChild(purgeStatus);
       body.appendChild(purgeHeader);
     }
+    const statItems = [
+      ['Active', activeRetentionCount, 'Active retention count'],
+      ['Restored', restoredRetentionCount, 'Restored retention count'],
+      ['Purge blocked', purgeBlockedCount, 'Purge blocked count'],
+      ['Expired', expiredRetentionCount, 'Expired retention count'],
+      ['Purge eligible', purgeEligibleCount, 'Purge eligible count'],
+      ['Retention', `${formatNumber(retentionDays)}d`, 'Retention days'],
+    ];
     body.appendChild(el('div', {
-      style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;font-size:10.5px;line-height:1.25;',
+      class: 'wbFolderRecentlyDeletedStatsGrid',
+      style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:6px;font-size:10.5px;line-height:1.25;',
+    }, statItems.map(([label, value, title]) => el('div', {
+      title,
+      style: 'min-width:0;padding:7px 8px;border:1px solid rgba(255,255,255,.07);border-radius:7px;background:rgba(255,255,255,.025);',
     }, [
-      el('span', { title: 'Active retention count' }, `Active ${formatNumber(activeRetentionCount)}`),
-      el('span', { title: 'Expired retention count' }, `Expired ${formatNumber(expiredRetentionCount)}`),
-      el('span', { title: 'Restored retention count' }, `Restored ${formatNumber(restoredRetentionCount)}`),
-      el('span', { title: 'Purge eligible count' }, `Purge eligible ${formatNumber(purgeEligibleCount)}`),
-      el('span', { title: 'Purge blocked count' }, `Purge blocked ${formatNumber(purgeBlockedCount)}`),
-      el('span', { title: 'Retention days' }, `Retention ${formatNumber(retentionDays)}d`),
-    ]));
+      el('div', {
+        style: 'font-size:9.5px;letter-spacing:.035em;text-transform:uppercase;color:rgba(255,255,255,.48);',
+      }, label),
+      el('div', {
+        style: 'margin-top:2px;font-size:12px;font-weight:650;color:rgba(255,255,255,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+      }, typeof value === 'number' ? formatNumber(value) : String(value)),
+    ]))));
     body.appendChild(el('div', {
-      style: 'display:flex;flex-wrap:wrap;gap:4px;font-size:10px;line-height:1.2;',
+      class: 'wbFolderRecentlyDeletedPolicyChips',
+      style: 'display:flex;flex-wrap:wrap;gap:6px;font-size:10px;line-height:1.2;',
     }, [
       el('span', {
-        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+        style: 'padding:3px 6px;border-radius:999px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
       }, 'Purge deferred'),
       el('span', {
-        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+        style: 'padding:3px 6px;border-radius:999px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
       }, 'Hard delete blocked'),
       el('span', {
-        style: 'padding:2px 5px;border-radius:5px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
+        style: 'padding:3px 6px;border-radius:999px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.72);',
       }, `Retention enforcement ${retentionEnforcement}`),
     ]));
 
@@ -2344,6 +2367,8 @@
       const folderId = recentlyDeletedText(row.folderId || row.id, '');
       const restoreAvailable = row.restoreAvailable === true;
       const restoreStatus = recentlyDeletedText(row.restoreStatus, 'unknown');
+      const restoreStatusLabel = restoreStatus === 'restored' ? 'Restored' :
+        (restoreStatus === 'active' ? 'Active' : restoreStatus.charAt(0).toUpperCase() + restoreStatus.slice(1));
       const restoreDisabledReason = restoreApiAvailable
         ? (restoreAvailable ? '' : 'Restore is unavailable for this tombstone state')
         : 'Safe restore API unavailable';
@@ -2351,19 +2376,21 @@
         class: 'wbFolderRecentlyDeletedRow',
         'data-h2o-recently-deleted-folder-id': folderId || null,
         style: isMainPlacement
-          ? 'display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);'
+          ? 'display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid rgba(255,255,255,.08);border-radius:9px;background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.018));box-sizing:border-box;min-width:0;'
           : 'display:flex;flex-direction:column;gap:5px;padding:7px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.025);',
       });
       card.appendChild(el('div', {
-        style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;',
+        class: 'wbFolderRecentlyDeletedRowHeader',
+        style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0;flex-wrap:wrap;',
       }, [
         el('span', {
-          style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:rgba(255,255,255,.86);',
+          style: 'flex:1 1 180px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:650;color:rgba(255,255,255,.9);',
           title: folderName,
         }, folderName),
         el('span', {
-          style: 'flex:0 0 auto;font-size:10px;color:rgba(255,255,255,.55);',
-        }, restoreStatus),
+          class: 'wbFolderRecentlyDeletedStatusPill',
+          style: 'flex:0 0 auto;font-size:10px;line-height:1.2;padding:4px 7px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:rgba(255,255,255,.72);white-space:nowrap;',
+        }, restoreStatusLabel),
       ]));
       const lines = [
         ['Folder ID', folderId],
@@ -2376,18 +2403,26 @@
         ['Purge blocked', recentlyDeletedBoolLabel(row.purgeBlocked !== false)],
         ['Hard delete blocked', recentlyDeletedBoolLabel(row.hardDeleteBlocked !== false)],
       ];
+      const detailGrid = el('div', {
+        class: 'wbFolderRecentlyDeletedDetailsGrid',
+        style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px 10px;min-width:0;',
+      });
       lines.forEach(([label, value]) => {
-        card.appendChild(el('div', {
-          style: 'display:flex;gap:8px;justify-content:space-between;align-items:flex-start;font-size:10.5px;line-height:1.25;color:rgba(255,255,255,.62);',
+        detailGrid.appendChild(el('div', {
+          style: 'min-width:0;display:flex;flex-direction:column;gap:2px;font-size:10.5px;line-height:1.25;color:rgba(255,255,255,.62);',
         }, [
-          el('span', {}, label),
           el('span', {
-            style: 'text-align:right;min-width:0;overflow-wrap:anywhere;color:rgba(255,255,255,.76);',
+            style: 'font-size:9.5px;letter-spacing:.03em;text-transform:uppercase;color:rgba(255,255,255,.45);',
+          }, label),
+          el('span', {
+            style: 'min-width:0;overflow-wrap:anywhere;color:rgba(255,255,255,.78);',
           }, value),
         ]));
       });
+      card.appendChild(detailGrid);
       const actionRow = el('div', {
-        style: 'display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:2px;flex-wrap:wrap;',
+        class: 'wbFolderRecentlyDeletedActionRow',
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:1px;flex-wrap:wrap;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);',
       });
       const rowStatus = el('span', {
         style: 'flex:1 1 160px;min-width:0;font-size:10.5px;line-height:1.3;color:rgba(255,255,255,.58);overflow-wrap:anywhere;',
@@ -2397,7 +2432,7 @@
         actionRow.appendChild(el('span', {
           class: 'wbFolderRecentlyDeletedRestorePill',
           title: 'This folder tombstone has already been restored',
-          style: 'flex:0 0 auto;font-size:10.5px;line-height:1.2;padding:4px 7px;border-radius:999px;background:rgba(255,255,255,.06);color:rgba(255,255,255,.7);white-space:nowrap;',
+          style: 'flex:0 0 auto;font-size:10.5px;line-height:1.2;padding:5px 8px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:rgba(255,255,255,.72);white-space:nowrap;',
         }, 'Already restored'));
       } else {
         const restoreBtn = el('button', {

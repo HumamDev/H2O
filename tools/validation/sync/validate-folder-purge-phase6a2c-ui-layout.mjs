@@ -5,7 +5,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const sidebarPath = path.join(root, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js');
-const evidencePath = path.join(root, 'release-evidence/2026-06-24/folder-delete-restore-phase6a2b-purge-ui-layout.md');
+const evidencePath = path.join(root, 'release-evidence/2026-06-24/folder-delete-restore-phase6a2c-premium-ui-layout.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -49,48 +49,87 @@ const sidebar = read(sidebarPath);
 const evidence = read(evidencePath);
 const renderBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersPanel');
 const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSidebarEntry');
+const purgeFlowBody = functionBody(sidebar, 'permanentlyDeleteRecentlyDeletedFolders');
 
 [
+  'summary.textContent = `Recently Deleted · ${formatNumber(rows.length)}`',
   'wbFolderRecentlyDeletedPurgeHeader',
-  'display:flex;align-items:flex-start;justify-content:space-between',
-  'Permanent delete',
+  'wbFolderRecentlyDeletedPurgeCopy',
   'wbFolderRecentlyDeletedPurgeHelper',
+  'Permanent delete',
+  'Permanently removes restore records for eligible deleted folders. Chats and snapshots are not deleted.',
   'No purge-eligible deleted folders.',
   'Delete permanently',
-  'white-space:nowrap',
-  'overflow-wrap:anywhere',
-].forEach((needle) => assertContains(renderBody, needle, `non-overlapping purge header ${needle}`));
+  'wbSidebarNativeAction--danger',
+  'flex-wrap:wrap',
+  'max-width:100%',
+  'white-space:normal',
+  'linear-gradient(180deg,rgba(220,38,38,.36),rgba(127,29,29,.24))',
+].forEach((needle) => assertContains(renderBody, needle, `professional purge header ${needle}`));
 
 [
-  'flex-wrap:wrap',
-  'flex:1 1 160px',
+  'wbFolderRecentlyDeletedStatsGrid',
+  'repeat(auto-fit,minmax(108px,1fr))',
+  'Active',
+  'Restored',
+  'Purge blocked',
+  'Expired',
+  'Purge eligible',
+  'Retention',
+  'wbFolderRecentlyDeletedPolicyChips',
+  'Purge deferred',
+  'Hard delete blocked',
+  'Retention enforcement',
+].forEach((needle) => assertContains(renderBody, needle, `stats/chip layout ${needle}`));
+
+[
+  'wbFolderRecentlyDeletedRowHeader',
+  'wbFolderRecentlyDeletedStatusPill',
+  'wbFolderRecentlyDeletedDetailsGrid',
+  'repeat(auto-fit,minmax(150px,1fr))',
+  'Folder ID',
+  'Deleted',
+  'Restore available',
+  'Affected chats',
+  'Purge blocked',
+  'Hard delete blocked',
+  'wbFolderRecentlyDeletedActionRow',
   'wbFolderRecentlyDeletedRestorePill',
   'Already restored',
   "restoreStatus === 'restored'",
-].forEach((needle) => assertContains(renderBody, needle, `restored row layout ${needle}`));
+].forEach((needle) => assertContains(renderBody, needle, `row card layout ${needle}`));
+
+[
+  'deleteChats: false',
+  'deleteSnapshots: false',
+  'deleteAssets: false',
+].forEach((needle) => assertContains(purgeFlowBody, needle, `purge safety option ${needle}`));
 
 assertNotContains(sidebarEntryBody, 'Delete permanently', 'sidebar purge button');
 assertNotContains(sidebarEntryBody, 'wbFolderRecentlyDeletedPurgeHeader', 'sidebar purge header');
 
 [
+  'chromeFolderDeleteRequestActions',
+  'requestDelete',
   'deleteChat(',
   'deleteSnapshot(',
   'DELETE FROM',
-  'requestDelete',
-].forEach((needle) => assertNotContains(renderBody, needle, `forbidden layout behavior ${needle}`));
+].forEach((needle) => assertNotContains(renderBody, needle, `forbidden UI behavior ${needle}`));
 
 [
-  'Phase 6A.2b',
+  'Phase 6A.2c',
+  'premium',
   'Delete permanently (0)',
+  'Permanent delete',
   'No purge-eligible deleted folders.',
   'Already restored',
   'no Chrome purge UI',
-  'no destructive behavior change',
+  'no purge semantics change',
 ].forEach((needle) => assertContains(evidence, needle, `evidence ${needle}`));
 
 console.log(JSON.stringify({
   ok: true,
-  validator: 'validate-folder-purge-phase6a2b-ui-layout',
+  validator: 'validate-folder-purge-phase6a2c-ui-layout',
   ui: path.relative(root, sidebarPath),
   evidence: path.relative(root, evidencePath),
   layoutOnly: true,
