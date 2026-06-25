@@ -86,6 +86,7 @@
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
   var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
+  var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
   var EXPORT_COVERAGE_SCHEMA = 'h2o.studio.sync.chrome-export-coverage.v1';
   var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
   var EXPORT_COVERAGE_UNAVAILABLE = 'chrome-export-source-coverage-unavailable';
@@ -491,6 +492,129 @@
     return cleanString(row.requestId || row.reviewId) + '|' + cleanString(row.folderId || row.recordId);
   }
 
+  function hiddenPendingFolderDeleteRowsFromState(stateInput) {
+    var stateValue = isPlainObject(stateInput) ? stateInput : {};
+    var bag = isPlainObject(stateValue.hiddenByChromePendingDelete) ? stateValue.hiddenByChromePendingDelete : {};
+    return Object.keys(bag).sort().map(function (folderId) {
+      var row = isPlainObject(bag[folderId]) ? bag[folderId] : { folderId: folderId };
+      var id = cleanString(row.folderId || row.id || folderId);
+      if (!id) return null;
+      return {
+        id: id,
+        folderId: id,
+        folderName: cleanString(row.folderName || row.name || row.title || id),
+        name: cleanString(row.name || row.folderName || row.title || id),
+        requestId: cleanString(row.requestId || row.reviewId),
+        reviewId: cleanString(row.reviewId || row.requestId),
+        requestedAt: cleanString(row.requestedAt || row.hiddenAt),
+        reason: cleanString(row.reason || 'chrome-soft-delete-request-pending'),
+        sourceSurface: 'chrome-studio',
+      };
+    }).filter(Boolean);
+  }
+
+  async function readChromePendingDeleteHiddenRowsForExport() {
+    try {
+      var chromeValue = await readKv(FOLDER_STATE_KEY_LOCAL);
+      var localValue = null;
+      try {
+        var raw = global.localStorage && global.localStorage.getItem(FOLDER_STATE_KEY_LOCAL);
+        localValue = raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        localValue = null;
+      }
+      var byId = Object.create(null);
+      hiddenPendingFolderDeleteRowsFromState(localValue).forEach(function (row) {
+        byId[row.folderId] = row;
+      });
+      hiddenPendingFolderDeleteRowsFromState(chromeValue).forEach(function (row) {
+        byId[row.folderId] = Object.assign({}, byId[row.folderId] || {}, row);
+      });
+      return Object.keys(byId).sort().map(function (folderId) { return byId[folderId]; });
+    } catch (e) {
+      pushError('folderDeleteRequests.pendingHidden.read', e);
+      return [];
+    }
+  }
+
+  async function repairPendingHiddenFolderDeleteRequestsForExport() {
+    var result = {
+      ok: true,
+      status: 'pending-hidden-request-repair-checked',
+      pendingDeleteHiddenCount: 0,
+      existingExportableRequestCount: 0,
+      repairedRequestCount: 0,
+      hiddenWithoutExportableRequestCount: 0,
+      blockers: [],
+      warnings: [],
+      rows: [],
+    };
+    try {
+      var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      if (!reviews || typeof reviews.listFolderDeleteRequests !== 'function' || typeof reviews.requestFolderDelete !== 'function') {
+        result.ok = false;
+        result.status = 'tombstone-review-store-unavailable';
+        result.blockers.push('tombstone-review-store-unavailable');
+        return result;
+      }
+      var hiddenRows = await readChromePendingDeleteHiddenRowsForExport();
+      result.pendingDeleteHiddenCount = hiddenRows.length;
+      if (!hiddenRows.length) return result;
+      var pendingRows = await reviews.listFolderDeleteRequests({ status: 'pending', limit: 1000 });
+      var requestByFolderId = Object.create(null);
+      (Array.isArray(pendingRows) ? pendingRows : []).forEach(function (row) {
+        var request = sanitizeFolderDeleteRequestForExport(row);
+        if (request && request.folderId) requestByFolderId[request.folderId] = request;
+      });
+      result.existingExportableRequestCount = Object.keys(requestByFolderId).length;
+      for (var i = 0; i < hiddenRows.length; i += 1) {
+        var hidden = hiddenRows[i];
+        if (requestByFolderId[hidden.folderId]) continue;
+        result.hiddenWithoutExportableRequestCount += 1;
+        var requestResult = await reviews.requestFolderDelete({
+          folderId: hidden.folderId,
+          id: hidden.folderId,
+          folderName: hidden.folderName || hidden.name || hidden.folderId,
+          name: hidden.name || hidden.folderName || hidden.folderId,
+          sourceSurface: 'chrome-studio',
+          requestId: hidden.requestId || hidden.reviewId || undefined,
+          requestedAt: hidden.requestedAt || undefined,
+        }, {
+          sourceSurface: 'chrome-studio',
+          reason: 'phase6b4c-repair-pending-hide-export-request',
+        });
+        var ok = requestResult && requestResult.ok === true;
+        if (ok) {
+          result.repairedRequestCount += 1;
+          result.rows.push({
+            folderId: hidden.folderId,
+            folderName: hidden.folderName || hidden.name || '',
+            requestId: cleanString(requestResult.requestId || requestResult.reviewId),
+            status: cleanString(requestResult.status),
+          });
+        } else {
+          result.warnings.push('pending-hide-without-exportable-delete-request');
+          result.rows.push({
+            folderId: hidden.folderId,
+            folderName: hidden.folderName || hidden.name || '',
+            status: cleanString(requestResult && requestResult.status) || 'request-repair-failed',
+          });
+        }
+      }
+      if (result.hiddenWithoutExportableRequestCount > 0 && result.repairedRequestCount < result.hiddenWithoutExportableRequestCount) {
+        result.warnings.push('pending-hide-without-exportable-delete-request');
+      }
+      return result;
+    } catch (e) {
+      result.ok = false;
+      result.status = 'pending-hidden-request-repair-failed';
+      result.blockers.push('pending-hidden-request-repair-failed');
+      result.error = String((e && e.message) || e);
+      pushError('folderDeleteRequests.pendingHidden.repair', e);
+      return result;
+    }
+  }
+
   async function readFolderDeleteRequestExportMirror() {
     var empty = {
       ok: true,
@@ -534,10 +658,21 @@
       reviewRequestCount: 0,
       mirrorRequestCount: 0,
       staleMirrorSkippedCount: 0,
+      pendingDeleteHiddenCount: 0,
+      hiddenWithoutExportableRequestCount: 0,
+      repairedHiddenRequestCount: 0,
       warnings: [],
       requests: [],
     };
     try {
+      var pendingHiddenRepair = await repairPendingHiddenFolderDeleteRequestsForExport();
+      result.pendingHiddenRepair = pendingHiddenRepair;
+      result.pendingDeleteHiddenCount = Number(pendingHiddenRepair.pendingDeleteHiddenCount || 0);
+      result.hiddenWithoutExportableRequestCount = Number(pendingHiddenRepair.hiddenWithoutExportableRequestCount || 0);
+      result.repairedHiddenRequestCount = Number(pendingHiddenRepair.repairedRequestCount || 0);
+      (pendingHiddenRepair.warnings || []).forEach(function (code) {
+        if (result.warnings.indexOf(code) === -1) result.warnings.push(code);
+      });
       var byIdentity = Object.create(null);
       function addRequest(row, source) {
         var request = sanitizeFolderDeleteRequestForExport(row);
@@ -2064,9 +2199,13 @@
           reviewRequestCount: Number(folderDeleteRequestExport.reviewRequestCount || 0),
           mirrorRequestCount: Number(folderDeleteRequestExport.mirrorRequestCount || 0),
           staleMirrorSkippedCount: Number(folderDeleteRequestExport.staleMirrorSkippedCount || 0),
+          pendingDeleteHiddenCount: Number(folderDeleteRequestExport.pendingDeleteHiddenCount || 0),
+          hiddenWithoutExportableRequestCount: Number(folderDeleteRequestExport.hiddenWithoutExportableRequestCount || 0),
+          repairedHiddenRequestCount: Number(folderDeleteRequestExport.repairedHiddenRequestCount || 0),
           storeAvailable: folderDeleteRequestExport.storeAvailable === true,
           mirrorAvailable: folderDeleteRequestExport.mirrorAvailable === true,
           mirrorOk: folderDeleteRequestExport.mirrorOk === true,
+          pendingHiddenRepair: folderDeleteRequestExport.pendingHiddenRepair || null,
           noApply: true,
           desktopApplyRequired: true,
         },

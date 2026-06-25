@@ -2986,6 +2986,18 @@
     const companionRows = await chromeRecentlyDeletedCompanionRows(model);
     const pendingDeleteHiddenCount = hiddenPendingRows.length;
     const desktopReceiptHiddenCount = companionRows.filter((row) => row?.hiddenByDesktopReceipt === true || row?.deletedByDesktopReceipt === true).length;
+    const requestFolderIds = new Set(requestRows.map((row) => String(row?.folderId || row?.id || '').trim()).filter(Boolean));
+    const hiddenWithoutExportableRequestRows = hiddenPendingRows.filter((row) => {
+      const folderId = String(row?.folderId || row?.id || '').trim();
+      return folderId && !requestFolderIds.has(folderId);
+    });
+    const hiddenWithoutExportableRequestCount = hiddenWithoutExportableRequestRows.length;
+    const diagnosticBlockers = hiddenWithoutExportableRequestCount > 0
+      ? ['pending-hide-without-exportable-delete-request']
+      : [];
+    const diagnosticWarnings = hiddenWithoutExportableRequestCount > 0
+      ? ['pending-hide-without-exportable-delete-request']
+      : [];
     const probeName = String(opts.probeName || opts.folderName || 'chrome delete companion test').trim();
     const probeKey = probeName.toLowerCase();
     const rowMatchesProbe = (row = {}) => {
@@ -3017,6 +3029,8 @@
       hiddenByChromePendingDeleteCount: pendingDeleteHiddenCount,
       pendingDeleteHiddenCount,
       pendingDeleteRequestCount: requestRows.length,
+      exportableFolderDeleteRequestCount: requestRows.length,
+      hiddenWithoutExportableRequestCount,
       desktopReceiptHiddenCount,
       chromeReceiptImportedCount: desktopReceiptHiddenCount,
       chromePendingStillWaitingCount: Math.max(0, pendingDeleteHiddenCount - desktopReceiptHiddenCount),
@@ -3056,6 +3070,19 @@
         status: row.status || '',
         source: row.source || '',
       })),
+      requestStoreRows: requestRows.slice(0, 80).map((row) => ({
+        folderId: row.folderId || row.id || '',
+        folderName: row.folderName || row.name || '',
+        requestId: row.requestId || '',
+        status: row.status || '',
+        source: row.source || '',
+      })),
+      hiddenWithoutExportableRequestRows: hiddenWithoutExportableRequestRows.slice(0, 80).map((row) => ({
+        folderId: row.folderId || row.id || '',
+        folderName: row.folderName || row.name || '',
+        status: row.status || '',
+        source: row.source || '',
+      })),
       storageDiagnostics: {
         source: storageSources.source,
         hiddenByChromePendingDeleteChromeCount: storageSources.hiddenByChromePendingDeleteChromeCount,
@@ -3073,8 +3100,8 @@
       noChatDelete: true,
       noSnapshotDelete: true,
       noAssetDelete: true,
-      blockers: [],
-      warnings: [],
+      blockers: diagnosticBlockers,
+      warnings: diagnosticWarnings,
     };
   }
 
