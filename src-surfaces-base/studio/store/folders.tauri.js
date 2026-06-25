@@ -76,6 +76,8 @@
   var PHASE4D3_RETENTION_DAYS = 30;
   var PHASE6A_PURGE_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-preview.v1';
   var PHASE6A_PURGE_RESULT_SCHEMA = 'h2o.studio.folder-purge-result.v1';
+  var PHASE6A_RESTORED_HISTORY_CLEAR_PREVIEW_SCHEMA = 'h2o.studio.folder-restored-history-clear-preview.v1';
+  var PHASE6A_RESTORED_HISTORY_CLEAR_RESULT_SCHEMA = 'h2o.studio.folder-restored-history-clear-result.v1';
   var PHASE6A_REPAIR_PREVIEW_SCHEMA = 'h2o.studio.folder-purge-resurrection-repair-preview.v1';
   var PHASE6A_REPAIR_RESULT_SCHEMA = 'h2o.studio.folder-purge-resurrection-repair-result.v1';
   var PHASE6A_PURGE_TOKEN_TTL_MS = 5 * 60 * 1000;
@@ -129,6 +131,8 @@
     phase6a: {
       lastPreview: null,
       lastCommit: null,
+      lastRestoredHistoryClearPreview: null,
+      lastRestoredHistoryClearCommit: null,
       lastRepairPreview: null,
       lastRepairCommit: null,
     },
@@ -2189,6 +2193,229 @@
     return result;
   }
 
+  function makeRestoredHistoryClearBase(schema, status) {
+    return {
+      schema: schema,
+      phase: 'phase6a.4.desktop-folder-restored-history-clear',
+      ok: false,
+      status: status || 'not-run',
+      observedAt: new Date().toISOString(),
+      desktopOnly: true,
+      chromeAuthority: false,
+      automaticPurge: false,
+      operatorConfirmedPurge: false,
+      operatorConfirmedHistoryClear: false,
+      clearRestoredHistoryOnly: true,
+      purgeDeletesActiveTombstones: false,
+      noActiveDeletedTombstoneDelete: true,
+      noActiveVisibleFolderDelete: true,
+      noProtectedSystemFolderDelete: true,
+      noFolderRowDelete: true,
+      noChromeRowsDeleted: true,
+      beforeCount: 0,
+      restoredHistoryCandidateCount: 0,
+      candidateCount: 0,
+      clearedCount: 0,
+      skippedCount: 0,
+      activeDeletedSkippedCount: 0,
+      protectedSkippedCount: 0,
+      malformedSkippedCount: 0,
+      alreadyClearedSkippedCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      receiptDeletedCount: 0,
+      blockers: [],
+      warnings: [],
+      candidates: [],
+      skipped: [],
+    };
+  }
+
+  function summarizeRestoredHistoryClearRow(row, reason) {
+    return {
+      tombstoneId: cleanString(row && row.tombstoneId),
+      folderId: cleanString(row && row.folderId),
+      folderName: cleanString(row && row.folderName),
+      restoredAt: cleanString(row && row.restoredAt),
+      restoreStatus: cleanString(row && row.restoreStatus),
+      skipReason: cleanString(reason),
+    };
+  }
+
+  async function buildRecentlyDeletedRestoredHistoryClearPlan(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var tombstones = getTombstoneStore();
+    var limit = Math.max(1, Math.min(1000, Number(options.limit) || 500));
+    var base = makeRestoredHistoryClearBase(PHASE6A_RESTORED_HISTORY_CLEAR_PREVIEW_SCHEMA, 'folder-restored-history-clear-previewed');
+    base.preview = true;
+    base.reason = cleanString(options.reason);
+    if (!tombstones || typeof tombstones.list !== 'function') {
+      addBlocker(base.blockers, 'tombstone-store-unavailable');
+      base.status = 'tombstone-store-unavailable';
+      return base;
+    }
+    try {
+      var rawRows = await tombstones.list({ recordKind: 'folder', includeRestored: true, limit: limit });
+      var rows = (Array.isArray(rawRows) ? rawRows : [])
+        .filter(function (row) { return cleanString(row && row.recordKind) === 'folder'; })
+        .map(recentlyDeletedRowFromTombstone);
+      base.beforeCount = rows.length;
+      for (var i = 0; i < rows.length; i += 1) {
+        var row = rows[i];
+        var tombstoneId = cleanString(row.tombstoneId);
+        var folderId = cleanString(row.folderId);
+        var restored = !!cleanString(row.restoredAt) || row.restoreStatus === 'restored';
+        if (!restored) {
+          base.activeDeletedSkippedCount += 1;
+          base.skipped.push(summarizeRestoredHistoryClearRow(row, 'active-deleted-tombstone'));
+          continue;
+        }
+        if (!tombstoneId || !folderId) {
+          base.malformedSkippedCount += 1;
+          base.skipped.push(summarizeRestoredHistoryClearRow(row, 'folder-or-tombstone-identity-missing'));
+          continue;
+        }
+        var folder = await getById(folderId);
+        var protectionCodes = folderPurgeProtectionCodes(folderId, folder, row);
+        if (protectionCodes.length) {
+          base.protectedSkippedCount += 1;
+          base.skipped.push(summarizeRestoredHistoryClearRow(row, protectionCodes[0]));
+          continue;
+        }
+        base.candidates.push(summarizeRestoredHistoryClearRow(row, ''));
+      }
+      base.restoredHistoryCandidateCount = base.candidates.length;
+      base.candidateCount = base.restoredHistoryCandidateCount;
+      base.skippedCount = base.skipped.length;
+      base.ok = true;
+      base.status = 'folder-restored-history-clear-previewed';
+      return base;
+    } catch (e) {
+      recordError('buildRecentlyDeletedRestoredHistoryClearPlan', e);
+      base.status = 'folder-restored-history-clear-preview-failed';
+      addBlocker(base.blockers, 'folder-restored-history-clear-preview-failed');
+      base.reason = String((e && e.message) || e);
+      return base;
+    }
+  }
+
+  async function previewRecentlyDeletedRestoredHistoryClear(opts) {
+    var result = await buildRecentlyDeletedRestoredHistoryClearPlan(opts);
+    if (result.ok === true) {
+      var token = makePurgeToken().replace('folder-purge-preview:', 'folder-restored-history-clear-preview:');
+      result.previewToken = token;
+      result.previewExpiresAt = new Date(Date.now() + PHASE6A_PURGE_TOKEN_TTL_MS).toISOString();
+      state.phase6a.lastRestoredHistoryClearPreview = {
+        token: token,
+        createdAt: Date.now(),
+        restoredHistoryCandidateCount: result.restoredHistoryCandidateCount,
+        candidateTombstoneIds: result.candidates.map(function (row) { return row.tombstoneId; }),
+      };
+    }
+    return result;
+  }
+
+  async function clearRecentlyDeletedRestoredHistory(options) {
+    var opts = options && typeof options === 'object' ? options : {};
+    var result = makeRestoredHistoryClearBase(PHASE6A_RESTORED_HISTORY_CLEAR_RESULT_SCHEMA, 'not-run');
+    result.reason = cleanString(opts.reason);
+    var previewToken = cleanString(opts.previewToken || opts.confirmationToken);
+    var expectedCount = Number(opts.expectedCount ?? opts.expectedRestoredHistoryClearCount ?? opts.expectedCandidateCount);
+    var confirmationPhrase = cleanString(opts.confirmationPhrase || opts.confirmationText || opts.typedConfirmation);
+    var confirmationFlag = opts.confirmRestoredHistoryClear === true || opts.confirmation === true;
+    if (opts.dryRun !== false) addBlocker(result.blockers, 'dry-run-false-required');
+    if (!result.reason || result.reason.length < 8) addBlocker(result.blockers, 'explicit-reason-required');
+    if (!previewToken) addBlocker(result.blockers, 'preview-token-required');
+    if (!Number.isFinite(expectedCount) || Math.floor(expectedCount) !== expectedCount || expectedCount < 0) {
+      addBlocker(result.blockers, 'expected-count-required');
+    }
+    if (!confirmationFlag && confirmationPhrase !== 'CLEAR RESTORED HISTORY') {
+      addBlocker(result.blockers, 'restored-history-clear-confirmation-required');
+    }
+    var last = state.phase6a.lastRestoredHistoryClearPreview;
+    if (!last || last.token !== previewToken) addBlocker(result.blockers, 'invalid-preview-token');
+    if (last && Date.now() - Number(last.createdAt || 0) > PHASE6A_PURGE_TOKEN_TTL_MS) {
+      addBlocker(result.blockers, 'preview-token-expired');
+    }
+    if (result.blockers.length) {
+      result.status = result.blockers[0];
+      return result;
+    }
+    var plan = await buildRecentlyDeletedRestoredHistoryClearPlan({ limit: 1000, reason: result.reason });
+    result.beforeCount = plan.beforeCount;
+    result.restoredHistoryCandidateCount = plan.restoredHistoryCandidateCount;
+    result.candidateCount = plan.candidateCount;
+    result.skippedCount = plan.skippedCount;
+    result.activeDeletedSkippedCount = plan.activeDeletedSkippedCount;
+    result.protectedSkippedCount = plan.protectedSkippedCount;
+    result.malformedSkippedCount = plan.malformedSkippedCount;
+    result.candidates = plan.candidates;
+    result.skipped = plan.skipped;
+    if (plan.ok !== true) {
+      result.status = plan.status || 'folder-restored-history-clear-preview-failed';
+      plan.blockers.forEach(function (code) { addBlocker(result.blockers, code); });
+      return result;
+    }
+    if (plan.restoredHistoryCandidateCount !== expectedCount ||
+      plan.restoredHistoryCandidateCount !== last.restoredHistoryCandidateCount) {
+      result.status = 'expected-count-mismatch';
+      addBlocker(result.blockers, 'expected-count-mismatch');
+      return result;
+    }
+    var currentIds = plan.candidates.map(function (row) { return row.tombstoneId; }).sort();
+    var previewIds = last.candidateTombstoneIds.slice().sort();
+    if (currentIds.join('\n') !== previewIds.join('\n')) {
+      result.status = 'preview-candidate-set-changed';
+      addBlocker(result.blockers, 'preview-candidate-set-changed');
+      return result;
+    }
+    if (!currentIds.length) {
+      result.ok = true;
+      result.status = 'no-restored-history-candidates';
+      result.operatorConfirmedHistoryClear = true;
+      state.phase6a.lastRestoredHistoryClearCommit = result;
+      return result;
+    }
+    var tombstones = getTombstoneStore();
+    if (!tombstones || typeof tombstones.clearRestoredFolderTombstonesByIds !== 'function') {
+      result.status = 'restored-history-clear-api-unavailable';
+      addBlocker(result.blockers, 'restored-history-clear-api-unavailable');
+      return result;
+    }
+    var clearResult = await tombstones.clearRestoredFolderTombstonesByIds(currentIds, {
+      dryRun: false,
+      reason: result.reason,
+      source: 'desktop-recently-deleted-clear-restored-history',
+    });
+    result.tombstoneStoreResult = clearResult;
+    result.clearedCount = Number(clearResult && clearResult.clearedCount) || 0;
+    result.alreadyClearedSkippedCount = Number(clearResult && clearResult.alreadyClearedSkippedCount) || 0;
+    if (!clearResult || clearResult.ok !== true) {
+      result.status = cleanString(clearResult && clearResult.status) || 'folder-restored-history-clear-failed';
+      (Array.isArray(clearResult && clearResult.blockers) ? clearResult.blockers : []).forEach(function (code) {
+        addBlocker(result.blockers, code && (code.code || code));
+      });
+      if (!result.blockers.length) addBlocker(result.blockers, 'folder-restored-history-clear-failed');
+      return result;
+    }
+    result.ok = true;
+    result.status = 'folder-restored-history-cleared';
+    result.operatorConfirmedHistoryClear = true;
+    state.phase6a.lastRestoredHistoryClearPreview = null;
+    state.phase6a.lastRestoredHistoryClearCommit = result;
+    recordWrite('clearRecentlyDeletedRestoredHistory');
+    notifySubscribers({
+      source: 'desktop-recently-deleted-clear-restored-history',
+      op: 'clearRecentlyDeletedRestoredHistory',
+      clearedCount: result.clearedCount,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+    });
+    return result;
+  }
+
   async function listRecentlyDeletedFolders(opts) {
     var tombstones = getTombstoneStore();
     var limit = Math.max(1, Math.min(1000, Number(opts && opts.limit) || 500));
@@ -2209,6 +2436,7 @@
       unknownRetentionCount: 0,
       restoreAvailableCount: 0,
       purgeEligibleCount: 0,
+      restoredHistoryClearableCount: 0,
       purgeBlockedCount: 0,
       hardDeleteBlockedCount: 0,
       retentionEnforcement: 'deferred',
@@ -2232,13 +2460,27 @@
         .filter(function (row) { return cleanString(row && row.recordKind) === 'folder'; })
         .map(recentlyDeletedRowFromTombstone);
       var purgePlan = await buildRecentlyDeletedPurgePlan({ limit: limit, reason: 'recently-deleted-diagnostics' });
+      var restoredHistoryClearPlan = await buildRecentlyDeletedRestoredHistoryClearPlan({ limit: limit, reason: 'recently-deleted-diagnostics' });
       var purgeCandidateSet = Object.create(null);
       (Array.isArray(purgePlan.candidates) ? purgePlan.candidates : []).forEach(function (candidate) {
         var id = cleanString(candidate && candidate.tombstoneId);
         if (id) purgeCandidateSet[id] = true;
       });
+      var restoredHistoryClearCandidateSet = Object.create(null);
+      (Array.isArray(restoredHistoryClearPlan.candidates) ? restoredHistoryClearPlan.candidates : []).forEach(function (candidate) {
+        var id = cleanString(candidate && candidate.tombstoneId);
+        if (id) restoredHistoryClearCandidateSet[id] = true;
+      });
       result.rows = result.rows.map(function (row) {
-        if (!purgeCandidateSet[cleanString(row && row.tombstoneId)]) return row;
+        var tombstoneId = cleanString(row && row.tombstoneId);
+        if (restoredHistoryClearCandidateSet[tombstoneId]) {
+          row = Object.assign({}, row, {
+            restoredHistoryClearable: true,
+            restoredHistoryClearBlocked: false,
+            restoredHistoryClearReason: 'operator-confirmed-history-clear-available',
+          });
+        }
+        if (!purgeCandidateSet[tombstoneId]) return row;
         return Object.assign({}, row, {
           purgeEligible: true,
           operatorPurgeAvailable: true,
@@ -2256,15 +2498,21 @@
       result.unknownRetentionCount = result.rows.filter(function (row) { return row.retentionCountdownStatus === 'unknown'; }).length;
       result.restoreAvailableCount = result.rows.filter(function (row) { return row.restoreAvailable === true; }).length;
       result.purgeEligibleCount = result.rows.filter(function (row) { return row.purgeEligible === true; }).length;
+      result.restoredHistoryClearableCount = result.rows.filter(function (row) { return row.restoredHistoryClearable === true; }).length;
       result.purgeBlockedCount = result.rows.filter(function (row) { return row.purgeBlocked === true; }).length;
       result.hardDeleteBlockedCount = result.rows.filter(function (row) { return row.hardDeleteBlocked === true; }).length;
       result.operatorPurgeAvailableCount = result.purgeEligibleCount;
+      result.operatorRestoredHistoryClearAvailableCount = result.restoredHistoryClearableCount;
       result.automaticPurge = false;
       result.automaticPurgeBlocked = true;
       result.operatorPurgeAvailable = result.purgeEligibleCount > 0;
+      result.operatorRestoredHistoryClearAvailable = result.restoredHistoryClearableCount > 0;
       result.purgePolicy = 'operator-confirmed-tombstone-recovery-record-purge';
       result.purgePreviewApi = 'previewRecentlyDeletedFolderPurge';
       result.purgeCommitApi = 'purgeRecentlyDeletedFolders';
+      result.restoredHistoryClearPolicy = 'operator-confirmed-restored-history-clear';
+      result.restoredHistoryClearPreviewApi = 'previewRecentlyDeletedRestoredHistoryClear';
+      result.restoredHistoryClearCommitApi = 'clearRecentlyDeletedRestoredHistory';
       result.purgeDiagnostics = {
         schema: PHASE6A_PURGE_PREVIEW_SCHEMA,
         phase: 'phase6a.desktop-folder-purge',
@@ -2288,6 +2536,25 @@
         desktopOnly: true,
         chromeAuthority: false,
         automaticPurge: false,
+      };
+      result.restoredHistoryClearDiagnostics = {
+        schema: PHASE6A_RESTORED_HISTORY_CLEAR_PREVIEW_SCHEMA,
+        phase: 'phase6a.4.desktop-folder-restored-history-clear',
+        beforeCount: restoredHistoryClearPlan.beforeCount,
+        restoredHistoryCandidateCount: restoredHistoryClearPlan.restoredHistoryCandidateCount,
+        candidateCount: restoredHistoryClearPlan.candidateCount,
+        skippedCount: restoredHistoryClearPlan.skippedCount,
+        activeDeletedSkippedCount: restoredHistoryClearPlan.activeDeletedSkippedCount,
+        protectedSkippedCount: restoredHistoryClearPlan.protectedSkippedCount,
+        malformedSkippedCount: restoredHistoryClearPlan.malformedSkippedCount,
+        clearedCount: 0,
+        chatDeletedCount: 0,
+        snapshotDeletedCount: 0,
+        assetDeletedCount: 0,
+        hardDeletedFolderRowCount: 0,
+        receiptDeletedCount: 0,
+        desktopOnly: true,
+        chromeAuthority: false,
       };
       return result;
     } catch (e) {
@@ -2956,6 +3223,8 @@
     repairPurgedFolderResurrections: repairPurgedFolderResurrections,
     previewRecentlyDeletedFolderPurge: previewRecentlyDeletedFolderPurge,
     purgeRecentlyDeletedFolders: purgeRecentlyDeletedFolders,
+    previewRecentlyDeletedRestoredHistoryClear: previewRecentlyDeletedRestoredHistoryClear,
+    clearRecentlyDeletedRestoredHistory: clearRecentlyDeletedRestoredHistory,
     remove: softDeleteEmptyFolder,
     'delete': softDeleteEmptyFolder,
     bindChat: bindChat,

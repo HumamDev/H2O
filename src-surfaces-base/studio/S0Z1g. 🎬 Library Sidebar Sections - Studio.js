@@ -806,6 +806,13 @@
       typeof store?.purgeRecentlyDeletedFolders === 'function';
   }
 
+  function canUseDesktopRestoredHistoryClear() {
+    if (!studioIsTauri()) return false;
+    const store = desktopFolderStore();
+    return typeof store?.previewRecentlyDeletedRestoredHistoryClear === 'function' &&
+      typeof store?.clearRecentlyDeletedRestoredHistory === 'function';
+  }
+
   function chromeFolderDeleteRequestActions() {
     try {
       const actions = W.H2O?.Studio?.actions?.folders;
@@ -2178,6 +2185,87 @@
     }
   }
 
+  async function clearRecentlyDeletedRestoredHistory(controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const refreshPanel = typeof controls.refresh === 'function' ? controls.refresh : null;
+    const store = desktopFolderStore();
+    const previewFn = store?.previewRecentlyDeletedRestoredHistoryClear;
+    const commitFn = store?.clearRecentlyDeletedRestoredHistory;
+    if (!canUseDesktopRestoredHistoryClear() || typeof previewFn !== 'function' || typeof commitFn !== 'function') {
+      setStatus('Clear restored history unavailable on this surface', 'blocked');
+      return { ok: false, status: 'folder-restored-history-clear-api-unavailable', blockers: ['folder-restored-history-clear-api-unavailable'] };
+    }
+    setStatus('Checking restored history...', 'pending');
+    let preview = null;
+    try {
+      preview = await previewFn.call(store, { reason: 'desktop-recently-deleted-ui-restored-history-preview' });
+    } catch (e) {
+      err('recentlyDeleted.restoredHistoryPreview', e);
+      const message = String(e?.message || e || 'folder-restored-history-clear-preview-threw');
+      setStatus(`Blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-restored-history-clear-preview-threw', blockers: ['folder-restored-history-clear-preview-threw'], reason: message };
+    }
+    if (preview?.ok !== true) {
+      const code = firstResultCode(preview, String(preview?.status || 'folder-restored-history-clear-preview-failed'));
+      setStatus(`Blocked: ${code}`, 'blocked');
+      return preview || { ok: false, status: 'folder-restored-history-clear-preview-failed', blockers: ['folder-restored-history-clear-preview-failed'] };
+    }
+    const expectedCount = Number(preview?.restoredHistoryCandidateCount ?? preview?.candidateCount) || 0;
+    if (!expectedCount) {
+      setStatus('No restored history entries to clear', '');
+      return preview;
+    }
+    const confirmText = [
+      `Clear ${formatNumber(expectedCount)} restored histor${expectedCount === 1 ? 'y entry' : 'y entries'} from Recently Deleted?`,
+      '',
+      'This only removes restored/history entries from Recently Deleted.',
+      'Folders, chats, snapshots, assets, active folders, and receipts will not be deleted.',
+      '',
+      'Type CLEAR RESTORED HISTORY to continue.',
+    ].join('\n');
+    const typed = String(W.prompt?.(confirmText, '') || '').trim();
+    if (typed !== 'CLEAR RESTORED HISTORY') {
+      setStatus('Clear restored history cancelled', '');
+      return { ok: false, status: 'folder-restored-history-clear-cancelled', blockers: [] };
+    }
+    setStatus('Clearing restored history...', 'pending');
+    try {
+      const result = await commitFn.call(store, {
+        dryRun: false,
+        confirmationToken: preview.previewToken,
+        expectedCount,
+        confirmationPhrase: 'CLEAR RESTORED HISTORY',
+        reason: 'desktop-recently-deleted-ui-clear-restored-history',
+        deleteChats: false,
+        deleteSnapshots: false,
+        deleteAssets: false,
+      });
+      if (result?.ok === true) {
+        const cleared = Number(result?.clearedCount) || 0;
+        const skipped = Number(result?.skippedCount) || 0;
+        setStatus(
+          `Cleared restored history ${formatNumber(cleared)} · skipped ${formatNumber(skipped)} · chats ${formatNumber(Number(result?.chatDeletedCount) || 0)} · snapshots ${formatNumber(Number(result?.snapshotDeletedCount) || 0)} · hard rows ${formatNumber(Number(result?.hardDeletedFolderRowCount) || 0)}`,
+          'ok'
+        );
+        refreshAfterNativeFolderMetadataApply('folder-recently-deleted-restored-history-clear');
+        if (refreshPanel) {
+          W.setTimeout(() => {
+            try { refreshPanel(); } catch (e) { err('recentlyDeleted.restoredHistoryClearRefresh', e); }
+          }, 250);
+        }
+      } else {
+        const code = firstResultCode(result, String(result?.status || 'folder-restored-history-clear-failed'));
+        setStatus(`Blocked: ${code}`, 'blocked');
+      }
+      return result || { ok: false, status: 'folder-restored-history-clear-failed', blockers: ['folder-restored-history-clear-failed'] };
+    } catch (e) {
+      err('recentlyDeleted.restoredHistoryCommit', e);
+      const message = String(e?.message || e || 'folder-restored-history-clear-threw');
+      setStatus(`Blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-restored-history-clear-threw', blockers: ['folder-restored-history-clear-threw'], reason: message };
+    }
+  }
+
   async function renderRecentlyDeletedFoldersPanel(host, opts = {}) {
     if (!host || !canUseDesktopRecentlyDeletedFolders()) return;
     const placement = String(opts?.placement || '').trim() === 'main' ? 'main' : 'sidebar';
@@ -2243,10 +2331,12 @@
     const rows = recentlyDeletedRowsFromResult(result);
     const restoreApiAvailable = canUseDesktopFolderRestore();
     const purgeApiAvailable = canUseDesktopFolderPurge();
+    const restoredHistoryClearApiAvailable = canUseDesktopRestoredHistoryClear();
     const activeRetentionCount = recentlyDeletedAggregateValue(result, 'activeRetentionCount');
     const expiredRetentionCount = recentlyDeletedAggregateValue(result, 'expiredRetentionCount');
     const restoredRetentionCount = recentlyDeletedAggregateValue(result, 'restoredRetentionCount');
     const purgeEligibleCount = recentlyDeletedAggregateValue(result, 'purgeEligibleCount');
+    const restoredHistoryClearableCount = recentlyDeletedAggregateValue(result, 'restoredHistoryClearableCount');
     const purgeBlockedCount = recentlyDeletedAggregateValue(result, 'purgeBlockedCount', rows.length);
     const retentionDays = recentlyDeletedAggregateValue(result, 'retentionDays', 30);
     const retentionEnforcement = recentlyDeletedText(result?.retentionEnforcement || result?.recentlyDeletedDiagnostics?.retentionEnforcement, 'deferred');
@@ -2306,6 +2396,58 @@
       purgeHeader.appendChild(purgeCopy);
       purgeHeader.appendChild(purgeBtn);
       body.appendChild(purgeHeader);
+      const restoredHistoryClearEnabled = restoredHistoryClearableCount > 0 && restoredHistoryClearApiAvailable;
+      const restoredHistoryClearStatus = el('div', {
+        role: 'status',
+        'aria-live': 'polite',
+        class: 'wbFolderRecentlyDeletedRestoredHistoryHelper',
+        style: 'min-width:0;font-size:11px;line-height:1.45;color:rgba(255,255,255,.66);overflow-wrap:anywhere;',
+      }, restoredHistoryClearableCount > 0
+        ? 'Clears restored/history entries from Recently Deleted only. Folders, chats, snapshots, assets, and receipts are not deleted.'
+        : 'No restored history entries to clear.');
+      const restoredHistoryHeader = el('div', {
+        class: 'wbFolderRecentlyDeletedRestoredHistoryHeader',
+        style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;min-width:0;padding:12px;border:1px solid rgba(148,163,184,.16);border-radius:9px;background:linear-gradient(180deg,rgba(15,23,42,.34),rgba(255,255,255,.018));box-sizing:border-box;',
+      });
+      const restoredHistoryCopy = el('div', {
+        class: 'wbFolderRecentlyDeletedRestoredHistoryCopy',
+        style: 'flex:1 1 220px;min-width:0;display:flex;flex-direction:column;gap:4px;',
+      });
+      restoredHistoryCopy.appendChild(el('div', {
+        style: 'font-size:10.5px;line-height:1.2;letter-spacing:.04em;text-transform:uppercase;font-weight:700;color:rgba(226,232,240,.82);',
+      }, 'Restored history'));
+      restoredHistoryCopy.appendChild(restoredHistoryClearStatus);
+      const restoredHistoryBtn = el('button', {
+        type: 'button',
+        class: 'wbSidebarNativeAction wbSidebarNativeAction--secondary',
+        disabled: restoredHistoryClearEnabled ? null : 'disabled',
+        title: restoredHistoryClearEnabled
+          ? 'Clear restored/history entries from Recently Deleted'
+          : (restoredHistoryClearApiAvailable ? 'No restored history entries to clear' : 'Desktop restored history clear API unavailable'),
+        style: `flex:0 1 auto;align-self:flex-start;max-width:100%;box-sizing:border-box;font-size:11px;font-weight:700;padding:7px 10px;border-radius:7px;white-space:normal;text-align:center;line-height:1.15;border:1px solid ${restoredHistoryClearEnabled ? 'rgba(148,163,184,.45)' : 'rgba(255,255,255,.12)'};background:${restoredHistoryClearEnabled ? 'linear-gradient(180deg,rgba(71,85,105,.38),rgba(30,41,59,.28))' : 'rgba(255,255,255,.035)'};color:${restoredHistoryClearEnabled ? 'rgba(248,250,252,.94)' : 'rgba(226,232,240,.52)'};`,
+      }, `Clear restored history (${formatNumber(restoredHistoryClearableCount)})`);
+      if (!restoredHistoryClearEnabled) restoredHistoryBtn.classList.add('is-disabled');
+      restoredHistoryBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (restoredHistoryBtn.disabled) return;
+        restoredHistoryBtn.disabled = true;
+        restoredHistoryBtn.classList.add('is-disabled');
+        Promise.resolve(clearRecentlyDeletedRestoredHistory({
+          setStatus: (message) => { restoredHistoryClearStatus.textContent = message; },
+          refresh: () => renderRecentlyDeletedFoldersPanel(host, { placement: 'main' }).catch((e) => err('recentlyDeleted.renderMainAfterRestoredHistoryClear', e)),
+        })).finally(() => {
+          W.setTimeout(() => {
+            if (restoredHistoryBtn.isConnected) {
+              restoredHistoryBtn.disabled = !(restoredHistoryClearableCount > 0 && restoredHistoryClearApiAvailable);
+              if (!restoredHistoryBtn.disabled) restoredHistoryBtn.classList.remove('is-disabled');
+            }
+          }, 350);
+        });
+      });
+      restoredHistoryHeader.appendChild(restoredHistoryCopy);
+      restoredHistoryHeader.appendChild(restoredHistoryBtn);
+      body.appendChild(restoredHistoryHeader);
     }
     const statItems = [
       ['Active', activeRetentionCount, 'Active retention count'],
@@ -2313,6 +2455,7 @@
       ['Purge blocked', purgeBlockedCount, 'Purge blocked count'],
       ['Expired', expiredRetentionCount, 'Expired retention count'],
       ['Purge eligible', purgeEligibleCount, 'Purge eligible count'],
+      ['Clearable history', restoredHistoryClearableCount, 'Restored history clearable count'],
       ['Retention', `${formatNumber(retentionDays)}d`, 'Retention days'],
     ];
     body.appendChild(el('div', {

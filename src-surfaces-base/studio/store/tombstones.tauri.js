@@ -541,6 +541,102 @@
       });
   }
 
+  function clearRestoredFolderTombstonesByIds(ids, options) {
+    var requestedIds = normalizeExactIdList(ids);
+    var opts = options && typeof options === 'object' ? options : {};
+    var result = {
+      schema: 'h2o.studio.folder-restored-history-clear.v1',
+      ok: false,
+      status: 'not-run',
+      desktopOnly: true,
+      exactTombstoneIdsOnly: true,
+      recordKind: 'folder',
+      restoredRowsOnly: true,
+      activeDeletedRowsRejected: true,
+      receiptDeletedCount: 0,
+      hardDeletedFolderRowCount: 0,
+      chatDeletedCount: 0,
+      snapshotDeletedCount: 0,
+      assetDeletedCount: 0,
+      requestedCount: requestedIds.length,
+      matchedCount: 0,
+      clearedCount: 0,
+      alreadyClearedSkippedCount: 0,
+      activeDeletedSkippedCount: 0,
+      blockers: [],
+      warnings: [],
+    };
+    if (opts.dryRun !== false) {
+      result.status = 'dry-run-false-required';
+      result.blockers.push('dry-run-false-required');
+      return Promise.resolve(result);
+    }
+    if (!requestedIds.length) {
+      result.status = 'no-tombstone-ids';
+      result.blockers.push('no-tombstone-ids');
+      return Promise.resolve(result);
+    }
+    if (requestedIds.length > MAX_LIST_LIMIT) {
+      result.status = 'too-many-tombstone-ids';
+      result.blockers.push('too-many-tombstone-ids');
+      return Promise.resolve(result);
+    }
+    return ensureReady()
+      .then(function () {
+        var placeholders = requestedIds.map(function () { return '?'; }).join(', ');
+        return sqlSelect(
+          'SELECT tombstone_id FROM ' + TABLE + ' WHERE record_kind = ? AND restored_at IS NULL AND tombstone_id IN (' + placeholders + ')',
+          ['folder'].concat(requestedIds)
+        ).then(function (activeRows) {
+          var active = (Array.isArray(activeRows) ? activeRows : []).map(function (row) { return cleanString(row.tombstone_id); }).filter(Boolean);
+          result.activeDeletedSkippedCount = active.length;
+          if (active.length) {
+            result.status = 'active-deleted-tombstones-rejected';
+            result.blockers.push('active-deleted-tombstones-rejected');
+            return result;
+          }
+          return sqlSelect(
+            'SELECT tombstone_id FROM ' + TABLE + ' WHERE record_kind = ? AND restored_at IS NOT NULL AND tombstone_id IN (' + placeholders + ')',
+            ['folder'].concat(requestedIds)
+          ).then(function (rows) {
+            var matched = (Array.isArray(rows) ? rows : []).map(function (row) { return cleanString(row.tombstone_id); }).filter(Boolean);
+            result.matchedCount = matched.length;
+            result.alreadyClearedSkippedCount = Math.max(0, requestedIds.length - matched.length);
+            if (!matched.length) {
+              result.ok = true;
+              result.status = 'folder-restored-history-already-cleared';
+              result.clearedCount = 0;
+              return result;
+            }
+            var deletePlaceholders = matched.map(function () { return '?'; }).join(', ');
+            return sqlExecute(
+              'DELETE FROM ' + TABLE + ' WHERE record_kind = ? AND restored_at IS NOT NULL AND tombstone_id IN (' + deletePlaceholders + ')',
+              ['folder'].concat(matched)
+            ).then(function (deleteResult) {
+              result.clearedCount = readRowsAffected(deleteResult);
+              result.ok = true;
+              result.status = 'folder-restored-history-cleared';
+              recordWrite('clearRestoredFolderTombstonesByIds');
+              notifySubscribers({
+                source: 'desktop-recently-deleted-clear-restored-history',
+                op: 'clearRestoredFolderTombstonesByIds',
+                recordKind: 'folder',
+                clearedCount: result.clearedCount,
+              });
+              return result;
+            });
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('clearRestoredFolderTombstonesByIds', e);
+        result.status = 'folder-restored-history-clear-failed';
+        result.blockers.push('folder-restored-history-clear-failed');
+        result.reason = String((e && e.message) || e);
+        return result;
+      });
+  }
+
   function countByKind(filters) {
     return ensureReady()
       .then(function () {
@@ -869,6 +965,7 @@
     getById: getById,
     listTombstones: listTombstones,
     purgeFolderTombstonesByIds: purgeFolderTombstonesByIds,
+    clearRestoredFolderTombstonesByIds: clearRestoredFolderTombstonesByIds,
     countByKind: countByKind,
     markRestored: markRestored,
     validateTombstone: validateTombstone,
