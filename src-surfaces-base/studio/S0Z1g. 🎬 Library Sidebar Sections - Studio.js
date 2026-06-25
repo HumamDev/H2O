@@ -2111,6 +2111,14 @@
     const store = desktopFolderStore();
     const previewFn = store?.previewRecentlyDeletedFolderPurge;
     const commitFn = store?.purgeRecentlyDeletedFolders;
+    const reason = 'recently-deleted-ui-delete-permanently';
+    const logPurgeStep = (step, details = {}) => {
+      try {
+        if (typeof console !== 'undefined' && typeof console.info === 'function') {
+          console.info('[H2O.Studio.RecentlyDeleted.purge]', { step, ...details });
+        }
+      } catch (_) {}
+    };
     if (!canUseDesktopFolderPurge() || typeof previewFn !== 'function' || typeof commitFn !== 'function') {
       setStatus('Delete permanently unavailable on this surface', 'blocked');
       return { ok: false, status: 'folder-purge-api-unavailable', blockers: ['folder-purge-api-unavailable'] };
@@ -2118,7 +2126,12 @@
     setStatus('Checking purge candidates...', 'pending');
     let preview = null;
     try {
-      preview = await previewFn.call(store, { reason: 'desktop-recently-deleted-ui-preview' });
+      preview = await previewFn.call(store, { reason });
+      logPurgeStep('preview', {
+        ok: preview?.ok === true,
+        candidateCount: Number(preview?.candidateCount) || 0,
+        tokenPresent: Boolean(preview?.confirmationToken || preview?.previewToken),
+      });
     } catch (e) {
       err('recentlyDeleted.purgePreview', e);
       const message = String(e?.message || e || 'folder-purge-preview-threw');
@@ -2146,12 +2159,12 @@
       'Restore will no longer be possible for those folder tombstones.',
       'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
     ].join('\n');
-    const confirmFn = typeof W.confirm === 'function' ? W.confirm.bind(W) : null;
-    if (!confirmFn) {
+    if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
       setStatus('Delete permanently failed: native confirmation unavailable', 'blocked');
       return { ok: false, status: 'native-confirm-unavailable', blockers: ['native-confirm-unavailable'] };
     }
-    const confirmResult = confirmFn(confirmText);
+    const confirmResult = window.confirm(confirmText);
+    logPurgeStep('confirm', { confirmResult });
     if (confirmResult === false) {
       setStatus('Delete permanently cancelled.', '');
       return { ok: false, status: 'folder-purge-cancelled', blockers: [] };
@@ -2161,15 +2174,20 @@
       const result = await commitFn.call(store, {
         dryRun: false,
         confirmationToken,
-        previewToken: confirmationToken,
         expectedCount,
-        reason: 'desktop-recently-deleted-ui-delete-permanently',
-        deleteChats: false,
-        deleteSnapshots: false,
-        deleteAssets: false,
+        reason,
         confirmationPhrase: 'DELETE PERMANENTLY',
         confirmPhrase: 'DELETE PERMANENTLY',
         typedConfirmation: 'DELETE PERMANENTLY',
+        deleteChats: false,
+        deleteSnapshots: false,
+        deleteAssets: false,
+      });
+      logPurgeStep('commit', {
+        ok: result?.ok === true,
+        status: String(result?.status || ''),
+        purgedCount: Number(result?.purgedCount ?? result?.purgedTombstoneCount) || 0,
+        blockers: Array.isArray(result?.blockers) ? result.blockers : [],
       });
       if (result?.ok === true) {
         const purged = Number(result?.purgedCount ?? result?.purgedTombstoneCount) || 0;

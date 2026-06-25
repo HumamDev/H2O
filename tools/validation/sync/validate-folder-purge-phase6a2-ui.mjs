@@ -66,7 +66,6 @@ const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSide
   'Chats, snapshots, assets, active folders, and receipts will not be deleted.',
   'dryRun: false',
   'confirmationToken,',
-  'previewToken: confirmationToken',
   'expectedCount',
   'deleteChats: false',
   'deleteSnapshots: false',

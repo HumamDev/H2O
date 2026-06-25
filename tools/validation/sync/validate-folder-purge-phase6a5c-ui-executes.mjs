@@ -5,7 +5,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const sidebarPath = path.join(root, 'src-surfaces-base/studio/S0Z1g. 🎬 Library Sidebar Sections - Studio.js');
-const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-restore-phase6a5b-purge-button-wiring.md');
+const evidencePath = path.join(root, 'release-evidence/2026-06-25/folder-delete-restore-phase6a5c-purge-button-executes.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -48,18 +48,16 @@ for (const file of [sidebarPath, evidencePath]) {
 const sidebar = read(sidebarPath);
 const evidence = read(evidencePath);
 const purgeBody = functionBody(sidebar, 'permanentlyDeleteRecentlyDeletedFolders');
+const renderBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersPanel');
 const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSidebarEntry');
 
 [
   "const reason = 'recently-deleted-ui-delete-permanently'",
   "previewFn.call(store, { reason })",
-  'preview?.ok !== true',
   'preview?.confirmationToken || preview?.previewToken',
-  'preview-token-missing',
-  'native-confirm-unavailable',
+  'candidateCount',
   'const confirmResult = window.confirm(confirmText)',
   'confirmResult === false',
-  "console.info('[H2O.Studio.RecentlyDeleted.purge]'",
   'Delete permanently cancelled.',
   'commitFn.call(store',
   'dryRun: false',
@@ -74,51 +72,65 @@ const sidebarEntryBody = functionBody(sidebar, 'renderRecentlyDeletedFoldersSide
   'deleteAssets: false',
   'Deleted permanently:',
   'Delete permanently failed:',
-].forEach((needle) => assertContains(purgeBody, needle, `6A.5b purge wiring ${needle}`));
+  "logPurgeStep('preview'",
+  "logPurgeStep('confirm'",
+  "logPurgeStep('commit'",
+].forEach((needle) => assertContains(purgeBody, needle, `6A.5c purge execution ${needle}`));
 
 [
-  'W.prompt',
   'prompt(',
+  'W.prompt',
   'Type DELETE PERMANENTLY',
   'const confirmFn = typeof W.confirm',
   'W.confirm.bind(W)',
   'confirmFn(confirmText)',
   'previewToken: confirmationToken',
   "reason: 'desktop-recently-deleted-ui-delete-permanently'",
-  'confirmText) === true',
-  'confirmationToken: preview.previewToken',
+  "reason: 'desktop-recently-deleted-ui-preview'",
   'remove(',
   'softDeleteEmptyFolder(',
+  'restoreTombstonedFolder(',
   'deleteChat(',
   'deleteSnapshot(',
   'DELETE FROM',
   'folder_bindings',
   'sync_tombstone_reviews',
-].forEach((needle) => assertNotContains(purgeBody, needle, `6A.5b forbidden purge wiring ${needle}`));
+].forEach((needle) => assertNotContains(purgeBody, needle, `6A.5c forbidden purge execution ${needle}`));
+
+[
+  'Delete permanently',
+  'purgeEligibleCount > 0 && purgeApiAvailable',
+  'permanentlyDeleteRecentlyDeletedFolders',
+  'wbSidebarNativeAction--danger',
+].forEach((needle) => assertContains(renderBody, needle, `6A.5c main purge button ${needle}`));
 
 assertNotContains(sidebarEntryBody, 'Delete permanently', 'sidebar purge button');
 assertNotContains(sidebarEntryBody, 'permanentlyDeleteRecentlyDeletedFolders', 'sidebar purge action');
 
 [
-  'Phase 6A.5b',
-  'preview.confirmationToken || preview.previewToken',
-  'confirmResult === false',
-  'native-confirm-unavailable',
+  'Phase 6A.5c',
+  'Delete permanently',
+  'window.confirm',
+  'recently-deleted-ui-delete-permanently',
   'confirmationPhrase:"DELETE PERMANENTLY"',
   'confirmPhrase:"DELETE PERMANENTLY"',
   'typedConfirmation:"DELETE PERMANENTLY"',
   'Deleted permanently: N',
-  'Delete permanently failed',
-  'Manual runtime proof pending',
+  'chatDeletedCount:0',
+  'snapshotDeletedCount:0',
+  'assetDeletedCount:0',
+  'hardDeletedFolderRowCount:0',
+  'receiptDeletedCount:0',
   'Chrome has no purge button',
-].forEach((needle) => assertContains(evidence, needle, `6A.5b evidence ${needle}`));
+].forEach((needle) => assertContains(evidence, needle, `6A.5c evidence ${needle}`));
 
 console.log(JSON.stringify({
   ok: true,
-  validator: 'validate-folder-purge-phase6a5b-ui-wiring',
+  validator: 'validate-folder-purge-phase6a5c-ui-executes',
   ui: path.relative(root, sidebarPath),
   evidence: path.relative(root, evidencePath),
-  tokenFallback: true,
-  explicitFalseCancelOnly: true,
+  exactBackendPayload: true,
+  nativeConfirm: true,
+  promptRemoved: true,
   chromeAuthority: false,
 }, null, 2));
