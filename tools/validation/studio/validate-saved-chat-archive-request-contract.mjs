@@ -203,13 +203,63 @@ check('forbidden scopes are explicitly non-goals', () => {
 check('Phase D roadmap is present', () => {
   for (const phase of [
     'D.1 request contract',
-    'D.2 Desktop intake/approval boundary',
+    'D.2A/D.2B Desktop intake + durable queue',
+    'D.2C package-write trigger',
     'D.3 request queue/status model',
     'D.4 minimal runtime proof',
     'D.5 evidence/closure',
   ]) {
     requireText(spec, phase);
   }
+});
+
+check('D.2C materialization API and lifecycle/result statuses are documented', () => {
+  requireText(spec, 'materializeSavedChatArchiveRequestV1');
+  requireText(spec, 'overwrite = false');
+  for (const status of ['writing', 'written', 'failed', 'already-written', 'not-found', 'not-eligible']) {
+    requireText(spec, status);
+  }
+});
+
+check('D.2C state behavior and re-resolution rule are documented', () => {
+  requireText(spec, 'validated -> writing -> written');
+  requireText(spec, 'validated -> writing -> failed');
+  requireText(spec, 'needs-desktop-snapshot');
+  requireText(spec, 'db-unavailable');
+  requireText(spec, 'duplicate');
+  // re-resolution immediately before writing, using only the resolved Desktop snapshotId
+  requireText(spec, 're-run Desktop request resolution');
+  // whitespace-tolerant (the phrase may wrap across a markdown line)
+  requirePattern(spec, /only\s+(the|with the)\s+resolved\s+Desktop/);
+});
+
+check('D.2C materialization metadata fields are documented under meta_json.materialization', () => {
+  requireText(spec, 'meta_json.materialization');
+  for (const field of [
+    'packagePath', 'contentHash', 'schemaVersion', 'payloadVersion', 'snapshotId', 'writtenAt',
+    'processingStartedAt', 'processingFinishedAt', 'overwrite', 'errorCode', 'errorMessage',
+  ]) {
+    requireText(spec, field);
+  }
+});
+
+check('D.2C trust boundary keeps Chrome/request payload non-authoritative', () => {
+  requireText(spec, 'never packages Chrome/request payload');
+  requireText(spec, 'never computes `contentHash` from Chrome/request payload');
+  requireText(spec, 'Desktop remains the only package writer');
+});
+
+check('D.2C runtime evidence is referenced', () => {
+  requireText(spec, 'd82d4ac');
+  requireText(spec, '[d2c-archive-request-materializer-smoke] ALL PASS');
+  requireText(spec, 'sha256-c13bb62596c3fd896589fa18e5290953dbc5ccc9b2458b36c005d359212ccd8e');
+});
+
+check('D.2C-deferred items (retry/overwrite/delete/repair, stale writing, status transport) remain non-goals', () => {
+  requireText(spec, 'retry-failed-request API');
+  requireText(spec, 'stale `writing` recovery');
+  requireText(spec, 'overwrite / delete / repair policy');
+  requireText(spec, 'request status transport back to Chrome');
 });
 
 check('validator remains static/docs-only and avoids runtime imports', () => {

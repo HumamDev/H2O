@@ -1,6 +1,6 @@
 # Saved Chat Archive Request v1
 
-Status: Draft / Phase D.1 contract (docs only)
+Status: Draft / Phase D.1 contract; D.2A–D.2C implemented and runtime-proven; D.2C materialization documented 2026-06-24
 
 Date: 2026-06-24
 
@@ -142,6 +142,7 @@ Field contract:
 | `received` | Desktop observed the request envelope. |
 | `validated` | Desktop accepted the request schema and basic trust boundary checks. |
 | `needs-desktop-snapshot` | Desktop cannot resolve an existing Desktop snapshot to package. |
+| `db-unavailable` | Desktop could not read store state to resolve/re-resolve the request. |
 | `accepted` | Desktop can satisfy the request from Desktop store state. |
 | `writing` | Desktop is materializing a package with the Desktop package writer. |
 | `written` | Desktop wrote the package under the app-owned archive. |
@@ -230,6 +231,102 @@ or other asset bytes, that must become a separate Desktop intake/import flow wit
 Failure modes do not grant Chrome write authority. They produce request status
 only.
 
+## Desktop Materialization (D.2C)
+
+D.2C adds the Desktop-only package-write trigger from a persisted **`validated`**
+queued request. It is implemented and runtime-proven (see Runtime Evidence below).
+
+### API
+
+Desktop-only:
+
+```
+H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1({ requestId, overwrite = false })
+```
+
+It loads the persisted `saved_chat_archive_requests` row by `requestId`,
+re-resolves the request against live Desktop store state, and — only when the row
+is currently `validated` and re-resolution is still `validated` — calls the
+existing Desktop package writer. `overwrite` defaults to `false` and overwrite is
+not exercised by D.2C (a true overwrite policy is deferred).
+
+### Materializer result statuses
+
+| status | meaning |
+|---|---|
+| `written` | The package was materialized for this request. |
+| `already-written` | The request was already `written`; idempotent no-op returning the persisted package metadata, no writer call. |
+| `failed` | Re-resolution still validated but the package writer failed. |
+| `needs-desktop-snapshot` | Re-resolution no longer validates (snapshot/chat missing); not written. |
+| `db-unavailable` | Re-resolution could not read Desktop store; not written. |
+| `not-found` | No queue row exists for `requestId`. |
+| `not-eligible` | The queue row is not currently `validated` (and not `written`). |
+
+### State behavior
+
+- Only a persisted **`validated`** request is eligible for materialization.
+- `validated -> writing -> written` on writer success.
+- `validated -> writing -> failed` on writer failure.
+- If re-resolution no longer validates, update the queue row to
+  `needs-desktop-snapshot` or `db-unavailable` and **do not write**.
+- A `written` request returns `already-written` (idempotent no-op; no writer call,
+  no queue write).
+- `writing`, `needs-desktop-snapshot`, `rejected`, `db-unavailable`, `failed`, and
+  `duplicate` rows are **not eligible** (`not-eligible`).
+- A missing request returns `not-found`.
+
+### Re-resolution rule
+
+D.2C must **re-run Desktop request resolution before writing** (re-resolves the
+persisted normalized request against live store state). It must use **only the
+resolved Desktop `snapshotId`** to call the package writer. If re-resolution does
+not return `validated`, D.2C does not write.
+
+### Materialization metadata (`meta_json.materialization`)
+
+Package result data is persisted on the queue row under
+**`meta_json.materialization`** — no new columns and **no DB migration**:
+
+| field | meaning |
+|---|---|
+| `packagePath` | Materialized package path under the app-owned archive. |
+| `contentHash` | Package contentHash (computed by the Desktop writer from Desktop store state). |
+| `schemaVersion` | Package schemaVersion (1 or 2). |
+| `payloadVersion` | Package payloadVersion when present. |
+| `snapshotId` | The resolved Desktop snapshotId that was written. |
+| `writtenAt` | Writer completion timestamp. |
+| `processingStartedAt` | When `validated -> writing` began. |
+| `processingFinishedAt` | When the attempt finished (`written` or `failed`). |
+| `overwrite` | Always `false` in D.2C. |
+| `errorCode` | On failure, e.g. `package-already-exists`, `package-writer-threw`. |
+| `errorMessage` | On failure, the package writer error message. |
+
+The only DB mutation is the `saved_chat_archive_requests` row
+(`status`/`updated_at`/`meta_json`, and `snapshot_id` only if re-resolution
+corrected it). Package files are written solely by the existing Desktop writer
+under the app-owned archive.
+
+### Trust boundary (materialization)
+
+- D.2C **never packages Chrome/request payload content**.
+- D.2C **never computes `contentHash` from Chrome/request payload** — the package
+  writer computes it from Desktop store snapshot state.
+- D.2C calls the existing Desktop package writer **only with the resolved Desktop
+  `snapshotId`** (never the request envelope or Chrome content).
+- Chrome remains **intent-only**; **Desktop remains the only package writer**.
+
+### Runtime evidence
+
+D.2C materializer runtime smoke passed on real Desktop Studio (evidence commit
+`d82d4ac`):
+
+```text
+[d2c-archive-request-materializer-smoke] ALL PASS
+```
+
+- proven package path: `archive/packages/d2c_request_materializer_chat_1782334865884.h2ochat`
+- proven contentHash: `sha256-c13bb62596c3fd896589fa18e5290953dbc5ccc9b2458b36c005d359212ccd8e`
+
 ## Explicit Non-Goals
 
 D.1 does not implement or authorize:
@@ -255,14 +352,31 @@ D.1 does not implement or authorize:
 - package writer changes
 - Archive Health UI changes
 
+### Still deferred after D.2C
+
+D.2C ships only the validated-request package-write trigger. Still deferred:
+
+- Chrome runtime / service-worker transport
+- request status transport back to Chrome
+- sync transport
+- import/recovery
+- retry-failed-request API
+- stale `writing` recovery
+- overwrite / delete / repair policy
+- user-folder export / save dialog
+- package writer modification
+- CAS writer changes
+- Archive Health UI changes
+
 ## Phase D Subphase Roadmap
 
 | Subphase | Scope | Status |
 |---|---|---|
 | D.1 request contract | Define the Chrome-to-Desktop request envelope, ownership rules, lifecycle, trust boundary, and non-goals. | This document |
-| D.2 Desktop intake/approval boundary | Add a Desktop-only validator/intake surface that resolves requests through store state and rejects unsafe payloads. | Future |
-| D.3 request queue/status model | Add Desktop-owned durable request status and idempotent duplicate handling. | Future |
-| D.4 minimal runtime proof | Prove a request referencing an existing Desktop snapshot can trigger Desktop package materialization, and a missing snapshot returns `needs-desktop-snapshot`. | Future |
+| D.2A/D.2B Desktop intake + durable queue | Desktop-only validator/intake/resolver and the durable `saved_chat_archive_requests` queue/status model with idempotent dedupe. | Closed (`adceba8`, `b52c878`, closure `2eccc6b`) |
+| D.2C package-write trigger | Desktop-only `materializeSavedChatArchiveRequestV1` that re-resolves a `validated` request and writes the package via the existing Desktop writer (`validated -> writing -> written/failed`), persisting metadata under `meta_json.materialization`. | Closed (`d578702`, evidence `d82d4ac`) |
+| D.3 request queue/status model | Add Desktop-owned durable request status and idempotent duplicate handling. | Done as part of D.2B |
+| D.4 minimal runtime proof | Prove a request referencing an existing Desktop snapshot can trigger Desktop package materialization, and a missing snapshot returns `needs-desktop-snapshot`. | Proven by the D.2C runtime smoke (`d82d4ac`) |
 | D.5 evidence/closure | Record runtime evidence and close the Phase D handoff milestone. | Future |
 
 ## Wrong Turns To Avoid
