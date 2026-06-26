@@ -2983,9 +2983,10 @@
     const storageSources = await readChromeFolderStateMirrorSources();
     const hiddenPendingRows = chromePendingDeleteHiddenRowsFromState(storageSources.merged);
     const requestRows = await loadPendingChromeFolderDeleteRequestRows();
+    const receiptRows = chromeDesktopReceiptHiddenRowsFromState(storageSources.merged);
     const companionRows = await chromeRecentlyDeletedCompanionRows(model);
     const pendingDeleteHiddenCount = hiddenPendingRows.length;
-    const desktopReceiptHiddenCount = companionRows.filter((row) => row?.hiddenByDesktopReceipt === true || row?.deletedByDesktopReceipt === true).length;
+    const desktopReceiptHiddenCount = receiptRows.length;
     const requestFolderIds = new Set(requestRows.map((row) => String(row?.folderId || row?.id || '').trim()).filter(Boolean));
     const hiddenWithoutExportableRequestRows = hiddenPendingRows.filter((row) => {
       const folderId = String(row?.folderId || row?.id || '').trim();
@@ -3000,14 +3001,21 @@
       : [];
     const probeName = String(opts.probeName || opts.folderName || 'chrome delete companion test').trim();
     const probeKey = probeName.toLowerCase();
+    const probeFolderId = String(opts.folderId || opts.probeFolderId || '').trim();
+    const probeRequestId = String(opts.requestId || opts.reviewId || opts.probeRequestId || '').trim();
     const rowMatchesProbe = (row = {}) => {
       const id = String(row.folderId || row.id || '').trim();
       const name = String(row.folderName || row.name || row.title || '').trim();
-      return !!probeKey && (id.toLowerCase() === probeKey || name.toLowerCase() === probeKey);
+      const requestId = String(row.requestId || row.reviewId || row.receiptId || '').trim();
+      const matchesName = !!probeKey && (id.toLowerCase() === probeKey || name.toLowerCase() === probeKey);
+      const matchesFolderId = !!probeFolderId && id === probeFolderId;
+      const matchesRequestId = !!probeRequestId && requestId === probeRequestId;
+      return matchesName || matchesFolderId || matchesRequestId;
     };
     const normalProbeRows = canonicalRows.filter(rowMatchesProbe);
     const hiddenProbeRows = hiddenPendingRows.filter(rowMatchesProbe);
     const requestProbeRows = requestRows.filter(rowMatchesProbe);
+    const receiptProbeRows = receiptRows.filter(rowMatchesProbe);
     const companionProbeRows = companionRows.filter(rowMatchesProbe);
     let extensionId = '';
     try { extensionId = String(W.chrome?.runtime?.id || '').trim(); } catch {}
@@ -3033,23 +3041,33 @@
       hiddenWithoutExportableRequestCount,
       desktopReceiptHiddenCount,
       chromeReceiptImportedCount: desktopReceiptHiddenCount,
+      receiptImportedCount: receiptRows.length,
       chromePendingStillWaitingCount: Math.max(0, pendingDeleteHiddenCount - desktopReceiptHiddenCount),
       companionStateSource: 'merged-folder-state-mirror+pending-delete-request-store',
       probeName,
+      probeFolderId,
+      probeRequestId,
       probe: {
         name: probeName,
+        folderId: probeFolderId,
+        requestId: probeRequestId,
         normalRows: normalProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.name || row.folderName || '' })),
         hiddenPendingRows: hiddenProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', source: row.source || '' })),
         requestStoreRows: requestProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', requestId: row.requestId || '' })),
-        companionRows: companionProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', source: row.source || '', status: row.status || '' })),
+        receiptRows: receiptProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', requestId: row.requestId || '', reviewId: row.reviewId || '', receiptId: row.receiptId || '', source: row.source || '', status: row.status || '' })),
+        companionRows: companionProbeRows.map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', requestId: row.requestId || '', reviewId: row.reviewId || '', receiptId: row.receiptId || '', source: row.source || '', status: row.status || '' })),
         existsInNormalRows: normalProbeRows.length > 0,
         existsInHiddenPendingRows: hiddenProbeRows.length > 0,
         existsInRequestStore: requestProbeRows.length > 0,
+        existsInReceiptRows: receiptProbeRows.length > 0,
         existsInCompanionRows: companionProbeRows.length > 0,
       },
       rows: companionRows.slice(0, 80).map((row) => ({
         folderId: row.folderId || row.id || '',
         folderName: row.folderName || row.name || '',
+        requestId: row.requestId || '',
+        reviewId: row.reviewId || '',
+        receiptId: row.receiptId || '',
         status: row.status || '',
         source: row.source || '',
         companionStatusLabel: row.companionStatusLabel || '',
@@ -3069,6 +3087,18 @@
         requestId: row.requestId || '',
         status: row.status || '',
         source: row.source || '',
+      })),
+      receiptRows: receiptRows.slice(0, 80).map((row) => ({
+        folderId: row.folderId || row.id || '',
+        folderName: row.folderName || row.name || '',
+        requestId: row.requestId || '',
+        reviewId: row.reviewId || '',
+        receiptId: row.receiptId || '',
+        status: row.status || '',
+        source: row.source || '',
+        companionStatusLabel: row.companionStatusLabel || '',
+        trustedDesktopReceiptWithoutLocalRequest: row.trustedDesktopReceiptWithoutLocalRequest === true,
+        pendingDeleteConfirmedByDesktopReceipt: row.pendingDeleteConfirmedByDesktopReceipt === true,
       })),
       requestStoreRows: requestRows.slice(0, 80).map((row) => ({
         folderId: row.folderId || row.id || '',

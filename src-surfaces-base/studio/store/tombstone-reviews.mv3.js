@@ -1562,6 +1562,7 @@
         if (!review) {
           var noMatch = blockFolderDeleteReceiptApply(receipt, 'receipt-no-matching-request');
           noMatch.warningOnly = true;
+          noMatch.trustedDesktopReceiptWithoutLocalRequest = true;
           return noMatch;
         }
         var result = makeFolderDeleteReceiptApplyResult(receipt);
@@ -1665,10 +1666,14 @@
       noBindingMutation: true,
       noChatMutation: true,
       noSnapshotMutation: true,
+      noAssetDelete: true,
       tombstonePropagation: 'deferred',
       warnings: [],
       blockers: [],
       results: [],
+      receiptRows: [],
+      skippedReceipts: [],
+      trustedDesktopReceiptWithoutLocalRequestCount: 0,
     };
   }
 
@@ -1707,22 +1712,56 @@
     return bundle.folderDeleteReceipts.reduce(function (promise, receipt) {
       return promise.then(function () {
         return applyFolderDeleteReceipt(receipt, options).then(function (single) {
-          result.results.push({
+          var singleWarningOnly = single && single.warningOnly === true;
+          var singleReceiptRow = {
             ok: single && single.ok === true,
             status: cleanScalar(single && single.status),
+            receiptId: nullableString(single && single.receiptId),
+            requestId: nullableString(single && (single.requestId || single.reviewId)),
+            reviewId: nullableString(single && (single.reviewId || single.requestId)),
+            folderId: nullableString(single && single.folderId),
             reviewFound: single && single.reviewFound === true,
             resolved: single && single.resolved === true,
             alreadyResolved: single && single.alreadyResolved === true,
+            trustedDesktopReceiptWithoutLocalRequest: single && single.trustedDesktopReceiptWithoutLocalRequest === true,
+            warningOnly: singleWarningOnly,
+            noFolderHide: true,
+            noTombstoneApply: true,
+          };
+          result.results.push({
+            ok: singleReceiptRow.ok,
+            status: singleReceiptRow.status,
+            receiptId: singleReceiptRow.receiptId,
+            requestId: singleReceiptRow.requestId,
+            reviewId: singleReceiptRow.reviewId,
+            folderId: singleReceiptRow.folderId,
+            reviewFound: singleReceiptRow.reviewFound,
+            resolved: singleReceiptRow.resolved,
+            alreadyResolved: singleReceiptRow.alreadyResolved,
+            trustedDesktopReceiptWithoutLocalRequest: singleReceiptRow.trustedDesktopReceiptWithoutLocalRequest,
+            warningOnly: singleWarningOnly,
             noFolderHide: true,
             noTombstoneApply: true,
           });
+          result.receiptRows.push(singleReceiptRow);
           if (single && single.resolved === true) result.resolvedCount += 1;
           else if (single && single.alreadyResolved === true) result.alreadyResolvedCount += 1;
           else result.skippedCount += 1;
+          if (singleReceiptRow.trustedDesktopReceiptWithoutLocalRequest) {
+            result.trustedDesktopReceiptWithoutLocalRequestCount += 1;
+            result.skippedReceipts.push(Object.assign({}, singleReceiptRow, {
+              reason: 'receipt-no-matching-request',
+            }));
+          }
           if (single && Array.isArray(single.blockers) && single.blockers.length) {
-            result.blockerCount += single.blockers.length;
             single.blockers.forEach(function (blocker) {
-              addReceiptImportCode(result.blockers, blocker && blocker.code);
+              if (singleWarningOnly) {
+                result.warningCount += 1;
+                addReceiptImportCode(result.warnings, blocker && blocker.code);
+              } else {
+                result.blockerCount += 1;
+                addReceiptImportCode(result.blockers, blocker && blocker.code);
+              }
             });
           }
           if (single && Array.isArray(single.warnings) && single.warnings.length) {

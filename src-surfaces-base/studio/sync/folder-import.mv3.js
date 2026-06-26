@@ -2679,7 +2679,19 @@
     if (!normalized.ok) return normalized;
     var receipt = normalized.receipt;
     var found = await findChromeFolderDeleteReceiptReviewForHide(receipt);
-    if (!found.ok || !found.review) return { ok: false, code: found.code || 'receipt-no-matching-request', receipt: receipt };
+    if (!found.ok || !found.review) {
+      if ((found && found.code) === 'receipt-no-matching-request') {
+        return {
+          ok: true,
+          receipt: receipt,
+          review: null,
+          trustedDesktopReceipt: true,
+          trustedDesktopReceiptWithoutLocalRequest: true,
+          warning: 'receipt-no-matching-request',
+        };
+      }
+      return { ok: false, code: found.code || 'receipt-no-matching-request', receipt: receipt };
+    }
     var review = found.review;
     var localFolderId = chromeFolderDeleteReviewFolderId(review);
     if (localFolderId !== receipt.folderId) return { ok: false, code: 'receipt-folder-mismatch', receipt: receipt };
@@ -2691,7 +2703,7 @@
     if (!chromeFolderDeleteReviewIsResolvedApplied(review)) {
       return { ok: false, code: 'receipt-review-not-resolved-applied', receipt: receipt };
     }
-    return { ok: true, receipt: receipt, review: review };
+    return { ok: true, receipt: receipt, review: review, trustedDesktopReceipt: true };
   }
 
   function folderStateHasFolderId(folderState, folderId) {
@@ -2704,15 +2716,35 @@
     return !!(id && Object.prototype.hasOwnProperty.call(items, id));
   }
 
-  async function hideFolderByDesktopReceiptFromMirror(receipt) {
+  async function hideFolderByDesktopReceiptFromMirror(receipt, target) {
     var folderId = normalizeFolderRecordId(receipt && receipt.folderId);
     if (!folderId) return { ok: false, hidden: false, status: 'receipt-folder-identity-missing' };
     var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
     var markerBag = safeObject(current.hiddenByDesktopReceipt);
+    var pendingBag = safeObject(current.hiddenByChromePendingDelete);
+    var pendingRow = safeObject(pendingBag[folderId]);
+    var hadPendingDelete = !!pendingBag[folderId];
     var alreadyMarked = !!markerBag[folderId];
     var hasFolder = folderStateHasFolderId(current, folderId);
     if (!hasFolder && alreadyMarked) {
-      return { ok: true, hidden: false, alreadyHidden: true, status: 'folder-delete-receipt-folder-already-hidden', writesPerformed: 0, folderId: folderId };
+      if (hadPendingDelete) {
+        var cleared = cloneJson(current) || {};
+        var clearedPending = Object.assign({}, safeObject(cleared.hiddenByChromePendingDelete));
+        delete clearedPending[folderId];
+        cleared.hiddenByChromePendingDelete = clearedPending;
+        cleared.updatedAt = nowIso();
+        await writeKv(FOLDER_STATE_KEY_LOCAL, cleared);
+      }
+      return {
+        ok: true,
+        hidden: false,
+        alreadyHidden: true,
+        status: 'folder-delete-receipt-folder-already-hidden',
+        writesPerformed: hadPendingDelete ? 1 : 0,
+        folderId: folderId,
+        trustedDesktopReceiptWithoutLocalRequest: !!(target && target.trustedDesktopReceiptWithoutLocalRequest),
+        pendingDeleteConfirmedByDesktopReceipt: hadPendingDelete,
+      };
     }
     var next = cloneJson(current) || {};
     var rows = Array.isArray(next.folders) ? next.folders : [];
@@ -2727,24 +2759,46 @@
       delete nextItems[folderId];
       next.items = nextItems;
     }
+    var nextPending = Object.assign({}, safeObject(next.hiddenByChromePendingDelete));
+    delete nextPending[folderId];
+    next.hiddenByChromePendingDelete = nextPending;
+    var sourceRow = safeObject(removedRow || pendingRow || markerBag[folderId]);
+    var rowMeta = safeObject(sourceRow.meta);
+    var receiptFolderName = cleanString(receipt.folderName || receipt.folderNameAtRequest);
+    var folderName = cleanString(sourceRow.name || sourceRow.folderName || sourceRow.title || rowMeta.name || receiptFolderName || folderId);
+    var color = cleanString(sourceRow.color || sourceRow.iconColor || rowMeta.color || rowMeta.iconColor);
+    var iconColor = cleanString(sourceRow.iconColor || sourceRow.color || rowMeta.iconColor || rowMeta.color);
     var hidden = Object.assign({}, safeObject(next.hiddenByDesktopReceipt));
     hidden[folderId] = Object.assign({}, safeObject(hidden[folderId]), {
       hiddenByDesktopReceipt: true,
       deletedByDesktopReceipt: true,
       folderId: folderId,
-      folderName: cleanString(removedRow.name || removedRow.title || safeObject(removedRow.meta).name),
-      color: cleanString(removedRow.color || removedRow.iconColor || safeObject(removedRow.meta).color || safeObject(removedRow.meta).iconColor),
-      iconColor: cleanString(removedRow.iconColor || removedRow.color || safeObject(removedRow.meta).iconColor || safeObject(removedRow.meta).color),
-      meta: safeObject(removedRow.meta),
+      id: folderId,
+      name: folderName,
+      folderName: folderName,
+      color: color,
+      iconColor: iconColor,
+      meta: rowMeta,
       receiptId: cleanString(receipt.receiptId),
       requestId: cleanString(receipt.requestId),
       reviewId: cleanString(receipt.reviewId),
       tombstoneId: cleanString(receipt.tombstoneId),
       hiddenAt: nowIso(),
+      confirmedAt: nowIso(),
+      source: 'desktop-folder-delete-receipt',
+      sourceKind: 'desktop-receipt-visible-state',
+      status: 'deleted',
+      companionStatusLabel: 'Deleted on Desktop',
+      trustedDesktopReceipt: true,
+      trustedDesktopReceiptWithoutLocalRequest: !!(target && target.trustedDesktopReceiptWithoutLocalRequest),
+      pendingDeleteConfirmedByDesktopReceipt: hadPendingDelete,
       statusOnly: true,
       noTombstoneApply: true,
+      noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
       tombstonePropagation: 'deferred'
     });
     next.hiddenByDesktopReceipt = hidden;
@@ -2756,8 +2810,27 @@
       alreadyHidden: !hasFolder,
       status: hasFolder ? 'folder-delete-receipt-folder-hidden' : 'folder-delete-receipt-folder-already-hidden',
       writesPerformed: 1,
-      folderId: folderId
+      folderId: folderId,
+      requestId: cleanString(receipt.requestId),
+      receiptId: cleanString(receipt.receiptId),
+      trustedDesktopReceiptWithoutLocalRequest: !!(target && target.trustedDesktopReceiptWithoutLocalRequest),
+      pendingDeleteConfirmedByDesktopReceipt: hadPendingDelete
     };
+  }
+
+  function folderDeleteReceiptHideDiagnosticRow(receiptInput, extra) {
+    var receipt = safeObject(receiptInput);
+    var row = Object.assign({
+      receiptId: cleanString(receipt.receiptId),
+      requestId: cleanString(receipt.requestId || receipt.reviewId),
+      reviewId: cleanString(receipt.reviewId || receipt.requestId),
+      folderId: normalizeFolderRecordId(receipt.folderId),
+      folderName: cleanString(receipt.folderName || receipt.folderNameAtRequest),
+      status: cleanString(receipt.status),
+      decision: cleanString(receipt.decision),
+      source: 'desktop-folder-delete-receipt',
+    }, safeObject(extra));
+    return row;
   }
 
   function makeFolderDeleteReceiptHideResult() {
@@ -2776,12 +2849,16 @@
       noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
+      noAssetDelete: true,
       noBindingMutation: true,
       noChatMutation: true,
       noSnapshotMutation: true,
       noDestructiveFolderMutation: true,
       tombstonePropagation: 'deferred',
       hiddenFolderIds: [],
+      receiptRows: [],
+      skippedReceipts: [],
+      trustedDesktopReceiptWithoutLocalRequestCount: 0,
       warnings: [],
       blockers: []
     };
@@ -2811,9 +2888,16 @@
           result.hideSkippedCount += 1;
           result.hideWarningCount += 1;
           addFolderDeleteReceiptHideCode(result, 'warnings', target.code || 'folder-delete-receipt-hide-skipped');
+          result.skippedReceipts.push(folderDeleteReceiptHideDiagnosticRow(target.receipt || receipts[i], {
+            reason: target.code || 'folder-delete-receipt-hide-skipped',
+          }));
           continue;
         }
-        var hidden = await hideFolderByDesktopReceiptFromMirror(target.receipt);
+        if (target.warning) {
+          result.hideWarningCount += 1;
+          addFolderDeleteReceiptHideCode(result, 'warnings', target.warning);
+        }
+        var hidden = await hideFolderByDesktopReceiptFromMirror(target.receipt, target);
         if (hidden && hidden.hidden) {
           result.hiddenCount += 1;
           addUniqueFolderId(result.hiddenFolderIds, hidden.folderId);
@@ -2824,11 +2908,24 @@
           result.hideWarningCount += 1;
           addFolderDeleteReceiptHideCode(result, 'warnings', cleanString(hidden && hidden.status) || 'folder-delete-receipt-hide-skipped');
         }
+        if (hidden && hidden.trustedDesktopReceiptWithoutLocalRequest) {
+          result.trustedDesktopReceiptWithoutLocalRequestCount += 1;
+        }
+        result.receiptRows.push(folderDeleteReceiptHideDiagnosticRow(target.receipt, {
+          hidden: !!(hidden && hidden.hidden),
+          alreadyHidden: !!(hidden && hidden.alreadyHidden),
+          status: cleanString(hidden && hidden.status),
+          trustedDesktopReceiptWithoutLocalRequest: !!(target && target.trustedDesktopReceiptWithoutLocalRequest),
+          pendingDeleteConfirmedByDesktopReceipt: !!(hidden && hidden.pendingDeleteConfirmedByDesktopReceipt),
+        }));
       } catch (error) {
         pushError('folder-delete-receipt-hide', error);
         result.hideSkippedCount += 1;
         result.hideBlockerCount += 1;
         addFolderDeleteReceiptHideCode(result, 'blockers', 'folder-delete-receipt-hide-failed');
+        result.skippedReceipts.push(folderDeleteReceiptHideDiagnosticRow(receipts[i], {
+          reason: 'folder-delete-receipt-hide-failed',
+        }));
       }
     }
     result.ok = result.hideBlockerCount === 0;
@@ -2844,12 +2941,16 @@
     base.hideSkippedCount = numberOrZero(hide.hideSkippedCount);
     base.hideBlockerCount = numberOrZero(hide.hideBlockerCount);
     base.hideWarningCount = numberOrZero(hide.hideWarningCount);
+    base.trustedDesktopReceiptWithoutLocalRequestCount = numberOrZero(hide.trustedDesktopReceiptWithoutLocalRequestCount);
+    base.receiptRows = Array.isArray(hide.receiptRows) ? hide.receiptRows.slice(0, 120) : [];
+    base.skippedReceipts = Array.isArray(hide.skippedReceipts) ? hide.skippedReceipts.slice(0, 120) : [];
     base.visibleStateOnlyHide = true;
     base.noFolderHide = base.hiddenCount > 0 || base.alreadyHiddenCount > 0 ? false : base.noFolderHide !== false;
     base.noTombstoneApply = true;
     base.noTombstoneCreate = true;
     base.noHardDelete = true;
     base.noChatDelete = true;
+    base.noAssetDelete = true;
     base.noBindingMutation = true;
     base.noChatMutation = true;
     base.noSnapshotMutation = true;
@@ -3874,6 +3975,7 @@
       noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
+      noAssetDelete: true,
       noFolderMutation: true,
       noBindingMutation: true,
       noChatMutation: true,
@@ -3920,17 +4022,43 @@
       hideSkippedCount: numberOrZero(r.hideSkippedCount),
       hideBlockerCount: numberOrZero(r.hideBlockerCount),
       hideWarningCount: numberOrZero(r.hideWarningCount),
+      trustedDesktopReceiptWithoutLocalRequestCount: numberOrZero(r.trustedDesktopReceiptWithoutLocalRequestCount),
       visibleStateOnlyHide: r.visibleStateOnlyHide === true,
       noTombstoneApply: true,
       noTombstoneCreate: true,
       noHardDelete: true,
       noChatDelete: true,
+      noAssetDelete: true,
       noFolderMutation: r.noFolderMutation === false ? false : true,
       noBindingMutation: true,
       noChatMutation: true,
       noSnapshotMutation: true,
       noDestructiveFolderMutation: true,
       tombstonePropagation: 'deferred',
+      receiptRows: Array.isArray(r.receiptRows) ? r.receiptRows.slice(0, 120).map(function (row) {
+        return {
+          receiptId: cleanString(row && row.receiptId),
+          requestId: cleanString(row && row.requestId),
+          reviewId: cleanString(row && row.reviewId),
+          folderId: cleanString(row && row.folderId),
+          folderName: cleanString(row && row.folderName),
+          status: cleanString(row && row.status),
+          source: cleanString(row && row.source),
+          trustedDesktopReceiptWithoutLocalRequest: row && row.trustedDesktopReceiptWithoutLocalRequest === true,
+          pendingDeleteConfirmedByDesktopReceipt: row && row.pendingDeleteConfirmedByDesktopReceipt === true,
+          hidden: row && row.hidden === true,
+          alreadyHidden: row && row.alreadyHidden === true,
+        };
+      }) : [],
+      skippedReceipts: Array.isArray(r.skippedReceipts) ? r.skippedReceipts.slice(0, 120).map(function (row) {
+        return {
+          receiptId: cleanString(row && row.receiptId),
+          requestId: cleanString(row && row.requestId),
+          reviewId: cleanString(row && row.reviewId),
+          folderId: cleanString(row && row.folderId),
+          reason: cleanString(row && row.reason),
+        };
+      }) : [],
       warnings: warnings,
       blockers: blockers,
     };
