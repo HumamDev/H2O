@@ -51,6 +51,7 @@
     lastLoadedAt: 0,
   };
   const FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const FOLDER_SYNC_STATE_KEY_LOCAL = 'h2o:sync:folder-import:state:v1';
   const CHROME_PENDING_DELETE_HIDDEN_REASON = 'chrome-soft-delete-request-pending';
   const CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE = 'Permanent delete is only available from Desktop Studio.';
   const CHROME_RESTORE_DEFERRED_MESSAGE = 'Restore is available from Desktop Studio.';
@@ -405,6 +406,16 @@
     return next;
   }
 
+  function hasChromeDesktopCanonicalRecentlyDeletedSnapshot(value) {
+    const snapshot = plainObject(value);
+    return !!(snapshot && Array.isArray(snapshot.rows));
+  }
+
+  function chromeDesktopCanonicalRecentlyDeletedRowCount(value) {
+    const snapshot = plainObject(value);
+    return Array.isArray(snapshot.rows) ? snapshot.rows.length : 0;
+  }
+
   async function readChromeFolderStateMirrorSources() {
     if (studioPlatformAdapter() !== 'mv3') {
       return {
@@ -420,14 +431,34 @@
     const chromeValue = await chromeStorageGet(FOLDER_STATE_KEY_LOCAL);
     const chromeState = plainObject(chromeValue);
     const localState = plainObject(readJson(FOLDER_STATE_KEY_LOCAL, {}));
+    const chromeSyncValue = await chromeStorageGet(FOLDER_SYNC_STATE_KEY_LOCAL);
+    const chromeSyncState = plainObject(chromeSyncValue);
+    const localSyncState = plainObject(readJson(FOLDER_SYNC_STATE_KEY_LOCAL, {}));
     const hasChrome = !!(chromeValue && typeof chromeValue === 'object' && !Array.isArray(chromeValue));
+    const hasChromeSync = !!(chromeSyncValue && typeof chromeSyncValue === 'object' && !Array.isArray(chromeSyncValue));
     const localRawPresent = (() => {
       try { return W.localStorage?.getItem?.(FOLDER_STATE_KEY_LOCAL) != null; }
       catch { return false; }
     })();
+    const localSyncRawPresent = (() => {
+      try { return W.localStorage?.getItem?.(FOLDER_SYNC_STATE_KEY_LOCAL) != null; }
+      catch { return false; }
+    })();
     const merged = mergeChromeFolderStateMirror(hasChrome ? chromeState : {}, localState);
+    const syncMerged = {
+      ...localSyncState,
+      ...chromeSyncState,
+    };
+    const folderMirrorHasCanonical = hasChromeDesktopCanonicalRecentlyDeletedSnapshot(merged.desktopCanonicalRecentlyDeleted);
+    const syncStateHasCanonical = hasChromeDesktopCanonicalRecentlyDeletedSnapshot(syncMerged.desktopCanonicalRecentlyDeleted);
+    if (!folderMirrorHasCanonical && syncStateHasCanonical) {
+      merged.desktopCanonicalRecentlyDeleted = syncMerged.desktopCanonicalRecentlyDeleted;
+    }
     const chromePendingCount = Object.keys(plainObject(chromeState.hiddenByChromePendingDelete)).length;
     const localPendingCount = Object.keys(plainObject(localState.hiddenByChromePendingDelete)).length;
+    const canonicalSource = hasChromeDesktopCanonicalRecentlyDeletedSnapshot(merged.desktopCanonicalRecentlyDeleted)
+      ? (folderMirrorHasCanonical ? 'folder-state-mirror' : 'sync-import-state')
+      : 'missing';
     return {
       merged,
       source: hasChrome && localRawPresent ? 'chrome.storage.local+localStorage'
@@ -437,6 +468,13 @@
       chromeStorageAvailable: !!chromeStorageLocal(),
       chromeStorageSource: hasChrome ? 'chrome.storage.local' : 'empty',
       localStorageSource: localRawPresent ? 'localStorage' : 'empty',
+      syncStateSource: hasChromeSync && localSyncRawPresent ? 'chrome.storage.local+localStorage'
+        : hasChromeSync ? 'chrome.storage.local'
+        : localSyncRawPresent ? 'localStorage'
+        : 'empty',
+      desktopCanonicalRecentlyDeletedSource: canonicalSource,
+      desktopCanonicalRecentlyDeletedFolderStateCount: chromeDesktopCanonicalRecentlyDeletedRowCount(merged.desktopCanonicalRecentlyDeleted),
+      desktopCanonicalRecentlyDeletedSyncStateCount: chromeDesktopCanonicalRecentlyDeletedRowCount(syncMerged.desktopCanonicalRecentlyDeleted),
       hiddenByChromePendingDeleteChromeCount: chromePendingCount,
       hiddenByChromePendingDeleteLocalCount: localPendingCount,
       hiddenByChromePendingDeleteMergedCount: Object.keys(plainObject(merged.hiddenByChromePendingDelete)).length,
@@ -3055,24 +3093,25 @@
     const diagnosticWarnings = hiddenWithoutExportableRequestCount > 0
       ? ['pending-hide-without-exportable-delete-request']
       : [];
+    const canonicalProjectionPresent = !!desktopCanonicalSnapshot;
     const canonicalIds = new Set(desktopCanonicalRows.map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean));
     const companionIds = new Set(companionRows.map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean));
-    const extraChromeRows = companionRows.filter((row) => {
+    const extraChromeRows = canonicalProjectionPresent ? companionRows.filter((row) => {
       const folderId = String(row.folderId || row.id || '').trim();
-      return folderId && desktopCanonicalSnapshot && !canonicalIds.has(folderId);
-    });
+      return folderId && !canonicalIds.has(folderId);
+    }) : companionRows.slice();
     const missingChromeRows = desktopCanonicalRows.filter((row) => {
       const folderId = String(row.folderId || row.id || '').trim();
       return folderId && !companionIds.has(folderId);
     });
-    const staleReceiptRows = desktopCanonicalSnapshot
+    const staleReceiptRows = canonicalProjectionPresent
       ? receiptRows.filter((row) => {
         const folderId = String(row.folderId || row.id || '').trim();
         return folderId && !canonicalIds.has(folderId);
       })
-      : [];
+      : receiptRows.slice();
     const mismatchedFolderIds = Array.from(new Set(extraChromeRows.concat(missingChromeRows).map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean))).sort();
-    const desktopChromeRecentlyDeletedParityOk = !!desktopCanonicalSnapshot &&
+    const desktopChromeRecentlyDeletedParityOk = canonicalProjectionPresent &&
       extraChromeRows.length === 0 &&
       missingChromeRows.length === 0 &&
       companionRows.length === desktopCanonicalRows.length;
@@ -3109,11 +3148,14 @@
       chromeStorageAvailable: storageSources.chromeStorageAvailable === true,
       chromeStorageSource: storageSources.chromeStorageSource,
       localStorageSource: storageSources.localStorageSource,
+      syncStateSource: storageSources.syncStateSource,
       chromeNormalVisibleFolderCount: canonicalRows.length,
       chromeRecentlyDeletedCount: companionRows.length,
       desktopCanonicalRecentlyDeletedCount: desktopCanonicalRows.length,
       chromeCanonicalRecentlyDeletedCount: desktopCanonicalRows.length,
       chromeCompanionRecentlyDeletedCount: companionRows.length,
+      desktopCanonicalRecentlyDeletedSource: storageSources.desktopCanonicalRecentlyDeletedSource,
+      desktopCanonicalRecentlyDeletedProjectionPresent: canonicalProjectionPresent,
       desktopChromeRecentlyDeletedParityOk,
       mismatchedFolderIds,
       extraChromeRows: extraChromeRows.slice(0, 80).map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '' })),
@@ -3216,6 +3258,9 @@
         hiddenByChromePendingDeleteLocalCount: storageSources.hiddenByChromePendingDeleteLocalCount,
         hiddenByChromePendingDeleteMergedCount: storageSources.hiddenByChromePendingDeleteMergedCount,
         desktopReceiptHiddenMergedCount: storageSources.desktopReceiptHiddenMergedCount,
+        desktopCanonicalRecentlyDeletedSource: storageSources.desktopCanonicalRecentlyDeletedSource,
+        desktopCanonicalRecentlyDeletedFolderStateCount: storageSources.desktopCanonicalRecentlyDeletedFolderStateCount,
+        desktopCanonicalRecentlyDeletedSyncStateCount: storageSources.desktopCanonicalRecentlyDeletedSyncStateCount,
       },
       chromePermanentDeleteBlocked: true,
       noChromePurgeAuthority: true,

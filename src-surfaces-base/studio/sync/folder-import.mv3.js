@@ -2564,7 +2564,8 @@
     var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(normalized.bundle, nowIso());
     var desktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(desktopVisibleFolderSet);
     folderMetadataChangeSummary = mergeDesktopVisibleSetHideSummary(folderMetadataChangeSummary, desktopVisibleSetHide);
-    var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedSnapshot(normalized.bundle, nowIso());
+    var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedSnapshot(bundleInput, nowIso()) ||
+      buildDesktopCanonicalRecentlyDeletedSnapshot(normalized.bundle, nowIso());
     var desktopCanonicalRecentlyDeletedImport = await storeDesktopCanonicalRecentlyDeletedSnapshot(desktopCanonicalRecentlyDeleted);
     if (desktopCanonicalRecentlyDeletedImport.changed === true) {
       addUnique(folderMetadataChangeSummary.changedFields, 'desktop-canonical-recently-deleted');
@@ -5067,6 +5068,8 @@
         folderRestoreReceiptImport: propagation && propagation.folderRestoreReceiptImport,
         desktopVisibleFolderSet: desktopVisibleFolderSet,
         desktopVisibleSetHide: propagation && propagation.desktopVisibleSetHide,
+        desktopCanonicalRecentlyDeleted: propagation && propagation.desktopCanonicalRecentlyDeleted,
+        desktopCanonicalRecentlyDeletedImport: propagation && propagation.desktopCanonicalRecentlyDeletedImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,

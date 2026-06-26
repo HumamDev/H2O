@@ -118,11 +118,16 @@ const renderBody = functionBody(sidebar, 'renderChromeRecentlyDeletedCompanionPa
 ].forEach((needle) => assertContains(storeSnapshotBody, needle, `6B.5 Chrome canonical store ${needle}`));
 
 [
-  'buildDesktopCanonicalRecentlyDeletedSnapshot(normalized.bundle',
+  'buildDesktopCanonicalRecentlyDeletedSnapshot(bundleInput',
   'storeDesktopCanonicalRecentlyDeletedSnapshot(desktopCanonicalRecentlyDeleted)',
   'desktop-canonical-recently-deleted',
   'desktopCanonicalRecentlyDeletedImport',
 ].forEach((needle) => assertContains(importPropagationBody, needle, `6B.5 import propagation ${needle}`));
+
+[
+  'desktopCanonicalRecentlyDeleted: propagation && propagation.desktopCanonicalRecentlyDeleted',
+  'desktopCanonicalRecentlyDeletedImport: propagation && propagation.desktopCanonicalRecentlyDeletedImport',
+].forEach((needle) => assertContains(importer, needle, `6B.5 sync result surfaces canonical import ${needle}`));
 
 [
   'desktopCanonicalRecentlyDeleted',
@@ -133,6 +138,13 @@ const renderBody = functionBody(sidebar, 'renderChromeRecentlyDeletedCompanionPa
 ].forEach((needle) => assertContains(canonicalRowsBody, needle, `6B.5 Chrome companion canonical rows ${needle}`));
 
 [
+  'FOLDER_SYNC_STATE_KEY_LOCAL',
+  'desktopCanonicalRecentlyDeletedSource',
+  'sync-import-state',
+  'hasChromeDesktopCanonicalRecentlyDeletedSnapshot',
+].forEach((needle) => assertContains(sidebar, needle, `6B.5 Chrome canonical storage recovery ${needle}`));
+
+[
   'const desktopCanonical = chromeDesktopCanonicalRecentlyDeletedSnapshotFromState(state)',
   'if (desktopCanonical) return desktopCanonical.rows',
 ].forEach((needle) => assertContains(companionRowsBody, needle, `6B.5 Chrome companion canonical precedence ${needle}`));
@@ -141,6 +153,8 @@ const renderBody = functionBody(sidebar, 'renderChromeRecentlyDeletedCompanionPa
   'desktopCanonicalRecentlyDeletedCount',
   'chromeCanonicalRecentlyDeletedCount',
   'chromeCompanionRecentlyDeletedCount',
+  'desktopCanonicalRecentlyDeletedProjectionPresent',
+  'desktopCanonicalRecentlyDeletedSource',
   'staleReceiptRowCount',
   'pendingLocalDeleteCount',
   'desktopChromeRecentlyDeletedParityOk',
@@ -148,6 +162,12 @@ const renderBody = functionBody(sidebar, 'renderChromeRecentlyDeletedCompanionPa
   'extraChromeRows',
   'missingChromeRows',
 ].forEach((needle) => assertContains(diagnoseBody, needle, `6B.5 parity diagnostics ${needle}`));
+
+[
+  'const canonicalProjectionPresent = !!desktopCanonicalSnapshot',
+  ': companionRows.slice()',
+  ': receiptRows.slice()',
+].forEach((needle) => assertContains(diagnoseBody, needle, `6B.5 stale fallback diagnostics ${needle}`));
 
 [
   'Restore is available from Desktop Studio.',
