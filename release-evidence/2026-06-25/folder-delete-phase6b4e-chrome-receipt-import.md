@@ -6,6 +6,14 @@ Phase 6B.4e fixes Chrome-side Desktop receipt recognition for Chrome-originated 
 
 Chrome still does not own canonical tombstones, purge, restore, hard delete, chat deletion, snapshot deletion, or asset deletion. Desktop remains authoritative. Chrome imports trusted Desktop delete receipts as visible-state-only confirmation so the folder appears in Chrome Recently Deleted as deleted on Desktop.
 
+Final runtime proof is green after loading fresh Chrome Studio assets from the rebuilt Studio Launcher.
+
+## Implementation Commits
+
+- `8e708661eeb12f93e0fddf8602a8c72b0f22f816` - 6B.4c request export repair
+- `bb9e76e5d9dfbab7dbe714f2d317fc5f9b44680a` - 6B.4d Chrome export gate fix
+- `7a06c0f5fff6b5a82b96477f00817fd016dcaaef` - 6B.4e Chrome receipt import fix
+
 ## Root Cause
 
 The Desktop export already wrote valid `folderDeleteReceipts[]` into `latest.json`, including the target `requestId` and `folderId`.
@@ -76,7 +84,9 @@ Static validation passed:
 - `git diff --check`
 - `git diff --cached --check`
 
-## Runtime Attempt
+## Earlier Runtime Attempt
+
+The first runtime attempt was blocked by stale loaded Chrome assets. It is superseded by the final green runtime proof below.
 
 Runtime command attempted:
 
@@ -102,23 +112,125 @@ The runtime receipt-import proof is blocked by stale loaded Chrome assets. The i
 - `blockers:[{ code:"receipt-no-matching-request" }]`
 - missing the new `receiptRows`, `skippedReceipts`, and `trustedDesktopReceiptWithoutLocalRequestCount` diagnostics
 
-This indicates the running Chrome Studio profile has not been rebuilt/reloaded with the scoped 6B.4e source changes. The product source fix remains scoped to Chrome receipt import/matching and should be rerun after generated/runtime assets are refreshed.
+This indicated that the running Chrome Studio profile had not been rebuilt/reloaded with the scoped 6B.4e source changes.
 
-## Runtime Proof Target
+## Final Runtime Proof
 
-Expected runtime proof for a fresh Chrome-originated folder delete:
+Phase: 6B.4e - Chrome receipt import/matching for Desktop-applied Chrome folder delete receipts.
 
-1. Chrome creates and exports a `folderDeleteRequest`.
-2. Desktop imports and applies the request as `applied-folder-delete-request`.
-3. Desktop exports a delete receipt in `latest.json` with the exact `requestId` and `folderId`.
-4. Chrome imports the receipt.
-5. Chrome companion diagnostics show the target in `receiptRows` or `companionRows`.
-6. `companion.blockers:[]`.
-7. `noChromePurgeAuthority:true`.
-8. `noChromeTombstoneApply:true`.
-9. `noHardDelete:true`.
-10. `noChatDelete:true`.
-11. `noSnapshotDelete:true`.
-12. `noAssetDelete:true`.
+Target:
 
-Runtime proof should be rerun from the current Chrome/CDP profile once the local Chrome and Desktop smoke gates are available.
+- `folderId:"fold_smoke_chrome-receipt-import-proof-1782489489705_mqv47woy_935ab2615f49"`
+- `requestId:"folder-delete-request:f3a218e1-1368-45ed-a0ab-6d559d4a6e42"`
+
+Fresh Chrome Studio assets were loaded via CDP from the rebuilt Studio Launcher.
+
+### Chrome Health
+
+- `status:"healthy"`
+- `connected:true`
+- `permission:"granted"`
+- `noFolderHandle:false`
+- `chromeWritesSyncFolder:true`
+- `blockers:[]`
+
+### Chrome Create And Delete Request
+
+Chrome created a fresh folder:
+
+- `status:"folder-created"`
+
+Chrome created the soft-delete request:
+
+- `status:"pending-created"`
+- `requestId:"folder-delete-request:f3a218e1-1368-45ed-a0ab-6d559d4a6e42"`
+
+Chrome exported the request:
+
+- `status:"chrome-to-desktop-exported"`
+- `bytes:497398`
+- `requestCount:1`
+- `reviewRequestCount:1`
+- `mirrorRequestCount:1`
+- `hiddenWithoutExportableRequestCount:0`
+- `blockers:[]`
+- `warnings:[]`
+
+### Desktop Queue And Apply
+
+Desktop queue health:
+
+- `queueEnabled:true`
+- `queueStarted:true`
+- `queueBlockers:[]`
+- `queueRegistryBlockers:[]`
+- `bridgeStatus:"healthy"`
+- `bridgeBlockers:[]`
+
+Desktop import/apply ran. Older already-tombstoned rows produced noise during the run, but the target request was applied and the target later appeared in Desktop `latest.json`.
+
+Desktop receipt export:
+
+- `status:"latest-sync-bundle-written"`
+- `bytes:547692`
+- `blockers:[]`
+- `warnings:[]`
+
+Grep confirmed the target was exported in `/Users/hobayda/H2O Studio Sync/latest.json`:
+
+- contains `folderId:"fold_smoke_chrome-receipt-import-proof-1782489489705_mqv47woy_935ab2615f49"`
+- contains `requestId:"folder-delete-request:f3a218e1-1368-45ed-a0ab-6d559d4a6e42"`
+
+### Chrome Receipt Import
+
+Chrome receipt import ran with fresh 6B.4e assets:
+
+- `href` starts with `chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg`
+- `status:"sync-folder-imported"`
+- `direction:"desktop-to-chrome"`
+- `blockers:[]`
+- `receiptFound:15`
+- `trustedWithoutLocalRequest:9`
+- `receiptRowsPresent:true`
+
+### Chrome Companion Target Match
+
+The target matched in Chrome Recently Deleted companion:
+
+- `companionMatches` contains the target `folderId`
+- `companionMatches` contains the target `requestId`
+- `status:"deleted"`
+- `source:"desktop-folder-delete-receipt"`
+- `companionStatusLabel:"Deleted on Desktop"`
+- `pendingDeleteHidden:false`
+- `pendingDeleteRequest:false`
+- `desktopReceiptHidden:true`
+
+Companion summary:
+
+- `ok:true`
+- `status:"chrome-recently-deleted-companion-diagnosed"`
+- `chromeRecentlyDeletedCount:13`
+- `chromeReceiptImportedCount:13`
+- `desktopReceiptHiddenCount:13`
+- `pendingDeleteHiddenCount:2`
+- `exportableFolderDeleteRequestCount:2`
+- `chromePermanentDeleteBlocked:true`
+- `noChromePurgeAuthority:true`
+- `noChromeTombstoneApply:true`
+- `noHardDelete:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noAssetDelete:true`
+- `blockers:[]`
+- `warnings:[]`
+
+## Caveats
+
+- The target helper returned empty `requestMatches` and `receiptMatches`, but `companionMatches` was non-empty and receipt-confirmed. The product-facing Chrome Recently Deleted companion correctly recognizes the Desktop receipt.
+- Desktop Recently Deleted diagnostics previously returned `0` despite active tombstones. That is a follow-up candidate only and was not changed in this evidence step.
+- Old historical receipt/request rows produced noise in earlier attempts. The final 6B.4e proof uses a fresh target and a companion match.
+
+## Final Result
+
+Phase 6B.4e is runtime-green for Chrome importing and displaying Desktop-applied folder delete receipts in the Chrome Recently Deleted companion while preserving Chrome as a visible-state-only companion.
