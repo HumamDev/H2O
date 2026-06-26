@@ -43,6 +43,7 @@
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
   var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
+  var DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA = 'h2o.studio.folder-purge-suppression.desktop.v1';
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1539,6 +1540,104 @@
     };
   }
 
+  function desktopPurgedFolderSuppressionRowFromFolder(folder) {
+    if (!folder || typeof folder !== 'object') return null;
+    var meta = safeObject(folder.meta);
+    if (meta.phase6aPermanentlyPurged !== true) return null;
+    var folderId = cleanString(folder.folderId || folder.id);
+    if (!folderId) return null;
+    var folderName = cleanString(folder.name || folder.title || meta.name || meta.folderName || folderId);
+    return {
+      schema: DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA + '.row',
+      folderId: folderId,
+      id: folderId,
+      folderName: folderName,
+      name: folderName,
+      purgedAt: cleanString(meta.phase6aPurgedAt || meta.purgedAt),
+      purgeReason: cleanString(meta.phase6aPurgeReason || meta.purgeReason),
+      purgeSource: cleanString(meta.phase6aPurgeSource || meta.purgeSource || 'desktop-recently-deleted-purge'),
+      purgeTombstoneId: cleanString(meta.phase6aPurgeTombstoneId || meta.purgeTombstoneId),
+      phase6aPermanentlyPurged: true,
+      permanentlySuppressed: true,
+      source: 'desktop-purged-folder-suppression',
+      sourceKind: 'desktop-purged-folder-suppression',
+      status: 'purged',
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noChromeTombstoneCreate: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
+  async function buildDesktopPurgedFolderSuppressionPayloadSafely(stores) {
+    var api = stores && stores.folders;
+    var base = {
+      schema: DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA,
+      source: 'desktop-purged-folder-suppression',
+      status: 'exported',
+      exportedAt: nowIso(),
+      count: 0,
+      folderIds: [],
+      rows: [],
+      diagnostics: {
+        schema: DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA + '.diagnostics',
+        exported: false,
+        purgedSuppressedCount: 0,
+        source: 'folders.phase6aPermanentlyPurged',
+        desktopAuthority: true,
+        chromeAuthority: false,
+        noChromePurgeAuthority: true,
+        noChromeTombstoneApply: true,
+        noChromeTombstoneCreate: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        warnings: [],
+      },
+    };
+    if (!api || typeof api.list !== 'function') {
+      base.diagnostics.warnings.push({
+        code: 'folder-purge-suppression-store-unavailable',
+        warning: 'store.folders.list unavailable; exporting empty purge suppression projection',
+      });
+      return base;
+    }
+    try {
+      var rows = (await listFromStore(api, {
+        includeTombstoned: true,
+        includeDeleted: true,
+        includePurged: true,
+        includePermanentlyPurged: true,
+        limit: 5000,
+      }))
+        .map(desktopPurgedFolderSuppressionRowFromFolder)
+        .filter(function (row) { return row && row.folderId; })
+        .sort(function (a, b) {
+          return cleanString(b.purgedAt).localeCompare(cleanString(a.purgedAt)) ||
+            cleanString(a.folderName).localeCompare(cleanString(b.folderName));
+        });
+      base.rows = rows;
+      base.count = rows.length;
+      base.folderIds = rows.map(function (row) { return row.folderId; }).sort();
+      base.diagnostics.exported = true;
+      base.diagnostics.purgedSuppressedCount = rows.length;
+      return base;
+    } catch (e) {
+      base.diagnostics.warnings.push({
+        code: 'folder-purge-suppression-export-failed',
+        warning: 'permanent folder suppression projection failed; exporting empty purge suppression projection',
+        error: String((e && e.message) || e),
+      });
+      return base;
+    }
+  }
+
   function nonNegativeIntegerOrNull(value) {
     var number = Number(value);
     if (!Number.isFinite(number) || number < 0) return null;
@@ -1677,6 +1776,7 @@
     var folderRestoreReceiptExport = buildFolderRestoreReceiptPayloadFromTombstones(tombstoneExport.tombstones);
     var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
     var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstoneExport.tombstones);
+    var desktopPurgedFolderSuppression = await buildDesktopPurgedFolderSuppressionPayloadSafely(stores);
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
     var summary = {
       chatCount: chatArchive.chatCount,
@@ -1699,6 +1799,7 @@
       folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
       folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
       desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
+      desktopPurgedFolderSuppressionCount: Number(desktopPurgedFolderSuppression.count) || 0,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -1715,6 +1816,8 @@
       tombstones: asArray(tombstoneExport.tombstones),
       desktopCanonicalRecentlyDeletedFolders: asArray(desktopCanonicalRecentlyDeleted.rows),
       desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
+      desktopPurgedFolderSuppressions: asArray(desktopPurgedFolderSuppression.rows),
+      desktopPurgedFolderSuppression: desktopPurgedFolderSuppression,
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
@@ -1734,6 +1837,7 @@
           },
           tombstones: tombstoneDiagnostics,
           desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted.diagnostics,
+          desktopPurgedFolderSuppression: desktopPurgedFolderSuppression.diagnostics,
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           applyEvents: {

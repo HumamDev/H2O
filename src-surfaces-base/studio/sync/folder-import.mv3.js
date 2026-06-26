@@ -183,6 +183,7 @@
     lastFolderRestoreReceiptImport: null,
     desktopVisibleFolderSet: null,
     desktopCanonicalRecentlyDeleted: null,
+    desktopPurgedFolderSuppression: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -384,6 +385,7 @@
       : [];
     state.desktopVisibleFolderSet = normalizeDesktopVisibleFolderSetSnapshot(saved.desktopVisibleFolderSet);
     state.desktopCanonicalRecentlyDeleted = normalizeDesktopCanonicalRecentlyDeletedSnapshot(saved.desktopCanonicalRecentlyDeleted);
+    state.desktopPurgedFolderSuppression = normalizeDesktopPurgedFolderSuppressionSnapshot(saved.desktopPurgedFolderSuppression);
   }
 
   async function persistState(patch) {
@@ -426,6 +428,7 @@
       lastChromeExportBlockers: state.lastChromeExportBlockers.slice(),
       desktopVisibleFolderSet: state.desktopVisibleFolderSet,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted,
+      desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' || chromeExportReady,
@@ -1233,6 +1236,182 @@
       await writeKv(FOLDER_STATE_KEY_LOCAL, next);
     }
     state.desktopCanonicalRecentlyDeleted = snapshot;
+    return result;
+  }
+
+  function normalizeDesktopPurgedFolderSuppressionSnapshot(value) {
+    var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    var rows = Array.isArray(input.rows) ? input.rows : [];
+    var safeRows = [];
+    var ids = [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] && typeof rows[i] === 'object' && !Array.isArray(rows[i]) ? rows[i] : null;
+      var id = normalizeFolderRecordId(row && (row.folderId || row.id));
+      if (!row || !id || ids.indexOf(id) !== -1) continue;
+      ids.push(id);
+      safeRows.push({
+        schema: 'h2o.studio.folder-purge-suppression.desktop.v1.row',
+        folderId: id,
+        id: id,
+        folderName: cleanString(row.folderName || row.name || row.title || id),
+        name: cleanString(row.name || row.folderName || row.title || id),
+        purgedAt: cleanString(row.purgedAt || row.deletedAt || row.hiddenAt),
+        purgeReason: cleanString(row.purgeReason || row.deleteReason || row.reason),
+        purgeSource: cleanString(row.purgeSource || row.source || 'desktop-purged-folder-suppression'),
+        purgeTombstoneId: cleanString(row.purgeTombstoneId || row.tombstoneId),
+        phase6aPermanentlyPurged: true,
+        permanentlySuppressed: true,
+        source: 'desktop-purged-folder-suppression',
+        sourceKind: 'desktop-purged-folder-suppression',
+        status: 'purged',
+        desktopAuthority: true,
+        chromeAuthority: false,
+        noChromePurgeAuthority: true,
+        noChromeTombstoneApply: true,
+        noChromeTombstoneCreate: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true
+      });
+    }
+    ids.sort();
+    safeRows.sort(function (a, b) {
+      return cleanString(b.purgedAt).localeCompare(cleanString(a.purgedAt)) ||
+        cleanString(a.folderName).localeCompare(cleanString(b.folderName));
+    });
+    return {
+      schema: 'h2o.studio.folder-purge-suppression.desktop.v1',
+      source: cleanString(input.source || 'desktop-purged-folder-suppression'),
+      status: cleanString(input.status || 'imported'),
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt),
+      desktopPurgedFolderSuppressionFolderIds: ids,
+      desktopPurgedFolderSuppressionCount: ids.length,
+      folderIds: ids,
+      rows: safeRows,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noChromeTombstoneCreate: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  function buildDesktopPurgedFolderSuppressionSnapshot(bundle, importedAt) {
+    var payload = safeObject(bundle && bundle.desktopPurgedFolderSuppression);
+    var rows = Array.isArray(payload.rows)
+      ? payload.rows
+      : (Array.isArray(bundle && bundle.desktopPurgedFolderSuppressions)
+        ? bundle.desktopPurgedFolderSuppressions
+        : null);
+    if (!rows) return null;
+    return normalizeDesktopPurgedFolderSuppressionSnapshot({
+      source: 'desktop-purged-folder-suppression',
+      status: 'imported',
+      importedAt: cleanString(importedAt) || nowIso(),
+      sourceExportedAt: cleanString(bundle && bundle.exportedAt),
+      rows: rows
+    });
+  }
+
+  async function storeDesktopPurgedFolderSuppressionSnapshot(snapshotInput) {
+    var snapshot = normalizeDesktopPurgedFolderSuppressionSnapshot(snapshotInput);
+    var ids = snapshot && Array.isArray(snapshot.desktopPurgedFolderSuppressionFolderIds)
+      ? snapshot.desktopPurgedFolderSuppressionFolderIds.slice()
+      : [];
+    var idSet = {};
+    ids.forEach(function (id) { if (id) idSet[id] = true; });
+    var result = {
+      schema: 'h2o.studio.folder-purge-suppression.chrome-import.v1',
+      phase: 'phase6b.6',
+      attempted: true,
+      ok: true,
+      status: 'desktop-purged-folder-suppression-imported',
+      desktopPurgedFolderSuppressionCount: ids.length,
+      purgedSuppressedFolderIds: ids,
+      changed: false,
+      clearedDesktopReceiptRowCount: 0,
+      clearedPendingDeleteRowCount: 0,
+      clearedFolderRowCount: 0,
+      importedAt: snapshot ? cleanString(snapshot.importedAt) : '',
+      sourceExportedAt: snapshot ? cleanString(snapshot.sourceExportedAt) : '',
+      blockers: [],
+      warnings: [],
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+    if (!snapshot) {
+      result.ok = false;
+      result.status = 'desktop-purged-folder-suppression-missing';
+      result.blockers.push('desktop-purged-folder-suppression-missing');
+      return result;
+    }
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var existing = normalizeDesktopPurgedFolderSuppressionSnapshot(current.desktopPurgedFolderSuppression);
+    var next = cloneJson(current) || {};
+    var desktopReceipt = Object.assign({}, safeObject(next.hiddenByDesktopReceipt));
+    var pendingDelete = Object.assign({}, safeObject(next.hiddenByChromePendingDelete));
+    ids.forEach(function (folderId) {
+      if (desktopReceipt[folderId]) {
+        delete desktopReceipt[folderId];
+        result.clearedDesktopReceiptRowCount += 1;
+      }
+      if (pendingDelete[folderId]) {
+        delete pendingDelete[folderId];
+        result.clearedPendingDeleteRowCount += 1;
+      }
+    });
+    var rows = Array.isArray(next.folders) ? next.folders : [];
+    if (rows.length) {
+      next.folders = rows.filter(function (row) {
+        var id = normalizeFolderRecordId(folderMetadataRowId(row));
+        if (id && idSet[id]) {
+          result.clearedFolderRowCount += 1;
+          return false;
+        }
+        return true;
+      });
+    }
+    if (next.items && typeof next.items === 'object' && !Array.isArray(next.items)) {
+      var nextItems = Object.assign({}, next.items);
+      ids.forEach(function (folderId) { delete nextItems[folderId]; });
+      next.items = nextItems;
+    }
+    var canonicalSnapshotChanged = false;
+    var canonical = normalizeDesktopCanonicalRecentlyDeletedSnapshot(next.desktopCanonicalRecentlyDeleted);
+    if (canonical && Array.isArray(canonical.rows)) {
+      var canonicalRows = canonical.rows.filter(function (row) {
+        var folderId = normalizeFolderRecordId(row && (row.folderId || row.id));
+        return !folderId || !idSet[folderId];
+      });
+      if (canonicalRows.length !== canonical.rows.length) {
+        next.desktopCanonicalRecentlyDeleted = normalizeDesktopCanonicalRecentlyDeletedSnapshot(Object.assign({}, canonical, { rows: canonicalRows }));
+        state.desktopCanonicalRecentlyDeleted = next.desktopCanonicalRecentlyDeleted;
+        canonicalSnapshotChanged = true;
+      }
+    }
+    next.hiddenByDesktopReceipt = desktopReceipt;
+    next.hiddenByChromePendingDelete = pendingDelete;
+    next.desktopPurgedFolderSuppression = snapshot;
+    next.updatedAt = nowIso();
+    result.changed = JSON.stringify(safeObject(existing)) !== JSON.stringify(safeObject(snapshot)) ||
+      result.clearedDesktopReceiptRowCount > 0 ||
+      result.clearedPendingDeleteRowCount > 0 ||
+      result.clearedFolderRowCount > 0 ||
+      canonicalSnapshotChanged === true;
+    if (result.changed) await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    state.desktopPurgedFolderSuppression = snapshot;
     return result;
   }
 
@@ -2571,6 +2750,13 @@
       addUnique(folderMetadataChangeSummary.changedFields, 'desktop-canonical-recently-deleted');
       folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
     }
+    var desktopPurgedFolderSuppression = buildDesktopPurgedFolderSuppressionSnapshot(bundleInput, nowIso()) ||
+      buildDesktopPurgedFolderSuppressionSnapshot(normalized.bundle, nowIso());
+    var desktopPurgedFolderSuppressionImport = await storeDesktopPurgedFolderSuppressionSnapshot(desktopPurgedFolderSuppression);
+    if (desktopPurgedFolderSuppressionImport.changed === true) {
+      addUnique(folderMetadataChangeSummary.changedFields, 'desktop-purged-folder-suppression');
+      folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
+    }
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2604,6 +2790,8 @@
       desktopVisibleSetHide: desktopVisibleSetHide,
       desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
       desktopCanonicalRecentlyDeletedImport: desktopCanonicalRecentlyDeletedImport,
+      desktopPurgedFolderSuppression: desktopPurgedFolderSuppression,
+      desktopPurgedFolderSuppressionImport: desktopPurgedFolderSuppressionImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -4044,6 +4232,7 @@
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted || null,
+      desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression || null,
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
       cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
       refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
@@ -4761,12 +4950,19 @@
             addUnique(alreadyRefreshSummary.changedFields, 'desktop-canonical-recently-deleted');
             alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
           }
+          var alreadyDesktopPurgedFolderSuppression = buildDesktopPurgedFolderSuppressionSnapshot(bundle, nowIso());
+          var alreadyDesktopPurgedFolderSuppressionImport = await storeDesktopPurgedFolderSuppressionSnapshot(alreadyDesktopPurgedFolderSuppression);
+          if (alreadyDesktopPurgedFolderSuppressionImport.changed === true) {
+            addUnique(alreadyRefreshSummary.changedFields, 'desktop-purged-folder-suppression');
+            alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
+          }
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
           if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0 ||
             numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0 ||
-            alreadyDesktopCanonicalRecentlyDeletedImport.changed === true) {
+            alreadyDesktopCanonicalRecentlyDeletedImport.changed === true ||
+            alreadyDesktopPurgedFolderSuppressionImport.changed === true) {
             alreadyPostImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
               alreadyRefreshSummary,
               opts.reason || 'desktop-chrome-propagation-import',
@@ -4816,6 +5012,8 @@
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
             desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
+            desktopPurgedFolderSuppression: alreadyDesktopPurgedFolderSuppression,
+            desktopPurgedFolderSuppressionImport: alreadyDesktopPurgedFolderSuppressionImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -4869,6 +5067,8 @@
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
             desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
+            desktopPurgedFolderSuppression: alreadyDesktopPurgedFolderSuppression,
+            desktopPurgedFolderSuppressionImport: alreadyDesktopPurgedFolderSuppressionImport,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
@@ -5070,6 +5270,8 @@
         desktopVisibleSetHide: propagation && propagation.desktopVisibleSetHide,
         desktopCanonicalRecentlyDeleted: propagation && propagation.desktopCanonicalRecentlyDeleted,
         desktopCanonicalRecentlyDeletedImport: propagation && propagation.desktopCanonicalRecentlyDeletedImport,
+        desktopPurgedFolderSuppression: propagation && propagation.desktopPurgedFolderSuppression,
+        desktopPurgedFolderSuppressionImport: propagation && propagation.desktopPurgedFolderSuppressionImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,
