@@ -193,6 +193,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // diagnostics into Settings -> Diagnostics via the injected read-only API; no
   // mutation/repair/import/sync/Chrome. Shows Desktop-only message when absent.
   "ingestion/archive-health-ui.studio.js",
+  // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
+  // manual Settings utility card wiring the D.3C.1 delivery APIs under an
+  // explicit click. No automatic delivery, no read-back, no Desktop runtime,
+  // sync, CAS, package writer, queue/materializer call, or Archive Health UI.
+  "ingestion/saved-chat-archive-request-delivery-ui.studio.js",
   // F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Inert shared
   // scanner/enforcer only; no domain adoption, publication, replay,
   // watermark, apply, convergence, storage, network, or mobile behavior.
@@ -1245,6 +1250,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
+  // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
+  // manual Settings utility card wiring the D.3C.1 delivery APIs under an
+  // explicit click. No automatic delivery, no read-back, no Desktop runtime,
+  // sync, CAS, package writer, queue/materializer call, or Archive Health UI.
+  "ingestion/saved-chat-archive-request-delivery-ui.studio.js",
   "sync/kernel/privacy-scan.tauri.js",
   "sync/kernel/identity-kit.tauri.js",
   "sync/kernel/blockers.tauri.js",
