@@ -182,6 +182,7 @@
     lastFolderDeleteReceiptImport: null,
     lastFolderRestoreReceiptImport: null,
     desktopVisibleFolderSet: null,
+    desktopCanonicalRecentlyDeleted: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -382,6 +383,7 @@
       ? saved.lastChromeExportBlockers.map(cleanString).filter(Boolean).slice(0, 8)
       : [];
     state.desktopVisibleFolderSet = normalizeDesktopVisibleFolderSetSnapshot(saved.desktopVisibleFolderSet);
+    state.desktopCanonicalRecentlyDeleted = normalizeDesktopCanonicalRecentlyDeletedSnapshot(saved.desktopCanonicalRecentlyDeleted);
   }
 
   async function persistState(patch) {
@@ -423,6 +425,7 @@
       lastChromeExportPermission: state.lastChromeExportPermission,
       lastChromeExportBlockers: state.lastChromeExportBlockers.slice(),
       desktopVisibleFolderSet: state.desktopVisibleFolderSet,
+      desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' || chromeExportReady,
@@ -1101,6 +1104,136 @@
     var snapshot = buildDesktopVisibleFolderSetSnapshot(bundle, importedAt);
     state.desktopVisibleFolderSet = snapshot;
     return snapshot;
+  }
+
+  function normalizeDesktopCanonicalRecentlyDeletedSnapshot(value) {
+    var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    var rows = Array.isArray(input.rows) ? input.rows : [];
+    var safeRows = [];
+    var ids = [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] && typeof rows[i] === 'object' && !Array.isArray(rows[i]) ? rows[i] : null;
+      var id = normalizeFolderRecordId(row && (row.folderId || row.id));
+      if (!row || !id || ids.indexOf(id) !== -1) continue;
+      var requestId = cleanString(row.requestId || row.reviewId);
+      ids.push(id);
+      safeRows.push({
+        schema: 'h2o.studio.folder-recently-deleted.desktop-canonical.v1.row',
+        tombstoneId: cleanString(row.tombstoneId),
+        recordId: cleanString(row.recordId || ('folder:' + id)),
+        folderId: id,
+        id: id,
+        folderName: cleanString(row.folderName || row.name || row.title || id),
+        name: cleanString(row.name || row.folderName || row.title || id),
+        deletedAt: cleanString(row.deletedAt),
+        deleteReason: cleanString(row.deleteReason || row.reason),
+        requestId: requestId,
+        reviewId: cleanString(row.reviewId || requestId),
+        source: 'desktop-canonical-recently-deleted',
+        sourceKind: 'desktop-canonical-recently-deleted',
+        status: 'deleted',
+        companionStatusLabel: 'Deleted on Desktop',
+        restoreEligible: row.restoreEligible !== false,
+        restoreAvailable: row.restoreAvailable !== false,
+        purgeEligible: row.purgeEligible !== false,
+        desktopCanonicalRecentlyDeleted: true,
+        desktopReceiptHidden: true,
+        noChromeAuthority: true,
+        noChromePurgeAuthority: true,
+        noChromeTombstoneApply: true,
+        noTombstoneApplyOnChrome: true,
+        noTombstoneCreateOnChrome: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true
+      });
+    }
+    ids.sort();
+    safeRows.sort(function (a, b) {
+      return cleanString(b.deletedAt).localeCompare(cleanString(a.deletedAt)) ||
+        cleanString(a.folderName).localeCompare(cleanString(b.folderName));
+    });
+    return {
+      schema: 'h2o.studio.folder-recently-deleted.desktop-canonical.v1',
+      source: cleanString(input.source || 'desktop-canonical-recently-deleted'),
+      status: cleanString(input.status || 'imported'),
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt),
+      desktopCanonicalRecentlyDeletedFolderIds: ids,
+      desktopCanonicalRecentlyDeletedCount: ids.length,
+      rows: safeRows,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noChromeTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  function buildDesktopCanonicalRecentlyDeletedSnapshot(bundle, importedAt) {
+    var payload = safeObject(bundle && bundle.desktopCanonicalRecentlyDeleted);
+    var rows = Array.isArray(payload.rows)
+      ? payload.rows
+      : (Array.isArray(bundle && bundle.desktopCanonicalRecentlyDeletedFolders)
+        ? bundle.desktopCanonicalRecentlyDeletedFolders
+        : null);
+    if (!rows) return null;
+    return normalizeDesktopCanonicalRecentlyDeletedSnapshot({
+      source: 'desktop-canonical-recently-deleted',
+      status: 'imported',
+      importedAt: cleanString(importedAt) || nowIso(),
+      sourceExportedAt: cleanString(bundle && bundle.exportedAt),
+      rows: rows
+    });
+  }
+
+  async function storeDesktopCanonicalRecentlyDeletedSnapshot(snapshotInput) {
+    var snapshot = normalizeDesktopCanonicalRecentlyDeletedSnapshot(snapshotInput);
+    var result = {
+      schema: 'h2o.studio.folder-recently-deleted.desktop-canonical.chrome-import.v1',
+      phase: 'phase6b.5',
+      attempted: true,
+      ok: true,
+      status: 'desktop-canonical-recently-deleted-imported',
+      desktopCanonicalRecentlyDeletedCount: snapshot ? numberOrZero(snapshot.desktopCanonicalRecentlyDeletedCount) : 0,
+      changed: false,
+      importedAt: snapshot ? cleanString(snapshot.importedAt) : '',
+      sourceExportedAt: snapshot ? cleanString(snapshot.sourceExportedAt) : '',
+      blockers: [],
+      warnings: [],
+      noChromePurgeAuthority: true,
+      noChromeTombstoneApply: true,
+      noTombstoneCreateOnChrome: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+    if (!snapshot) {
+      result.ok = false;
+      result.status = 'desktop-canonical-recently-deleted-missing';
+      result.blockers.push('desktop-canonical-recently-deleted-missing');
+      return result;
+    }
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var existing = normalizeDesktopCanonicalRecentlyDeletedSnapshot(current.desktopCanonicalRecentlyDeleted);
+    result.changed = JSON.stringify(safeObject(existing)) !== JSON.stringify(safeObject(snapshot));
+    if (result.changed) {
+      var next = cloneJson(current) || {};
+      next.desktopCanonicalRecentlyDeleted = snapshot;
+      next.updatedAt = nowIso();
+      await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    }
+    state.desktopCanonicalRecentlyDeleted = snapshot;
+    return result;
   }
 
   function makeDesktopVisibleSetHideResult() {
@@ -2431,6 +2564,12 @@
     var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(normalized.bundle, nowIso());
     var desktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(desktopVisibleFolderSet);
     folderMetadataChangeSummary = mergeDesktopVisibleSetHideSummary(folderMetadataChangeSummary, desktopVisibleSetHide);
+    var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedSnapshot(normalized.bundle, nowIso());
+    var desktopCanonicalRecentlyDeletedImport = await storeDesktopCanonicalRecentlyDeletedSnapshot(desktopCanonicalRecentlyDeleted);
+    if (desktopCanonicalRecentlyDeletedImport.changed === true) {
+      addUnique(folderMetadataChangeSummary.changedFields, 'desktop-canonical-recently-deleted');
+      folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
+    }
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2462,6 +2601,8 @@
       folderRestoreReceiptImport: folderRestoreReceiptImport,
       desktopVisibleFolderSet: desktopVisibleFolderSet,
       desktopVisibleSetHide: desktopVisibleSetHide,
+      desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
+      desktopCanonicalRecentlyDeletedImport: desktopCanonicalRecentlyDeletedImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -3901,6 +4042,7 @@
       changedFolderCount: state.lastChromePostImportChangedFolderCount,
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+      desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted || null,
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
       cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
       refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
@@ -4612,10 +4754,18 @@
           var alreadyDesktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, nowIso());
           var alreadyDesktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(alreadyDesktopVisibleFolderSet);
           alreadyRefreshSummary = mergeDesktopVisibleSetHideSummary(alreadyRefreshSummary, alreadyDesktopVisibleSetHide);
+          var alreadyDesktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedSnapshot(bundle, nowIso());
+          var alreadyDesktopCanonicalRecentlyDeletedImport = await storeDesktopCanonicalRecentlyDeletedSnapshot(alreadyDesktopCanonicalRecentlyDeleted);
+          if (alreadyDesktopCanonicalRecentlyDeletedImport.changed === true) {
+            addUnique(alreadyRefreshSummary.changedFields, 'desktop-canonical-recently-deleted');
+            alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
+          }
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
-          if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0 || numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0) {
+          if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0 ||
+            numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0 ||
+            alreadyDesktopCanonicalRecentlyDeletedImport.changed === true) {
             alreadyPostImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
               alreadyRefreshSummary,
               opts.reason || 'desktop-chrome-propagation-import',
@@ -4663,6 +4813,8 @@
             folderRestoreReceiptImport: alreadyRestoreReceiptImport,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
+            desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
+            desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -4714,6 +4866,8 @@
             convergence: alreadyPropagation.convergence,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
+            desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
+            desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,

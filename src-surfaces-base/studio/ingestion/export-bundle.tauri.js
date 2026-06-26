@@ -42,6 +42,7 @@
   var FOLDER_DELETE_RECEIPT_LIMIT = 1000;
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
+  var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1446,6 +1447,98 @@
     return recordId;
   }
 
+  function canonicalRecentlyDeletedFolderName(tombstone) {
+    var meta = safeObject(tombstone && tombstone.meta);
+    var recovery = safeObject(meta.recoverySnapshot);
+    var folder = safeObject(recovery.folder);
+    return cleanString(folder.name || folder.title || meta.folderName || tombstone && tombstone.folderName);
+  }
+
+  function canonicalRecentlyDeletedRequestId(tombstone) {
+    var meta = safeObject(tombstone && tombstone.meta);
+    var requestId = cleanString(meta.requestId || meta.reviewId || meta.deleteRequestId || meta.folderDeleteRequestId);
+    if (requestId) return requestId;
+    var recovery = safeObject(meta.recoverySnapshot);
+    return cleanString(recovery.requestId || recovery.reviewId || recovery.deleteRequestId || recovery.folderDeleteRequestId);
+  }
+
+  function canonicalRecentlyDeletedRowFromTombstone(tombstone) {
+    if (!tombstone || typeof tombstone !== 'object') return null;
+    if (cleanString(tombstone.schema) !== TOMBSTONE_SCHEMA_VERSION) return null;
+    if (cleanString(tombstone.recordKind) !== 'folder') return null;
+    if (cleanString(tombstone.restoredAt)) return null;
+    var folderId = folderIdFromTombstoneRecordId(tombstone.recordId);
+    if (!folderId) return null;
+    var meta = safeObject(tombstone.meta);
+    var requestId = canonicalRecentlyDeletedRequestId(tombstone);
+    var folderName = canonicalRecentlyDeletedFolderName(tombstone) || folderId;
+    return {
+      schema: DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA + '.row',
+      tombstoneId: cleanString(tombstone.tombstoneId),
+      recordId: cleanString(tombstone.recordId),
+      folderId: folderId,
+      folderName: folderName,
+      name: folderName,
+      deletedAt: cleanString(tombstone.deletedAt),
+      deletedBy: cleanString(tombstone.deletedBySyncPeerId),
+      deletedBySurface: cleanString(meta.deletedBySurface || meta.sourceSurface || tombstone.deletedBySurface || 'desktop-studio'),
+      deleteReason: cleanString(tombstone.deleteReason || meta.deleteReason || meta.reason),
+      requestId: requestId,
+      reviewId: requestId,
+      source: 'desktop-canonical-recently-deleted',
+      sourceKind: 'desktop-canonical-recently-deleted',
+      status: 'deleted',
+      restoreEligible: true,
+      restoreAvailable: true,
+      purgeEligible: true,
+      purgeBlocked: false,
+      hardDeleteBlocked: true,
+      noChromeAuthority: true,
+      noChromeTombstoneApply: true,
+      noChromeTombstoneCreate: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
+  function buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstones) {
+    var rows = asArray(tombstones)
+      .map(canonicalRecentlyDeletedRowFromTombstone)
+      .filter(function (row) { return row && row.folderId; })
+      .sort(function (a, b) {
+        return cleanString(b.deletedAt).localeCompare(cleanString(a.deletedAt)) ||
+          cleanString(a.folderName).localeCompare(cleanString(b.folderName));
+      });
+    return {
+      schema: DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA,
+      source: 'desktop-canonical-recently-deleted',
+      status: 'exported',
+      exportedAt: nowIso(),
+      count: rows.length,
+      rows: rows,
+      folderIds: rows.map(function (row) { return row.folderId; }),
+      diagnostics: {
+        schema: DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA + '.diagnostics',
+        exported: true,
+        activeDeletedCount: rows.length,
+        restoredExcluded: asArray(tombstones).filter(function (row) {
+          return cleanString(row && row.recordKind) === 'folder' && !!cleanString(row && row.restoredAt);
+        }).length,
+        source: 'sync_tombstones-active-folder-rows',
+        desktopAuthority: true,
+        chromeAuthority: false,
+        noChromeTombstoneApply: true,
+        noChromeTombstoneCreate: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      },
+    };
+  }
+
   function nonNegativeIntegerOrNull(value) {
     var number = Number(value);
     if (!Number.isFinite(number) || number < 0) return null;
@@ -1583,6 +1676,7 @@
     var folderDeleteReceiptDiagnostics = folderDeleteReceiptExport.diagnostics || emptyFolderDeleteReceiptDiagnostics();
     var folderRestoreReceiptExport = buildFolderRestoreReceiptPayloadFromTombstones(tombstoneExport.tombstones);
     var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
+    var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstoneExport.tombstones);
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
     var summary = {
       chatCount: chatArchive.chatCount,
@@ -1604,6 +1698,7 @@
       restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
       folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
       folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
+      desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -1618,6 +1713,8 @@
       libraryKv: libraryKv,
       tombstoneSchemaVersion: TOMBSTONE_SCHEMA_VERSION,
       tombstones: asArray(tombstoneExport.tombstones),
+      desktopCanonicalRecentlyDeletedFolders: asArray(desktopCanonicalRecentlyDeleted.rows),
+      desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
@@ -1636,6 +1733,7 @@
             bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
           },
           tombstones: tombstoneDiagnostics,
+          desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted.diagnostics,
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           applyEvents: {

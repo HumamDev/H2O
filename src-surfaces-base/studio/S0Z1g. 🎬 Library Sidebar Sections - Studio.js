@@ -53,7 +53,8 @@
   const FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
   const CHROME_PENDING_DELETE_HIDDEN_REASON = 'chrome-soft-delete-request-pending';
   const CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE = 'Permanent delete is only available from Desktop Studio.';
-  const CHROME_RESTORE_DEFERRED_MESSAGE = 'Restore from Desktop Studio.';
+  const CHROME_RESTORE_DEFERRED_MESSAGE = 'Restore is available from Desktop Studio.';
+  const CHROME_RESTORE_DEFERRED_LEGACY_LABEL = 'Restore from Desktop Studio.';
   let folderActionDelegationBound = false;
   const FOLDERS_UI_KEYS = [
     'h2o:prm:cgx:fldrs:state:ui:v1',
@@ -2945,9 +2946,62 @@
     }).filter((row) => row.folderId);
   }
 
+  function chromeDesktopCanonicalRecentlyDeletedSnapshotFromState(state) {
+    const snapshot = plainObject(state?.desktopCanonicalRecentlyDeleted);
+    if (!snapshot || !Array.isArray(snapshot.rows)) return null;
+    const ids = [];
+    const rows = snapshot.rows.map((raw) => {
+      const row = plainObject(raw);
+      const folderId = String(row.folderId || row.id || '').trim();
+      if (!folderId || ids.includes(folderId)) return null;
+      ids.push(folderId);
+      const folderName = String(row.folderName || row.name || row.title || folderId).trim();
+      return {
+        ...row,
+        id: folderId,
+        folderId,
+        name: folderName,
+        folderName,
+        status: 'deleted',
+        source: 'desktop-canonical-recently-deleted',
+        sourceKind: 'desktop-canonical-recently-deleted',
+        desktopCanonicalRecentlyDeleted: true,
+        companionStatusLabel: 'Deleted on Desktop',
+        pendingDeleteHidden: false,
+        hiddenByChromePendingDelete: false,
+        pendingDeleteRequest: false,
+        desktopReceiptHidden: true,
+        noChromePurgeAuthority: true,
+        noChromeTombstoneApply: true,
+        noHardDelete: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      };
+    }).filter(Boolean);
+    return {
+      schema: String(snapshot.schema || 'h2o.studio.folder-recently-deleted.desktop-canonical.v1').trim(),
+      source: String(snapshot.source || 'desktop-canonical-recently-deleted').trim(),
+      status: String(snapshot.status || 'imported').trim(),
+      importedAt: String(snapshot.importedAt || '').trim(),
+      sourceExportedAt: String(snapshot.sourceExportedAt || '').trim(),
+      desktopCanonicalRecentlyDeletedCount: rows.length,
+      desktopCanonicalRecentlyDeletedFolderIds: ids.sort(),
+      rows: rows.sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || '')) ||
+        String(a.folderName || '').localeCompare(String(b.folderName || ''))),
+    };
+  }
+
+  function chromeDesktopCanonicalRecentlyDeletedRowsFromState(state) {
+    const snapshot = chromeDesktopCanonicalRecentlyDeletedSnapshotFromState(state);
+    return snapshot ? snapshot.rows : [];
+  }
+
   async function chromeRecentlyDeletedCompanionRows(model = null) {
     if (studioPlatformAdapter() !== 'mv3') return [];
     const state = await readChromeFolderStateMirror();
+    const desktopCanonical = chromeDesktopCanonicalRecentlyDeletedSnapshotFromState(state);
+    if (desktopCanonical) return desktopCanonical.rows;
     const pendingRows = chromePendingDeleteHiddenRowsFromState(state).map((row) => ({
       ...row,
       companionStatusLabel: 'Delete pending',
@@ -2984,6 +3038,8 @@
     const hiddenPendingRows = chromePendingDeleteHiddenRowsFromState(storageSources.merged);
     const requestRows = await loadPendingChromeFolderDeleteRequestRows();
     const receiptRows = chromeDesktopReceiptHiddenRowsFromState(storageSources.merged);
+    const desktopCanonicalSnapshot = chromeDesktopCanonicalRecentlyDeletedSnapshotFromState(storageSources.merged);
+    const desktopCanonicalRows = desktopCanonicalSnapshot ? desktopCanonicalSnapshot.rows : [];
     const companionRows = await chromeRecentlyDeletedCompanionRows(model);
     const pendingDeleteHiddenCount = hiddenPendingRows.length;
     const desktopReceiptHiddenCount = receiptRows.length;
@@ -2999,6 +3055,27 @@
     const diagnosticWarnings = hiddenWithoutExportableRequestCount > 0
       ? ['pending-hide-without-exportable-delete-request']
       : [];
+    const canonicalIds = new Set(desktopCanonicalRows.map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean));
+    const companionIds = new Set(companionRows.map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean));
+    const extraChromeRows = companionRows.filter((row) => {
+      const folderId = String(row.folderId || row.id || '').trim();
+      return folderId && desktopCanonicalSnapshot && !canonicalIds.has(folderId);
+    });
+    const missingChromeRows = desktopCanonicalRows.filter((row) => {
+      const folderId = String(row.folderId || row.id || '').trim();
+      return folderId && !companionIds.has(folderId);
+    });
+    const staleReceiptRows = desktopCanonicalSnapshot
+      ? receiptRows.filter((row) => {
+        const folderId = String(row.folderId || row.id || '').trim();
+        return folderId && !canonicalIds.has(folderId);
+      })
+      : [];
+    const mismatchedFolderIds = Array.from(new Set(extraChromeRows.concat(missingChromeRows).map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean))).sort();
+    const desktopChromeRecentlyDeletedParityOk = !!desktopCanonicalSnapshot &&
+      extraChromeRows.length === 0 &&
+      missingChromeRows.length === 0 &&
+      companionRows.length === desktopCanonicalRows.length;
     const probeName = String(opts.probeName || opts.folderName || 'chrome delete companion test').trim();
     const probeKey = probeName.toLowerCase();
     const probeFolderId = String(opts.folderId || opts.probeFolderId || '').trim();
@@ -3034,6 +3111,16 @@
       localStorageSource: storageSources.localStorageSource,
       chromeNormalVisibleFolderCount: canonicalRows.length,
       chromeRecentlyDeletedCount: companionRows.length,
+      desktopCanonicalRecentlyDeletedCount: desktopCanonicalRows.length,
+      chromeCanonicalRecentlyDeletedCount: desktopCanonicalRows.length,
+      chromeCompanionRecentlyDeletedCount: companionRows.length,
+      desktopChromeRecentlyDeletedParityOk,
+      mismatchedFolderIds,
+      extraChromeRows: extraChromeRows.slice(0, 80).map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '' })),
+      missingChromeRows: missingChromeRows.slice(0, 80).map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '' })),
+      staleReceiptRowCount: staleReceiptRows.length,
+      staleReceiptRows: staleReceiptRows.slice(0, 80).map((row) => ({ folderId: row.folderId || row.id || '', folderName: row.folderName || row.name || '', requestId: row.requestId || '' })),
+      pendingLocalDeleteCount: pendingDeleteHiddenCount,
       hiddenByChromePendingDeleteCount: pendingDeleteHiddenCount,
       pendingDeleteHiddenCount,
       pendingDeleteRequestCount: requestRows.length,
@@ -3074,6 +3161,16 @@
         pendingDeleteHidden: row.pendingDeleteHidden === true || row.hiddenByChromePendingDelete === true,
         pendingDeleteRequest: row.pendingDeleteRequest === true,
         desktopReceiptHidden: row.hiddenByDesktopReceipt === true || row.deletedByDesktopReceipt === true,
+        desktopCanonicalRecentlyDeleted: row.desktopCanonicalRecentlyDeleted === true,
+      })),
+      desktopCanonicalRecentlyDeletedRows: desktopCanonicalRows.slice(0, 80).map((row) => ({
+        folderId: row.folderId || row.id || '',
+        folderName: row.folderName || row.name || '',
+        requestId: row.requestId || '',
+        reviewId: row.reviewId || '',
+        status: row.status || '',
+        source: row.source || '',
+        companionStatusLabel: row.companionStatusLabel || '',
       })),
       hiddenByChromePendingDeleteRows: hiddenPendingRows.slice(0, 80).map((row) => ({
         folderId: row.folderId || row.id || '',
@@ -3220,24 +3317,18 @@
         type: 'button',
         class: 'wbFolderRecentlyDeletedChromeRestoreBlocked',
         'data-h2o-chrome-restore-blocked': '1',
-        style: 'border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.04);color:rgba(255,255,255,.72);font-size:10.5px;line-height:1.2;padding:6px 8px;',
-      }, 'Restore');
-      restore.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setChromeRecentlyDeletedStatus(status, CHROME_RESTORE_DEFERRED_MESSAGE, 'blocked');
-      });
+        disabled: 'disabled',
+        title: CHROME_RESTORE_DEFERRED_MESSAGE,
+        style: 'border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.54);font-size:10.5px;line-height:1.2;padding:6px 8px;cursor:not-allowed;',
+      }, CHROME_RESTORE_DEFERRED_MESSAGE);
       const permanentDelete = el('button', {
         type: 'button',
         class: 'wbFolderRecentlyDeletedChromePermanentDeleteBlocked',
         'data-h2o-chrome-permanent-delete-blocked': '1',
-        style: 'border:1px solid rgba(248,113,113,.22);border-radius:7px;background:rgba(127,29,29,.14);color:rgba(254,202,202,.84);font-size:10.5px;line-height:1.2;padding:6px 8px;',
-      }, 'Permanent Delete');
-      permanentDelete.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setChromeRecentlyDeletedStatus(status, CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE, 'blocked');
-      });
+        disabled: 'disabled',
+        title: CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE,
+        style: 'border:1px solid rgba(248,113,113,.18);border-radius:7px;background:rgba(127,29,29,.08);color:rgba(254,202,202,.58);font-size:10.5px;line-height:1.2;padding:6px 8px;cursor:not-allowed;',
+      }, CHROME_PERMANENT_DELETE_BLOCKED_MESSAGE);
       actions.appendChild(restore);
       actions.appendChild(permanentDelete);
       item.appendChild(actions);
