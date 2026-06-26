@@ -41,14 +41,18 @@
   H2O.Studio.ingestion = H2O.Studio.ingestion || {};
   if (H2O.Studio.ingestion.__archiveRequestDeliveryInstalled) return;
 
-  var PHASE = 'D.3C.1';
+  var PHASE = 'D.3C.3';
   var DIAG_SCHEMA = 'h2o.studio.archive-request-delivery-diagnostics.v1';
   var REQUEST_SCHEMA = 'h2o.savedChatArchiveRequest.v1';
+  var RECEIPT_SCHEMA = 'h2o.savedChatArchiveRequestReceipt.v1';
   var ROOT_DIR_NAME = 'H2O Studio Archive Requests';
   var INBOX_DIR = 'inbox';
+  var RECEIPTS_DIR = 'receipts';
   var REQUEST_SUFFIX = '.request.json';
   var TMP_SUFFIX = '.request.json.tmp';
+  var RECEIPT_SUFFIX = '.receipt.json';
   var MAX_REQUEST_BYTES = 128 * 1024; /* matches inbox contract 128 KB cap */
+  var MAX_RECEIPT_BYTES = 128 * 1024; /* read-back size cap */
 
   var IDB_NAME = 'h2o.studio.archive-requests.folder.mv3';
   var IDB_STORE = 'handles';
@@ -75,6 +79,9 @@
   function nowIso() {
     try { return new Date().toISOString(); }
     catch (_) { return String(Date.now()); }
+  }
+  function asArray(value) {
+    return Array.isArray(value) ? value : [];
   }
 
   /* requestId must be a safe, single-segment file stem — never a path. */
@@ -146,6 +153,9 @@
       && typeof handle.getDirectoryHandle === 'function'
       && typeof handle.queryPermission === 'function';
   }
+  function handleSupportsRead(handle) {
+    return !!handle && typeof handle.getDirectoryHandle === 'function';
+  }
 
   /* ── Dedicated IndexedDB handle store (separate from Sync) ─────────── */
   function openHandleDb() {
@@ -215,6 +225,22 @@
     if (typeof handle.requestPermission !== 'function') return 'denied';
     var asked;
     try { asked = await handle.requestPermission({ mode: 'readwrite' }); }
+    catch (_) { return 'denied'; }
+    return asked === 'granted' ? 'granted' : 'denied';
+  }
+
+  /* Read-only permission for receipt read-back (lighter than readwrite). */
+  async function queryReadPermission(handle) {
+    if (!handle || typeof handle.queryPermission !== 'function') return 'unavailable';
+    try { return await handle.queryPermission({ mode: 'read' }); }
+    catch (_) { return 'unknown'; }
+  }
+  async function ensureReadPermission(handle) {
+    var current = await queryReadPermission(handle);
+    if (current === 'granted') return 'granted';
+    if (typeof handle.requestPermission !== 'function') return 'denied';
+    var asked;
+    try { asked = await handle.requestPermission({ mode: 'read' }); }
     catch (_) { return 'denied'; }
     return asked === 'granted' ? 'granted' : 'denied';
   }
@@ -291,18 +317,21 @@
       folderNameMatches: !!handle && folderName === ROOT_DIR_NAME,
       permission: permission,
       inboxDir: INBOX_DIR,
+      receiptsDir: RECEIPTS_DIR,
       requestFileSuffix: REQUEST_SUFFIX,
       tmpFileSuffix: TMP_SUFFIX,
+      receiptFileSuffix: RECEIPT_SUFFIX,
       maxRequestBytes: MAX_REQUEST_BYTES,
       automaticDeliveryEnabled: false,
       backgroundDeliveryEnabled: false,
       watcherEnabled: false,
       pollingEnabled: false,
-      readBackImplemented: false,
+      readBackImplemented: true,
+      readBackAutomatic: false,
       notes: [
-        'D.3C.1 delivery API only; no automatic delivery flow is enabled.',
+        'D.3C.3 delivery + manual read-back; no automatic delivery flow is enabled.',
         'Delivery requires an explicit user gesture and confirmDelivery:true.',
-        'Result read-back is deferred to D.3C.3.',
+        'Receipt read-back is read-only, manual, and never writes/creates receipts.',
       ],
     };
   }
@@ -436,9 +465,180 @@
     });
   }
 
+  /* ── Receipt read-back (D.3C.3): read-only, manual, informational ──── */
+  function makeReadResult(status, extra) {
+    var OK_READ = { 'queued-on-desktop': 1, 'already-queued-duplicate': 1, 'needs-desktop-snapshot': 1 };
+    var base = {
+      ok: !!OK_READ[status],
+      status: status,
+      requestId: null,
+      receipt: null,
+      receiptFileName: null,
+      folderConnected: false,
+      warnings: [],
+      blockers: [],
+    };
+    return Object.assign(base, extra || {});
+  }
+
+  /* Map the Desktop receipt verdict (status/enqueueStatus) to a Chrome status. */
+  function mapReceiptStatus(receipt) {
+    var warnings = [];
+    function m(value) {
+      if (value === 'validated') return 'queued-on-desktop';
+      if (value === 'duplicate') return 'already-queued-duplicate';
+      if (value === 'rejected') return 'rejected-by-desktop';
+      if (value === 'needs-desktop-snapshot') return 'needs-desktop-snapshot';
+      if (value === 'db-unavailable') return 'db-unavailable';
+      return null;
+    }
+    var mapped = m(cleanString(receipt.status)) || m(cleanString(receipt.enqueueStatus));
+    if (!mapped) {
+      mapped = 'rejected-by-desktop';
+      warnings.push('unrecognized-receipt-status:' + cleanString(receipt.status));
+    }
+    return { status: mapped, warnings: warnings };
+  }
+
+  function isNotFound(err) {
+    return !!err && (err.name === 'NotFoundError' || err.code === 8);
+  }
+  function isPermissionError(err) {
+    return !!err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+  }
+
+  async function readSavedChatArchiveRequestReceiptV1(options) {
+    var input = isObject(options) ? options : {};
+    var requestId = cleanString(input.requestId);
+
+    var handle = null;
+    try { handle = await loadStoredHandle(); } catch (_) { handle = null; }
+    var folderConnected = !!handle;
+
+    if (!requestId || !isSafeRequestId(requestId)) {
+      return makeReadResult('receipt-request-id-mismatch', {
+        folderConnected: folderConnected, requestId: requestId || null, blockers: ['invalid-request-id'],
+      });
+    }
+    var receiptFileName = requestId + RECEIPT_SUFFIX;
+    if (!handle) {
+      return makeReadResult('archive-request-folder-not-connected', {
+        folderConnected: false, requestId: requestId, receiptFileName: receiptFileName,
+      });
+    }
+    if (!handleSupportsRead(handle)) {
+      return makeReadResult('file-system-access-unavailable', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+      });
+    }
+    var permission = await ensureReadPermission(handle);
+    if (permission !== 'granted') {
+      return makeReadResult('archive-request-folder-permission-denied', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+      });
+    }
+
+    /* Receipts folder is Desktop-owned: open WITHOUT create. Absent => awaiting. */
+    var receiptsDir;
+    try {
+      receiptsDir = await handle.getDirectoryHandle(RECEIPTS_DIR);
+    } catch (e) {
+      if (isPermissionError(e)) {
+        return makeReadResult('archive-request-folder-permission-denied', {
+          folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        });
+      }
+      return makeReadResult('delivered-awaiting-desktop', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+      });
+    }
+
+    var file;
+    try {
+      var fileHandle = await receiptsDir.getFileHandle(receiptFileName);
+      file = await fileHandle.getFile();
+    } catch (e) {
+      if (isPermissionError(e)) {
+        return makeReadResult('archive-request-folder-permission-denied', {
+          folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        });
+      }
+      if (isNotFound(e)) {
+        return makeReadResult('delivered-awaiting-desktop', {
+          folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        });
+      }
+      return makeReadResult('receipt-malformed', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        blockers: ['receipt-read-failed:' + cleanString(e && e.message)],
+      });
+    }
+
+    if (file && typeof file.size === 'number' && file.size > MAX_RECEIPT_BYTES) {
+      return makeReadResult('receipt-malformed', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        blockers: ['receipt-too-large:' + MAX_RECEIPT_BYTES],
+      });
+    }
+
+    var text;
+    try { text = await file.text(); }
+    catch (e) {
+      return makeReadResult('receipt-malformed', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        blockers: ['receipt-read-failed:' + cleanString(e && e.message)],
+      });
+    }
+    if (typeof text === 'string' && byteLength(text) > MAX_RECEIPT_BYTES) {
+      return makeReadResult('receipt-malformed', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        blockers: ['receipt-too-large:' + MAX_RECEIPT_BYTES],
+      });
+    }
+
+    var receipt;
+    try { receipt = JSON.parse(text); }
+    catch (_) {
+      return makeReadResult('receipt-malformed', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        blockers: ['receipt-json-parse-failed'],
+      });
+    }
+
+    if (!isObject(receipt) || cleanString(receipt.schema) !== RECEIPT_SCHEMA) {
+      return makeReadResult('receipt-schema-mismatch', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        receipt: isObject(receipt) ? receipt : null, blockers: ['expected-schema:' + RECEIPT_SCHEMA],
+      });
+    }
+    if (cleanString(receipt.requestId) !== requestId) {
+      return makeReadResult('receipt-request-id-mismatch', {
+        folderConnected: true, requestId: requestId, receiptFileName: receiptFileName,
+        receipt: receipt, blockers: ['receipt-request-id:' + cleanString(receipt.requestId)],
+      });
+    }
+
+    var mapped = mapReceiptStatus(receipt);
+    return makeReadResult(mapped.status, {
+      folderConnected: true,
+      requestId: requestId,
+      receiptFileName: receiptFileName,
+      receipt: receipt,
+      warnings: asArray(receipt.warnings).concat(mapped.warnings),
+      blockers: asArray(receipt.blockers),
+    });
+  }
+
+  /* Optional alias: a "refresh" is just a manual read of the latest receipt. */
+  function refreshSavedChatArchiveRequestStatusV1(options) {
+    return readSavedChatArchiveRequestReceiptV1(options);
+  }
+
   H2O.Studio.ingestion.diagnoseSavedChatArchiveRequestDeliveryV1 = diagnoseSavedChatArchiveRequestDeliveryV1;
   H2O.Studio.ingestion.connectSavedChatArchiveRequestFolderV1 = connectSavedChatArchiveRequestFolderV1;
   H2O.Studio.ingestion.disconnectSavedChatArchiveRequestFolderV1 = disconnectSavedChatArchiveRequestFolderV1;
   H2O.Studio.ingestion.deliverSavedChatArchiveRequestV1 = deliverSavedChatArchiveRequestV1;
+  H2O.Studio.ingestion.readSavedChatArchiveRequestReceiptV1 = readSavedChatArchiveRequestReceiptV1;
+  H2O.Studio.ingestion.refreshSavedChatArchiveRequestStatusV1 = refreshSavedChatArchiveRequestStatusV1;
   H2O.Studio.ingestion.__archiveRequestDeliveryInstalled = true;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1,25 +1,28 @@
-/* H2O Studio — Saved Chat Archive Request Delivery UI (Chrome, Phase D.3C.2)
+/* H2O Studio — Saved Chat Archive Request Delivery UI (Chrome, Phase D.3C.2 + D.3C.3)
  *
  * Minimal manual Settings utility card that provides the explicit user gesture
  * for the D.3C.1 low-level delivery module
  * (src-surfaces-base/studio/ingestion/saved-chat-archive-request-delivery.mv3.js).
  *
- * It renders the delivery diagnostics and three manual buttons:
+ * It renders the delivery diagnostics and four manual buttons:
  *   - Connect archive request folder -> connectSavedChatArchiveRequestFolderV1()
  *   - Disconnect folder              -> disconnectSavedChatArchiveRequestFolderV1()
  *   - Send test archive request      -> deliverSavedChatArchiveRequestV1({ confirmDelivery: true, ... })
+ *   - Check receipt (D.3C.3)         -> readSavedChatArchiveRequestReceiptV1({ requestId })
  *
- * The Send handler runs inside the click handler so File System Access
- * permission/write is tied to a user gesture. There is no automatic delivery,
- * no background write, no polling, no watcher, and no result read-back
- * (read-back is D.3C.3). It calls only the injected/global delivery APIs and
- * never touches the Desktop queue, materializer, package writer, CAS, store,
- * sync, native messaging, localhost, or the Archive Health UI.
+ * The Send and Check-receipt actions run inside their click handlers so File
+ * System Access permission is tied to a user gesture. There is no automatic
+ * delivery, no background write, no polling, no watcher, and no automatic
+ * read-back. Receipt read-back is read-only and informational. It calls only
+ * the injected/global delivery APIs and never touches the Desktop queue,
+ * materializer, package writer, CAS, store, sync, native messaging, localhost,
+ * or the Archive Health UI.
  *
  * Public API (H2O.Studio.archiveRequestDeliveryUi):
  *   renderArchiveRequestDeliveryCard(container, options)
  *   formatDeliveryDiagnostics(diag) -> pure
  *   formatDeliveryResult(result)    -> pure
+ *   formatReceiptResult(result)     -> pure
  *   buildTestRequestOptions()       -> pure
  */
 (function (global) {
@@ -29,18 +32,21 @@
   H2O.Studio = H2O.Studio || {};
   if (H2O.Studio.archiveRequestDeliveryUi && H2O.Studio.archiveRequestDeliveryUi.__installed) return;
 
-  var MODULE_VERSION = '0.1.0-phase-d-d3c2';
+  var MODULE_VERSION = '0.2.0-phase-d-d3c3';
   var TEST_TITLE = 'D.3C.2 manual test archive request';
 
   var TEXT = {
     title: 'Archive Request Delivery',
-    intro: 'Manual D.3C.2 utility. Writes one metadata-only request file to the Desktop ' +
-           'inbox under an explicit click. No automatic delivery, no background write, no read-back.',
+    intro: 'Manual utility. Writes one metadata-only request file to the Desktop inbox ' +
+           'under an explicit click, then reads the Desktop receipt on demand. No automatic ' +
+           'delivery, no background write, no polling.',
     unavailable: 'Archive request delivery is available in Chrome Studio only.',
     connect: 'Connect archive request folder',
     disconnect: 'Disconnect folder',
     send: 'Send test archive request',
+    checkReceipt: 'Check receipt',
     idle: 'Pick the H2O Studio Archive Requests folder, then send a test request.',
+    noDelivered: 'Send a request first, then check its Desktop receipt.',
   };
 
   var STATUS_LABELS = {
@@ -58,6 +64,16 @@
     disconnected: 'Folder disconnected',
     'not-connected': 'No folder connected',
     cancelled: 'Folder selection cancelled',
+    /* D.3C.3 receipt read-back statuses */
+    'delivered-awaiting-desktop': 'Delivered — awaiting Desktop',
+    'queued-on-desktop': 'Queued on Desktop',
+    'already-queued-duplicate': 'Already queued (duplicate)',
+    'rejected-by-desktop': 'Rejected by Desktop',
+    'needs-desktop-snapshot': 'Needs a Desktop snapshot first',
+    'db-unavailable': 'Desktop database unavailable',
+    'receipt-malformed': 'Receipt unusable (malformed)',
+    'receipt-schema-mismatch': 'Receipt unusable (schema mismatch)',
+    'receipt-request-id-mismatch': 'Receipt unusable (requestId mismatch)',
   };
 
   var BLOCK_STATUSES = {
@@ -70,6 +86,18 @@
     'archive-request-folder-permission-denied': true,
     'archive-request-folder-name-mismatch': true,
     'not-connected': true, cancelled: true,
+  };
+
+  /* Receipt read-back tone classification (informational only). */
+  var RECEIPT_OK = {
+    'queued-on-desktop': true, 'already-queued-duplicate': true, 'needs-desktop-snapshot': true,
+  };
+  var RECEIPT_BLOCK = {
+    'rejected-by-desktop': true, 'db-unavailable': true, 'receipt-malformed': true,
+    'receipt-schema-mismatch': true, 'receipt-request-id-mismatch': true,
+    'archive-request-folder-not-connected': true,
+    'archive-request-folder-permission-denied': true,
+    'file-system-access-unavailable': true,
   };
 
   function escapeHtml(value) {
@@ -145,6 +173,31 @@
     };
   }
 
+  /* Pure: map a readSavedChatArchiveRequestReceiptV1() result to a display
+   * object. Informational only — the Desktop queue stays authoritative. */
+  function formatReceiptResult(result) {
+    var r = safeObject(result);
+    var status = String(r.status || 'unknown');
+    var tone = RECEIPT_OK[status] ? 'ok' : (RECEIPT_BLOCK[status] ? 'block' : 'warn');
+    var receipt = safeObject(r.receipt);
+    var lines = [['requestId', r.requestId || '(none)']];
+    if (r.receipt) {
+      lines.push(['receipt.status', receipt.status || '(none)']);
+      lines.push(['enqueueStatus', receipt.enqueueStatus || '(none)']);
+      if (receipt.dedupeKey) lines.push(['dedupeKey', receipt.dedupeKey]);
+      if (receipt.duplicateOf) lines.push(['duplicateOf', receipt.duplicateOf]);
+    }
+    return {
+      ok: r.ok === true,
+      status: status,
+      tone: tone,
+      headline: STATUS_LABELS[status] || status,
+      lines: lines,
+      blockers: asList(r.blockers),
+      warnings: asList(r.warnings),
+    };
+  }
+
   /* ── API resolution (injected for tests; global otherwise) ────────── */
   function resolveApis(options) {
     var injected = safeObject(options && options.api);
@@ -158,6 +211,7 @@
       connect: pick('connectSavedChatArchiveRequestFolderV1'),
       disconnect: pick('disconnectSavedChatArchiveRequestFolderV1'),
       deliver: pick('deliverSavedChatArchiveRequestV1'),
+      read: pick('readSavedChatArchiveRequestReceiptV1'),
     };
   }
 
@@ -200,11 +254,14 @@
         '<button type="button" id="arDeliveryConnect" style="' + btn + '">' + escapeHtml(TEXT.connect) + '</button>' +
         '<button type="button" id="arDeliveryDisconnect" style="' + btn + '">' + escapeHtml(TEXT.disconnect) + '</button>' +
         '<button type="button" id="arDeliverySend" style="' + btn + '">' + escapeHtml(TEXT.send) + '</button>' +
+        '<button type="button" id="arDeliveryCheckReceipt" style="' + btn + '">' + escapeHtml(TEXT.checkReceipt) + '</button>' +
       '</div>' +
       '<div id="arDeliveryResult" style="margin-top:10px;font-size:13px">' + escapeHtml(TEXT.idle) + '</div>';
 
     var diagBox = container.querySelector('#arDeliveryDiag');
     var resultBox = container.querySelector('#arDeliveryResult');
+    /* Tracks the last delivered requestId for manual receipt read-back. */
+    var lastDeliveredRequestId = null;
 
     function setResult(view) {
       if (resultBox) resultBox.innerHTML = resultHtml(view);
@@ -235,9 +292,20 @@
     container.querySelector('#arDeliverySend').addEventListener('click', async function () {
       try {
         var res = await apis.deliver(buildTestRequestOptions());
+        if (res && res.status === 'delivered' && res.requestId) lastDeliveredRequestId = res.requestId;
         setResult(formatDeliveryResult(res));
       } catch (e) { setResult({ tone: 'block', headline: 'delivery failed', lines: [], blockers: [String(e && e.message)], warnings: [] }); }
       refreshDiagnostics();
+    });
+    /* Manual, click-triggered receipt read-back for the last delivered request.
+     * Read-only and informational; never polls and never writes. */
+    container.querySelector('#arDeliveryCheckReceipt').addEventListener('click', async function () {
+      if (!apis.read) { setResult({ tone: 'warn', headline: 'Receipt read-back unavailable', lines: [], blockers: [], warnings: [] }); return; }
+      if (!lastDeliveredRequestId) { setResult({ tone: 'warn', headline: TEXT.noDelivered, lines: [], blockers: [], warnings: [] }); return; }
+      try {
+        var res = await apis.read({ requestId: lastDeliveredRequestId });
+        setResult(formatReceiptResult(res));
+      } catch (e) { setResult({ tone: 'block', headline: 'receipt read failed', lines: [], blockers: [String(e && e.message)], warnings: [] }); }
     });
 
     refreshDiagnostics();
@@ -249,6 +317,7 @@
     renderArchiveRequestDeliveryCard: renderArchiveRequestDeliveryCard,
     formatDeliveryDiagnostics: formatDeliveryDiagnostics,
     formatDeliveryResult: formatDeliveryResult,
+    formatReceiptResult: formatReceiptResult,
     buildTestRequestOptions: buildTestRequestOptions,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

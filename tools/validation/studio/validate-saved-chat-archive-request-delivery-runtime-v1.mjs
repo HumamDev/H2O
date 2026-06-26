@@ -93,6 +93,8 @@ function loadDelivery(context) {
     'connectSavedChatArchiveRequestFolderV1',
     'disconnectSavedChatArchiveRequestFolderV1',
     'deliverSavedChatArchiveRequestV1',
+    'readSavedChatArchiveRequestReceiptV1',
+    'refreshSavedChatArchiveRequestStatusV1',
   ]) {
     assert.equal(typeof ing[name], 'function', `delivery API ${name} was not registered`);
   }
@@ -170,10 +172,22 @@ check('module re-asserts metadata-only payload policy false/false', () => {
   assert.ok(deliverySource.includes('collectForbiddenKeys'));
 });
 
-check('module creates inbox only and never creates/writes results', () => {
+check('module creates inbox only and never creates/writes receipts', () => {
   assert.match(deliverySource, /getDirectoryHandle\(INBOX_DIR,\s*\{\s*create:\s*true\s*\}\)/);
-  assert.equal(deliveryCode.includes('receipt'), false, 'delivery module must not reference receipts');
-  assert.equal(deliveryCode.includes('getFile('), false, 'delivery module must not read files (read-back is D.3C.3)');
+  // Receipts folder is Desktop-owned: opened read-only, never with create:true.
+  assert.ok(deliverySource.includes('getDirectoryHandle(RECEIPTS_DIR)'), 'receipts dir should be opened read-only');
+  assert.doesNotMatch(deliveryCode, /getDirectoryHandle\(RECEIPTS_DIR,\s*\{\s*create:\s*true\s*\}\)/, 'must not create receipts/');
+  assert.doesNotMatch(deliveryCode, /getFileHandle\(receiptFileName,\s*\{\s*create:\s*true\s*\}\)/, 'must not create receipt files');
+  assert.equal(deliveryCode.includes('writeReceipt'), false, 'must not write receipts');
+});
+
+check('module reads receipts read-only (D.3C.3) and validates them', () => {
+  assert.match(deliverySource, /H2O\.Studio\.ingestion\.readSavedChatArchiveRequestReceiptV1\s*=/);
+  assert.ok(deliverySource.includes('h2o.savedChatArchiveRequestReceipt.v1'), 'receipt schema must be checked');
+  assert.ok(deliverySource.includes('.receipt.json'), 'receipt file suffix must be referenced');
+  assert.ok(deliverySource.includes('getFile()'), 'read-back must read the receipt file');
+  assert.ok(deliverySource.includes('receipt.requestId'), 'read-back must check the receipt requestId');
+  assert.match(deliverySource, /MAX_RECEIPT_BYTES/, 'read-back must enforce a size cap');
 });
 
 check('module finalizes via move() with copy-then-delete fallback', () => {
@@ -247,7 +261,8 @@ await checkAsync('diagnose returns a structured result when FSA is unavailable',
   assert.equal(result.folderConnected, false);
   assert.equal(result.automaticDeliveryEnabled, false);
   assert.equal(result.backgroundDeliveryEnabled, false);
-  assert.equal(result.readBackImplemented, false);
+  assert.equal(result.readBackImplemented, true);
+  assert.equal(result.readBackAutomatic, false);
   assert.equal(result.expectedFolderName, 'H2O Studio Archive Requests');
 });
 
@@ -308,6 +323,31 @@ await checkAsync('connect without File System Access API reports unavailable', a
   const ing = loadDelivery(sandbox);
   const result = await ing.connectSavedChatArchiveRequestFolderV1();
   assert.equal(result.status, 'file-system-access-unavailable');
+});
+
+await checkAsync('receipt read-back is registered and read-only', async () => {
+  const sandbox = createSandbox();
+  const ing = loadDelivery(sandbox);
+  assert.equal(typeof ing.readSavedChatArchiveRequestReceiptV1, 'function');
+  assert.equal(typeof ing.refreshSavedChatArchiveRequestStatusV1, 'function');
+});
+
+await checkAsync('receipt read-back with no connected folder reports not-connected', async () => {
+  const sandbox = createSandbox();
+  const ing = loadDelivery(sandbox);
+  const result = await ing.readSavedChatArchiveRequestReceiptV1({ requestId: 'req_d3c1_test' });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'archive-request-folder-not-connected');
+  assert.equal(result.receiptFileName, 'req_d3c1_test.receipt.json');
+});
+
+await checkAsync('receipt read-back rejects an unsafe/empty requestId', async () => {
+  const sandbox = createSandbox();
+  const ing = loadDelivery(sandbox);
+  const empty = await ing.readSavedChatArchiveRequestReceiptV1({});
+  assert.equal(empty.status, 'receipt-request-id-mismatch');
+  const unsafe = await ing.readSavedChatArchiveRequestReceiptV1({ requestId: '../escape' });
+  assert.equal(unsafe.status, 'receipt-request-id-mismatch');
 });
 
 if (FAIL.length) {

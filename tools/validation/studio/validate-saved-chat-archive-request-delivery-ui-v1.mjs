@@ -89,6 +89,7 @@ function loadUi(context) {
     'renderArchiveRequestDeliveryCard',
     'formatDeliveryDiagnostics',
     'formatDeliveryResult',
+    'formatReceiptResult',
     'buildTestRequestOptions',
   ]) {
     assert.equal(typeof ui[name], 'function', `UI API ${name} was not registered`);
@@ -138,11 +139,15 @@ check('UI uses manual click handling (gesture-bound)', () => {
   assert.ok(uiSource.includes("'arDeliverySend'") || uiSource.includes('arDeliverySend'), 'missing send button id');
 });
 
-check('UI does not implement receipt read-back', () => {
-  assert.equal(uiCode.includes('readSavedChatArchiveRequestReceiptV1'), false);
-  assert.equal(uiCode.includes('refreshSavedChatArchiveRequestStatusV1'), false);
-  assert.equal(uiCode.includes('receipt'), false, 'UI must not reference receipts');
-  assert.equal(uiCode.includes('getFile('), false, 'UI must not read files');
+check('UI wires manual receipt read-back via the delivery API (D.3C.3)', () => {
+  assert.ok(uiSource.includes('readSavedChatArchiveRequestReceiptV1'), 'UI must call the read-back API');
+  assert.match(uiSource, /Check receipt/, 'UI must expose a Check receipt button');
+  assert.ok(uiSource.includes('arDeliveryCheckReceipt'), 'missing check-receipt button id');
+  assert.ok(uiSource.includes('lastDeliveredRequestId'), 'read-back must target the last delivered requestId');
+  // The UI never reads files directly; it delegates to the delivery module.
+  assert.equal(uiCode.includes('getFile('), false, 'UI must not read files directly');
+  // Read-back must be manual: no interval/observer driving it.
+  assert.doesNotMatch(uiCode, /setInterval/, 'read-back must not run on an interval');
 });
 
 check('UI makes no forbidden Desktop/queue/package/CAS calls', () => {
@@ -239,6 +244,23 @@ await checkAsync('render degrades to a Chrome-only message when APIs are absent'
   };
   ui.renderArchiveRequestDeliveryCard(fakeContainer);
   assert.match(text, /Chrome Studio only/);
+});
+
+await checkAsync('formatReceiptResult maps awaiting/queued/rejected outcomes', async () => {
+  const ui = loadUi(createSandbox());
+  const awaiting = ui.formatReceiptResult({ ok: false, status: 'delivered-awaiting-desktop', requestId: 'req_x' });
+  assert.equal(awaiting.tone, 'warn');
+
+  const queued = ui.formatReceiptResult({
+    ok: true, status: 'queued-on-desktop', requestId: 'req_x',
+    receipt: { status: 'validated', enqueueStatus: 'validated', dedupeKey: 'sha256-x' },
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(queued.tone, 'ok');
+  assert.ok(queued.lines.some((l) => l[0] === 'receipt.status' && l[1] === 'validated'));
+
+  const rejected = ui.formatReceiptResult({ ok: false, status: 'rejected-by-desktop', requestId: 'req_x', receipt: { status: 'rejected' } });
+  assert.equal(rejected.tone, 'block');
 });
 
 if (FAIL.length) {
