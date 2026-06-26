@@ -595,6 +595,13 @@
        intent. No transport, Desktop queue call, package writer, CAS, Sync,
        file drop, native messaging, localhost relay, or user export. -->
   <script src="./ingestion/saved-chat-archive-request-builder.mv3.js"></script>
+  <!-- Chrome/MV3: saved-chat archive request delivery (Phase D.3C.1).
+       Low-level File System Access API write of a metadata-only request file
+       into the dedicated $HOME/H2O Studio Archive Requests inbox. No UI, no
+       result read-back, no automatic/background delivery, no Desktop runtime,
+       service-worker transport, native messaging, localhost relay, Sync, CAS,
+       package writer, or queue/materializer call. -->
+  <script src="./ingestion/saved-chat-archive-request-delivery.mv3.js"></script>
   <!-- Desktop-only: saved-chat archive request intake (Phase D.2A).
        Validates Chrome-to-Desktop save/archive request envelopes and resolves
        existing Desktop store state read-only. No queue, package write, Chrome

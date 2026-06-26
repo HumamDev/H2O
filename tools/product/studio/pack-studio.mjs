@@ -168,6 +168,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // transport, Desktop queue call, package writer, CAS, Sync, file drop,
   // native messaging, localhost relay, or user export.
   "ingestion/saved-chat-archive-request-builder.mv3.js",
+  // Chrome/MV3: saved-chat archive request delivery (Phase D.3C.1). Low-level
+  // File System Access API write of a metadata-only request file into the
+  // dedicated $HOME/H2O Studio Archive Requests inbox. No UI, no result
+  // read-back, no automatic/background delivery, no Desktop runtime, sync,
+  // CAS, package writer, or queue/materializer call.
+  "ingestion/saved-chat-archive-request-delivery.mv3.js",
   // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
   // Chrome-to-Desktop request envelopes and resolves Desktop store state
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
@@ -1234,6 +1240,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-package-assets.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
+  "ingestion/saved-chat-archive-request-delivery.mv3.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
