@@ -97,48 +97,101 @@ Until B2 exists, B1 diagnostics cannot make a cross-surface parity judgment and 
 
 ## Runtime Proof Status
 
-Runtime proof was attempted and blocked by local runtime availability, not by the B1 diagnostic allowlist.
+PASS. The initial runtime blockers were resolved and B1 was proven on both Desktop Studio and Chrome Studio.
 
 Commands run:
 
 ```sh
-node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseChatFolderBindingParity --timeout-ms 8000
-node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseChatFolderBindingParity --timeout-ms 8000
+node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseChatFolderBindingParity --timeout-ms 60000
+node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseChatFolderBindingParity --timeout-ms 60000
 ```
 
-Desktop runtime result:
+## Desktop Runtime Result
 
-- `ok:false`
-- `status:"desktop-queue-timeout"`
 - `op:"diagnoseChatFolderBindingParity"`
-- `readOnly:true`
-- `allowedReadOnlyOps` included `diagnoseChatFolderBindingParity`
-- blocker: `desktop-queue-timeout`
-- next action from helper: open Desktop Studio with `?h2oSmokeBridge=folder-sync-rc`, set localStorage opt-in, and confirm `H2O.Studio.devSmoke.folderSyncQueue.diagnose().started === true`.
-
-Chrome runtime result:
-
-- `ok:false`
-- `status:"chrome-cdp-unavailable"`
-- `op:"diagnoseChatFolderBindingParity"`
-- `readOnly:true`
-- `allowedReadOnlyOps` included `diagnoseChatFolderBindingParity`
-- blocker: `chrome-cdp-unavailable`
-- error: `chrome-cdp-unavailable: fetch failed` on port `9247`
-
-Expected live result once runtime gates are active:
-
-- Desktop should report `status:"chat-folder-binding-parity-diagnosed"` from Desktop store reads.
-- Chrome should report `status:"chat-folder-binding-parity-diagnosed"` from Chrome mirror/display reads.
-
-Acceptable B1 result:
-
 - `ok:true`
 - `status:"chat-folder-binding-parity-diagnosed"`
+- `surface:"desktop-studio"`
+- `adapter:"tauri"`
+- `totalBindingCount:12`
+- `unfiledCount:29`
+- `missingFolderBindingCount:0`
+- `deletedFolderBindingCount:0`
+- `restoredFolderBindingCount:0`
 - `parityComparable:false`
 - `parityOk:null`
-- warnings explaining missing canonical binding transport/mirror data
-- `blockers:[]` unless the bridge/runtime itself is unavailable
+- `blockers:[]`
+
+Desktop `folderBindingCounts`:
+
+- `f_e301f3506938c19dbac0e304:1`
+- `f_2bb1037f88b2719dbac10c22:0`
+- `f_d04f98de89e35819e885aef8e:6`
+- `f_7050f49d3f341819dba53d547:3`
+- `f_3bf15f43b835d19dbac0fb13:2`
+- `fold_chrome_chrome-delete-companion-test_mqtdzvyv_4a699cf35f:0`
+- `fold_smoke_chrome-restore-proof-1782569112247_mqwfmhu8_8d8f2f42d3fd:0`
+
+Desktop warnings:
+
+- `chrome-binding-mirror-missing-for-parity`
+- `desktop-orphan-binding-scan-unavailable`
+
+Desktop safety flags:
+
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChromeDestructiveBindingApply:true`
+
+## Chrome Runtime Result
+
+- `href:"chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/library/folders"`
+- `op:"diagnoseChatFolderBindingParity"`
+- `ok:true`
+- `status:"chat-folder-binding-parity-diagnosed"`
+- `surface:"chrome-studio"`
+- `adapter:"mv3"`
+- `totalBindingCount:12`
+- `unfiledCount:null`
+- `missingFolderBindingCount:0`
+- `deletedFolderBindingCount:0`
+- `restoredFolderBindingCount:0`
+- `parityComparable:false`
+- `parityOk:null`
+- `blockers:[]`
+
+Chrome `folderBindingCounts` included:
+
+- `f_2bb1037f88b2719dbac10c22:1`
+- `f_3bf15f43b835d19dbac0fb13:3`
+- `f_7050f49d3f341819dba53d547:7`
+- `f_e301f3506938c19dbac0e304:1`
+- many historic/test/deleted/restored folder IDs at `0`
+
+Chrome warnings:
+
+- `chrome-canonical-binding-projection-missing`
+- `chat-folder-binding-transport-deferred`
+
+Chrome safety flags:
+
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChromeDestructiveBindingApply:true`
+
+## Runtime Interpretation
+
+B1 runtime proof is now green on Desktop and Chrome:
+
+- The diagnostic is read-only and safe.
+- Both surfaces report binding summaries.
+- Both surfaces return `parityComparable:false` and `parityOk:null` intentionally because canonical binding transport/projection is still deferred.
+- The prior `desktop-queue-timeout` and `chrome-cdp-unavailable` blockers are resolved for this proof.
+- B2 should focus on Desktop canonical binding export / transport projection before any Chrome mutation/request flows.
 
 ## Safety Boundaries
 
