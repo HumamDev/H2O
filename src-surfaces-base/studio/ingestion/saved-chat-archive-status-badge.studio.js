@@ -49,6 +49,19 @@
   var localCache = new Map();
   var warmSeen = new Object();
   var hydrateSeen = new Object();
+  var diagnosticsState = {
+    calls: 0,
+    hydrationAttempts: 0,
+    hydrationResolved: 0,
+    hydrationMisses: 0,
+    rendered: 0,
+    skippedQuiet: 0,
+    skippedNoArticle: 0,
+    skippedNoIdentifiers: 0,
+    lastState: null,
+    lastReason: '',
+    lastError: '',
+  };
 
   function isObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -100,6 +113,10 @@
     var bk = cleanString(row.badgeKind).toLowerCase();
     return row.isLinked === true || row.isImported === true || dv === 'link' || dv === 'linked' || dv === 'imported' || bk === 'link';
   }
+  function likelyThinRow(row) {
+    if (!isObject(row) || row.isSaved === true || row.isLinked === true || row.isImported === true) return false;
+    return !cleanString(row.displayView) && !cleanString(row.badgeKind);
+  }
   function flagEnabled() {
     try {
       var diag = ingestion().diagnoseSavedChatArchiveOnSaveToFolderV1;
@@ -121,7 +138,10 @@
     if (typeof compute !== 'function') return null;
     try {
       return compute({ row: row, local: local, diagnostics: diagnostics, receipt: receipt || null });
-    } catch (_) { return null; }
+    } catch (err) {
+      diagnosticsState.lastError = cleanString(err && err.message) || 'status-compute-failed';
+      return null;
+    }
   }
   function libraryRows() {
     try {
@@ -162,6 +182,22 @@
     if (!status || !status.state) return false;
     if (SHOW_STATES[status.state]) return true;
     return status.state === 'unknown-check-status' && status.canCheckStatus === true && cleanString(status.requestId);
+  }
+  function recordStatus(status) {
+    diagnosticsState.lastState = status && status.state ? cleanString(status.state) : null;
+    diagnosticsState.lastReason = status && status.reason ? cleanString(status.reason) : '';
+  }
+  function normalizeLocalMeta(meta) {
+    return {
+      delivered: !!(meta && meta.delivered),
+      requestId: (meta && meta.requestId) || null,
+      deliveredAt: (meta && meta.deliveredAt) || null,
+    };
+  }
+  function readLocalMeta(row) {
+    var fn = ingestion().getSavedChatArchiveLocalDeliveryMetaV1;
+    if (typeof fn !== 'function') return Promise.resolve({ delivered: false, requestId: null, deliveredAt: null });
+    return Promise.resolve(fn(row)).then(normalizeLocalMeta);
   }
   function localRequestId(local) {
     return cleanString(local && local.requestId);
@@ -256,13 +292,17 @@
     var local = resolveLocal(row, localOverride);
     var diagnostics = resolveDiag(diagOverride);
     var status = computeStatusWith(row, local, diagnostics, null);
+    recordStatus(status);
     /* Remove any prior archive-status badge first (idempotent re-render). */
     var existingContainer = resolveContainer(article, badgesEl, false);
     if (existingContainer && typeof existingContainer.querySelector === 'function') {
       var prior = existingContainer.querySelector(BADGE_SELECTOR);
       if (prior && typeof prior.remove === 'function') prior.remove();
     }
-    if (!shouldShowStatus(status)) return status;
+    if (!shouldShowStatus(status)) {
+      diagnosticsState.skippedQuiet += 1;
+      return status;
+    }
     var container = resolveContainer(article, badgesEl, true);
     if (!container) return status;
     var document = doc();
@@ -270,6 +310,7 @@
     var span = document.createElement('span');
     applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
+    diagnosticsState.rendered += 1;
     return status;
   }
 
@@ -280,52 +321,88 @@
     var key = keyFor(row);
     if (!key || localCache.has(key) || warmSeen[key]) return;
     warmSeen[key] = true;
-    var fn = ingestion().getSavedChatArchiveLocalDeliveryMetaV1;
-    if (typeof fn !== 'function') return;
     try {
-      Promise.resolve(fn(row)).then(function (meta) {
-        localCache.set(key, {
-          delivered: !!(meta && meta.delivered),
-          requestId: (meta && meta.requestId) || null,
-          deliveredAt: (meta && meta.deliveredAt) || null,
-        });
+      readLocalMeta(row).then(function (local) {
+        localCache.set(key, local);
         renderInto(article, badgesEl, row);
       }).catch(function () { delete warmSeen[key]; });
     } catch (_) { delete warmSeen[key]; }
   }
   function maybeHydrateFromLibrary(article, badgesEl, row, localOverride, diagOverride, initialStatus) {
-    if (!article || explicitLinkOnly(row)) return;
+    if (!article) {
+      diagnosticsState.skippedNoArticle += 1;
+      return;
+    }
+    if (explicitLinkOnly(row)) return;
     var ids = articleIds(article);
     var chatId = cleanString(row && row.chatId) || ids.chatId;
     var snapshotId = deriveSnapshotId(row || {}) || ids.snapshotId;
-    if (!chatId && !snapshotId) return;
+    if (!chatId && !snapshotId) {
+      diagnosticsState.skippedNoIdentifiers += 1;
+      return;
+    }
     if (shouldShowStatus(initialStatus) && deriveSnapshotId(row) && row.isSaved === true) return;
     var key = 'hydrate|' + (chatId || '?') + '|' + (snapshotId || '?');
     if (hydrateSeen[key]) return;
     hydrateSeen[key] = true;
+    diagnosticsState.hydrationAttempts += 1;
     Promise.resolve().then(function () {
       return hydrateFullRow(article, row);
     }).then(function (fullRow) {
-      if (!isObject(fullRow) || explicitLinkOnly(fullRow)) return;
+      if (!isObject(fullRow) || explicitLinkOnly(fullRow)) {
+        diagnosticsState.hydrationMisses += 1;
+        delete hydrateSeen[key];
+        return null;
+      }
       var merged = rowWithArticleIds(fullRow, article);
-      renderInto(article, badgesEl, merged, localOverride, diagOverride);
-      if (!isObject(localOverride)) warmLocal(article, badgesEl, merged);
+      var localPromise = isObject(localOverride) ? Promise.resolve(localOverride) : readLocalMeta(merged);
+      return localPromise.then(function (local) {
+        var cacheKey = keyFor(merged);
+        if (cacheKey && !isObject(localOverride)) localCache.set(cacheKey, local);
+        diagnosticsState.hydrationResolved += 1;
+        renderInto(article, badgesEl, merged, local, diagOverride);
+      });
     }).catch(function () {
+      diagnosticsState.lastError = 'hydrate-failed';
       delete hydrateSeen[key];
     });
   }
 
   function appendSavedChatArchiveStatusBadgeV1(options) {
+    diagnosticsState.calls += 1;
     var opts = isObject(options) ? options : {};
     var article = opts.article || null;
     var badgesEl = opts.badgesEl || null;
     var row = rowWithArticleIds(opts.row, article);
-    if (!cleanString(row.chatId) && !deriveSnapshotId(row)) return;
+    if (!cleanString(row.chatId) && !deriveSnapshotId(row)) {
+      diagnosticsState.skippedNoIdentifiers += 1;
+      return;
+    }
     var status = renderInto(article, badgesEl, row, opts.local, opts.diagnostics);
-    /* Only warm from the live cache path (not when caller supplied local). */
-    if (!isObject(opts.local)) warmLocal(article, badgesEl, row);
+    var hydrateFirst = likelyThinRow(row) && !shouldShowStatus(status);
+    /* Only warm from the live cache path (not when caller supplied local).
+     * Thin route rows hydrate first so they do not cache a false local result
+     * before the full LibraryIndex row is available. */
+    if (!isObject(opts.local) && !hydrateFirst) warmLocal(article, badgesEl, row);
     maybeHydrateFromLibrary(article, badgesEl, row, opts.local, opts.diagnostics, status);
+  }
+  function diagnoseSavedChatArchiveStatusBadgeV1() {
+    return {
+      schema: 'h2o.savedChatArchiveStatusBadgeDiagnostic.v1',
+      calls: diagnosticsState.calls,
+      hydrationAttempts: diagnosticsState.hydrationAttempts,
+      hydrationResolved: diagnosticsState.hydrationResolved,
+      hydrationMisses: diagnosticsState.hydrationMisses,
+      rendered: diagnosticsState.rendered,
+      skippedQuiet: diagnosticsState.skippedQuiet,
+      skippedNoArticle: diagnosticsState.skippedNoArticle,
+      skippedNoIdentifiers: diagnosticsState.skippedNoIdentifiers,
+      lastState: diagnosticsState.lastState,
+      lastReason: diagnosticsState.lastReason,
+      lastError: diagnosticsState.lastError,
+    };
   }
 
   H2O.Studio.ingestion.appendSavedChatArchiveStatusBadgeV1 = appendSavedChatArchiveStatusBadgeV1;
+  H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1 = diagnoseSavedChatArchiveStatusBadgeV1;
 })(typeof window !== 'undefined' ? window : globalThis);

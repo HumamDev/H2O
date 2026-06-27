@@ -117,6 +117,7 @@ function loadBadge(context) {
   vm.runInContext(readRepo(BADGE_REL), context, { filename: BADGE_REL });
   const fn = context.H2O?.Studio?.ingestion?.appendSavedChatArchiveStatusBadgeV1;
   assert.equal(typeof fn, 'function', 'appendSavedChatArchiveStatusBadgeV1 not registered');
+  assert.equal(typeof context.H2O?.Studio?.ingestion?.diagnoseSavedChatArchiveStatusBadgeV1, 'function', 'diagnoseSavedChatArchiveStatusBadgeV1 not registered');
   return { fn, context };
 }
 function makeArticle(context, attrs = {}) {
@@ -142,6 +143,7 @@ console.log('[saved-chat-archive-status-badge-v1] static checks');
 check('badge module exists and registers appendSavedChatArchiveStatusBadgeV1', () => {
   assert.ok(fs.existsSync(path.join(REPO_ROOT, BADGE_REL)));
   assert.match(badgeSrc, /H2O\.Studio\.ingestion\.appendSavedChatArchiveStatusBadgeV1\s*=/);
+  assert.match(badgeSrc, /H2O\.Studio\.ingestion\.diagnoseSavedChatArchiveStatusBadgeV1\s*=/);
 });
 
 check('badge uses the status model and the local delivery accessor', () => {
@@ -151,6 +153,10 @@ check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('H2O.LibraryIndex'), 'must hydrate thin rows from LibraryIndex');
   assert.ok(badgeSrc.includes('data-chat-id'), 'must read article data-chat-id');
   assert.ok(badgeSrc.includes('data-snapshot-id'), 'must read article data-snapshot-id');
+  assert.ok(badgeSrc.includes('hydrationAttempts'), 'diagnostic should report hydration attempts');
+  assert.ok(badgeSrc.includes('hydrationResolved'), 'diagnostic should report resolved hydration');
+  assert.ok(badgeSrc.includes('hydrationMisses'), 'diagnostic should report hydration misses');
+  assert.ok(badgeSrc.includes('lastState'), 'diagnostic should report last status state');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -263,6 +269,11 @@ await checkAsync('thin row plus article ids hydrates from LibraryIndex and rende
   assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
   assert.equal(badge.getAttribute('role'), null, 'legacy no-requestId hydration remains passive');
   assert.equal(context.__receiptCalls.length, 0, 'passive hydration must not read receipts');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.hydrationAttempts > 0, 'diagnostic should count hydration attempts');
+  assert.ok(diag.hydrationResolved > 0, 'diagnostic should count resolved hydration');
+  assert.ok(diag.rendered > 0, 'diagnostic should count rendered badges');
+  assert.equal(diag.lastState, 'archive-requested');
 });
 
 await checkAsync('thin row hydration remains quiet when no full LibraryIndex row is found', async () => {
@@ -275,6 +286,9 @@ await checkAsync('thin row hydration remains quiet when no full LibraryIndex row
   await flushAsync();
   assert.equal(article.querySelector('.wbBadge--archive-status'), null, 'missing full row should stay quiet');
   assert.equal(context.__receiptCalls.length, 0, 'missing full row must not read receipts');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.hydrationAttempts > 0, 'miss path should attempt hydration');
+  assert.ok(diag.hydrationMisses > 0, 'miss path should increment hydrationMisses');
 });
 
 await checkAsync('repeated thin-row hydration is idempotent and does not duplicate badges', async () => {
