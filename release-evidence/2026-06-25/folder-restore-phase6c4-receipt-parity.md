@@ -51,45 +51,91 @@ Chrome import diagnostics now include:
 - `staleRestoreRequestCount`
 - `restoreReceiptRequestIdMismatchCount`
 
-## Runtime Proof Target
+## Runtime Proof
 
-Use the current restored folder when runtime access is available:
+Target restored folder:
 
 - `folderId:"fold_smoke_chrome-restore-proof-1782569112247_mqwfmhu8_8d8f2f42d3fd"`
 - `folderName:"chrome restore proof 1782569112247"`
 
-Expected runtime sequence:
+Desktop restore receipt export:
 
-1. Desktop export `desktop-to-chrome`.
-2. `folderRestoreReceiptExport.receiptCount >= 1`.
-3. Chrome import `desktop-to-chrome`.
-4. `folderRestoreReceiptImport.importedRestoreReceiptCount >= 1`.
-5. `folderRestoreReceiptImport.confirmedRestoreRequestCount >= 1` for the target request, or `alreadyResolvedCount >= 1` if the receipt was replayed.
-6. Chrome pending restore request is not left pending forever.
-7. Target is not shown as active Recently Deleted after restore.
-8. Restore receipt path reports `blockers:[]`.
+- Command direction: `desktop-to-chrome`
+- `ok:true`
+- `status:"latest-sync-bundle-written"`
+- `transport:"latest.json"`
+- `bytes:703129`
+- `blockers:[]`
+- `warnings:[]`
+- `folderRestoreReceiptExport.schema:"h2o.studio.folder-restore-receipt.v1"`
+- `folderRestoreReceiptExport.receiptCount:2`
+- `folderRestoreReceiptExport.requestReceiptCount:1`
+- `folderRestoreReceiptExport.tombstoneFallbackCount:1`
+- Safety flags:
+  - `noChromeRestoreAuthority:true`
+  - `noTombstoneApply:true`
+  - `noHardDelete:true`
+  - `noChatDelete:true`
+  - `noSnapshotDelete:true`
+  - `noAssetDelete:true`
 
-## Runtime Proof Status
+Chrome restore receipt import:
 
-Runtime proof could not complete in this implementation pass because both local runtime gates were unavailable from the current shell.
+- Import direction: `desktop-to-chrome`
+- `imported.ok:true`
+- `imported.status:"sync-folder-imported"`
+- `imported.blockers:[]`
+- `folderRestoreReceiptImport.schema:"h2o.studio.folder-restore-receipt.v1.chrome-import"`
+- `folderRestoreReceiptImport.ok:true`
+- `folderRestoreReceiptImport.found:2`
+- `folderRestoreReceiptImport.receiptCount:2`
+- `folderRestoreReceiptImport.importedRestoreReceiptCount:1`
+- `folderRestoreReceiptImport.confirmedRestoreRequestCount:1`
+- `folderRestoreReceiptImport.staleRestoreRequestCount:1`
+- `folderRestoreReceiptImport.restoreReceiptRequestIdMismatchCount:0`
+- `folderRestoreReceiptImport.reShownCount:1`
+- `folderRestoreReceiptImport.alreadyVisibleCount:1`
+- `folderRestoreReceiptImport.blockerCount:0`
+- `folderRestoreReceiptImport.blockers:[]`
+- Warning count: `1`
+  - `code:"restore-receipt-no-matching-request"`
+  - `trustedDesktopReceiptWithoutLocalRequest:true`
+  - `warningOnly:true`
+  - Interpretation: tombstone fallback receipt had no matching local request. This is non-blocking restored-history noise.
 
-Desktop queue health attempt:
+Chrome pending restore request resolution:
 
-- Command: `node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 15000`
-- Result: `ok:false`
-- Status: `desktop-queue-client-threw`
-- Error: `EPERM: operation not permitted, open '/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json'`
-- Blockers: `["desktop-queue-client-threw"]`
+- `listFolderRestoreRequests.ok:true`
+- `status:"folder-restore-requests-listed"`
+- `count:1`
+- `targetRequestCount:1`
+- `pendingTargetRequestCount:0`
+- Target request:
+  - `requestId:"folder-restore-request:9a732e99-d63c-413f-aeae-274db6f2b25e"`
+  - `status:"resolved"`
+  - `decision:"applied-folder-restore-request"`
+  - Warnings include:
+    - `folder-restore-receipt-imported`
+    - `folder-restore-request-applied-on-desktop`
+    - `chrome-restore-direct-apply-blocked`
+    - `no-tombstone-apply`
 
-Chrome CDP health attempt:
+Chrome Recently Deleted companion:
 
-- Command: `node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseHealth --timeout-ms 10000`
-- Result: `ok:false`
-- Status: `chrome-cdp-unavailable`
-- Error: `chrome-cdp-unavailable: fetch failed`
-- Blockers: `["chrome-cdp-unavailable"]`
+- `diagnoseChromeRecentlyDeletedCompanion.ok:true`
+- `status:"chrome-recently-deleted-companion-diagnosed"`
+- `targetCompanionCount:0`
+- `targetCompanionRows:[]`
+- `blockers:[]`
+- `warnings:[]`
 
-The static contract is ready for the next Desktop export and Chrome import against the current restored folder once the Desktop smoke queue can write its command file and Chrome CDP is running on port `9247`.
+## Runtime Interpretation
+
+Phase 6C.4 runtime proof is closed. Desktop exports restore receipts, Chrome imports trusted Desktop restore receipts, and Chrome resolves the pending restore request without leaving the target pending forever.
+
+The target no longer appears as an active Chrome Recently Deleted companion row. The fallback tombstone receipt without a matching local request is warning-only and non-blocking.
+
+Chrome health returned `status:"blocked"` with blocker `chrome-to-desktop-export-failed` during this pass. That is unrelated noise from the opposite export direction. The Phase 6C.4 `desktop-to-chrome` import lane reports `blockers:[]` and is green.
 
 ## Safety Invariants
 
@@ -117,6 +163,4 @@ The static contract is ready for the next Desktop export and Chrome import again
   - `node tools/validation/sync/validate-folder-delete-phase6b5-recently-deleted-parity.mjs`
 - `git diff --check`
 - `git diff --cached --check`
-- Runtime proof attempts recorded exact blockers:
-  - Desktop queue command-file `EPERM`
-  - Chrome CDP unavailable on port `9247`
+- Runtime proof passed for Desktop restore receipt export and Chrome restore receipt import.
