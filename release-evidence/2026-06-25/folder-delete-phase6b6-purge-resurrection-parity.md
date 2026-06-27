@@ -75,7 +75,85 @@ Validation run:
 
 ## Runtime Proof
 
-Runtime proof attempted:
+Final runtime proof:
+
+Implementation commit:
+
+- `3d5ccd12fa7f18c1a70d626a737c8675c41558c2` — `fix(sync): prevent purged folder resurrection in chrome`
+
+Desktop queue health before rerun:
+
+- `href:"http://127.0.0.1:1430/studio.html?h2oSmokeBridge=folder-sync-rc#/library/folders"`
+- `queueEnabled:true`
+- `queueStarted:true`
+- `queueLastStatus:"healthy"`
+- `queueBlockers:[]`
+- `queueRegistryBlockers:[]`
+- `bridgeStatus:"healthy"`
+- `bridgeBlockers:[]`
+
+Desktop export:
+
+- `ok:true`
+- `status:"latest-sync-bundle-written"`
+- `direction:"desktop-to-chrome"`
+- `transport:"latest.json"`
+- `bytes:686062`
+- `blockers:[]`
+- `warnings:[]`
+
+Chrome import before reload:
+
+- `ok:true`
+- `status:"sync-folder-imported"`
+- `blockers:[]`
+- warnings were deferred propagation warnings only
+
+Chrome Recently Deleted diagnostic before reload:
+
+- `ok:true`
+- `status:"chrome-recently-deleted-companion-diagnosed"`
+- `desktopChromeRecentlyDeletedParityOk:true`
+- `desktopCanonicalRecentlyDeletedCount:0`
+- `chromeCanonicalRecentlyDeletedCount:0`
+- `chromeCompanionRecentlyDeletedCount:0`
+- `resurrectedAfterPurgeCount:0`
+- `staleReceiptRowCount:0`
+- `extraChromeRows:[]`
+- `missingChromeRows:[]`
+- `blockers:[]`
+- `warnings:[]`
+
+Chrome reload proof:
+
+- Action: `location.reload()`
+- Reran `diagnoseChromeRecentlyDeletedCompanion` on Chrome Studio after reload.
+- `href:"chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html#/library/folders"`
+- `ok:true`
+- `status:"chrome-recently-deleted-companion-diagnosed"`
+- `desktopChromeRecentlyDeletedParityOk:true`
+- `desktopCanonicalRecentlyDeletedCount:0`
+- `chromeCanonicalRecentlyDeletedCount:0`
+- `chromeCompanionRecentlyDeletedCount:0`
+- `resurrectedAfterPurgeCount:0`
+- `staleReceiptRowCount:0`
+- `extraChromeRows:[]`
+- `missingChromeRows:[]`
+- `blockers:[]`
+- `warnings:[]`
+
+Conclusion:
+
+- The old Chrome reload resurrection bug is fixed.
+- Permanently deleted/purged folders do not reappear in Chrome after reload.
+- Chrome Recently Deleted parity remains aligned with Desktop canonical state.
+- Chrome sidebar Recently Deleted row removal was part of the Phase 6B.6 implementation.
+- Chrome remains a read-only companion with no purge, permanent delete, restore, or tombstone authority.
+- Safety flags remained intact: no Chrome purge authority, no Chrome tombstone apply, no hard delete, and no chat/snapshot/asset deletion.
+
+## Superseded Runtime Attempt
+
+The earlier runtime attempt in this evidence file was blocked by Desktop queue timeout before the final rerun. The final rerun above supersedes that blocked state.
 
 1. Start from Desktop and Chrome synced.
 2. Permanently delete active Recently Deleted rows from Desktop.
