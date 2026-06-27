@@ -82,7 +82,7 @@ assertContains(publicBody, "surface.kind === 'chrome-studio'", 'B1 Chrome surfac
   'readFolderRowsForBindingDiagnostic',
   'countKnownChatsForBindingDiagnostic',
   'readRecentlyDeletedBindingSignals',
-  'chrome-binding-mirror-missing-for-parity',
+  'chrome-binding-import-deferred',
   'desktop-orphan-binding-scan-unavailable',
   'bindingRecoverySnapshotCount',
 ].forEach((needle) => assertContains(desktopBody, needle, `B1 Desktop diagnostic ${needle}`));
@@ -91,8 +91,8 @@ assertContains(publicBody, "surface.kind === 'chrome-studio'", 'B1 Chrome surfac
   'chromeStorageGet(FOLDER_STATE_DATA_KEY)',
   'readLocalFolderStateMirror',
   'mergeFolderStateMirrors',
-  'chrome-canonical-binding-projection-missing',
-  'chat-folder-binding-transport-deferred',
+  'desktop-canonical-chat-folder-bindings',
+  'chrome-binding-import-deferred',
   'chromeCanonicalBindingProjectionAvailable',
 ].forEach((needle) => assertContains(chromeBody, needle, `B1 Chrome diagnostic ${needle}`));
 

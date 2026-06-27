@@ -51,6 +51,7 @@
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
+  var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
@@ -190,6 +191,7 @@
     desktopVisibleFolderSet: null,
     desktopCanonicalRecentlyDeleted: null,
     desktopPurgedFolderSuppression: null,
+    desktopCanonicalChatFolderBindings: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -394,6 +396,7 @@
     state.desktopVisibleFolderSet = normalizeDesktopVisibleFolderSetSnapshot(saved.desktopVisibleFolderSet);
     state.desktopCanonicalRecentlyDeleted = normalizeDesktopCanonicalRecentlyDeletedSnapshot(saved.desktopCanonicalRecentlyDeleted);
     state.desktopPurgedFolderSuppression = normalizeDesktopPurgedFolderSuppressionSnapshot(saved.desktopPurgedFolderSuppression);
+    state.desktopCanonicalChatFolderBindings = normalizeDesktopCanonicalChatFolderBindingSnapshot(saved.desktopCanonicalChatFolderBindings);
   }
 
   async function persistState(patch) {
@@ -442,6 +445,7 @@
       desktopVisibleFolderSet: state.desktopVisibleFolderSet,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted,
       desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression,
+      desktopCanonicalChatFolderBindings: state.desktopCanonicalChatFolderBindings,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' || chromeExportReady,
@@ -1249,6 +1253,139 @@
       await writeKv(FOLDER_STATE_KEY_LOCAL, next);
     }
     state.desktopCanonicalRecentlyDeleted = snapshot;
+    return result;
+  }
+
+  function normalizeDesktopCanonicalChatFolderBindingSnapshot(value) {
+    var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    var sourceRows = Array.isArray(input.bindings)
+      ? input.bindings
+      : (Array.isArray(input.rows) ? input.rows : []);
+    var bindings = [];
+    var seen = Object.create(null);
+    var folderBindingCounts = {};
+    var uniqueChats = Object.create(null);
+    for (var i = 0; i < sourceRows.length; i += 1) {
+      var row = sourceRows[i] && typeof sourceRows[i] === 'object' && !Array.isArray(sourceRows[i]) ? sourceRows[i] : null;
+      var chatId = cleanString(row && (row.chatId || row.conversationId));
+      var folderId = normalizeFolderRecordId(row && row.folderId);
+      if (!row || !chatId || !folderId) continue;
+      var key = chatId + '\u0000' + folderId;
+      if (seen[key]) continue;
+      seen[key] = true;
+      uniqueChats[chatId] = true;
+      folderBindingCounts[folderId] = (numberOrZero(folderBindingCounts[folderId]) || 0) + 1;
+      bindings.push({
+        schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.row',
+        chatId: chatId,
+        conversationId: chatId,
+        folderId: folderId,
+        folderName: cleanString(row.folderName || row.name || folderId),
+        source: 'desktop-canonical-chat-folder-bindings',
+        sourceSurface: 'desktop-studio',
+        authority: 'desktop',
+        status: cleanString(row.status || row.state || 'active') || 'active',
+        state: cleanString(row.state || row.status || 'active') || 'active',
+        observedAt: cleanString(row.observedAt || row.updatedAt || input.exportedAt || input.sourceExportedAt),
+        updatedAt: cleanString(row.updatedAt),
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true
+      });
+    }
+    bindings.sort(function (a, b) {
+      return cleanString(a.folderId).localeCompare(cleanString(b.folderId)) ||
+        cleanString(a.chatId).localeCompare(cleanString(b.chatId));
+    });
+    return {
+      schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+      source: cleanString(input.source || 'desktop-canonical-chat-folder-bindings'),
+      status: cleanString(input.status || 'imported'),
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt || input.exportedAt),
+      bindingCount: bindings.length,
+      totalBindingCount: bindings.length,
+      folderBindingCounts: folderBindingCounts,
+      unfiledCount: Object.prototype.hasOwnProperty.call(input, 'unfiledCount') ? input.unfiledCount : null,
+      missingFolderBindingCount: numberOrZero(input.missingFolderBindingCount),
+      deletedFolderBindingCount: numberOrZero(input.deletedFolderBindingCount),
+      restoredFolderBindingCount: numberOrZero(input.restoredFolderBindingCount),
+      bindings: bindings,
+      rows: bindings,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      readOnlyProjection: true,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  function buildDesktopCanonicalChatFolderBindingSnapshot(bundle, importedAt) {
+    var payload = safeObject(bundle && bundle.desktopCanonicalChatFolderBindings);
+    var rows = Array.isArray(payload.bindings)
+      ? payload.bindings
+      : (Array.isArray(payload.rows)
+        ? payload.rows
+        : (Array.isArray(bundle && bundle.chatFolderBindings) ? bundle.chatFolderBindings : null));
+    if (!rows) return null;
+    return normalizeDesktopCanonicalChatFolderBindingSnapshot({
+      source: 'desktop-canonical-chat-folder-bindings',
+      status: 'imported',
+      importedAt: cleanString(importedAt) || nowIso(),
+      sourceExportedAt: cleanString(bundle && bundle.exportedAt),
+      unfiledCount: Object.prototype.hasOwnProperty.call(payload, 'unfiledCount') ? payload.unfiledCount : null,
+      missingFolderBindingCount: payload.missingFolderBindingCount,
+      deletedFolderBindingCount: payload.deletedFolderBindingCount,
+      restoredFolderBindingCount: payload.restoredFolderBindingCount,
+      bindings: rows
+    });
+  }
+
+  async function storeDesktopCanonicalChatFolderBindingSnapshot(snapshotInput) {
+    var snapshot = normalizeDesktopCanonicalChatFolderBindingSnapshot(snapshotInput);
+    var result = {
+      schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.chrome-import.v1',
+      phase: 'chat-folder-binding-b2',
+      attempted: true,
+      ok: true,
+      status: 'desktop-canonical-chat-folder-bindings-imported',
+      bindingCount: snapshot ? numberOrZero(snapshot.bindingCount) : 0,
+      changed: false,
+      importedAt: snapshot ? cleanString(snapshot.importedAt) : '',
+      sourceExportedAt: snapshot ? cleanString(snapshot.sourceExportedAt) : '',
+      blockers: [],
+      warnings: [],
+      readOnlyProjection: true,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+    if (!snapshot) {
+      result.ok = false;
+      result.status = 'desktop-canonical-chat-folder-bindings-missing';
+      result.blockers.push('desktop-canonical-chat-folder-bindings-missing');
+      return result;
+    }
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var existing = normalizeDesktopCanonicalChatFolderBindingSnapshot(current.desktopCanonicalChatFolderBindings);
+    result.changed = JSON.stringify(safeObject(existing)) !== JSON.stringify(safeObject(snapshot));
+    if (result.changed) {
+      var next = cloneJson(current) || {};
+      next.desktopCanonicalChatFolderBindings = snapshot;
+      next.updatedAt = nowIso();
+      await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    }
+    state.desktopCanonicalChatFolderBindings = snapshot;
     return result;
   }
 
@@ -2770,6 +2907,13 @@
       addUnique(folderMetadataChangeSummary.changedFields, 'desktop-purged-folder-suppression');
       folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
     }
+    var desktopCanonicalChatFolderBindings = buildDesktopCanonicalChatFolderBindingSnapshot(bundleInput, nowIso()) ||
+      buildDesktopCanonicalChatFolderBindingSnapshot(normalized.bundle, nowIso());
+    var desktopCanonicalChatFolderBindingImport = await storeDesktopCanonicalChatFolderBindingSnapshot(desktopCanonicalChatFolderBindings);
+    if (desktopCanonicalChatFolderBindingImport.changed === true) {
+      addUnique(folderMetadataChangeSummary.changedFields, 'desktop-canonical-chat-folder-bindings');
+      folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
+    }
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2805,6 +2949,8 @@
       desktopCanonicalRecentlyDeletedImport: desktopCanonicalRecentlyDeletedImport,
       desktopPurgedFolderSuppression: desktopPurgedFolderSuppression,
       desktopPurgedFolderSuppressionImport: desktopPurgedFolderSuppressionImport,
+      desktopCanonicalChatFolderBindings: desktopCanonicalChatFolderBindings,
+      desktopCanonicalChatFolderBindingImport: desktopCanonicalChatFolderBindingImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -5161,13 +5307,20 @@
             addUnique(alreadyRefreshSummary.changedFields, 'desktop-purged-folder-suppression');
             alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
           }
+          var alreadyDesktopCanonicalChatFolderBindings = buildDesktopCanonicalChatFolderBindingSnapshot(bundle, nowIso());
+          var alreadyDesktopCanonicalChatFolderBindingImport = await storeDesktopCanonicalChatFolderBindingSnapshot(alreadyDesktopCanonicalChatFolderBindings);
+          if (alreadyDesktopCanonicalChatFolderBindingImport.changed === true) {
+            addUnique(alreadyRefreshSummary.changedFields, 'desktop-canonical-chat-folder-bindings');
+            alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
+          }
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
           if (numberOrZero(alreadyReceiptHide.hiddenCount) > 0 ||
             numberOrZero(alreadyRestoreReceiptImport.reShownCount) > 0 ||
             alreadyDesktopCanonicalRecentlyDeletedImport.changed === true ||
-            alreadyDesktopPurgedFolderSuppressionImport.changed === true) {
+            alreadyDesktopPurgedFolderSuppressionImport.changed === true ||
+            alreadyDesktopCanonicalChatFolderBindingImport.changed === true) {
             alreadyPostImportRefresh = await refreshChromeFolderUiAfterDesktopImport(
               alreadyRefreshSummary,
               opts.reason || 'desktop-chrome-propagation-import',
@@ -5219,6 +5372,8 @@
             desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
             desktopPurgedFolderSuppression: alreadyDesktopPurgedFolderSuppression,
             desktopPurgedFolderSuppressionImport: alreadyDesktopPurgedFolderSuppressionImport,
+            desktopCanonicalChatFolderBindings: alreadyDesktopCanonicalChatFolderBindings,
+            desktopCanonicalChatFolderBindingImport: alreadyDesktopCanonicalChatFolderBindingImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -5274,6 +5429,8 @@
             desktopCanonicalRecentlyDeletedImport: alreadyDesktopCanonicalRecentlyDeletedImport,
             desktopPurgedFolderSuppression: alreadyDesktopPurgedFolderSuppression,
             desktopPurgedFolderSuppressionImport: alreadyDesktopPurgedFolderSuppressionImport,
+            desktopCanonicalChatFolderBindings: alreadyDesktopCanonicalChatFolderBindings,
+            desktopCanonicalChatFolderBindingImport: alreadyDesktopCanonicalChatFolderBindingImport,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
@@ -5477,6 +5634,8 @@
         desktopCanonicalRecentlyDeletedImport: propagation && propagation.desktopCanonicalRecentlyDeletedImport,
         desktopPurgedFolderSuppression: propagation && propagation.desktopPurgedFolderSuppression,
         desktopPurgedFolderSuppressionImport: propagation && propagation.desktopPurgedFolderSuppressionImport,
+        desktopCanonicalChatFolderBindings: propagation && propagation.desktopCanonicalChatFolderBindings,
+        desktopCanonicalChatFolderBindingImport: propagation && propagation.desktopCanonicalChatFolderBindingImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,

@@ -615,7 +615,7 @@
         mappings.push(bindingMapRow(chatId, folderId, includeSensitive));
       });
     }
-    addUniqueCode(warnings, 'chrome-binding-mirror-missing-for-parity');
+    addUniqueCode(warnings, 'chrome-binding-import-deferred');
     addUniqueCode(warnings, 'desktop-orphan-binding-scan-unavailable');
     var chatCount = await countKnownChatsForBindingDiagnostic();
     var totalBindingCount = mappings.length;
@@ -630,6 +630,9 @@
       adapter: 'tauri',
       readOnly: true,
       canonicalSource: 'desktop-store-folder-bindings',
+      desktopCanonicalBindingProjectionAvailable: !!(H2O.Studio && H2O.Studio.ingestion &&
+        typeof H2O.Studio.ingestion.exportLatestSyncBundle === 'function'),
+      desktopCanonicalBindingProjectionSchema: 'h2o.studio.chat-folder-bindings.desktop-canonical.v1',
       totalBindingCount: totalBindingCount,
       desktopBindingCount: totalBindingCount,
       folderBindingCounts: folderBindingCounts,
@@ -713,12 +716,30 @@
     } catch (_) {
       addUniqueCode(warnings, 'chrome-folder-display-model-read-failed');
     }
-    var hasCanonicalBindingProjection = !!(mirror.desktopCanonicalChatFolderBindings &&
-      Array.isArray(safeObject(mirror.desktopCanonicalChatFolderBindings).bindings));
-    if (!hasCanonicalBindingProjection) {
-      addUniqueCode(warnings, 'chrome-canonical-binding-projection-missing');
-      addUniqueCode(warnings, 'chat-folder-binding-transport-deferred');
+    var canonicalProjection = safeObject(mirror.desktopCanonicalChatFolderBindings);
+    var canonicalRows = safeArray(canonicalProjection.bindings).length
+      ? safeArray(canonicalProjection.bindings)
+      : safeArray(canonicalProjection.rows);
+    var hasCanonicalBindingProjection = cleanString(canonicalProjection.schema) === 'h2o.studio.chat-folder-bindings.desktop-canonical.v1' &&
+      Array.isArray(canonicalRows);
+    var canonicalFolderBindingCounts = {};
+    var canonicalMappings = [];
+    if (hasCanonicalBindingProjection) {
+      canonicalRows.forEach(function (row) {
+        var chatId = chatIdFromRow(row);
+        var folderId = folderIdFromAny(row);
+        if (!chatId || !folderId) return;
+        canonicalFolderBindingCounts[folderId] = (Number(canonicalFolderBindingCounts[folderId]) || 0) + 1;
+        canonicalMappings.push(bindingMapRow(chatId, folderId, safeObject(payload).includeSensitive === true));
+      });
     }
+    if (!hasCanonicalBindingProjection) {
+      addUniqueCode(warnings, 'chrome-binding-import-deferred');
+      addUniqueCode(warnings, 'desktop-canonical-binding-projection-not-imported');
+    }
+    var reportedMappings = hasCanonicalBindingProjection ? canonicalMappings : mappings;
+    var reportedFolderBindingCounts = hasCanonicalBindingProjection ? canonicalFolderBindingCounts : folderBindingCounts;
+    var reportedBindingCount = hasCanonicalBindingProjection ? canonicalMappings.length : totalBindingCount;
     return baseResult('diagnoseChatFolderBindingParity', {
       ok: blockers.length === 0,
       status: 'chat-folder-binding-parity-diagnosed',
@@ -726,20 +747,24 @@
       adapter: 'mv3',
       readOnly: true,
       canonicalSource: hasCanonicalBindingProjection ? 'desktop-canonical-chat-folder-bindings' : 'chrome-folder-state-mirror-items',
-      totalBindingCount: totalBindingCount,
+      totalBindingCount: reportedBindingCount,
       chromeMirrorBindingCount: totalBindingCount,
+      chromeCanonicalBindingCount: hasCanonicalBindingProjection ? canonicalMappings.length : 0,
       chromeVisibleFolderCount: Number(folderModel && folderModel.rowCount) || 0,
-      folderBindingCounts: folderBindingCounts,
-      chatFolderBindings: mappings,
+      folderBindingCounts: reportedFolderBindingCounts,
+      chatFolderBindings: reportedMappings,
       bindingMapRedacted: safeObject(payload).includeSensitive !== true,
-      unfiledCount: null,
-      missingFolderBindingCount: missingFolderBindingCount,
-      deletedFolderBindingCount: 0,
-      restoredFolderBindingCount: 0,
+      unfiledCount: hasCanonicalBindingProjection && Object.prototype.hasOwnProperty.call(canonicalProjection, 'unfiledCount')
+        ? canonicalProjection.unfiledCount
+        : null,
+      missingFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.missingFolderBindingCount || 0) : missingFolderBindingCount,
+      deletedFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.deletedFolderBindingCount || 0) : 0,
+      restoredFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.restoredFolderBindingCount || 0) : 0,
       bindingRecoverySnapshotCount: 0,
       parityComparable: false,
       parityOk: null,
       chromeCanonicalBindingProjectionAvailable: hasCanonicalBindingProjection,
+      chromeCanonicalBindingProjectionSchema: hasCanonicalBindingProjection ? cleanString(canonicalProjection.schema) : '',
       blockers: blockers,
       warnings: warnings,
       noChatDelete: true,

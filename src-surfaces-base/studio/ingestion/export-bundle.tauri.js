@@ -44,6 +44,7 @@
   var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
   var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
   var DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA = 'h2o.studio.folder-purge-suppression.desktop.v1';
+  var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1068,6 +1069,187 @@
     };
   }
 
+  async function buildDesktopCanonicalChatFolderBindingProjection(stores, chatCount) {
+    var exportedAt = nowIso();
+    var warnings = [];
+    var api = stores && stores.folders;
+    var baseDiagnostics = {
+      schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.diagnostics',
+      exported: false,
+      bindingCount: 0,
+      folderBindingCounts: {},
+      unfiledCount: null,
+      missingFolderBindingCount: 0,
+      deletedFolderBindingCount: 0,
+      restoredFolderBindingCount: 0,
+      source: 'desktop-store-folder-bindings',
+      desktopAuthority: true,
+      chromeAuthority: false,
+      readOnlyProjection: true,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      blockers: [],
+      warnings: warnings,
+    };
+    if (!api || typeof api.listChats !== 'function') {
+      warnings.push({
+        code: 'desktop-chat-folder-binding-store-unavailable',
+        warning: 'store.folders.listChats unavailable; exporting empty canonical chat-folder binding projection',
+      });
+      return {
+        schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+        source: 'desktop-canonical-chat-folder-bindings',
+        status: 'exported',
+        exportedAt: exportedAt,
+        bindingCount: 0,
+        folderBindingCounts: {},
+        unfiledCount: null,
+        missingFolderBindingCount: 0,
+        deletedFolderBindingCount: 0,
+        restoredFolderBindingCount: 0,
+        bindings: [],
+        rows: [],
+        diagnostics: baseDiagnostics,
+        desktopAuthority: true,
+        chromeAuthority: false,
+        readOnlyProjection: true,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      };
+    }
+    var folderRows = [];
+    try {
+      folderRows = (await listFromStore(api)).map(projectFolder).filter(Boolean);
+    } catch (e) {
+      warnings.push({
+        code: 'desktop-chat-folder-binding-folder-list-failed',
+        warning: 'store.folders.list failed; exporting empty canonical chat-folder binding projection',
+        error: String((e && e.message) || e),
+      });
+      return {
+        schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+        source: 'desktop-canonical-chat-folder-bindings',
+        status: 'exported',
+        exportedAt: exportedAt,
+        bindingCount: 0,
+        folderBindingCounts: {},
+        unfiledCount: null,
+        missingFolderBindingCount: 0,
+        deletedFolderBindingCount: 0,
+        restoredFolderBindingCount: 0,
+        bindings: [],
+        rows: [],
+        diagnostics: baseDiagnostics,
+        desktopAuthority: true,
+        chromeAuthority: false,
+        readOnlyProjection: true,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      };
+    }
+    var folderNames = {};
+    var folderIds = [];
+    folderRows.forEach(function (folder) {
+      var folderId = cleanString(folder && (folder.folderId || folder.id));
+      if (!folderId || folderIds.indexOf(folderId) >= 0) return;
+      folderIds.push(folderId);
+      folderNames[folderId] = cleanString(folder && (folder.name || folder.title)) || folderId;
+    });
+    folderIds.sort();
+    var folderBindingCounts = {};
+    var bindings = [];
+    var seenChats = Object.create(null);
+    for (var i = 0; i < folderIds.length; i += 1) {
+      var folderId = folderIds[i];
+      var chatRows = [];
+      try {
+        chatRows = asArray(await api.listChats(folderId));
+      } catch (e2) {
+        warnings.push({
+          code: 'desktop-chat-folder-binding-list-read-failed',
+          folderId: folderId,
+          warning: 'store.folders.listChats failed for folder; exporting known folders and continuing',
+          error: String((e2 && e2.message) || e2),
+        });
+        chatRows = [];
+      }
+      var chatIds = uniqStrings(chatRows.map(function (row) {
+        return cleanString(row && (row.chatId || row.id));
+      }).filter(Boolean));
+      folderBindingCounts[folderId] = chatIds.length;
+      chatIds.forEach(function (chatId) {
+        seenChats[chatId] = true;
+        bindings.push({
+          schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.row',
+          chatId: chatId,
+          conversationId: chatId,
+          folderId: folderId,
+          folderName: folderNames[folderId] || folderId,
+          source: 'desktop-canonical-chat-folder-bindings',
+          sourceSurface: 'desktop-studio',
+          authority: 'desktop',
+          status: 'active',
+          state: 'active',
+          observedAt: exportedAt,
+          updatedAt: '',
+          noChromeDestructiveBindingApply: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noHardDelete: true,
+          noPurge: true,
+        });
+      });
+    }
+    bindings.sort(function (a, b) {
+      return cleanString(a.folderId).localeCompare(cleanString(b.folderId)) ||
+        cleanString(a.chatId).localeCompare(cleanString(b.chatId));
+    });
+    var knownChatCount = Number(chatCount);
+    var unfiledCount = Number.isFinite(knownChatCount)
+      ? Math.max(0, Math.floor(knownChatCount) - Object.keys(seenChats).length)
+      : null;
+    baseDiagnostics.exported = true;
+    baseDiagnostics.bindingCount = bindings.length;
+    baseDiagnostics.folderBindingCounts = folderBindingCounts;
+    baseDiagnostics.unfiledCount = unfiledCount;
+    return {
+      schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+      source: 'desktop-canonical-chat-folder-bindings',
+      status: 'exported',
+      exportedAt: exportedAt,
+      bindingCount: bindings.length,
+      folderBindingCounts: folderBindingCounts,
+      unfiledCount: unfiledCount,
+      missingFolderBindingCount: 0,
+      deletedFolderBindingCount: 0,
+      restoredFolderBindingCount: 0,
+      bindings: bindings,
+      rows: bindings,
+      diagnostics: baseDiagnostics,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      readOnlyProjection: true,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+  }
+
   function buildLibraryKv(labelBindings) {
     var keys = Object.keys(labelBindings || {});
     if (!keys.length) return [];
@@ -1864,6 +2046,8 @@
     var collected = await buildChatArchive(stores, warnings, folderFallback.state);
     var folderStateBuild = await buildFolderState(stores, collected.folderItems, folderFallback.state);
     var folderState = folderStateBuild.state;
+    var desktopCanonicalChatFolderBindings = await buildDesktopCanonicalChatFolderBindingProjection(stores, collected.archive.chatCount);
+    folderState.desktopCanonicalChatFolderBindings = desktopCanonicalChatFolderBindings;
     var folderParity = buildFolderParityDiagnostics(folderState, collected.archive);
     var chromeStorageLocal = {};
     chromeStorageLocal[FOLDER_STATE_KEY] = folderState;
@@ -1902,6 +2086,7 @@
       folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
       desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
       desktopPurgedFolderSuppressionCount: Number(desktopPurgedFolderSuppression.count) || 0,
+      desktopCanonicalChatFolderBindingCount: Number(desktopCanonicalChatFolderBindings.bindingCount) || 0,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -1920,6 +2105,8 @@
       desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
       desktopPurgedFolderSuppressions: asArray(desktopPurgedFolderSuppression.rows),
       desktopPurgedFolderSuppression: desktopPurgedFolderSuppression,
+      chatFolderBindings: asArray(desktopCanonicalChatFolderBindings.bindings),
+      desktopCanonicalChatFolderBindings: desktopCanonicalChatFolderBindings,
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
@@ -1940,6 +2127,7 @@
           tombstones: tombstoneDiagnostics,
           desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted.diagnostics,
           desktopPurgedFolderSuppression: desktopPurgedFolderSuppression.diagnostics,
+          chatFolderBindings: desktopCanonicalChatFolderBindings.diagnostics,
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           applyEvents: {
@@ -2089,6 +2277,28 @@
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
         folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
         folderRestoreReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderRestoreReceiptCount) || 0,
+        chatFolderBindingExport: {
+          schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+          bindingCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalChatFolderBindingCount) || 0,
+          folderBindingCounts: safeObject(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.folderBindingCounts),
+          unfiledCount: Object.prototype.hasOwnProperty.call(safeObject(bundle && bundle.desktopCanonicalChatFolderBindings), 'unfiledCount')
+            ? bundle.desktopCanonicalChatFolderBindings.unfiledCount
+            : null,
+          missingFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.missingFolderBindingCount) || 0,
+          deletedFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.deletedFolderBindingCount) || 0,
+          restoredFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.restoredFolderBindingCount) || 0,
+          blockers: asArray(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.diagnostics && bundle.desktopCanonicalChatFolderBindings.diagnostics.blockers),
+          warnings: asArray(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.diagnostics && bundle.desktopCanonicalChatFolderBindings.diagnostics.warnings),
+          desktopAuthority: true,
+          chromeAuthority: false,
+          readOnlyProjection: true,
+          noChromeDestructiveBindingApply: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+        },
         folderRestoreReceiptExport: {
           schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
           receiptCount: asArray(bundle && bundle.folderRestoreReceipts).length,
