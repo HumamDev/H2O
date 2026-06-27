@@ -48,11 +48,14 @@
   var CASCADE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-review-cascade-diagnostics.v1';
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
+  var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-delete-receipt-import.v1';
   var FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-delete-receipt-apply-result.v1';
   var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
   var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
+  var FOLDER_RESTORE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-restore-requests:pending-export:v1';
+  var FOLDER_RESTORE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-restore-request.pending-export-mirror.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -76,6 +79,7 @@
     'self-originated': true,
     'local-comparison-unavailable': true,
     'delete-request': true,
+    'restore-request': true,
   };
   var STATUSES = {
     pending: true,
@@ -138,6 +142,11 @@
     lastFolderDeleteRequestStatus: '',
     folderDeleteRequestCreates: 0,
     folderDeleteRequestDuplicates: 0,
+    lastFolderRestoreRequestAt: null,
+    lastFolderRestoreRequestFolderId: '',
+    lastFolderRestoreRequestStatus: '',
+    folderRestoreRequestCreates: 0,
+    folderRestoreRequestDuplicates: 0,
   };
 
   function recordError(op, e) {
@@ -236,6 +245,14 @@
     return 'folder-delete-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
   }
 
+  function folderRestoreRequestRecordId(folderId) {
+    return cleanScalar(folderId);
+  }
+
+  function folderRestoreRequestDedupeKey(folderId, requestId) {
+    return 'folder-restore-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
+  }
+
   function folderDeleteReceiptIds(receipt) {
     var values = [
       cleanScalar(receipt && receipt.requestId),
@@ -255,6 +272,20 @@
     try {
       var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
       return isObject(parsed) && parsed.schema === FOLDER_DELETE_REQUEST_SCHEMA ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseFolderRestoreRequestPayload(row) {
+    var raw = row && row.rawTombstoneJson;
+    if (!raw && row && row.raw_tombstone_json) raw = row.raw_tombstone_json;
+    if (!raw && isObject(row && row.payload)) raw = row.payload;
+    if (!raw && isObject(row)) raw = row;
+    if (!raw) return null;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isObject(parsed) && parsed.schema === FOLDER_RESTORE_REQUEST_SCHEMA ? parsed : null;
     } catch (_) {
       return null;
     }
@@ -413,6 +444,14 @@
     return 'folder-delete-request:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
   }
 
+  function generateFolderRestoreRequestId() {
+    try {
+      var c = global.crypto || null;
+      if (c && typeof c.randomUUID === 'function') return 'folder-restore-request:' + c.randomUUID();
+    } catch (_) { /* ignore */ }
+    return 'folder-restore-request:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+
   function shapeFolderDeleteRequestInput(input, options, requestId, requestedAt) {
     var data = isObject(input) ? input : {};
     var opts = isObject(options) ? options : {};
@@ -520,6 +559,156 @@
     }).catch(function (e) {
       recordError('folderDeleteRequest.exportMirror.upsert', e);
       return { ok: false, status: 'folder-delete-request-export-mirror-failed', reason: String((e && e.message) || e) };
+    });
+  }
+
+  function shapeFolderRestoreRequestInput(input, options, requestId, requestedAt) {
+    var data = isObject(input) ? input : {};
+    var opts = isObject(options) ? options : {};
+    var folderId = readFolderId(input);
+    var folderName = cleanScalar(data.folderName || data.name || data.title || opts.folderName || opts.name || '');
+    var sourceSurface = cleanScalar(opts.sourceSurface || data.sourceSurface || 'chrome-studio') || 'chrome-studio';
+    return {
+      schema: FOLDER_RESTORE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: requestId,
+      recordKind: 'folder',
+      intent: 'folder-restore-request',
+      classification: 'restore-request',
+      folderId: folderId,
+      folderName: folderName || null,
+      folderNameAtRequest: folderName || null,
+      tombstoneId: nullableString(data.tombstoneId || opts.tombstoneId),
+      receiptId: nullableString(data.receiptId || opts.receiptId),
+      requestedAt: requestedAt,
+      createdAt: requestedAt,
+      requestedBy: 'chrome-studio',
+      source: 'chrome-studio',
+      sourceSurface: sourceSurface,
+      sourcePeerId: nullableString(opts.sourcePeerId || data.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: cleanScalar(opts.reason || data.reason || 'user-requested-folder-restore') || 'user-requested-folder-restore',
+      desktopRestoreRequired: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noChromeRestoreAuthority: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: {
+        desktopCanonicalRecentlyDeleted: data.desktopCanonicalRecentlyDeleted === true,
+        restoreEligible: data.restoreEligible !== false,
+        purgeEligible: data.purgeEligible === true,
+        sourceKind: nullableString(data.sourceKind || data.kind),
+        stateSource: nullableString(data.stateSource),
+      },
+    };
+  }
+
+  function isPurgedFolderRestoreRequestInput(input) {
+    var data = isObject(input) ? input : {};
+    var status = cleanScalar(data.status).toLowerCase();
+    var source = cleanScalar(data.source || data.sourceKind || data.kind).toLowerCase();
+    return data.phase6aPermanentlyPurged === true ||
+      data.permanentlySuppressed === true ||
+      status === 'purged' ||
+      source === 'desktop-purged-folder-suppression';
+  }
+
+  function isDesktopCanonicalRestoreRequestInput(input) {
+    var data = isObject(input) ? input : {};
+    var status = cleanScalar(data.status).toLowerCase();
+    var source = cleanScalar(data.source || data.sourceKind || data.kind);
+    return data.desktopCanonicalRecentlyDeleted === true ||
+      source === 'desktop-canonical-recently-deleted' ||
+      (status === 'deleted' && cleanScalar(data.tombstoneId));
+  }
+
+  function folderRestoreRequestExportIdentity(payload) {
+    var p = isObject(payload) ? payload : {};
+    return cleanScalar(p.requestId || p.reviewId) + '|' + cleanScalar(p.folderId || p.recordId);
+  }
+
+  function sanitizeFolderRestoreRequestExportPayload(payload) {
+    var p = isObject(payload) ? payload : {};
+    if (cleanScalar(p.schema) !== FOLDER_RESTORE_REQUEST_SCHEMA) return null;
+    if (cleanScalar(p.intent) !== 'folder-restore-request') return null;
+    if (cleanScalar(p.status) !== 'pending') return null;
+    if (p.desktopRestoreRequired !== true && p.desktopApplyRequired !== true) return null;
+    var requestId = cleanScalar(p.requestId || p.reviewId);
+    var folderId = cleanScalar(p.folderId || p.recordId);
+    if (!requestId || !folderId) return null;
+    return {
+      schema: FOLDER_RESTORE_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanScalar(p.reviewId || requestId) || requestId,
+      recordKind: 'folder',
+      intent: 'folder-restore-request',
+      classification: 'restore-request',
+      folderId: folderId,
+      folderName: nullableString(p.folderName || p.folderNameAtRequest),
+      folderNameAtRequest: nullableString(p.folderNameAtRequest || p.folderName),
+      tombstoneId: nullableString(p.tombstoneId),
+      receiptId: nullableString(p.receiptId),
+      requestedAt: nullableString(p.requestedAt || p.createdAt),
+      createdAt: nullableString(p.createdAt || p.requestedAt),
+      requestedBy: nullableString(p.requestedBy || 'chrome-studio'),
+      source: nullableString(p.source || 'chrome-studio'),
+      sourceSurface: nullableString(p.sourceSurface || 'chrome-studio'),
+      sourcePeerId: nullableString(p.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: nullableString(p.reason || 'user-requested-folder-restore'),
+      desktopRestoreRequired: true,
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noChromeRestoreAuthority: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: isObject(p.advisory) ? Object.assign({}, p.advisory) : null,
+      mirroredAt: nowIso(),
+    };
+  }
+
+  function upsertFolderRestoreRequestExportMirror(payload) {
+    var request = sanitizeFolderRestoreRequestExportPayload(payload);
+    if (!request) return Promise.resolve({ ok: false, status: 'folder-restore-request-export-mirror-invalid' });
+    return readKv(FOLDER_RESTORE_REQUEST_EXPORT_KEY).then(function (current) {
+      var rows = Array.isArray(current && current.requests) ? current.requests.slice() : [];
+      var key = folderRestoreRequestExportIdentity(request);
+      rows = rows.filter(function (row) {
+        return folderRestoreRequestExportIdentity(row) !== key;
+      });
+      rows.push(request);
+      if (rows.length > MAX_LIST_LIMIT) rows = rows.slice(rows.length - MAX_LIST_LIMIT);
+      return writeKv(FOLDER_RESTORE_REQUEST_EXPORT_KEY, {
+        schema: FOLDER_RESTORE_REQUEST_EXPORT_MIRROR_SCHEMA,
+        version: 1,
+        updatedAt: nowIso(),
+        requestCount: rows.length,
+        requests: rows,
+      }).then(function () {
+        return { ok: true, status: 'folder-restore-request-export-mirror-updated', requestCount: rows.length };
+      });
+    }).catch(function (e) {
+      recordError('folderRestoreRequest.exportMirror.upsert', e);
+      return { ok: false, status: 'folder-restore-request-export-mirror-failed', reason: String((e && e.message) || e) };
     });
   }
 
@@ -1432,6 +1621,242 @@
         lastRequestStatus: state.lastFolderDeleteRequestStatus,
         createsSinceBoot: state.folderDeleteRequestCreates,
         duplicatesSinceBoot: state.folderDeleteRequestDuplicates,
+      };
+      if (includeRows) result.pending = pending;
+      return result;
+    });
+  }
+
+  function findPendingFolderRestoreRequest(folderIdInput) {
+    var folderId = readFolderId(folderIdInput);
+    if (!folderId) return Promise.resolve(null);
+    return listReviews({
+      classification: 'restore-request',
+      status: 'pending',
+      recordKind: 'folder',
+      recordId: folderRestoreRequestRecordId(folderId),
+      limit: MAX_LIST_LIMIT,
+    }).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).find(function (row) {
+        var payload = parseFolderRestoreRequestPayload(row);
+        return payload && cleanScalar(payload.folderId) === folderId && cleanScalar(payload.status) === 'pending';
+      }) || null;
+    });
+  }
+
+  function listFolderRestoreRequests(filters) {
+    var f = isObject(filters) ? filters : {};
+    var folderId = readFolderId(f.folderId || f.id || f.recordId || '');
+    var query = {
+      classification: 'restore-request',
+      recordKind: 'folder',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (cleanScalar(f.status)) query.status = cleanScalar(f.status);
+    if (folderId) query.recordId = folderRestoreRequestRecordId(folderId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).filter(function (row) {
+        var payload = parseFolderRestoreRequestPayload(row);
+        if (!payload) return false;
+        if (folderId && cleanScalar(payload.folderId) !== folderId) return false;
+        return true;
+      });
+    });
+  }
+
+  function requestFolderRestore(input, options) {
+    var folderId = readFolderId(input);
+    var requestedAt = nowIso();
+    if (!folderId) {
+      return Promise.resolve({
+        ok: false,
+        status: 'folder-identity-missing',
+        blockers: [{ code: 'folder-identity-missing' }],
+        noChromeRestoreAuthority: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopRestoreRequired: true,
+      });
+    }
+    if (isPurgedFolderRestoreRequestInput(input)) {
+      return Promise.resolve({
+        ok: false,
+        status: 'folder-restore-request-blocked-purged',
+        folderId: folderId,
+        blockers: [{ code: 'folder-restore-request-blocked-purged' }],
+        purgedRestoreBlocked: true,
+        noChromeRestoreAuthority: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopRestoreRequired: true,
+      });
+    }
+    if (!isDesktopCanonicalRestoreRequestInput(input)) {
+      return Promise.resolve({
+        ok: false,
+        status: 'folder-restore-request-non-canonical-row',
+        folderId: folderId,
+        blockers: [{ code: 'folder-restore-request-non-canonical-row' }],
+        noChromeRestoreAuthority: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopRestoreRequired: true,
+      });
+    }
+    return ensureReady()
+      .then(function () { return findPendingFolderRestoreRequest(folderId); })
+      .then(function (existing) {
+        if (existing) {
+          var existingPayload = parseFolderRestoreRequestPayload(existing);
+          state.folderRestoreRequestDuplicates += 1;
+          state.lastFolderRestoreRequestAt = requestedAt;
+          state.lastFolderRestoreRequestFolderId = folderId;
+          state.lastFolderRestoreRequestStatus = 'pending-existing';
+          return upsertFolderRestoreRequestExportMirror(existingPayload || existing).then(function (mirror) {
+            return {
+              ok: true,
+              status: 'pending-existing',
+              duplicate: true,
+              folderId: folderId,
+              requestId: cleanScalar(existing.reviewId),
+              reviewId: cleanScalar(existing.reviewId),
+              review: existing,
+              payload: existingPayload,
+              exportMirror: mirror,
+              noChromeRestoreAuthority: true,
+              noTombstoneApply: true,
+              noTombstoneCreate: true,
+              noHardDelete: true,
+              noPurge: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noAssetDelete: true,
+              desktopRestoreRequired: true,
+            };
+          });
+        }
+        var requestId = generateFolderRestoreRequestId();
+        var payload = shapeFolderRestoreRequestInput(input, options, requestId, requestedAt);
+        var review = {
+          schema: REVIEW_SCHEMA,
+          reviewId: requestId,
+          classification: 'restore-request',
+          status: 'pending',
+          recordKind: 'folder',
+          recordId: folderRestoreRequestRecordId(folderId),
+          deleteReason: payload.reason,
+          remoteSyncPeerId: payload.sourcePeerId || 'chrome-studio',
+          receivedAt: requestedAt,
+          firstSeenAt: requestedAt,
+          lastSeenAt: requestedAt,
+          dedupeKey: folderRestoreRequestDedupeKey(folderId, requestId),
+          rawTombstoneJson: JSON.stringify(payload),
+          warningsJson: JSON.stringify([{ code: 'desktop-restore-required' }]),
+        };
+        return createReview(review).then(function (created) {
+          state.folderRestoreRequestCreates += 1;
+          state.lastFolderRestoreRequestAt = requestedAt;
+          state.lastFolderRestoreRequestFolderId = folderId;
+          state.lastFolderRestoreRequestStatus = 'pending-created';
+          notifySubscribers({
+            source: 'chrome-folder-restore-request',
+            op: 'requestFolderRestore',
+            folderId: folderId,
+            requestId: requestId,
+            reviewId: requestId,
+            status: 'pending',
+          });
+          return upsertFolderRestoreRequestExportMirror(payload).then(function (mirror) {
+            return {
+              ok: true,
+              status: 'pending-created',
+              duplicate: false,
+              folderId: folderId,
+              requestId: requestId,
+              reviewId: requestId,
+              review: created,
+              payload: payload,
+              exportMirror: mirror,
+              noChromeRestoreAuthority: true,
+              noTombstoneApply: true,
+              noTombstoneCreate: true,
+              noHardDelete: true,
+              noPurge: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noAssetDelete: true,
+              desktopRestoreRequired: true,
+            };
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('requestFolderRestore', e);
+        return {
+          ok: false,
+          status: 'folder-restore-request-failed',
+          folderId: folderId,
+          blockers: [{ code: 'folder-restore-request-failed' }],
+          reason: String((e && e.message) || e),
+          noChromeRestoreAuthority: true,
+          noTombstoneApply: true,
+          noTombstoneCreate: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          desktopRestoreRequired: true,
+        };
+      });
+  }
+
+  function diagnoseFolderRestoreRequests(options) {
+    var includeRows = !!(options && options.includeRows);
+    return Promise.all([
+      listFolderRestoreRequests({ status: 'pending', limit: MAX_LIST_LIMIT }),
+      listFolderRestoreRequests({ limit: MAX_LIST_LIMIT }),
+    ]).then(function (parts) {
+      var pending = parts[0] || [];
+      var all = parts[1] || [];
+      var result = {
+        schema: FOLDER_RESTORE_REQUEST_SCHEMA + '.diagnostic',
+        ok: true,
+        installed: true,
+        surface: 'chrome-studio',
+        nonDestructive: true,
+        noChromeRestoreAuthority: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopRestoreRequired: true,
+        transportDeferred: true,
+        pendingCount: pending.length,
+        totalCount: all.length,
+        lastRequestAt: state.lastFolderRestoreRequestAt,
+        lastRequestFolderId: state.lastFolderRestoreRequestFolderId,
+        lastRequestStatus: state.lastFolderRestoreRequestStatus,
+        createsSinceBoot: state.folderRestoreRequestCreates,
+        duplicatesSinceBoot: state.folderRestoreRequestDuplicates,
       };
       if (includeRows) result.pending = pending;
       return result;
@@ -4165,6 +4590,8 @@
         deleteVsEditCount: 0,
         folderDeleteRequestCount: 0,
         folderDeleteRequestPendingCount: 0,
+        folderRestoreRequestCount: 0,
+        folderRestoreRequestPendingCount: 0,
         unsupportedKindCount: 0,
         initError: 'indexedDB unavailable',
         warnings: [{ code: 'indexeddb-unavailable' }],
@@ -4206,6 +4633,11 @@
             return cleanScalar(row && row.classification) === 'delete-request' &&
               cleanScalar(row && row.status) === 'pending';
           }).length,
+          folderRestoreRequestCount: findCount(byClassification, 'restore-request'),
+          folderRestoreRequestPendingCount: rows.filter(function (row) {
+            return cleanScalar(row && row.classification) === 'restore-request' &&
+              cleanScalar(row && row.status) === 'pending';
+          }).length,
           unsupportedKindCount: findCount(byClassification, 'unsupported-record-kind'),
           lastReloadedAt: state.lastReloadedAt,
           lastWriteAt: state.lastWriteAt,
@@ -4214,6 +4646,11 @@
           lastFolderDeleteRequestStatus: state.lastFolderDeleteRequestStatus,
           folderDeleteRequestCreates: state.folderDeleteRequestCreates,
           folderDeleteRequestDuplicates: state.folderDeleteRequestDuplicates,
+          lastFolderRestoreRequestAt: state.lastFolderRestoreRequestAt,
+          lastFolderRestoreRequestFolderId: includeSensitive ? state.lastFolderRestoreRequestFolderId : '',
+          lastFolderRestoreRequestStatus: state.lastFolderRestoreRequestStatus,
+          folderRestoreRequestCreates: state.folderRestoreRequestCreates,
+          folderRestoreRequestDuplicates: state.folderRestoreRequestDuplicates,
           writesSinceBoot: state.writesSinceBoot,
           subscribers: state.subscribers.size,
           initError: state.initError,
@@ -4245,6 +4682,8 @@
           deleteVsEditCount: 0,
           folderDeleteRequestCount: 0,
           folderDeleteRequestPendingCount: 0,
+          folderRestoreRequestCount: 0,
+          folderRestoreRequestPendingCount: 0,
           unsupportedKindCount: 0,
           initError: state.initError || String((e && e.message) || e),
           warnings: state.warnings.concat([{ code: 'diagnose-failed' }]),
@@ -4268,6 +4707,10 @@
     findPendingFolderDeleteRequest: findPendingFolderDeleteRequest,
     listFolderDeleteRequests: listFolderDeleteRequests,
     diagnoseFolderDeleteRequests: diagnoseFolderDeleteRequests,
+    requestFolderRestore: requestFolderRestore,
+    findPendingFolderRestoreRequest: findPendingFolderRestoreRequest,
+    listFolderRestoreRequests: listFolderRestoreRequests,
+    diagnoseFolderRestoreRequests: diagnoseFolderRestoreRequests,
     applyFolderDeleteReceipt: applyFolderDeleteReceipt,
     ingestFolderDeleteReceipts: ingestFolderDeleteReceipts,
     upsertReviewSighting: upsertReviewSighting,
@@ -4293,6 +4736,7 @@
     constants: Object.freeze({
       schema: REVIEW_SCHEMA,
       folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
+      folderRestoreRequestSchema: FOLDER_RESTORE_REQUEST_SCHEMA,
       folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
       folderDeleteReceiptImportSchema: FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,

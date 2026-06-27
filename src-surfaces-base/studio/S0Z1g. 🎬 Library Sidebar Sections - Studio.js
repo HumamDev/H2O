@@ -3189,6 +3189,55 @@
     }
   }
 
+  async function requestChromeFolderRestoreFromCompanion(row, controls = {}) {
+    const setStatus = typeof controls.setStatus === 'function' ? controls.setStatus : () => {};
+    const api = chromeFolderRestoreRequestApi();
+    const folderId = String(row?.folderId || row?.id || '').trim();
+    if (!folderId) {
+      setStatus('Restore request blocked: folder identity missing', 'blocked');
+      return { ok: false, status: 'folder-identity-missing', blockers: ['folder-identity-missing'] };
+    }
+    if (!api || typeof api.requestFolderRestore !== 'function') {
+      setStatus(CHROME_RESTORE_REQUEST_EXPORT_DEFERRED_MESSAGE, 'blocked');
+      return { ok: false, status: CHROME_RESTORE_REQUEST_EXPORT_DEFERRED_BLOCKER, blockers: [CHROME_RESTORE_REQUEST_EXPORT_DEFERRED_BLOCKER] };
+    }
+    if (row.phase6aPermanentlyPurged === true || row.permanentlySuppressed === true || String(row.status || '').trim() === 'purged') {
+      setStatus('Restore request blocked: permanently deleted on Desktop', 'blocked');
+      return { ok: false, status: 'folder-restore-request-blocked-purged', blockers: ['folder-restore-request-blocked-purged'] };
+    }
+    if (row.desktopCanonicalRecentlyDeleted !== true && String(row.source || row.sourceKind || '').trim() !== 'desktop-canonical-recently-deleted') {
+      setStatus('Restore request blocked: Desktop canonical row required', 'blocked');
+      return { ok: false, status: 'folder-restore-request-non-canonical-row', blockers: ['folder-restore-request-non-canonical-row'] };
+    }
+    setStatus('Requesting restore...', 'pending');
+    try {
+      const result = await api.requestFolderRestore({
+        ...row,
+        id: folderId,
+        folderId,
+        folderName: row.folderName || row.name || folderId,
+        status: row.status || 'deleted',
+        desktopCanonicalRecentlyDeleted: true,
+      }, {
+        sourceSurface: 'chrome-studio',
+        reason: 'chrome-recently-deleted-request-restore',
+      });
+      if (result?.ok === true) {
+        const duplicate = result.duplicate === true || result.status === 'pending-existing';
+        setStatus(duplicate ? 'Restore already pending' : 'Restore pending', 'pending');
+      } else {
+        const code = firstResultCode(result, String(result?.status || 'folder-restore-request-failed'));
+        setStatus(`Restore request blocked: ${code}`, 'blocked');
+      }
+      return result || { ok: false, status: 'folder-restore-request-failed', blockers: ['folder-restore-request-failed'] };
+    } catch (e) {
+      err('chromeRestoreRequests.request', e);
+      const message = String(e?.message || e || 'folder-restore-request-threw');
+      setStatus(`Restore request blocked: ${message}`, 'blocked');
+      return { ok: false, status: 'folder-restore-request-threw', blockers: ['folder-restore-request-threw'], reason: message };
+    }
+  }
+
   async function diagnoseChromeRecentlyDeletedCompanion(options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     let model = opts.model && typeof opts.model === 'object' ? opts.model : null;
@@ -3338,10 +3387,12 @@
       pendingDeleteRequestCount: requestRows.length,
       exportableFolderDeleteRequestCount: requestRows.length,
       chromeRestoreRequestUxAvailable: restoreRequestUxAvailable,
+      chromeRestoreRequestExportAvailable: restoreRequestUxAvailable,
       chromeRestoreRequestExportDeferred: !restoreRequestUxAvailable,
       chromeRestoreRequestBlocker: restoreRequestUxAvailable ? '' : CHROME_RESTORE_REQUEST_EXPORT_DEFERRED_BLOCKER,
       chromeRestoreRequestPendingCount: restoreRequestPendingRows.length,
       pendingRestoreCount: restoreRequestPendingRows.length,
+      folderRestoreRequestExportableCount: restoreRequestPendingRows.length,
       chromeRestoreDirectApplyBlocked: true,
       noChromeRestoreAuthority: true,
       hiddenWithoutExportableRequestCount,
@@ -3379,6 +3430,7 @@
         companionStatusLabel: row.companionStatusLabel || '',
         pendingDeleteHidden: row.pendingDeleteHidden === true || row.hiddenByChromePendingDelete === true,
         pendingDeleteRequest: row.pendingDeleteRequest === true,
+        pendingRestoreRequest: restoreRequestPendingRows.some((restoreRow) => String(restoreRow.folderId || restoreRow.id || '').trim() === String(row.folderId || row.id || '').trim()),
         desktopReceiptHidden: row.hiddenByDesktopReceipt === true || row.deletedByDesktopReceipt === true,
         desktopCanonicalRecentlyDeleted: row.desktopCanonicalRecentlyDeleted === true,
       })),
@@ -3517,6 +3569,7 @@
         status: 'chrome-recently-deleted-companion-rendered',
         total: 0,
         chromeRestoreRequestUxAvailable: chromeRestoreRequestUxAvailable(),
+        chromeRestoreRequestExportAvailable: chromeRestoreRequestUxAvailable(),
         chromeRestoreRequestPendingCount: 0,
         chromeRestoreDirectApplyBlocked: true,
         noChromeRestoreAuthority: true,
@@ -3535,11 +3588,19 @@
       style: 'display:flex;flex-direction:column;gap:7px;min-width:0;',
     });
     const restoreRequestAvailable = chromeRestoreRequestUxAvailable();
+    const pendingRestoreRows = restoreRequestAvailable ? await loadPendingChromeFolderRestoreRequestRows() : [];
+    const pendingRestoreIds = new Set(pendingRestoreRows.map((row) => String(row.folderId || row.id || '').trim()).filter(Boolean));
     rows.forEach((row) => {
       const folderName = recentlyDeletedText(row.folderName || row.name || row.folderId, 'Folder');
       const folderId = recentlyDeletedText(row.folderId || row.id, '');
       const pending = row.pendingDeleteHidden === true || row.hiddenByChromePendingDelete === true;
-      const statusLabel = row.companionStatusLabel || (pending ? 'Delete pending' : 'Deleted on Desktop');
+      const restorePending = pendingRestoreIds.has(folderId);
+      const restoreRequestEligible = restoreRequestAvailable &&
+        !restorePending &&
+        (row.desktopCanonicalRecentlyDeleted === true || String(row.source || row.sourceKind || '').trim() === 'desktop-canonical-recently-deleted') &&
+        row.phase6aPermanentlyPurged !== true &&
+        row.permanentlySuppressed !== true;
+      const statusLabel = restorePending ? 'Restore pending' : (row.companionStatusLabel || (pending ? 'Delete pending' : 'Deleted on Desktop'));
       const item = el('article', {
         class: 'wbFolderRecentlyDeletedChromeRow',
         'data-h2o-chrome-recently-deleted-row': '1',
@@ -3573,13 +3634,30 @@
         type: 'button',
         class: 'wbFolderRecentlyDeletedChromeRestoreRequest wbFolderRecentlyDeletedChromeRestoreBlocked',
         'data-h2o-chrome-restore-request-only': '1',
-        'data-h2o-chrome-restore-blocked': '1',
+        'data-h2o-chrome-restore-blocked': restoreRequestEligible ? null : '1',
         'data-h2o-chrome-restore-request-deferred': restoreRequestAvailable ? null : '1',
         'data-h2o-chrome-restore-direct-apply-blocked': '1',
-        disabled: 'disabled',
+        disabled: restoreRequestEligible ? null : 'disabled',
         title: restoreTitle,
-        style: 'border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.54);font-size:10.5px;line-height:1.2;padding:6px 8px;cursor:not-allowed;',
-      }, CHROME_RESTORE_REQUEST_LABEL);
+        style: restoreRequestEligible
+          ? 'border:1px solid rgba(125,211,252,.22);border-radius:7px;background:rgba(14,165,233,.10);color:rgba(186,230,253,.92);font-size:10.5px;line-height:1.2;padding:6px 8px;cursor:pointer;'
+          : 'border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.035);color:rgba(255,255,255,.54);font-size:10.5px;line-height:1.2;padding:6px 8px;cursor:not-allowed;',
+      }, restorePending ? 'Restore pending' : CHROME_RESTORE_REQUEST_LABEL);
+      if (restoreRequestEligible) {
+        restore.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (restore.disabled) return;
+          restore.disabled = true;
+          restore.textContent = 'Restore pending';
+          Promise.resolve(requestChromeFolderRestoreFromCompanion(row, { setStatus: (message, kind) => setChromeRecentlyDeletedStatus(status, message, kind) }))
+            .finally(() => {
+              W.setTimeout(() => {
+                renderChromeRecentlyDeletedCompanionPanel(host, { model }).catch((e) => err('chromeRestoreRequests.renderAfterRequest', e));
+              }, 250);
+            });
+        });
+      }
       const permanentDelete = el('button', {
         type: 'button',
         class: 'wbFolderRecentlyDeletedChromePermanentDeleteBlocked',
@@ -3596,7 +3674,7 @@
         'data-h2o-chrome-restore-request-6c2-blocker': restoreRequestAvailable ? null : '1',
         style: 'font-size:10.5px;line-height:1.35;color:rgba(255,255,255,.52);overflow-wrap:anywhere;',
       }, restoreRequestAvailable
-        ? 'Restore request is pending Desktop authority.'
+        ? (restorePending ? 'Restore pending. Desktop Studio must apply it before this folder returns.' : 'Request-only. Desktop Studio must apply restore before this folder returns.')
         : CHROME_RESTORE_REQUEST_EXPORT_DEFERRED_MESSAGE));
       list.appendChild(item);
     });
@@ -3607,7 +3685,8 @@
       status: 'chrome-recently-deleted-companion-rendered',
       total: rows.length,
       chromeRestoreRequestUxAvailable: restoreRequestAvailable,
-      chromeRestoreRequestPendingCount: 0,
+      chromeRestoreRequestExportAvailable: restoreRequestAvailable,
+      chromeRestoreRequestPendingCount: pendingRestoreRows.length,
       chromeRestoreDirectApplyBlocked: true,
       noChromeRestoreAuthority: true,
       chromePermanentDeleteBlocked: true,

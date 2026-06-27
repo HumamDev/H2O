@@ -37,6 +37,8 @@
     'diagnoseChromeRecentlyDeletedCompanion',
     'requestFolderDelete',
     'listFolderDeleteRequests',
+    'requestFolderRestore',
+    'listFolderRestoreRequests',
     'applyFolderDeleteRequest',
     'listFolderDeleteReceipts',
     'listActiveFolderTombstones',
@@ -60,6 +62,7 @@
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
+    requestFolderRestore: true,
     diagnoseVisibleFolderParity: true,
     diagnoseChromeRecentlyDeletedCompanion: true,
   });
@@ -1083,6 +1086,7 @@
       blockers: codeList(result.blockers),
       warnings: codeList(result.warnings),
       folderDeleteRequestExport: safeObject(result.folderDeleteRequestExport),
+      folderRestoreRequestExport: safeObject(result.folderRestoreRequestExport),
       folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
       chromeExportSmokeOptInEnsured: chromeExportSmokeOptInEnsured,
@@ -1125,6 +1129,8 @@
         rawDiagnose && (rawDiagnose.folderDeleteReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderDeleteReceiptImport)),
       folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport ||
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestImport)),
+      folderRestoreRequestExport: safeObject(rawDiagnose &&
+        (rawDiagnose.folderRestoreRequestExport || safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestExport))),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply ||
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestAutoApply)),
       folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport ||
@@ -1172,6 +1178,8 @@
       readOnly: true,
       chromePermanentDeleteBlocked: true,
       noChromePurgeAuthority: true,
+      chromeRestoreDirectApplyBlocked: true,
+      noChromeRestoreAuthority: true,
       noChromeTombstoneApply: true,
       noTombstoneApplyOnChrome: true,
       noTombstoneCreateOnChrome: true,
@@ -1228,6 +1236,57 @@
       status: 'folder-delete-requests-listed',
       count: rows.length,
       requests: rows.map(summarizeReviewRow),
+    });
+  }
+
+  async function requestFolderRestore(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+    var fn = store && store.requestFolderRestore;
+    if (typeof fn !== 'function') return unsupportedResult('requestFolderRestore', 'folder-restore-request-api-unavailable');
+    var result = await fn.call(store, {
+      folderId: cleanString(payload.folderId || payload.id),
+      folderName: cleanString(payload.folderName || payload.name),
+      name: cleanString(payload.name || payload.folderName),
+      tombstoneId: cleanString(payload.tombstoneId),
+      status: cleanString(payload.status || 'deleted'),
+      source: cleanString(payload.source || 'desktop-canonical-recently-deleted'),
+      sourceKind: cleanString(payload.sourceKind || 'desktop-canonical-recently-deleted'),
+      desktopCanonicalRecentlyDeleted: payload.desktopCanonicalRecentlyDeleted !== false,
+      restoreEligible: payload.restoreEligible !== false,
+      phase6aPermanentlyPurged: payload.phase6aPermanentlyPurged === true,
+      permanentlySuppressed: payload.permanentlySuppressed === true,
+    }, {
+      reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge-restore-request',
+      sourceSurface: 'chrome-studio',
+    });
+    return summarizeMutationResult('requestFolderRestore', Object.assign({}, safeObject(result), {
+      chromeRestoreDirectApplyBlocked: true,
+      noChromeRestoreAuthority: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    }));
+  }
+
+  async function listFolderRestoreRequests(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+    var fn = store && (store.listFolderRestoreRequests || store.listReviews || store.list);
+    if (typeof fn !== 'function') return unsupportedResult('listFolderRestoreRequests', 'folder-restore-review-api-unavailable');
+    var rows = safeArray(await fn.call(store, Object.assign({ limit: 100 }, safeObject(payload))));
+    return baseResult('listFolderRestoreRequests', {
+      ok: true,
+      status: 'folder-restore-requests-listed',
+      count: rows.length,
+      requests: rows.map(summarizeReviewRow),
+      chromeRestoreDirectApplyBlocked: true,
+      noChromeRestoreAuthority: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
     });
   }
 
@@ -1484,6 +1543,8 @@
     if (op === 'diagnoseChromeRecentlyDeletedCompanion') return diagnoseChromeRecentlyDeletedCompanion(payload);
     if (op === 'requestFolderDelete') return requestFolderDelete(payload);
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
+    if (op === 'requestFolderRestore') return requestFolderRestore(payload);
+    if (op === 'listFolderRestoreRequests') return listFolderRestoreRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
     if (op === 'listActiveFolderTombstones') return listActiveFolderTombstones(payload);

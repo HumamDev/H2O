@@ -146,7 +146,7 @@ try {
 }
 `;
 }
-const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity', 'diagnoseCanonicalVisibleFolderSet', 'diagnoseChromeRecentlyDeletedCompanion']);
+const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity', 'diagnoseCanonicalVisibleFolderSet', 'diagnoseChromeRecentlyDeletedCompanion', 'listFolderRestoreRequests']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 const MUTATION_OPS = Object.freeze([
   'createFolder',
@@ -154,6 +154,7 @@ const MUTATION_OPS = Object.freeze([
   'setFolderColor',
   'syncNow',
   'requestFolderDelete',
+  'requestFolderRestore',
   'verifyFolderVisible',
   'verifyFolderHidden',
 ]);
@@ -413,8 +414,8 @@ function usage() {
     `  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port ${CHROME_DEV_SMOKE_PORT} --chrome-path "${CHROME_DEV_PATH}" --extension-path "${DEFAULT_LOAD_EXTENSION}" --user-data-dir "${CHROME_DEV_SMOKE_PROFILE}" --op diagnoseHealth`,
     `  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port ${CHROME_DEV_SMOKE_PORT} --op getFolderModel`,
     '',
-    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, countChatsSnapshots, diagnoseVisibleFolderParity, diagnoseCanonicalVisibleFolderSet, diagnoseChromeRecentlyDeletedCompanion.',
-    'Slice 5A mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, verifyFolderVisible, verifyFolderHidden.',
+    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, countChatsSnapshots, diagnoseVisibleFolderParity, diagnoseCanonicalVisibleFolderSet, diagnoseChromeRecentlyDeletedCompanion, listFolderRestoreRequests.',
+    'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, requestFolderDelete, requestFolderRestore, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }
 
