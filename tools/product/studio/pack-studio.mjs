@@ -180,6 +180,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // saved + snapshot-backed row via the D.3C delivery API, deduped per
   // chatId|snapshotId. No UI, no Save-to-Folder hook, no Desktop runtime.
   "ingestion/saved-chat-archive-on-save.mv3.js",
+  // Saved-chat archive status model (Phase E.2.1). Pure status-model helper
+  // computeSavedChatArchiveStatusV1 mapping row + local delivered meta + delivery
+  // diagnostics + receipt read-back to a product-language status. No UI, no DOM,
+  // no timers, no delivery/Desktop calls. Consumed by the later E.2 status surface.
+  "ingestion/saved-chat-archive-status.studio.js",
   // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
   // Chrome-to-Desktop request envelopes and resolves Desktop store state
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
@@ -1253,6 +1258,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
   "ingestion/saved-chat-archive-on-save.mv3.js",
+  "ingestion/saved-chat-archive-status.studio.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",

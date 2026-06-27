@@ -612,6 +612,12 @@
        snapshotId. No UI, no Save-to-Folder hook, no Desktop runtime, sync, CAS,
        package writer, or queue/materializer call. -->
   <script src="./ingestion/saved-chat-archive-on-save.mv3.js"></script>
+  <!-- Saved-chat archive status model (Phase E.2.1). Pure status-model helper
+       H2O.Studio.ingestion.computeSavedChatArchiveStatusV1 that maps a library
+       row + local delivered metadata + delivery diagnostics + receipt read-back
+       to a product-language status. No UI, no DOM, no timers, no delivery/Desktop
+       calls. Consumed by the later E.2 inline status surface. -->
+  <script src="./ingestion/saved-chat-archive-status.studio.js"></script>
        existing Desktop store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>

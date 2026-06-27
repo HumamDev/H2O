@@ -175,10 +175,12 @@
     var set = await readDeliveredSet();
     return !!set[dedupeRowKey];
   }
-  async function markDelivered(dedupeRowKey) {
+  async function markDelivered(dedupeRowKey, requestId) {
     var set = await readDeliveredSet();
     if (set[dedupeRowKey]) return;
-    set[dedupeRowKey] = nowIso();
+    /* New shape { requestId, deliveredAt }; legacy timestamp values still parse
+     * as delivered (requestId unknown) via normalizeDeliveredEntry. */
+    set[dedupeRowKey] = { requestId: cleanString(requestId) || null, deliveredAt: nowIso() };
     deliveredCache = set;
     var storage = getChromeStorageLocal();
     if (storage && typeof storage.set === 'function') {
@@ -188,6 +190,17 @@
         storage.set(payload, function () { /* best-effort */ });
       } catch (_) { /* ignore */ }
     }
+  }
+
+  /* Backward-compatible read of a stored delivered entry: the legacy E.1.x shape
+   * was a timestamp string/number; the E.2.1 shape is { requestId, deliveredAt }.
+   * Both mean "delivered" — legacy entries simply have an unknown requestId. */
+  function normalizeDeliveredEntry(value) {
+    if (value == null || value === false) return null;
+    if (isObject(value)) {
+      return { delivered: true, requestId: cleanString(value.requestId) || null, deliveredAt: cleanString(value.deliveredAt) || null };
+    }
+    return { delivered: true, requestId: null, deliveredAt: cleanString(value) || null };
   }
   function rowDedupeKey(chatId, snapshotId) {
     return chatId + '|' + snapshotId;
@@ -289,7 +302,7 @@
     }
 
     var status = cleanString(result && result.status) || 'unknown';
-    if (status === 'delivered') await markDelivered(key);
+    if (status === 'delivered') await markDelivered(key, cleanString(result && result.requestId) || null);
 
     return makeOnSaveResult(status === 'delivered' ? 'delivered' : status, {
       chatId: chatId,
@@ -368,8 +381,35 @@
     };
   }
 
+  /* ── Read-only accessors for E.2 status (no writes, no delivery) ──── */
+  /* Reuses the exact saved-wins eligibility predicate used by delivery, so the
+   * status surface and the listener never drift. */
+  function isSavedChatArchiveEligibleRowV1(row) {
+    return isSavedSnapshotBackedRow(row);
+  }
+  /* Read-only local delivered metadata for a row or a chatId|snapshotId key.
+   * Returns { key, delivered, requestId, deliveredAt } and never writes. */
+  async function getSavedChatArchiveLocalDeliveryMetaV1(rowOrKey) {
+    var key = null;
+    if (typeof rowOrKey === 'string') {
+      key = cleanString(rowOrKey) || null;
+    } else if (isObject(rowOrKey)) {
+      var chatId = cleanString(rowOrKey.chatId);
+      var snapshotId = deriveSnapshotId(rowOrKey);
+      key = (chatId && snapshotId) ? rowDedupeKey(chatId, snapshotId) : null;
+    }
+    var empty = { key: key, delivered: false, requestId: null, deliveredAt: null };
+    if (!key) return empty;
+    var set = await readDeliveredSet();
+    var normalized = normalizeDeliveredEntry(set[key]);
+    if (!normalized) return empty;
+    return { key: key, delivered: true, requestId: normalized.requestId, deliveredAt: normalized.deliveredAt };
+  }
+
   H2O.Studio.ingestion.maybeDeliverSavedChatArchiveOnSaveToFolderV1 = maybeDeliverSavedChatArchiveOnSaveToFolderV1;
   H2O.Studio.ingestion.diagnoseSavedChatArchiveOnSaveToFolderV1 = diagnoseSavedChatArchiveOnSaveToFolderV1;
+  H2O.Studio.ingestion.isSavedChatArchiveEligibleRowV1 = isSavedChatArchiveEligibleRowV1;
+  H2O.Studio.ingestion.getSavedChatArchiveLocalDeliveryMetaV1 = getSavedChatArchiveLocalDeliveryMetaV1;
   H2O.Studio.ingestion.__archiveOnSaveInstalled = true;
 
   installListeners();
