@@ -5605,6 +5605,8 @@ function buildReaderDOM(snap){
   if (!assistantTurnEls.length){
     sc.classList.add("wbRichRoot"); // semantic markdown CSS applies to canonical renders too
     sc.classList.remove("is-rich"); // is-rich stays false — signals DOM-rich vs text-rich
+  // E.2.2: quiet inline archive delivery status badge (focused helper, no-op if absent).
+  W?.H2O?.Studio?.ingestion?.appendSavedChatArchiveStatusBadgeV1?.({ article, badgesEl: article.querySelector(".wbBadges"), row });
     assistantTurnEls = buildCanonicalConversation(sc, snap);
   }
 

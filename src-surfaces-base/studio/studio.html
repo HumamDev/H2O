@@ -618,6 +618,12 @@
        to a product-language status. No UI, no DOM, no timers, no delivery/Desktop
        calls. Consumed by the later E.2 inline status surface. -->
   <script src="./ingestion/saved-chat-archive-status.studio.js"></script>
+  <!-- Saved-chat archive status badge (Phase E.2.2). Renders one quiet inline
+       wbBadge--archive-status into a library row's wbBadges container from the
+       E.2.1 status model + local delivered metadata. UI shell only: no buttons,
+       no read-back, no delivery/Desktop calls, no timers/watchers, no storage
+       writes. Consumed by studio.js renderRow via a single delegation call. -->
+  <script src="./ingestion/saved-chat-archive-status-badge.studio.js"></script>
        existing Desktop store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>

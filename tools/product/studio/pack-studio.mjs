@@ -185,6 +185,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // diagnostics + receipt read-back to a product-language status. No UI, no DOM,
   // no timers, no delivery/Desktop calls. Consumed by the later E.2 status surface.
   "ingestion/saved-chat-archive-status.studio.js",
+  // Saved-chat archive status badge (Phase E.2.2). Renders one quiet inline
+  // wbBadge--archive-status into a library row's wbBadges from the E.2.1 status
+  // model + local delivered metadata. UI shell only: no buttons, no read-back,
+  // no delivery/Desktop calls, no timers/watchers, no storage writes.
+  "ingestion/saved-chat-archive-status-badge.studio.js",
   // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
   // Chrome-to-Desktop request envelopes and resolves Desktop store state
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
@@ -1259,6 +1264,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
   "ingestion/saved-chat-archive-on-save.mv3.js",
   "ingestion/saved-chat-archive-status.studio.js",
+  "ingestion/saved-chat-archive-status-badge.studio.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
