@@ -58,9 +58,9 @@ Expected Desktop 6C.3 follow-up:
 
 ## Runtime Proof Status
 
-Runtime Chrome export proof was not completed in this pass because the local Chrome CDP runtime was unavailable on port `9247`.
+Runtime proof was completed after Chrome CDP was relaunched and the sync folder handle was reconnected.
 
-Runtime attach attempt:
+Prior blocked attach attempt:
 
 - Command: `node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseHealth --timeout-ms 10000`
 - Result: `ok:false`
@@ -68,7 +68,53 @@ Runtime attach attempt:
 - Blockers: `["chrome-cdp-unavailable"]`
 - Error: `chrome-cdp-unavailable: fetch failed`
 
-The implementation is ready for the next Chrome/CDP rerun against the current pending restore request once Chrome Studio is running with the smoke bridge on port `9247`.
+Recovered Chrome CDP launch:
+
+- `extensionLoad.ok:true`
+- `studioTargetFound:true`
+- `smokeRegistryOverlayStatus:"source-current"`
+- `targetUrl:"chrome-extension://bpobkkppdlldlkccaehmpfclmkhiemhg/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/saved"`
+
+Chrome sync folder health after reconnect:
+
+- `status:"healthy"`
+- `connected:true`
+- `permission:"granted"`
+- `noFolderHandle:false`
+- `chromeWritesSyncFolder:true`
+- `blockers:[]`
+
+First export after 6C.2b proved the stale in-flight lock no longer blocked export:
+
+- `ok:true`
+- `status:"chrome-to-desktop-exported"`
+- `direction:"chrome-to-desktop"`
+- `bytes:541044`
+- `restoreRequestCount:0`
+- `pendingRestoreRequestCount:0`
+- `chromeExportInFlightPersisted:false`
+- `chromeExportInFlightMemory:false`
+- `chromeExportInFlightAgeMs:1704`
+- `chromeExportStaleLockCleared:false`
+- `blockers:[]`
+- `warnings:[]`
+
+Restore request was then recreated in the fresh Chrome profile and exported:
+
+- Import status before request: `sync-folder-imported`
+- Request status: `pending-created`
+- `requestId:"folder-restore-request:baf2e96a-cfef-4e10-a755-f0cd86c15a33"`
+- List status: `folder-restore-requests-listed`
+- Listed count: `1`
+- Target match `folderId:"fold_smoke_chrome-restore-proof-1782569112247_mqwfmhu8_8d8f2f42d3fd"`
+- Export status: `chrome-to-desktop-exported`
+- Exported bytes: `542369`
+- `folderRestoreRequestExport.requestCount:1`
+- `pendingRestoreRequestCount:1`
+- `blockers:[]`
+- `warnings:[]`
+
+Conclusion: Phase 6C.2b runtime proof is green. Chrome `syncNow({ direction:"chrome-to-desktop" })` recovered from the false in-flight failure mode and exported the restore request contract.
 
 ## Safety Invariants
 
@@ -93,4 +139,5 @@ The implementation is ready for the next Chrome/CDP rerun against the current pe
   - `node tools/validation/sync/validate-folder-delete-phase6b5-recently-deleted-parity.mjs`
 - `git diff --check`
 - `git diff --cached --check`
-- Runtime attach check: `node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseHealth --timeout-ms 10000` returned `chrome-cdp-unavailable`.
+- Runtime attach check initially returned `chrome-cdp-unavailable`, then recovered after Chrome CDP relaunch.
+- Runtime export proof returned `status:"chrome-to-desktop-exported"` with `folderRestoreRequestExport.requestCount:1`.

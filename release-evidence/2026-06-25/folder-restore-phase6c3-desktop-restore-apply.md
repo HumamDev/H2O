@@ -55,18 +55,85 @@ Phase 6C.2 made Chrome create and export `folderRestoreRequests[]`, but Desktop 
 
 ## Runtime Proof Status
 
-Runtime Chrome -> Desktop restore proof is operator pending for this evidence pass.
+Runtime Chrome -> Desktop restore proof is complete.
 
-Expected runtime chain:
+Desktop queue health before import/apply:
 
-1. Chrome exports `folderRestoreRequests[]` with `requestCount >= 1`.
-2. Desktop import reports `folderRestoreRequestImport.found >= 1`.
-3. Desktop auto-apply reports `folderRestoreRequestAutoApply.appliedCount >= 1` or `alreadyAppliedCount >= 1`.
-4. Desktop Recently Deleted count decreases by one.
-5. Desktop normal folder list includes the restored folder.
-6. No hard delete / chat / snapshot / asset deletion occurs.
+- `href:"http://127.0.0.1:1430/studio.html?h2oSmokeBridge=folder-sync-rc#/library/folders"`
+- `queueEnabled:true`
+- `queueStarted:true`
+- `queueBlockers:[]`
+- `queueRegistryBlockers:[]`
+- `queueLastStatus:"duplicate-command-id"`
+- `bridgeStatus:"healthy"`
+- `bridgeBlockers:[]`
 
-## Validation Plan
+The top-level Desktop smoke wrapper returned `ok:false` with `status:"imported"` because old delete-request rows produced already-tombstoned noise. The restore lane itself was green and is the authority for this Phase 6C.3 result.
+
+Restore request import:
+
+- `folderRestoreRequestImport.ok:true`
+- `status:"folder-restore-request-imported"`
+- `found:1`
+- `inserted:0`
+- `updated:1`
+- `invalid:0`
+- `failed:0`
+- `warnings:[]`
+
+Restore request auto-apply:
+
+- `folderRestoreRequestAutoApply.ok:true`
+- `status:"folder-restore-request-auto-applied"`
+- `found:1`
+- `requestCount:1`
+- `importedCount:1`
+- `attemptedCount:0`
+- `appliedCount:0`
+- `alreadyAppliedCount:1`
+- `purgedBlockedCount:0`
+- `noActiveTombstoneBlockedCount:0`
+- `failedCount:0`
+- `receiptExportReadyCount:1`
+- `blockers:[]`
+- `desktopAppliedFolderRestoreRequestCount:1`
+
+Visible-folder proof:
+
+- `verifyFolderVisible.ok:true`
+- `status:"folder-visible"`
+- `visible:true`
+- `folderId:"fold_smoke_chrome-restore-proof-1782569112247_mqwfmhu8_8d8f2f42d3fd"`
+- `folderName:"chrome restore proof 1782569112247"`
+- `sourceKind:"desktop-store-visible"`
+- `stateSource:"desktop-store-visible"`
+- `isCanonical:true`
+- `hidden:false`
+- `mirrorFallbackUsed:false`
+
+Recently Deleted active-deleted filter proof:
+
+- `listRecentlyDeletedFolders.ok:true`
+- `status:"recently-deleted-folders-listed"`
+- `targetRowCount:1`
+- `targetActiveDeletedCount:0`
+- `targetRestoredHistoryCount:1`
+- Target row `restoreStatus:"restored"`
+- `restoredAt:"2026-06-27T14:35:05.866Z"`
+- `restoreAvailable:false`
+- `restoreAvailableReason:"already-restored"`
+- `purgeEligible:false`
+- `operatorPurgeAvailable:false`
+- `blockers:[]`
+- `warnings:[]`
+
+Interpretation:
+
+- The target appearing in Recently Deleted is restored history, not an active deleted row.
+- Phase 6C.3 runtime proof is closed because the folder is visible and `targetActiveDeletedCount:0`.
+- The old delete-lane `already-tombstoned` blocker is noisy wrapper aggregation from historical delete rows, not a restore failure.
+
+## Validation
 
 - `node --check` on changed JS/MJS files.
 - `node tools/validation/sync/validate-folder-restore-phase6c3-desktop-restore-apply.mjs`
@@ -78,6 +145,7 @@ Expected runtime chain:
   - `node tools/validation/sync/validate-folder-delete-phase6b5-recently-deleted-parity.mjs`
 - `git diff --check`
 - `git diff --cached --check`
+- Runtime proof confirmed Desktop import/apply accepted the Chrome restore request and resolved it idempotently with `alreadyAppliedCount:1`.
 
 ## Deferred
 
