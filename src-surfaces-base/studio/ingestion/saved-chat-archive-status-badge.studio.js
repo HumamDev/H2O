@@ -1,10 +1,14 @@
-/* H2O Studio — Saved Chat Archive Status Badge (UI shell, Phase E.2.2)
+/* H2O Studio — Saved Chat Archive Status Badge (receipt check, Phase E.2.3)
  *
  * Renders one quiet inline archive status badge into a library row's existing
  * wbBadges container, using the E.2.1 pure status model
  * (computeSavedChatArchiveStatusV1) and the local delivered metadata accessor
- * (getSavedChatArchiveLocalDeliveryMetaV1). It is a UI shell only:
- *   - no receipt read-back, no "Check status" action, no buttons, no click handlers;
+ * (getSavedChatArchiveLocalDeliveryMetaV1). If the model says the row can
+ * check status and local delivery metadata includes a requestId, the badge
+ * becomes the explicit per-row read-back gesture:
+ *   - reads only a Desktop receipt by requestId;
+ *   - recomputes status through computeSavedChatArchiveStatusV1;
+ *   - updates only the same badge in place;
  *   - no delivery/enqueue/materialize/package/CAS/SQLite/Desktop calls;
  *   - no timers, no polling, no watcher, no MutationObserver;
  *   - never inspects transcript/messages/html/assets/contentHash/package body;
@@ -74,19 +78,98 @@
     return false;
   }
 
-  function computeStatus(row, localOverride, diagOverride) {
+  function resolveLocal(row, localOverride) {
+    if (isObject(localOverride)) return localOverride;
+    var key = keyFor(row);
+    return (key && localCache.has(key)) ? localCache.get(key) : { delivered: false, requestId: null, deliveredAt: null };
+  }
+  function resolveDiag(diagOverride) {
+    return isObject(diagOverride) ? diagOverride : { enabled: flagEnabled(), folderConnected: true };
+  }
+  function computeStatusWith(row, local, diagnostics, receipt) {
     var compute = ingestion().computeSavedChatArchiveStatusV1;
     if (typeof compute !== 'function') return null;
-    var key = keyFor(row);
-    var local = isObject(localOverride)
-      ? localOverride
-      : (key && localCache.has(key) ? localCache.get(key) : { delivered: false, requestId: null, deliveredAt: null });
-    var diagnostics = isObject(diagOverride)
-      ? diagOverride
-      : { enabled: flagEnabled(), folderConnected: true };
     try {
-      return compute({ row: row, local: local, diagnostics: diagnostics, receipt: null });
+      return compute({ row: row, local: local, diagnostics: diagnostics, receipt: receipt || null });
     } catch (_) { return null; }
+  }
+  function shouldShowStatus(status) {
+    if (!status || !status.state) return false;
+    if (SHOW_STATES[status.state]) return true;
+    return status.state === 'unknown-check-status' && status.canCheckStatus === true && cleanString(status.requestId);
+  }
+  function localRequestId(local) {
+    return cleanString(local && local.requestId);
+  }
+  function interactiveRequestId(status, local) {
+    var requestId = localRequestId(local);
+    return (status && status.canCheckStatus === true && requestId) ? requestId : '';
+  }
+  function readReceipt(requestId) {
+    var fn = ingestion().readSavedChatArchiveRequestReceiptV1;
+    if (typeof fn !== 'function') return Promise.reject(new Error('receipt read-back unavailable'));
+    return Promise.resolve(fn({ requestId: requestId }));
+  }
+  function titleFor(status, canCheck) {
+    var label = cleanString(status && status.label) || 'Archive status';
+    var reason = cleanString(status && status.reason);
+    var title = reason ? (label + ' — ' + reason) : label;
+    if (canCheck) title += ' Click or press Enter to check archive status.';
+    return title;
+  }
+  function stopRowEvent(event) {
+    if (!event) return;
+    if (typeof event.preventDefault === 'function') event.preventDefault();
+    if (typeof event.stopPropagation === 'function') event.stopPropagation();
+  }
+  function clearInteractiveAttrs(el) {
+    if (!el || typeof el.removeAttribute !== 'function') return;
+    el.removeAttribute('role');
+    el.removeAttribute('tabindex');
+    el.removeAttribute('aria-label');
+    el.removeAttribute('aria-busy');
+  }
+  function applyStatusToBadge(span, status, row, local, diagnostics) {
+    var requestId = interactiveRequestId(status, local);
+    var canCheck = !!requestId;
+    span.className = BADGE_CLASS + ' wbBadge--archive-' + cleanString(status.severity || 'neutral');
+    span.setAttribute('data-h2o-archive-status', cleanString(status.state));
+    if (requestId) span.setAttribute('data-h2o-archive-request-id', requestId);
+    else if (typeof span.removeAttribute === 'function') span.removeAttribute('data-h2o-archive-request-id');
+    span.setAttribute('title', titleFor(status, canCheck));
+    span.textContent = status.label;
+    if (!canCheck) {
+      clearInteractiveAttrs(span);
+      return;
+    }
+    span.setAttribute('role', 'button');
+    span.setAttribute('tabindex', '0');
+    span.setAttribute('aria-label', 'Check archive status for this saved chat');
+    if (span.__h2oArchiveStatusCheckBound) return;
+    span.__h2oArchiveStatusCheckBound = true;
+    var check = function (event) {
+      stopRowEvent(event);
+      if (span.__h2oArchiveCheckInFlight) return;
+      var currentRequestId = span.getAttribute('data-h2o-archive-request-id');
+      if (!currentRequestId) return;
+      span.__h2oArchiveCheckInFlight = true;
+      span.setAttribute('aria-busy', 'true');
+      readReceipt(currentRequestId).then(function (receipt) {
+        var nextStatus = computeStatusWith(row, local, diagnostics, receipt);
+        if (shouldShowStatus(nextStatus)) applyStatusToBadge(span, nextStatus, row, local, diagnostics);
+      }).catch(function () {
+        var failedStatus = computeStatusWith(row, local, diagnostics, { status: 'receipt-read-error', requestId: currentRequestId });
+        if (shouldShowStatus(failedStatus)) applyStatusToBadge(span, failedStatus, row, local, diagnostics);
+      }).finally(function () {
+        span.__h2oArchiveCheckInFlight = false;
+        if (typeof span.removeAttribute === 'function') span.removeAttribute('aria-busy');
+      });
+    };
+    span.addEventListener('click', check);
+    span.addEventListener('keydown', function (event) {
+      var key = event && event.key;
+      if (key === 'Enter' || key === ' ') check(event);
+    });
   }
 
   function resolveContainer(article, badgesEl, createIfMissing) {
@@ -105,23 +188,22 @@
   }
 
   function renderInto(article, badgesEl, row, localOverride, diagOverride) {
-    var status = computeStatus(row, localOverride, diagOverride);
+    var local = resolveLocal(row, localOverride);
+    var diagnostics = resolveDiag(diagOverride);
+    var status = computeStatusWith(row, local, diagnostics, null);
     /* Remove any prior archive-status badge first (idempotent re-render). */
     var existingContainer = resolveContainer(article, badgesEl, false);
     if (existingContainer && typeof existingContainer.querySelector === 'function') {
       var prior = existingContainer.querySelector(BADGE_SELECTOR);
       if (prior && typeof prior.remove === 'function') prior.remove();
     }
-    if (!status || !SHOW_STATES[status.state]) return;
+    if (!shouldShowStatus(status)) return;
     var container = resolveContainer(article, badgesEl, true);
     if (!container) return;
     var document = doc();
     if (!document) return;
     var span = document.createElement('span');
-    span.className = BADGE_CLASS + ' wbBadge--archive-' + cleanString(status.severity || 'neutral');
-    span.setAttribute('data-h2o-archive-status', cleanString(status.state));
-    span.setAttribute('title', status.reason ? (status.label + ' — ' + status.reason) : status.label);
-    span.textContent = status.label;
+    applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
   }
 

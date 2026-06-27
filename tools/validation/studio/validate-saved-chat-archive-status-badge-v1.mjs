@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Validator for Phase E.2.2 saved-chat archive status badge (UI shell).
+// Validator for Phase E.2.3 saved-chat archive status badge receipt check.
 //
-// Static checks keep the badge a quiet, read-only renderer (no delivery/read-back/
-// Desktop/timer/watcher/content). VM checks (with a minimal fake DOM) prove it
-// renders the right wbBadge--archive-status for delivered/needs-snapshot rows,
-// stays quiet for archive-off, and never marks link-only rows as archived.
+// Static checks keep the badge a gesture-only, read-only renderer (receipt
+// read-back only; no delivery/Desktop writer/timer/watcher/content). VM checks
+// prove the badge is interactive only with a local requestId, stops row events,
+// reads one receipt, recomputes through the status model, and updates in place.
 
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
@@ -31,6 +31,10 @@ function check(label, fn) {
   try { fn(); PASS.push(label); console.log(`  PASS ${label}`); }
   catch (err) { const m = err && err.message ? err.message : String(err); FAIL.push({ label, message: m }); console.log(`  FAIL ${label}`); console.log(`       ${m}`); }
 }
+async function checkAsync(label, fn) {
+  try { await fn(); PASS.push(label); console.log(`  PASS ${label}`); }
+  catch (err) { const m = err && err.message ? err.message : String(err); FAIL.push({ label, message: m }); console.log(`  FAIL ${label}`); console.log(`       ${m}`); }
+}
 function stripComments(src) {
   return String(src).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
@@ -42,10 +46,20 @@ function makeFakeDocument() {
       className: '',
       children: [],
       _attrs: {},
+      _listeners: {},
       textContent: '',
-      appendChild(child) { this.children.push(child); return child; },
+      appendChild(child) { child._parent = this; this.children.push(child); return child; },
       setAttribute(k, v) { this._attrs[k] = String(v); },
       getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
+      removeAttribute(k) { delete this._attrs[k]; },
+      addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); },
+      async dispatchEvent(event) {
+        const list = this._listeners[event.type] || [];
+        for (const fn of list) await fn.call(this, event);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      },
       remove() { if (this._parent) { const i = this._parent.children.indexOf(this); if (i >= 0) this._parent.children.splice(i, 1); } },
       querySelector(sel) { return findBySelector(this, sel); },
     };
@@ -67,8 +81,9 @@ function makeFakeDocument() {
   return { createElement() { return makeEl(); }, _makeEl: makeEl };
 }
 
-function createSandbox() {
+function createSandbox(readReceiptImpl) {
   const fakeDoc = makeFakeDocument();
+  const receiptCalls = [];
   const context = {
     console, Date, JSON, Math, Number, Object, Array, Promise, RegExp, String, Map,
     document: fakeDoc,
@@ -77,8 +92,14 @@ function createSandbox() {
       diagnoseSavedChatArchiveOnSaveToFolderV1: () => ({ enabled: true }),
       // local accessor stub (async); badge tests pass `local` directly, so this is unused there
       getSavedChatArchiveLocalDeliveryMetaV1: async () => ({ delivered: false, requestId: null, deliveredAt: null }),
+      readSavedChatArchiveRequestReceiptV1: async (opts) => {
+        receiptCalls.push(opts);
+        if (readReceiptImpl) return readReceiptImpl(opts);
+        return { ok: true, status: 'queued-on-desktop', requestId: opts.requestId, receipt: { status: 'validated' } };
+      },
     } } },
   };
+  context.__receiptCalls = receiptCalls;
   context.globalThis = context; context.window = context;
   return vm.createContext(context);
 }
@@ -113,6 +134,7 @@ check('badge module exists and registers appendSavedChatArchiveStatusBadgeV1', (
 check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('computeSavedChatArchiveStatusV1'), 'must use the status model');
   assert.ok(badgeSrc.includes('getSavedChatArchiveLocalDeliveryMetaV1'), 'must use the local delivery accessor');
+  assert.ok(badgeSrc.includes('readSavedChatArchiveRequestReceiptV1'), 'must use the receipt read-back accessor');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -122,14 +144,14 @@ check('badge uses wbBadge conventions, the archive-status class and data attribu
   assert.ok(badgeSrc.includes('appendChild'), 'must append into a badge container');
 });
 
-check('badge calls no delivery / read-back / Desktop / queue APIs', () => {
+check('badge reads receipts only; it calls no delivery / Desktop writer / queue APIs', () => {
   for (const token of [
     'deliverSavedChatArchiveRequestV1',
-    'readSavedChatArchiveRequestReceiptV1',
     'refreshSavedChatArchiveRequestStatusV1',
     'enqueueSavedChatArchiveRequestV1',
     'materializeSavedChatArchiveRequestV1',
     'writeSavedChatPackageV1',
+    'buildSavedChatPackageV1',
     'assetCas',
     'plugin:sql',
     'nativeMessaging',
@@ -140,11 +162,20 @@ check('badge calls no delivery / read-back / Desktop / queue APIs', () => {
   assert.doesNotMatch(badgeCode, /localhost|127\.0\.0\.1|WebDAV/i, 'no localhost/WebDAV');
 });
 
-check('badge uses no timers/polling/watcher and no click handlers (shell only)', () => {
+check('badge has explicit click/keyboard receipt gesture and no timers/polling/watcher', () => {
+  assert.match(badgeCode, /addEventListener\('click'/, 'click handler required for interactive badge');
+  assert.match(badgeCode, /addEventListener\('keydown'/, 'keyboard handler required for interactive badge');
+  assert.match(badgeCode, /key\s*===\s*'Enter'/, 'Enter must trigger check');
+  assert.match(badgeCode, /key\s*===\s*' '/, 'Space must trigger check');
+  assert.match(badgeCode, /preventDefault/, 'gesture must prevent row open/default behavior');
+  assert.match(badgeCode, /stopPropagation/, 'gesture must stop row click propagation');
+  assert.match(badgeCode, /aria-busy/, 'gesture should mark in-flight read-back');
+  assert.match(badgeCode, /role['"],\s*['"]button/, 'interactive badge must use button role');
+  assert.match(badgeCode, /tabindex['"],\s*['"]0/, 'interactive badge must be keyboard focusable');
   assert.doesNotMatch(badgeCode, /setInterval/, 'no setInterval');
   assert.doesNotMatch(badgeCode, /setTimeout/, 'no setTimeout');
   assert.doesNotMatch(badgeCode, /MutationObserver/, 'no MutationObserver');
-  assert.doesNotMatch(badgeCode, /addEventListener/, 'no event listeners (no click handlers yet)');
+  assert.doesNotMatch(badgeCode, /\bwatch(?:er)?\b/i, 'no watcher loop');
 });
 
 check('badge inspects no authoritative content fields and writes no storage', () => {
@@ -161,7 +192,7 @@ check('badge module is loaded in studio.html and shipped in pack-studio (both li
   assert.ok(occurrences >= 2, 'badge module must appear in pack input and output lists');
 });
 
-check('studio.js contains only the single E.2.2 delegation hunk', () => {
+check('studio.js contains only the single archive status badge delegation hunk', () => {
   assert.ok(studioJs.includes('appendSavedChatArchiveStatusBadgeV1'), 'studio.js must delegate to the badge helper');
   const calls = [...studioJs.matchAll(/appendSavedChatArchiveStatusBadgeV1/g)].length;
   assert.equal(calls, 1, 'exactly one delegation reference in studio.js');
@@ -171,7 +202,7 @@ check('studio.js contains only the single E.2.2 delegation hunk', () => {
   catch (_) { staged = ''; }
   const addedLines = staged.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
   for (const line of addedLines) {
-    assert.ok(/appendSavedChatArchiveStatusBadgeV1|E\.2\.2: quiet inline archive/.test(line), `unexpected staged studio.js line: ${line}`);
+    assert.ok(/appendSavedChatArchiveStatusBadgeV1|E\.2\.[23]: .*archive/.test(line), `unexpected staged studio.js line: ${line}`);
   }
 });
 
@@ -185,24 +216,104 @@ check('S0F0j and S0F1j are not staged in this change set', () => {
 
 console.log('[saved-chat-archive-status-badge-v1] VM behavior checks');
 
-check('delivered saved row renders a waiting-for-desktop badge', () => {
+check('delivered saved row with requestId renders an interactive waiting-for-desktop badge', () => {
   const { fn, context } = loadBadge(createSandbox());
   const article = makeArticle(context);
   fn({ article, badgesEl: null, row: savedRow(), local: { delivered: true, requestId: 'req_e22' }, diagnostics: { enabled: true, folderConnected: true } });
   const badge = article.querySelector('.wbBadge--archive-status');
   assert.ok(badge, 'badge should be rendered');
   assert.equal(badge.getAttribute('data-h2o-archive-status'), 'waiting-for-desktop');
+  assert.equal(badge.getAttribute('data-h2o-archive-request-id'), 'req_e22');
+  assert.equal(badge.getAttribute('role'), 'button');
+  assert.equal(badge.getAttribute('tabindex'), '0');
+  assert.match(String(badge.getAttribute('aria-label')), /Check archive status/i);
   assert.match(String(badge.className), /wbBadge\b/);
   assert.ok(String(badge.textContent).length > 0, 'badge has label text');
 });
 
-check('saved + snapshot-backed + isLinked:true renders a status badge', () => {
+await checkAsync('click reads receipt, stops row propagation, and updates only that badge to archived', async () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const article = makeArticle(context);
+  fn({ article, badgesEl: null, row: savedRow(), local: { delivered: true, requestId: 'req_click' }, diagnostics: { enabled: true, folderConnected: true } });
+  const badge = article.querySelector('.wbBadge--archive-status');
+  let prevented = false;
+  let stopped = false;
+  await badge.dispatchEvent({
+    type: 'click',
+    preventDefault() { prevented = true; },
+    stopPropagation() { stopped = true; },
+  });
+  assert.equal(prevented, true, 'click should prevent default row behavior');
+  assert.equal(stopped, true, 'click should stop row propagation');
+  assert.equal(JSON.stringify(context.__receiptCalls), JSON.stringify([{ requestId: 'req_click' }]));
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archived');
+  assert.equal(article.querySelector('.wbBadge--archive-status'), badge, 'same badge node should be updated in place');
+});
+
+await checkAsync('Enter and Space keyboard paths read the same receipt and stop row propagation', async () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const article = makeArticle(context);
+  fn({ article, badgesEl: null, row: savedRow(), local: { delivered: true, requestId: 'req_key' }, diagnostics: { enabled: true, folderConnected: true } });
+  const badge = article.querySelector('.wbBadge--archive-status');
+  let stopped = 0;
+  let prevented = 0;
+  await badge.dispatchEvent({
+    type: 'keydown',
+    key: 'a',
+    preventDefault() { prevented += 1; },
+    stopPropagation() { stopped += 1; },
+  });
+  assert.equal(context.__receiptCalls.length, 0, 'non-activation key should not read receipt');
+  await badge.dispatchEvent({
+    type: 'keydown',
+    key: 'Enter',
+    preventDefault() { prevented += 1; },
+    stopPropagation() { stopped += 1; },
+  });
+  await badge.dispatchEvent({
+    type: 'keydown',
+    key: ' ',
+    preventDefault() { prevented += 1; },
+    stopPropagation() { stopped += 1; },
+  });
+  assert.equal(JSON.stringify(context.__receiptCalls), JSON.stringify([{ requestId: 'req_key' }, { requestId: 'req_key' }]));
+  assert.equal(stopped, 2);
+  assert.equal(prevented, 2);
+});
+
+await checkAsync('receipt read-back errors render unknown-check-status without throwing', async () => {
+  const { fn, context } = loadBadge(createSandbox(async () => { throw new Error('receipt unavailable'); }));
+  const article = makeArticle(context);
+  fn({ article, badgesEl: null, row: savedRow(), local: { delivered: true, requestId: 'req_error' }, diagnostics: { enabled: true, folderConnected: true } });
+  const badge = article.querySelector('.wbBadge--archive-status');
+  await badge.dispatchEvent({
+    type: 'click',
+    preventDefault() {},
+    stopPropagation() {},
+  });
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'unknown-check-status');
+  assert.equal(context.__receiptCalls.length, 1);
+});
+
+check('legacy delivered entry with no requestId remains passive', () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const article = makeArticle(context);
+  fn({ article, badgesEl: null, row: savedRow(), local: { delivered: true, requestId: null }, diagnostics: { enabled: true, folderConnected: true } });
+  const badge = article.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'legacy delivered row should still render conservative status');
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
+  assert.equal(badge.getAttribute('role'), null, 'legacy row must not be interactive');
+  assert.equal(badge.getAttribute('tabindex'), null, 'legacy row must not be keyboard focusable');
+});
+
+check('saved + snapshot-backed + isLinked:true renders an interactive status badge when requestId exists', () => {
   const { fn, context } = loadBadge(createSandbox());
   const article = makeArticle(context);
   fn({ article, badgesEl: null, row: savedRow({ isLinked: true }), local: { delivered: true, requestId: 'r' }, diagnostics: { enabled: true, folderConnected: true } });
   const badge = article.querySelector('.wbBadge--archive-status');
   assert.ok(badge, 'linked saved row should still render a status');
   assert.equal(badge.getAttribute('data-h2o-archive-status'), 'waiting-for-desktop');
+  assert.equal(badge.getAttribute('role'), 'button');
 });
 
 check('true link-only row renders no archived badge', () => {
