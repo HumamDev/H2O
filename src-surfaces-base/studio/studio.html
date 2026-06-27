@@ -604,6 +604,14 @@
   <script src="./ingestion/saved-chat-archive-request-delivery.mv3.js"></script>
   <!-- Desktop-only: saved-chat archive request intake (Phase D.2A).
        Validates Chrome-to-Desktop save/archive request envelopes and resolves
+  <!-- Chrome/MV3: saved-chat archive delivery companion on save (Phase E.1.1).
+       Flag-gated (archive.deliverOnSaveToFolder, default OFF) listener that
+       reacts to library-index updates, detects newly saved + snapshot-backed
+       rows via H2O.LibraryIndex.getAll(), and delivers one metadata-only
+       request per row through the D.3C delivery API, deduped per chatId|
+       snapshotId. No UI, no Save-to-Folder hook, no Desktop runtime, sync, CAS,
+       package writer, or queue/materializer call. -->
+  <script src="./ingestion/saved-chat-archive-on-save.mv3.js"></script>
        existing Desktop store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>

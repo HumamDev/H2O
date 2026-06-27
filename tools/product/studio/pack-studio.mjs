@@ -174,6 +174,12 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // read-back, no automatic/background delivery, no Desktop runtime, sync,
   // CAS, package writer, or queue/materializer call.
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
+  // Chrome/MV3: saved-chat archive delivery companion on save (Phase E.1.1).
+  // Flag-gated (archive.deliverOnSaveToFolder, default OFF) listener on
+  // library-index updates that delivers one metadata-only request per newly
+  // saved + snapshot-backed row via the D.3C delivery API, deduped per
+  // chatId|snapshotId. No UI, no Save-to-Folder hook, no Desktop runtime.
+  "ingestion/saved-chat-archive-on-save.mv3.js",
   // Desktop-only: saved-chat archive request intake (Phase D.2A). Validates
   // Chrome-to-Desktop request envelopes and resolves Desktop store state
   // read-only. No queue, package write, sync, Chrome runtime, CAS, DB mutation,
@@ -1246,6 +1252,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
+  "ingestion/saved-chat-archive-on-save.mv3.js",
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
