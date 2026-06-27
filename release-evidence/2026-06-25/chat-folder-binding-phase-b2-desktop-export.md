@@ -77,37 +77,104 @@ Chrome warnings move from "projection missing" toward import-stage state:
 
 ## Runtime Proof Status
 
-PARTIAL. Static validation passed for B2. Live Desktop queue export proof was attempted, but the Desktop WebView did not process the smoke queue command before timeout.
+PASS. The Desktop queue blocker was resolved and B2 was proven at runtime.
 
-Command attempted:
+Desktop queue health before proof:
+
+- `href:"http://127.0.0.1:1430/studio.html?h2oSmokeBridge=folder-sync-rc#/library/folders"`
+- `queueEnabled:true`
+- `queueStarted:true`
+- `queueBlockers:[]`
+- `queueRegistryBlockers:[]`
+- `queueLastStatus:"latest-sync-bundle-written"`
+- `bridgeStatus:"healthy"`
+- `bridgeBlockers:[]`
+
+Desktop export command:
 
 ```sh
 node tools/smoke/desktop-folder-sync-queue-client.mjs --op syncNow --allow-mutation --payload-json '{"direction":"desktop-to-chrome","reason":"chat-folder-binding-b2-desktop-export"}' --timeout-ms 60000
 ```
 
-Observed result:
+Desktop `syncNow` export result:
 
-- `ok:false`
-- `status:"desktop-queue-timeout"`
-- `commandPath:"/Users/hobayda/H2O Studio Sync/.h2o-smoke/desktop-command.json"`
-- `payloadAccepted:true`
-- `mutationAllowed:true`
-- `blockers:["desktop-queue-timeout"]`
-
-Required operator recovery:
-
-- Open Desktop Studio with `?h2oSmokeBridge=folder-sync-rc`
-- Set `localStorage["h2o:studio:smoke-bridge:enabled:v1"] = "folder-sync-rc"`
-- Confirm `H2O.Studio.devSmoke.folderSyncQueue.diagnose().started === true`
-
-Expected result after queue recovery:
-
+- `op:"syncNow"`
+- `direction:"desktop-to-chrome"`
 - `status:"latest-sync-bundle-written"`
-- `chatFolderBindingExport.schema:"h2o.studio.chat-folder-bindings.desktop-canonical.v1"`
-- `chatFolderBindingExport.bindingCount >= 12`
-- `chatFolderBindingExport.blockers:[]`
+- `ok:true`
+- `transport:"latest.json"`
+- `bytes:754321`
+- `blockers:[]`
+- `warnings:[]`
 
-If Chrome import is run after that, Chrome B1 diagnostic should no longer report that the Desktop canonical binding projection is missing. It may still report `parityComparable:false` until B3 implements Chrome import/display parity over the canonical projection.
+Direct `latest.json` inspection:
+
+- path: `/Users/hobayda/H2O Studio Sync/latest.json`
+- top-level binding keys:
+  - `chatFolderBindings`
+  - `desktopCanonicalChatFolderBindings`
+- projection object exists
+- `schema:"h2o.studio.chat-folder-bindings.desktop-canonical.v1"`
+- `source:"desktop-canonical-chat-folder-bindings"`
+- `status:"exported"`
+- `bindingCount:12`
+- `unfiledCount:29`
+- `missingFolderBindingCount:0`
+- `deletedFolderBindingCount:0`
+- `restoredFolderBindingCount:0`
+
+Runtime `folderBindingCounts`:
+
+- `f_2bb1037f88b2719dbac0e304:0`
+- `f_3bf15f43b835d19dbac0fb13:2`
+- `f_7050f49d3f341819dba53d547:3`
+- `f_d04f98de89e35819e885aef8e:6`
+- `f_e301f3506938c19dbac0e304:1`
+- `fold_chrome_chrome-delete-companion-test_mqtdzvyv_4a699cf35f:0`
+- `fold_smoke_chrome-restore-proof-1782569112247_mqwfmhu8_8d8f2f42d3fd:0`
+
+Binding rows include active Desktop canonical rows with:
+
+- `chatId`
+- `conversationId`
+- `folderId`
+- `folderName`
+- `source:"desktop-canonical-chat-folder-bindings"`
+- `sourceSurface:"desktop-studio"`
+- `authority:"desktop"`
+- `status:"active"`
+- `state:"active"`
+- `noChromeDestructiveBindingApply:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noHardDelete:true`
+- `noPurge:true`
+
+Projection diagnostics:
+
+- `diagnostics.exported:true`
+- `diagnostics.bindingCount:12`
+- `diagnostics.unfiledCount:29`
+- `diagnostics.desktopAuthority:true`
+- `diagnostics.chromeAuthority:false`
+- `diagnostics.readOnlyProjection:true`
+- `diagnostics.blockers:[]`
+- `diagnostics.warnings:[]`
+- `diagnostics.noChromeDestructiveBindingApply:true`
+- `diagnostics.noHardDelete:true`
+- `diagnostics.noPurge:true`
+- `diagnostics.noChatDelete:true`
+- `diagnostics.noSnapshotDelete:true`
+- `diagnostics.noAssetDelete:true`
+
+Runtime interpretation:
+
+- B2 runtime proof is green.
+- Desktop canonical chat-folder binding projection is present in `latest.json`.
+- The projection is an object with `bindings` / `rows` arrays, not a raw top-level array.
+- The smoke `syncNow` response did not surface a top-level `chatFolderBindingExport` summary, but the transport file contains the canonical projection and diagnostics correctly.
+- Treat smoke summary exposure as optional diagnostic polish, not a B2 blocker.
+- B3 should focus on Chrome importing/reading this Desktop canonical projection and making parity comparable, still without Chrome destructive binding authority.
 
 ## Remaining For B3
 
