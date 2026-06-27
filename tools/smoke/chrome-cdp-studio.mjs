@@ -146,7 +146,7 @@ try {
 }
 `;
 }
-const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity', 'diagnoseCanonicalVisibleFolderSet', 'diagnoseChromeRecentlyDeletedCompanion', 'listFolderRestoreRequests']);
+const READ_ONLY_OPS = Object.freeze(['diagnoseHealth', 'getFolderModel', 'countChatsSnapshots', 'diagnoseVisibleFolderParity', 'diagnoseCanonicalVisibleFolderSet', 'diagnoseChromeRecentlyDeletedCompanion', 'diagnoseChatFolderBindingParity', 'listFolderRestoreRequests']);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 const MUTATION_OPS = Object.freeze([
   'createFolder',
@@ -405,6 +405,7 @@ function usage() {
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseVisibleFolderParity --timeout-ms 60000',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseCanonicalVisibleFolderSet --timeout-ms 60000',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseChromeRecentlyDeletedCompanion --timeout-ms 60000',
+    '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseChatFolderBindingParity --timeout-ms 60000',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port 9224 --op diagnoseHealth',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9246 --op createFolder --allow-mutation --payload-json \'{"name":"zz-5a-chrome-create","color":"#FF4C4C"}\' --timeout-ms 30000',
     '  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9246 --op syncNow --allow-mutation --payload-json \'{"direction":"chrome-to-desktop","reason":"slice-5a-manual-proof"}\' --timeout-ms 30000',
@@ -414,7 +415,7 @@ function usage() {
     `  node tools/smoke/chrome-cdp-studio.mjs --mode launch --port ${CHROME_DEV_SMOKE_PORT} --chrome-path "${CHROME_DEV_PATH}" --extension-path "${DEFAULT_LOAD_EXTENSION}" --user-data-dir "${CHROME_DEV_SMOKE_PROFILE}" --op diagnoseHealth`,
     `  node tools/smoke/chrome-cdp-studio.mjs --mode attach --port ${CHROME_DEV_SMOKE_PORT} --op getFolderModel`,
     '',
-    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, countChatsSnapshots, diagnoseVisibleFolderParity, diagnoseCanonicalVisibleFolderSet, diagnoseChromeRecentlyDeletedCompanion, listFolderRestoreRequests.',
+    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, countChatsSnapshots, diagnoseVisibleFolderParity, diagnoseCanonicalVisibleFolderSet, diagnoseChromeRecentlyDeletedCompanion, diagnoseChatFolderBindingParity, listFolderRestoreRequests.',
     'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, requestFolderDelete, requestFolderRestore, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }

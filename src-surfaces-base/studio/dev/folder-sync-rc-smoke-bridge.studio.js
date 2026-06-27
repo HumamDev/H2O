@@ -35,6 +35,7 @@
     'diagnoseVisibleFolderParity',
     'diagnoseCanonicalVisibleFolderSet',
     'diagnoseChromeRecentlyDeletedCompanion',
+    'diagnoseChatFolderBindingParity',
     'requestFolderDelete',
     'listFolderDeleteRequests',
     'requestFolderRestore',
@@ -102,6 +103,12 @@
       if (typeof entry === 'string') return cleanString(entry);
       return cleanString(entry && (entry.code || entry.status || entry.reason));
     }).filter(Boolean).slice(0, 16);
+  }
+
+  function addUniqueCode(list, code) {
+    var normalized = cleanString(code);
+    if (!normalized || list.indexOf(normalized) !== -1) return;
+    list.push(normalized);
   }
 
   function isValidId(value) {
@@ -454,6 +461,293 @@
       isCanonical: r.isCanonical === true,
       hidden: r.hidden === true || r.hiddenByDesktopReceipt === true || r.deletedByDesktopReceipt === true,
     };
+  }
+
+  function diagnosticIdToken(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    return 'h' + ((hash >>> 0).toString(16)).padStart(8, '0');
+  }
+
+  function chatIdFromRow(row) {
+    var r = safeObject(row);
+    return cleanString(r.chatId || r.chat_id || r.id || r.chat_id_hash || r.chatIdHash);
+  }
+
+  function bindingMapRow(chatId, folderId, includeSensitive) {
+    var cid = cleanString(chatId);
+    var fid = cleanString(folderId);
+    return {
+      folderId: fid,
+      chatId: includeSensitive ? cid : '',
+      chatIdToken: diagnosticIdToken(cid),
+    };
+  }
+
+  function folderIdFromAny(row) {
+    var r = safeObject(row);
+    return cleanString(r.folderId || r.folder_id || r.id || r.key || r.recordId);
+  }
+
+  async function readFolderRowsForBindingDiagnostic(store) {
+    if (!store) return [];
+    if (typeof store.list === 'function') return safeArray(await store.list());
+    if (typeof store.getAll === 'function') return safeArray(await store.getAll());
+    return [];
+  }
+
+  async function countKnownChatsForBindingDiagnostic() {
+    var chats = getPath(H2O, ['Studio', 'store', 'chats']);
+    if (!chats) return { known: false, count: null, source: 'store-unavailable' };
+    try {
+      if (typeof chats.count === 'function') {
+        return { known: true, count: Number(await chats.count()) || 0, source: 'store.chats.count' };
+      }
+      if (typeof chats.list === 'function') {
+        return { known: true, count: safeArray(await chats.list()).length, source: 'store.chats.list' };
+      }
+      if (typeof chats.getAll === 'function') {
+        return { known: true, count: safeArray(await chats.getAll()).length, source: 'store.chats.getAll' };
+      }
+    } catch (_) {
+      return { known: false, count: null, source: 'store-read-failed' };
+    }
+    return { known: false, count: null, source: 'count-api-unavailable' };
+  }
+
+  async function readRecentlyDeletedBindingSignals(store, warnings) {
+    var out = {
+      activeDeletedFolderIds: Object.create(null),
+      restoredFolderIds: Object.create(null),
+      restoredFolderBindingCount: 0,
+      bindingRecoverySnapshotCount: 0,
+      recentlyDeletedRowsScanned: 0,
+      available: false,
+    };
+    if (!store || typeof store.listRecentlyDeletedFolders !== 'function') {
+      addUniqueCode(warnings, 'recently-deleted-binding-signal-unavailable');
+      return out;
+    }
+    try {
+      var result = safeObject(await store.listRecentlyDeletedFolders({ limit: 1000 }));
+      var rows = safeArray(result.rows);
+      out.available = result.ok === true || rows.length > 0;
+      out.recentlyDeletedRowsScanned = rows.length;
+      for (var i = 0; i < rows.length; i += 1) {
+        var row = safeObject(rows[i]);
+        var folderId = folderIdFromAny(row);
+        if (!folderId) continue;
+        if (cleanString(row.restoreStatus) === 'restored') {
+          out.restoredFolderIds[folderId] = true;
+          out.restoredFolderBindingCount += Number(row.bindingRestoredCount || 0) || 0;
+        } else if (cleanString(row.restoreStatus) === 'active') {
+          out.activeDeletedFolderIds[folderId] = true;
+        }
+        if (Number(row.affectedChatCount || 0) > 0) out.bindingRecoverySnapshotCount += 1;
+      }
+    } catch (_) {
+      addUniqueCode(warnings, 'recently-deleted-binding-signal-read-failed');
+    }
+    return out;
+  }
+
+  async function diagnoseDesktopChatFolderBindingParity(payload) {
+    var includeSensitive = safeObject(payload).includeSensitive === true;
+    var warnings = [];
+    var blockers = [];
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    if (!store || typeof store.listChats !== 'function') {
+      return baseResult('diagnoseChatFolderBindingParity', {
+        ok: false,
+        status: 'chat-folder-binding-diagnostic-unavailable',
+        blockers: ['folder-binding-store-unavailable'],
+        warnings: warnings,
+        readOnly: true,
+        surface: 'desktop-studio',
+        parityComparable: false,
+        parityOk: null,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChromeDestructiveBindingApply: true,
+      });
+    }
+    var folderRows = await readFolderRowsForBindingDiagnostic(store);
+    var folderIds = Object.create(null);
+    folderRows.forEach(function (row) {
+      var id = folderIdFromAny(row);
+      if (id) folderIds[id] = true;
+    });
+    var signals = await readRecentlyDeletedBindingSignals(store, warnings);
+    var folderBindingCounts = {};
+    var mappings = [];
+    var uniqueChatIds = Object.create(null);
+    var missingFolderBindingCount = 0;
+    var deletedFolderBindingCount = 0;
+    var restoredFolderBindingCount = 0;
+    for (var i = 0; i < folderRows.length; i += 1) {
+      var folderId = folderIdFromAny(folderRows[i]);
+      if (!folderId || typeof store.listChats !== 'function') continue;
+      var chatRows = [];
+      try {
+        chatRows = safeArray(await store.listChats(folderId));
+      } catch (_) {
+        addUniqueCode(warnings, 'folder-binding-list-read-failed');
+        chatRows = [];
+      }
+      var chatIds = [];
+      chatRows.forEach(function (chat) {
+        var chatId = chatIdFromRow(chat);
+        if (chatId && chatIds.indexOf(chatId) === -1) chatIds.push(chatId);
+      });
+      folderBindingCounts[folderId] = chatIds.length;
+      if (!folderIds[folderId]) missingFolderBindingCount += chatIds.length;
+      if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += chatIds.length;
+      if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += chatIds.length;
+      chatIds.forEach(function (chatId) {
+        uniqueChatIds[chatId] = true;
+        mappings.push(bindingMapRow(chatId, folderId, includeSensitive));
+      });
+    }
+    addUniqueCode(warnings, 'chrome-binding-mirror-missing-for-parity');
+    addUniqueCode(warnings, 'desktop-orphan-binding-scan-unavailable');
+    var chatCount = await countKnownChatsForBindingDiagnostic();
+    var totalBindingCount = mappings.length;
+    var unfiledCount = chatCount.known
+      ? Math.max(0, Number(chatCount.count || 0) - Object.keys(uniqueChatIds).length)
+      : null;
+    if (!chatCount.known) addUniqueCode(warnings, 'unfiled-count-unavailable');
+    return baseResult('diagnoseChatFolderBindingParity', {
+      ok: blockers.length === 0,
+      status: 'chat-folder-binding-parity-diagnosed',
+      surface: 'desktop-studio',
+      adapter: 'tauri',
+      readOnly: true,
+      canonicalSource: 'desktop-store-folder-bindings',
+      totalBindingCount: totalBindingCount,
+      desktopBindingCount: totalBindingCount,
+      folderBindingCounts: folderBindingCounts,
+      chatFolderBindings: mappings,
+      bindingMapRedacted: includeSensitive !== true,
+      knownChatCount: chatCount.known ? Number(chatCount.count || 0) : null,
+      knownChatCountSource: chatCount.source,
+      unfiledCount: unfiledCount,
+      missingFolderBindingCount: missingFolderBindingCount,
+      deletedFolderBindingCount: deletedFolderBindingCount,
+      restoredFolderBindingCount: restoredFolderBindingCount,
+      bindingRecoverySnapshotCount: signals.bindingRecoverySnapshotCount,
+      recentlyDeletedRowsScanned: signals.recentlyDeletedRowsScanned,
+      parityComparable: false,
+      parityOk: null,
+      blockers: blockers,
+      warnings: warnings,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChromeDestructiveBindingApply: true,
+    });
+  }
+
+  function readLocalFolderStateMirror() {
+    try {
+      var raw = global.localStorage && global.localStorage.getItem(FOLDER_STATE_DATA_KEY);
+      if (!raw) return {};
+      return safeObject(JSON.parse(raw));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function mergeFolderStateMirrors(primary, fallback) {
+    var a = safeObject(primary);
+    var b = safeObject(fallback);
+    var items = Object.assign({}, safeObject(b.items), safeObject(a.items));
+    return Object.assign({}, b, a, { items: items });
+  }
+
+  async function diagnoseChromeChatFolderBindingParity(payload) {
+    var warnings = [];
+    var blockers = [];
+    var chromeMirror = {};
+    try {
+      chromeMirror = safeObject(await chromeStorageGet(FOLDER_STATE_DATA_KEY));
+    } catch (_) {
+      addUniqueCode(warnings, 'chrome-folder-state-read-failed');
+    }
+    var localMirror = readLocalFolderStateMirror();
+    var mirror = mergeFolderStateMirrors(chromeMirror, localMirror);
+    var folders = safeArray(mirror.folders);
+    var folderIds = Object.create(null);
+    folders.forEach(function (folder) {
+      var id = folderIdFromAny(folder);
+      if (id) folderIds[id] = true;
+    });
+    var items = safeObject(mirror.items);
+    var folderBindingCounts = {};
+    var mappings = [];
+    var uniqueChatIds = Object.create(null);
+    var missingFolderBindingCount = 0;
+    Object.keys(items).sort().forEach(function (folderId) {
+      var id = cleanString(folderId);
+      if (!id) return;
+      var chatIds = safeArray(items[folderId]).map(cleanString).filter(Boolean)
+        .filter(function (chatId, index, arr) { return arr.indexOf(chatId) === index; });
+      folderBindingCounts[id] = chatIds.length;
+      if (!folderIds[id]) missingFolderBindingCount += chatIds.length;
+      chatIds.forEach(function (chatId) {
+        uniqueChatIds[chatId] = true;
+        mappings.push(bindingMapRow(chatId, id, safeObject(payload).includeSensitive === true));
+      });
+    });
+    var totalBindingCount = mappings.length;
+    var folderModel = null;
+    try {
+      folderModel = await getFolderModel({ reason: 'chat-folder-binding-parity-diagnostic' });
+    } catch (_) {
+      addUniqueCode(warnings, 'chrome-folder-display-model-read-failed');
+    }
+    var hasCanonicalBindingProjection = !!(mirror.desktopCanonicalChatFolderBindings &&
+      Array.isArray(safeObject(mirror.desktopCanonicalChatFolderBindings).bindings));
+    if (!hasCanonicalBindingProjection) {
+      addUniqueCode(warnings, 'chrome-canonical-binding-projection-missing');
+      addUniqueCode(warnings, 'chat-folder-binding-transport-deferred');
+    }
+    return baseResult('diagnoseChatFolderBindingParity', {
+      ok: blockers.length === 0,
+      status: 'chat-folder-binding-parity-diagnosed',
+      surface: 'chrome-studio',
+      adapter: 'mv3',
+      readOnly: true,
+      canonicalSource: hasCanonicalBindingProjection ? 'desktop-canonical-chat-folder-bindings' : 'chrome-folder-state-mirror-items',
+      totalBindingCount: totalBindingCount,
+      chromeMirrorBindingCount: totalBindingCount,
+      chromeVisibleFolderCount: Number(folderModel && folderModel.rowCount) || 0,
+      folderBindingCounts: folderBindingCounts,
+      chatFolderBindings: mappings,
+      bindingMapRedacted: safeObject(payload).includeSensitive !== true,
+      unfiledCount: null,
+      missingFolderBindingCount: missingFolderBindingCount,
+      deletedFolderBindingCount: 0,
+      restoredFolderBindingCount: 0,
+      bindingRecoverySnapshotCount: 0,
+      parityComparable: false,
+      parityOk: null,
+      chromeCanonicalBindingProjectionAvailable: hasCanonicalBindingProjection,
+      blockers: blockers,
+      warnings: warnings,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChromeDestructiveBindingApply: true,
+    });
   }
 
   function summarizeFolderModel(model) {
@@ -1245,6 +1539,34 @@
     }));
   }
 
+  async function diagnoseChatFolderBindingParity(payload) {
+    var surface = detectSurface();
+    if (surface.kind === 'desktop-studio') return diagnoseDesktopChatFolderBindingParity(payload);
+    if (surface.kind === 'chrome-studio') return diagnoseChromeChatFolderBindingParity(payload);
+    return baseResult('diagnoseChatFolderBindingParity', {
+      ok: true,
+      status: 'chat-folder-binding-parity-not-comparable-on-surface',
+      surface: surface.kind,
+      adapter: surface.adapter,
+      readOnly: true,
+      totalBindingCount: 0,
+      folderBindingCounts: {},
+      unfiledCount: null,
+      missingFolderBindingCount: 0,
+      deletedFolderBindingCount: 0,
+      restoredFolderBindingCount: 0,
+      parityComparable: false,
+      parityOk: null,
+      blockers: [],
+      warnings: ['chat-folder-binding-parity-supported-on-desktop-or-chrome-only'],
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChromeDestructiveBindingApply: true,
+    });
+  }
+
   async function requestFolderDelete(payload) {
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     var fn = actions && (actions.requestDelete || actions.requestFolderDelete);
@@ -1593,6 +1915,7 @@
     if (op === 'diagnoseVisibleFolderParity') return diagnoseVisibleFolderParity(payload);
     if (op === 'diagnoseCanonicalVisibleFolderSet') return diagnoseCanonicalVisibleFolderSet(payload);
     if (op === 'diagnoseChromeRecentlyDeletedCompanion') return diagnoseChromeRecentlyDeletedCompanion(payload);
+    if (op === 'diagnoseChatFolderBindingParity') return diagnoseChatFolderBindingParity(payload);
     if (op === 'requestFolderDelete') return requestFolderDelete(payload);
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
     if (op === 'requestFolderRestore') return requestFolderRestore(payload);

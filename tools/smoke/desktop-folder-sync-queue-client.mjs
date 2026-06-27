@@ -18,6 +18,7 @@ const READ_ONLY_OPS = Object.freeze([
   'diagnosePurgedFolderResurrectionCandidates',
   'countChatsSnapshots',
   'diagnoseCanonicalVisibleFolderSet',
+  'diagnoseChatFolderBindingParity',
 ]);
 const READ_ONLY_OP_SET = new Set(READ_ONLY_OPS);
 const MUTATION_OPS = Object.freeze([
@@ -85,6 +86,7 @@ function usage() {
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op listRecentlyDeletedFolders --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnosePurgedFolderResurrectionCandidates --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseCanonicalVisibleFolderSet --timeout-ms 60000',
+    '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseChatFolderBindingParity --timeout-ms 60000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op listFolderDeleteRequests --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op renameFolder --allow-mutation --payload-json \'{"folderId":"...","name":"zz-5a-renamed"}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op setFolderColor --allow-mutation --payload-json \'{"folderId":"...","color":"#10B981"}\' --timeout-ms 30000',
@@ -92,7 +94,7 @@ function usage() {
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op restoreFolder --allow-mutation --payload-json \'{"tombstoneId":"..."}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op verifyFolderVisible --allow-mutation --payload-file /private/tmp/h2o-folder-visible-payload.json --timeout-ms 30000',
     '',
-    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, listFolderDeleteRequests, listFolderDeleteReceipts, listActiveFolderTombstones, listRecentlyDeletedFolders, diagnosePurgedFolderResurrectionCandidates, countChatsSnapshots, diagnoseCanonicalVisibleFolderSet.',
+    'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, listFolderDeleteRequests, listFolderDeleteReceipts, listActiveFolderTombstones, listRecentlyDeletedFolders, diagnosePurgedFolderResurrectionCandidates, countChatsSnapshots, diagnoseCanonicalVisibleFolderSet, diagnoseChatFolderBindingParity.',
     'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, applyFolderDeleteRequest, restoreFolder, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }
