@@ -48,6 +48,7 @@
   /* Lazily-warmed synchronous cache of local delivered metadata by chatId|snapshotId. */
   var localCache = new Map();
   var warmSeen = new Object();
+  var hydrateSeen = new Object();
 
   function isObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -65,10 +66,39 @@
   function deriveSnapshotId(row) {
     return cleanString(row.snapshotId) || cleanString(row.lastSnapshotId) || cleanString(row.latestSnapshotId);
   }
+  function attr(el, name) {
+    if (!el) return '';
+    try {
+      if (typeof el.getAttribute === 'function') return cleanString(el.getAttribute(name));
+    } catch (_) { /* fall through */ }
+    try {
+      var key = name.replace(/^data-/, '').replace(/-([a-z])/g, function (_, c) { return c.toUpperCase(); });
+      return cleanString(el.dataset && el.dataset[key]);
+    } catch (_) { return ''; }
+  }
+  function articleIds(article) {
+    return {
+      chatId: attr(article, 'data-chat-id'),
+      snapshotId: attr(article, 'data-snapshot-id'),
+    };
+  }
+  function rowWithArticleIds(row, article) {
+    var base = isObject(row) ? Object.assign({}, row) : {};
+    var ids = articleIds(article);
+    if (!cleanString(base.chatId) && ids.chatId) base.chatId = ids.chatId;
+    if (!deriveSnapshotId(base) && ids.snapshotId) base.snapshotId = ids.snapshotId;
+    return base;
+  }
   function keyFor(row) {
     var chatId = cleanString(row && row.chatId);
     var snapshotId = deriveSnapshotId(row || {});
     return (chatId && snapshotId) ? (chatId + '|' + snapshotId) : null;
+  }
+  function explicitLinkOnly(row) {
+    if (!isObject(row) || row.isSaved === true) return false;
+    var dv = cleanString(row.displayView).toLowerCase();
+    var bk = cleanString(row.badgeKind).toLowerCase();
+    return row.isLinked === true || row.isImported === true || dv === 'link' || dv === 'linked' || dv === 'imported' || bk === 'link';
   }
   function flagEnabled() {
     try {
@@ -92,6 +122,41 @@
     try {
       return compute({ row: row, local: local, diagnostics: diagnostics, receipt: receipt || null });
     } catch (_) { return null; }
+  }
+  function libraryRows() {
+    try {
+      var index = H2O.LibraryIndex;
+      if (index && typeof index.getAll === 'function') return index.getAll();
+    } catch (_) { /* fall through */ }
+    return null;
+  }
+  function matchLibraryRow(rows, row, article) {
+    var ids = articleIds(article);
+    var chatId = cleanString(row && row.chatId) || ids.chatId;
+    var snapshotId = deriveSnapshotId(row || {}) || ids.snapshotId;
+    if (!Array.isArray(rows) || (!chatId && !snapshotId)) return null;
+    var both = null;
+    var bySnapshot = null;
+    var byChat = null;
+    for (var i = 0; i < rows.length; i += 1) {
+      var candidate = rows[i];
+      if (!isObject(candidate)) continue;
+      var candidateChatId = cleanString(candidate.chatId);
+      var candidateSnapshotId = deriveSnapshotId(candidate);
+      if (chatId && snapshotId && candidateChatId === chatId && candidateSnapshotId === snapshotId) {
+        both = candidate;
+        break;
+      }
+      if (!bySnapshot && snapshotId && candidateSnapshotId === snapshotId) bySnapshot = candidate;
+      if (!byChat && chatId && candidateChatId === chatId) byChat = candidate;
+    }
+    return both || bySnapshot || byChat || null;
+  }
+  function hydrateFullRow(article, row) {
+    var rows = libraryRows();
+    return Promise.resolve(rows).then(function (resolvedRows) {
+      return matchLibraryRow(resolvedRows, row, article);
+    });
   }
   function shouldShowStatus(status) {
     if (!status || !status.state) return false;
@@ -197,14 +262,15 @@
       var prior = existingContainer.querySelector(BADGE_SELECTOR);
       if (prior && typeof prior.remove === 'function') prior.remove();
     }
-    if (!shouldShowStatus(status)) return;
+    if (!shouldShowStatus(status)) return status;
     var container = resolveContainer(article, badgesEl, true);
-    if (!container) return;
+    if (!container) return status;
     var document = doc();
-    if (!document) return;
+    if (!document) return status;
     var span = document.createElement('span');
     applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
+    return status;
   }
 
   /* One-shot, fire-and-forget warm of the local delivered cache for a row, then
@@ -227,14 +293,38 @@
       }).catch(function () { delete warmSeen[key]; });
     } catch (_) { delete warmSeen[key]; }
   }
+  function maybeHydrateFromLibrary(article, badgesEl, row, localOverride, diagOverride, initialStatus) {
+    if (!article || explicitLinkOnly(row)) return;
+    var ids = articleIds(article);
+    var chatId = cleanString(row && row.chatId) || ids.chatId;
+    var snapshotId = deriveSnapshotId(row || {}) || ids.snapshotId;
+    if (!chatId && !snapshotId) return;
+    if (shouldShowStatus(initialStatus) && deriveSnapshotId(row) && row.isSaved === true) return;
+    var key = 'hydrate|' + (chatId || '?') + '|' + (snapshotId || '?');
+    if (hydrateSeen[key]) return;
+    hydrateSeen[key] = true;
+    Promise.resolve().then(function () {
+      return hydrateFullRow(article, row);
+    }).then(function (fullRow) {
+      if (!isObject(fullRow) || explicitLinkOnly(fullRow)) return;
+      var merged = rowWithArticleIds(fullRow, article);
+      renderInto(article, badgesEl, merged, localOverride, diagOverride);
+      if (!isObject(localOverride)) warmLocal(article, badgesEl, merged);
+    }).catch(function () {
+      delete hydrateSeen[key];
+    });
+  }
 
   function appendSavedChatArchiveStatusBadgeV1(options) {
     var opts = isObject(options) ? options : {};
-    var row = isObject(opts.row) ? opts.row : null;
-    if (!row) return;
-    renderInto(opts.article || null, opts.badgesEl || null, row, opts.local, opts.diagnostics);
+    var article = opts.article || null;
+    var badgesEl = opts.badgesEl || null;
+    var row = rowWithArticleIds(opts.row, article);
+    if (!cleanString(row.chatId) && !deriveSnapshotId(row)) return;
+    var status = renderInto(article, badgesEl, row, opts.local, opts.diagnostics);
     /* Only warm from the live cache path (not when caller supplied local). */
-    if (!isObject(opts.local)) warmLocal(opts.article || null, opts.badgesEl || null, row);
+    if (!isObject(opts.local)) warmLocal(article, badgesEl, row);
+    maybeHydrateFromLibrary(article, badgesEl, row, opts.local, opts.diagnostics, status);
   }
 
   H2O.Studio.ingestion.appendSavedChatArchiveStatusBadgeV1 = appendSavedChatArchiveStatusBadgeV1;

@@ -3,8 +3,9 @@
 //
 // Static checks keep the badge a gesture-only, read-only renderer (receipt
 // read-back only; no delivery/Desktop writer/timer/watcher/content). VM checks
-// prove the badge is interactive only with a local requestId, stops row events,
-// reads one receipt, recomputes through the status model, and updates in place.
+// prove thin rows hydrate once from LibraryIndex, and interactive badges read
+// one receipt, stop row events, recompute through the status model, and update
+// in place.
 
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
@@ -81,25 +82,33 @@ function makeFakeDocument() {
   return { createElement() { return makeEl(); }, _makeEl: makeEl };
 }
 
-function createSandbox(readReceiptImpl) {
+function createSandbox(options) {
+  const cfg = typeof options === 'function' ? { readReceiptImpl: options } : (options || {});
   const fakeDoc = makeFakeDocument();
   const receiptCalls = [];
+  const localMetaCalls = [];
+  const libraryRows = Array.isArray(cfg.libraryRows) ? cfg.libraryRows : [];
   const context = {
     console, Date, JSON, Math, Number, Object, Array, Promise, RegExp, String, Map,
     document: fakeDoc,
-    H2O: { Studio: { ingestion: {
-      // sync flag diagnose; default enabled true (overridden per test via diagnostics arg)
-      diagnoseSavedChatArchiveOnSaveToFolderV1: () => ({ enabled: true }),
-      // local accessor stub (async); badge tests pass `local` directly, so this is unused there
-      getSavedChatArchiveLocalDeliveryMetaV1: async () => ({ delivered: false, requestId: null, deliveredAt: null }),
-      readSavedChatArchiveRequestReceiptV1: async (opts) => {
-        receiptCalls.push(opts);
-        if (readReceiptImpl) return readReceiptImpl(opts);
-        return { ok: true, status: 'queued-on-desktop', requestId: opts.requestId, receipt: { status: 'validated' } };
-      },
-    } } },
+    H2O: {},
   };
+  context.H2O = { LibraryIndex: { getAll: () => libraryRows }, Studio: { ingestion: {
+    // sync flag diagnose; default enabled true (overridden per test via diagnostics arg)
+    diagnoseSavedChatArchiveOnSaveToFolderV1: () => ({ enabled: true }),
+    getSavedChatArchiveLocalDeliveryMetaV1: async (row) => {
+      localMetaCalls.push(row);
+      if (typeof cfg.localMetaImpl === 'function') return cfg.localMetaImpl(row);
+      return { delivered: false, requestId: null, deliveredAt: null };
+    },
+    readSavedChatArchiveRequestReceiptV1: async (opts) => {
+      receiptCalls.push(opts);
+      if (cfg.readReceiptImpl) return cfg.readReceiptImpl(opts);
+      return { ok: true, status: 'queued-on-desktop', requestId: opts.requestId, receipt: { status: 'validated' } };
+    },
+  } } };
   context.__receiptCalls = receiptCalls;
+  context.__localMetaCalls = localMetaCalls;
   context.globalThis = context; context.window = context;
   return vm.createContext(context);
 }
@@ -110,12 +119,16 @@ function loadBadge(context) {
   assert.equal(typeof fn, 'function', 'appendSavedChatArchiveStatusBadgeV1 not registered');
   return { fn, context };
 }
-function makeArticle(context) {
+function makeArticle(context, attrs = {}) {
   const el = context.document._makeEl();
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
   return el;
 }
 function savedRow(over = {}) {
   return { chatId: 'chat_e22', snapshotId: 'snap_e22', title: 'Saved chat', isSaved: true, displayView: 'saved', badgeKind: 'Saved', ...over };
+}
+async function flushAsync(turns = 8) {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
 const badgeSrc = readRepo(BADGE_REL);
@@ -135,6 +148,9 @@ check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('computeSavedChatArchiveStatusV1'), 'must use the status model');
   assert.ok(badgeSrc.includes('getSavedChatArchiveLocalDeliveryMetaV1'), 'must use the local delivery accessor');
   assert.ok(badgeSrc.includes('readSavedChatArchiveRequestReceiptV1'), 'must use the receipt read-back accessor');
+  assert.ok(badgeSrc.includes('H2O.LibraryIndex'), 'must hydrate thin rows from LibraryIndex');
+  assert.ok(badgeSrc.includes('data-chat-id'), 'must read article data-chat-id');
+  assert.ok(badgeSrc.includes('data-snapshot-id'), 'must read article data-snapshot-id');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -229,6 +245,86 @@ check('delivered saved row with requestId renders an interactive waiting-for-des
   assert.match(String(badge.getAttribute('aria-label')), /Check archive status/i);
   assert.match(String(badge.className), /wbBadge\b/);
   assert.ok(String(badge.textContent).length > 0, 'badge has label text');
+});
+
+await checkAsync('thin row plus article ids hydrates from LibraryIndex and renders archive-requested', async () => {
+  const fullRow = savedRow({ chatId: 'chat_hydrate_1', snapshotId: 'snap_hydrate_1' });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: (row) => row.chatId === 'chat_hydrate_1'
+      ? { delivered: true, requestId: null, deliveredAt: '2026-06-27T00:00:00.000Z' }
+      : { delivered: false, requestId: null, deliveredAt: null },
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'chat_hydrate_1', 'data-snapshot-id': 'snap_hydrate_1' });
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  await flushAsync();
+  const badge = article.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'hydrated thin row should render a badge');
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
+  assert.equal(badge.getAttribute('role'), null, 'legacy no-requestId hydration remains passive');
+  assert.equal(context.__receiptCalls.length, 0, 'passive hydration must not read receipts');
+});
+
+await checkAsync('thin row hydration remains quiet when no full LibraryIndex row is found', async () => {
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [],
+    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-27T00:00:00.000Z' }),
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'missing_chat', 'data-snapshot-id': 'missing_snap' });
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  await flushAsync();
+  assert.equal(article.querySelector('.wbBadge--archive-status'), null, 'missing full row should stay quiet');
+  assert.equal(context.__receiptCalls.length, 0, 'missing full row must not read receipts');
+});
+
+await checkAsync('repeated thin-row hydration is idempotent and does not duplicate badges', async () => {
+  const fullRow = savedRow({ chatId: 'chat_hydrate_dupe', snapshotId: 'snap_hydrate_dupe' });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-27T00:00:00.000Z' }),
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'chat_hydrate_dupe', 'data-snapshot-id': 'snap_hydrate_dupe' });
+  const opts = { article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } };
+  fn(opts);
+  fn(opts);
+  await flushAsync();
+  const container = article.querySelector('.wbBadges');
+  const count = container ? container.children.filter((c) => String(c.className).includes('wbBadge--archive-status')).length : 0;
+  assert.equal(count, 1, 'hydration must not create duplicate badges');
+});
+
+await checkAsync('explicit link-only article row remains quiet and does not hydrate into a saved badge', async () => {
+  const fullRow = savedRow({ chatId: 'chat_link_only', snapshotId: 'snap_link_only' });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-27T00:00:00.000Z' }),
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'chat_link_only', 'data-snapshot-id': 'snap_link_only' });
+  fn({
+    article,
+    badgesEl: null,
+    row: { chatId: 'chat_link_only', snapshotId: 'snap_link_only', isSaved: false, isLinked: true, displayView: 'link', badgeKind: 'Link' },
+    diagnostics: { enabled: true, folderConnected: true },
+  });
+  await flushAsync();
+  assert.equal(article.querySelector('.wbBadge--archive-status'), null, 'link-only row must stay quiet');
+  assert.equal(context.__receiptCalls.length, 0, 'link-only hydration must not read receipts');
+});
+
+await checkAsync('thin row hydrates saved + snapshot-backed + isLinked:true and keeps receipt gesture', async () => {
+  const fullRow = savedRow({ chatId: 'chat_hydrate_linked', snapshotId: 'snap_hydrate_linked', isLinked: true });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: () => ({ delivered: true, requestId: 'req_hydrate_linked', deliveredAt: '2026-06-27T00:00:00.000Z' }),
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'chat_hydrate_linked', 'data-snapshot-id': 'snap_hydrate_linked' });
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  await flushAsync();
+  const badge = article.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'hydrated saved-linked row should render');
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'waiting-for-desktop');
+  assert.equal(badge.getAttribute('role'), 'button');
+  assert.equal(context.__receiptCalls.length, 0, 'passive hydration should not read receipt before gesture');
 });
 
 await checkAsync('click reads receipt, stops row propagation, and updates only that badge to archived', async () => {
