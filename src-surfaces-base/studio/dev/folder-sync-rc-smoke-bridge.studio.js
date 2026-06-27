@@ -489,6 +489,92 @@
     };
   }
 
+  function bindingCompareKey(chatId, folderId) {
+    var cid = cleanString(chatId);
+    var fid = cleanString(folderId);
+    return cid && fid ? (cid + '\u0000' + fid) : '';
+  }
+
+  function bindingDiagnosticRow(chatId, folderId, includeSensitive) {
+    var cid = cleanString(chatId);
+    var fid = cleanString(folderId);
+    return {
+      folderId: fid,
+      chatId: includeSensitive ? cid : '',
+      chatIdToken: diagnosticIdToken(cid),
+      keyToken: diagnosticIdToken(cid + ':' + fid),
+    };
+  }
+
+  function countFolderBindingMismatches(a, b) {
+    var left = safeObject(a);
+    var right = safeObject(b);
+    var ids = Object.create(null);
+    Object.keys(left).forEach(function (id) { if (cleanString(id)) ids[id] = true; });
+    Object.keys(right).forEach(function (id) { if (cleanString(id)) ids[id] = true; });
+    var mismatches = [];
+    Object.keys(ids).sort().forEach(function (folderId) {
+      var leftCount = Number(left[folderId] || 0) || 0;
+      var rightCount = Number(right[folderId] || 0) || 0;
+      if (leftCount !== rightCount) {
+        mismatches.push({
+          folderId: folderId,
+          desktopCount: leftCount,
+          chromeCount: rightCount,
+          delta: rightCount - leftCount,
+        });
+      }
+    });
+    return mismatches;
+  }
+
+  function compareBindingRows(desktopRows, chromeRows, includeSensitive) {
+    var desktop = safeArray(desktopRows);
+    var chrome = safeArray(chromeRows);
+    var desktopMap = Object.create(null);
+    var chromeMap = Object.create(null);
+    var desktopInvalid = 0;
+    var chromeInvalid = 0;
+    desktop.forEach(function (row) {
+      var chatId = chatIdFromRow(row);
+      var folderId = folderIdFromAny(row);
+      var key = bindingCompareKey(chatId, folderId);
+      if (!key) {
+        desktopInvalid += 1;
+        return;
+      }
+      desktopMap[key] = { chatId: chatId, folderId: folderId };
+    });
+    chrome.forEach(function (row) {
+      var chatId = chatIdFromRow(row);
+      var folderId = folderIdFromAny(row);
+      var key = bindingCompareKey(chatId, folderId);
+      if (!key) {
+        chromeInvalid += 1;
+        return;
+      }
+      chromeMap[key] = { chatId: chatId, folderId: folderId };
+    });
+    var missing = [];
+    var extra = [];
+    Object.keys(desktopMap).sort().forEach(function (key) {
+      if (!chromeMap[key]) missing.push(bindingDiagnosticRow(desktopMap[key].chatId, desktopMap[key].folderId, includeSensitive));
+    });
+    Object.keys(chromeMap).sort().forEach(function (key) {
+      if (!desktopMap[key]) extra.push(bindingDiagnosticRow(chromeMap[key].chatId, chromeMap[key].folderId, includeSensitive));
+    });
+    return {
+      comparisonMode: desktopInvalid || chromeInvalid ? 'folder-counts-only' : 'chat-folder-map',
+      comparableBindingCount: Object.keys(desktopMap).length,
+      missingInChrome: missing.slice(0, 50),
+      extraInChrome: extra.slice(0, 50),
+      missingInChromeCount: missing.length,
+      extraInChromeCount: extra.length,
+      desktopInvalidBindingCount: desktopInvalid,
+      chromeInvalidBindingCount: chromeInvalid,
+    };
+  }
+
   function folderIdFromAny(row) {
     var r = safeObject(row);
     return cleanString(r.folderId || r.folder_id || r.id || r.key || r.recordId);
@@ -587,6 +673,7 @@
     var signals = await readRecentlyDeletedBindingSignals(store, warnings);
     var folderBindingCounts = {};
     var mappings = [];
+    var localBindingRows = [];
     var uniqueChatIds = Object.create(null);
     var missingFolderBindingCount = 0;
     var deletedFolderBindingCount = 0;
@@ -706,6 +793,7 @@
       if (!folderIds[id]) missingFolderBindingCount += chatIds.length;
       chatIds.forEach(function (chatId) {
         uniqueChatIds[chatId] = true;
+        localBindingRows.push({ chatId: chatId, folderId: id });
         mappings.push(bindingMapRow(chatId, id, safeObject(payload).includeSensitive === true));
       });
     });
@@ -724,12 +812,14 @@
       Array.isArray(canonicalRows);
     var canonicalFolderBindingCounts = {};
     var canonicalMappings = [];
+    var canonicalBindingRows = [];
     if (hasCanonicalBindingProjection) {
       canonicalRows.forEach(function (row) {
         var chatId = chatIdFromRow(row);
         var folderId = folderIdFromAny(row);
         if (!chatId || !folderId) return;
         canonicalFolderBindingCounts[folderId] = (Number(canonicalFolderBindingCounts[folderId]) || 0) + 1;
+        canonicalBindingRows.push({ chatId: chatId, folderId: folderId });
         canonicalMappings.push(bindingMapRow(chatId, folderId, safeObject(payload).includeSensitive === true));
       });
     }
@@ -740,6 +830,30 @@
     var reportedMappings = hasCanonicalBindingProjection ? canonicalMappings : mappings;
     var reportedFolderBindingCounts = hasCanonicalBindingProjection ? canonicalFolderBindingCounts : folderBindingCounts;
     var reportedBindingCount = hasCanonicalBindingProjection ? canonicalMappings.length : totalBindingCount;
+    var folderCountMismatches = hasCanonicalBindingProjection
+      ? countFolderBindingMismatches(canonicalFolderBindingCounts, folderBindingCounts)
+      : [];
+    var bindingComparison = hasCanonicalBindingProjection
+      ? compareBindingRows(canonicalBindingRows, localBindingRows, safeObject(payload).includeSensitive === true)
+      : {
+        comparisonMode: 'not-comparable',
+        comparableBindingCount: 0,
+        missingInChrome: [],
+        extraInChrome: [],
+        missingInChromeCount: 0,
+        extraInChromeCount: 0,
+        desktopInvalidBindingCount: 0,
+        chromeInvalidBindingCount: 0,
+      };
+    if (hasCanonicalBindingProjection && bindingComparison.comparisonMode === 'folder-counts-only') {
+      addUniqueCode(warnings, 'chat-folder-binding-exact-map-not-comparable');
+    }
+    var parityComparable = hasCanonicalBindingProjection;
+    var parityOk = parityComparable
+      ? bindingComparison.missingInChromeCount === 0 &&
+        bindingComparison.extraInChromeCount === 0 &&
+        folderCountMismatches.length === 0
+      : null;
     return baseResult('diagnoseChatFolderBindingParity', {
       ok: blockers.length === 0,
       status: 'chat-folder-binding-parity-diagnosed',
@@ -748,9 +862,18 @@
       readOnly: true,
       canonicalSource: hasCanonicalBindingProjection ? 'desktop-canonical-chat-folder-bindings' : 'chrome-folder-state-mirror-items',
       totalBindingCount: reportedBindingCount,
+      importedDesktopCanonicalBindingCount: hasCanonicalBindingProjection ? canonicalMappings.length : 0,
+      importedDesktopCanonicalFolderBindingCounts: canonicalFolderBindingCounts,
+      importedDesktopCanonicalUnfiledCount: hasCanonicalBindingProjection && Object.prototype.hasOwnProperty.call(canonicalProjection, 'unfiledCount')
+        ? canonicalProjection.unfiledCount
+        : null,
+      localBindingCount: totalBindingCount,
+      chromeBindingCount: totalBindingCount,
       chromeMirrorBindingCount: totalBindingCount,
       chromeCanonicalBindingCount: hasCanonicalBindingProjection ? canonicalMappings.length : 0,
       chromeVisibleFolderCount: Number(folderModel && folderModel.rowCount) || 0,
+      localFolderBindingCounts: folderBindingCounts,
+      chromeFolderBindingCounts: folderBindingCounts,
       folderBindingCounts: reportedFolderBindingCounts,
       chatFolderBindings: reportedMappings,
       bindingMapRedacted: safeObject(payload).includeSensitive !== true,
@@ -761,8 +884,18 @@
       deletedFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.deletedFolderBindingCount || 0) : 0,
       restoredFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.restoredFolderBindingCount || 0) : 0,
       bindingRecoverySnapshotCount: 0,
-      parityComparable: false,
-      parityOk: null,
+      comparisonMode: bindingComparison.comparisonMode,
+      comparableBindingCount: bindingComparison.comparableBindingCount,
+      missingInChromeCount: bindingComparison.missingInChromeCount,
+      extraInChromeCount: bindingComparison.extraInChromeCount,
+      folderCountMismatchCount: folderCountMismatches.length,
+      missingInChrome: bindingComparison.missingInChrome,
+      extraInChrome: bindingComparison.extraInChrome,
+      folderCountMismatches: folderCountMismatches.slice(0, 50),
+      desktopInvalidBindingCount: bindingComparison.desktopInvalidBindingCount,
+      chromeInvalidBindingCount: bindingComparison.chromeInvalidBindingCount,
+      parityComparable: parityComparable,
+      parityOk: parityOk,
       chromeCanonicalBindingProjectionAvailable: hasCanonicalBindingProjection,
       chromeCanonicalBindingProjectionSchema: hasCanonicalBindingProjection ? cleanString(canonicalProjection.schema) : '',
       blockers: blockers,
