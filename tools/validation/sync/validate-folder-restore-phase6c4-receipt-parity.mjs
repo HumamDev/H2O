@@ -90,6 +90,8 @@ assertContains(desktopReviews, 'listFolderRestoreReceipts: listFolderRestoreRece
   'FOLDER_RESTORE_RECEIPT_IMPORT_SCHEMA',
   'applyFolderRestoreReceipt',
   'ingestFolderRestoreReceipts',
+  'resolvePendingFolderRestoreRequestsByReceipt',
+  'sameFolderPendingRestoreResolvedCount',
   'pruneFolderRestoreRequestExportMirror',
   'restoreReceiptRequestIdMismatchCount',
   'trustedDesktopReceiptWithoutLocalRequest',
@@ -108,8 +110,9 @@ assertContains(desktopReviews, 'listFolderRestoreReceipts: listFolderRestoreRece
   'confirmedRestoreRequestCount',
   'staleRestoreRequestCount',
   'restoreReceiptRequestIdMismatchCount',
+  'sameFolderPendingRestoreResolvedCount',
   'mergeFolderRestoreReceiptReviewImport',
-].forEach((needle) => assertContains(chromeImportBody + chromeReviewImportBody, needle, `6C.4 Chrome sync import ${needle}`));
+].forEach((needle) => assertContains(chromeImport + chromeImportBody + chromeReviewImportBody, needle, `6C.4 Chrome sync import ${needle}`));
 
 assertContains(bridgeSyncBody, 'folderRestoreReceiptExport', '6C.4 smoke bridge exposes folderRestoreReceiptExport');
 assertContains(bridgeSyncBody, 'folderRestoreReceiptImport', '6C.4 smoke bridge still exposes folderRestoreReceiptImport');

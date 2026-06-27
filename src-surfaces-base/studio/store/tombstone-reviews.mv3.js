@@ -2535,6 +2535,97 @@
       });
   }
 
+  function resolvePendingFolderRestoreRequestsByReceipt(receiptInput) {
+    var normalized = normalizeFolderRestoreReceipt(receiptInput);
+    if (!normalized.ok) {
+      return Promise.resolve({
+        ok: true,
+        status: 'folder-restore-receipt-pending-reconcile-skipped',
+        skipped: true,
+        reason: normalized.code || 'restore-receipt-invalid',
+        resolvedCount: 0,
+        requestIdMismatchCount: 0,
+        rows: [],
+      });
+    }
+    var receipt = normalized.receipt;
+    return listFolderRestoreRequests({
+      folderId: receipt.folderId,
+      status: 'pending',
+      limit: MAX_LIST_LIMIT,
+    }).then(function (rows) {
+      var pending = (Array.isArray(rows) ? rows : []).filter(function (row) {
+        var localFolderId = folderRestoreReceiptLocalFolderId(row);
+        return cleanScalar(row && row.status) === 'pending' && localFolderId === receipt.folderId;
+      });
+      return pending.reduce(function (promise, review) {
+        return promise.then(function (acc) {
+          var currentStatus = cleanScalar(review && review.status);
+          if (!canApplyDecisionTransition(currentStatus, 'resolved')) return acc;
+          var importedAt = nowIso();
+          var localRequestId = folderRestoreReceiptLocalRequestId(review);
+          var ids = folderRestoreReceiptIds(receipt);
+          var requestIdMismatch = !!(localRequestId && ids.length && ids.indexOf(localRequestId) === -1 &&
+            ids.indexOf(cleanScalar(review.reviewId)) === -1);
+          var next = Object.assign({}, review, {
+            status: 'resolved',
+            decision: 'applied-folder-restore-request',
+            decidedAt: importedAt,
+            decidedBySyncPeerId: cleanScalar(receipt.sourcePeerId || 'desktop-studio') || 'desktop-studio',
+            rawTombstoneJson: folderRestoreReceiptRawWithResult(review, receipt, importedAt, requestIdMismatch),
+            warningsJson: appendFolderRestoreReceiptWarnings(review.warningsJson || review.warnings, requestIdMismatch),
+            updatedAt: importedAt,
+          });
+          return idbPut(next).then(function () {
+            recordWrite('resolvePendingFolderRestoreRequestsByReceipt');
+            notifySubscribers({
+              source: 'desktop-folder-restore-receipt',
+              op: 'resolvePendingFolderRestoreRequestsByReceipt',
+              reviewId: cleanScalar(review.reviewId),
+              folderId: receipt.folderId,
+              status: 'resolved',
+              noFolderRestore: true,
+              noTombstoneApply: true,
+            });
+            acc.resolvedCount += 1;
+            if (requestIdMismatch) acc.requestIdMismatchCount += 1;
+            acc.rows.push({
+              reviewId: cleanScalar(review.reviewId),
+              requestId: localRequestId || cleanScalar(review.reviewId),
+              folderId: receipt.folderId,
+              status: 'folder-restore-receipt-same-folder-pending-resolved',
+              requestIdMismatch: requestIdMismatch,
+              noChromeRestoreAuthority: true,
+              noFolderRestore: true,
+              noTombstoneApply: true,
+            });
+            return pruneFolderRestoreRequestExportMirror({
+              requestId: localRequestId || receipt.requestId,
+              reviewId: cleanScalar(review.reviewId) || receipt.reviewId,
+              folderId: receipt.folderId,
+            }).then(function () { return acc; });
+          });
+        });
+      }, Promise.resolve({
+        ok: true,
+        status: 'folder-restore-receipt-same-folder-pending-reconciled',
+        resolvedCount: 0,
+        requestIdMismatchCount: 0,
+        rows: [],
+      }));
+    }).catch(function (e) {
+      recordError('resolvePendingFolderRestoreRequestsByReceipt', e);
+      return {
+        ok: false,
+        status: 'folder-restore-receipt-same-folder-pending-reconcile-failed',
+        resolvedCount: 0,
+        requestIdMismatchCount: 0,
+        rows: [],
+        warnings: [{ code: 'folder-restore-receipt-same-folder-pending-reconcile-failed' }],
+      };
+    });
+  }
+
   function makeFolderRestoreReceiptImportResult(bundleInput, options) {
     var opts = isObject(options) ? options : {};
     return {
@@ -2551,6 +2642,7 @@
       confirmedRestoreRequestCount: 0,
       staleRestoreRequestCount: 0,
       restoreReceiptRequestIdMismatchCount: 0,
+      sameFolderPendingRestoreResolvedCount: 0,
       skippedCount: 0,
       malformedCount: 0,
       blockerCount: 0,
@@ -2685,6 +2777,29 @@
               addRestoreReceiptImportCode(result.warnings, warning && warning.code);
             });
           }
+          return resolvePendingFolderRestoreRequestsByReceipt(receipt).then(function (reconcile) {
+            if (!reconcile) return;
+            if (reconcile.ok === false) {
+              result.warningCount += 1;
+              addRestoreReceiptImportCode(result.warnings, 'folder-restore-receipt-same-folder-pending-reconcile-failed');
+              return;
+            }
+            var resolvedCount = Number(reconcile.resolvedCount) || 0;
+            if (resolvedCount > 0) {
+              result.resolvedCount += resolvedCount;
+              result.importedRestoreReceiptCount += resolvedCount;
+              result.confirmedRestoreRequestCount += resolvedCount;
+              result.sameFolderPendingRestoreResolvedCount += resolvedCount;
+              result.restoreReceiptRequestIdMismatchCount += Number(reconcile.requestIdMismatchCount) || 0;
+              (Array.isArray(reconcile.rows) ? reconcile.rows : []).forEach(function (row) {
+                result.receiptRows.push(Object.assign({}, row, {
+                  receiptId: nullableString(single && single.receiptId),
+                  source: 'desktop-folder-restore-receipt',
+                  sameFolderPendingRestoreResolved: true,
+                }));
+              });
+            }
+          });
         });
       });
     }, Promise.resolve()).then(function () {

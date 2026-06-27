@@ -3368,6 +3368,7 @@
       confirmedRestoreRequestCount: 0,
       staleRestoreRequestCount: 0,
       restoreReceiptRequestIdMismatchCount: 0,
+      sameFolderPendingRestoreResolvedCount: 0,
       visibleStateOnlyReShow: true,
       noChromeRestoreAuthority: true,
       noTombstoneApply: true,
@@ -3551,6 +3552,7 @@
       (numberOrZero(review.resolvedCount) + numberOrZero(review.alreadyResolvedCount)));
     target.staleRestoreRequestCount = numberOrZero(review.staleRestoreRequestCount || review.trustedDesktopReceiptWithoutLocalRequestCount);
     target.restoreReceiptRequestIdMismatchCount = numberOrZero(review.restoreReceiptRequestIdMismatchCount);
+    target.sameFolderPendingRestoreResolvedCount = numberOrZero(review.sameFolderPendingRestoreResolvedCount);
     target.receiptRows = Array.isArray(review.receiptRows) ? review.receiptRows.slice(0, 100) : target.receiptRows;
     target.skippedReceipts = Array.isArray(review.skippedReceipts) ? review.skippedReceipts.slice(0, 100) : target.skippedReceipts;
     (Array.isArray(review.warnings) ? review.warnings : []).forEach(function (warning) {
