@@ -2,9 +2,9 @@
 
 ## Verdict
 
-PARTIAL. The audit found one real Chrome-side restore parity defect and fixed it with a narrow source change, but post-fix runtime reload/import proof could not complete because the relaunched Chrome CDP profile requires the sync folder permission grant again.
+PASS. Phase 6C.5 runtime proof is now green after reconnecting the Chrome sync folder.
 
-Phase 6C should not be marked fully closed until the post-fix Chrome import proof is rerun in a profile with `/Users/hobayda/H2O Studio Sync` permission granted and shows `pendingTargetRequestCount:0`.
+The final closeout condition is satisfied: the target Chrome restore request is resolved, not pending, and the restored target does not reappear in Chrome Recently Deleted companion.
 
 ## Target
 
@@ -114,32 +114,71 @@ Defect observed:
 - `folderRestoreRequestExportableCount:1`
 - target restore request still `status:"pending"`
 
-## Post-Fix Runtime Blocker
+## Post-Fix Runtime Proof
 
-After source fix and `npm run dev:all`, the Studio Launcher extension was rebuilt successfully. A fresh Chrome CDP launch loaded the rebuilt extension, but the smoke profile no longer had granted sync folder permission:
+Chrome health before proof:
 
-- `status:"blocked"`
-- `blockers:["permission-required"]`
+- `status:"healthy"`
 - `connected:true`
-- `permission:"prompt"`
-- `folderName:"H2O Studio Sync"`
-- `chromeWritesSyncFolder:true`
-- `permissionRequired:true`
+- `permission:"granted"`
 - `noFolderHandle:false`
+- `chromeWritesSyncFolder:true`
+- `blockers:[]`
 
-Because Desktop-to-Chrome import requires the folder grant, post-fix runtime proof is blocked until the operator re-grants `/Users/hobayda/H2O Studio Sync` in that Chrome profile.
+Chrome Desktop-to-Chrome import:
 
-Required next proof:
+- `imported.ok:true`
+- `imported.status:"sync-folder-imported"`
+- `imported.blockers:[]`
+- `folderRestoreReceiptImport.ok:true`
+- `folderRestoreReceiptImport.found:2`
+- `folderRestoreReceiptImport.receiptCount:2`
+- `folderRestoreReceiptImport.blockerCount:0`
+- `folderRestoreReceiptImport.blockers:[]`
+- `folderRestoreReceiptImport.staleRestoreRequestCount:2`
+- `folderRestoreReceiptImport.sameFolderPendingRestoreResolvedCount:0`
 
-1. Grant sync folder permission in the Chrome CDP profile.
-2. Run Desktop export `desktop-to-chrome`.
-3. Run Chrome import `desktop-to-chrome`.
-4. Run `listFolderRestoreRequests` for the target.
-5. Expected:
-   - `pendingTargetRequestCount:0`
-   - `sameFolderPendingRestoreResolvedCount >= 1` if the stale pending row is still present before import
-   - target remains visible in normal folder list
-   - target remains absent from Chrome Recently Deleted companion
+Interpretation: `sameFolderPendingRestoreResolvedCount:0` is expected on this rerun because the request was already resolved by the prior import/fix path. The final request state below is the authoritative closeout condition.
+
+Warning-only restore receipt entries:
+
+- `restore-receipt-no-matching-request`
+- non-blocking
+- trusted Desktop receipt without a local request
+
+Final target restore request state:
+
+- `listFolderRestoreRequests.ok:true`
+- `status:"folder-restore-requests-listed"`
+- `count:1`
+- `targetRequestCount:1`
+- `pendingTargetRequestCount:0`
+- target `requestId:"folder-restore-request:baf2e96a-cfef-4e10-a755-f0cd86c15a33"`
+- target `status:"resolved"`
+- target `decision:"applied-folder-restore-request"`
+- warnings include:
+  - `folder-restore-receipt-imported`
+  - `folder-restore-request-applied-on-desktop`
+  - `chrome-restore-direct-apply-blocked`
+  - `no-tombstone-apply`
+  - `restore-receipt-request-id-mismatch`
+
+Chrome Recently Deleted companion:
+
+- `diagnoseChromeRecentlyDeletedCompanion.ok:true`
+- `status:"chrome-recently-deleted-companion-diagnosed"`
+- `targetCompanionCount:0`
+- `targetCompanionRows:[]`
+- `blockers:[]`
+- `warnings:[]`
+
+## Runtime Interpretation
+
+Phase 6C.5 runtime proof is green. The key closeout condition is `pendingTargetRequestCount:0`: Chrome no longer keeps a same-folder restore request pending after trusted Desktop restore receipt reconciliation.
+
+The target request is resolved, not pending. The target does not reappear in Chrome Recently Deleted companion.
+
+Desktop trusted receipt reconciliation remains status/request-state reconciliation only. It does not grant Chrome restore authority, tombstone apply/create, purge, hard delete, chat delete, snapshot delete, or asset delete.
 
 ## Safety Invariants
 
