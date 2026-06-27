@@ -1093,6 +1093,13 @@
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
       folderRestoreRequestImport: safeObject(result.folderRestoreRequestImport),
       folderRestoreRequestAutoApply: safeObject(result.folderRestoreRequestAutoApply),
+      chromeExportInFlightPersisted: result.chromeExportInFlightPersisted === true,
+      chromeExportInFlightMemory: result.chromeExportInFlightMemory === true,
+      chromeExportInFlightAgeMs: Number(result.chromeExportInFlightAgeMs || 0) || 0,
+      chromeExportInFlightStaleMs: Number(result.chromeExportInFlightStaleMs || 0) || 0,
+      chromeExportStaleLockCleared: result.chromeExportStaleLockCleared === true,
+      chromeExportLockOwner: cleanString(result.chromeExportLockOwner),
+      chromeExportLockReason: cleanString(result.chromeExportLockReason),
       chromeExportSmokeOptInEnsured: chromeExportSmokeOptInEnsured,
       preExportFolderModel: preExportFolderModel ? {
         status: cleanString(preExportFolderModel.status),
@@ -1141,6 +1148,20 @@
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestImport)),
       folderRestoreRequestAutoApply: safeObject(result.folderRestoreRequestAutoApply ||
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestAutoApply)),
+      chromeExportInFlightPersisted: result.chromeExportInFlightPersisted === true ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportInFlightPersisted === true,
+      chromeExportInFlightMemory: result.chromeExportInFlightMemory === true ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportInFlightMemory === true,
+      chromeExportInFlightAgeMs: Number(result.chromeExportInFlightAgeMs ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportInFlightAgeMs || 0) || 0,
+      chromeExportInFlightStaleMs: Number(result.chromeExportInFlightStaleMs ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportInFlightStaleMs || 0) || 0,
+      chromeExportStaleLockCleared: result.chromeExportStaleLockCleared === true ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportStaleLockCleared === true,
+      chromeExportLockOwner: cleanString(result.chromeExportLockOwner ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportLockOwner),
+      chromeExportLockReason: cleanString(result.chromeExportLockReason ||
+        safeObject(rawDiagnose && rawDiagnose.chromeToDesktop).chromeExportLockReason),
       folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport ||
         rawDiagnose && (rawDiagnose.folderRestoreReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport)),
       lastFolderRestoreReceiptImport: safeObject(rawDiagnose &&

@@ -109,6 +109,7 @@
   var SMOKE_REQUIRED_VALUE = 'folder-sync-rc';
   var SETTINGS_KEY         = 'h2o:sync:chrome-auto-import:state:v1';
   var MAX_ERRORS           = 20;
+  var CHROME_EXPORT_IN_FLIGHT_STALE_MS = 60000;
   /* R3 phase 2 — event-trigger wiring. The whitelist names below are
    * "post-write" library-state-changed signals; each fires AFTER a
    * library save has completed, not during. EVENT_TRIGGER_DEBOUNCE_MS
@@ -126,6 +127,11 @@
     installedAt: Date.now(),
     enabled: false,             /* mirrors the EVENT_TRIGGER_FLAG_KEY value; kept in sync via enable()/disable() */
     inFlight: false,
+    inFlightStartedAt: 0,
+    inFlightReason: '',
+    inFlightOwner: '',
+    lastStaleInFlightClearedAt: '',
+    lastStaleInFlightClearedReason: '',
     lastExportAt: '',
     lastExportStatus: '',
     lastExportFile: '',
@@ -380,6 +386,50 @@
     state.lastExportBytes = Number(p.bytes || 0);
     state.lastExportError = String(p.error || '');
     return p;
+  }
+
+  function chromeExportInFlightAgeMs(now) {
+    if (!state.inFlight || !state.inFlightStartedAt) return 0;
+    return Math.max(0, Number(now || Date.now()) - Number(state.inFlightStartedAt || 0));
+  }
+
+  function chromeExportLockDiagnostics(extra) {
+    var data = extra && typeof extra === 'object' ? extra : {};
+    var memoryInFlight = Object.prototype.hasOwnProperty.call(data, 'memoryInFlight')
+      ? data.memoryInFlight === true
+      : state.inFlight === true;
+    var ageMs = Object.prototype.hasOwnProperty.call(data, 'ageMs')
+      ? Math.max(0, Number(data.ageMs) || 0)
+      : chromeExportInFlightAgeMs();
+    return {
+      chromeExportInFlightPersisted: false,
+      chromeExportInFlightMemory: memoryInFlight,
+      chromeExportInFlightAgeMs: ageMs,
+      chromeExportInFlightStaleMs: CHROME_EXPORT_IN_FLIGHT_STALE_MS,
+      chromeExportStaleLockCleared: data.staleCleared === true,
+      chromeExportLockOwner: cleanString(data.owner || state.inFlightOwner || 'auto-import.exportNow'),
+      chromeExportLockReason: cleanString(data.reason || state.inFlightReason),
+    };
+  }
+
+  function clearStaleChromeExportLock(reason) {
+    if (!state.inFlight) return null;
+    var ageMs = chromeExportInFlightAgeMs();
+    if (!state.inFlightStartedAt || ageMs < CHROME_EXPORT_IN_FLIGHT_STALE_MS) {
+      return { cleared: false, ageMs: ageMs };
+    }
+    var previous = {
+      owner: state.inFlightOwner,
+      reason: state.inFlightReason,
+      ageMs: ageMs,
+    };
+    state.inFlight = false;
+    state.inFlightStartedAt = 0;
+    state.inFlightReason = '';
+    state.inFlightOwner = '';
+    state.lastStaleInFlightClearedAt = nowIso();
+    state.lastStaleInFlightClearedReason = cleanString(reason || previous.reason || 'stale-export-lock');
+    return Object.assign({ cleared: true }, previous);
   }
 
   /* ── Service-worker round-trip to produce the bundle ──────────────── */
@@ -2203,7 +2253,7 @@
 
     /* (1) Flag gate. */
     if (!flagEnabled() && !folderAutoSync) {
-      var s1 = {
+      var s1 = Object.assign({
         ok: false,
         reason: reason,
         startedAt: startedAt,
@@ -2221,15 +2271,17 @@
         error: 'feature flag "' + FLAG_KEY + '" is OFF',
         enableForSmokeSnippet: writeGate.enableForSmokeSnippet,
         warnings: [],
-      };
+      }, chromeExportLockDiagnostics({ memoryInFlight: state.inFlight === true, reason: reason }));
       state.lastExportAt = startedAt;
       state.lastExportStatus = 'flag-off';
       state.lastExportError = s1.error;
       return s1;
     }
 
+    var staleLock = clearStaleChromeExportLock(reason);
     if (state.inFlight) {
-      return {
+      var blockedAgeMs = chromeExportInFlightAgeMs();
+      return Object.assign({
         ok: false,
         reason: reason,
         startedAt: startedAt,
@@ -2244,11 +2296,21 @@
         exportWriteGate: diagnoseChromeExportWriteGate(),
         folderAutoSync: folderAutoSync,
         status: 'chrome-to-desktop-export-in-flight',
+        blockers: ['chrome-to-desktop-export-in-flight'],
         error: 'export already in flight',
         warnings: [],
-      };
+      }, chromeExportLockDiagnostics({
+        memoryInFlight: true,
+        ageMs: blockedAgeMs,
+        reason: state.inFlightReason || reason,
+        owner: state.inFlightOwner || 'auto-import.exportNow',
+      }));
     }
     state.inFlight = true;
+    state.inFlightStartedAt = Date.now();
+    state.inFlightReason = reason;
+    state.inFlightOwner = 'auto-import.exportNow';
+    var staleLockCleared = !!(staleLock && staleLock.cleared);
     var warnings = [];
     var errors = [];
     var blockers = [];
@@ -2357,7 +2419,7 @@
         });
       }
       if (blockers.length > 0) {
-        var blocked = {
+        var blocked = Object.assign({
           ok: false,
           reason: reason,
           startedAt: startedAt,
@@ -2381,7 +2443,12 @@
           unindexedRowReasonCounts: chromeExportCoverage ? Object.assign({}, chromeExportCoverage.unindexedRowReasonCounts || {}) : {},
           unindexedRows: chromeExportCoverage && Array.isArray(chromeExportCoverage.unindexedRows)
             ? chromeExportCoverage.unindexedRows.slice(0, 50) : [],
-        };
+        }, chromeExportLockDiagnostics({
+          memoryInFlight: false,
+          staleCleared: staleLockCleared,
+          reason: reason,
+          owner: 'auto-import.exportNow',
+        }));
         state.lastExportAt = startedAt;
         state.lastExportStatus = 'coverage-blocked';
         state.lastExportFile = '';
@@ -2403,7 +2470,7 @@
       atomicMethod = writeResult.atomicMethod;
       var completedAt = nowIso();
 
-      var ok = {
+      var ok = Object.assign({
         ok: true,
         reason: reason,
         startedAt: startedAt,
@@ -2465,7 +2532,12 @@
         unindexedRowReasonCounts: chromeExportCoverage ? Object.assign({}, chromeExportCoverage.unindexedRowReasonCounts || {}) : {},
         unindexedRows: chromeExportCoverage && Array.isArray(chromeExportCoverage.unindexedRows)
           ? chromeExportCoverage.unindexedRows.slice(0, 50) : [],
-      };
+      }, chromeExportLockDiagnostics({
+        memoryInFlight: false,
+        staleCleared: staleLockCleared,
+        reason: reason,
+        owner: 'auto-import.exportNow',
+      }));
       state.lastExportAt = startedAt;
       state.lastExportStatus = 'ok';
       state.lastExportFile = CHROME_FILE;
@@ -2487,7 +2559,7 @@
       state.lastExportAt = startedAt;
       state.lastExportStatus = 'error';
       state.lastExportError = String((e && e.message) || e);
-      return {
+      return Object.assign({
         ok: false,
         reason: reason,
         startedAt: startedAt,
@@ -2506,9 +2578,18 @@
         warnings: warnings,
         errors: errors,
         error: String((e && e.message) || e),
-      };
+        blockers: ['chrome-to-desktop-export-failed'],
+      }, chromeExportLockDiagnostics({
+        memoryInFlight: false,
+        staleCleared: staleLockCleared,
+        reason: reason,
+        owner: 'auto-import.exportNow',
+      }));
     } finally {
       state.inFlight = false;
+      state.inFlightStartedAt = 0;
+      state.inFlightReason = '';
+      state.inFlightOwner = '';
     }
   }
 
@@ -2718,6 +2799,15 @@
       lastFolderDeleteRequestExport: state.lastFolderDeleteRequestExport,
       lastFolderRestoreRequestExport: state.lastFolderRestoreRequestExport,
       inFlight: state.inFlight,
+      chromeExportInFlightPersisted: false,
+      chromeExportInFlightMemory: state.inFlight === true,
+      chromeExportInFlightAgeMs: chromeExportInFlightAgeMs(),
+      chromeExportInFlightStaleMs: CHROME_EXPORT_IN_FLIGHT_STALE_MS,
+      chromeExportStaleLockCleared: false,
+      chromeExportLastStaleLockClearedAt: state.lastStaleInFlightClearedAt,
+      chromeExportLastStaleLockClearedReason: state.lastStaleInFlightClearedReason,
+      chromeExportLockOwner: cleanString(state.inFlightOwner),
+      chromeExportLockReason: cleanString(state.inFlightReason),
     };
   }
   async function diagnose() {
