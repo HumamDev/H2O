@@ -40,6 +40,7 @@
     'requestFolderRestore',
     'listFolderRestoreRequests',
     'applyFolderDeleteRequest',
+    'applyFolderRestoreRequest',
     'listFolderDeleteReceipts',
     'listActiveFolderTombstones',
     'listRecentlyDeletedFolders',
@@ -55,6 +56,7 @@
   }, Object.create(null));
   var DESKTOP_ONLY_OPS = Object.freeze({
     applyFolderDeleteRequest: true,
+    applyFolderRestoreRequest: true,
     listActiveFolderTombstones: true,
     listRecentlyDeletedFolders: true,
     diagnosePurgedFolderResurrectionCandidates: true,
@@ -1089,6 +1091,8 @@
       folderRestoreRequestExport: safeObject(result.folderRestoreRequestExport),
       folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
+      folderRestoreRequestImport: safeObject(result.folderRestoreRequestImport),
+      folderRestoreRequestAutoApply: safeObject(result.folderRestoreRequestAutoApply),
       chromeExportSmokeOptInEnsured: chromeExportSmokeOptInEnsured,
       preExportFolderModel: preExportFolderModel ? {
         status: cleanString(preExportFolderModel.status),
@@ -1133,6 +1137,10 @@
         (rawDiagnose.folderRestoreRequestExport || safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestExport))),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply ||
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestAutoApply)),
+      folderRestoreRequestImport: safeObject(result.folderRestoreRequestImport ||
+        rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestImport)),
+      folderRestoreRequestAutoApply: safeObject(result.folderRestoreRequestAutoApply ||
+        rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestAutoApply)),
       folderRestoreReceiptImport: safeObject(result.folderRestoreReceiptImport ||
         rawDiagnose && (rawDiagnose.folderRestoreReceiptImport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptImport)),
       lastFolderRestoreReceiptImport: safeObject(rawDiagnose &&
@@ -1301,6 +1309,26 @@
       reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge',
     });
     return summarizeMutationResult('applyFolderDeleteRequest', result);
+  }
+
+  async function applyFolderRestoreRequest(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+    var fn = store && store.applyFolderRestoreRequest;
+    if (typeof fn !== 'function') return unsupportedResult('applyFolderRestoreRequest', 'folder-restore-apply-api-unavailable');
+    var result = await fn.call(store, {
+      reviewId: cleanString(payload.reviewId || payload.requestId),
+      requestId: cleanString(payload.requestId || payload.reviewId),
+    }, {
+      reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge-restore-apply',
+    });
+    return summarizeMutationResult('applyFolderRestoreRequest', Object.assign({}, safeObject(result), {
+      noChromeRestoreAuthority: true,
+      noChromeTombstoneApply: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    }));
   }
 
   async function restoreFolder(payload) {
@@ -1546,6 +1574,7 @@
     if (op === 'requestFolderRestore') return requestFolderRestore(payload);
     if (op === 'listFolderRestoreRequests') return listFolderRestoreRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);
+    if (op === 'applyFolderRestoreRequest') return applyFolderRestoreRequest(payload);
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
     if (op === 'listActiveFolderTombstones') return listActiveFolderTombstones(payload);
     if (op === 'listRecentlyDeletedFolders') return listRecentlyDeletedFolders(payload);
