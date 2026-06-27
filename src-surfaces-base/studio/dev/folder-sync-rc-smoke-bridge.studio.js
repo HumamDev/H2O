@@ -1089,6 +1089,7 @@
       warnings: codeList(result.warnings),
       folderDeleteRequestExport: safeObject(result.folderDeleteRequestExport),
       folderRestoreRequestExport: safeObject(result.folderRestoreRequestExport),
+      folderRestoreReceiptExport: safeObject(result.folderRestoreReceiptExport),
       folderDeleteRequestImport: safeObject(result.folderDeleteRequestImport),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply),
       folderRestoreRequestImport: safeObject(result.folderRestoreRequestImport),
@@ -1142,6 +1143,8 @@
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestImport)),
       folderRestoreRequestExport: safeObject(rawDiagnose &&
         (rawDiagnose.folderRestoreRequestExport || safeObject(safeObject(rawDiagnose.state).lastFolderRestoreRequestExport))),
+      folderRestoreReceiptExport: safeObject(result.folderRestoreReceiptExport ||
+        rawDiagnose && (rawDiagnose.folderRestoreReceiptExport || safeObject(rawDiagnose.desktopToChrome).folderRestoreReceiptExport)),
       folderDeleteRequestAutoApply: safeObject(result.folderDeleteRequestAutoApply ||
         rawDiagnose && safeObject(safeObject(rawDiagnose.state).lastFolderDeleteRequestAutoApply)),
       folderRestoreRequestImport: safeObject(result.folderRestoreRequestImport ||

@@ -39,6 +39,7 @@
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
+  var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -407,6 +408,10 @@
     return 'folder-delete-receipt:' + encodeRecordPart(requestId);
   }
 
+  function folderRestoreReceiptId(requestId) {
+    return 'folder-restore-receipt:' + encodeRecordPart(requestId);
+  }
+
   function parseFolderDeleteRequestPayload(input) {
     if (!input) return null;
     var raw = readField(input, 'rawTombstoneJson', 'raw_tombstone_json');
@@ -685,6 +690,91 @@
     if (folderId) query.recordId = folderDeleteRequestRecordId(folderId);
     return listReviews(query).then(function (rows) {
       return (Array.isArray(rows) ? rows : []).map(folderDeleteReceiptFromReview).filter(function (receipt) {
+        if (!receipt) return false;
+        if (folderId && receipt.folderId !== folderId) return false;
+        if (requestId && receipt.requestId !== requestId) return false;
+        if (reviewId && receipt.reviewId !== reviewId) return false;
+        return true;
+      });
+    });
+  }
+
+  function folderRestoreReceiptFromReview(review) {
+    if (!review) return null;
+    if (cleanScalar(review.classification) !== 'restore-request') return null;
+    if (cleanScalar(review.recordKind) !== 'folder') return null;
+    if (cleanScalar(review.status) !== 'resolved') return null;
+    var decision = cleanScalar(review.decision);
+    if (decision !== 'applied-folder-restore-request' &&
+        decision !== 'already-restored-folder-restore-request') return null;
+
+    var parsed = normalizeFolderRestoreRequest(review);
+    if (!parsed.ok) return null;
+    var request = parsed.request;
+    var payload = parseFolderRestoreRequestPayload(review) || {};
+    var applyResult = isObject(payload.desktopApplyResult) ? payload.desktopApplyResult : {};
+    var status = cleanScalar(applyResult.status);
+    if (status !== 'applied-folder-restore-request' &&
+        status !== 'already-restored-folder-restore-request') return null;
+
+    var requestId = cleanScalar(request.requestId || review.reviewId);
+    var reviewId = cleanScalar(review.reviewId || request.reviewId || requestId);
+    var folderId = cleanScalar(request.folderId || review.recordId);
+    if (!requestId || !reviewId || !folderId) return null;
+
+    return {
+      schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+      receiptId: folderRestoreReceiptId(requestId),
+      requestId: requestId,
+      reviewId: reviewId,
+      folderId: folderId,
+      folderName: nullableString(request.folderNameAtRequest || request.folderName),
+      folderNameAtRequest: nullableString(request.folderNameAtRequest || request.folderName),
+      recordKind: 'folder',
+      intent: 'folder-restore-request',
+      decision: 'desktop-folder-restored',
+      restoreDecision: decision,
+      status: 'restored',
+      result: status,
+      restoredAt: nullableString(applyResult.appliedAt || review.decidedAt),
+      restoredBy: 'desktop-studio',
+      restoredBySurface: 'desktop-studio',
+      restoredBySyncPeerIdPresent: applyResult.appliedBySyncPeerIdPresent === true || !!cleanScalar(review.decidedBySyncPeerId),
+      sourcePeerId: nullableString(request.sourcePeerId || review.remoteSyncPeerId || 'chrome-studio'),
+      tombstoneId: nullableString(applyResult.tombstoneId || request.tombstoneId),
+      alreadyRestored: applyResult.alreadyRestored === true || decision === 'already-restored-folder-restore-request',
+      bindingRestoreAttemptedCount: Number(applyResult.bindingRestoreAttemptedCount) || 0,
+      bindingRestoredCount: Number(applyResult.bindingRestoredCount) || 0,
+      bindingSkippedCount: Number(applyResult.bindingSkippedCount) || 0,
+      chromeReceipt: true,
+      statusOnly: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noChromeRestoreAuthority: true,
+      tombstonePropagation: 'deferred',
+      chromeReShowDeferred: true,
+    };
+  }
+
+  function listFolderRestoreReceipts(filters) {
+    var f = isObject(filters) ? filters : {};
+    var folderId = cleanScalar(f.folderId || f.id || f.recordId || '');
+    var requestId = cleanScalar(f.requestId || '');
+    var reviewId = cleanScalar(f.reviewId || '');
+    var query = {
+      classification: 'restore-request',
+      status: 'resolved',
+      recordKind: 'folder',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (folderId) query.recordId = folderRestoreRequestRecordId(folderId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).map(folderRestoreReceiptFromReview).filter(function (receipt) {
         if (!receipt) return false;
         if (folderId && receipt.folderId !== folderId) return false;
         if (requestId && receipt.requestId !== requestId) return false;
@@ -4823,6 +4913,7 @@
     applyFolderDeleteRequest: applyFolderDeleteRequest,
     findPendingFolderRestoreRequest: findPendingFolderRestoreRequest,
     listFolderRestoreRequests: listFolderRestoreRequests,
+    listFolderRestoreReceipts: listFolderRestoreReceipts,
     ingestFolderRestoreRequests: ingestFolderRestoreRequests,
     applyFolderRestoreRequest: applyFolderRestoreRequest,
     getReview: getReview,
@@ -4850,6 +4941,7 @@
       folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
       folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
       folderRestoreRequestSchema: FOLDER_RESTORE_REQUEST_SCHEMA,
+      folderRestoreReceiptSchema: FOLDER_RESTORE_RECEIPT_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,

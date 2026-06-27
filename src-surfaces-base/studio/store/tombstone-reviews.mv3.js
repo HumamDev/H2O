@@ -52,6 +52,9 @@
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-delete-receipt-import.v1';
   var FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-delete-receipt-apply-result.v1';
+  var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
+  var FOLDER_RESTORE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-restore-receipt-import.v1';
+  var FOLDER_RESTORE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-restore-receipt-apply-result.v1';
   var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
   var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
   var FOLDER_RESTORE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-restore-requests:pending-export:v1';
@@ -742,6 +745,39 @@
     }).catch(function (e) {
       recordError('folderDeleteRequest.exportMirror.prune', e);
       return { ok: false, status: 'folder-delete-request-export-mirror-prune-failed', reason: String((e && e.message) || e) };
+    });
+  }
+
+  function pruneFolderRestoreRequestExportMirror(payload) {
+    var p = isObject(payload) ? payload : {};
+    var ids = [
+      cleanScalar(p.requestId),
+      cleanScalar(p.reviewId),
+    ].filter(Boolean);
+    var folderId = cleanScalar(p.folderId || p.recordId);
+    if (!ids.length && !folderId) return Promise.resolve({ ok: true, status: 'folder-restore-request-export-mirror-noop' });
+    return readKv(FOLDER_RESTORE_REQUEST_EXPORT_KEY).then(function (current) {
+      var rows = Array.isArray(current && current.requests) ? current.requests.slice() : [];
+      var before = rows.length;
+      rows = rows.filter(function (row) {
+        var rowIds = [cleanScalar(row.requestId), cleanScalar(row.reviewId)].filter(Boolean);
+        var idMatch = ids.length && rowIds.some(function (id) { return ids.indexOf(id) !== -1; });
+        var folderMatch = folderId && cleanScalar(row.folderId || row.recordId) === folderId;
+        return !(idMatch || folderMatch);
+      });
+      if (rows.length === before) return { ok: true, status: 'folder-restore-request-export-mirror-unchanged', requestCount: rows.length };
+      return writeKv(FOLDER_RESTORE_REQUEST_EXPORT_KEY, {
+        schema: FOLDER_RESTORE_REQUEST_EXPORT_MIRROR_SCHEMA,
+        version: 1,
+        updatedAt: nowIso(),
+        requestCount: rows.length,
+        requests: rows,
+      }).then(function () {
+        return { ok: true, status: 'folder-restore-request-export-mirror-pruned', requestCount: rows.length };
+      });
+    }).catch(function (e) {
+      recordError('folderRestoreRequest.exportMirror.prune', e);
+      return { ok: false, status: 'folder-restore-request-export-mirror-prune-failed', reason: String((e && e.message) || e) };
     });
   }
 
@@ -2200,6 +2236,460 @@
     }, Promise.resolve()).then(function () {
       result.ok = result.blockerCount === 0;
       if (result.blockerCount > 0) addReceiptImportCode(result.warnings, 'folder-delete-receipt-import-blocked');
+      return result;
+    });
+  }
+
+  function folderRestoreReceiptIds(receipt) {
+    var values = [
+      cleanScalar(receipt && receipt.requestId),
+      cleanScalar(receipt && receipt.reviewId),
+    ];
+    var seen = Object.create(null);
+    return values.filter(function (value) {
+      if (!value || seen[value]) return false;
+      seen[value] = true;
+      return true;
+    });
+  }
+
+  function normalizeFolderRestoreReceipt(input) {
+    var receipt = isObject(input) ? input : {};
+    if (cleanScalar(receipt.schema) !== FOLDER_RESTORE_RECEIPT_SCHEMA) {
+      return { ok: false, code: 'restore-receipt-schema-invalid' };
+    }
+    if (cleanScalar(receipt.status) !== 'restored') {
+      return { ok: false, code: 'restore-receipt-status-not-restored' };
+    }
+    if (cleanScalar(receipt.decision) !== 'desktop-folder-restored') {
+      return { ok: false, code: 'restore-receipt-decision-invalid' };
+    }
+    if (receipt.statusOnly !== true) return { ok: false, code: 'restore-receipt-status-only-missing' };
+    if (receipt.noTombstoneApply !== true) return { ok: false, code: 'restore-receipt-no-tombstone-apply-missing' };
+    if (receipt.noHardDelete !== true) return { ok: false, code: 'restore-receipt-no-hard-delete-missing' };
+    if (receipt.noChatDelete !== true) return { ok: false, code: 'restore-receipt-no-chat-delete-missing' };
+    var requestId = cleanScalar(receipt.requestId || receipt.reviewId);
+    var reviewId = cleanScalar(receipt.reviewId || receipt.requestId);
+    var folderId = cleanScalar(receipt.folderId);
+    if (!folderId) return { ok: false, code: 'restore-receipt-folder-identity-missing' };
+    return {
+      ok: true,
+      receipt: {
+        schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+        receiptId: nullableString(receipt.receiptId),
+        requestId: requestId || reviewId,
+        reviewId: reviewId || requestId,
+        folderId: folderId,
+        folderName: nullableString(receipt.folderName || receipt.folderNameAtRequest),
+        recordKind: 'folder',
+        intent: 'folder-restore-request',
+        status: 'restored',
+        decision: 'desktop-folder-restored',
+        restoreDecision: nullableString(receipt.restoreDecision || receipt.result),
+        restoredAt: nullableString(receipt.restoredAt),
+        tombstoneId: nullableString(receipt.tombstoneId),
+        sourcePeerId: nullableString(receipt.sourcePeerId || receipt.restoredBySyncPeerId || receipt.restoredBy || 'desktop-studio'),
+        alreadyRestored: receipt.alreadyRestored === true,
+        noHardDelete: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noPurge: true,
+        statusOnly: true,
+        noTombstoneApply: true,
+        noTombstoneCreate: true,
+        noChromeRestoreAuthority: true,
+        tombstonePropagation: 'deferred',
+      },
+    };
+  }
+
+  function makeFolderRestoreReceiptApplyResult(receipt) {
+    var r = isObject(receipt) ? receipt : {};
+    return {
+      schema: FOLDER_RESTORE_RECEIPT_APPLY_RESULT_SCHEMA,
+      phase: 'phase6c.4',
+      ok: false,
+      applied: false,
+      resolved: false,
+      alreadyResolved: false,
+      receiptId: nullableString(r.receiptId),
+      requestId: nullableString(r.requestId || r.reviewId),
+      reviewId: nullableString(r.reviewId || r.requestId),
+      folderId: nullableString(r.folderId),
+      status: 'not-applied',
+      decision: 'desktop-folder-restored',
+      reviewFound: false,
+      reviewStatus: null,
+      reviewUpdated: false,
+      writesPerformed: 0,
+      requestIdMismatch: false,
+      trustedDesktopReceiptWithoutLocalRequest: false,
+      warningOnly: false,
+      noChromeRestoreAuthority: true,
+      noFolderRestore: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      blockers: [],
+      warnings: [],
+    };
+  }
+
+  function blockFolderRestoreReceiptApply(receipt, code, extra) {
+    var result = makeFolderRestoreReceiptApplyResult(receipt);
+    var normalized = cleanScalar(code) || 'folder-restore-receipt-blocked';
+    result.status = normalized;
+    pushBlocker(result, normalized);
+    if (extra && typeof extra === 'object') Object.assign(result, extra);
+    return result;
+  }
+
+  function findFolderRestoreRequestReviewForReceipt(receipt) {
+    var ids = folderRestoreReceiptIds(receipt);
+    function byId(index) {
+      if (index >= ids.length) return Promise.resolve(null);
+      return getReview(ids[index]).then(function (review) {
+        return review || byId(index + 1);
+      });
+    }
+    return byId(0).then(function (review) {
+      if (review) return { review: review, foundById: true };
+      return listFolderRestoreRequests({ folderId: receipt.folderId, limit: MAX_LIST_LIMIT }).then(function (rows) {
+        var found = (Array.isArray(rows) ? rows : []).find(function (row) {
+          var payload = parseFolderRestoreRequestPayload(row);
+          if (!payload) return false;
+          return ids.indexOf(cleanScalar(payload.requestId)) !== -1 ||
+            ids.indexOf(cleanScalar(payload.reviewId)) !== -1 ||
+            ids.indexOf(cleanScalar(row && row.reviewId)) !== -1;
+        }) || null;
+        if (found) return { review: found, foundById: false };
+        var pending = (Array.isArray(rows) ? rows : []).find(function (row) {
+          return cleanScalar(row && row.status) === 'pending';
+        }) || null;
+        return { review: pending, foundById: false, folderOnlyMatch: !!pending };
+      });
+    });
+  }
+
+  function folderRestoreReceiptLocalFolderId(review) {
+    var payload = parseFolderRestoreRequestPayload(review);
+    return cleanScalar(payload && payload.folderId) || cleanScalar(review && review.recordId);
+  }
+
+  function folderRestoreReceiptLocalRequestId(review) {
+    var payload = parseFolderRestoreRequestPayload(review);
+    return cleanScalar(payload && (payload.requestId || payload.reviewId)) || cleanScalar(review && review.reviewId);
+  }
+
+  function appendFolderRestoreReceiptWarnings(rawWarnings, requestIdMismatch) {
+    var warnings = parseWarnings(rawWarnings);
+    pushCodeWarning(warnings, 'folder-restore-receipt-imported');
+    pushCodeWarning(warnings, 'folder-restore-request-applied-on-desktop');
+    pushCodeWarning(warnings, 'chrome-restore-direct-apply-blocked');
+    pushCodeWarning(warnings, 'no-tombstone-apply');
+    if (requestIdMismatch) pushCodeWarning(warnings, 'restore-receipt-request-id-mismatch');
+    return JSON.stringify(warnings);
+  }
+
+  function folderRestoreReceiptRawWithResult(review, receipt, importedAt, requestIdMismatch) {
+    var payload = parseFolderRestoreRequestPayload(review) || {};
+    payload.status = 'resolved';
+    payload.desktopRestoreReceiptResult = {
+      schema: FOLDER_RESTORE_RECEIPT_APPLY_RESULT_SCHEMA,
+      phase: 'phase6c.4',
+      status: 'restored',
+      decision: 'desktop-folder-restored',
+      receiptId: cleanScalar(receipt.receiptId),
+      requestId: cleanScalar(receipt.requestId),
+      reviewId: cleanScalar(receipt.reviewId),
+      folderId: cleanScalar(receipt.folderId),
+      importedAt: importedAt,
+      receivedAt: importedAt,
+      restoredAt: nullableString(receipt.restoredAt),
+      tombstoneId: nullableString(receipt.tombstoneId),
+      requestIdMismatch: requestIdMismatch === true,
+      noChromeRestoreAuthority: true,
+      noFolderRestore: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      statusOnly: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      tombstonePropagation: 'deferred',
+    };
+    return JSON.stringify(payload);
+  }
+
+  function applyFolderRestoreReceipt(receiptInput, options) {
+    var normalized = normalizeFolderRestoreReceipt(receiptInput);
+    if (!normalized.ok) {
+      return Promise.resolve(blockFolderRestoreReceiptApply(receiptInput, normalized.code || 'restore-receipt-invalid'));
+    }
+    var receipt = normalized.receipt;
+    return ensureReady()
+      .then(function () { return findFolderRestoreRequestReviewForReceipt(receipt); })
+      .then(function (match) {
+        var review = match && match.review;
+        if (!review) {
+          var noMatch = blockFolderRestoreReceiptApply(receipt, 'restore-receipt-no-matching-request');
+          noMatch.warningOnly = true;
+          noMatch.trustedDesktopReceiptWithoutLocalRequest = true;
+          return noMatch;
+        }
+        var result = makeFolderRestoreReceiptApplyResult(receipt);
+        result.reviewFound = true;
+        result.reviewId = cleanScalar(review.reviewId);
+        result.reviewStatus = nullableString(review.status);
+        var localFolderId = folderRestoreReceiptLocalFolderId(review);
+        if (localFolderId !== receipt.folderId) {
+          pushBlocker(result, 'restore-receipt-folder-mismatch');
+          result.status = 'restore-receipt-folder-mismatch';
+          result.localFolderIdPresent = !!localFolderId;
+          return result;
+        }
+        var localRequestId = folderRestoreReceiptLocalRequestId(review);
+        var ids = folderRestoreReceiptIds(receipt);
+        var requestIdMismatch = !!(localRequestId && ids.length && ids.indexOf(localRequestId) === -1 &&
+          ids.indexOf(cleanScalar(review.reviewId)) === -1);
+        var currentStatus = cleanScalar(review.status);
+        if (currentStatus === 'resolved' && (
+          cleanScalar(review.decision) === 'applied-folder-restore-request' ||
+          cleanScalar(review.decision) === 'already-restored-folder-restore-request'
+        )) {
+          result.ok = true;
+          result.alreadyResolved = true;
+          result.status = 'folder-restore-receipt-already-resolved';
+          result.requestIdMismatch = requestIdMismatch;
+          return pruneFolderRestoreRequestExportMirror({
+            requestId: receipt.requestId,
+            reviewId: receipt.reviewId,
+            folderId: receipt.folderId,
+          }).then(function (mirror) {
+            result.exportMirror = mirror;
+            return result;
+          });
+        }
+        if (!canApplyDecisionTransition(currentStatus, 'resolved')) {
+          pushBlocker(result, 'restore-receipt-review-not-pending');
+          result.status = 'restore-receipt-review-not-pending';
+          return result;
+        }
+        var importedAt = nowIso();
+        var next = Object.assign({}, review, {
+          status: 'resolved',
+          decision: 'applied-folder-restore-request',
+          decidedAt: importedAt,
+          decidedBySyncPeerId: cleanScalar(receipt.sourcePeerId || 'desktop-studio') || 'desktop-studio',
+          rawTombstoneJson: folderRestoreReceiptRawWithResult(review, receipt, importedAt, requestIdMismatch),
+          warningsJson: appendFolderRestoreReceiptWarnings(review.warningsJson || review.warnings, requestIdMismatch),
+          updatedAt: importedAt,
+        });
+        return idbPut(next).then(function () {
+          recordWrite('applyFolderRestoreReceipt');
+          notifySubscribers({
+            source: 'desktop-folder-restore-receipt',
+            op: 'applyFolderRestoreReceipt',
+            reviewId: cleanScalar(review.reviewId),
+            folderId: receipt.folderId,
+            status: 'resolved',
+            noFolderRestore: true,
+            noTombstoneApply: true,
+          });
+          result.ok = true;
+          result.applied = true;
+          result.resolved = true;
+          result.status = 'folder-restore-receipt-applied';
+          result.decision = 'desktop-folder-restored';
+          result.decidedAt = importedAt;
+          result.reviewUpdated = true;
+          result.requestIdMismatch = requestIdMismatch;
+          result.writesPerformed = 1;
+          if (requestIdMismatch) pushCodeWarning(result.warnings, 'restore-receipt-request-id-mismatch');
+          return pruneFolderRestoreRequestExportMirror({
+            requestId: receipt.requestId,
+            reviewId: receipt.reviewId,
+            folderId: receipt.folderId,
+          }).then(function (mirror) {
+            result.exportMirror = mirror;
+            return result;
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('applyFolderRestoreReceipt', e);
+        var failure = blockFolderRestoreReceiptApply(receipt, 'folder-restore-receipt-apply-failed');
+        pushCodeWarning(failure.warnings, 'folder-restore-receipt-apply-threw');
+        return failure;
+      });
+  }
+
+  function makeFolderRestoreReceiptImportResult(bundleInput, options) {
+    var opts = isObject(options) ? options : {};
+    return {
+      schema: FOLDER_RESTORE_RECEIPT_IMPORT_SCHEMA,
+      phase: 'phase6c.4',
+      ok: true,
+      source: cleanScalar(opts.source || 'latest.json'),
+      attempted: true,
+      found: 0,
+      receiptCount: 0,
+      resolvedCount: 0,
+      alreadyResolvedCount: 0,
+      importedRestoreReceiptCount: 0,
+      confirmedRestoreRequestCount: 0,
+      staleRestoreRequestCount: 0,
+      restoreReceiptRequestIdMismatchCount: 0,
+      skippedCount: 0,
+      malformedCount: 0,
+      blockerCount: 0,
+      warningCount: 0,
+      noChromeRestoreAuthority: true,
+      noFolderRestore: true,
+      noTombstoneApply: true,
+      noTombstoneCreate: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      tombstonePropagation: 'deferred',
+      warnings: [],
+      blockers: [],
+      results: [],
+      receiptRows: [],
+      skippedReceipts: [],
+      trustedDesktopReceiptWithoutLocalRequestCount: 0,
+    };
+  }
+
+  function addRestoreReceiptImportCode(list, code) {
+    var c = cleanScalar(code);
+    if (!c || !Array.isArray(list)) return;
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].code === c) {
+        list[i].count = Number(list[i].count || 1) + 1;
+        return;
+      }
+    }
+    list.push({ code: c });
+  }
+
+  function ingestFolderRestoreReceipts(bundleInput, options) {
+    var bundle = Array.isArray(bundleInput)
+      ? { folderRestoreReceipts: bundleInput }
+      : (isObject(bundleInput) ? bundleInput : null);
+    var result = makeFolderRestoreReceiptImportResult(bundle, options);
+    if (!bundle || !Object.prototype.hasOwnProperty.call(bundle, 'folderRestoreReceipts')) {
+      result.found = 0;
+      result.receiptCount = 0;
+      return Promise.resolve(result);
+    }
+    if (!Array.isArray(bundle.folderRestoreReceipts)) {
+      result.ok = false;
+      result.malformedCount = 1;
+      result.skippedCount = 1;
+      result.warningCount = 1;
+      addRestoreReceiptImportCode(result.warnings, 'folder-restore-receipts-malformed');
+      return Promise.resolve(result);
+    }
+    result.found = bundle.folderRestoreReceipts.length;
+    result.receiptCount = bundle.folderRestoreReceipts.length;
+    return bundle.folderRestoreReceipts.reduce(function (promise, receipt) {
+      return promise.then(function () {
+        return applyFolderRestoreReceipt(receipt, options).then(function (single) {
+          var singleWarningOnly = single && single.warningOnly === true;
+          var singleReceiptRow = {
+            ok: single && single.ok === true,
+            status: cleanScalar(single && single.status),
+            receiptId: nullableString(single && single.receiptId),
+            requestId: nullableString(single && (single.requestId || single.reviewId)),
+            reviewId: nullableString(single && (single.reviewId || single.requestId)),
+            folderId: nullableString(single && single.folderId),
+            reviewFound: single && single.reviewFound === true,
+            resolved: single && single.resolved === true,
+            alreadyResolved: single && single.alreadyResolved === true,
+            requestIdMismatch: single && single.requestIdMismatch === true,
+            trustedDesktopReceiptWithoutLocalRequest: single && single.trustedDesktopReceiptWithoutLocalRequest === true,
+            warningOnly: singleWarningOnly,
+            noChromeRestoreAuthority: true,
+            noFolderRestore: true,
+            noTombstoneApply: true,
+          };
+          result.results.push({
+            ok: singleReceiptRow.ok,
+            status: singleReceiptRow.status,
+            receiptId: singleReceiptRow.receiptId,
+            requestId: singleReceiptRow.requestId,
+            reviewId: singleReceiptRow.reviewId,
+            folderId: singleReceiptRow.folderId,
+            reviewFound: singleReceiptRow.reviewFound,
+            resolved: singleReceiptRow.resolved,
+            alreadyResolved: singleReceiptRow.alreadyResolved,
+            requestIdMismatch: singleReceiptRow.requestIdMismatch,
+            trustedDesktopReceiptWithoutLocalRequest: singleReceiptRow.trustedDesktopReceiptWithoutLocalRequest,
+            warningOnly: singleWarningOnly,
+            noChromeRestoreAuthority: true,
+            noFolderRestore: true,
+            noTombstoneApply: true,
+          });
+          result.receiptRows.push(singleReceiptRow);
+          if (single && single.resolved === true) {
+            result.resolvedCount += 1;
+            result.importedRestoreReceiptCount += 1;
+            result.confirmedRestoreRequestCount += 1;
+          } else if (single && single.alreadyResolved === true) {
+            result.alreadyResolvedCount += 1;
+            result.importedRestoreReceiptCount += 1;
+            result.confirmedRestoreRequestCount += 1;
+          } else {
+            result.skippedCount += 1;
+          }
+          if (singleReceiptRow.requestIdMismatch) result.restoreReceiptRequestIdMismatchCount += 1;
+          if (singleReceiptRow.trustedDesktopReceiptWithoutLocalRequest) {
+            result.trustedDesktopReceiptWithoutLocalRequestCount += 1;
+            result.staleRestoreRequestCount += 1;
+            result.skippedReceipts.push(Object.assign({}, singleReceiptRow, {
+              reason: 'restore-receipt-no-matching-request',
+            }));
+          }
+          if (single && Array.isArray(single.blockers) && single.blockers.length) {
+            single.blockers.forEach(function (blocker) {
+              if (singleWarningOnly) {
+                result.warningCount += 1;
+                addRestoreReceiptImportCode(result.warnings, blocker && blocker.code);
+              } else {
+                result.blockerCount += 1;
+                addRestoreReceiptImportCode(result.blockers, blocker && blocker.code);
+              }
+            });
+          }
+          if (single && Array.isArray(single.warnings) && single.warnings.length) {
+            result.warningCount += single.warnings.length;
+            single.warnings.forEach(function (warning) {
+              addRestoreReceiptImportCode(result.warnings, warning && warning.code);
+            });
+          }
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      result.ok = result.blockerCount === 0;
+      if (result.blockerCount > 0) addRestoreReceiptImportCode(result.warnings, 'folder-restore-receipt-import-blocked');
       return result;
     });
   }
@@ -4713,6 +5203,8 @@
     diagnoseFolderRestoreRequests: diagnoseFolderRestoreRequests,
     applyFolderDeleteReceipt: applyFolderDeleteReceipt,
     ingestFolderDeleteReceipts: ingestFolderDeleteReceipts,
+    applyFolderRestoreReceipt: applyFolderRestoreReceipt,
+    ingestFolderRestoreReceipts: ingestFolderRestoreReceipts,
     upsertReviewSighting: upsertReviewSighting,
     getReview: getReview,
     getByDedupeKey: getByDedupeKey,
@@ -4739,6 +5231,8 @@
       folderRestoreRequestSchema: FOLDER_RESTORE_REQUEST_SCHEMA,
       folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
       folderDeleteReceiptImportSchema: FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA,
+      folderRestoreReceiptSchema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+      folderRestoreReceiptImportSchema: FOLDER_RESTORE_RECEIPT_IMPORT_SCHEMA,
       diagnosticSchema: DIAGNOSTIC_SCHEMA,
       cascadeDiagnosticSchema: CASCADE_DIAGNOSTIC_SCHEMA,
       lifecycleDiagnosticSchema: LIFECYCLE_DIAGNOSTIC_SCHEMA,

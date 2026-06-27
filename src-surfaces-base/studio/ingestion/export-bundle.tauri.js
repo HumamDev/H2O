@@ -1750,6 +1750,108 @@
     };
   }
 
+  function folderRestoreReceiptExportKey(receipt) {
+    var r = safeObject(receipt);
+    var requestId = cleanString(r.requestId || r.reviewId);
+    if (requestId) return 'request:' + requestId;
+    var folderId = cleanString(r.folderId);
+    var tombstoneId = cleanString(r.tombstoneId);
+    if (folderId && tombstoneId) return 'folder-tombstone:' + folderId + ':' + tombstoneId;
+    if (folderId) return 'folder:' + folderId;
+    return cleanString(r.receiptId);
+  }
+
+  function mergeFolderRestoreReceiptPayloads(primary, fallback) {
+    var primaryRows = asArray(primary && primary.receipts);
+    var fallbackRows = asArray(fallback && fallback.receipts);
+    var seen = Object.create(null);
+    var receipts = [];
+    primaryRows.concat(fallbackRows).forEach(function (receipt) {
+      if (!receipt || typeof receipt !== 'object') return;
+      if (cleanString(receipt.schema) !== FOLDER_RESTORE_RECEIPT_SCHEMA) return;
+      if (receipt.statusOnly !== true || receipt.noTombstoneApply !== true) return;
+      var key = folderRestoreReceiptExportKey(receipt);
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      receipts.push(receipt);
+    });
+    return receipts.slice(0, FOLDER_RESTORE_RECEIPT_LIMIT);
+  }
+
+  async function buildFolderRestoreReceiptPayloadSafely(stores, tombstones) {
+    var fallback = buildFolderRestoreReceiptPayloadFromTombstones(tombstones);
+    var api = stores && stores.tombstoneReviews;
+    if (!api || typeof api.listFolderRestoreReceipts !== 'function') {
+      fallback.diagnostics = Object.assign({}, fallback.diagnostics || emptyFolderRestoreReceiptDiagnostics(), {
+        requestReceiptSourceAvailable: false,
+        requestReceiptCount: 0,
+        tombstoneFallbackCount: asArray(fallback.receipts).length,
+        warnings: asArray(fallback.diagnostics && fallback.diagnostics.warnings).concat([{
+          code: 'folder-restore-receipt-review-store-unavailable',
+          warning: 'store.tombstoneReviews.listFolderRestoreReceipts unavailable; using tombstone-derived folderRestoreReceipts fallback',
+        }]),
+      });
+      return fallback;
+    }
+    try {
+      var requestReceipts = await api.listFolderRestoreReceipts({
+        limit: FOLDER_RESTORE_RECEIPT_LIMIT,
+      });
+      if (!Array.isArray(requestReceipts)) {
+        fallback.diagnostics = Object.assign({}, fallback.diagnostics || emptyFolderRestoreReceiptDiagnostics(), {
+          requestReceiptSourceAvailable: true,
+          requestReceiptCount: 0,
+          tombstoneFallbackCount: asArray(fallback.receipts).length,
+          warnings: asArray(fallback.diagnostics && fallback.diagnostics.warnings).concat([{
+            code: 'folder-restore-receipt-list-malformed',
+            warning: 'store.tombstoneReviews.listFolderRestoreReceipts returned a non-array payload; using tombstone fallback',
+          }]),
+        });
+        return fallback;
+      }
+      var projected = requestReceipts.filter(function (receipt) {
+        return receipt && typeof receipt === 'object' &&
+          cleanString(receipt.schema) === FOLDER_RESTORE_RECEIPT_SCHEMA &&
+          receipt.statusOnly === true &&
+          receipt.noTombstoneApply === true &&
+          receipt.noChromeRestoreAuthority === true;
+      });
+      var merged = mergeFolderRestoreReceiptPayloads({ receipts: projected }, fallback);
+      return {
+        receipts: merged,
+        diagnostics: {
+          supported: true,
+          exported: true,
+          schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+          total: requestReceipts.length + Number(fallback.diagnostics && fallback.diagnostics.total || 0),
+          exportedCount: merged.length,
+          requestReceiptSourceAvailable: true,
+          requestReceiptCount: projected.length,
+          tombstoneFallbackCount: asArray(fallback.receipts).length,
+          skippedMalformed: Math.max(0, requestReceipts.length - projected.length),
+          statusOnly: true,
+          noTombstoneApply: true,
+          noChromeRestoreAuthority: true,
+          tombstonePropagation: 'deferred',
+          chromeReShowDeferred: true,
+          warnings: asArray(fallback.diagnostics && fallback.diagnostics.warnings),
+        },
+      };
+    } catch (e) {
+      fallback.diagnostics = Object.assign({}, fallback.diagnostics || emptyFolderRestoreReceiptDiagnostics(), {
+        requestReceiptSourceAvailable: true,
+        requestReceiptCount: 0,
+        tombstoneFallbackCount: asArray(fallback.receipts).length,
+        warnings: asArray(fallback.diagnostics && fallback.diagnostics.warnings).concat([{
+          code: 'folder-restore-receipt-export-failed',
+          warning: 'folder restore request receipt projection failed; using tombstone fallback',
+          error: String((e && e.message) || e),
+        }]),
+      });
+      return fallback;
+    }
+  }
+
   async function exportFullBundle(options) {
     var startedAt = Date.now();
     var warnings = [];
@@ -1773,7 +1875,7 @@
     var tombstoneDiagnostics = tombstoneExport.diagnostics || emptyTombstoneExportDiagnostics();
     var folderDeleteReceiptExport = await buildFolderDeleteReceiptPayloadSafely(stores);
     var folderDeleteReceiptDiagnostics = folderDeleteReceiptExport.diagnostics || emptyFolderDeleteReceiptDiagnostics();
-    var folderRestoreReceiptExport = buildFolderRestoreReceiptPayloadFromTombstones(tombstoneExport.tombstones);
+    var folderRestoreReceiptExport = await buildFolderRestoreReceiptPayloadSafely(stores, tombstoneExport.tombstones);
     var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
     var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstoneExport.tombstones);
     var desktopPurgedFolderSuppression = await buildDesktopPurgedFolderSuppressionPayloadSafely(stores);
@@ -1987,6 +2089,22 @@
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
         folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
         folderRestoreReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderRestoreReceiptCount) || 0,
+        folderRestoreReceiptExport: {
+          schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
+          receiptCount: asArray(bundle && bundle.folderRestoreReceipts).length,
+          requestReceiptCount: Number(bundle && bundle.diagnostics && bundle.diagnostics.desktopExport &&
+            bundle.diagnostics.desktopExport.folderRestoreReceipts &&
+            bundle.diagnostics.desktopExport.folderRestoreReceipts.requestReceiptCount) || 0,
+          tombstoneFallbackCount: Number(bundle && bundle.diagnostics && bundle.diagnostics.desktopExport &&
+            bundle.diagnostics.desktopExport.folderRestoreReceipts &&
+            bundle.diagnostics.desktopExport.folderRestoreReceipts.tombstoneFallbackCount) || 0,
+          noChromeRestoreAuthority: true,
+          noTombstoneApply: true,
+          noHardDelete: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+        },
         applyEventCount: Number(bundle && bundle.summary && bundle.summary.applyEventCount) || 0,
         applyEventExportedCount: asArray(bundle && bundle.syncApplyEvents && bundle.syncApplyEvents.events).length,
         checksum: checksum,
