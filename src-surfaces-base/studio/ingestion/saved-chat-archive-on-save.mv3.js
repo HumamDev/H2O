@@ -119,7 +119,13 @@
     var bk = cleanString(row.badgeKind).toLowerCase();
     return dv === 'saved' || bk === 'saved';
   }
+  /* Link-only = linked/imported AND NOT saved/snapshot-backed. A saved row wins
+   * over the isLinked flag: a row that is saved (isSaved / displayView 'saved' /
+   * badgeKind 'Saved') is never treated as link-only even if isLinked is true,
+   * so saved snapshot-backed rows remain eligible. Only rows that are linked/
+   * imported without being saved are excluded as Add-to-Library link-only. */
   function isLinkOnlyRow(row) {
+    if (isSavedRow(row)) return false;
     if (row.isLinked === true || row.isImported === true) return true;
     var dv = cleanString(row.displayView).toLowerCase();
     return dv === 'link' || dv === 'linked' || dv === 'imported';

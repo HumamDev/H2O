@@ -113,6 +113,9 @@ check('candidate selection requires saved/snapshot-backed and excludes link-only
   assert.ok(src.includes('isLinkOnlyRow'), 'must exclude link-only/Add-to-Library rows');
   assert.ok(src.includes('deriveSnapshotId'), 'must derive snapshotId');
   assert.ok(src.includes('missing-snapshot-id'), 'missing snapshotId must be a skip reason');
+  // Saved wins over isLinked: link-only must short-circuit on isSavedRow so a
+  // saved snapshot-backed row with isLinked:true is NOT excluded.
+  assert.match(src, /function isLinkOnlyRow[\s\S]{0,200}isSavedRow\(row\)/, 'link-only must defer to isSavedRow (saved wins over linked)');
 });
 
 check('persistent chrome.storage.local dedupe keyed by chatId|snapshotId', () => {
@@ -235,10 +238,23 @@ await checkAsync('missing snapshotId is skipped (not delivered, not marked)', as
   assert.equal(sandbox.__deliverCalls.length, 0);
 });
 
-await checkAsync('link-only / Add-to-Library row is not delivered', async () => {
+await checkAsync('saved + snapshot-backed row with isLinked:true is eligible and delivered', async () => {
   const sandbox = createSandbox({ flagOn: true });
   const ing = loadModule(sandbox);
-  const linked = await ing.maybeDeliverSavedChatArchiveOnSaveToFolderV1({ row: savedRow({ isSaved: false, isLinked: true, displayView: 'link', badgeKind: 'Link' }) });
+  const res = await ing.maybeDeliverSavedChatArchiveOnSaveToFolderV1({
+    row: savedRow({ isSaved: true, isLinked: true, isImported: false, displayView: 'saved', badgeKind: 'Saved' }),
+  });
+  assert.equal(res.status, 'delivered', 'a saved snapshot-backed row must deliver even when isLinked:true');
+  assert.equal(sandbox.__deliverCalls.length, 1);
+  assert.equal(sandbox.__deliverCalls[0].builderOptions.desktopResolution.studioChatId, 'chat_e11');
+});
+
+await checkAsync('true link-only / Add-to-Library row (not saved, no snapshot) is excluded', async () => {
+  const sandbox = createSandbox({ flagOn: true });
+  const ing = loadModule(sandbox);
+  const linked = await ing.maybeDeliverSavedChatArchiveOnSaveToFolderV1({
+    row: savedRow({ isSaved: false, isLinked: true, displayView: 'link', badgeKind: 'Link', snapshotId: '', lastSnapshotId: '', latestSnapshotId: '' }),
+  });
   assert.equal(linked.status, 'skipped-not-saved-row');
   assert.equal(sandbox.__deliverCalls.length, 0);
 });
