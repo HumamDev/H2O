@@ -782,6 +782,7 @@
     var items = safeObject(mirror.items);
     var folderBindingCounts = {};
     var mappings = [];
+    var localBindingRows = [];
     var uniqueChatIds = Object.create(null);
     var missingFolderBindingCount = 0;
     Object.keys(items).sort().forEach(function (folderId) {

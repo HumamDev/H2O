@@ -58,6 +58,15 @@ const storeSnapshotBody = functionBody(importer, 'storeDesktopCanonicalChatFolde
 const importBundleBody = functionBody(importer, 'importDesktopBundlePayload');
 const syncNowBody = functionBody(importer, 'syncNow');
 
+const localBindingRowsDeclaration = chromeDiagnosticBody.indexOf('var localBindingRows = []');
+const localBindingRowsPush = chromeDiagnosticBody.indexOf('localBindingRows.push');
+assert(localBindingRowsDeclaration >= 0, 'B3 Chrome diagnostic must declare localBindingRows');
+assert(localBindingRowsPush >= 0, 'B3 Chrome diagnostic must populate localBindingRows');
+assert(
+  localBindingRowsDeclaration < localBindingRowsPush,
+  'B3 Chrome diagnostic must declare localBindingRows before use'
+);
+
 [
   'compareBindingRows',
   'countFolderBindingMismatches',
