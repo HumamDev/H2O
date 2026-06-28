@@ -51,6 +51,7 @@
   var FOLDER_SYNC_HEALTH_VERSION = '0.1.0-phase3-health';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
+  var CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
   var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
@@ -188,6 +189,7 @@
     lastChromePostImportChangedFolderIds: [],
     lastFolderDeleteReceiptImport: null,
     lastFolderRestoreReceiptImport: null,
+    lastChatFolderBindingReceiptImport: null,
     desktopVisibleFolderSet: null,
     desktopCanonicalRecentlyDeleted: null,
     desktopPurgedFolderSuppression: null,
@@ -1912,6 +1914,7 @@
       hiddenDynamicNativeOnlyCount: Number(model && model.hiddenDynamicNativeOnlyCount) || 0,
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+      chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
       blockers: blockers,
       warnings: warnings,
       noTombstoneApplyOnChrome: true,
@@ -2763,6 +2766,7 @@
       importSummary: f.importSummary || null,
       folderDeleteReceiptImport: f.folderDeleteReceiptImport || null,
       folderRestoreReceiptImport: f.folderRestoreReceiptImport || null,
+      chatFolderBindingReceiptImport: f.chatFolderBindingReceiptImport || null,
       convergence: f.convergence || null,
       postImportRefresh: f.postImportRefresh ? redactedPostImportRefreshSummary(f.postImportRefresh) : null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
@@ -2898,6 +2902,7 @@
     var folderRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundleInput);
     state.lastFolderRestoreReceiptImport = folderRestoreReceiptImport;
     folderMetadataChangeSummary = mergeFolderRestoreReceiptReShowSummary(folderMetadataChangeSummary, folderRestoreReceiptImport);
+    var chatFolderBindingReceiptImport = await importChatFolderBindingReceiptsFromDesktopBundle(bundleInput);
     var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(normalized.bundle, nowIso());
     var desktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(desktopVisibleFolderSet);
     folderMetadataChangeSummary = mergeDesktopVisibleSetHideSummary(folderMetadataChangeSummary, desktopVisibleSetHide);
@@ -2941,6 +2946,9 @@
     if (numberOrZero(folderRestoreReceiptImport && folderRestoreReceiptImport.blockerCount) > 0) {
       addUnique(blockers, 'folder-restore-receipt-import-blocked');
     }
+    if (numberOrZero(chatFolderBindingReceiptImport && chatFolderBindingReceiptImport.blockerCount) > 0) {
+      addUnique(blockers, 'chat-folder-binding-receipt-import-blocked');
+    }
     var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity, importSummary);
     if (!convergence.ok) addUnique(blockers, convergence.blocker);
     return propagationResult(blockers.length === 0, {
@@ -2951,6 +2959,7 @@
       importSummary: importSummary,
       folderDeleteReceiptImport: folderDeleteReceiptImport,
       folderRestoreReceiptImport: folderRestoreReceiptImport,
+      chatFolderBindingReceiptImport: chatFolderBindingReceiptImport,
       desktopVisibleFolderSet: desktopVisibleFolderSet,
       desktopVisibleSetHide: desktopVisibleSetHide,
       desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
@@ -3823,6 +3832,105 @@
     return result;
   }
 
+  function makeChatFolderBindingReceiptImportResult() {
+    return {
+      schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA + '.chrome-import',
+      phase: 'phase-b9',
+      ok: true,
+      attempted: true,
+      found: 0,
+      receiptCount: 0,
+      importedChatFolderBindingReceiptCount: 0,
+      confirmedChatFolderBindingRequestCount: 0,
+      staleChatFolderBindingRequestCount: 0,
+      requestIdMismatchCount: 0,
+      skippedCount: 0,
+      malformedCount: 0,
+      blockerCount: 0,
+      warningCount: 0,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noBindingMutation: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      warnings: [],
+      blockers: [],
+      receiptRows: [],
+      skippedReceipts: [],
+    };
+  }
+
+  function addChatFolderBindingReceiptCode(result, bucket, code) {
+    var c = cleanString(code);
+    if (!c || !result || !Array.isArray(result[bucket])) return;
+    if (!result[bucket].some(function (row) { return row && row.code === c; })) {
+      result[bucket].push({ code: c });
+    }
+  }
+
+  function mergeChatFolderBindingReceiptReviewImport(result, reviewImport) {
+    var target = result || makeChatFolderBindingReceiptImportResult();
+    var review = safeObject(reviewImport);
+    target.reviewStoreImportAttempted = review.attempted === true || !!review.schema;
+    target.reviewStoreImportOk = review.ok !== false;
+    target.importedChatFolderBindingReceiptCount = numberOrZero(review.importedChatFolderBindingReceiptCount || review.resolvedCount || review.alreadyResolvedCount);
+    target.confirmedChatFolderBindingRequestCount = numberOrZero(review.confirmedChatFolderBindingRequestCount ||
+      (numberOrZero(review.resolvedCount) + numberOrZero(review.alreadyResolvedCount)));
+    target.staleChatFolderBindingRequestCount = numberOrZero(review.staleChatFolderBindingRequestCount || review.trustedDesktopReceiptWithoutLocalRequestCount);
+    target.requestIdMismatchCount = numberOrZero(review.requestIdMismatchCount);
+    target.receiptRows = Array.isArray(review.receiptRows) ? review.receiptRows.slice(0, 100) : target.receiptRows;
+    target.skippedReceipts = Array.isArray(review.skippedReceipts) ? review.skippedReceipts.slice(0, 100) : target.skippedReceipts;
+    (Array.isArray(review.warnings) ? review.warnings : []).forEach(function (warning) {
+      addChatFolderBindingReceiptCode(target, 'warnings', warning && (warning.code || warning));
+    });
+    (Array.isArray(review.blockers) ? review.blockers : []).forEach(function (blocker) {
+      addChatFolderBindingReceiptCode(target, 'blockers', blocker && (blocker.code || blocker));
+    });
+    target.warningCount = target.warnings.length || numberOrZero(target.warningCount);
+    target.blockerCount = target.blockers.length || numberOrZero(target.blockerCount);
+    target.ok = target.blockerCount === 0 && review.ok !== false;
+    return target;
+  }
+
+  async function importChatFolderBindingReceiptsFromDesktopBundle(bundle) {
+    var result = makeChatFolderBindingReceiptImportResult();
+    var receipts = Array.isArray(bundle && bundle.chatFolderBindingReceipts) ? bundle.chatFolderBindingReceipts : [];
+    result.found = receipts.length;
+    result.receiptCount = receipts.length;
+    if (!receipts.length) {
+      state.lastChatFolderBindingReceiptImport = result;
+      return result;
+    }
+    try {
+      var reviews = H2O.Studio && H2O.Studio.store && H2O.Studio.store.tombstoneReviews;
+      if (!reviews || typeof reviews.ingestChatFolderBindingReceipts !== 'function') {
+        result.warningCount = 1;
+        addChatFolderBindingReceiptCode(result, 'warnings', 'chat-folder-binding-receipt-store-unavailable');
+        state.lastChatFolderBindingReceiptImport = result;
+        return result;
+      }
+      var reviewImport = await reviews.ingestChatFolderBindingReceipts(bundle, {
+        source: 'latest.json',
+        noChromeBindingAuthority: true,
+        noChromeDestructiveBindingApply: true,
+        noBindingMutation: true,
+      });
+      result = mergeChatFolderBindingReceiptReviewImport(result, reviewImport);
+      state.lastChatFolderBindingReceiptImport = result;
+      return result;
+    } catch (error) {
+      pushError('chat-folder-binding-receipt-import', error);
+      result.ok = false;
+      result.blockerCount = 1;
+      addChatFolderBindingReceiptCode(result, 'blockers', 'chat-folder-binding-receipt-import-failed');
+      state.lastChatFolderBindingReceiptImport = result;
+      return result;
+    }
+  }
+
   function mergeFolderRestoreReceiptReShowSummary(metadataSummary, restoreResult) {
     var summary = Object.assign({}, safeObject(metadataSummary));
     var restore = safeObject(restoreResult);
@@ -4496,6 +4604,7 @@
       changedFolderCount: state.lastChromePostImportChangedFolderCount,
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+      chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted || null,
       desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression || null,
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
@@ -5301,6 +5410,7 @@
           var alreadyRefreshSummary = mergeFolderDeleteReceiptHideSummary(folderMetadataChangeSummary, alreadyReceiptHide);
           var alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle);
           alreadyRefreshSummary = mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport);
+          var alreadyChatFolderBindingReceiptImport = await importChatFolderBindingReceiptsFromDesktopBundle(bundle);
           var alreadyDesktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, nowIso());
           var alreadyDesktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(alreadyDesktopVisibleFolderSet);
           alreadyRefreshSummary = mergeDesktopVisibleSetHideSummary(alreadyRefreshSummary, alreadyDesktopVisibleSetHide);
@@ -5375,6 +5485,7 @@
             },
             folderDeleteReceiptImport: alreadyReceiptImport,
             folderRestoreReceiptImport: alreadyRestoreReceiptImport,
+            chatFolderBindingReceiptImport: alreadyChatFolderBindingReceiptImport,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
@@ -5432,6 +5543,7 @@
             importSummary: alreadyPropagation.importSummary,
             folderDeleteReceiptImport: alreadyPropagation.folderDeleteReceiptImport,
             folderRestoreReceiptImport: alreadyPropagation.folderRestoreReceiptImport,
+            chatFolderBindingReceiptImport: alreadyPropagation.chatFolderBindingReceiptImport,
             convergence: alreadyPropagation.convergence,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
@@ -5777,6 +5889,7 @@
         },
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+        chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,
@@ -5935,6 +6048,7 @@
       },
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+      chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
       desktopToChrome: {
         autoExportEnabled: !!desktopToChromeRaw.autoExportEnabled,
         autoImportEnabled: !!desktopToChromeRaw.autoImportEnabled,
@@ -5956,7 +6070,8 @@
         changedFolderIds: [],
         changedFolderIdsRedacted: true,
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
-        folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null
+        folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
+        chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null
       },
       chromeToDesktop: {
         chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,

@@ -42,6 +42,8 @@
   var FOLDER_DELETE_RECEIPT_LIMIT = 1000;
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
+  var CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
+  var CHAT_FOLDER_BINDING_RECEIPT_LIMIT = 1000;
   var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
   var DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA = 'h2o.studio.folder-purge-suppression.desktop.v1';
   var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
@@ -1461,6 +1463,25 @@
     };
   }
 
+  function emptyChatFolderBindingReceiptDiagnostics(warnings) {
+    return {
+      supported: true,
+      exported: false,
+      schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA,
+      total: 0,
+      exportedCount: 0,
+      statusOnly: true,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      warnings: asArray(warnings),
+    };
+  }
+
   function warningCode(code) {
     return { code: cleanString(code) || 'warning' };
   }
@@ -1723,6 +1744,70 @@
         diagnostics: emptyFolderDeleteReceiptDiagnostics([{
           code: 'folder-delete-receipt-export-failed',
           warning: 'folder delete receipt projection failed; exporting empty folderDeleteReceipts array',
+          error: String((e && e.message) || e),
+        }]),
+      };
+    }
+  }
+
+  async function buildChatFolderBindingReceiptPayloadSafely(stores) {
+    var api = stores && stores.tombstoneReviews;
+    if (!api || typeof api.listChatFolderBindingReceipts !== 'function') {
+      return {
+        receipts: [],
+        diagnostics: emptyChatFolderBindingReceiptDiagnostics([{
+          code: 'chat-folder-binding-receipt-store-unavailable',
+          warning: 'store.tombstoneReviews.listChatFolderBindingReceipts unavailable; exporting empty chatFolderBindingReceipts array',
+        }]),
+      };
+    }
+    try {
+      var receipts = await api.listChatFolderBindingReceipts({
+        limit: CHAT_FOLDER_BINDING_RECEIPT_LIMIT,
+      });
+      if (!Array.isArray(receipts)) {
+        return {
+          receipts: [],
+          diagnostics: emptyChatFolderBindingReceiptDiagnostics([{
+            code: 'chat-folder-binding-receipt-list-malformed',
+            warning: 'store.tombstoneReviews.listChatFolderBindingReceipts returned a non-array payload',
+          }]),
+        };
+      }
+      var projected = receipts.filter(function (receipt) {
+        return receipt && typeof receipt === 'object' &&
+          cleanString(receipt.schema) === CHAT_FOLDER_BINDING_RECEIPT_SCHEMA &&
+          receipt.statusOnly === true &&
+          receipt.noChromeBindingAuthority === true &&
+          receipt.noChromeDestructiveBindingApply === true;
+      });
+      return {
+        receipts: projected,
+        diagnostics: {
+          supported: true,
+          exported: true,
+          schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA,
+          total: receipts.length,
+          receiptCount: projected.length,
+          exportedCount: projected.length,
+          skippedMalformed: Math.max(0, receipts.length - projected.length),
+          statusOnly: true,
+          noChromeBindingAuthority: true,
+          noChromeDestructiveBindingApply: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          warnings: [],
+        },
+      };
+    } catch (e) {
+      return {
+        receipts: [],
+        diagnostics: emptyChatFolderBindingReceiptDiagnostics([{
+          code: 'chat-folder-binding-receipt-export-failed',
+          warning: 'chat-folder binding receipt projection failed; exporting empty chatFolderBindingReceipts array',
           error: String((e && e.message) || e),
         }]),
       };
@@ -2166,6 +2251,8 @@
     var folderDeleteReceiptDiagnostics = folderDeleteReceiptExport.diagnostics || emptyFolderDeleteReceiptDiagnostics();
     var folderRestoreReceiptExport = await buildFolderRestoreReceiptPayloadSafely(stores, tombstoneExport.tombstones);
     var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
+    var chatFolderBindingReceiptExport = await buildChatFolderBindingReceiptPayloadSafely(stores);
+    var chatFolderBindingReceiptDiagnostics = chatFolderBindingReceiptExport.diagnostics || emptyChatFolderBindingReceiptDiagnostics();
     var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstoneExport.tombstones);
     var desktopPurgedFolderSuppression = await buildDesktopPurgedFolderSuppressionPayloadSafely(stores);
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
@@ -2189,6 +2276,7 @@
       restoredTombstoneCount: Number(tombstoneDiagnostics.restored) || 0,
       folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
       folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
+      chatFolderBindingReceiptCount: asArray(chatFolderBindingReceiptExport.receipts).length,
       desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
       desktopPurgedFolderSuppressionCount: Number(desktopPurgedFolderSuppression.count) || 0,
       desktopCanonicalChatFolderBindingCount: Number(desktopCanonicalChatFolderBindings.bindingCount) || 0,
@@ -2214,6 +2302,7 @@
       desktopCanonicalChatFolderBindings: desktopCanonicalChatFolderBindings,
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
+      chatFolderBindingReceipts: asArray(chatFolderBindingReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
       diagnostics: {
         desktopExport: {
@@ -2235,6 +2324,7 @@
           chatFolderBindings: desktopCanonicalChatFolderBindings.diagnostics,
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
+          chatFolderBindingReceipts: chatFolderBindingReceiptDiagnostics,
           applyEvents: {
             schema: cleanString(syncApplyEvents.schema) || APPLY_EVENTS_SCHEMA_VERSION,
             available: syncApplyEvents.available === true,
@@ -2382,6 +2472,7 @@
         linkedOnlyCount: Number(bundle && bundle.summary && bundle.summary.linkedOnlyCount) || 0,
         folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
         folderRestoreReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderRestoreReceiptCount) || 0,
+        chatFolderBindingReceiptCount: Number(bundle && bundle.summary && bundle.summary.chatFolderBindingReceiptCount) || 0,
         chatFolderBindingExport: {
           schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
           bindingCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalChatFolderBindingCount) || 0,
@@ -2405,6 +2496,20 @@
           desktopAuthority: true,
           chromeAuthority: false,
           readOnlyProjection: true,
+          noChromeDestructiveBindingApply: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+        },
+        chatFolderBindingReceiptExport: {
+          schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA,
+          receiptCount: asArray(bundle && bundle.chatFolderBindingReceipts).length,
+          exportedCount: Number(bundle && bundle.diagnostics && bundle.diagnostics.desktopExport &&
+            bundle.diagnostics.desktopExport.chatFolderBindingReceipts &&
+            bundle.diagnostics.desktopExport.chatFolderBindingReceipts.exportedCount) || 0,
+          noChromeBindingAuthority: true,
           noChromeDestructiveBindingApply: true,
           noHardDelete: true,
           noPurge: true,
