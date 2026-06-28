@@ -23,6 +23,7 @@
 
   const LAYOUT_KEY = 'h2o:prm:cgx:library-workspace:sidebar-layout:v1';
   const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  const SYNC_FOLDER_IMPORT_STATE_KEY = 'h2o:sync:folder-import:state:v1';
   const NATIVE_BROADCAST_KEY = 'h2o:library:cross-surface:broadcast:native:v1';
   const FOLDER_PARITY_RUNTIME_VERSION = 'f19.7-folder-fallback-v2';
   const FOLDER_PARITY_RUNTIME_LOADED_AT = new Date().toISOString();
@@ -463,6 +464,99 @@
     });
   }
 
+  function normalizeDesktopCanonicalChatFolderBindingsForDisplay(raw) {
+    const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+    const schema = String(input?.schema || '').trim();
+    if (!input || schema !== 'h2o.studio.chat-folder-bindings.desktop-canonical.v1') {
+      return {
+        available: false,
+        schema,
+        source: '',
+        bindingCount: 0,
+        totalBindingCount: 0,
+        folderBindingCounts: {},
+        items: {},
+        rows: [],
+        bindings: [],
+        unfiledCount: null,
+        readOnlyProjection: true,
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      };
+    }
+    const sourceRows = Array.isArray(input.bindings)
+      ? input.bindings
+      : (Array.isArray(input.rows) ? input.rows : []);
+    const seen = new Set();
+    const rows = [];
+    const items = {};
+    const folderBindingCounts = {};
+    for (const row of sourceRows) {
+      const chatId = String(row?.chatId || row?.conversationId || '').trim();
+      const folderId = folderIdOf(row);
+      if (!chatId || !folderId) continue;
+      const key = `${chatId}\u0000${folderId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!Array.isArray(items[folderId])) items[folderId] = [];
+      items[folderId].push(chatId);
+      folderBindingCounts[folderId] = (Number(folderBindingCounts[folderId]) || 0) + 1;
+      rows.push({
+        schema: 'h2o.studio.chat-folder-bindings.desktop-canonical.v1.display-row',
+        chatId,
+        conversationId: chatId,
+        folderId,
+        folderName: String(row?.folderName || row?.name || folderId).trim() || folderId,
+        source: 'desktop-canonical-chat-folder-bindings',
+        sourceSurface: 'desktop-studio',
+        authority: 'desktop',
+        status: String(row?.status || row?.state || 'active').trim() || 'active',
+        state: String(row?.state || row?.status || 'active').trim() || 'active',
+        readOnlyProjection: true,
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      });
+    }
+    rows.sort((a, b) => String(a.folderId).localeCompare(String(b.folderId)) || String(a.chatId).localeCompare(String(b.chatId)));
+    Object.keys(input.folderBindingCounts && typeof input.folderBindingCounts === 'object' ? input.folderBindingCounts : {}).forEach((folderId) => {
+      const id = String(folderId || '').trim();
+      if (!id || Object.prototype.hasOwnProperty.call(folderBindingCounts, id)) return;
+      folderBindingCounts[id] = Number(input.folderBindingCounts[folderId]) || 0;
+      if (!Array.isArray(items[id])) items[id] = [];
+    });
+    return {
+      available: true,
+      schema,
+      source: String(input.source || 'desktop-canonical-chat-folder-bindings').trim() || 'desktop-canonical-chat-folder-bindings',
+      bindingCount: rows.length,
+      totalBindingCount: rows.length,
+      folderBindingCounts,
+      items,
+      rows,
+      bindings: rows,
+      unfiledCount: Object.prototype.hasOwnProperty.call(input, 'unfiledCount') ? input.unfiledCount : null,
+      importedAt: String(input.importedAt || '').trim(),
+      sourceExportedAt: String(input.sourceExportedAt || input.exportedAt || '').trim(),
+      desktopAuthority: true,
+      chromeAuthority: false,
+      readOnlyProjection: true,
+      noChromeDestructiveBindingApply: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noAssetDelete: true,
+    };
+  }
+
   function normalizeFolderStateForParity(raw, source = '') {
     const src = raw && typeof raw === 'object' ? raw : {};
     const folders = (Array.isArray(src.folders) ? src.folders : [])
@@ -495,11 +589,40 @@
     return {
       folders,
       items,
+      desktopCanonicalChatFolderBindings: normalizeDesktopCanonicalChatFolderBindingsForDisplay(src.desktopCanonicalChatFolderBindings),
       hiddenByDesktopVisibleSet,
       hiddenByDesktopVisibleSetIds,
       hiddenByChromePendingDelete,
       hiddenByChromePendingDeleteIds,
       desktopVisibleFolderSet: normalizeDesktopVisibleSetForDisplay(src.desktopVisibleFolderSet),
+    };
+  }
+
+  function mergeDesktopCanonicalBindingProjectionForDisplay(folderStateRaw, syncImportStateRaw) {
+    const folderState = folderStateRaw && typeof folderStateRaw === 'object' && !Array.isArray(folderStateRaw)
+      ? folderStateRaw
+      : {};
+    const syncState = syncImportStateRaw && typeof syncImportStateRaw === 'object' && !Array.isArray(syncImportStateRaw)
+      ? syncImportStateRaw
+      : {};
+    const existingProjection = normalizeDesktopCanonicalChatFolderBindingsForDisplay(folderState.desktopCanonicalChatFolderBindings);
+    if (existingProjection.available) return folderState;
+    const importedProjection = normalizeDesktopCanonicalChatFolderBindingsForDisplay(syncState.desktopCanonicalChatFolderBindings);
+    if (!importedProjection.available) return folderState;
+    return {
+      ...folderState,
+      desktopCanonicalChatFolderBindings: {
+        ...syncState.desktopCanonicalChatFolderBindings,
+        source: syncState.desktopCanonicalChatFolderBindings?.source || 'desktop-canonical-chat-folder-bindings',
+        readOnlyProjection: true,
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      },
+      desktopCanonicalChatFolderBindingsSource: 'sync-folder-import-state',
     };
   }
 
@@ -2245,7 +2368,12 @@
 
     const storedRead = await readStorageKey(FOLDER_STATE_DATA_KEY);
     if (storedRead.error) warnings.push('Folder-state key read failed: ' + storedRead.error);
-    const storedState = normalizeFolderStateForParity(storedRead.value, storedRead.source || 'stored-folder-state');
+    const syncImportStateRead = !LW_isTauri() ? await readStorageKey(SYNC_FOLDER_IMPORT_STATE_KEY) : { value: null };
+    if (syncImportStateRead.error) warnings.push('Sync import state key read failed: ' + syncImportStateRead.error);
+    const storedStateInput = !LW_isTauri()
+      ? mergeDesktopCanonicalBindingProjectionForDisplay(storedRead.value, syncImportStateRead.value)
+      : storedRead.value;
+    const storedState = normalizeFolderStateForParity(storedStateInput, storedRead.source || 'stored-folder-state');
 
     const nativeRead = await readStorageKey(NATIVE_BROADCAST_KEY);
     if (nativeRead.error) warnings.push('Native broadcast read failed: ' + nativeRead.error);
@@ -2287,10 +2415,16 @@
       ...canonicalFoldersBase,
       ...desktopVisibleSetAdoptionRows,
     ];
+    const desktopCanonicalBindingDisplay = storedState.desktopCanonicalChatFolderBindings && storedState.desktopCanonicalChatFolderBindings.available
+      ? storedState.desktopCanonicalChatFolderBindings
+      : null;
+    const desktopCanonicalBindingDisplayAvailable = !LW_isTauri() && !!desktopCanonicalBindingDisplay;
     const fallbackVisualsEnriched = !mergedTrustedCanonical.folders.length && !!fallbackCanonical.enriched;
     const canonicalIds = new Set(canonicalFolders.map((folder) => folder.id).filter(Boolean));
     const canonicalNames = new Set(canonicalFolders.map((folder) => normalizeFolderName(folderNameOf(folder))).filter(Boolean));
-    const canonicalBindingCount = desktopStoreVisibleAuthoritative
+    const canonicalBindingCount = desktopCanonicalBindingDisplayAvailable
+      ? Number(desktopCanonicalBindingDisplay.bindingCount || 0)
+      : desktopStoreVisibleAuthoritative
       ? countFolderStateBindings(mergedTrustedCanonical.items)
       : canonicalFromBroadcast
         ? countFolderStateBindings(mergedTrustedCanonical.items)
@@ -2366,7 +2500,9 @@
       ? 'review-required'
       : 'ok';
     const canonicalMirrorAvailable = mergedTrustedCanonical.folders.length > 0;
-    const canonicalItems = mergedTrustedCanonical.folders.length ? mergedTrustedCanonical.items : storedState.items;
+    const canonicalItems = desktopCanonicalBindingDisplayAvailable
+      ? desktopCanonicalBindingDisplay.items
+      : (mergedTrustedCanonical.folders.length ? mergedTrustedCanonical.items : storedState.items);
     const chromePendingDeleteHiddenIds = storedState.hiddenByChromePendingDeleteIds instanceof Set
       ? storedState.hiddenByChromePendingDeleteIds
       : new Set();
@@ -2551,6 +2687,20 @@
       localFolderCount: localFolders.length,
       canonicalBindingCount,
       localBindingCount,
+      chatFolderBindingDisplayProjectionAvailable: desktopCanonicalBindingDisplayAvailable,
+      chatFolderBindingDisplayProjectionSource: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.source : '',
+      chatFolderBindingDisplayProjectionSchema: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.schema : '',
+      chatFolderBindingDisplayBindingCount: desktopCanonicalBindingDisplayAvailable ? Number(desktopCanonicalBindingDisplay.bindingCount || 0) : 0,
+      chatFolderBindingDisplayFolderBindingCounts: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.folderBindingCounts : {},
+      chatFolderBindingDisplayRows: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.rows : [],
+      chatFolderBindingDisplayItems: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.items : {},
+      chatFolderBindingDisplayUnfiledCount: desktopCanonicalBindingDisplayAvailable ? desktopCanonicalBindingDisplay.unfiledCount : null,
+      noChromeDestructiveBindingApply: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noAssetDelete: true,
       knownStudioRowCountByFolder,
       rowStatsByFolder,
       knownStudioRowTotal,
@@ -3180,6 +3330,26 @@
         localFolderCount: localReviewRows.length,
         canonicalBindingCount: Number(report?.canonicalBindingCount || 0) || 0,
         localBindingCount: Number(report?.localBindingCount || 0) || 0,
+        chatFolderBindingDisplayProjectionAvailable: report?.chatFolderBindingDisplayProjectionAvailable === true,
+        chatFolderBindingDisplayProjectionSource: String(report?.chatFolderBindingDisplayProjectionSource || ''),
+        chatFolderBindingDisplayProjectionSchema: String(report?.chatFolderBindingDisplayProjectionSchema || ''),
+        chatFolderBindingDisplayBindingCount: Number(report?.chatFolderBindingDisplayBindingCount || 0) || 0,
+        chatFolderBindingDisplayFolderBindingCounts: report?.chatFolderBindingDisplayFolderBindingCounts && typeof report.chatFolderBindingDisplayFolderBindingCounts === 'object'
+          ? { ...report.chatFolderBindingDisplayFolderBindingCounts }
+          : {},
+        chatFolderBindingDisplayRows: Array.isArray(report?.chatFolderBindingDisplayRows) ? report.chatFolderBindingDisplayRows.slice(0, 500) : [],
+        chatFolderBindingDisplayItems: report?.chatFolderBindingDisplayItems && typeof report.chatFolderBindingDisplayItems === 'object'
+          ? { ...report.chatFolderBindingDisplayItems }
+          : {},
+        chatFolderBindingDisplayUnfiledCount: Object.prototype.hasOwnProperty.call(report || {}, 'chatFolderBindingDisplayUnfiledCount')
+          ? report.chatFolderBindingDisplayUnfiledCount
+          : null,
+        noChromeDestructiveBindingApply: report?.noChromeDestructiveBindingApply === true,
+        noChatDelete: report?.noChatDelete === true,
+        noSnapshotDelete: report?.noSnapshotDelete === true,
+        noHardDelete: report?.noHardDelete === true,
+        noPurge: report?.noPurge === true,
+        noAssetDelete: report?.noAssetDelete === true,
         canonicalSource,
         canonicalOrderTokens,
         canonicalColorTokens,

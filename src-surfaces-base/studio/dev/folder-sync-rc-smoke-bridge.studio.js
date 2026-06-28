@@ -741,6 +741,7 @@
       noSnapshotDelete: true,
       noHardDelete: true,
       noPurge: true,
+      noAssetDelete: true,
       noChromeDestructiveBindingApply: true,
     });
   }
@@ -805,6 +806,17 @@
     } catch (_) {
       addUniqueCode(warnings, 'chrome-folder-display-model-read-failed');
     }
+    var folderModelObject = safeObject(folderModel);
+    var displayProjectionAvailable = folderModelObject.chatFolderBindingDisplayProjectionAvailable === true;
+    var displayBindingRows = displayProjectionAvailable
+      ? safeArray(folderModelObject.chatFolderBindingDisplayRows)
+      : [];
+    var displayFolderBindingCounts = displayProjectionAvailable
+      ? safeObject(folderModelObject.chatFolderBindingDisplayFolderBindingCounts)
+      : {};
+    var displayBindingCount = displayProjectionAvailable
+      ? Number(folderModelObject.chatFolderBindingDisplayBindingCount || displayBindingRows.length) || 0
+      : 0;
     var canonicalProjection = safeObject(mirror.desktopCanonicalChatFolderBindings);
     var canonicalRows = safeArray(canonicalProjection.bindings).length
       ? safeArray(canonicalProjection.bindings)
@@ -831,11 +843,14 @@
     var reportedMappings = hasCanonicalBindingProjection ? canonicalMappings : mappings;
     var reportedFolderBindingCounts = hasCanonicalBindingProjection ? canonicalFolderBindingCounts : folderBindingCounts;
     var reportedBindingCount = hasCanonicalBindingProjection ? canonicalMappings.length : totalBindingCount;
+    var chromeReadBindingRows = displayProjectionAvailable ? displayBindingRows : localBindingRows;
+    var chromeReadFolderBindingCounts = displayProjectionAvailable ? displayFolderBindingCounts : folderBindingCounts;
+    var chromeReadBindingCount = displayProjectionAvailable ? displayBindingCount : totalBindingCount;
     var folderCountMismatches = hasCanonicalBindingProjection
-      ? countFolderBindingMismatches(canonicalFolderBindingCounts, folderBindingCounts)
+      ? countFolderBindingMismatches(canonicalFolderBindingCounts, chromeReadFolderBindingCounts)
       : [];
     var bindingComparison = hasCanonicalBindingProjection
-      ? compareBindingRows(canonicalBindingRows, localBindingRows, safeObject(payload).includeSensitive === true)
+      ? compareBindingRows(canonicalBindingRows, chromeReadBindingRows, safeObject(payload).includeSensitive === true)
       : {
         comparisonMode: 'not-comparable',
         comparableBindingCount: 0,
@@ -869,14 +884,22 @@
         ? canonicalProjection.unfiledCount
         : null,
       localBindingCount: totalBindingCount,
-      chromeBindingCount: totalBindingCount,
+      chromeBindingCount: chromeReadBindingCount,
       chromeMirrorBindingCount: totalBindingCount,
+      chromeDisplayBindingCount: chromeReadBindingCount,
       chromeCanonicalBindingCount: hasCanonicalBindingProjection ? canonicalMappings.length : 0,
-      chromeVisibleFolderCount: Number(folderModel && folderModel.rowCount) || 0,
+      chromeVisibleFolderCount: Number(folderModelObject && folderModelObject.rowCount) || 0,
       localFolderBindingCounts: folderBindingCounts,
-      chromeFolderBindingCounts: folderBindingCounts,
+      chromeFolderBindingCounts: chromeReadFolderBindingCounts,
+      chromeDisplayFolderBindingCounts: chromeReadFolderBindingCounts,
       folderBindingCounts: reportedFolderBindingCounts,
       chatFolderBindings: reportedMappings,
+      chromeReadDisplayProjectionAvailable: displayProjectionAvailable,
+      chromeReadDisplayProjectionSource: cleanString(folderModelObject.chatFolderBindingDisplayProjectionSource),
+      chromeReadDisplayProjectionSchema: cleanString(folderModelObject.chatFolderBindingDisplayProjectionSchema),
+      chromeReadDisplayProjectionUnfiledCount: Object.prototype.hasOwnProperty.call(folderModelObject, 'chatFolderBindingDisplayUnfiledCount')
+        ? folderModelObject.chatFolderBindingDisplayUnfiledCount
+        : null,
       bindingMapRedacted: safeObject(payload).includeSensitive !== true,
       unfiledCount: hasCanonicalBindingProjection && Object.prototype.hasOwnProperty.call(canonicalProjection, 'unfiledCount')
         ? canonicalProjection.unfiledCount
@@ -926,6 +949,22 @@
       canonicalRowCount: safeArray(m.canonicalRows).length,
       displayModelAvailable: m.displayModelAvailable === true || folders.length > 0,
       renderBlockedReason: cleanString(m.renderBlockedReason),
+      chatFolderBindingDisplayProjectionAvailable: m.chatFolderBindingDisplayProjectionAvailable === true,
+      chatFolderBindingDisplayProjectionSource: cleanString(m.chatFolderBindingDisplayProjectionSource),
+      chatFolderBindingDisplayProjectionSchema: cleanString(m.chatFolderBindingDisplayProjectionSchema),
+      chatFolderBindingDisplayBindingCount: Number(m.chatFolderBindingDisplayBindingCount || 0) || 0,
+      chatFolderBindingDisplayFolderBindingCounts: safeObject(m.chatFolderBindingDisplayFolderBindingCounts),
+      chatFolderBindingDisplayRows: safeArray(m.chatFolderBindingDisplayRows).slice(0, 500),
+      chatFolderBindingDisplayItems: safeObject(m.chatFolderBindingDisplayItems),
+      chatFolderBindingDisplayUnfiledCount: Object.prototype.hasOwnProperty.call(m, 'chatFolderBindingDisplayUnfiledCount')
+        ? m.chatFolderBindingDisplayUnfiledCount
+        : null,
+      noChromeDestructiveBindingApply: m.noChromeDestructiveBindingApply === true,
+      noChatDelete: m.noChatDelete === true,
+      noSnapshotDelete: m.noSnapshotDelete === true,
+      noHardDelete: m.noHardDelete === true,
+      noPurge: m.noPurge === true,
+      noAssetDelete: m.noAssetDelete === true,
       folders: folders,
     };
   }
