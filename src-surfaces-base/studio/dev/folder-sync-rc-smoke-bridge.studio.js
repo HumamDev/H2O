@@ -47,6 +47,7 @@
     'listRecentlyDeletedFolders',
     'diagnosePurgedFolderResurrectionCandidates',
     'restoreFolder',
+    'moveChatFolderBinding',
     'countChatsSnapshots',
     'verifyFolderVisible',
     'verifyFolderHidden',
@@ -62,6 +63,7 @@
     listRecentlyDeletedFolders: true,
     diagnosePurgedFolderResurrectionCandidates: true,
     restoreFolder: true,
+    moveChatFolderBinding: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
@@ -1765,6 +1767,124 @@
     });
   }
 
+  async function moveChatFolderBinding(payload) {
+    var p = safeObject(payload);
+    var includeSensitive = p.includeSensitive === true;
+    var chatId = cleanString(p.chatId || p.conversationId);
+    var targetFolderId = folderIdFromAny({ folderId: p.targetFolderId || p.folderId || p.toFolderId });
+    var expectedCurrentFolderId = folderIdFromAny({ folderId: p.expectedCurrentFolderId || p.fromFolderId || p.currentFolderId });
+    var reason = cleanString(p.reason);
+    var confirmationPhrase = cleanString(p.confirmationPhrase || p.confirmPhrase || p.typedConfirmation);
+    var blockers = [];
+    var warnings = [];
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    if (!store || typeof store.bindChat !== 'function' || typeof store.listForChat !== 'function') {
+      blockers.push('folder-binding-store-unavailable');
+    }
+    if (!chatId) blockers.push('chat-id-required');
+    if (!targetFolderId) blockers.push('target-folder-id-required');
+    if (!expectedCurrentFolderId) blockers.push('expected-current-folder-id-required');
+    if (!reason || reason.length < 8) blockers.push('explicit-reason-required');
+    if (confirmationPhrase !== 'B5 DESKTOP BINDING CONVERGENCE') blockers.push('confirmation-phrase-required');
+    if (blockers.length) {
+      return baseResult('moveChatFolderBinding', {
+        ok: false,
+        status: blockers[0],
+        blockers: blockers,
+        warnings: warnings,
+        readOnly: false,
+        desktopOnly: true,
+        chromeAuthority: false,
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      });
+    }
+    var beforeRows = safeArray(await store.listForChat(chatId));
+    var beforeFolderId = beforeRows.length ? folderIdFromAny(beforeRows[0]) : '';
+    if (beforeFolderId !== expectedCurrentFolderId) {
+      blockers.push('expected-current-folder-mismatch');
+      return baseResult('moveChatFolderBinding', {
+        ok: false,
+        status: 'expected-current-folder-mismatch',
+        blockers: blockers,
+        warnings: warnings,
+        readOnly: false,
+        desktopOnly: true,
+        chromeAuthority: false,
+        expectedCurrentFolderId: expectedCurrentFolderId,
+        beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      });
+    }
+    var targetFolder = typeof store.get === 'function' ? await store.get(targetFolderId) : null;
+    if (!targetFolder) {
+      blockers.push('target-folder-missing');
+      return baseResult('moveChatFolderBinding', {
+        ok: false,
+        status: 'target-folder-missing',
+        blockers: blockers,
+        warnings: warnings,
+        readOnly: false,
+        desktopOnly: true,
+        chromeAuthority: false,
+        targetFolderId: targetFolderId,
+        beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+        noAssetDelete: true,
+      });
+    }
+    var beforeDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var changed = beforeFolderId !== targetFolderId;
+    var bindOk = changed
+      ? await store.bindChat(targetFolderId, chatId, {
+        reason: reason,
+        source: 'phase-b5-desktop-origin-convergence',
+      })
+      : true;
+    var afterRows = safeArray(await store.listForChat(chatId));
+    var afterFolderId = afterRows.length ? folderIdFromAny(afterRows[0]) : '';
+    var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    if (!bindOk || afterFolderId !== targetFolderId) blockers.push('folder-binding-move-failed');
+    return baseResult('moveChatFolderBinding', {
+      ok: blockers.length === 0,
+      status: blockers.length ? blockers[0] : (changed ? 'chat-folder-binding-moved' : 'chat-folder-binding-already-targeted'),
+      blockers: blockers,
+      warnings: warnings,
+      readOnly: false,
+      desktopOnly: true,
+      chromeAuthority: false,
+      changed: changed,
+      reason: reason,
+      beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
+      afterBinding: bindingMapRow(chatId, afterFolderId, includeSensitive),
+      targetFolderId: targetFolderId,
+      expectedCurrentFolderId: expectedCurrentFolderId,
+      beforeBindingCount: Number(beforeDiagnostic.totalBindingCount || beforeDiagnostic.desktopBindingCount || 0) || 0,
+      afterBindingCount: Number(afterDiagnostic.totalBindingCount || afterDiagnostic.desktopBindingCount || 0) || 0,
+      beforeFolderBindingCounts: safeObject(beforeDiagnostic.folderBindingCounts),
+      afterFolderBindingCounts: safeObject(afterDiagnostic.folderBindingCounts),
+      noChromeDestructiveBindingApply: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noAssetDelete: true,
+    });
+  }
+
   async function requestFolderDelete(payload) {
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     var fn = actions && (actions.requestDelete || actions.requestFolderDelete);
@@ -2125,6 +2245,7 @@
     if (op === 'listRecentlyDeletedFolders') return listRecentlyDeletedFolders(payload);
     if (op === 'diagnosePurgedFolderResurrectionCandidates') return diagnosePurgedFolderResurrectionCandidates(payload);
     if (op === 'restoreFolder') return restoreFolder(payload);
+    if (op === 'moveChatFolderBinding') return moveChatFolderBinding(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
     return unsupportedResult(op, 'unsupported-op');
