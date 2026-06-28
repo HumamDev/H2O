@@ -1,8 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/capabilities/2",
   "identifier": "default",
-  "description": "Default capability for the H2O Studio main window. M1 grants the minimum needed to boot Studio's UI and open external URLs via tauri-plugin-shell. M2d-1a adds read-only filesystem access (download folder + home) for manual Browser Studio bundle sync. R2A-1 adds narrowly scoped write access for the Desktop latest sync bundle. F4 adds scoped producer-side peer mirror writes under devices/. Slice 3 smoke bridge adds dev-only scoped queue access under H2O Studio Sync/.h2o-smoke/.",
+  "description": "Default capability for the H2O Studio main window. M1 grants the minimum needed to boot Studio's UI and open external URLs via tauri-plugin-shell. M2d-1a adds read-only filesystem access (download folder + home) for manual Browser Studio bundle sync. R2A-1 adds narrowly scoped write access for the Desktop latest sync bundle. F4 adds scoped producer-side peer mirror writes under devices/. Slice 3 smoke bridge adds dev-only scoped queue access under H2O Studio Sync/.h2o-smoke/. F.3 adds a dev-only remote-origin scope so the Tauri WebView served by the local Vite dev server (http://127.0.0.1:1430 / http://localhost:1430) receives this same Desktop capability under `tauri dev`; the remote scope is inert in production builds, which load locally over tauri://.",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:1430/*", "http://localhost:1430/*"]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
