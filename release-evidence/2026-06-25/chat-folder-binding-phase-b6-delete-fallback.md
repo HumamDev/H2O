@@ -2,7 +2,7 @@
 
 ## Verdict
 
-PARTIAL / B6 IMPLEMENTED, RUNTIME PROOF PENDING. B6 adds the Desktop-authoritative folder delete binding fallback proof path and updates the canonical binding projection so bindings to deleted or missing folders are not exported as active Chrome display bindings.
+PASS / B6 CLOSED. B6 proves Desktop-authoritative folder delete binding fallback / Unfiled behavior against the canonical binding projection. Bindings to deleted or missing folders are not exported as active Chrome display bindings.
 
 B6 does not add Chrome binding mutation, Chrome binding request export, Desktop binding request apply from Chrome, hard delete, purge, chat deletion, snapshot deletion, or asset deletion.
 
@@ -90,58 +90,117 @@ If a temporary fixture is used, restore it through the existing Desktop restore 
 
 ## Runtime Status
 
-Runtime proof status: BLOCKED by stale Desktop smoke bridge source.
+Runtime proof status: PASS.
 
-Read-only Desktop queue health was reachable:
+Pre-delete Desktop diagnostic:
 
-- command: `node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseHealth --timeout-ms 30000`
+- queue enabled: `true`
+- queue started: `true`
+- queue blockers: `[]`
+- health status: `syncing`
+- binding diagnostic `ok:true`
+- `totalBindingCount:14`
+- `unfiledCount:27`
+- `deletedFolderBindingCount:0`
+- `missingFolderBindingCount:2`
+- `bindingRecoverySnapshotCount:0`
+- Tech folder `f_3bf15f43b835d19dbac0fb13` active binding count: `2`
+
+B6 soft delete helper proof:
+
+- op: `softDeleteFolderForBindingFallback`
 - `ok:true`
-- `status:"syncing"`
+- `status:"folder-soft-deleted-binding-fallback-proven"`
+- folderId: `f_3bf15f43b835d19dbac0fb13`
+- tombstoneId: `tombstone:21c3fdf4-0216-494b-982f-56be79144703`
+- `beforeFolderBindingCount:2`
+- `afterFolderBindingCount:0`
+- `beforeUnfiledCount:29`
+- `afterUnfiledCount:31`
+- `beforeDeletedFolderBindingCount:0`
+- `afterDeletedFolderBindingCount:0`
+- `beforeFallbackUnfiledBindingCount:2`
+- `afterFallbackUnfiledBindingCount:2`
+- `bindingRecoverySnapshotCount:1`
+- `activeDeletedFolderBindingExportedAsActive:false`
+- `deletedFolderBindingsExcludedFromActiveProjection:true`
+- `chatCountBefore:41`
+- `chatCountAfter:41`
+- `snapshotCountBefore:29`
+- `snapshotCountAfter:29`
 - `blockers:[]`
-- Desktop-to-Chrome last export: `latest-sync-bundle-written`
-- unrelated Chrome-to-Desktop delete request auto-apply noise remained present:
-  - `folder-delete-request-auto-apply-failed`
-  - `already-tombstoned`
+- `warnings:[]`
+- safety flags preserved:
+  - `noHardDelete:true`
+  - `noPurge:true`
+  - `noChatDelete:true`
+  - `noSnapshotDelete:true`
+  - `noBroadFilesystemAccess:true`
+  - `noChromeDestructiveBindingApply:true`
+  - `noAssetDelete:true`
 
-Read-only Desktop binding diagnostic was reachable:
+Post-delete Desktop diagnostic:
 
-- command: `node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseChatFolderBindingParity --timeout-ms 30000`
 - `ok:true`
 - `status:"chat-folder-binding-parity-diagnosed"`
-- `canonicalBindingReadPath:"store.folders.listCanonicalChatFolderBindings"`
-- `totalBindingCount:14`
-- `knownChatCount:41`
-- `unfiledCount:27`
-- `missingFolderBindingCount:2`
+- `totalBindingCount:10`
+- `unfiledCount:31`
 - `deletedFolderBindingCount:0`
+- `missingFolderBindingCount:2`
+- `bindingRecoverySnapshotCount:1`
+- Tech active count: `0`
 - `blockers:[]`
-- warnings only:
-  - `chrome-binding-import-deferred`
-  - `desktop-orphan-binding-scan-unavailable`
 
-However, that live diagnostic did not yet emit the new B6 fields:
+Desktop export:
 
-- `fallbackUnfiledBindingCount`
-- `activeDanglingFolderBindingCount`
-- `activeDeletedFolderBindingExportedAsActive`
-- `deletedFolderBindingsExcludedFromActiveProjection`
+- op: `syncNow`
+- direction: `desktop-to-chrome`
+- `ok:true`
+- `status:"latest-sync-bundle-written"`
+- transport: `latest.json`
+- exportedAt: `2026-06-28T12:23:37.638Z`
+- bytes: `756007`
+- `blockers:[]`
+- `warnings:[]`
+
+Chrome import + diagnostic:
+
+- import `ok:true`
+- import status: `sync-folder-imported`
+- import blockers: `[]`
+- diagnostic `ok:true`
+- `status:"chat-folder-binding-parity-diagnosed"`
+- `importedDesktopCanonicalBindingCount:10`
+- `chromeDisplayBindingCount:10`
+- `parityComparable:true`
+- `parityOk:true`
+- `missingInChromeCount:0`
+- `extraInChromeCount:0`
+- `folderCountMismatchCount:0`
+- `unfiledCount:31`
+- `importedDesktopCanonicalUnfiledCount:31`
+- `deletedFolderBindingCount:0`
+- `missingFolderBindingCount:2`
+- Tech active count: `0`
+- `blockers:[]`
+- `warnings:[]`
+- safety flags remain true:
+  - `noChromeDestructiveBindingApply:true`
+  - `noChatDelete:true`
+  - `noSnapshotDelete:true`
+  - `noHardDelete:true`
+  - `noPurge:true`
 
 Interpretation:
 
-- The Desktop queue is processing read-only commands.
-- The live Desktop WebView is still running source older than this B6 implementation.
-- The read-only diagnostic already shows two missing-folder binding references in the current runtime state.
-- B6 source now classifies those as fallback/dangling diagnostic rows instead of active Chrome display rows, but live proof requires reloading/rebuilding Desktop Studio so the WebView runs the B6 source.
-- No B6 live folder delete mutation was performed while creating this evidence note.
-
-Full B6 runtime proof still requires:
-
-- fresh Desktop Studio source with B6 fields loaded,
-- a safe bound smoke folder fixture,
-- `softDeleteFolderForBindingFallback`,
-- Desktop export,
-- Chrome import with sync-folder permission,
-- Chrome parity diagnostic.
+- Folder delete binding fallback / Unfiled behavior is proven.
+- Deleting Tech with two bound chats did not delete chats, snapshots, or assets.
+- Deleted folder bindings are excluded from active canonical projection.
+- Unfiled count increased from `29` to `31`.
+- Desktop exported the fallback projection.
+- Chrome imported and displayed parity with Tech active count `0`.
+- Desktop recovery snapshot count is `1`, while Chrome diagnostic showed `bindingRecoverySnapshotCount:0`; this is non-blocking Desktop-side recovery metadata and belongs to the B7 restore-rebind proof.
+- Current state after B6: Tech folder is soft-deleted and should be restored/rebound in B7.
 
 ## Validation
 
