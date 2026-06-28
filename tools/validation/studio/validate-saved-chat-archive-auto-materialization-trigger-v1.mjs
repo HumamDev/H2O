@@ -4,17 +4,20 @@
 // G.0 (contract 558a653) decided that automatic materialization, if added, is an
 // explicit, Desktop-only, BOUNDED operator "Materialize validated" batch (option
 // C) that keeps the scanner enqueue-only and reuses the F.2/F.3 building blocks —
-// NOT a scanner-coupled flag (B), NOT a background daemon/watcher (D). G.1
-// statically locks that contract and asserts the current runtime still matches the
-// pre-implementation state (no batch action anywhere, scanner enqueue-only,
-// materializer Desktop-only, Chrome read-back only, F.4 sidecar still deferred).
+// NOT a scanner-coupled flag (B), NOT a background daemon/watcher (D). G.1 locked
+// that contract; G.2 then added the bounded "Materialize validated" batch action.
+// This validator now asserts BOTH the G.0 contract and the G.2 batch
+// implementation (bounded default 10 / cap 50, sequential, scanner-free,
+// overwrite-never, result-count summary), while the standing boundaries hold
+// (scanner enqueue-only, Chrome read-back only, F.4 sidecar still deferred).
 //
 //   [G.1]       = the auto-materialization trigger contract (G.0 doc assertions).
-//   [INVARIANT] = boundaries that must hold now and after G.2/G.3.
+//   [G.2]       = the bounded "Materialize validated" batch implementation.
+//   [INVARIANT] = boundaries that must hold now and after G.3.
 //
 // Static only: reads source/doc text, asserts patterns. No runtime, no imports of
-// runtime modules, no DB, no network. It asserts NO batch action and NO sidecar
-// are implemented yet — this validator must be updated alongside G.2/G.3.
+// runtime modules, no DB, no network. When G.3 / any future change lands, update
+// this validator in lock-step.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -195,6 +198,53 @@ check('[INVARIANT] package-written Chrome sidecar/read-back remains deferred (F.
   assert.deepEqual(offenders, [], 'materialization sidecar must remain unimplemented; found: ' + offenders.join(', '));
   // status model still has no package-written substate
   assert.ok(!statusModel.includes('archived-package-written'), 'status model must not implement archived-package-written yet');
+});
+
+// --- C. G.2 bounded "Materialize validated" batch implementation -------------
+
+check('[G.2] bounded batch action materializeValidatedBatch exists and is exported', () => {
+  assert.match(actionSrc, /function materializeValidatedBatch\s*\(/);
+  assert.match(actionSrc, /materializeValidatedBatch:\s*materializeValidatedBatch/);
+});
+
+check('[G.2] batch limits: default 10, hard cap 50, clamped', () => {
+  assert.match(actionCode, /DEFAULT_BATCH_LIMIT\s*=\s*10\b/);
+  assert.match(actionCode, /MAX_BATCH_LIMIT\s*=\s*50\b/);
+  assert.match(actionCode, /Math\.min\(\s*MAX_BATCH_LIMIT/); // clamped to the hard cap
+});
+
+check('[G.2] batch lists VALIDATED rows via listSavedChatArchiveRequestsV1({ status:"validated" })', () => {
+  assert.ok(actionCode.includes('listSavedChatArchiveRequestsV1'), 'must use the validated-rows listing API');
+  assert.match(actionCode, /status:\s*['"]validated['"]/);
+});
+
+check('[G.2] batch routes each requestId through the materializer (materializeSavedChatArchiveRequestV1({ requestId }))', () => {
+  assert.match(actionCode, new RegExp(MATERIALIZE_API + '\\s*\\(\\s*\\{\\s*requestId')); // single bounded path
+  assert.match(actionCode, /materialize\(\s*\{\s*requestId:\s*row\.requestId/);            // per-row in the batch
+});
+
+check('[G.2] batch is sequential (reduce-chain, no parallel fan-out)', () => {
+  assert.match(actionCode, /\.reduce\(/);
+  assert.ok(!actionCode.includes('Promise.all'), 'batch must not fan out with Promise.all');
+});
+
+check('[G.2] batch does not call the scanner and never passes overwrite:true', () => {
+  assert.ok(!actionCode.includes('scanSavedChatArchiveRequestInboxV1'), 'batch must not call the scanner');
+  assert.doesNotMatch(actionCode, /overwrite\s*:\s*true/, 'batch must not force overwrite');
+});
+
+check('[G.2] batch exposes a result-count summary (written/already-written/failed/not-eligible/needs-desktop-snapshot/db-unavailable)', () => {
+  for (const k of ['written', 'already-written', 'failed', 'not-eligible', 'needs-desktop-snapshot', 'db-unavailable']) {
+    assert.ok(actionCode.includes("'" + k + "'"), 'batch count summary missing: ' + k);
+  }
+  for (const f of ['limit', 'total', 'attempted', 'results']) {
+    assert.ok(actionCode.includes(f), 'batch summary missing field: ' + f);
+  }
+});
+
+check('[G.2] batch is Desktop-gated and returns a safe empty result (no rows -> no materializer calls)', () => {
+  assert.match(actionCode, /function materializeValidatedBatch[\s\S]*?if \(!isDesktopCapable\(\)\) return Promise\.resolve\(emptyBatchResult/);
+  assert.match(actionCode, /if \(!list\.length\) return summary/);
 });
 
 console.log('');
