@@ -59,6 +59,9 @@
     staleArticleRetargeted: 0,
     staleArticleMisses: 0,
     connectedRendered: 0,
+    providedArticleRendered: 0,
+    detachedConstructionRendered: 0,
+    retargetedOnlyWhenMismatched: 0,
     preservedExisting: 0,
     fullRowCacheHits: 0,
     fullRowCacheWrites: 0,
@@ -112,13 +115,19 @@
   function isConnectedArticle(article) {
     return !!article && article.isConnected === true;
   }
-  function articleMatchesIds(article, chatId, snapshotId) {
-    if (!isConnectedArticle(article)) return false;
+  /* Identifier-only match — does NOT require the article to be connected, so a
+   * detached construction article from renderRow() is still a valid target. */
+  function articleIdsMatch(article, chatId, snapshotId) {
+    if (!article) return false;
     var ids = articleIds(article);
     if (!ids.chatId && !ids.snapshotId) return true;
     if (chatId && ids.chatId && ids.chatId !== chatId) return false;
     if (snapshotId && ids.snapshotId && ids.snapshotId !== snapshotId) return false;
     return (chatId && ids.chatId === chatId) || (snapshotId && ids.snapshotId === snapshotId);
+  }
+  /* Connected AND identifier match (used only for connected-article lookups). */
+  function articleMatchesIds(article, chatId, snapshotId) {
+    return isConnectedArticle(article) && articleIdsMatch(article, chatId, snapshotId);
   }
   function findCurrentArticle(chatId, snapshotId) {
     var document = doc();
@@ -139,19 +148,26 @@
     var chatId = cleanString(row && row.chatId) || ids.chatId;
     var snapshotId = deriveSnapshotId(row || {}) || ids.snapshotId;
     diagnosticsState.lastRetargeted = false;
-    if (articleMatchesIds(article, chatId, snapshotId)) {
-      diagnosticsState.lastArticleConnected = true;
+    /* Primary target: the provided (construction) article whenever its
+     * identifiers match — EVEN WHEN DETACHED. renderRow() hands us the article
+     * it is about to attach, so the badge must go into it, not into an older
+     * connected row the list is about to replace. */
+    if (article && articleIdsMatch(article, chatId, snapshotId)) {
+      diagnosticsState.lastArticleConnected = isConnectedArticle(article);
       return article;
     }
+    /* Retarget to a connected current article only when the provided article is
+     * absent or its identifiers no longer match (genuinely stale/mismatched). */
     var current = findCurrentArticle(chatId, snapshotId);
     if (current) {
       diagnosticsState.staleArticleRetargeted += 1;
+      diagnosticsState.retargetedOnlyWhenMismatched += 1;
       diagnosticsState.lastRetargeted = true;
       diagnosticsState.lastArticleConnected = true;
       return current;
     }
     diagnosticsState.staleArticleMisses += 1;
-    diagnosticsState.lastArticleConnected = false;
+    diagnosticsState.lastArticleConnected = isConnectedArticle(article);
     return null;
   }
   function rowWithArticleIds(row, article) {
@@ -403,10 +419,19 @@
     applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
     var attached = container.querySelector && container.querySelector(BADGE_SELECTOR);
-    if (isConnectedArticle(targetArticle) && attached && attached.getAttribute('data-h2o-archive-status') === cleanString(status.state)) {
+    if (attached && attached.getAttribute('data-h2o-archive-status') === cleanString(status.state)) {
+      /* A successful render counts whether the target is a connected row or a
+       * still-detached construction article (the badge survives when the list
+       * attaches that article). */
       diagnosticsState.rendered += 1;
-      diagnosticsState.connectedRendered += 1;
-      diagnosticsState.lastArticleConnected = true;
+      if (targetArticle === article) {
+        diagnosticsState.providedArticleRendered += 1;
+        if (!isConnectedArticle(targetArticle)) diagnosticsState.detachedConstructionRendered += 1;
+      }
+      if (isConnectedArticle(targetArticle)) {
+        diagnosticsState.connectedRendered += 1;
+        diagnosticsState.lastArticleConnected = true;
+      }
     }
     return status;
   }
@@ -501,6 +526,9 @@
       staleArticleRetargeted: diagnosticsState.staleArticleRetargeted,
       staleArticleMisses: diagnosticsState.staleArticleMisses,
       connectedRendered: diagnosticsState.connectedRendered,
+      providedArticleRendered: diagnosticsState.providedArticleRendered,
+      detachedConstructionRendered: diagnosticsState.detachedConstructionRendered,
+      retargetedOnlyWhenMismatched: diagnosticsState.retargetedOnlyWhenMismatched,
       preservedExisting: diagnosticsState.preservedExisting,
       fullRowCacheHits: diagnosticsState.fullRowCacheHits,
       fullRowCacheWrites: diagnosticsState.fullRowCacheWrites,

@@ -152,6 +152,18 @@ function makeArticle(context, attrs = {}) {
   context.document._root.appendChild(el);
   return el;
 }
+/* A renderRow()-style construction article: built with identifiers but NOT yet
+ * attached to the document (isConnected stays false until attachArticle). */
+function makeDetachedArticle(context, attrs = {}) {
+  const el = context.document._makeEl('article');
+  el.className = 'wbHistoryRow';
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+  return el;
+}
+function attachArticle(context, el) {
+  context.document._root.appendChild(el);
+  return el;
+}
 function savedRow(over = {}) {
   return { chatId: 'chat_e22', snapshotId: 'snap_e22', title: 'Saved chat', isSaved: true, displayView: 'saved', badgeKind: 'Saved', ...over };
 }
@@ -194,6 +206,11 @@ check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('fullRowCacheWrites'), 'diagnostic should report full-row cache writes');
   assert.ok(badgeSrc.includes('skippedQuietThinPreserved'), 'diagnostic should report thin quiet preservation');
   assert.ok(badgeSrc.includes('removed'), 'diagnostic should report confident removals');
+  // E.2.4 lifecycle fix: identifier-only match + detached construction targeting.
+  assert.ok(badgeSrc.includes('articleIdsMatch'), 'must split identifier match from connected match');
+  assert.ok(badgeSrc.includes('detachedConstructionRendered'), 'diagnostic should report detached construction renders');
+  assert.ok(badgeSrc.includes('providedArticleRendered'), 'diagnostic should report provided-article renders');
+  assert.ok(badgeSrc.includes('retargetedOnlyWhenMismatched'), 'diagnostic should report mismatch-only retargets');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -368,41 +385,67 @@ await checkAsync('confident full-row link-only evaluation can remove an existing
   assert.ok(diag.removed > 0, 'diagnostic should count confident removal');
 });
 
-await checkAsync('hydration retargets from a detached original article to the current connected article', async () => {
-  const fullRow = savedRow({ chatId: 'chat_retarget_1', snapshotId: 'snap_retarget_1' });
+await checkAsync('detached construction article hydrates and keeps the badge after the list attaches it', async () => {
+  const fullRow = savedRow({ chatId: 'chat_ctor_1', snapshotId: 'snap_ctor_1' });
   const { fn, context } = loadBadge(createSandbox({
     libraryRows: [fullRow],
     localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' }),
   }));
-  const oldArticle = makeArticle(context, { 'data-chat-id': 'chat_retarget_1', 'data-snapshot-id': 'snap_retarget_1' });
-  fn({ article: oldArticle, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
-  oldArticle.remove();
-  const currentArticle = makeArticle(context, { 'data-chat-id': 'chat_retarget_1', 'data-snapshot-id': 'snap_retarget_1' });
+  const article = makeDetachedArticle(context, { 'data-chat-id': 'chat_ctor_1', 'data-snapshot-id': 'snap_ctor_1' });
+  assert.equal(article.isConnected, false, 'construction article starts detached');
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
   await flushAsync();
-  assert.equal(oldArticle.querySelector('.wbBadge--archive-status'), null, 'detached original article must not retain a badge');
-  const badge = currentArticle.querySelector('.wbBadge--archive-status');
-  assert.ok(badge, 'current connected article should receive the hydrated badge');
+  assert.ok(article.querySelector('.wbBadge--archive-status'), 'badge must render into the detached construction article');
+  // The row list attaches the construction article later; the badge survives.
+  attachArticle(context, article);
+  const connected = context.document.querySelector('article.wbHistoryRow[data-chat-id="chat_ctor_1"]');
+  assert.ok(connected, 'attached article is findable in the document');
+  const badge = connected.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'final connected article must contain the badge');
   assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
   const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
-  assert.ok(diag.staleArticleRetargeted > 0, 'diagnostic should count stale retargets');
-  assert.ok(diag.connectedRendered > 0, 'diagnostic should count connected rendered badges');
-  assert.equal(diag.lastArticleConnected, true);
-  assert.equal(diag.lastRetargeted, true);
+  assert.ok(diag.detachedConstructionRendered > 0, 'must count detached construction renders');
+  assert.ok(diag.providedArticleRendered > 0, 'must count provided-article renders');
 });
 
-await checkAsync('detached hydrated article without a current replacement stays quiet and records stale miss', async () => {
-  const fullRow = savedRow({ chatId: 'chat_stale_miss', snapshotId: 'snap_stale_miss' });
-  const { fn, context } = loadBadge(createSandbox({
-    libraryRows: [fullRow],
-    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' }),
-  }));
-  const oldArticle = makeArticle(context, { 'data-chat-id': 'chat_stale_miss', 'data-snapshot-id': 'snap_stale_miss' });
-  fn({ article: oldArticle, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
-  oldArticle.remove();
-  await flushAsync();
-  assert.equal(oldArticle.querySelector('.wbBadge--archive-status'), null, 'detached article must not be rendered into');
+check('new detached construction row receives the badge, not only the old connected row', () => {
+  const ids = { 'data-chat-id': 'chat_ctor_2', 'data-snapshot-id': 'snap_ctor_2' };
+  const { fn, context } = loadBadge(createSandbox());
+  const oldArticle = makeArticle(context, ids);
+  fn({ article: oldArticle, badgesEl: null, row: savedRow({ chatId: 'chat_ctor_2', snapshotId: 'snap_ctor_2' }), local: { delivered: true, requestId: 'r2' }, diagnostics: { enabled: true, folderConnected: true } });
+  assert.ok(oldArticle.querySelector('.wbBadge--archive-status'), 'old connected row renders its badge');
+  // renderRow() builds a NEW detached construction article for the same row.
+  const newArticle = makeDetachedArticle(context, ids);
+  fn({ article: newArticle, badgesEl: null, row: savedRow({ chatId: 'chat_ctor_2', snapshotId: 'snap_ctor_2' }), local: { delivered: true, requestId: 'r2' }, diagnostics: { enabled: true, folderConnected: true } });
+  assert.ok(newArticle.querySelector('.wbBadge--archive-status'), 'new construction article must receive the badge (not only the old row)');
+  attachArticle(context, newArticle);
+  assert.ok(newArticle.querySelector('.wbBadge--archive-status'), 'attached new article still has the badge');
   const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
-  assert.ok(diag.staleArticleMisses > 0, 'diagnostic should count stale misses');
+  assert.ok(diag.providedArticleRendered > 0, 'render must target the provided construction article');
+  assert.ok(diag.detachedConstructionRendered > 0, 'new construction render is detached at render time');
+});
+
+check('retarget to a connected article happens only when the provided article identifiers mismatch', () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const connectedA = makeArticle(context, { 'data-chat-id': 'chat_A', 'data-snapshot-id': 'snap_A' });
+  // Provided article belongs to a DIFFERENT row → mismatch → must retarget.
+  const mismatched = makeDetachedArticle(context, { 'data-chat-id': 'chat_B', 'data-snapshot-id': 'snap_B' });
+  fn({ article: mismatched, badgesEl: null, row: savedRow({ chatId: 'chat_A', snapshotId: 'snap_A' }), local: { delivered: true, requestId: 'rA' }, diagnostics: { enabled: true, folderConnected: true } });
+  assert.equal(mismatched.querySelector('.wbBadge--archive-status'), null, 'mismatched provided article must not be rendered into');
+  assert.ok(connectedA.querySelector('.wbBadge--archive-status'), 'retarget renders into the matching connected article');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.staleArticleRetargeted > 0, 'retarget counter increments on mismatch');
+  assert.ok(diag.retargetedOnlyWhenMismatched > 0, 'mismatch-only retarget counter increments');
+});
+
+check('mismatched provided article with no connected match records a stale miss and stays quiet', () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const mismatched = makeDetachedArticle(context, { 'data-chat-id': 'chat_X', 'data-snapshot-id': 'snap_X' });
+  fn({ article: mismatched, badgesEl: null, row: savedRow({ chatId: 'chat_Y', snapshotId: 'snap_Y' }), local: { delivered: true, requestId: 'rY' }, diagnostics: { enabled: true, folderConnected: true } });
+  assert.equal(mismatched.querySelector('.wbBadge--archive-status'), null, 'no render into a mismatched article');
+  assert.equal(context.document.querySelector('article.wbHistoryRow[data-chat-id="chat_Y"]'), null, 'no connected article exists for the row');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.staleArticleMisses > 0, 'stale miss recorded when provided article mismatches and no connected match exists');
   assert.equal(diag.lastArticleConnected, false);
 });
 
