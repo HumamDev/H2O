@@ -2,9 +2,15 @@
 
 ## Verdict
 
-PARTIAL / B3 IMPLEMENTED. Chrome now imports and reads the Desktop canonical chat-folder binding projection from `latest.json`, then exposes a read-only parity comparison through `diagnoseChatFolderBindingParity`.
+PASS / B3 CLOSED. Chrome imports and reads the Desktop canonical chat-folder binding projection from `latest.json`, then exposes a read-only parity comparison through `diagnoseChatFolderBindingParity`.
 
 B3 does not fix binding mismatches. It makes them comparable, explicit, and safe.
+
+B3 runtime proof was completed after the B3a diagnostic fix:
+
+- B3 implementation commit: `64a83b1f9321388952864440e0ebffb42dd33dd9`
+- B3a diagnostic fix commit: `eafd0ec2dd6452489f690aebf1619b488b5af47d`
+- B3a evidence: `release-evidence/2026-06-25/chat-folder-binding-phase-b3a-diagnostic-runtime-fix.md`
 
 ## Imported Projection
 
@@ -77,9 +83,9 @@ That mismatch is acceptable for B3. The B3 requirement is explicit, read-only mi
 
 ## Runtime Proof Status
 
-PARTIAL. Static validation passed. Chrome CDP was available and connected to the sync folder, but the attached Chrome runtime assets were stale for the focused B3 diagnostic op.
+PASS after B3a. Fresh Studio Launcher assets were rebuilt and Chrome CDP smoke profile was relaunched. The focused B3 diagnostic is now allowlisted, runs, and returns explicit read-only mismatch details.
 
-Chrome health proof:
+Chrome health proof before import:
 
 - `status:"healthy"`
 - `connected:true`
@@ -88,7 +94,7 @@ Chrome health proof:
 - `chromeWritesSyncFolder:true`
 - `blockers:[]`
 
-Chrome import command:
+Chrome import command before B3a runtime diagnostic:
 
 ```sh
 node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op syncNow --allow-mutation --payload-json '{"direction":"desktop-to-chrome","reason":"chat-folder-binding-b3-import-parity"}' --timeout-ms 60000
@@ -100,38 +106,55 @@ Chrome import result:
 - `blockers:[]`
 - warnings were existing deferred propagation warnings, including `library-propagation-chat-folder-bindings-deferred`
 
-Focused diagnostic command:
+B3a root cause and fix:
+
+- Before B3a, the diagnostic threw with `reason:"localBindingRows is not defined"`.
+- B3a declared the Chrome diagnostic accumulator and strengthened the validator so the declaration must exist before use.
+- After rebuilding Studio Launcher assets, the loaded smoke registry reported `smokeRegistryOverlayStatus:"source-current"`.
+
+Focused diagnostic command after B3a:
 
 ```sh
 node tools/smoke/chrome-cdp-studio.mjs --mode attach --port 9247 --op diagnoseChatFolderBindingParity --timeout-ms 60000
 ```
 
-Observed diagnostic blocker:
+Focused diagnostic result after B3a:
 
-- `status:"op-not-allowlisted"`
-- `blockers:["op-not-allowlisted"]`
-- runtime registry allowlist did not include `diagnoseChatFolderBindingParity`
+- `ok:true`
+- `status:"chat-folder-binding-parity-diagnosed"`
+- `surface:"chrome-studio"`
+- `adapter:"mv3"`
+- `canonicalSource:"desktop-canonical-chat-folder-bindings"`
+- `totalBindingCount:12`
+- `importedDesktopCanonicalBindingCount:12`
+- `importedDesktopCanonicalUnfiledCount:29`
+- `localBindingCount:0`
+- `chromeBindingCount:0`
+- `comparisonMode:"chat-folder-map"`
+- `comparableBindingCount:12`
+- `missingInChromeCount:12`
+- `extraInChromeCount:0`
+- `folderCountMismatchCount:4`
+- `parityComparable:true`
+- `parityOk:false`
+- `chromeCanonicalBindingProjectionAvailable:true`
+- `chromeCanonicalBindingProjectionSchema:"h2o.studio.chat-folder-bindings.desktop-canonical.v1"`
+- `blockers:[]`
+- `warnings:[]`
 
 Interpretation:
 
-- This is a Chrome runtime asset freshness blocker for the proof, not a B3 source contract failure.
-- Source validation proves `diagnoseChatFolderBindingParity` is registered and the B3 comparison fields exist.
-- A fresh Studio Launcher rebuild/reload should be run before collecting B3 runtime diagnostic evidence.
-
-Expected diagnostic assertions after runtime asset refresh:
-
-- `importedDesktopCanonicalBindingCount:12`
-- `parityComparable:true` when the imported projection is available
-- `parityOk:true` or `parityOk:false`
-- if `parityOk:false`, mismatch details are explicit via `missingInChromeCount`, `extraInChromeCount`, and `folderCountMismatchCount`
-- `blockers:[]`
+- B3 runtime proof is now closed.
+- `parityOk:false` is not a B3 failure. B3 was not scoped to mutate or repair Chrome binding/display state.
+- The useful B3 result is that the imported Desktop canonical projection is visible to Chrome diagnostics and the parity gap is now explicit.
+- The current mismatch is read-only evidence for B4/B5.
+- The B3a evidence file records the runtime asset refresh and crash fix details.
 
 ## Remaining For B4
 
-B4 should decide the first reconciliation/display parity slice:
+B4 should address Chrome display/read-model parity using the imported Desktop canonical projection, still without Chrome destructive binding authority.
 
-- Chrome display/count parity using the Desktop canonical projection, or
-- Chrome request/receipt design for user-initiated binding moves.
+B5 can then address request/receipt design for user-initiated binding moves if mutation is needed.
 
 Do not add Chrome destructive binding authority in B4. Keep Chrome request-only where mutation is needed.
 
