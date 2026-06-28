@@ -2,11 +2,11 @@
 
 ## Verdict
 
-PARTIAL PASS: the B9 Desktop apply runtime blocker is fixed.
+PASS / CLOSED.
 
 Desktop now imports the B8 Chrome-origin chat-folder binding request, isolates stale folder-delete request noise, reconciles a stale resolved binding review against the live canonical binding store, applies the Desktop-authoritative move, and writes an updated Desktop projection/receipt into `latest.json`.
 
-Remaining runtime proof blocker: Chrome CDP import could not be completed in the available profiles. Port `9224` did not expose the Studio Launcher extension, and port `9247` exposed Studio but had no granted sync-folder handle (`sync-folder-missing` / `noFolderHandle:true`). This is an operator/profile permission blocker, not a Desktop apply blocker.
+B9 runtime proof is now closed end to end: Chrome remained request-only, Desktop applied the canonical binding move, Desktop exported the updated projection/receipt, and Chrome imported Desktop state with binding parity green.
 
 ## Request Under Test
 
@@ -75,6 +75,7 @@ Applied request:
 
 - requestId: `chat-folder-binding-request:e54fda11-d9f0-498e-bdea-62187c5aad52`
 - chatId: `69dd285f-16ec-8390-a458-0574c6ea956e`
+- expectedCurrentFolderId: `f_e301f3506938c19dbac0e304`
 - targetFolderId: `f_2bb1037f88b2719dbac10c22`
 - status: `chat-folder-binding-request-reconciled-after-stale-resolved-review`
 - beforeFolderId: `f_e301f3506938c19dbac0e304`
@@ -145,20 +146,49 @@ Direct `/Users/hobayda/H2O Studio Sync/latest.json` inspection:
 - noSnapshotDelete: `true`
 - noAssetDelete: `true`
 
-## Chrome Import Runtime Blocker
+## Chrome Setup Runtime Proof
 
-Chrome import could not be completed in the available runtime profiles:
+Final Chrome Studio target and sync folder state:
 
-- Port `9224` returned `chrome-load-extension-ignored` / `studio-launcher-extension-not-loaded`.
-- Port `9247` found the Studio Launcher extension and Studio target, but `syncNow` returned:
-  - status: `sync-folder-not-connected`
-  - blockers: `["sync-folder-missing"]`
-  - connected: `false`
-  - permission: `unknown`
-  - permissionRequired: `true`
-  - noFolderHandle: `true`
+- isChromeStudio: `true`
+- hasSmokeFlag: `true`
+- hasFolderSync: `true`
+- folderName: `H2O Studio Sync`
+- connected: `true`
+- permission: `granted`
+- noFolderHandle: `false`
+- chromeWritesSyncFolder: `true`
+- desktopToChromePermission: `granted`
+- health.status: `healthy`
+- blockers: `[]`
 
-Next runtime action for full Chrome proof: reconnect the `9247` Chrome Dev smoke profile to `/Users/hobayda/H2O Studio Sync`, then run Desktop-to-Chrome import and `diagnoseChatFolderBindingParity`.
+## Chrome Import / Parity Final Proof
+
+After reconnecting the Chrome Studio profile to `/Users/hobayda/H2O Studio Sync`, Chrome imported Desktop state and diagnosed binding parity:
+
+- healthOk: `true`
+- healthStatus: `healthy`
+- healthBlockers: `[]`
+- desktopToChromeInFlight: `false`
+- lastImportStatus: `sync-folder-imported`
+- lastImportedAt: `2026-06-28T18:37:06.486Z`
+- parityOk: `true`
+- importedCount: `12`
+- chromeCount: `12`
+- Code `f_e301f3506938c19dbac0e304`: `0`
+- English `f_2bb1037f88b2719dbac10c22`: `1`
+- Tech `f_3bf15f43b835d19dbac0fb13`: `2`
+- pendingRequests: `0`
+- blockers: `[]`
+- warnings: `[]`
+
+Interpretation:
+
+- B9 is PASS / CLOSED.
+- Desktop successfully imported and applied the Chrome-origin binding request through Desktop canonical authority.
+- Chrome remained request-only and then consumed Desktop's updated projection/receipt.
+- The chat-folder binding request lifecycle is now complete end to end.
+- Earlier `sync-folder-sync-in-flight` import output was non-blocking because final health later showed `desktopToChromeInFlight:false` and `parityOk:true`.
 
 ## Validation
 
@@ -173,7 +203,5 @@ Full regression validator run is recorded with the final commit output.
 
 ## Remaining Work
 
-- Reconnect Chrome CDP profile sync-folder access and rerun the Chrome import/parity proof.
-- Investigate the explicit Desktop-to-Chrome queue export command returning `latest-sync-bundle-write-failed` despite `latest.json` being written by auto-export.
-
-These are runtime/operator follow-ups. The B9 stale folder-delete blocker and stale resolved review apply path are fixed.
+- None for B9.
+- Later closeout can cover the full Chrome-origin binding lifecycle if needed.
