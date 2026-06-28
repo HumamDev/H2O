@@ -1852,12 +1852,25 @@
       ? await store.bindChat(targetFolderId, chatId, {
         reason: reason,
         source: 'phase-b5-desktop-origin-convergence',
+        forceCanonicalFolderBindingStoreWrite: true,
+        forceLegacyFolderBindingWrite: true,
+        canonicalBindingStoreWrite: true,
       })
       : true;
     var afterRows = safeArray(await store.listForChat(chatId));
     var afterFolderId = afterRows.length ? folderIdFromAny(afterRows[0]) : '';
     var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var afterCounts = safeObject(afterDiagnostic.folderBindingCounts);
+    var beforeTargetCount = Number(safeObject(beforeDiagnostic.folderBindingCounts)[targetFolderId] || 0) || 0;
+    var beforeCurrentCount = Number(safeObject(beforeDiagnostic.folderBindingCounts)[expectedCurrentFolderId] || 0) || 0;
+    var expectedTargetCount = changed ? beforeTargetCount + 1 : beforeTargetCount;
+    var expectedCurrentCount = changed ? Math.max(0, beforeCurrentCount - 1) : beforeCurrentCount;
+    var afterTargetCount = Number(afterCounts[targetFolderId] || 0) || 0;
+    var afterCurrentCount = Number(afterCounts[expectedCurrentFolderId] || 0) || 0;
     if (!bindOk || afterFolderId !== targetFolderId) blockers.push('folder-binding-move-failed');
+    if (afterTargetCount !== expectedTargetCount || afterCurrentCount !== expectedCurrentCount) {
+      blockers.push('canonical-folder-binding-diagnostic-mismatch');
+    }
     return baseResult('moveChatFolderBinding', {
       ok: blockers.length === 0,
       status: blockers.length ? blockers[0] : (changed ? 'chat-folder-binding-moved' : 'chat-folder-binding-already-targeted'),
@@ -1868,14 +1881,20 @@
       chromeAuthority: false,
       changed: changed,
       reason: reason,
+      bindingStoreWritePath: 'canonical-folder-bindings-sqlite',
+      forceCanonicalFolderBindingStoreWrite: true,
       beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
       afterBinding: bindingMapRow(chatId, afterFolderId, includeSensitive),
       targetFolderId: targetFolderId,
       expectedCurrentFolderId: expectedCurrentFolderId,
+      expectedTargetFolderBindingCount: expectedTargetCount,
+      actualTargetFolderBindingCount: afterTargetCount,
+      expectedCurrentFolderBindingCount: expectedCurrentCount,
+      actualCurrentFolderBindingCount: afterCurrentCount,
       beforeBindingCount: Number(beforeDiagnostic.totalBindingCount || beforeDiagnostic.desktopBindingCount || 0) || 0,
       afterBindingCount: Number(afterDiagnostic.totalBindingCount || afterDiagnostic.desktopBindingCount || 0) || 0,
       beforeFolderBindingCounts: safeObject(beforeDiagnostic.folderBindingCounts),
-      afterFolderBindingCounts: safeObject(afterDiagnostic.folderBindingCounts),
+      afterFolderBindingCounts: afterCounts,
       noChromeDestructiveBindingApply: true,
       noChatDelete: true,
       noSnapshotDelete: true,

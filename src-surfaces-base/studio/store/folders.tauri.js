@@ -798,6 +798,8 @@
   }
 
   function f15FolderBindingDelegationEnabled(opts) {
+    if (opts && (opts.forceCanonicalFolderBindingStoreWrite === true ||
+        opts.forceLegacyFolderBindingWrite === true)) return false;
     if (opts && opts.useF15FolderBindingDelegation === true) return true;
     var sync = getSync();
     if (!sync) return false;
