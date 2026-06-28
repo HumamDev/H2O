@@ -189,6 +189,11 @@ check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('connectedRendered'), 'diagnostic should report connected renders');
   assert.ok(badgeSrc.includes('lastArticleConnected'), 'diagnostic should report article connectivity');
   assert.ok(badgeSrc.includes('lastRetargeted'), 'diagnostic should report last retarget');
+  assert.ok(badgeSrc.includes('preservedExisting'), 'diagnostic should report preserved badges');
+  assert.ok(badgeSrc.includes('fullRowCacheHits'), 'diagnostic should report full-row cache hits');
+  assert.ok(badgeSrc.includes('fullRowCacheWrites'), 'diagnostic should report full-row cache writes');
+  assert.ok(badgeSrc.includes('skippedQuietThinPreserved'), 'diagnostic should report thin quiet preservation');
+  assert.ok(badgeSrc.includes('removed'), 'diagnostic should report confident removals');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -305,7 +310,62 @@ await checkAsync('thin row plus article ids hydrates from LibraryIndex and rende
   assert.ok(diag.hydrationAttempts > 0, 'diagnostic should count hydration attempts');
   assert.ok(diag.hydrationResolved > 0, 'diagnostic should count resolved hydration');
   assert.ok(diag.rendered > 0, 'diagnostic should count rendered badges');
+  assert.ok(diag.fullRowCacheWrites > 0, 'hydration should write full-row cache');
   assert.equal(diag.lastState, 'archive-requested');
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  await flushAsync();
+  const afterCache = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(afterCache.fullRowCacheHits > 0, 'later thin pass should use full-row cache');
+  assert.equal(article.querySelector('.wbBadge--archive-status').getAttribute('data-h2o-archive-status'), 'archive-requested');
+});
+
+await checkAsync('later thin not-eligible pass preserves existing informative badge when no full-row cache exists', async () => {
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [],
+    localMetaImpl: () => ({ delivered: false, requestId: null, deliveredAt: null }),
+  }));
+  const article = makeArticle(context, { 'data-chat-id': 'chat_preserve_1', 'data-snapshot-id': 'snap_preserve_1' });
+  fn({
+    article,
+    badgesEl: null,
+    row: savedRow({ chatId: 'chat_preserve_1', snapshotId: 'snap_preserve_1' }),
+    local: { delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' },
+    diagnostics: { enabled: true, folderConnected: true },
+  });
+  assert.equal(article.querySelector('.wbBadge--archive-status').getAttribute('data-h2o-archive-status'), 'archive-requested');
+  fn({ article, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  await flushAsync();
+  const badge = article.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'thin quiet pass must not remove existing informative badge');
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.preservedExisting > 0, 'diagnostic should count preserved existing badge');
+  assert.ok(diag.skippedQuietThinPreserved > 0, 'diagnostic should count thin quiet preserve');
+  assert.equal(context.__receiptCalls.length, 0, 'passive preserve must not read receipts');
+});
+
+await checkAsync('confident full-row link-only evaluation can remove an existing archive badge', async () => {
+  const { fn, context } = loadBadge(createSandbox());
+  const article = makeArticle(context, { 'data-chat-id': 'chat_remove_1', 'data-snapshot-id': 'snap_remove_1' });
+  fn({
+    article,
+    badgesEl: null,
+    row: savedRow({ chatId: 'chat_remove_1', snapshotId: 'snap_remove_1' }),
+    local: { delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' },
+    diagnostics: { enabled: true, folderConnected: true },
+  });
+  assert.ok(article.querySelector('.wbBadge--archive-status'), 'setup badge should render');
+  fn({
+    article,
+    badgesEl: null,
+    row: { chatId: 'chat_remove_1', snapshotId: 'snap_remove_1', isSaved: false, isLinked: true, displayView: 'link', badgeKind: 'Link' },
+    local: { delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' },
+    diagnostics: { enabled: true, folderConnected: true },
+  });
+  await flushAsync();
+  assert.equal(article.querySelector('.wbBadge--archive-status'), null, 'full link-only evaluation may remove saved archive badge');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.removed > 0, 'diagnostic should count confident removal');
 });
 
 await checkAsync('hydration retargets from a detached original article to the current connected article', async () => {

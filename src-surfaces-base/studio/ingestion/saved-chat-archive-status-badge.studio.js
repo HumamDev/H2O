@@ -47,6 +47,7 @@
 
   /* Lazily-warmed synchronous cache of local delivered metadata by chatId|snapshotId. */
   var localCache = new Map();
+  var fullRowCache = new Map();
   var warmSeen = new Object();
   var hydrateSeen = new Object();
   var diagnosticsState = {
@@ -58,6 +59,11 @@
     staleArticleRetargeted: 0,
     staleArticleMisses: 0,
     connectedRendered: 0,
+    preservedExisting: 0,
+    fullRowCacheHits: 0,
+    fullRowCacheWrites: 0,
+    removed: 0,
+    skippedQuietThinPreserved: 0,
     skippedQuiet: 0,
     skippedNoArticle: 0,
     skippedNoIdentifiers: 0,
@@ -160,6 +166,18 @@
     var snapshotId = deriveSnapshotId(row || {});
     return (chatId && snapshotId) ? (chatId + '|' + snapshotId) : null;
   }
+  function cacheFullRow(row) {
+    var key = keyFor(row);
+    if (!key || !isObject(row)) return;
+    fullRowCache.set(key, row);
+    diagnosticsState.fullRowCacheWrites += 1;
+  }
+  function cachedFullRow(row) {
+    var key = keyFor(row);
+    if (!key || !fullRowCache.has(key)) return null;
+    diagnosticsState.fullRowCacheHits += 1;
+    return fullRowCache.get(key);
+  }
   function explicitLinkOnly(row) {
     if (!isObject(row) || row.isSaved === true) return false;
     var dv = cleanString(row.displayView).toLowerCase();
@@ -235,6 +253,16 @@
     if (!status || !status.state) return false;
     if (SHOW_STATES[status.state]) return true;
     return status.state === 'unknown-check-status' && status.canCheckStatus === true && cleanString(status.requestId);
+  }
+  function priorInformativeBadge(container) {
+    if (!container || typeof container.querySelector !== 'function') return null;
+    var prior = container.querySelector(BADGE_SELECTOR);
+    if (!prior || typeof prior.getAttribute !== 'function') return null;
+    return SHOW_STATES[prior.getAttribute('data-h2o-archive-status')] ? prior : null;
+  }
+  function shouldPreserveExisting(row, status, prior) {
+    if (!prior || shouldShowStatus(status)) return false;
+    return likelyThinRow(row);
   }
   function recordStatus(status) {
     diagnosticsState.lastState = status && status.state ? cleanString(status.state) : null;
@@ -348,14 +376,21 @@
     recordStatus(status);
     var targetArticle = currentArticleFor(article, row);
     var targetBadgesEl = targetArticle === article ? badgesEl : null;
-    /* Remove any prior archive-status badge first (idempotent re-render). */
     var existingContainer = resolveContainer(targetArticle, targetBadgesEl, false);
-    if (existingContainer && typeof existingContainer.querySelector === 'function') {
-      var prior = existingContainer.querySelector(BADGE_SELECTOR);
-      if (prior && typeof prior.remove === 'function') prior.remove();
-    }
+    var prior = existingContainer && typeof existingContainer.querySelector === 'function'
+      ? existingContainer.querySelector(BADGE_SELECTOR)
+      : null;
     if (!shouldShowStatus(status)) {
       diagnosticsState.skippedQuiet += 1;
+      if (shouldPreserveExisting(row, status, priorInformativeBadge(existingContainer))) {
+        diagnosticsState.preservedExisting += 1;
+        diagnosticsState.skippedQuietThinPreserved += 1;
+        return status;
+      }
+      if (prior && typeof prior.remove === 'function' && !likelyThinRow(row)) {
+        prior.remove();
+        diagnosticsState.removed += 1;
+      }
       return status;
     }
     if (!targetArticle) return status;
@@ -363,6 +398,7 @@
     if (!container) return status;
     var document = doc();
     if (!document) return status;
+    if (prior && typeof prior.remove === 'function') prior.remove();
     var span = document.createElement('span');
     applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
@@ -416,6 +452,7 @@
         return null;
       }
       var merged = rowWithArticleIds(fullRow, article);
+      cacheFullRow(merged);
       var localPromise = isObject(localOverride) ? Promise.resolve(localOverride) : readLocalMeta(merged);
       return localPromise.then(function (local) {
         var cacheKey = keyFor(merged);
@@ -441,6 +478,10 @@
       diagnosticsState.skippedNoIdentifiers += 1;
       return;
     }
+    if (likelyThinRow(row)) {
+      var cached = cachedFullRow(row);
+      if (cached) row = rowWithArticleIds(cached, article);
+    }
     var status = renderInto(article, badgesEl, row, opts.local, opts.diagnostics);
     var hydrateFirst = likelyThinRow(row) && !shouldShowStatus(status);
     /* Only warm from the live cache path (not when caller supplied local).
@@ -460,6 +501,11 @@
       staleArticleRetargeted: diagnosticsState.staleArticleRetargeted,
       staleArticleMisses: diagnosticsState.staleArticleMisses,
       connectedRendered: diagnosticsState.connectedRendered,
+      preservedExisting: diagnosticsState.preservedExisting,
+      fullRowCacheHits: diagnosticsState.fullRowCacheHits,
+      fullRowCacheWrites: diagnosticsState.fullRowCacheWrites,
+      removed: diagnosticsState.removed,
+      skippedQuietThinPreserved: diagnosticsState.skippedQuietThinPreserved,
       skippedQuiet: diagnosticsState.skippedQuiet,
       skippedNoArticle: diagnosticsState.skippedNoArticle,
       skippedNoIdentifiers: diagnosticsState.skippedNoIdentifiers,
