@@ -680,29 +680,57 @@
     var missingFolderBindingCount = 0;
     var deletedFolderBindingCount = 0;
     var restoredFolderBindingCount = 0;
-    for (var i = 0; i < folderRows.length; i += 1) {
-      var folderId = folderIdFromAny(folderRows[i]);
-      if (!folderId || typeof store.listChats !== 'function') continue;
-      var chatRows = [];
+    folderRows.forEach(function (folder) {
+      var folderId = folderIdFromAny(folder);
+      if (folderId) folderBindingCounts[folderId] = 0;
+    });
+    var canonicalRows = null;
+    if (typeof store.listCanonicalChatFolderBindings === 'function') {
       try {
-        chatRows = safeArray(await store.listChats(folderId));
+        canonicalRows = safeArray(await store.listCanonicalChatFolderBindings());
       } catch (_) {
-        addUniqueCode(warnings, 'folder-binding-list-read-failed');
-        chatRows = [];
+        addUniqueCode(warnings, 'canonical-folder-binding-list-read-failed');
+        canonicalRows = null;
       }
-      var chatIds = [];
-      chatRows.forEach(function (chat) {
-        var chatId = chatIdFromRow(chat);
-        if (chatId && chatIds.indexOf(chatId) === -1) chatIds.push(chatId);
-      });
-      folderBindingCounts[folderId] = chatIds.length;
-      if (!folderIds[folderId]) missingFolderBindingCount += chatIds.length;
-      if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += chatIds.length;
-      if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += chatIds.length;
-      chatIds.forEach(function (chatId) {
+    }
+    if (canonicalRows) {
+      canonicalRows.forEach(function (row) {
+        var folderId = folderIdFromAny(row);
+        var chatId = chatIdFromRow(row);
+        if (!folderId || !chatId) return;
+        folderBindingCounts[folderId] = (Number(folderBindingCounts[folderId]) || 0) + 1;
+        if (!folderIds[folderId]) missingFolderBindingCount += 1;
+        if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += 1;
+        if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += 1;
         uniqueChatIds[chatId] = true;
+        localBindingRows.push(row);
         mappings.push(bindingMapRow(chatId, folderId, includeSensitive));
       });
+    } else {
+      for (var i = 0; i < folderRows.length; i += 1) {
+        var folderId = folderIdFromAny(folderRows[i]);
+        if (!folderId || typeof store.listChats !== 'function') continue;
+        var chatRows = [];
+        try {
+          chatRows = safeArray(await store.listChats(folderId));
+        } catch (_) {
+          addUniqueCode(warnings, 'folder-binding-list-read-failed');
+          chatRows = [];
+        }
+        var chatIds = [];
+        chatRows.forEach(function (chat) {
+          var chatId = chatIdFromRow(chat);
+          if (chatId && chatIds.indexOf(chatId) === -1) chatIds.push(chatId);
+        });
+        folderBindingCounts[folderId] = chatIds.length;
+        if (!folderIds[folderId]) missingFolderBindingCount += chatIds.length;
+        if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += chatIds.length;
+        if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += chatIds.length;
+        chatIds.forEach(function (chatId) {
+          uniqueChatIds[chatId] = true;
+          mappings.push(bindingMapRow(chatId, folderId, includeSensitive));
+        });
+      }
     }
     addUniqueCode(warnings, 'chrome-binding-import-deferred');
     addUniqueCode(warnings, 'desktop-orphan-binding-scan-unavailable');
@@ -719,6 +747,7 @@
       adapter: 'tauri',
       readOnly: true,
       canonicalSource: 'desktop-store-folder-bindings',
+      canonicalBindingReadPath: canonicalRows ? 'store.folders.listCanonicalChatFolderBindings' : 'store.folders.listChats',
       desktopCanonicalBindingProjectionAvailable: !!(H2O.Studio && H2O.Studio.ingestion &&
         typeof H2O.Studio.ingestion.exportLatestSyncBundle === 'function'),
       desktopCanonicalBindingProjectionSchema: 'h2o.studio.chat-folder-bindings.desktop-canonical.v1',
@@ -1883,6 +1912,10 @@
       reason: reason,
       bindingStoreWritePath: 'canonical-folder-bindings-sqlite',
       forceCanonicalFolderBindingStoreWrite: true,
+      postWriteDiagnosticSource: 'diagnoseChatFolderBindingParity',
+      postWriteCanonicalReader: cleanString(afterDiagnostic.canonicalBindingReadPath),
+      postWriteExportSource: 'desktopCanonicalChatFolderBindings',
+      postWriteDiagnosticFolderBindingCounts: afterCounts,
       beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
       afterBinding: bindingMapRow(chatId, afterFolderId, includeSensitive),
       targetFolderId: targetFolderId,

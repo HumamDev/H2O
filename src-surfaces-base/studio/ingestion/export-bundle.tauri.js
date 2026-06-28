@@ -1171,32 +1171,35 @@
     var folderBindingCounts = {};
     var bindings = [];
     var seenChats = Object.create(null);
-    for (var i = 0; i < folderIds.length; i += 1) {
-      var folderId = folderIds[i];
-      var chatRows = [];
+    var missingFolderBindingCount = 0;
+    folderIds.forEach(function (folderId) { folderBindingCounts[folderId] = 0; });
+    var canonicalRows = null;
+    if (typeof api.listCanonicalChatFolderBindings === 'function') {
       try {
-        chatRows = asArray(await api.listChats(folderId));
+        canonicalRows = asArray(await api.listCanonicalChatFolderBindings());
       } catch (e2) {
         warnings.push({
-          code: 'desktop-chat-folder-binding-list-read-failed',
-          folderId: folderId,
-          warning: 'store.folders.listChats failed for folder; exporting known folders and continuing',
+          code: 'desktop-chat-folder-binding-canonical-list-read-failed',
+          warning: 'store.folders.listCanonicalChatFolderBindings failed; falling back to per-folder listChats',
           error: String((e2 && e2.message) || e2),
         });
-        chatRows = [];
+        canonicalRows = null;
       }
-      var chatIds = uniqStrings(chatRows.map(function (row) {
-        return cleanString(row && (row.chatId || row.id));
-      }).filter(Boolean));
-      folderBindingCounts[folderId] = chatIds.length;
-      chatIds.forEach(function (chatId) {
+    }
+    if (canonicalRows) {
+      canonicalRows.forEach(function (row) {
+        var chatId = cleanString(row && (row.chatId || row.conversationId || row.chat_id || row.id));
+        var folderId = cleanString(row && (row.folderId || row.folder_id));
+        if (!chatId || !folderId) return;
+        if (folderIds.indexOf(folderId) < 0) missingFolderBindingCount += 1;
+        folderBindingCounts[folderId] = (Number(folderBindingCounts[folderId]) || 0) + 1;
         seenChats[chatId] = true;
         bindings.push({
           schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.row',
           chatId: chatId,
           conversationId: chatId,
           folderId: folderId,
-          folderName: folderNames[folderId] || folderId,
+          folderName: cleanString(row && row.folderName) || folderNames[folderId] || folderId,
           source: 'desktop-canonical-chat-folder-bindings',
           sourceSurface: 'desktop-studio',
           authority: 'desktop',
@@ -1211,6 +1214,48 @@
           noPurge: true,
         });
       });
+    } else {
+      for (var i = 0; i < folderIds.length; i += 1) {
+        var folderId = folderIds[i];
+        var chatRows = [];
+        try {
+          chatRows = asArray(await api.listChats(folderId));
+        } catch (e3) {
+          warnings.push({
+            code: 'desktop-chat-folder-binding-list-read-failed',
+            folderId: folderId,
+            warning: 'store.folders.listChats failed for folder; exporting known folders and continuing',
+            error: String((e3 && e3.message) || e3),
+          });
+          chatRows = [];
+        }
+        var chatIds = uniqStrings(chatRows.map(function (row) {
+          return cleanString(row && (row.chatId || row.id));
+        }).filter(Boolean));
+        folderBindingCounts[folderId] = chatIds.length;
+        chatIds.forEach(function (chatId) {
+          seenChats[chatId] = true;
+          bindings.push({
+            schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.row',
+            chatId: chatId,
+            conversationId: chatId,
+            folderId: folderId,
+            folderName: folderNames[folderId] || folderId,
+            source: 'desktop-canonical-chat-folder-bindings',
+            sourceSurface: 'desktop-studio',
+            authority: 'desktop',
+            status: 'active',
+            state: 'active',
+            observedAt: exportedAt,
+            updatedAt: '',
+            noChromeDestructiveBindingApply: true,
+            noChatDelete: true,
+            noSnapshotDelete: true,
+            noHardDelete: true,
+            noPurge: true,
+          });
+        });
+      }
     }
     bindings.sort(function (a, b) {
       return cleanString(a.folderId).localeCompare(cleanString(b.folderId)) ||
@@ -1224,6 +1269,10 @@
     baseDiagnostics.bindingCount = bindings.length;
     baseDiagnostics.folderBindingCounts = folderBindingCounts;
     baseDiagnostics.unfiledCount = unfiledCount;
+    baseDiagnostics.canonicalBindingReadPath = canonicalRows
+      ? 'store.folders.listCanonicalChatFolderBindings'
+      : 'store.folders.listChats';
+    baseDiagnostics.missingFolderBindingCount = missingFolderBindingCount;
     return {
       schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
       source: 'desktop-canonical-chat-folder-bindings',
@@ -1232,11 +1281,12 @@
       bindingCount: bindings.length,
       folderBindingCounts: folderBindingCounts,
       unfiledCount: unfiledCount,
-      missingFolderBindingCount: 0,
+      missingFolderBindingCount: missingFolderBindingCount,
       deletedFolderBindingCount: 0,
       restoredFolderBindingCount: 0,
       bindings: bindings,
       rows: bindings,
+      canonicalBindingReadPath: baseDiagnostics.canonicalBindingReadPath,
       diagnostics: baseDiagnostics,
       desktopAuthority: true,
       chromeAuthority: false,

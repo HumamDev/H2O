@@ -6,10 +6,12 @@ import process from 'node:process';
 const root = process.cwd();
 const bridgePath = path.join(root, 'src-surfaces-base/studio/dev/folder-sync-rc-smoke-bridge.studio.js');
 const folderStorePath = path.join(root, 'src-surfaces-base/studio/store/folders.tauri.js');
+const exportBundlePath = path.join(root, 'src-surfaces-base/studio/ingestion/export-bundle.tauri.js');
 const desktopClientPath = path.join(root, 'tools/smoke/desktop-folder-sync-queue-client.mjs');
 const chromeClientPath = path.join(root, 'tools/smoke/chrome-cdp-studio.mjs');
 const evidencePath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5-desktop-origin-convergence.md');
 const evidenceB5aPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5a-canonical-move-persistence.md');
+const evidenceB5bPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5b-same-reader-persistence.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -45,20 +47,25 @@ function functionBody(source, name) {
   throw new Error(`${name} body parse failed`);
 }
 
-for (const file of [bridgePath, folderStorePath, desktopClientPath, chromeClientPath, evidencePath, evidenceB5aPath]) {
+for (const file of [bridgePath, folderStorePath, exportBundlePath, desktopClientPath, chromeClientPath, evidencePath, evidenceB5aPath, evidenceB5bPath]) {
   assert(fs.existsSync(file), `${path.relative(root, file)} missing`);
 }
 
 const bridge = read(bridgePath);
 const folderStore = read(folderStorePath);
+const exportBundle = read(exportBundlePath);
 const desktopClient = read(desktopClientPath);
 const chromeClient = read(chromeClientPath);
 const evidence = read(evidencePath);
 const evidenceB5a = read(evidenceB5aPath);
+const evidenceB5b = read(evidenceB5bPath);
 
 const helperBody = functionBody(bridge, 'moveChatFolderBinding');
 const dispatchBody = functionBody(bridge, 'dispatchOp');
 const delegationGateBody = functionBody(folderStore, 'f15FolderBindingDelegationEnabled');
+const storeCanonicalReaderBody = functionBody(folderStore, 'listCanonicalChatFolderBindings');
+const desktopDiagnosticBody = functionBody(bridge, 'diagnoseDesktopChatFolderBindingParity');
+const exportProjectionBody = functionBody(exportBundle, 'buildDesktopCanonicalChatFolderBindingProjection');
 
 [
   "'moveChatFolderBinding'",
@@ -85,6 +92,10 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
   'actualTargetFolderBindingCount',
   'expectedCurrentFolderBindingCount',
   'actualCurrentFolderBindingCount',
+  "postWriteDiagnosticSource: 'diagnoseChatFolderBindingParity'",
+  'postWriteCanonicalReader',
+  "postWriteExportSource: 'desktopCanonicalChatFolderBindings'",
+  'postWriteDiagnosticFolderBindingCounts',
   'beforeFolderBindingCounts',
   'afterFolderBindingCounts',
   'desktopOnly: true',
@@ -102,6 +113,24 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
   'forceLegacyFolderBindingWrite === true',
   'return false',
 ].forEach((needle) => assertContains(delegationGateBody, needle, `B5 canonical store override ${needle}`));
+
+[
+  'function listCanonicalChatFolderBindings',
+  'FROM folder_bindings b LEFT JOIN folders f ON f.id = b.folder_id',
+  'source: \'desktop-canonical-folder-bindings-sqlite\'',
+  'listCanonicalChatFolderBindings: listCanonicalChatFolderBindings',
+].forEach((needle) => assertContains(folderStore, needle, `B5b store canonical reader ${needle}`));
+
+[
+  'store.listCanonicalChatFolderBindings',
+  "canonicalBindingReadPath: canonicalRows ? 'store.folders.listCanonicalChatFolderBindings' : 'store.folders.listChats'",
+].forEach((needle) => assertContains(desktopDiagnosticBody, needle, `B5b diagnostic same reader ${needle}`));
+
+[
+  'api.listCanonicalChatFolderBindings',
+  "canonicalBindingReadPath = canonicalRows",
+  'canonicalBindingReadPath: baseDiagnostics.canonicalBindingReadPath',
+].forEach((needle) => assertContains(exportProjectionBody, needle, `B5b export same reader ${needle}`));
 
 [
   'deleteChat',
@@ -154,15 +183,37 @@ assertNotContains(chromeClient, 'B5 DESKTOP BINDING CONVERGENCE', 'B5 Chrome CDP
   'no purge',
 ].forEach((needle) => assertContains(evidenceB5a, needle, `B5a evidence ${needle}`));
 
+[
+  'B5b',
+  'same canonical reader',
+  'store.folders.listCanonicalChatFolderBindings',
+  'diagnoseChatFolderBindingParity',
+  'desktopCanonicalChatFolderBindings',
+  'postWriteDiagnosticSource:"diagnoseChatFolderBindingParity"',
+  'postWriteCanonicalReader:"store.folders.listCanonicalChatFolderBindings"',
+  'postWriteExportSource:"desktopCanonicalChatFolderBindings"',
+  'Code `0`',
+  'English `1`',
+  'Code `1`',
+  'English `0`',
+  'no Chrome destructive binding apply',
+  'no chat deletion',
+  'no snapshot deletion',
+  'no hard delete',
+  'no purge',
+].forEach((needle) => assertContains(evidenceB5b, needle, `B5b evidence ${needle}`));
+
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-chat-folder-binding-phase-b5-desktop-origin-convergence',
   bridge: path.relative(root, bridgePath),
   folderStore: path.relative(root, folderStorePath),
+  exportBundle: path.relative(root, exportBundlePath),
   desktopClient: path.relative(root, desktopClientPath),
   chromeClient: path.relative(root, chromeClientPath),
   evidence: path.relative(root, evidencePath),
   evidenceB5a: path.relative(root, evidenceB5aPath),
+  evidenceB5b: path.relative(root, evidenceB5bPath),
   desktopOnlyMutationHelper: true,
   chromeDestructiveBindingAuthority: false,
   noChatDelete: true,

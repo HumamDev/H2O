@@ -3112,6 +3112,41 @@
     }).catch(function (e) { recordError('listChats', e); return []; });
   }
 
+  function listCanonicalChatFolderBindings() {
+    return sqlSelect(
+      'SELECT b.chat_id AS chat_id, b.folder_id AS folder_id, b.assigned_at AS assigned_at, f.name AS folder_name ' +
+      'FROM folder_bindings b LEFT JOIN folders f ON f.id = b.folder_id ' +
+      'ORDER BY b.folder_id ASC, b.chat_id ASC',
+      []
+    ).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).map(function (row) {
+        var chatId = cleanString(row && row.chat_id);
+        var folderId = cleanString(row && row.folder_id);
+        if (!chatId || !folderId) return null;
+        return {
+          chatId: chatId,
+          conversationId: chatId,
+          folderId: folderId,
+          folderName: cleanString(row && row.folder_name),
+          assignedAt: row && row.assigned_at,
+          source: 'desktop-canonical-folder-bindings-sqlite',
+          sourceSurface: 'desktop-studio',
+          authority: 'desktop',
+          status: 'active',
+          state: 'active',
+          noChromeDestructiveBindingApply: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noHardDelete: true,
+          noPurge: true,
+        };
+      }).filter(Boolean);
+    }).catch(function (e) {
+      recordError('listCanonicalChatFolderBindings', e);
+      return [];
+    });
+  }
+
   /* listForChat(chatId): single binding row max (chat_id is PK). Returns
    * the bound folder as a one-element array, or [] if unbound. */
   function listForChat(chatIdInput) {
@@ -3232,6 +3267,7 @@
     bindChat: bindChat,
     unbindChat: unbindChat,
     listChats: listChats,
+    listCanonicalChatFolderBindings: listCanonicalChatFolderBindings,
     listForChat: listForChat,
     count: countFolders,
   };
