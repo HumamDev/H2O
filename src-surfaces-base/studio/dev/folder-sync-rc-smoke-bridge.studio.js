@@ -1809,6 +1809,7 @@
     var store = getPath(H2O, ['Studio', 'store', 'folders']);
     if (!store || typeof store.moveCanonicalChatFolderBinding !== 'function' ||
         typeof store.getCanonicalChatFolderBindingForChat !== 'function' ||
+        typeof store.listCanonicalChatFolderBindingsForChat !== 'function' ||
         typeof store.listCanonicalChatFolderBindings !== 'function') {
       blockers.push('folder-binding-store-unavailable');
     }
@@ -1834,7 +1835,10 @@
         noAssetDelete: true,
       });
     }
-    var beforeCanonicalBinding = await store.getCanonicalChatFolderBindingForChat(chatId);
+    var beforeCanonicalRowsForChat = await store.listCanonicalChatFolderBindingsForChat(chatId);
+    var beforeCanonicalBinding = Array.isArray(beforeCanonicalRowsForChat) && beforeCanonicalRowsForChat.length
+      ? beforeCanonicalRowsForChat[0]
+      : null;
     var beforeFolderId = folderIdFromAny(beforeCanonicalBinding);
     if (beforeFolderId !== expectedCurrentFolderId) {
       blockers.push('expected-current-folder-mismatch');
@@ -1889,6 +1893,9 @@
         forceCanonicalFolderBindingStoreWrite: true,
         forceLegacyFolderBindingWrite: true,
         canonicalBindingStoreWrite: true,
+        smokeSkipBindingTombstone: true,
+        smokeSuppressBindingSubscribers: true,
+        stabilityCheckMs: 75,
       })
       : {
         ok: true,
@@ -1904,9 +1911,10 @@
         sameLiveCanonicalStore: true,
       };
     warnings = warnings.concat(safeArray(moveResult && moveResult.warnings));
-    var afterCanonicalBinding = moveResult && moveResult.afterBinding
-      ? moveResult.afterBinding
-      : await store.getCanonicalChatFolderBindingForChat(chatId);
+    var afterCanonicalRowsForChat = await store.listCanonicalChatFolderBindingsForChat(chatId);
+    var afterCanonicalBinding = Array.isArray(afterCanonicalRowsForChat) && afterCanonicalRowsForChat.length
+      ? afterCanonicalRowsForChat[0]
+      : (moveResult && moveResult.afterBinding ? moveResult.afterBinding : null);
     var afterFolderId = folderIdFromAny(afterCanonicalBinding);
     var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
     var afterCounts = safeObject(afterDiagnostic.folderBindingCounts);
@@ -1917,6 +1925,9 @@
     var afterTargetCount = Number(afterCounts[targetFolderId] || 0) || 0;
     var afterCurrentCount = Number(afterCounts[expectedCurrentFolderId] || 0) || 0;
     if (!moveResult || moveResult.ok !== true || afterFolderId !== targetFolderId) blockers.push('folder-binding-move-failed');
+    if (Array.isArray(afterCanonicalRowsForChat) && afterCanonicalRowsForChat.length > 1) {
+      blockers.push('duplicate-canonical-binding-rows-for-chat');
+    }
     if (afterTargetCount !== expectedTargetCount || afterCurrentCount !== expectedCurrentCount) {
       blockers.push('canonical-folder-binding-diagnostic-mismatch');
     }
@@ -1940,6 +1951,8 @@
       reason: reason,
       bindingStoreWritePath: 'canonical-folder-bindings-sqlite',
       forceCanonicalFolderBindingStoreWrite: true,
+      smokeSkipBindingTombstone: true,
+      smokeSuppressBindingSubscribers: true,
       canonicalMoveResult: moveResult,
       sameReaderVerificationOk: sameReaderVerificationOk,
       bindingStoreIdentity: moveResult && moveResult.storeIdentity ? moveResult.storeIdentity : null,
@@ -1951,6 +1964,12 @@
       afterBinding: bindingMapRow(chatId, afterFolderId, includeSensitive),
       beforeCanonicalBinding: beforeCanonicalBinding,
       afterCanonicalBinding: afterCanonicalBinding,
+      canonicalRowsForChatBeforeCount: Array.isArray(beforeCanonicalRowsForChat) ? beforeCanonicalRowsForChat.length : 0,
+      canonicalRowsForChatBefore: beforeCanonicalRowsForChat,
+      canonicalRowsForChatCount: Array.isArray(afterCanonicalRowsForChat) ? afterCanonicalRowsForChat.length : 0,
+      canonicalRowsForChat: afterCanonicalRowsForChat,
+      duplicateCanonicalBindingRowsForChatCount: Math.max(0, (Array.isArray(afterCanonicalRowsForChat) ? afterCanonicalRowsForChat.length : 0) - 1),
+      duplicateCanonicalBindingRowsForChatBlocked: Array.isArray(afterCanonicalRowsForChat) && afterCanonicalRowsForChat.length > 1,
       targetFolderId: targetFolderId,
       expectedCurrentFolderId: expectedCurrentFolderId,
       expectedTargetFolderBindingCount: expectedTargetCount,

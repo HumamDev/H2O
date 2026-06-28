@@ -3161,6 +3161,7 @@
       tableName: 'folder_bindings',
       readerFunction: 'listCanonicalChatFolderBindings',
       rowReaderFunction: 'getCanonicalChatFolderBindingForChat',
+      rowListReaderFunction: 'listCanonicalChatFolderBindingsForChat',
       writerFunction: 'moveCanonicalChatFolderBinding',
       countSource: 'sqlite:folder_bindings',
       storeReady: state.ready === true,
@@ -3179,32 +3180,41 @@
   function getCanonicalChatFolderBindingForChat(chatIdInput) {
     var chatId = cleanString(chatIdInput);
     if (!chatId) return Promise.resolve(null);
+    return listCanonicalChatFolderBindingsForChat(chatId).then(function (rows) {
+      return Array.isArray(rows) && rows.length ? rows[0] : null;
+    });
+  }
+
+  function listCanonicalChatFolderBindingsForChat(chatIdInput) {
+    var chatId = cleanString(chatIdInput);
+    if (!chatId) return Promise.resolve([]);
     return sqlSelect(
       'SELECT b.chat_id AS chat_id, b.folder_id AS folder_id, b.assigned_at AS assigned_at, f.name AS folder_name ' +
       'FROM folder_bindings b LEFT JOIN folders f ON f.id = b.folder_id ' +
-      'WHERE b.chat_id = ? LIMIT 1',
+      'WHERE b.chat_id = ? ORDER BY b.assigned_at DESC, b.folder_id ASC',
       [chatId]
     ).then(function (rows) {
-      if (!Array.isArray(rows) || !rows.length) return null;
-      var row = rows[0] || {};
-      var folderId = cleanString(row.folder_id);
-      if (!folderId) return null;
-      return {
-        chatId: cleanString(row.chat_id),
-        conversationId: cleanString(row.chat_id),
-        folderId: folderId,
-        folderName: cleanString(row.folder_name),
-        assignedAt: row.assigned_at,
-        source: 'desktop-canonical-folder-bindings-sqlite',
-        sourceSurface: 'desktop-studio',
-        authority: 'desktop',
-        status: 'active',
-        state: 'active',
-        storeIdentity: canonicalBindingStoreIdentity(),
-      };
+      if (!Array.isArray(rows) || !rows.length) return [];
+      return rows.map(function (row) {
+        var folderId = cleanString(row && row.folder_id);
+        if (!folderId) return null;
+        return {
+          chatId: cleanString(row && row.chat_id),
+          conversationId: cleanString(row && row.chat_id),
+          folderId: folderId,
+          folderName: cleanString(row && row.folder_name),
+          assignedAt: row && row.assigned_at,
+          source: 'desktop-canonical-folder-bindings-sqlite',
+          sourceSurface: 'desktop-studio',
+          authority: 'desktop',
+          status: 'active',
+          state: 'active',
+          storeIdentity: canonicalBindingStoreIdentity(),
+        };
+      }).filter(Boolean);
     }).catch(function (e) {
-      recordError('getCanonicalChatFolderBindingForChat', e);
-      return null;
+      recordError('listCanonicalChatFolderBindingsForChat', e);
+      return [];
     });
   }
 
@@ -3217,6 +3227,11 @@
     var assignedAt = (typeof options.assignedAt === 'number' && options.assignedAt > 0)
       ? options.assignedAt
       : Date.now();
+    var skipBindingTombstone = options.skipBindingTombstone === true || options.smokeSkipBindingTombstone === true;
+    var suppressBindingSubscribers = options.suppressBindingSubscribers === true || options.smokeSuppressBindingSubscribers === true;
+    var stabilityCheckMs = (typeof options.stabilityCheckMs === 'number' && options.stabilityCheckMs >= 0)
+      ? Math.min(500, options.stabilityCheckMs)
+      : 75;
     var identity = canonicalBindingStoreIdentity();
     var blockers = [];
     if (!folderId) blockers.push('target-folder-id-required');
@@ -3253,8 +3268,10 @@
           noPurge: true,
         };
       }
-      return getCanonicalChatFolderBindingForChat(chatId).then(function (before) {
+      return listCanonicalChatFolderBindingsForChat(chatId).then(function (beforeRows) {
+        var before = Array.isArray(beforeRows) && beforeRows.length ? beforeRows[0] : null;
         var beforeFolderId = getFolderId(before);
+        var beforeDuplicateCount = Math.max(0, (Array.isArray(beforeRows) ? beforeRows.length : 0) - 1);
         if (beforeFolderId !== expectedCurrentFolderId) {
           return {
             ok: false,
@@ -3265,6 +3282,10 @@
             expectedCurrentFolderId: expectedCurrentFolderId,
             actualCurrentFolderId: beforeFolderId || '',
             beforeBinding: before,
+            canonicalRowsForChatCount: Array.isArray(beforeRows) ? beforeRows.length : 0,
+            canonicalRowsForChat: beforeRows || [],
+            duplicateCanonicalBindingRowsForChatCount: beforeDuplicateCount,
+            duplicateCanonicalBindingRowsForChatBlocked: beforeDuplicateCount > 0,
             storeIdentity: identity,
             noChromeDestructiveBindingApply: true,
             noChatDelete: true,
@@ -3274,7 +3295,9 @@
           };
         }
         if (beforeFolderId === folderId) {
-          return getCanonicalChatFolderBindingForChat(chatId).then(function (afterSame) {
+          return listCanonicalChatFolderBindingsForChat(chatId).then(function (afterSameRows) {
+            var afterSame = Array.isArray(afterSameRows) && afterSameRows.length ? afterSameRows[0] : null;
+            var afterSameDuplicateCount = Math.max(0, (Array.isArray(afterSameRows) ? afterSameRows.length : 0) - 1);
             return {
               ok: true,
               status: 'chat-folder-binding-already-targeted',
@@ -3286,6 +3309,10 @@
               expectedCurrentFolderId: expectedCurrentFolderId,
               beforeBinding: before,
               afterBinding: afterSame,
+              canonicalRowsForChatCount: Array.isArray(afterSameRows) ? afterSameRows.length : 0,
+              canonicalRowsForChat: afterSameRows || [],
+              duplicateCanonicalBindingRowsForChatCount: afterSameDuplicateCount,
+              duplicateCanonicalBindingRowsForChatBlocked: afterSameDuplicateCount > 0,
               rowsAffected: 0,
               writeResult: null,
               storeIdentity: canonicalBindingStoreIdentity(),
@@ -3302,48 +3329,81 @@
           'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
           [chatId, folderId, assignedAt]
         ).then(function (writeResult) {
-          return getCanonicalChatFolderBindingForChat(chatId).then(function (after) {
+          return listCanonicalChatFolderBindingsForChat(chatId).then(function (afterRows) {
+            var after = Array.isArray(afterRows) && afterRows.length ? afterRows[0] : null;
             var afterFolderId = getFolderId(after);
-            var writeOk = afterFolderId === folderId;
-            var result = {
-              ok: writeOk,
-              status: writeOk ? 'chat-folder-binding-moved' : 'canonical-folder-binding-write-not-visible',
-              blockers: writeOk ? [] : ['canonical-folder-binding-write-not-visible'],
-              warnings: [],
-              changed: writeOk,
-              chatId: chatId,
-              targetFolderId: folderId,
-              expectedCurrentFolderId: expectedCurrentFolderId,
-              beforeBinding: before,
-              afterBinding: after,
-              assignedAt: assignedAt,
-              rowsAffected: readRowsAffected(writeResult),
-              writeResult: writeResult,
-              storeIdentity: canonicalBindingStoreIdentity(),
-              sameLiveCanonicalStore: true,
-              noChromeDestructiveBindingApply: true,
-              noChatDelete: true,
-              noSnapshotDelete: true,
-              noHardDelete: true,
-              noPurge: true,
-            };
-            if (!writeOk) return result;
-            recordWrite('moveCanonicalChatFolderBinding');
-            notifySubscribers({ source: 'local', op: 'moveCanonicalChatFolderBinding', folderId: folderId, chatId: chatId });
-            return writeFolderBindingTombstoneSafely(beforeFolderId, chatId, {
-              deleteReason: 'folder-rebind',
-              meta: {
+            var duplicateCount = Math.max(0, (Array.isArray(afterRows) ? afterRows.length : 0) - 1);
+            var writeVisible = afterFolderId === folderId;
+            var duplicateBlocker = duplicateCount > 0;
+            var buildResult = function (stableRows) {
+              var stable = Array.isArray(stableRows) && stableRows.length ? stableRows[0] : null;
+              var stableFolderId = getFolderId(stable);
+              var stableDuplicateCount = Math.max(0, (Array.isArray(stableRows) ? stableRows.length : 0) - 1);
+              var blockers = [];
+              if (!writeVisible) blockers.push('canonical-folder-binding-write-not-visible');
+              if (duplicateBlocker || stableDuplicateCount > 0) blockers.push('duplicate-canonical-binding-rows-for-chat');
+              if (stableFolderId !== folderId) blockers.push('canonical-folder-binding-write-not-stable');
+              return {
+                ok: blockers.length === 0,
+                status: blockers.length ? blockers[0] : 'chat-folder-binding-moved',
+                blockers: blockers,
+                warnings: [],
+                changed: blockers.length === 0,
                 chatId: chatId,
-                folderId: beforeFolderId,
-                oldFolderId: beforeFolderId,
-                newFolderId: folderId,
-                assignedAt: before && before.assignedAt,
-                recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
-                source: 'store.folders.moveCanonicalChatFolderBinding',
-                replacement: true,
-                reason: reason,
-              },
-            }).then(function () { return result; });
+                targetFolderId: folderId,
+                expectedCurrentFolderId: expectedCurrentFolderId,
+                beforeBinding: before,
+                afterBinding: stable || after,
+                assignedAt: assignedAt,
+                rowsAffected: readRowsAffected(writeResult),
+                writeResult: writeResult,
+                storeIdentity: canonicalBindingStoreIdentity(),
+                sameLiveCanonicalStore: true,
+                canonicalRowsForChatCount: Array.isArray(stableRows) ? stableRows.length : (Array.isArray(afterRows) ? afterRows.length : 0),
+                canonicalRowsForChat: stableRows || afterRows || [],
+                canonicalRowsForChatBeforeCount: Array.isArray(beforeRows) ? beforeRows.length : 0,
+                canonicalRowsForChatBefore: beforeRows || [],
+                duplicateCanonicalBindingRowsForChatCount: Math.max(duplicateCount, stableDuplicateCount),
+                duplicateCanonicalBindingRowsForChatBlocked: duplicateBlocker || stableDuplicateCount > 0,
+                bindingTombstoneSkipped: skipBindingTombstone,
+                subscriberNotificationSuppressed: suppressBindingSubscribers,
+                postWriteStabilityCheckMs: stabilityCheckMs,
+                postWriteStable: stableFolderId === folderId && stableDuplicateCount === 0,
+                noChromeDestructiveBindingApply: true,
+                noChatDelete: true,
+                noSnapshotDelete: true,
+                noHardDelete: true,
+                noPurge: true,
+              };
+            };
+            if (!writeVisible || duplicateBlocker) return buildResult(afterRows);
+            recordWrite('moveCanonicalChatFolderBinding');
+            if (!suppressBindingSubscribers) {
+              notifySubscribers({ source: 'local', op: 'moveCanonicalChatFolderBinding', folderId: folderId, chatId: chatId });
+            }
+            var tombstonePromise = skipBindingTombstone
+              ? Promise.resolve()
+              : writeFolderBindingTombstoneSafely(beforeFolderId, chatId, {
+                deleteReason: 'folder-rebind',
+                meta: {
+                  chatId: chatId,
+                  folderId: beforeFolderId,
+                  oldFolderId: beforeFolderId,
+                  newFolderId: folderId,
+                  assignedAt: before && before.assignedAt,
+                  recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+                  source: 'store.folders.moveCanonicalChatFolderBinding',
+                  replacement: true,
+                  reason: reason,
+                },
+              });
+            return tombstonePromise.then(function () {
+              return new Promise(function (resolve) {
+                try { setTimeout(resolve, stabilityCheckMs); } catch (_) { resolve(); }
+              });
+            }).then(function () {
+              return listCanonicalChatFolderBindingsForChat(chatId).then(buildResult);
+            });
           });
         });
       });
@@ -3486,6 +3546,7 @@
     listChats: listChats,
     listCanonicalChatFolderBindings: listCanonicalChatFolderBindings,
     getCanonicalChatFolderBindingForChat: getCanonicalChatFolderBindingForChat,
+    listCanonicalChatFolderBindingsForChat: listCanonicalChatFolderBindingsForChat,
     moveCanonicalChatFolderBinding: moveCanonicalChatFolderBinding,
     canonicalBindingStoreIdentity: canonicalBindingStoreIdentity,
     listForChat: listForChat,

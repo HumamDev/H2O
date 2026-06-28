@@ -13,6 +13,7 @@ const evidencePath = path.join(root, 'release-evidence/2026-06-25/chat-folder-bi
 const evidenceB5aPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5a-canonical-move-persistence.md');
 const evidenceB5bPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5b-same-reader-persistence.md');
 const evidenceB5cPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5c-db-identity-persistence.md');
+const evidenceB5dPath = path.join(root, 'release-evidence/2026-06-25/chat-folder-binding-phase-b5d-reverse-persistence.md');
 
 function read(file) {
   return fs.readFileSync(file, 'utf8');
@@ -48,7 +49,7 @@ function functionBody(source, name) {
   throw new Error(`${name} body parse failed`);
 }
 
-for (const file of [bridgePath, folderStorePath, exportBundlePath, desktopClientPath, chromeClientPath, evidencePath, evidenceB5aPath, evidenceB5bPath, evidenceB5cPath]) {
+for (const file of [bridgePath, folderStorePath, exportBundlePath, desktopClientPath, chromeClientPath, evidencePath, evidenceB5aPath, evidenceB5bPath, evidenceB5cPath, evidenceB5dPath]) {
   assert(fs.existsSync(file), `${path.relative(root, file)} missing`);
 }
 
@@ -61,6 +62,7 @@ const evidence = read(evidencePath);
 const evidenceB5a = read(evidenceB5aPath);
 const evidenceB5b = read(evidenceB5bPath);
 const evidenceB5c = read(evidenceB5cPath);
+const evidenceB5d = read(evidenceB5dPath);
 
 const helperBody = functionBody(bridge, 'moveChatFolderBinding');
 const dispatchBody = functionBody(bridge, 'dispatchOp');
@@ -85,11 +87,14 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
 [
   'store.moveCanonicalChatFolderBinding',
   'store.getCanonicalChatFolderBindingForChat',
+  'store.listCanonicalChatFolderBindingsForChat',
   'store.listCanonicalChatFolderBindings',
   'store.get',
   'diagnoseDesktopChatFolderBindingParity',
   'forceCanonicalFolderBindingStoreWrite: true',
   'forceLegacyFolderBindingWrite: true',
+  'smokeSkipBindingTombstone: true',
+  'smokeSuppressBindingSubscribers: true',
   "bindingStoreWritePath: 'canonical-folder-bindings-sqlite'",
   'sameReaderVerificationOk',
   'same-reader-verification-failed',
@@ -106,6 +111,10 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
   'postWriteDiagnosticFolderBindingCounts',
   'beforeFolderBindingCounts',
   'afterFolderBindingCounts',
+  'canonicalRowsForChatBeforeCount',
+  'canonicalRowsForChatCount',
+  'duplicateCanonicalBindingRowsForChatCount',
+  'duplicateCanonicalBindingRowsForChatBlocked',
   'desktopOnly: true',
   'chromeAuthority: false',
   'noChromeDestructiveBindingApply: true',
@@ -126,6 +135,7 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
   'function listCanonicalChatFolderBindings',
   'FROM folder_bindings b LEFT JOIN folders f ON f.id = b.folder_id',
   'source: \'desktop-canonical-folder-bindings-sqlite\'',
+  'listCanonicalChatFolderBindingsForChat: listCanonicalChatFolderBindingsForChat',
   'listCanonicalChatFolderBindings: listCanonicalChatFolderBindings',
   'getCanonicalChatFolderBindingForChat: getCanonicalChatFolderBindingForChat',
   'moveCanonicalChatFolderBinding: moveCanonicalChatFolderBinding',
@@ -135,12 +145,21 @@ assertContains(dispatchBody, "op === 'moveChatFolderBinding'", 'B5 dispatch regi
 [
   'sqlExecute(',
   'INSERT OR REPLACE INTO folder_bindings',
-  'getCanonicalChatFolderBindingForChat(chatId)',
+  'listCanonicalChatFolderBindingsForChat(chatId)',
   'sameLiveCanonicalStore: true',
   'canonical-folder-binding-write-not-visible',
+  'canonical-folder-binding-write-not-stable',
+  'duplicate-canonical-binding-rows-for-chat',
+  'skipBindingTombstone',
+  'suppressBindingSubscribers',
+  'bindingTombstoneSkipped',
+  'subscriberNotificationSuppressed',
+  'postWriteStabilityCheckMs',
+  'postWriteStable',
   'storeIdentity: canonicalBindingStoreIdentity()',
   'writerFunction: \'moveCanonicalChatFolderBinding\'',
   'readerFunction: \'listCanonicalChatFolderBindings\'',
+  'rowListReaderFunction: \'listCanonicalChatFolderBindingsForChat\'',
   'dbUrl: DB_URL',
   'tableName: \'folder_bindings\'',
 ].forEach((needle) => assertContains(storeCanonicalMoveBody + folderStore, needle, `B5c canonical move identity ${needle}`));
@@ -246,6 +265,23 @@ assertNotContains(chromeClient, 'B5 DESKTOP BINDING CONVERGENCE', 'B5 Chrome CDP
   'no purge',
 ].forEach((needle) => assertContains(evidenceB5c, needle, `B5c evidence ${needle}`));
 
+[
+  'B5d',
+  'reverse',
+  'Code `1`',
+  'English `0`',
+  'duplicate canonical binding rows',
+  'canonicalRowsForChatCount',
+  'bindingTombstoneSkipped:true',
+  'subscriberNotificationSuppressed:true',
+  'sameReaderVerificationOk:true',
+  'no Chrome destructive binding apply',
+  'no chat deletion',
+  'no snapshot deletion',
+  'no hard delete',
+  'no purge',
+].forEach((needle) => assertContains(evidenceB5d, needle, `B5d evidence ${needle}`));
+
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-chat-folder-binding-phase-b5-desktop-origin-convergence',
@@ -258,6 +294,7 @@ console.log(JSON.stringify({
   evidenceB5a: path.relative(root, evidenceB5aPath),
   evidenceB5b: path.relative(root, evidenceB5bPath),
   evidenceB5c: path.relative(root, evidenceB5cPath),
+  evidenceB5d: path.relative(root, evidenceB5dPath),
   desktopOnlyMutationHelper: true,
   chromeDestructiveBindingAuthority: false,
   noChatDelete: true,
