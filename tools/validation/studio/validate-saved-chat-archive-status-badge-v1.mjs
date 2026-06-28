@@ -42,14 +42,22 @@ function stripComments(src) {
 
 /* ── Minimal fake DOM for VM render tests ─────────────────────────────── */
 function makeFakeDocument() {
-  function makeEl() {
+  function makeEl(tagName = 'div') {
     return {
+      tagName: String(tagName).toUpperCase(),
+      isConnected: false,
       className: '',
       children: [],
       _attrs: {},
       _listeners: {},
       textContent: '',
-      appendChild(child) { child._parent = this; this.children.push(child); return child; },
+      appendChild(child) {
+        child._parent = this;
+        child.isConnected = this.isConnected === true;
+        this.children.push(child);
+        for (const grand of child.children || []) grand.isConnected = child.isConnected;
+        return child;
+      },
       setAttribute(k, v) { this._attrs[k] = String(v); },
       getAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null; },
       removeAttribute(k) { delete this._attrs[k]; },
@@ -61,13 +69,23 @@ function makeFakeDocument() {
         await Promise.resolve();
         await Promise.resolve();
       },
-      remove() { if (this._parent) { const i = this._parent.children.indexOf(this); if (i >= 0) this._parent.children.splice(i, 1); } },
+      remove() {
+        this.isConnected = false;
+        for (const child of this.children || []) child.isConnected = false;
+        if (this._parent) { const i = this._parent.children.indexOf(this); if (i >= 0) this._parent.children.splice(i, 1); }
+      },
       querySelector(sel) { return findBySelector(this, sel); },
     };
   }
   function classList(el) { return String(el.className || '').split(/\s+/).filter(Boolean); }
   function matchesSelector(el, sel) {
     if (sel.charAt(0) === '.') return classList(el).includes(sel.slice(1));
+    const articleAttr = sel.match(/^article\.([A-Za-z0-9_-]+)\[([^=]+)="([^"]*)"\]$/);
+    if (articleAttr) {
+      return el.tagName === 'ARTICLE'
+        && classList(el).includes(articleAttr[1])
+        && el.getAttribute(articleAttr[2]) === articleAttr[3];
+    }
     return false;
   }
   function findBySelector(root, sel) {
@@ -79,7 +97,14 @@ function makeFakeDocument() {
     }
     return null;
   }
-  return { createElement() { return makeEl(); }, _makeEl: makeEl };
+  const root = makeEl('body');
+  root.isConnected = true;
+  return {
+    createElement(tagName) { return makeEl(tagName); },
+    querySelector(sel) { return findBySelector(root, sel); },
+    _makeEl: makeEl,
+    _root: root,
+  };
 }
 
 function createSandbox(options) {
@@ -121,8 +146,10 @@ function loadBadge(context) {
   return { fn, context };
 }
 function makeArticle(context, attrs = {}) {
-  const el = context.document._makeEl();
+  const el = context.document._makeEl('article');
+  el.className = 'wbHistoryRow';
   for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+  context.document._root.appendChild(el);
   return el;
 }
 function savedRow(over = {}) {
@@ -157,6 +184,11 @@ check('badge uses the status model and the local delivery accessor', () => {
   assert.ok(badgeSrc.includes('hydrationResolved'), 'diagnostic should report resolved hydration');
   assert.ok(badgeSrc.includes('hydrationMisses'), 'diagnostic should report hydration misses');
   assert.ok(badgeSrc.includes('lastState'), 'diagnostic should report last status state');
+  assert.ok(badgeSrc.includes('staleArticleRetargeted'), 'diagnostic should report stale retargets');
+  assert.ok(badgeSrc.includes('staleArticleMisses'), 'diagnostic should report stale misses');
+  assert.ok(badgeSrc.includes('connectedRendered'), 'diagnostic should report connected renders');
+  assert.ok(badgeSrc.includes('lastArticleConnected'), 'diagnostic should report article connectivity');
+  assert.ok(badgeSrc.includes('lastRetargeted'), 'diagnostic should report last retarget');
 });
 
 check('badge uses wbBadge conventions, the archive-status class and data attribute', () => {
@@ -274,6 +306,44 @@ await checkAsync('thin row plus article ids hydrates from LibraryIndex and rende
   assert.ok(diag.hydrationResolved > 0, 'diagnostic should count resolved hydration');
   assert.ok(diag.rendered > 0, 'diagnostic should count rendered badges');
   assert.equal(diag.lastState, 'archive-requested');
+});
+
+await checkAsync('hydration retargets from a detached original article to the current connected article', async () => {
+  const fullRow = savedRow({ chatId: 'chat_retarget_1', snapshotId: 'snap_retarget_1' });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' }),
+  }));
+  const oldArticle = makeArticle(context, { 'data-chat-id': 'chat_retarget_1', 'data-snapshot-id': 'snap_retarget_1' });
+  fn({ article: oldArticle, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  oldArticle.remove();
+  const currentArticle = makeArticle(context, { 'data-chat-id': 'chat_retarget_1', 'data-snapshot-id': 'snap_retarget_1' });
+  await flushAsync();
+  assert.equal(oldArticle.querySelector('.wbBadge--archive-status'), null, 'detached original article must not retain a badge');
+  const badge = currentArticle.querySelector('.wbBadge--archive-status');
+  assert.ok(badge, 'current connected article should receive the hydrated badge');
+  assert.equal(badge.getAttribute('data-h2o-archive-status'), 'archive-requested');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.staleArticleRetargeted > 0, 'diagnostic should count stale retargets');
+  assert.ok(diag.connectedRendered > 0, 'diagnostic should count connected rendered badges');
+  assert.equal(diag.lastArticleConnected, true);
+  assert.equal(diag.lastRetargeted, true);
+});
+
+await checkAsync('detached hydrated article without a current replacement stays quiet and records stale miss', async () => {
+  const fullRow = savedRow({ chatId: 'chat_stale_miss', snapshotId: 'snap_stale_miss' });
+  const { fn, context } = loadBadge(createSandbox({
+    libraryRows: [fullRow],
+    localMetaImpl: () => ({ delivered: true, requestId: null, deliveredAt: '2026-06-28T00:00:00.000Z' }),
+  }));
+  const oldArticle = makeArticle(context, { 'data-chat-id': 'chat_stale_miss', 'data-snapshot-id': 'snap_stale_miss' });
+  fn({ article: oldArticle, badgesEl: null, row: {}, diagnostics: { enabled: true, folderConnected: true } });
+  oldArticle.remove();
+  await flushAsync();
+  assert.equal(oldArticle.querySelector('.wbBadge--archive-status'), null, 'detached article must not be rendered into');
+  const diag = context.H2O.Studio.ingestion.diagnoseSavedChatArchiveStatusBadgeV1();
+  assert.ok(diag.staleArticleMisses > 0, 'diagnostic should count stale misses');
+  assert.equal(diag.lastArticleConnected, false);
 });
 
 await checkAsync('thin row hydration remains quiet when no full LibraryIndex row is found', async () => {

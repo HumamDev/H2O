@@ -55,12 +55,17 @@
     hydrationResolved: 0,
     hydrationMisses: 0,
     rendered: 0,
+    staleArticleRetargeted: 0,
+    staleArticleMisses: 0,
+    connectedRendered: 0,
     skippedQuiet: 0,
     skippedNoArticle: 0,
     skippedNoIdentifiers: 0,
     lastState: null,
     lastReason: '',
     lastError: '',
+    lastArticleConnected: false,
+    lastRetargeted: false,
   };
 
   function isObject(value) {
@@ -94,6 +99,54 @@
       chatId: attr(article, 'data-chat-id'),
       snapshotId: attr(article, 'data-snapshot-id'),
     };
+  }
+  function selectorValue(value) {
+    return cleanString(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+  function isConnectedArticle(article) {
+    return !!article && article.isConnected === true;
+  }
+  function articleMatchesIds(article, chatId, snapshotId) {
+    if (!isConnectedArticle(article)) return false;
+    var ids = articleIds(article);
+    if (!ids.chatId && !ids.snapshotId) return true;
+    if (chatId && ids.chatId && ids.chatId !== chatId) return false;
+    if (snapshotId && ids.snapshotId && ids.snapshotId !== snapshotId) return false;
+    return (chatId && ids.chatId === chatId) || (snapshotId && ids.snapshotId === snapshotId);
+  }
+  function findCurrentArticle(chatId, snapshotId) {
+    var document = doc();
+    if (!document || typeof document.querySelector !== 'function') return null;
+    var selectors = [];
+    if (chatId) selectors.push('article.wbHistoryRow[data-chat-id="' + selectorValue(chatId) + '"]');
+    if (snapshotId) selectors.push('article.wbHistoryRow[data-snapshot-id="' + selectorValue(snapshotId) + '"]');
+    for (var i = 0; i < selectors.length; i += 1) {
+      try {
+        var found = document.querySelector(selectors[i]);
+        if (articleMatchesIds(found, chatId, snapshotId)) return found;
+      } catch (_) { /* try next selector */ }
+    }
+    return null;
+  }
+  function currentArticleFor(article, row) {
+    var ids = articleIds(article);
+    var chatId = cleanString(row && row.chatId) || ids.chatId;
+    var snapshotId = deriveSnapshotId(row || {}) || ids.snapshotId;
+    diagnosticsState.lastRetargeted = false;
+    if (articleMatchesIds(article, chatId, snapshotId)) {
+      diagnosticsState.lastArticleConnected = true;
+      return article;
+    }
+    var current = findCurrentArticle(chatId, snapshotId);
+    if (current) {
+      diagnosticsState.staleArticleRetargeted += 1;
+      diagnosticsState.lastRetargeted = true;
+      diagnosticsState.lastArticleConnected = true;
+      return current;
+    }
+    diagnosticsState.staleArticleMisses += 1;
+    diagnosticsState.lastArticleConnected = false;
+    return null;
   }
   function rowWithArticleIds(row, article) {
     var base = isObject(row) ? Object.assign({}, row) : {};
@@ -293,8 +346,10 @@
     var diagnostics = resolveDiag(diagOverride);
     var status = computeStatusWith(row, local, diagnostics, null);
     recordStatus(status);
+    var targetArticle = currentArticleFor(article, row);
+    var targetBadgesEl = targetArticle === article ? badgesEl : null;
     /* Remove any prior archive-status badge first (idempotent re-render). */
-    var existingContainer = resolveContainer(article, badgesEl, false);
+    var existingContainer = resolveContainer(targetArticle, targetBadgesEl, false);
     if (existingContainer && typeof existingContainer.querySelector === 'function') {
       var prior = existingContainer.querySelector(BADGE_SELECTOR);
       if (prior && typeof prior.remove === 'function') prior.remove();
@@ -303,14 +358,20 @@
       diagnosticsState.skippedQuiet += 1;
       return status;
     }
-    var container = resolveContainer(article, badgesEl, true);
+    if (!targetArticle) return status;
+    var container = resolveContainer(targetArticle, targetBadgesEl, true);
     if (!container) return status;
     var document = doc();
     if (!document) return status;
     var span = document.createElement('span');
     applyStatusToBadge(span, status, row, local, diagnostics);
     container.appendChild(span);
-    diagnosticsState.rendered += 1;
+    var attached = container.querySelector && container.querySelector(BADGE_SELECTOR);
+    if (isConnectedArticle(targetArticle) && attached && attached.getAttribute('data-h2o-archive-status') === cleanString(status.state)) {
+      diagnosticsState.rendered += 1;
+      diagnosticsState.connectedRendered += 1;
+      diagnosticsState.lastArticleConnected = true;
+    }
     return status;
   }
 
@@ -360,7 +421,9 @@
         var cacheKey = keyFor(merged);
         if (cacheKey && !isObject(localOverride)) localCache.set(cacheKey, local);
         diagnosticsState.hydrationResolved += 1;
-        renderInto(article, badgesEl, merged, local, diagOverride);
+        return Promise.resolve().then(function () {
+          renderInto(article, badgesEl, merged, local, diagOverride);
+        });
       });
     }).catch(function () {
       diagnosticsState.lastError = 'hydrate-failed';
@@ -394,12 +457,17 @@
       hydrationResolved: diagnosticsState.hydrationResolved,
       hydrationMisses: diagnosticsState.hydrationMisses,
       rendered: diagnosticsState.rendered,
+      staleArticleRetargeted: diagnosticsState.staleArticleRetargeted,
+      staleArticleMisses: diagnosticsState.staleArticleMisses,
+      connectedRendered: diagnosticsState.connectedRendered,
       skippedQuiet: diagnosticsState.skippedQuiet,
       skippedNoArticle: diagnosticsState.skippedNoArticle,
       skippedNoIdentifiers: diagnosticsState.skippedNoIdentifiers,
       lastState: diagnosticsState.lastState,
       lastReason: diagnosticsState.lastReason,
       lastError: diagnosticsState.lastError,
+      lastArticleConnected: diagnosticsState.lastArticleConnected,
+      lastRetargeted: diagnosticsState.lastRetargeted,
     };
   }
 
