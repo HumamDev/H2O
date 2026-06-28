@@ -3447,6 +3447,80 @@
     };
   }
 
+  function makeAlreadyAppliedChatFolderBindingRequestResult(review, request, extra) {
+    var result = makeChatFolderBindingRequestApplyResult(review);
+    var currentFolderId = cleanScalar(extra && extra.currentFolderId);
+    result.ok = true;
+    result.applied = false;
+    result.alreadyApplied = true;
+    result.status = 'chat-folder-binding-request-already-applied';
+    result.decision = cleanScalar(review && review.decision);
+    result.reviewStatus = cleanScalar(review && review.status);
+    result.requestId = request ? request.requestId : null;
+    result.chatId = request ? request.chatId : null;
+    result.conversationId = request ? request.conversationId : null;
+    result.expectedCurrentFolderId = request ? request.expectedCurrentFolderId : null;
+    result.targetFolderId = request ? request.targetFolderId : null;
+    result.targetKind = request && request.targetUnfiled === true ? 'unfiled' : 'folder';
+    result.targetUnfiled = request ? request.targetUnfiled === true : false;
+    result.beforeFolderId = currentFolderId || (request ? request.targetFolderId : null);
+    result.afterFolderId = currentFolderId || (request && request.targetUnfiled === true ? null : request ? request.targetFolderId : null);
+    result.changed = false;
+    result.validationStatus = 'accepted';
+    result.canonicalAlreadyApplied = true;
+    result.resolvedCanonicalVerified = extra && extra.resolvedCanonicalVerified === true;
+    result.sameLiveCanonicalStore = true;
+    if (extra && extra.currentBinding) result.currentBinding = extra.currentBinding;
+    return result;
+  }
+
+  function makeReconciledResolvedChatFolderBindingRequestResult(review, request, applyResult, peerId) {
+    var result = makeChatFolderBindingRequestApplyResult(review);
+    var beforeBinding = isObject(applyResult && applyResult.beforeBinding) ? applyResult.beforeBinding : null;
+    var afterBinding = isObject(applyResult && applyResult.afterBinding) ? applyResult.afterBinding : null;
+    result.ok = true;
+    result.applied = true;
+    result.alreadyApplied = false;
+    result.status = 'chat-folder-binding-request-reconciled-after-stale-resolved-review';
+    result.decision = cleanScalar(review && review.decision) || 'applied-chat-folder-binding-request';
+    result.reviewStatus = cleanScalar(review && review.status);
+    result.reviewUpdated = false;
+    result.requestId = request ? request.requestId : null;
+    result.chatId = request ? request.chatId : null;
+    result.conversationId = request ? request.conversationId : null;
+    result.expectedCurrentFolderId = request ? request.expectedCurrentFolderId : null;
+    result.targetFolderId = request ? request.targetFolderId : null;
+    result.targetKind = request && request.targetUnfiled === true ? 'unfiled' : 'folder';
+    result.targetUnfiled = request ? request.targetUnfiled === true : false;
+    result.beforeFolderId = cleanScalar(applyResult && (applyResult.beforeFolderId || chatFolderBindingFolderIdFromRow(beforeBinding))) ||
+      (request ? request.expectedCurrentFolderId : null);
+    result.afterFolderId = cleanScalar(applyResult && (applyResult.afterFolderId || chatFolderBindingFolderIdFromRow(afterBinding))) ||
+      (request && request.targetUnfiled === true ? null : request ? request.targetFolderId : null);
+    result.changed = applyResult && applyResult.changed === true;
+    result.validationStatus = 'accepted';
+    result.appliedBySyncPeerIdPresent = !!peerId;
+    result.resolvedCanonicalReconciled = true;
+    result.resolvedCanonicalVerified = true;
+    result.warnings.push('stale-resolved-chat-folder-binding-request-reapplied');
+    result.storeIdentity = isObject(applyResult && (applyResult.storeIdentity || applyResult.bindingStoreIdentity))
+      ? (applyResult.storeIdentity || applyResult.bindingStoreIdentity)
+      : null;
+    result.sameLiveCanonicalStore = applyResult && applyResult.sameLiveCanonicalStore === true;
+    result.moveResult = {
+      ok: applyResult && applyResult.ok === true,
+      status: cleanScalar(applyResult && applyResult.status),
+      changed: applyResult && applyResult.changed === true,
+      beforeFolderId: result.beforeFolderId,
+      afterFolderId: result.afterFolderId,
+      rowsAffected: Number(applyResult && applyResult.rowsAffected) || 0,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+    return result;
+  }
+
   function blockChatFolderBindingRequestApply(review, code, extra) {
     var result = makeChatFolderBindingRequestApplyResult(review);
     var normalized = cleanScalar(code) || 'chat-folder-binding-request-apply-blocked';
@@ -3742,21 +3816,135 @@
         if (!validation.ok) {
           var existingRequest = validation.request || null;
           if (validation.alreadyApplied === true) {
-            var already = makeChatFolderBindingRequestApplyResult(review);
-            already.ok = true;
-            already.applied = false;
-            already.alreadyApplied = true;
-            already.status = 'chat-folder-binding-request-already-applied';
-            already.decision = cleanScalar(review && review.decision);
-            already.reviewStatus = cleanScalar(review && review.status);
-            already.requestId = existingRequest ? existingRequest.requestId : null;
-            already.chatId = existingRequest ? existingRequest.chatId : null;
-            already.conversationId = existingRequest ? existingRequest.conversationId : null;
-            already.expectedCurrentFolderId = existingRequest ? existingRequest.expectedCurrentFolderId : null;
-            already.targetFolderId = existingRequest ? existingRequest.targetFolderId : null;
-            already.targetKind = existingRequest && existingRequest.targetUnfiled === true ? 'unfiled' : 'folder';
-            already.targetUnfiled = existingRequest ? existingRequest.targetUnfiled === true : false;
-            return already;
+            if (opts.reconcileResolvedCanonical === true && existingRequest && existingRequest.chatId) {
+              var reconcileFolders = H2O.Studio && H2O.Studio.store && H2O.Studio.store.folders;
+              if (!reconcileFolders || typeof reconcileFolders.getCanonicalChatFolderBindingForChat !== 'function') {
+                return blockChatFolderBindingRequestApply(review, 'folder-binding-store-unavailable', {
+                  requestId: existingRequest.requestId,
+                  chatId: existingRequest.chatId,
+                  targetFolderId: existingRequest.targetFolderId,
+                });
+              }
+              return readLocalSyncPeerIdForDecision().then(function (peerId) {
+                if (existingRequest.targetUnfiled === true) {
+                  if (typeof reconcileFolders.listCanonicalChatFolderBindingsForChat !== 'function' ||
+                      typeof reconcileFolders.unbindChat !== 'function') {
+                    return blockChatFolderBindingRequestApply(review, 'chat-folder-binding-unfile-unavailable', {
+                      requestId: existingRequest.requestId,
+                      chatId: existingRequest.chatId,
+                    });
+                  }
+                  return reconcileFolders.listCanonicalChatFolderBindingsForChat(existingRequest.chatId).then(function (beforeRows) {
+                    var before = Array.isArray(beforeRows) && beforeRows.length ? beforeRows[0] : null;
+                    var actualCurrentFolderId = chatFolderBindingFolderIdFromRow(before);
+                    if (!actualCurrentFolderId) {
+                      return makeAlreadyAppliedChatFolderBindingRequestResult(review, existingRequest, {
+                        currentFolderId: null,
+                        currentBinding: null,
+                        resolvedCanonicalVerified: true,
+                      });
+                    }
+                    if (existingRequest.expectedCurrentFolderId && actualCurrentFolderId !== existingRequest.expectedCurrentFolderId) {
+                      return blockChatFolderBindingRequestApply(review, 'expected-current-folder-mismatch', {
+                        requestId: existingRequest.requestId,
+                        chatId: existingRequest.chatId,
+                        expectedCurrentFolderId: existingRequest.expectedCurrentFolderId,
+                        actualCurrentFolderId: actualCurrentFolderId,
+                      });
+                    }
+                    return reconcileFolders.unbindChat(existingRequest.expectedCurrentFolderId, existingRequest.chatId, {
+                      reason: cleanScalar(opts.reason) || 'phase-b9-auto-apply-chrome-chat-folder-binding-request',
+                      explicitF7Fallback: true,
+                      noHardDelete: true,
+                      noChatDelete: true,
+                      noSnapshotDelete: true,
+                      noAssetDelete: true,
+                    }).then(function (ok) {
+                      if (ok !== true) {
+                        return blockChatFolderBindingRequestApply(review, 'chat-folder-binding-unfile-failed', {
+                          requestId: existingRequest.requestId,
+                          chatId: existingRequest.chatId,
+                        });
+                      }
+                      return makeReconciledResolvedChatFolderBindingRequestResult(review, existingRequest, {
+                        ok: true,
+                        status: 'chat-folder-binding-unfiled',
+                        changed: true,
+                        beforeBinding: before,
+                        afterBinding: null,
+                        beforeFolderId: actualCurrentFolderId,
+                        afterFolderId: null,
+                        rowsAffected: 1,
+                        sameLiveCanonicalStore: true,
+                      }, peerId);
+                    });
+                  });
+                }
+                if (typeof reconcileFolders.moveCanonicalChatFolderBinding !== 'function') {
+                  return blockChatFolderBindingRequestApply(review, 'canonical-folder-binding-move-unavailable', {
+                    requestId: existingRequest.requestId,
+                    chatId: existingRequest.chatId,
+                    targetFolderId: existingRequest.targetFolderId,
+                  });
+                }
+                return reconcileFolders.getCanonicalChatFolderBindingForChat(existingRequest.chatId).then(function (currentBinding) {
+                  var currentFolderId = chatFolderBindingFolderIdFromRow(currentBinding);
+                  if (currentFolderId === existingRequest.targetFolderId) {
+                    return makeAlreadyAppliedChatFolderBindingRequestResult(review, existingRequest, {
+                      currentFolderId: currentFolderId,
+                      currentBinding: currentBinding,
+                      resolvedCanonicalVerified: true,
+                    });
+                  }
+                  if (existingRequest.expectedCurrentFolderId && currentFolderId !== existingRequest.expectedCurrentFolderId) {
+                    return blockChatFolderBindingRequestApply(review, 'expected-current-folder-mismatch', {
+                      requestId: existingRequest.requestId,
+                      chatId: existingRequest.chatId,
+                      expectedCurrentFolderId: existingRequest.expectedCurrentFolderId,
+                      actualCurrentFolderId: currentFolderId || '',
+                      targetFolderId: existingRequest.targetFolderId,
+                    });
+                  }
+                  return reconcileFolders.moveCanonicalChatFolderBinding(existingRequest.targetFolderId, existingRequest.chatId, {
+                    expectedCurrentFolderId: existingRequest.expectedCurrentFolderId || currentFolderId,
+                    reason: cleanScalar(opts.reason) || 'phase-b9-auto-apply-chrome-chat-folder-binding-request',
+                    sourceReviewId: cleanScalar(review.reviewId),
+                    reviewId: cleanScalar(review.reviewId),
+                    requestId: cleanScalar(existingRequest.requestId),
+                    skipBindingTombstone: true,
+                    suppressBindingSubscribers: false,
+                    noHardDelete: true,
+                    noChatDelete: true,
+                    noSnapshotDelete: true,
+                    noAssetDelete: true,
+                  }).then(function (moveResult) {
+                    if (!moveResult || moveResult.ok !== true) {
+                      var status = cleanScalar(moveResult && moveResult.status) || 'chat-folder-binding-move-failed';
+                      var blocked = blockChatFolderBindingRequestApply(review, status, {
+                        requestId: existingRequest.requestId,
+                        chatId: existingRequest.chatId,
+                        targetFolderId: existingRequest.targetFolderId,
+                        moveResult: moveResult || null,
+                      });
+                      (Array.isArray(moveResult && moveResult.blockers) ? moveResult.blockers : []).forEach(function (code) {
+                        pushBlocker(blocked, code && (code.code || code));
+                      });
+                      return blocked;
+                    }
+                    return makeReconciledResolvedChatFolderBindingRequestResult(review, existingRequest, moveResult, peerId);
+                  });
+                });
+              }, function () {
+                return blockChatFolderBindingRequestApply(review, 'local-identity-unavailable', {
+                  requestId: existingRequest.requestId,
+                  chatId: existingRequest.chatId,
+                  targetFolderId: existingRequest.targetFolderId,
+                });
+              });
+            }
+            return makeAlreadyAppliedChatFolderBindingRequestResult(review, existingRequest, {
+              resolvedCanonicalVerified: false,
+            });
           }
           return blockChatFolderBindingRequestApply(review, validation.code, {
             requestId: existingRequest ? existingRequest.requestId : null,

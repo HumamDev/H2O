@@ -1514,6 +1514,8 @@
       folderDeleteRequestAutoApply: f.folderDeleteRequestAutoApply || null,
       folderRestoreRequestImport: f.folderRestoreRequestImport || null,
       folderRestoreRequestAutoApply: f.folderRestoreRequestAutoApply || null,
+      chatFolderBindingRequestImport: f.chatFolderBindingRequestImport || null,
+      chatFolderBindingRequestAutoApply: f.chatFolderBindingRequestAutoApply || null,
       parity: f.parity || {
         snapshotCaptured: false,
         paritySnapshotHash: '',
@@ -1809,15 +1811,34 @@
             status: 'already-applied',
           });
         } else {
+          var applyBlockers = Array.isArray(applyResult && applyResult.blockers) ? applyResult.blockers.slice() : [];
+          var applyStatus = cleanString(applyResult && applyResult.status) || 'folder-delete-request-apply-failed';
+          var alreadyTombstoned = applyStatus === 'already-tombstoned' ||
+            applyBlockers.some(function (code) {
+              return cleanString(code && (code.code || code)) === 'already-tombstoned';
+            });
+          if (alreadyTombstoned) {
+            result.alreadyAppliedCount += 1;
+            result.receiptExportReadyCount += 1;
+            result.appliedRequests.push({
+              requestId: request.requestId,
+              reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
+              folderId: request.folderId,
+              status: 'already-tombstoned',
+              idempotent: true,
+            });
+            addUnique(result.warnings, 'folder-delete-request-already-tombstoned-idempotent');
+            continue;
+          }
           result.failedCount += 1;
           result.failedRequests.push({
             requestId: request.requestId,
             reviewId: cleanString(row.reviewId || request.reviewId || request.requestId),
             folderId: request.folderId,
-            status: cleanString(applyResult && applyResult.status) || 'folder-delete-request-apply-failed',
-            blockers: Array.isArray(applyResult && applyResult.blockers) ? applyResult.blockers.slice() : [],
+            status: applyStatus,
+            blockers: applyBlockers,
           });
-          (Array.isArray(applyResult && applyResult.blockers) ? applyResult.blockers : []).forEach(function (code) {
+          applyBlockers.forEach(function (code) {
             addUnique(result.blockers, code && (code.code || code));
           });
         }
@@ -2311,14 +2332,47 @@
             decision === 'applied-chat-folder-binding-request' ||
             decision === 'already-applied-chat-folder-binding-request'
           )) {
-            result.alreadyAppliedCount += 1;
+            var resolvedApplyResult = await reviews.applyChatFolderBindingRequest({
+              reviewId: cleanString(resolved.reviewId || request.reviewId || request.requestId),
+              requestId: request.requestId,
+            }, {
+              reason: 'phase-b9-auto-apply-chrome-chat-folder-binding-request',
+              reconcileResolvedCanonical: true,
+            });
+            if (!resolvedApplyResult || resolvedApplyResult.ok !== true) {
+              var resolvedStatus = cleanString(resolvedApplyResult && resolvedApplyResult.status) || 'chat-folder-binding-request-resolved-reconcile-failed';
+              if (resolvedStatus === 'expected-current-folder-mismatch') result.expectedCurrentFolderMismatchCount += 1;
+              if (resolvedStatus === 'target-folder-missing') result.targetFolderMissingCount += 1;
+              result.failedCount += 1;
+              result.failedRequests.push({
+                requestId: request.requestId,
+                reviewId: cleanString(resolved.reviewId || request.reviewId || request.requestId),
+                chatId: request.chatId,
+                targetFolderId: request.targetFolderId,
+                status: resolvedStatus,
+                blockers: Array.isArray(resolvedApplyResult && resolvedApplyResult.blockers) ? resolvedApplyResult.blockers.slice() : [],
+              });
+              (Array.isArray(resolvedApplyResult && resolvedApplyResult.blockers) ? resolvedApplyResult.blockers : []).forEach(function (code) {
+                addUnique(result.blockers, code && (code.code || code));
+              });
+              continue;
+            }
+            if (resolvedApplyResult.alreadyApplied === true) result.alreadyAppliedCount += 1;
+            else result.appliedCount += 1;
             result.receiptExportReadyCount += 1;
+            (Array.isArray(resolvedApplyResult.warnings) ? resolvedApplyResult.warnings : []).forEach(function (code) {
+              addUnique(result.warnings, code && (code.code || code));
+            });
             result.appliedRequests.push({
               requestId: request.requestId,
               reviewId: cleanString(resolved.reviewId || request.reviewId || request.requestId),
               chatId: request.chatId,
               targetFolderId: request.targetFolderId,
-              status: 'already-applied',
+              status: cleanString(resolvedApplyResult.status) || 'already-applied',
+              beforeFolderId: cleanString(resolvedApplyResult.beforeFolderId),
+              afterFolderId: cleanString(resolvedApplyResult.afterFolderId),
+              resolvedCanonicalReconciled: resolvedApplyResult.resolvedCanonicalReconciled === true,
+              resolvedCanonicalVerified: resolvedApplyResult.resolvedCanonicalVerified === true,
             });
             continue;
           }
@@ -2678,6 +2732,13 @@
     };
   }
 
+  function duplicateChromeLatestBundleHasRequestLanes(bundle) {
+    if (!bundle || typeof bundle !== 'object') return false;
+    return (Array.isArray(bundle.folderDeleteRequests) && bundle.folderDeleteRequests.length > 0) ||
+      (Array.isArray(bundle.folderRestoreRequests) && bundle.folderRestoreRequests.length > 0) ||
+      (Array.isArray(bundle.chatFolderBindingRequests) && bundle.chatFolderBindingRequests.length > 0);
+  }
+
   async function importChromeLatestFromFile(filePathArg, options) {
     var filePath = String(filePathArg || '').trim();
     if (!filePath) {
@@ -2724,6 +2785,30 @@
     var ledger = await getLedger();
     var existing = ledger.entries.filter(function (le) { return le && le.fingerprint === fingerprint; })[0];
     if (existing) {
+      var duplicateBundle = null;
+      try { duplicateBundle = JSON.parse(fileText); } catch (_) { duplicateBundle = null; }
+      if (duplicateChromeLatestBundleHasRequestLanes(duplicateBundle)) {
+        var duplicateResult = await importChromeLatestBundle(duplicateBundle, Object.assign(
+          {},
+          options && typeof options === 'object' ? options : {},
+          {
+            fileFingerprint: fingerprint,
+            mode: 'f19-chrome-desktop-duplicate-request-replay',
+            duplicateReplay: true
+          }
+        ));
+        duplicateResult.idempotency = Object.assign({}, duplicateResult.idempotency || {}, {
+          fileFingerprintChecked: true,
+          alreadyImported: true,
+          duplicateRequestReplay: true,
+          hardeningCode: F19_SYNC_HARDENING_CODES.duplicateImportIdempotent,
+          mergeOnly: true,
+          existingRowsSkipped: true,
+          protectedDomainFallbackDisabled: true
+        });
+        addUnique(duplicateResult.warnings, F19_SYNC_HARDENING_CODES.duplicateImportIdempotent);
+        return duplicateResult;
+      }
       return propagationResult(true, {
         status: 'already-imported',
         warnings: [F19_SYNC_HARDENING_CODES.duplicateImportIdempotent],

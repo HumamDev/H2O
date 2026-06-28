@@ -72,12 +72,18 @@ const evidence = read(evidencePath);
 
 const desktopApplyBody = functionBody(tauriReview, 'applyChatFolderBindingRequest');
 const desktopUnfileApplyBody = functionBody(tauriReview, 'applyChatFolderBindingUnfileRequest');
+const desktopAlreadyAppliedBody = functionBody(tauriReview, 'makeAlreadyAppliedChatFolderBindingRequestResult');
+const desktopResolvedReconcileBody = functionBody(tauriReview, 'makeReconciledResolvedChatFolderBindingRequestResult');
 const desktopMarkAppliedBody = functionBody(tauriReview, 'markChatFolderBindingRequestApplied');
 const desktopRawApplyBody = functionBody(tauriReview, 'chatFolderBindingRequestRawWithApplyResult');
 const desktopValidateBody = functionBody(tauriReview, 'validateChatFolderBindingRequestReviewForApply');
 const desktopNormalizeBody = functionBody(tauriReview, 'normalizeChatFolderBindingRequest');
 const desktopReceiptBody = functionBody(tauriReview, 'chatFolderBindingReceiptFromReview');
 const desktopIngestBody = functionBody(tauriReview, 'ingestChatFolderBindingRequests');
+const propagationResultBody = functionBody(tauriSync, 'propagationResult');
+const folderDeleteAutoApplyBody = functionBody(tauriSync, 'autoApplyFolderDeleteRequestsFromChromeBundle');
+const duplicateReplayBody = functionBody(tauriSync, 'duplicateChromeLatestBundleHasRequestLanes');
+const importChromeLatestFromFileBody = functionBody(tauriSync, 'importChromeLatestFromFile');
 const syncIngestBody = functionBody(tauriSync, 'ingestChatFolderBindingRequestsFromChromeBundle');
 const syncApplyBody = functionBody(tauriSync, 'autoApplyChatFolderBindingRequestsFromChromeBundle');
 const exportReceiptBody = functionBody(desktopExport, 'buildChatFolderBindingReceiptPayloadSafely');
@@ -121,7 +127,24 @@ const bridgeSummaryBody = functionBody(bridge, 'summarizeFolderSyncDiagnose');
   'expectedCurrentFolderId',
   'phase-b9-auto-apply-chrome-chat-folder-binding-request',
   'markChatFolderBindingRequestApplied',
+  'reconcileResolvedCanonical',
+  'makeAlreadyAppliedChatFolderBindingRequestResult',
+  'makeReconciledResolvedChatFolderBindingRequestResult',
+  'getCanonicalChatFolderBindingForChat',
 ].forEach((needle) => assertContains(desktopApplyBody, needle, `B9 Desktop apply ${needle}`));
+
+[
+  'canonicalAlreadyApplied = true',
+  'resolvedCanonicalVerified',
+  'sameLiveCanonicalStore = true',
+].forEach((needle) => assertContains(desktopAlreadyAppliedBody, needle, `B9 verified already-applied result ${needle}`));
+
+[
+  'chat-folder-binding-request-reconciled-after-stale-resolved-review',
+  'stale-resolved-chat-folder-binding-request-reapplied',
+  'resolvedCanonicalReconciled = true',
+  'resolvedCanonicalVerified = true',
+].forEach((needle) => assertContains(desktopResolvedReconcileBody, needle, `B9 stale resolved reconciliation ${needle}`));
 
 [
   'applied-chat-folder-binding-request',
@@ -183,8 +206,39 @@ const bridgeSummaryBody = functionBody(bridge, 'summarizeFolderSyncDiagnose');
 ].forEach((needle) => assertContains(tauriSync, needle, `B9 Desktop sync ${needle}`));
 
 [
+  'chatFolderBindingRequestImport: f.chatFolderBindingRequestImport || null',
+  'chatFolderBindingRequestAutoApply: f.chatFolderBindingRequestAutoApply || null',
+].forEach((needle) => assertContains(propagationResultBody, needle, `B9 propagation result ${needle}`));
+
+[
+  'already-tombstoned',
+  'folder-delete-request-already-tombstoned-idempotent',
+  'alreadyAppliedCount += 1',
+  'receiptExportReadyCount += 1',
+  'idempotent: true',
+  'continue;',
+].forEach((needle) => assertContains(folderDeleteAutoApplyBody, needle, `B9 stale folder-delete isolation ${needle}`));
+
+[
+  'folderDeleteRequests',
+  'folderRestoreRequests',
+  'chatFolderBindingRequests',
+].forEach((needle) => assertContains(duplicateReplayBody, needle, `B9 duplicate request replay detector ${needle}`));
+
+[
+  'duplicateChromeLatestBundleHasRequestLanes',
+  'importChromeLatestBundle(duplicateBundle',
+  'duplicateRequestReplay: true',
+  'alreadyImported: true',
+  'F19_SYNC_HARDENING_CODES.duplicateImportIdempotent',
+].forEach((needle) => assertContains(importChromeLatestFromFileBody, needle, `B9 duplicate request replay ${needle}`));
+
+[
   'bundle.chatFolderBindingRequests',
   'reviews.ingestChatFolderBindingRequests',
+  'reconcileResolvedCanonical: true',
+  'resolvedCanonicalReconciled',
+  'resolvedCanonicalVerified',
 ].forEach((needle) => assertContains(syncIngestBody + syncApplyBody, needle, `B9 Desktop sync lane ${needle}`));
 
 [
