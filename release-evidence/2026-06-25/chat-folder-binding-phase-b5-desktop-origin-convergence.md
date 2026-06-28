@@ -51,27 +51,108 @@ The helper returns before/after binding summaries and folder binding counts, whi
 
 ## Runtime Status
 
-Runtime proof status: BLOCKED by Desktop queue runtime access.
+Runtime proof status: PASS.
 
-Attempted Desktop queue calls:
+B5 Desktop-origin binding convergence is now runtime-proven after the B5a/B5b/B5c/B5d persistence fixes:
 
-- `diagnoseHealth`
-- `diagnoseChatFolderBindingParity` with `includeSensitive:true` for selecting a reversible binding target
+- B5 implementation: `eed3f34aa1f65ffb223fd13210b373e77d4573c4`
+- B5a canonical move persistence: `a2ed5fdc5fb78dfe264d61888206cc6288242b85`
+- B5b same-reader persistence: `e8a10bfd0be7041b636e5f93c0ef6050cdfa2237`
+- B5c DB identity persistence: `3798f3391179917b2bd738f28d00ae1bd0d05bb6`
+- B5d reverse persistence: `be47c2be2f698c5af0a27489496d881138893340`
 
-Both returned:
+Initial baseline before final B5d proof:
 
-- `ok:false`
-- `status:"desktop-queue-timeout"`
-- `blockers:["desktop-queue-timeout"]`
-- `nextAction:"Open Desktop Studio with ?h2oSmokeBridge=folder-sync-rc, set localStorage h2o:studio:smoke-bridge:enabled:v1 to folder-sync-rc, and confirm H2O.Studio.devSmoke.folderSyncQueue.diagnose().started is true."`
+- Desktop queue healthy.
+- Desktop diagnostic `ok:true`.
+- `totalBindingCount:14`
+- current state before reverse proof was forward:
+  - Code folder `f_e301f3506938c19dbac0e304`: `0`
+  - English folder `f_2bb1037f88b2719dbac10c22`: `1`
+- `blockers:[]`
 
-No Desktop binding mutation was performed.
+B5d reverse move proof:
 
-Expected additional blocker if Chrome is launched in a fresh CDP profile without sync-folder permission:
+- op: `moveChatFolderBinding`
+- `ok:true`
+- `status:"chat-folder-binding-moved"`
+- chatId: `69dd285f-16ec-8390-a458-0574c6ea956e`
+- expectedCurrentFolderId: `f_2bb1037f88b2719dbac10c22`
+- targetFolderId: `f_e301f3506938c19dbac0e304`
+- confirmation phrase: `B5 DESKTOP BINDING CONVERGENCE`
+- `sameReaderVerificationOk:true`
+- binding store identity:
+  - `dbUrl:"sqlite:studio-v1.db"`
+  - `tableName:"folder_bindings"`
+  - `readerFunction:"listCanonicalChatFolderBindings"`
+  - `writerFunction:"moveCanonicalChatFolderBinding"`
+  - `countSource:"sqlite:folder_bindings"`
+- `postWriteDiagnosticSource:"diagnoseChatFolderBindingParity"`
+- `postWriteCanonicalReader:"store.folders.listCanonicalChatFolderBindings"`
+- `postWriteExportSource:"desktopCanonicalChatFolderBindings"`
+- before counts:
+  - Code `0`
+  - English `1`
+- after counts:
+  - Code `1`
+  - English `0`
+- `beforeBindingCount:14`
+- `afterBindingCount:14`
+- `blockers:[]`
+- `warnings:[]`
 
-- `permission-required`
+Separate Desktop diagnostic after reverse:
 
-These are operator runtime gates, not B5 product-code blockers.
+- `ok:true`
+- `status:"chat-folder-binding-parity-diagnosed"`
+- `totalBindingCount:14`
+- Code `1`
+- English `0`
+- `blockers:[]`
+- warnings only:
+  - `chrome-binding-import-deferred`
+  - `desktop-orphan-binding-scan-unavailable`
+
+Desktop final export:
+
+- op: `syncNow`
+- direction: `desktop-to-chrome`
+- `ok:true`
+- `status:"latest-sync-bundle-written"`
+- transport: `latest.json`
+- exportedAt: `2026-06-28T11:11:12.462Z`
+- bytes: `765269`
+- `blockers:[]`
+- `warnings:[]`
+
+Final Chrome import + diagnostic:
+
+- Chrome import returned `status:"sync-folder-sync-in-flight"` with `blockers:[]`; this is treated as non-blocking/noisy because the immediately following diagnostic showed final projection parity.
+- Chrome diagnostic:
+  - `ok:true`
+  - `status:"chat-folder-binding-parity-diagnosed"`
+  - `importedDesktopCanonicalBindingCount:14`
+  - `chromeDisplayBindingCount:14`
+  - `parityComparable:true`
+  - `parityOk:true`
+  - `missingInChromeCount:0`
+  - `extraInChromeCount:0`
+  - `folderCountMismatchCount:0`
+  - Code `1`
+  - English `0`
+  - `blockers:[]`
+  - `warnings:[]`
+
+Interpretation:
+
+- Desktop-origin binding convergence is proven in both directions.
+- Code -> English forward move converged to Chrome parity.
+- English -> Code reverse move converged back to original Chrome parity.
+- Final state is restored to original:
+  - Code `1`
+  - English `0`
+- Chrome remains read-only; no Chrome binding mutation/request authority was added.
+- B5 now uses canonical SQLite `folder_bindings`, which sees `14` rows instead of the earlier `12`; this is expected after the canonical reader was unified.
 
 ## Validation
 

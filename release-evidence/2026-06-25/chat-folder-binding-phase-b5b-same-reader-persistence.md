@@ -116,6 +116,29 @@ Because the queue did not process a read-only health probe, no B5b Desktop bindi
 
 The B5b live proof requires Desktop Studio to run the current source with `?h2oSmokeBridge=folder-sync-rc` and the queue started. The Chrome import leg requires the same Chrome profile to have sync-folder permission.
 
+## Final B5 Runtime Cross-Reference
+
+Final B5 runtime proof is PASS in the B5d evidence:
+
+- evidence: `release-evidence/2026-06-25/chat-folder-binding-phase-b5d-reverse-persistence.md`
+- B5d commit: `be47c2be2f698c5af0a27489496d881138893340`
+- reverse move result:
+  - `sameReaderVerificationOk:true`
+  - `postWriteDiagnosticSource:"diagnoseChatFolderBindingParity"`
+  - `postWriteCanonicalReader:"store.folders.listCanonicalChatFolderBindings"`
+  - `postWriteExportSource:"desktopCanonicalChatFolderBindings"`
+- separate Desktop diagnostic after reverse:
+  - `totalBindingCount:14`
+  - Code `1`
+  - English `0`
+  - `blockers:[]`
+- Chrome final diagnostic:
+  - `parityComparable:true`
+  - `parityOk:true`
+  - `folderCountMismatchCount:0`
+
+B5b remains useful as the same-reader persistence attribution step; final live convergence is closed by B5d.
+
 ## Validation
 
 Validation passed:

@@ -150,6 +150,34 @@ Interpretation:
 
 The Chrome import leg also requires the same Chrome profile to have sync-folder permission.
 
+## Final B5 Runtime Cross-Reference
+
+Final B5 runtime proof is PASS in the B5d evidence:
+
+- evidence: `release-evidence/2026-06-25/chat-folder-binding-phase-b5d-reverse-persistence.md`
+- B5d commit: `be47c2be2f698c5af0a27489496d881138893340`
+- binding store identity:
+  - `dbUrl:"sqlite:studio-v1.db"`
+  - `tableName:"folder_bindings"`
+  - `readerFunction:"listCanonicalChatFolderBindings"`
+  - `writerFunction:"moveCanonicalChatFolderBinding"`
+  - `countSource:"sqlite:folder_bindings"`
+- reverse move after-counts:
+  - Code `1`
+  - English `0`
+- Desktop export:
+  - `status:"latest-sync-bundle-written"`
+  - bytes `765269`
+  - `blockers:[]`
+- Chrome final diagnostic:
+  - `importedDesktopCanonicalBindingCount:14`
+  - `chromeDisplayBindingCount:14`
+  - `parityComparable:true`
+  - `parityOk:true`
+  - `folderCountMismatchCount:0`
+
+B5c remains useful as the DB identity attribution step; final reverse persistence and Chrome convergence are closed by B5d.
+
 ## Validation
 
 Validation passed:

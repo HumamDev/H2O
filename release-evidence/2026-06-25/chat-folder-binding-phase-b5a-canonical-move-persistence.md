@@ -94,6 +94,28 @@ No Desktop binding mutation was performed during B5a because the queue did not p
 
 The B5 runtime failure is fully attributed and guarded statically. A live rerun requires the Desktop Studio smoke bridge to load the B5a source and the Chrome profile to have sync-folder permission if the Chrome import leg is exercised.
 
+## Final B5 Runtime Cross-Reference
+
+Final B5 runtime proof is PASS in the B5d evidence:
+
+- evidence: `release-evidence/2026-06-25/chat-folder-binding-phase-b5d-reverse-persistence.md`
+- B5d commit: `be47c2be2f698c5af0a27489496d881138893340`
+- final Desktop binding count: `14`
+- final state restored to original:
+  - Code `1`
+  - English `0`
+- Chrome diagnostic:
+  - `importedDesktopCanonicalBindingCount:14`
+  - `chromeDisplayBindingCount:14`
+  - `parityComparable:true`
+  - `parityOk:true`
+  - `missingInChromeCount:0`
+  - `extraInChromeCount:0`
+  - `folderCountMismatchCount:0`
+  - `blockers:[]`
+
+B5a remains useful as the canonical move persistence attribution step; final live convergence is closed by B5d.
+
 ## Validation
 
 Validation passed:
