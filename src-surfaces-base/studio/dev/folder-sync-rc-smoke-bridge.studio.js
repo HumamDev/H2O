@@ -48,6 +48,7 @@
     'diagnosePurgedFolderResurrectionCandidates',
     'restoreFolder',
     'moveChatFolderBinding',
+    'softDeleteFolderForBindingFallback',
     'countChatsSnapshots',
     'verifyFolderVisible',
     'verifyFolderHidden',
@@ -64,6 +65,7 @@
     diagnosePurgedFolderResurrectionCandidates: true,
     restoreFolder: true,
     moveChatFolderBinding: true,
+    softDeleteFolderForBindingFallback: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
@@ -679,6 +681,8 @@
     var uniqueChatIds = Object.create(null);
     var missingFolderBindingCount = 0;
     var deletedFolderBindingCount = 0;
+    var fallbackUnfiledBindingCount = 0;
+    var activeDanglingFolderBindingCount = 0;
     var restoredFolderBindingCount = 0;
     folderRows.forEach(function (folder) {
       var folderId = folderIdFromAny(folder);
@@ -698,9 +702,19 @@
         var folderId = folderIdFromAny(row);
         var chatId = chatIdFromRow(row);
         if (!folderId || !chatId) return;
+        if (!folderIds[folderId]) {
+          missingFolderBindingCount += 1;
+          fallbackUnfiledBindingCount += 1;
+          activeDanglingFolderBindingCount += 1;
+          return;
+        }
+        if (signals.activeDeletedFolderIds[folderId]) {
+          deletedFolderBindingCount += 1;
+          fallbackUnfiledBindingCount += 1;
+          folderBindingCounts[folderId] = 0;
+          return;
+        }
         folderBindingCounts[folderId] = (Number(folderBindingCounts[folderId]) || 0) + 1;
-        if (!folderIds[folderId]) missingFolderBindingCount += 1;
-        if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += 1;
         if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += 1;
         uniqueChatIds[chatId] = true;
         localBindingRows.push(row);
@@ -723,8 +737,18 @@
           if (chatId && chatIds.indexOf(chatId) === -1) chatIds.push(chatId);
         });
         folderBindingCounts[folderId] = chatIds.length;
-        if (!folderIds[folderId]) missingFolderBindingCount += chatIds.length;
-        if (signals.activeDeletedFolderIds[folderId]) deletedFolderBindingCount += chatIds.length;
+        if (!folderIds[folderId]) {
+          missingFolderBindingCount += chatIds.length;
+          fallbackUnfiledBindingCount += chatIds.length;
+          activeDanglingFolderBindingCount += chatIds.length;
+          continue;
+        }
+        if (signals.activeDeletedFolderIds[folderId]) {
+          deletedFolderBindingCount += chatIds.length;
+          fallbackUnfiledBindingCount += chatIds.length;
+          folderBindingCounts[folderId] = 0;
+          continue;
+        }
         if (signals.restoredFolderIds[folderId]) restoredFolderBindingCount += chatIds.length;
         chatIds.forEach(function (chatId) {
           uniqueChatIds[chatId] = true;
@@ -761,6 +785,10 @@
       unfiledCount: unfiledCount,
       missingFolderBindingCount: missingFolderBindingCount,
       deletedFolderBindingCount: deletedFolderBindingCount,
+      fallbackUnfiledBindingCount: fallbackUnfiledBindingCount,
+      activeDanglingFolderBindingCount: activeDanglingFolderBindingCount,
+      activeDeletedFolderBindingExportedAsActive: false,
+      deletedFolderBindingsExcludedFromActiveProjection: true,
       restoredFolderBindingCount: restoredFolderBindingCount,
       bindingRecoverySnapshotCount: signals.bindingRecoverySnapshotCount,
       recentlyDeletedRowsScanned: signals.recentlyDeletedRowsScanned,
@@ -937,6 +965,14 @@
         : null,
       missingFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.missingFolderBindingCount || 0) : missingFolderBindingCount,
       deletedFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.deletedFolderBindingCount || 0) : 0,
+      fallbackUnfiledBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.fallbackUnfiledBindingCount || 0) : 0,
+      activeDanglingFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.activeDanglingFolderBindingCount || 0) : 0,
+      activeDeletedFolderBindingExportedAsActive: hasCanonicalBindingProjection
+        ? canonicalProjection.activeDeletedFolderBindingExportedAsActive === true
+        : false,
+      deletedFolderBindingsExcludedFromActiveProjection: hasCanonicalBindingProjection
+        ? canonicalProjection.deletedFolderBindingsExcludedFromActiveProjection !== false
+        : true,
       restoredFolderBindingCount: hasCanonicalBindingProjection ? Number(canonicalProjection.restoredFolderBindingCount || 0) : 0,
       bindingRecoverySnapshotCount: 0,
       comparisonMode: bindingComparison.comparisonMode,
@@ -1783,6 +1819,10 @@
       unfiledCount: null,
       missingFolderBindingCount: 0,
       deletedFolderBindingCount: 0,
+      fallbackUnfiledBindingCount: 0,
+      activeDanglingFolderBindingCount: 0,
+      activeDeletedFolderBindingExportedAsActive: false,
+      deletedFolderBindingsExcludedFromActiveProjection: true,
       restoredFolderBindingCount: 0,
       parityComparable: false,
       parityOk: null,
@@ -1985,6 +2025,111 @@
       noSnapshotDelete: true,
       noHardDelete: true,
       noPurge: true,
+      noAssetDelete: true,
+    });
+  }
+
+  async function softDeleteFolderForBindingFallback(payload) {
+    var p = safeObject(payload);
+    var folderId = folderIdFromAny({ folderId: p.folderId || p.id });
+    var expectedBindingCountMin = Number(p.expectedBindingCountMin || p.minBindingCount || 1) || 1;
+    var confirmationPhrase = cleanString(p.confirmationPhrase || p.confirmPhrase || p.typedConfirmation);
+    var blockers = [];
+    var warnings = [];
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    if (!store || typeof store.softDeleteEmptyFolder !== 'function') blockers.push('folder-soft-delete-api-unavailable');
+    if (!folderId) blockers.push('folder-id-required');
+    if (confirmationPhrase !== 'B6 DESKTOP BINDING FALLBACK') blockers.push('confirmation-phrase-required');
+    if (blockers.length) {
+      return baseResult('softDeleteFolderForBindingFallback', {
+        ok: false,
+        status: blockers[0],
+        blockers: blockers,
+        warnings: warnings,
+        readOnly: false,
+        desktopOnly: true,
+        chromeAuthority: false,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      });
+    }
+    var beforeCounts = await countChatsSnapshots();
+    var beforeDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var beforeFolderBindingCounts = safeObject(beforeDiagnostic.folderBindingCounts);
+    var beforeFolderBindingCount = Number(beforeFolderBindingCounts[folderId] || 0) || 0;
+    if (beforeFolderBindingCount < expectedBindingCountMin) {
+      blockers.push('expected-bound-folder-required');
+      return baseResult('softDeleteFolderForBindingFallback', {
+        ok: false,
+        status: 'expected-bound-folder-required',
+        blockers: blockers,
+        warnings: warnings,
+        folderId: folderId,
+        expectedBindingCountMin: expectedBindingCountMin,
+        beforeFolderBindingCount: beforeFolderBindingCount,
+        beforeFolderBindingCounts: beforeFolderBindingCounts,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      });
+    }
+    var result = await store.softDeleteEmptyFolder(folderId, {
+      deleteReason: 'phase-b6-binding-fallback-soft-delete',
+      deletedBySyncPeerId: 'desktop-smoke-phase-b6',
+    });
+    warnings = warnings.concat(codeList(result && result.warnings)).concat(codeList(result && result.bindingUnbindWarnings));
+    var afterCounts = await countChatsSnapshots();
+    var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var afterFolderBindingCounts = safeObject(afterDiagnostic.folderBindingCounts);
+    var afterFolderBindingCount = Number(afterFolderBindingCounts[folderId] || 0) || 0;
+    var chatCountBefore = Number(beforeCounts.chatCount);
+    var chatCountAfter = Number(afterCounts.chatCount);
+    var snapshotCountBefore = Number(beforeCounts.snapshotCount);
+    var snapshotCountAfter = Number(afterCounts.snapshotCount);
+    if (!result || result.ok !== true) blockers.push('folder-soft-delete-failed');
+    if (afterFolderBindingCount !== 0) blockers.push('deleted-folder-active-binding-still-visible');
+    if (chatCountBefore === chatCountBefore && chatCountAfter === chatCountAfter && chatCountBefore !== chatCountAfter) blockers.push('chat-count-changed');
+    if (snapshotCountBefore === snapshotCountBefore && snapshotCountAfter === snapshotCountAfter && snapshotCountBefore !== snapshotCountAfter) blockers.push('snapshot-count-changed');
+    if (afterDiagnostic.activeDeletedFolderBindingExportedAsActive === true) blockers.push('active-deleted-binding-exported-as-active');
+    return baseResult('softDeleteFolderForBindingFallback', {
+      ok: blockers.length === 0,
+      status: blockers.length ? blockers[0] : 'folder-soft-deleted-binding-fallback-proven',
+      blockers: blockers,
+      warnings: warnings,
+      readOnly: false,
+      desktopOnly: true,
+      chromeAuthority: false,
+      folderId: folderId,
+      softDeleteResult: summarizeMutationResult('softDeleteFolderForBindingFallback.inner', result),
+      beforeFolderBindingCount: beforeFolderBindingCount,
+      afterFolderBindingCount: afterFolderBindingCount,
+      beforeFolderBindingCounts: beforeFolderBindingCounts,
+      afterFolderBindingCounts: afterFolderBindingCounts,
+      beforeUnfiledCount: beforeDiagnostic.unfiledCount,
+      afterUnfiledCount: afterDiagnostic.unfiledCount,
+      beforeDeletedFolderBindingCount: Number(beforeDiagnostic.deletedFolderBindingCount || 0) || 0,
+      afterDeletedFolderBindingCount: Number(afterDiagnostic.deletedFolderBindingCount || 0) || 0,
+      beforeFallbackUnfiledBindingCount: Number(beforeDiagnostic.fallbackUnfiledBindingCount || 0) || 0,
+      afterFallbackUnfiledBindingCount: Number(afterDiagnostic.fallbackUnfiledBindingCount || 0) || 0,
+      bindingRecoverySnapshotCount: Number(afterDiagnostic.bindingRecoverySnapshotCount || 0) || 0,
+      activeDeletedFolderBindingExportedAsActive: afterDiagnostic.activeDeletedFolderBindingExportedAsActive === true,
+      deletedFolderBindingsExcludedFromActiveProjection: afterDiagnostic.deletedFolderBindingsExcludedFromActiveProjection !== false,
+      chatCountBefore: beforeCounts.chatCount,
+      chatCountAfter: afterCounts.chatCount,
+      snapshotCountBefore: beforeCounts.snapshotCount,
+      snapshotCountAfter: afterCounts.snapshotCount,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
       noAssetDelete: true,
     });
   }
@@ -2350,6 +2495,7 @@
     if (op === 'diagnosePurgedFolderResurrectionCandidates') return diagnosePurgedFolderResurrectionCandidates(payload);
     if (op === 'restoreFolder') return restoreFolder(payload);
     if (op === 'moveChatFolderBinding') return moveChatFolderBinding(payload);
+    if (op === 'softDeleteFolderForBindingFallback') return softDeleteFolderForBindingFallback(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
     return unsupportedResult(op, 'unsupported-op');

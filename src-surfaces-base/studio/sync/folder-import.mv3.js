@@ -1312,6 +1312,10 @@
       unfiledCount: Object.prototype.hasOwnProperty.call(input, 'unfiledCount') ? input.unfiledCount : null,
       missingFolderBindingCount: numberOrZero(input.missingFolderBindingCount),
       deletedFolderBindingCount: numberOrZero(input.deletedFolderBindingCount),
+      fallbackUnfiledBindingCount: numberOrZero(input.fallbackUnfiledBindingCount),
+      activeDanglingFolderBindingCount: numberOrZero(input.activeDanglingFolderBindingCount),
+      activeDeletedFolderBindingExportedAsActive: input.activeDeletedFolderBindingExportedAsActive === true,
+      deletedFolderBindingsExcludedFromActiveProjection: input.deletedFolderBindingsExcludedFromActiveProjection !== false,
       restoredFolderBindingCount: numberOrZero(input.restoredFolderBindingCount),
       bindings: bindings,
       rows: bindings,
@@ -1343,6 +1347,10 @@
       unfiledCount: Object.prototype.hasOwnProperty.call(payload, 'unfiledCount') ? payload.unfiledCount : null,
       missingFolderBindingCount: payload.missingFolderBindingCount,
       deletedFolderBindingCount: payload.deletedFolderBindingCount,
+      fallbackUnfiledBindingCount: payload.fallbackUnfiledBindingCount,
+      activeDanglingFolderBindingCount: payload.activeDanglingFolderBindingCount,
+      activeDeletedFolderBindingExportedAsActive: payload.activeDeletedFolderBindingExportedAsActive,
+      deletedFolderBindingsExcludedFromActiveProjection: payload.deletedFolderBindingsExcludedFromActiveProjection,
       restoredFolderBindingCount: payload.restoredFolderBindingCount,
       bindings: rows
     });

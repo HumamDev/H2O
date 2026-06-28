@@ -29,6 +29,7 @@ const MUTATION_OPS = Object.freeze([
   'applyFolderDeleteRequest',
   'restoreFolder',
   'moveChatFolderBinding',
+  'softDeleteFolderForBindingFallback',
   'verifyFolderVisible',
   'verifyFolderHidden',
 ]);
@@ -94,10 +95,11 @@ function usage() {
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op applyFolderDeleteRequest --allow-mutation --payload-json \'{"reviewId":"..."}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op restoreFolder --allow-mutation --payload-json \'{"tombstoneId":"..."}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op moveChatFolderBinding --allow-mutation --payload-json \'{"chatId":"...","expectedCurrentFolderId":"...","targetFolderId":"...","confirmationPhrase":"B5 DESKTOP BINDING CONVERGENCE"}\' --timeout-ms 30000',
+    '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op softDeleteFolderForBindingFallback --allow-mutation --payload-json \'{"folderId":"...","expectedBindingCountMin":1,"confirmationPhrase":"B6 DESKTOP BINDING FALLBACK"}\' --timeout-ms 30000',
     '  node tools/smoke/desktop-folder-sync-queue-client.mjs --op verifyFolderVisible --allow-mutation --payload-file /private/tmp/h2o-folder-visible-payload.json --timeout-ms 30000',
     '',
     'Read-only ops work without extra flags: diagnoseHealth, getFolderModel, listFolderDeleteRequests, listFolderDeleteReceipts, listActiveFolderTombstones, listRecentlyDeletedFolders, diagnosePurgedFolderResurrectionCandidates, countChatsSnapshots, diagnoseCanonicalVisibleFolderSet, diagnoseChatFolderBindingParity.',
-    'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, applyFolderDeleteRequest, restoreFolder, moveChatFolderBinding, verifyFolderVisible, verifyFolderHidden.',
+    'Mutation ops require --allow-mutation: createFolder, renameFolder, setFolderColor, syncNow, applyFolderDeleteRequest, restoreFolder, moveChatFolderBinding, softDeleteFolderForBindingFallback, verifyFolderVisible, verifyFolderHidden.',
   ].join('\n');
 }
 

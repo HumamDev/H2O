@@ -1073,6 +1073,7 @@
     var exportedAt = nowIso();
     var warnings = [];
     var api = stores && stores.folders;
+    var tombstones = stores && stores.tombstones;
     var baseDiagnostics = {
       schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA + '.diagnostics',
       exported: false,
@@ -1081,6 +1082,8 @@
       unfiledCount: null,
       missingFolderBindingCount: 0,
       deletedFolderBindingCount: 0,
+      fallbackUnfiledBindingCount: 0,
+      activeDanglingFolderBindingCount: 0,
       restoredFolderBindingCount: 0,
       source: 'desktop-store-folder-bindings',
       desktopAuthority: true,
@@ -1110,6 +1113,10 @@
         unfiledCount: null,
         missingFolderBindingCount: 0,
         deletedFolderBindingCount: 0,
+        fallbackUnfiledBindingCount: 0,
+        activeDanglingFolderBindingCount: 0,
+        activeDeletedFolderBindingExportedAsActive: false,
+        deletedFolderBindingsExcludedFromActiveProjection: true,
         restoredFolderBindingCount: 0,
         bindings: [],
         rows: [],
@@ -1144,6 +1151,10 @@
         unfiledCount: null,
         missingFolderBindingCount: 0,
         deletedFolderBindingCount: 0,
+        fallbackUnfiledBindingCount: 0,
+        activeDanglingFolderBindingCount: 0,
+        activeDeletedFolderBindingExportedAsActive: false,
+        deletedFolderBindingsExcludedFromActiveProjection: true,
         restoredFolderBindingCount: 0,
         bindings: [],
         rows: [],
@@ -1172,7 +1183,27 @@
     var bindings = [];
     var seenChats = Object.create(null);
     var missingFolderBindingCount = 0;
+    var deletedFolderBindingCount = 0;
+    var fallbackUnfiledBindingCount = 0;
+    var activeDanglingFolderBindingCount = 0;
     folderIds.forEach(function (folderId) { folderBindingCounts[folderId] = 0; });
+    var activeDeletedFolderIds = Object.create(null);
+    if (tombstones && typeof tombstones.list === 'function') {
+      try {
+        asArray(await tombstones.list({ recordKind: 'folder', activeOnly: true, limit: 1000 })).forEach(function (row) {
+          var recordId = cleanString(row && (row.recordId || row.record_id));
+          var meta = parseJsonObject(row && (row.meta || row.metaJson || row.meta_json));
+          var folderId = cleanString(meta && meta.folderId) || (recordId.indexOf('folder:') === 0 ? decodeURIComponent(recordId.slice('folder:'.length)) : '');
+          if (folderId) activeDeletedFolderIds[folderId] = true;
+        });
+      } catch (eDeleted) {
+        warnings.push({
+          code: 'desktop-chat-folder-binding-active-deleted-scan-failed',
+          warning: 'active folder tombstone scan failed; deleted-folder binding fallback diagnostics may be incomplete',
+          error: String((eDeleted && eDeleted.message) || eDeleted),
+        });
+      }
+    }
     var canonicalRows = null;
     if (typeof api.listCanonicalChatFolderBindings === 'function') {
       try {
@@ -1191,7 +1222,18 @@
         var chatId = cleanString(row && (row.chatId || row.conversationId || row.chat_id || row.id));
         var folderId = cleanString(row && (row.folderId || row.folder_id));
         if (!chatId || !folderId) return;
-        if (folderIds.indexOf(folderId) < 0) missingFolderBindingCount += 1;
+        if (folderIds.indexOf(folderId) < 0) {
+          missingFolderBindingCount += 1;
+          fallbackUnfiledBindingCount += 1;
+          activeDanglingFolderBindingCount += 1;
+          return;
+        }
+        if (activeDeletedFolderIds[folderId]) {
+          deletedFolderBindingCount += 1;
+          fallbackUnfiledBindingCount += 1;
+          folderBindingCounts[folderId] = 0;
+          return;
+        }
         folderBindingCounts[folderId] = (Number(folderBindingCounts[folderId]) || 0) + 1;
         seenChats[chatId] = true;
         bindings.push({
@@ -1233,6 +1275,12 @@
           return cleanString(row && (row.chatId || row.id));
         }).filter(Boolean));
         folderBindingCounts[folderId] = chatIds.length;
+        if (activeDeletedFolderIds[folderId]) {
+          deletedFolderBindingCount += chatIds.length;
+          fallbackUnfiledBindingCount += chatIds.length;
+          folderBindingCounts[folderId] = 0;
+          continue;
+        }
         chatIds.forEach(function (chatId) {
           seenChats[chatId] = true;
           bindings.push({
@@ -1273,6 +1321,9 @@
       ? 'store.folders.listCanonicalChatFolderBindings'
       : 'store.folders.listChats';
     baseDiagnostics.missingFolderBindingCount = missingFolderBindingCount;
+    baseDiagnostics.deletedFolderBindingCount = deletedFolderBindingCount;
+    baseDiagnostics.fallbackUnfiledBindingCount = fallbackUnfiledBindingCount;
+    baseDiagnostics.activeDanglingFolderBindingCount = activeDanglingFolderBindingCount;
     return {
       schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
       source: 'desktop-canonical-chat-folder-bindings',
@@ -1282,7 +1333,11 @@
       folderBindingCounts: folderBindingCounts,
       unfiledCount: unfiledCount,
       missingFolderBindingCount: missingFolderBindingCount,
-      deletedFolderBindingCount: 0,
+      deletedFolderBindingCount: deletedFolderBindingCount,
+      fallbackUnfiledBindingCount: fallbackUnfiledBindingCount,
+      activeDanglingFolderBindingCount: activeDanglingFolderBindingCount,
+      activeDeletedFolderBindingExportedAsActive: false,
+      deletedFolderBindingsExcludedFromActiveProjection: true,
       restoredFolderBindingCount: 0,
       bindings: bindings,
       rows: bindings,
@@ -2336,6 +2391,14 @@
             : null,
           missingFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.missingFolderBindingCount) || 0,
           deletedFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.deletedFolderBindingCount) || 0,
+          fallbackUnfiledBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.fallbackUnfiledBindingCount) || 0,
+          activeDanglingFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.activeDanglingFolderBindingCount) || 0,
+          activeDeletedFolderBindingExportedAsActive: bundle && bundle.desktopCanonicalChatFolderBindings
+            ? bundle.desktopCanonicalChatFolderBindings.activeDeletedFolderBindingExportedAsActive === true
+            : false,
+          deletedFolderBindingsExcludedFromActiveProjection: bundle && bundle.desktopCanonicalChatFolderBindings
+            ? bundle.desktopCanonicalChatFolderBindings.deletedFolderBindingsExcludedFromActiveProjection !== false
+            : true,
           restoredFolderBindingCount: Number(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.restoredFolderBindingCount) || 0,
           blockers: asArray(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.diagnostics && bundle.desktopCanonicalChatFolderBindings.diagnostics.blockers),
           warnings: asArray(bundle && bundle.desktopCanonicalChatFolderBindings && bundle.desktopCanonicalChatFolderBindings.diagnostics && bundle.desktopCanonicalChatFolderBindings.diagnostics.warnings),
