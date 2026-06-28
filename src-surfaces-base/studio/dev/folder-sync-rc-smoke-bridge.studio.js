@@ -49,6 +49,7 @@
     'restoreFolder',
     'moveChatFolderBinding',
     'softDeleteFolderForBindingFallback',
+    'restoreFolderForBindingRebind',
     'countChatsSnapshots',
     'verifyFolderVisible',
     'verifyFolderHidden',
@@ -66,6 +67,7 @@
     restoreFolder: true,
     moveChatFolderBinding: true,
     softDeleteFolderForBindingFallback: true,
+    restoreFolderForBindingRebind: true,
   });
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
@@ -2134,6 +2136,103 @@
     });
   }
 
+  async function restoreFolderForBindingRebind(payload) {
+    var p = safeObject(payload);
+    var folderId = folderIdFromAny({ folderId: p.folderId || p.id });
+    var tombstoneId = cleanString(p.tombstoneId);
+    var expectedBindingCountMin = Number(p.expectedBindingCountMin || p.minBindingCount || 1) || 1;
+    var confirmationPhrase = cleanString(p.confirmationPhrase || p.confirmPhrase || p.typedConfirmation);
+    var blockers = [];
+    var warnings = [];
+    var store = getPath(H2O, ['Studio', 'store', 'folders']);
+    var fn = store && (store.restoreTombstonedFolder || store.restoreFolder);
+    if (typeof fn !== 'function') blockers.push('folder-restore-api-unavailable');
+    if (!folderId && !tombstoneId) blockers.push('folder-or-tombstone-id-required');
+    if (confirmationPhrase !== 'B7 DESKTOP BINDING REBIND') blockers.push('confirmation-phrase-required');
+    if (blockers.length) {
+      return baseResult('restoreFolderForBindingRebind', {
+        ok: false,
+        status: blockers[0],
+        blockers: blockers,
+        warnings: warnings,
+        readOnly: false,
+        desktopOnly: true,
+        chromeAuthority: false,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+      });
+    }
+    var beforeCounts = await countChatsSnapshots();
+    var beforeDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var beforeFolderBindingCounts = safeObject(beforeDiagnostic.folderBindingCounts);
+    var beforeFolderBindingCount = folderId ? (Number(beforeFolderBindingCounts[folderId] || 0) || 0) : null;
+    var result = await fn.call(store, {
+      tombstoneId: tombstoneId,
+      folderId: folderId,
+      id: tombstoneId || folderId,
+    }, {
+      reason: cleanString(p.reason) || 'phase-b7-binding-restore-rebind-smoke',
+      restoredBySyncPeerId: cleanString(p.restoredBySyncPeerId) || 'desktop-smoke-phase-b7',
+    });
+    warnings = warnings.concat(codeList(result && result.warnings)).concat(codeList(result && result.restoreWarnings));
+    var restoredFolderId = folderIdFromAny({ folderId: folderId || (result && result.folderId) || (result && result.id) });
+    var afterCounts = await countChatsSnapshots();
+    var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
+    var afterFolderBindingCounts = safeObject(afterDiagnostic.folderBindingCounts);
+    var afterFolderBindingCount = restoredFolderId ? (Number(afterFolderBindingCounts[restoredFolderId] || 0) || 0) : null;
+    var chatCountBefore = Number(beforeCounts.chatCount);
+    var chatCountAfter = Number(afterCounts.chatCount);
+    var snapshotCountBefore = Number(beforeCounts.snapshotCount);
+    var snapshotCountAfter = Number(afterCounts.snapshotCount);
+    var bindingRestoreAttemptedCount = Number(result && result.bindingRestoreAttemptedCount) || 0;
+    var bindingRestoredCount = Number(result && result.bindingRestoredCount) || 0;
+    var bindingSkippedCount = Number(result && result.bindingSkippedCount) || 0;
+    if (!result || result.ok !== true) blockers.push('folder-restore-failed');
+    if (afterFolderBindingCount == null || afterFolderBindingCount < expectedBindingCountMin) blockers.push('restored-folder-binding-count-not-rebound');
+    if (bindingRestoreAttemptedCount > 0 && bindingRestoredCount < expectedBindingCountMin) blockers.push('binding-restore-count-below-expected');
+    if (bindingSkippedCount > 0) addUniqueCode(warnings, 'binding-restore-skipped-count-nonzero');
+    if (chatCountBefore === chatCountBefore && chatCountAfter === chatCountAfter && chatCountBefore !== chatCountAfter) blockers.push('chat-count-changed');
+    if (snapshotCountBefore === snapshotCountBefore && snapshotCountAfter === snapshotCountAfter && snapshotCountBefore !== snapshotCountAfter) blockers.push('snapshot-count-changed');
+    return baseResult('restoreFolderForBindingRebind', {
+      ok: blockers.length === 0,
+      status: blockers.length ? blockers[0] : 'folder-restored-binding-rebind-proven',
+      blockers: blockers,
+      warnings: warnings,
+      readOnly: false,
+      desktopOnly: true,
+      chromeAuthority: false,
+      folderId: restoredFolderId,
+      tombstoneId: tombstoneId || cleanString(result && result.tombstoneId),
+      restoreResult: summarizeMutationResult('restoreFolderForBindingRebind.inner', result),
+      beforeFolderBindingCount: beforeFolderBindingCount,
+      afterFolderBindingCount: afterFolderBindingCount,
+      beforeFolderBindingCounts: beforeFolderBindingCounts,
+      afterFolderBindingCounts: afterFolderBindingCounts,
+      beforeUnfiledCount: beforeDiagnostic.unfiledCount,
+      afterUnfiledCount: afterDiagnostic.unfiledCount,
+      beforeBindingRecoverySnapshotCount: Number(beforeDiagnostic.bindingRecoverySnapshotCount || 0) || 0,
+      afterBindingRecoverySnapshotCount: Number(afterDiagnostic.bindingRecoverySnapshotCount || 0) || 0,
+      bindingRestoreAttemptedCount: bindingRestoreAttemptedCount,
+      bindingRestoredCount: bindingRestoredCount,
+      bindingSkippedCount: bindingSkippedCount,
+      restoreWarnings: codeList(result && result.restoreWarnings),
+      chatCountBefore: beforeCounts.chatCount,
+      chatCountAfter: afterCounts.chatCount,
+      snapshotCountBefore: beforeCounts.snapshotCount,
+      snapshotCountAfter: afterCounts.snapshotCount,
+      noChromeDestructiveBindingApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    });
+  }
+
   async function requestFolderDelete(payload) {
     var actions = getPath(H2O, ['Studio', 'actions', 'folders']);
     var fn = actions && (actions.requestDelete || actions.requestFolderDelete);
@@ -2496,6 +2595,7 @@
     if (op === 'restoreFolder') return restoreFolder(payload);
     if (op === 'moveChatFolderBinding') return moveChatFolderBinding(payload);
     if (op === 'softDeleteFolderForBindingFallback') return softDeleteFolderForBindingFallback(payload);
+    if (op === 'restoreFolderForBindingRebind') return restoreFolderForBindingRebind(payload);
     if (op === 'countChatsSnapshots') return countChatsSnapshots(payload);
     if (op === 'verifyFolderVisible' || op === 'verifyFolderHidden') return verifyFolderVisibility(op, payload);
     return unsupportedResult(op, 'unsupported-op');
