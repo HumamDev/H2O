@@ -4,7 +4,7 @@ Date: 2026-06-28
 
 ## Verdict
 
-PARTIAL / IMPLEMENTED. B8 adds Chrome-origin chat-folder binding request creation and export. Chrome can request a binding change, but Chrome still does not mutate Desktop canonical binding state.
+PASS / CLOSED. B8 adds Chrome-origin chat-folder binding request creation and export. Chrome can request a binding change, but Chrome still does not mutate Desktop canonical binding state.
 
 Desktop apply/receipt for Chrome binding requests is deferred to B9.
 
@@ -84,73 +84,175 @@ Duplicate pending requests for the same chat and target return `pending-existing
 
 ## Runtime Proof
 
-PARTIAL / BLOCKED BY STALE LIVE CHROME ASSETS.
+PASS / CLOSED.
 
-Runtime was attempted against the existing Chrome Dev CDP profile on port `9247`.
+Fresh Chrome runtime loaded the current B8 smoke bridge:
 
-Chrome health was green:
+- `studioTargetFound:true`
+- `smokeRegistryOverlayStatus:"source-current"`
+- `allowedMutationOps` included `requestChatFolderBinding`
+- `allowedReadOnlyOps` included `listChatFolderBindingRequests`
 
-- `ok:true`
-- `status:"healthy"`
+Chrome reconnected to the correct sync folder and health was green:
+
+- `folderName:"H2O Studio Sync"`
 - `connected:true`
 - `permission:"granted"`
-- `noFolderHandle:false`
 - `chromeWritesSyncFolder:true`
+- `health.status:"healthy"`
 - `blockers:[]`
 
-The CDP helper loaded from source exposed the B8 operation in its mutation allowlist:
+Chrome request creation:
 
-- `requestChatFolderBinding`
-- `listChatFolderBindingRequests`
+- `op:"requestChatFolderBinding"`
+- `ok:true`
+- `status:"pending-created"`
+- `requestId:"chat-folder-binding-request:e54fda11-d9f0-498e-bdea-62187c5aad52"`
+- `blockers:[]`
+- `warnings:[]`
 
-A safe no-op binding request target was selected from the current Desktop canonical projection:
+Request payload:
 
-- `chatId:"69f0a945-8640-83eb-a5e4-9c433fedee5b"`
-- `conversationId:"69f0a945-8640-83eb-a5e4-9c433fedee5b"`
-- `expectedCurrentFolderId:"f_3bf15f43b835d19dbac0fb13"`
-- `targetFolderId:"f_3bf15f43b835d19dbac0fb13"`
-- reason:`"phase-b8-chrome-binding-request-export-proof"`
+- `chatId:"69dd285f-16ec-8390-a458-0574c6ea956e"`
+- `conversationId:"69dd285f-16ec-8390-a458-0574c6ea956e"`
+- `expectedCurrentFolderId:"f_e301f3506938c19dbac0e304"`
+- `targetFolderId:"f_2bb1037f88b2719dbac10c22"`
+- `sourceSurface:"chrome-studio"`
+- `reason:"phase-b8-runtime-request-only-proof"`
 
-The runtime request was blocked before any request row was created:
+Chrome request list:
 
-- `ok:false`
-- `status:"op-not-allowlisted"`
-- `blockers:["op-not-allowlisted"]`
+- `ok:true`
+- `status:"chat-folder-binding-requests-listed"`
+- `count:1`
+- `requestOnly:true`
+- `noChromeBindingAuthority:true`
+- `noDesktopCanonicalMutation:true`
 
-Root cause: the active Chrome page registry is stale and does not yet include the B8 bridge operation in its in-page allowlist. The helper's source-side allowlist includes the op, but the loaded page allowlist ended at pre-B8 operations:
+Listed request:
 
-- `getFolderModel`
-- `createFolder`
-- `renameFolder`
-- `setFolderColor`
-- `syncNow`
-- `diagnoseHealth`
-- `diagnoseVisibleFolderParity`
-- `diagnoseCanonicalVisibleFolderSet`
-- `diagnoseChromeRecentlyDeletedCompanion`
-- `diagnoseChatFolderBindingParity`
-- `requestFolderDelete`
-- `listFolderDeleteRequests`
-- `requestFolderRestore`
-- `listFolderRestoreRequests`
-- `applyFolderDeleteRequest`
-- `applyFolderRestoreRequest`
-- `listFolderDeleteReceipts`
-- `listActiveFolderTombstones`
-- `listRecentlyDeletedFolders`
-- `diagnosePurgedFolderResurrectionCandidates`
-- `restoreFolder`
-- `countChatsSnapshots`
-- `verifyFolderVisible`
-- `verifyFolderHidden`
+- `requestId:"chat-folder-binding-request:e54fda11-d9f0-498e-bdea-62187c5aad52"`
+- `recordKind:"folderBinding"`
+- `classification:"binding-request"`
+- `status:"pending"`
+- `remoteSyncPeerId:"chrome-studio"`
+- warning:`"desktop-binding-apply-required"`
+
+Note: the list projection showed `folderId` as the chat/conversation id. The exported canonical request payload was correct, so this is a non-blocking review-list projection quirk.
+
+Chrome export:
+
+- `op:"syncNow"`
+- `direction:"chrome-to-desktop"`
+- `ok:true`
+- `status:"chrome-to-desktop-exported"`
+- `blockers:[]`
+- `warnings:[]`
+
+Export safety:
+
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noHardDelete:true`
+- `noPurge:true`
+
+Export file inspection:
+
+File:
+
+`/Users/hobayda/H2O Studio Sync/chrome-latest.json`
+
+Confirmed top-level key:
+
+- `chatFolderBindingRequests`
+
+Confirmed exported request:
+
+- `schema:"h2o.studio.chat-folder-binding-request.v1"`
+- `requestId:"chat-folder-binding-request:e54fda11-d9f0-498e-bdea-62187c5aad52"`
+- `reviewId:"chat-folder-binding-request:e54fda11-d9f0-498e-bdea-62187c5aad52"`
+- `recordKind:"folderBinding"`
+- `intent:"chat-folder-binding-request"`
+- `classification:"binding-request"`
+- `chatId:"69dd285f-16ec-8390-a458-0574c6ea956e"`
+- `conversationId:"69dd285f-16ec-8390-a458-0574c6ea956e"`
+- `expectedCurrentFolderId:"f_e301f3506938c19dbac0e304"`
+- `targetFolderId:"f_2bb1037f88b2719dbac10c22"`
+- `targetKind:"folder"`
+- `targetUnfiled:false`
+- `requestedAt:"2026-06-28T14:20:02.400Z"`
+- `createdAt:"2026-06-28T14:20:02.400Z"`
+- `requestedBy:"chrome-studio"`
+- `sourceSurface:"chrome-studio"`
+- `sourcePeerId:"chrome-studio"`
+- `status:"pending"`
+- `reason:"phase-b8-runtime-request-only-proof"`
+- `desktopApplyRequired:true`
+- `noLocalApply:true`
+- `noChromeBindingAuthority:true`
+- `noChromeDestructiveBindingApply:true`
+- `noDesktopCanonicalMutation:true`
+- `noTombstoneApply:true`
+- `noHardDelete:true`
+- `noPurge:true`
+- `noChatDelete:true`
+- `noSnapshotDelete:true`
+- `noAssetDelete:true`
+- `noFolderMutation:true`
+- `noBindingMutation:true`
+- `noChatMutation:true`
+- `noSnapshotMutation:true`
+- `transportedAt:"2026-06-28T15:26:46.388Z"`
+- `exportSource:"review-store"`
+
+Desktop canonical unchanged proof:
+
+Command:
+
+```sh
+node tools/smoke/desktop-folder-sync-queue-client.mjs --op diagnoseChatFolderBindingParity --timeout-ms 60000
+```
+
+Result:
+
+- `ok:true`
+- `status:"chat-folder-binding-parity-diagnosed"`
+- `canonicalSource:"desktop-store-folder-bindings"`
+- `canonicalBindingReadPath:"store.folders.listCanonicalChatFolderBindings"`
+- `desktopCanonicalBindingProjectionAvailable:true`
+- `totalBindingCount:12`
+- `desktopBindingCount:12`
+- `knownChatCount:41`
+- `unfiledCount:29`
+- `missingFolderBindingCount:2`
+- `deletedFolderBindingCount:0`
+- `fallbackUnfiledBindingCount:2`
+- `activeDanglingFolderBindingCount:2`
+- `activeDeletedFolderBindingExportedAsActive:false`
+- `deletedFolderBindingsExcludedFromActiveProjection:true`
+- `restoredFolderBindingCount:2`
+- `bindingRecoverySnapshotCount:1`
+- `blockers:[]`
+- `warnings:["chrome-binding-import-deferred","desktop-orphan-binding-scan-unavailable"]`
+- `noChromeDestructiveBindingApply:true`
+- `noAssetDelete:true`
+
+Desktop folder binding counts remained unchanged:
+
+- `f_e301f3506938c19dbac0e304:1`
+- `f_2bb1037f88b2719dbac10c22:0`
+- `f_d04f98de89e35819e885aef8e:6`
+- `f_7050f49d3f341819dba53d547:3`
+- `f_3bf15f43b835d19dbac0fb13:2`
 
 Interpretation:
 
-- B8 source implementation is present and statically validated.
-- The active runtime profile needs rebuilt/reloaded Studio Launcher assets before the B8 request/export proof can run end to end.
-- No Desktop canonical binding mutation occurred.
-- No Chrome destructive binding authority was added or exercised.
-- No chat, snapshot, asset, folder hard-delete, or purge operation occurred.
+- B8 is PASS / CLOSED.
+- Chrome can create and export request-only chat-folder binding requests.
+- The exported request payload is correct.
+- Desktop canonical binding counts remained unchanged after Chrome request/export.
+- Chrome still has no canonical binding authority.
+- Desktop apply/receipt is intentionally out of scope and should be B9.
 
 ## Validation
 
