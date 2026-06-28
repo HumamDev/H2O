@@ -1807,7 +1807,9 @@
     var blockers = [];
     var warnings = [];
     var store = getPath(H2O, ['Studio', 'store', 'folders']);
-    if (!store || typeof store.bindChat !== 'function' || typeof store.listForChat !== 'function') {
+    if (!store || typeof store.moveCanonicalChatFolderBinding !== 'function' ||
+        typeof store.getCanonicalChatFolderBindingForChat !== 'function' ||
+        typeof store.listCanonicalChatFolderBindings !== 'function') {
       blockers.push('folder-binding-store-unavailable');
     }
     if (!chatId) blockers.push('chat-id-required');
@@ -1832,8 +1834,8 @@
         noAssetDelete: true,
       });
     }
-    var beforeRows = safeArray(await store.listForChat(chatId));
-    var beforeFolderId = beforeRows.length ? folderIdFromAny(beforeRows[0]) : '';
+    var beforeCanonicalBinding = await store.getCanonicalChatFolderBindingForChat(chatId);
+    var beforeFolderId = folderIdFromAny(beforeCanonicalBinding);
     if (beforeFolderId !== expectedCurrentFolderId) {
       blockers.push('expected-current-folder-mismatch');
       return baseResult('moveChatFolderBinding', {
@@ -1845,6 +1847,8 @@
         desktopOnly: true,
         chromeAuthority: false,
         expectedCurrentFolderId: expectedCurrentFolderId,
+        actualCurrentFolderId: beforeFolderId,
+        beforeCanonicalBinding: beforeCanonicalBinding,
         beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
         noChromeDestructiveBindingApply: true,
         noChatDelete: true,
@@ -1877,17 +1881,33 @@
     }
     var beforeDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
     var changed = beforeFolderId !== targetFolderId;
-    var bindOk = changed
-      ? await store.bindChat(targetFolderId, chatId, {
+    var moveResult = changed
+      ? await store.moveCanonicalChatFolderBinding(targetFolderId, chatId, {
+        expectedCurrentFolderId: expectedCurrentFolderId,
         reason: reason,
         source: 'phase-b5-desktop-origin-convergence',
         forceCanonicalFolderBindingStoreWrite: true,
         forceLegacyFolderBindingWrite: true,
         canonicalBindingStoreWrite: true,
       })
-      : true;
-    var afterRows = safeArray(await store.listForChat(chatId));
-    var afterFolderId = afterRows.length ? folderIdFromAny(afterRows[0]) : '';
+      : {
+        ok: true,
+        status: 'chat-folder-binding-already-targeted',
+        blockers: [],
+        warnings: [],
+        changed: false,
+        beforeBinding: beforeCanonicalBinding,
+        afterBinding: beforeCanonicalBinding,
+        storeIdentity: typeof store.canonicalBindingStoreIdentity === 'function'
+          ? store.canonicalBindingStoreIdentity()
+          : null,
+        sameLiveCanonicalStore: true,
+      };
+    warnings = warnings.concat(safeArray(moveResult && moveResult.warnings));
+    var afterCanonicalBinding = moveResult && moveResult.afterBinding
+      ? moveResult.afterBinding
+      : await store.getCanonicalChatFolderBindingForChat(chatId);
+    var afterFolderId = folderIdFromAny(afterCanonicalBinding);
     var afterDiagnostic = await diagnoseDesktopChatFolderBindingParity({ includeSensitive: false });
     var afterCounts = safeObject(afterDiagnostic.folderBindingCounts);
     var beforeTargetCount = Number(safeObject(beforeDiagnostic.folderBindingCounts)[targetFolderId] || 0) || 0;
@@ -1896,10 +1916,18 @@
     var expectedCurrentCount = changed ? Math.max(0, beforeCurrentCount - 1) : beforeCurrentCount;
     var afterTargetCount = Number(afterCounts[targetFolderId] || 0) || 0;
     var afterCurrentCount = Number(afterCounts[expectedCurrentFolderId] || 0) || 0;
-    if (!bindOk || afterFolderId !== targetFolderId) blockers.push('folder-binding-move-failed');
+    if (!moveResult || moveResult.ok !== true || afterFolderId !== targetFolderId) blockers.push('folder-binding-move-failed');
     if (afterTargetCount !== expectedTargetCount || afterCurrentCount !== expectedCurrentCount) {
       blockers.push('canonical-folder-binding-diagnostic-mismatch');
     }
+    if (cleanString(afterDiagnostic.canonicalBindingReadPath) !== 'store.folders.listCanonicalChatFolderBindings' ||
+        !moveResult || moveResult.sameLiveCanonicalStore !== true) {
+      blockers.push('same-reader-verification-failed');
+    }
+    var sameReaderVerificationOk = blockers.indexOf('canonical-folder-binding-diagnostic-mismatch') === -1 &&
+      blockers.indexOf('same-reader-verification-failed') === -1 &&
+      cleanString(afterDiagnostic.canonicalBindingReadPath) === 'store.folders.listCanonicalChatFolderBindings' &&
+      !!(moveResult && moveResult.sameLiveCanonicalStore === true);
     return baseResult('moveChatFolderBinding', {
       ok: blockers.length === 0,
       status: blockers.length ? blockers[0] : (changed ? 'chat-folder-binding-moved' : 'chat-folder-binding-already-targeted'),
@@ -1912,12 +1940,17 @@
       reason: reason,
       bindingStoreWritePath: 'canonical-folder-bindings-sqlite',
       forceCanonicalFolderBindingStoreWrite: true,
+      canonicalMoveResult: moveResult,
+      sameReaderVerificationOk: sameReaderVerificationOk,
+      bindingStoreIdentity: moveResult && moveResult.storeIdentity ? moveResult.storeIdentity : null,
       postWriteDiagnosticSource: 'diagnoseChatFolderBindingParity',
       postWriteCanonicalReader: cleanString(afterDiagnostic.canonicalBindingReadPath),
       postWriteExportSource: 'desktopCanonicalChatFolderBindings',
       postWriteDiagnosticFolderBindingCounts: afterCounts,
       beforeBinding: bindingMapRow(chatId, beforeFolderId, includeSensitive),
       afterBinding: bindingMapRow(chatId, afterFolderId, includeSensitive),
+      beforeCanonicalBinding: beforeCanonicalBinding,
+      afterCanonicalBinding: afterCanonicalBinding,
       targetFolderId: targetFolderId,
       expectedCurrentFolderId: expectedCurrentFolderId,
       expectedTargetFolderBindingCount: expectedTargetCount,

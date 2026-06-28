@@ -3147,6 +3147,223 @@
     });
   }
 
+  function canonicalBindingStoreIdentity() {
+    var sqliteStatus = null;
+    try {
+      var platform = H2O && H2O.Studio && H2O.Studio.platform;
+      sqliteStatus = platform && typeof platform.__sqliteStatus === 'function'
+        ? platform.__sqliteStatus()
+        : null;
+    } catch (_) { sqliteStatus = null; }
+    return {
+      adapter: 'store.folders.tauri',
+      dbUrl: DB_URL,
+      tableName: 'folder_bindings',
+      readerFunction: 'listCanonicalChatFolderBindings',
+      rowReaderFunction: 'getCanonicalChatFolderBindingForChat',
+      writerFunction: 'moveCanonicalChatFolderBinding',
+      countSource: 'sqlite:folder_bindings',
+      storeReady: state.ready === true,
+      lastReloadedAt: state.lastReloadedAt,
+      lastWriteAt: state.lastWriteAt,
+      writesSinceBoot: state.writesSinceBoot,
+      sqliteStatus: sqliteStatus,
+      noChromeDestructiveBindingApply: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+    };
+  }
+
+  function getCanonicalChatFolderBindingForChat(chatIdInput) {
+    var chatId = cleanString(chatIdInput);
+    if (!chatId) return Promise.resolve(null);
+    return sqlSelect(
+      'SELECT b.chat_id AS chat_id, b.folder_id AS folder_id, b.assigned_at AS assigned_at, f.name AS folder_name ' +
+      'FROM folder_bindings b LEFT JOIN folders f ON f.id = b.folder_id ' +
+      'WHERE b.chat_id = ? LIMIT 1',
+      [chatId]
+    ).then(function (rows) {
+      if (!Array.isArray(rows) || !rows.length) return null;
+      var row = rows[0] || {};
+      var folderId = cleanString(row.folder_id);
+      if (!folderId) return null;
+      return {
+        chatId: cleanString(row.chat_id),
+        conversationId: cleanString(row.chat_id),
+        folderId: folderId,
+        folderName: cleanString(row.folder_name),
+        assignedAt: row.assigned_at,
+        source: 'desktop-canonical-folder-bindings-sqlite',
+        sourceSurface: 'desktop-studio',
+        authority: 'desktop',
+        status: 'active',
+        state: 'active',
+        storeIdentity: canonicalBindingStoreIdentity(),
+      };
+    }).catch(function (e) {
+      recordError('getCanonicalChatFolderBindingForChat', e);
+      return null;
+    });
+  }
+
+  function moveCanonicalChatFolderBinding(folderIdInput, chatIdInput, opts) {
+    var folderId = getFolderId(folderIdInput);
+    var chatId = cleanString(chatIdInput);
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var expectedCurrentFolderId = getFolderId(options.expectedCurrentFolderId || options.fromFolderId || options.currentFolderId);
+    var reason = cleanString(options.reason);
+    var assignedAt = (typeof options.assignedAt === 'number' && options.assignedAt > 0)
+      ? options.assignedAt
+      : Date.now();
+    var identity = canonicalBindingStoreIdentity();
+    var blockers = [];
+    if (!folderId) blockers.push('target-folder-id-required');
+    if (!chatId) blockers.push('chat-id-required');
+    if (!expectedCurrentFolderId) blockers.push('expected-current-folder-id-required');
+    if (!reason || reason.length < 8) blockers.push('explicit-reason-required');
+    if (blockers.length) {
+      return Promise.resolve({
+        ok: false,
+        status: blockers[0],
+        blockers: blockers,
+        warnings: [],
+        storeIdentity: identity,
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+      });
+    }
+    return getById(folderId).then(function (targetFolder) {
+      if (!targetFolder) {
+        return {
+          ok: false,
+          status: 'target-folder-missing',
+          blockers: ['target-folder-missing'],
+          warnings: [],
+          targetFolderId: folderId,
+          storeIdentity: identity,
+          noChromeDestructiveBindingApply: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noHardDelete: true,
+          noPurge: true,
+        };
+      }
+      return getCanonicalChatFolderBindingForChat(chatId).then(function (before) {
+        var beforeFolderId = getFolderId(before);
+        if (beforeFolderId !== expectedCurrentFolderId) {
+          return {
+            ok: false,
+            status: 'expected-current-folder-mismatch',
+            blockers: ['expected-current-folder-mismatch'],
+            warnings: [],
+            chatId: chatId,
+            expectedCurrentFolderId: expectedCurrentFolderId,
+            actualCurrentFolderId: beforeFolderId || '',
+            beforeBinding: before,
+            storeIdentity: identity,
+            noChromeDestructiveBindingApply: true,
+            noChatDelete: true,
+            noSnapshotDelete: true,
+            noHardDelete: true,
+            noPurge: true,
+          };
+        }
+        if (beforeFolderId === folderId) {
+          return getCanonicalChatFolderBindingForChat(chatId).then(function (afterSame) {
+            return {
+              ok: true,
+              status: 'chat-folder-binding-already-targeted',
+              blockers: [],
+              warnings: [],
+              changed: false,
+              chatId: chatId,
+              targetFolderId: folderId,
+              expectedCurrentFolderId: expectedCurrentFolderId,
+              beforeBinding: before,
+              afterBinding: afterSame,
+              rowsAffected: 0,
+              writeResult: null,
+              storeIdentity: canonicalBindingStoreIdentity(),
+              sameLiveCanonicalStore: true,
+              noChromeDestructiveBindingApply: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noHardDelete: true,
+              noPurge: true,
+            };
+          });
+        }
+        return sqlExecute(
+          'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
+          [chatId, folderId, assignedAt]
+        ).then(function (writeResult) {
+          return getCanonicalChatFolderBindingForChat(chatId).then(function (after) {
+            var afterFolderId = getFolderId(after);
+            var writeOk = afterFolderId === folderId;
+            var result = {
+              ok: writeOk,
+              status: writeOk ? 'chat-folder-binding-moved' : 'canonical-folder-binding-write-not-visible',
+              blockers: writeOk ? [] : ['canonical-folder-binding-write-not-visible'],
+              warnings: [],
+              changed: writeOk,
+              chatId: chatId,
+              targetFolderId: folderId,
+              expectedCurrentFolderId: expectedCurrentFolderId,
+              beforeBinding: before,
+              afterBinding: after,
+              assignedAt: assignedAt,
+              rowsAffected: readRowsAffected(writeResult),
+              writeResult: writeResult,
+              storeIdentity: canonicalBindingStoreIdentity(),
+              sameLiveCanonicalStore: true,
+              noChromeDestructiveBindingApply: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noHardDelete: true,
+              noPurge: true,
+            };
+            if (!writeOk) return result;
+            recordWrite('moveCanonicalChatFolderBinding');
+            notifySubscribers({ source: 'local', op: 'moveCanonicalChatFolderBinding', folderId: folderId, chatId: chatId });
+            return writeFolderBindingTombstoneSafely(beforeFolderId, chatId, {
+              deleteReason: 'folder-rebind',
+              meta: {
+                chatId: chatId,
+                folderId: beforeFolderId,
+                oldFolderId: beforeFolderId,
+                newFolderId: folderId,
+                assignedAt: before && before.assignedAt,
+                recordIdFormat: F5D_FOLDER_BINDING_RECORD_ID_FORMAT,
+                source: 'store.folders.moveCanonicalChatFolderBinding',
+                replacement: true,
+                reason: reason,
+              },
+            }).then(function () { return result; });
+          });
+        });
+      });
+    }).catch(function (e) {
+      recordError('moveCanonicalChatFolderBinding', e);
+      return {
+        ok: false,
+        status: 'canonical-folder-binding-write-failed',
+        blockers: ['canonical-folder-binding-write-failed'],
+        warnings: [String((e && e.message) || e)],
+        storeIdentity: canonicalBindingStoreIdentity(),
+        noChromeDestructiveBindingApply: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noHardDelete: true,
+        noPurge: true,
+      };
+    });
+  }
+
   /* listForChat(chatId): single binding row max (chat_id is PK). Returns
    * the bound folder as a one-element array, or [] if unbound. */
   function listForChat(chatIdInput) {
@@ -3268,6 +3485,9 @@
     unbindChat: unbindChat,
     listChats: listChats,
     listCanonicalChatFolderBindings: listCanonicalChatFolderBindings,
+    getCanonicalChatFolderBindingForChat: getCanonicalChatFolderBindingForChat,
+    moveCanonicalChatFolderBinding: moveCanonicalChatFolderBinding,
+    canonicalBindingStoreIdentity: canonicalBindingStoreIdentity,
     listForChat: listForChat,
     count: countFolders,
   };
