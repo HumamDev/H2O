@@ -632,6 +632,13 @@
        enqueues through D.2B only. Writes receipts; no materialization, package
        writer, CAS, sync transport, Chrome delivery, import/recovery, or UI. -->
   <script src="./ingestion/saved-chat-archive-request-inbox.tauri.js"></script>
+  <!-- Desktop operator action: saved-chat archive materializer trigger (Phase F.2).
+       Renders a clearly-separated Desktop-only "Materialize package" operator card,
+       mounted as a sibling beneath the read-only Archive Health card. Invokes
+       H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1 for an explicit
+       validated requestId. No scanner call, no automatic/background materialization,
+       no watcher/poller/daemon, no Chrome runtime, sync, CAS, or package writer. -->
+  <script src="./ingestion/saved-chat-archive-materializer-action.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the

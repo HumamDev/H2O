@@ -498,6 +498,18 @@
     }
 
     render();
+
+    // Phase F.2: mount the clearly-separated, Desktop-only operator action card
+    // (its own module) as a sibling beneath this read-only diagnostics card. This
+    // read-only card is unchanged and performs no mutation; it only delegates to
+    // the operator action module, which owns the materializer call and its gate.
+    try {
+      var actionApi = H2O.Studio && H2O.Studio.archiveMaterializerAction;
+      if (actionApi && typeof actionApi.mountArchiveMaterializerActionCard === 'function') {
+        actionApi.mountArchiveMaterializerActionCard(container);
+      }
+    } catch (_) { /* operator action card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 

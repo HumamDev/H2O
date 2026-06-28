@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-// F.1 — Saved-chat archive MATERIALIZER TRIGGER BOUNDARY validator (static).
+// F.1/F.2 — Saved-chat archive MATERIALIZER TRIGGER BOUNDARY validator (static).
 //
 // The materializer itself (D.2C) already exists and is behaviorally covered by
 // validate-saved-chat-archive-materializer-v1.mjs. This validator does NOT
-// re-test materializer internals. It locks the Phase F *trigger boundary*
-// before any operator UI is added: it asserts the cross-module invariants that
-// must hold while a validated request becomes a materialized package, and the
-// F.1 phase-gates that prove no trigger has been wired prematurely.
+// re-test materializer internals. It locks the Phase F *trigger boundary*: it
+// asserts the cross-module invariants that must hold while a validated request
+// becomes a materialized package, and — since F.2 — that the ONE trigger is a
+// bounded, Desktop-only operator action (no automatic/scanner/watcher trigger).
 //
-// Checks are labeled [INVARIANT] (must always hold) or [F.1-GATE] (a
-// point-in-time lock that a later phase, e.g. F.2's operator action, will
-// intentionally flip and update here).
+// Checks are labeled [INVARIANT] (must always hold) or [F.2] (the bounded
+// operator-action contract). F.1 originally asserted that no trigger existed;
+// F.2 flipped that gate to assert the contracted operator action is present
+// and correctly bounded.
 //
 // Static only: reads source, asserts patterns. No runtime, no imports of
 // runtime modules, no DB, no network.
@@ -31,8 +32,11 @@ const DELIVERY_MV3_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const S0F0J_REL = 'src-surfaces-base/studio/S0F0j. 🎬 Library Actions Core - Studio.js';
 const S0F1J_REL = 'src-surfaces-base/studio/S0F1j. 🎬 Library Actions - Studio.js';
+const ACTION_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-materializer-action.studio.js';
 
 const MATERIALIZE_API = 'materializeSavedChatArchiveRequestV1';
+// The Desktop scanner the operator action must NOT auto-invoke.
+const SCANNER_API = 'scanSavedChatArchiveRequestInboxV1';
 // Chrome intent / read-back / badge APIs the Desktop materializer must never call.
 const CHROME_APIS = [
   'deliverSavedChatArchiveRequestV1',
@@ -75,6 +79,8 @@ const deliveryMv3Code = stripComments(readRepo(DELIVERY_MV3_REL));
 const studioHtml = readRepo(STUDIO_HTML_REL);
 const s0f0j = readRepo(S0F0J_REL);
 const s0f1j = readRepo(S0F1J_REL);
+const actionSrc = readRepo(ACTION_REL);
+const actionCode = stripComments(actionSrc);
 
 console.log('[archive-materializer-trigger] F.1 boundary checks');
 
@@ -207,17 +213,76 @@ check('[INVARIANT] materializer has no sync/webdav/native-messaging/localhost-re
   }
 });
 
-// --- H. No premature trigger / UI (F.1 phase-gates) -------------------------
+// --- H. Bounded operator-action trigger (F.2) -------------------------------
+// F.1 asserted NO trigger was wired. F.2 adds exactly one: a bounded,
+// Desktop-only operator action in its own module. These checks pin that
+// contract and prove no automatic/scanner/watcher trigger crept in.
 
-check('[F.1-GATE] no operator trigger wired yet: Archive Health UI helper does not call the materializer', () => {
-  assert.ok(!healthUiCode.includes(MATERIALIZE_API), 'Archive Health UI must not call the materializer until F.2 adds the contracted operator action');
+check('[F.2] operator action module exists, registers archiveMaterializerAction, and is loaded + packed', () => {
+  assert.ok(exists(ACTION_REL), 'operator action module missing');
+  assert.match(actionSrc, /H2O\.Studio\.archiveMaterializerAction\s*=/);
+  assert.match(actionSrc, /renderArchiveMaterializerActionCard/);
+  assert.match(actionSrc, /mountArchiveMaterializerActionCard/);
+  assert.ok(studioHtml.includes('./ingestion/saved-chat-archive-materializer-action.studio.js'), 'studio.html does not load the operator action module');
 });
 
-check('[F.1-GATE] Archive diagnostics remains read-only: does not call the materializer', () => {
+check('[F.2] operator action invokes the materializer for an explicit requestId (no forced overwrite)', () => {
+  assert.ok(actionCode.includes(MATERIALIZE_API), 'operator action must call the materializer');
+  assert.match(actionCode, new RegExp(MATERIALIZE_API + '\\s*\\(\\s*\\{\\s*requestId'));
+  assert.doesNotMatch(actionCode, /overwrite\s*:\s*true/, 'operator action must not force overwrite:true');
+});
+
+check('[F.2] operator action is Desktop/Tauri capability-gated', () => {
+  assert.match(actionCode, /function detectTauri\s*\(/);
+  assert.match(actionCode, /__TAURI_INTERNALS__|__TAURI__/);
+  assert.match(actionCode, /isDesktopCapable/);
+});
+
+check('[F.2] operator action does NOT auto-call the scanner; selection is restricted to validated rows', () => {
+  assert.ok(!actionCode.includes(SCANNER_API), 'operator action must not call the scanner');
+  assert.match(actionCode, /status:\s*['"]validated['"]/);
+});
+
+check('[F.2] operator action has no watcher/poller/daemon (no automatic materialization)', () => {
+  for (const banned of ['setInterval', 'setTimeout', 'MutationObserver', 'requestAnimationFrame', 'requestIdleCallback']) {
+    assert.ok(!actionCode.includes(banned), `operator action must not use ${banned}`);
+  }
+});
+
+check('[F.2] operator action surfaces the full materializer result vocabulary + invalid-state', () => {
+  for (const s of RESULT_VOCAB) {
+    assert.ok(hasStr(actionCode, s), `operator action result presentation missing: ${s}`);
+  }
+  assert.ok(hasStr(actionCode, 'invalid-state'), 'operator action must surface invalid-state');
+});
+
+check('[F.2] operator action has no writer/Chrome/sync/webdav/native coupling', () => {
+  assert.ok(!actionCode.includes('writeSavedChatPackageV1'), 'operator action must not call the package writer directly');
+  for (const api of CHROME_APIS) {
+    assert.ok(!actionCode.includes(api), `operator action must not reference Chrome API: ${api}`);
+  }
+  for (const banned of [
+    'H2O.Studio.sync', 'webdav', 'WebDAV', 'connectNative', 'sendNativeMessage',
+    'chrome.runtime', 'localhost', '127.0.0.1', 'ws://', 'wss://', 'fetch(',
+    'plugin:fs|write', 'putAssetBytes', 'getAssetBytes',
+  ]) {
+    assert.ok(!actionCode.includes(banned), `operator action must not couple to: ${banned}`);
+  }
+});
+
+check('[F.2] Archive Health UI stays read-only but delegates to the separate operator action', () => {
+  assert.ok(healthUiCode.includes('mountArchiveMaterializerActionCard'), 'health UI must delegate to the operator action module');
+  assert.ok(!healthUiCode.includes(MATERIALIZE_API), 'health UI must not call the materializer directly');
+  assert.ok(!healthUiCode.includes('writeSavedChatPackageV1'), 'health UI must not call the package writer');
+});
+
+// --- I. Permanent boundaries (diagnostics + mega-files never trigger) --------
+
+check('[INVARIANT] Archive diagnostics remains read-only: does not call the materializer', () => {
   assert.ok(!diagCode.includes(MATERIALIZE_API), 'diagnostics must not call the materializer');
 });
 
-check('[F.1-GATE] library action mega-files (S0F0j / S0F1j) do not wire the materializer', () => {
+check('[INVARIANT] library action mega-files (S0F0j / S0F1j) do not wire the materializer', () => {
   assert.ok(!s0f0j.includes(MATERIALIZE_API), 'S0F0j must not wire the materializer');
   assert.ok(!s0f1j.includes(MATERIALIZE_API), 'S0F1j must not wire the materializer');
 });
