@@ -49,6 +49,7 @@
   var LIFECYCLE_DIAGNOSTIC_SCHEMA = 'h2o.studio.tombstone-lifecycle-diagnostic.v1';
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
+  var CHAT_FOLDER_BINDING_REQUEST_SCHEMA = 'h2o.studio.chat-folder-binding-request.v1';
   var FOLDER_DELETE_RECEIPT_SCHEMA = 'h2o.studio.folder-delete-receipt.v1';
   var FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA = 'h2o.studio.folder-delete-receipt-import.v1';
   var FOLDER_DELETE_RECEIPT_APPLY_RESULT_SCHEMA = 'h2o.studio.folder-delete-receipt-apply-result.v1';
@@ -59,6 +60,8 @@
   var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
   var FOLDER_RESTORE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-restore-requests:pending-export:v1';
   var FOLDER_RESTORE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-restore-request.pending-export-mirror.v1';
+  var CHAT_FOLDER_BINDING_REQUEST_EXPORT_KEY = 'h2o:studio:chat-folder-binding-requests:pending-export:v1';
+  var CHAT_FOLDER_BINDING_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.chat-folder-binding-request.pending-export-mirror.v1';
   var DUPLICATE_SIGHTING_PREVIEW_SCHEMA = 'h2o.studio.tombstone-review-duplicate-sighting-preview.v1';
   var SYNTHETIC_CLEANUP_PREVIEW_SCHEMA = 'h2o.studio.synthetic-cleanup-preview.v1';
   var INGEST_SCHEMA = 'h2o.studio.tombstone-review-ingest.v1';
@@ -83,6 +86,7 @@
     'local-comparison-unavailable': true,
     'delete-request': true,
     'restore-request': true,
+    'binding-request': true,
   };
   var STATUSES = {
     pending: true,
@@ -150,6 +154,11 @@
     lastFolderRestoreRequestStatus: '',
     folderRestoreRequestCreates: 0,
     folderRestoreRequestDuplicates: 0,
+    lastChatFolderBindingRequestAt: null,
+    lastChatFolderBindingRequestChatId: '',
+    lastChatFolderBindingRequestStatus: '',
+    chatFolderBindingRequestCreates: 0,
+    chatFolderBindingRequestDuplicates: 0,
   };
 
   function recordError(op, e) {
@@ -240,6 +249,13 @@
     return cleanScalar(input);
   }
 
+  function readChatId(input) {
+    if (input && typeof input === 'object') {
+      return cleanScalar(input.chatId || input.conversationId || input.chat_id || input.conversation_id);
+    }
+    return cleanScalar(input);
+  }
+
   function folderDeleteRequestRecordId(folderId) {
     return cleanScalar(folderId);
   }
@@ -254,6 +270,14 @@
 
   function folderRestoreRequestDedupeKey(folderId, requestId) {
     return 'folder-restore-request:' + encodeURIComponent(cleanScalar(folderId)) + ':' + encodeURIComponent(cleanScalar(requestId));
+  }
+
+  function chatFolderBindingRequestRecordId(chatId) {
+    return cleanScalar(chatId);
+  }
+
+  function chatFolderBindingRequestDedupeKey(chatId, requestId) {
+    return 'chat-folder-binding-request:' + encodeURIComponent(cleanScalar(chatId)) + ':' + encodeURIComponent(cleanScalar(requestId));
   }
 
   function folderDeleteReceiptIds(receipt) {
@@ -289,6 +313,20 @@
     try {
       var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
       return isObject(parsed) && parsed.schema === FOLDER_RESTORE_REQUEST_SCHEMA ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseChatFolderBindingRequestPayload(row) {
+    var raw = row && row.rawTombstoneJson;
+    if (!raw && row && row.raw_tombstone_json) raw = row.raw_tombstone_json;
+    if (!raw && isObject(row && row.payload)) raw = row.payload;
+    if (!raw && isObject(row)) raw = row;
+    if (!raw) return null;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isObject(parsed) && parsed.schema === CHAT_FOLDER_BINDING_REQUEST_SCHEMA ? parsed : null;
     } catch (_) {
       return null;
     }
@@ -453,6 +491,14 @@
       if (c && typeof c.randomUUID === 'function') return 'folder-restore-request:' + c.randomUUID();
     } catch (_) { /* ignore */ }
     return 'folder-restore-request:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  }
+
+  function generateChatFolderBindingRequestId() {
+    try {
+      var c = global.crypto || null;
+      if (c && typeof c.randomUUID === 'function') return 'chat-folder-binding-request:' + c.randomUUID();
+    } catch (_) { /* ignore */ }
+    return 'chat-folder-binding-request:' + Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
   }
 
   function shapeFolderDeleteRequestInput(input, options, requestId, requestedAt) {
@@ -712,6 +758,155 @@
     }).catch(function (e) {
       recordError('folderRestoreRequest.exportMirror.upsert', e);
       return { ok: false, status: 'folder-restore-request-export-mirror-failed', reason: String((e && e.message) || e) };
+    });
+  }
+
+  function chatFolderBindingRequestTarget(data, opts) {
+    var unfile = data.unfile === true || data.unfiled === true ||
+      cleanScalar(data.targetFolderId || data.folderId || opts.targetFolderId).toLowerCase() === '__unfiled__' ||
+      cleanScalar(data.targetFolderId || data.folderId || opts.targetFolderId).toLowerCase() === 'unfiled';
+    var targetFolderId = unfile ? '' : cleanScalar(data.targetFolderId || data.folderId || opts.targetFolderId || '');
+    return {
+      targetKind: unfile ? 'unfiled' : 'folder',
+      targetFolderId: unfile ? null : (targetFolderId || null),
+      targetUnfiled: unfile,
+    };
+  }
+
+  function shapeChatFolderBindingRequestInput(input, options, requestId, requestedAt) {
+    var data = isObject(input) ? input : {};
+    var opts = isObject(options) ? options : {};
+    var chatId = readChatId(data);
+    var target = chatFolderBindingRequestTarget(data, opts);
+    var expectedCurrentFolderId = cleanScalar(data.expectedCurrentFolderId || data.currentFolderId || opts.expectedCurrentFolderId || '');
+    var sourceSurface = cleanScalar(opts.sourceSurface || data.sourceSurface || 'chrome-studio') || 'chrome-studio';
+    return {
+      schema: CHAT_FOLDER_BINDING_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: requestId,
+      recordKind: 'folderBinding',
+      intent: 'chat-folder-binding-request',
+      classification: 'binding-request',
+      chatId: chatId,
+      conversationId: cleanScalar(data.conversationId || data.chatId || chatId) || chatId,
+      expectedCurrentFolderId: expectedCurrentFolderId || null,
+      targetFolderId: target.targetFolderId,
+      targetKind: target.targetKind,
+      targetUnfiled: target.targetUnfiled,
+      requestedAt: requestedAt,
+      createdAt: requestedAt,
+      requestedBy: 'chrome-studio',
+      source: 'chrome-studio',
+      sourceSurface: sourceSurface,
+      sourcePeerId: nullableString(opts.sourcePeerId || data.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: cleanScalar(opts.reason || data.reason || 'user-requested-chat-folder-binding-change') || 'user-requested-chat-folder-binding-change',
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noDesktopCanonicalMutation: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: {
+        sourceKind: nullableString(data.sourceKind || data.kind),
+        stateSource: nullableString(data.stateSource),
+        desktopCanonicalProjection: data.desktopCanonicalProjection === true || data.desktopCanonicalBindingProjection === true,
+      },
+    };
+  }
+
+  function chatFolderBindingRequestExportIdentity(payload) {
+    var p = isObject(payload) ? payload : {};
+    return cleanScalar(p.requestId || p.reviewId) + '|' + cleanScalar(p.chatId || p.conversationId || p.recordId);
+  }
+
+  function sanitizeChatFolderBindingRequestExportPayload(payload) {
+    var p = isObject(payload) ? payload : {};
+    if (cleanScalar(p.schema) !== CHAT_FOLDER_BINDING_REQUEST_SCHEMA) return null;
+    if (cleanScalar(p.intent) !== 'chat-folder-binding-request') return null;
+    if (cleanScalar(p.status) !== 'pending') return null;
+    if (p.desktopApplyRequired !== true) return null;
+    if (p.noChromeBindingAuthority !== true && p.noChromeDestructiveBindingApply !== true) return null;
+    if (p.noHardDelete !== true || p.noChatDelete !== true || p.noSnapshotDelete !== true) return null;
+    var requestId = cleanScalar(p.requestId || p.reviewId);
+    var chatId = cleanScalar(p.chatId || p.conversationId || p.recordId);
+    var targetKind = cleanScalar(p.targetKind || (p.targetUnfiled === true ? 'unfiled' : 'folder')) || 'folder';
+    var targetFolderId = cleanScalar(p.targetFolderId);
+    if (!requestId || !chatId) return null;
+    if (targetKind !== 'unfiled' && !targetFolderId) return null;
+    return {
+      schema: CHAT_FOLDER_BINDING_REQUEST_SCHEMA,
+      requestId: requestId,
+      reviewId: cleanScalar(p.reviewId || requestId) || requestId,
+      recordKind: 'folderBinding',
+      intent: 'chat-folder-binding-request',
+      classification: 'binding-request',
+      chatId: chatId,
+      conversationId: cleanScalar(p.conversationId || chatId) || chatId,
+      expectedCurrentFolderId: nullableString(p.expectedCurrentFolderId || p.currentFolderId),
+      targetFolderId: targetKind === 'unfiled' ? null : targetFolderId,
+      targetKind: targetKind === 'unfiled' ? 'unfiled' : 'folder',
+      targetUnfiled: targetKind === 'unfiled',
+      requestedAt: nullableString(p.requestedAt || p.createdAt),
+      createdAt: nullableString(p.createdAt || p.requestedAt),
+      requestedBy: nullableString(p.requestedBy || 'chrome-studio'),
+      source: nullableString(p.source || 'chrome-studio'),
+      sourceSurface: nullableString(p.sourceSurface || 'chrome-studio'),
+      sourcePeerId: nullableString(p.sourcePeerId || 'chrome-studio'),
+      status: 'pending',
+      reason: nullableString(p.reason || 'user-requested-chat-folder-binding-change'),
+      desktopApplyRequired: true,
+      noLocalApply: true,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noDesktopCanonicalMutation: true,
+      noTombstoneApply: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noFolderMutation: true,
+      noBindingMutation: true,
+      noChatMutation: true,
+      noSnapshotMutation: true,
+      advisory: isObject(p.advisory) ? Object.assign({}, p.advisory) : null,
+      mirroredAt: nowIso(),
+    };
+  }
+
+  function upsertChatFolderBindingRequestExportMirror(payload) {
+    var request = sanitizeChatFolderBindingRequestExportPayload(payload);
+    if (!request) return Promise.resolve({ ok: false, status: 'chat-folder-binding-request-export-mirror-invalid' });
+    return readKv(CHAT_FOLDER_BINDING_REQUEST_EXPORT_KEY).then(function (current) {
+      var rows = Array.isArray(current && current.requests) ? current.requests.slice() : [];
+      var key = chatFolderBindingRequestExportIdentity(request);
+      rows = rows.filter(function (row) {
+        return chatFolderBindingRequestExportIdentity(row) !== key;
+      });
+      rows.push(request);
+      if (rows.length > MAX_LIST_LIMIT) rows = rows.slice(rows.length - MAX_LIST_LIMIT);
+      return writeKv(CHAT_FOLDER_BINDING_REQUEST_EXPORT_KEY, {
+        schema: CHAT_FOLDER_BINDING_REQUEST_EXPORT_MIRROR_SCHEMA,
+        version: 1,
+        updatedAt: nowIso(),
+        requestCount: rows.length,
+        requests: rows,
+      }).then(function () {
+        return { ok: true, status: 'chat-folder-binding-request-export-mirror-updated', requestCount: rows.length };
+      });
+    }).catch(function (e) {
+      recordError('chatFolderBindingRequest.exportMirror.upsert', e);
+      return { ok: false, status: 'chat-folder-binding-request-export-mirror-failed', reason: String((e && e.message) || e) };
     });
   }
 
@@ -1893,6 +2088,239 @@
         lastRequestStatus: state.lastFolderRestoreRequestStatus,
         createsSinceBoot: state.folderRestoreRequestCreates,
         duplicatesSinceBoot: state.folderRestoreRequestDuplicates,
+      };
+      if (includeRows) result.pending = pending;
+      return result;
+    });
+  }
+
+  function findPendingChatFolderBindingRequest(input) {
+    var data = isObject(input) ? input : {};
+    var chatId = readChatId(data);
+    if (!chatId) return Promise.resolve(null);
+    var target = chatFolderBindingRequestTarget(data, {});
+    return listReviews({
+      classification: 'binding-request',
+      status: 'pending',
+      recordKind: 'folderBinding',
+      recordId: chatFolderBindingRequestRecordId(chatId),
+      limit: MAX_LIST_LIMIT,
+    }).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).find(function (row) {
+        var payload = parseChatFolderBindingRequestPayload(row);
+        if (!payload) return false;
+        if (cleanScalar(payload.chatId || payload.conversationId) !== chatId) return false;
+        if (cleanScalar(payload.status) !== 'pending') return false;
+        var payloadTargetKind = cleanScalar(payload.targetKind || (payload.targetUnfiled === true ? 'unfiled' : 'folder'));
+        var payloadTargetFolderId = cleanScalar(payload.targetFolderId);
+        if (target.targetKind === 'unfiled') return payloadTargetKind === 'unfiled';
+        return payloadTargetKind !== 'unfiled' && payloadTargetFolderId === cleanScalar(target.targetFolderId);
+      }) || null;
+    });
+  }
+
+  function listChatFolderBindingRequests(filters) {
+    var f = isObject(filters) ? filters : {};
+    var chatId = readChatId(f.chatId || f.conversationId || f.recordId || '');
+    var query = {
+      classification: 'binding-request',
+      recordKind: 'folderBinding',
+      limit: f.limit || DEFAULT_LIST_LIMIT,
+    };
+    if (cleanScalar(f.status)) query.status = cleanScalar(f.status);
+    if (chatId) query.recordId = chatFolderBindingRequestRecordId(chatId);
+    return listReviews(query).then(function (rows) {
+      return (Array.isArray(rows) ? rows : []).filter(function (row) {
+        var payload = parseChatFolderBindingRequestPayload(row);
+        if (!payload) return false;
+        if (chatId && cleanScalar(payload.chatId || payload.conversationId) !== chatId) return false;
+        return true;
+      });
+    });
+  }
+
+  function requestChatFolderBinding(input, options) {
+    var data = isObject(input) ? input : {};
+    var chatId = readChatId(data);
+    var requestedAt = nowIso();
+    var target = chatFolderBindingRequestTarget(data, isObject(options) ? options : {});
+    if (!chatId) {
+      return Promise.resolve({
+        ok: false,
+        status: 'chat-id-required',
+        blockers: [{ code: 'chat-id-required' }],
+        noChromeBindingAuthority: true,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopApplyRequired: true,
+      });
+    }
+    if (target.targetKind !== 'unfiled' && !target.targetFolderId) {
+      return Promise.resolve({
+        ok: false,
+        status: 'target-folder-id-required',
+        chatId: chatId,
+        blockers: [{ code: 'target-folder-id-required' }],
+        noChromeBindingAuthority: true,
+        noChromeDestructiveBindingApply: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopApplyRequired: true,
+      });
+    }
+    return ensureReady()
+      .then(function () { return findPendingChatFolderBindingRequest(data); })
+      .then(function (existing) {
+        if (existing) {
+          var existingPayload = parseChatFolderBindingRequestPayload(existing);
+          state.chatFolderBindingRequestDuplicates += 1;
+          state.lastChatFolderBindingRequestAt = requestedAt;
+          state.lastChatFolderBindingRequestChatId = chatId;
+          state.lastChatFolderBindingRequestStatus = 'pending-existing';
+          return upsertChatFolderBindingRequestExportMirror(existingPayload || existing).then(function (mirror) {
+            return {
+              ok: true,
+              status: 'pending-existing',
+              duplicate: true,
+              chatId: chatId,
+              conversationId: cleanScalar(existingPayload && existingPayload.conversationId || chatId) || chatId,
+              targetFolderId: existingPayload ? existingPayload.targetFolderId : target.targetFolderId,
+              targetKind: existingPayload ? existingPayload.targetKind : target.targetKind,
+              requestId: cleanScalar(existing.reviewId),
+              reviewId: cleanScalar(existing.reviewId),
+              review: existing,
+              payload: existingPayload,
+              exportMirror: mirror,
+              noChromeBindingAuthority: true,
+              noChromeDestructiveBindingApply: true,
+              noDesktopCanonicalMutation: true,
+              noHardDelete: true,
+              noPurge: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noAssetDelete: true,
+              desktopApplyRequired: true,
+            };
+          });
+        }
+        var requestId = generateChatFolderBindingRequestId();
+        var payload = shapeChatFolderBindingRequestInput(input, options, requestId, requestedAt);
+        var review = {
+          schema: REVIEW_SCHEMA,
+          reviewId: requestId,
+          classification: 'binding-request',
+          status: 'pending',
+          recordKind: 'folderBinding',
+          recordId: chatFolderBindingRequestRecordId(chatId),
+          deleteReason: payload.reason,
+          remoteSyncPeerId: payload.sourcePeerId || 'chrome-studio',
+          receivedAt: requestedAt,
+          firstSeenAt: requestedAt,
+          lastSeenAt: requestedAt,
+          dedupeKey: chatFolderBindingRequestDedupeKey(chatId, requestId),
+          rawTombstoneJson: JSON.stringify(payload),
+          warningsJson: JSON.stringify([{ code: 'desktop-binding-apply-required' }]),
+        };
+        return createReview(review).then(function (created) {
+          state.chatFolderBindingRequestCreates += 1;
+          state.lastChatFolderBindingRequestAt = requestedAt;
+          state.lastChatFolderBindingRequestChatId = chatId;
+          state.lastChatFolderBindingRequestStatus = 'pending-created';
+          notifySubscribers({
+            source: 'chrome-chat-folder-binding-request',
+            op: 'requestChatFolderBinding',
+            chatId: chatId,
+            targetFolderId: payload.targetFolderId,
+            targetKind: payload.targetKind,
+            requestId: requestId,
+            reviewId: requestId,
+            status: 'pending',
+          });
+          return upsertChatFolderBindingRequestExportMirror(payload).then(function (mirror) {
+            return {
+              ok: true,
+              status: 'pending-created',
+              duplicate: false,
+              chatId: chatId,
+              conversationId: payload.conversationId,
+              targetFolderId: payload.targetFolderId,
+              targetKind: payload.targetKind,
+              requestId: requestId,
+              reviewId: requestId,
+              review: created,
+              payload: payload,
+              exportMirror: mirror,
+              noChromeBindingAuthority: true,
+              noChromeDestructiveBindingApply: true,
+              noDesktopCanonicalMutation: true,
+              noHardDelete: true,
+              noPurge: true,
+              noChatDelete: true,
+              noSnapshotDelete: true,
+              noAssetDelete: true,
+              desktopApplyRequired: true,
+            };
+          });
+        });
+      })
+      .catch(function (e) {
+        recordError('requestChatFolderBinding', e);
+        return {
+          ok: false,
+          status: 'chat-folder-binding-request-failed',
+          chatId: chatId,
+          blockers: [{ code: 'chat-folder-binding-request-failed' }],
+          reason: String((e && e.message) || e),
+          noChromeBindingAuthority: true,
+          noChromeDestructiveBindingApply: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          desktopApplyRequired: true,
+        };
+      });
+  }
+
+  function diagnoseChatFolderBindingRequests(options) {
+    var includeRows = !!(options && options.includeRows);
+    return Promise.all([
+      listChatFolderBindingRequests({ status: 'pending', limit: MAX_LIST_LIMIT }),
+      listChatFolderBindingRequests({ limit: MAX_LIST_LIMIT }),
+    ]).then(function (parts) {
+      var pending = parts[0] || [];
+      var all = parts[1] || [];
+      var result = {
+        schema: CHAT_FOLDER_BINDING_REQUEST_SCHEMA + '.diagnostic',
+        ok: true,
+        installed: true,
+        surface: 'chrome-studio',
+        nonDestructive: true,
+        noChromeBindingAuthority: true,
+        noChromeDestructiveBindingApply: true,
+        noDesktopCanonicalMutation: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        desktopApplyRequired: true,
+        transportDeferred: true,
+        pendingCount: pending.length,
+        totalCount: all.length,
+        lastRequestAt: state.lastChatFolderBindingRequestAt,
+        lastRequestChatId: state.lastChatFolderBindingRequestChatId,
+        lastRequestStatus: state.lastChatFolderBindingRequestStatus,
+        createsSinceBoot: state.chatFolderBindingRequestCreates,
+        duplicatesSinceBoot: state.chatFolderBindingRequestDuplicates,
       };
       if (includeRows) result.pending = pending;
       return result;
@@ -5316,6 +5744,10 @@
     findPendingFolderRestoreRequest: findPendingFolderRestoreRequest,
     listFolderRestoreRequests: listFolderRestoreRequests,
     diagnoseFolderRestoreRequests: diagnoseFolderRestoreRequests,
+    requestChatFolderBinding: requestChatFolderBinding,
+    findPendingChatFolderBindingRequest: findPendingChatFolderBindingRequest,
+    listChatFolderBindingRequests: listChatFolderBindingRequests,
+    diagnoseChatFolderBindingRequests: diagnoseChatFolderBindingRequests,
     applyFolderDeleteReceipt: applyFolderDeleteReceipt,
     ingestFolderDeleteReceipts: ingestFolderDeleteReceipts,
     applyFolderRestoreReceipt: applyFolderRestoreReceipt,
@@ -5344,6 +5776,7 @@
       schema: REVIEW_SCHEMA,
       folderDeleteRequestSchema: FOLDER_DELETE_REQUEST_SCHEMA,
       folderRestoreRequestSchema: FOLDER_RESTORE_REQUEST_SCHEMA,
+      chatFolderBindingRequestSchema: CHAT_FOLDER_BINDING_REQUEST_SCHEMA,
       folderDeleteReceiptSchema: FOLDER_DELETE_RECEIPT_SCHEMA,
       folderDeleteReceiptImportSchema: FOLDER_DELETE_RECEIPT_IMPORT_SCHEMA,
       folderRestoreReceiptSchema: FOLDER_RESTORE_RECEIPT_SCHEMA,

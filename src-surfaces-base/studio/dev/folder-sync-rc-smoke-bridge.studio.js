@@ -40,6 +40,8 @@
     'listFolderDeleteRequests',
     'requestFolderRestore',
     'listFolderRestoreRequests',
+    'requestChatFolderBinding',
+    'listChatFolderBindingRequests',
     'applyFolderDeleteRequest',
     'applyFolderRestoreRequest',
     'listFolderDeleteReceipts',
@@ -72,6 +74,7 @@
   var CHROME_ONLY_OPS = Object.freeze({
     requestFolderDelete: true,
     requestFolderRestore: true,
+    requestChatFolderBinding: true,
     diagnoseVisibleFolderParity: true,
     diagnoseChromeRecentlyDeletedCompanion: true,
   });
@@ -931,6 +934,19 @@
         bindingComparison.extraInChromeCount === 0 &&
         folderCountMismatches.length === 0
       : null;
+    var pendingBindingRequestCount = 0;
+    var totalBindingRequestCount = 0;
+    try {
+      var requestStore = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+      if (requestStore && typeof requestStore.listChatFolderBindingRequests === 'function') {
+        pendingBindingRequestCount = safeArray(await requestStore.listChatFolderBindingRequests({ status: 'pending', limit: 1000 })).length;
+        totalBindingRequestCount = safeArray(await requestStore.listChatFolderBindingRequests({ limit: 1000 })).length;
+      } else {
+        addUniqueCode(warnings, 'chat-folder-binding-request-store-unavailable');
+      }
+    } catch (_) {
+      addUniqueCode(warnings, 'chat-folder-binding-request-diagnostic-read-failed');
+    }
     return baseResult('diagnoseChatFolderBindingParity', {
       ok: blockers.length === 0,
       status: 'chat-folder-binding-parity-diagnosed',
@@ -991,6 +1007,10 @@
       parityOk: parityOk,
       chromeCanonicalBindingProjectionAvailable: hasCanonicalBindingProjection,
       chromeCanonicalBindingProjectionSchema: hasCanonicalBindingProjection ? cleanString(canonicalProjection.schema) : '',
+      chatFolderBindingRequestPendingCount: pendingBindingRequestCount,
+      chromePendingBindingRequestCount: pendingBindingRequestCount,
+      chatFolderBindingRequestTotalCount: totalBindingRequestCount,
+      chromeBindingRequestsAreRequestOnly: true,
       blockers: blockers,
       warnings: warnings,
       noChatDelete: true,
@@ -998,6 +1018,7 @@
       noHardDelete: true,
       noPurge: true,
       noChromeDestructiveBindingApply: true,
+      noDesktopCanonicalMutation: true,
     });
   }
 
@@ -2310,6 +2331,58 @@
     });
   }
 
+  async function requestChatFolderBinding(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+    var fn = store && store.requestChatFolderBinding;
+    if (typeof fn !== 'function') return unsupportedResult('requestChatFolderBinding', 'chat-folder-binding-request-api-unavailable');
+    var result = await fn.call(store, {
+      chatId: cleanString(payload.chatId || payload.conversationId),
+      conversationId: cleanString(payload.conversationId || payload.chatId),
+      expectedCurrentFolderId: cleanString(payload.expectedCurrentFolderId || payload.currentFolderId),
+      targetFolderId: cleanString(payload.targetFolderId || payload.folderId),
+      unfile: payload.unfile === true || payload.unfiled === true,
+      sourceKind: cleanString(payload.sourceKind || payload.kind),
+      stateSource: cleanString(payload.stateSource),
+      desktopCanonicalProjection: payload.desktopCanonicalProjection !== false,
+    }, {
+      reason: cleanString(payload.reason) || 'folder-sync-rc-smoke-bridge-binding-request',
+      sourceSurface: 'chrome-studio',
+    });
+    return summarizeMutationResult('requestChatFolderBinding', Object.assign({}, safeObject(result), {
+      chromeBindingRequestsAreRequestOnly: true,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noDesktopCanonicalMutation: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    }));
+  }
+
+  async function listChatFolderBindingRequests(payload) {
+    var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
+    var fn = store && (store.listChatFolderBindingRequests || store.listReviews || store.list);
+    if (typeof fn !== 'function') return unsupportedResult('listChatFolderBindingRequests', 'chat-folder-binding-review-api-unavailable');
+    var rows = safeArray(await fn.call(store, Object.assign({ limit: 100 }, safeObject(payload))));
+    return baseResult('listChatFolderBindingRequests', {
+      ok: true,
+      status: 'chat-folder-binding-requests-listed',
+      count: rows.length,
+      requestOnly: true,
+      noChromeBindingAuthority: true,
+      noChromeDestructiveBindingApply: true,
+      noDesktopCanonicalMutation: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      requests: rows.map(summarizeReviewRow),
+    });
+  }
+
   async function applyFolderDeleteRequest(payload) {
     var store = getPath(H2O, ['Studio', 'store', 'tombstoneReviews']);
     var fn = store && store.applyFolderDeleteRequest;
@@ -2586,6 +2659,8 @@
     if (op === 'listFolderDeleteRequests') return listFolderDeleteRequests(payload);
     if (op === 'requestFolderRestore') return requestFolderRestore(payload);
     if (op === 'listFolderRestoreRequests') return listFolderRestoreRequests(payload);
+    if (op === 'requestChatFolderBinding') return requestChatFolderBinding(payload);
+    if (op === 'listChatFolderBindingRequests') return listChatFolderBindingRequests(payload);
     if (op === 'applyFolderDeleteRequest') return applyFolderDeleteRequest(payload);
     if (op === 'applyFolderRestoreRequest') return applyFolderRestoreRequest(payload);
     if (op === 'listFolderDeleteReceipts') return listFolderDeleteReceipts(payload);
