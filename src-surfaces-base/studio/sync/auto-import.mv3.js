@@ -127,6 +127,7 @@
     'evt:h2o:sync:chrome-auto-import:trigger', /* Explicit manual trigger for tests / future modules */
   ];
   var EVENT_TRIGGER_DEBOUNCE_MS = 2000;
+  var DESKTOP_ORIGIN_IMPORT_EVENT_SOURCES = ['sync-folder-import'];
 
   /* ── State (in-memory only; persisted bits live in SETTINGS_KEY) ─── */
   var state = {
@@ -150,6 +151,11 @@
     lastEventAt: 0,
     lastEventName: '',
     eventTriggerCount: 0,
+    eventTriggerSuppressedCount: 0,
+    lastEventTriggerSuppressedAt: 0,
+    lastEventTriggerSuppressedName: '',
+    lastEventTriggerSuppressedSource: '',
+    lastEventTriggerSuppressedReason: '',
     lastSnapshotPayloadCoverage: null,
     lastNativeSnapshotPayloadPreflight: null,
     lastFolderDeleteRequestExport: null,
@@ -438,6 +444,37 @@
     state.lastStaleInFlightClearedAt = nowIso();
     state.lastStaleInFlightClearedReason = cleanString(reason || previous.reason || 'stale-export-lock');
     return Object.assign({ cleared: true }, previous);
+  }
+
+  function eventDetailSource(event) {
+    try {
+      if (!event || !event.detail || typeof event.detail !== 'object') return '';
+      return cleanString(event.detail.source);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function shouldSuppressEventTriggeredExport(eventName, event) {
+    var name = cleanString(eventName);
+    if (name !== 'evt:h2o:library:cross-surface-sync') return null;
+    var source = eventDetailSource(event);
+    if (DESKTOP_ORIGIN_IMPORT_EVENT_SOURCES.indexOf(source) === -1) return null;
+    return {
+      suppressed: true,
+      eventName: name,
+      source: source,
+      reason: 'desktop-origin-import-event',
+    };
+  }
+
+  function recordEventTriggerSuppressed(summary) {
+    var data = summary && typeof summary === 'object' ? summary : {};
+    state.eventTriggerSuppressedCount += 1;
+    state.lastEventTriggerSuppressedAt = Date.now();
+    state.lastEventTriggerSuppressedName = cleanString(data.eventName || state.lastEventName);
+    state.lastEventTriggerSuppressedSource = cleanString(data.source);
+    state.lastEventTriggerSuppressedReason = cleanString(data.reason || 'event-trigger-suppressed');
   }
 
   /* ── Service-worker round-trip to produce the bundle ──────────────── */
@@ -3265,10 +3302,15 @@
   /* onTriggerEvent: load-bearing guard. Even with listeners bound, we
    * re-check both flags + folder-connected on every fire so a runtime
    * flag flip (without disable()) doesn't leak unwanted exports. */
-  function onTriggerEvent(eventName) {
+  function onTriggerEvent(eventName, event) {
     state.lastEventAt = Date.now();
     state.lastEventName = String(eventName || '');
     state.eventTriggerCount += 1;
+    var suppressed = shouldSuppressEventTriggeredExport(eventName, event);
+    if (suppressed) {
+      recordEventTriggerSuppressed(suppressed);
+      return;
+    }
     /* Hard gates — drop event without scheduling. */
     if (!flagEnabled())            return;
     if (!eventTriggerFlagEnabled()) return;
@@ -3292,7 +3334,7 @@
     var opts = (options && typeof options === 'object') ? options : {};
     var name = String(opts.eventName || opts.reason || 'evt:h2o:sync:chrome-auto-import:trigger');
     reconcileEventTriggerBinding('trigger:' + name);
-    onTriggerEvent(name);
+    onTriggerEvent(name, null);
     return {
       ok: true,
       eventName: name,
@@ -3311,7 +3353,7 @@
     }
     EVENT_TRIGGER_NAMES.forEach(function (name) {
       if (state.listenerHandlers[name]) return;
-      var handler = function () { onTriggerEvent(name); };
+      var handler = function (event) { onTriggerEvent(name, event); };
       state.listenerHandlers[name] = handler;
       try { global.addEventListener(name, handler); }
       catch (e) { pushError('bindEventListeners:' + name, e); }
@@ -3357,6 +3399,12 @@
       eventTriggerCount: state.eventTriggerCount,
       lastEventAt: state.lastEventAt,
       lastEventName: state.lastEventName,
+      desktopOriginImportEventSources: DESKTOP_ORIGIN_IMPORT_EVENT_SOURCES.slice(),
+      eventTriggerSuppressedCount: state.eventTriggerSuppressedCount,
+      lastEventTriggerSuppressedAt: state.lastEventTriggerSuppressedAt,
+      lastEventTriggerSuppressedName: state.lastEventTriggerSuppressedName,
+      lastEventTriggerSuppressedSource: state.lastEventTriggerSuppressedSource,
+      lastEventTriggerSuppressedReason: state.lastEventTriggerSuppressedReason,
       lastEventTriggerReconcileReason: state.lastEventTriggerReconcileReason || '',
       folderConnected: !!(handleRow && handleRow.handle),
       folderName: folderName,
