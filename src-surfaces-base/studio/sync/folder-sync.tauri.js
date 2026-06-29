@@ -61,6 +61,10 @@
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
   var CHAT_FOLDER_BINDING_REQUEST_SCHEMA = 'h2o.studio.chat-folder-binding-request.v1';
+  var LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA = 'h2o.studio.library-metadata-mutation-request.v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-receipts:export:v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.export-mirror.v1';
   var F19_CHROME_DESKTOP_VERSION = '0.1.0-f19.2.b';
   var F19_DESKTOP_CHROME_VERSION = '0.1.0-f19.2.c';
   var FOLDER_SYNC_HEALTH_SCHEMA = 'h2o.studio.sync.folder-health.v1';
@@ -92,6 +96,7 @@
     'folder-delete-requests',
     'folder-restore-requests',
     'chat-folder-binding-requests',
+    'library-metadata-mutation-requests',
     'category-metadata',
     'chat-category-bindings'
   ];
@@ -172,6 +177,8 @@
     lastFolderRestoreRequestAutoApply: null,
     lastChatFolderBindingRequestImport: null,
     lastChatFolderBindingRequestAutoApply: null,
+    lastLibraryMetadataMutationRequestImport: null,
+    lastLibraryMetadataMutationRequestAutoApply: null,
   };
 
   /* M2d-1b watcher state — runtime-only; never persisted. */
@@ -667,6 +674,25 @@
     return Number.isFinite(n) ? n : 0;
   }
 
+  function safeMetadataRequestId(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    if (!/^[a-z0-9][a-z0-9:._/-]{0,180}$/i.test(text)) return '';
+    return text.slice(0, 180);
+  }
+
+  function safeMetadataRequestName(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    text = text.replace(/[\u0000-\u001f\u007f<>]/g, '').trim();
+    return text.slice(0, 160);
+  }
+
+  function safeMetadataRequestHash(value) {
+    var text = cleanString(value).toLowerCase();
+    return /^[a-f0-9]{64}$/.test(text) ? text : '';
+  }
+
   function addHealthCode(list, code) {
     addUnique(list, cleanString(code));
   }
@@ -1034,6 +1060,158 @@
     return out;
   }
 
+  function normalizeLibraryMetadataMutationRequestAction(input) {
+    var source = safeObject(input);
+    var action = cleanString(source.action || source.requestType || source.type).toLowerCase().replace(/_/g, '-');
+    var kind = cleanString(source.metadataKind || source.kind || source.catalogKind).toLowerCase();
+    if (!action && kind && cleanString(source.operation)) action = kind + '-' + cleanString(source.operation).toLowerCase();
+    if (action === 'create-label') action = 'label-create';
+    if (action === 'create-tag') action = 'tag-create';
+    if (action === 'create-category') action = 'category-create';
+    if (action === 'rename-label') action = 'label-rename';
+    if (action === 'rename-tag') action = 'tag-rename';
+    if (action === 'rename-category') action = 'category-rename';
+    if (action === 'bind-label') action = 'chat-label-bind';
+    if (action === 'bind-tag') action = 'chat-tag-bind';
+    if (action === 'assign-category') action = 'chat-category-assign';
+    if (action === 'set-classification') action = 'classification-set';
+    return action;
+  }
+
+  function libraryMetadataMutationRequestActionSpec(action) {
+    var table = {
+      'label-create': { metadataKind: 'label', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'tag-create': { metadataKind: 'tag', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'category-create': { metadataKind: 'category', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'label-rename': { metadataKind: 'label', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'tag-rename': { metadataKind: 'tag', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'category-rename': { metadataKind: 'category', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
+      'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
+    };
+    return table[action] || null;
+  }
+
+  function libraryMetadataMutationRequestDestructiveAction(action) {
+    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(cleanString(action));
+  }
+
+  function sanitizeLibraryMetadataMutationRequestForChromeDesktop(row) {
+    var request = safeObject(row);
+    if (cleanString(request.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) return null;
+    if (cleanString(request.intent) !== 'library-metadata-mutation-request') return null;
+    if (cleanString(request.classification) !== 'metadata-request') return null;
+    if (cleanString(request.status) !== 'pending') return null;
+    if (request.desktopApplyRequired !== true || request.noLocalApply !== true) return null;
+    if (request.noChromeCanonicalMutation !== true || request.noDesktopCanonicalMutation !== true) return null;
+    if (request.chromeAuthority !== false || request.desktopAuthority !== true || request.requestOnly !== true) return null;
+    if (request.separateFromDesktopCanonicalLibraryMetadata !== true) return null;
+    if (request.noHardDelete !== true || request.noPurge !== true || request.noChatDelete !== true ||
+        request.noSnapshotDelete !== true || request.noAssetDelete !== true) return null;
+    if (request.noLabelDelete !== true || request.noTagDelete !== true ||
+        request.noCategoryDelete !== true || request.noMetadataDelete !== true) return null;
+    var privacy = safeObject(request.privacy);
+    if (privacy.rawChatContent !== false || privacy.rawChatTitles !== false ||
+        privacy.accountLinkedMetadata !== false) return null;
+    var action = normalizeLibraryMetadataMutationRequestAction(request);
+    if (libraryMetadataMutationRequestDestructiveAction(action)) return null;
+    var spec = libraryMetadataMutationRequestActionSpec(action);
+    if (!spec) return null;
+    var requestId = safeMetadataRequestId(request.requestId || request.reviewId);
+    if (!requestId) return null;
+    var payload = safeObject(request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var entityId = safeMetadataRequestId(payload.entityId || payload.labelId || payload.tagId ||
+      payload.categoryId || payload.classificationId);
+    var displayName = safeMetadataRequestName(payload.displayName);
+    if (spec.requiresChatId && !chatId) return null;
+    if (spec.requiresId && !entityId) return null;
+    if (spec.requiresName && !displayName) return null;
+    return {
+      schema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA,
+      version: cleanString(request.version || '0.1.0-phase6'),
+      phase: 'phase6-chrome-request-export',
+      requestId: requestId,
+      reviewId: safeMetadataRequestId(request.reviewId || requestId) || requestId,
+      idempotencyKey: cleanString(request.idempotencyKey),
+      intent: 'library-metadata-mutation-request',
+      classification: 'metadata-request',
+      requestType: action,
+      action: action,
+      operation: spec.operation,
+      metadataKind: spec.metadataKind,
+      subjectKind: spec.subjectKind,
+      status: 'pending',
+      createdAt: cleanString(request.createdAt || request.requestedAt) || null,
+      requestedAt: cleanString(request.requestedAt || request.createdAt) || null,
+      requestedBy: 'chrome-studio',
+      source: 'chrome-studio',
+      sourceSurface: 'chrome-studio',
+      sourcePeerId: safeMetadataRequestId(request.sourcePeerId || 'chrome-studio') || 'chrome-studio',
+      expectedCurrentBasisHash: safeMetadataRequestHash(request.expectedCurrentBasisHash),
+      expectedCurrentBasis: safeObject(request.expectedCurrentBasis),
+      payload: {
+        chatId: chatId || null,
+        conversationId: chatId || null,
+        entityId: entityId || null,
+        labelId: spec.metadataKind === 'label' ? entityId || null : null,
+        tagId: spec.metadataKind === 'tag' ? entityId || null : null,
+        categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+        classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
+        displayName: displayName || null
+      },
+      privacy: {
+        rawChatContent: false,
+        rawChatTitles: false,
+        accountLinkedMetadata: false,
+        displayNameIncluded: !!displayName,
+        displayNameSource: displayName ? 'explicit-user-entered-metadata' : ''
+      },
+      desktopApplyRequired: true,
+      desktopApply: false,
+      noLocalApply: true,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutation: true,
+      chromeAuthority: false,
+      desktopAuthority: true,
+      requestOnly: true,
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      advisory: {
+        productSyncReady: false,
+        desktopApplyDeferred: true,
+        chromeCanonicalMutationAllowed: false,
+        destructiveMetadataActionsDeferred: true
+      },
+      transportedAt: cleanString(request.transportedAt || request.mirroredAt) || null,
+    };
+  }
+
+  function sanitizeLibraryMetadataMutationRequestsForChromeDesktop(bundle, warnings) {
+    if (!bundle || !Object.prototype.hasOwnProperty.call(bundle, 'libraryMetadataMutationRequests')) return [];
+    if (!Array.isArray(bundle.libraryMetadataMutationRequests)) {
+      addUnique(warnings, 'library-metadata-mutation-requests-section-invalid');
+      return [];
+    }
+    var out = [];
+    bundle.libraryMetadataMutationRequests.forEach(function (row) {
+      var request = sanitizeLibraryMetadataMutationRequestForChromeDesktop(row);
+      if (request) out.push(request);
+      else addUnique(warnings, 'library-metadata-mutation-request-skipped-invalid');
+    });
+    return out;
+  }
+
   function normalizeHardeningWarnings(warnings) {
     var out = Array.isArray(warnings) ? warnings.slice() : [];
     var legacyDeferred = [
@@ -1283,6 +1461,7 @@
     var folderDeleteRequests = sanitizeFolderDeleteRequestsForChromeDesktop(bundle, warnings);
     var folderRestoreRequests = sanitizeFolderRestoreRequestsForChromeDesktop(bundle, warnings);
     var chatFolderBindingRequests = sanitizeChatFolderBindingRequestsForChromeDesktop(bundle, warnings);
+    var libraryMetadataMutationRequests = sanitizeLibraryMetadataMutationRequestsForChromeDesktop(bundle, warnings);
 
     var supported = {
       schema: FULL_BUNDLE_SCHEMA,
@@ -1309,6 +1488,7 @@
       folderDeleteRequests: folderDeleteRequests,
       folderRestoreRequests: folderRestoreRequests,
       chatFolderBindingRequests: chatFolderBindingRequests,
+      libraryMetadataMutationRequests: libraryMetadataMutationRequests,
       libraryKv: [],
       diagnostics: {
         unindexedRows: unindexedManifest.rows.slice(0, 50),
@@ -1340,6 +1520,7 @@
         folderDeleteRequestCount: folderDeleteRequests.length,
         folderRestoreRequestCount: folderRestoreRequests.length,
         chatFolderBindingRequestCount: chatFolderBindingRequests.length,
+        libraryMetadataMutationRequestCount: libraryMetadataMutationRequests.length,
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
         hasContentSha256: !!supported.contentSha256
@@ -1516,6 +1697,8 @@
       folderRestoreRequestAutoApply: f.folderRestoreRequestAutoApply || null,
       chatFolderBindingRequestImport: f.chatFolderBindingRequestImport || null,
       chatFolderBindingRequestAutoApply: f.chatFolderBindingRequestAutoApply || null,
+      libraryMetadataMutationRequestImport: f.libraryMetadataMutationRequestImport || null,
+      libraryMetadataMutationRequestAutoApply: f.libraryMetadataMutationRequestAutoApply || null,
       parity: f.parity || {
         snapshotCaptured: false,
         paritySnapshotHash: '',
@@ -2453,6 +2636,511 @@
     return result;
   }
 
+  function summarizeLibraryMetadataMutationRequestsFromChromeBundle(normalized, options) {
+    var bundle = normalized && normalized.bundle && typeof normalized.bundle === 'object'
+      ? normalized.bundle : null;
+    var sourceRequests = bundle && Array.isArray(bundle.libraryMetadataMutationRequests)
+      ? bundle.libraryMetadataMutationRequests : [];
+    var requests = sourceRequests.map(sanitizeLibraryMetadataMutationRequestForChromeDesktop).filter(function (request) {
+      return !!request;
+    });
+    var result = {
+      schema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA + '.desktop-import.v1',
+      ok: true,
+      phase: 'phase7-desktop-apply-receipts',
+      status: sourceRequests.length ? 'library-metadata-mutation-requests-imported' : 'no-library-metadata-mutation-requests',
+      section: 'libraryMetadataMutationRequests',
+      found: sourceRequests.length,
+      requestCount: requests.length,
+      invalid: Math.max(0, sourceRequests.length - requests.length),
+      failed: 0,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutationFromChrome: true,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      warnings: [],
+      blockers: [],
+    };
+    if (result.invalid > 0) result.warnings.push('library-metadata-mutation-request-skipped-invalid');
+    state.lastLibraryMetadataMutationRequestImport = result;
+    return result;
+  }
+
+  function libraryMetadataMutationReceiptId(request, status) {
+    var requestId = safeMetadataRequestId(request && (request.requestId || request.reviewId)) || 'unknown';
+    var cleanStatus = cleanString(status) || 'reviewed';
+    return 'library-metadata-mutation-receipt:' + requestId + ':' + cleanStatus;
+  }
+
+  async function readLibraryMetadataMutationReceiptExportMirror() {
+    var empty = {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA,
+      version: 1,
+      updatedAt: '',
+      receiptCount: 0,
+      receipts: []
+    };
+    try {
+      var mirror = await readKv(LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY);
+      if (!mirror || typeof mirror !== 'object' || Array.isArray(mirror)) return empty;
+      if (cleanString(mirror.schema) !== LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA) return empty;
+      return {
+        schema: LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA,
+        version: Number(mirror.version || 1) || 1,
+        updatedAt: cleanString(mirror.updatedAt),
+        receiptCount: Array.isArray(mirror.receipts) ? mirror.receipts.length : 0,
+        receipts: Array.isArray(mirror.receipts) ? mirror.receipts.slice() : []
+      };
+    } catch (e) {
+      pushErr('libraryMetadataMutationReceipts.read', e);
+      return empty;
+    }
+  }
+
+  async function upsertLibraryMetadataMutationReceipts(receipts) {
+    var rows = Array.isArray(receipts) ? receipts.filter(function (row) {
+      return row && typeof row === 'object' &&
+        cleanString(row.schema) === LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA &&
+        cleanString(row.receiptId);
+    }) : [];
+    if (!rows.length) return await readLibraryMetadataMutationReceiptExportMirror();
+    var current = await readLibraryMetadataMutationReceiptExportMirror();
+    var next = Array.isArray(current.receipts) ? current.receipts.slice() : [];
+    rows.forEach(function (receipt) {
+      var receiptId = cleanString(receipt.receiptId);
+      next = next.filter(function (row) {
+        return cleanString(row && row.receiptId) !== receiptId;
+      });
+      next.push(receipt);
+    });
+    if (next.length > 1000) next = next.slice(next.length - 1000);
+    var mirror = {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      receiptCount: next.length,
+      receipts: next
+    };
+    await writeKv(LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY, mirror);
+    return mirror;
+  }
+
+  async function listLibraryMetadataMutationReceipts(options) {
+    var opts = safeObject(options);
+    var mirror = await readLibraryMetadataMutationReceiptExportMirror();
+    var rows = Array.isArray(mirror.receipts) ? mirror.receipts.slice() : [];
+    var status = cleanString(opts.status);
+    if (status) rows = rows.filter(function (row) {
+      return cleanString(row && row.status) === status;
+    });
+    var limit = numberOrZero(opts.limit) || 1000;
+    if (limit > 0) rows = rows.slice(0, Math.min(limit, 1000));
+    return rows.map(function (row) { return cloneJson(row); }).filter(Boolean);
+  }
+
+  async function captureLibraryMetadataMutationProjectionBasis(requestedBy) {
+    try {
+      var api = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.libraryMetadataExportProjection;
+      if (!api || typeof api.buildDesktopCanonicalMetadataExport !== 'function') {
+        return { available: false, projectionHash: '', counts: {}, warnings: ['library-metadata-export-projection-unavailable'] };
+      }
+      var projection = await api.buildDesktopCanonicalMetadataExport({
+        requestedBy: cleanString(requestedBy) || 'phase7-desktop-apply-receipts'
+      });
+      var hashes = safeObject(projection && projection.hashes);
+      return {
+        available: true,
+        schema: cleanString(projection && projection.schema),
+        version: cleanString(projection && projection.version),
+        phase: cleanString(projection && projection.phase),
+        projectionHash: safeMetadataRequestHash(hashes.projection),
+        counts: safeObject(projection && projection.counts),
+        privacy: safeObject(projection && projection.privacy),
+        safety: safeObject(projection && projection.safety),
+        warnings: []
+      };
+    } catch (e) {
+      pushErr('libraryMetadataMutationProjectionBasis.capture', e);
+      return { available: false, projectionHash: '', counts: {}, warnings: ['library-metadata-export-projection-failed'] };
+    }
+  }
+
+  function libraryMetadataMutationReceiptFromRequest(request, status, code, extra) {
+    var cleanStatus = cleanString(status) || 'invalid';
+    var now = new Date().toISOString();
+    var payload = safeObject(request && request.payload);
+    var requestId = safeMetadataRequestId(request && (request.requestId || request.reviewId)) || '';
+    var action = normalizeLibraryMetadataMutationRequestAction(request || {});
+    var data = safeObject(extra);
+    return {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+      version: '0.1.0-phase7',
+      phase: 'phase7-desktop-apply-receipts',
+      receiptId: libraryMetadataMutationReceiptId({ requestId: requestId }, cleanStatus),
+      requestId: requestId,
+      reviewId: safeMetadataRequestId(request && (request.reviewId || request.requestId)) || requestId,
+      idempotencyKey: cleanString(request && request.idempotencyKey),
+      requestAction: action,
+      requestType: action,
+      metadataKind: cleanString(request && request.metadataKind),
+      subjectKind: cleanString(request && request.subjectKind),
+      status: cleanStatus,
+      reason: cleanString(code) || cleanStatus,
+      code: cleanString(code) || cleanStatus,
+      reviewedAt: now,
+      appliedAt: cleanStatus === 'applied' ? now : null,
+      source: {
+        surface: 'desktop-studio',
+        platformAdapter: 'tauri',
+        authority: 'desktop',
+        requestedBy: 'phase7-desktop-apply-receipts'
+      },
+      requestSource: {
+        surface: cleanString(request && request.sourceSurface) || 'chrome-studio',
+        peerId: safeMetadataRequestId(request && request.sourcePeerId) || 'chrome-studio'
+      },
+      target: {
+        chatIdHash: cleanString(data.chatIdHash),
+        entityIdHash: cleanString(data.entityIdHash),
+        metadataKind: cleanString(request && request.metadataKind),
+      },
+      expectedCurrentBasisHash: safeMetadataRequestHash(request && request.expectedCurrentBasisHash),
+      beforeProjectionHash: safeMetadataRequestHash(data.beforeProjectionHash),
+      resultingCanonicalHash: safeMetadataRequestHash(data.resultingCanonicalHash || data.afterProjectionHash),
+      beforeAssignmentHash: safeMetadataRequestHash(data.beforeAssignmentHash),
+      afterAssignmentHash: safeMetadataRequestHash(data.afterAssignmentHash),
+      counts: safeObject(data.counts),
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false,
+        displayNameIncluded: false,
+        displayNameReceiptRedacted: !!payload.displayName
+      },
+      safety: {
+        desktopAuthority: true,
+        chromeAuthority: false,
+        requestOnly: false,
+        chromeCanonicalMutation: false,
+        noChromeCanonicalMutation: true,
+        noDesktopCanonicalMutationFromChrome: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noLabelDelete: true,
+        noTagDelete: true,
+        noCategoryDelete: true,
+        noMetadataDelete: true,
+        destructiveMetadataActionsDeferred: true
+      },
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      productSyncReady: false
+    };
+  }
+
+  async function libraryMetadataMutationTargetHashes(payload) {
+    var p = safeObject(payload);
+    var chatId = safeMetadataRequestId(p.chatId || p.conversationId);
+    var entityId = safeMetadataRequestId(p.entityId || p.labelId || p.tagId || p.categoryId || p.classificationId);
+    return {
+      chatIdHash: chatId ? await sha256Hex('chat:' + chatId) : '',
+      entityIdHash: entityId ? await sha256Hex('entity:' + entityId) : ''
+    };
+  }
+
+  function validateLibraryMetadataMutationRequestForDesktopApply(request, basis) {
+    var blockers = [];
+    var action = normalizeLibraryMetadataMutationRequestAction(request || {});
+    var spec = libraryMetadataMutationRequestActionSpec(action);
+    if (cleanString(request && request.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) blockers.push('library-metadata-mutation-request-schema-invalid');
+    if (cleanString(request && request.intent) !== 'library-metadata-mutation-request') blockers.push('library-metadata-mutation-request-intent-invalid');
+    if (cleanString(request && request.status) !== 'pending') blockers.push('library-metadata-mutation-request-status-invalid');
+    if (!safeMetadataRequestId(request && (request.requestId || request.reviewId))) blockers.push('library-metadata-mutation-request-id-required');
+    if (!cleanString(request && request.idempotencyKey)) blockers.push('library-metadata-mutation-request-idempotency-key-required');
+    if (cleanString(request && request.sourceSurface) !== 'chrome-studio') blockers.push('library-metadata-mutation-request-source-surface-invalid');
+    if (request && (request.desktopApplyRequired !== true || request.noLocalApply !== true)) blockers.push('library-metadata-mutation-request-apply-flags-invalid');
+    if (request && (request.noChromeCanonicalMutation !== true || request.noDesktopCanonicalMutation !== true)) blockers.push('library-metadata-mutation-request-mutation-flags-invalid');
+    if (request && (request.noHardDelete !== true || request.noPurge !== true || request.noChatDelete !== true ||
+        request.noSnapshotDelete !== true || request.noAssetDelete !== true ||
+        request.noLabelDelete !== true || request.noTagDelete !== true ||
+        request.noCategoryDelete !== true || request.noMetadataDelete !== true)) {
+      blockers.push('library-metadata-mutation-request-safety-flags-invalid');
+    }
+    var privacy = safeObject(request && request.privacy);
+    if (privacy.rawChatContent !== false || privacy.rawChatTitles !== false || privacy.accountLinkedMetadata !== false) {
+      blockers.push('library-metadata-mutation-request-privacy-flags-invalid');
+    }
+    if (libraryMetadataMutationRequestDestructiveAction(action)) {
+      return { ok: false, status: 'deferred', code: 'library-metadata-mutation-request-destructive-action-deferred' };
+    }
+    if (!spec) {
+      return { ok: false, status: 'invalid', code: 'library-metadata-mutation-request-action-unsupported' };
+    }
+    if (blockers.length) {
+      return { ok: false, status: 'invalid', code: blockers[0], blockers: blockers };
+    }
+    if (action !== 'chat-category-assign') {
+      return { ok: false, status: 'deferred', code: 'library-metadata-mutation-request-action-deferred-phase7' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
+    if (!chatId || !categoryId) {
+      return { ok: false, status: 'invalid', code: 'library-metadata-mutation-request-target-required' };
+    }
+    var expectedHash = safeMetadataRequestHash(request && request.expectedCurrentBasisHash);
+    var currentHash = safeMetadataRequestHash(basis && basis.projectionHash);
+    if (expectedHash && currentHash && expectedHash !== currentHash) {
+      return { ok: false, status: 'stale_basis', code: 'library-metadata-mutation-request-stale-basis' };
+    }
+    if (expectedHash && !currentHash) {
+      return { ok: false, status: 'deferred', code: 'library-metadata-mutation-request-basis-unavailable' };
+    }
+    return { ok: true, status: 'ready', code: 'library-metadata-mutation-request-ready' };
+  }
+
+  async function applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var categories = stores && stores.categories;
+    var chats = stores && stores.chats;
+    if (!categories || typeof categories.assignChat !== 'function' || typeof categories.get !== 'function' ||
+        !chats || typeof chats.get !== 'function') {
+      return { status: 'deferred', code: 'library-metadata-mutation-request-desktop-store-unavailable' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return { status: 'rejected', code: 'library-metadata-mutation-request-chat-not-found' };
+    var categoryRow = await categories.get(categoryId);
+    if (!categoryRow) return { status: 'rejected', code: 'library-metadata-mutation-request-category-not-found' };
+    var beforeCategoryId = cleanString(chatRow.categoryId || chatRow.category_id);
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: await sha256Hex('category:' + categoryId)
+    }));
+    if (beforeCategoryId === categoryId) {
+      return {
+        status: 'skipped_duplicate',
+        code: 'library-metadata-mutation-request-already-applied-canonical',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var ok = await categories.assignChat(categoryId, chatId);
+    if (ok !== true) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-category-assign-failed',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterBasis = await captureLibraryMetadataMutationProjectionBasis('phase7-desktop-apply-receipts-after-apply');
+    return {
+      status: 'applied',
+      code: 'library-metadata-mutation-request-applied',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: afterBasis.projectionHash,
+      counts: safeObject(afterBasis.counts)
+    };
+  }
+
+  async function autoApplyLibraryMetadataMutationRequestsFromChromeBundle(normalized, importResult, options) {
+    var bundle = normalized && normalized.bundle && typeof normalized.bundle === 'object'
+      ? normalized.bundle : null;
+    var sourceRequests = bundle && Array.isArray(bundle.libraryMetadataMutationRequests)
+      ? bundle.libraryMetadataMutationRequests : [];
+    var requests = sourceRequests.map(sanitizeLibraryMetadataMutationRequestForChromeDesktop).filter(function (request) {
+      return !!request;
+    });
+    var result = {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA + '.desktop-auto-apply.v1',
+      ok: true,
+      phase: 'phase7-desktop-apply-receipts',
+      status: requests.length ? 'library-metadata-mutation-request-auto-apply-pending' : 'no-library-metadata-mutation-requests',
+      model: 'desktop-apply-chrome-library-metadata-mutation-request',
+      found: sourceRequests.length,
+      requestCount: requests.length,
+      importedCount: numberOrZero(importResult && importResult.requestCount),
+      attemptedCount: 0,
+      appliedCount: 0,
+      rejectedCount: 0,
+      deferredCount: 0,
+      skippedDuplicateCount: 0,
+      staleBasisCount: 0,
+      invalidCount: Math.max(0, sourceRequests.length - requests.length),
+      failedCount: 0,
+      receiptExportReadyCount: 0,
+      appliedRequests: [],
+      receiptStatuses: [],
+      warnings: [],
+      blockers: [],
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutationFromChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      destructiveMetadataActionsDeferred: true,
+      productSyncReady: false
+    };
+    if (result.invalidCount > 0) addUnique(result.warnings, 'library-metadata-mutation-request-skipped-invalid');
+    if (!requests.length) {
+      state.lastLibraryMetadataMutationRequestAutoApply = result;
+      return result;
+    }
+    if (!importResult || importResult.ok === false) {
+      result.ok = false;
+      result.status = 'library-metadata-mutation-request-import-not-ok';
+      result.blockers.push('library-metadata-mutation-request-import-not-ok');
+      result.failedCount = requests.length;
+      state.lastLibraryMetadataMutationRequestAutoApply = result;
+      return result;
+    }
+    var mirror = await readLibraryMetadataMutationReceiptExportMirror();
+    var existingReceipts = Array.isArray(mirror.receipts) ? mirror.receipts : [];
+    var receipts = [];
+    var beforeBasis = await captureLibraryMetadataMutationProjectionBasis('phase7-desktop-apply-receipts-before-apply');
+    for (var i = 0; i < requests.length; i += 1) {
+      var request = requests[i];
+      var targetHashes = await libraryMetadataMutationTargetHashes(request.payload);
+      var alreadyApplied = existingReceipts.find(function (receipt) {
+        return receipt && cleanString(receipt.status) === 'applied' && (
+          cleanString(receipt.requestId) === cleanString(request.requestId) ||
+          (cleanString(receipt.idempotencyKey) && cleanString(receipt.idempotencyKey) === cleanString(request.idempotencyKey))
+        );
+      });
+      if (alreadyApplied) {
+        result.skippedDuplicateCount += 1;
+        var duplicateReceipt = libraryMetadataMutationReceiptFromRequest(
+          request,
+          'skipped_duplicate',
+          'library-metadata-mutation-request-skipped-duplicate',
+          Object.assign({}, targetHashes, {
+            beforeProjectionHash: beforeBasis.projectionHash,
+            resultingCanonicalHash: cleanString(alreadyApplied.resultingCanonicalHash) || beforeBasis.projectionHash,
+            counts: safeObject(beforeBasis.counts)
+          })
+        );
+        receipts.push(duplicateReceipt);
+        result.receiptStatuses.push({ requestId: request.requestId, status: duplicateReceipt.status, code: duplicateReceipt.code });
+        continue;
+      }
+      var validation = validateLibraryMetadataMutationRequestForDesktopApply(request, beforeBasis);
+      if (!validation.ok) {
+        if (validation.status === 'deferred') result.deferredCount += 1;
+        else if (validation.status === 'stale_basis') result.staleBasisCount += 1;
+        else result.invalidCount += 1;
+        var validationReceipt = libraryMetadataMutationReceiptFromRequest(
+          request,
+          validation.status,
+          validation.code,
+          Object.assign({}, targetHashes, {
+            beforeProjectionHash: beforeBasis.projectionHash,
+            resultingCanonicalHash: beforeBasis.projectionHash,
+            counts: safeObject(beforeBasis.counts)
+          })
+        );
+        receipts.push(validationReceipt);
+        result.receiptStatuses.push({ requestId: request.requestId, status: validationReceipt.status, code: validationReceipt.code });
+        continue;
+      }
+      result.attemptedCount += 1;
+      try {
+        var applied = await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis);
+        if (applied.status === 'applied') result.appliedCount += 1;
+        else if (applied.status === 'skipped_duplicate') result.skippedDuplicateCount += 1;
+        else if (applied.status === 'deferred') result.deferredCount += 1;
+        else result.rejectedCount += 1;
+        var receipt = libraryMetadataMutationReceiptFromRequest(
+          request,
+          applied.status,
+          applied.code,
+          Object.assign({}, targetHashes, applied)
+        );
+        receipts.push(receipt);
+        result.receiptStatuses.push({ requestId: request.requestId, status: receipt.status, code: receipt.code });
+        if (applied.status === 'applied') {
+          result.appliedRequests.push({
+            requestId: request.requestId,
+            requestType: request.requestType,
+            resultingCanonicalHash: receipt.resultingCanonicalHash
+          });
+          beforeBasis = await captureLibraryMetadataMutationProjectionBasis('phase7-desktop-apply-receipts-after-step');
+        }
+      } catch (e) {
+        result.failedCount += 1;
+        addUnique(result.blockers, 'library-metadata-mutation-request-auto-apply-threw');
+        pushErr('libraryMetadataMutationRequests.autoApply', e);
+        var failureReceipt = libraryMetadataMutationReceiptFromRequest(
+          request,
+          'rejected',
+          'library-metadata-mutation-request-auto-apply-threw',
+          Object.assign({}, targetHashes, {
+            beforeProjectionHash: beforeBasis.projectionHash,
+            resultingCanonicalHash: beforeBasis.projectionHash,
+            counts: safeObject(beforeBasis.counts)
+          })
+        );
+        receipts.push(failureReceipt);
+        result.receiptStatuses.push({ requestId: request.requestId, status: failureReceipt.status, code: failureReceipt.code });
+      }
+    }
+    var receiptMirror = await upsertLibraryMetadataMutationReceipts(receipts);
+    result.receiptExportReadyCount = receipts.length;
+    result.receiptExportStoredCount = numberOrZero(receiptMirror.receiptCount);
+    if (result.failedCount > 0) {
+      result.ok = false;
+      result.status = result.appliedCount ? 'library-metadata-mutation-request-auto-apply-partial' : 'library-metadata-mutation-request-auto-apply-failed';
+      if (!result.blockers.length) result.blockers.push('library-metadata-mutation-request-auto-apply-failed');
+    } else if (result.appliedCount) {
+      result.status = 'library-metadata-mutation-request-auto-applied';
+    } else if (result.deferredCount || result.rejectedCount || result.staleBasisCount || result.invalidCount || result.skippedDuplicateCount) {
+      result.status = 'library-metadata-mutation-request-auto-apply-reviewed';
+    } else {
+      result.status = 'library-metadata-mutation-request-auto-apply-skipped';
+    }
+    state.lastLibraryMetadataMutationRequestAutoApply = result;
+    return result;
+  }
+
   async function importChromeLatestBundle(bundleInput, options) {
     var normalized = buildChromeDesktopSupportedBundle(bundleInput);
     if (!normalized.ok) {
@@ -2566,6 +3254,26 @@
         addUnique(blockers, code);
       });
     }
+    var libraryMetadataMutationRequestImport = summarizeLibraryMetadataMutationRequestsFromChromeBundle(normalized, options);
+    (libraryMetadataMutationRequestImport.warnings || []).forEach(function (code) {
+      addUnique(warnings, code);
+    });
+    var libraryMetadataMutationRequestAutoApply = await autoApplyLibraryMetadataMutationRequestsFromChromeBundle(
+      normalized,
+      libraryMetadataMutationRequestImport,
+      options
+    );
+    (libraryMetadataMutationRequestAutoApply.warnings || []).forEach(function (code) {
+      addUnique(warnings, code);
+    });
+    if (libraryMetadataMutationRequestAutoApply.ok === false) {
+      var metadataAutoApplyBlockers = Array.isArray(libraryMetadataMutationRequestAutoApply.blockers) && libraryMetadataMutationRequestAutoApply.blockers.length
+        ? libraryMetadataMutationRequestAutoApply.blockers
+        : ['library-metadata-mutation-request-auto-apply-failed'];
+      metadataAutoApplyBlockers.forEach(function (code) {
+        addUnique(blockers, code);
+      });
+    }
     try {
       if (H2O.LibraryIndex && typeof H2O.LibraryIndex.refresh === 'function') {
         await H2O.LibraryIndex.refresh('f19-chrome-desktop-import');
@@ -2587,6 +3295,8 @@
       folderRestoreRequestAutoApply: folderRestoreRequestAutoApply,
       chatFolderBindingRequestImport: chatFolderBindingRequestImport,
       chatFolderBindingRequestAutoApply: chatFolderBindingRequestAutoApply,
+      libraryMetadataMutationRequestImport: libraryMetadataMutationRequestImport,
+      libraryMetadataMutationRequestAutoApply: libraryMetadataMutationRequestAutoApply,
       parity: parity,
       idempotency: {
         fileFingerprintChecked: false,
@@ -2736,7 +3446,8 @@
     if (!bundle || typeof bundle !== 'object') return false;
     return (Array.isArray(bundle.folderDeleteRequests) && bundle.folderDeleteRequests.length > 0) ||
       (Array.isArray(bundle.folderRestoreRequests) && bundle.folderRestoreRequests.length > 0) ||
-      (Array.isArray(bundle.chatFolderBindingRequests) && bundle.chatFolderBindingRequests.length > 0);
+      (Array.isArray(bundle.chatFolderBindingRequests) && bundle.chatFolderBindingRequests.length > 0) ||
+      (Array.isArray(bundle.libraryMetadataMutationRequests) && bundle.libraryMetadataMutationRequests.length > 0);
   }
 
   async function importChromeLatestFromFile(filePathArg, options) {
@@ -3724,6 +4435,62 @@
           noSnapshotDelete: state.lastChatFolderBindingRequestAutoApply.noSnapshotDelete === true,
           noAssetDelete: state.lastChatFolderBindingRequestAutoApply.noAssetDelete === true,
         } : null,
+        lastLibraryMetadataMutationRequestImport: state.lastLibraryMetadataMutationRequestImport ? {
+          ok: state.lastLibraryMetadataMutationRequestImport.ok === true,
+          phase: cleanString(state.lastLibraryMetadataMutationRequestImport.phase),
+          status: cleanString(state.lastLibraryMetadataMutationRequestImport.status),
+          section: cleanString(state.lastLibraryMetadataMutationRequestImport.section),
+          found: numberOrZero(state.lastLibraryMetadataMutationRequestImport.found),
+          requestCount: numberOrZero(state.lastLibraryMetadataMutationRequestImport.requestCount),
+          invalid: numberOrZero(state.lastLibraryMetadataMutationRequestImport.invalid),
+          failed: numberOrZero(state.lastLibraryMetadataMutationRequestImport.failed),
+          desktopAuthority: state.lastLibraryMetadataMutationRequestImport.desktopAuthority === true,
+          chromeAuthority: state.lastLibraryMetadataMutationRequestImport.chromeAuthority === true,
+          noChromeCanonicalMutation: state.lastLibraryMetadataMutationRequestImport.noChromeCanonicalMutation === true,
+          noDesktopCanonicalMutationFromChrome: state.lastLibraryMetadataMutationRequestImport.noDesktopCanonicalMutationFromChrome === true,
+          noHardDelete: state.lastLibraryMetadataMutationRequestImport.noHardDelete === true,
+          noPurge: state.lastLibraryMetadataMutationRequestImport.noPurge === true,
+          noChatDelete: state.lastLibraryMetadataMutationRequestImport.noChatDelete === true,
+          noSnapshotDelete: state.lastLibraryMetadataMutationRequestImport.noSnapshotDelete === true,
+          noAssetDelete: state.lastLibraryMetadataMutationRequestImport.noAssetDelete === true,
+          noLabelDelete: state.lastLibraryMetadataMutationRequestImport.noLabelDelete === true,
+          noTagDelete: state.lastLibraryMetadataMutationRequestImport.noTagDelete === true,
+          noCategoryDelete: state.lastLibraryMetadataMutationRequestImport.noCategoryDelete === true,
+          noMetadataDelete: state.lastLibraryMetadataMutationRequestImport.noMetadataDelete === true,
+        } : null,
+        lastLibraryMetadataMutationRequestAutoApply: state.lastLibraryMetadataMutationRequestAutoApply ? {
+          ok: state.lastLibraryMetadataMutationRequestAutoApply.ok === true,
+          phase: cleanString(state.lastLibraryMetadataMutationRequestAutoApply.phase),
+          status: cleanString(state.lastLibraryMetadataMutationRequestAutoApply.status),
+          model: cleanString(state.lastLibraryMetadataMutationRequestAutoApply.model),
+          found: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.found),
+          requestCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.requestCount),
+          importedCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.importedCount),
+          attemptedCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.attemptedCount),
+          appliedCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.appliedCount),
+          rejectedCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.rejectedCount),
+          deferredCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.deferredCount),
+          skippedDuplicateCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.skippedDuplicateCount),
+          staleBasisCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.staleBasisCount),
+          invalidCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.invalidCount),
+          failedCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.failedCount),
+          receiptExportReadyCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.receiptExportReadyCount),
+          receiptExportStoredCount: numberOrZero(state.lastLibraryMetadataMutationRequestAutoApply.receiptExportStoredCount),
+          desktopAuthority: state.lastLibraryMetadataMutationRequestAutoApply.desktopAuthority === true,
+          chromeAuthority: state.lastLibraryMetadataMutationRequestAutoApply.chromeAuthority === true,
+          noChromeCanonicalMutation: state.lastLibraryMetadataMutationRequestAutoApply.noChromeCanonicalMutation === true,
+          noDesktopCanonicalMutationFromChrome: state.lastLibraryMetadataMutationRequestAutoApply.noDesktopCanonicalMutationFromChrome === true,
+          noHardDelete: state.lastLibraryMetadataMutationRequestAutoApply.noHardDelete === true,
+          noPurge: state.lastLibraryMetadataMutationRequestAutoApply.noPurge === true,
+          noChatDelete: state.lastLibraryMetadataMutationRequestAutoApply.noChatDelete === true,
+          noSnapshotDelete: state.lastLibraryMetadataMutationRequestAutoApply.noSnapshotDelete === true,
+          noAssetDelete: state.lastLibraryMetadataMutationRequestAutoApply.noAssetDelete === true,
+          noLabelDelete: state.lastLibraryMetadataMutationRequestAutoApply.noLabelDelete === true,
+          noTagDelete: state.lastLibraryMetadataMutationRequestAutoApply.noTagDelete === true,
+          noCategoryDelete: state.lastLibraryMetadataMutationRequestAutoApply.noCategoryDelete === true,
+          noMetadataDelete: state.lastLibraryMetadataMutationRequestAutoApply.noMetadataDelete === true,
+          productSyncReady: state.lastLibraryMetadataMutationRequestAutoApply.productSyncReady === true,
+        } : null,
         errors: state.errors.slice(-5),
         warnings: state.warnings.slice(-5),
         /* Phase D — orphan-folder-binding visibility (visibility only,
@@ -4034,6 +4801,9 @@
     importChromeLatestFromFolder: importChromeLatestFromFolder,
     importChromeFromSyncFolder: importChromeLatestFromFolder,
     importChromeLatestFromSyncFolder: importChromeLatestFromFolder,
+    listLibraryMetadataMutationReceipts: listLibraryMetadataMutationReceipts,
+    libraryMetadataMutationReceiptSchema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+    libraryMetadataMutationReceiptExportKey: LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY,
     syncNow: folderSyncNow,
     diagnose: diagnose,
     diagnoseHealth: diagnoseHealth,

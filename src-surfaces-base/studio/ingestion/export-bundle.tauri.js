@@ -44,6 +44,10 @@
   var FOLDER_RESTORE_RECEIPT_LIMIT = 1000;
   var CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
   var CHAT_FOLDER_BINDING_RECEIPT_LIMIT = 1000;
+  var LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_LIMIT = 1000;
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-receipts:export:v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.export-mirror.v1';
   var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
   var DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA = 'h2o.studio.folder-purge-suppression.desktop.v1';
   var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
@@ -1483,6 +1487,32 @@
     };
   }
 
+  function emptyLibraryMetadataMutationReceiptDiagnostics(warnings) {
+    return {
+      supported: true,
+      exported: false,
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+      total: 0,
+      exportedCount: 0,
+      statusOnly: true,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutationFromChrome: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      productSyncReady: false,
+      warnings: asArray(warnings),
+    };
+  }
+
   function warningCode(code) {
     return { code: cleanString(code) || 'warning' };
   }
@@ -1809,6 +1839,89 @@
         diagnostics: emptyChatFolderBindingReceiptDiagnostics([{
           code: 'chat-folder-binding-receipt-export-failed',
           warning: 'chat-folder binding receipt projection failed; exporting empty chatFolderBindingReceipts array',
+          error: String((e && e.message) || e),
+        }]),
+      };
+    }
+  }
+
+  async function buildLibraryMetadataMutationReceiptPayloadSafely() {
+    try {
+      var mirror = await readChromeStorageLocalValue(LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY);
+      if (!mirror || typeof mirror !== 'object' || Array.isArray(mirror)) {
+        return {
+          receipts: [],
+          diagnostics: emptyLibraryMetadataMutationReceiptDiagnostics([{
+            code: 'library-metadata-mutation-receipt-export-mirror-missing',
+            warning: 'no Desktop library metadata mutation receipt mirror exists yet; exporting empty libraryMetadataMutationReceipts array',
+          }]),
+        };
+      }
+      if (cleanString(mirror.schema) !== LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA) {
+        return {
+          receipts: [],
+          diagnostics: emptyLibraryMetadataMutationReceiptDiagnostics([{
+            code: 'library-metadata-mutation-receipt-export-mirror-schema-invalid',
+            warning: 'Desktop library metadata mutation receipt mirror schema was not recognized; exporting empty libraryMetadataMutationReceipts array',
+          }]),
+        };
+      }
+      var receipts = Array.isArray(mirror.receipts) ? mirror.receipts.slice(0, LIBRARY_METADATA_MUTATION_RECEIPT_LIMIT) : [];
+      var projected = receipts.filter(function (receipt) {
+        return receipt && typeof receipt === 'object' &&
+          cleanString(receipt.schema) === LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA &&
+          cleanString(receipt.receiptId) &&
+          receipt.separateFromDesktopCanonicalLibraryMetadata === true &&
+          receipt.productSyncReady === false &&
+          receipt.privacy && receipt.privacy.redacted === true &&
+          receipt.privacy.hashOnly === true &&
+          receipt.safety && receipt.safety.desktopAuthority === true &&
+          receipt.safety.chromeAuthority === false &&
+          receipt.safety.noChromeCanonicalMutation === true &&
+          receipt.safety.noHardDelete === true &&
+          receipt.safety.noPurge === true &&
+          receipt.safety.noChatDelete === true &&
+          receipt.safety.noSnapshotDelete === true &&
+          receipt.safety.noAssetDelete === true &&
+          receipt.safety.noLabelDelete === true &&
+          receipt.safety.noTagDelete === true &&
+          receipt.safety.noCategoryDelete === true &&
+          receipt.safety.noMetadataDelete === true;
+      });
+      return {
+        receipts: projected,
+        diagnostics: {
+          supported: true,
+          exported: true,
+          schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+          mirrorSchema: LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA,
+          total: receipts.length,
+          exportedCount: projected.length,
+          skippedMalformed: Math.max(0, receipts.length - projected.length),
+          statusOnly: true,
+          desktopAuthority: true,
+          chromeAuthority: false,
+          noChromeCanonicalMutation: true,
+          noDesktopCanonicalMutationFromChrome: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          noLabelDelete: true,
+          noTagDelete: true,
+          noCategoryDelete: true,
+          noMetadataDelete: true,
+          productSyncReady: false,
+          warnings: [],
+        },
+      };
+    } catch (e) {
+      return {
+        receipts: [],
+        diagnostics: emptyLibraryMetadataMutationReceiptDiagnostics([{
+          code: 'library-metadata-mutation-receipt-export-failed',
+          warning: 'library metadata mutation receipt projection failed; exporting empty libraryMetadataMutationReceipts array',
           error: String((e && e.message) || e),
         }]),
       };
@@ -2347,6 +2460,8 @@
     var folderRestoreReceiptDiagnostics = folderRestoreReceiptExport.diagnostics || emptyFolderRestoreReceiptDiagnostics();
     var chatFolderBindingReceiptExport = await buildChatFolderBindingReceiptPayloadSafely(stores);
     var chatFolderBindingReceiptDiagnostics = chatFolderBindingReceiptExport.diagnostics || emptyChatFolderBindingReceiptDiagnostics();
+    var libraryMetadataMutationReceiptExport = await buildLibraryMetadataMutationReceiptPayloadSafely();
+    var libraryMetadataMutationReceiptDiagnostics = libraryMetadataMutationReceiptExport.diagnostics || emptyLibraryMetadataMutationReceiptDiagnostics();
     var desktopCanonicalRecentlyDeleted = buildDesktopCanonicalRecentlyDeletedPayloadFromTombstones(tombstoneExport.tombstones);
     var desktopPurgedFolderSuppression = await buildDesktopPurgedFolderSuppressionPayloadSafely(stores);
     var syncApplyEvents = await buildApplyEventsPayloadSafely();
@@ -2371,6 +2486,7 @@
       folderDeleteReceiptCount: asArray(folderDeleteReceiptExport.receipts).length,
       folderRestoreReceiptCount: asArray(folderRestoreReceiptExport.receipts).length,
       chatFolderBindingReceiptCount: asArray(chatFolderBindingReceiptExport.receipts).length,
+      libraryMetadataMutationReceiptCount: asArray(libraryMetadataMutationReceiptExport.receipts).length,
       desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
       desktopPurgedFolderSuppressionCount: Number(desktopPurgedFolderSuppression.count) || 0,
       desktopCanonicalChatFolderBindingCount: Number(desktopCanonicalChatFolderBindings.bindingCount) || 0,
@@ -2402,6 +2518,7 @@
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       chatFolderBindingReceipts: asArray(chatFolderBindingReceiptExport.receipts),
+      libraryMetadataMutationReceipts: asArray(libraryMetadataMutationReceiptExport.receipts),
       syncApplyEvents: syncApplyEvents,
       diagnostics: {
         desktopExport: {
@@ -2425,6 +2542,7 @@
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           chatFolderBindingReceipts: chatFolderBindingReceiptDiagnostics,
+          libraryMetadataMutationReceipts: libraryMetadataMutationReceiptDiagnostics,
           applyEvents: {
             schema: cleanString(syncApplyEvents.schema) || APPLY_EVENTS_SCHEMA_VERSION,
             available: syncApplyEvents.available === true,
@@ -2573,6 +2691,7 @@
         folderDeleteReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderDeleteReceiptCount) || 0,
         folderRestoreReceiptCount: Number(bundle && bundle.summary && bundle.summary.folderRestoreReceiptCount) || 0,
         chatFolderBindingReceiptCount: Number(bundle && bundle.summary && bundle.summary.chatFolderBindingReceiptCount) || 0,
+        libraryMetadataMutationReceiptCount: Number(bundle && bundle.summary && bundle.summary.libraryMetadataMutationReceiptCount) || 0,
         chatFolderBindingExport: {
           schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
           bindingCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalChatFolderBindingCount) || 0,
@@ -2639,6 +2758,27 @@
           noChatDelete: true,
           noSnapshotDelete: true,
           noAssetDelete: true,
+        },
+        libraryMetadataMutationReceiptExport: {
+          schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+          receiptCount: asArray(bundle && bundle.libraryMetadataMutationReceipts).length,
+          exportedCount: Number(bundle && bundle.diagnostics && bundle.diagnostics.desktopExport &&
+            bundle.diagnostics.desktopExport.libraryMetadataMutationReceipts &&
+            bundle.diagnostics.desktopExport.libraryMetadataMutationReceipts.exportedCount) || 0,
+          desktopAuthority: true,
+          chromeAuthority: false,
+          noChromeCanonicalMutation: true,
+          noDesktopCanonicalMutationFromChrome: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          noLabelDelete: true,
+          noTagDelete: true,
+          noCategoryDelete: true,
+          noMetadataDelete: true,
+          productSyncReady: false,
         },
         folderRestoreReceiptExport: {
           schema: FOLDER_RESTORE_RECEIPT_SCHEMA,
