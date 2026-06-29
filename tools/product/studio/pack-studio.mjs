@@ -717,6 +717,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // import, export, settle, write SQLite/storage, call Native/F5, or change
   // propagation behavior.
   "sync/library/library-chrome-desktop-parity-diagnostic.js",
+  // Phase 2: Desktop/Tauri canonical labels/tags/categories/classification
+  // export projection. Counts/hashes/redacted shape only; no Chrome import,
+  // request export, Desktop apply, canonical mutation, or delete behavior.
+  "sync/library/library-metadata-export-projection.tauri.js",
   // Phase 1: labels/tags/categories/classification metadata diagnostics.
   // Shared read-only store/API/facet/deferred-warning readiness snapshot for
   // Desktop and Chrome Studio. Counts and hashes only; no product sync writes,
@@ -1371,6 +1375,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/library/library-multipeer-soak-proof.tauri.js",
   "sync/library/library-performance-stress-proof.tauri.js",
   "sync/library/library-chrome-desktop-parity-diagnostic.js",
+  "sync/library/library-metadata-export-projection.tauri.js",
   "sync/library/library-metadata-diagnostics.js",
   "sync/library/library-sync-operator-ui.tauri.js",
   "sync/library/library-folder-binding-bridge-diagnostic.tauri.js",

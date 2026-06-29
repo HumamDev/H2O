@@ -47,6 +47,7 @@
   var DESKTOP_CANONICAL_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted.desktop-canonical.v1';
   var DESKTOP_PURGED_FOLDER_SUPPRESSION_SCHEMA = 'h2o.studio.folder-purge-suppression.desktop.v1';
   var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
+  var DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA = 'h2o.studio.library-metadata.desktop-canonical.v1';
   var DB_URL = 'sqlite:studio-v1.db';
   var APPLY_EVENTS_SCHEMA_VERSION = 'h2o.studio.sync.apply-events.v0';
   var APPLY_EVENT_SCHEMA_VERSION = 'h2o.studio.sync.apply-event.v0';
@@ -1814,6 +1815,98 @@
     }
   }
 
+  async function buildDesktopCanonicalLibraryMetadataProjectionSafely() {
+    var fallback = {
+      schema: DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA,
+      version: '0.1.0-phase2',
+      phase: 'phase2-desktop-canonical-export',
+      source: {
+        surface: 'desktop-studio',
+        platformAdapter: 'tauri',
+        authority: 'desktop',
+        projection: 'desktop-canonical-library-metadata',
+        requestedBy: 'desktop-export-bundle',
+      },
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false,
+      },
+      sideEffectSummary: {
+        readOnly: true,
+        storageWrites: false,
+        sqliteWrites: false,
+        chromeStorageWrites: false,
+        importInvoked: false,
+        exportInvoked: false,
+        syncNowInvoked: false,
+        applyExecuted: false,
+        desktopApply: false,
+        chromeRequestExport: false,
+        canonicalMutation: false,
+        deletes: false,
+      },
+      counts: {
+        labelCatalogCount: 0,
+        tagCatalogCount: 0,
+        categoryCatalogCount: 0,
+        chatStoreRowCount: 0,
+        chatLabelBindingCount: 0,
+        chatTagBindingCount: 0,
+        chatCategoryAssignmentCount: 0,
+        classificationSignalCount: 0,
+      },
+      hashes: {},
+      catalogs: { labels: [], tags: [], categories: [] },
+      bindings: { chatLabels: [], chatTags: [], chatCategories: [] },
+      diagnostics: {
+        ok: false,
+        warnings: [{ code: 'library-metadata-export-projection-unavailable' }],
+        blockers: [],
+        productSyncReady: false,
+        phase2DesktopExportReady: false,
+        chromeImportDisplayParityImplemented: false,
+        chromeRequestExportImplemented: false,
+        desktopApplyImplemented: false,
+      },
+      safety: {
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noLabelDelete: true,
+        noTagDelete: true,
+        noCategoryDelete: true,
+        noMetadataDelete: true,
+      },
+    };
+    try {
+      var sync = safeObject(H2O.Studio && H2O.Studio.sync);
+      var api = safeObject(sync.libraryMetadataExportProjection);
+      if (typeof api.buildDesktopCanonicalMetadataExport !== 'function') return fallback;
+      var projection = await api.buildDesktopCanonicalMetadataExport({
+        requestedBy: 'desktop-export-bundle',
+      });
+      return safeObject(projection);
+    } catch (e) {
+      fallback.diagnostics = Object.assign({}, fallback.diagnostics, {
+        warnings: asArray(fallback.diagnostics && fallback.diagnostics.warnings).concat([{
+          code: 'library-metadata-export-projection-failed',
+          error: String((e && e.message) || e),
+        }]),
+      });
+      return fallback;
+    }
+  }
+
   function folderIdFromTombstoneRecordId(recordIdInput) {
     var recordId = cleanString(recordIdInput);
     if (recordId.indexOf('folder:') === 0) return cleanString(recordId.slice('folder:'.length));
@@ -2237,6 +2330,7 @@
     var folderStateBuild = await buildFolderState(stores, collected.folderItems, folderFallback.state);
     var folderState = folderStateBuild.state;
     var desktopCanonicalChatFolderBindings = await buildDesktopCanonicalChatFolderBindingProjection(stores, collected.archive.chatCount);
+    var desktopCanonicalLibraryMetadata = await buildDesktopCanonicalLibraryMetadataProjectionSafely();
     folderState.desktopCanonicalChatFolderBindings = desktopCanonicalChatFolderBindings;
     var folderParity = buildFolderParityDiagnostics(folderState, collected.archive);
     var chromeStorageLocal = {};
@@ -2280,6 +2374,10 @@
       desktopCanonicalRecentlyDeletedCount: Number(desktopCanonicalRecentlyDeleted.count) || 0,
       desktopPurgedFolderSuppressionCount: Number(desktopPurgedFolderSuppression.count) || 0,
       desktopCanonicalChatFolderBindingCount: Number(desktopCanonicalChatFolderBindings.bindingCount) || 0,
+      desktopCanonicalMetadataLabelCount: Number(desktopCanonicalLibraryMetadata && desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.labelCatalogCount) || 0,
+      desktopCanonicalMetadataTagCount: Number(desktopCanonicalLibraryMetadata && desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.tagCatalogCount) || 0,
+      desktopCanonicalMetadataCategoryCount: Number(desktopCanonicalLibraryMetadata && desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.categoryCatalogCount) || 0,
+      desktopCanonicalMetadataChatCategoryAssignmentCount: Number(desktopCanonicalLibraryMetadata && desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount) || 0,
       applyEventCount: Number(syncApplyEvents.total) || 0,
     };
     var bundle = {
@@ -2300,6 +2398,7 @@
       desktopPurgedFolderSuppression: desktopPurgedFolderSuppression,
       chatFolderBindings: asArray(desktopCanonicalChatFolderBindings.bindings),
       desktopCanonicalChatFolderBindings: desktopCanonicalChatFolderBindings,
+      desktopCanonicalLibraryMetadata: desktopCanonicalLibraryMetadata,
       folderDeleteReceipts: asArray(folderDeleteReceiptExport.receipts),
       folderRestoreReceipts: asArray(folderRestoreReceiptExport.receipts),
       chatFolderBindingReceipts: asArray(chatFolderBindingReceiptExport.receipts),
@@ -2322,6 +2421,7 @@
           desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted.diagnostics,
           desktopPurgedFolderSuppression: desktopPurgedFolderSuppression.diagnostics,
           chatFolderBindings: desktopCanonicalChatFolderBindings.diagnostics,
+          libraryMetadata: safeObject(desktopCanonicalLibraryMetadata && desktopCanonicalLibraryMetadata.diagnostics),
           folderDeleteReceipts: folderDeleteReceiptDiagnostics,
           folderRestoreReceipts: folderRestoreReceiptDiagnostics,
           chatFolderBindingReceipts: chatFolderBindingReceiptDiagnostics,
@@ -2497,6 +2597,29 @@
           chromeAuthority: false,
           readOnlyProjection: true,
           noChromeDestructiveBindingApply: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+        },
+        libraryMetadataExport: {
+          schema: DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA,
+          labelCatalogCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalMetadataLabelCount) || 0,
+          tagCatalogCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalMetadataTagCount) || 0,
+          categoryCatalogCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalMetadataCategoryCount) || 0,
+          chatCategoryAssignmentCount: Number(bundle && bundle.summary && bundle.summary.desktopCanonicalMetadataChatCategoryAssignmentCount) || 0,
+          hashes: safeObject(bundle && bundle.desktopCanonicalLibraryMetadata && bundle.desktopCanonicalLibraryMetadata.hashes),
+          warnings: asArray(bundle && bundle.desktopCanonicalLibraryMetadata &&
+            bundle.desktopCanonicalLibraryMetadata.diagnostics &&
+            bundle.desktopCanonicalLibraryMetadata.diagnostics.warnings),
+          productSyncReady: false,
+          desktopAuthority: true,
+          chromeAuthority: false,
+          readOnlyProjection: true,
+          chromeImportDisplayParityImplemented: false,
+          chromeRequestExportImplemented: false,
+          desktopApplyImplemented: false,
           noHardDelete: true,
           noPurge: true,
           noChatDelete: true,

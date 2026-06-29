@@ -1268,6 +1268,12 @@
        SQLite write, chrome.storage write, Native/F5 call, or propagation
        behavior change. -->
   <script src="./sync/library/library-chrome-desktop-parity-diagnostic.js"></script>
+  <!-- Phase 2: Desktop canonical labels/tags/categories/classification export.
+       Tauri-only read projection consumed by ingestion/export-bundle.tauri.js.
+       Emits counts, hashes, and redacted canonical shape only. No Chrome
+       import/display parity, request export, Desktop apply behavior, Chrome
+       canonical mutation, product sync writes, or delete behavior. -->
+  <script src="./sync/library/library-metadata-export-projection.tauri.js"></script>
   <!-- Phase 1: labels/tags/categories/classification metadata diagnostics.
        Shared read-only readiness snapshot for Desktop and Chrome Studio.
        Captures store/API/facet/deferred-warning state as counts and hashes
