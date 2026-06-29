@@ -1268,6 +1268,13 @@
        SQLite write, chrome.storage write, Native/F5 call, or propagation
        behavior change. -->
   <script src="./sync/library/library-chrome-desktop-parity-diagnostic.js"></script>
+  <!-- Phase 1: labels/tags/categories/classification metadata diagnostics.
+       Shared read-only readiness snapshot for Desktop and Chrome Studio.
+       Captures store/API/facet/deferred-warning state as counts and hashes
+       only. No product sync writes, import/export/sync/apply calls, request
+       export, Desktop apply behavior, Chrome canonical mutation, or delete
+       behavior. -->
+  <script src="./sync/library/library-metadata-diagnostics.js"></script>
   <!-- F15.10.a: Desktop/Tauri Library Sync operator status UI.
        Read-only Settings-hosted proof/status panel for F15 Library Sync.
        Runs closure and end-to-end proofs only from explicit operator actions;
