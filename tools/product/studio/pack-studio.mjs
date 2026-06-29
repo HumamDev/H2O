@@ -206,6 +206,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // explicit validated requestId. No scanner call, no automatic materialization, no
   // watcher/poller/daemon, no Chrome runtime, sync, CAS, or package writer here.
   "ingestion/saved-chat-archive-materializer-action.studio.js",
+  // Desktop-only, read-only Archive Inspector (Phase H.2). Verifies + previews one
+  // .h2ochat package read-only; reuses the diagnostics validator; no import/write.
+  "ingestion/saved-chat-archive-inspector.studio.js",
   // Desktop-only: saved-chat archive request materializer (Phase D.2C). Triggers
   // the existing package writer for a validated queued request (re-resolves
   // first); updates only the saved_chat_archive_requests row. No migration,
@@ -1284,6 +1287,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-requests.tauri.js",
   "ingestion/saved-chat-archive-request-inbox.tauri.js",
   "ingestion/saved-chat-archive-materializer-action.studio.js",
+  "ingestion/saved-chat-archive-inspector.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal

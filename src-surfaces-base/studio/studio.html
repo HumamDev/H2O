@@ -639,6 +639,10 @@
        validated requestId. No scanner call, no automatic/background materialization,
        no watcher/poller/daemon, no Chrome runtime, sync, CAS, or package writer. -->
   <script src="./ingestion/saved-chat-archive-materializer-action.studio.js"></script>
+  <!-- Desktop-only, read-only Archive Inspector (Phase H.2/H.3). Verifies + previews
+       one .h2ochat package read-only (reuses the diagnostics validator); mounts a
+       sibling card beneath Archive Health. No import/write/overwrite, no Chrome. -->
+  <script src="./ingestion/saved-chat-archive-inspector.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the
