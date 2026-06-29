@@ -643,6 +643,13 @@
        one .h2ochat package read-only (reuses the diagnostics validator); mounts a
        sibling card beneath Archive Health. No import/write/overwrite, no Chrome. -->
   <script src="./ingestion/saved-chat-archive-inspector.studio.js"></script>
+  <!-- Desktop-only: saved-chat archive import / recovery action (Phase H.4).
+       Two-step, verification-gated, NO-OVERWRITE: dry-run a .h2ochat package
+       (reuses the read-only inspector), then explicitly import it as a NEW
+       recovered chat + snapshot (fresh ids, provenance) via the Desktop store
+       adapters. Never overwrites existing rows; restore/relink deferred; mounts
+       a sibling card beneath Archive Health. No Chrome authority. -->
+  <script src="./ingestion/saved-chat-archive-importer.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the

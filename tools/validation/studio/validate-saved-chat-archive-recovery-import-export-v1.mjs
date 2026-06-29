@@ -1,22 +1,26 @@
 #!/usr/bin/env node
-// H.1/H.2 — Saved-chat archive RECOVERY / IMPORT / EXPORT validator (static).
+// H.1/H.2/H.4 — Saved-chat archive RECOVERY / IMPORT / EXPORT validator (static).
 //
 // H.0 (contract e8e2ca1) defined inspection/verification/open/import/export of
-// .h2ochat packages, inspector-first. H.1 locked the contract; H.2 then added the
-// Desktop READ-ONLY package inspector. This validator now asserts BOTH the H.0
-// contract and the H.2 read-only inspector (Desktop-only, reuses the read-only
-// diagnostics validation, granular status vocabulary, no store write/import, no
-// package-HTML execution), while the IMPORT/WRITE recovery entry points (H.4) still
-// do not exist and the standing boundaries hold (Chrome no package authority,
-// diagnostics read-only, writer a projection writer).
+// .h2ochat packages, inspector-first. H.1 locked the contract; H.2 added the
+// Desktop READ-ONLY package inspector; H.4 now adds the FIRST import/recovery
+// action — a separate, Desktop-only, verification-gated, NO-OVERWRITE importer
+// module (dry-run + explicit import-as-new). This validator asserts the H.0
+// contract, the H.2 read-only inspector (which STAYS read-only), and the H.4
+// importer (verification-gated, dry-run non-mutating, import-as-new via a fresh
+// id, never the overwrite-by-id primitive, restore/relink deferred, no package
+// HTML execution, Desktop-only), while the standing boundaries hold (Chrome no
+// package authority, diagnostics read-only, writer a projection writer, no
+// .h2ochat EXPORT runtime yet).
 //
 //   [H.1]       = the recovery/import/export contract (H.0 doc assertions).
-//   [H.2]       = the read-only Archive Inspector implementation.
+//   [H.2]       = the read-only Archive Inspector implementation (stays read-only).
+//   [H.4]       = the verification-gated, no-overwrite import/recovery action.
 //   [INVARIANT] = boundaries that must hold now and after H.4.
 //
 // Static only: reads source/doc text, asserts patterns. No runtime, no imports of
-// runtime modules, no DB, no network. When H.4 (importer) lands, update this
-// validator in lock-step.
+// runtime modules, no DB, no network. When H.5 (export / restore-relink) lands,
+// update this validator in lock-step.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -39,18 +43,30 @@ const STUDIO_DIR_REL = 'src-surfaces-base/studio';
 const MATERIALIZE_API = 'materializeSavedChatArchiveRequestV1';
 const PACKAGE_EXT = '.h2ochat';
 const INSPECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
+const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
 // Files that legitimately reference .h2ochat: the WRITER, the read-only DIAGNOSTICS,
-// and (since H.2) the read-only INSPECTOR. No other module may reference it.
+// the read-only INSPECTOR (H.2), and (since H.4) the verification-gated IMPORTER.
+// No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
+  'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js',
 ]);
-// IMPORT / WRITE recovery entry-point names that must NOT exist until H.4. The
-// read-only H.2 inspector is allowed; importing/recovering into the store is not.
+// Legacy placeholder import/recovery entry-point names we deliberately did NOT use
+// (H.4 uses the cleaner dryRunImportPackage / importVerifiedPackage). These must
+// not appear anywhere in the studio tree.
 const FORBIDDEN_IMPORTER_NAMES = [
   'importSavedChatPackage', 'recoverSavedChat', 'openSavedChatPackage', 'importSavedChatArchivePackage',
+];
+// The REAL H.4 import/recovery entry points. They may exist ONLY in the importer
+// module — never leaked into the writer/diagnostics/inspector/scanner/materializer
+// or the Chrome reader.
+const IMPORTER_ENTRY_NAMES = ['dryRunImportPackage', 'importVerifiedPackage'];
+// .h2ochat EXPORT / share entry points are NOT implemented yet (deferred).
+const FORBIDDEN_EXPORT_NAMES = [
+  'exportSavedChatPackage', 'shareSavedChatPackage', 'exportSavedChatArchivePackage',
 ];
 
 const PASS = [];
@@ -84,6 +100,8 @@ const importBundle = stripComments(readRepo(IMPORT_BUNDLE_REL));
 const exportBundle = stripComments(readRepo(EXPORT_BUNDLE_REL));
 const inspectorSrc = exists(INSPECTOR_REL) ? readRepo(INSPECTOR_REL) : '';
 const inspectorCode = stripComments(inspectorSrc);
+const importerSrc = exists(IMPORTER_REL) ? readRepo(IMPORTER_REL) : '';
+const importerCode = stripComments(importerSrc);
 const healthUiCode = stripComments(readRepo(HEALTH_UI_REL));
 
 console.log('[archive-recovery-import-export] H.1 contract checks');
@@ -168,7 +186,7 @@ check('[H.1] H.0 defines the safety boundaries (no Chrome package authority / no
 
 // --- B. Current runtime is pre-implementation (no inspector/importer yet) -----
 
-check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/read-only-inspector; no IMPORT/WRITE entry point exists', () => {
+check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/importer; import entry points confined to the importer', () => {
   const offenders = [];
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     if (stripComments(fs.readFileSync(abs, 'utf8')).includes(PACKAGE_EXT)) {
@@ -176,11 +194,21 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/read-only-insp
       if (!ALLOWED_H2OCHAT.has(rel)) offenders.push(rel);
     }
   }
-  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector (unexpected reader/importer?): ' + offenders.join(', '));
+  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector/importer (unexpected reader?): ' + offenders.join(', '));
+  // Legacy placeholder names must not appear anywhere.
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
     for (const name of FORBIDDEN_IMPORTER_NAMES) {
-      assert.ok(!code.includes(name), 'import/write recovery entry point already exists (H.4, not yet): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+      assert.ok(!code.includes(name), 'unexpected legacy import entry-point name: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    }
+  }
+  // The real H.4 import entry points may live ONLY in the importer module.
+  for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
+    const rel = path.relative(REPO_ROOT, abs);
+    if (rel === IMPORTER_REL) continue;
+    const code = stripComments(fs.readFileSync(abs, 'utf8'));
+    for (const name of IMPORTER_ENTRY_NAMES) {
+      assert.ok(!code.includes(name), 'import entry point leaked outside the importer module: ' + name + ' in ' + rel);
     }
   }
 });
@@ -271,6 +299,98 @@ check('[H.2] inspector has no watcher/daemon and no scanner/Chrome/sync/native c
     'scanSavedChatArchiveRequestInboxV1', 'chrome.runtime', 'connectNative', 'sendNativeMessage',
     'H2O.Studio.sync', 'webdav', 'WebDAV', 'localhost', '127.0.0.1', 'ws://', 'wss://']) {
     assert.ok(!inspectorCode.includes(banned), 'inspector must not couple to: ' + banned);
+  }
+});
+
+// --- D. H.4 verification-gated, no-overwrite import/recovery action ----------
+
+console.log('[archive-recovery-import-export] H.4 importer checks');
+
+check('[H.4] importer module exists, registers archiveImporter (dry-run + import + pure turn builder); health UI delegates the mount', () => {
+  assert.ok(exists(IMPORTER_REL), 'importer module missing');
+  assert.match(importerSrc, /H2O\.Studio\.archiveImporter\s*=/);
+  assert.match(importerSrc, /function dryRunImportPackage\s*\(/);
+  assert.match(importerSrc, /function importVerifiedPackage\s*\(/);
+  assert.match(importerSrc, /function buildTurnsFromPackageSnapshot\s*\(/);
+  assert.match(importerSrc, /mountArchiveImporterCard/);
+  assert.ok(healthUiCode.includes('mountArchiveImporterCard'), 'health UI must delegate to the importer mount');
+});
+
+check('[H.4] importer is Desktop-only and gated on the store adapters (detectTauri + isDesktopCapable + snapshots/chats stores)', () => {
+  assert.match(importerCode, /function detectTauri\s*\(/);
+  assert.match(importerCode, /__TAURI_INTERNALS__|__TAURI__/);
+  assert.match(importerCode, /function isDesktopCapable\s*\(/);
+  assert.ok(importerCode.includes('getSnapshotsStore') && importerCode.includes('getChatsStore'),
+    'importer must require the Desktop snapshots + chats store adapters');
+});
+
+check('[H.4] importer reuses the read-only inspector for verification (archiveInspector + inspectPackage)', () => {
+  assert.ok(importerCode.includes('archiveInspector'), 'importer must use the inspector');
+  assert.ok(importerCode.includes('inspectPackage'), 'importer must verify via inspectPackage');
+});
+
+check('[H.4] dry-run is NON-MUTATING (no create/upsert/SQL/fs-write inside dryRunImportPackage)', () => {
+  const body = (importerCode.split(/function\s+dryRunImportPackage\s*\(/)[1] || '')
+    .split(/function\s+generateRecoveredChatId\s*\(/)[0] || '';
+  assert.ok(body.length > 0, 'could not isolate dryRunImportPackage body');
+  for (const banned of ['.create(', '.upsert(', 'plugin:sql|', 'plugin:fs|write', 'INSERT INTO', 'UPDATE ']) {
+    assert.ok(!body.includes(banned), 'dry-run must not write (found: ' + banned + ')');
+  }
+  // dry-run reads existing state only
+  assert.ok(/\.get\(|\.listByChat\(/.test(body), 'dry-run must read store state (get / listByChat)');
+});
+
+check('[H.4] import is verification-gated (requires import-ready, re-verifies, refuses partial/empty)', () => {
+  assert.ok(importerCode.includes('dryRunImportPackage'), 'import must consult the dry-run');
+  assert.ok(importerCode.includes("'import-ready'") || importerCode.includes('import-ready'), 'import gates on import-ready');
+  assert.match(importerCode, /status[^;]*!==\s*'verified'|'verified'/, 'import re-verifies the package');
+  assert.ok(importerCode.includes('already-imported'), 'already-imported documented no-op');
+  assert.ok(/no turns|refusing partial|partial import/i.test(importerSrc), 'import must refuse an empty/partial payload');
+});
+
+check('[H.4] NO-OVERWRITE by construction: import-as-new via snapshots.create with a fresh id; the overwrite-by-id primitive is never used; original ids never reused for a write', () => {
+  assert.ok(/snapStore\.create\(|snapshots\.create\(/.test(importerCode), 'import-as-new must use snapshots.create (fresh id)');
+  assert.ok(!/snapStore\.upsert\(|snapshots\.upsert\(/.test(importerCode), 'must never call the snapshot overwrite-by-id primitive');
+  assert.ok(importerCode.includes('generateRecoveredChatId'), 'recovered chat id must be freshly generated');
+  assert.ok(importerSrc.includes('refusing to reuse original id'), 'must guard against reusing the package original ids');
+  // the snapshot create patch must not carry a snapshotId (which would route to overwrite)
+  assert.doesNotMatch(importerCode, /create\(\{[^}]*snapshotId/s, 'snapshot create patch must not set snapshotId');
+});
+
+check('[H.4] importer writes ONLY through the store adapters (no raw SQL, no fs write, no package overwrite)', () => {
+  for (const banned of ['plugin:sql|execute', 'plugin:sql|', 'plugin:fs|write', 'writeSavedChatPackageV1', MATERIALIZE_API]) {
+    assert.ok(!importerCode.includes(banned), 'importer must not bypass the store adapters (found: ' + banned + ')');
+  }
+  assert.doesNotMatch(importerCode, /\bINSERT\s+INTO\b|\bUPDATE\b[^=]/i, 'importer must not write raw SQL');
+});
+
+check('[H.4] restore/relink deferred + import-as-new records provenance + full decision vocabulary present', () => {
+  assert.ok(importerCode.includes('restore-relink-deferred'), 'restore/relink must be deferred');
+  for (const prov of ['recovered', 'originalChatId', 'originalSnapshotId', 'recoveredAt']) {
+    assert.ok(importerCode.includes(prov), 'provenance field missing: ' + prov);
+  }
+  for (const st of ['import-ready', 'already-imported', 'conflict-chat-id', 'conflict-snapshot-id', 'corrupted', 'unsupported-version', 'rejected', 'imported']) {
+    assert.ok(importerCode.includes(st), 'decision/state missing: ' + st);
+  }
+});
+
+check('[H.4] importer executes no package HTML and has no watcher/scanner/Chrome/sync coupling', () => {
+  assert.doesNotMatch(importerCode, /\beval\s*\(/, 'no eval');
+  assert.doesNotMatch(importerCode, /new\s+Function\s*\(/, 'no new Function');
+  assert.doesNotMatch(importerCode, /readPackageTextFile\([^)]*['"]chat\.html['"]/, 'importer must not read chat.html');
+  for (const banned of ['setInterval', 'MutationObserver', 'requestAnimationFrame', 'requestIdleCallback',
+    'scanSavedChatArchiveRequestInboxV1', 'chrome.runtime', 'connectNative', 'sendNativeMessage',
+    'H2O.Studio.sync', 'webdav', 'WebDAV', 'ws://', 'wss://']) {
+    assert.ok(!importerCode.includes(banned), 'importer must not couple to: ' + banned);
+  }
+});
+
+check('[INVARIANT] no .h2ochat EXPORT / share runtime exists yet (deferred)', () => {
+  for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
+    const code = stripComments(fs.readFileSync(abs, 'utf8'));
+    for (const name of FORBIDDEN_EXPORT_NAMES) {
+      assert.ok(!code.includes(name), 'package export entry point exists (deferred): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    }
   }
 });
 

@@ -521,6 +521,18 @@
       }
     } catch (_) { /* inspector card must never break the read-only health card */ }
 
+    // Phase H.4: mount the Desktop-only, verification-gated import/recovery card
+    // (its own module) as a sibling beneath this read-only diagnostics card. This
+    // card is unchanged and performs no mutation; it only delegates a mount call
+    // to the importer module, which owns the dry-run + the single no-overwrite
+    // write and its Desktop gate.
+    try {
+      var importerApi = H2O.Studio && H2O.Studio.archiveImporter;
+      if (importerApi && typeof importerApi.mountArchiveImporterCard === 'function') {
+        importerApi.mountArchiveImporterCard(container);
+      }
+    } catch (_) { /* importer card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 
