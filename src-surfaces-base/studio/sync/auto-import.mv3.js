@@ -86,12 +86,15 @@
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
   var CHAT_FOLDER_BINDING_REQUEST_SCHEMA = 'h2o.studio.chat-folder-binding-request.v1';
+  var LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA = 'h2o.studio.library-metadata-mutation-request.v1';
   var FOLDER_DELETE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-delete-requests:pending-export:v1';
   var FOLDER_DELETE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-delete-request.pending-export-mirror.v1';
   var FOLDER_RESTORE_REQUEST_EXPORT_KEY = 'h2o:studio:folder-restore-requests:pending-export:v1';
   var FOLDER_RESTORE_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.folder-restore-request.pending-export-mirror.v1';
   var CHAT_FOLDER_BINDING_REQUEST_EXPORT_KEY = 'h2o:studio:chat-folder-binding-requests:pending-export:v1';
   var CHAT_FOLDER_BINDING_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.chat-folder-binding-request.pending-export-mirror.v1';
+  var LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-requests:pending-export:v1';
+  var LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-request.pending-export-mirror.v1';
   var FOLDER_STATE_KEY_LOCAL = 'h2o:prm:cgx:fldrs:state:data:v1';
   var EXPORT_COVERAGE_SCHEMA = 'h2o.studio.sync.chrome-export-coverage.v1';
   var EXPORT_COVERAGE_MISMATCH = 'chrome-export-source-coverage-mismatch';
@@ -152,6 +155,7 @@
     lastFolderDeleteRequestExport: null,
     lastFolderRestoreRequestExport: null,
     lastChatFolderBindingRequestExport: null,
+    lastLibraryMetadataMutationRequestExport: null,
     errors: [],
   };
 
@@ -708,6 +712,177 @@
     return cleanString(row.requestId || row.reviewId) + '|' + cleanString(row.chatId || row.conversationId || row.recordId);
   }
 
+  function safeMetadataRequestHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    if (!/^[a-z0-9][a-z0-9:._-]{3,180}$/i.test(text)) return '';
+    return text;
+  }
+
+  function safeMetadataRequestId(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    if (!/^[a-z0-9][a-z0-9:._/-]{0,180}$/i.test(text)) return '';
+    return text.slice(0, 180);
+  }
+
+  function safeMetadataRequestName(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    text = text.replace(/[\u0000-\u001f\u007f<>]/g, '').trim();
+    return text.slice(0, 160);
+  }
+
+  function normalizeLibraryMetadataMutationAction(input) {
+    var source = isPlainObject(input) ? input : {};
+    var action = cleanString(source.action || source.requestType || source.type).toLowerCase().replace(/_/g, '-');
+    var kind = cleanString(source.metadataKind || source.kind || source.catalogKind).toLowerCase();
+    if (!action && kind && cleanString(source.operation)) action = kind + '-' + cleanString(source.operation).toLowerCase();
+    if (action === 'create-label') action = 'label-create';
+    if (action === 'create-tag') action = 'tag-create';
+    if (action === 'create-category') action = 'category-create';
+    if (action === 'rename-label') action = 'label-rename';
+    if (action === 'rename-tag') action = 'tag-rename';
+    if (action === 'rename-category') action = 'category-rename';
+    if (action === 'bind-label') action = 'chat-label-bind';
+    if (action === 'bind-tag') action = 'chat-tag-bind';
+    if (action === 'assign-category') action = 'chat-category-assign';
+    if (action === 'set-classification') action = 'classification-set';
+    return action;
+  }
+
+  function libraryMetadataMutationActionSpec(action) {
+    var table = {
+      'label-create': { metadataKind: 'label', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'tag-create': { metadataKind: 'tag', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'category-create': { metadataKind: 'category', subjectKind: 'catalog', operation: 'create', requiresName: true },
+      'label-rename': { metadataKind: 'label', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'tag-rename': { metadataKind: 'tag', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'category-rename': { metadataKind: 'category', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
+      'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
+      'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
+    };
+    return table[action] || null;
+  }
+
+  function libraryMetadataMutationDeferredDestructiveAction(action) {
+    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(cleanString(action));
+  }
+
+  function parseLibraryMetadataMutationRequestPayload(row) {
+    var raw = row && row.rawTombstoneJson;
+    if (!raw && row && row.raw_tombstone_json) raw = row.raw_tombstone_json;
+    if (!raw && isPlainObject(row && row.payload)) raw = row.payload;
+    if (!raw && isPlainObject(row)) raw = row;
+    if (!raw) return null;
+    try {
+      var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return isPlainObject(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function sanitizeLibraryMetadataMutationRequestForExport(row) {
+    var payload = parseLibraryMetadataMutationRequestPayload(row);
+    if (!payload) return null;
+    if (cleanString(payload.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) return null;
+    if (cleanString(payload.intent) !== 'library-metadata-mutation-request') return null;
+    if (cleanString(payload.status) !== 'pending') return null;
+    if (payload.desktopApplyRequired !== true || payload.noLocalApply !== true) return null;
+    if (payload.noChromeCanonicalMutation !== true || payload.noDesktopCanonicalMutation !== true) return null;
+    if (payload.noHardDelete !== true || payload.noPurge !== true || payload.noChatDelete !== true ||
+        payload.noSnapshotDelete !== true || payload.noAssetDelete !== true) return null;
+    if (payload.noLabelDelete !== true || payload.noTagDelete !== true ||
+        payload.noCategoryDelete !== true || payload.noMetadataDelete !== true) return null;
+    var action = normalizeLibraryMetadataMutationAction(payload);
+    if (libraryMetadataMutationDeferredDestructiveAction(action)) return null;
+    var spec = libraryMetadataMutationActionSpec(action);
+    if (!spec) return null;
+    var requestId = cleanString(payload.requestId || payload.reviewId);
+    if (!requestId) return null;
+    var p = isPlainObject(payload.payload) ? payload.payload : {};
+    var chatId = safeMetadataRequestId(p.chatId || p.conversationId);
+    var entityId = safeMetadataRequestId(p.entityId || p.labelId || p.tagId || p.categoryId || p.classificationId);
+    var displayName = safeMetadataRequestName(p.displayName);
+    if (spec.requiresChatId && !chatId) return null;
+    if (spec.requiresId && !entityId) return null;
+    if (spec.requiresName && !displayName) return null;
+    return {
+      schema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA,
+      version: cleanString(payload.version || '0.1.0-phase6'),
+      phase: 'phase6-chrome-request-export',
+      requestId: requestId,
+      reviewId: cleanString(payload.reviewId || requestId) || requestId,
+      idempotencyKey: cleanString(payload.idempotencyKey),
+      intent: 'library-metadata-mutation-request',
+      classification: 'metadata-request',
+      requestType: action,
+      action: action,
+      operation: spec.operation,
+      metadataKind: spec.metadataKind,
+      subjectKind: spec.subjectKind,
+      status: 'pending',
+      createdAt: nullableString(payload.createdAt || payload.requestedAt),
+      requestedAt: nullableString(payload.requestedAt || payload.createdAt),
+      requestedBy: 'chrome-studio',
+      source: 'chrome-studio',
+      sourceSurface: 'chrome-studio',
+      sourcePeerId: safeMetadataRequestId(payload.sourcePeerId || 'chrome-studio') || 'chrome-studio',
+      expectedCurrentBasisHash: safeMetadataRequestHash(payload.expectedCurrentBasisHash),
+      expectedCurrentBasis: isPlainObject(payload.expectedCurrentBasis) ? cloneJson(payload.expectedCurrentBasis) : null,
+      payload: {
+        chatId: chatId || null,
+        conversationId: chatId || null,
+        entityId: entityId || null,
+        labelId: spec.metadataKind === 'label' ? entityId || null : null,
+        tagId: spec.metadataKind === 'tag' ? entityId || null : null,
+        categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+        classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
+        displayName: displayName || null
+      },
+      privacy: {
+        rawChatContent: false,
+        rawChatTitles: false,
+        accountLinkedMetadata: false,
+        displayNameIncluded: !!displayName,
+        displayNameSource: displayName ? 'explicit-user-entered-metadata' : ''
+      },
+      desktopApplyRequired: true,
+      desktopApply: false,
+      noLocalApply: true,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutation: true,
+      chromeAuthority: false,
+      desktopAuthority: true,
+      requestOnly: true,
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      advisory: {
+        productSyncReady: false,
+        desktopApplyDeferred: true,
+        chromeCanonicalMutationAllowed: false,
+        destructiveMetadataActionsDeferred: true
+      },
+      transportedAt: nowIso()
+    };
+  }
+
+  function libraryMetadataMutationRequestExportIdentity(request) {
+    var row = isPlainObject(request) ? request : {};
+    return cleanString(row.requestId || row.reviewId) + '|' + cleanString(row.idempotencyKey);
+  }
+
   function hiddenPendingFolderDeleteRowsFromState(stateInput) {
     var stateValue = isPlainObject(stateInput) ? stateInput : {};
     var bag = isPlainObject(stateValue.hiddenByChromePendingDelete) ? stateValue.hiddenByChromePendingDelete : {};
@@ -928,6 +1103,40 @@
         ok: false,
         found: false,
         warning: 'chat-folder-binding-request-export-mirror-read-failed',
+        error: String((e && e.message) || e),
+      });
+    }
+  }
+
+  async function readLibraryMetadataMutationRequestExportMirror() {
+    var empty = {
+      ok: true,
+      schema: LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA,
+      found: false,
+      requestCount: 0,
+      requests: [],
+    };
+    try {
+      var mirror = await readKv(LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_KEY);
+      if (!mirror || typeof mirror !== 'object') return empty;
+      if (cleanString(mirror.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA) {
+        return Object.assign({}, empty, { ok: false, found: true, warning: 'library-metadata-mutation-request-export-mirror-schema-invalid' });
+      }
+      var rows = Array.isArray(mirror.requests) ? mirror.requests : [];
+      return {
+        ok: true,
+        schema: LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA,
+        found: true,
+        updatedAt: cleanString(mirror.updatedAt),
+        requestCount: rows.length,
+        requests: rows,
+      };
+    } catch (e) {
+      pushError('libraryMetadataMutationRequests.exportMirror.read', e);
+      return Object.assign({}, empty, {
+        ok: false,
+        found: false,
+        warning: 'library-metadata-mutation-request-export-mirror-read-failed',
         error: String((e && e.message) || e),
       });
     }
@@ -1219,6 +1428,80 @@
       result.blockers.push('chat-folder-binding-request-export-failed');
       result.error = String((e && e.message) || e);
       pushError('chatFolderBindingRequests.export', e);
+      return result;
+    }
+  }
+
+  async function collectLibraryMetadataMutationRequestsForExport() {
+    var result = {
+      ok: true,
+      schema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA + '.export.v1',
+      requestCount: 0,
+      pendingRequestCount: 0,
+      skippedCount: 0,
+      invalidCount: 0,
+      mirrorRequestCount: 0,
+      warnings: [],
+      blockers: [],
+      requests: [],
+      requestOnly: true,
+      desktopApplyRequired: true,
+      desktopApply: false,
+      noLocalApply: true,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutation: true,
+      chromeAuthority: false,
+      desktopAuthority: true,
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+    };
+    try {
+      var byIdentity = Object.create(null);
+      function addRequest(row) {
+        var request = sanitizeLibraryMetadataMutationRequestForExport(row);
+        if (!request) {
+          result.skippedCount += 1;
+          result.invalidCount += 1;
+          return null;
+        }
+        var key = libraryMetadataMutationRequestExportIdentity(request);
+        if (!key || key === '|') {
+          result.skippedCount += 1;
+          result.invalidCount += 1;
+          return null;
+        }
+        if (!byIdentity[key]) {
+          request.exportSource = 'pending-export-mirror';
+          byIdentity[key] = request;
+          result.requests.push(request);
+        }
+        return request;
+      }
+      var mirror = await readLibraryMetadataMutationRequestExportMirror();
+      result.mirrorAvailable = mirror.found === true;
+      result.mirrorOk = mirror.ok === true;
+      result.mirrorRequestCount = Number(mirror.requestCount || 0);
+      if (mirror.warning) result.warnings.push(mirror.warning);
+      (Array.isArray(mirror.requests) ? mirror.requests : []).forEach(function (row) {
+        addRequest(row);
+      });
+      result.requestCount = result.requests.length;
+      result.pendingRequestCount = result.requests.length;
+      return result;
+    } catch (e) {
+      result.ok = false;
+      result.warnings.push('library-metadata-mutation-request-export-failed');
+      result.blockers.push('library-metadata-mutation-request-export-failed');
+      result.error = String((e && e.message) || e);
+      pushError('libraryMetadataMutationRequests.export', e);
       return result;
     }
   }
@@ -2607,12 +2890,15 @@
       var folderDeleteRequestExport = await collectFolderDeleteRequestsForExport();
       var folderRestoreRequestExport = await collectFolderRestoreRequestsForExport();
       var chatFolderBindingRequestExport = await collectChatFolderBindingRequestsForExport();
+      var libraryMetadataMutationRequestExport = await collectLibraryMetadataMutationRequestsForExport();
       bundle.folderDeleteRequests = folderDeleteRequestExport.requests || [];
       bundle.folderRestoreRequests = folderRestoreRequestExport.requests || [];
       bundle.chatFolderBindingRequests = chatFolderBindingRequestExport.requests || [];
+      bundle.libraryMetadataMutationRequests = libraryMetadataMutationRequestExport.requests || [];
       state.lastFolderDeleteRequestExport = folderDeleteRequestExport;
       state.lastFolderRestoreRequestExport = folderRestoreRequestExport;
       state.lastChatFolderBindingRequestExport = chatFolderBindingRequestExport;
+      state.lastLibraryMetadataMutationRequestExport = libraryMetadataMutationRequestExport;
       (folderDeleteRequestExport.warnings || []).forEach(function (code) {
         if (warnings.indexOf(code) === -1) warnings.push(code);
       });
@@ -2626,6 +2912,12 @@
         if (warnings.indexOf(code) === -1) warnings.push(code);
       });
       (chatFolderBindingRequestExport.blockers || []).forEach(function (code) {
+        if (blockers.indexOf(code) === -1) blockers.push(code);
+      });
+      (libraryMetadataMutationRequestExport.warnings || []).forEach(function (code) {
+        if (warnings.indexOf(code) === -1) warnings.push(code);
+      });
+      (libraryMetadataMutationRequestExport.blockers || []).forEach(function (code) {
         if (blockers.indexOf(code) === -1) blockers.push(code);
       });
       if (chromeExportCoverage) chromeExportCoverage.nativeSnapshotPayloadPreflight = nativeSnapshotPayloadPreflight;
@@ -2767,6 +3059,34 @@
           noChatDelete: true,
           noSnapshotDelete: true,
           noAssetDelete: true,
+        },
+        libraryMetadataMutationRequestExport: {
+          requestCount: Number(libraryMetadataMutationRequestExport.requestCount || 0),
+          pendingRequestCount: Number(libraryMetadataMutationRequestExport.pendingRequestCount || 0),
+          skippedCount: Number(libraryMetadataMutationRequestExport.skippedCount || 0),
+          invalidCount: Number(libraryMetadataMutationRequestExport.invalidCount || 0),
+          mirrorRequestCount: Number(libraryMetadataMutationRequestExport.mirrorRequestCount || 0),
+          mirrorAvailable: libraryMetadataMutationRequestExport.mirrorAvailable === true,
+          mirrorOk: libraryMetadataMutationRequestExport.mirrorOk === true,
+          noApply: true,
+          requestOnly: true,
+          desktopApplyRequired: true,
+          desktopApply: false,
+          noLocalApply: true,
+          noChromeCanonicalMutation: true,
+          noDesktopCanonicalMutation: true,
+          chromeAuthority: false,
+          desktopAuthority: true,
+          separateFromDesktopCanonicalLibraryMetadata: true,
+          noHardDelete: true,
+          noPurge: true,
+          noChatDelete: true,
+          noSnapshotDelete: true,
+          noAssetDelete: true,
+          noLabelDelete: true,
+          noTagDelete: true,
+          noCategoryDelete: true,
+          noMetadataDelete: true,
         },
         chromeExportCoverage: chromeExportCoverage,
         unindexedArchiveRowCount: chromeExportCoverage ? Number(chromeExportCoverage.unindexedArchiveRowCount || 0) : 0,
@@ -3041,6 +3361,7 @@
       lastFolderDeleteRequestExport: state.lastFolderDeleteRequestExport,
       lastFolderRestoreRequestExport: state.lastFolderRestoreRequestExport,
       lastChatFolderBindingRequestExport: state.lastChatFolderBindingRequestExport,
+      lastLibraryMetadataMutationRequestExport: state.lastLibraryMetadataMutationRequestExport,
       inFlight: state.inFlight,
       chromeExportInFlightPersisted: false,
       chromeExportInFlightMemory: state.inFlight === true,
