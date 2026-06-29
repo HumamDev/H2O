@@ -1179,6 +1179,191 @@
     }).sort();
   }
 
+  /* ── Phase 10: read-only library metadata sync status/display model ──
+   *
+   * Aggregates the existing Phase 6 request diagnostics and Phase 8 receipt
+   * diagnostics into a single read-only status/display model. It only calls the
+   * read-only list/diagnose APIs (never request/import/apply/sync/export), so it
+   * adds no side effects, no Chrome canonical mutation, and no Desktop apply
+   * behavior. The model is counts/booleans/notes only — never raw chat content,
+   * titles, IDs, or names. This is a status surface, not a mutation workflow.
+   */
+  var STATUS_SCHEMA = 'h2o.studio.sync.library-metadata-sync-status.v1';
+  var STATUS_VERSION = '0.1.0-phase10';
+  var ONLY_PROVEN_APPLIED_TYPE = 'chat-category-assign';
+  var DEFERRED_REQUEST_TYPES = [
+    'label-create', 'tag-create', 'category-create',
+    'label-rename', 'tag-rename', 'category-rename',
+    'chat-label-bind', 'chat-tag-bind', 'classification-set'
+  ];
+  var DEFERRED_DESTRUCTIVE_SHAPES = [
+    'label-delete', 'tag-delete', 'category-delete',
+    'chat-label-unbind', 'chat-tag-unbind', 'chat-category-clear',
+    'purge', 'hard-delete'
+  ];
+
+  function getFolderSyncApi() {
+    try {
+      var folder = H2O.Studio && H2O.Studio.sync && H2O.Studio.sync.folder;
+      return (folder && typeof folder === 'object') ? folder : null;
+    } catch (_) { return null; }
+  }
+
+  async function readOnlyCall(fn) {
+    try {
+      if (typeof fn !== 'function') return null;
+      return await fn();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function countRequestStatuses(rows) {
+    var counts = { total: 0, pending: 0, resolved: 0, other: 0 };
+    asArray(rows).forEach(function (row) {
+      var status = cleanString(row && row.status);
+      counts.total += 1;
+      if (status === 'pending') counts.pending += 1;
+      else if (status === 'resolved') counts.resolved += 1;
+      else counts.other += 1;
+    });
+    return counts;
+  }
+
+  function receiptStatusCounts(diag) {
+    var sc = safeObject(diag && diag.statusCounts);
+    return {
+      applied: numberOrZero(sc.applied),
+      rejected: numberOrZero(sc.rejected),
+      deferred: numberOrZero(sc.deferred),
+      skipped_duplicate: numberOrZero(sc.skipped_duplicate),
+      stale_basis: numberOrZero(sc.stale_basis),
+      invalid: numberOrZero(sc.invalid)
+    };
+  }
+
+  function statusDisplayRows(model) {
+    var rc = model.requestCounts;
+    var rec = model.receiptCounts;
+    return [
+      { label: 'Surface', value: model.surface },
+      { label: 'Requests pending', value: String(rc.pending) },
+      { label: 'Requests resolved', value: String(rc.resolved) },
+      { label: 'Requests total', value: String(rc.total) },
+      { label: 'Receipts applied', value: String(rec.applied) },
+      { label: 'Receipts rejected', value: String(rec.rejected) },
+      { label: 'Receipts deferred', value: String(rec.deferred) },
+      { label: 'Receipts skipped (duplicate)', value: String(rec.skipped_duplicate) },
+      { label: 'Receipts stale basis', value: String(rec.stale_basis) },
+      { label: 'Receipts invalid', value: String(rec.invalid) },
+      { label: 'Receipts total', value: String(rec.total) },
+      { label: 'Only proven applied type', value: model.onlyRuntimeProvenAppliedType },
+      { label: 'Desktop authority', value: 'true' },
+      { label: 'Chrome authority', value: 'false' },
+      { label: 'Chrome canonical mutation', value: 'false' },
+      { label: 'Raw chat content', value: 'none' },
+      { label: 'Raw chat titles', value: 'none' },
+      { label: 'Account-linked metadata', value: 'none' },
+      { label: 'Delete / purge behavior', value: 'none' },
+      { label: 'Broader metadata types', value: 'deferred' },
+      { label: 'Product metadata sync', value: 'not ready (chat-category-assign only)' }
+    ];
+  }
+
+  async function captureMetadataSyncStatus(options) {
+    safeObject(options);
+    var surface = detectSurface();
+    var folder = getFolderSyncApi();
+    var warnings = [];
+
+    var apisAvailable = {
+      requests: !!(folder && typeof folder.listLibraryMetadataMutationRequests === 'function'),
+      requestDiagnostics: !!(folder && typeof folder.diagnoseLibraryMetadataMutationRequests === 'function'),
+      receipts: !!(folder && typeof folder.listLibraryMetadataMutationReceipts === 'function'),
+      receiptDiagnostics: !!(folder && typeof folder.diagnoseLibraryMetadataMutationReceipts === 'function')
+    };
+    if (!folder) addUnique(warnings, 'library-metadata-sync-status-folder-api-unavailable');
+    if (!apisAvailable.requestDiagnostics) addUnique(warnings, 'library-metadata-sync-status-request-diagnostics-unavailable');
+    if (!apisAvailable.receiptDiagnostics) addUnique(warnings, 'library-metadata-sync-status-receipt-diagnostics-unavailable');
+
+    var requestDiag = await readOnlyCall(apisAvailable.requestDiagnostics
+      ? function () { return folder.diagnoseLibraryMetadataMutationRequests({ includeRows: false }); } : null);
+    var requestRows = await readOnlyCall(apisAvailable.requests
+      ? function () { return folder.listLibraryMetadataMutationRequests({}); } : null);
+    var receiptDiag = await readOnlyCall(apisAvailable.receiptDiagnostics
+      ? function () { return folder.diagnoseLibraryMetadataMutationReceipts({ includeRows: false }); } : null);
+    var receiptRows = await readOnlyCall(apisAvailable.receipts
+      ? function () { return folder.listLibraryMetadataMutationReceipts({}); } : null);
+
+    var requestCounts = countRequestStatuses(requestRows);
+    if (requestDiag && typeof requestDiag.pendingCount !== 'undefined') {
+      requestCounts.pending = numberOrZero(requestDiag.pendingCount);
+    }
+    if (requestDiag && typeof requestDiag.totalCount !== 'undefined' && requestCounts.total === 0) {
+      requestCounts.total = numberOrZero(requestDiag.totalCount);
+    }
+
+    var receiptCounts = receiptStatusCounts(receiptDiag);
+    receiptCounts.total = receiptDiag ? numberOrZero(receiptDiag.receiptCount) : asArray(receiptRows).length;
+
+    var resolvedRequestCount = receiptDiag ? numberOrZero(receiptDiag.resolvedRequestCount) : requestCounts.resolved;
+    var pendingRequestCount = receiptDiag ? numberOrZero(receiptDiag.pendingRequestCount) : requestCounts.pending;
+    if (resolvedRequestCount > requestCounts.resolved) requestCounts.resolved = resolvedRequestCount;
+
+    var model = {
+      schema: STATUS_SCHEMA,
+      version: STATUS_VERSION,
+      phase: 'phase10-status-display',
+      displayTitle: 'Library metadata sync status',
+      displaySurfaceName: 'libraryMetadataSyncStatus',
+      generatedAt: nowIso(),
+      surface: surface.surface,
+      adapter: surface.adapter,
+      readOnly: true,
+      statusOnly: true,
+      mutationWorkflow: false,
+      requestOnly: true,
+      apisAvailable: apisAvailable,
+      requestCounts: { total: requestCounts.total, pending: requestCounts.pending, resolved: requestCounts.resolved },
+      receiptCounts: receiptCounts,
+      resolvedRequestCount: resolvedRequestCount,
+      pendingRequestCount: pendingRequestCount,
+      onlyRuntimeProvenAppliedType: ONLY_PROVEN_APPLIED_TYPE,
+      appliedRequestTypes: [ONLY_PROVEN_APPLIED_TYPE],
+      deferredRequestTypes: DEFERRED_REQUEST_TYPES.slice(),
+      deferredDestructiveShapes: DEFERRED_DESTRUCTIVE_SHAPES.slice(),
+      deferredNote: 'Only chat-category-assign is runtime-proven and applied. Broader metadata request/apply types ' +
+        '(catalog create/rename, label/tag binding, classification-set) remain deferred; destructive metadata ' +
+        'actions remain blocked/deferred.',
+      authority: {
+        desktopAuthority: true,
+        chromeAuthority: false,
+        chromeCanonicalMutation: false,
+        desktopCanonicalAuthority: true,
+        chromeRequestOnly: true,
+        chromeReadOnlyCanonical: true
+      },
+      privacy: privacySummary(),
+      safety: {
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noLabelDelete: true,
+        noTagDelete: true,
+        noCategoryDelete: true,
+        noMetadataDelete: true,
+        destructiveMetadataActionsDeferred: true
+      },
+      sideEffectSummary: sideEffectSummary(),
+      productSyncReady: false,
+      warnings: warnings
+    };
+    model.display = { rows: statusDisplayRows(model) };
+    return model;
+  }
+
   var api = {
     __installed: true,
     version: VERSION,
@@ -1190,6 +1375,9 @@
     runDiagnostic: runDiagnostic,
     buildDisplayParityModel: buildDisplayParityModel,
     captureDisplayParityModel: captureDisplayParityModel,
+    captureMetadataSyncStatus: captureMetadataSyncStatus,
+    metadataSyncStatusSchema: STATUS_SCHEMA,
+    onlyProvenAppliedRequestType: ONLY_PROVEN_APPLIED_TYPE,
     listDeferredWarningCodes: listDeferredWarningCodes,
     listMismatchCodes: listMismatchCodes,
     warningCodes: Object.keys(WARNING_CODES).map(function (key) { return WARNING_CODES[key]; }).sort()
@@ -1200,4 +1388,5 @@
   H2O.Studio.sync.compareLibraryMetadataDiagnosticSnapshots = compareSnapshots;
   H2O.Studio.sync.runLibraryMetadataDiagnostics = runDiagnostic;
   H2O.Studio.sync.captureLibraryMetadataDisplayParityModel = captureDisplayParityModel;
+  H2O.Studio.sync.captureLibraryMetadataSyncStatus = captureMetadataSyncStatus;
 })(typeof globalThis !== 'undefined' ? globalThis : window);
