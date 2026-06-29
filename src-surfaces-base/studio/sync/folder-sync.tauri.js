@@ -693,6 +693,12 @@
     return /^[a-f0-9]{64}$/.test(text) ? text : '';
   }
 
+  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
+  var APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS = {
+    'chat-category-assign': true,
+    'chat-category-clear': true
+  };
+
   function addHealthCode(list, code) {
     addUnique(list, cleanString(code));
   }
@@ -1089,13 +1095,16 @@
       'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
+      'chat-category-clear': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'clear', requiresChatId: true, requiresId: false },
       'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
     };
     return table[action] || null;
   }
 
   function libraryMetadataMutationRequestDestructiveAction(action) {
-    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(cleanString(action));
+    var normalized = cleanString(action);
+    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(normalized) &&
+      !NON_DESTRUCTIVE_CLEAR_ALLOWLIST.has(normalized);
   }
 
   function sanitizeLibraryMetadataMutationRequestForChromeDesktop(row) {
@@ -1126,6 +1135,10 @@
     var entityId = safeMetadataRequestId(payload.entityId || payload.labelId || payload.tagId ||
       payload.categoryId || payload.classificationId);
     var displayName = safeMetadataRequestName(payload.displayName);
+    if (action === 'chat-category-clear') {
+      entityId = '';
+      displayName = '';
+    }
     if (spec.requiresChatId && !chatId) return null;
     if (spec.requiresId && !entityId) return null;
     if (spec.requiresName && !displayName) return null;
@@ -1158,7 +1171,7 @@
         entityId: entityId || null,
         labelId: spec.metadataKind === 'label' ? entityId || null : null,
         tagId: spec.metadataKind === 'tag' ? entityId || null : null,
-        categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+        categoryId: spec.metadataKind === 'category' && action !== 'chat-category-clear' ? entityId || null : null,
         classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
         displayName: displayName || null
       },
@@ -2897,13 +2910,13 @@
     if (blockers.length) {
       return { ok: false, status: 'invalid', code: blockers[0], blockers: blockers };
     }
-    if (action !== 'chat-category-assign') {
+    if (APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS[action] !== true) {
       return { ok: false, status: 'deferred', code: 'library-metadata-mutation-request-action-deferred-phase7' };
     }
     var payload = safeObject(request && request.payload);
     var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
     var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
-    if (!chatId || !categoryId) {
+    if (!chatId || (action === 'chat-category-assign' && !categoryId)) {
       return { ok: false, status: 'invalid', code: 'library-metadata-mutation-request-target-required' };
     }
     var expectedHash = safeMetadataRequestHash(request && request.expectedCurrentBasisHash);
@@ -2964,6 +2977,61 @@
       };
     }
     var afterBasis = await captureLibraryMetadataMutationProjectionBasis('phase7-desktop-apply-receipts-after-apply');
+    return {
+      status: 'applied',
+      code: 'library-metadata-mutation-request-applied',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: afterBasis.projectionHash,
+      counts: safeObject(afterBasis.counts)
+    };
+  }
+
+  async function applyChatCategoryClearLibraryMetadataRequest(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var categories = stores && stores.categories;
+    var chats = stores && stores.chats;
+    if (!categories || typeof categories.clearChat !== 'function' ||
+        !chats || typeof chats.get !== 'function') {
+      return { status: 'deferred', code: 'library-metadata-mutation-request-desktop-store-unavailable' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return { status: 'rejected', code: 'library-metadata-mutation-request-chat-not-found' };
+    var beforeCategoryId = cleanString(chatRow.categoryId || chatRow.category_id);
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: ''
+    }));
+    if (!beforeCategoryId) {
+      return {
+        status: 'skipped_duplicate',
+        code: 'library-metadata-mutation-request-already-cleared-canonical',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var ok = await categories.clearChat(chatId);
+    if (ok !== true) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-category-clear-failed',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterBasis = await captureLibraryMetadataMutationProjectionBasis('phase13-chat-category-clear-after-apply');
     return {
       status: 'applied',
       code: 'library-metadata-mutation-request-applied',
@@ -3084,7 +3152,9 @@
       }
       result.attemptedCount += 1;
       try {
-        var applied = await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis);
+        var applied = cleanString(request.requestType || request.action) === 'chat-category-clear'
+          ? await applyChatCategoryClearLibraryMetadataRequest(request, beforeBasis)
+          : await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis);
         if (applied.status === 'applied') result.appliedCount += 1;
         else if (applied.status === 'skipped_duplicate') result.skippedDuplicateCount += 1;
         else if (applied.status === 'deferred') result.deferredCount += 1;

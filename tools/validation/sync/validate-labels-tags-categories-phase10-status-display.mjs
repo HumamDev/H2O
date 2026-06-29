@@ -147,13 +147,18 @@ async function runRuntimeProof() {
     `receipt counts mismatch: ${JSON.stringify(status.receiptCounts)}`);
   assert(status.resolvedRequestCount === 1 && status.pendingRequestCount === 0, 'resolved/pending request counts mismatch');
 
-  // Only chat-category-assign is proven/applied; everything else deferred.
-  assert(status.onlyRuntimeProvenAppliedType === 'chat-category-assign', 'only-proven-applied-type mismatch');
-  assert(Array.isArray(status.appliedRequestTypes) && status.appliedRequestTypes.length === 1 &&
-    status.appliedRequestTypes[0] === 'chat-category-assign', 'appliedRequestTypes must be exactly chat-category-assign');
+  // Only chat-category-assign and chat-category-clear are proven/applied; everything else remains deferred.
+  assert(status.onlyRuntimeProvenAppliedType === 'chat-category-assign, chat-category-clear',
+    'runtime-proven-applied-types mismatch');
+  assert(Array.isArray(status.appliedRequestTypes) && status.appliedRequestTypes.length === 2 &&
+    status.appliedRequestTypes.includes('chat-category-assign') &&
+    status.appliedRequestTypes.includes('chat-category-clear'),
+    'appliedRequestTypes must be exactly chat-category-assign and chat-category-clear');
   assert(Array.isArray(status.deferredRequestTypes) && status.deferredRequestTypes.includes('label-create') &&
-    status.deferredRequestTypes.includes('classification-set') && !status.deferredRequestTypes.includes('chat-category-assign'),
-    'deferredRequestTypes must list broader types and exclude chat-category-assign');
+    status.deferredRequestTypes.includes('classification-set') &&
+    !status.deferredRequestTypes.includes('chat-category-assign') &&
+    !status.deferredRequestTypes.includes('chat-category-clear'),
+    'deferredRequestTypes must list broader types and exclude proven chat category actions');
 
   // Authority + read-only canonical posture.
   assert(status.authority.desktopAuthority === true && status.authority.chromeAuthority === false &&
@@ -174,7 +179,7 @@ async function runRuntimeProof() {
   // Display rows present and status-oriented.
   assert(status.display && Array.isArray(status.display.rows) && status.display.rows.length >= 12, 'display rows missing');
   const rowLabels = status.display.rows.map((r) => r.label);
-  for (const label of ['Requests pending', 'Requests resolved', 'Receipts applied', 'Only proven applied type', 'Broader metadata types']) {
+  for (const label of ['Requests pending', 'Requests resolved', 'Receipts applied', 'Runtime proven applied types', 'Broader metadata types']) {
     assert(rowLabels.includes(label), `display row missing: ${label}`);
   }
 
@@ -208,6 +213,7 @@ async function runRuntimeProof() {
     surface: status.surface,
     displaySurfaceName: status.displaySurfaceName,
     onlyRuntimeProvenAppliedType: status.onlyRuntimeProvenAppliedType,
+    runtimeProvenAppliedTypes: status.runtimeProvenAppliedTypes,
     requestCounts: status.requestCounts,
     receiptCounts: status.receiptCounts,
     authority: status.authority,
@@ -225,7 +231,7 @@ if (failures.length === 0) {
   const diagnostics = read(diagnosticsFile);
   for (const needle of [
     "var STATUS_SCHEMA = 'h2o.studio.sync.library-metadata-sync-status.v1'",
-    "var ONLY_PROVEN_APPLIED_TYPE = 'chat-category-assign'",
+    "var RUNTIME_PROVEN_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear']",
     'async function captureMetadataSyncStatus(',
     'captureMetadataSyncStatus: captureMetadataSyncStatus',
     'metadataSyncStatusSchema: STATUS_SCHEMA',

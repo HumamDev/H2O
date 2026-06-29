@@ -733,6 +733,8 @@
     return text.slice(0, 160);
   }
 
+  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
+
   function normalizeLibraryMetadataMutationAction(input) {
     var source = isPlainObject(input) ? input : {};
     var action = cleanString(source.action || source.requestType || source.type).toLowerCase().replace(/_/g, '-');
@@ -762,13 +764,16 @@
       'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
+      'chat-category-clear': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'clear', requiresChatId: true, requiresId: false },
       'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
     };
     return table[action] || null;
   }
 
   function libraryMetadataMutationDeferredDestructiveAction(action) {
-    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(cleanString(action));
+    var normalized = cleanString(action);
+    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(normalized) &&
+      !NON_DESTRUCTIVE_CLEAR_ALLOWLIST.has(normalized);
   }
 
   function parseLibraryMetadataMutationRequestPayload(row) {
@@ -807,6 +812,10 @@
     var chatId = safeMetadataRequestId(p.chatId || p.conversationId);
     var entityId = safeMetadataRequestId(p.entityId || p.labelId || p.tagId || p.categoryId || p.classificationId);
     var displayName = safeMetadataRequestName(p.displayName);
+    if (action === 'chat-category-clear') {
+      entityId = '';
+      displayName = '';
+    }
     if (spec.requiresChatId && !chatId) return null;
     if (spec.requiresId && !entityId) return null;
     if (spec.requiresName && !displayName) return null;
@@ -839,7 +848,7 @@
         entityId: entityId || null,
         labelId: spec.metadataKind === 'label' ? entityId || null : null,
         tagId: spec.metadataKind === 'tag' ? entityId || null : null,
-        categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+        categoryId: spec.metadataKind === 'category' && action !== 'chat-category-clear' ? entityId || null : null,
         classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
         displayName: displayName || null
       },

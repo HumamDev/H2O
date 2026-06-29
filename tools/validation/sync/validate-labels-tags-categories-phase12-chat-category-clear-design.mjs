@@ -16,6 +16,7 @@ const failures = [];
 
 const designDoc = 'release-evidence/2026-06-25/labels-tags-categories-phase12-chat-category-clear-design.md';
 const phase11Doc = 'release-evidence/2026-06-25/labels-tags-categories-phase11-closeout-readiness-audit.md';
+const phase13Doc = 'release-evidence/2026-06-25/labels-tags-categories-phase13-chat-category-clear.md';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const categoriesStoreFile = 'src-surfaces-base/studio/store/categories.tauri.js';
@@ -32,6 +33,7 @@ if (!exists(designDoc)) {
   process.exit(1);
 }
 const doc = read(designDoc);
+const phase13Implemented = exists(phase13Doc);
 assert(doc.length > 2000, `${designDoc}: design doc too short`);
 
 // ---- design-only markers ----
@@ -89,19 +91,29 @@ assert(!/chat-category-clear is (now )?(implemented|applied|enabled)/i.test(doc)
   'design doc must not claim chat-category-clear is implemented/applied/enabled');
 assert(doc.includes('NOT READY'), 'design doc must keep product sync NOT READY');
 
-// ---- design-only PROOF against source: nothing was enabled ----
+// ---- design-only / post-implementation source proof ----
 for (const file of [folderSyncFile, folderImportFile, categoriesStoreFile]) {
   assert(exists(file), `${file}: missing`);
 }
-// The Desktop apply/validate module and the Chrome request module must NOT reference the new action
-// (it remains a design only; only the Phase 10 diagnostics deferred-list mentions it).
-assert(!read(folderSyncFile).includes('chat-category-clear'),
-  'design-only violated: folder-sync.tauri.js references chat-category-clear (apply not allowed in this phase)');
-assert(!read(folderImportFile).includes('chat-category-clear'),
-  'design-only violated: folder-import.mv3.js references chat-category-clear (request enablement not allowed in this phase)');
-// The apply gate and destructive guards must be unchanged (clear still blocked, assign-only apply).
-assert(read(folderSyncFile).includes("if (action !== 'chat-category-assign')"),
-  'Desktop apply gate must remain limited to chat-category-assign');
+if (!phase13Implemented) {
+  // The Desktop apply/validate module and the Chrome request module must NOT reference the new action
+  // (it remains a design only; only the Phase 10 diagnostics deferred-list mentions it).
+  assert(!read(folderSyncFile).includes('chat-category-clear'),
+    'design-only violated: folder-sync.tauri.js references chat-category-clear (apply not allowed in this phase)');
+  assert(!read(folderImportFile).includes('chat-category-clear'),
+    'design-only violated: folder-import.mv3.js references chat-category-clear (request enablement not allowed in this phase)');
+  // The apply gate and destructive guards must be unchanged (clear still blocked, assign-only apply).
+  assert(read(folderSyncFile).includes("if (action !== 'chat-category-assign')"),
+    'Desktop apply gate must remain limited to chat-category-assign');
+} else {
+  assert(read(phase13Doc).includes('chat-category-clear'), `${phase13Doc}: missing chat-category-clear implementation evidence`);
+  assert(read(folderSyncFile).includes("NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear'])"),
+    'Desktop Phase 13 exact clear allowlist missing');
+  assert(read(folderImportFile).includes("NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear'])"),
+    'Chrome Phase 13 exact clear allowlist missing');
+  assert(read(folderSyncFile).includes('APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS'),
+    'Desktop Phase 13 applied request allowlist missing');
+}
 for (const guardFile of [folderSyncFile, folderImportFile]) {
   assert(read(guardFile).includes('delete|remove|unbind|clear|purge|hard-delete'),
     `destructive guard regex must remain intact (clear still blocked) in ${guardFile}`);
@@ -120,13 +132,13 @@ console.log(JSON.stringify({
   schema: 'h2o.studio.library-metadata.phase12-chat-category-clear-design.v1',
   phase: 'phase12-chat-category-clear-design',
   designDoc,
-  designOnly: true,
-  implemented: false,
-  applied: false,
-  onlyAppliedType: 'chat-category-assign',
+  designOnly: !phase13Implemented,
+  implemented: phase13Implemented,
+  applied: phase13Implemented ? 'phase13-chat-category-clear' : false,
+  onlyAppliedType: phase13Implemented ? 'chat-category-assign, chat-category-clear' : 'chat-category-assign',
   clearSemantics: 'non-destructive-reassignment-to-none',
   invariantsChecked: REQUIRED_INVARIANTS.length,
-  sourceUnchanged: true,
+  sourceUnchanged: !phase13Implemented,
   productSyncReady: false,
 }, null, 2));
 console.log('PASS validate-labels-tags-categories-phase12-chat-category-clear-design');

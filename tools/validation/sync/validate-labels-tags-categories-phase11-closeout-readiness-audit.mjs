@@ -23,6 +23,7 @@ const failures = [];
 const runSuite = process.argv.includes('--run-suite');
 
 const auditDoc = 'release-evidence/2026-06-25/labels-tags-categories-phase11-closeout-readiness-audit.md';
+const phase13Doc = 'release-evidence/2026-06-25/labels-tags-categories-phase13-chat-category-clear.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -76,9 +77,15 @@ const REQUIRED_COMMITS = [
   '93d07f3', '91e1c95', '8addf3a', '2b6116f', 'ede1f66', 'daf28cc',
 ];
 
+const phase13Implemented = exists(phase13Doc);
+
 // Enforcement tokens the doc cites that must really exist in the named source file.
 const ENFORCEMENT_ANCHORS = [
-  ["if (action !== 'chat-category-assign')", 'src-surfaces-base/studio/sync/folder-sync.tauri.js'],
+  [
+    phase13Implemented ? 'APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS' : "if (action !== 'chat-category-assign')",
+    'src-surfaces-base/studio/sync/folder-sync.tauri.js',
+    "if (action !== 'chat-category-assign')"
+  ],
   ['readOnlyProjection: true', 'src-surfaces-base/studio/sync/folder-import.mv3.js'],
   ['canonicalMutation: false', 'src-surfaces-base/studio/sync/library/library-metadata-export-projection.tauri.js'],
   ['chromeReadOnlyCanonical: true', 'src-surfaces-base/studio/sync/library/library-metadata-diagnostics.js'],
@@ -121,12 +128,12 @@ for (const commit of REQUIRED_COMMITS) {
 }
 
 // ---- enforcement anchors real in source AND cited in doc ----
-for (const [token, file] of ENFORCEMENT_ANCHORS) {
+for (const [token, file, docToken] of ENFORCEMENT_ANCHORS) {
   assert(exists(file), `enforcement source file missing: ${file}`);
   if (exists(file)) {
     assert(read(file).includes(token), `enforcement token absent from source ${file}: ${token}`);
   }
-  assert(doc.includes(token), `audit doc does not cite enforcement token: ${token}`);
+  assert(doc.includes(docToken || token), `audit doc does not cite enforcement token: ${docToken || token}`);
 }
 
 // ---- readiness verdicts present, no over-claim ----

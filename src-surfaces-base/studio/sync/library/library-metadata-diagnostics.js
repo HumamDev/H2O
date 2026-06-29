@@ -1190,7 +1190,7 @@
    */
   var STATUS_SCHEMA = 'h2o.studio.sync.library-metadata-sync-status.v1';
   var STATUS_VERSION = '0.1.0-phase10';
-  var ONLY_PROVEN_APPLIED_TYPE = 'chat-category-assign';
+  var RUNTIME_PROVEN_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear'];
   var DEFERRED_REQUEST_TYPES = [
     'label-create', 'tag-create', 'category-create',
     'label-rename', 'tag-rename', 'category-rename',
@@ -1198,8 +1198,9 @@
   ];
   var DEFERRED_DESTRUCTIVE_SHAPES = [
     'label-delete', 'tag-delete', 'category-delete',
-    'chat-label-unbind', 'chat-tag-unbind', 'chat-category-clear',
-    'purge', 'hard-delete'
+    'chat-label-unbind', 'chat-tag-unbind',
+    'chat-label-clear', 'chat-tag-clear', 'category-clear', 'metadata-clear',
+    'chat-category-delete', 'delete', 'remove', 'unbind', 'purge', 'hard-delete'
   ];
 
   function getFolderSyncApi() {
@@ -1257,7 +1258,7 @@
       { label: 'Receipts stale basis', value: String(rec.stale_basis) },
       { label: 'Receipts invalid', value: String(rec.invalid) },
       { label: 'Receipts total', value: String(rec.total) },
-      { label: 'Only proven applied type', value: model.onlyRuntimeProvenAppliedType },
+      { label: 'Runtime proven applied types', value: model.runtimeProvenAppliedTypes.join(', ') },
       { label: 'Desktop authority', value: 'true' },
       { label: 'Chrome authority', value: 'false' },
       { label: 'Chrome canonical mutation', value: 'false' },
@@ -1266,7 +1267,7 @@
       { label: 'Account-linked metadata', value: 'none' },
       { label: 'Delete / purge behavior', value: 'none' },
       { label: 'Broader metadata types', value: 'deferred' },
-      { label: 'Product metadata sync', value: 'not ready (chat-category-assign only)' }
+      { label: 'Product metadata sync', value: 'not ready (category assign/clear only)' }
     ];
   }
 
@@ -1328,11 +1329,12 @@
       receiptCounts: receiptCounts,
       resolvedRequestCount: resolvedRequestCount,
       pendingRequestCount: pendingRequestCount,
-      onlyRuntimeProvenAppliedType: ONLY_PROVEN_APPLIED_TYPE,
-      appliedRequestTypes: [ONLY_PROVEN_APPLIED_TYPE],
+      onlyRuntimeProvenAppliedType: RUNTIME_PROVEN_APPLIED_TYPES.join(', '),
+      runtimeProvenAppliedTypes: RUNTIME_PROVEN_APPLIED_TYPES.slice(),
+      appliedRequestTypes: RUNTIME_PROVEN_APPLIED_TYPES.slice(),
       deferredRequestTypes: DEFERRED_REQUEST_TYPES.slice(),
       deferredDestructiveShapes: DEFERRED_DESTRUCTIVE_SHAPES.slice(),
-      deferredNote: 'Only chat-category-assign is runtime-proven and applied. Broader metadata request/apply types ' +
+      deferredNote: 'Only chat-category-assign and chat-category-clear are runtime-proven and applied. Broader metadata request/apply types ' +
         '(catalog create/rename, label/tag binding, classification-set) remain deferred; destructive metadata ' +
         'actions remain blocked/deferred.',
       authority: {
@@ -1377,7 +1379,8 @@
     captureDisplayParityModel: captureDisplayParityModel,
     captureMetadataSyncStatus: captureMetadataSyncStatus,
     metadataSyncStatusSchema: STATUS_SCHEMA,
-    onlyProvenAppliedRequestType: ONLY_PROVEN_APPLIED_TYPE,
+    onlyProvenAppliedRequestType: RUNTIME_PROVEN_APPLIED_TYPES.join(', '),
+    runtimeProvenAppliedRequestTypes: RUNTIME_PROVEN_APPLIED_TYPES.slice(),
     listDeferredWarningCodes: listDeferredWarningCodes,
     listMismatchCodes: listMismatchCodes,
     warningCodes: Object.keys(WARNING_CODES).map(function (key) { return WARNING_CODES[key]; }).sort()

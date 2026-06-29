@@ -389,11 +389,13 @@ for (const file of [folderImportFile, folderSyncFile, projectionFile]) {
   assert(exists(file), `${file}: missing`);
 }
 if (failures.length === 0) {
-  // The loop must remain limited to chat-category-assign and must not introduce broadened apply or
-  // destructive metadata behavior in the Desktop apply path.
+  // The loop must remain limited to the reviewed applied action allowlist and must not introduce
+  // broadened apply or destructive metadata behavior in the Desktop apply path.
   const folderSync = read(folderSyncFile);
-  assert(folderSync.includes("if (action !== 'chat-category-assign')"),
-    `${folderSyncFile}: Desktop apply must remain limited to chat-category-assign`);
+  assert(folderSync.includes('APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS') &&
+    folderSync.includes("'chat-category-assign': true") &&
+    folderSync.includes("'chat-category-clear': true"),
+    `${folderSyncFile}: Desktop apply must remain limited to the reviewed assign/clear allowlist`);
   assert(folderSync.includes('library-metadata-mutation-request-action-deferred-phase7'),
     `${folderSyncFile}: broader metadata actions must remain deferred`);
   if (exists(evidenceFile)) {

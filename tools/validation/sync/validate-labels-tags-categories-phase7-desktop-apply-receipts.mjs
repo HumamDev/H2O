@@ -344,7 +344,7 @@ const exportReceiptBody = functionBody(exportBundle, "buildLibraryMetadataMutati
 ].forEach((needle) => assertContains(folderSyncFile, needle));
 
 [
-  "action !== 'chat-category-assign'",
+  "APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS[action] !== true",
   "library-metadata-mutation-request-action-deferred-phase7",
   "libraryMetadataMutationRequestDestructiveAction(action)",
   "library-metadata-mutation-request-destructive-action-deferred",

@@ -6468,6 +6468,8 @@
     return text.slice(0, 160);
   }
 
+  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
+
   function normalizeLibraryMetadataRequestAction(input) {
     var action = cleanString(input.action || input.requestType || input.type).toLowerCase().replace(/_/g, '-');
     var kind = cleanString(input.metadataKind || input.kind || input.catalogKind).toLowerCase();
@@ -6496,13 +6498,16 @@
       'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
+      'chat-category-clear': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'clear', requiresChatId: true, requiresId: false },
       'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
     };
     return table[action] || null;
   }
 
   function libraryMetadataMutationDeferredDestructiveAction(action) {
-    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(cleanString(action));
+    var normalized = cleanString(action);
+    return /(delete|remove|unbind|clear|purge|hard-delete)/i.test(normalized) &&
+      !NON_DESTRUCTIVE_CLEAR_ALLOWLIST.has(normalized);
   }
 
   function libraryMetadataMutationRequestFailure(status, blockers, extra) {
@@ -6566,6 +6571,10 @@
     var entityId = safeMetadataRequestId(data.entityId || data.labelId || data.tagId || data.categoryId ||
       data.classificationId || data.id);
     var displayName = safeMetadataRequestName(data.displayName || data.name || data.label || data.title || data.newName);
+    if (action === 'chat-category-clear') {
+      entityId = '';
+      displayName = '';
+    }
     var expectedCurrentBasisHash = safeMetadataHash(data.expectedCurrentBasisHash || data.expectedProjectionHash ||
       data.projectionHash || data.expectedCurrentHash);
     var projectionBasis = libraryMetadataMutationProjectionBasis();
@@ -6619,7 +6628,7 @@
           entityId: entityId || null,
           labelId: spec.metadataKind === 'label' ? entityId || null : null,
           tagId: spec.metadataKind === 'tag' ? entityId || null : null,
-          categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+          categoryId: spec.metadataKind === 'category' && action !== 'chat-category-clear' ? entityId || null : null,
           classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
           displayName: displayName || null
         },
@@ -6680,6 +6689,10 @@
     var entityId = safeMetadataRequestId(payloadObj.entityId || payloadObj.labelId || payloadObj.tagId ||
       payloadObj.categoryId || payloadObj.classificationId);
     var displayName = safeMetadataRequestName(payloadObj.displayName);
+    if (action === 'chat-category-clear') {
+      entityId = '';
+      displayName = '';
+    }
     if (spec.requiresChatId && !chatId) return null;
     if (spec.requiresId && !entityId) return null;
     if (spec.requiresName && !displayName) return null;
@@ -6712,7 +6725,7 @@
         entityId: entityId || null,
         labelId: spec.metadataKind === 'label' ? entityId || null : null,
         tagId: spec.metadataKind === 'tag' ? entityId || null : null,
-        categoryId: spec.metadataKind === 'category' ? entityId || null : null,
+        categoryId: spec.metadataKind === 'category' && action !== 'chat-category-clear' ? entityId || null : null,
         classificationId: spec.metadataKind === 'classification' ? entityId || null : null,
         displayName: displayName || null
       },
