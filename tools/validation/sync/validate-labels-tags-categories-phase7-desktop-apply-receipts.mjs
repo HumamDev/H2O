@@ -422,8 +422,10 @@ assert(duplicateBody.includes("Array.isArray(bundle.libraryMetadataMutationReque
   "receipt.safety.noMetadataDelete === true"
 ].forEach((needle) => assert(exportReceiptBody.includes(needle), `receipt export guard missing ${needle}`));
 
-assertNotContains(chromeFolderImportFile, "libraryMetadataMutationReceipts", "Chrome receipt import must remain Phase 8");
-assertNotContains(chromeAutoImportFile, "libraryMetadataMutationReceipts", "Chrome receipt export/import must remain absent");
+// Chrome receipt import now lands in Phase 8 (folder-import.mv3.js); it is validated by
+// validate-labels-tags-categories-phase8-chrome-receipt-import.mjs. The auto-import (Chrome->Desktop
+// export) lane must still never read/import receipts — it remains request-export-only.
+assertNotContains(chromeAutoImportFile, "libraryMetadataMutationReceipts", "Chrome receipt export/import must remain absent from the auto-import export lane");
 
 [
   "Phase 7",

@@ -57,6 +57,9 @@
   var LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA = 'h2o.studio.library-metadata-mutation-request.v1';
   var LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-requests:pending-export:v1';
   var LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-request.pending-export-mirror.v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_KEY = 'h2o:studio:library-metadata-mutation-receipts:chrome-imported:v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.chrome-imported-mirror.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
@@ -204,6 +207,9 @@
     lastLibraryMetadataMutationRequestStatus: '',
     libraryMetadataMutationRequestCreates: 0,
     libraryMetadataMutationRequestDuplicates: 0,
+    lastLibraryMetadataMutationReceiptImport: null,
+    libraryMetadataMutationReceiptImports: 0,
+    libraryMetadataMutationReceiptResolvedRequests: 0,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -3042,6 +3048,7 @@
       folderDeleteReceiptImport: f.folderDeleteReceiptImport || null,
       folderRestoreReceiptImport: f.folderRestoreReceiptImport || null,
       chatFolderBindingReceiptImport: f.chatFolderBindingReceiptImport || null,
+      libraryMetadataMutationReceiptImport: f.libraryMetadataMutationReceiptImport || null,
       desktopCanonicalLibraryMetadata: f.desktopCanonicalLibraryMetadata || null,
       desktopCanonicalLibraryMetadataImport: f.desktopCanonicalLibraryMetadataImport || null,
       convergence: f.convergence || null,
@@ -3180,6 +3187,7 @@
     state.lastFolderRestoreReceiptImport = folderRestoreReceiptImport;
     folderMetadataChangeSummary = mergeFolderRestoreReceiptReShowSummary(folderMetadataChangeSummary, folderRestoreReceiptImport);
     var chatFolderBindingReceiptImport = await importChatFolderBindingReceiptsFromDesktopBundle(bundleInput);
+    var libraryMetadataMutationReceiptImport = await importLibraryMetadataMutationReceiptsFromDesktopBundle(bundleInput);
     var desktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(normalized.bundle, nowIso());
     var desktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(desktopVisibleFolderSet);
     folderMetadataChangeSummary = mergeDesktopVisibleSetHideSummary(folderMetadataChangeSummary, desktopVisibleSetHide);
@@ -3229,6 +3237,9 @@
     if (numberOrZero(chatFolderBindingReceiptImport && chatFolderBindingReceiptImport.blockerCount) > 0) {
       addUnique(blockers, 'chat-folder-binding-receipt-import-blocked');
     }
+    if (numberOrZero(libraryMetadataMutationReceiptImport && libraryMetadataMutationReceiptImport.blockerCount) > 0) {
+      addUnique(blockers, 'library-metadata-mutation-receipt-import-blocked');
+    }
     var convergence = evaluateDesktopChromeConvergence(normalized.sourceSummary, parity, importSummary);
     if (!convergence.ok) addUnique(blockers, convergence.blocker);
     return propagationResult(blockers.length === 0, {
@@ -3240,6 +3251,7 @@
       folderDeleteReceiptImport: folderDeleteReceiptImport,
       folderRestoreReceiptImport: folderRestoreReceiptImport,
       chatFolderBindingReceiptImport: chatFolderBindingReceiptImport,
+      libraryMetadataMutationReceiptImport: libraryMetadataMutationReceiptImport,
       desktopVisibleFolderSet: desktopVisibleFolderSet,
       desktopVisibleSetHide: desktopVisibleSetHide,
       desktopCanonicalRecentlyDeleted: desktopCanonicalRecentlyDeleted,
@@ -4887,6 +4899,7 @@
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
       chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+      libraryMetadataMutationReceiptImport: state.lastLibraryMetadataMutationReceiptImport || null,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted || null,
       desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression || null,
       desktopCanonicalLibraryMetadata: state.desktopCanonicalLibraryMetadata || null,
@@ -5695,6 +5708,7 @@
           var alreadyRestoreReceiptImport = await importFolderRestoreReceiptsFromDesktopBundle(bundle);
           alreadyRefreshSummary = mergeFolderRestoreReceiptReShowSummary(alreadyRefreshSummary, alreadyRestoreReceiptImport);
           var alreadyChatFolderBindingReceiptImport = await importChatFolderBindingReceiptsFromDesktopBundle(bundle);
+          var alreadyLibraryMetadataMutationReceiptImport = await importLibraryMetadataMutationReceiptsFromDesktopBundle(bundle);
           var alreadyDesktopVisibleFolderSet = importDesktopVisibleFolderSetSnapshot(bundle, nowIso());
           var alreadyDesktopVisibleSetHide = await applyDesktopVisibleSetHideOverlay(alreadyDesktopVisibleFolderSet);
           alreadyRefreshSummary = mergeDesktopVisibleSetHideSummary(alreadyRefreshSummary, alreadyDesktopVisibleSetHide);
@@ -5772,6 +5786,7 @@
             folderDeleteReceiptImport: alreadyReceiptImport,
             folderRestoreReceiptImport: alreadyRestoreReceiptImport,
             chatFolderBindingReceiptImport: alreadyChatFolderBindingReceiptImport,
+            libraryMetadataMutationReceiptImport: alreadyLibraryMetadataMutationReceiptImport,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
             desktopCanonicalRecentlyDeleted: alreadyDesktopCanonicalRecentlyDeleted,
@@ -5832,6 +5847,7 @@
             folderDeleteReceiptImport: alreadyPropagation.folderDeleteReceiptImport,
             folderRestoreReceiptImport: alreadyPropagation.folderRestoreReceiptImport,
             chatFolderBindingReceiptImport: alreadyPropagation.chatFolderBindingReceiptImport,
+            libraryMetadataMutationReceiptImport: alreadyPropagation.libraryMetadataMutationReceiptImport,
             convergence: alreadyPropagation.convergence,
             desktopVisibleFolderSet: alreadyDesktopVisibleFolderSet,
             desktopVisibleSetHide: alreadyDesktopVisibleSetHide,
@@ -6182,6 +6198,7 @@
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
         chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+        libraryMetadataMutationReceiptImport: state.lastLibraryMetadataMutationReceiptImport || null,
         desktopCanonicalLibraryMetadataImport: summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata),
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
@@ -6342,6 +6359,7 @@
       folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
       folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
       chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+      libraryMetadataMutationReceiptImport: state.lastLibraryMetadataMutationReceiptImport || null,
       desktopToChrome: {
         autoExportEnabled: !!desktopToChromeRaw.autoExportEnabled,
         autoImportEnabled: !!desktopToChromeRaw.autoImportEnabled,
@@ -6365,6 +6383,7 @@
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
         chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+        libraryMetadataMutationReceiptImport: state.lastLibraryMetadataMutationReceiptImport || null,
         desktopCanonicalLibraryMetadataImport: summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata)
       },
       chromeToDesktop: {
@@ -6962,6 +6981,491 @@
     return result;
   }
 
+  // ----- Phase 8: Chrome read-only import/display of Desktop-issued library metadata mutation receipts -----
+  //
+  // Chrome remains request-only. It never owns canonical metadata. This lane only reads trusted
+  // Desktop receipts from the desktop-to-chrome bundle, records them in a Chrome-only read-model
+  // mirror, and marks the matching Chrome pending request rows as observed/resolved. It performs no
+  // canonical mutation, no Desktop apply, and no delete of any kind.
+  //
+  // Receipt status taxonomy follows Phase 7 exactly:
+  //   applied | rejected | deferred | skipped_duplicate | stale_basis | invalid
+  // Terminal statuses conclude the request instance and flip the matching Chrome request off
+  // 'pending' (stops Chrome re-exporting an already-decided request, without deleting history).
+  // 'deferred' is observed-only and stays pending so a future Desktop phase can still apply it.
+
+  function knownLibraryMetadataMutationReceiptStatus(status) {
+    var s = cleanString(status);
+    return s === 'applied' || s === 'rejected' || s === 'deferred' ||
+      s === 'skipped_duplicate' || s === 'stale_basis' || s === 'invalid';
+  }
+
+  function isTerminalLibraryMetadataMutationReceiptStatus(status) {
+    var s = cleanString(status);
+    return s === 'applied' || s === 'rejected' || s === 'invalid' ||
+      s === 'skipped_duplicate' || s === 'stale_basis';
+  }
+
+  function sanitizeImportedLibraryMetadataMutationReceipt(receipt) {
+    var r = safeObject(receipt);
+    if (cleanString(r.schema) !== LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-schema-invalid' };
+    }
+    var receiptId = safeMetadataRequestId(r.receiptId);
+    if (!receiptId) return { ok: false, code: 'library-metadata-mutation-receipt-id-invalid' };
+    var requestId = safeMetadataRequestId(r.requestId || r.reviewId);
+    if (!requestId) return { ok: false, code: 'library-metadata-mutation-receipt-request-id-invalid' };
+    var status = cleanString(r.status);
+    if (!knownLibraryMetadataMutationReceiptStatus(status)) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-status-unknown' };
+    }
+    if (r.separateFromDesktopCanonicalLibraryMetadata !== true) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-not-separate-from-canonical' };
+    }
+    if (r.productSyncReady !== false) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-product-sync-flag-invalid' };
+    }
+    var privacy = safeObject(r.privacy);
+    if (privacy.redacted !== true || privacy.hashOnly !== true ||
+        privacy.rawChatIds === true || privacy.rawChatTitles === true ||
+        privacy.rawChatContent === true || privacy.accountLinkedMetadata === true) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-privacy-invalid' };
+    }
+    var safety = safeObject(r.safety);
+    if (safety.desktopAuthority !== true || safety.chromeAuthority !== false ||
+        safety.noChromeCanonicalMutation !== true ||
+        safety.noHardDelete !== true || safety.noPurge !== true ||
+        safety.noChatDelete !== true || safety.noSnapshotDelete !== true ||
+        safety.noAssetDelete !== true || safety.noLabelDelete !== true ||
+        safety.noTagDelete !== true || safety.noCategoryDelete !== true ||
+        safety.noMetadataDelete !== true) {
+      return { ok: false, code: 'library-metadata-mutation-receipt-safety-invalid' };
+    }
+    var target = safeObject(r.target);
+    var sanitized = {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+      version: cleanString(r.version),
+      phase: cleanString(r.phase),
+      receiptId: receiptId,
+      requestId: requestId,
+      reviewId: safeMetadataRequestId(r.reviewId || r.requestId) || requestId,
+      idempotencyKey: cleanString(r.idempotencyKey),
+      requestAction: normalizeLibraryMetadataRequestAction(r),
+      requestType: cleanString(r.requestType || r.requestAction),
+      metadataKind: cleanString(r.metadataKind),
+      subjectKind: cleanString(r.subjectKind),
+      status: status,
+      reason: cleanString(r.reason) || status,
+      code: cleanString(r.code) || status,
+      reviewedAt: cleanString(r.reviewedAt),
+      appliedAt: cleanString(r.appliedAt),
+      target: {
+        chatIdHash: safeMetadataHash(target.chatIdHash),
+        entityIdHash: safeMetadataHash(target.entityIdHash),
+        metadataKind: cleanString(target.metadataKind)
+      },
+      expectedCurrentBasisHash: safeMetadataHash(r.expectedCurrentBasisHash),
+      beforeProjectionHash: safeMetadataHash(r.beforeProjectionHash),
+      resultingCanonicalHash: safeMetadataHash(r.resultingCanonicalHash),
+      beforeAssignmentHash: safeMetadataHash(r.beforeAssignmentHash),
+      afterAssignmentHash: safeMetadataHash(r.afterAssignmentHash),
+      counts: safeObject(r.counts),
+      desktopSource: {
+        surface: cleanString(safeObject(r.source).surface) || 'desktop-studio',
+        authority: 'desktop'
+      },
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false
+      },
+      safety: {
+        desktopAuthority: true,
+        chromeAuthority: false,
+        chromeReadOnly: true,
+        noChromeCanonicalMutation: true,
+        noDesktopCanonicalMutationFromChrome: true,
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noLabelDelete: true,
+        noTagDelete: true,
+        noCategoryDelete: true,
+        noMetadataDelete: true,
+        destructiveMetadataActionsDeferred: true
+      },
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      productSyncReady: false,
+      terminal: isTerminalLibraryMetadataMutationReceiptStatus(status),
+      chromeImport: {
+        surface: 'chrome-studio',
+        readOnly: true,
+        source: 'desktop-latest-bundle'
+      }
+    };
+    return { ok: true, receipt: sanitized };
+  }
+
+  async function readLibraryMetadataMutationReceiptImportMirror() {
+    var empty = {
+      ok: true,
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA,
+      found: false,
+      updatedAt: '',
+      receiptCount: 0,
+      receipts: []
+    };
+    try {
+      var mirror = await readKv(LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_KEY);
+      if (!mirror || typeof mirror !== 'object' || Array.isArray(mirror)) return empty;
+      if (cleanString(mirror.schema) !== LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA) {
+        return Object.assign({}, empty, {
+          ok: false,
+          found: true,
+          warning: 'library-metadata-mutation-receipt-import-mirror-schema-invalid'
+        });
+      }
+      return {
+        ok: true,
+        schema: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA,
+        found: true,
+        updatedAt: cleanString(mirror.updatedAt),
+        receiptCount: Array.isArray(mirror.receipts) ? mirror.receipts.length : 0,
+        receipts: Array.isArray(mirror.receipts) ? mirror.receipts.slice() : []
+      };
+    } catch (e) {
+      pushError('libraryMetadataMutationReceipts.importMirror.read', e);
+      return Object.assign({}, empty, {
+        ok: false,
+        warning: 'library-metadata-mutation-receipt-import-mirror-read-failed'
+      });
+    }
+  }
+
+  async function writeLibraryMetadataMutationReceiptImportMirror(rows) {
+    var list = Array.isArray(rows) ? rows.slice() : [];
+    if (list.length > 1000) list = list.slice(list.length - 1000);
+    await writeKv(LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_KEY, {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA,
+      version: 1,
+      updatedAt: nowIso(),
+      receiptCount: list.length,
+      receipts: list
+    });
+    return list;
+  }
+
+  // Read-model only. Marks matching Chrome request rows as observed/resolved using the existing
+  // Phase 6 pending-export mirror. No row is ever deleted; resolved rows keep full history and are
+  // naturally excluded from Chrome->Desktop re-export because the export sanitizer requires
+  // status === 'pending'. Idempotent: a row already resolved by the same receiptId is not rewritten.
+  async function markLibraryMetadataMutationRequestsResolvedByReceipts(receipts) {
+    var summary = {
+      matchedPendingRequestCount: 0,
+      resolvedPendingRequestCount: 0,
+      observedDeferredRequestCount: 0,
+      alreadyResolvedRequestCount: 0,
+      unmatchedReceiptCount: 0,
+      warnings: []
+    };
+    var rowsList = Array.isArray(receipts) ? receipts : [];
+    if (!rowsList.length) return summary;
+    var mirror = await readLibraryMetadataMutationRequestExportMirror();
+    var requestRows = Array.isArray(mirror.requests) ? mirror.requests.slice() : [];
+    if (!requestRows.length) {
+      summary.unmatchedReceiptCount = rowsList.length;
+      return summary;
+    }
+    var changed = false;
+    rowsList.forEach(function (receipt) {
+      var requestId = cleanString(receipt.requestId);
+      var idempotencyKey = cleanString(receipt.idempotencyKey);
+      var status = cleanString(receipt.status);
+      var receiptId = cleanString(receipt.receiptId);
+      var matches = requestRows.filter(function (row) {
+        var rid = cleanString(row && (row.requestId || row.reviewId));
+        var rkey = cleanString(row && row.idempotencyKey);
+        return (requestId && rid === requestId) || (idempotencyKey && rkey === idempotencyKey);
+      });
+      if (!matches.length) {
+        summary.unmatchedReceiptCount += 1;
+        return;
+      }
+      matches.forEach(function (row) {
+        var rowStatus = cleanString(row.status);
+        if (rowStatus === 'pending') {
+          summary.matchedPendingRequestCount += 1;
+          if (isTerminalLibraryMetadataMutationReceiptStatus(status)) {
+            row.status = 'resolved';
+            row.resolvedByReceiptId = receiptId;
+            row.resolvedReceiptStatus = status;
+            row.resolvedAt = nowIso();
+            row.resolutionSource = 'desktop-receipt-import';
+            summary.resolvedPendingRequestCount += 1;
+            changed = true;
+          } else if (cleanString(row.observedByReceiptId) !== receiptId) {
+            // deferred: keep pending for a future Desktop phase, record observation only.
+            row.observedByReceiptId = receiptId;
+            row.observedReceiptStatus = status;
+            row.observedAt = nowIso();
+            summary.observedDeferredRequestCount += 1;
+            changed = true;
+          } else {
+            summary.observedDeferredRequestCount += 1;
+          }
+        } else if (rowStatus === 'resolved' && cleanString(row.resolvedByReceiptId) === receiptId) {
+          summary.alreadyResolvedRequestCount += 1;
+        }
+      });
+    });
+    if (changed) {
+      try {
+        await writeKv(LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_KEY, {
+          schema: LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_MIRROR_SCHEMA,
+          version: 1,
+          updatedAt: nowIso(),
+          requestCount: requestRows.length,
+          requests: requestRows
+        });
+      } catch (e) {
+        pushError('libraryMetadataMutationRequests.resolveByReceipt', e);
+        summary.warnings.push({ code: 'library-metadata-mutation-request-resolution-write-failed' });
+      }
+    }
+    return summary;
+  }
+
+  function makeLibraryMetadataMutationReceiptImportResult() {
+    return {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA + '.chrome-import.v1',
+      phase: 'phase8-chrome-receipt-import',
+      ok: true,
+      attempted: true,
+      surface: 'chrome-studio',
+      found: 0,
+      receiptCount: 0,
+      importedReceiptCount: 0,
+      newReceiptCount: 0,
+      duplicateReceiptCount: 0,
+      skippedMalformedCount: 0,
+      statusCounts: { applied: 0, rejected: 0, deferred: 0, skipped_duplicate: 0, stale_basis: 0, invalid: 0 },
+      matchedPendingRequestCount: 0,
+      resolvedPendingRequestCount: 0,
+      observedDeferredRequestCount: 0,
+      alreadyResolvedRequestCount: 0,
+      unmatchedReceiptCount: 0,
+      blockerCount: 0,
+      warningCount: 0,
+      chromeReadOnly: true,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutationFromChrome: true,
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      productSyncReady: false,
+      destructiveMetadataActionsDeferred: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      receiptRows: [],
+      skippedReceipts: [],
+      warnings: [],
+      blockers: []
+    };
+  }
+
+  function addLibraryMetadataMutationReceiptCode(result, bucket, code) {
+    var c = cleanString(code);
+    if (!c || !result || !Array.isArray(result[bucket])) return;
+    if (!result[bucket].some(function (row) { return row && row.code === c; })) {
+      result[bucket].push({ code: c });
+    }
+  }
+
+  async function importLibraryMetadataMutationReceiptsFromDesktopBundle(bundle) {
+    var result = makeLibraryMetadataMutationReceiptImportResult();
+    var incoming = Array.isArray(bundle && bundle.libraryMetadataMutationReceipts) ? bundle.libraryMetadataMutationReceipts : [];
+    result.found = incoming.length;
+    if (!incoming.length) {
+      state.lastLibraryMetadataMutationReceiptImport = result;
+      return result;
+    }
+    try {
+      var mirror = await readLibraryMetadataMutationReceiptImportMirror();
+      if (mirror.warning) {
+        addLibraryMetadataMutationReceiptCode(result, 'warnings', mirror.warning);
+      }
+      var existingRows = Array.isArray(mirror.receipts) ? mirror.receipts.slice() : [];
+      var byId = Object.create(null);
+      existingRows.forEach(function (row) {
+        var id = cleanString(row && row.receiptId);
+        if (id) byId[id] = row;
+      });
+      var sanitizedReceipts = [];
+      incoming.forEach(function (raw) {
+        var outcome = sanitizeImportedLibraryMetadataMutationReceipt(raw);
+        if (!outcome.ok) {
+          result.skippedMalformedCount += 1;
+          if (result.skippedReceipts.length < 50) result.skippedReceipts.push({ code: outcome.code });
+          addLibraryMetadataMutationReceiptCode(result, 'warnings', outcome.code);
+          return;
+        }
+        var receipt = outcome.receipt;
+        var existing = byId[receipt.receiptId] || null;
+        receipt.chromeImport.firstObservedAt = (existing && existing.chromeImport &&
+          cleanString(existing.chromeImport.firstObservedAt)) || nowIso();
+        receipt.chromeImport.lastObservedAt = nowIso();
+        if (existing) result.duplicateReceiptCount += 1;
+        else result.newReceiptCount += 1;
+        var status = cleanString(receipt.status);
+        if (Object.prototype.hasOwnProperty.call(result.statusCounts, status)) {
+          result.statusCounts[status] += 1;
+        }
+        byId[receipt.receiptId] = receipt;
+        sanitizedReceipts.push(receipt);
+      });
+      result.importedReceiptCount = sanitizedReceipts.length;
+      var nextRows = existingRows.filter(function (row) {
+        var id = cleanString(row && row.receiptId);
+        return id && !sanitizedReceipts.some(function (r) { return r.receiptId === id; });
+      }).concat(sanitizedReceipts);
+      await writeLibraryMetadataMutationReceiptImportMirror(nextRows);
+      result.receiptCount = nextRows.length;
+      var resolution = await markLibraryMetadataMutationRequestsResolvedByReceipts(sanitizedReceipts);
+      result.matchedPendingRequestCount = numberOrZero(resolution.matchedPendingRequestCount);
+      result.resolvedPendingRequestCount = numberOrZero(resolution.resolvedPendingRequestCount);
+      result.observedDeferredRequestCount = numberOrZero(resolution.observedDeferredRequestCount);
+      result.alreadyResolvedRequestCount = numberOrZero(resolution.alreadyResolvedRequestCount);
+      result.unmatchedReceiptCount = numberOrZero(resolution.unmatchedReceiptCount);
+      (Array.isArray(resolution.warnings) ? resolution.warnings : []).forEach(function (w) {
+        addLibraryMetadataMutationReceiptCode(result, 'warnings', w && (w.code || w));
+      });
+      result.receiptRows = sanitizedReceipts.slice(0, 100).map(function (row) {
+        return {
+          receiptId: row.receiptId,
+          requestId: row.requestId,
+          idempotencyKey: row.idempotencyKey,
+          requestType: row.requestType,
+          status: row.status,
+          terminal: row.terminal === true,
+          code: row.code
+        };
+      });
+      result.warningCount = result.warnings.length;
+      result.blockerCount = result.blockers.length;
+      result.ok = result.blockerCount === 0;
+      state.libraryMetadataMutationReceiptImports += 1;
+      state.libraryMetadataMutationReceiptResolvedRequests += result.resolvedPendingRequestCount;
+      state.lastLibraryMetadataMutationReceiptImport = result;
+      return result;
+    } catch (error) {
+      pushError('library-metadata-mutation-receipt-import', error);
+      result.ok = false;
+      result.blockerCount = 1;
+      addLibraryMetadataMutationReceiptCode(result, 'blockers', 'library-metadata-mutation-receipt-import-failed');
+      state.lastLibraryMetadataMutationReceiptImport = result;
+      return result;
+    }
+  }
+
+  async function listLibraryMetadataMutationReceipts(options) {
+    var opts = safeObject(options);
+    var mirror = await readLibraryMetadataMutationReceiptImportMirror();
+    var rows = Array.isArray(mirror.receipts) ? mirror.receipts.slice() : [];
+    var statusFilter = cleanString(opts.status);
+    if (statusFilter) rows = rows.filter(function (row) { return cleanString(row && row.status) === statusFilter; });
+    var requestIdFilter = safeMetadataRequestId(opts.requestId);
+    if (requestIdFilter) rows = rows.filter(function (row) { return cleanString(row && row.requestId) === requestIdFilter; });
+    var limit = numberOrZero(opts.limit) || 1000;
+    if (limit > 0) rows = rows.slice(0, Math.min(limit, 1000));
+    return rows.map(function (row) { return cloneJson(row); }).filter(Boolean);
+  }
+
+  async function diagnoseLibraryMetadataMutationReceipts(options) {
+    var includeRows = !!(options && options.includeRows);
+    var mirror = await readLibraryMetadataMutationReceiptImportMirror();
+    var rows = Array.isArray(mirror.receipts) ? mirror.receipts : [];
+    var statusCounts = { applied: 0, rejected: 0, deferred: 0, skipped_duplicate: 0, stale_basis: 0, invalid: 0 };
+    rows.forEach(function (row) {
+      var s = cleanString(row && row.status);
+      if (Object.prototype.hasOwnProperty.call(statusCounts, s)) statusCounts[s] += 1;
+    });
+    var requestMirror = await readLibraryMetadataMutationRequestExportMirror();
+    var requestRows = Array.isArray(requestMirror.requests) ? requestMirror.requests : [];
+    var pendingRequestCount = requestRows.filter(function (row) { return cleanString(row && row.status) === 'pending'; }).length;
+    var resolvedRequestCount = requestRows.filter(function (row) { return cleanString(row && row.status) === 'resolved'; }).length;
+    var result = {
+      schema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA + '.chrome-import-diagnostic.v1',
+      phase: 'phase8-chrome-receipt-import',
+      ok: mirror.ok === true,
+      installed: true,
+      surface: 'chrome-studio',
+      section: 'libraryMetadataMutationReceipts',
+      importMirrorKey: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_KEY,
+      importMirrorSchema: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_MIRROR_SCHEMA,
+      receiptSchema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+      mirrorAvailable: mirror.found === true,
+      receiptCount: rows.length,
+      statusCounts: statusCounts,
+      appliedCount: statusCounts.applied,
+      rejectedCount: statusCounts.rejected,
+      deferredCount: statusCounts.deferred,
+      skippedDuplicateCount: statusCounts.skipped_duplicate,
+      staleBasisCount: statusCounts.stale_basis,
+      invalidCount: statusCounts.invalid,
+      pendingRequestCount: pendingRequestCount,
+      resolvedRequestCount: resolvedRequestCount,
+      importsSinceBoot: state.libraryMetadataMutationReceiptImports,
+      resolvedRequestsSinceBoot: state.libraryMetadataMutationReceiptResolvedRequests,
+      lastImport: state.lastLibraryMetadataMutationReceiptImport || null,
+      chromeReadOnly: true,
+      desktopApply: false,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      noChromeCanonicalMutation: true,
+      noDesktopCanonicalMutationFromChrome: true,
+      separateFromDesktopCanonicalLibraryMetadata: true,
+      productSyncReady: false,
+      destructiveMetadataActionsDeferred: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+      noLabelDelete: true,
+      noTagDelete: true,
+      noCategoryDelete: true,
+      noMetadataDelete: true,
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        accountLinkedMetadata: false
+      },
+      warnings: mirror.warning ? [{ code: mirror.warning }] : [],
+      blockers: mirror.ok === true ? [] : [{ code: 'library-metadata-mutation-receipt-import-mirror-unavailable' }]
+    };
+    if (includeRows) result.receipts = rows.map(function (row) { return cloneJson(row); }).filter(Boolean);
+    return result;
+  }
+
   var api = {
     connectFolder: connectFolder,
     disconnectFolder: disconnectFolder,
@@ -6988,6 +7492,11 @@
     diagnoseLibraryMetadataMutationRequests: diagnoseLibraryMetadataMutationRequests,
     libraryMetadataMutationRequestSchema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA,
     libraryMetadataMutationRequestExportKey: LIBRARY_METADATA_MUTATION_REQUEST_EXPORT_KEY,
+    importLibraryMetadataMutationReceiptsFromDesktopBundle: importLibraryMetadataMutationReceiptsFromDesktopBundle,
+    listLibraryMetadataMutationReceipts: listLibraryMetadataMutationReceipts,
+    diagnoseLibraryMetadataMutationReceipts: diagnoseLibraryMetadataMutationReceipts,
+    libraryMetadataMutationReceiptSchema: LIBRARY_METADATA_MUTATION_RECEIPT_SCHEMA,
+    libraryMetadataMutationReceiptImportKey: LIBRARY_METADATA_MUTATION_RECEIPT_IMPORT_KEY,
     diagnoseVisibleFolderParity: diagnoseVisibleFolderParity,
     health: {
       diagnose: diagnoseHealth,
