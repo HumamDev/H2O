@@ -1,8 +1,8 @@
 {
   "schema": "h2o.studio.savedChat.snapshot.v1",
   "schemaVersion": 1,
-  "snapshotId": "snap_i_harness_fixture_src",
-  "chatId": "i-harness-fixture-src-chat",
+  "snapshotId": "snap_i_harness_source",
+  "chatId": "i-harness-source",
   "title": "I-Harness Import Recovery Fixture",
   "capturedAt": "2026-06-24T00:00:00.000Z",
   "savedAt": "2026-06-24T00:00:00.000Z",

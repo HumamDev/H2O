@@ -1,9 +1,9 @@
 {
   "schema": "h2o.savedChatPackage",
   "schemaVersion": 1,
-  "packageId": "pkg_snap_i_harness_fixture_src_ee831ea2f673",
-  "chatId": "i-harness-fixture-src-chat",
-  "snapshotId": "snap_i_harness_fixture_src",
+  "packageId": "pkg_snap_i_harness_source_f17737f9cb49",
+  "chatId": "i-harness-source",
+  "snapshotId": "snap_i_harness_source",
   "createdAt": "2026-06-24T00:00:00.000Z",
   "generatedAt": "2026-06-24T00:00:00.000Z",
   "generator": {
@@ -29,8 +29,8 @@
   "files": {
     "snapshot": {
       "path": "snapshot.json",
-      "sha256": "sha256-ee831ea2f67358ba1f0875bc580aa4d4d633f5605b6feb1e5999f3526c0fbb0d",
-      "byteLength": 1721
+      "sha256": "sha256-f17737f9cb491e9bb6139bebf36226ecd2b12ffc5f9591db5f1094595a8eb7ef",
+      "byteLength": 1706
     },
     "markdown": {
       "path": "chat.md",
@@ -46,7 +46,7 @@
     }
   },
   "assets": [],
-  "contentHash": "sha256-ee831ea2f67358ba1f0875bc580aa4d4d633f5605b6feb1e5999f3526c0fbb0d",
+  "contentHash": "sha256-f17737f9cb491e9bb6139bebf36226ecd2b12ffc5f9591db5f1094595a8eb7ef",
   "provenance": {
     "createdBy": "i-harness-fixture",
     "sourceOfTruth": "deterministic-test-fixture",
