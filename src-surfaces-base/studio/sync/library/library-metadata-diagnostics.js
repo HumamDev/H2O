@@ -7,6 +7,7 @@
  *   H2O.Studio.sync.libraryMetadataDiagnostics.captureSnapshot(options)
  *   H2O.Studio.sync.libraryMetadataDiagnostics.compareSnapshots(left, right)
  *   H2O.Studio.sync.libraryMetadataDiagnostics.runDiagnostic(input)
+ *   H2O.Studio.sync.libraryMetadataDiagnostics.captureDisplayParityModel(options)
  *   H2O.Studio.sync.runLibraryMetadataDiagnostics(input)
  *
  * Safety invariants:
@@ -35,6 +36,8 @@
   var VERSION = '0.1.0-phase1';
   var SNAPSHOT_SCHEMA = 'h2o.studio.sync.library-metadata-diagnostics-snapshot.v1';
   var COMPARISON_SCHEMA = 'h2o.studio.sync.library-metadata-diagnostics-comparison.v1';
+  var DISPLAY_PARITY_SCHEMA = 'h2o.studio.sync.library-metadata-display-parity.v1';
+  var DISPLAY_PARITY_VERSION = '0.1.0-phase5';
   var DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA = 'h2o.studio.library-metadata.desktop-canonical.v1';
 
   var DEFERRED_WARNING_CODES = {
@@ -802,6 +805,104 @@
     };
   }
 
+  function buildDisplayParityModel(snapshotInput) {
+    var snapshot = snapshotSummary(snapshotInput);
+    var projection = summarizeDesktopCanonicalLibraryMetadataProjection(snapshot.desktopCanonicalLibraryMetadata);
+    var blockers = [];
+    if (!projection.available) addUnique(blockers, 'library-metadata-display-parity-projection-unavailable');
+    return {
+      schema: DISPLAY_PARITY_SCHEMA,
+      version: DISPLAY_PARITY_VERSION,
+      phase: 'phase5-read-only-display-parity',
+      ok: projection.available === true,
+      status: projection.available ? 'desktop-canonical-library-metadata-display-ready' : 'desktop-canonical-library-metadata-unavailable',
+      surface: cleanString(snapshot.surface),
+      sourceName: 'desktopCanonicalLibraryMetadata',
+      section: 'desktopCanonicalLibraryMetadata',
+      projectionSchema: cleanString(projection.schema),
+      projectionVersion: cleanString(projection.version),
+      projectionPhase: cleanString(projection.phase),
+      available: projection.available === true,
+      displayMode: cleanString(projection.displayMode || 'hash-count-read-model'),
+      displaySurface: 'library-metadata-diagnostics-display-parity-model',
+      uiDisplayNamesAvailable: projection.uiDisplayNamesAvailable === true,
+      uiDisplayDeferred: projection.uiDisplayDeferred !== false,
+      userFacingNote: projection.uiDisplayNamesAvailable === true
+        ? 'Desktop-origin metadata names are available from the read-only projection.'
+        : 'Desktop-origin metadata names and details are deferred; Phase 5 displays counts, hashes, status, and authority flags only.',
+      displayedFields: [
+        'sourceName',
+        'projectionSchema',
+        'projectionVersion',
+        'projectionPhase',
+        'displayMode',
+        'counts.labelCatalogCount',
+        'counts.tagCatalogCount',
+        'counts.categoryCatalogCount',
+        'counts.chatCategoryAssignmentCount',
+        'counts.classificationSignalCount',
+        'projectionHash',
+        'flags.desktopAuthority',
+        'flags.chromeAuthority',
+        'flags.readOnlyProjection',
+        'flags.chromeRequestExport',
+        'flags.desktopApply',
+        'flags.canonicalMutation',
+        'privacy.redacted',
+        'privacy.hashOnly'
+      ],
+      counts: {
+        labelCatalogCount: numberOrZero(projection.counts.labelCatalogCount),
+        tagCatalogCount: numberOrZero(projection.counts.tagCatalogCount),
+        categoryCatalogCount: numberOrZero(projection.counts.categoryCatalogCount),
+        chatCategoryAssignmentCount: numberOrZero(projection.counts.chatCategoryAssignmentCount),
+        classificationSignalCount: numberOrZero(projection.counts.classificationSignalCount)
+      },
+      projectionHash: safeProjectionHash(projection.hashes.projection),
+      flags: {
+        desktopAuthority: projection.desktopAuthority !== false,
+        chromeAuthority: false,
+        readOnlyProjection: projection.readOnlyProjection !== false,
+        chromeRequestExport: false,
+        desktopApply: false,
+        canonicalMutation: false,
+        productSyncReady: false
+      },
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false
+      },
+      sideEffectSummary: sideEffectSummary(),
+      safety: {
+        noHardDelete: true,
+        noPurge: true,
+        noChatDelete: true,
+        noSnapshotDelete: true,
+        noAssetDelete: true,
+        noLabelDelete: true,
+        noTagDelete: true,
+        noCategoryDelete: true,
+        noMetadataDelete: true
+      },
+      blockers: blockers,
+      warnings: uniqueSorted(snapshot.warnings),
+      observedAtIso: nowIso()
+    };
+  }
+
+  async function captureDisplayParityModel(options) {
+    var snapshot = await captureSnapshot(options || {});
+    return buildDisplayParityModel(snapshot);
+  }
+
   async function captureSnapshot(options) {
     var opts = safeObject(options);
     var detected = detectSurface();
@@ -1083,9 +1184,12 @@
     version: VERSION,
     snapshotSchema: SNAPSHOT_SCHEMA,
     comparisonSchema: COMPARISON_SCHEMA,
+    displayParitySchema: DISPLAY_PARITY_SCHEMA,
     captureSnapshot: captureSnapshot,
     compareSnapshots: compareSnapshots,
     runDiagnostic: runDiagnostic,
+    buildDisplayParityModel: buildDisplayParityModel,
+    captureDisplayParityModel: captureDisplayParityModel,
     listDeferredWarningCodes: listDeferredWarningCodes,
     listMismatchCodes: listMismatchCodes,
     warningCodes: Object.keys(WARNING_CODES).map(function (key) { return WARNING_CODES[key]; }).sort()
@@ -1095,4 +1199,5 @@
   H2O.Studio.sync.captureLibraryMetadataDiagnosticSnapshot = captureSnapshot;
   H2O.Studio.sync.compareLibraryMetadataDiagnosticSnapshots = compareSnapshots;
   H2O.Studio.sync.runLibraryMetadataDiagnostics = runDiagnostic;
+  H2O.Studio.sync.captureLibraryMetadataDisplayParityModel = captureDisplayParityModel;
 })(typeof globalThis !== 'undefined' ? globalThis : window);
