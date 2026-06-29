@@ -53,6 +53,7 @@
   var FOLDER_RESTORE_RECEIPT_SCHEMA = 'h2o.studio.folder-restore-receipt.v1';
   var CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
   var DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA = 'h2o.studio.chat-folder-bindings.desktop-canonical.v1';
+  var DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA = 'h2o.studio.library-metadata.desktop-canonical.v1';
   var HEALTH_SCHEDULER_EXPECTATION_WINDOW_MS = 2 * 60 * 1000;
   var LATEST_FILE = 'latest.json';
   var CHROME_LATEST_FILE = 'chrome-latest.json';
@@ -74,7 +75,8 @@
     'linked-chat-records',
     'folder-metadata',
     'category-metadata',
-    'chat-category-bindings'
+    'chat-category-bindings',
+    'desktop-canonical-library-metadata'
   ];
   var DESKTOP_CHROME_DEFERRED_CODES = {
     labels: 'library-propagation-labels-deferred',
@@ -194,6 +196,7 @@
     desktopCanonicalRecentlyDeleted: null,
     desktopPurgedFolderSuppression: null,
     desktopCanonicalChatFolderBindings: null,
+    desktopCanonicalLibraryMetadata: null,
     loopSuppressedCount: 0,
     duplicateSkippedCount: 0,
     selfOriginSkippedCount: 0,
@@ -399,6 +402,7 @@
     state.desktopCanonicalRecentlyDeleted = normalizeDesktopCanonicalRecentlyDeletedSnapshot(saved.desktopCanonicalRecentlyDeleted);
     state.desktopPurgedFolderSuppression = normalizeDesktopPurgedFolderSuppressionSnapshot(saved.desktopPurgedFolderSuppression);
     state.desktopCanonicalChatFolderBindings = normalizeDesktopCanonicalChatFolderBindingSnapshot(saved.desktopCanonicalChatFolderBindings);
+    state.desktopCanonicalLibraryMetadata = normalizeDesktopCanonicalLibraryMetadataSnapshot(saved.desktopCanonicalLibraryMetadata);
   }
 
   async function persistState(patch) {
@@ -448,6 +452,7 @@
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted,
       desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression,
       desktopCanonicalChatFolderBindings: state.desktopCanonicalChatFolderBindings,
+      desktopCanonicalLibraryMetadata: state.desktopCanonicalLibraryMetadata,
       autoSyncMinIntervalMs: AUTO_SYNC_MIN_INTERVAL_MS,
       backgroundAutoImport: false,
       chromeWritesSyncFolder: state.lastChromeExportStatus === 'chrome-to-desktop-exported' || chromeExportReady,
@@ -1399,6 +1404,257 @@
     return result;
   }
 
+  function safeMetadataHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    if (!/^[a-z0-9][a-z0-9:._-]{3,180}$/i.test(text)) return '';
+    return text;
+  }
+
+  function safeMetadataCode(value, fallback) {
+    var text = cleanString(value);
+    if (!/^[a-z0-9][a-z0-9:._-]{1,120}$/i.test(text)) return fallback || '';
+    return text;
+  }
+
+  function sanitizeMetadataCatalogRows(rows, expectedKind) {
+    var out = [];
+    var seen = Object.create(null);
+    var source = Array.isArray(rows) ? rows : [];
+    for (var i = 0; i < source.length; i += 1) {
+      var row = source[i] && typeof source[i] === 'object' && !Array.isArray(source[i]) ? source[i] : null;
+      if (!row) continue;
+      var subjectHash = safeMetadataHash(row.subjectHash);
+      if (!subjectHash || seen[subjectHash]) continue;
+      seen[subjectHash] = true;
+      out.push({
+        subjectType: 'library.catalog',
+        catalogKind: expectedKind,
+        subjectHash: subjectHash,
+        nameHash: safeMetadataHash(row.nameHash),
+        colorHash: safeMetadataHash(row.colorHash),
+        sourceHash: safeMetadataHash(row.sourceHash),
+        parentHash: safeMetadataHash(row.parentHash),
+        hasName: row.hasName === true,
+        hasColor: row.hasColor === true,
+        hasParent: row.hasParent === true,
+        autoDerived: row.autoDerived === true,
+        hasMetadata: row.hasMetadata === true
+      });
+    }
+    out.sort(function (a, b) {
+      return cleanString(a.subjectHash).localeCompare(cleanString(b.subjectHash));
+    });
+    return out;
+  }
+
+  function sanitizeMetadataBindingRows(rows, expectedKind) {
+    var out = [];
+    var seen = Object.create(null);
+    var source = Array.isArray(rows) ? rows : [];
+    for (var i = 0; i < source.length; i += 1) {
+      var row = source[i] && typeof source[i] === 'object' && !Array.isArray(source[i]) ? source[i] : null;
+      if (!row) continue;
+      var subjectHash = safeMetadataHash(row.subjectHash);
+      var leftHash = safeMetadataHash(row.leftSubjectHash);
+      var rightHash = safeMetadataHash(row.rightSubjectHash);
+      if (!subjectHash || !leftHash || !rightHash || seen[subjectHash]) continue;
+      seen[subjectHash] = true;
+      out.push({
+        subjectType: 'library.binding',
+        bindingKind: expectedKind,
+        subjectHash: subjectHash,
+        leftSubjectType: safeMetadataCode(row.leftSubjectType, 'chat.metadata'),
+        leftSubjectHash: leftHash,
+        rightSubjectType: safeMetadataCode(row.rightSubjectType, 'library.catalog'),
+        rightSubjectHash: rightHash
+      });
+    }
+    out.sort(function (a, b) {
+      return cleanString(a.subjectHash).localeCompare(cleanString(b.subjectHash));
+    });
+    return out;
+  }
+
+  function normalizeDesktopCanonicalLibraryMetadataSnapshot(value) {
+    var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    if (!input) return null;
+    if (cleanString(input.schema) && cleanString(input.schema) !== DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA) return null;
+    var counts = safeObject(input.counts);
+    var hashes = safeObject(input.hashes);
+    var catalogs = safeObject(input.catalogs);
+    var bindings = safeObject(input.bindings);
+    var labelCatalog = sanitizeMetadataCatalogRows(catalogs.labels, 'label');
+    var tagCatalog = sanitizeMetadataCatalogRows(catalogs.tags, 'tag');
+    var categoryCatalog = sanitizeMetadataCatalogRows(catalogs.categories, 'category');
+    var chatLabels = sanitizeMetadataBindingRows(bindings.chatLabels, 'chat-label');
+    var chatTags = sanitizeMetadataBindingRows(bindings.chatTags, 'chat-tag');
+    var chatCategories = sanitizeMetadataBindingRows(bindings.chatCategories, 'chat-category');
+    return {
+      schema: DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA,
+      version: cleanString(input.version || '0.1.0-phase2'),
+      phase: cleanString(input.phase || 'phase2-desktop-canonical-export'),
+      source: 'desktop-canonical-library-metadata',
+      status: cleanString(input.status || 'imported'),
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt || input.exportedAt),
+      available: true,
+      displaySourceName: 'desktopCanonicalLibraryMetadata',
+      displayMode: 'hash-count-read-model',
+      uiDisplayNamesAvailable: false,
+      uiDisplayDeferred: true,
+      counts: {
+        labelCatalogCount: numberOrZero(counts.labelCatalogCount || labelCatalog.length),
+        tagCatalogCount: numberOrZero(counts.tagCatalogCount || tagCatalog.length),
+        categoryCatalogCount: numberOrZero(counts.categoryCatalogCount || categoryCatalog.length),
+        chatStoreRowCount: numberOrZero(counts.chatStoreRowCount),
+        chatLabelBindingCount: numberOrZero(counts.chatLabelBindingCount || chatLabels.length),
+        chatTagBindingCount: numberOrZero(counts.chatTagBindingCount || chatTags.length),
+        chatCategoryAssignmentCount: numberOrZero(counts.chatCategoryAssignmentCount || chatCategories.length),
+        classificationSignalCount: numberOrZero(counts.classificationSignalCount || chatCategories.length)
+      },
+      hashes: {
+        labels: safeMetadataHash(hashes.labels),
+        tags: safeMetadataHash(hashes.tags),
+        categories: safeMetadataHash(hashes.categories),
+        chatLabelBindings: safeMetadataHash(hashes.chatLabelBindings),
+        chatTagBindings: safeMetadataHash(hashes.chatTagBindings),
+        chatCategoryAssignments: safeMetadataHash(hashes.chatCategoryAssignments),
+        projection: safeMetadataHash(hashes.projection)
+      },
+      catalogs: {
+        labels: labelCatalog,
+        tags: tagCatalog,
+        categories: categoryCatalog
+      },
+      bindings: {
+        chatLabels: chatLabels,
+        chatTags: chatTags,
+        chatCategories: chatCategories
+      },
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false
+      },
+      sideEffectSummary: {
+        readOnly: true,
+        storageWrites: false,
+        sqliteWrites: false,
+        chromeStorageWrites: false,
+        importInvoked: false,
+        exportInvoked: false,
+        syncNowInvoked: false,
+        applyExecuted: false,
+        desktopApply: false,
+        chromeRequestExport: false,
+        canonicalMutation: false,
+        deletes: false
+      },
+      diagnostics: {
+        ok: true,
+        productSyncReady: false,
+        phase3ChromeImportDisplayReady: true,
+        readOnlyMirror: true,
+        chromeRequestExportImplemented: false,
+        desktopApplyImplemented: false,
+        warnings: [],
+        blockers: []
+      },
+      desktopAuthority: true,
+      chromeAuthority: false,
+      readOnlyProjection: true,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  function buildDesktopCanonicalLibraryMetadataSnapshot(bundle, importedAt) {
+    var payload = safeObject(bundle && bundle.desktopCanonicalLibraryMetadata);
+    if (!payload || !Object.keys(payload).length) return null;
+    return normalizeDesktopCanonicalLibraryMetadataSnapshot(Object.assign({}, payload, {
+      status: 'imported',
+      importedAt: cleanString(importedAt) || nowIso(),
+      sourceExportedAt: cleanString(bundle && bundle.exportedAt)
+    }));
+  }
+
+  function summarizeDesktopCanonicalLibraryMetadata(snapshotInput) {
+    var snapshot = normalizeDesktopCanonicalLibraryMetadataSnapshot(snapshotInput);
+    return {
+      schema: DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA + '.chrome-import.v1',
+      phase: 'phase3-chrome-import-display',
+      attempted: true,
+      ok: !!snapshot,
+      status: snapshot ? 'desktop-canonical-library-metadata-imported' : 'desktop-canonical-library-metadata-missing',
+      available: !!snapshot,
+      section: 'desktopCanonicalLibraryMetadata',
+      sourceName: 'desktopCanonicalLibraryMetadata',
+      displayMode: 'hash-count-read-model',
+      labelCatalogCount: snapshot ? numberOrZero(snapshot.counts.labelCatalogCount) : 0,
+      tagCatalogCount: snapshot ? numberOrZero(snapshot.counts.tagCatalogCount) : 0,
+      categoryCatalogCount: snapshot ? numberOrZero(snapshot.counts.categoryCatalogCount) : 0,
+      chatCategoryAssignmentCount: snapshot ? numberOrZero(snapshot.counts.chatCategoryAssignmentCount) : 0,
+      classificationSignalCount: snapshot ? numberOrZero(snapshot.counts.classificationSignalCount) : 0,
+      projectionHash: snapshot ? cleanString(snapshot.hashes.projection) : '',
+      importedAt: snapshot ? cleanString(snapshot.importedAt) : '',
+      sourceExportedAt: snapshot ? cleanString(snapshot.sourceExportedAt) : '',
+      changed: false,
+      blockers: snapshot ? [] : ['desktop-canonical-library-metadata-missing'],
+      warnings: [],
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false
+      },
+      readOnlyProjection: true,
+      desktopAuthority: true,
+      chromeAuthority: false,
+      chromeRequestExport: false,
+      desktopApply: false,
+      canonicalMutation: false,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  async function storeDesktopCanonicalLibraryMetadataSnapshot(snapshotInput) {
+    var snapshot = normalizeDesktopCanonicalLibraryMetadataSnapshot(snapshotInput);
+    var result = summarizeDesktopCanonicalLibraryMetadata(snapshot);
+    if (!snapshot) return result;
+    var current = safeObject(await readKv(FOLDER_STATE_KEY_LOCAL));
+    var existing = normalizeDesktopCanonicalLibraryMetadataSnapshot(current.desktopCanonicalLibraryMetadata);
+    result.changed = JSON.stringify(safeObject(existing)) !== JSON.stringify(safeObject(snapshot));
+    if (result.changed) {
+      var next = cloneJson(current) || {};
+      next.desktopCanonicalLibraryMetadata = snapshot;
+      next.updatedAt = nowIso();
+      await writeKv(FOLDER_STATE_KEY_LOCAL, next);
+    }
+    state.desktopCanonicalLibraryMetadata = snapshot;
+    return result;
+  }
+
   function normalizeDesktopPurgedFolderSuppressionSnapshot(value) {
     var input = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
     if (!input) return null;
@@ -2314,6 +2570,7 @@
     var shellSummary = desktopShellRowSummary(chats);
     var categories = cloneJson(sourceCategories) || [];
     var folderState = folderStateForDesktopChrome(bundle, warnings);
+    var desktopCanonicalLibraryMetadata = buildDesktopCanonicalLibraryMetadataSnapshot(bundle, cleanString(bundle.exportedAt));
     var chromeStorageLocal = {};
     if (folderState) chromeStorageLocal[FOLDER_STATE_KEY_LOCAL] = folderState;
     var supported = {
@@ -2366,6 +2623,17 @@
         folderCount: folderState && Array.isArray(folderState.folders) ? folderState.folders.length : 0,
         folderDeleteReceiptCount: Array.isArray(bundle.folderDeleteReceipts) ? bundle.folderDeleteReceipts.length : 0,
         folderRestoreReceiptCount: Array.isArray(bundle.folderRestoreReceipts) ? bundle.folderRestoreReceipts.length : 0,
+        desktopCanonicalLibraryMetadataAvailable: !!desktopCanonicalLibraryMetadata,
+        desktopCanonicalMetadataLabelCount: numberOrZero(desktopCanonicalLibraryMetadata &&
+          desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.labelCatalogCount),
+        desktopCanonicalMetadataTagCount: numberOrZero(desktopCanonicalLibraryMetadata &&
+          desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.tagCatalogCount),
+        desktopCanonicalMetadataCategoryCount: numberOrZero(desktopCanonicalLibraryMetadata &&
+          desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.categoryCatalogCount),
+        desktopCanonicalMetadataChatCategoryAssignmentCount: numberOrZero(desktopCanonicalLibraryMetadata &&
+          desktopCanonicalLibraryMetadata.counts && desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount),
+        desktopCanonicalMetadataProjectionHash: cleanString(desktopCanonicalLibraryMetadata &&
+          desktopCanonicalLibraryMetadata.hashes && desktopCanonicalLibraryMetadata.hashes.projection),
         hasSourcePeerEnvelope: !!supported.sourcePeerEnvelope,
         hasExportId: !!supported.exportId,
         hasContentSha256: !!supported.contentSha256
@@ -2767,6 +3035,8 @@
       folderDeleteReceiptImport: f.folderDeleteReceiptImport || null,
       folderRestoreReceiptImport: f.folderRestoreReceiptImport || null,
       chatFolderBindingReceiptImport: f.chatFolderBindingReceiptImport || null,
+      desktopCanonicalLibraryMetadata: f.desktopCanonicalLibraryMetadata || null,
+      desktopCanonicalLibraryMetadataImport: f.desktopCanonicalLibraryMetadataImport || null,
       convergence: f.convergence || null,
       postImportRefresh: f.postImportRefresh ? redactedPostImportRefreshSummary(f.postImportRefresh) : null,
       redactedErrorCategories: redactedErrorCategoryList(f.redactedErrorCategories ||
@@ -2927,6 +3197,9 @@
       addUnique(folderMetadataChangeSummary.changedFields, 'desktop-canonical-chat-folder-bindings');
       folderMetadataChangeSummary.changedFolderCount = Math.max(1, numberOrZero(folderMetadataChangeSummary.changedFolderCount));
     }
+    var desktopCanonicalLibraryMetadata = buildDesktopCanonicalLibraryMetadataSnapshot(bundleInput, nowIso()) ||
+      buildDesktopCanonicalLibraryMetadataSnapshot(normalized.bundle, nowIso());
+    var desktopCanonicalLibraryMetadataImport = await storeDesktopCanonicalLibraryMetadataSnapshot(desktopCanonicalLibraryMetadata);
     var shellRows = await materializeDesktopShellRows(normalized.bundle);
     if (numberOrZero(folderMetadataChangeSummary.changedFolderCount) > 0) {
       await refreshLibraryIndex('desktop-chrome-propagation-import');
@@ -2969,6 +3242,8 @@
       desktopCanonicalChatFolderBindings: desktopCanonicalChatFolderBindings,
       desktopCanonicalChatFolderBindingImport: desktopCanonicalChatFolderBindingImport,
       importedDesktopCanonicalBindingCount: numberOrZero(desktopCanonicalChatFolderBindingImport && desktopCanonicalChatFolderBindingImport.bindingCount),
+      desktopCanonicalLibraryMetadata: desktopCanonicalLibraryMetadata,
+      desktopCanonicalLibraryMetadataImport: desktopCanonicalLibraryMetadataImport,
       convergence: convergence,
       postImportRefresh: postImportRefresh,
       redactedErrorCategories: redactedErrors,
@@ -4607,6 +4882,8 @@
       chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
       desktopCanonicalRecentlyDeleted: state.desktopCanonicalRecentlyDeleted || null,
       desktopPurgedFolderSuppression: state.desktopPurgedFolderSuppression || null,
+      desktopCanonicalLibraryMetadata: state.desktopCanonicalLibraryMetadata || null,
+      desktopCanonicalLibraryMetadataImport: summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata),
       renderRefreshCount: state.lastChromePostImportRenderRefreshCount,
       cumulativeRenderRefreshCount: state.chromePostImportRenderRefreshCount,
       refreshSuppressed: state.lastChromePostImportRefreshSuppressed,
@@ -5432,6 +5709,8 @@
             addUnique(alreadyRefreshSummary.changedFields, 'desktop-canonical-chat-folder-bindings');
             alreadyRefreshSummary.changedFolderCount = Math.max(1, numberOrZero(alreadyRefreshSummary.changedFolderCount));
           }
+          var alreadyDesktopCanonicalLibraryMetadata = buildDesktopCanonicalLibraryMetadataSnapshot(bundle, nowIso());
+          var alreadyDesktopCanonicalLibraryMetadataImport = await storeDesktopCanonicalLibraryMetadataSnapshot(alreadyDesktopCanonicalLibraryMetadata);
           state.duplicateSkippedCount += 1;
           state.loopSuppressedCount += 1;
           var alreadyPostImportRefresh;
@@ -5495,6 +5774,8 @@
             desktopCanonicalChatFolderBindings: alreadyDesktopCanonicalChatFolderBindings,
             desktopCanonicalChatFolderBindingImport: alreadyDesktopCanonicalChatFolderBindingImport,
             importedDesktopCanonicalBindingCount: numberOrZero(alreadyDesktopCanonicalChatFolderBindingImport && alreadyDesktopCanonicalChatFolderBindingImport.bindingCount),
+            desktopCanonicalLibraryMetadata: alreadyDesktopCanonicalLibraryMetadata,
+            desktopCanonicalLibraryMetadataImport: alreadyDesktopCanonicalLibraryMetadataImport,
             parity: alreadyParity,
             convergence: alreadyConvergence,
             postImportRefresh: alreadyPostImportRefresh,
@@ -5554,6 +5835,8 @@
             desktopCanonicalChatFolderBindings: alreadyDesktopCanonicalChatFolderBindings,
             desktopCanonicalChatFolderBindingImport: alreadyDesktopCanonicalChatFolderBindingImport,
             importedDesktopCanonicalBindingCount: numberOrZero(alreadyDesktopCanonicalChatFolderBindingImport && alreadyDesktopCanonicalChatFolderBindingImport.bindingCount),
+            desktopCanonicalLibraryMetadata: alreadyDesktopCanonicalLibraryMetadata,
+            desktopCanonicalLibraryMetadataImport: alreadyDesktopCanonicalLibraryMetadataImport,
             blockers: alreadyPropagation.blockers,
             warnings: alreadyPropagation.warnings,
             redactedErrorCategories: alreadyPropagation.redactedErrorCategories,
@@ -5760,6 +6043,8 @@
         desktopCanonicalChatFolderBindings: propagation && propagation.desktopCanonicalChatFolderBindings,
         desktopCanonicalChatFolderBindingImport: propagation && propagation.desktopCanonicalChatFolderBindingImport,
         importedDesktopCanonicalBindingCount: numberOrZero(propagation && propagation.importedDesktopCanonicalBindingCount),
+        desktopCanonicalLibraryMetadata: propagation && propagation.desktopCanonicalLibraryMetadata,
+        desktopCanonicalLibraryMetadataImport: propagation && propagation.desktopCanonicalLibraryMetadataImport,
         convergence: propagation && propagation.convergence,
         postImportRefresh: propagation && propagation.postImportRefresh,
         conflictDecision: propagation && propagation.conflictDecision,
@@ -5890,6 +6175,7 @@
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
         chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+        desktopCanonicalLibraryMetadataImport: summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata),
         simultaneousConflictStatus: state.lastTransportConflictStatus,
         simultaneousConflictDecision: state.lastTransportConflictDecision,
         simultaneousConflictReason: state.lastTransportConflictReason,
@@ -6071,7 +6357,8 @@
         changedFolderIdsRedacted: true,
         folderDeleteReceiptImport: state.lastFolderDeleteReceiptImport || null,
         folderRestoreReceiptImport: state.lastFolderRestoreReceiptImport || null,
-        chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null
+        chatFolderBindingReceiptImport: state.lastChatFolderBindingReceiptImport || null,
+        desktopCanonicalLibraryMetadataImport: summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata)
       },
       chromeToDesktop: {
         chromeWritesSyncFolder: !!chromeToDesktopRaw.chromeWritesSyncFolder,
@@ -6122,6 +6409,14 @@
     };
   }
 
+  function getDesktopCanonicalLibraryMetadata() {
+    return cloneJson(state.desktopCanonicalLibraryMetadata) || null;
+  }
+
+  function diagnoseDesktopCanonicalLibraryMetadata() {
+    return summarizeDesktopCanonicalLibraryMetadata(state.desktopCanonicalLibraryMetadata);
+  }
+
   var api = {
     connectFolder: connectFolder,
     disconnectFolder: disconnectFolder,
@@ -6141,6 +6436,8 @@
     scheduleAutoSync: scheduleAutoSync,
     diagnose: diagnose,
     diagnoseHealth: diagnoseHealth,
+    getDesktopCanonicalLibraryMetadata: getDesktopCanonicalLibraryMetadata,
+    diagnoseDesktopCanonicalLibraryMetadata: diagnoseDesktopCanonicalLibraryMetadata,
     diagnoseVisibleFolderParity: diagnoseVisibleFolderParity,
     health: {
       diagnose: diagnoseHealth,

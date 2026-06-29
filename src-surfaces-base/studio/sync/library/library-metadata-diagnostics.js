@@ -35,6 +35,7 @@
   var VERSION = '0.1.0-phase1';
   var SNAPSHOT_SCHEMA = 'h2o.studio.sync.library-metadata-diagnostics-snapshot.v1';
   var COMPARISON_SCHEMA = 'h2o.studio.sync.library-metadata-diagnostics-comparison.v1';
+  var DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA = 'h2o.studio.library-metadata.desktop-canonical.v1';
 
   var DEFERRED_WARNING_CODES = {
     labels: 'library-propagation-labels-deferred',
@@ -63,6 +64,7 @@
     tags: 'library-metadata-diagnostics-tag-mismatch',
     categories: 'library-metadata-diagnostics-category-mismatch',
     classification: 'library-metadata-diagnostics-classification-mismatch',
+    desktopCanonicalProjection: 'library-metadata-diagnostics-desktop-canonical-projection-mismatch',
     deferredWarnings: 'library-metadata-diagnostics-deferred-warning-mismatch',
     f15: 'library-metadata-diagnostics-f15-readiness-mismatch'
   };
@@ -576,6 +578,101 @@
     };
   }
 
+  function safeProjectionHash(value) {
+    var text = cleanString(value);
+    if (!text) return '';
+    if (!/^[a-z0-9][a-z0-9:._-]{3,180}$/i.test(text)) return '';
+    return text;
+  }
+
+  function summarizeDesktopCanonicalLibraryMetadataProjection(value) {
+    var input = safeObject(value);
+    var counts = safeObject(input.counts);
+    var hashes = safeObject(input.hashes);
+    var available = cleanString(input.schema) === DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA ||
+      input.available === true ||
+      !!safeProjectionHash(hashes.projection || input.projectionHash);
+    return {
+      available: available,
+      schema: available ? (cleanString(input.schema) || DESKTOP_CANONICAL_LIBRARY_METADATA_SCHEMA) : '',
+      version: cleanString(input.version),
+      phase: cleanString(input.phase),
+      section: 'desktopCanonicalLibraryMetadata',
+      sourceName: cleanString(input.sourceName || input.displaySourceName || input.source || 'desktopCanonicalLibraryMetadata'),
+      displayMode: cleanString(input.displayMode || 'hash-count-read-model'),
+      uiDisplayNamesAvailable: input.uiDisplayNamesAvailable === true,
+      uiDisplayDeferred: input.uiDisplayDeferred !== false,
+      counts: {
+        labelCatalogCount: numberOrZero(counts.labelCatalogCount || input.labelCatalogCount),
+        tagCatalogCount: numberOrZero(counts.tagCatalogCount || input.tagCatalogCount),
+        categoryCatalogCount: numberOrZero(counts.categoryCatalogCount || input.categoryCatalogCount),
+        chatStoreRowCount: numberOrZero(counts.chatStoreRowCount || input.chatStoreRowCount),
+        chatLabelBindingCount: numberOrZero(counts.chatLabelBindingCount || input.chatLabelBindingCount),
+        chatTagBindingCount: numberOrZero(counts.chatTagBindingCount || input.chatTagBindingCount),
+        chatCategoryAssignmentCount: numberOrZero(counts.chatCategoryAssignmentCount || input.chatCategoryAssignmentCount),
+        classificationSignalCount: numberOrZero(counts.classificationSignalCount || input.classificationSignalCount)
+      },
+      hashes: {
+        labels: safeProjectionHash(hashes.labels),
+        tags: safeProjectionHash(hashes.tags),
+        categories: safeProjectionHash(hashes.categories),
+        chatLabelBindings: safeProjectionHash(hashes.chatLabelBindings),
+        chatTagBindings: safeProjectionHash(hashes.chatTagBindings),
+        chatCategoryAssignments: safeProjectionHash(hashes.chatCategoryAssignments),
+        projection: safeProjectionHash(hashes.projection || input.projectionHash)
+      },
+      importedAt: cleanString(input.importedAt),
+      sourceExportedAt: cleanString(input.sourceExportedAt || input.exportedAt),
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawChatIds: false,
+        rawChatTitles: false,
+        rawChatContent: false,
+        rawLabelNames: false,
+        rawTagNames: false,
+        rawCategoryNames: false,
+        rawColors: false,
+        accountLinkedMetadata: false
+      },
+      desktopAuthority: input.desktopAuthority !== false,
+      chromeAuthority: false,
+      readOnlyProjection: input.readOnlyProjection !== false,
+      productSyncReady: false,
+      chromeRequestExport: false,
+      desktopApply: false,
+      canonicalMutation: false,
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true
+    };
+  }
+
+  async function readDesktopCanonicalLibraryMetadataProjectionSummary(detected, warnings) {
+    var sync = (H2O.Studio && H2O.Studio.sync) || {};
+    try {
+      if (detected && detected.isChrome && sync.folder) {
+        if (typeof sync.folder.diagnoseDesktopCanonicalLibraryMetadata === 'function') {
+          return summarizeDesktopCanonicalLibraryMetadataProjection(await sync.folder.diagnoseDesktopCanonicalLibraryMetadata());
+        }
+        if (typeof sync.folder.getDesktopCanonicalLibraryMetadata === 'function') {
+          return summarizeDesktopCanonicalLibraryMetadataProjection(await sync.folder.getDesktopCanonicalLibraryMetadata());
+        }
+      }
+      if (detected && detected.isTauri && sync.libraryMetadataExportProjection &&
+          typeof sync.libraryMetadataExportProjection.buildDesktopCanonicalMetadataExport === 'function') {
+        return summarizeDesktopCanonicalLibraryMetadataProjection(await sync.libraryMetadataExportProjection.buildDesktopCanonicalMetadataExport({
+          requestedBy: 'library-metadata-diagnostics'
+        }));
+      }
+    } catch (e) {
+      addUnique(warnings, 'library-metadata-diagnostics-desktop-canonical-projection-read-failed');
+    }
+    return summarizeDesktopCanonicalLibraryMetadataProjection(null);
+  }
+
   function collectCodesFrom(value, out) {
     if (!value) return;
     if (typeof value === 'string') {
@@ -717,6 +814,7 @@
     var activeRows = canonicalActiveRows(rows);
     var idx = indexSummary(rows, activeRows);
     var folderSyncSummary = await readFolderSyncDiagnostic(warnings);
+    var desktopCanonicalLibraryMetadata = await readDesktopCanonicalLibraryMetadataProjectionSummary(detected, warnings);
     var stores = {
       labels: await readStoreSummary('labels', warnings),
       tags: await readStoreSummary('tags', warnings),
@@ -741,7 +839,8 @@
       phase: 'phase1-read-only-diagnostics',
       surface: cleanString(opts.surfaceOverride) || detected.surface,
       sourceType: cleanString(opts.sourceTypeOverride) || detected.sourceType,
-      sourceAvailable: rows.length > 0 || stores.labels.available || stores.tags.available || stores.categories.available,
+      sourceAvailable: rows.length > 0 || stores.labels.available || stores.tags.available ||
+        stores.categories.available || desktopCanonicalLibraryMetadata.available === true,
       observedAtIso: nowIso(),
       privacy: privacySummary(),
       sideEffectSummary: sideEffectSummary(),
@@ -769,7 +868,11 @@
         tagStoreRows: stores.tags.rowCount,
         categoryStoreRows: stores.categories.rowCount,
         chatStoreRows: stores.chats.rowCount,
-        chatCategoryAssignments: stores.chats.categoryAssignmentCount
+        chatCategoryAssignments: stores.chats.categoryAssignmentCount,
+        desktopCanonicalMetadataLabelCount: desktopCanonicalLibraryMetadata.counts.labelCatalogCount,
+        desktopCanonicalMetadataTagCount: desktopCanonicalLibraryMetadata.counts.tagCatalogCount,
+        desktopCanonicalMetadataCategoryCount: desktopCanonicalLibraryMetadata.counts.categoryCatalogCount,
+        desktopCanonicalMetadataChatCategoryAssignmentCount: desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount
       },
       hashes: {
         rowMetadata: await hashValue(idx.tokens),
@@ -791,12 +894,14 @@
         classification: await hashValue(uniqueSorted(idx.tokens.reduce(function (out, token) {
           return out.concat(token.classification);
         }, []))),
-        chatCategoryCache: stores.chats.rowHash
+        chatCategoryCache: stores.chats.rowHash,
+        desktopCanonicalLibraryMetadataProjection: cleanString(desktopCanonicalLibraryMetadata.hashes.projection)
       },
       stores: stores,
       workspace: workspace,
       f15: f15,
       propagation: readPropagationReadiness(folderSyncSummary),
+      desktopCanonicalLibraryMetadata: desktopCanonicalLibraryMetadata,
       folderSync: folderSyncSummary,
       deferredWarnings: deferred,
       warnings: uniqueSorted(warnings),
@@ -823,6 +928,7 @@
       hashes: safeObject(s.hashes),
       f15: safeObject(s.f15),
       propagation: safeObject(s.propagation),
+      desktopCanonicalLibraryMetadata: summarizeDesktopCanonicalLibraryMetadataProjection(s.desktopCanonicalLibraryMetadata),
       deferredWarnings: safeObject(s.deferredWarnings),
       warnings: asArray(s.warnings).map(cleanString).filter(Boolean),
       blockers: asArray(s.blockers).map(cleanString).filter(Boolean),
@@ -879,6 +985,26 @@
     compareField(mismatches, MISMATCH_CODES.categories, 'hashes.categories', cleanString(chrome.hashes.categories), cleanString(desktop.hashes.categories));
     compareField(mismatches, MISMATCH_CODES.classification, 'hashes.classification', cleanString(chrome.hashes.classification), cleanString(desktop.hashes.classification));
     compareField(mismatches, MISMATCH_CODES.classification, 'hashes.rowMetadata', cleanString(chrome.hashes.rowMetadata), cleanString(desktop.hashes.rowMetadata));
+    if (chrome.desktopCanonicalLibraryMetadata.available || desktop.desktopCanonicalLibraryMetadata.available) {
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.available',
+        chrome.desktopCanonicalLibraryMetadata.available === true,
+        desktop.desktopCanonicalLibraryMetadata.available === true);
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.counts.labelCatalogCount',
+        numberOrZero(chrome.desktopCanonicalLibraryMetadata.counts.labelCatalogCount),
+        numberOrZero(desktop.desktopCanonicalLibraryMetadata.counts.labelCatalogCount));
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.counts.tagCatalogCount',
+        numberOrZero(chrome.desktopCanonicalLibraryMetadata.counts.tagCatalogCount),
+        numberOrZero(desktop.desktopCanonicalLibraryMetadata.counts.tagCatalogCount));
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.counts.categoryCatalogCount',
+        numberOrZero(chrome.desktopCanonicalLibraryMetadata.counts.categoryCatalogCount),
+        numberOrZero(desktop.desktopCanonicalLibraryMetadata.counts.categoryCatalogCount));
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount',
+        numberOrZero(chrome.desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount),
+        numberOrZero(desktop.desktopCanonicalLibraryMetadata.counts.chatCategoryAssignmentCount));
+      compareField(mismatches, MISMATCH_CODES.desktopCanonicalProjection, 'desktopCanonicalLibraryMetadata.hashes.projection',
+        cleanString(chrome.desktopCanonicalLibraryMetadata.hashes.projection),
+        cleanString(desktop.desktopCanonicalLibraryMetadata.hashes.projection));
+    }
     compareField(mismatches, MISMATCH_CODES.deferredWarnings, 'deferredWarnings.observedCodes', canonicalJson(chrome.deferredWarnings.observedCodes), canonicalJson(desktop.deferredWarnings.observedCodes));
     compareField(mismatches, MISMATCH_CODES.f15, 'f15.storeCutoverShimsInstalled', chrome.f15.storeCutoverShimsInstalled === true, desktop.f15.storeCutoverShimsInstalled === true);
     compareField(mismatches, MISMATCH_CODES.f15, 'f15.sqliteWriterIdentitySentinelInstalled', chrome.f15.sqliteWriterIdentitySentinelInstalled === true, desktop.f15.sqliteWriterIdentitySentinelInstalled === true);
