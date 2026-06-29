@@ -85,6 +85,14 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  /* The store maps the snapshots.id column to the JS key `snapshotId`
+   * (store/snapshots.tauri.js column map), so a store snapshot object exposes
+   * its id as `.snapshotId`. Read that (with `.id` as a defensive fallback). */
+  function snapshotRowId(snap) {
+    var s = safeObject(snap);
+    return cleanString(s.snapshotId) || cleanString(s.id);
+  }
+
   function getInspector() {
     var ins = H2O.Studio && H2O.Studio.archiveInspector;
     return (ins && typeof ins.inspectPackage === 'function') ? ins : null;
@@ -272,12 +280,12 @@
         return Promise.resolve(snapStore.get(identity.snapshotId)).catch(function () { return null; })
           .then(function (existingCombined) {
             var existingSnap = safeObject(existingCombined).snapshot;
-            if (existingSnap && cleanString(existingSnap.id)) {
+            if (existingSnap && snapshotRowId(existingSnap)) {
               var storeDigest = cleanString(existingSnap.digest) || cleanString(safeObject(existingSnap.meta).digest);
               var digestMatches = !!identity.digest && !!storeDigest && storeDigest === identity.digest;
               /* unknown digest on either side -> trust the strong snapshotId key (no-op, never a write) */
               var sameContent = digestMatches || !identity.digest || !storeDigest;
-              var store = { snapshotExists: true, chatExists: true, digestMatches: digestMatches, existingSnapshotId: cleanString(existingSnap.id), existingChatId: cleanString(existingSnap.chatId) };
+              var store = { snapshotExists: true, chatExists: true, digestMatches: digestMatches, existingSnapshotId: snapshotRowId(existingSnap), existingChatId: cleanString(existingSnap.chatId) };
               if (sameContent) return dryRunResult(packagePath, 'already-imported', identity, store, 'snapshotId already present in store', inspectStatus);
               return dryRunResult(packagePath, 'conflict-snapshot-id', identity, store, 'snapshotId present with a different content digest; will not overwrite', inspectStatus);
             }
@@ -428,7 +436,7 @@
                 meta: { recovered: provenance },
               };
               return Promise.resolve(snapStore.create(snapPatch)).then(function (combined) {
-                var newSnapshotId = cleanString(safeObject(safeObject(combined).snapshot).id);
+                var newSnapshotId = snapshotRowId(safeObject(combined).snapshot);
                 return importResult(packagePath, 'imported', decision, {
                   newChatId: freshChatId,
                   newSnapshotId: newSnapshotId,
