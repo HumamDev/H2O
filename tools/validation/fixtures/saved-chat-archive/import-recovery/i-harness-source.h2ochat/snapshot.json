@@ -1,0 +1,66 @@
+{
+  "schema": "h2o.studio.savedChat.snapshot.v1",
+  "schemaVersion": 1,
+  "snapshotId": "snap_i_harness_fixture_src",
+  "chatId": "i-harness-fixture-src-chat",
+  "title": "I-Harness Import Recovery Fixture",
+  "capturedAt": "2026-06-24T00:00:00.000Z",
+  "savedAt": "2026-06-24T00:00:00.000Z",
+  "source": {
+    "host": "fixture",
+    "nativeConversationId": "",
+    "sourceHref": "",
+    "accountHint": ""
+  },
+  "library": {
+    "isSaved": true,
+    "isLinked": false,
+    "categoryIdAtCapture": "",
+    "folderIdAtCapture": "",
+    "labelIdsAtCapture": []
+  },
+  "metadata": {
+    "messageCount": 2,
+    "digest": "5b683ac33cc49eee1c26a5e9a7e7c2dc201bcafba0355db4b7341b8b30a5b075",
+    "model": "",
+    "locale": "",
+    "captureAdapter": "i-harness-fixture",
+    "captureSurface": "test"
+  },
+  "messages": [
+    {
+      "id": "turn-0",
+      "turnIndex": 0,
+      "role": "user",
+      "author": "user",
+      "parentId": "",
+      "createdAt": "2026-06-24T00:00:00.000Z",
+      "content": [
+        {
+          "type": "text",
+          "text": "Deterministic fixture prompt for the import-recovery harness."
+        }
+      ],
+      "contentText": "Deterministic fixture prompt for the import-recovery harness.",
+      "assetRefs": [],
+      "metadata": {}
+    },
+    {
+      "id": "turn-1",
+      "turnIndex": 1,
+      "role": "assistant",
+      "author": "assistant",
+      "parentId": "turn-0",
+      "createdAt": "2026-06-24T00:00:01.000Z",
+      "content": [
+        {
+          "type": "text",
+          "text": "Deterministic fixture reply. No real user data."
+        }
+      ],
+      "contentText": "Deterministic fixture reply. No real user data.",
+      "assetRefs": [],
+      "metadata": {}
+    }
+  ]
+}

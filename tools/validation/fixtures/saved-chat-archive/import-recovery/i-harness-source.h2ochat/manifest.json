@@ -1,0 +1,57 @@
+{
+  "schema": "h2o.savedChatPackage",
+  "schemaVersion": 1,
+  "packageId": "pkg_snap_i_harness_fixture_src_ee831ea2f673",
+  "chatId": "i-harness-fixture-src-chat",
+  "snapshotId": "snap_i_harness_fixture_src",
+  "createdAt": "2026-06-24T00:00:00.000Z",
+  "generatedAt": "2026-06-24T00:00:00.000Z",
+  "generator": {
+    "surface": "test",
+    "app": "H2O Studio I-Harness Fixture",
+    "appVersion": "",
+    "buildId": "i-harness",
+    "rendererVersion": "saved-chat-package-v1"
+  },
+  "source": {
+    "host": "fixture",
+    "nativeConversationId": "",
+    "sourceHref": "",
+    "accountHint": ""
+  },
+  "store": {
+    "authority": "fixture",
+    "adapter": "none",
+    "storeSchemaVersion": "",
+    "recordVersion": "",
+    "exportedFrom": "fixture"
+  },
+  "files": {
+    "snapshot": {
+      "path": "snapshot.json",
+      "sha256": "sha256-ee831ea2f67358ba1f0875bc580aa4d4d633f5605b6feb1e5999f3526c0fbb0d",
+      "byteLength": 1721
+    },
+    "markdown": {
+      "path": "chat.md",
+      "sha256": "sha256-0982a7a2b104b39a1663b990f2ba16e07f9247521f4d6947edc7c7feb5fcadd5",
+      "byteLength": 173,
+      "derivedFrom": "snapshot.json"
+    },
+    "html": {
+      "path": "chat.html",
+      "sha256": "sha256-84294230467e1e2b51e20a5318e26126943675a1833d3ddded2c3df8d283ba83",
+      "byteLength": 271,
+      "derivedFrom": "snapshot.json"
+    }
+  },
+  "assets": [],
+  "contentHash": "sha256-ee831ea2f67358ba1f0875bc580aa4d4d633f5605b6feb1e5999f3526c0fbb0d",
+  "provenance": {
+    "createdBy": "i-harness-fixture",
+    "sourceOfTruth": "deterministic-test-fixture",
+    "projectionOnly": true,
+    "isImportHarnessFixture": true,
+    "note": "Phase I import-recovery harness source fixture — NOT user data"
+  }
+}
