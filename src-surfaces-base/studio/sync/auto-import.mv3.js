@@ -816,6 +816,7 @@
   function parseLibraryMetadataMutationRequestPayload(row) {
     var raw = row && row.rawTombstoneJson;
     if (!raw && row && row.raw_tombstone_json) raw = row.raw_tombstone_json;
+    if (!raw && isPlainObject(row) && cleanString(row.schema) === LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) raw = row;
     if (!raw && isPlainObject(row && row.payload)) raw = row.payload;
     if (!raw && isPlainObject(row)) raw = row;
     if (!raw) return null;
@@ -827,24 +828,30 @@
     }
   }
 
-  function sanitizeLibraryMetadataMutationRequestForExport(row) {
+  function sanitizeLibraryMetadataMutationRequestForExport(row, diagnostics) {
+    function invalid(code) {
+      if (diagnostics && Array.isArray(diagnostics.invalidReasons)) {
+        diagnostics.invalidReasons.push(cleanString(code) || 'library-metadata-mutation-request-export-invalid');
+      }
+      return null;
+    }
     var payload = parseLibraryMetadataMutationRequestPayload(row);
-    if (!payload) return null;
-    if (cleanString(payload.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) return null;
-    if (cleanString(payload.intent) !== 'library-metadata-mutation-request') return null;
-    if (cleanString(payload.status) !== 'pending') return null;
-    if (payload.desktopApplyRequired !== true || payload.noLocalApply !== true) return null;
-    if (payload.noChromeCanonicalMutation !== true || payload.noDesktopCanonicalMutation !== true) return null;
+    if (!payload) return invalid('library-metadata-mutation-request-export-payload-unreadable');
+    if (cleanString(payload.schema) !== LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA) return invalid('library-metadata-mutation-request-export-schema-invalid');
+    if (cleanString(payload.intent) !== 'library-metadata-mutation-request') return invalid('library-metadata-mutation-request-export-intent-invalid');
+    if (cleanString(payload.status) !== 'pending') return invalid('library-metadata-mutation-request-export-status-not-pending');
+    if (payload.desktopApplyRequired !== true || payload.noLocalApply !== true) return invalid('library-metadata-mutation-request-export-request-only-flags-invalid');
+    if (payload.noChromeCanonicalMutation !== true || payload.noDesktopCanonicalMutation !== true) return invalid('library-metadata-mutation-request-export-authority-flags-invalid');
     if (payload.noHardDelete !== true || payload.noPurge !== true || payload.noChatDelete !== true ||
-        payload.noSnapshotDelete !== true || payload.noAssetDelete !== true) return null;
+        payload.noSnapshotDelete !== true || payload.noAssetDelete !== true) return invalid('library-metadata-mutation-request-export-delete-safety-flags-invalid');
     if (payload.noLabelDelete !== true || payload.noTagDelete !== true ||
-        payload.noCategoryDelete !== true || payload.noMetadataDelete !== true) return null;
+        payload.noCategoryDelete !== true || payload.noMetadataDelete !== true) return invalid('library-metadata-mutation-request-export-metadata-delete-safety-flags-invalid');
     var action = normalizeLibraryMetadataMutationAction(payload);
-    if (libraryMetadataMutationDeferredDestructiveAction(action)) return null;
+    if (libraryMetadataMutationDeferredDestructiveAction(action)) return invalid('library-metadata-mutation-request-export-destructive-action-deferred');
     var spec = libraryMetadataMutationActionSpec(action);
-    if (!spec) return null;
+    if (!spec) return invalid('library-metadata-mutation-request-export-action-unsupported');
     var requestId = cleanString(payload.requestId || payload.reviewId);
-    if (!requestId) return null;
+    if (!requestId) return invalid('library-metadata-mutation-request-export-request-id-missing');
     var p = isPlainObject(payload.payload) ? payload.payload : {};
     var chatId = safeMetadataRequestId(p.chatId || p.conversationId);
     var entityId = safeMetadataRequestId(p.entityId || p.labelId || p.tagId || p.categoryId || p.classificationId);
@@ -853,9 +860,9 @@
       entityId = '';
       displayName = '';
     }
-    if (spec.requiresChatId && !chatId) return null;
-    if (spec.requiresId && !entityId) return null;
-    if (spec.requiresName && !displayName) return null;
+    if (spec.requiresChatId && !chatId) return invalid('library-metadata-mutation-request-export-chat-id-required');
+    if (spec.requiresId && !entityId) return invalid('library-metadata-mutation-request-export-entity-id-required');
+    if (spec.requiresName && !displayName) return invalid('library-metadata-mutation-request-export-display-name-required');
     return {
       schema: LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA,
       version: cleanString(payload.version || '0.1.0-phase6'),
@@ -1508,20 +1515,31 @@
       noTagDelete: true,
       noCategoryDelete: true,
       noMetadataDelete: true,
+      invalidReasons: [],
+      invalidReasonCounts: {},
     };
     try {
       var byIdentity = Object.create(null);
       function addRequest(row) {
-        var request = sanitizeLibraryMetadataMutationRequestForExport(row);
+        var diagnostics = { invalidReasons: [] };
+        var request = sanitizeLibraryMetadataMutationRequestForExport(row, diagnostics);
         if (!request) {
           result.skippedCount += 1;
           result.invalidCount += 1;
+          diagnostics.invalidReasons.forEach(function (code) {
+            if (!code) return;
+            result.invalidReasons.push(code);
+            result.invalidReasonCounts[code] = (result.invalidReasonCounts[code] || 0) + 1;
+          });
           return null;
         }
         var key = libraryMetadataMutationRequestExportIdentity(request);
         if (!key || key === '|') {
           result.skippedCount += 1;
           result.invalidCount += 1;
+          result.invalidReasons.push('library-metadata-mutation-request-export-identity-invalid');
+          result.invalidReasonCounts['library-metadata-mutation-request-export-identity-invalid'] =
+            (result.invalidReasonCounts['library-metadata-mutation-request-export-identity-invalid'] || 0) + 1;
           return null;
         }
         if (!byIdentity[key]) {
