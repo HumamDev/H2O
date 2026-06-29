@@ -1,20 +1,22 @@
 #!/usr/bin/env node
-// H.1 — Saved-chat archive RECOVERY / IMPORT / EXPORT CONTRACT validator (static).
+// H.1/H.2 — Saved-chat archive RECOVERY / IMPORT / EXPORT validator (static).
 //
-// H.0 (contract e8e2ca1) defined inspection / verification / open / import / export
-// of .h2ochat packages, and decided to ship a READ-ONLY package inspector first
-// (H.2/H.3) before any import/write recovery (H.4/H.5). H.1 statically locks that
-// contract and asserts the current runtime is still pre-implementation: no
-// .h2ochat reader/importer/inspector exists, the diagnostics stay read-only, the
-// writer stays a projection writer (not an importer), and Chrome has no package
-// authority.
+// H.0 (contract e8e2ca1) defined inspection/verification/open/import/export of
+// .h2ochat packages, inspector-first. H.1 locked the contract; H.2 then added the
+// Desktop READ-ONLY package inspector. This validator now asserts BOTH the H.0
+// contract and the H.2 read-only inspector (Desktop-only, reuses the read-only
+// diagnostics validation, granular status vocabulary, no store write/import, no
+// package-HTML execution), while the IMPORT/WRITE recovery entry points (H.4) still
+// do not exist and the standing boundaries hold (Chrome no package authority,
+// diagnostics read-only, writer a projection writer).
 //
 //   [H.1]       = the recovery/import/export contract (H.0 doc assertions).
-//   [INVARIANT] = boundaries that must hold now and after H.2/H.4.
+//   [H.2]       = the read-only Archive Inspector implementation.
+//   [INVARIANT] = boundaries that must hold now and after H.4.
 //
 // Static only: reads source/doc text, asserts patterns. No runtime, no imports of
-// runtime modules, no DB, no network. It asserts NO inspector/importer is
-// implemented yet — this validator must be updated alongside H.2/H.4.
+// runtime modules, no DB, no network. When H.4 (importer) lands, update this
+// validator in lock-step.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -36,16 +38,19 @@ const STUDIO_DIR_REL = 'src-surfaces-base/studio';
 
 const MATERIALIZE_API = 'materializeSavedChatArchiveRequestV1';
 const PACKAGE_EXT = '.h2ochat';
-// Files that legitimately reference .h2ochat today: the WRITER and the read-only
-// DIAGNOSTICS. No reader/importer/inspector may reference it yet.
+const INSPECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
+const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
+// Files that legitimately reference .h2ochat: the WRITER, the read-only DIAGNOSTICS,
+// and (since H.2) the read-only INSPECTOR. No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js',
+  'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
 ]);
-// Importer/reader/inspector entry-point names that must NOT exist yet.
-const IMPORTER_NAMES = [
-  'importSavedChatPackage', 'readSavedChatPackageV1', 'inspectSavedChatPackage',
-  'recoverSavedChat', 'openSavedChatPackage', 'importSavedChatArchivePackage',
+// IMPORT / WRITE recovery entry-point names that must NOT exist until H.4. The
+// read-only H.2 inspector is allowed; importing/recovering into the store is not.
+const FORBIDDEN_IMPORTER_NAMES = [
+  'importSavedChatPackage', 'recoverSavedChat', 'openSavedChatPackage', 'importSavedChatArchivePackage',
 ];
 
 const PASS = [];
@@ -77,6 +82,9 @@ const matCode = stripComments(readRepo(MATERIALIZER_REL));
 const readerCode = stripComments(readRepo(DELIVERY_MV3_REL));
 const importBundle = stripComments(readRepo(IMPORT_BUNDLE_REL));
 const exportBundle = stripComments(readRepo(EXPORT_BUNDLE_REL));
+const inspectorSrc = exists(INSPECTOR_REL) ? readRepo(INSPECTOR_REL) : '';
+const inspectorCode = stripComments(inspectorSrc);
+const healthUiCode = stripComments(readRepo(HEALTH_UI_REL));
 
 console.log('[archive-recovery-import-export] H.1 contract checks');
 
@@ -160,7 +168,7 @@ check('[H.1] H.0 defines the safety boundaries (no Chrome package authority / no
 
 // --- B. Current runtime is pre-implementation (no inspector/importer yet) -----
 
-check('[INVARIANT] no .h2ochat reader/importer/inspector implementation exists (only writer + diagnostics reference it)', () => {
+check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/read-only-inspector; no IMPORT/WRITE entry point exists', () => {
   const offenders = [];
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     if (stripComments(fs.readFileSync(abs, 'utf8')).includes(PACKAGE_EXT)) {
@@ -168,11 +176,11 @@ check('[INVARIANT] no .h2ochat reader/importer/inspector implementation exists (
       if (!ALLOWED_H2OCHAT.has(rel)) offenders.push(rel);
     }
   }
-  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics (new reader/importer?): ' + offenders.join(', '));
+  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector (unexpected reader/importer?): ' + offenders.join(', '));
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
-    for (const name of IMPORTER_NAMES) {
-      assert.ok(!code.includes(name), 'importer/inspector entry point already exists: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    for (const name of FORBIDDEN_IMPORTER_NAMES) {
+      assert.ok(!code.includes(name), 'import/write recovery entry point already exists (H.4, not yet): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
     }
   }
 });
@@ -201,7 +209,7 @@ check('[INVARIANT] diagnostics still validates required files + hashes/assets, r
 check('[INVARIANT] package writer still writes projection packages and is NOT an importer', () => {
   assert.ok(writerCode.includes('writeSavedChatPackageV1'), 'writer present');
   assert.ok(writerCode.includes('projectionOnly'), 'writer emits projectionOnly provenance');
-  for (const banned of IMPORTER_NAMES.concat(['snapshots.create', 'snapshots.upsert'])) {
+  for (const banned of FORBIDDEN_IMPORTER_NAMES.concat(['snapshots.create', 'snapshots.upsert'])) {
     assert.ok(!writerCode.includes(banned), 'writer must not become an importer (found: ' + banned + ')');
   }
 });
@@ -211,6 +219,59 @@ check('[INVARIANT] import-bundle / export-bundle are full-bundle artifacts, not 
   assert.ok(!importBundle.includes(PACKAGE_EXT), 'import-bundle must not touch .h2ochat packages');
   assert.ok(exportBundle.includes('h2o.studio.fullBundle'), 'export-bundle is the full-bundle exporter');
   assert.ok(!exportBundle.includes(PACKAGE_EXT), 'export-bundle must not touch .h2ochat packages');
+});
+
+// --- C. H.2 read-only Archive Inspector implementation -----------------------
+
+check('[H.2] read-only Archive Inspector module exists, registers archiveInspector, and the health UI delegates to it', () => {
+  assert.ok(exists(INSPECTOR_REL), 'inspector module missing');
+  assert.match(inspectorSrc, /H2O\.Studio\.archiveInspector\s*=/);
+  assert.match(inspectorSrc, /function inspectPackage\s*\(/);
+  assert.match(inspectorSrc, /mountArchiveInspectorCard/);
+  assert.match(inspectorSrc, /renderArchiveInspectorCard/);
+  // mounted adjacent to Archive Health via the read-only-preserving delegation
+  assert.ok(healthUiCode.includes('mountArchiveInspectorCard'), 'health UI must delegate to the inspector mount');
+});
+
+check('[H.2] inspector is Desktop-only (detectTauri + isDesktopCapable gate)', () => {
+  assert.match(inspectorCode, /function detectTauri\s*\(/);
+  assert.match(inspectorCode, /__TAURI_INTERNALS__|__TAURI__/);
+  assert.match(inspectorCode, /isDesktopCapable/);
+});
+
+check('[H.2] inspector reuses the read-only diagnostics validation (validateSavedChatPackageV1 + listSavedChatArchivePackagesV1)', () => {
+  assert.ok(inspectorCode.includes('validateSavedChatPackageV1'), 'inspector must reuse validateSavedChatPackageV1');
+  assert.ok(inspectorCode.includes('listSavedChatArchivePackagesV1'), 'inspector must reuse the package inventory list');
+});
+
+check('[H.2] inspector exposes the granular status vocabulary', () => {
+  for (const st of ['verified', 'corrupted', 'missing-files', 'hash-mismatch', 'unsupported-version', 'read-error']) {
+    assert.ok(inspectorCode.includes("'" + st + "'"), 'inspector status missing: ' + st);
+  }
+});
+
+check('[H.2] inspector does NOT import or write the store (no snapshot create/upsert, no SQL/package write, no importer)', () => {
+  for (const banned of ['snapshots.create', 'snapshots.upsert', 'plugin:sql|execute', 'plugin:sql|', 'writeSavedChatPackageV1',
+    'plugin:fs|write', MATERIALIZE_API].concat(FORBIDDEN_IMPORTER_NAMES)) {
+    assert.ok(!inspectorCode.includes(banned), 'inspector must stay read-only (found: ' + banned + ')');
+  }
+  assert.doesNotMatch(inspectorCode, /\bINSERT\s+INTO\b|\bUPDATE\b[^=]/i, 'inspector must not write SQL');
+});
+
+check('[H.2] inspector does NOT execute package HTML (reads chat.md escaped; never reads/injects chat.html; no eval/Function)', () => {
+  assert.doesNotMatch(inspectorCode, /\beval\s*\(/, 'no eval');
+  assert.doesNotMatch(inspectorCode, /new\s+Function\s*\(/, 'no new Function');
+  assert.match(inspectorCode, /readPackageTextFile\([^)]*['"]chat\.md['"]/); // preview reads chat.md
+  assert.doesNotMatch(inspectorCode, /readPackageTextFile\([^)]*['"]chat\.html['"]/, 'inspector must not read chat.html');
+  assert.ok(inspectorSrc.includes('escapeHtml(r.preview)'), 'preview must be HTML-escaped');
+});
+
+check('[H.2] inspector has no watcher/daemon and no scanner/Chrome/sync/native coupling', () => {
+  for (const banned of ['setInterval', 'setTimeout', 'MutationObserver', 'requestAnimationFrame', 'requestIdleCallback',
+    'scanSavedChatArchiveRequestInboxV1', 'chrome.runtime', 'connectNative', 'sendNativeMessage',
+    'H2O.Studio.sync', 'webdav', 'WebDAV', 'localhost', '127.0.0.1', 'ws://', 'wss://']) {
+    assert.ok(!inspectorCode.includes(banned), 'inspector must not couple to: ' + banned);
+  }
 });
 
 console.log('');

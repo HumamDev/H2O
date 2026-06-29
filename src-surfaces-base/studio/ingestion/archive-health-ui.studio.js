@@ -510,6 +510,17 @@
       }
     } catch (_) { /* operator action card must never break the read-only health card */ }
 
+    // Phase H.2: mount the Desktop-only, READ-ONLY package inspector card (its own
+    // module) as a sibling beneath this read-only diagnostics card. This card is
+    // unchanged and performs no mutation; it only delegates a mount call to the
+    // inspector module, which owns the read-only verification and its Desktop gate.
+    try {
+      var inspectorApi = H2O.Studio && H2O.Studio.archiveInspector;
+      if (inspectorApi && typeof inspectorApi.mountArchiveInspectorCard === 'function') {
+        inspectorApi.mountArchiveInspectorCard(container);
+      }
+    } catch (_) { /* inspector card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 
