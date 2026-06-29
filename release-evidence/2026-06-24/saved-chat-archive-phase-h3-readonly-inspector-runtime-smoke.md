@@ -2,18 +2,51 @@
 
 Date: 2026-06-29
 
-Status: **H.3 ARCHIVE INSPECTOR — WIRED + VALIDATED; runtime smoke is the operator's final Tauri-DevTools step (pre-confirmed verifiable)**
+Status: **H.3 READ-ONLY ARCHIVE INSPECTOR RUNTIME SMOKE — PASSED**
 
-(Supersedes the earlier BLOCKED note: the `studio.html` blocker is resolved.)
+(History preserved: the earlier note was BLOCKED on a sync-lane-dirty `studio.html`;
+that blocker was resolved by path-scoped stashing the unrelated appearance work, the
+loader/pack wiring was committed at **`a4ceade`**, and the live Tauri-DevTools smoke
+has now **passed**.)
 
 Lane: Chat Saving Architecture (Phase H — recovery / import / export / inspection).
 
-The deferred H.3 loader wiring is now done — the inspector `<script>` is in
-`studio.html` and the matching pack allowlist entries are present and consistent,
-validated green. The live `inspectPackage` run must execute in Desktop Studio /
-Tauri DevTools, which this environment cannot drive (the WKWebView has no remote
-debug port — same as F.3/G.3), so the operator runs the final smoke; the target
-package is **pre-confirmed verifiable on disk**, so it will return `verified`.
+The deferred H.3 loader wiring is done — the inspector `<script>` is in `studio.html`
+and the matching pack allowlist entries are present and consistent (committed at
+`a4ceade`). The live `inspectPackage` smoke ran in Desktop Studio / Tauri DevTools
+and **PASSED**: the target package returned `status:"verified"` with matching
+identity + hashes, the preview stayed text-only / HTML-escaped (no `chat.html`
+execution), and **no DB / store / package mutation** occurred. (The live run is the
+operator's step — this environment cannot drive the Tauri WKWebView, which exposes
+no remote debug port, as in F.3/G.3.)
+
+## Live runtime smoke result — PASSED
+
+Inspected `archive/packages/69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat` via
+`H2O.Studio.archiveInspector.inspectPackage(...)` in Desktop Studio / Tauri DevTools:
+
+```text
+archiveInspector / inspectPackage / listPackages : all present
+ok: true   status: verified   error: null   blockers: []
+packagePath:    archive/packages/69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat
+packageDirName: 69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat
+identity: chatId 69f0c5f3-30c4-83eb-9240-26331d09532b
+          snapshotId snap_1778516336177_wy9txv06
+          contentHash sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec
+          schemaVersion 1   payloadVersion null
+checks:   manifestPresent ✓  snapshotPresent ✓  markdownPresent ✓  htmlPresent ✓
+          assetsDirPresent false  contentHashOk ✓  hashMismatchCount 0  supportedVersion ✓
+preview:  "" (empty)
+```
+
+The empty `preview` is **not** a failure: verification + identity + hash checks all
+passed, and crucially the package's `chat.html` was **not** read, executed, or
+injected (the preview reads only `chat.md` and is HTML-escaped).
+
+Final smoke verdict object:
+`{ hasExpectedChatId: true, hasExpectedSnapshotId: true, hasExpectedContentHash: true,
+mentionsVerified: true, dbCountsUnchanged: true, packageCountUnchanged: true,
+noHtmlExecutionRequested: true, ok: true, status: "verified-read-only-smoke-pass" }`
 
 ## Baseline
 
@@ -125,15 +158,27 @@ checks (PASS 24) and re-confirmed below.
 ## No-mutation proof
 
 The inspector is read-only (validator-enforced: no `snapshots.create`/`upsert`, no
-SQL/package write, no import, never reads `chat.html`). Baseline captured for the
-smoke (compare unchanged after the operator runs it):
+SQL/package write, no import, never reads `chat.html`). The live smoke captured DB +
+package counts immediately **before and after** the `inspectPackage` run — they are
+**identical**, confirming zero mutation:
 
 ```text
-saved_chat_archive_requests:  validated 56 · needs-desktop-snapshot 7 · written 5 · rejected 3  (total 71)
-snapshots:                    29
-package dirs:                 18
-materialization sidecar receipts:  0
+                                   BEFORE   AFTER
+saved_chat_archive_requests:
+  validated                        56       56
+  written                          5        5
+  needs-desktop-snapshot           7        7
+  rejected                         3        3
+snapshots                          29       29
+package dirs                       18       18
+materialization sidecar receipts   0        0   (no new receipt/sidecar created)
 ```
+
+No DB request/snapshot row changed, no package was written or overwritten, no
+sidecar/receipt was created, and no scanner/materializer run was triggered — the
+inspector only read package files and reused the read-only diagnostics validator.
+No import/export behavior occurred, and Chrome authority did not expand (the
+inspector is Desktop-only; Chrome reads/writes no package/CAS/SQLite).
 
 ## Validation results
 
@@ -161,20 +206,25 @@ concurrent file included.
 
 ## Verdict
 
-**H.3 wiring complete + validated.** The `studio.html` blocker is resolved (stash),
-the inspector loader + pack allowlist are wired consistently (validators green; the
-one f17 failure is a pre-existing, unrelated migration issue), and the target
-package is pre-confirmed verifiable on disk (`contentHash` matches
-`sha256(snapshot.json)`). The live `inspectPackage` smoke is the operator's final
-Tauri-DevTools step (snippet above), which this environment cannot drive — it will
-return `verified` with no mutation.
+**H.3 READ-ONLY ARCHIVE INSPECTOR RUNTIME SMOKE — PASSED.** The `studio.html` blocker
+was resolved (path-scoped stash), the inspector loader + pack allowlist were wired
+consistently and committed at `a4ceade` (validators green; the one f17 failure is a
+pre-existing, unrelated migration issue), and the live `inspectPackage` smoke in
+Desktop Studio / Tauri DevTools returned `status:"verified"` for the target package
+— matching identity (chatId/snapshotId), `contentHash` = `sha256(snapshot.json)`,
+all required-file + hash + version checks passing, an HTML-escaped text-only preview
+(no `chat.html` execution/injection), and **no DB / store / package / receipt
+mutation** and no scanner/materializer run. No import/export behavior and no Chrome
+authority expansion: the inspector is Desktop-only, reads package files read-only,
+and Chrome gained nothing.
 
 ## Recommended next step after H.3
 
-Operator: refresh the dev build (`node tools/dev/dev-all.mjs` + reload, or the quick
-dist-stage), run the inspect snippet, and confirm `status:"verified"` + the
-unchanged baseline counts to close H.3. Separately, the **f17 migration-drift
-(v13 gap) in `src-tauri/lib.rs studio_migrations()`** should be triaged by the
-Desktop/sync lane (out of H.3 scope). After H.3, **H.4** is the verification-gated,
-no-overwrite import/recovery action (import entry points still gated off by the H
-validator).
+**H.3 is closed** — the inspector is wired, validated, and the live smoke verified it
+read-only. Proceed to **H.4**: the verification-gated, **no-overwrite import/recovery**
+action (import-as-new / restore-relink), reusing this inspector's verification as the
+safety gate; the import/write entry points remain gated off by the H validator until
+then. Separately (out of H.3 scope), the **f17 migration-drift (v13 gap) in
+`src-tauri/lib.rs studio_migrations()`** should be triaged by the Desktop/sync lane —
+a pre-existing committed-state issue unrelated to the inspector (flagged as a
+background task).
