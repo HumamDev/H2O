@@ -201,9 +201,33 @@ check('TextQuote repeated match with approx tie-break selects nearest span', () 
   assert.equal(res.confidence, 0.9);
 });
 
+// Conservative A2a.1 contract: ambiguous textQuote matches must not fall back or guess.
+// A2a.2 may broaden behavior, but A2a.1 keeps this as a hard orphan boundary.
+check('TextQuote approx exact-distance tie returns orphaned', () => {
+  const api = freshRuntime({ flag: true });
+  const res = api.resolveInText({ textQuote: { exact: 'target', approx: 4 } }, 'target  target');
+  assert.equal(res.status, 'orphaned');
+  assert.equal(res.reason, 'ambiguous-textQuote');
+});
+
 check('ambiguous TextQuote without safe tie-break returns orphaned', () => {
   const api = freshRuntime({ flag: true });
   const res = api.resolveInText({ textQuote: { exact: 'target' } }, 'target target');
+  assert.equal(res.status, 'orphaned');
+  assert.equal(res.reason, 'ambiguous-textQuote');
+});
+
+// Conservative A2a.1 contract: even when textPos could validate, ambiguous textQuote short-circuits to orphaned.
+// This avoids any fallback-based inference before A2a.2 decisions.
+check('Ambiguous textQuote does not fall back to textPos in A2a.1', () => {
+  const api = freshRuntime({ flag: true });
+  const res = api.resolveInText(
+    {
+      textQuote: { exact: 'target' },
+      textPos: { start: 0, end: 6 },
+    },
+    'target target',
+  );
   assert.equal(res.status, 'orphaned');
   assert.equal(res.reason, 'ambiguous-textQuote');
 });
