@@ -661,6 +661,12 @@
        and snapshotId. No relink, tombstone override, Chrome authority, sync,
        scanner/materializer changes, or UI card in this slice. -->
   <script src="./ingestion/saved-chat-archive-restore.studio.js"></script>
+  <!-- Desktop-only: saved-chat archive relink action (Phase K.4.2).
+       Verification-gated, typed-confirm relink of a verified package onto an
+       existing target chat by inserting a fresh snapshot + turns, then updating
+       only target chat pointer metadata. No UI card, tombstone override,
+       Chrome authority, sync, or scanner/materializer changes in this slice. -->
+  <script src="./ingestion/saved-chat-archive-relink.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the

@@ -18,6 +18,7 @@ const K0_CONTRACT_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k0
 const K1_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k1-restore-relink-validator.md';
 const K2_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k2-restore-original-ids-action.md';
 const RESTORE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
+const RELINK_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-relink.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const HARNESS_REL = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
@@ -167,11 +168,13 @@ check('[K.2] forbidden authorities and side effects are absent from restore modu
   }
 });
 
-check('[DEFERRED] relink runtime remains absent everywhere in the Studio tree', () => {
+check('[INVARIANT] relink runtime is confined to the separate relink module', () => {
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
+    const rel = path.relative(REPO_ROOT, abs);
+    if (rel === RELINK_REL) continue;
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
     for (const name of RELINK_FORBIDDEN_NAMES) {
-      assert.ok(!code.includes(name), 'relink runtime is deferred; unexpected: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+      assert.ok(!code.includes(name), 'relink runtime leaked outside relink module: ' + name + ' in ' + rel);
     }
   }
 });

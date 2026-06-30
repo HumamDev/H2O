@@ -219,6 +219,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // explicit confirm restore of absent original chatId/snapshotId. No relink,
   // tombstone override, Chrome authority, sync, or scanner/materializer changes.
   "ingestion/saved-chat-archive-restore.studio.js",
+  // Desktop-only, verification-gated relink action (Phase K.4.2). Dry-run +
+  // typed-confirm relink onto an existing target chat by inserting a fresh
+  // snapshot + turns, then updating only target chat pointer metadata. API-only;
+  // no UI card, tombstone override, Chrome authority, sync, or scanner changes.
+  "ingestion/saved-chat-archive-relink.studio.js",
   // Desktop-only: saved-chat archive request materializer (Phase D.2C). Triggers
   // the existing package writer for a validated queued request (re-resolves
   // first); updates only the saved_chat_archive_requests row. No migration,
@@ -1309,6 +1314,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-importer.studio.js",
   "ingestion/saved-chat-archive-exporter.studio.js",
   "ingestion/saved-chat-archive-restore.studio.js",
+  "ingestion/saved-chat-archive-relink.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
