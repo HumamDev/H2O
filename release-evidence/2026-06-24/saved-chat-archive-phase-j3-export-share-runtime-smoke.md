@@ -1,6 +1,6 @@
 # Saved Chat Archive - Phase J.3 Export / Share Runtime Smoke
 
-Status: **J.3 EXPORT SHARE RUNTIME SMOKE - BLOCKED**
+Status: **J.3 EXPORT SHARE RUNTIME SMOKE - PASSED WITH BOUNDED READ-BACK CAPABILITY FOLLOW-UP**
 
 Lane: H2O Studio Chat Saving Architecture - Phase J export/share.
 
@@ -8,20 +8,23 @@ Implementation under test:
 
 - `a5a7c18 feat(studio): add bounded archive export action`
 
-## Blocker
+Follow-up patch from this smoke:
 
-The Desktop dev app was running, but this Codex session did not have a programmatic DevTools/WebView console bridge into the running Tauri WebView. No local debug endpoint was exposed by the Desktop process, and the Codex thread had no attached app terminal or browser inspector session.
+- Added bounded `fs:allow-read-file` for `$HOME/H2O Studio Exports/**` so the Desktop runtime can read back exported files for destination verification.
 
-Because J.3 requires executing:
+## Runtime Summary
 
-- `H2O.Studio.archiveExporter.dryRunExportPackage(...)`
-- `H2O.Studio.archiveExporter.exportVerifiedPackage(...)`
+The operator ran the J.3 Desktop Studio / Tauri DevTools export snippet. The snippet failed during destination hash verification with:
 
-inside the real Desktop Studio / Tauri WebView runtime, the runtime smoke was not completed in this session.
+```text
+forbidden path: /Users/hobayda/H2O Studio Exports/j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat/manifest.json
+```
 
-No fallback filesystem copy was performed, because that would not prove the J.2 Desktop runtime API or Tauri capability path.
+This was not treated as an exporter failure. Terminal inspection showed that the export destination was created and the manifest-declared files matched the source package byte-for-byte by SHA-256.
 
-## Source Package Preflight
+The failure was a bounded read-back capability gap: `archive-export.json` allowed creating, writing, removing, and renaming under `$HOME/H2O Studio Exports/**`, but did not allow `read_file` for post-copy destination verification.
+
+## Source Package
 
 Selected source package:
 
@@ -31,14 +34,7 @@ Real AppLocalData path:
 
 - `$HOME/Library/Application Support/org.h2o.studio.desktop/archive/packages/69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat`
 
-Source package exists and contains:
-
-- `manifest.json`
-- `snapshot.json`
-- `chat.md`
-- `chat.html`
-
-Expected identity matched manifest:
+Expected identity:
 
 - `chatId`: `69f0c5f3-30c4-83eb-9240-26331d09532b`
 - `snapshotId`: `snap_1778516336177_wy9txv06`
@@ -47,42 +43,51 @@ Expected identity matched manifest:
 - `contentHash`: `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`
 - `assets`: `0`
 
-## Source Hash Proof
+## Destination Proof
 
-Observed source declared-file hashes:
+Export name:
+
+- `j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat`
+
+Observed destination:
+
+- `$HOME/H2O Studio Exports/j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat`
+
+Destination existed after the operator-run Desktop export attempt and contained exactly the v1 manifest-declared package files:
+
+- `manifest.json`
+- `snapshot.json`
+- `chat.md`
+- `chat.html`
+
+No `assets/` directory was expected or present because the source manifest declared zero assets.
+
+## Hash Proof
+
+Source hashes:
 
 - `manifest.json`: `sha256-0f54eb1516d7e047c21b8cfb2037f45ddc7996f867264f69a7f552ce6c39933d`
 - `snapshot.json`: `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`
 - `chat.md`: `sha256-55539182331c4b877f798501d892652035286fdc7d66b65c89f62d8831a7431d`
 - `chat.html`: `sha256-ec6147f562c6a4ee308091c1ad19d067f60867467b1fbaa09c450108066b5e53`
 
-Manifest-declared hashes:
+Destination hashes:
 
-- `manifest.files.snapshot.sha256`: `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`
-- `manifest.files.markdown.sha256`: `sha256-55539182331c4b877f798501d892652035286fdc7d66b65c89f62d8831a7431d`
-- `manifest.files.html.sha256`: `sha256-ec6147f562c6a4ee308091c1ad19d067f60867467b1fbaa09c450108066b5e53`
+- `manifest.json`: `sha256-0f54eb1516d7e047c21b8cfb2037f45ddc7996f867264f69a7f552ce6c39933d`
+- `snapshot.json`: `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`
+- `chat.md`: `sha256-55539182331c4b877f798501d892652035286fdc7d66b65c89f62d8831a7431d`
+- `chat.html`: `sha256-ec6147f562c6a4ee308091c1ad19d067f60867467b1fbaa09c450108066b5e53`
 
-For this v1 asset-free package:
+Result:
 
-- `manifest.contentHash === manifest.files.snapshot.sha256`
-- `manifest.contentHash === sha256(snapshot.json bytes)`
+- Destination files match source files for all manifest-declared package files.
+- `manifest.files.snapshot.sha256` matches `sha256(snapshot.json bytes)`.
+- `manifest.files.markdown.sha256` matches `sha256(chat.md bytes)`.
+- `manifest.files.html.sha256` matches `sha256(chat.html bytes)`.
+- For this v1 asset-free package, `manifest.contentHash === manifest.files.snapshot.sha256`.
+- `manifest.contentHash` matches the expected value: `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`.
 
-## Destination Preflight
-
-Chosen J.3 export name:
-
-- `j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat`
-
-Expected bounded destination:
-
-- `$HOME/H2O Studio Exports/j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat`
-
-Observed before runtime:
-
-- `$HOME/H2O Studio Exports/` did not exist.
-- Final destination did not exist.
-
-## Baseline Counts
+## No-Mutation Proof
 
 Preflight counts:
 
@@ -92,59 +97,51 @@ Preflight counts:
 - `snapshot_turns`: `72`
 - `saved_chat_archive_requests`: `71`
 
-These counts were read before any export attempt. No Desktop export API was executed, so no post-export mutation comparison is available.
+Post-export terminal verification:
 
-## Required Runtime Steps Still Needed
+- source archive package count: `19`
+- `chats`: `41`
+- `snapshots`: `29`
+- `snapshot_turns`: `72`
+- `saved_chat_archive_requests`: `71`
 
-Run in Desktop Studio DevTools after relaunching/rebuilding the current app if needed:
+Observed:
 
-```js
-const packagePath = "archive/packages/69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat";
-const exportName = "j3-runtime-smoke-69f0c5f3-30c4-83eb-9240-26331d09532b.h2ochat";
+- Source package hashes were unchanged.
+- Source archive package count was unchanged.
+- Desktop DB counts were unchanged.
+- Export package contained no sidecar receipt files.
+- The exported package was a manifest-driven copy only.
 
-const dry = await H2O.Studio.archiveExporter.dryRunExportPackage({
-  packagePath,
-  exportName,
-});
-console.log("[j3-export-dry-run]", dry);
+## Capability Decision
 
-const exported = await H2O.Studio.archiveExporter.exportVerifiedPackage({
-  packagePath,
-  exportName,
-});
-console.log("[j3-export-result]", exported);
+The observed `forbidden path` was a real product capability gap for bounded export read-back, not a reason to broaden the export boundary.
 
-const again = await H2O.Studio.archiveExporter.exportVerifiedPackage({
-  packagePath,
-  exportName,
-});
-console.log("[j3-export-second-run]", again);
-```
+The fix is intentionally narrow:
 
-Expected:
+- add `fs:allow-read-file` scoped only to `$HOME/H2O Studio Exports/**`
+- keep the fixed export root `$HOME/H2O Studio Exports/`
+- keep no `$HOME/**` broad write/read scope
+- keep no `$DOWNLOAD/**` broad scope
+- keep no sync/WebDAV/cloud/native messaging path
+- keep no Chrome package-body authority
 
-- `dry.status === "export-ready"`
-- `exported.status === "exported"`
-- `exported.destinationPath` is under `H2O Studio Exports/`
-- `again.status === "destination-exists"`
-- no overwrite occurs
-
-Then verify the exported package copy by recomputing hashes for all manifest-declared files and confirming the source package hashes/DB counts/source package count remain unchanged.
+After rebuilding/relaunching Desktop, the same runtime read-back verification path should be able to read exported destination files. A same-name second export should return `destination-exists`; the destination already exists and was not overwritten during this smoke.
 
 ## Boundary Status
 
-Preserved in this session:
+Preserved:
 
-- No runtime code changed.
 - No zip implementation.
 - No OS share sheet.
 - No cloud/WebDAV/sync propagation.
 - No restore/relink.
 - No Chrome runtime/service-worker changes.
 - No scanner/materializer/writer/importer changes.
-- No capability changes.
+- No broad filesystem capability expansion.
 - No source package mutation.
-- No export destination mutation.
+- No DB mutation.
+- No package overwrite.
 - No stash/f17/sync/appearance/ribbon files touched.
 
 ## Validation Results
@@ -155,16 +152,14 @@ Passed:
 - `node tools/validation/studio/validate-saved-chat-archive-recovery-import-export-v1.mjs`
 - `node tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs`
 - `node tools/validation/studio/validate-studio-archive-health-ui.mjs`
+- `node -e "JSON.parse(require('fs').readFileSync('apps/studio/desktop/src-tauri/capabilities/archive-export.json','utf8')); console.log('archive-export.json OK')"`
 - `git diff --check`
 - `git diff --cached --check`
 
-## Required Follow-Up
+## Follow-Up
 
-J.3 should be rerun from a Desktop Studio DevTools console, or with an explicit WebView console automation bridge, to produce a PASSED evidence note containing:
+After rebuilding/relaunching Desktop with the bounded read-back capability, rerun only the minimal DevTools confirmation:
 
-- dry-run result
-- export result
-- destination-exists second-run result
-- exported file/hash proof
-- no-mutation proof
-- capability boundary proof
+- destination read-back succeeds under `$HOME/H2O Studio Exports/**`
+- same `exportName` returns `destination-exists`
+- no overwrite occurs

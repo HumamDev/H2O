@@ -29,6 +29,12 @@
       ]
     },
     {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
       "identifier": "fs:allow-write-file",
       "allow": [
         { "path": "$HOME/H2O Studio Exports/**" }
