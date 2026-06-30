@@ -12,7 +12,9 @@
 // HTML execution, Desktop-only), while the standing boundaries hold (Chrome no
 // package authority, diagnostics read-only, writer a projection writer, and as
 // of Phase J.2 only the bounded Desktop archiveExporter export/share runtime is
-// allowed.
+// allowed. As of Phase K.1 the future verification-gated RESTORE module
+// (restore-original-ids) is pre-authorized as planned work, while relink and
+// tombstone-override/un-delete stay deferred (no relink runtime allowed).
 //
 //   [H.1]       = the recovery/import/export contract (H.0 doc assertions).
 //   [H.2]       = the read-only Archive Inspector implementation (stays read-only).
@@ -45,16 +47,24 @@ const PACKAGE_EXT = '.h2ochat';
 const INSPECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const EXPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js';
+// Phase K.0/K.1 planning allowance: the future verification-gated, absent-only,
+// no-overwrite RESTORE module (restore-original-ids). It does not exist yet (K.1 is
+// contract + validator only); pre-authorizing it here keeps the K.2 restore module
+// from tripping the .h2ochat-reference invariant. Relink + tombstone-override stay
+// deferred (see RELINK_FORBIDDEN_NAMES).
+const RESTORE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
 // Files that legitimately reference .h2ochat: the WRITER, the read-only DIAGNOSTICS,
-// the read-only INSPECTOR (H.2), the verification-gated IMPORTER (H.4), and
-// the bounded Desktop EXPORTER (J.2). No other module may reference it.
+// the read-only INSPECTOR (H.2), the verification-gated IMPORTER (H.4), the bounded
+// Desktop EXPORTER (J.2), and (planned, K) the verification-gated RESTORE module.
+// No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js',
+  RESTORE_REL,
 ]);
 // Legacy placeholder import/recovery entry-point names we deliberately did NOT use
 // (H.4 uses the cleaner dryRunImportPackage / importVerifiedPackage). These must
@@ -74,6 +84,14 @@ const FORBIDDEN_EXPORT_NAMES = [
   'copySavedChatPackageToExport',
 ];
 const EXPORTER_ENTRY_NAMES = ['archiveExporter', 'dryRunExportPackage', 'exportVerifiedPackage'];
+// Planned K (restore-original-ids) entry points. They may exist ONLY in the restore
+// module once K.2 lands — never leaked elsewhere. Absent in K.1. (Namespace-qualified
+// so bare `archiveRestore` does not collide with unrelated sync-lane identifiers like
+// archiveRestoreInstalled.)
+const RESTORE_ENTRY_NAMES = ['H2O.Studio.archiveRestore', 'dryRunRestorePackage', 'restoreVerifiedPackage'];
+// Relink runtime stays DEFERRED (mutates existing library state). These names must
+// not appear anywhere in the studio tree until a future relink phase.
+const RELINK_FORBIDDEN_NAMES = ['archiveRelink', 'dryRunRelinkPackage', 'relinkVerifiedPackage'];
 
 const PASS = [];
 const FAIL = [];
@@ -215,6 +233,20 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/impo
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
     for (const name of IMPORTER_ENTRY_NAMES) {
       assert.ok(!code.includes(name), 'import entry point leaked outside the importer module: ' + name + ' in ' + rel);
+    }
+  }
+  // The planned K restore entry points may live ONLY in the restore module (absent in
+  // K.1). Relink entry points stay forbidden everywhere (relink deferred).
+  for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
+    const rel = path.relative(REPO_ROOT, abs);
+    const code = stripComments(fs.readFileSync(abs, 'utf8'));
+    if (rel !== RESTORE_REL) {
+      for (const name of RESTORE_ENTRY_NAMES) {
+        assert.ok(!code.includes(name), 'restore entry point leaked outside the restore module: ' + name + ' in ' + rel);
+      }
+    }
+    for (const name of RELINK_FORBIDDEN_NAMES) {
+      assert.ok(!code.includes(name), 'relink runtime is deferred; unexpected relink entry point: ' + name + ' in ' + rel);
     }
   }
 });
