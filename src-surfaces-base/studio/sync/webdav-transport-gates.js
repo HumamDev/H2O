@@ -21,7 +21,9 @@
     'chat-category-assign',
     'chat-category-clear',
     'chat-label-bind',
-    'chat-tag-bind'
+    'chat-tag-bind',
+    'chat-label-unbind',
+    'chat-tag-unbind'
   ]);
   var SAME_ENVELOPES = Object.freeze([
     'latest.json',
@@ -208,7 +210,7 @@
     guard('authority-model-guard', true, 'passed', 'Desktop canonical, Chrome request-only, WebDAV dumb transport.');
     guard('chrome-read-only-guard', true, 'passed', 'Chrome canonical mutation remains blocked.');
     guard('desktop-canonical-guard', true, 'passed', 'Desktop remains canonical authority.');
-    guard('no-destructive-action-guard', true, 'passed', 'No delete, purge, remove, unbind, clear broadening.');
+    guard('no-destructive-action-guard', true, 'passed', 'No delete, purge, remove, hard-delete, or catalog destructive broadening.');
     guard('no-schema-mutation-guard', true, 'passed', 'No metadata request/receipt/projection schema mutation.');
     guard('no-secret-raw-data-evidence-guard', !privacy.rawInputRejected, privacy.rawInputRejected ? 'blocked-raw-private-input' : 'passed',
       'Manifest/evidence is hash/redacted only.');

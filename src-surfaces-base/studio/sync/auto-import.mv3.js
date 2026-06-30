@@ -770,7 +770,7 @@
     return text.slice(0, 160);
   }
 
-  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
+  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear', 'chat-label-unbind', 'chat-tag-unbind']);
 
   function normalizeLibraryMetadataMutationAction(input) {
     var source = isPlainObject(input) ? input : {};
@@ -785,6 +785,8 @@
     if (action === 'rename-category') action = 'category-rename';
     if (action === 'bind-label') action = 'chat-label-bind';
     if (action === 'bind-tag') action = 'chat-tag-bind';
+    if (action === 'unbind-label') action = 'chat-label-unbind';
+    if (action === 'unbind-tag') action = 'chat-tag-unbind';
     if (action === 'assign-category') action = 'chat-category-assign';
     if (action === 'set-classification') action = 'classification-set';
     return action;
@@ -800,6 +802,8 @@
       'category-rename': { metadataKind: 'category', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
       'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-label-unbind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'unbind', requiresChatId: true, requiresId: true },
+      'chat-tag-unbind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'unbind', requiresChatId: true, requiresId: true },
       'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
       'chat-category-clear': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'clear', requiresChatId: true, requiresId: false },
       'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }

@@ -48,6 +48,10 @@ const EXPECTED_APPLIED_TYPES = [
   'chat-label-bind',
   'chat-tag-bind',
 ];
+const OPERATIONAL_RUNTIME_TYPES = EXPECTED_APPLIED_TYPES.concat([
+  'chat-label-unbind',
+  'chat-tag-unbind',
+]);
 
 const REQUIRED_A4_PATTERNS = [
   /pre-freeze/i,
@@ -279,12 +283,12 @@ check('[EXPORT] current metadata projection path carries canonical metadata and 
   assertIncludes(codeOf(FOLDER_IMPORT_REL), 'libraryMetadataMutationRequests');
 });
 
-check('[REQUEST CORE] four request-core types remain the only applied closed allowlist', () => {
+check('[REQUEST CORE] four request-core types remain stable; Operational.2 unbinds are allowed runtime extensions', () => {
   const applied = parseAppliedAllowlist(readRepo(FOLDER_SYNC_REL));
   assert.ok(Array.isArray(applied), 'could not parse applied metadata request allowlist');
-  assert.deepEqual(applied, EXPECTED_APPLIED_TYPES.slice().sort(), 'applied request allowlist drifted');
+  assert.deepEqual(applied, OPERATIONAL_RUNTIME_TYPES.slice().sort(), 'applied request allowlist must be four-core plus Operational.2 unbinds');
   const syncCode = codeOf(FOLDER_SYNC_REL);
-  assertIncludes(syncCode, "NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear'])");
+  assertIncludes(syncCode, "NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear', 'chat-label-unbind', 'chat-tag-unbind'])");
   assertIncludes(syncCode, 'library-metadata-mutation-request-action-deferred-phase7');
   assert.match(a4, /chat-label-unbind/i, 'A4 should defer label unbind');
   assert.match(a4, /chat-tag-unbind/i, 'A4 should defer tag unbind');
@@ -328,6 +332,7 @@ console.log(JSON.stringify({
   productSyncReady: false,
   currentWire: 'h2o.studio.fullBundle.v2',
   appliedRequestCore: EXPECTED_APPLIED_TYPES,
+  operationalRuntimeTypes: OPERATIONAL_RUNTIME_TYPES,
   scannedFiles: SCANNED_RELS,
   projectionFindings: {
     categories: TABLE_FIELD_EXPECTATIONS.categories,

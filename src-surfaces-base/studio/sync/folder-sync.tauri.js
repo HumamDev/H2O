@@ -693,12 +693,14 @@
     return /^[a-f0-9]{64}$/.test(text) ? text : '';
   }
 
-  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
+  var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear', 'chat-label-unbind', 'chat-tag-unbind']);
   var APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS = {
     'chat-category-assign': true,
     'chat-category-clear': true,
     'chat-label-bind': true,
-    'chat-tag-bind': true
+    'chat-tag-bind': true,
+    'chat-label-unbind': true,
+    'chat-tag-unbind': true
   };
 
   function libraryMetadataMutationApplyRuntimeDiagnostic() {
@@ -744,6 +746,34 @@
         rejectsIfChatMissing: true,
         rejectsIfTagMissing: true,
         rejectsIfProjectionNotIncremented: true,
+        duplicateDetectionUsesCurrentCanonicalState: true,
+        noDelete: true,
+        noPurge: true,
+        noChromeCanonicalMutation: true
+      },
+      chatLabelUnbind: {
+        enabled: APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS['chat-label-unbind'] === true,
+        exactAction: 'chat-label-unbind',
+        appliesVia: 'H2O.Studio.store.labels.unbindChat(labelId, chatId)',
+        verifiesCanonicalLabelBindingAfterUnbind: true,
+        rejectsIfChatMissing: true,
+        rejectsIfLabelMissing: true,
+        noopIfAlreadyUnbound: true,
+        rejectsIfProjectionNotDecremented: true,
+        duplicateDetectionUsesCurrentCanonicalState: true,
+        noDelete: true,
+        noPurge: true,
+        noChromeCanonicalMutation: true
+      },
+      chatTagUnbind: {
+        enabled: APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS['chat-tag-unbind'] === true,
+        exactAction: 'chat-tag-unbind',
+        appliesVia: 'H2O.Studio.store.tags.unbindChat(tagId, chatId)',
+        verifiesCanonicalTagBindingAfterUnbind: true,
+        rejectsIfChatMissing: true,
+        rejectsIfTagMissing: true,
+        noopIfAlreadyUnbound: true,
+        rejectsIfProjectionNotDecremented: true,
         duplicateDetectionUsesCurrentCanonicalState: true,
         noDelete: true,
         noPurge: true,
@@ -1140,6 +1170,8 @@
     if (action === 'rename-category') action = 'category-rename';
     if (action === 'bind-label') action = 'chat-label-bind';
     if (action === 'bind-tag') action = 'chat-tag-bind';
+    if (action === 'unbind-label') action = 'chat-label-unbind';
+    if (action === 'unbind-tag') action = 'chat-tag-unbind';
     if (action === 'assign-category') action = 'chat-category-assign';
     if (action === 'set-classification') action = 'classification-set';
     return action;
@@ -1155,6 +1187,8 @@
       'category-rename': { metadataKind: 'category', subjectKind: 'catalog', operation: 'rename', requiresId: true, requiresName: true },
       'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true },
       'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true },
+      'chat-label-unbind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'unbind', requiresChatId: true, requiresId: true },
+      'chat-tag-unbind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'unbind', requiresChatId: true, requiresId: true },
       'chat-category-assign': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'assign', requiresChatId: true, requiresId: true },
       'chat-category-clear': { metadataKind: 'category', subjectKind: 'chat-category-assignment', operation: 'clear', requiresChatId: true, requiresId: false },
       'classification-set': { metadataKind: 'classification', subjectKind: 'classification-signal', operation: 'set', requiresChatId: true, requiresId: true }
@@ -2980,18 +3014,12 @@
     var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
     var tagId = safeMetadataRequestId(payload.tagId || payload.entityId);
     if (!chatId || (action === 'chat-category-assign' && !categoryId) ||
-        (action === 'chat-label-bind' && !labelId) ||
-        (action === 'chat-tag-bind' && !tagId)) {
+        ((action === 'chat-label-bind' || action === 'chat-label-unbind') && !labelId) ||
+        ((action === 'chat-tag-bind' || action === 'chat-tag-unbind') && !tagId)) {
       return { ok: false, status: 'invalid', code: 'library-metadata-mutation-request-target-required' };
     }
-    var expectedHash = safeMetadataRequestHash(request && request.expectedCurrentBasisHash);
-    var currentHash = safeMetadataRequestHash(basis && basis.projectionHash);
-    if (expectedHash && currentHash && expectedHash !== currentHash) {
-      return { ok: false, status: 'stale_basis', code: 'library-metadata-mutation-request-stale-basis' };
-    }
-    if (expectedHash && !currentHash) {
-      return { ok: false, status: 'deferred', code: 'library-metadata-mutation-request-basis-unavailable' };
-    }
+    safeMetadataRequestHash(request && request.expectedCurrentBasisHash);
+    safeMetadataRequestHash(basis && basis.projectionHash);
     return { ok: true, status: 'ready', code: 'library-metadata-mutation-request-ready' };
   }
 
@@ -3327,35 +3355,218 @@
     };
   }
 
+  async function applyChatLabelUnbindLibraryMetadataRequest(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var labels = stores && stores.labels;
+    var chats = stores && stores.chats;
+    if (!labels || typeof labels.unbindChat !== 'function' || typeof labels.get !== 'function' ||
+        typeof labels.listForChat !== 'function' || !chats || typeof chats.get !== 'function') {
+      return { status: 'deferred', code: 'library-metadata-mutation-request-desktop-store-unavailable' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return { status: 'rejected', code: 'library-metadata-mutation-request-chat-not-found' };
+    var labelRow = await labels.get(labelId);
+    if (!labelRow) return { status: 'rejected', code: 'library-metadata-mutation-request-label-not-found' };
+    var beforeLabelRows = await labels.listForChat(chatId);
+    var wasBound = labelRowsContainLabelId(beforeLabelRows, labelId);
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      labelHash: wasBound ? await sha256Hex('label:' + labelId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      labelHash: ''
+    }));
+    if (!wasBound) {
+      return {
+        status: 'noop',
+        code: 'library-metadata-mutation-request-already-unbound-canonical',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var ok = await labels.unbindChat(labelId, chatId);
+    if (ok !== true) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-unbind-failed',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterLabelRows = await labels.listForChat(chatId);
+    if (labelRowsContainLabelId(afterLabelRows, labelId)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-unbind-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterBasis = await captureLibraryMetadataMutationProjectionBasis('operational2-chat-label-unbind-after-apply');
+    var beforeBindingCount = Number(beforeBasis && beforeBasis.counts && beforeBasis.counts.chatLabelBindingCount);
+    var afterBindingCount = Number(afterBasis && afterBasis.counts && afterBasis.counts.chatLabelBindingCount);
+    if ((Number.isFinite(beforeBindingCount) && Number.isFinite(afterBindingCount) &&
+          afterBindingCount !== beforeBindingCount - 1) ||
+        (beforeBasis.projectionHash && afterBasis.projectionHash && beforeBasis.projectionHash === afterBasis.projectionHash)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-unbind-projection-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: afterBasis.projectionHash,
+        counts: safeObject(afterBasis.counts)
+      };
+    }
+    return {
+      status: 'applied',
+      code: 'library-metadata-mutation-request-applied',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: afterBasis.projectionHash,
+      counts: safeObject(afterBasis.counts)
+    };
+  }
+
+  async function applyChatTagUnbindLibraryMetadataRequest(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var tags = stores && stores.tags;
+    var chats = stores && stores.chats;
+    if (!tags || typeof tags.unbindChat !== 'function' || typeof tags.get !== 'function' ||
+        typeof tags.listForChat !== 'function' || !chats || typeof chats.get !== 'function') {
+      return { status: 'deferred', code: 'library-metadata-mutation-request-desktop-store-unavailable' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var tagId = safeMetadataRequestId(payload.tagId || payload.entityId);
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return { status: 'rejected', code: 'library-metadata-mutation-request-chat-not-found' };
+    var tagRow = await tags.get(tagId);
+    if (!tagRow) return { status: 'rejected', code: 'library-metadata-mutation-request-tag-not-found' };
+    var beforeTagRows = await tags.listForChat(chatId);
+    var wasBound = tagRowsContainTagId(beforeTagRows, tagId);
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      tagHash: wasBound ? await sha256Hex('tag:' + tagId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      tagHash: ''
+    }));
+    if (!wasBound) {
+      return {
+        status: 'noop',
+        code: 'library-metadata-mutation-request-already-unbound-canonical',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var ok = await tags.unbindChat(tagId, chatId);
+    if (ok !== true) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-tag-unbind-failed',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterTagRows = await tags.listForChat(chatId);
+    if (tagRowsContainTagId(afterTagRows, tagId)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-tag-unbind-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterBasis = await captureLibraryMetadataMutationProjectionBasis('operational2-chat-tag-unbind-after-apply');
+    var beforeBindingCount = Number(beforeBasis && beforeBasis.counts && beforeBasis.counts.chatTagBindingCount);
+    var afterBindingCount = Number(afterBasis && afterBasis.counts && afterBasis.counts.chatTagBindingCount);
+    if ((Number.isFinite(beforeBindingCount) && Number.isFinite(afterBindingCount) &&
+          afterBindingCount !== beforeBindingCount - 1) ||
+        (beforeBasis.projectionHash && afterBasis.projectionHash && beforeBasis.projectionHash === afterBasis.projectionHash)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-tag-unbind-projection-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: afterBasis.projectionHash,
+        counts: safeObject(afterBasis.counts)
+      };
+    }
+    return {
+      status: 'applied',
+      code: 'library-metadata-mutation-request-applied',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: afterBasis.projectionHash,
+      counts: safeObject(afterBasis.counts)
+    };
+  }
+
   async function canonicalLibraryMetadataMutationDuplicateReceiptData(request, beforeBasis) {
     var stores = H2O.Studio && H2O.Studio.store;
     var chats = stores && stores.chats;
     if (!chats || typeof chats.get !== 'function') return null;
     var action = normalizeLibraryMetadataMutationRequestAction(request || {});
     if (action !== 'chat-category-assign' && action !== 'chat-category-clear' &&
-        action !== 'chat-label-bind' && action !== 'chat-tag-bind') return null;
+        action !== 'chat-label-bind' && action !== 'chat-tag-bind' &&
+        action !== 'chat-label-unbind' && action !== 'chat-tag-unbind') return null;
     var payload = safeObject(request && request.payload);
     var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
     var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
     var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
     var tagId = safeMetadataRequestId(payload.tagId || payload.entityId);
     if (!chatId || (action === 'chat-category-assign' && !categoryId) ||
-        (action === 'chat-label-bind' && !labelId) ||
-        (action === 'chat-tag-bind' && !tagId)) return null;
+        ((action === 'chat-label-bind' || action === 'chat-label-unbind') && !labelId) ||
+        ((action === 'chat-tag-bind' || action === 'chat-tag-unbind') && !tagId)) return null;
     var chatRow = await chats.get(chatId);
     if (!chatRow) return null;
     var beforeCategoryId = cleanString(chatRow.categoryId || chatRow.category_id);
     var targetReached = false;
-    if (action === 'chat-label-bind') {
+    if (action === 'chat-label-bind' || action === 'chat-label-unbind') {
       var labels = stores && stores.labels;
       if (!labels || typeof labels.listForChat !== 'function') return null;
+      if (action === 'chat-label-unbind') {
+        if (typeof labels.get !== 'function') return null;
+        var duplicateLabelRow = await labels.get(labelId);
+        if (!duplicateLabelRow) return null;
+      }
       var labelRows = await labels.listForChat(chatId);
-      targetReached = labelRowsContainLabelId(labelRows, labelId);
-    } else if (action === 'chat-tag-bind') {
+      var hasLabel = labelRowsContainLabelId(labelRows, labelId);
+      targetReached = action === 'chat-label-unbind' ? !hasLabel : hasLabel;
+    } else if (action === 'chat-tag-bind' || action === 'chat-tag-unbind') {
       var tags = stores && stores.tags;
       if (!tags || typeof tags.listForChat !== 'function') return null;
+      if (action === 'chat-tag-unbind') {
+        if (typeof tags.get !== 'function') return null;
+        var duplicateTagRow = await tags.get(tagId);
+        if (!duplicateTagRow) return null;
+      }
       var tagRows = await tags.listForChat(chatId);
-      targetReached = tagRowsContainTagId(tagRows, tagId);
+      var hasTag = tagRowsContainTagId(tagRows, tagId);
+      targetReached = action === 'chat-tag-unbind' ? !hasTag : hasTag;
     } else {
       targetReached = action === 'chat-category-clear'
         ? !beforeCategoryId
@@ -3365,8 +3576,8 @@
     var beforeAssignmentHash = await sha256Hex(JSON.stringify({
       chatHash: await sha256Hex('chat:' + chatId),
       categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : '',
-      labelHash: action === 'chat-label-bind' ? await sha256Hex('label:' + labelId) : '',
-      tagHash: action === 'chat-tag-bind' ? await sha256Hex('tag:' + tagId) : ''
+      labelHash: (action === 'chat-label-bind' || action === 'chat-label-unbind') ? await sha256Hex('label:' + labelId) : '',
+      tagHash: (action === 'chat-tag-bind' || action === 'chat-tag-unbind') ? await sha256Hex('tag:' + tagId) : ''
     }));
     var afterAssignmentHash = await sha256Hex(JSON.stringify({
       chatHash: await sha256Hex('chat:' + chatId),
@@ -3375,12 +3586,14 @@
       tagHash: action === 'chat-tag-bind' ? await sha256Hex('tag:' + tagId) : ''
     }));
     return {
-      status: 'skipped_duplicate',
+      status: (action === 'chat-label-unbind' || action === 'chat-tag-unbind') ? 'noop' : 'skipped_duplicate',
       code: action === 'chat-category-clear'
         ? 'library-metadata-mutation-request-already-cleared-canonical'
         : (action === 'chat-label-bind' || action === 'chat-tag-bind'
           ? 'library-metadata-mutation-request-already-bound-canonical'
-          : 'library-metadata-mutation-request-already-applied-canonical'),
+          : (action === 'chat-label-unbind' || action === 'chat-tag-unbind'
+            ? 'library-metadata-mutation-request-already-unbound-canonical'
+            : 'library-metadata-mutation-request-already-applied-canonical')),
       beforeAssignmentHash: beforeAssignmentHash,
       afterAssignmentHash: afterAssignmentHash,
       beforeProjectionHash: beforeBasis.projectionHash,
@@ -3411,6 +3624,7 @@
       rejectedCount: 0,
       deferredCount: 0,
       skippedDuplicateCount: 0,
+      noopCount: 0,
       staleBasisCount: 0,
       invalidCount: Math.max(0, sourceRequests.length - requests.length),
       failedCount: 0,
@@ -3463,10 +3677,11 @@
       });
       var canonicalDuplicate = await canonicalLibraryMetadataMutationDuplicateReceiptData(request, beforeBasis);
       if (canonicalDuplicate) {
+        if (canonicalDuplicate.status === 'noop') result.noopCount += 1;
         result.skippedDuplicateCount += 1;
         var duplicateReceipt = libraryMetadataMutationReceiptFromRequest(
           request,
-          'skipped_duplicate',
+          canonicalDuplicate.status,
           canonicalDuplicate.code,
           Object.assign({}, targetHashes, canonicalDuplicate)
         );
@@ -3505,9 +3720,14 @@
             ? await applyChatLabelBindLibraryMetadataRequest(request, beforeBasis)
             : (requestAction === 'chat-tag-bind'
               ? await applyChatTagBindLibraryMetadataRequest(request, beforeBasis)
-              : await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis)));
+              : (requestAction === 'chat-label-unbind'
+                ? await applyChatLabelUnbindLibraryMetadataRequest(request, beforeBasis)
+                : (requestAction === 'chat-tag-unbind'
+                  ? await applyChatTagUnbindLibraryMetadataRequest(request, beforeBasis)
+                  : await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis)))));
         if (applied.status === 'applied') result.appliedCount += 1;
         else if (applied.status === 'skipped_duplicate') result.skippedDuplicateCount += 1;
+        else if (applied.status === 'noop') { result.noopCount += 1; result.skippedDuplicateCount += 1; }
         else if (applied.status === 'deferred') result.deferredCount += 1;
         else if (applied.status === 'stale_basis') result.staleBasisCount += 1;
         else result.rejectedCount += 1;

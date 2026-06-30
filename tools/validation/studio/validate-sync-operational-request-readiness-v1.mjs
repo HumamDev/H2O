@@ -1,24 +1,9 @@
 #!/usr/bin/env node
-// Operational.1 — Sync request/mutation READINESS validator (static).
+// Operational.2 - Sync request/mutation readiness validator.
 //
-// Operational.0 (contract) decided that v1 single-canonical readiness requires
-// bind/unbind SYMMETRY: the applied request allowlist must grow from four to six
-// by adding chat-label-unbind + chat-tag-unbind (category is already symmetric via
-// assign/clear). Operational.1 (this validator) LOCKS that contract statically and
-// asserts the current NOT-IMPLEMENTED runtime state: the runtime applied allowlist
-// is still the four proven types, the two unbind types are planned/deferred (not yet
-// applied), catalog CRUD stays deferred, the B8/B9 basis stays reserved/diagnostic-
-// only, and productSyncReady stays false. The unbind runtime arrives in Operational.2,
-// at which point this validator flips to assert the six-type implementation.
-//
-//   [O.0]       = the Operational.0 readiness contract (doc assertions).
-//   [RUNTIME]   = the current runtime state (four applied; unbind not implemented).
-//   [TARGET]    = the six-type readiness target + the deferred families.
-//   [INVARIANT] = the future unbind implementation invariants (documented).
-//   [BOUNDARY]  = boundaries that must hold (productSyncReady false, no v3, etc.).
-//
-// Static only: reads source/doc text, asserts patterns. No runtime, no node:sqlite,
-// no DB, no module loads. Implements no request type.
+// Static validator only. It asserts the six single-canonical request types are
+// implemented, label/tag unbind are no longer deferred destructive shapes, and
+// productSyncReady/fullBundle.v3/WebDAV/multi-writer remain closed.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,159 +15,222 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const O0_CONTRACT_REL = 'release-evidence/2026-06-30/sync-operational-0-request-mutation-readiness-contract.md';
 const O1_EVIDENCE_REL = 'release-evidence/2026-06-30/sync-operational-1-request-readiness-validator.md';
-const VALIDATOR_REL = 'tools/validation/studio/validate-sync-operational-request-readiness-v1.mjs';
-const GATES_REL = 'src-surfaces-base/studio/sync/webdav-transport-gates.js';
+const O2_EVIDENCE_REL = 'release-evidence/2026-06-30/sync-operational-2-label-tag-unbind-implementation.md';
+const FOLDER_SYNC_REL = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
+const AUTO_IMPORT_REL = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
+const FOLDER_IMPORT_REL = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const WEBDAV_GATES_REL = 'src-surfaces-base/studio/sync/webdav-transport-gates.js';
 const DIAG_REL = 'src-surfaces-base/studio/sync/library/library-metadata-diagnostics.js';
 
-const FOUR_PROVEN = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
-const NEW_UNBIND = ['chat-label-unbind', 'chat-tag-unbind'];
-const SIX_TYPES = FOUR_PROVEN.concat(NEW_UNBIND);
-const RECEIPT_STATUSES = ['pending', 'applied', 'noop', 'rejected', 'superseded'];
-const DEFERRED_CATALOG = ['label-create', 'tag-create', 'category-create', 'recolor', 'hard-delete'];
+const SIX_TYPES = [
+  'chat-category-assign',
+  'chat-category-clear',
+  'chat-label-bind',
+  'chat-tag-bind',
+  'chat-label-unbind',
+  'chat-tag-unbind',
+];
+
+const CATALOG_CRUD_TYPES = [
+  'label-create',
+  'tag-create',
+  'category-create',
+  'label-rename',
+  'tag-rename',
+  'category-rename',
+  'catalog-soft-delete',
+  'catalog-restore',
+  'hard-delete',
+  'un-delete',
+];
 
 const PASS = [];
 const FAIL = [];
-function check(label, fn) {
-  try { fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
-  catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
+
+function repoPath(rel) {
+  return path.join(REPO_ROOT, rel);
 }
-function readRepo(rel) { return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'); }
-function exists(rel) { return fs.existsSync(path.join(REPO_ROOT, rel)); }
-function stripComments(src) { return String(src).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1'); }
+
+function exists(rel) {
+  return fs.existsSync(repoPath(rel));
+}
+
+function readRepo(rel) {
+  return fs.readFileSync(repoPath(rel), 'utf8');
+}
+
+function stripComments(src) {
+  return String(src)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+function codeOf(rel) {
+  return stripComments(readRepo(rel));
+}
+
+function check(label, fn) {
+  try {
+    fn();
+    PASS.push(label);
+    console.log(`  PASS ${label}`);
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    FAIL.push({ label, message });
+    console.log(`  FAIL ${label}`);
+    console.log(`       ${message}`);
+  }
+}
+
+function parseObjectAllowlist(source) {
+  const marker = 'APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS = {';
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, 'missing APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS');
+  const end = source.indexOf('}', start);
+  assert.ok(end > start, 'missing APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS close');
+  const block = source.slice(start, end);
+  const out = [];
+  const re = /'([^']+)'\s*:\s*true/g;
+  let match;
+  while ((match = re.exec(block)) !== null) out.push(match[1]);
+  return out.sort();
+}
+
+function parseArrayAllowlist(source) {
+  const marker = 'var APPLIED_TYPES = Object.freeze([';
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, 'missing APPLIED_TYPES');
+  const end = source.indexOf(']);', start);
+  assert.ok(end > start, 'missing APPLIED_TYPES close');
+  const block = source.slice(start, end);
+  const out = [];
+  const re = /'([^']+)'/g;
+  let match;
+  while ((match = re.exec(block)) !== null) out.push(match[1]);
+  return out.sort();
+}
+
+function assertSetEqual(actual, expected, label) {
+  assert.deepEqual(actual.slice().sort(), expected.slice().sort(), label);
+}
 
 const o0 = exists(O0_CONTRACT_REL) ? readRepo(O0_CONTRACT_REL) : '';
 const o1 = exists(O1_EVIDENCE_REL) ? readRepo(O1_EVIDENCE_REL) : '';
-const gatesCode = exists(GATES_REL) ? stripComments(readRepo(GATES_REL)) : '';
-const diagCode = exists(DIAG_REL) ? stripComments(readRepo(DIAG_REL)) : '';
-const selfSrc = readRepo(VALIDATOR_REL);
+const o2 = exists(O2_EVIDENCE_REL) ? readRepo(O2_EVIDENCE_REL) : '';
+const folderSync = readRepo(FOLDER_SYNC_REL);
+const folderSyncCode = stripComments(folderSync);
+const autoImportCode = codeOf(AUTO_IMPORT_REL);
+const folderImportCode = codeOf(FOLDER_IMPORT_REL);
+const gatesCode = readRepo(WEBDAV_GATES_REL);
+const diagCode = readRepo(DIAG_REL);
 
-console.log('[sync-operational-request-readiness] Operational.1 readiness checks');
+console.log('[sync-operational-request-readiness] Operational.2 checks');
 
-// --- A. Operational.0 contract ------------------------------------------------
-
-check('[O.0] readiness contract exists and is the single-canonical / productSyncReady:false / v3-not-minted contract', () => {
+check('[CONTRACT] Operational.0 exists and requires six single-canonical request types', () => {
   assert.ok(exists(O0_CONTRACT_REL), 'missing Operational.0 contract');
-  assert.match(o0, /OPERATIONAL\.0 READINESS/);
+  assert.match(o0, /OPERATIONAL\.0 READINESS/i);
   assert.match(o0, /single-canonical/i);
   assert.match(o0, /productSyncReady\s*:\s*false|productSyncReady[^.\n]*false/i);
-  assert.match(o0, /fullBundle\.v3[^.\n]*not minted|v3 not minted/i);
+  for (const type of SIX_TYPES) assert.ok(o0.includes(type), `Operational.0 missing ${type}`);
 });
 
-check('[O.0] contract names the SIX applied request types (4 proven + 2 unbind)', () => {
-  for (const t of SIX_TYPES) assert.ok(o0.includes(t), 'contract missing applied type: ' + t);
-  assert.match(o0, /allowlist[^.\n]*six|exactly six|four to six/i);
+check('[BASELINE] Operational.1 evidence remains the planned/not-implemented baseline', () => {
+  assert.ok(exists(O1_EVIDENCE_REL), 'missing Operational.1 evidence');
+  assert.match(o1, /NOT IMPLEMENTED/i);
 });
 
-check('[O.0] contract requires bind/unbind symmetry via chat-label-unbind + chat-tag-unbind', () => {
-  for (const t of NEW_UNBIND) assert.ok(o0.includes(t), 'contract missing required unbind type: ' + t);
-  assert.match(o0, /symmetry/i);
+check('[EVIDENCE] Operational.2 implementation evidence exists', () => {
+  assert.ok(exists(O2_EVIDENCE_REL), 'missing Operational.2 evidence');
+  assert.match(o2, /OPERATIONAL\.2 LABEL\/TAG UNBIND IMPLEMENTATION - IMPLEMENTED/i);
+  for (const type of ['chat-label-unbind', 'chat-tag-unbind']) assert.ok(o2.includes(type), `evidence missing ${type}`);
 });
 
-check('[O.0] contract reuses the B8/B9 request/receipt pattern (requestId, idempotent, append-only, dedup)', () => {
-  assert.ok(o0.includes('B8/B9'), 'must reuse the B8/B9 pattern');
-  assert.match(o0, /requestId/);
-  assert.match(o0, /idempotent/i);
-  assert.match(o0, /append-only/i);
-  assert.match(o0, /deduplicate|dedup/i);
+check('[RUNTIME] Desktop applied request allowlist is exactly six', () => {
+  assertSetEqual(parseObjectAllowlist(folderSync), SIX_TYPES, 'Desktop applied allowlist must be exactly six');
 });
 
-check('[O.0] contract defers catalog CRUD + hard-delete/un-delete (NOT readiness blockers)', () => {
-  for (const c of DEFERRED_CATALOG) assert.ok(o0.includes(c), 'contract must defer: ' + c);
-  assert.match(o0, /deferred/i);
-  assert.match(o0, /hard-delete|un-delete/i);
+check('[RUNTIME] WebDAV/dry-run gate allowlist reports the same six types without enabling product sync', () => {
+  assertSetEqual(parseArrayAllowlist(gatesCode), SIX_TYPES, 'WebDAV gate allowlist must report exactly six');
+  assert.ok(gatesCode.includes('productSyncReady: false'), 'webdav gates must keep productSyncReady false');
 });
 
-check('[O.0] contract pins the single-canonical conflict model (no multi-writer; basis reserved/diagnostic-only; noop)', () => {
-  assert.match(o0, /no multi-writer|No multi-writer merge/i);
-  assert.match(o0, /basis[^.\n]*reserved|reserved[^.\n]*diagnostic-only/i);
-  assert.match(o0, /no[^.\n]*basis[^.\n]*enforcement|No conflict basis enforcement/i);
-  assert.ok(o0.includes('noop') || /already-satisfied/.test(o0), 'must define noop / already-satisfied');
-});
-
-check('[O.0] contract defines the receipt status vocabulary (pending/applied/noop/rejected/superseded)', () => {
-  for (const s of RECEIPT_STATUSES) assert.ok(o0.includes(s), 'contract missing receipt status: ' + s);
-});
-
-check('[O.0] contract keeps the gate honest (productSyncReady flips only after six-type + harness; no premature flip)', () => {
-  assert.match(o0, /harness/i);
-  assert.match(o0, /productSyncReady[\s\S]{0,80}(flip|after)/i);
-});
-
-// --- B. Current runtime state (Operational.1 is NOT IMPLEMENTED) ---------------
-
-check('[RUNTIME] applied allowlist is exactly the FOUR proven types (the two unbind types are NOT yet applied)', () => {
-  assert.ok(gatesCode.length > 0, 'applied-allowlist module not found');
-  for (const t of FOUR_PROVEN) assert.ok(gatesCode.includes("'" + t + "'"), 'applied allowlist missing proven type: ' + t);
-  for (const u of NEW_UNBIND) assert.ok(!gatesCode.includes(u), 'unbind unexpectedly present in the applied allowlist module (Operational.1 must not implement it): ' + u);
-});
-
-check('[RUNTIME] chat-label-unbind / chat-tag-unbind runtime is NOT implemented yet — tracked as planned/deferred', () => {
-  // not in the applied allowlist (above) AND tracked as a deferred destructive shape in diagnostics
-  assert.ok(diagCode.length > 0, 'diagnostics module not found');
-  for (const u of NEW_UNBIND) assert.ok(diagCode.includes(u), 'unbind type should be tracked (as deferred/planned) in diagnostics: ' + u);
-  assert.ok(/DEFERRED_DESTRUCTIVE_SHAPES|deferred/i.test(diagCode), 'diagnostics must track unbind as deferred (planned)');
-});
-
-check('[RUNTIME] productSyncReady remains false in the sync runtime (no premature flip)', () => {
-  assert.ok(gatesCode.includes('productSyncReady'), 'gates must reference productSyncReady');
-  assert.doesNotMatch(gatesCode, /productSyncReady\s*[:=]\s*true/, 'productSyncReady must not be flipped true');
-  assert.doesNotMatch(diagCode, /productSyncReady\s*[:=]\s*true/, 'productSyncReady must not be flipped true');
-});
-
-check('[RUNTIME] no catalog-CRUD request type is in the applied allowlist (catalog CRUD stays Desktop-managed/deferred)', () => {
-  for (const c of ['label-create', 'tag-create', 'category-create', 'label-rename', 'category-rename', 'recolor']) {
-    assert.ok(!gatesCode.includes("'" + c + "'"), 'catalog CRUD type must not be an applied request type: ' + c);
+check('[REQUEST] Chrome/mirror request shapers support label/tag unbind as request-only actions', () => {
+  for (const code of [autoImportCode, folderImportCode]) {
+    assert.ok(code.includes("if (action === 'unbind-label') action = 'chat-label-unbind';"), 'missing unbind-label alias');
+    assert.ok(code.includes("if (action === 'unbind-tag') action = 'chat-tag-unbind';"), 'missing unbind-tag alias');
+    assert.ok(code.includes("'chat-label-unbind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'unbind'"), 'missing label unbind spec');
+    assert.ok(code.includes("'chat-tag-unbind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'unbind'"), 'missing tag unbind spec');
+    assert.ok(code.includes('noChromeCanonicalMutation: true'), 'request shaper must keep Chrome non-authoritative');
+    assert.ok(code.includes('desktopApplyRequired: true'), 'request shaper must keep Desktop apply required');
   }
 });
 
-// --- C. Six-type readiness target + deferrals --------------------------------
-
-check('[TARGET] readiness target = four proven + two unbind; catalog CRUD + hard-delete are NOT readiness-closed', () => {
-  // the contract states the six-type set is the readiness allowlist...
-  for (const t of SIX_TYPES) assert.ok(o0.includes(t), 'six-type target missing: ' + t);
-  // ...and explicitly does not gate readiness on catalog CRUD / deletion
-  assert.match(o0, /Catalog CRUD[\s\S]{0,60}(deferred|not[\s\S]{0,12}gating|not[\s\S]{0,12}required)/i);
+check('[APPLY] Desktop apply functions validate chat/entity, call only binding unbind APIs, and verify projection decrement', () => {
+  assert.ok(folderSyncCode.includes('async function applyChatLabelUnbindLibraryMetadataRequest'), 'missing label unbind apply function');
+  assert.ok(folderSyncCode.includes('async function applyChatTagUnbindLibraryMetadataRequest'), 'missing tag unbind apply function');
+  assert.ok(folderSyncCode.includes('labels.unbindChat(labelId, chatId)'), 'label unbind must call labels.unbindChat');
+  assert.ok(folderSyncCode.includes('tags.unbindChat(tagId, chatId)'), 'tag unbind must call tags.unbindChat');
+  assert.ok(folderSyncCode.includes('library-metadata-mutation-request-label-not-found'), 'label unbind must validate label exists');
+  assert.ok(folderSyncCode.includes('library-metadata-mutation-request-tag-not-found'), 'tag unbind must validate tag exists');
+  assert.ok(folderSyncCode.includes('library-metadata-mutation-request-chat-not-found'), 'unbind must validate chat exists');
+  assert.ok(folderSyncCode.includes('afterBindingCount !== beforeBindingCount - 1'), 'unbind apply must verify projection decrement');
 });
 
-// --- D. Future unbind implementation invariants (documented) ------------------
-
-check('[INVARIANT] contract documents the future unbind apply invariants (idempotent noop / invalid->rejected / basis inert / canonical order / mirrors request-only)', () => {
-  assert.match(o0, /already-unbound[\s\S]{0,20}noop|noop[\s\S]{0,40}zero write/i);
-  assert.match(o0, /invalid[\s\S]{0,30}rejected/i);
-  assert.match(o0, /reserved[\s\S]{0,30}inert|basis[\s\S]{0,30}reserved/i);
-  assert.match(o0, /canonical order|canonical Desktop applies/i);
-  assert.match(o0, /request-only/i);
+check('[NOOP] already-unbound state returns noop/already-satisfied style receipts', () => {
+  assert.ok(folderSyncCode.includes("status: 'noop'"), 'missing noop status');
+  assert.ok(folderSyncCode.includes('library-metadata-mutation-request-already-unbound-canonical'), 'missing already-unbound code');
+  assert.ok(folderSyncCode.includes('noopCount'), 'auto-apply result must count noop outcomes');
 });
 
-// --- E. Boundaries ------------------------------------------------------------
-
-check('[BOUNDARY] no WebDAV apply / no multi-writer / no tags.updated_at migration / no fullBundle.v3 mint claimed by this readiness slice', () => {
-  assert.match(o0, /WebDAV[\s\S]{0,30}(deferred|not[\s\S]{0,8}implement)/i);
-  assert.match(o0, /multi-writer/i);
-  // Operational.1 must not, itself, mint v3 or flip readiness — assert the contract keeps these deferred
-  assert.match(o0, /v3[\s\S]{0,30}not[\s\S]{0,8}mint|not[\s\S]{0,8}mint[\s\S]{0,30}v3/i);
+check('[BASIS] basis remains reserved/diagnostic-only under single-canonical v1', () => {
+  assert.ok(folderSyncCode.includes('expectedCurrentBasisHash'), 'requests still carry basis diagnostically');
+  assert.ok(!folderSyncCode.includes("status: 'stale_basis'"), 'Desktop apply validation must not reject stale basis in v1');
+  assert.ok(!folderSyncCode.includes('library-metadata-mutation-request-basis-unavailable'), 'basis unavailable must not defer v1 apply');
 });
 
-// --- F. Operational.1 evidence + static self-check ---------------------------
-
-check('[O.1] evidence exists and is marked NOT IMPLEMENTED', () => {
-  assert.ok(exists(O1_EVIDENCE_REL), 'Operational.1 evidence missing');
-  assert.match(o1, /OPERATIONAL\.1 REQUEST READINESS VALIDATOR\s*[—-]\s*NOT IMPLEMENTED/);
-  assert.ok(o1.includes('chat-label-unbind') && o1.includes('chat-tag-unbind'), 'evidence must name the two planned unbind types');
+check('[DIAGNOSTICS] label/tag unbind are no longer deferred destructive shapes', () => {
+  const deferredBlockStart = diagCode.indexOf('var DEFERRED_DESTRUCTIVE_SHAPES = [');
+  assert.ok(deferredBlockStart >= 0, 'missing deferred destructive shapes');
+  const deferredBlockEnd = diagCode.indexOf('];', deferredBlockStart);
+  const deferredBlock = diagCode.slice(deferredBlockStart, deferredBlockEnd);
+  assert.ok(!deferredBlock.includes('chat-label-unbind'), 'label unbind must not be deferred destructive');
+  assert.ok(!deferredBlock.includes('chat-tag-unbind'), 'tag unbind must not be deferred destructive');
+  for (const type of SIX_TYPES) assert.ok(diagCode.includes(type), `diagnostics missing applied type ${type}`);
 });
 
-check('[STATIC] this validator loads no runtime module / no node:sqlite / no DB (static scaffold)', () => {
-  const loadLines = selfSrc.split('\n').filter((l) => /^\s*import\s/.test(l) || /\b(?:require|import)\s*\(/.test(l));
-  const loaded = loadLines.join('\n');
-  for (const mod of ['node:sqlite', 'webdav-transport-gates', 'library-metadata-diagnostics', 'folder-sync', 'store/']) {
-    assert.ok(!loaded.includes(mod), 'Operational.1 validator must not load a runtime module: ' + mod);
+check('[DEFERRED] catalog CRUD and delete/undelete remain absent from applied allowlists', () => {
+  const appliedBlock = parseObjectAllowlist(folderSync).join('\n');
+  const gateBlock = parseArrayAllowlist(gatesCode).join('\n');
+  for (const type of CATALOG_CRUD_TYPES) {
+    assert.ok(!appliedBlock.includes(type), `Desktop allowlist must not include ${type}`);
+    assert.ok(!gateBlock.includes(type), `gate allowlist must not include ${type}`);
   }
 });
+
+check('[BOUNDARY] productSyncReady false, v3 unminted, WebDAV apply/multi-writer absent', () => {
+  for (const code of [folderSyncCode, autoImportCode, folderImportCode, stripComments(gatesCode), stripComments(diagCode)]) {
+    assert.ok(!/productSyncReady\s*[:=]\s*true\b/.test(code), 'productSyncReady must not flip true');
+    assert.ok(!/h2o\.studio\.fullBundle\.v3/i.test(code), 'fullBundle.v3 must not be minted');
+    assert.ok(!/\bautoApply.*WebDAV\b/i.test(code), 'WebDAV auto-apply must remain absent');
+    assert.ok(!/\bmulti-writer\b/i.test(code), 'multi-writer runtime must remain absent');
+  }
+});
+
+if (FAIL.length) {
+  console.error('');
+  console.error('FAIL validate-sync-operational-request-readiness-v1');
+  for (const failure of FAIL) console.error(`- ${failure.label}: ${failure.message}`);
+  process.exit(1);
+}
 
 console.log('');
-if (FAIL.length) {
-  console.error(`[sync-operational-request-readiness] ${FAIL.length} failed, ${PASS.length} passed`);
-  process.exitCode = 1;
-} else {
-  console.log(`[sync-operational-request-readiness] PASS ${PASS.length} checks`);
-}
+console.log(JSON.stringify({
+  schema: 'h2o.studio.sync.operational-request-readiness.validator.v1',
+  status: 'passed',
+  phase: 'operational-2-label-tag-unbind',
+  appliedTypes: SIX_TYPES,
+  productSyncReady: false,
+  fullBundleV3Minted: false,
+  checks: PASS.length,
+}, null, 2));
+console.log('PASS validate-sync-operational-request-readiness-v1');

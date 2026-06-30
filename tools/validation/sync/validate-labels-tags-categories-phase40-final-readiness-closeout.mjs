@@ -7,8 +7,9 @@
 // (ready/dev-only/deferred/blocked), reconfirms the source invariants, states what is NOT complete,
 // classifies folder sync as a separate future lane, lists the next-lane options, recommends the safest
 // next step, keeps product metadata sync globally NOT READY, references the Phase 39 commit, and — as
-// real drift guards — confirms the source allowlist is exactly four, WebDAV stays deferred in the loop,
-// and the gates module remains a disabled-by-default dev sandbox with no server/network code.
+// real drift guards — confirms the source allowlist is the phase-40 four-type core plus any later
+// Operational single-canonical extensions, WebDAV stays deferred in the loop, and the gates module
+// remains a disabled-by-default dev sandbox with no server/network code.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,6 +29,7 @@ function exists(file) { return fs.existsSync(path.join(root, file)); }
 function assert(condition, message) { if (!condition) failures.push(message); }
 
 const APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
+const OPERATIONAL_RUNTIME_TYPES = APPLIED_TYPES.concat(['chat-label-unbind', 'chat-tag-unbind']);
 const PHASE39_COMMIT = 'bb68e5c1c17bec08aeb9f099794f04dc73bd479f';
 
 const SURFACE_CLASSES = ['ready-for-maintainer-review', 'dev-only / proof-only', 'deferred', 'blocked'];
@@ -118,17 +120,17 @@ assert(flat.includes('globally NOT READY') || flat.includes('NOT READY globally'
 assert(!/product metadata sync is complete/i.test(flat), 'closeout doc must not over-claim completion');
 assert(flat.includes('READY FOR MAINTAINER REVIEW'), 'closeout doc must state the final readiness verdict');
 
-// ---- REAL SOURCE: allowlist exactly four; WebDAV deferred; gates module disabled-by-default, no server/network ----
+// ---- REAL SOURCE: four-core plus Operational.2 unbinds; WebDAV deferred; gates module disabled-by-default, no server/network ----
 assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const applied = parseAppliedAllowlist(read(folderSyncFile));
   assert(Array.isArray(applied), 'could not parse APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS from source');
   if (Array.isArray(applied)) {
     const sorted = applied.slice().sort();
-    const expected = APPLIED_TYPES.slice().sort();
+    const expected = OPERATIONAL_RUNTIME_TYPES.slice().sort();
     assert(sorted.length === expected.length && sorted.every((a, i) => a === expected[i]),
-      `source applied allowlist drifted: expected exactly [${expected.join(', ')}], got [${sorted.join(', ')}]`);
-    for (const a of applied) assert(APPLIED_TYPES.includes(a), `source enables a broader/unexpected applied type: ${a}`);
+      `source applied allowlist drifted: expected [${expected.join(', ')}], got [${sorted.join(', ')}]`);
+    for (const a of applied) assert(OPERATIONAL_RUNTIME_TYPES.includes(a), `source enables a broader/unexpected applied type: ${a}`);
   }
 }
 for (const file of [folderSyncFile, folderImportFile]) {
@@ -162,6 +164,7 @@ console.log(JSON.stringify({
   notCompleteChecked: NOT_COMPLETE.length,
   nextLaneOptionsChecked: NEXT_LANE_OPTIONS.length,
   appliedAllowlistInSource: parseAppliedAllowlist(read(folderSyncFile)),
+  operationalRuntimeTypes: OPERATIONAL_RUNTIME_TYPES,
   phase39CommitReferenced: PHASE39_COMMIT,
   webdavDeferredInSource: true,
   finalReadiness: 'ready-for-maintainer-review',

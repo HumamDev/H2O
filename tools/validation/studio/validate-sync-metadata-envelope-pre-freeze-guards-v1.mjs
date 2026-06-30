@@ -45,6 +45,10 @@ const EXPECTED_APPLIED_TYPES = [
   'chat-label-bind',
   'chat-tag-bind',
 ];
+const OPERATIONAL_RUNTIME_TYPES = EXPECTED_APPLIED_TYPES.concat([
+  'chat-label-unbind',
+  'chat-tag-unbind',
+]);
 
 const REQUIRED_A2_PATTERNS = [
   /PRE-FREEZE/i,
@@ -203,12 +207,12 @@ check('[RUNTIME] productSyncReady is not flipped to true', () => {
   }
 });
 
-check('[REQUEST CORE] applied metadata request allowlist remains exactly four types', () => {
+check('[REQUEST CORE] four-type request core remains stable; Operational.2 runtime may apply the two unbind extensions', () => {
   const applied = parseAppliedAllowlist(readRepo(FOLDER_SYNC_REL));
   assert.ok(Array.isArray(applied), 'could not parse applied metadata request allowlist');
-  assert.deepEqual(applied, EXPECTED_APPLIED_TYPES.slice().sort(), 'applied request allowlist drifted');
+  assert.deepEqual(applied, OPERATIONAL_RUNTIME_TYPES.slice().sort(), 'applied request allowlist must be the four-core plus Operational.2 unbinds');
   const syncCode = codeOf(FOLDER_SYNC_REL);
-  assertIncludes(syncCode, "NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear'])");
+  assertIncludes(syncCode, "NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear', 'chat-label-unbind', 'chat-tag-unbind'])");
   assertIncludes(syncCode, 'library-metadata-mutation-request-action-deferred-phase7');
 });
 
@@ -267,6 +271,7 @@ console.log(JSON.stringify({
   v3Minted: false,
   productSyncReady: false,
   appliedRequestCore: EXPECTED_APPLIED_TYPES,
+  operationalRuntimeTypes: OPERATIONAL_RUNTIME_TYPES,
   packageBodiesExcluded: true,
   webdavDeferred: true,
   identityKeyRuntimeSatisfied: false,

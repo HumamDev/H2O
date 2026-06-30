@@ -47,6 +47,10 @@ const CORE_REQUEST_TYPES = [
   'chat-label-bind',
   'chat-tag-bind',
 ];
+const OPERATIONAL_RUNTIME_TYPES = CORE_REQUEST_TYPES.concat([
+  'chat-label-unbind',
+  'chat-tag-unbind',
+]);
 
 const TABLE_FIELD_EXPECTATIONS = {
   categories: ['id', 'name', 'parent_id', 'source', 'created_at', 'updated_at', 'meta_json'],
@@ -620,7 +624,7 @@ check('[RESERVED] reserved identity/clock/signature fields remain null in pre-fr
   assert.equal(sample.envelope.signature, null);
 });
 
-check('[VERSION] v3.1 additive minor is tolerated; v4 unknown major is quarantined; allowlist remains four-core', () => {
+check('[VERSION] v3.1 additive minor is tolerated; v4 unknown major is quarantined; v3 sample remains four-core while runtime has Operational.2 unbinds', () => {
   const minor = attachHash(baseProjection());
   minor.version.minorVersion = 1;
   minor.projection.labels[0].futureOptionalField = 'ignored-by-v3.0-consumers';
@@ -633,7 +637,7 @@ check('[VERSION] v3.1 additive minor is tolerated; v4 unknown major is quarantin
   assert.deepEqual(parseProjectionEnvelope(major), { ok: false, status: 'unknown-major-quarantined' });
 
   const applied = parseAppliedAllowlist(readRepo(FOLDER_SYNC_REL));
-  assert.deepEqual(applied, CORE_REQUEST_TYPES.slice().sort(), 'runtime applied allowlist drifted');
+  assert.deepEqual(applied, OPERATIONAL_RUNTIME_TYPES.slice().sort(), 'runtime applied allowlist must be four-core plus Operational.2 unbinds');
 });
 
 check('[NO PREMATURE MINT] runtime remains v2/local, productSyncReady false, WebDAV deferred, identity absent, package bodies excluded', () => {
