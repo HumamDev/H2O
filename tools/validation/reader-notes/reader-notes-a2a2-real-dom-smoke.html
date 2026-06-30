@@ -1,0 +1,190 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reader &amp; Notes A2a.2 Real DOM Smoke</title>
+<body>
+  <pre id="result">pending</pre>
+  <script>
+    window.__H2O_READER_NOTES_A2A2_FLAGS = Object.create(null);
+    window.__H2O_READER_NOTES_A2A2_FLAG_WRITES = [];
+    window.H2O = {
+      flags: {
+        get(key, fallback) {
+          return Object.prototype.hasOwnProperty.call(window.__H2O_READER_NOTES_A2A2_FLAGS, key)
+            ? window.__H2O_READER_NOTES_A2A2_FLAGS[key]
+            : fallback;
+        },
+        set(key, value) {
+          window.__H2O_READER_NOTES_A2A2_FLAG_WRITES.push({ key, value });
+        },
+      },
+      Studio: { readerNotes: {} },
+    };
+  </script>
+  <script src="../../../src-surfaces-base/studio/reader-notes/anchor-resolver.studio.js"></script>
+  <script src="../../../src-surfaces-base/studio/reader-notes/anchor-resolver-dom.studio.js"></script>
+  <script>
+    (function runSmoke() {
+      const FLAG_KEY = 'studio.readerNotes.anchorResolver.enabled';
+      const assertions = [];
+      const failures = [];
+
+      function add(name, ok, details) {
+        const entry = { name, ok: ok === true };
+        if (details && typeof details === 'object') entry.details = details;
+        assertions.push(entry);
+        if (!entry.ok) failures.push(entry);
+      }
+
+      function assert(name, condition, details) {
+        add(name, !!condition, details);
+      }
+
+      function setFlag(value) {
+        window.__H2O_READER_NOTES_A2A2_FLAGS[FLAG_KEY] = value;
+      }
+
+      function collectTextNodes(root) {
+        const nodes = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.nodeValue.length > 0) nodes.push(node);
+        }
+        return nodes;
+      }
+
+      function snapshot(root) {
+        return {
+          textContent: root.textContent,
+          textNodeCount: collectTextNodes(root).length,
+          markCount: root.querySelectorAll('mark,[data-overlay-inline]').length,
+          html: root.innerHTML,
+        };
+      }
+
+      function sameSnapshot(a, b) {
+        return a.textContent === b.textContent
+          && a.textNodeCount === b.textNodeCount
+          && a.markCount === b.markCount
+          && a.html === b.html;
+      }
+
+      function makeRoot() {
+        const root = document.createElement('section');
+        root.id = 'reader-notes-a2a2-smoke-root';
+        root.appendChild(document.createTextNode('alpha '));
+
+        const hidden = document.createElement('span');
+        hidden.style.display = 'none';
+        hidden.appendChild(document.createTextNode('hidden'));
+        root.appendChild(hidden);
+
+        root.appendChild(document.createTextNode(' '));
+
+        const beta = document.createElement('span');
+        const betaText = document.createTextNode('beta');
+        beta.appendChild(betaText);
+        root.appendChild(beta);
+
+        root.appendChild(document.createTextNode(' gamma'));
+        document.body.appendChild(root);
+        return { root, betaText };
+      }
+
+      function highlight(exact) {
+        return { kind: 'highlight', raw: { anchors: { textQuote: { exact } } } };
+      }
+
+      try {
+        const core = window.H2O && window.H2O.Studio && window.H2O.Studio.readerNotes && window.H2O.Studio.readerNotes.anchorResolver;
+        const dom = window.H2O && window.H2O.Studio && window.H2O.Studio.readerNotes && window.H2O.Studio.readerNotes.anchorResolverDom;
+        assert('A2a.1 core module loaded', !!core && core.__installed === true);
+        assert('A2a.2 DOM wrapper module loaded', !!dom && dom.__installed === true);
+
+        const disabledFixture = makeRoot();
+        setFlag(false);
+        const disabled = dom.resolveHighlight(highlight('beta'), disabledFixture.root);
+        assert('disabled flag returns orphaned/null range', disabled.status === 'orphaned' && disabled.range === null && disabled.reason === 'disabled', disabled);
+
+        setFlag(true);
+        const fixture = makeRoot();
+        const flat = dom.flattenRoot(fixture.root);
+        assert('flattenRoot includes exact text, whitespace, and hidden text', flat.plain === 'alpha hidden beta gamma', {
+          plain: flat.plain,
+          mapLength: flat.map.length,
+        });
+        assert('flattenRoot includes all non-empty real text nodes', flat.map.length === 5, {
+          nodes: flat.map.map((seg) => seg.node.nodeValue),
+        });
+        assert('flattenRoot inserts no separators', flat.plain === collectTextNodes(fixture.root).map((node) => node.nodeValue).join(''));
+
+        const beforeSingle = snapshot(fixture.root);
+        const single = dom.resolveHighlight(highlight('hidden'), fixture.root);
+        const afterSingle = snapshot(fixture.root);
+        assert('resolveHighlight returns real Range inside one text node', single.status === 'anchored' && !!single.range && single.range.toString() === 'hidden', {
+          status: single.status,
+          span: single.span,
+          text: single.range ? single.range.toString() : null,
+        });
+        assert('single-node resolution returns span alongside range', !!single.span && single.span.start === 6 && single.span.end === 12);
+        assert('single-node resolution does not mutate DOM', sameSnapshot(beforeSingle, afterSingle), { beforeSingle, afterSingle });
+
+        const beforeCross = snapshot(fixture.root);
+        const cross = dom.resolveHighlight(highlight('hidden beta'), fixture.root);
+        const afterCross = snapshot(fixture.root);
+        assert('resolveHighlight returns real Range across text nodes', cross.status === 'anchored' && !!cross.range && cross.range.toString() === 'hidden beta', {
+          status: cross.status,
+          span: cross.span,
+          text: cross.range ? cross.range.toString() : null,
+        });
+        assert('cross-node resolution returns span alongside range', !!cross.span && cross.span.start === 6 && cross.span.end === 17);
+        assert('cross-node resolution does not mutate DOM', sameSnapshot(beforeCross, afterCross), { beforeCross, afterCross });
+
+        const staleFixture = makeRoot();
+        const originalCreateRange = document.createRange.bind(document);
+        document.createRange = function createMismatchedRange() {
+          const range = originalCreateRange();
+          const originalToString = range.toString.bind(range);
+          range.toString = function toStringMismatch() {
+            return `${originalToString()}!mismatch!`;
+          };
+          return range;
+        };
+        const stale = dom.resolveHighlight(highlight('beta'), staleFixture.root);
+        document.createRange = originalCreateRange;
+        assert('stale DOM content mismatch downgrades safely', stale.status === 'orphaned' && stale.range === null && stale.reason === 'range-unavailable', stale);
+
+        const xpath = dom.resolveHighlight({ kind: 'highlight', raw: { anchors: { xpath: { startXPath: './/span' } } } }, fixture.root);
+        assert('XPath remains deferred and does not resolve', xpath.status === 'orphaned' && xpath.range === null && xpath.diagnostics && xpath.diagnostics.xpathDeferred === true, xpath);
+        assert('flag defaults were not written', window.__H2O_READER_NOTES_A2A2_FLAG_WRITES.length === 0, {
+          writes: window.__H2O_READER_NOTES_A2A2_FLAG_WRITES,
+        });
+      } catch (error) {
+        add('smoke harness did not throw', false, { error: String(error && (error.stack || error.message) || error) });
+      }
+
+      const result = {
+        schema: 'h2o.readerNotes.a2a2.realDomSmoke.result.v1',
+        phase: 'MVP-A2a.2b',
+        ok: failures.length === 0,
+        status: failures.length === 0 ? 'real-dom-smoke-passed' : 'real-dom-smoke-failed',
+        observedAt: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        assertionCount: assertions.length,
+        assertions,
+        failures,
+        boundaries: {
+          noRuntimeWiring: true,
+          noXPath: true,
+          noA1Integration: true,
+          noStorage: true,
+          noSidecar: true,
+          noRendererRegistry: true,
+          noNativeNote: true,
+        },
+      };
+      window.__H2O_READER_NOTES_A2A2_SMOKE_RESULT = result;
+      document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+      document.title = result.status;
+    }());
+  </script>
+</body>
