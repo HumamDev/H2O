@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// I.1/I.2 — Saved-chat archive IMPORT-RECOVERY HARNESS (static scaffold + LIVE run).
+// I.1/I.2/K.3 — Saved-chat archive IMPORT-RECOVERY + RESTORE HARNESS.
 //
 // Phase I promotes the one-off H.5 node:sqlite import-as-new proof into a permanent
 // repo harness (contract: I.0). I.1 added the static scaffold + a deterministic
@@ -9,7 +9,9 @@
 // diagnostics / inspector / importer / store adapters, and proves the import-as-new
 // recovery loop end-to-end — verify -> import-ready -> imported, +1 chat / +1 snapshot
 // / +N turns, fresh ids, provenance, NO UPDATE (no overwrite), already-imported no-op,
-// and the live Desktop DB untouched.
+// and the live Desktop DB untouched. K.3 extends the same permanent temp-DB proof
+// to restore-original-ids: restore-ready -> restored, confirm gate, already-present,
+// conflict-snapshot-id, conflict-chat-id, and tombstoned.
 //
 //   [I.0]      = the harness contract (doc assertions).
 //   [SCAFFOLD] = scaffold artifacts + the deterministic fixture is well-formed.
@@ -19,7 +21,7 @@
 // It NEVER depends on or mutates the developer's live studio-v1.db: the seed DB is a
 // throwaway temp file built from inline SQL, and all reads/writes are routed there.
 // (A live-DB stat is taken only as an optional untouched-witness, fully guarded.)
-// restore/relink and export remain deferred until Phase I closes.
+// Relink, tombstone override/un-delete, and package export are out of this harness.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -37,6 +39,7 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const I0_CONTRACT_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i0-import-harness-contract.md';
 const I1_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i1-import-harness-scaffold.md';
 const I2_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i2-import-harness-runtime.md';
+const K3_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k3-restore-runtime-smoke.md';
 const VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const FIXTURE_DIR_REL = 'tools/validation/fixtures/saved-chat-archive/import-recovery';
 const FIXTURE_README_REL = FIXTURE_DIR_REL + '/README.md';
@@ -49,6 +52,7 @@ const STORE_MODULES = [
   'ingestion/saved-chat-archive-diagnostics.tauri.js',
   'ingestion/saved-chat-archive-inspector.studio.js',
   'ingestion/saved-chat-archive-importer.studio.js',
+  'ingestion/saved-chat-archive-restore.studio.js',
 ];
 const REQUIRED_FILES = ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html'];
 const LIVE_DB = path.join(os.homedir(), 'Library', 'Application Support', 'org.h2o.studio.desktop', 'studio-v1.db');
@@ -82,6 +86,25 @@ CREATE TABLE snapshot_turns (
   snapshot_id TEXT NOT NULL, turn_idx INTEGER NOT NULL, role TEXT NOT NULL,
   outer_html TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', meta_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (snapshot_id, turn_idx)
+);
+CREATE TABLE sync_tombstones (
+  tombstone_id TEXT PRIMARY KEY,
+  schema TEXT NOT NULL DEFAULT 'h2o.syncTombstone.v1',
+  record_kind TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  deleted_at TEXT NOT NULL DEFAULT '',
+  deleted_by_sync_peer_id TEXT NOT NULL DEFAULT '',
+  delete_reason TEXT NOT NULL DEFAULT '',
+  prior_digest TEXT,
+  prior_updated_at TEXT,
+  source_export_id TEXT,
+  source_sequence_number INTEGER,
+  cascade_from TEXT,
+  restored_at TEXT,
+  restored_by_sync_peer_id TEXT,
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TRIGGER f15_protect_chats_category_id_insert
   BEFORE INSERT ON chats WHEN NEW.category_id IS NOT NULL AND NEW.category_id != ''
@@ -282,6 +305,16 @@ async function runHarness() {
     const srcAbs = path.join(REPO_ROOT, FIXTURE_PKG_REL);
     fs.cpSync(srcAbs, path.join(pkgRoot, 'i-harness-source.h2ochat'), { recursive: true });
     generateConflictFreeFixture(srcAbs, path.join(pkgRoot, 'i-harness-import-ready-chat.h2ochat'), RDY_CHAT, RDY_SNAP);
+    const restorePackages = {
+      ready: { chat: 'k3-restore-ready-chat', snap: 'snap_k3_restore_ready' },
+      confirm: { chat: 'k3-confirm-gate-chat', snap: 'snap_k3_confirm_gate' },
+      conflictSnap: { chat: 'k3-conflict-snapshot-chat', snap: 'snap_k3_conflict_snapshot' },
+      conflictChat: { chat: 'k3-conflict-chat', snap: 'snap_k3_conflict_chat' },
+      tombstoned: { chat: 'k3-tombstoned-chat', snap: 'snap_k3_tombstoned' },
+    };
+    for (const info of Object.values(restorePackages)) {
+      generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
+    }
 
     // wire globals + load real modules
     const mockInvoke = (cmd, a) => {
@@ -307,8 +340,8 @@ async function runHarness() {
     globalThis.H2O = {};
     for (const m of STORE_MODULES) require(path.join(REPO_ROOT, 'src-surfaces-base/studio', m));
     const S = globalThis.H2O.Studio;
-    const inspector = S.archiveInspector, importer = S.archiveImporter;
-    assert.ok(inspector && importer, 'real inspector + importer must register');
+    const inspector = S.archiveInspector, importer = S.archiveImporter, restore = S.archiveRestore;
+    assert.ok(inspector && importer && restore, 'real inspector + importer + restore must register');
 
     const counts = () => ({
       chats: db.prepare('SELECT count(*) c FROM chats').get().c,
@@ -346,6 +379,67 @@ async function runHarness() {
     const impAI = await importer.importVerifiedPackage({ packagePath: SRC_REL, mode: 'import-as-new' });
     const aiWrites = writes.length - wAI;
 
+    // K.3 restore-original-ids harness cases.
+    const restoreRel = (info) => 'archive/packages/' + info.chat + '.h2ochat';
+    const countTurnsFor = (snapId) => db.prepare('SELECT count(*) c FROM snapshot_turns WHERE snapshot_id=?').get(snapId).c;
+    const getChat = (chatId) => db.prepare('SELECT * FROM chats WHERE id=?').get(chatId);
+    const getSnap = (snapId) => db.prepare('SELECT * FROM snapshots WHERE id=?').get(snapId);
+    const restoreBefore = counts();
+    const restoreReadyDir = path.join(pkgRoot, restorePackages.ready.chat + '.h2ochat');
+    const restoreReadyFilesBefore = dirSig(restoreReadyDir);
+    const wRestoreReady = writes.length;
+    const restoreReadyDry = await restore.dryRunRestorePackage({ packagePath: restoreRel(restorePackages.ready) });
+    const restoreReadyDryWrites = writes.length - wRestoreReady;
+    const restoreAction = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.ready), mode: 'restore-original-ids', confirm: true });
+    const restoreReadyWrites = writes.slice(wRestoreReady + restoreReadyDryWrites);
+    const restoreAfter = counts();
+    const restoredChat = getChat(restorePackages.ready.chat);
+    const restoredSnap = getSnap(restorePackages.ready.snap);
+    const restoredTurns = countTurnsFor(restorePackages.ready.snap);
+    const restoredChatMeta = restoredChat ? JSON.parse(restoredChat.meta_json || '{}') : {};
+    const restoredSnapMeta = restoredSnap ? JSON.parse(restoredSnap.meta_json || '{}') : {};
+    const restoreReadyFilesAfter = dirSig(restoreReadyDir);
+
+    const wAlready = writes.length;
+    const restoreAlready = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.ready), mode: 'restore-original-ids', confirm: true });
+    const restoreAlreadyWrites = writes.length - wAlready;
+
+    const confirmBefore = counts();
+    const wConfirm = writes.length;
+    const restoreConfirm = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.confirm), mode: 'restore-original-ids', confirm: false });
+    const confirmAfter = counts();
+    const confirmWrites = writes.length - wConfirm;
+
+    db.prepare('INSERT INTO snapshots (id, chat_id, title, digest, message_count, meta_json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(restorePackages.conflictSnap.snap, 'different-chat-for-conflict', 'Conflicting snapshot', 'different-digest', 0, '{}');
+    const conflictSnapBefore = counts();
+    const wConflictSnap = writes.length;
+    const conflictSnapDry = await restore.dryRunRestorePackage({ packagePath: restoreRel(restorePackages.conflictSnap) });
+    const conflictSnapAction = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.conflictSnap), mode: 'restore-original-ids', confirm: true });
+    const conflictSnapAfter = counts();
+    const conflictSnapWrites = writes.length - wConflictSnap;
+
+    db.prepare('INSERT INTO chats (id, title, meta_json) VALUES (?, ?, ?)').run(restorePackages.conflictChat.chat, 'Existing conflict chat', '{}');
+    const conflictChatBefore = counts();
+    const wConflictChat = writes.length;
+    const conflictChatDry = await restore.dryRunRestorePackage({ packagePath: restoreRel(restorePackages.conflictChat) });
+    const conflictChatAction = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.conflictChat), mode: 'restore-original-ids', confirm: true });
+    const conflictChatAfter = counts();
+    const conflictChatWrites = writes.length - wConflictChat;
+
+    db.prepare('INSERT INTO sync_tombstones (tombstone_id, record_kind, record_id, deleted_at, deleted_by_sync_peer_id, delete_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('tombstone-' + restorePackages.tombstoned.chat, 'chat', restorePackages.tombstoned.chat, '2026-06-24T00:00:00.000Z', 'k3-harness', 'restore-test', '2026-06-24T00:00:00.000Z', '2026-06-24T00:00:00.000Z');
+    const tombstoneBefore = counts();
+    const tombstoneRowBefore = db.prepare('SELECT * FROM sync_tombstones WHERE record_id=?').get(restorePackages.tombstoned.chat);
+    const tombstoneSigBefore = crypto.createHash('sha256').update(JSON.stringify(tombstoneRowBefore)).digest('hex');
+    const wTombstone = writes.length;
+    const tombstoneDry = await restore.dryRunRestorePackage({ packagePath: restoreRel(restorePackages.tombstoned) });
+    const tombstoneAction = await restore.restoreVerifiedPackage({ packagePath: restoreRel(restorePackages.tombstoned), mode: 'restore-original-ids', confirm: true });
+    const tombstoneAfter = counts();
+    const tombstoneWrites = writes.length - wTombstone;
+    const tombstoneRowAfter = db.prepare('SELECT * FROM sync_tombstones WHERE record_id=?').get(restorePackages.tombstoned.chat);
+    const tombstoneSigAfter = crypto.createHash('sha256').update(JSON.stringify(tombstoneRowAfter)).digest('hex');
+
     const readyFilesAfter = dirSig(readyDir);
     const srcChatSigAfter = rowSig('chats', SRC_CHAT), srcSnapSigAfter = rowSig('snapshots', SRC_SNAP);
     const liveAfter = fs.existsSync(LIVE_DB) ? fs.statSync(LIVE_DB) : null;
@@ -365,6 +459,30 @@ async function runHarness() {
       noUpdate: !importWrites.some((w) => w.startsWith('UPDATE')),
       unchanged: { srcChatRow: srcChatSig === srcChatSigAfter, srcSnapRow: srcSnapSig === srcSnapSigAfter, readyFiles: readyFilesBefore === readyFilesAfter },
       alreadyImported: { decision: dryAI.decision, importStatus: impAI.status, writes: aiWrites },
+      restore: {
+        ready: {
+          dryDecision: restoreReadyDry.decision,
+          dryWrites: restoreReadyDryWrites,
+          status: restoreAction.status,
+          chatId: restoreAction.restored && restoreAction.restored.chatId,
+          snapshotId: restoreAction.restored && restoreAction.restored.snapshotId,
+          turnCount: restoreAction.restored && restoreAction.restored.turnCount,
+          delta: { chats: restoreAfter.chats - restoreBefore.chats, snapshots: restoreAfter.snapshots - restoreBefore.snapshots, turns: restoreAfter.turns - restoreBefore.turns },
+          chatExists: !!restoredChat,
+          snapshotExists: !!restoredSnap,
+          turns: restoredTurns,
+          provenanceChat: restoredChatMeta.restored || null,
+          provenanceSnapshot: restoredSnapMeta.restored || null,
+          writes: restoreReadyWrites,
+          noUpdate: !restoreReadyWrites.some((w) => w.startsWith('UPDATE')),
+          fixtureUnchanged: restoreReadyFilesBefore === restoreReadyFilesAfter,
+        },
+        alreadyPresent: { status: restoreAlready.status, writes: restoreAlreadyWrites },
+        confirmGate: { status: restoreConfirm.status, writes: confirmWrites, delta: { chats: confirmAfter.chats - confirmBefore.chats, snapshots: confirmAfter.snapshots - confirmBefore.snapshots, turns: confirmAfter.turns - confirmBefore.turns } },
+        conflictSnapshot: { dryDecision: conflictSnapDry.decision, status: conflictSnapAction.status, writes: conflictSnapWrites, delta: { chats: conflictSnapAfter.chats - conflictSnapBefore.chats - 0, snapshots: conflictSnapAfter.snapshots - conflictSnapBefore.snapshots, turns: conflictSnapAfter.turns - conflictSnapBefore.turns } },
+        conflictChat: { dryDecision: conflictChatDry.decision, status: conflictChatAction.status, writes: conflictChatWrites, delta: { chats: conflictChatAfter.chats - conflictChatBefore.chats, snapshots: conflictChatAfter.snapshots - conflictChatBefore.snapshots, turns: conflictChatAfter.turns - conflictChatBefore.turns } },
+        tombstoned: { dryDecision: tombstoneDry.decision, status: tombstoneAction.status, writes: tombstoneWrites, delta: { chats: tombstoneAfter.chats - tombstoneBefore.chats, snapshots: tombstoneAfter.snapshots - tombstoneBefore.snapshots, turns: tombstoneAfter.turns - tombstoneBefore.turns }, tombstoneUnchanged: tombstoneSigBefore === tombstoneSigAfter },
+      },
       liveDb: { present: !!liveBefore, untouched: !liveBefore || (!!liveAfter && liveBefore.mtimeMs === liveAfter.mtimeMs && liveBefore.size === liveAfter.size), seedIsTemp: seedDbPath.startsWith(os.tmpdir()) },
     };
   } finally {
@@ -444,7 +562,79 @@ check('[I.2] live Desktop DB untouched (seed DB is a temp file; live studio-v1.d
   assert.equal(H.liveDb.untouched, true, 'live studio-v1.db mtime/size must be unchanged (or absent in CI)');
 });
 
-// --- E. Evidence + deferrals -------------------------------------------------
+// --- E. Restore-original-ids harness (K.3) ----------------------------------
+
+check('[K.3] restore-ready dry-run returns restore-ready with zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.restore.ready.dryDecision, 'restore-ready');
+  assert.equal(H.restore.ready.dryWrites, 0);
+});
+
+check('[K.3] restoreVerifiedPackage restores original chatId + snapshotId and inserts snapshot_turns', () => {
+  assert.ok(H);
+  assert.equal(H.restore.ready.status, 'restored');
+  assert.equal(H.restore.ready.chatId, 'k3-restore-ready-chat');
+  assert.equal(H.restore.ready.snapshotId, 'snap_k3_restore_ready');
+  assert.equal(H.restore.ready.chatExists, true);
+  assert.equal(H.restore.ready.snapshotExists, true);
+  assert.equal(H.restore.ready.turns, H.pkg.srcMsgs);
+});
+
+check('[K.3] restore DB delta is exactly +1 chat, +1 snapshot, +N turns; provenance recorded; fixture unchanged', () => {
+  assert.ok(H);
+  assert.deepEqual(H.restore.ready.delta, { chats: 1, snapshots: 1, turns: H.pkg.srcMsgs });
+  assert.equal(H.restore.ready.provenanceChat.originalChatId, 'k3-restore-ready-chat');
+  assert.equal(H.restore.ready.provenanceSnapshot.originalSnapshotId, 'snap_k3_restore_ready');
+  assert.equal(H.restore.ready.fixtureUnchanged, true);
+});
+
+check('[K.3] restore no-overwrite proof: restore write verbs contain no UPDATE', () => {
+  assert.ok(H);
+  assert.equal(H.restore.ready.noUpdate, true, 'restore writes: ' + JSON.stringify(H.restore.ready.writes));
+  assert.ok(H.restore.ready.writes.some((w) => w.startsWith('INSERT chats')), 'expected INSERT chats');
+  assert.ok(H.restore.ready.writes.some((w) => w.startsWith('INSERT snapshots')), 'expected INSERT snapshots');
+  assert.ok(H.restore.ready.writes.some((w) => w.startsWith('INSERT snapshot_turns')), 'expected INSERT snapshot_turns');
+});
+
+check('[K.3] confirm gate rejects restore without confirm and performs zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.restore.confirmGate.status, 'rejected');
+  assert.equal(H.restore.confirmGate.writes, 0);
+  assert.deepEqual(H.restore.confirmGate.delta, { chats: 0, snapshots: 0, turns: 0 });
+});
+
+check('[K.3] second restore returns already-present and performs zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.restore.alreadyPresent.status, 'already-present');
+  assert.equal(H.restore.alreadyPresent.writes, 0);
+});
+
+check('[K.3] conflict-snapshot-id returns conflict without restore writes', () => {
+  assert.ok(H);
+  assert.equal(H.restore.conflictSnapshot.dryDecision, 'conflict-snapshot-id');
+  assert.equal(H.restore.conflictSnapshot.status, 'conflict');
+  assert.equal(H.restore.conflictSnapshot.writes, 0);
+  assert.deepEqual(H.restore.conflictSnapshot.delta, { chats: 0, snapshots: 0, turns: 0 });
+});
+
+check('[K.3] conflict-chat-id returns conflict without restore writes', () => {
+  assert.ok(H);
+  assert.equal(H.restore.conflictChat.dryDecision, 'conflict-chat-id');
+  assert.equal(H.restore.conflictChat.status, 'conflict');
+  assert.equal(H.restore.conflictChat.writes, 0);
+  assert.deepEqual(H.restore.conflictChat.delta, { chats: 0, snapshots: 0, turns: 0 });
+});
+
+check('[K.3] tombstoned returns tombstoned, performs zero writes, and leaves tombstone unchanged', () => {
+  assert.ok(H);
+  assert.equal(H.restore.tombstoned.dryDecision, 'tombstoned');
+  assert.equal(H.restore.tombstoned.status, 'tombstoned');
+  assert.equal(H.restore.tombstoned.writes, 0);
+  assert.deepEqual(H.restore.tombstoned.delta, { chats: 0, snapshots: 0, turns: 0 });
+  assert.equal(H.restore.tombstoned.tombstoneUnchanged, true);
+});
+
+// --- F. Evidence + deferrals -------------------------------------------------
 
 check('[I.0] I.1 scaffold evidence exists (PASSED) and defers restore/relink/export', () => {
   assert.ok(exists(I1_EVIDENCE_REL));
@@ -457,6 +647,17 @@ check('[I.2] I.2 runtime evidence exists, is marked PASSED, and keeps restore/re
   assert.match(i2, /I\.2 IMPORT RECOVERY HARNESS\s*[—-]\s*PASSED/);
   assert.match(i2, /restore ?\/ ?relink/i);
   assert.match(i2, /defer/i);
+});
+
+check('[K.3] K.3 restore evidence exists and records PASSED harness/runtime proof', () => {
+  assert.ok(exists(K3_EVIDENCE_REL), 'K.3 evidence missing');
+  const k3 = readRepo(K3_EVIDENCE_REL);
+  assert.match(k3, /PHASE K\.3[\s\S]*RESTORE ORIGINAL IDS HARNESS ?\/ ?RUNTIME SMOKE[\s\S]*PASSED/);
+  assert.match(k3, /restore-ready/i);
+  assert.match(k3, /conflict-snapshot-id/i);
+  assert.match(k3, /conflict-chat-id/i);
+  assert.match(k3, /tombstoned/i);
+  assert.match(k3, /no-overwrite/i);
 });
 
 console.log('');

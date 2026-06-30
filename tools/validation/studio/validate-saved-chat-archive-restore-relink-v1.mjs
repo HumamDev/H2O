@@ -19,6 +19,7 @@ const K1_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k1
 const K2_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k2-restore-original-ids-action.md';
 const RESTORE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const HARNESS_REL = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const STUDIO_DIR_REL = 'src-surfaces-base/studio';
@@ -74,6 +75,7 @@ const restoreSrc = exists(RESTORE_REL) ? readRepo(RESTORE_REL) : '';
 const restoreCode = stripComments(restoreSrc);
 const importerSrc = exists(IMPORTER_REL) ? readRepo(IMPORTER_REL) : '';
 const importerCode = stripComments(importerSrc);
+const harnessSrc = exists(HARNESS_REL) ? readRepo(HARNESS_REL) : '';
 const studioHtml = exists(STUDIO_HTML_REL) ? readRepo(STUDIO_HTML_REL) : '';
 const packSrc = exists(PACK_REL) ? readRepo(PACK_REL) : '';
 
@@ -190,6 +192,22 @@ check('[INVARIANT] importer remains import-as-new only and does not write packag
   assert.ok(!/snapStore\.upsert\(|snapshots\.upsert\(/.test(importerCode), 'importer must not call snapshot overwrite-by-id primitive');
   assert.doesNotMatch(importerCode, /create\(\{[^}]*snapshotId/s, 'import-as-new must not write package original snapshotId');
   assert.ok(importerCode.includes('generateRecoveredChatId'), 'importer must still generate fresh recovered chat id');
+});
+
+check('[K.3] permanent harness covers restore-ready / confirm gate / already-present / conflicts / tombstoned', () => {
+  assert.ok(harnessSrc.includes('saved-chat-archive-restore.studio.js'), 'harness must load restore module');
+  for (const phrase of [
+    'restore-ready',
+    'confirm gate',
+    'already-present',
+    'conflict-snapshot-id',
+    'conflict-chat-id',
+    'tombstoned',
+    'no-overwrite proof',
+    'live Desktop DB untouched',
+  ]) {
+    assert.ok(harnessSrc.includes(phrase), 'harness coverage missing: ' + phrase);
+  }
 });
 
 console.log('');
