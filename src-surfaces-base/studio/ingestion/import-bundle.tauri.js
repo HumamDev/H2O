@@ -73,6 +73,8 @@
   ];
   var KV_ALLOW_PREFIX = 'h2o:prm:cgx:library:';
   var FOLDER_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-receipts:export:v1';
+  var LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA = 'h2o.studio.library-metadata-mutation-receipt.export-mirror.v1';
   var DB_URL = 'sqlite:studio-v1.db';
   var BULK_MIGRATION_IDENTITY = 'f15.bulk-migration';
 
@@ -121,6 +123,22 @@
       hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
     }
     return 'h:' + ('00000000' + hash.toString(16)).slice(-8);
+  }
+
+  async function sha256Hex(text) {
+    if (!global.crypto || !global.crypto.subtle || typeof global.crypto.subtle.digest !== 'function') {
+      throw new Error('crypto.subtle.digest unavailable');
+    }
+    var enc = new TextEncoder().encode(String(text || ''));
+    var hash = await global.crypto.subtle.digest('SHA-256', enc);
+    var bytes = new Uint8Array(hash);
+    var out = '';
+    for (var i = 0; i < bytes.length; i += 1) {
+      var v = bytes[i].toString(16);
+      if (v.length < 2) v = '0' + v;
+      out += v;
+    }
+    return out;
   }
 
   function normalizeUnindexedReason(value) {
@@ -198,6 +216,35 @@
         global.chrome.storage.local.get(arr, function (items) { resolve(items || {}); });
       } catch (_) { resolve({}); }
     });
+  }
+
+  async function appliedChatCategoryClearReceiptChatHashes(result) {
+    var out = Object.create(null);
+    try {
+      var stored = await chromeStorageGet([LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY]);
+      var mirror = stored && stored[LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_KEY];
+      if (!mirror || typeof mirror !== 'object' || Array.isArray(mirror)) return out;
+      if (cleanString(mirror.schema) !== LIBRARY_METADATA_MUTATION_RECEIPT_EXPORT_MIRROR_SCHEMA) return out;
+      var receipts = Array.isArray(mirror.receipts) ? mirror.receipts : [];
+      for (var i = 0; i < receipts.length; i += 1) {
+        var receipt = receipts[i] && typeof receipts[i] === 'object' ? receipts[i] : {};
+        if (cleanString(receipt.status) !== 'applied') continue;
+        if (cleanString(receipt.requestAction || receipt.requestType) !== 'chat-category-clear') continue;
+        var target = safeMeta(receipt.target);
+        var hash = cleanString(target.chatIdHash);
+        if (/^[a-f0-9]{64}$/i.test(hash)) out[hash.toLowerCase()] = true;
+      }
+    } catch (e) {
+      if (result && result.warnings) result.warnings.push({ kind: 'library-metadata-clear-receipt-read-failed' });
+    }
+    return out;
+  }
+
+  async function chatReceiptHash(chatId) {
+    var id = cleanString(chatId);
+    if (!id) return '';
+    try { return (await sha256Hex('chat:' + id)).toLowerCase(); }
+    catch (_) { return ''; }
   }
 
   /* ── Bundle parsing + schema validation ───────────────────────────── */
@@ -2509,6 +2556,9 @@
     var tagBindings = [];
     var labelSamples = [];
     var tagSamples = [];
+    var appliedClearChatHashes = await appliedChatCategoryClearReceiptChatHashes(result);
+    var appliedClearHashCount = Object.keys(appliedClearChatHashes).length;
+    var categoryRehydrationSuppressed = 0;
 
     async function chatExists(chatId, warningKind) {
       if (chatStateIndex[chatId] === 'imported' || chatStateIndex[chatId] === 'skipped') return true;
@@ -2530,8 +2580,12 @@
         try {
           var category = catStore && typeof catStore.get === 'function' ? await catStore.get(categoryId) : null;
           var chatRow = chatStore && typeof chatStore.get === 'function' ? await chatStore.get(chatId) : null;
+          var targetChatHash = appliedClearHashCount ? await chatReceiptHash(chatId) : '';
           if (!category) result.warnings.push({ kind: 'orphan-category-id', chatId: chatId, categoryId: categoryId });
           else if (!chatRow) result.warnings.push({ kind: 'orphan-category-binding', chatId: chatId, categoryId: categoryId });
+          else if (targetChatHash && appliedClearChatHashes[targetChatHash]) {
+            categoryRehydrationSuppressed += 1;
+          }
           else if (cleanString(chatRow.categoryId) !== categoryId) chatCategories.push({ chatId: chatId, categoryId: categoryId, assignedAt: Date.now() });
         } catch (e) {
           result.errors.push({ kind: 'category-binding', chatId: chatId, categoryId: categoryId, error: String(e && e.message || e) });
@@ -2619,6 +2673,24 @@
           result.errors.push({ kind: 'tag.get', tagId: tagId, error: String((e5 && e5.message) || e5) });
         }
       }
+    }
+
+    if (categoryRehydrationSuppressed > 0) {
+      result.libraryMetadataMutationCategoryRehydrationGuard = {
+        schema: 'h2o.studio.library-metadata.category-rehydration-guard.v1',
+        phase: 'phase14h-live-apply-receipt-canonical-consistency',
+        suppressedCount: categoryRehydrationSuppressed,
+        appliedClearReceiptHashCount: appliedClearHashCount,
+        reason: 'desktop-applied-chat-category-clear-receipt',
+        rawChatIdsReturned: false,
+        noDelete: true,
+        noPurge: true,
+        noChromeCanonicalMutation: true
+      };
+      result.warnings.push({
+        kind: 'library-metadata-category-rehydration-suppressed-after-clear',
+        count: categoryRehydrationSuppressed
+      });
     }
 
     if (!chatCategories.length && !labelBindings.length && !tagBindings.length) return true;
