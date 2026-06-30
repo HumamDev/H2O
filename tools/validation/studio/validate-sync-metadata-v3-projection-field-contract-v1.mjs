@@ -15,6 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const A6_CONTRACT_REL = 'release-evidence/2026-06-30/sync-metadata-envelope-a6-v3-projection-field-contract.md';
+const TAGS_UPDATED_AT_DECISION_REL = 'release-evidence/2026-06-30/sync-metadata-envelope-tags-updated-at-decision.md';
 const LIB_RS_REL = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const EXPORT_BUNDLE_REL = 'src-surfaces-base/studio/ingestion/export-bundle.tauri.js';
 const FOLDER_SYNC_REL = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
@@ -32,6 +33,7 @@ const STORE_RELS = [
 
 const SCANNED_RELS = [
   A6_CONTRACT_REL,
+  TAGS_UPDATED_AT_DECISION_REL,
   LIB_RS_REL,
   EXPORT_BUNDLE_REL,
   FOLDER_SYNC_REL,
@@ -152,6 +154,19 @@ const IDENTITY_RUNTIME_PATTERNS = [
   /\bencryptSyncEnvelope\b/i,
   /\bdecryptSyncEnvelope\b/i,
   /\bkeychainSyncKey\b/i,
+];
+
+const HARD_TAG_LWW_CREATED_AT_PATTERNS = [
+  /tags?[\s\S]{0,120}lww(?:Basis| basis)?[\s:=`"']+createdAt/i,
+  /createdAt[\s\S]{0,120}hard tag LWW basis/i,
+  /tags?[\s\S]{0,160}authoritative conflict basis[\s\S]{0,80}createdAt/i,
+];
+
+const SYNTHETIC_TAG_UPDATED_AT_PATTERNS = [
+  /updatedAt\s*:\s*[^,\n]*createdAt/i,
+  /updated_at\s*=\s*created_at/i,
+  /set\s+updated_at\s*=\s*created_at/i,
+  /tags?[\s\S]{0,120}synth(?:etic|esize|esized)[\s\S]{0,120}updatedAt/i,
 ];
 
 const PASS = [];
@@ -479,6 +494,7 @@ function parseProjectionEnvelope(bundle) {
 }
 
 const contract = exists(A6_CONTRACT_REL) ? readRepo(A6_CONTRACT_REL) : '';
+const tagsUpdatedAtDecision = exists(TAGS_UPDATED_AT_DECISION_REL) ? readRepo(TAGS_UPDATED_AT_DECISION_REL) : '';
 
 console.log('[sync-metadata-v3-projection-field-contract] A7 field-contract harness checks');
 
@@ -503,6 +519,17 @@ check('[A6] required contract decisions are present', () => {
   assert.match(contract, /runtime `tags` table has no `updated_at` column/i);
 });
 
+check('[TAGS UPDATED_AT] decision note exists and locks pre-freeze sequencing', () => {
+  assert.ok(exists(TAGS_UPDATED_AT_DECISION_REL), 'missing tags.updated_at decision note');
+  assert.match(tagsUpdatedAtDecision, /DEFER MIGRATION TO MULTI-WRITER/i);
+  assert.match(tagsUpdatedAtDecision, /v3 single-canonical unaffected/i);
+  assert.match(tagsUpdatedAtDecision, /productSyncReady:false/i);
+  assert.match(tagsUpdatedAtDecision, /Do not freeze `createdAt` as the hard tag LWW basis/i);
+  assert.match(tagsUpdatedAtDecision, /Do not synthesize `updatedAt`/i);
+  assert.match(tagsUpdatedAtDecision, /Future v18 migration/i);
+  assert.match(tagsUpdatedAtDecision, /f17 v13 migration-drift fix/i);
+});
+
 check('[CONTRACT] field-level sections cover required projection fields', () => {
   Object.entries(CONTRACT_FIELD_PATTERNS).forEach(([section, patterns]) => {
     assertContractSection(contract, `projection.${section}`, patterns);
@@ -522,7 +549,22 @@ check('[SCHEMA] runtime schema/store fields are covered and tags.updated_at gap 
   assert.match(schema, /CREATE TABLE(?: IF NOT EXISTS)? sync_tombstones/i);
   const tags = tableBlock(schema, 'tags');
   assert.ok(!/\bupdated_at\b/.test(tags), 'tags unexpectedly has updated_at; A6 gap must be revisited');
+  assert.ok(!/Migration\s+v18|v18\s+[—-]|tags\.updated_at/.test(schema), 'premature v18/tags.updated_at migration marker found');
   STORE_RELS.forEach((rel) => assert.ok(exists(rel), `missing store file ${rel}`));
+});
+
+check('[TAGS UPDATED_AT] optional/absent in sample; createdAt is not hard LWW; updatedAt is not synthesized', () => {
+  const sample = attachHash(baseProjection());
+  sample.projection.tags.forEach((tag) => {
+    assert.ok(!Object.prototype.hasOwnProperty.call(tag, 'updatedAt'), 'sample tag unexpectedly has updatedAt');
+  });
+  assert.match(contract, /updatedAt`: optional or absent/i);
+  assert.match(tagsUpdatedAtDecision, /keep `tags\.updatedAt` optional/i);
+  assertAbsent(A6_CONTRACT_REL, contract, HARD_TAG_LWW_CREATED_AT_PATTERNS, 'hard tag createdAt LWW basis');
+  assertAbsent('A7 sample fixture', JSON.stringify(sample), SYNTHETIC_TAG_UPDATED_AT_PATTERNS, 'synthetic tag updatedAt');
+  assertAbsent(A6_CONTRACT_REL, contract, SYNTHETIC_TAG_UPDATED_AT_PATTERNS, 'synthetic tag updatedAt');
+  const tagsStore = codeOf('src-surfaces-base/studio/store/tags.tauri.js');
+  assert.ok(!/\bupdated_at\b/.test(tagsStore), 'tags store unexpectedly writes updated_at before v18');
 });
 
 check('[EXCLUSION] contract and sample exclude content, pointers, package bodies, full tombstone fields, secrets, and Chrome state', () => {
