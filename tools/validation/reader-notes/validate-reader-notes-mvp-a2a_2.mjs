@@ -291,6 +291,36 @@ check('spanToRange requires owner createRange and content equality', () => {
   assert.equal(api.spanToRange({ start: 1, end: 5 }, flat), null);
 });
 
+// Protect against stale/changed DOM or range-string drift: we must drop to orphaned
+// when the recovered range content no longer matches the flattened text slice.
+check('resolveHighlight downgrades to orphaned when content-valid span maps to mismatched range', () => {
+  const api = freshRuntime({ flag: true });
+  const ann = {
+    kind: 'highlight',
+    raw: { anchors: { textQuote: { exact: 'beta' } } },
+  };
+
+  const { root } = fixture();
+  const originalCreateRange = root.ownerDocument.createRange;
+  const mismatchedText = '!mismatch!';
+  root.ownerDocument.createRange = function createRangeWithMismatch() {
+    const range = new RangeShim({ root });
+    const baseToString = range.toString.bind(range);
+    range.toString = function toStringMismatch() {
+      return `${baseToString()}${mismatchedText}`;
+    };
+    return range;
+  };
+
+  const res = api.resolveHighlight(ann, root);
+  assert.equal(res.status, 'orphaned');
+  assert.equal(res.range, null);
+  assert.equal(res.reason, 'range-unavailable');
+  assert.equal(res.span.start, 6);
+  assert.equal(res.span.end, 10);
+  root.ownerDocument.createRange = originalCreateRange;
+});
+
 check('resolveHighlight fails closed for disabled, missing root, missing anchors, and unsupported kind', () => {
   const off = freshRuntime({ flag: false });
   const ann = { kind: 'highlight', raw: { anchors: { textQuote: { exact: 'alpha' } } } };
