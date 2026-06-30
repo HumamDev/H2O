@@ -16,8 +16,10 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const K4_CONTRACT_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k4-relink-contract.md';
 const K41_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k4-1-relink-validator.md';
 const K42_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k4-2-relink-action.md';
+const K43_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k4-3-relink-harness.md';
 const RECOVERY_VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-recovery-import-export-v1.mjs';
 const RESTORE_VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-restore-relink-v1.mjs';
+const HARNESS_REL = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const RESTORE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
 const RELINK_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-relink.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
@@ -78,8 +80,10 @@ function walkJs(absDir) {
 const k4 = exists(K4_CONTRACT_REL) ? readRepo(K4_CONTRACT_REL) : '';
 const k41 = exists(K41_EVIDENCE_REL) ? readRepo(K41_EVIDENCE_REL) : '';
 const k42 = exists(K42_EVIDENCE_REL) ? readRepo(K42_EVIDENCE_REL) : '';
+const k43 = exists(K43_EVIDENCE_REL) ? readRepo(K43_EVIDENCE_REL) : '';
 const recoveryValidator = exists(RECOVERY_VALIDATOR_REL) ? readRepo(RECOVERY_VALIDATOR_REL) : '';
 const restoreValidator = exists(RESTORE_VALIDATOR_REL) ? readRepo(RESTORE_VALIDATOR_REL) : '';
+const harnessSrc = exists(HARNESS_REL) ? readRepo(HARNESS_REL) : '';
 const restoreCode = exists(RESTORE_REL) ? stripComments(readRepo(RESTORE_REL)) : '';
 const relinkSrc = exists(RELINK_REL) ? readRepo(RELINK_REL) : '';
 const relinkCode = exists(RELINK_REL) ? stripComments(relinkSrc) : '';
@@ -327,6 +331,47 @@ check('[K.4.2] action evidence records implementation and remaining deferrals', 
     'runtime smoke deferred to K.4.3',
   ]) {
     assert.ok(k42.includes(phrase), 'evidence missing: ' + phrase);
+  }
+});
+
+check('[K.4.3] harness covers relink success, rejection paths, provenance, and no-overwrite boundaries', () => {
+  assert.ok(harnessSrc.includes('saved-chat-archive-relink.studio.js'), 'harness must load relink module');
+  for (const phrase of [
+    'relink-ready',
+    'typed-confirm rejection',
+    'relinked',
+    'already-relinked',
+    'target-chat-missing',
+    'target-chat-deleted',
+    'tombstoned',
+    'snapshot-belongs-to-other-chat',
+    'previousSnapshotId',
+    'exactly +1 snapshot',
+    'old snapshot and turns remain unchanged',
+    'originalSnapshotNotReused',
+    'libraryIndex',
+    'saved_chat_archive_requests',
+    'sync_tombstones',
+    'live Desktop DB untouched',
+  ]) {
+    assert.ok(harnessSrc.includes(phrase), 'harness coverage missing: ' + phrase);
+  }
+});
+
+check('[K.4.3] evidence records relink harness proof and live DB boundary', () => {
+  assert.ok(exists(K43_EVIDENCE_REL), 'missing K.4.3 evidence note');
+  assert.match(k43, /PHASE K\.4\.3[\s\S]*RELINK HARNESS PROOF[\s\S]*PASSED/);
+  for (const phrase of [
+    'relink-ready',
+    'typed-confirm rejection',
+    'already-relinked',
+    'target-chat-deleted',
+    'tombstoned',
+    'snapshot-belongs-to-other-chat',
+    'old snapshot',
+    'live Desktop DB',
+  ]) {
+    assert.ok(k43.includes(phrase), 'evidence missing: ' + phrase);
   }
 });
 

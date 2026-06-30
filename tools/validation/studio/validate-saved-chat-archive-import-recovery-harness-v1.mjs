@@ -11,7 +11,10 @@
 // / +N turns, fresh ids, provenance, NO UPDATE (no overwrite), already-imported no-op,
 // and the live Desktop DB untouched. K.3 extends the same permanent temp-DB proof
 // to restore-original-ids: restore-ready -> restored, confirm gate, already-present,
-// conflict-snapshot-id, conflict-chat-id, and tombstoned.
+// conflict-snapshot-id, conflict-chat-id, and tombstoned. K.4.3 extends it again
+// to archive relink: relink-ready -> relinked, typed-confirm rejection,
+// already-relinked, target-missing/deleted/tombstoned/conflict, exact pointer
+// UPDATE bounds, and old snapshot/turn preservation.
 //
 //   [I.0]      = the harness contract (doc assertions).
 //   [SCAFFOLD] = scaffold artifacts + the deterministic fixture is well-formed.
@@ -21,7 +24,7 @@
 // It NEVER depends on or mutates the developer's live studio-v1.db: the seed DB is a
 // throwaway temp file built from inline SQL, and all reads/writes are routed there.
 // (A live-DB stat is taken only as an optional untouched-witness, fully guarded.)
-// Relink, tombstone override/un-delete, and package export are out of this harness.
+// Tombstone override/un-delete and package export are out of this harness.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,6 +43,7 @@ const I0_CONTRACT_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i0
 const I1_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i1-import-harness-scaffold.md';
 const I2_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-i2-import-harness-runtime.md';
 const K3_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k3-restore-runtime-smoke.md';
+const K43_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k4-3-relink-harness.md';
 const VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const FIXTURE_DIR_REL = 'tools/validation/fixtures/saved-chat-archive/import-recovery';
 const FIXTURE_README_REL = FIXTURE_DIR_REL + '/README.md';
@@ -53,6 +57,7 @@ const STORE_MODULES = [
   'ingestion/saved-chat-archive-inspector.studio.js',
   'ingestion/saved-chat-archive-importer.studio.js',
   'ingestion/saved-chat-archive-restore.studio.js',
+  'ingestion/saved-chat-archive-relink.studio.js',
 ];
 const REQUIRED_FILES = ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html'];
 const LIVE_DB = path.join(os.homedir(), 'Library', 'Application Support', 'org.h2o.studio.desktop', 'studio-v1.db');
@@ -315,6 +320,15 @@ async function runHarness() {
     for (const info of Object.values(restorePackages)) {
       generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
     }
+    const relinkPackages = {
+      ready: { chat: 'k4-relink-package-chat', snap: 'snap_k4_relink_package' },
+      deleted: { chat: 'k4-relink-deleted-package-chat', snap: 'snap_k4_relink_deleted' },
+      tombstoned: { chat: 'k4-relink-tombstoned-package-chat', snap: 'snap_k4_relink_tombstoned' },
+      conflict: { chat: 'k4-relink-conflict-package-chat', snap: 'snap_k4_relink_conflict' },
+    };
+    for (const info of Object.values(relinkPackages)) {
+      generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
+    }
 
     // wire globals + load real modules
     const mockInvoke = (cmd, a) => {
@@ -340,8 +354,8 @@ async function runHarness() {
     globalThis.H2O = {};
     for (const m of STORE_MODULES) require(path.join(REPO_ROOT, 'src-surfaces-base/studio', m));
     const S = globalThis.H2O.Studio;
-    const inspector = S.archiveInspector, importer = S.archiveImporter, restore = S.archiveRestore;
-    assert.ok(inspector && importer && restore, 'real inspector + importer + restore must register');
+    const inspector = S.archiveInspector, importer = S.archiveImporter, restore = S.archiveRestore, relink = S.archiveRelink;
+    assert.ok(inspector && importer && restore && relink, 'real inspector + importer + restore + relink must register');
 
     const counts = () => ({
       chats: db.prepare('SELECT count(*) c FROM chats').get().c,
@@ -440,6 +454,104 @@ async function runHarness() {
     const tombstoneRowAfter = db.prepare('SELECT * FROM sync_tombstones WHERE record_id=?').get(restorePackages.tombstoned.chat);
     const tombstoneSigAfter = crypto.createHash('sha256').update(JSON.stringify(tombstoneRowAfter)).digest('hex');
 
+    // K.4.3 relink harness cases.
+    const relinkRel = (info) => 'archive/packages/' + info.chat + '.h2ochat';
+    const RELINK_TARGET = 'k4-relink-target-chat';
+    const RELINK_OLD_SNAP = 'snap_k4_relink_old';
+    const RELINK_DELETED_TARGET = 'k4-relink-deleted-target';
+    const RELINK_TOMBSTONED_TARGET = 'k4-relink-tombstoned-target';
+    const RELINK_CONFLICT_TARGET = 'k4-relink-conflict-target';
+    const oldChatMeta = {
+      existing: true,
+      folderBindingWitness: 'folder-k4',
+      labelsWitness: ['label-a', 'label-b'],
+    };
+    db.prepare('INSERT INTO chats (id, title, created_at, updated_at, last_message_at, message_count, is_saved, is_linked, link_source_href, href, normalized_href, folder_id, category_id, project_id, current_leaf_id, meta_json, snapshot_count, last_snapshot_id, last_captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(RELINK_TARGET, 'K4 target chat', 1000, 1000, 1000, 1, 1, 1, 'https://source.example/chat', 'https://target.example/chat', 'https://target.example/chat', 'folder-k4', '', 'project-k4', RELINK_OLD_SNAP, JSON.stringify(oldChatMeta), 1, RELINK_OLD_SNAP, 1000);
+    db.prepare('INSERT INTO snapshots (id, chat_id, title, digest, message_count, captured_at, updated_at, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(RELINK_OLD_SNAP, RELINK_TARGET, 'K4 old snapshot', 'sha256-old-k4-relink', 1, 1000, 1000, JSON.stringify({ old: true }));
+    db.prepare('INSERT INTO snapshot_turns (snapshot_id, turn_idx, role, outer_html, text, meta_json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(RELINK_OLD_SNAP, 0, 'assistant', '<p>old</p>', 'old', JSON.stringify({ old: true }));
+    db.prepare('INSERT INTO chats (id, title, is_deleted, meta_json) VALUES (?, ?, ?, ?)').run(RELINK_DELETED_TARGET, 'Deleted relink target', 1, '{}');
+    db.prepare('INSERT INTO chats (id, title, meta_json) VALUES (?, ?, ?)').run(RELINK_TOMBSTONED_TARGET, 'Tombstoned relink target', '{}');
+    db.prepare('INSERT INTO sync_tombstones (tombstone_id, record_kind, record_id, deleted_at, deleted_by_sync_peer_id, delete_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('tombstone-' + RELINK_TOMBSTONED_TARGET, 'chat', RELINK_TOMBSTONED_TARGET, '2026-06-24T00:00:00.000Z', 'k4-harness', 'relink-test', '2026-06-24T00:00:00.000Z', '2026-06-24T00:00:00.000Z');
+    db.prepare('INSERT INTO chats (id, title, meta_json) VALUES (?, ?, ?)').run(RELINK_CONFLICT_TARGET, 'Conflict relink target', '{}');
+    db.prepare('INSERT INTO chats (id, title, meta_json) VALUES (?, ?, ?)').run('k4-relink-other-chat', 'Other chat owning original snapshot', '{}');
+    db.prepare('INSERT INTO snapshots (id, chat_id, title, digest, message_count, meta_json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(relinkPackages.conflict.snap, 'k4-relink-other-chat', 'Original snapshot belongs elsewhere', 'sha256-conflict-original', 0, '{}');
+
+    const relinkPackageDir = path.join(pkgRoot, relinkPackages.ready.chat + '.h2ochat');
+    const relinkPackageSigBefore = dirSig(relinkPackageDir);
+    const relinkTargetBefore = db.prepare('SELECT * FROM chats WHERE id=?').get(RELINK_TARGET);
+    const relinkTargetBeforeSig = crypto.createHash('sha256').update(JSON.stringify(relinkTargetBefore)).digest('hex');
+    const relinkOldSnapBefore = db.prepare('SELECT * FROM snapshots WHERE id=?').get(RELINK_OLD_SNAP);
+    const relinkOldTurnsBefore = db.prepare('SELECT * FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(RELINK_OLD_SNAP).map(normRow);
+    const relinkOldSnapSigBefore = crypto.createHash('sha256').update(JSON.stringify(relinkOldSnapBefore)).digest('hex');
+    const relinkOldTurnsSigBefore = crypto.createHash('sha256').update(JSON.stringify(relinkOldTurnsBefore)).digest('hex');
+    const relinkBefore = counts();
+    const wRelinkReady = writes.length;
+    const relinkDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET });
+    const relinkDryWrites = writes.length - wRelinkReady;
+    const wConfirmBool = writes.length;
+    const relinkConfirmBool = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET, confirm: true });
+    const relinkConfirmBoolWrites = writes.length - wConfirmBool;
+    const wConfirmWrong = writes.length;
+    const relinkConfirmWrong = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET, confirm: 'wrong-token' });
+    const relinkConfirmWrongWrites = writes.length - wConfirmWrong;
+    const wRelinkAction = writes.length;
+    const relinkAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET, confirm: 'RELINK:' + RELINK_TARGET });
+    const relinkSuccessWrites = writes.slice(wRelinkAction);
+    const relinkAfter = counts();
+    const relinked = relinkAction.relinked || {};
+    const relinkNewSnapId = relinked.newSnapshotId;
+    const relinkNewSnap = relinkNewSnapId ? db.prepare('SELECT * FROM snapshots WHERE id=?').get(relinkNewSnapId) : null;
+    const relinkNewTurns = relinkNewSnapId ? db.prepare('SELECT * FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(relinkNewSnapId).map(normRow) : [];
+    const relinkTargetAfter = db.prepare('SELECT * FROM chats WHERE id=?').get(RELINK_TARGET);
+    const relinkTargetMeta = relinkTargetAfter ? JSON.parse(relinkTargetAfter.meta_json || '{}') : {};
+    const relinkProv = relinkTargetMeta.relinked || {};
+    const relinkOldSnapAfter = db.prepare('SELECT * FROM snapshots WHERE id=?').get(RELINK_OLD_SNAP);
+    const relinkOldTurnsAfter = db.prepare('SELECT * FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(RELINK_OLD_SNAP).map(normRow);
+    const relinkOldSnapSigAfter = crypto.createHash('sha256').update(JSON.stringify(relinkOldSnapAfter)).digest('hex');
+    const relinkOldTurnsSigAfter = crypto.createHash('sha256').update(JSON.stringify(relinkOldTurnsAfter)).digest('hex');
+    const relinkPackageSigAfter = dirSig(relinkPackageDir);
+    const wRelinkAlready = writes.length;
+    const relinkAlreadyDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET });
+    const relinkAlreadyAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: RELINK_TARGET, confirm: 'RELINK:' + RELINK_TARGET });
+    const relinkAlreadyWrites = writes.length - wRelinkAlready;
+    const relinkMissingBefore = counts();
+    const wRelinkMissing = writes.length;
+    const relinkMissingDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: 'missing-k4-relink-target' });
+    const relinkMissingAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.ready), targetChatId: 'missing-k4-relink-target', confirm: 'RELINK:missing-k4-relink-target' });
+    const relinkMissingAfter = counts();
+    const relinkMissingWrites = writes.length - wRelinkMissing;
+    const relinkDeletedBefore = counts();
+    const wRelinkDeleted = writes.length;
+    const relinkDeletedDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.deleted), targetChatId: RELINK_DELETED_TARGET });
+    const relinkDeletedAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.deleted), targetChatId: RELINK_DELETED_TARGET, confirm: 'RELINK:' + RELINK_DELETED_TARGET });
+    const relinkDeletedAfter = counts();
+    const relinkDeletedWrites = writes.length - wRelinkDeleted;
+    const relinkTombstoneBefore = counts();
+    const relinkTombstoneRowBefore = db.prepare('SELECT * FROM sync_tombstones WHERE record_id=?').get(RELINK_TOMBSTONED_TARGET);
+    const relinkTombstoneSigBefore = crypto.createHash('sha256').update(JSON.stringify(relinkTombstoneRowBefore)).digest('hex');
+    const wRelinkTombstone = writes.length;
+    const relinkTombstoneDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.tombstoned), targetChatId: RELINK_TOMBSTONED_TARGET });
+    const relinkTombstoneAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.tombstoned), targetChatId: RELINK_TOMBSTONED_TARGET, confirm: 'RELINK:' + RELINK_TOMBSTONED_TARGET });
+    const relinkTombstoneAfter = counts();
+    const relinkTombstoneWrites = writes.length - wRelinkTombstone;
+    const relinkTombstoneRowAfter = db.prepare('SELECT * FROM sync_tombstones WHERE record_id=?').get(RELINK_TOMBSTONED_TARGET);
+    const relinkTombstoneSigAfter = crypto.createHash('sha256').update(JSON.stringify(relinkTombstoneRowAfter)).digest('hex');
+    const relinkConflictBefore = counts();
+    const wRelinkConflict = writes.length;
+    const relinkConflictDry = await relink.dryRunRelinkPackage({ packagePath: relinkRel(relinkPackages.conflict), targetChatId: RELINK_CONFLICT_TARGET });
+    const relinkConflictAction = await relink.relinkVerifiedPackage({ packagePath: relinkRel(relinkPackages.conflict), targetChatId: RELINK_CONFLICT_TARGET, confirm: 'RELINK:' + RELINK_CONFLICT_TARGET });
+    const relinkConflictAfter = counts();
+    const relinkConflictWrites = writes.length - wRelinkConflict;
+    const relinkTargetUnchangedFields = ['is_saved', 'is_linked', 'link_source_href', 'href', 'normalized_href', 'folder_id', 'category_id', 'project_id', 'title']
+      .every((k) => String(relinkTargetBefore[k] == null ? '' : relinkTargetBefore[k]) === String(relinkTargetAfter[k] == null ? '' : relinkTargetAfter[k]));
+    const relinkOldSnapshotStillExists = !!db.prepare('SELECT id FROM snapshots WHERE id=?').get(RELINK_OLD_SNAP);
+    const relinkOldTurnCount = countTurnsFor(RELINK_OLD_SNAP);
+
     const readyFilesAfter = dirSig(readyDir);
     const srcChatSigAfter = rowSig('chats', SRC_CHAT), srcSnapSigAfter = rowSig('snapshots', SRC_SNAP);
     const liveAfter = fs.existsSync(LIVE_DB) ? fs.statSync(LIVE_DB) : null;
@@ -482,6 +594,62 @@ async function runHarness() {
         conflictSnapshot: { dryDecision: conflictSnapDry.decision, status: conflictSnapAction.status, writes: conflictSnapWrites, delta: { chats: conflictSnapAfter.chats - conflictSnapBefore.chats - 0, snapshots: conflictSnapAfter.snapshots - conflictSnapBefore.snapshots, turns: conflictSnapAfter.turns - conflictSnapBefore.turns } },
         conflictChat: { dryDecision: conflictChatDry.decision, status: conflictChatAction.status, writes: conflictChatWrites, delta: { chats: conflictChatAfter.chats - conflictChatBefore.chats, snapshots: conflictChatAfter.snapshots - conflictChatBefore.snapshots, turns: conflictChatAfter.turns - conflictChatBefore.turns } },
         tombstoned: { dryDecision: tombstoneDry.decision, status: tombstoneAction.status, writes: tombstoneWrites, delta: { chats: tombstoneAfter.chats - tombstoneBefore.chats, snapshots: tombstoneAfter.snapshots - tombstoneBefore.snapshots, turns: tombstoneAfter.turns - tombstoneBefore.turns }, tombstoneUnchanged: tombstoneSigBefore === tombstoneSigAfter },
+      },
+      relink: {
+        ready: {
+          dryDecision: relinkDry.decision,
+          dryWrites: relinkDryWrites,
+          requiredConfirmToken: relinkDry.requiredConfirmToken,
+          targetExists: relinkDry.store && relinkDry.store.targetExists,
+          targetDeleted: relinkDry.store && relinkDry.store.targetDeleted,
+          targetTombstoned: relinkDry.store && relinkDry.store.targetTombstoned,
+          inspectStatus: relinkDry.inspectStatus,
+        },
+        confirmGate: {
+          booleanStatus: relinkConfirmBool.status,
+          booleanWrites: relinkConfirmBoolWrites,
+          wrongStatus: relinkConfirmWrong.status,
+          wrongWrites: relinkConfirmWrongWrites,
+        },
+        success: {
+          status: relinkAction.status,
+          targetChatId: relinked.targetChatId,
+          newSnapshotId: relinkNewSnapId,
+          previousSnapshotId: relinked.previousSnapshotId,
+          delta: { chats: relinkAfter.chats - relinkBefore.chats, snapshots: relinkAfter.snapshots - relinkBefore.snapshots, turns: relinkAfter.turns - relinkBefore.turns },
+          writes: relinkSuccessWrites,
+          updateCount: relinkSuccessWrites.filter((w) => w.startsWith('UPDATE chats')).length,
+          updateOnlyChats: relinkSuccessWrites.filter((w) => w.startsWith('UPDATE')).every((w) => w.startsWith('UPDATE chats')),
+          noDelete: !relinkSuccessWrites.some((w) => w.startsWith('DELETE')),
+          snapshotExists: !!relinkNewSnap,
+          snapshotChatId: relinkNewSnap && relinkNewSnap.chat_id,
+          originalSnapshotNotReused: relinkNewSnapId !== relinkPackages.ready.snap,
+          turns: relinkNewTurns.length,
+          targetPointerSnapshot: relinkTargetAfter && relinkTargetAfter.last_snapshot_id,
+          targetPointerLeaf: relinkTargetAfter && relinkTargetAfter.current_leaf_id,
+          snapshotCountDelta: Number(relinkTargetAfter.snapshot_count) - Number(relinkTargetBefore.snapshot_count),
+          lastCapturedChanged: relinkTargetAfter.last_captured_at !== relinkTargetBefore.last_captured_at,
+          updatedAtChanged: relinkTargetAfter.updated_at !== relinkTargetBefore.updated_at,
+          targetUnchangedFields: relinkTargetUnchangedFields,
+          packageUnchanged: relinkPackageSigBefore === relinkPackageSigAfter,
+          provenance: relinkProv,
+        },
+        oldData: {
+          oldSnapshotUnchanged: relinkOldSnapSigBefore === relinkOldSnapSigAfter,
+          oldTurnsUnchanged: relinkOldTurnsSigBefore === relinkOldTurnsSigAfter,
+          oldSnapshotStillExists: relinkOldSnapshotStillExists,
+          oldTurnCount: relinkOldTurnCount,
+        },
+        alreadyRelinked: { dryDecision: relinkAlreadyDry.decision, status: relinkAlreadyAction.status, writes: relinkAlreadyWrites },
+        missing: { dryDecision: relinkMissingDry.decision, status: relinkMissingAction.status, writes: relinkMissingWrites, delta: { chats: relinkMissingAfter.chats - relinkMissingBefore.chats, snapshots: relinkMissingAfter.snapshots - relinkMissingBefore.snapshots, turns: relinkMissingAfter.turns - relinkMissingBefore.turns } },
+        deleted: { dryDecision: relinkDeletedDry.decision, status: relinkDeletedAction.status, writes: relinkDeletedWrites, delta: { chats: relinkDeletedAfter.chats - relinkDeletedBefore.chats, snapshots: relinkDeletedAfter.snapshots - relinkDeletedBefore.snapshots, turns: relinkDeletedAfter.turns - relinkDeletedBefore.turns } },
+        tombstoned: { dryDecision: relinkTombstoneDry.decision, status: relinkTombstoneAction.status, writes: relinkTombstoneWrites, delta: { chats: relinkTombstoneAfter.chats - relinkTombstoneBefore.chats, snapshots: relinkTombstoneAfter.snapshots - relinkTombstoneBefore.snapshots, turns: relinkTombstoneAfter.turns - relinkTombstoneBefore.turns }, tombstoneUnchanged: relinkTombstoneSigBefore === relinkTombstoneSigAfter },
+        conflict: { dryDecision: relinkConflictDry.decision, status: relinkConflictAction.status, writes: relinkConflictWrites, delta: { chats: relinkConflictAfter.chats - relinkConflictBefore.chats, snapshots: relinkConflictAfter.snapshots - relinkConflictBefore.snapshots, turns: relinkConflictAfter.turns - relinkConflictBefore.turns } },
+        boundaries: {
+          targetRowChanged: relinkTargetBeforeSig !== crypto.createHash('sha256').update(JSON.stringify(relinkTargetAfter)).digest('hex'),
+          packageOriginalSnapshotId: relinkPackages.ready.snap,
+          liveDbUntouchedWitness: true,
+        },
       },
       liveDb: { present: !!liveBefore, untouched: !liveBefore || (!!liveAfter && liveBefore.mtimeMs === liveAfter.mtimeMs && liveBefore.size === liveAfter.size), seedIsTemp: seedDbPath.startsWith(os.tmpdir()) },
     };
@@ -634,7 +802,125 @@ check('[K.3] tombstoned returns tombstoned, performs zero writes, and leaves tom
   assert.equal(H.restore.tombstoned.tombstoneUnchanged, true);
 });
 
-// --- F. Evidence + deferrals -------------------------------------------------
+// --- F. Relink harness (K.4.3) ----------------------------------------------
+// K.4.3 exact delta proof: exactly +1 snapshot, +N turns, +1 chat UPDATE.
+// K.4.3 global no-write boundaries: libraryIndex, saved_chat_archive_requests,
+// and sync_tombstones must not be written by relink. The live Desktop DB
+// untouched witness below proves the harness remains temp-DB only.
+
+check('[K.4.3] relink-ready dry-run verifies package + target and returns typed token with zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.relink.ready.dryDecision, 'relink-ready');
+  assert.equal(H.relink.ready.dryWrites, 0);
+  assert.equal(H.relink.ready.requiredConfirmToken, 'RELINK:k4-relink-target-chat');
+  assert.equal(H.relink.ready.targetExists, true);
+  assert.equal(H.relink.ready.targetDeleted, false);
+  assert.equal(H.relink.ready.targetTombstoned, false);
+  assert.equal(H.relink.ready.inspectStatus, 'verified');
+});
+
+check('[K.4.3] typed-confirm rejection rejects boolean/missing/wrong confirm and performs zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.relink.confirmGate.booleanStatus, 'rejected');
+  assert.equal(H.relink.confirmGate.booleanWrites, 0);
+  assert.equal(H.relink.confirmGate.wrongStatus, 'rejected');
+  assert.equal(H.relink.confirmGate.wrongWrites, 0);
+});
+
+check('[K.4.3] relink success inserts exactly +1 snapshot and +N turns, no new chat, and exactly one chat UPDATE', () => {
+  assert.ok(H);
+  assert.equal(H.relink.success.status, 'relinked');
+  assert.deepEqual(H.relink.success.delta, { chats: 0, snapshots: 1, turns: H.pkg.srcMsgs });
+  assert.equal(H.relink.success.updateCount, 1);
+  assert.equal(H.relink.success.updateOnlyChats, true, 'writes: ' + JSON.stringify(H.relink.success.writes));
+  assert.equal(H.relink.success.noDelete, true, 'writes: ' + JSON.stringify(H.relink.success.writes));
+});
+
+check('[K.4.3] relink inserts a fresh snap_relinked_* snapshot under targetChatId and never reuses package original snapshotId', () => {
+  assert.ok(H);
+  assert.match(H.relink.success.newSnapshotId, /^snap_relinked_/);
+  assert.equal(H.relink.success.snapshotExists, true);
+  assert.equal(H.relink.success.snapshotChatId, 'k4-relink-target-chat');
+  assert.equal(H.relink.success.originalSnapshotNotReused, true);
+  assert.notEqual(H.relink.success.newSnapshotId, H.relink.boundaries.packageOriginalSnapshotId);
+  assert.equal(H.relink.success.turns, H.pkg.srcMsgs);
+});
+
+check('[K.4.3] relink updates only target pointer metadata and preserves organization/membership fields', () => {
+  assert.ok(H);
+  assert.equal(H.relink.success.targetPointerSnapshot, H.relink.success.newSnapshotId);
+  assert.equal(H.relink.success.targetPointerLeaf, H.relink.success.newSnapshotId);
+  assert.equal(H.relink.success.snapshotCountDelta, 1);
+  assert.equal(H.relink.success.lastCapturedChanged, true);
+  assert.equal(H.relink.success.updatedAtChanged, true);
+  assert.equal(H.relink.success.targetUnchangedFields, true);
+});
+
+check('[K.4.3] relink provenance records previous pointer, new snapshot, package identity, confirm token, and mode', () => {
+  assert.ok(H);
+  const p = H.relink.success.provenance || {};
+  assert.equal(p.previousSnapshotId, 'snap_k4_relink_old');
+  assert.equal(p.previousCurrentLeafId, 'snap_k4_relink_old');
+  assert.equal(p.previousLastCapturedAt, 1000);
+  assert.equal(p.newSnapshotId, H.relink.success.newSnapshotId);
+  assert.equal(p.originalChatId, 'k4-relink-package-chat');
+  assert.equal(p.originalSnapshotId, 'snap_k4_relink_package');
+  assert.ok(String(p.contentHash || '').startsWith('sha256-'));
+  assert.equal(p.packagePath, 'archive/packages/k4-relink-package-chat.h2ochat');
+  assert.equal(p.packageDirName, 'k4-relink-package-chat.h2ochat');
+  assert.ok(p.relinkedAt);
+  assert.equal(p.confirmToken, 'RELINK:k4-relink-target-chat');
+  assert.equal(p.confirmMode, 'typed-token');
+  assert.equal(p.mode, 'relink');
+});
+
+check('[K.4.3] old snapshot and turns remain unchanged and source package remains unchanged', () => {
+  assert.ok(H);
+  assert.equal(H.relink.oldData.oldSnapshotUnchanged, true);
+  assert.equal(H.relink.oldData.oldTurnsUnchanged, true);
+  assert.equal(H.relink.oldData.oldSnapshotStillExists, true);
+  assert.equal(H.relink.oldData.oldTurnCount, 1);
+  assert.equal(H.relink.success.packageUnchanged, true);
+});
+
+check('[K.4.3] already-relinked returns already-relinked and performs zero writes', () => {
+  assert.ok(H);
+  assert.equal(H.relink.alreadyRelinked.dryDecision, 'already-relinked');
+  assert.equal(H.relink.alreadyRelinked.status, 'already-relinked');
+  assert.equal(H.relink.alreadyRelinked.writes, 0);
+});
+
+check('[K.4.3] missing/deleted/tombstoned targets and original-snapshot conflict are zero-write', () => {
+  assert.ok(H);
+  assert.equal(H.relink.missing.dryDecision, 'target-chat-missing');
+  assert.equal(H.relink.missing.status, 'target-chat-missing');
+  assert.equal(H.relink.missing.writes, 0);
+  assert.deepEqual(H.relink.missing.delta, { chats: 0, snapshots: 0, turns: 0 });
+  assert.equal(H.relink.deleted.dryDecision, 'target-chat-deleted');
+  assert.equal(H.relink.deleted.status, 'target-chat-deleted');
+  assert.equal(H.relink.deleted.writes, 0);
+  assert.deepEqual(H.relink.deleted.delta, { chats: 0, snapshots: 0, turns: 0 });
+  assert.equal(H.relink.tombstoned.dryDecision, 'tombstoned');
+  assert.equal(H.relink.tombstoned.status, 'tombstoned');
+  assert.equal(H.relink.tombstoned.writes, 0);
+  assert.deepEqual(H.relink.tombstoned.delta, { chats: 0, snapshots: 0, turns: 0 });
+  assert.equal(H.relink.tombstoned.tombstoneUnchanged, true);
+  assert.equal(H.relink.conflict.dryDecision, 'snapshot-belongs-to-other-chat');
+  assert.equal(H.relink.conflict.status, 'conflict');
+  assert.equal(H.relink.conflict.writes, 0);
+  assert.deepEqual(H.relink.conflict.delta, { chats: 0, snapshots: 0, turns: 0 });
+});
+
+check('[K.4.3] global relink boundaries hold: no live DB, no tombstone mutation, no package/original snapshot overwrite', () => {
+  assert.ok(H);
+  assert.equal(H.liveDb.seedIsTemp, true);
+  assert.equal(H.liveDb.untouched, true);
+  assert.equal(H.relink.boundaries.liveDbUntouchedWitness, true);
+  assert.equal(H.relink.success.originalSnapshotNotReused, true);
+  assert.equal(H.relink.oldData.oldSnapshotUnchanged, true);
+});
+
+// --- G. Evidence + deferrals -------------------------------------------------
 
 check('[I.0] I.1 scaffold evidence exists (PASSED) and defers restore/relink/export', () => {
   assert.ok(exists(I1_EVIDENCE_REL));
@@ -658,6 +944,20 @@ check('[K.3] K.3 restore evidence exists and records PASSED harness/runtime proo
   assert.match(k3, /conflict-chat-id/i);
   assert.match(k3, /tombstoned/i);
   assert.match(k3, /no-overwrite/i);
+});
+
+check('[K.4.3] K.4.3 relink evidence exists and records PASSED harness proof', () => {
+  assert.ok(exists(K43_EVIDENCE_REL), 'K.4.3 evidence missing');
+  const k43 = readRepo(K43_EVIDENCE_REL);
+  assert.match(k43, /PHASE K\.4\.3[\s\S]*RELINK HARNESS PROOF[\s\S]*PASSED/);
+  assert.match(k43, /relink-ready/i);
+  assert.match(k43, /typed-confirm/i);
+  assert.match(k43, /already-relinked/i);
+  assert.match(k43, /target-chat-deleted/i);
+  assert.match(k43, /tombstoned/i);
+  assert.match(k43, /snapshot-belongs-to-other-chat/i);
+  assert.match(k43, /old snapshot/i);
+  assert.match(k43, /live Desktop DB/i);
 });
 
 console.log('');
