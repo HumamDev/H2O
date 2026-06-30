@@ -650,6 +650,12 @@
        adapters. Never overwrites existing rows; restore/relink deferred; mounts
        a sibling card beneath Archive Health. No Chrome authority. -->
   <script src="./ingestion/saved-chat-archive-importer.studio.js"></script>
+  <!-- Desktop-only: saved-chat archive export / share action (Phase J.2).
+       Two-step, verification-gated, NO-OVERWRITE: dry-run a .h2ochat package
+       (reuses the read-only inspector), then explicitly export it by manifest-
+       driven folder copy to $HOME/H2O Studio Exports/. No zip, picker, Chrome
+       authority, sync/WebDAV/cloud, restore/relink, or full-bundle export. -->
+  <script src="./ingestion/saved-chat-archive-exporter.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the
@@ -1833,6 +1839,13 @@
        Loads after every Library feature owner so canonical aliases resolve
        to real impls on the first registration pass. Purely additive. -->
   <script src="./S0F1k. 🎬 Library Canonical Services - Studio.js"></script>
+  <!-- Reader & Notes — MVP-A1.1: read-only, flag-guarded captured_chat
+       LibraryItem typed view over Chat Registry / Library Index. Loads after
+       S0F1k so H2O.flags / ChatRegistry / LibraryIndex are defined. The flag
+       'studio.readerNotes.libraryItemView.enabled' defaults off; this module
+       only attaches a frozen read-only namespace and changes nothing while
+       off. -->
+  <script src="./reader-notes/library-item-view.studio.js"></script>
   <!-- R4.5.1.a — Desktop-first folder organization modals (folders only in this
        slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
        silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no

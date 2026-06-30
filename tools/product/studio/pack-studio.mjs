@@ -212,6 +212,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only, verification-gated import/recovery (Phase H.4). Dry-run + explicit
   // no-overwrite import-as-new (fresh ids, provenance) via the Desktop store adapters.
   "ingestion/saved-chat-archive-importer.studio.js",
+  // Desktop-only, verification-gated .h2ochat export/share (Phase J.2). Dry-run +
+  // explicit no-overwrite manifest-driven folder copy to $HOME/H2O Studio Exports/.
+  "ingestion/saved-chat-archive-exporter.studio.js",
   // Desktop-only: saved-chat archive request materializer (Phase D.2C). Triggers
   // the existing package writer for a validated queued request (re-resolves
   // first); updates only the saved_chat_archive_requests row. No migration,
@@ -1206,6 +1209,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
 
   // Standalone Studio decorations referenced by studio.html.
   "S9D1a. 🎬 Auto Emoji Title - Studio.js",
+
+  // Reader & Notes — MVP-A1.1 read-only library-item view (flag-gated, default
+  // off). Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
+  "reader-notes/library-item-view.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1292,6 +1299,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-materializer-action.studio.js",
   "ingestion/saved-chat-archive-inspector.studio.js",
   "ingestion/saved-chat-archive-importer.studio.js",
+  "ingestion/saved-chat-archive-exporter.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
@@ -1536,6 +1544,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Standalone Studio decorations referenced by studio.html.
   "S9D1a. 🎬 Auto Emoji Title - Studio.js",
+
+  // Reader & Notes — MVP-A1.1 read-only library-item view — see SOURCE_FILES.
+  "reader-notes/library-item-view.studio.js",
 ]);
 
 function ensureDir(dirPath) {
