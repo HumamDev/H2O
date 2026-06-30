@@ -699,6 +699,38 @@
     'chat-category-clear': true
   };
 
+  function libraryMetadataMutationApplyRuntimeDiagnostic() {
+    return {
+      schema: 'h2o.studio.library-metadata-mutation.apply-runtime-diagnostic.v1',
+      phase: 'phase14g-live-runtime-apply-consistency',
+      sourceFile: 'sync/folder-sync.tauri.js',
+      appliedRequestTypes: Object.keys(APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS)
+        .filter(function (action) { return APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS[action] === true; })
+        .sort(),
+      nonDestructiveClearAllowlist: Array.from(NON_DESTRUCTIVE_CLEAR_ALLOWLIST).sort(),
+      chatCategoryClear: {
+        enabled: APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS['chat-category-clear'] === true,
+        exactAction: 'chat-category-clear',
+        appliesVia: 'H2O.Studio.store.categories.clearChat(chatId)',
+        verifiesCanonicalChatRowAfterClear: true,
+        rejectsIfCategoryStillPresent: true,
+        rejectsIfProjectionNotDecremented: true,
+        duplicateDetectionUsesCurrentCanonicalState: true,
+        staleAppliedReceiptDoesNotMaskCanonicalState: true,
+        noDelete: true,
+        noPurge: true,
+        noChromeCanonicalMutation: true
+      },
+      receiptContract: {
+        appliedRequiresPostWriteCanonicalVerification: true,
+        appliedRequiresProjectionHashChangeForClear: true,
+        skippedDuplicateRequiresCurrentCanonicalTargetReached: true,
+        appliedReceiptCanonicalMismatchWarning: 'library-metadata-mutation-request-applied-receipt-canonical-mismatch'
+      },
+      productSyncReady: false
+    };
+  }
+
   function addHealthCode(list, code) {
     addUnique(list, cleanString(code));
   }
@@ -4414,6 +4446,7 @@
       ignoreSuffixes: IGNORE_SUFFIXES.slice(),
       ingestionAvailable: !!(ingestion && typeof ingestion.importBundle === 'function'),
       folderOnlyApiAvailable: !!(ingestion && typeof ingestion.importFolderStateOnly === 'function'),
+      libraryMetadataMutationApplyRuntime: libraryMetadataMutationApplyRuntimeDiagnostic(),
       chromeDesktopPropagation: {
         schema: PROPAGATION_SCHEMA,
         version: F19_CHROME_DESKTOP_VERSION,
