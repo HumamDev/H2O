@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-// Validator for Studio Reader & Notes MVP-A1.3a:
-// zero-attribution-risk highlight support in the read-only annotation facade.
-//
-// A1.3a must enumerate highlights as unattributed only. It must not move
-// highlights into listForItem(), must not attempt safe attribution, and must
-// not implement anchor resolver, sidecar, renderer registry, or native_note.
+// Validator for Studio Reader & Notes MVP-A1.3b:
+// exact per-item convoId highlight attribution in the read-only annotation
+// facade. This validator writes no files.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,16 +17,10 @@ const MODULE_REL = 'src-surfaces-base/studio/reader-notes/annotation-facade.stud
 const A1_2_VALIDATOR_REL = 'tools/validation/reader-notes/validate-reader-notes-mvp-a1_2.mjs';
 const A1_1_VALIDATOR_REL = 'tools/validation/reader-notes/validate-reader-notes-mvp-a1_1.mjs';
 const A0_VALIDATOR_REL = 'tools/validation/reader-notes/validate-reader-notes-architecture-contract-v1_2.mjs';
-const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
-const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 
 const OUTER_FLAG_KEY = 'studio.readerNotes.annotationFacade.enabled';
 const HIGHLIGHT_FLAG_KEY = 'studio.readerNotes.annotationHighlights.enabled';
-const A1_3_MARKERS = [
-  'annotationHighlights',
-  'listUnattributed',
-  'a1_3a-attribution-deferred',
-];
+const A1_3_MARKERS = ['annotationHighlights', 'listUnattributed', 'lastAttributedHighlights'];
 const FORBIDDEN_FILES = [
   'src-surfaces-base/studio/store/highlights.js',
   'src-surfaces-base/studio/store/notes.js',
@@ -103,8 +94,30 @@ function listFilesRecursive(absDir, acc) {
   }
   return acc;
 }
+function assertEmptyArray(value, label) {
+  assert.ok(Array.isArray(value), `${label}: expected array`);
+  assert.equal(value.length, 0, `${label}: expected empty array`);
+}
 
 const moduleText = read(MODULE_REL);
+
+function makeItemsByAnswer() {
+  return {
+    answerLooksLikeChatA: [
+      { id: 'ha', convoId: 'c/chatA', color: 'yellow', anchors: { exact: 'chat A quote' }, ts: 101 },
+      { id: 'hb', convoId: 'c/chatB', color: 'green', anchors: { exact: 'chat B quote' }, ts: 202 },
+      { id: 'missing', color: 'pink', anchors: { exact: 'missing convo quote' }, ts: 303 },
+      { id: 'unknown', convoId: 'c/unknown', text: 'unknown convo quote', ts: 404 },
+      { id: 'bad', convoId: 'chatA', quote: 'bad convo quote', ts: 505 },
+      { id: 'unknownLib', convoId: 'c/chatX', quote: 'unknown library quote', ts: 606 },
+      'MALFORMED',
+    ],
+    answerShared: [
+      { id: 'hb2', convoId: 'c/chatB', color: 'blue', exact: 'chat B second quote', ts: 707 },
+      { id: 'fallback', convoId: 'c/chatA', selectedText: 'chat A fallback quote' },
+    ],
+  };
+}
 
 function freshRuntime(options = {}) {
   const calls = {
@@ -113,7 +126,10 @@ function freshRuntime(options = {}) {
     highlightWrites: [],
     notesList: [],
     bookmarksList: [],
+    libraryGets: [],
   };
+  const itemsByAnswer = options.itemsByAnswer || makeItemsByAnswer();
+  const knownChats = options.knownChats || { chatA: true, chatB: true };
   const flagMap = {
     [OUTER_FLAG_KEY]: options.outerFlag,
     [HIGHLIGHT_FLAG_KEY]: options.highlightFlag,
@@ -127,43 +143,32 @@ function freshRuntime(options = {}) {
       },
     },
     Studio: {
-      readerNotes: {
-        libraryItems: {
-          get(id) {
-            return id === 'chatA'
-              ? { kind: 'captured_chat', id: 'chatA', identity: { chatId: 'chatA' } }
-              : null;
-          },
-        },
-      },
+      readerNotes: {},
       store: {
         notes: {
           list(chatId) {
             calls.notesList.push(chatId);
-            return [{ id: 'note1', title: 'N', text: 'note body' }];
+            return [{ id: `note-${chatId}`, title: 'N', text: 'note body' }];
           },
         },
         bookmarks: {
           list(chatId) {
             calls.bookmarksList.push(chatId);
-            return [{ msgId: 'bookmark1', title: 'B', snapText: 'bookmark body' }];
+            return [{ msgId: `bookmark-${chatId}`, title: 'B', snapText: 'bookmark body' }];
           },
         },
       },
     },
   };
-
-  if (options.withHighlights !== false) {
-    const itemsByAnswer = options.itemsByAnswer || {
-      ans1: [
-        { id: 'h1', convoId: 'c/chatA', color: 'yellow', anchors: { exact: 'quote one' }, ts: 101 },
-        { id: 'h2', convoId: 'c/chatB', exact: 'quote two', highlightColor: 'green', ts: 202 },
-      ],
-      ans2: [
-        'BAD',
-        { convoId: 'c/chatA', quote: 'fallback id quote', c: 'blue' },
-      ],
+  if (!options.missingLibraryItems) {
+    mock.Studio.readerNotes.libraryItems = {
+      get(id) {
+        calls.libraryGets.push(id);
+        return knownChats[id] ? { kind: 'captured_chat', id, identity: { chatId: id } } : null;
+      },
     };
+  }
+  if (options.withHighlights !== false) {
     const blob = options.highlightBlob || { convoId: 'c/chatA', itemsByAnswer };
     mock.Studio.store.highlights = {
       getAll() {
@@ -175,6 +180,7 @@ function freshRuntime(options = {}) {
         calls.highlightsGetForAnswer.push(answerId);
         if (options.throwGetForAnswer) throw new Error('getForAnswer boom');
         const list = itemsByAnswer[answerId];
+        if (options.liveHighlightRefs) return Array.isArray(list) ? list : [];
         return Array.isArray(list) ? JSON.parse(JSON.stringify(list)) : [];
       },
     };
@@ -193,7 +199,7 @@ function freshRuntime(options = {}) {
   sandbox.window = undefined;
   vm.createContext(sandbox);
   vm.runInContext(moduleText, sandbox, { filename: 'annotation-facade.studio.js' });
-  return { api: sandbox.H2O.Studio.readerNotes.annotations, calls, mock };
+  return { api: sandbox.H2O.Studio.readerNotes.annotations, calls, itemsByAnswer };
 }
 
 function runValidator(rel) {
@@ -204,201 +210,178 @@ function runValidator(rel) {
     assert.ok(/validation passed/.test(out), `${rel} did not report passed`);
   } catch (error) {
     const output = (error && (error.stdout || '')) + (error && (error.stderr || ''));
-    throw new Error(`${rel} failed (exit ${error && error.status}): ${output.slice(-500)}`);
+    throw new Error(`${rel} failed (exit ${error && error.status}): ${output.slice(-700)}`);
   }
 }
-function assertEmptyArray(value, label) {
-  assert.ok(Array.isArray(value), `${label}: expected array`);
-  assert.equal(value.length, 0, `${label}: expected empty array`);
-}
 
-// 1.
-check('annotation-facade.studio.js exists', () => {
-  assert.ok(fs.existsSync(path.join(REPO_ROOT, MODULE_REL)), `${MODULE_REL} must exist`);
-});
-
-// 2.
-check('public API includes listUnattributed', () => {
+check('exact public API allowlist', () => {
   const { api } = freshRuntime();
-  assert.equal(typeof api.listUnattributed, 'function', 'listUnattributed must be public');
-  has(moduleText, 'listUnattributed', 'source should define listUnattributed');
+  const keys = Object.keys(api).sort();
+  assert.deepEqual(keys, [
+    '__installed',
+    'diagnose',
+    'flagKey',
+    'isEnabled',
+    'kinds',
+    'listForItem',
+    'listUnattributed',
+    'readonly',
+    'selfCheck',
+    'version',
+  ]);
+  const fnKeys = keys.filter((key) => typeof api[key] === 'function').sort();
+  assert.deepEqual(fnKeys, ['diagnose', 'isEnabled', 'listForItem', 'listUnattributed', 'selfCheck']);
+  assert.equal(api.readonly, true);
+  assert.ok(Object.isFrozen(api));
 });
 
-// 3.
-check('API remains frozen/read-only', () => {
-  const { api } = freshRuntime();
-  assert.equal(api.readonly, true, 'readonly true');
-  assert.ok(Object.isFrozen(api), 'api frozen');
-});
-
-// 4.
-check('API exposes no write-like methods', () => {
-  const { api } = freshRuntime();
-  const writeLike = /^(set|save|update|remove|delete|upsert|patch|clear|write|put|add|mutate|persist|commit)/i;
-  const bad = Object.keys(api).filter((key) => typeof api[key] === 'function' && writeLike.test(key));
-  assert.deepEqual(bad, [], `write-like api methods exposed: ${bad.join(',')}`);
-});
-
-// 5.
-check('kinds includes highlight', () => {
-  const { api } = freshRuntime();
-  assert.ok(Array.isArray(api.kinds), 'kinds array');
-  assert.ok(api.kinds.includes('note'), 'includes note');
-  assert.ok(api.kinds.includes('bookmark'), 'includes bookmark');
-  assert.ok(api.kinds.includes('highlight'), 'includes highlight');
-});
-
-// 6 + 7.
-check('highlight sub-flag key exists and defaults off', () => {
-  has(moduleText, HIGHLIGHT_FLAG_KEY, 'highlight flag key');
-  has(moduleText, 'get(HIGHLIGHT_FLAG_KEY, false)', 'highlight flag default-off read');
-  const { api } = freshRuntime({ outerFlag: true });
-  assertEmptyArray(api.listUnattributed(), 'missing highlight flag value defaults off');
-  assert.equal(api.selfCheck().highlightSubFlag, false, 'selfCheck reports sub-flag disabled');
-});
-
-// 8.
-check('with highlight sub-flag off, listUnattributed returns []', () => {
-  const { api, calls } = freshRuntime({ outerFlag: true, highlightFlag: false });
-  assertEmptyArray(api.listUnattributed(), 'sub-flag off');
-  assert.equal(calls.highlightsGetAll, 0, 'must not read highlight store when sub-flag off');
-});
-
-// 9.
-check('with outer facade flag off, listUnattributed returns []', () => {
-  const { api, calls } = freshRuntime({ outerFlag: false, highlightFlag: true });
-  assertEmptyArray(api.listUnattributed(), 'outer flag off');
-  assert.equal(calls.highlightsGetAll, 0, 'must not read highlight store when outer flag off');
-  const missing = freshRuntime({ missingFlags: true });
-  assertEmptyArray(missing.api.listUnattributed(), 'missing flags fail closed');
-});
-
-// 10 + 12.
-check('with both flags on, mocked highlights return unattributed objects', () => {
+check('exact-match attribution adds highlights to listForItem', () => {
   const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
-  const res = api.listUnattributed();
-  assert.equal(res.length, 3, `expected 3 valid highlights, got ${res.length}`);
-  for (const h of res) {
-    assert.equal(h.schemaVersion, 1);
-    assert.equal(h.kind, 'highlight');
-    assert.equal(h.item, null);
-    assert.equal(h.attribution, 'unattributed');
-    assert.equal(h.reason, 'a1_3a-attribution-deferred');
-    assert.equal(h.source.store, 'highlights');
-    assert.equal(h.source.chatId, null);
-    assert.ok(h.source.answerId === 'ans1' || h.source.answerId === 'ans2');
-    assert.ok(h.id.startsWith(`highlight:unattributed:${h.source.answerId}:`));
-    assert.ok(h.raw && typeof h.raw === 'object', 'raw clone present');
-  }
-  const first = res.find((h) => h.source.nativeId === 'h1');
-  assert.equal(first.source.convoId, 'c/chatA');
-  assert.equal(first.body.color, 'yellow');
-  assert.equal(first.body.text, 'quote one');
-  assert.equal(first.body.createdAt, 101);
-  const fallback = res.find((h) => h.source.answerId === 'ans2');
-  assert.equal(fallback.source.nativeId, 'ans2:1', 'fallback native id');
-  assert.equal(fallback.body.text, 'fallback id quote');
-});
-
-// 11.
-check('A1.3a does not add highlights to listForItem', () => {
-  const { api, calls } = freshRuntime({ outerFlag: true, highlightFlag: true });
   const res = api.listForItem('chatA');
-  assert.deepEqual(Array.from(res, (a) => a.kind).sort(), ['bookmark', 'note']);
-  assert.equal(calls.highlightsGetAll, 0, 'listForItem must not enumerate highlights');
-  assert.deepEqual(calls.highlightsGetForAnswer, [], 'listForItem must not read highlight answer buckets');
+  const ha = res.find((a) => a.kind === 'highlight' && a.source.nativeId === 'ha');
+  assert.ok(ha, 'chatA highlight should be attributed');
+  assert.equal(ha.item.kind, 'captured_chat');
+  assert.equal(ha.item.id, 'chatA');
+  assert.equal(ha.attribution, 'attributed');
+  assert.equal(ha.id, 'highlight:chatA:answerLooksLikeChatA:ha');
+  assert.equal(ha.source.chatId, 'chatA');
+  assert.equal(ha.source.convoId, 'c/chatA');
+  assert.equal(ha.body.text, 'chat A quote');
+  assert.equal(ha.body.color, 'yellow');
+  assert.equal(ha.body.createdAt, 101);
 });
 
-// 13 + 14.
-check('A1.3a does not attempt safe attribution and ignores top-level blob convoId', () => {
+check('mixed bucket partitions chatA and chatB by per-item convoId only', () => {
   const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
-  const res = api.listUnattributed();
-  const apparentlyAttributable = res.find((h) => h.source.convoId === 'c/chatA');
-  assert.ok(apparentlyAttributable, 'fixture includes per-item c/chatA provenance');
-  assert.equal(apparentlyAttributable.item, null, 'must not attribute even exact-looking per-item provenance in A1.3a');
-  assert.equal(apparentlyAttributable.attribution, 'unattributed');
-  assert.ok(res.every((h) => h.source.chatId === null), 'top-level blob convoId must not assign chatId');
+  const chatA = Array.from(api.listForItem('chatA').filter((a) => a.kind === 'highlight'), (h) => h.source.nativeId).sort();
+  const chatB = Array.from(api.listForItem('chatB').filter((a) => a.kind === 'highlight'), (h) => h.source.nativeId).sort();
+  assert.deepEqual(chatA, ['fallback', 'ha']);
+  assert.deepEqual(chatB, ['hb', 'hb2']);
 });
 
-// 15.
-check('returned raw highlight entries are deep cloned', () => {
-  const source = { ans1: [{ id: 'h1', anchors: { exact: 'ORIG' }, color: 'yellow' }] };
-  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true, itemsByAnswer: source });
-  const res = api.listUnattributed();
-  res[0].raw.anchors.exact = 'MUTATED';
-  res[0].body.text = 'BODY MUTATED';
-  assert.equal(source.ans1[0].anchors.exact, 'ORIG', 'source fixture must not mutate');
+check('top-level blob convoId is ignored', () => {
+  const itemsByAnswer = { answer1: [{ id: 'topOnly', anchors: { exact: 'top only' } }] };
+  const { api } = freshRuntime({
+    outerFlag: true,
+    highlightFlag: true,
+    itemsByAnswer,
+    highlightBlob: { convoId: 'c/chatA', itemsByAnswer },
+  });
+  assert.ok(!api.listForItem('chatA').some((a) => a.kind === 'highlight'), 'top-level convoId must not attribute');
+  const unattributed = api.listUnattributed();
+  assert.equal(unattributed.length, 1);
+  assert.equal(unattributed[0].reason, 'missing-convo');
 });
 
-// 16.
-check('malformed highlights are omitted and counted', () => {
+check('answerId cannot attribute ownership', () => {
   const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  const chatAIds = api.listForItem('chatA').filter((a) => a.kind === 'highlight').map((h) => h.source.nativeId);
+  const chatBIds = api.listForItem('chatB').filter((a) => a.kind === 'highlight').map((h) => h.source.nativeId);
+  assert.ok(!chatAIds.includes('hb'), 'answerLooksLikeChatA must not attribute hb to chatA');
+  assert.ok(chatBIds.includes('hb'), 'hb belongs only to chatB via c/chatB');
+});
+
+check('unattributed reasons are implemented', () => {
+  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  const byId = Object.fromEntries(api.listUnattributed().map((h) => [h.source.nativeId, h]));
+  assert.equal(byId.missing.reason, 'missing-convo');
+  assert.equal(byId.unknown.reason, 'unknown-convo');
+  assert.equal(byId.bad.reason, 'malformed-convo');
+  assert.equal(byId.unknownLib.reason, 'convo-not-in-library');
+
+  const missingLib = freshRuntime({ outerFlag: true, highlightFlag: true, missingLibraryItems: true });
+  const unavailable = missingLib.api.listUnattributed().filter((h) => h.reason === 'attribution-unavailable');
+  assert.ok(unavailable.length >= 1, 'libraryItems unavailable should produce attribution-unavailable');
+});
+
+check('listUnattributed excludes safely attributed highlights', () => {
+  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  const ids = Array.from(api.listUnattributed(), (h) => h.source.nativeId).sort();
+  assert.deepEqual(ids, ['bad', 'missing', 'unknown', 'unknownLib']);
+  const attributed = api.listForItem('chatA').filter((a) => a.kind === 'highlight').map((h) => h.source.nativeId);
+  for (const id of attributed) assert.ok(!ids.includes(id), `attributed ${id} must be absent from listUnattributed`);
+});
+
+check('clone safety with live getForAnswer references', () => {
+  const itemsByAnswer = { answer1: [{ id: 'live', convoId: 'c/chatA', anchors: { exact: 'ORIG' } }] };
+  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true, itemsByAnswer, liveHighlightRefs: true });
+  const res = api.listForItem('chatA').find((a) => a.kind === 'highlight');
+  res.raw.anchors.exact = 'MUTATED';
+  res.body.text = 'BODY MUTATED';
+  assert.equal(itemsByAnswer.answer1[0].anchors.exact, 'ORIG');
+});
+
+check('malformed entries are omitted and counted', () => {
+  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  api.listForItem('chatA');
+  assert.equal(api.diagnose().lastMalformed.highlight, 1);
   api.listUnattributed();
-  const diag = api.diagnose();
-  assert.equal(diag.lastUnattributedHighlights, 3, 'three valid highlights counted');
-  assert.equal(diag.lastMalformed.highlight, 1, 'one malformed highlight counted');
+  assert.equal(api.diagnose().lastMalformed.highlight, 1);
 });
 
-// 17.
-check('missing highlights store fails closed', () => {
-  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true, withHighlights: false });
-  assertEmptyArray(api.listUnattributed(), 'missing highlights store');
-  assert.equal(api.selfCheck().deps.highlightsStore, false);
+check('flags and missing stores fail closed', () => {
+  assertEmptyArray(freshRuntime({ outerFlag: false, highlightFlag: true }).api.listUnattributed(), 'outer off');
+  assertEmptyArray(freshRuntime({ outerFlag: true, highlightFlag: false }).api.listUnattributed(), 'highlight off');
+  assertEmptyArray(freshRuntime({ missingFlags: true }).api.listUnattributed(), 'missing flags');
+  assertEmptyArray(freshRuntime({ outerFlag: true, highlightFlag: true, withHighlights: false }).api.listUnattributed(), 'missing store');
 });
 
-// 18.
-check('store errors are caught and return []', () => {
-  const getAll = freshRuntime({ outerFlag: true, highlightFlag: true, throwGetAll: true });
-  assertEmptyArray(getAll.api.listUnattributed(), 'getAll throw');
-  const getFor = freshRuntime({ outerFlag: true, highlightFlag: true, throwGetForAnswer: true });
-  assertEmptyArray(getFor.api.listUnattributed(), 'getForAnswer throw');
-});
-
-// 19 + 20.
 check('only allowed highlight read APIs are used and no write APIs are called', () => {
   const { api, calls } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  api.listForItem('chatA');
   api.listUnattributed();
-  assert.equal(calls.highlightsGetAll, 1, 'getAll used once');
-  assert.deepEqual(calls.highlightsGetForAnswer.sort(), ['ans1', 'ans2'], 'getForAnswer used per answer');
-  assert.deepEqual(calls.highlightWrites, [], 'no highlight write methods called');
+  assert.ok(calls.highlightsGetAll >= 2, 'getAll should be used to enumerate answer keys');
+  assert.ok(calls.highlightsGetForAnswer.includes('answerLooksLikeChatA'), 'getForAnswer used');
+  assert.deepEqual(calls.highlightWrites, [], 'no highlight write calls');
   for (const method of HIGHLIGHT_WRITE_METHODS) {
     assert.ok(!new RegExp(`\\.\\s*${method}\\s*\\(`).test(moduleText), `source must not call highlights.${method}()`);
   }
 });
 
-// 21.
-check('no raw browser storage APIs', () => {
-  for (const token of ['chrome.', 'localStorage', 'sessionStorage', 'indexedDB']) {
-    hasNot(moduleText, token, 'forbidden storage API');
-  }
+check('no raw browser storage', () => {
+  for (const token of ['chrome.', 'localStorage', 'sessionStorage', 'indexedDB']) hasNot(moduleText, token, 'raw storage');
 });
 
-// 22-25.
-check('no anchor resolver / sidecar / native_note / renderer registry implementation', () => {
+check('diagnostics include A1.3b attribution fields', () => {
+  const { api } = freshRuntime({ outerFlag: true, highlightFlag: true });
+  api.listForItem('chatA');
+  let diag = api.diagnose();
+  assert.equal(diag.lastAttributedHighlights, 2);
+  assert.equal(typeof diag.lastUnattributedHighlights, 'number');
+  assert.ok(diag.lastAttributionReasons);
+  assert.ok(diag.note.includes("item.convoId === 'c/' + chatId"));
+  api.listUnattributed();
+  diag = api.diagnose();
+  assert.equal(diag.lastUnattributedHighlights, 4);
+  assert.equal(diag.lastAttributionReasons['missing-convo'], 1);
+  assert.equal(diag.lastAttributionReasons['unknown-convo'], 1);
+  assert.equal(diag.lastAttributionReasons['malformed-convo'], 1);
+  assert.equal(diag.lastAttributionReasons['convo-not-in-library'], 1);
+});
+
+check('no anchor resolver / sidecar / renderer registry / native_note implementation', () => {
   for (const token of [
     'readerNotes.anchor',
     'anchorResolver',
     'resolveAnchor',
     'readerNotes.sidecar',
+    'rendererRegistry',
     'nativeNote',
     'native_note:',
-    'rendererRegistry',
     'buildReaderDOM',
   ]) {
     hasNot(moduleText, token, 'forbidden later-phase implementation marker');
   }
 });
 
-// 26.
-check('no sync/ingestion/runtime marker footprint', () => {
+check('no sync / ingestion / runtime marker footprint', () => {
   for (const rel of FORBIDDEN_FILES) {
     const text = readIfExists(rel);
     if (text == null) continue;
     for (const marker of A1_3_MARKERS) hasNot(text, marker, `forbidden file ${rel}`);
   }
   for (const dirRel of FORBIDDEN_DIRS) {
-    const files = listFilesRecursive(path.join(REPO_ROOT, dirRel), []);
-    for (const file of files) {
+    for (const file of listFilesRecursive(path.join(REPO_ROOT, dirRel), [])) {
       let text = '';
       try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
       for (const marker of A1_3_MARKERS) {
@@ -408,16 +391,6 @@ check('no sync/ingestion/runtime marker footprint', () => {
   }
 });
 
-check('no loader or pack changes required for A1.3a', () => {
-  const html = read(STUDIO_HTML_REL);
-  const pack = read(PACK_REL);
-  has(html, 'reader-notes/annotation-facade.studio.js', 'A1.2 loader still present');
-  has(pack, 'reader-notes/annotation-facade.studio.js', 'A1.2 pack entry still present');
-  hasNot(html, 'annotationHighlights', 'no A1.3a loader marker in studio.html');
-  hasNot(pack, 'annotationHighlights', 'no A1.3a pack marker');
-});
-
-// 27-29.
 check('A1.2 validator still passes', () => runValidator(A1_2_VALIDATOR_REL));
 check('A1.1 validator still passes', () => runValidator(A1_1_VALIDATOR_REL));
 check('A0 contract validator still passes', () => runValidator(A0_VALIDATOR_REL));

@@ -1,4 +1,4 @@
-/* H2O Studio — Reader & Notes — MVP-A1.3a: annotation façade
+/* H2O Studio — Reader & Notes — MVP-A1.3b: annotation façade
  *
  * A flag-guarded, READ-ONLY aggregator that projects existing per-chat
  * annotation data (notes and bookmarks) for a captured_chat
@@ -8,11 +8,11 @@
  *
  * SCOPE:
  *   - A1.2 covers item-scoped 'note' and 'bookmark' annotations.
- *   - A1.3a adds zero-attribution-risk highlight enumeration:
- *     every highlight is returned from listUnattributed() as
- *     attribution: 'unattributed' with reason
- *     'a1_3a-attribution-deferred'.
- *   - listForItem(itemId) remains notes + bookmarks only in A1.3a.
+ *   - A1.3a added zero-attribution-risk highlight enumeration.
+ *   - A1.3b adds exact per-item `convoId` highlight attribution.
+ *     A highlight is attributed iff item.convoId === 'c/' + chatId.
+ *     No answerId inference, no DOM inference, no top-level blob convoId,
+ *     no fuzzy matching, and no guessing.
  *   - Validates item identity through the A1.1 typed view
  *     (H2O.Studio.readerNotes.libraryItems.get) so it reads annotation data
  *     only for a known captured_chat item.
@@ -23,8 +23,6 @@
  *     Returns deep-cloned, read-only annotation snapshots.
  *
  * OUT OF SCOPE (later phases — NOT implemented here):
- *   - A1.3b safe highlight attribution. This module performs no highlight
- *     matching and does not move highlights into listForItem().
  *   - Anchor resolver, A2a/A2b, sidecar, enrichment, renderer registry,
  *     native_note, sync, chat saving, capture/saving, or runtime writers.
  *
@@ -57,8 +55,8 @@
  *   persisted and no flag store is created.
  *
  * Highlight sub-flag: 'studio.readerNotes.annotationHighlights.enabled' —
- *   default OFF. listUnattributed() returns highlights only when both the
- *   outer annotation façade flag and this sub-flag are true.
+ *   default OFF. Highlight reads run only when both the outer annotation
+ *   façade flag and this sub-flag are true.
  */
 (function (global) {
   'use strict';
@@ -82,7 +80,9 @@
   var errors = [];
   var ERR_MAX = 20;
   var lastMalformed = { note: 0, bookmark: 0, highlight: 0 };
+  var lastAttributedHighlights = 0;
   var lastUnattributedHighlights = 0;
+  var lastAttributionReasons = emptyReasonCounts();
 
   function recordError(op, e) {
     try {
@@ -110,6 +110,25 @@
   }
   function strOrNull(v) {
     return (v == null || v === '') ? null : String(v);
+  }
+  function emptyReasonCounts() {
+    return {
+      'missing-convo': 0,
+      'unknown-convo': 0,
+      'malformed-convo': 0,
+      'convo-not-in-library': 0,
+      'attribution-unavailable': 0,
+    };
+  }
+  function resetListForItemDiagnostics() {
+    lastMalformed = { note: 0, bookmark: 0, highlight: 0 };
+    lastAttributedHighlights = 0;
+    lastAttributionReasons = emptyReasonCounts();
+  }
+  function resetUnattributedDiagnostics() {
+    lastUnattributedHighlights = 0;
+    lastMalformed.highlight = 0;
+    lastAttributionReasons = emptyReasonCounts();
   }
 
   /* ── Dependency accessors (lazy, defensive) ───────────────────────────── */
@@ -177,6 +196,40 @@
     return chatId ? String(chatId) : null;
   }
 
+  function knownCapturedChat(libraryItems, chatId, cache) {
+    if (!libraryItems) return false;
+    if (!cache) cache = {};
+    if (Object.prototype.hasOwnProperty.call(cache, chatId)) return cache[chatId];
+    var item = safe(function () { return libraryItems.get(chatId); });
+    var known = !!(isPlainObject(item) && item.kind === 'captured_chat');
+    cache[chatId] = known;
+    return known;
+  }
+
+  function classifyHighlightAttribution(entry, libraryItems, cache) {
+    var convoId = (entry && entry.convoId != null) ? String(entry.convoId) : null;
+    if (convoId == null || convoId === '') {
+      return { status: 'unattributed', reason: 'missing-convo', convoId: convoId };
+    }
+    if (convoId === 'c/unknown') {
+      return { status: 'unattributed', reason: 'unknown-convo', convoId: convoId };
+    }
+    if (!/^c\/.+$/.test(convoId)) {
+      return { status: 'unattributed', reason: 'malformed-convo', convoId: convoId };
+    }
+    var chatId = convoId.slice(2);
+    if (chatId === '') {
+      return { status: 'unattributed', reason: 'malformed-convo', convoId: convoId };
+    }
+    if (!libraryItems) {
+      return { status: 'unattributed', reason: 'attribution-unavailable', convoId: convoId };
+    }
+    if (knownCapturedChat(libraryItems, chatId, cache)) {
+      return { status: 'attributed', chatId: chatId, convoId: convoId };
+    }
+    return { status: 'unattributed', reason: 'convo-not-in-library', convoId: convoId };
+  }
+
   /* ── Mappers (return cloned, read-only annotation snapshots) ──────────── */
   function mapNote(chatId, entry) {
     if (!isPlainObject(entry)) return null;      /* malformed: non-object */
@@ -238,7 +291,7 @@
     return strOrNull(entry && (entry.color || entry.highlightColor || entry.hlColor || entry.c));
   }
 
-  function mapUnattributedHighlight(answerId, entry, index) {
+  function mapAttributedHighlight(chatId, answerId, entry, index) {
     if (!isPlainObject(entry)) return null;      /* malformed: non-object */
     var answer = strOrNull(answerId);
     if (!answer) return null;                   /* malformed: no answer bucket */
@@ -246,13 +299,12 @@
     return {
       schemaVersion: SCHEMA_VERSION,
       kind: 'highlight',
-      id: 'highlight:unattributed:' + answer + ':' + nativeId,
-      item: null,
-      attribution: 'unattributed',
-      reason: 'a1_3a-attribution-deferred',
+      id: 'highlight:' + chatId + ':' + answer + ':' + nativeId,
+      item: { kind: 'captured_chat', id: chatId },
+      attribution: 'attributed',
       source: {
         store: 'highlights',
-        chatId: null,
+        chatId: chatId,
         answerId: answer,
         nativeId: nativeId,
         convoId: strOrNull(entry.convoId),
@@ -266,6 +318,17 @@
     };
   }
 
+  function mapUnattributedHighlight(answerId, entry, index, reason) {
+    var mapped = mapAttributedHighlight('', answerId, entry, index);
+    if (!mapped) return null;
+    mapped.id = 'highlight:unattributed:' + mapped.source.answerId + ':' + mapped.source.nativeId;
+    mapped.item = null;
+    mapped.attribution = 'unattributed';
+    mapped.reason = reason;
+    mapped.source.chatId = null;
+    return mapped;
+  }
+
   function answerIdsFromHighlights(store) {
     var blob = safe(function () { return store.getAll(); });
     var iba = blob && blob.itemsByAnswer;
@@ -275,16 +338,25 @@
 
   /* ── Public read API ──────────────────────────────────────────────────── */
   function listForItem(itemId, options) {
-    if (!isEnabled()) return [];                 /* fail closed: disabled */
+    if (!isEnabled()) {
+      resetListForItemDiagnostics();
+      return [];                                 /* fail closed: disabled */
+    }
     try {
       var chatId = chatIdForItem(itemId);
-      if (!chatId) return [];                     /* empty / unknown / A1.1 missing */
+      if (!chatId) {
+        resetListForItemDiagnostics();
+        return [];                               /* empty / unknown / A1.1 missing */
+      }
 
       var out = [];
-      var malformed = { note: 0, bookmark: 0, highlight: lastMalformed.highlight || 0 };
+      var malformed = { note: 0, bookmark: 0, highlight: 0 };
+      var attributedHighlights = 0;
+      var reasons = emptyReasonCounts();
       var opts = options || {};
       var wantNote = !opts.kind || opts.kind === 'note';
       var wantBookmark = !opts.kind || opts.kind === 'bookmark';
+      var wantHighlight = !opts.kind || opts.kind === 'highlight';
 
       if (wantNote) {
         var notesStore = getNotesStore();
@@ -313,36 +385,72 @@
         }
       }
 
+      if (wantHighlight && isHighlightSubFlagEnabled()) {
+        var hStore = getHighlightsStore();
+        if (hStore) {
+          var answers = answerIdsFromHighlights(hStore);
+          var expectedConvoId = 'c/' + chatId;
+          var li = getLibraryItems();
+          var knownCache = {};
+          for (var k = 0; k < answers.length; k += 1) {
+            var answerId = answers[k];
+            var items = safe(function (id) {
+              return function () { return hStore.getForAnswer(id); };
+            }(answerId));
+            if (!Array.isArray(items)) continue;
+            for (var hIdx = 0; hIdx < items.length; hIdx += 1) {
+              var entry = items[hIdx];
+              if (!isPlainObject(entry)) { malformed.highlight += 1; continue; }
+              var classified = classifyHighlightAttribution(entry, li, knownCache);
+              if (classified.status === 'attributed' && entry.convoId === expectedConvoId) {
+                var mapped = mapAttributedHighlight(chatId, answerId, entry, hIdx);
+                if (mapped) {
+                  out.push(mapped);
+                  attributedHighlights += 1;
+                } else {
+                  malformed.highlight += 1;
+                }
+              } else if (classified.reason && Object.prototype.hasOwnProperty.call(reasons, classified.reason)) {
+                reasons[classified.reason] += 1;
+              }
+            }
+          }
+        }
+      }
+
       lastMalformed = malformed;
+      lastAttributedHighlights = attributedHighlights;
+      lastAttributionReasons = reasons;
       return out;
     } catch (e) {
       recordError('listForItem', e);
+      resetListForItemDiagnostics();
       return [];
     }
   }
 
   function listUnattributed(options) {
     if (!canReadHighlights()) {
-      lastUnattributedHighlights = 0;
-      lastMalformed.highlight = 0;
+      resetUnattributedDiagnostics();
       return [];
     }
     try {
       var opts = options || {};
       if (opts.kind && opts.kind !== 'highlight') {
-        lastUnattributedHighlights = 0;
-        lastMalformed.highlight = 0;
+        resetUnattributedDiagnostics();
         return [];
       }
       var store = getHighlightsStore();
       if (!store) {
-        lastUnattributedHighlights = 0;
-        lastMalformed.highlight = 0;
+        resetUnattributedDiagnostics();
         return [];
       }
 
       var out = [];
       var malformed = 0;
+      var reasons = emptyReasonCounts();
+      var li = getLibraryItems();
+      var knownCache = {};
       var answers = answerIdsFromHighlights(store);
       for (var i = 0; i < answers.length; i += 1) {
         var answerId = answers[i];
@@ -351,17 +459,27 @@
         }(answerId));
         if (!Array.isArray(items)) continue;
         for (var j = 0; j < items.length; j += 1) {
-          var h = mapUnattributedHighlight(answerId, items[j], j);
-          if (h) out.push(h); else malformed += 1;
+          var entry = items[j];
+          if (!isPlainObject(entry)) { malformed += 1; continue; }
+          var classified = classifyHighlightAttribution(entry, li, knownCache);
+          if (classified.status === 'attributed') continue;
+          var reason = classified.reason || 'attribution-unavailable';
+          var h = mapUnattributedHighlight(answerId, entry, j, reason);
+          if (h) {
+            out.push(h);
+            if (Object.prototype.hasOwnProperty.call(reasons, reason)) reasons[reason] += 1;
+          } else {
+            malformed += 1;
+          }
         }
       }
       lastUnattributedHighlights = out.length;
       lastMalformed.highlight = malformed;
+      lastAttributionReasons = reasons;
       return out;
     } catch (e) {
       recordError('listUnattributed', e);
-      lastUnattributedHighlights = 0;
-      lastMalformed.highlight = 0;
+      resetUnattributedDiagnostics();
       return [];
     }
   }
@@ -400,14 +518,22 @@
       kinds: KINDS.slice(),
       enabled: base.enabled,
       deps: base.deps,
+      lastAttributedHighlights: lastAttributedHighlights,
       lastUnattributedHighlights: lastUnattributedHighlights,
       lastMalformed: {
         note: lastMalformed.note,
         bookmark: lastMalformed.bookmark,
         highlight: lastMalformed.highlight,
       },
+      lastAttributionReasons: {
+        'missing-convo': lastAttributionReasons['missing-convo'],
+        'unknown-convo': lastAttributionReasons['unknown-convo'],
+        'malformed-convo': lastAttributionReasons['malformed-convo'],
+        'convo-not-in-library': lastAttributionReasons['convo-not-in-library'],
+        'attribution-unavailable': lastAttributionReasons['attribution-unavailable'],
+      },
       note: base.enabled
-        ? 'read-only annotation facade active; A1.3a returns all highlights as unattributed and performs no attribution'
+        ? "read-only annotation facade active; A1.3b highlight attribution uses exact rule item.convoId === 'c/' + chatId"
         : 'disabled — no runtime effect (flag off or dependencies missing)',
       errors: base.errors,
     };
