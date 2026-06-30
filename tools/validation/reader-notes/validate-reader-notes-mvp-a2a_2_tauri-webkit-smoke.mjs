@@ -36,11 +36,6 @@ const FORBIDDEN_HARNESS_PATTERNS = [
   { label: 'appendChild', re: /\bappendChild\s*\(/ },
 ];
 
-const FORBIDDEN_UNWIRED_TOKENS = [
-  'anchor-resolver.studio.js',
-  'anchor-resolver-dom.studio.js',
-];
-
 function read(rel) {
   const full = path.join(REPO_ROOT, rel);
   assert.ok(fs.existsSync(full), `${rel} must exist`);
@@ -285,10 +280,10 @@ function validateGeneratedHarness(harness) {
 function validateBoundaryFiles() {
   const html = read(STUDIO_HTML_REL);
   const pack = read(PACK_REL);
-  for (const token of FORBIDDEN_UNWIRED_TOKENS) {
-    assert.ok(!html.includes(token), `studio.html must not load ${token}`);
-    assert.ok(!pack.includes(token), `pack-studio.mjs must not include ${token}`);
-  }
+  assert.ok(html.includes('reader-notes/library-item-view.studio.js'), 'studio.html must still load A1.1');
+  assert.ok(html.includes('reader-notes/annotation-facade.studio.js'), 'studio.html must still load A1.2');
+  assert.ok(pack.includes('reader-notes/library-item-view.studio.js'), 'pack-studio.mjs must still include A1.1');
+  assert.ok(pack.includes('reader-notes/annotation-facade.studio.js'), 'pack-studio.mjs must still include A1.2');
   assertNoConflictMarkers(STUDIO_HTML_REL, html);
   assertNoConflictMarkers(PACK_REL, pack);
 }

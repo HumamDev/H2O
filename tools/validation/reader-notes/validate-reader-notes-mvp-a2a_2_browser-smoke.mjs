@@ -206,10 +206,10 @@ function staticBoundaryChecks() {
     assert.ok(!dom.includes(token), `DOM wrapper must not use ${token}`);
     assert.ok(!core.includes(token), `core must not use ${token}`);
   }
-  assert.ok(!html.includes('anchor-resolver.studio.js'), 'studio.html must not load A2a core');
-  assert.ok(!html.includes('anchor-resolver-dom.studio.js'), 'studio.html must not load A2a DOM wrapper');
-  assert.ok(!pack.includes('anchor-resolver.studio.js'), 'pack-studio must not include A2a core');
-  assert.ok(!pack.includes('anchor-resolver-dom.studio.js'), 'pack-studio must not include A2a DOM wrapper');
+  assert.ok(html.includes('reader-notes/library-item-view.studio.js'), 'studio.html must still load A1.1');
+  assert.ok(html.includes('reader-notes/annotation-facade.studio.js'), 'studio.html must still load A1.2');
+  assert.ok(pack.includes('reader-notes/library-item-view.studio.js'), 'pack-studio must still include A1.1');
+  assert.ok(pack.includes('reader-notes/annotation-facade.studio.js'), 'pack-studio must still include A1.2');
 }
 
 async function main() {

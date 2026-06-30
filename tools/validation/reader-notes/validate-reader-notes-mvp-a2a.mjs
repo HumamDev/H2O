@@ -315,13 +315,14 @@ check('no sidecar/enrichment/native_note/renderer markers', () => {
   }
 });
 
-check('no A1 module, loader, or pack changes required', () => {
-  const html = read(STUDIO_HTML_REL);
-  const pack = read(PACK_REL);
-  hasNot(html, 'anchor-resolver.studio.js', 'studio.html must not load A2a.1');
-  hasNot(pack, 'anchor-resolver.studio.js', 'pack must not include A2a.1');
-  assert.ok(readIfExists('src-surfaces-base/studio/reader-notes/library-item-view.studio.js'), 'A1.1 present');
-  assert.ok(readIfExists('src-surfaces-base/studio/reader-notes/annotation-facade.studio.js'), 'A1 annotation facade present');
+check('no A1 module changes required', () => {
+  const a1_1 = readIfExists('src-surfaces-base/studio/reader-notes/library-item-view.studio.js') || '';
+  const a1_2 = readIfExists('src-surfaces-base/studio/reader-notes/annotation-facade.studio.js') || '';
+  assert.ok(a1_1, 'A1.1 present');
+  assert.ok(a1_2, 'A1 annotation facade present');
+  hasNot(a1_1, 'resolveInText(', 'A1.1 must not call A2a resolver');
+  hasNot(a1_2, 'resolveInText(', 'A1.2/A1.3 must not call A2a resolver');
+  hasNot(a1_2, 'resolveHighlight(', 'A1.2/A1.3 must not call DOM resolver');
 });
 
 check('forbidden paths carry no A2a footprint', () => {

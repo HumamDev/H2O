@@ -30,12 +30,6 @@ const START_MARKER = '// ── H2O.flags registry (minimal, per-surface)';
 const END_MARKER = '// ── Library Core registration';
 const FLAGS_STORAGE_KEY = 'h2o:flags:v1';
 const RESOLVER_FLAG_KEY = 'studio.readerNotes.anchorResolver.enabled';
-const FORBIDDEN_WIRED_TOKENS = [
-  'reader-notes/anchor-resolver.studio.js',
-  'reader-notes/anchor-resolver-dom.studio.js',
-  'anchor-resolver.studio.js',
-  'anchor-resolver-dom.studio.js',
-];
 
 const pass = [];
 const fail = [];
@@ -364,13 +358,15 @@ check('resolver isEnabled is write-free against real sliced H2O.flags.get', () =
   assert.deepEqual(keys(rt.runtime), beforeTrue);
 });
 
-check('A2a modules remain un-wired in studio.html and pack-studio.mjs', () => {
+check('A2a.2d loader boundary is superseded by A2a.3 inert exposure gate', () => {
   const html = read(STUDIO_HTML_REL);
   const pack = read(PACK_REL);
-  for (const token of FORBIDDEN_WIRED_TOKENS) {
-    hasNot(html, token, `studio.html token ${token}`);
-    hasNot(pack, token, `pack-studio token ${token}`);
-  }
+  assertNoConflictMarkers(STUDIO_HTML_REL, html);
+  assertNoConflictMarkers(PACK_REL, pack);
+  has(html, 'reader-notes/library-item-view.studio.js', 'studio.html A1.1 boundary');
+  has(html, 'reader-notes/annotation-facade.studio.js', 'studio.html A1.2 boundary');
+  has(pack, 'reader-notes/library-item-view.studio.js', 'pack A1.1 boundary');
+  has(pack, 'reader-notes/annotation-facade.studio.js', 'pack A1.2 boundary');
 });
 
 check('evidence doc records read-purity gate and deferred scope', () => {

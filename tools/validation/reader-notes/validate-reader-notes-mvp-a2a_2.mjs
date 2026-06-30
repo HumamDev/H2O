@@ -404,9 +404,12 @@ check('no sidecar/enrichment/native_note/renderer markers', () => {
   }
 });
 
-check('studio loader and pack are untouched by A2a.2a', () => {
-  hasNot(read(STUDIO_HTML_REL), 'anchor-resolver-dom.studio.js', 'studio.html must not load A2a.2a');
-  hasNot(read(PACK_REL), 'anchor-resolver-dom.studio.js', 'pack must not include A2a.2a');
+check('A1 modules remain non-consumers of A2a.2 DOM wrapper', () => {
+  const a1_1 = readIfExists('src-surfaces-base/studio/reader-notes/library-item-view.studio.js') || '';
+  const a1_2 = readIfExists('src-surfaces-base/studio/reader-notes/annotation-facade.studio.js') || '';
+  hasNot(a1_1, 'anchorResolverDom', 'A1.1 must not reference DOM resolver');
+  hasNot(a1_2, 'anchorResolverDom', 'A1.2/A1.3 must not reference DOM resolver');
+  hasNot(a1_2, 'resolveHighlight(', 'A1.2/A1.3 must not call DOM resolver');
 });
 
 check('forbidden paths carry no A2a.2 footprint', () => {

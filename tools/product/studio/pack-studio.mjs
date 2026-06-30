@@ -1229,6 +1229,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Reader & Notes — MVP-A1.2 read-only annotation façade (notes + bookmarks,
   // flag-gated, default off). Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
   "reader-notes/annotation-facade.studio.js",
+
+  // Reader & Notes — MVP-A2a.3 inert runtime exposure for the read-only anchor
+  // resolver core and DOM wrapper. Flag-gated, default off; no consumers here.
+  "reader-notes/anchor-resolver.studio.js",
+  "reader-notes/anchor-resolver-dom.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1569,6 +1574,10 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Reader & Notes — MVP-A1.2 read-only annotation façade — see SOURCE_FILES.
   "reader-notes/annotation-facade.studio.js",
+
+  // Reader & Notes — MVP-A2a.3 inert anchor resolver exposure — see SOURCE_FILES.
+  "reader-notes/anchor-resolver.studio.js",
+  "reader-notes/anchor-resolver-dom.studio.js",
 ]);
 
 function ensureDir(dirPath) {
