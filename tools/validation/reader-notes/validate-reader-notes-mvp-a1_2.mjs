@@ -7,7 +7,7 @@
 // its runtime behavior (flag-off, missing deps, unknown/empty id, mapping,
 // malformed counting, clone-safety) can be exercised without a browser.
 // This script writes no files. The only child processes are the A1.1 and A0
-// validators (checks 22-23), which are themselves read-only.
+// validators, which are themselves read-only.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -98,18 +98,19 @@ check('module installs H2O.Studio.readerNotes.annotations', () => {
   assert.ok(api && api.__installed === true, 'annotations installed at runtime');
 });
 
-// 3 + 4. Read-only API allowlist (runtime) + no write-like methods (static).
-check('public API is exactly the read-only methods (runtime allowlist)', () => {
+// 3 + 4. A1.2 read-only API baseline + no write-like methods (static).
+check('public API includes the A1.2 read-only baseline', () => {
   const keys = Object.keys(api).sort();
-  assert.deepEqual(keys,
-    ['__installed', 'diagnose', 'flagKey', 'isEnabled', 'kinds', 'listForItem', 'readonly', 'selfCheck', 'version'],
-    `unexpected api keys: ${keys.join(',')}`);
+  for (const key of ['__installed', 'diagnose', 'flagKey', 'isEnabled', 'kinds', 'listForItem', 'readonly', 'selfCheck', 'version']) {
+    assert.ok(keys.includes(key), `missing A1.2 api key: ${key}`);
+  }
   const fnKeys = keys.filter((k) => typeof api[k] === 'function').sort();
-  assert.deepEqual(fnKeys, ['diagnose', 'isEnabled', 'listForItem', 'selfCheck'],
-    `unexpected function keys: ${fnKeys.join(',')}`);
+  for (const key of ['diagnose', 'isEnabled', 'listForItem', 'selfCheck']) {
+    assert.ok(fnKeys.includes(key), `missing A1.2 function: ${key}`);
+  }
   assert.equal(api.readonly, true, 'readonly true');
   assert.equal(api.flagKey, FLAG_KEY, 'flagKey');
-  assert.ok(Array.isArray(api.kinds) && api.kinds.join(',') === 'note,bookmark', 'kinds = note,bookmark');
+  assert.ok(Array.isArray(api.kinds) && api.kinds.includes('note') && api.kinds.includes('bookmark'), 'kinds include note,bookmark');
   assert.ok(Object.isFrozen(api), 'api is frozen');
 });
 check('module exposes no write-like methods (static)', () => {
@@ -118,15 +119,13 @@ check('module exposes no write-like methods (static)', () => {
   assert.ok(!m, `write-like token found: ${m ? m[0] : ''}`);
 });
 
-// 5-9. forbidden later-phase tokens absent.
-check('no listUnattributed / highlights / anchor / sidecar / native_note', () => {
-  hasNot(moduleText, 'listUnattributed', 'no unattributed listing');
-  hasNot(moduleText, 'unattributed', 'no unattributed');
-  hasNot(moduleText, 'highlight', 'no highlights');
-  hasNot(moduleText, 'anchor', 'no anchor resolver');
-  hasNot(moduleText, 'sidecar', 'no sidecar');
-  hasNot(moduleText, 'native_note', 'no native_note');
-  hasNot(moduleText, 'native-note', 'no native-note');
+// 5-9. forbidden post-A1.2 implementation tokens absent.
+check('no anchor / sidecar / native_note / renderer registry', () => {
+  hasNot(moduleText, 'readerNotes.anchor', 'no anchor resolver namespace');
+  hasNot(moduleText, 'readerNotes.sidecar', 'no sidecar namespace');
+  hasNot(moduleText, 'nativeNote', 'no native note implementation');
+  hasNot(moduleText, 'native_note:', 'no native_note api property');
+  hasNot(moduleText, 'rendererRegistry', 'no renderer registry implementation');
   hasNot(moduleText, 'getScratch', 'no scratchpad read');
   hasNot(moduleText, 'scratch', 'no scratch exposure');
 });

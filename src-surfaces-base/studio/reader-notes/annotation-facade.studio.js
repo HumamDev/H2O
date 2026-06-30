@@ -1,31 +1,41 @@
-/* H2O Studio — Reader & Notes — MVP-A1.2: annotation façade (notes + bookmarks)
+/* H2O Studio — Reader & Notes — MVP-A1.3a: annotation façade
  *
  * A flag-guarded, READ-ONLY aggregator that projects existing per-chat
- * annotation data (notes and bookmarks only) for a captured_chat
+ * annotation data (notes and bookmarks) for a captured_chat
  * LibraryItem into a unified annotation shape, per the Reader & Notes
  * Architecture Contract v1.2 (docs/systems/reader-notes/architecture-contract-v1.2.md)
  * and ADR-0011.
  *
- * SCOPE (A1.2 only):
- *   - Covers exactly two annotation kinds: 'note' and 'bookmark'.
+ * SCOPE:
+ *   - A1.2 covers item-scoped 'note' and 'bookmark' annotations.
+ *   - A1.3a adds zero-attribution-risk highlight enumeration:
+ *     every highlight is returned from listUnattributed() as
+ *     attribution: 'unattributed' with reason
+ *     'a1_3a-attribution-deferred'.
+ *   - listForItem(itemId) remains notes + bookmarks only in A1.3a.
  *   - Validates item identity through the A1.1 typed view
  *     (H2O.Studio.readerNotes.libraryItems.get) so it reads annotation data
  *     only for a known captured_chat item.
  *   - Reads only via H2O.Studio.store.notes.list(chatId) and
- *     H2O.Studio.store.bookmarks.list(chatId). Returns deep-cloned,
- *     read-only annotation snapshots.
+ *     H2O.Studio.store.bookmarks.list(chatId) for item-scoped reads.
+ *   - Reads highlights only via H2O.Studio.store.highlights.getAll() to
+ *     enumerate answer ids and .getForAnswer(answerId) to fetch cloned lists.
+ *     Returns deep-cloned, read-only annotation snapshots.
  *
  * OUT OF SCOPE (later phases — NOT implemented here):
- *   - Every subsequent Reader & Notes phase. This module covers only the
- *     note and bookmark annotation kinds and implements no later-phase
- *     feature.
+ *   - A1.3b safe highlight attribution. This module performs no highlight
+ *     matching and does not move highlights into listForItem().
+ *   - Anchor resolver, A2a/A2b, sidecar, enrichment, renderer registry,
+ *     native_note, sync, chat saving, capture/saving, or runtime writers.
  *
  * HARD GUARANTEES:
- *   - Exposes only read methods: isEnabled / listForItem / selfCheck /
- *     diagnose. No mutation API.
+ *   - Exposes only read methods: isEnabled / listForItem /
+ *     listUnattributed / selfCheck / diagnose. No mutation API.
  *   - Calls only the read method `.list(chatId)` on the notes and bookmarks
  *     stores. It never invokes any store mutation method and reads no other
  *     store surface.
+ *   - Calls only `getAll()` and `getForAnswer(answerId)` on the highlights
+ *     store. It never invokes any highlight mutation method.
  *   - Performs NO persistence: no platform-storage writes and no direct
  *     browser storage APIs (key-value or database).
  *   - No subscriptions, no polling, no async hydrate logic.
@@ -45,6 +55,10 @@
  *   Read through H2O.flags.get(key, false) === true. When H2O.flags is
  *   absent, isEnabled() returns false (fail closed). No flag default is
  *   persisted and no flag store is created.
+ *
+ * Highlight sub-flag: 'studio.readerNotes.annotationHighlights.enabled' —
+ *   default OFF. listUnattributed() returns highlights only when both the
+ *   outer annotation façade flag and this sub-flag are true.
  */
 (function (global) {
   'use strict';
@@ -61,12 +75,14 @@
   var VERSION = 1;
   var SCHEMA_VERSION = 1;
   var FLAG_KEY = 'studio.readerNotes.annotationFacade.enabled';
-  var KINDS = Object.freeze(['note', 'bookmark']);
+  var HIGHLIGHT_FLAG_KEY = 'studio.readerNotes.annotationHighlights.enabled';
+  var KINDS = Object.freeze(['note', 'bookmark', 'highlight']);
 
   /* Bounded error ring + last-run malformed counters (diagnostics only). */
   var errors = [];
   var ERR_MAX = 20;
-  var lastMalformed = { note: 0, bookmark: 0 };
+  var lastMalformed = { note: 0, bookmark: 0, highlight: 0 };
+  var lastUnattributedHighlights = 0;
 
   function recordError(op, e) {
     try {
@@ -113,6 +129,10 @@
     var s = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.bookmarks;
     return (s && typeof s.list === 'function') ? s : null;
   }
+  function getHighlightsStore() {
+    var s = H2O && H2O.Studio && H2O.Studio.store && H2O.Studio.store.highlights;
+    return (s && typeof s.getAll === 'function' && typeof s.getForAnswer === 'function') ? s : null;
+  }
 
   /* ── Flag (default OFF; fail closed) ──────────────────────────────────── */
   function isEnabled() {
@@ -124,6 +144,21 @@
       recordError('isEnabled', e);
       return false;
     }
+  }
+
+  function isHighlightSubFlagEnabled() {
+    try {
+      var flags = getFlags();
+      if (!flags) return false;                 /* no flag system → fail closed */
+      return flags.get(HIGHLIGHT_FLAG_KEY, false) === true;
+    } catch (e) {
+      recordError('isHighlightSubFlagEnabled', e);
+      return false;
+    }
+  }
+
+  function canReadHighlights() {
+    return isEnabled() && isHighlightSubFlagEnabled();
   }
 
   /* ── Identity validation via the A1.1 typed view ──────────────────────── */
@@ -189,6 +224,55 @@
     };
   }
 
+  function highlightText(entry) {
+    if (entry && entry.anchors && entry.anchors.exact != null) return strOrEmpty(entry.anchors.exact);
+    if (entry && entry.anchor && entry.anchor.exact != null) return strOrEmpty(entry.anchor.exact);
+    if (entry && entry.exact != null) return strOrEmpty(entry.exact);
+    if (entry && entry.quote != null) return strOrEmpty(entry.quote);
+    if (entry && entry.selectedText != null) return strOrEmpty(entry.selectedText);
+    if (entry && entry.text != null) return strOrEmpty(entry.text);
+    return '';
+  }
+
+  function highlightColor(entry) {
+    return strOrNull(entry && (entry.color || entry.highlightColor || entry.hlColor || entry.c));
+  }
+
+  function mapUnattributedHighlight(answerId, entry, index) {
+    if (!isPlainObject(entry)) return null;      /* malformed: non-object */
+    var answer = strOrNull(answerId);
+    if (!answer) return null;                   /* malformed: no answer bucket */
+    var nativeId = strOrNull(entry.id) || (answer + ':' + String(index));
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      kind: 'highlight',
+      id: 'highlight:unattributed:' + answer + ':' + nativeId,
+      item: null,
+      attribution: 'unattributed',
+      reason: 'a1_3a-attribution-deferred',
+      source: {
+        store: 'highlights',
+        chatId: null,
+        answerId: answer,
+        nativeId: nativeId,
+        convoId: strOrNull(entry.convoId),
+      },
+      body: {
+        color: highlightColor(entry),
+        text: highlightText(entry),
+        createdAt: numOrNull(entry.ts),
+      },
+      raw: cloneValue(entry),
+    };
+  }
+
+  function answerIdsFromHighlights(store) {
+    var blob = safe(function () { return store.getAll(); });
+    var iba = blob && blob.itemsByAnswer;
+    if (!isPlainObject(iba)) return [];
+    return Object.keys(iba).filter(function (key) { return String(key || '').trim() !== ''; });
+  }
+
   /* ── Public read API ──────────────────────────────────────────────────── */
   function listForItem(itemId, options) {
     if (!isEnabled()) return [];                 /* fail closed: disabled */
@@ -197,7 +281,7 @@
       if (!chatId) return [];                     /* empty / unknown / A1.1 missing */
 
       var out = [];
-      var malformed = { note: 0, bookmark: 0 };
+      var malformed = { note: 0, bookmark: 0, highlight: lastMalformed.highlight || 0 };
       var opts = options || {};
       var wantNote = !opts.kind || opts.kind === 'note';
       var wantBookmark = !opts.kind || opts.kind === 'bookmark';
@@ -237,6 +321,51 @@
     }
   }
 
+  function listUnattributed(options) {
+    if (!canReadHighlights()) {
+      lastUnattributedHighlights = 0;
+      lastMalformed.highlight = 0;
+      return [];
+    }
+    try {
+      var opts = options || {};
+      if (opts.kind && opts.kind !== 'highlight') {
+        lastUnattributedHighlights = 0;
+        lastMalformed.highlight = 0;
+        return [];
+      }
+      var store = getHighlightsStore();
+      if (!store) {
+        lastUnattributedHighlights = 0;
+        lastMalformed.highlight = 0;
+        return [];
+      }
+
+      var out = [];
+      var malformed = 0;
+      var answers = answerIdsFromHighlights(store);
+      for (var i = 0; i < answers.length; i += 1) {
+        var answerId = answers[i];
+        var items = safe(function (id) {
+          return function () { return store.getForAnswer(id); };
+        }(answerId));
+        if (!Array.isArray(items)) continue;
+        for (var j = 0; j < items.length; j += 1) {
+          var h = mapUnattributedHighlight(answerId, items[j], j);
+          if (h) out.push(h); else malformed += 1;
+        }
+      }
+      lastUnattributedHighlights = out.length;
+      lastMalformed.highlight = malformed;
+      return out;
+    } catch (e) {
+      recordError('listUnattributed', e);
+      lastUnattributedHighlights = 0;
+      lastMalformed.highlight = 0;
+      return [];
+    }
+  }
+
   function selfCheck() {
     return {
       ok: errors.length === 0,
@@ -244,13 +373,16 @@
       readonly: true,
       schemaVersion: SCHEMA_VERSION,
       flagKey: FLAG_KEY,
+      highlightSubFlagKey: HIGHLIGHT_FLAG_KEY,
       kinds: KINDS.slice(),
       enabled: isEnabled(),
+      highlightSubFlag: isHighlightSubFlagEnabled(),
       deps: {
         flags: !!getFlags(),
         libraryItems: !!getLibraryItems(),
         notesStore: !!getNotesStore(),
         bookmarksStore: !!getBookmarksStore(),
+        highlightsStore: !!getHighlightsStore(),
       },
       errors: errors.slice(),
     };
@@ -263,12 +395,19 @@
       version: VERSION,
       readonly: true,
       flagKey: FLAG_KEY,
+      highlightSubFlagKey: HIGHLIGHT_FLAG_KEY,
+      highlightSubFlag: base.highlightSubFlag,
       kinds: KINDS.slice(),
       enabled: base.enabled,
       deps: base.deps,
-      lastMalformed: { note: lastMalformed.note, bookmark: lastMalformed.bookmark },
+      lastUnattributedHighlights: lastUnattributedHighlights,
+      lastMalformed: {
+        note: lastMalformed.note,
+        bookmark: lastMalformed.bookmark,
+        highlight: lastMalformed.highlight,
+      },
       note: base.enabled
-        ? 'read-only notes+bookmarks annotation facade active'
+        ? 'read-only annotation facade active; A1.3a returns all highlights as unattributed and performs no attribution'
         : 'disabled — no runtime effect (flag off or dependencies missing)',
       errors: base.errors,
     };
@@ -283,6 +422,7 @@
     kinds: KINDS,
     isEnabled: isEnabled,
     listForItem: listForItem,
+    listUnattributed: listUnattributed,
     selfCheck: selfCheck,
     diagnose: diagnose,
   });
