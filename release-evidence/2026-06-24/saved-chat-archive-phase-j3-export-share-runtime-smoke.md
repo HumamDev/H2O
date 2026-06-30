@@ -1,6 +1,8 @@
 # Saved Chat Archive - Phase J.3 Export / Share Runtime Smoke
 
-Status: **J.3 EXPORT SHARE RUNTIME SMOKE - PASSED WITH BOUNDED READ-BACK CAPABILITY FOLLOW-UP**
+Date: 2026-06-30
+
+Status: **J.3 EXPORT SHARE RUNTIME SMOKE - PASSED**
 
 Lane: H2O Studio Chat Saving Architecture - Phase J export/share.
 
@@ -8,9 +10,53 @@ Implementation under test:
 
 - `a5a7c18 feat(studio): add bounded archive export action`
 
-Follow-up patch from this smoke:
+Read-back capability fix landed during this smoke:
 
-- Added bounded `fs:allow-read-file` for `$HOME/H2O Studio Exports/**` so the Desktop runtime can read back exported files for destination verification.
+- `71b6113 fix(studio): allow bounded archive export readback` — added bounded
+  `fs:allow-read-file` for `$HOME/H2O Studio Exports/**` so the Desktop runtime can read
+  back exported files for post-copy destination verification.
+
+The final minimal Desktop Studio / Tauri DevTools confirmation has now **passed**: the
+exported destination reads back under the bounded export root, the exported manifest
+`contentHash` and snapshot hash match the expected value, and a same-name second export
+returns `destination-exists` with no overwrite.
+
+## Blocker history (preserved)
+
+1. **Initially blocked** — the Tauri WKWebView exposes no remote debug / console bridge
+   this environment can drive, so the J.3 runtime is operator-run (same constraint as
+   F.3 / G.3 / H.3); the first J.3 note recorded the blocked preflight (`2d17e32`).
+2. **First operator run proved the export but read-back failed** — the export wrote the
+   destination and the manifest-declared files matched the source byte-for-byte (verified
+   in the terminal), but the in-app post-copy verification hit
+   `forbidden path: …/H2O Studio Exports/…/manifest.json` — a bounded read-back capability
+   gap (`archive-export.json` allowed create/write/remove/rename but not `read_file`).
+3. **Bounded read-back capability added** — `71b6113` added `fs:allow-read-file` scoped
+   only to `$HOME/H2O Studio Exports/**` (no broadening).
+4. **Final minimal Desktop DevTools confirmation passed** — see below.
+
+## Final runtime confirmation — PASSED
+
+After rebuilding/relaunching Desktop with the bounded read-back capability, the operator
+ran the minimal DevTools confirmation:
+
+```text
+{
+  ok: true,
+  destinationReadbackOk: true,
+  manifestContentHash: "sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec",
+  snapshotHash:        "sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec",
+  secondExportStatus:  "destination-exists",
+  noOverwriteConfirmed: true
+}
+```
+
+- **Destination read-back now works** under the bounded export root.
+- **Exported manifest `contentHash` matches** the expected
+  `sha256-fe608c13cff690a078bbf1caacbad7d8b439c94385b4a0e5ea0d1e9f2589a8ec`.
+- **Exported snapshot hash matches** manifest / `contentHash` (v1 asset-free:
+  `contentHash === files.snapshot.sha256`).
+- **Re-exporting with the same `exportName` returns `destination-exists`** — no overwrite.
 
 ## Runtime Summary
 
@@ -126,7 +172,10 @@ The fix is intentionally narrow:
 - keep no sync/WebDAV/cloud/native messaging path
 - keep no Chrome package-body authority
 
-After rebuilding/relaunching Desktop, the same runtime read-back verification path should be able to read exported destination files. A same-name second export should return `destination-exists`; the destination already exists and was not overwritten during this smoke.
+After rebuilding/relaunching Desktop, the same runtime read-back verification path **did**
+read the exported destination files (`destinationReadbackOk: true`), and a same-name second
+export returned `destination-exists` with `noOverwriteConfirmed: true` — the destination
+already existed and was not overwritten.
 
 ## Boundary Status
 
@@ -156,10 +205,14 @@ Passed:
 - `git diff --check`
 - `git diff --cached --check`
 
-## Follow-Up
+## Resolution (done)
 
-After rebuilding/relaunching Desktop with the bounded read-back capability, rerun only the minimal DevTools confirmation:
+The minimal DevTools confirmation was rerun after rebuilding/relaunching Desktop with the
+bounded read-back capability, and all three checks passed:
 
-- destination read-back succeeds under `$HOME/H2O Studio Exports/**`
-- same `exportName` returns `destination-exists`
-- no overwrite occurs
+- destination read-back succeeded under `$HOME/H2O Studio Exports/**` (`destinationReadbackOk: true`)
+- same `exportName` returned `destination-exists`
+- no overwrite occurred (`noOverwriteConfirmed: true`)
+
+No further follow-up remains for J.3. The export action is verification-gated,
+no-overwrite, bounded, and runtime-confirmed.
