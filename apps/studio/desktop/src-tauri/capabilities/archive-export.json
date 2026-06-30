@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "archive-export",
+  "description": "Chat Saving Architecture Phase J.2 bounded .h2ochat export capability. Grants only the minimum Desktop filesystem access needed to export one verified saved-chat package by writing a temp package directory under $HOME/H2O Studio Exports and atomically renaming it to the final .h2ochat destination. No arbitrary user-selected paths, no $HOME/** write scope, no $DOWNLOAD/** write scope, no archive package mutation, no sync/WebDAV/cloud integration, and no Chrome authority.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:1430/*", "http://localhost:1430/*"]
+  },
+  "permissions": [
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports" },
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports" },
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports" },
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        { "path": "$HOME/H2O Studio Exports/**" }
+      ]
+    }
+  ]
+}

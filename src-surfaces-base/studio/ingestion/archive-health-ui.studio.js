@@ -533,6 +533,17 @@
       }
     } catch (_) { /* importer card must never break the read-only health card */ }
 
+    // Phase J.2: mount the Desktop-only, verification-gated export/share card
+    // (its own module) as a sibling beneath this read-only diagnostics card. The
+    // health card remains read-only; the exporter module owns the bounded
+    // $HOME/H2O Studio Exports write and no-overwrite gate.
+    try {
+      var exporterApi = H2O.Studio && H2O.Studio.archiveExporter;
+      if (exporterApi && typeof exporterApi.mountArchiveExporterCard === 'function') {
+        exporterApi.mountArchiveExporterCard(container);
+      }
+    } catch (_) { /* exporter card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 

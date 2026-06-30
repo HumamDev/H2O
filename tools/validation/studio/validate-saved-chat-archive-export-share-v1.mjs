@@ -10,10 +10,15 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../../..');
 
 const J0_CONTRACT = 'release-evidence/2026-06-24/saved-chat-archive-phase-j0-export-share-contract.md';
+const EXPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js';
 const EXPORT_BUNDLE = 'src-surfaces-base/studio/ingestion/export-bundle.tauri.js';
+const ARCHIVE_HEALTH_UI = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
+const STUDIO_HTML = 'src-surfaces-base/studio/studio.html';
+const PACK_STUDIO = 'tools/product/studio/pack-studio.mjs';
 const RECOVERY_VALIDATOR = 'tools/validation/studio/validate-saved-chat-archive-recovery-import-export-v1.mjs';
 const IMPORT_HARNESS = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const STUDIO_ROOT = 'src-surfaces-base/studio';
+const ARCHIVE_EXPORT_CAPABILITY = 'apps/studio/desktop/src-tauri/capabilities/archive-export.json';
 const CAPABILITY_FILES = [
   'apps/studio/desktop/src-tauri/capabilities/default.json',
   'apps/studio/desktop/src-tauri/capabilities/archive-cas.json',
@@ -148,6 +153,12 @@ function scanFilesForTokens(files, tokens) {
   return hits;
 }
 
+function stripComments(text) {
+  return String(text || '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 const checks = [];
 function check(name, fn) {
   checks.push({ name, fn });
@@ -158,6 +169,8 @@ check('J.0 export/share contract exists', () => {
 });
 
 const j0 = readRepo(J0_CONTRACT);
+const exporterSrc = existsRepo(EXPORTER) ? readRepo(EXPORTER) : '';
+const exporterCode = stripComments(exporterSrc);
 
 check('J.0 is marked contract-only and not implemented', () => {
   assertMatches(j0, /PHASE J\.0 CONTRACT\s*[—-]\s*NOT IMPLEMENTED/, 'PHASE J.0 CONTRACT - NOT IMPLEMENTED');
@@ -243,7 +256,106 @@ check('J.0 distinguishes .h2ochat export from full-library bundle export', () =>
   }
 });
 
-check('current runtime has no .h2ochat export/share action implementation', () => {
+check('J.2 exporter module exists and registers H2O.Studio.archiveExporter APIs', () => {
+  assert.ok(existsRepo(EXPORTER), `${EXPORTER} does not exist`);
+  assertMatches(exporterSrc, /H2O\.Studio\.archiveExporter\s*=/);
+  for (const name of [
+    'isDesktopCapable',
+    'resolveExportDestination',
+    'dryRunExportPackage',
+    'exportVerifiedPackage',
+    'renderArchiveExporterCard',
+    'mountArchiveExporterCard',
+  ]) {
+    assertIncludes(exporterSrc, name);
+  }
+});
+
+check('J.2 exporter is Desktop-only and verification-gated through inspectPackage', () => {
+  assertIncludes(exporterCode, 'detectTauri');
+  assertIncludes(exporterCode, 'isDesktopCapable');
+  assertIncludes(exporterCode, 'archiveInspector');
+  assertIncludes(exporterCode, 'inspectPackage');
+  assertMatches(exporterCode, /inspectStatus\s*!==\s*['"]verified['"]/);
+  assertIncludes(exporterCode, 'dryRunExportPackage');
+  assertIncludes(exporterCode, 'exportVerifiedPackage');
+});
+
+check('J.2 exporter uses fixed bounded export root and no arbitrary destination root', () => {
+  assertIncludes(exporterCode, "EXPORT_ROOT = 'H2O Studio Exports'");
+  assertIncludes(exporterCode, 'HOME_BASE_DIR = 21');
+  assertIncludes(exporterCode, 'resolveExportDestination');
+  assert.doesNotMatch(exporterCode, /destinationRoot|rootPath|targetRoot|absoluteDestination|showOpenDialog|showSaveDialog|dialog:/);
+  assert.doesNotMatch(exporterCode, /\$DOWNLOAD|\$HOME\/\*\*/);
+});
+
+check('J.2 exporter sanitizes exportName as a single .h2ochat leaf', () => {
+  assertIncludes(exporterCode, 'sanitizeExportName');
+  assertMatches(exporterCode, /PACKAGE_SUFFIX\s*=\s*['"]\.h2ochat['"]/);
+  assertMatches(exporterCode, /indexOf\(['"]\.\.['"]\)/);
+  assertIncludes(exporterCode, "replace(/[\\\\\\/]+/g, '-')");
+  assertIncludes(exporterCode, "/[\\/\\\\]/.test(name)");
+});
+
+check('J.2 exporter is manifest-driven and does not recursively blind-copy packages', () => {
+  assertIncludes(exporterCode, 'declaredFilesFromManifest');
+  assertIncludes(exporterCode, 'manifest.files');
+  assertIncludes(exporterCode, 'manifest.assets');
+  assertIncludes(exporterCode, 'copyDeclaredFile');
+  assert.doesNotMatch(exporterCode, /plugin:fs\|read_dir|readDir|copyDir|recursiveCopy|walkFiles/);
+});
+
+check('J.2 exporter guards package-relative paths and asset paths', () => {
+  assertIncludes(exporterCode, 'assertSafeRelativePackagePath');
+  assertIncludes(exporterCode, 'path must be relative');
+  assertIncludes(exporterCode, 'path must not traverse');
+  assertIncludes(exporterCode, 'asset path must stay under assets/');
+  assertIncludes(exporterCode, 'asset path sha mismatch');
+});
+
+check('J.2 exporter is no-overwrite and uses temp-to-rename atomic strategy', () => {
+  assertIncludes(exporterCode, 'destination-exists');
+  assertIncludes(exporterCode, 'fsExists(dest.destinationPath');
+  assertIncludes(exporterCode, 'TMP_SUFFIX_PREFIX');
+  assertIncludes(exporterCode, 'fsRename(tempPath, dest.destinationPath');
+  assertIncludes(exporterCode, 'plugin:fs|rename');
+  assert.doesNotMatch(exporterCode, /truncate:\s*true|overwrite:\s*true/);
+});
+
+check('J.2 exporter verifies copied hashes and contentHash after copy', () => {
+  assertIncludes(exporterCode, 'verifyCopiedFiles');
+  assertIncludes(exporterCode, 'sha256Prefixed');
+  assertIncludes(exporterCode, 'contentHashExpected');
+  assertIncludes(exporterCode, 'copied package contentHash mismatch');
+  assertIncludes(exporterCode, 'copied file hash mismatch');
+});
+
+check('J.2 exporter does not call store/scanner/materializer/importer/sync paths', () => {
+  for (const token of [
+    'H2O.Studio.store',
+    'scanSavedChatArchiveRequestInboxV1',
+    'materializeSavedChatArchiveRequestV1',
+    'writeSavedChatPackageV1',
+    'buildSavedChatPackageV1',
+    'archiveImporter',
+    'exportFullBundle',
+    'exportLatestSyncBundle',
+    'folder-sync',
+    'WebDAV',
+  ]) {
+    assert.ok(!exporterCode.includes(token), `exporter must not reference ${token}`);
+  }
+});
+
+check('J.2 exporter is loaded and mounted beside Archive Health', () => {
+  assertIncludes(readRepo(STUDIO_HTML), './ingestion/saved-chat-archive-exporter.studio.js');
+  assertIncludes(readRepo(PACK_STUDIO), 'ingestion/saved-chat-archive-exporter.studio.js');
+  const health = readRepo(ARCHIVE_HEALTH_UI);
+  assertIncludes(health, 'archiveExporter');
+  assertIncludes(health, 'mountArchiveExporterCard');
+});
+
+check('placeholder/broad .h2ochat export/share action names remain absent', () => {
   const files = walkFiles(STUDIO_ROOT).filter((relPath) => relPath.endsWith('.js'));
   const hits = scanFilesForTokens(files, FORBIDDEN_EXPORT_RUNTIME_TOKENS);
   assert.deepEqual(hits, [], `unexpected export/share runtime tokens:\n${hits.join('\n')}`);
@@ -279,14 +391,42 @@ check('scanner/materializer/writer/importer behavior remains export-share unchan
   assert.deepEqual(hits, [], `unexpected export/share tokens in guarded runtime files:\n${hits.join('\n')}`);
 });
 
-check('current capabilities are not broadened for J.1 export/share', () => {
+check('J.2 archive-export capability is dedicated and bounded to H2O Studio Exports', () => {
+  assert.ok(existsRepo(ARCHIVE_EXPORT_CAPABILITY), `${ARCHIVE_EXPORT_CAPABILITY} does not exist`);
+  const raw = readRepo(ARCHIVE_EXPORT_CAPABILITY);
+  const json = JSON.parse(raw);
+  assert.equal(json.identifier, 'archive-export');
+  for (const permission of [
+    'fs:allow-mkdir',
+    'fs:allow-exists',
+    'fs:allow-read-dir',
+    'fs:allow-write-file',
+    'fs:allow-remove',
+    'fs:allow-rename',
+  ]) {
+    assert.ok(raw.includes(permission), `${permission} missing from archive-export capability`);
+  }
+  const scopes = collectStrings(json);
+  const pathScopes = scopes.filter((scope) => scope.startsWith('$'));
+  for (const scope of pathScopes) {
+    assert.ok(
+      scope === '$HOME/H2O Studio Exports' || scope === '$HOME/H2O Studio Exports/**',
+      `unexpected archive-export scope: ${scope}`,
+    );
+  }
+  assert.ok(!pathScopes.includes('$HOME/**'), 'archive-export must not grant broad HOME scope');
+  assert.ok(!pathScopes.some((scope) => scope.includes('$DOWNLOAD')), 'archive-export must not grant Downloads scope');
+  assert.ok(!pathScopes.some((scope) => scope.includes('$APPLOCALDATA/archive')), 'archive-export must not target app archive package root');
+});
+
+check('existing capabilities are not broadened for J.2 export/share', () => {
   const writeLikeScopes = [];
   for (const relPath of CAPABILITY_FILES) {
     assert.ok(existsRepo(relPath), `${relPath} does not exist`);
     const raw = readRepo(relPath);
     const json = JSON.parse(raw);
     writeLikeScopes.push(...collectWriteLikeCapabilityScopes(json).map((scope) => `${relPath}: ${scope}`));
-    assert.ok(!raw.includes('H2O Studio Exports'), `${relPath} must not add export destination capability in J.1`);
+    assert.ok(!raw.includes('H2O Studio Exports'), `${relPath} must not add export destination capability in J.2`);
   }
   const broadHomeWrites = writeLikeScopes.filter((scope) => scope.includes('$HOME/**'));
   const downloadWrites = writeLikeScopes.filter((scope) => scope.includes('$DOWNLOAD'));
@@ -296,7 +436,7 @@ check('current capabilities are not broadened for J.1 export/share', () => {
   assert.deepEqual(exportRootWrites, [], `export-root write-like capability found:\n${exportRootWrites.join('\n')}`);
 });
 
-check('J.1 remains no watcher/poller/daemon and no sync/WebDAV/cloud/native path', () => {
+check('J.2 remains no watcher/poller/daemon and no sync/WebDAV/cloud/native path', () => {
   for (const text of [
     'No watcher / daemon',
     'No sync / WebDAV / cloud / native messaging',
@@ -308,7 +448,7 @@ check('J.1 remains no watcher/poller/daemon and no sync/WebDAV/cloud/native path
 
 check('existing recovery/import/export validator still preserves deferred export boundary', () => {
   const text = readRepo(RECOVERY_VALIDATOR);
-  assertIncludes(text, 'no .h2ochat EXPORT / share runtime exists yet (deferred)');
+  assertIncludes(text, 'bounded .h2ochat export runtime exists only in archiveExporter');
   assertIncludes(text, 'export-bundle are full-bundle artifacts');
   assertIncludes(text, 'restore/relink deferred');
 });
@@ -318,7 +458,7 @@ check('existing import recovery harness remains present for regression validatio
   assertIncludes(text, 'saved-chat-archive-importer');
 });
 
-check('no S0F0j/S0F1j files are staged by J.1', () => {
+check('no S0F0j/S0F1j files are staged by J.2', () => {
   const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -344,4 +484,4 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.log(`\nPASS saved chat archive export/share J.1 contract validation (${checks.length} checks)`);
+console.log(`\nPASS saved chat archive export/share J.2 implementation validation (${checks.length} checks)`);

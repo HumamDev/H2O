@@ -10,8 +10,9 @@
 // importer (verification-gated, dry-run non-mutating, import-as-new via a fresh
 // id, never the overwrite-by-id primitive, restore/relink deferred, no package
 // HTML execution, Desktop-only), while the standing boundaries hold (Chrome no
-// package authority, diagnostics read-only, writer a projection writer, no
-// .h2ochat EXPORT runtime yet).
+// package authority, diagnostics read-only, writer a projection writer, and as
+// of Phase J.2 only the bounded Desktop archiveExporter export/share runtime is
+// allowed.
 //
 //   [H.1]       = the recovery/import/export contract (H.0 doc assertions).
 //   [H.2]       = the read-only Archive Inspector implementation (stays read-only).
@@ -19,8 +20,7 @@
 //   [INVARIANT] = boundaries that must hold now and after H.4.
 //
 // Static only: reads source/doc text, asserts patterns. No runtime, no imports of
-// runtime modules, no DB, no network. When H.5 (export / restore-relink) lands,
-// update this validator in lock-step.
+// runtime modules, no DB, no network.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -44,15 +44,17 @@ const MATERIALIZE_API = 'materializeSavedChatArchiveRequestV1';
 const PACKAGE_EXT = '.h2ochat';
 const INSPECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const EXPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js';
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
 // Files that legitimately reference .h2ochat: the WRITER, the read-only DIAGNOSTICS,
-// the read-only INSPECTOR (H.2), and (since H.4) the verification-gated IMPORTER.
-// No other module may reference it.
+// the read-only INSPECTOR (H.2), the verification-gated IMPORTER (H.4), and
+// the bounded Desktop EXPORTER (J.2). No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js',
+  'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js',
 ]);
 // Legacy placeholder import/recovery entry-point names we deliberately did NOT use
 // (H.4 uses the cleaner dryRunImportPackage / importVerifiedPackage). These must
@@ -64,10 +66,14 @@ const FORBIDDEN_IMPORTER_NAMES = [
 // module — never leaked into the writer/diagnostics/inspector/scanner/materializer
 // or the Chrome reader.
 const IMPORTER_ENTRY_NAMES = ['dryRunImportPackage', 'importVerifiedPackage'];
-// .h2ochat EXPORT / share entry points are NOT implemented yet (deferred).
+// Broad/placeholder .h2ochat EXPORT / share entry points remain forbidden. J.2
+// allows only the bounded Desktop archiveExporter module with these explicit
+// names.
 const FORBIDDEN_EXPORT_NAMES = [
   'exportSavedChatPackage', 'shareSavedChatPackage', 'exportSavedChatArchivePackage',
+  'copySavedChatPackageToExport',
 ];
+const EXPORTER_ENTRY_NAMES = ['archiveExporter', 'dryRunExportPackage', 'exportVerifiedPackage'];
 
 const PASS = [];
 const FAIL = [];
@@ -186,7 +192,7 @@ check('[H.1] H.0 defines the safety boundaries (no Chrome package authority / no
 
 // --- B. Current runtime is pre-implementation (no inspector/importer yet) -----
 
-check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/importer; import entry points confined to the importer', () => {
+check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/importer/exporter; import entry points confined to the importer', () => {
   const offenders = [];
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     if (stripComments(fs.readFileSync(abs, 'utf8')).includes(PACKAGE_EXT)) {
@@ -194,7 +200,7 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/impo
       if (!ALLOWED_H2OCHAT.has(rel)) offenders.push(rel);
     }
   }
-  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector/importer (unexpected reader?): ' + offenders.join(', '));
+  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector/importer/exporter (unexpected reader?): ' + offenders.join(', '));
   // Legacy placeholder names must not appear anywhere.
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
@@ -385,11 +391,28 @@ check('[H.4] importer executes no package HTML and has no watcher/scanner/Chrome
   }
 });
 
-check('[INVARIANT] no .h2ochat EXPORT / share runtime exists yet (deferred)', () => {
+check('[INVARIANT] bounded .h2ochat export runtime exists only in archiveExporter; broad placeholders remain forbidden', () => {
+  const exporterPath = path.join(REPO_ROOT, EXPORTER_REL);
+  assert.ok(fs.existsSync(exporterPath), 'J.2 exporter module must exist');
+  const exporter = stripComments(fs.readFileSync(exporterPath, 'utf8'));
+  assert.ok(exporter.includes('H2O.Studio.archiveExporter'), 'exporter must register H2O.Studio.archiveExporter');
+  for (const name of EXPORTER_ENTRY_NAMES) {
+    assert.ok(exporter.includes(name), 'exporter entry point missing: ' + name);
+  }
+  assert.ok(exporter.includes('H2O Studio Exports'), 'exporter must use the bounded export root');
+  assert.ok(exporter.includes('inspectPackage'), 'exporter must verify via inspectPackage');
+  assert.ok(healthUiCode.includes('mountArchiveExporterCard'), 'health UI must delegate to the exporter mount');
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
     for (const name of FORBIDDEN_EXPORT_NAMES) {
-      assert.ok(!code.includes(name), 'package export entry point exists (deferred): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+      assert.ok(!code.includes(name), 'forbidden broad package export entry point exists: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    }
+    const rel = path.relative(REPO_ROOT, abs);
+    if (rel !== EXPORTER_REL) {
+      for (const name of EXPORTER_ENTRY_NAMES) {
+        if (rel === HEALTH_UI_REL && name === 'archiveExporter') continue;
+        assert.ok(!code.includes(name), 'bounded exporter entry leaked outside exporter module: ' + name + ' in ' + rel);
+      }
     }
   }
 });
