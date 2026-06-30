@@ -656,6 +656,11 @@
        driven folder copy to $HOME/H2O Studio Exports/. No zip, picker, Chrome
        authority, sync/WebDAV/cloud, restore/relink, or full-bundle export. -->
   <script src="./ingestion/saved-chat-archive-exporter.studio.js"></script>
+  <!-- Desktop-only: saved-chat archive restore-original-ids action (Phase K.2).
+       Verification-gated, absent-only, no-overwrite restore of original chatId
+       and snapshotId. No relink, tombstone override, Chrome authority, sync,
+       scanner/materializer changes, or UI card in this slice. -->
+  <script src="./ingestion/saved-chat-archive-restore.studio.js"></script>
   <!-- Desktop-only: saved-chat archive request materializer (Phase D.2C).
        Triggers the existing Desktop package writer for a validated queued
        request (re-resolves Desktop store state first). Updates only the

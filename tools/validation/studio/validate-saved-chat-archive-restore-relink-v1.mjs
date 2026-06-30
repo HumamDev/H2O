@@ -1,23 +1,10 @@
 #!/usr/bin/env node
-// K.1 — Saved-chat archive RESTORE / RELINK contract validator (static).
+// K.2 — Saved-chat archive RESTORE / RELINK validator (static).
 //
-// Phase K adds verified restore/relink on top of the closed H (import-as-new) /
-// I (permanent harness) / J (export) phases. K.0 (contract) defined `restore-
-// original-ids` (absent-only, non-destructive, Desktop-only, verification-gated,
-// no overwrite) and DEFERRED relink + tombstone-override/un-delete. K.1 (this
-// validator) locks the K.0 contract statically and asserts that NO restore/relink
-// RUNTIME exists yet — the restore module, its registration, its UI card, and any
-// relink/tombstone-override behavior are all still absent. The runtime arrives in
-// K.2, at which point this validator flips to assert the implementation.
-//
-//   [K.0]       = the restore/relink contract (K.0 doc assertions).
-//   [NOT-IMPL]  = no restore/relink runtime exists yet.
-//   [DEFERRED]  = relink + tombstone-override stay deferred.
-//   [INVARIANT] = the importer stays import-as-new only; the recovery validator
-//                 recognizes the restore plan without allowing runtime relink.
-//
-// Static only: reads source/doc text, asserts patterns. No runtime, no node:sqlite,
-// no DB, no module loads.
+// K.2 implements the first restore mode only: restore-original-ids. It is
+// Desktop-only, verification-gated, absent-only, non-destructive, and explicitly
+// confirm-gated. Relink, restore-into-existing-chat, tombstone override, and
+// overwrite remain deferred/forbidden.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -29,19 +16,29 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const K0_CONTRACT_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k0-restore-relink-contract.md';
 const K1_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k1-restore-relink-validator.md';
-const VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-restore-relink-v1.mjs';
-const RECOVERY_VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-recovery-import-export-v1.mjs';
-const RESTORE_MODULE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
+const K2_EVIDENCE_REL = 'release-evidence/2026-06-24/saved-chat-archive-phase-k2-restore-original-ids-action.md';
+const RESTORE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
+const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const STUDIO_DIR_REL = 'src-surfaces-base/studio';
 
-// Restore/relink runtime markers that must NOT exist anywhere in the studio tree yet.
-// Use the namespace-qualified registration (bare `archiveRestore` collides with
-// unrelated sync-lane identifiers like archiveRestoreInstalled); the function/card
-// names are already specific.
-const RESTORE_RUNTIME_NAMES = ['H2O.Studio.archiveRestore', 'dryRunRestorePackage', 'restoreVerifiedPackage',
-  'mountArchiveRestoreCard', 'renderArchiveRestoreCard'];
-const RELINK_RUNTIME_NAMES = ['archiveRelink', 'dryRunRelinkPackage', 'relinkVerifiedPackage'];
+const RESTORE_ENTRY_NAMES = ['H2O.Studio.archiveRestore', 'dryRunRestorePackage', 'restoreVerifiedPackage'];
+const RELINK_FORBIDDEN_NAMES = ['archiveRelink', 'dryRunRelinkPackage', 'relinkVerifiedPackage'];
+const FORBIDDEN_RESTORE_MUTATIONS = [
+  'libraryIndex',
+  'saved_chat_archive_requests',
+  'writeSavedChatPackageV1',
+  'buildSavedChatPackageV1',
+  'materializeSavedChatArchiveRequestV1',
+  'scanSavedChatArchiveRequestInboxV1',
+  'chrome.runtime',
+  'connectNative',
+  'sendNativeMessage',
+  'webdav',
+  'WebDAV',
+  'syncNow',
+];
 
 const PASS = [];
 const FAIL = [];
@@ -61,128 +58,138 @@ function walkJs(absDir) {
   }
   return out;
 }
+function functionBody(src, name) {
+  const marker = new RegExp('function\\s+' + name + '\\s*\\(');
+  const m = marker.exec(src);
+  if (!m) return '';
+  return src.slice(m.index, src.indexOf('\n  function ', m.index + 20) > -1
+    ? src.indexOf('\n  function ', m.index + 20)
+    : src.length);
+}
 
 const k0 = exists(K0_CONTRACT_REL) ? readRepo(K0_CONTRACT_REL) : '';
 const k1 = exists(K1_EVIDENCE_REL) ? readRepo(K1_EVIDENCE_REL) : '';
-const importerCode = exists(IMPORTER_REL) ? stripComments(readRepo(IMPORTER_REL)) : '';
-const recoveryValidatorSrc = exists(RECOVERY_VALIDATOR_REL) ? readRepo(RECOVERY_VALIDATOR_REL) : '';
-const selfSrc = readRepo(VALIDATOR_REL);
+const k2 = exists(K2_EVIDENCE_REL) ? readRepo(K2_EVIDENCE_REL) : '';
+const restoreSrc = exists(RESTORE_REL) ? readRepo(RESTORE_REL) : '';
+const restoreCode = stripComments(restoreSrc);
+const importerSrc = exists(IMPORTER_REL) ? readRepo(IMPORTER_REL) : '';
+const importerCode = stripComments(importerSrc);
+const studioHtml = exists(STUDIO_HTML_REL) ? readRepo(STUDIO_HTML_REL) : '';
+const packSrc = exists(PACK_REL) ? readRepo(PACK_REL) : '';
 
-console.log('[archive-restore-relink] K.1 contract + not-implemented checks');
+console.log('[archive-restore-relink] K.2 restore-original-ids checks');
 
-// --- A. K.0 contract -----------------------------------------------------------
-
-check('[K.0] contract evidence file exists and is marked NOT IMPLEMENTED', () => {
-  assert.ok(exists(K0_CONTRACT_REL), 'missing ' + K0_CONTRACT_REL);
+check('[K.0] contract evidence exists and defines restore-original-ids as absent-only / no-overwrite', () => {
+  assert.ok(exists(K0_CONTRACT_REL), 'missing K.0 contract');
   assert.match(k0, /PHASE K\.0 CONTRACT[\s\S]*NOT IMPLEMENTED/);
-});
-
-check('[K.0] contract states the K core decisions (restore-original-ids / absent-only / non-destructive / Desktop-only / verification-gated)', () => {
   assert.ok(k0.includes('restore-original-ids'), 'restore-original-ids');
   assert.ok(k0.includes('absent-only'), 'absent-only');
-  assert.ok(k0.includes('non-destructive'), 'non-destructive');
-  assert.ok(k0.includes('Desktop-only'), 'Desktop-only');
-  assert.match(k0, /verification-gated/i);
-  assert.ok(k0.includes('inspectPackage'), 'verification gate = inspectPackage');
+  assert.match(k0, /Overwrite is never allowed|permanently rejected|never overwrite/i);
 });
 
-check('[K.0] contract forbids overwrite and records the no-overwrite safety rules', () => {
-  assert.match(k0, /never overwrite|Overwrite is never allowed|permanently rejected/i);
-  for (const st of ['already-present', 'conflict-snapshot-id', 'conflict-chat-id', 'restore-ready']) {
-    assert.ok(k0.includes(st), 'safety status missing: ' + st);
+check('[K.1] validator evidence exists and K.2 implementation evidence exists', () => {
+  assert.ok(exists(K1_EVIDENCE_REL), 'missing K.1 evidence');
+  assert.match(k1, /PHASE K\.1[\s\S]*RESTORE ?\/ ?RELINK VALIDATOR/i);
+  assert.ok(exists(K2_EVIDENCE_REL), 'missing K.2 evidence');
+  assert.match(k2, /PHASE K\.2[\s\S]*RESTORE ORIGINAL IDS ACTION[\s\S]*IMPLEMENTED/);
+});
+
+check('[K.2] restore module exists and registers H2O.Studio.archiveRestore APIs', () => {
+  assert.ok(exists(RESTORE_REL), 'restore module missing');
+  assert.match(restoreSrc, /H2O\.Studio\.archiveRestore\s*=/);
+  for (const name of ['isDesktopCapable', 'dryRunRestorePackage', 'restoreVerifiedPackage']) {
+    assert.ok(restoreSrc.includes(name), 'API missing: ' + name);
   }
-  assert.match(k0, /Re-check `?snapshots\.get|immediately before insert/i);
 });
 
-check('[K.0] contract defers relink and tombstone-override/un-delete', () => {
-  assert.match(k0, /Relink is deferred|relink[\s\S]{0,40}deferred/i);
-  assert.ok(k0.includes('tombstoned'), 'tombstoned gate');
-  assert.match(k0, /Tombstone override\/un-delete is deferred|tombstone override[\s\S]{0,40}deferred/i);
+check('[K.2] restore module is Desktop-only and loaded in Studio + pack list', () => {
+  assert.match(restoreCode, /function detectTauri\s*\(/);
+  assert.match(restoreCode, /__TAURI_INTERNALS__|__TAURI__/);
+  assert.match(restoreCode, /function isDesktopCapable\s*\(/);
+  assert.ok(studioHtml.includes('ingestion/saved-chat-archive-restore.studio.js'), 'studio.html loader missing');
+  assert.ok(packSrc.includes('ingestion/saved-chat-archive-restore.studio.js'), 'pack list missing');
 });
 
-check('[K.0] contract scopes the writes (chats/snapshots/snapshot_turns/provenance) and forbids libraryIndex / saved_chat_archive_requests / Chrome', () => {
-  for (const t of ['chats', 'snapshots', 'snapshot_turns']) assert.ok(k0.includes(t), 'write target missing: ' + t);
-  assert.match(k0, /must not write `?libraryIndex`?|libraryIndex[\s\S]{0,40}not/i);
-  assert.ok(k0.includes('saved_chat_archive_requests'), 'must not touch saved_chat_archive_requests');
-  assert.match(k0, /no Chrome package authority|Chrome runtime\/service-worker/i);
+check('[K.2] dry-run reuses inspectPackage, reads store state only, and has the required decision vocabulary', () => {
+  const body = functionBody(restoreCode, 'dryRunRestorePackage');
+  assert.ok(body.includes('inspectPackage'), 'dry-run must verify through inspectPackage');
+  assert.ok(body.includes('.get('), 'dry-run must read store get');
+  assert.ok(body.includes('findActiveChatTombstone'), 'dry-run must check tombstones');
+  for (const banned of ['INSERT INTO', 'UPDATE ', 'DELETE ', '.upsert(', '.create(']) {
+    assert.ok(!body.includes(banned), 'dry-run must not write: ' + banned);
+  }
+  for (const st of ['restore-ready', 'already-present', 'conflict-snapshot-id', 'conflict-chat-id', 'tombstoned', 'corrupted', 'unsupported-version', 'rejected', 'read-error']) {
+    assert.ok(restoreCode.includes(st), 'decision missing: ' + st);
+  }
 });
 
-check('[K.0] contract names the future reuse seams + explicit confirm (inspectPackage + buildTurnsFromPackageSnapshot + confirm)', () => {
-  assert.ok(k0.includes('buildTurnsFromPackageSnapshot'), 'reuse importer turn builder');
-  assert.ok(k0.includes('inspectPackage'), 'reuse inspector gate');
-  assert.match(k0, /confirm/i);
+check('[K.2] restore action is mode-gated, confirm-gated, re-runs dry-run, and re-verifies before writing', () => {
+  const body = functionBody(restoreCode, 'restoreVerifiedPackage');
+  assert.ok(body.includes('mode !== RESTORE_MODE'), 'must reject unsupported mode');
+  assert.ok(body.includes('confirm !== true'), 'must require explicit confirm');
+  assert.ok(body.includes('dryRunRestorePackage'), 'must re-run dry-run');
+  assert.ok(body.includes('restore-ready'), 'must proceed only from restore-ready');
+  assert.ok(body.includes('inspectPackage'), 'must re-verify package at write time');
+  assert.ok(body.includes('getSnapshotsStore().get'), 'must re-check snapshot before insert');
 });
 
-// --- B. No restore/relink RUNTIME exists yet (K.1 is contract + validator only) -
-
-check('[NOT-IMPL] the restore runtime module does not exist yet', () => {
-  assert.ok(!exists(RESTORE_MODULE_REL), 'saved-chat-archive-restore.studio.js must not exist in K.1');
+check('[K.2] restore reuses the importer turn builder and refuses empty/partial restores', () => {
+  assert.ok(restoreCode.includes('archiveImporter'), 'must reference archiveImporter');
+  assert.ok(restoreCode.includes('buildTurnsFromPackageSnapshot'), 'must reuse importer turn builder');
+  assert.match(restoreCode, /no turns to restore|refusing partial restore/i);
 });
 
-check('[NOT-IMPL] no restore runtime markers anywhere in the studio tree (no archiveRestore registration, API, or card)', () => {
+check('[K.2] writes are insert-only into chats/snapshots/snapshot_turns and no UPDATE/DELETE/overwrite primitive is used', () => {
+  assert.match(restoreCode, /INSERT INTO chats/);
+  assert.match(restoreCode, /INSERT INTO snapshots/);
+  assert.match(restoreCode, /INSERT INTO snapshot_turns/);
+  assert.ok(!/UPDATE\s+chats|UPDATE\s+snapshots|UPDATE\s+snapshot_turns/i.test(restoreCode), 'restore must not UPDATE existing state');
+  assert.ok(!/DELETE\s+FROM\s+(chats|snapshots|snapshot_turns|sync_tombstones)/i.test(restoreCode), 'restore must not DELETE');
+  assert.ok(!/snapStore\.upsert\(|snapshots\.upsert\(|chatStore\.upsert\(|chats\.upsert\(/.test(restoreCode), 'restore must not use upsert overwrite primitives');
+});
+
+check('[K.2] tombstoned returns a no-write result; tombstone override/un-delete stays absent', () => {
+  assert.ok(restoreCode.includes('sync_tombstones'), 'must read tombstone gate');
+  assert.ok(restoreCode.includes('tombstoned'), 'must return tombstoned status');
+  for (const banned of ['UPDATE sync_tombstones', 'DELETE FROM sync_tombstones', 'SET restored_at', 'clearTombstone', 'deleteTombstone']) {
+    assert.ok(!restoreCode.includes(banned), 'tombstone override must be absent: ' + banned);
+  }
+});
+
+check('[K.2] forbidden authorities and side effects are absent from restore module', () => {
+  for (const banned of FORBIDDEN_RESTORE_MUTATIONS) {
+    assert.ok(!restoreCode.includes(banned), 'restore module must not reference: ' + banned);
+  }
+  for (const banned of ['plugin:fs|write', 'write_file', 'remove_file', 'remove_dir', 'rename', 'setInterval', 'MutationObserver']) {
+    assert.ok(!restoreCode.includes(banned), 'restore module must not include side effect: ' + banned);
+  }
+});
+
+check('[DEFERRED] relink runtime remains absent everywhere in the Studio tree', () => {
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
-    for (const name of RESTORE_RUNTIME_NAMES) {
-      assert.ok(!code.includes(name), 'restore runtime marker present (K.1 must add no runtime): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    for (const name of RELINK_FORBIDDEN_NAMES) {
+      assert.ok(!code.includes(name), 'relink runtime is deferred; unexpected: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
     }
   }
 });
 
-check('[DEFERRED] no relink runtime markers anywhere (relink stays deferred)', () => {
+check('[INVARIANT] restore entry points are confined to the restore module', () => {
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
+    const rel = path.relative(REPO_ROOT, abs);
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
-    for (const name of RELINK_RUNTIME_NAMES) {
-      assert.ok(!code.includes(name), 'relink runtime marker present (relink is deferred): ' + name + ' in ' + path.relative(REPO_ROOT, abs));
+    if (rel === RESTORE_REL) continue;
+    for (const name of RESTORE_ENTRY_NAMES) {
+      assert.ok(!code.includes(name), 'restore entry point leaked outside restore module: ' + name + ' in ' + rel);
     }
   }
 });
 
-check('[DEFERRED] no archive recovery code introduces a relink pointer UPDATE or a tombstone clear/supersede in K.1', () => {
-  // The chats store legitimately writes last_snapshot_id during normal capture; the
-  // ban here is that no NEW restore/recovery module exists that pairs a package read
-  // with such an UPDATE. With the restore module absent, this holds by construction.
-  assert.ok(!exists(RESTORE_MODULE_REL), 'restore module must be absent');
-  // The importer (the only existing recovery write path) must not clear tombstones.
-  for (const banned of ['sync_tombstones', 'tombstones.remove', 'tombstones.delete', "tombstones['delete']", 'deleteTombstone', 'clearTombstone']) {
-    assert.ok(!importerCode.includes(banned), 'importer must not touch tombstones (found: ' + banned + ')');
-  }
-});
-
-// --- C. The importer stays import-as-new only ---------------------------------
-
-check('[INVARIANT] importer is still import-as-new only (defers restore/relink; never reuses original ids for a write)', () => {
-  assert.ok(importerCode.includes('restore-relink-deferred'), 'importer must defer restore/relink');
-  assert.ok(!/snapStore\.upsert\(|snapshots\.upsert\(/.test(importerCode), 'importer must never call the snapshot overwrite-by-id primitive');
-  assert.doesNotMatch(importerCode, /create\(\{[^}]*snapshotId/s, 'importer snapshots.create must not set a package snapshotId (import-as-new uses a fresh id)');
-  assert.ok(importerCode.includes('generateRecoveredChatId'), 'importer still generates a fresh recovered chat id');
-});
-
-// --- D. Recovery validator recognizes the restore plan (the K.1 flip) ----------
-
-check('[INVARIANT] the recovery/import/export validator now recognizes the restore module (planning allowance) without enabling relink/overwrite', () => {
-  assert.ok(recoveryValidatorSrc.length > 0, 'recovery validator missing');
-  assert.ok(recoveryValidatorSrc.includes('saved-chat-archive-restore.studio.js'),
-    'recovery validator must pre-authorize the future restore module (ALLOWED_H2OCHAT)');
-  assert.ok(/RESTORE_ENTRY_NAMES|archiveRestore/.test(recoveryValidatorSrc),
-    'recovery validator must confine the restore entry points to the restore module');
-  // it must still keep relink forbidden as runtime
-  assert.ok(recoveryValidatorSrc.includes('relinkVerifiedPackage') || recoveryValidatorSrc.includes('archiveRelink'),
-    'recovery validator must keep relink runtime forbidden');
-});
-
-check('[INVARIANT] K.1 stays static — this validator loads no runtime, no node:sqlite, no DB, no modules', () => {
-  const loadLines = selfSrc.split('\n').filter((l) => /^\s*import\s/.test(l) || /\b(?:require|import)\s*\(/.test(l));
-  const loaded = loadLines.join('\n');
-  for (const mod of ['node:sqlite', 'saved-chat-archive-restore', 'saved-chat-archive-importer', 'store/snapshots.tauri', 'store/chats.tauri']) {
-    assert.ok(!loaded.includes(mod), 'K.1 validator must not load a runtime module: ' + mod);
-  }
-});
-
-check('[K.1] evidence exists and is marked NOT IMPLEMENTED with the deferrals recorded', () => {
-  assert.ok(exists(K1_EVIDENCE_REL), 'K.1 evidence missing');
-  assert.match(k1, /PHASE K\.1[\s\S]*RESTORE ?\/ ?RELINK VALIDATOR[\s\S]*NOT IMPLEMENTED/);
-  assert.match(k1, /relink[\s\S]{0,40}defer/i);
-  assert.match(k1, /tombstone[\s\S]{0,60}defer/i);
+check('[INVARIANT] importer remains import-as-new only and does not write package original snapshotId', () => {
+  assert.ok(importerCode.includes('restore-relink-deferred'), 'importer must still defer restore/relink');
+  assert.ok(!/snapStore\.upsert\(|snapshots\.upsert\(/.test(importerCode), 'importer must not call snapshot overwrite-by-id primitive');
+  assert.doesNotMatch(importerCode, /create\(\{[^}]*snapshotId/s, 'import-as-new must not write package original snapshotId');
+  assert.ok(importerCode.includes('generateRecoveredChatId'), 'importer must still generate fresh recovered chat id');
 });
 
 console.log('');
