@@ -106,13 +106,14 @@ requireIncludes(evidence, [
 
 const appliedActions = extractAppliedActions(folderSync);
 assert(
-  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind']),
-  `${folderSyncPath}: applied request types must remain exactly chat-category-assign, chat-category-clear, and chat-label-bind; found ${JSON.stringify(appliedActions)}`
+  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind']),
+  `${folderSyncPath}: applied request types must remain exactly chat-category-assign, chat-category-clear, chat-label-bind, and chat-tag-bind after Phase 22; found ${JSON.stringify(appliedActions)}`
 );
 
 requireIncludes(folderSync, [
   "var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);",
   'applyChatLabelBindLibraryMetadataRequest',
+  'applyChatTagBindLibraryMetadataRequest',
   'labels.bindChat(labelId, chatId)',
   'labels.listForChat(chatId)',
   'library-metadata-mutation-request-already-bound-canonical',

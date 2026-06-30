@@ -5,7 +5,8 @@
 // Lightweight consistency check (no behavior). It verifies the closure-gate audit doc exists and is
 // internally consistent, defines the implementation-entry gates + release-risk categories, keeps
 // product metadata sync globally NOT READY, and — as a real drift guard — parses the live applied
-// allowlist out of source and asserts it is EXACTLY the three live-proven types (no broader type).
+// allowlist out of source and asserts it is EXACTLY the four Phase 22 deterministic safe types
+// (no broader type).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +24,8 @@ function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
 function assert(condition, message) { if (!condition) failures.push(message); }
 
-const APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind'];
+const HISTORICAL_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind'];
+const CURRENT_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
 
 const REQUIRED_DEFERRED = [
   'label clear/remove/unbind',
@@ -60,10 +62,10 @@ if (!exists(auditDoc)) {
 const doc = read(auditDoc);
 assert(doc.length > 3000, `${auditDoc}: closure-gate doc too short`);
 
-// ---- names exactly the three live-proven applied types ----
-for (const type of APPLIED_TYPES) assert(doc.includes(type), `audit doc missing applied type: ${type}`);
+// ---- historical doc names the Phase 20 applied types ----
+for (const type of HISTORICAL_APPLIED_TYPES) assert(doc.includes(type), `audit doc missing applied type: ${type}`);
 assert(doc.includes('applied-type allowlist remains exactly'),
-  'audit doc must state the applied-type allowlist remains exactly the three types');
+  'audit doc must state the applied-type allowlist remains exactly');
 
 // ---- product metadata sync globally NOT READY ----
 assert(doc.includes('Product metadata sync remains globally NOT READY'),
@@ -93,18 +95,18 @@ assert(doc.includes('validate-labels-tags-categories-phase19-readiness-audit.mjs
 assert(exists(phase19Validator), 'Phase 19 validator file must exist on disk');
 assert(exists(phase19Doc), 'Phase 19 readiness doc must exist on disk');
 
-// ---- REAL SOURCE: applied allowlist is exactly the three types, no broader applied type ----
+// ---- REAL SOURCE: applied allowlist is exactly the Phase 22 safe types, no broader applied type ----
 assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const applied = parseAppliedAllowlist(read(folderSyncFile));
   assert(Array.isArray(applied), 'could not parse APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS from source');
   if (Array.isArray(applied)) {
     const sorted = applied.slice().sort();
-    const expected = APPLIED_TYPES.slice().sort();
+    const expected = CURRENT_APPLIED_TYPES.slice().sort();
     assert(sorted.length === expected.length && sorted.every((a, i) => a === expected[i]),
       `source applied allowlist drifted: expected exactly [${expected.join(', ')}], got [${sorted.join(', ')}]`);
     for (const a of applied) {
-      assert(APPLIED_TYPES.includes(a), `source enables a broader/unexpected applied type: ${a}`);
+      assert(CURRENT_APPLIED_TYPES.includes(a), `source enables a broader/unexpected applied type: ${a}`);
     }
   }
 }
@@ -119,7 +121,8 @@ console.log(JSON.stringify({
   schema: 'h2o.studio.library-metadata.phase20-closure-gate-audit.v1',
   phase: 'phase20-closure-gate-audit',
   auditDoc,
-  appliedTypes: APPLIED_TYPES,
+  historicalAppliedTypes: HISTORICAL_APPLIED_TYPES,
+  currentAppliedTypes: CURRENT_APPLIED_TYPES,
   appliedAllowlistInSource: parseAppliedAllowlist(read(folderSyncFile)),
   deferredSurfacesChecked: REQUIRED_DEFERRED.length,
   riskCategoriesChecked: REQUIRED_RISK_CATEGORIES.length,

@@ -123,8 +123,8 @@ requireIncludes(evidence, [
 
 const appliedActions = extractAppliedActions(folderSync);
 assert(
-  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind']),
-  `${folderSyncPath}: after Phase 17 the applied request types must be exactly chat-category-assign, chat-category-clear, and chat-label-bind; found ${JSON.stringify(appliedActions)}`
+  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind']),
+  `${folderSyncPath}: after Phase 22 the applied request types must be exactly chat-category-assign, chat-category-clear, chat-label-bind, and chat-tag-bind; found ${JSON.stringify(appliedActions)}`
 );
 
 requireIncludes(folderImport, [

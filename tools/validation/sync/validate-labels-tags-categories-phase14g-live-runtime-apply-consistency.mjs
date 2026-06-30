@@ -70,7 +70,7 @@ const evidence = fs.existsSync(path.join(root, evidenceFile)) ? read(evidenceFil
 
 const appliedActions = objectLiteralBody(folderSync, 'APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS');
 const appliedActionNames = Array.from(appliedActions.matchAll(/'([^']+)'\s*:\s*true/g)).map((match) => match[1]).sort();
-assert(JSON.stringify(appliedActionNames) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind']),
+assert(JSON.stringify(appliedActionNames) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind']),
   `applied actions must remain exact: ${JSON.stringify(appliedActionNames)}`);
 for (const forbidden of [
   'chat-label-clear',
@@ -106,6 +106,8 @@ for (const needle of [
   'verifiesCanonicalLabelBindingAfterBind: true',
   'rejectsIfLabelMissing: true',
   'rejectsIfProjectionNotIncremented: true',
+  'verifiesCanonicalTagBindingAfterBind: true',
+  'rejectsIfTagMissing: true',
   'appliedRequiresPostWriteCanonicalVerification: true',
   'productSyncReady: false',
 ]) {
@@ -160,7 +162,7 @@ if (failures.length) {
 console.log(JSON.stringify({
   schema: 'h2o.studio.library-metadata.phase14g-live-runtime-apply-consistency-validator.v1',
   diagnosticMarkerExposed: true,
-  appliedRequestTypes: ['chat-category-assign', 'chat-category-clear', 'chat-label-bind'],
+  appliedRequestTypes: ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'],
   exactClearCarveOutPreserved: true,
   phase14fApplyVerificationMarkersPresent: true,
   noChromeCanonicalMutation: true,

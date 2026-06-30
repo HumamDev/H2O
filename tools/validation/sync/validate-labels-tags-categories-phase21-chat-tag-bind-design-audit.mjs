@@ -4,10 +4,10 @@
 //
 // Lightweight consistency check (no behavior). It verifies the design-audit doc exists, states the
 // READY verdict + Gate A satisfaction, lists the candidate comparison + negative gates, keeps product
-// metadata sync globally NOT READY, and is genuinely design-only: it parses the live applied allowlist
-// from source and asserts it is still EXACTLY the three live-proven types with chat-tag-bind NOT
-// enabled. It also grounds the feasibility claims by checking the cited store/projection/request-spec
-// tokens exist in real source.
+// metadata sync globally NOT READY, and confirms the Phase 22 implementation state: it parses the
+// live applied allowlist from source and asserts it is now EXACTLY the four safe types with the
+// Phase 21 candidate chat-tag-bind enabled and no broader action. It also grounds the feasibility
+// claims by checking the cited store/projection/request-spec tokens exist in real source.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,7 @@ function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
 function assert(condition, message) { if (!condition) failures.push(message); }
 
-const APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind'];
+const APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
 const CANDIDATE = 'chat-tag-bind';
 
 function parseAppliedAllowlist(source) {
@@ -102,14 +102,14 @@ assert(doc.includes('validate-labels-tags-categories-phase20-closure-gate-audit.
   'audit doc must reference the Phase 20 validator');
 assert(exists(phase20Validator), 'Phase 20 validator file must exist on disk');
 
-// ---- DESIGN-ONLY: chat-tag-bind is NOT enabled; allowlist still exactly the three ----
+// ---- POST-PHASE-22: chat-tag-bind is enabled; allowlist is exactly the four safe types ----
 assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const applied = parseAppliedAllowlist(read(folderSyncFile));
   assert(Array.isArray(applied), 'could not parse the applied allowlist from source');
   if (Array.isArray(applied)) {
-    assert(!applied.includes(CANDIDATE),
-      `design-only violated: ${CANDIDATE} is enabled in the applied allowlist`);
+    assert(applied.includes(CANDIDATE),
+      `Phase 22 implementation missing: ${CANDIDATE} is not enabled in the applied allowlist`);
     const sorted = applied.slice().sort();
     const expected = APPLIED_TYPES.slice().sort();
     assert(sorted.length === expected.length && sorted.every((a, i) => a === expected[i]),
@@ -142,7 +142,7 @@ console.log(JSON.stringify({
   candidate: CANDIDATE,
   verdict: 'ready-for-phase22',
   gateA: 'satisfied',
-  candidateEnabledInSource: false,
+  candidateEnabledInSource: true,
   appliedAllowlistInSource: parseAppliedAllowlist(read(folderSyncFile)),
   feasibilityAnchorsVerified: SOURCE_AND_DOC_ANCHORS.length + SOURCE_ONLY_ANCHORS.length,
   productSyncReady: false,

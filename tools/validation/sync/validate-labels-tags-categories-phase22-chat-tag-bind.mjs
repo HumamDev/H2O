@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 //
-// Phase 17 — non-destructive chat-label-bind metadata request.
+// Phase 22 — non-destructive chat-tag-bind metadata request.
 //
 // Proves, in-process through the real Chrome/Desktop sync modules, that:
-//   - Chrome can shape/export a request-only chat-label-bind request.
+//   - Chrome can shape/export a request-only chat-tag-bind request.
 //   - Desktop applies only the approved safe request types.
-//   - Desktop bind uses labels.bindChat(labelId, chatId), not delete/clear/unbind.
-//   - Desktop emits applied only after canonical label binding + projection verification.
+//   - Desktop bind uses tags.bindChat(tagId, chatId), not delete/clear/unbind.
+//   - Desktop emits applied only after canonical tag binding + projection verification.
 //   - Replay is idempotent based on current canonical state.
 //   - Chrome imports the receipt and refreshed projection read-only.
 
@@ -24,16 +24,16 @@ const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const autoImportFile = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const projectionFile = 'src-surfaces-base/studio/sync/library/library-metadata-export-projection.tauri.js';
-const evidenceFile = 'release-evidence/2026-06-25/labels-tags-categories-phase17-chat-label-bind.md';
+const evidenceFile = 'release-evidence/2026-06-25/labels-tags-categories-phase22-chat-tag-bind.md';
 
 const REQUEST_EXPORT_KEY = 'h2o:studio:library-metadata-mutation-requests:pending-export:v1';
 
 const DESTRUCTIVE_NEGATIVE_ACTIONS = [
-  'chat-label-clear',
-  'chat-label-remove',
-  'chat-label-unbind',
-  'label-delete',
-  'label-clear',
+  'chat-tag-clear',
+  'chat-tag-remove',
+  'chat-tag-unbind',
+  'tag-delete',
+  'tag-clear',
   'delete',
   'remove',
   'unbind',
@@ -53,8 +53,8 @@ function assert(condition, message) {
   if (!condition) failures.push(message);
 }
 
-function assertNotContainsText(text, needle, label = needle) {
-  assert(!text.includes(needle), `forbidden ${label}`);
+function assertNotContainsText(text, needle, tag = needle) {
+  assert(!text.includes(needle), `forbidden ${tag}`);
 }
 
 function functionBody(source, name) {
@@ -148,10 +148,10 @@ function buildDesktopSurface() {
   let bindChatCallCount = 0;
   let categoryAssignCallCount = 0;
   let categoryClearCallCount = 0;
-  const labels = new Map([
-    ['lbl-safe', { id: 'lbl-safe', labelId: 'lbl-safe', name: 'PRIVATE-LABEL-NAME-NOLEAK', color: '#ffcc00' }],
+  const tags = new Map([
+    ['tag-safe', { id: 'tag-safe', tagId: 'tag-safe', name: 'PRIVATE-TAG-NAME-NOLEAK', color: '#ffcc00' }],
   ]);
-  const labelBindings = new Set();
+  const tagBindings = new Set();
   const chats = new Map([
     ['chat-1', { id: 'chat-1', chatId: 'chat-1', title: 'PRIVATE-CHAT-TITLE-NOLEAK', category_id: '' }],
   ]);
@@ -167,38 +167,38 @@ function buildDesktopSurface() {
       async get(id) { return chats.get(String(id)) || null; },
       async getAll() { return Array.from(chats.values()); },
     },
-    labels: {
-      async get(id) { return labels.get(String(id)) || null; },
-      async getAll() { return Array.from(labels.values()); },
-      async bindChat(labelId, chatId) {
+    tags: {
+      async get(id) { return tags.get(String(id)) || null; },
+      async getAll() { return Array.from(tags.values()); },
+      async bindChat(tagId, chatId) {
         bindChatCallCount += 1;
-        if (!labels.has(String(labelId)) || !chats.has(String(chatId))) return false;
-        labelBindings.add(`${chatId}:${labelId}`);
+        if (!tags.has(String(tagId)) || !chats.has(String(chatId))) return false;
+        tagBindings.add(`${chatId}:${tagId}`);
         return true;
       },
       async listForChat(chatId) {
         const out = [];
-        for (const key of Array.from(labelBindings.values())) {
+        for (const key of Array.from(tagBindings.values())) {
           const [cid, lid] = key.split(':');
-          if (cid === String(chatId) && labels.has(lid)) out.push(labels.get(lid));
+          if (cid === String(chatId) && tags.has(lid)) out.push(tags.get(lid));
         }
         return out;
       },
-      async listChats(labelId) {
+      async listChats(tagId) {
         const out = [];
-        for (const key of Array.from(labelBindings.values())) {
+        for (const key of Array.from(tagBindings.values())) {
           const [cid, lid] = key.split(':');
-          if (lid === String(labelId) && chats.has(cid)) out.push(chats.get(cid));
+          if (lid === String(tagId) && chats.has(cid)) out.push(chats.get(cid));
         }
         return out;
       },
     },
-    tags: { async getAll() { return []; }, async listChats() { return []; } },
+    labels: { async getAll() { return []; }, async listChats() { return []; } },
   };
   const ctx = baseGlobals({
     __TAURI__: {},
     __TAURI_INTERNALS__: {},
-    chrome: { runtime: { id: 'desktop-phase17', lastError: null }, storage: { ...storage, onChanged: { addListener() {}, removeListener() {} } } },
+    chrome: { runtime: { id: 'desktop-phase22', lastError: null }, storage: { ...storage, onChanged: { addListener() {}, removeListener() {} } } },
     H2O: {
       LibraryIndex: { async refresh() { return { ok: true }; } },
       Studio: {
@@ -211,11 +211,11 @@ function buildDesktopSurface() {
         },
       },
     },
-    __phase17: {
+    __phase22: {
       getBindChatCallCount: () => bindChatCallCount,
       getCategoryAssignCallCount: () => categoryAssignCallCount,
       getCategoryClearCallCount: () => categoryClearCallCount,
-      hasLabelBinding: (chatId, labelId) => labelBindings.has(`${chatId}:${labelId}`),
+      hasTagBinding: (chatId, tagId) => tagBindings.has(`${chatId}:${tagId}`),
     },
   });
   ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
@@ -231,7 +231,7 @@ function buildChromeSurface() {
     document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} },
     chrome: {
       runtime: {
-        id: 'chrome-phase17',
+        id: 'chrome-phase22',
         lastError: null,
         sendMessage(_message, callback) {
           if (typeof callback === 'function') callback({ ok: true, result: {} });
@@ -255,7 +255,7 @@ function makeBundle(fields = {}) {
   return {
     schema: 'h2o.studio.fullBundle.v2',
     exportedAt: '2026-06-30T12:00:00.000Z',
-    exportId: 'phase17-chat-label-bind',
+    exportId: 'phase22-chat-tag-bind',
     sequenceNumber: 17,
     contentSha256: 'd'.repeat(64),
     sourceSyncPeerId: 'chrome-studio',
@@ -264,7 +264,7 @@ function makeBundle(fields = {}) {
       schema: 'h2o.chatArchive.bundle.v1',
       exportedAt: '2026-06-30T12:00:00.000Z',
       chats: [],
-      catalogs: { categories: [], labels: [] },
+      catalogs: { categories: [], tags: [] },
     },
     ...fields,
   };
@@ -278,9 +278,9 @@ async function runRuntimeProof() {
   assert(projection && typeof projection.buildDesktopCanonicalMetadataExport === 'function', 'Desktop projection API missing');
   if (failures.length) return null;
 
-  const p0 = await projection.buildDesktopCanonicalMetadataExport({ requestedBy: 'phase17-before-label-bind' });
-  assert(p0.counts.labelCatalogCount === 1, 'Desktop projection should start with one label catalog row');
-  assert(p0.counts.chatLabelBindingCount === 0, 'Desktop projection should start with zero label bindings');
+  const p0 = await projection.buildDesktopCanonicalMetadataExport({ requestedBy: 'phase22-before-tag-bind' });
+  assert(p0.counts.tagCatalogCount === 1, 'Desktop projection should start with one tag catalog row');
+  assert(p0.counts.chatTagBindingCount === 0, 'Desktop projection should start with zero tag bindings');
 
   const chrome = buildChromeSurface();
   const chromeApi = chrome.context.H2O.Studio.sync.folder;
@@ -290,20 +290,20 @@ async function runRuntimeProof() {
   if (failures.length) return null;
 
   await chromeApi.importLatestBundle(makeBundle({ desktopCanonicalLibraryMetadata: p0 }), {
-    fileFingerprint: 'phase17-canonical-p0',
+    fileFingerprint: 'phase22-canonical-p0',
   });
   const requestResult = await chromeApi.requestLibraryMetadataMutation({
-    action: 'chat-label-bind',
+    action: 'chat-tag-bind',
     chatId: 'chat-1',
-    labelId: 'lbl-safe',
+    tagId: 'tag-safe',
     expectedCurrentBasisHash: p0.hashes.projection,
     rawChatTitle: 'PRIVATE-CHAT-TITLE-NOLEAK',
     rawChatContent: 'PRIVATE-CHAT-CONTENT-NOLEAK',
-    labelName: 'PRIVATE-LABEL-NAME-NOLEAK',
+    tagName: 'PRIVATE-TAG-NAME-NOLEAK',
   });
-  assert(requestResult.ok === true, 'Chrome chat-label-bind request should be created');
-  assert(requestResult.requestType === 'chat-label-bind', 'request type mismatch');
-  assert(requestResult.payload?.payload?.labelId === 'lbl-safe', 'bind payload labelId mismatch');
+  assert(requestResult.ok === true, 'Chrome chat-tag-bind request should be created');
+  assert(requestResult.requestType === 'chat-tag-bind', 'request type mismatch');
+  assert(requestResult.payload?.payload?.tagId === 'tag-safe', 'bind payload tagId mismatch');
   assert(requestResult.payload?.desktopApply === false && requestResult.payload?.noChromeCanonicalMutation === true,
     'Chrome request must remain request-only/no-mutation');
   assert(requestResult.payload?.privacy?.rawChatContent === false &&
@@ -311,16 +311,16 @@ async function runRuntimeProof() {
 
   const mirror = chrome.storage.__values.get(REQUEST_EXPORT_KEY);
   assert(mirror && mirror.requests && mirror.requests.length === 1, 'Chrome pending request mirror missing');
-  assert(JSON.stringify(mirror).includes('chat-label-bind'), 'Chrome pending mirror should contain bind request');
+  assert(JSON.stringify(mirror).includes('chat-tag-bind'), 'Chrome pending mirror should contain bind request');
   assertNotContainsText(JSON.stringify(mirror), 'PRIVATE-CHAT-TITLE-NOLEAK', 'raw chat title');
   assertNotContainsText(JSON.stringify(mirror), 'PRIVATE-CHAT-CONTENT-NOLEAK', 'raw chat content');
-  assertNotContainsText(JSON.stringify(mirror), 'PRIVATE-LABEL-NAME-NOLEAK', 'raw label name');
+  assertNotContainsText(JSON.stringify(mirror), 'PRIVATE-TAG-NAME-NOLEAK', 'raw tag name');
 
   for (const action of DESTRUCTIVE_NEGATIVE_ACTIONS) {
     const blocked = await chromeApi.requestLibraryMetadataMutation({
       action,
       chatId: 'chat-1',
-      labelId: 'lbl-safe',
+      tagId: 'tag-safe',
       expectedCurrentBasisHash: p0.hashes.projection,
     });
     assert(blocked.ok === false, `Chrome should block ${action}`);
@@ -331,38 +331,38 @@ async function runRuntimeProof() {
   const chromeRequest = JSON.parse(JSON.stringify(mirror.requests[0]));
   const desktopResult = await desktopApi.importChromeLatestBundle(makeBundle({
     libraryMetadataMutationRequests: [chromeRequest],
-  }), { mode: 'phase17-chat-label-bind' });
+  }), { mode: 'phase22-chat-tag-bind' });
   assert(desktopResult.ok === true, 'Desktop import/apply should pass');
   const autoApply = desktopResult.libraryMetadataMutationRequestAutoApply;
-  assert(autoApply && autoApply.appliedCount === 1, 'Desktop should apply one label bind request');
+  assert(autoApply && autoApply.appliedCount === 1, 'Desktop should apply one tag bind request');
   assert(autoApply.receiptExportReadyCount === 1, 'Desktop should prepare one receipt');
-  assert(desktop.context.__phase17.getBindChatCallCount() === 1, 'Desktop bindChat should be called once');
-  assert(desktop.context.__phase17.getCategoryAssignCallCount() === 0, 'Desktop assignChat must not be called');
-  assert(desktop.context.__phase17.getCategoryClearCallCount() === 0, 'Desktop clearChat must not be called');
-  assert(desktop.context.__phase17.hasLabelBinding('chat-1', 'lbl-safe'), 'canonical label binding should exist');
+  assert(desktop.context.__phase22.getBindChatCallCount() === 1, 'Desktop bindChat should be called once');
+  assert(desktop.context.__phase22.getCategoryAssignCallCount() === 0, 'Desktop assignChat must not be called');
+  assert(desktop.context.__phase22.getCategoryClearCallCount() === 0, 'Desktop clearChat must not be called');
+  assert(desktop.context.__phase22.hasTagBinding('chat-1', 'tag-safe'), 'canonical tag binding should exist');
 
-  const p1 = await projection.buildDesktopCanonicalMetadataExport({ requestedBy: 'phase17-after-label-bind' });
-  assert(p1.counts.chatLabelBindingCount === 1, 'Desktop projection label binding count should increment to one');
-  assert(p1.hashes.chatLabelBindings !== p0.hashes.chatLabelBindings, 'label binding hash should change after bind');
+  const p1 = await projection.buildDesktopCanonicalMetadataExport({ requestedBy: 'phase22-after-tag-bind' });
+  assert(p1.counts.chatTagBindingCount === 1, 'Desktop projection tag binding count should increment to one');
+  assert(p1.hashes.chatTagBindings !== p0.hashes.chatTagBindings, 'tag binding hash should change after bind');
   assert(p1.hashes.projection !== p0.hashes.projection, 'Desktop projection hash should change after bind');
 
   const receipts = await desktopApi.listLibraryMetadataMutationReceipts({});
   const appliedReceipt = receipts.find((receipt) => receipt.requestId === requestResult.requestId && receipt.status === 'applied');
   assert(appliedReceipt, 'Desktop applied receipt missing');
-  assert(appliedReceipt.requestType === 'chat-label-bind', 'Desktop receipt request type mismatch');
+  assert(appliedReceipt.requestType === 'chat-tag-bind', 'Desktop receipt request type mismatch');
   assert(appliedReceipt.resultingCanonicalHash === p1.hashes.projection, 'receipt resulting hash should match bound projection');
   assert(appliedReceipt.privacy.redacted === true && appliedReceipt.privacy.hashOnly === true, 'receipt privacy flags missing');
   assert(appliedReceipt.safety.noHardDelete === true && appliedReceipt.safety.noPurge === true &&
     appliedReceipt.safety.noChatDelete === true && appliedReceipt.safety.noSnapshotDelete === true &&
-    appliedReceipt.safety.noAssetDelete === true && appliedReceipt.safety.noLabelDelete === true &&
+    appliedReceipt.safety.noAssetDelete === true && appliedReceipt.safety.noTagDelete === true &&
     appliedReceipt.safety.noMetadataDelete === true, 'receipt no-delete flags missing');
   assertNotContainsText(JSON.stringify(appliedReceipt), 'PRIVATE-CHAT-TITLE-NOLEAK', 'receipt raw chat title');
-  assertNotContainsText(JSON.stringify(appliedReceipt), 'PRIVATE-LABEL-NAME-NOLEAK', 'receipt raw label name');
+  assertNotContainsText(JSON.stringify(appliedReceipt), 'PRIVATE-TAG-NAME-NOLEAK', 'receipt raw tag name');
 
   await chromeApi.importLatestBundle(makeBundle({
     desktopCanonicalLibraryMetadata: p1,
     libraryMetadataMutationReceipts: [appliedReceipt],
-  }), { fileFingerprint: 'phase17-canonical-p1-with-receipt' });
+  }), { fileFingerprint: 'phase22-canonical-p1-with-receipt' });
   const receiptDiag = await chromeApi.diagnoseLibraryMetadataMutationReceipts({ includeRows: true });
   assert(receiptDiag.statusCounts.applied === 1, 'Chrome receipt diagnostic should count applied receipt');
   assert(receiptDiag.resolvedRequestCount === 1, 'Chrome should resolve the pending bind request');
@@ -371,27 +371,27 @@ async function runRuntimeProof() {
   assert(projectionDiag.available === true, 'Chrome projection should be available after refresh');
   assert(projectionDiag.projectionHash === p1.hashes.projection, 'Chrome projection hash should match Desktop after bind');
   const directChromeProjection = chromeApi.getDesktopCanonicalLibraryMetadata();
-  assert(directChromeProjection?.counts?.chatLabelBindingCount === 1,
-    'Chrome direct read-only projection label binding count should match Desktop after bind');
+  assert(directChromeProjection?.counts?.chatTagBindingCount === 1,
+    'Chrome direct read-only projection tag binding count should match Desktop after bind');
 
   const replayResult = await desktopApi.importChromeLatestBundle(makeBundle({
-    exportId: 'phase17-chat-label-bind-replay',
+    exportId: 'phase22-chat-tag-bind-replay',
     sequenceNumber: 18,
     contentSha256: 'c'.repeat(64),
     libraryMetadataMutationRequests: [chromeRequest],
-  }), { mode: 'phase17-chat-label-bind-replay' });
+  }), { mode: 'phase22-chat-tag-bind-replay' });
   assert(replayResult.ok === true, 'Desktop replay should pass');
   assert(replayResult.libraryMetadataMutationRequestAutoApply.skippedDuplicateCount === 1,
     `Desktop replay should produce skipped_duplicate: ${JSON.stringify(replayResult.libraryMetadataMutationRequestAutoApply)}`);
-  assert(desktop.context.__phase17.getBindChatCallCount() === 1, 'Desktop replay must not call bindChat again');
+  assert(desktop.context.__phase22.getBindChatCallCount() === 1, 'Desktop replay must not call bindChat again');
 
   return {
-    schema: 'h2o.studio.library-metadata.phase17-chat-label-bind-proof.v1',
-    requestType: 'chat-label-bind',
+    schema: 'h2o.studio.library-metadata.phase22-chat-tag-bind-proof.v1',
+    requestType: 'chat-tag-bind',
     desktopAppliedCount: autoApply.appliedCount,
     desktopReplaySkippedDuplicateCount: replayResult.libraryMetadataMutationRequestAutoApply.skippedDuplicateCount,
-    beforeChatLabelBindingCount: p0.counts.chatLabelBindingCount,
-    afterChatLabelBindingCount: p1.counts.chatLabelBindingCount,
+    beforeChatTagBindingCount: p0.counts.chatTagBindingCount,
+    afterChatTagBindingCount: p1.counts.chatTagBindingCount,
     chromeProjectionHashMatchesDesktop: projectionDiag.projectionHash === p1.hashes.projection,
     chromeReceiptResolvedRequestCount: receiptDiag.resolvedRequestCount,
     destructiveNegativeActionsChecked: DESTRUCTIVE_NEGATIVE_ACTIONS.length,
@@ -421,37 +421,36 @@ for (const file of [folderImportFile, autoImportFile, folderSyncFile]) {
 }
 
 for (const file of [folderImportFile, autoImportFile, folderSyncFile]) {
-  assert(read(file).includes("'chat-label-bind': { metadataKind: 'label', subjectKind: 'chat-label-binding', operation: 'bind', requiresChatId: true, requiresId: true }"),
-    `${file}: chat-label-bind action spec missing`);
+  assert(read(file).includes("'chat-tag-bind': { metadataKind: 'tag', subjectKind: 'chat-tag-binding', operation: 'bind', requiresChatId: true, requiresId: true }"),
+    `${file}: chat-tag-bind action spec missing`);
 }
 
 const validateBody = functionBody(folderSync, 'validateLibraryMetadataMutationRequestForDesktopApply');
-assert(validateBody.includes("action === 'chat-label-bind' && !labelId"), 'Desktop validation must require labelId for chat-label-bind');
+assert(validateBody.includes("action === 'chat-tag-bind' && !tagId"), 'Desktop validation must require tagId for chat-tag-bind');
 assert(validateBody.includes('APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS[action] !== true'), 'Desktop validation must use applied allowlist');
 
-const labelBindBody = functionBody(folderSync, 'applyChatLabelBindLibraryMetadataRequest');
+const tagBindBody = functionBody(folderSync, 'applyChatTagBindLibraryMetadataRequest');
 [
-  'labels.bindChat(labelId, chatId)',
-  'labels.listForChat(chatId)',
-  'library-metadata-mutation-request-label-not-found',
-  'library-metadata-mutation-request-label-bind-not-reflected',
-  'library-metadata-mutation-request-label-bind-projection-not-reflected',
-  'chatLabelBindingCount',
-  'phase17-chat-label-bind-after-apply',
-].forEach((needle) => assert(labelBindBody.includes(needle), `label bind apply missing ${needle}`));
+  'tags.bindChat(tagId, chatId)',
+  'tags.listForChat(chatId)',
+  'library-metadata-mutation-request-tag-not-found',
+  'library-metadata-mutation-request-tag-bind-not-reflected',
+  'library-metadata-mutation-request-tag-bind-projection-not-reflected',
+  'chatTagBindingCount',
+  'phase22-chat-tag-bind-after-apply',
+].forEach((needle) => assert(tagBindBody.includes(needle), `tag bind apply missing ${needle}`));
 for (const forbidden of ['unbindChat', 'remove(', 'delete(', 'purge', 'hardDelete', 'hard-delete', 'clearChat']) {
-  assert(!labelBindBody.includes(forbidden), `label bind apply must not contain ${forbidden}`);
+  assert(!tagBindBody.includes(forbidden), `tag bind apply must not contain ${forbidden}`);
 }
 
 const duplicateBody = functionBody(folderSync, 'canonicalLibraryMetadataMutationDuplicateReceiptData');
 assert(duplicateBody.includes("action !== 'chat-label-bind' && action !== 'chat-tag-bind'"),
-  'duplicate detection must include chat-label-bind and chat-tag-bind and no other extra actions');
-assert(duplicateBody.includes('labelRowsContainLabelId(labelRows, labelId)'), 'duplicate detection must use current canonical label binding state');
+  'duplicate detection must include chat-tag-bind and no other extra actions');
+assert(duplicateBody.includes('tagRowsContainTagId(tagRows, tagId)'), 'duplicate detection must use current canonical tag binding state');
 assert(duplicateBody.includes('library-metadata-mutation-request-already-bound-canonical'), 'duplicate code missing');
 
 const autoApplyBody = functionBody(folderSync, 'autoApplyLibraryMetadataMutationRequestsFromChromeBundle');
-assert(autoApplyBody.includes('applyChatLabelBindLibraryMetadataRequest'), 'auto-apply must route chat-label-bind');
-assert(autoApplyBody.includes('applyChatTagBindLibraryMetadataRequest'), 'auto-apply must preserve chat-tag-bind');
+assert(autoApplyBody.includes('applyChatTagBindLibraryMetadataRequest'), 'auto-apply must route chat-tag-bind');
 assert(autoApplyBody.includes('applyChatCategoryAssignLibraryMetadataRequest'), 'auto-apply must preserve category assign');
 assert(autoApplyBody.includes('applyChatCategoryClearLibraryMetadataRequest'), 'auto-apply must preserve category clear');
 
@@ -460,10 +459,10 @@ for (const action of DESTRUCTIVE_NEGATIVE_ACTIONS) {
 }
 
 for (const needle of [
-  'chat-label-bind',
-  'H2O.Studio.store.labels.bindChat(labelId, chatId)',
-  'labels.listForChat(chatId)',
-  'chatLabelBindingCount',
+  'chat-tag-bind',
+  'H2O.Studio.store.tags.bindChat(tagId, chatId)',
+  'tags.listForChat(chatId)',
+  'chatTagBindingCount',
   'skipped_duplicate',
   'Product metadata sync: NOT READY globally',
   'No Chrome canonical mutation',
@@ -481,10 +480,10 @@ if (failures.length === 0) {
 }
 
 if (failures.length) {
-  console.error('FAIL validate-labels-tags-categories-phase17-chat-label-bind');
+  console.error('FAIL validate-labels-tags-categories-phase22-chat-tag-bind');
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
 
 console.log(JSON.stringify(proof, null, 2));
-console.log('PASS validate-labels-tags-categories-phase17-chat-label-bind');
+console.log('PASS validate-labels-tags-categories-phase22-chat-tag-bind');

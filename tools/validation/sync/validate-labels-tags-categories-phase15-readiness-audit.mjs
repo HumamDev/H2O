@@ -106,10 +106,10 @@ requireIncludes(evidence, [
 ], `${evidencePath} safety guarantees`);
 
 const appliedActions = extractAppliedActions(folderSync);
-const allowedAppliedActions = JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind']);
+const allowedAppliedActions = JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind']);
 assert(
   JSON.stringify(appliedActions) === allowedAppliedActions,
-  `${folderSyncPath}: applied request types must be exactly chat-category-assign, chat-category-clear, and chat-label-bind after Phase 17; found ${JSON.stringify(appliedActions)}`
+  `${folderSyncPath}: applied request types must be exactly chat-category-assign, chat-category-clear, chat-label-bind, and chat-tag-bind after Phase 22; found ${JSON.stringify(appliedActions)}`
 );
 
 requireIncludes(folderSync, [
@@ -122,6 +122,8 @@ requireIncludes(folderSync, [
   'verifiesCanonicalLabelBindingAfterBind: true',
   'rejectsIfLabelMissing: true',
   'rejectsIfProjectionNotIncremented: true',
+  'verifiesCanonicalTagBindingAfterBind: true',
+  'rejectsIfTagMissing: true',
   'productSyncReady: false',
 ], folderSyncPath);
 
