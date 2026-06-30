@@ -3032,6 +3032,33 @@
       };
     }
     var afterBasis = await captureLibraryMetadataMutationProjectionBasis('phase13-chat-category-clear-after-apply');
+    var afterChatRow = await chats.get(chatId);
+    var afterCategoryId = cleanString(afterChatRow && (afterChatRow.categoryId || afterChatRow.category_id));
+    if (afterCategoryId) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-category-clear-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: afterBasis.projectionHash,
+        counts: safeObject(afterBasis.counts)
+      };
+    }
+    var beforeAssignmentCount = numberOrZero(beforeBasis && beforeBasis.counts && beforeBasis.counts.chatCategoryAssignmentCount);
+    var afterAssignmentCount = numberOrZero(afterBasis && afterBasis.counts && afterBasis.counts.chatCategoryAssignmentCount);
+    if ((beforeAssignmentCount && afterAssignmentCount !== beforeAssignmentCount - 1) ||
+        (beforeBasis.projectionHash && afterBasis.projectionHash && beforeBasis.projectionHash === afterBasis.projectionHash)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-category-clear-projection-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: afterBasis.projectionHash,
+        counts: safeObject(afterBasis.counts)
+      };
+    }
     return {
       status: 'applied',
       code: 'library-metadata-mutation-request-applied',
@@ -3040,6 +3067,44 @@
       beforeProjectionHash: beforeBasis.projectionHash,
       afterProjectionHash: afterBasis.projectionHash,
       counts: safeObject(afterBasis.counts)
+    };
+  }
+
+  async function canonicalLibraryMetadataMutationDuplicateReceiptData(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var chats = stores && stores.chats;
+    if (!chats || typeof chats.get !== 'function') return null;
+    var action = normalizeLibraryMetadataMutationRequestAction(request || {});
+    if (action !== 'chat-category-assign' && action !== 'chat-category-clear') return null;
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
+    if (!chatId || (action === 'chat-category-assign' && !categoryId)) return null;
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return null;
+    var beforeCategoryId = cleanString(chatRow.categoryId || chatRow.category_id);
+    var targetReached = action === 'chat-category-clear'
+      ? !beforeCategoryId
+      : beforeCategoryId === categoryId;
+    if (!targetReached) return null;
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      categoryHash: action === 'chat-category-assign' && categoryId ? await sha256Hex('category:' + categoryId) : ''
+    }));
+    return {
+      status: 'skipped_duplicate',
+      code: action === 'chat-category-clear'
+        ? 'library-metadata-mutation-request-already-cleared-canonical'
+        : 'library-metadata-mutation-request-already-applied-canonical',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: beforeBasis.projectionHash,
+      counts: safeObject(beforeBasis.counts)
     };
   }
 
@@ -3115,21 +3180,21 @@
           (cleanString(receipt.idempotencyKey) && cleanString(receipt.idempotencyKey) === cleanString(request.idempotencyKey))
         );
       });
-      if (alreadyApplied) {
+      var canonicalDuplicate = await canonicalLibraryMetadataMutationDuplicateReceiptData(request, beforeBasis);
+      if (canonicalDuplicate) {
         result.skippedDuplicateCount += 1;
         var duplicateReceipt = libraryMetadataMutationReceiptFromRequest(
           request,
           'skipped_duplicate',
-          'library-metadata-mutation-request-skipped-duplicate',
-          Object.assign({}, targetHashes, {
-            beforeProjectionHash: beforeBasis.projectionHash,
-            resultingCanonicalHash: cleanString(alreadyApplied.resultingCanonicalHash) || beforeBasis.projectionHash,
-            counts: safeObject(beforeBasis.counts)
-          })
+          canonicalDuplicate.code,
+          Object.assign({}, targetHashes, canonicalDuplicate)
         );
         receipts.push(duplicateReceipt);
         result.receiptStatuses.push({ requestId: request.requestId, status: duplicateReceipt.status, code: duplicateReceipt.code });
         continue;
+      }
+      if (alreadyApplied) {
+        addUnique(result.warnings, 'library-metadata-mutation-request-applied-receipt-canonical-mismatch');
       }
       var validation = validateLibraryMetadataMutationRequestForDesktopApply(request, beforeBasis);
       if (!validation.ok) {
@@ -3158,6 +3223,7 @@
         if (applied.status === 'applied') result.appliedCount += 1;
         else if (applied.status === 'skipped_duplicate') result.skippedDuplicateCount += 1;
         else if (applied.status === 'deferred') result.deferredCount += 1;
+        else if (applied.status === 'stale_basis') result.staleBasisCount += 1;
         else result.rejectedCount += 1;
         var receipt = libraryMetadataMutationReceiptFromRequest(
           request,
