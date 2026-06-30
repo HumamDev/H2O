@@ -123,8 +123,8 @@ requireIncludes(evidence, [
 
 const appliedActions = extractAppliedActions(folderSync);
 assert(
-  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear']),
-  `${folderSyncPath}: design-only Phase 16 must not broaden applied types; found ${JSON.stringify(appliedActions)}`
+  JSON.stringify(appliedActions) === JSON.stringify(['chat-category-assign', 'chat-category-clear', 'chat-label-bind']),
+  `${folderSyncPath}: after Phase 17 the applied request types must be exactly chat-category-assign, chat-category-clear, and chat-label-bind; found ${JSON.stringify(appliedActions)}`
 );
 
 requireIncludes(folderImport, [

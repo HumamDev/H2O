@@ -696,7 +696,8 @@
   var NON_DESTRUCTIVE_CLEAR_ALLOWLIST = new Set(['chat-category-clear']);
   var APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS = {
     'chat-category-assign': true,
-    'chat-category-clear': true
+    'chat-category-clear': true,
+    'chat-label-bind': true
   };
 
   function libraryMetadataMutationApplyRuntimeDiagnostic() {
@@ -721,9 +722,23 @@
         noPurge: true,
         noChromeCanonicalMutation: true
       },
+      chatLabelBind: {
+        enabled: APPLIED_LIBRARY_METADATA_MUTATION_REQUEST_ACTIONS['chat-label-bind'] === true,
+        exactAction: 'chat-label-bind',
+        appliesVia: 'H2O.Studio.store.labels.bindChat(labelId, chatId)',
+        verifiesCanonicalLabelBindingAfterBind: true,
+        rejectsIfChatMissing: true,
+        rejectsIfLabelMissing: true,
+        rejectsIfProjectionNotIncremented: true,
+        duplicateDetectionUsesCurrentCanonicalState: true,
+        noDelete: true,
+        noPurge: true,
+        noChromeCanonicalMutation: true
+      },
       receiptContract: {
         appliedRequiresPostWriteCanonicalVerification: true,
         appliedRequiresProjectionHashChangeForClear: true,
+        appliedRequiresProjectionHashChangeForBind: true,
         skippedDuplicateRequiresCurrentCanonicalTargetReached: true,
         appliedReceiptCanonicalMismatchWarning: 'library-metadata-mutation-request-applied-receipt-canonical-mismatch'
       },
@@ -2948,7 +2963,9 @@
     var payload = safeObject(request && request.payload);
     var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
     var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
-    if (!chatId || (action === 'chat-category-assign' && !categoryId)) {
+    var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
+    if (!chatId || (action === 'chat-category-assign' && !categoryId) ||
+        (action === 'chat-label-bind' && !labelId)) {
       return { ok: false, status: 'invalid', code: 'library-metadata-mutation-request-target-required' };
     }
     var expectedHash = safeMetadataRequestHash(request && request.expectedCurrentBasisHash);
@@ -3102,36 +3119,146 @@
     };
   }
 
+  function labelRowsContainLabelId(rows, labelId) {
+    var target = safeMetadataRequestId(labelId);
+    if (!target || !Array.isArray(rows)) return false;
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = safeObject(rows[i]);
+      var id = safeMetadataRequestId(row.labelId || row.id);
+      if (id === target) return true;
+    }
+    return false;
+  }
+
+  async function applyChatLabelBindLibraryMetadataRequest(request, beforeBasis) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var labels = stores && stores.labels;
+    var chats = stores && stores.chats;
+    if (!labels || typeof labels.bindChat !== 'function' || typeof labels.get !== 'function' ||
+        typeof labels.listForChat !== 'function' || !chats || typeof chats.get !== 'function') {
+      return { status: 'deferred', code: 'library-metadata-mutation-request-desktop-store-unavailable' };
+    }
+    var payload = safeObject(request && request.payload);
+    var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
+    var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
+    var chatRow = await chats.get(chatId);
+    if (!chatRow) return { status: 'rejected', code: 'library-metadata-mutation-request-chat-not-found' };
+    var labelRow = await labels.get(labelId);
+    if (!labelRow) return { status: 'rejected', code: 'library-metadata-mutation-request-label-not-found' };
+    var beforeLabelRows = await labels.listForChat(chatId);
+    var alreadyBound = labelRowsContainLabelId(beforeLabelRows, labelId);
+    var beforeAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      labelHash: alreadyBound ? await sha256Hex('label:' + labelId) : ''
+    }));
+    var afterAssignmentHash = await sha256Hex(JSON.stringify({
+      chatHash: await sha256Hex('chat:' + chatId),
+      labelHash: await sha256Hex('label:' + labelId)
+    }));
+    if (alreadyBound) {
+      return {
+        status: 'skipped_duplicate',
+        code: 'library-metadata-mutation-request-already-bound-canonical',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var ok = await labels.bindChat(labelId, chatId);
+    if (ok !== true) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-bind-failed',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterLabelRows = await labels.listForChat(chatId);
+    if (!labelRowsContainLabelId(afterLabelRows, labelId)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-bind-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        counts: safeObject(beforeBasis.counts)
+      };
+    }
+    var afterBasis = await captureLibraryMetadataMutationProjectionBasis('phase17-chat-label-bind-after-apply');
+    var beforeBindingCount = Number(beforeBasis && beforeBasis.counts && beforeBasis.counts.chatLabelBindingCount);
+    var afterBindingCount = Number(afterBasis && afterBasis.counts && afterBasis.counts.chatLabelBindingCount);
+    if ((Number.isFinite(beforeBindingCount) && Number.isFinite(afterBindingCount) &&
+          afterBindingCount !== beforeBindingCount + 1) ||
+        (beforeBasis.projectionHash && afterBasis.projectionHash && beforeBasis.projectionHash === afterBasis.projectionHash)) {
+      return {
+        status: 'rejected',
+        code: 'library-metadata-mutation-request-label-bind-projection-not-reflected',
+        beforeAssignmentHash: beforeAssignmentHash,
+        afterAssignmentHash: afterAssignmentHash,
+        beforeProjectionHash: beforeBasis.projectionHash,
+        afterProjectionHash: afterBasis.projectionHash,
+        counts: safeObject(afterBasis.counts)
+      };
+    }
+    return {
+      status: 'applied',
+      code: 'library-metadata-mutation-request-applied',
+      beforeAssignmentHash: beforeAssignmentHash,
+      afterAssignmentHash: afterAssignmentHash,
+      beforeProjectionHash: beforeBasis.projectionHash,
+      afterProjectionHash: afterBasis.projectionHash,
+      counts: safeObject(afterBasis.counts)
+    };
+  }
+
   async function canonicalLibraryMetadataMutationDuplicateReceiptData(request, beforeBasis) {
     var stores = H2O.Studio && H2O.Studio.store;
     var chats = stores && stores.chats;
     if (!chats || typeof chats.get !== 'function') return null;
     var action = normalizeLibraryMetadataMutationRequestAction(request || {});
-    if (action !== 'chat-category-assign' && action !== 'chat-category-clear') return null;
+    if (action !== 'chat-category-assign' && action !== 'chat-category-clear' && action !== 'chat-label-bind') return null;
     var payload = safeObject(request && request.payload);
     var chatId = safeMetadataRequestId(payload.chatId || payload.conversationId);
     var categoryId = safeMetadataRequestId(payload.categoryId || payload.entityId);
-    if (!chatId || (action === 'chat-category-assign' && !categoryId)) return null;
+    var labelId = safeMetadataRequestId(payload.labelId || payload.entityId);
+    if (!chatId || (action === 'chat-category-assign' && !categoryId) ||
+        (action === 'chat-label-bind' && !labelId)) return null;
     var chatRow = await chats.get(chatId);
     if (!chatRow) return null;
     var beforeCategoryId = cleanString(chatRow.categoryId || chatRow.category_id);
-    var targetReached = action === 'chat-category-clear'
-      ? !beforeCategoryId
-      : beforeCategoryId === categoryId;
+    var targetReached = false;
+    if (action === 'chat-label-bind') {
+      var labels = stores && stores.labels;
+      if (!labels || typeof labels.listForChat !== 'function') return null;
+      var labelRows = await labels.listForChat(chatId);
+      targetReached = labelRowsContainLabelId(labelRows, labelId);
+    } else {
+      targetReached = action === 'chat-category-clear'
+        ? !beforeCategoryId
+        : beforeCategoryId === categoryId;
+    }
     if (!targetReached) return null;
     var beforeAssignmentHash = await sha256Hex(JSON.stringify({
       chatHash: await sha256Hex('chat:' + chatId),
-      categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : ''
+      categoryHash: beforeCategoryId ? await sha256Hex('category:' + beforeCategoryId) : '',
+      labelHash: action === 'chat-label-bind' ? await sha256Hex('label:' + labelId) : ''
     }));
     var afterAssignmentHash = await sha256Hex(JSON.stringify({
       chatHash: await sha256Hex('chat:' + chatId),
-      categoryHash: action === 'chat-category-assign' && categoryId ? await sha256Hex('category:' + categoryId) : ''
+      categoryHash: action === 'chat-category-assign' && categoryId ? await sha256Hex('category:' + categoryId) : '',
+      labelHash: action === 'chat-label-bind' ? await sha256Hex('label:' + labelId) : ''
     }));
     return {
       status: 'skipped_duplicate',
       code: action === 'chat-category-clear'
         ? 'library-metadata-mutation-request-already-cleared-canonical'
-        : 'library-metadata-mutation-request-already-applied-canonical',
+        : (action === 'chat-label-bind'
+          ? 'library-metadata-mutation-request-already-bound-canonical'
+          : 'library-metadata-mutation-request-already-applied-canonical'),
       beforeAssignmentHash: beforeAssignmentHash,
       afterAssignmentHash: afterAssignmentHash,
       beforeProjectionHash: beforeBasis.projectionHash,
@@ -3249,9 +3376,12 @@
       }
       result.attemptedCount += 1;
       try {
-        var applied = cleanString(request.requestType || request.action) === 'chat-category-clear'
+        var requestAction = cleanString(request.requestType || request.action);
+        var applied = requestAction === 'chat-category-clear'
           ? await applyChatCategoryClearLibraryMetadataRequest(request, beforeBasis)
-          : await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis);
+          : (requestAction === 'chat-label-bind'
+            ? await applyChatLabelBindLibraryMetadataRequest(request, beforeBasis)
+            : await applyChatCategoryAssignLibraryMetadataRequest(request, beforeBasis));
         if (applied.status === 'applied') result.appliedCount += 1;
         else if (applied.status === 'skipped_duplicate') result.skippedDuplicateCount += 1;
         else if (applied.status === 'deferred') result.deferredCount += 1;
