@@ -1846,6 +1846,13 @@
        only attaches a frozen read-only namespace and changes nothing while
        off. -->
   <script src="./reader-notes/library-item-view.studio.js"></script>
+  <!-- Reader & Notes — MVP-A1.2: read-only, flag-guarded annotation façade for
+       notes + bookmarks. Loads immediately after A1.1 (it calls
+       H2O.Studio.readerNotes.libraryItems.get to validate item identity). The
+       flag 'studio.readerNotes.annotationFacade.enabled' defaults off; this
+       module only attaches a frozen read-only namespace and changes nothing
+       while off. -->
+  <script src="./reader-notes/annotation-facade.studio.js"></script>
   <!-- R4.5.1.a — Desktop-first folder organization modals (folders only in this
        slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
        silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no

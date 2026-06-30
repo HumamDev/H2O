@@ -1213,6 +1213,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Reader & Notes — MVP-A1.1 read-only library-item view (flag-gated, default
   // off). Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
   "reader-notes/library-item-view.studio.js",
+
+  // Reader & Notes — MVP-A1.2 read-only annotation façade (notes + bookmarks,
+  // flag-gated, default off). Keep parallel to ARCHIVE_WORKBENCH_OUT_FILES below.
+  "reader-notes/annotation-facade.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1547,6 +1551,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Reader & Notes — MVP-A1.1 read-only library-item view — see SOURCE_FILES.
   "reader-notes/library-item-view.studio.js",
+
+  // Reader & Notes — MVP-A1.2 read-only annotation façade — see SOURCE_FILES.
+  "reader-notes/annotation-facade.studio.js",
 ]);
 
 function ensureDir(dirPath) {
