@@ -1875,6 +1875,12 @@
        consumers, XPath, sidecar, or A1 integration. -->
   <script src="./reader-notes/anchor-resolver.studio.js"></script>
   <script src="./reader-notes/anchor-resolver-dom.studio.js"></script>
+  <!-- Reader & Notes — MVP-A2a.4.2: read-only explicit-invocation highlight
+       resolution consumer. Loads after the A2a resolver modules. The flag
+       'studio.readerNotes.highlightResolutionConsumer.enabled' defaults off;
+       this module only attaches a frozen read-only namespace and adds no UI
+       rendering, XPath, sidecar, or A1 integration. -->
+  <script src="./reader-notes/highlight-resolution-consumer.studio.js"></script>
   <!-- R4.5.1.a — Desktop-first folder organization modals (folders only in this
        slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
        silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no

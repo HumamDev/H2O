@@ -16,6 +16,7 @@ const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const CORE_REL = 'src-surfaces-base/studio/reader-notes/anchor-resolver.studio.js';
 const DOM_REL = 'src-surfaces-base/studio/reader-notes/anchor-resolver-dom.studio.js';
+const CONSUMER_REL = 'src-surfaces-base/studio/reader-notes/highlight-resolution-consumer.studio.js';
 const A1_LIBRARY_REL = 'src-surfaces-base/studio/reader-notes/library-item-view.studio.js';
 const A1_ANNOTATION_REL = 'src-surfaces-base/studio/reader-notes/annotation-facade.studio.js';
 const CHROME_EVIDENCE_REL = 'release-evidence/2026-06-30/reader-notes-a2a2-real-dom-smoke.md';
@@ -37,19 +38,24 @@ const ORDER = [
   'reader-notes/annotation-facade.studio.js',
   'reader-notes/anchor-resolver.studio.js',
   'reader-notes/anchor-resolver-dom.studio.js',
+  'reader-notes/highlight-resolution-consumer.studio.js',
 ];
 const FLAG_KEY = 'studio.readerNotes.anchorResolver.enabled';
+const CONSUMER_FLAG_KEY = 'studio.readerNotes.highlightResolutionConsumer.enabled';
 const CONSUMER_TOKENS = [
   'H2O.Studio.readerNotes.anchorResolver',
   'H2O.Studio.readerNotes.anchorResolverDom',
+  'H2O.Studio.readerNotes.highlightResolutionConsumer',
   'resolveHighlight',
   'resolveInText',
   'flattenRoot',
   'spanToRange',
+  'resolveForItem',
 ];
 const ALLOWED_CONSUMER_RELS = new Set([
   CORE_REL,
   DOM_REL,
+  CONSUMER_REL,
   STUDIO_HTML_REL,
 ]);
 const FORBIDDEN_DIRS = [
@@ -157,6 +163,7 @@ function makeInstrumentedSandbox(flagValue) {
   const domCalls = [];
   const flagCalls = [];
   const writeCalls = [];
+  const hookCalls = [];
   const sandbox = {
     H2O: {
       flags: flagValue === 'missing' ? undefined : {
@@ -169,7 +176,18 @@ function makeInstrumentedSandbox(flagValue) {
         clear() { writeCalls.push('clear'); },
       },
       Studio: { readerNotes: {} },
+      events: { on() { hookCalls.push('H2O.events.on'); } },
+      bus: { on() { hookCalls.push('H2O.bus.on'); } },
     },
+    addEventListener() { hookCalls.push('addEventListener'); },
+    removeEventListener() { hookCalls.push('removeEventListener'); },
+    setTimeout() { hookCalls.push('setTimeout'); return 0; },
+    clearTimeout() { hookCalls.push('clearTimeout'); },
+    setInterval() { hookCalls.push('setInterval'); return 0; },
+    clearInterval() { hookCalls.push('clearInterval'); },
+    requestAnimationFrame() { hookCalls.push('requestAnimationFrame'); return 0; },
+    cancelAnimationFrame() { hookCalls.push('cancelAnimationFrame'); },
+    MutationObserver: function MutationObserver() { hookCalls.push('MutationObserver'); return { observe() { hookCalls.push('observe'); }, disconnect() {} }; },
     localStorage: {
       getItem(key) { storageCalls.push(['getItem', key]); return null; },
       setItem(key, value) { storageCalls.push(['setItem', key, value]); },
@@ -182,6 +200,8 @@ function makeInstrumentedSandbox(flagValue) {
       clear() { storageCalls.push(['session.clear']); },
     },
     document: {
+      addEventListener() { hookCalls.push('document.addEventListener'); },
+      removeEventListener() { hookCalls.push('document.removeEventListener'); },
       createRange() { domCalls.push('createRange'); return {}; },
       evaluate() { domCalls.push('evaluate'); return null; },
       body: {
@@ -193,13 +213,14 @@ function makeInstrumentedSandbox(flagValue) {
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  return { sandbox, storageCalls, domCalls, flagCalls, writeCalls };
+  return { sandbox, storageCalls, domCalls, flagCalls, writeCalls, hookCalls };
 }
 
-function loadResolvers(flagValue) {
+function loadResolvers(flagValue, includeConsumer = false) {
   const rt = makeInstrumentedSandbox(flagValue);
   vm.runInContext(read(CORE_REL), rt.sandbox, { filename: CORE_REL });
   vm.runInContext(read(DOM_REL), rt.sandbox, { filename: DOM_REL });
+  if (includeConsumer) vm.runInContext(read(CONSUMER_REL), rt.sandbox, { filename: CONSUMER_REL });
   return rt;
 }
 
@@ -240,55 +261,69 @@ check('pack-studio includes resolver files in both lockstep lists with matching 
   }
   const srcOrder = ORDER.map((token) => sourceEntries.indexOf(token));
   const outOrder = ORDER.map((token) => outEntries.indexOf(token));
-  assert.deepEqual(srcOrder, srcOrder.slice().sort((a, b) => a - b), 'source order must be A1.1/A1.2/A2a core/A2a DOM');
-  assert.deepEqual(outOrder, outOrder.slice().sort((a, b) => a - b), 'out order must be A1.1/A1.2/A2a core/A2a DOM');
+  assert.deepEqual(srcOrder, srcOrder.slice().sort((a, b) => a - b), 'source order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer');
+  assert.deepEqual(outOrder, outOrder.slice().sort((a, b) => a - b), 'out order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer');
 });
 
-check('resolver module load installs frozen APIs and performs no storage or DOM writes', () => {
-  const rt = loadResolvers(undefined);
+check('resolver and consumer module load installs frozen APIs and performs no storage, DOM, or hook writes', () => {
+  const rt = loadResolvers(undefined, true);
   const api = rt.sandbox.H2O.Studio.readerNotes.anchorResolver;
   const domApi = rt.sandbox.H2O.Studio.readerNotes.anchorResolverDom;
+  const consumerApi = rt.sandbox.H2O.Studio.readerNotes.highlightResolutionConsumer;
   assert.ok(api && api.__installed === true, 'core API installed');
   assert.ok(domApi && domApi.__installed === true, 'DOM API installed');
+  assert.ok(consumerApi && consumerApi.__installed === true, 'consumer API installed');
   assert.ok(Object.isFrozen(api), 'core API frozen');
   assert.ok(Object.isFrozen(domApi), 'DOM API frozen');
+  assert.ok(Object.isFrozen(consumerApi), 'consumer API frozen');
   assert.equal(api.flagKey, FLAG_KEY);
   assert.equal(domApi.flagKey, FLAG_KEY);
+  assert.equal(consumerApi.flagKey, CONSUMER_FLAG_KEY);
   assert.deepEqual(storageWrites(rt.storageCalls), [], 'module load must not write storage');
   assert.deepEqual(rt.domCalls, [], 'module load must not touch DOM');
   assert.deepEqual(rt.flagCalls, [], 'module load must not read flags before methods are called');
+  assert.deepEqual(rt.hookCalls, [], 'module load must not install hooks or timers');
 });
 
 check('default-off and missing flags keep resolver APIs disabled and inert', () => {
-  let rt = loadResolvers(undefined);
+  let rt = loadResolvers(undefined, true);
   assert.equal(rt.sandbox.H2O.Studio.readerNotes.anchorResolver.isEnabled(), false);
   assert.equal(rt.sandbox.H2O.Studio.readerNotes.anchorResolverDom.isEnabled(), false);
+  assert.equal(rt.sandbox.H2O.Studio.readerNotes.highlightResolutionConsumer.isEnabled(), false);
   assert.deepEqual(storageWrites(rt.storageCalls), []);
   assert.deepEqual(rt.domCalls, []);
   assert.deepEqual(rt.writeCalls, []);
-  assert.deepEqual(rt.flagCalls.map((call) => call.key), [FLAG_KEY, FLAG_KEY]);
+  assert.deepEqual(rt.hookCalls, []);
+  assert.deepEqual(rt.flagCalls.map((call) => call.key), [FLAG_KEY, FLAG_KEY, CONSUMER_FLAG_KEY]);
 
-  rt = loadResolvers('missing');
+  rt = loadResolvers('missing', true);
   assert.equal(rt.sandbox.H2O.Studio.readerNotes.anchorResolver.isEnabled(), false);
   assert.equal(rt.sandbox.H2O.Studio.readerNotes.anchorResolverDom.isEnabled(), false);
+  assert.equal(rt.sandbox.H2O.Studio.readerNotes.highlightResolutionConsumer.isEnabled(), false);
   assert.deepEqual(storageWrites(rt.storageCalls), []);
   assert.deepEqual(rt.domCalls, []);
   assert.deepEqual(rt.writeCalls, []);
+  assert.deepEqual(rt.hookCalls, []);
 });
 
 check('selfCheck and diagnose report frozen read-only APIs with XPath deferred', () => {
-  const rt = loadResolvers(false);
+  const rt = loadResolvers(false, true);
   const api = rt.sandbox.H2O.Studio.readerNotes.anchorResolver;
   const domApi = rt.sandbox.H2O.Studio.readerNotes.anchorResolverDom;
+  const consumerApi = rt.sandbox.H2O.Studio.readerNotes.highlightResolutionConsumer;
   assert.equal(api.selfCheck().enabled, false);
   assert.equal(domApi.selfCheck().enabled, false);
+  assert.equal(consumerApi.selfCheck().enabled, false);
   assert.equal(api.selfCheck().xpath, 'deferred');
   assert.equal(domApi.selfCheck().xpath, 'deferred');
+  assert.equal(consumerApi.diagnose().xpath, 'deferred');
+  assert.equal(consumerApi.diagnose().returnsLiveRange, false);
   assert.deepEqual(Array.from(api.diagnose().deferredSelectors), ['xpath']);
   assert.deepEqual(Array.from(domApi.diagnose().deferredSelectors), ['xpath']);
   assert.deepEqual(storageWrites(rt.storageCalls), []);
   assert.deepEqual(rt.domCalls, []);
   assert.deepEqual(rt.writeCalls, []);
+  assert.deepEqual(rt.hookCalls, []);
 });
 
 check('no A1 integration, UI consumer, or resolver auto-invocation exists outside allowed modules', () => {

@@ -1234,6 +1234,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // resolver core and DOM wrapper. Flag-gated, default off; no consumers here.
   "reader-notes/anchor-resolver.studio.js",
   "reader-notes/anchor-resolver-dom.studio.js",
+
+  // Reader & Notes — MVP-A2a.4.2 read-only highlight resolution consumer
+  // (explicit invocation only, flag-gated, default off). Keep parallel to
+  // ARCHIVE_WORKBENCH_OUT_FILES below.
+  "reader-notes/highlight-resolution-consumer.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1578,6 +1583,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   // Reader & Notes — MVP-A2a.3 inert anchor resolver exposure — see SOURCE_FILES.
   "reader-notes/anchor-resolver.studio.js",
   "reader-notes/anchor-resolver-dom.studio.js",
+
+  // Reader & Notes — MVP-A2a.4.2 highlight resolution consumer — see SOURCE_FILES.
+  "reader-notes/highlight-resolution-consumer.studio.js",
 ]);
 
 function ensureDir(dirPath) {

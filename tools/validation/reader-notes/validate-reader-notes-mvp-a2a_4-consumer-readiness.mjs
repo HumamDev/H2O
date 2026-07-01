@@ -638,13 +638,14 @@ check('XPath remains deferred and document.evaluate is never called', () => {
   assert.equal(fixture.owner.evaluateCalls, 0);
 });
 
-check('A2a.4.1 adds no runtime consumer module or loader/pack entries', () => {
-  assert.equal(readIfExists('src-surfaces-base/studio/reader-notes/highlight-resolution-consumer.studio.js'), null);
+check('A2a.4.1 evidence-doc filename is not wired into loader/pack', () => {
+  // A2a.4.2 (approved) creates and wires exactly one consumer module
+  // (highlight-resolution-consumer.studio.js); the wired-consumer-state gate is
+  // now owned by the A2a.3 and A2a.4.2 validators. This check only guards that
+  // the A2a.4.1 evidence-doc filename never leaks into loader/pack.
   const html = read(STUDIO_HTML_REL);
   const pack = read(PACK_REL);
   for (const token of [
-    'highlight-resolution-consumer',
-    'highlightResolutionConsumer',
     'reader-notes-a2a4-consumer-readiness',
   ]) {
     hasNot(html, token, `studio.html ${token}`);
