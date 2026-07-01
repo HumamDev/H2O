@@ -91,13 +91,14 @@ if (exists(folderSyncFile)) {
   assert(src.includes(REQUEST_STRING), 'source must contain the sortOrder request schema string');
   assert(src.includes(RECEIPT_STRING), 'source must contain the sortOrder receipt schema string');
 
-  // INERT: each constant name referenced EXACTLY ONCE (its declaration); each schema string exactly once
-  assert(countOccurrences(src, REQUEST_CONST) === 1,
-    `sortOrder request constant must be referenced exactly once (inert); found ${countOccurrences(src, REQUEST_CONST)}`);
-  assert(countOccurrences(src, RECEIPT_CONST) === 1,
-    `sortOrder receipt constant must be referenced exactly once (inert); found ${countOccurrences(src, RECEIPT_CONST)}`);
-  assert(countOccurrences(src, REQUEST_STRING) === 1, 'sortOrder request schema string must appear exactly once (declaration only)');
-  assert(countOccurrences(src, RECEIPT_STRING) === 1, 'sortOrder receipt schema string must appear exactly once (declaration only)');
+  // PRESENT: the S1 mint declared the constants; F32 S2 later added the handler that consumes them, so
+  // each is now referenced >= 1 (declaration + handler use). The mint itself remains a single declaration.
+  assert(countOccurrences(src, REQUEST_CONST) >= 1,
+    `sortOrder request constant must be present in source (now consumed by the F32 S2 handler); found ${countOccurrences(src, REQUEST_CONST)}`);
+  assert(countOccurrences(src, RECEIPT_CONST) >= 1,
+    `sortOrder receipt constant must be present in source (now consumed by the F32 S2 handler); found ${countOccurrences(src, RECEIPT_CONST)}`);
+  assert(countOccurrences(src, REQUEST_STRING) >= 1, 'sortOrder request schema string must be present in source');
+  assert(countOccurrences(src, RECEIPT_STRING) >= 1, 'sortOrder receipt schema string must be present in source');
 
   // region: both constants declared between CHAT_FOLDER_BINDING_REQUEST_SCHEMA and
   // LIBRARY_METADATA_MUTATION_REQUEST_SCHEMA (the request/receipt schema-constants region)

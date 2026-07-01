@@ -5467,8 +5467,217 @@
     dismissPending: dismissPending,
   });
 
+  /* ===================== F32 (folder-sync S2): sortOrder reorder Desktop handler =====================
+   * Scope: canonical Desktop SQLite sort_order apply ONLY. Dry-run by default; gated apply. Basis-gated,
+   * idempotent (applies the FULL requested order; atomic-on-retry). Emits a receipt via
+   * FOLDER_SORTORDER_REORDER_RECEIPT_SCHEMA. Writes ONLY sort_order via store.folders.patch (which routes
+   * through recordWrite). NO folder_bindings, NO DELETE FROM folders, NO tombstone mutation, NO chat
+   * mutation, NO folder delete/purge, NO F11 allowed-set change. Mirror re-projection is DEFERRED to a
+   * separate S2b slice (the F11 render-only rebuild strips sortOrder, and no standalone sortOrder-
+   * preserving projection is safely reusable here). Not auto-wired into any import loop; invoked
+   * explicitly. Clones the metadata-mutation Desktop-apply idiom. */
+  var FOLDER_SORTORDER_REORDER_APPLY_GATE = 'folder-sync-f32-sortorder-apply';
+  var FOLDER_SORTORDER_REORDER_INTENT = 'folder-sortorder-reorder-request';
+  var FOLDER_SORTORDER_REORDER_FORBIDDEN_KEYS = ['name', 'title', 'content'];
+
+  function f32Arr(v) { return Array.isArray(v) ? v : []; }
+  function f32StableHash(text) {
+    var h = 0x811c9dc5; var s = String(text);
+    for (var i = 0; i < s.length; i += 1) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+  function folderSortorderOrderingHash(orderedIds) {
+    var ids = f32Arr(orderedIds).map(function (x) { return cleanString(x); }).filter(Boolean);
+    return 'oh:' + f32StableHash(ids.join('>'));
+  }
+  function f32HasForbiddenKeys(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    var keys = Object.keys(obj);
+    for (var i = 0; i < keys.length; i += 1) {
+      var k = keys[i];
+      if (FOLDER_SORTORDER_REORDER_FORBIDDEN_KEYS.indexOf(k) !== -1) return true;
+      var v = obj[k];
+      if (v && typeof v === 'object' && f32HasForbiddenKeys(v)) return true;
+    }
+    return false;
+  }
+  function f32PayloadIds(request) {
+    return f32Arr(request && request.orderPayload)
+      .map(function (e) { return cleanString(e && e.folderId); }).filter(Boolean);
+  }
+
+  function validateFolderSortorderReorderRequestForDesktopApply(request) {
+    var blockers = [];
+    var req = safeObject(request);
+    if (cleanString(req.schema) !== FOLDER_SORTORDER_REORDER_REQUEST_SCHEMA) blockers.push('folder-sortorder-reorder-request-schema-invalid');
+    if (cleanString(req.intent) !== FOLDER_SORTORDER_REORDER_INTENT) blockers.push('folder-sortorder-reorder-request-intent-invalid');
+    if (!cleanString(req.requestId || req.reviewId)) blockers.push('folder-sortorder-reorder-request-id-required');
+    if (!cleanString(req.sourcePeerId) && !cleanString(req.deviceId)) blockers.push('folder-sortorder-reorder-request-peer-id-required');
+    if (['chrome-extension', 'native-extension', 'mobile'].indexOf(cleanString(req.surfaceKind)) === -1) blockers.push('folder-sortorder-reorder-request-surface-kind-invalid');
+    if (!Array.isArray(req.orderPayload) || !req.orderPayload.length) blockers.push('folder-sortorder-reorder-request-order-payload-invalid');
+    if (!cleanString(req.basisOrderingHash)) blockers.push('folder-sortorder-reorder-request-basis-hash-required');
+    if (!cleanString(req.requestedOrderingHash)) blockers.push('folder-sortorder-reorder-request-requested-hash-required');
+    if (!cleanString(req.createdAt)) blockers.push('folder-sortorder-reorder-request-created-at-required');
+    if (!cleanString(req.idempotencyKey)) blockers.push('folder-sortorder-reorder-request-idempotency-key-required');
+    if (req.desktopApplyRequired !== true || req.noLocalApply !== true) blockers.push('folder-sortorder-reorder-request-apply-flags-invalid');
+    if (req.noChromeCanonicalMutation !== true) blockers.push('folder-sortorder-reorder-request-mutation-flags-invalid');
+    if (req.noHardDelete !== true || req.noPurge !== true || req.noChatDelete !== true ||
+        req.noFolderDelete !== true || req.noBindingMutation !== true || req.noTombstoneMutation !== true) {
+      blockers.push('folder-sortorder-reorder-request-safety-flags-invalid');
+    }
+    var privacy = safeObject(req.privacy);
+    if (privacy.rawFolderNames !== false || privacy.rawChatTitles !== false || privacy.rawChatContent !== false) {
+      blockers.push('folder-sortorder-reorder-request-privacy-flags-invalid');
+    }
+    if (f32HasForbiddenKeys(req)) blockers.push('folder-sortorder-reorder-request-redaction-violation');
+    return { ok: blockers.length === 0, blockers: blockers };
+  }
+
+  async function folderSortorderCanonicalSnapshot() {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var folders = stores && stores.folders;
+    if (!folders || typeof folders.getAll !== 'function') return null;
+    var visible = f32Arr(await folders.getAll());
+    var tomb = [];
+    if (typeof folders.listRecentlyDeletedFolders === 'function') {
+      try { tomb = f32Arr(await folders.listRecentlyDeletedFolders({ limit: 1000 })); } catch (e) { tomb = []; }
+    }
+    var idOf = function (row) { return cleanString(row && (row.id || row.folderId)); };
+    var visibleIds = visible.map(idOf).filter(Boolean);
+    var tombIds = tomb.map(idOf).filter(Boolean);
+    var presentSet = Object.create(null); var sortOrderById = Object.create(null);
+    visible.forEach(function (row) { var id = idOf(row); if (id) { presentSet[id] = true; sortOrderById[id] = Number(row && row.sortOrder) || 0; } });
+    var tombSet = Object.create(null); tombIds.forEach(function (id) { tombSet[id] = true; });
+    var knownSet = Object.create(null); visibleIds.concat(tombIds).forEach(function (id) { knownSet[id] = true; });
+    return {
+      visibleOrderIds: visibleIds, presentSet: presentSet, tombSet: tombSet, knownSet: knownSet,
+      visibleSet: presentSet, sortOrderById: sortOrderById,
+    };
+  }
+
+  function f32CurrentPayloadOrder(payloadIds, snapshot) {
+    var s = safeObject(snapshot).sortOrderById || Object.create(null);
+    return payloadIds.slice().sort(function (a, b) { return (Number(s[a]) || 0) - (Number(s[b]) || 0); });
+  }
+
+  /* Conflict precedence (existence-first, so real folder problems surface before basis):
+   * duplicate -> unknown-folder -> tombstoned-folder -> missing-folder -> folder-not-in-catalog ->
+   * basis (stale-basis / superseded-concurrent) -> null (accepted). */
+  function classifyFolderSortorderReorderConflict(request, snapshot, ctx) {
+    ctx = safeObject(ctx);
+    var appliedKeys = safeObject(ctx.appliedKeys);
+    if (appliedKeys[cleanString(request && request.idempotencyKey)]) return 'duplicate';
+    var ids = f32PayloadIds(request);
+    for (var i = 0; i < ids.length; i += 1) {
+      var id = ids[i];
+      if (!snapshot.knownSet[id]) return 'unknown-folder';
+      if (snapshot.tombSet[id]) return 'tombstoned-folder';
+      if (!snapshot.presentSet[id]) return 'missing-folder';
+      if (!snapshot.visibleSet[id]) return 'folder-not-in-catalog';
+    }
+    var currentHash = folderSortorderOrderingHash(f32CurrentPayloadOrder(ids, snapshot));
+    if (cleanString(request && request.basisOrderingHash) !== currentHash) {
+      return ctx.priorAppliedInBatch ? 'superseded-concurrent' : 'stale-basis';
+    }
+    return null;
+  }
+
+  function buildFolderSortorderReorderReceipt(request, status, reason, extra) {
+    var req = safeObject(request); var data = safeObject(extra); var now = new Date().toISOString();
+    var cleanStatus = cleanString(status) || 'rejected';
+    return {
+      schema: FOLDER_SORTORDER_REORDER_RECEIPT_SCHEMA,
+      version: '0.1.0-f32', phase: 'f32-sortorder-desktop-apply',
+      requestId: cleanString(req.requestId || req.reviewId),
+      reviewId: cleanString(req.reviewId || req.requestId),
+      idempotencyKey: cleanString(req.idempotencyKey),
+      status: cleanStatus,
+      reason: cleanString(reason) || cleanStatus,
+      resultingOrderingHash: cleanString(data.resultingOrderingHash) || cleanString(req.basisOrderingHash),
+      canonicalAuthority: 'desktop-sqlite',
+      noDestructiveMutation: true, noFolderDelete: true, noFolderPurge: true,
+      noChatDelete: true, noBindingMutation: true, noTombstoneMutation: true,
+      mirrorReprojection: 'deferred-to-s2b',
+      canonicalWriteCount: Number(data.canonicalWriteCount) || 0,
+      dryRun: data.dryRun === true,
+      appliedAt: cleanStatus === 'applied' ? now : null,
+      decidedAt: now,
+      privacy: { redacted: true, hashOnly: true },
+      requestSource: {
+        surface: cleanString(req.surfaceKind) || 'chrome-extension',
+        peerId: cleanString(req.sourcePeerId || req.deviceId),
+      },
+    };
+  }
+
+  async function applyFolderSortorderReorderRequest(request, options) {
+    var opts = safeObject(options); var ctx = safeObject(opts.ctx);
+    var dryRun = opts.apply !== true;
+    var gateOk = cleanString(opts.gate) === FOLDER_SORTORDER_REORDER_APPLY_GATE;
+
+    var validation = validateFolderSortorderReorderRequestForDesktopApply(request);
+    if (!validation.ok) {
+      var reason = validation.blockers.indexOf('folder-sortorder-reorder-request-redaction-violation') !== -1
+        ? 'redaction-violation' : 'invalid-request-envelope';
+      return buildFolderSortorderReorderReceipt(request, 'rejected', reason, { dryRun: dryRun, canonicalWriteCount: 0 });
+    }
+    var snapshot = ctx.snapshot || await folderSortorderCanonicalSnapshot();
+    if (!snapshot) {
+      return buildFolderSortorderReorderReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: dryRun, canonicalWriteCount: 0 });
+    }
+    var conflict = classifyFolderSortorderReorderConflict(request, snapshot, ctx);
+    if (conflict) {
+      var conflictStatus = conflict === 'duplicate' ? 'skipped' : 'rejected';
+      return buildFolderSortorderReorderReceipt(request, conflictStatus, conflict,
+        { dryRun: dryRun, canonicalWriteCount: 0, resultingOrderingHash: request.basisOrderingHash });
+    }
+    // accepted. DRY-RUN by default: plan only, ZERO writes.
+    if (dryRun) {
+      return buildFolderSortorderReorderReceipt(request, 'dry-run', 'dry-run-sortorder-reorder-plan-ready',
+        { dryRun: true, canonicalWriteCount: 0, resultingOrderingHash: request.basisOrderingHash });
+    }
+    // GATED apply only.
+    if (!gateOk) {
+      return buildFolderSortorderReorderReceipt(request, 'rejected', 'apply-gate-required',
+        { dryRun: false, canonicalWriteCount: 0, resultingOrderingHash: request.basisOrderingHash });
+    }
+    var stores = H2O.Studio && H2O.Studio.store; var folders = stores && stores.folders;
+    if (!folders || typeof folders.patch !== 'function') {
+      return buildFolderSortorderReorderReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: false, canonicalWriteCount: 0 });
+    }
+    // Apply the FULL requested order to canonical sort_order (idempotent; atomic-on-retry). Writes ONLY
+    // sort_order via store.folders.patch (-> UPDATE folders SET sort_order; recordWrite). No other writes.
+    var order = f32PayloadIds(request); var writeCount = 0;
+    for (var i = 0; i < order.length; i += 1) {
+      await folders.patch(order[i], { sortOrder: i });
+      writeCount += 1;
+    }
+    // Verify: recompute canonical ordering hash over the payload; emit applied only if it matches requested.
+    var after = await folderSortorderCanonicalSnapshot();
+    var afterHash = after ? folderSortorderOrderingHash(f32CurrentPayloadOrder(order, after)) : '';
+    if (afterHash === cleanString(request.requestedOrderingHash)) {
+      return buildFolderSortorderReorderReceipt(request, 'applied', 'sortorder-reorder-applied',
+        { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash });
+    }
+    return buildFolderSortorderReorderReceipt(request, 'rejected', 'post-apply-ordering-hash-mismatch',
+      { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash });
+  }
+  /* ===================== end F32 S2 sortOrder reorder handler ===================== */
+
   H2O.Studio.sync = Object.assign({}, existingSync, desktopSyncApi, {
     folder: folderApi,
+    sortOrderReorder: {
+      applyGate: FOLDER_SORTORDER_REORDER_APPLY_GATE,
+      validate: validateFolderSortorderReorderRequestForDesktopApply,
+      classify: classifyFolderSortorderReorderConflict,
+      orderingHash: folderSortorderOrderingHash,
+      buildReceipt: buildFolderSortorderReorderReceipt,
+      snapshot: folderSortorderCanonicalSnapshot,
+      apply: applyFolderSortorderReorderRequest,
+    },
   });
 
   /* Boot-time auto-start: if persisted/effective config has mode ∈

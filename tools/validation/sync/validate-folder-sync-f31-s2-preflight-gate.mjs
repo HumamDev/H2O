@@ -146,18 +146,19 @@ if (exists(folderSyncFile)) {
   // present (minted by F30)
   assert(src.includes(REQUEST_STRING), 'sortOrder request schema must be present in source (minted by F30 S1)');
   assert(src.includes(RECEIPT_STRING), 'sortOrder receipt schema must be present in source (minted by F30 S1)');
-  // still INERT: each name + string referenced exactly once (no handler consumes them)
-  assert(countOccurrences(src, REQUEST_CONST) === 1,
-    `sortOrder request constant must remain referenced exactly once (inert; no handler yet); found ${countOccurrences(src, REQUEST_CONST)}`);
-  assert(countOccurrences(src, RECEIPT_CONST) === 1,
-    `sortOrder receipt constant must remain referenced exactly once (inert; no handler yet); found ${countOccurrences(src, RECEIPT_CONST)}`);
-  assert(countOccurrences(src, REQUEST_STRING) === 1, 'sortOrder request schema string must appear exactly once (still declaration-only)');
-  assert(countOccurrences(src, RECEIPT_STRING) === 1, 'sortOrder receipt schema string must appear exactly once (still declaration-only)');
-  // no handler tokens
-  for (const banned of ['applySortorderReorder', 'applySortOrderReorder', 'validateSortorderReorder',
-    'absorbSortorderReorder', 'buildSortorderReorderReceipt', 'sortorderReorderHandler']) {
-    assert(!src.includes(banned), `no sortOrder handler token should exist yet: ${banned}`);
-  }
+  // PRESENT + now consumed: F31 gated S2; F32 later added the handler that consumes the constants, so
+  // each is now referenced >= 1 (declaration + handler use). (F31's doc records the as-of-F31 no-handler
+  // state; this source anchor reflects current source after the F32 S2 handler landed.)
+  assert(countOccurrences(src, REQUEST_CONST) >= 1,
+    `sortOrder request constant must be present in source (now consumed by the F32 S2 handler); found ${countOccurrences(src, REQUEST_CONST)}`);
+  assert(countOccurrences(src, RECEIPT_CONST) >= 1,
+    `sortOrder receipt constant must be present in source (now consumed by the F32 S2 handler); found ${countOccurrences(src, RECEIPT_CONST)}`);
+  assert(countOccurrences(src, REQUEST_STRING) >= 1, 'sortOrder request schema string must be present in source');
+  assert(countOccurrences(src, RECEIPT_STRING) >= 1, 'sortOrder receipt schema string must be present in source');
+  // the F32 S2 sortOrder handler is now present (F31 gated it; F32 executed it)
+  assert(src.includes('function validateFolderSortorderReorderRequestForDesktopApply(') &&
+    src.includes('function applyFolderSortorderReorderRequest('),
+    'the F32 S2 sortOrder validate/apply handler is now present in source');
   // binding receipt still unminted; binding request present
   assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
@@ -209,7 +210,7 @@ console.log(JSON.stringify({
   requestConstOccurrences: countOccurrences(src, REQUEST_CONST),
   receiptConstOccurrences: countOccurrences(src, RECEIPT_CONST),
   constantsInert: countOccurrences(src, REQUEST_CONST) === 1 && countOccurrences(src, RECEIPT_CONST) === 1,
-  handlerExists: false,
+  handlerExists: src.includes('function applyFolderSortorderReorderRequest('),
   f11AllowedSetChanged: false,
   bindingReceiptSchemaMinted: false,
   bindingMismatchBlocked: true,
