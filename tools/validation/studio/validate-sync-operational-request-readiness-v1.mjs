@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Operational.2 - Sync request/mutation readiness validator.
+// Operational.2/3 - Sync request/mutation readiness validator.
 //
 // Static validator only. It asserts the six single-canonical request types are
-// implemented, label/tag unbind are no longer deferred destructive shapes, and
+// implemented, label/tag unbind are no longer deferred destructive shapes,
+// Operational.3 harness coverage exists, and
 // productSyncReady/fullBundle.v3/WebDAV/multi-writer remain closed.
 
 import assert from 'node:assert/strict';
@@ -16,6 +17,8 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const O0_CONTRACT_REL = 'release-evidence/2026-06-30/sync-operational-0-request-mutation-readiness-contract.md';
 const O1_EVIDENCE_REL = 'release-evidence/2026-06-30/sync-operational-1-request-readiness-validator.md';
 const O2_EVIDENCE_REL = 'release-evidence/2026-06-30/sync-operational-2-label-tag-unbind-implementation.md';
+const O3_EVIDENCE_REL = 'release-evidence/2026-06-30/sync-operational-3-label-tag-unbind-harness.md';
+const O3_HARNESS_REL = 'tools/validation/studio/validate-sync-operational-label-tag-unbind-harness-v1.mjs';
 const FOLDER_SYNC_REL = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const AUTO_IMPORT_REL = 'src-surfaces-base/studio/sync/auto-import.mv3.js';
 const FOLDER_IMPORT_REL = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
@@ -117,6 +120,8 @@ function assertSetEqual(actual, expected, label) {
 const o0 = exists(O0_CONTRACT_REL) ? readRepo(O0_CONTRACT_REL) : '';
 const o1 = exists(O1_EVIDENCE_REL) ? readRepo(O1_EVIDENCE_REL) : '';
 const o2 = exists(O2_EVIDENCE_REL) ? readRepo(O2_EVIDENCE_REL) : '';
+const o3 = exists(O3_EVIDENCE_REL) ? readRepo(O3_EVIDENCE_REL) : '';
+const o3Harness = exists(O3_HARNESS_REL) ? readRepo(O3_HARNESS_REL) : '';
 const folderSync = readRepo(FOLDER_SYNC_REL);
 const folderSyncCode = stripComments(folderSync);
 const autoImportCode = codeOf(AUTO_IMPORT_REL);
@@ -124,7 +129,7 @@ const folderImportCode = codeOf(FOLDER_IMPORT_REL);
 const gatesCode = readRepo(WEBDAV_GATES_REL);
 const diagCode = readRepo(DIAG_REL);
 
-console.log('[sync-operational-request-readiness] Operational.2 checks');
+console.log('[sync-operational-request-readiness] Operational.2/3 checks');
 
 check('[CONTRACT] Operational.0 exists and requires six single-canonical request types', () => {
   assert.ok(exists(O0_CONTRACT_REL), 'missing Operational.0 contract');
@@ -143,6 +148,22 @@ check('[EVIDENCE] Operational.2 implementation evidence exists', () => {
   assert.ok(exists(O2_EVIDENCE_REL), 'missing Operational.2 evidence');
   assert.match(o2, /OPERATIONAL\.2 LABEL\/TAG UNBIND IMPLEMENTATION - IMPLEMENTED/i);
   for (const type of ['chat-label-unbind', 'chat-tag-unbind']) assert.ok(o2.includes(type), `evidence missing ${type}`);
+});
+
+check('[HARNESS] Operational.3 deterministic label/tag unbind harness and evidence exist', () => {
+  assert.ok(exists(O3_HARNESS_REL), 'missing Operational.3 harness');
+  assert.ok(exists(O3_EVIDENCE_REL), 'missing Operational.3 evidence');
+  assert.match(o3, /OPERATIONAL\.3 LABEL\/TAG UNBIND HARNESS - PASSED/i);
+  assert.match(o3Harness, /label bind creates row, label unbind removes exact row/i);
+  assert.match(o3Harness, /tag bind creates row, tag unbind removes exact row/i);
+  assert.match(o3Harness, /already-unbound label\/tag return noop/i);
+  assert.match(o3Harness, /repeated requestId returns existing receipt/i);
+  assert.match(o3Harness, /invalid chat\/entity returns rejected/i);
+  assert.match(o3Harness, /bind -> unbind -> bind follows canonical receipt order/i);
+  assert.match(o3Harness, /basis mismatch is inert/i);
+  assert.match(o3Harness, /post-unbind projection hash changes/i);
+  assert.match(o3Harness, /catalog tables mutated/i);
+  assert.match(o3Harness, /liveDesktopDbTouched:\s*false/i);
 });
 
 check('[RUNTIME] Desktop applied request allowlist is exactly six', () => {
@@ -227,7 +248,7 @@ console.log('');
 console.log(JSON.stringify({
   schema: 'h2o.studio.sync.operational-request-readiness.validator.v1',
   status: 'passed',
-  phase: 'operational-2-label-tag-unbind',
+  phase: 'operational-3-label-tag-unbind-harness',
   appliedTypes: SIX_TYPES,
   productSyncReady: false,
   fullBundleV3Minted: false,
