@@ -5493,6 +5493,68 @@
     var ids = f32Arr(orderedIds).map(function (x) { return cleanString(x); }).filter(Boolean);
     return 'oh:' + f32StableHash(ids.join('>'));
   }
+
+  /* F32b: persistent replay/idempotency via the EXISTING consumed-operation ledger
+   * (H2O.Desktop.Sync.listConsumedOperations / recordConsumedOperation). Hash-only: the
+   * idempotencyKey is SHA-256'd into the ledger dedupeKey + eventDigest; no raw ids are stored.
+   * Degrades gracefully to caller-context-only when the ledger is absent. No new ledger substrate. */
+  var FOLDER_SORTORDER_REORDER_OPERATION_KIND = 'folder-sortorder-reorder';
+  function f32ConsumedLedger() {
+    var d = H2O && H2O.Desktop && H2O.Desktop.Sync;
+    if (d && typeof d.listConsumedOperations === 'function' &&
+        typeof d.recordConsumedOperation === 'function') return d;
+    return null;
+  }
+  async function f32ReorderDedupeKey(request) {
+    var req = safeObject(request);
+    try { return await sha256Hex(FOLDER_SORTORDER_REORDER_OPERATION_KIND + '|dedupe|' + cleanString(req.idempotencyKey)); }
+    catch (e) { return ''; }
+  }
+  async function f32ReorderEventDigest(request) {
+    var req = safeObject(request);
+    try {
+      return await sha256Hex(FOLDER_SORTORDER_REORDER_OPERATION_KIND + '|digest|' + cleanString(req.schema) + '|' +
+        cleanString(req.idempotencyKey) + '|' + cleanString(req.basisOrderingHash) + '|' + cleanString(req.requestedOrderingHash));
+    } catch (e) { return ''; }
+  }
+  async function f32ReorderAlreadyConsumed(request) {
+    var ledger = f32ConsumedLedger();
+    if (!ledger) return { available: false, consumed: false, dedupeKey: '' };
+    var dedupeKey = await f32ReorderDedupeKey(request);
+    if (!dedupeKey) return { available: false, consumed: false, dedupeKey: '' };
+    var listed = null;
+    try { listed = await ledger.listConsumedOperations(); }
+    catch (e) { return { available: false, consumed: false, dedupeKey: dedupeKey }; }
+    var rows = listed && Array.isArray(listed.rows) ? listed.rows : [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] || {};
+      if (cleanString(row.operationKind) === FOLDER_SORTORDER_REORDER_OPERATION_KIND &&
+          cleanString(row.dedupeKey).toLowerCase() === dedupeKey.toLowerCase()) {
+        return { available: true, consumed: true, dedupeKey: dedupeKey };
+      }
+    }
+    return { available: true, consumed: false, dedupeKey: dedupeKey };
+  }
+  async function f32RecordReorderConsumed(request) {
+    var ledger = f32ConsumedLedger();
+    if (!ledger) return { ok: false, reason: 'ledger-unavailable' };
+    var dedupeKey = await f32ReorderDedupeKey(request);
+    var eventDigest = await f32ReorderEventDigest(request);
+    if (!dedupeKey || !eventDigest) return { ok: false, reason: 'digest-unavailable' };
+    var res = null;
+    try {
+      res = await ledger.recordConsumedOperation({
+        eventDigest: eventDigest,
+        dedupeKey: dedupeKey,
+        envelopeKind: 'applyEvent',
+        operationKind: FOLDER_SORTORDER_REORDER_OPERATION_KIND,
+        consumedStatus: 'consumed',
+        reason: 'folder-sortorder-reorder-applied',
+      });
+    } catch (e) { return { ok: false, reason: 'record-threw' }; }
+    return { ok: !!(res && res.ok), reason: (res && res.ok) ? 'recorded'
+      : (res && Array.isArray(res.blockers) && res.blockers.length ? res.blockers.join(',') : 'record-failed') };
+  }
   function f32HasForbiddenKeys(obj) {
     if (!obj || typeof obj !== 'object') return false;
     var keys = Object.keys(obj);
@@ -5602,6 +5664,7 @@
       noChatDelete: true, noBindingMutation: true, noTombstoneMutation: true,
       mirrorReprojection: 'deferred-to-s2b',
       canonicalWriteCount: Number(data.canonicalWriteCount) || 0,
+      idempotencyPersisted: data.idempotencyPersisted === true,
       dryRun: data.dryRun === true,
       appliedAt: cleanStatus === 'applied' ? now : null,
       decidedAt: now,
@@ -5628,7 +5691,15 @@
     if (!snapshot) {
       return buildFolderSortorderReorderReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: dryRun, canonicalWriteCount: 0 });
     }
-    var conflict = classifyFolderSortorderReorderConflict(request, snapshot, ctx);
+    // F32b: persistent replay guard — a previously consumed idempotencyKey classifies as duplicate
+    // (skipped, zero-write) even across a separate call, sourced from the consumed-operation ledger.
+    var persisted = await f32ReorderAlreadyConsumed(request);
+    var effCtx = ctx;
+    if (persisted.consumed) {
+      effCtx = Object.assign({}, ctx, { appliedKeys: Object.assign({}, ctx.appliedKeys) });
+      effCtx.appliedKeys[cleanString(safeObject(request).idempotencyKey)] = true;
+    }
+    var conflict = classifyFolderSortorderReorderConflict(request, snapshot, effCtx);
     if (conflict) {
       var conflictStatus = conflict === 'duplicate' ? 'skipped' : 'rejected';
       return buildFolderSortorderReorderReceipt(request, conflictStatus, conflict,
@@ -5659,8 +5730,11 @@
     var after = await folderSortorderCanonicalSnapshot();
     var afterHash = after ? folderSortorderOrderingHash(f32CurrentPayloadOrder(order, after)) : '';
     if (afterHash === cleanString(request.requestedOrderingHash)) {
+      // F32b: record the consumed operation so a later separate call is a persistent no-op.
+      var recorded = await f32RecordReorderConsumed(request);
       return buildFolderSortorderReorderReceipt(request, 'applied', 'sortorder-reorder-applied',
-        { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash });
+        { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash,
+          idempotencyPersisted: recorded.ok });
     }
     return buildFolderSortorderReorderReceipt(request, 'rejected', 'post-apply-ordering-hash-mismatch',
       { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash });
