@@ -335,8 +335,8 @@ if (exists(folderSyncFile)) {
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + REQUEST_SCHEMA + "'"),
     'source must define the chat-folder-binding request schema (reused)');
   assert(!src.includes(RECEIPT_SCHEMA), 'F25 design-only: proposed binding receipt schema must NOT be minted in source');
-  assert(!src.includes(SORTORDER_REQUEST_SCHEMA) && !src.includes(SORTORDER_RECEIPT_SCHEMA),
-    'sortOrder proposed schemas must remain NOT minted in source');
+  assert(src.includes(SORTORDER_REQUEST_SCHEMA) && src.includes(SORTORDER_RECEIPT_SCHEMA),
+    'sortOrder schemas now present in source (minted inert by F30 S1)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), "WebDAV must remain deferred in folder-sync.tauri.js");

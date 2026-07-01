@@ -175,9 +175,9 @@ assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   for (const p of PRECEDENT_SCHEMAS) assert(src.includes(p), `request/receipt precedent must remain in source: ${p}`);
-  // design-only: the proposed sortorder reorder schemas must NOT be minted in source yet
-  assert(!src.includes(PROPOSED_REQUEST_SCHEMA), 'F15 is design-only: proposed request schema must NOT be minted in source');
-  assert(!src.includes(PROPOSED_RECEIPT_SCHEMA), 'F15 is design-only: proposed receipt schema must NOT be minted in source');
+  // F30 (S1) minted the sortOrder reorder schema constants inertly; they are now present in source.
+  assert(src.includes(PROPOSED_REQUEST_SCHEMA), 'sortOrder request schema now present in source (minted inert by F30 S1)');
+  assert(src.includes(PROPOSED_RECEIPT_SCHEMA), 'sortOrder receipt schema now present in source (minted inert by F30 S1)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), "WebDAV must remain deferred in folder-sync.tauri.js");

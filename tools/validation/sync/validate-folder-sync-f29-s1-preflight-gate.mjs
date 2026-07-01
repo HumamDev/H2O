@@ -149,8 +149,8 @@ for (const type of METADATA_CORE_TYPES) assert(flat.includes(type), `F29 doc mus
 assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
-  assert(!src.includes(SORTORDER_REQUEST_SCHEMA), 'F29 pre-flight: sortOrder request schema must NOT be minted in source yet');
-  assert(!src.includes(SORTORDER_RECEIPT_SCHEMA), 'F29 pre-flight: sortOrder receipt schema must NOT be minted in source yet');
+  assert(src.includes(SORTORDER_REQUEST_SCHEMA), 'sortOrder request schema now present in source (minted inert by F30 S1, which F29 gated)');
+  assert(src.includes(SORTORDER_RECEIPT_SCHEMA), 'sortOrder receipt schema now present in source (minted inert by F30 S1, which F29 gated)');
   assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'F29 pre-flight: binding receipt schema must NOT be minted in source');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must define the real binding request schema');

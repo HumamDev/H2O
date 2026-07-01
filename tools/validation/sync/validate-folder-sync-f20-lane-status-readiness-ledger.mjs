@@ -135,8 +135,8 @@ for (const type of METADATA_CORE_TYPES) assert(flat.includes(type), `F20 doc mus
 assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
-  assert(!src.includes(REQUEST_SCHEMA), 'F20 ledger-only: proposed request schema must NOT be minted in source');
-  assert(!src.includes(RECEIPT_SCHEMA), 'F20 ledger-only: proposed receipt schema must NOT be minted in source');
+  assert(src.includes(REQUEST_SCHEMA), 'sortOrder request schema now present in source (minted inert by F30 S1)');
+  assert(src.includes(RECEIPT_SCHEMA), 'sortOrder receipt schema now present in source (minted inert by F30 S1)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), "WebDAV must remain deferred in folder-sync.tauri.js");
