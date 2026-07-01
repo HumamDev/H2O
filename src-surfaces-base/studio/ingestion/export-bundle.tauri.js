@@ -462,14 +462,31 @@
       byId[id] = merged || before;
     });
     var items = Object.create(null);
-    var addItems = function (rawItems, allowedFolderIds) {
+    var skippedPrimaryOrphanItemBindingCount = 0;
+    var skippedPrimaryOrphanItemBindings = [];
+    var addItems = function (rawItems, allowedFolderIds, options) {
       var normalized = normalizeFolderItems(rawItems);
       Object.keys(normalized).forEach(function (folderId) {
-        if (allowedFolderIds instanceof Set && !allowedFolderIds.has(folderId)) return;
-        items[folderId] = uniqStrings((items[folderId] || []).concat(normalized[folderId]));
+        var chatIds = uniqStrings(normalized[folderId]);
+        if (allowedFolderIds instanceof Set && !allowedFolderIds.has(folderId)) {
+          if (options && options.recordPrimaryOrphan) {
+            skippedPrimaryOrphanItemBindingCount += chatIds.length;
+            skippedPrimaryOrphanItemBindings.push({
+              folderId: folderId,
+              chatIds: chatIds,
+              chatCount: chatIds.length,
+              source: 'primary-folder-items',
+              skipped: true,
+              reason: 'folder-id-absent-from-exported-folder-catalog',
+            });
+          }
+          return;
+        }
+        items[folderId] = uniqStrings((items[folderId] || []).concat(chatIds));
       });
     };
-    addItems(primary.items);
+    var primaryAllowedFolderIds = new Set(order);
+    addItems(primary.items, primaryAllowedFolderIds, { recordPrimaryOrphan: true });
     order.forEach(function (folderId) {
       if (!Object.prototype.hasOwnProperty.call(items, folderId)) items[folderId] = [];
     });
@@ -505,6 +522,9 @@
         fallbackFolderCount: fallback.folders.length,
         fallbackBindingCount: fallbackBindingCount,
         skippedFallbackBindingCount: skippedFallbackBindingCount,
+        skippedPrimaryOrphanItemBindingCount: skippedPrimaryOrphanItemBindingCount,
+        skippedPrimaryOrphanItemBindings: skippedPrimaryOrphanItemBindings,
+        primaryOrphanItemBindingAuthority: false,
         fallbackBindingAuthority: false,
         fallbackItemsMerged: false,
         canonicalBindingAuthority: 'desktop-sqlite',
