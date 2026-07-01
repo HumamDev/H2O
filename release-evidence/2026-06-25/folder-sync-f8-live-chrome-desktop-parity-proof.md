@@ -1,12 +1,23 @@
-# Folder Sync F8 - Live Chrome / Desktop Folder Parity Proof
+# Folder Sync F8 - Desktop Export Parity Proof
 
-F8 LIVE CHROME / DESKTOP FOLDER PARITY PROOF - BLOCKED
+F8 DESKTOP EXPORT PARITY - PASSED_DESKTOP_EXPORT_PARITY
+
+CHROME_PROOF_PENDING
 
 ## Result
 
-F8 did not proceed to Chrome proof. The Desktop DevTools export succeeded, but Terminal verification of the fresh `latest.json` found a remaining Desktop export count mismatch that must be resolved before Chrome-visible parity can be trusted.
+F8 Desktop export parity passed after the committed export parity fix:
 
-## Desktop Export
+- fix commit: `58a09933bfe52388a5e714a16f30647ad3ef05a1`
+- fix commit message: `fix(sync): skip orphan folder export items`
+- Desktop export parity verdict: `PASSED_DESKTOP_EXPORT_PARITY`
+- Chrome proof status: `CHROME_PROOF_PENDING`
+
+F8 did not proceed to Chrome proof in this slice. The purpose of this evidence is only to prove the fresh Desktop export is internally consistent after the orphan `folderState.items` filter.
+
+## Initial Blocked Export
+
+The initial F8 Desktop DevTools export succeeded, but Terminal verification of the fresh `latest.json` found a Desktop export count mismatch that had to be resolved before Chrome-visible parity could be trusted.
 
 Operator-run Desktop Studio DevTools export:
 
@@ -23,7 +34,7 @@ Operator-run Desktop Studio DevTools export:
 - folder catalog count: `6`
 - fallbackUsed: `false`
 
-## Terminal Verification
+## Initial Terminal Verification
 
 Fresh file inspected:
 
@@ -107,15 +118,41 @@ Expected fresh Desktop rerun counts after this fix:
 - no WebDAV/cloud/archive CAS markers
 - no Chat Saving package body markers
 
-This evidence remains `BLOCKED` until a fresh Desktop export is rerun and proves the expected counts. Chrome proof must not proceed before that clean Desktop export.
+The fresh Desktop export was rerun after the fix and proved the expected counts.
+
+## Fresh Desktop Export After Fix
+
+Desktop Studio DevTools fresh export:
+
+- exportedAt: `2026-07-01T10:59:17.139Z`
+- latest path: `~/H2O Studio Sync/latest.json`
+- latest mtime observed by terminal: `2026-07-01T10:59:17.156Z`
+- schema: `h2o.studio.fullBundle.v2`
+- contentSha256: `sha256:6c79db9cd2adc045f914ae7ae9e64913afc7f4ac55c8248ca08c5f40265a5eb4`
+- fileSha256: `sha256:fb2303ff9c3cc59163304709740913a38b0cd2c32b5128bff7e634d0ba5da95a`
+- `productSyncReady`: `false`
+- folderCatalogCount: `6`
+- `folderState.items` count: `12`
+- `folderParity.bindingCount`: `12`
+- `desktopCanonicalChatFolderBindings.bindingCount`: `12`
+- skippedPrimaryOrphanItemBindingCount: `1`
+- primaryOrphanItemBindingAuthority: `false`
+- fallbackBindingAuthority: `false`
+- fallbackItemsMerged: `false`
+- orphanFolderCount: `0`
+- fullBundleV3Present: `false`
+- webdavCloudArchiveCasMarkersPresent: `false`
+- chatSavingPackageBodyMarkersPresent: `false`
+
+The DevTools `copy()` helper failed with `ReferenceError: Can't find variable: copy`, but the full JSON was logged and returned. This is not a proof blocker.
 
 ## Decision
 
-F8 is blocked. Do not proceed to Chrome proof yet.
+F8 Desktop export parity passed.
 
-The correct Chrome expected active canonical count is `12`, but Chrome proof should wait until the exported `folderState.items` count also agrees with the active canonical projection or is explicitly filtered out before import/display parity.
+The correct Chrome expected active canonical count is `12`. Chrome proof remains pending and must start from this clean Desktop export baseline.
 
-## Minimal Fix
+## Fix Summary
 
 Patch the Desktop export path so `folderState.items` is constrained to the canonical folder catalog:
 
@@ -124,6 +161,9 @@ Patch the Desktop export path so `folderState.items` is constrained to the canon
 - keep fallback mirror bindings skipped as already implemented in F7
 - preserve `desktopCanonicalChatFolderBindings` as the active canonical projection
 - keep `productSyncReady:false`
+- no mirror write-through or repair was implemented
+- binding mismatch is not auto-repaired
+- sortOrder is not blindly overwritten
 
 Likely target:
 
@@ -135,12 +175,15 @@ Validator follow-up should extend F7/F8 coverage to prove:
 - active exported canonical count is the Chrome comparison count
 - `folderState.items` excludes orphan folder ids not present in the folder catalog
 - skipped orphan primary item count is recorded
+- Chrome proof remains pending
 
 ## Boundaries Preserved
 
-- No Chrome proof was run after the discrepancy was found.
+- No Chrome proof was run in this slice.
 - No archive package code was touched.
 - No WebDAV/cloud/archive CAS implementation.
 - No `fullBundle.v3` mint.
 - No `productSyncReady` flip.
 - No multi-writer or catalog CRUD implementation.
+- No mirror write-through or repair implementation.
+- Future shared transport must support Desktop Studio, Chrome/native extension across devices, and mobile app, but F8 implements no mobile or remote transport.

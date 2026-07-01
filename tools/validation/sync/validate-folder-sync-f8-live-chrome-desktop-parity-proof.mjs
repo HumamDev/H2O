@@ -2,10 +2,9 @@
 //
 // Folder Sync F8 - Desktop export parity blocker validator.
 //
-// Locks the Desktop export fix that prevents primary chat archive folder item
-// buckets from exporting bindings for folders absent from the exported
-// canonical folder catalog. Chrome proof remains blocked until a fresh Desktop
-// export proves the live counts.
+// Locks the Desktop export fix and the fresh Desktop export parity proof that
+// primary chat archive folder item buckets are constrained to the exported
+// canonical folder catalog. Chrome proof remains pending after this slice.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -126,15 +125,30 @@ assert.doesNotMatch(exportBundle, /archivePackageCloudSync|archiveCloudSync|uplo
 assert.doesNotMatch(exportBundle, /webdav.*put|webdav.*upload|remote.*write/i, 'WebDAV/cloud remote write markers must remain absent from this fix');
 
 for (const required of [
-  'F8 LIVE CHROME / DESKTOP FOLDER PARITY PROOF - BLOCKED',
+  'F8 DESKTOP EXPORT PARITY - PASSED_DESKTOP_EXPORT_PARITY',
+  'CHROME_PROOF_PENDING',
+  '58a09933bfe52388a5e714a16f30647ad3ef05a1',
   'folderState.items count of 13 is a real export bug',
   'folderState.items is constrained to the exported canonical folder catalog',
   'skippedPrimaryOrphanItemBindingCount',
   'skippedPrimaryOrphanItemBindings',
   'folderState.items count = 12',
+  'folderParity.bindingCount`: `12`',
+  'desktopCanonicalChatFolderBindings.bindingCount`: `12`',
+  'orphanFolderCount: `0`',
   'productSyncReady:false',
+  'contentSha256: `sha256:6c79db9cd2adc045f914ae7ae9e64913afc7f4ac55c8248ca08c5f40265a5eb4`',
+  'fileSha256: `sha256:fb2303ff9c3cc59163304709740913a38b0cd2c32b5128bff7e634d0ba5da95a`',
+  'fullBundleV3Present: `false`',
+  'webdavCloudArchiveCasMarkersPresent: `false`',
+  'chatSavingPackageBodyMarkersPresent: `false`',
+  'copy()` helper failed',
   'No archive package code was touched',
   'No WebDAV/cloud/archive CAS implementation',
+  'No mirror write-through or repair implementation',
+  'binding mismatch is not auto-repaired',
+  'sortOrder is not blindly overwritten',
+  'Future shared transport must support Desktop Studio, Chrome/native extension across devices, and mobile app',
 ]) {
   assert.ok(f8.includes(required), `${f8Doc} missing required phrase: ${required}`);
 }
@@ -143,10 +157,19 @@ console.log(JSON.stringify({
   schema: 'h2o.studio.folder-sync.f8-live-chrome-desktop-parity-proof.v1',
   lane: 'folder-sync',
   phase: 'F8',
-  verdict: 'BLOCKED_PENDING_FRESH_DESKTOP_EXPORT',
+  verdict: 'PASSED_DESKTOP_EXPORT_PARITY',
+  chromeProofStatus: 'CHROME_PROOF_PENDING',
   sourceFixPresent: true,
   exportedFolderStateItemCountFixture: countBindings(blockerFixture.exportedItems),
   activeCanonicalBindingCountFixture: 12,
+  liveDesktopExport: {
+    contentSha256: 'sha256:6c79db9cd2adc045f914ae7ae9e64913afc7f4ac55c8248ca08c5f40265a5eb4',
+    fileSha256: 'sha256:fb2303ff9c3cc59163304709740913a38b0cd2c32b5128bff7e634d0ba5da95a',
+    folderStateItemsCount: 12,
+    folderParityBindingCount: 12,
+    desktopCanonicalChatFolderBindingCount: 12,
+    orphanFolderCount: 0,
+  },
   skippedPrimaryOrphanItemBindingCount: blockerFixture.skippedPrimaryOrphanItemBindingCount,
   fallbackBindingAuthority: false,
   fallbackItemsMerged: false,
