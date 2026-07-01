@@ -3408,10 +3408,30 @@
       commandIds: ['highlight-clear-message', 'highlight-visibility'],
       currentColorFromEngine: true,
     },
+    /* Phase 8c-3 — Alignment. Unlike Text Color / Highlight (whole-group
+     * palettes), alignment is a SUB-GROUP of the Paragraph group: only
+     * the three align actions collapse into the split button, while
+     * list-bullet / list-numbered / indent / outdent keep rendering as
+     * individual icon buttons. `groupId` says which group it lives in and
+     * `actionIds` names the covered subset. `iconFromActionIcons` reuses
+     * the Phase 8b ACTION_ICONS glyphs for the main button (reflecting the
+     * last-picked alignment) and the popover rows; `showItemLabel` adds
+     * the Left / Center / Right text beside each icon. No color swatch. */
+    'align': {
+      kind: 'align',
+      groupId: 'paragraph',
+      actionIds: ['align-left', 'align-center', 'align-right'],
+      mainAriaLabel: 'Align',
+      chevronAriaLabel: 'Choose alignment',
+      defaultActionId: 'align-left',
+      iconFromActionIcons: true,
+      showItemLabel: true,
+    },
   };
   const __splitBtnLastPicked = {
     'text-color': 'text-color-red',
     'highlight': 'highlight-brush-blue',
+    'align': 'align-left',
   };
   let __openSplitPopover = null;
   /* Phase 8c-2 — module ref to the live ribbon shell, stashed by
@@ -3487,6 +3507,34 @@
     return cfg.defaultActionId;
   }
 
+  /* Phase 8c-3 — resolve which split-button configs apply to a group.
+   * A config targets the group whose id equals cfg.groupId (sub-group
+   * configs like Alignment) or, for whole-group palettes (Text Color /
+   * Highlight), cfg.kind. Returns:
+   *   whole   — the whole-group config (collapses every action) or null
+   *   anchor  — { firstActionId -> cfg } marking where each sub-group
+   *             split button renders (in place of its first action)
+   *   covered — { actionId -> true } for every action a sub-group split
+   *             button absorbs (so the per-action pass skips them)
+   * Whole-group and sub-group are mutually exclusive per group in
+   * practice, but both are reported independently for safety. */
+  function __splitConfigsForGroup(groupId) {
+    let whole = null;
+    const anchor = {};
+    const covered = {};
+    Object.keys(SPLIT_BUTTONS).forEach(function (key) {
+      const cfg = SPLIT_BUTTONS[key];
+      const cfgGroup = cfg.groupId || cfg.kind;
+      if (cfgGroup !== groupId) return;
+      if (!cfg.actionIds || !cfg.actionIds.length) { whole = cfg; return; }
+      cfg.actionIds.forEach(function (id, i) {
+        covered[id] = true;
+        if (i === 0) anchor[id] = cfg;
+      });
+    });
+    return { whole: whole, anchor: anchor, covered: covered };
+  }
+
   function __openSplitPopoverFor(cfg, actions, ctx, triggerEl, onPick) {
     __closeSplitPopover();
     /* Prefer a fresh context so per-item enabled/disabled state reflects
@@ -3504,6 +3552,12 @@
           : '';
       } catch (_) { currentSwatchColor = ''; }
     }
+    /* Phase 8c-3 — last-picked action id for icon kinds (Alignment), used
+     * to mark that row as pressed inside the popover. */
+    let currentIconId = '';
+    if (cfg.iconFromActionIcons) {
+      try { currentIconId = __resolveSplitCurrentId(cfg, actions); } catch (_) { currentIconId = ''; }
+    }
     const pop = el('div', {
       class: 'wbRibbonPopover wbRibbonPopover--' + cfg.kind,
       role: 'menu',
@@ -3513,6 +3567,7 @@
       const action = actions[aid];
       const isSwatch = !!(cfg.hexById && cfg.hexById[action.id]);
       const isCommand = !!(cfg.commandIds && cfg.commandIds.indexOf(action.id) !== -1);
+      const isIcon = !!(cfg.iconFromActionIcons && !isSwatch && !isCommand);
       /* Per-item enablement — mirrors the render pass so selection-
        * sensitive actions (e.g. highlight-clear-message) grey out when
        * unavailable. Swatch brushes are global-state and stay enabled
@@ -3526,7 +3581,8 @@
         type: 'button',
         class: 'wbRibbonPopover__item wbRibbonPopover__item--' + cfg.kind
           + (isCommand ? ' wbRibbonPopover__item--command' : '')
-          + (isSwatch ? ' wbRibbonPopover__item--swatch' : ''),
+          + (isSwatch ? ' wbRibbonPopover__item--swatch' : '')
+          + (isIcon ? ' wbRibbonPopover__item--icon' : ''),
         role: 'menuitem',
         'data-action-id': action.id,
         title: action.label,
@@ -3544,19 +3600,33 @@
       if (isCommand) {
         item.appendChild(document.createTextNode(action.label));
       }
+      if (isIcon) {
+        const glyph = ACTION_ICONS[action.id];
+        if (glyph) {
+          const iconSpan = el('span', { class: 'wbRibbonPopover__itemIcon' });
+          iconSpan.innerHTML = glyph;
+          item.appendChild(iconSpan);
+        }
+        if (cfg.showItemLabel) {
+          item.appendChild(document.createTextNode(action.label));
+        }
+        if (currentIconId && currentIconId === action.id) {
+          item.setAttribute('aria-pressed', 'true');
+        }
+      }
       if (!itemEnabled) {
         item.setAttribute('disabled', 'disabled');
       }
       item.addEventListener('click', function () {
         if (!itemEnabled) return;
-        if (isSwatch) {
+        if (isSwatch || isIcon) {
           __splitBtnLastPicked[cfg.kind] = action.id;
         }
         /* Close first so a brush-triggered re-render doesn't race the
          * live popover node, then dispatch through the real handler. */
         __closeSplitPopover();
         __dispatchSplitAction(action.id, triggerEl);
-        if (isSwatch) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
+        if (isSwatch || isIcon) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
       });
       pop.appendChild(item);
     });
@@ -3600,7 +3670,14 @@
       title: (cfg.mainAriaLabel || 'Apply') + (currentAction ? (' — ' + currentAction.label) : ''),
     });
     if (!enabled) main.setAttribute('disabled', 'disabled');
-    main.innerHTML = cfg.glyphIcon || '';
+    /* Phase 8c-3 — icon kinds (Alignment) show the current action's 8b
+     * glyph so the main button mirrors the last-picked alignment; other
+     * kinds show their static config glyph. */
+    if (cfg.iconFromActionIcons) {
+      main.innerHTML = (currentAction && ACTION_ICONS[currentAction.id]) || cfg.glyphIcon || '';
+    } else {
+      main.innerHTML = cfg.glyphIcon || '';
+    }
     if (cfg.hexById) {
       const swatch = el('span', { class: 'wbRibbonSplitBtn__swatch' });
       if (cfg.hexById[currentId]) {
@@ -3646,6 +3723,9 @@
               sw.style.background = cfg.hexById[picked.id];
             }
           }
+          if (cfg.iconFromActionIcons && ACTION_ICONS[picked.id]) {
+            main.innerHTML = ACTION_ICONS[picked.id];
+          }
         } catch (_) {}
       });
     });
@@ -3676,17 +3756,28 @@
         const groupEl = el('div', { class: 'wbRibbonGroup', 'data-group-id': group.id });
         const actionsRow = el('div', { class: 'wbRibbonGroupActions' });
         const actions = shell.actionsForGroup(tab.id, group.id);
-        /* Phase 8c-1 — Split-button render for palette-style groups.
-         * When a group id appears in SPLIT_BUTTONS (Text Color for
-         * now; Highlight + Alignment in later slices) we render one
-         * composite split button here and skip the per-action pass. */
-        const __splitCfg = SPLIT_BUTTONS[group.id];
-        if (__splitCfg) {
-          actionsRow.appendChild(__buildSplitButton(__splitCfg, actions, ctx));
+        /* Phase 8c — Split-button render. Whole-group palettes (Text
+         * Color, Highlight) collapse the entire group into one split
+         * button. Sub-group configs (Alignment, inside Paragraph) render
+         * their split button in place of their first covered action and
+         * leave the group's other actions to render individually. */
+        const __splits = __splitConfigsForGroup(group.id);
+        if (__splits.whole) {
+          actionsRow.appendChild(__buildSplitButton(__splits.whole, actions, ctx));
         }
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
-          if (__splitCfg) return;
+          if (__splits.whole) return;
+          if (__splits.anchor[aid]) {
+            const __subCfg = __splits.anchor[aid];
+            const __subset = {};
+            __subCfg.actionIds.forEach(function (id) {
+              if (actions[id]) __subset[id] = actions[id];
+            });
+            actionsRow.appendChild(__buildSplitButton(__subCfg, __subset, ctx));
+            return;
+          }
+          if (__splits.covered[aid]) return;
           if (tab.id === 'home' && action.id === 'refresh-reader') {
             const refreshButton = prepareRefreshButton(getRefreshButton());
             if (refreshButton) {

@@ -7493,6 +7493,60 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   border-color:var(--sui-border, rgba(0,0,0,.12));
 }
 
+/* ── Phase 8c-3 — Alignment split-button popover ─────────────────────────────
+ * Alignment reuses the shared split button but is icon-based, not color:
+ * the main half shows the last-picked alignment glyph (Phase 8b icon) and
+ * the popover is a compact single-column menu of icon + label rows
+ * (Left / Center / Right), OneNote-style. */
+.wbRibbonPopover--align{
+  grid-template-columns:1fr;
+  gap:2px;
+  min-width:132px;
+}
+.wbRibbonPopover__item--icon{
+  grid-column:1 / -1;
+  width:auto;
+  height:auto;
+  min-height:28px;
+  justify-content:flex-start;
+  gap:8px;
+  padding:4px 10px 4px 6px;
+  border-radius:4px;
+  white-space:nowrap;
+  font-size:12px;
+  line-height:1.2;
+}
+.wbRibbonPopover__item--icon:hover:not([disabled]){
+  background:var(--sui-hover, rgba(0,0,0,.06));
+}
+/* Selected (last-picked) alignment row — flat highlight rather than the
+ * swatch ring used for color kinds. */
+.wbRibbonPopover__item--icon[aria-pressed="true"]{
+  outline:none;
+  box-shadow:none;
+  background:var(--sui-hover, rgba(0,0,0,.06));
+  font-weight:600;
+}
+.wbRibbonPopover__itemIcon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:16px;
+  height:16px;
+  flex:0 0 auto;
+}
+.wbRibbonPopover__itemIcon > svg{
+  width:15px;
+  height:15px;
+  display:block;
+}
+/* Alignment main glyph reads best square (16x16 viewBox); override the
+ * shared 14x12 svg sizing used by the color kinds. */
+.wbRibbonSplitBtn__main--align > svg{
+  width:15px;
+  height:15px;
+}
+
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{
   opacity:.45;
