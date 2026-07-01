@@ -3390,6 +3390,11 @@
       glyphIcon: TEXT_COLOR_GLYPH_ICON,
       hexById: TEXT_COLOR_SWATCH_HEX,
       swatchIdPrefix: 'text-color-',
+      /* Phase 8c-4 — `text-color-none` clears color. It has no hex, so it
+       * is not a swatch; without this it rendered as a blank popover cell.
+       * Listed here so the popover draws a visible "no color" slashed
+       * swatch for it (still dispatches the existing text-color-none). */
+      noColorIds: ['text-color-none'],
     },
     /* Phase 8c-2 — Highlight. Reuses the shared primitive. `hexById`
      * covers the 8 brush swatches; `commandIds` are the two non-swatch
@@ -3568,6 +3573,9 @@
       const isSwatch = !!(cfg.hexById && cfg.hexById[action.id]);
       const isCommand = !!(cfg.commandIds && cfg.commandIds.indexOf(action.id) !== -1);
       const isIcon = !!(cfg.iconFromActionIcons && !isSwatch && !isCommand);
+      /* Phase 8c-4 — "no color" / clear item (text-color-none): swatch-
+       * sized cell with a CSS slash so it isn't a blank cell. */
+      const isNoColor = !!(cfg.noColorIds && cfg.noColorIds.indexOf(action.id) !== -1);
       /* Per-item enablement — mirrors the render pass so selection-
        * sensitive actions (e.g. highlight-clear-message) grey out when
        * unavailable. Swatch brushes are global-state and stay enabled
@@ -3582,7 +3590,8 @@
         class: 'wbRibbonPopover__item wbRibbonPopover__item--' + cfg.kind
           + (isCommand ? ' wbRibbonPopover__item--command' : '')
           + (isSwatch ? ' wbRibbonPopover__item--swatch' : '')
-          + (isIcon ? ' wbRibbonPopover__item--icon' : ''),
+          + (isIcon ? ' wbRibbonPopover__item--icon' : '')
+          + (isNoColor ? ' wbRibbonPopover__item--noColor' : ''),
         role: 'menuitem',
         'data-action-id': action.id,
         title: action.label,

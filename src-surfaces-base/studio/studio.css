@@ -7447,6 +7447,27 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   background:var(--wbRibbonPopoverItemColor, transparent);
   border-color:rgba(0,0,0,.14);
 }
+/* Phase 8c-4 — Text Color "None" item. A swatch-sized light cell with a
+ * red diagonal slash — the universal "no color" indicator — so the clear
+ * option reads clearly instead of rendering as a blank cell. Accessible
+ * name stays "None" (aria-label/title on the button). */
+.wbRibbonPopover__item--noColor{
+  background:var(--sui-surface, #fff);
+  border-color:rgba(0,0,0,.14);
+  position:relative;
+  overflow:hidden;
+}
+.wbRibbonPopover__item--noColor::after{
+  content:"";
+  position:absolute;
+  top:50%;
+  left:50%;
+  width:30px;
+  height:2px;
+  background:#C53030;
+  transform:translate(-50%, -50%) rotate(45deg);
+  pointer-events:none;
+}
 .wbRibbonPopover__item:hover:not([disabled]){
   border-color:var(--sui-focus, #2d7bd8);
 }
