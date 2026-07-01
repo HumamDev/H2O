@@ -26,7 +26,15 @@ function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
 function assert(condition, message) { if (!condition) failures.push(message); }
 
-const METADATA_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
+const F1_METADATA_APPLIED_TYPES = ['chat-category-assign', 'chat-category-clear', 'chat-label-bind', 'chat-tag-bind'];
+const CURRENT_METADATA_APPLIED_TYPES = [
+  'chat-category-assign',
+  'chat-category-clear',
+  'chat-label-bind',
+  'chat-tag-bind',
+  'chat-label-unbind',
+  'chat-tag-unbind',
+];
 
 // Source-of-truth tokens that must exist in real source AND be cited in the doc.
 const SOURCE_AND_DOC_ANCHORS = [
@@ -111,7 +119,7 @@ assert(flat.includes('validator-only drift detector'), 'F1 doc must recommend th
 assert(!/folder sync is (now )?ready/i.test(flat), 'F1 doc must not over-claim folder sync readiness');
 
 // ---- metadata lane untouched (named in doc) ----
-for (const type of METADATA_APPLIED_TYPES) assert(flat.includes(type), `F1 doc must confirm metadata applied type: ${type}`);
+for (const type of F1_METADATA_APPLIED_TYPES) assert(flat.includes(type), `F1 doc must confirm metadata applied type: ${type}`);
 
 // ---- source anchors real in source AND cited in doc ----
 for (const [token, file] of SOURCE_AND_DOC_ANCHORS) {
@@ -127,7 +135,7 @@ if (exists(folderSyncFile)) {
   assert(Array.isArray(applied), 'could not parse the metadata applied allowlist from source');
   if (Array.isArray(applied)) {
     const sorted = applied.slice().sort();
-    const expected = METADATA_APPLIED_TYPES.slice().sort();
+    const expected = CURRENT_METADATA_APPLIED_TYPES.slice().sort();
     assert(sorted.length === expected.length && sorted.every((a, i) => a === expected[i]),
       `metadata applied allowlist drifted: expected exactly [${expected.join(', ')}], got [${sorted.join(', ')}]`);
   }
@@ -157,6 +165,7 @@ console.log(JSON.stringify({
   folderSyncReady: false,
   publicPremiumBlocked: true,
   realRemoteWebdavWaits: true,
-  metadataAllowlistUntouched: parseMetadataAllowlist(read(folderSyncFile)),
+  f1HistoricalMetadataAllowlist: F1_METADATA_APPLIED_TYPES,
+  currentMetadataAllowlist: parseMetadataAllowlist(read(folderSyncFile)),
 }, null, 2));
 console.log('PASS validate-folder-sync-f1-source-of-truth-reconciliation');

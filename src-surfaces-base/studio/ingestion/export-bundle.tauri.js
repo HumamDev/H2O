@@ -462,7 +462,6 @@
       byId[id] = merged || before;
     });
     var items = Object.create(null);
-    var primaryFolderIds = new Set(order);
     var addItems = function (rawItems, allowedFolderIds) {
       var normalized = normalizeFolderItems(rawItems);
       Object.keys(normalized).forEach(function (folderId) {
@@ -471,7 +470,6 @@
       });
     };
     addItems(primary.items);
-    addItems(fallback.items, primaryFolderIds);
     order.forEach(function (folderId) {
       if (!Object.prototype.hasOwnProperty.call(items, folderId)) items[folderId] = [];
     });
@@ -479,13 +477,11 @@
     var primaryBindingCount = countFolderBindings(primary.items);
     var fallbackBindingCount = countFolderBindings(fallback.items);
     var mergedBindingCount = countFolderBindings(items);
+    var skippedFallbackBindingCount = fallbackBindingCount;
     var fallbackAvailable = fallback.folders.length > 0 || fallbackBindingCount > 0;
-    var fallbackUsed = fallbackAvailable && (
-      mergedBindingCount > primaryBindingCount ||
-      filledVisualMetadataCount > 0
-    );
+    var fallbackUsed = fallbackAvailable && filledVisualMetadataCount > 0;
     var exportedFrom = fallbackUsed
-      ? (primary.folders.length ? 'desktop-sqlite+folder-state-cache' : fallback.exportedFrom)
+      ? (primary.folders.length ? 'desktop-sqlite+folder-state-cache-visuals' : fallback.exportedFrom)
       : 'desktop-sqlite';
     return {
       state: {
@@ -508,6 +504,10 @@
         fallbackSource: fallbackAvailable ? fallback.exportedFrom : '',
         fallbackFolderCount: fallback.folders.length,
         fallbackBindingCount: fallbackBindingCount,
+        skippedFallbackBindingCount: skippedFallbackBindingCount,
+        fallbackBindingAuthority: false,
+        fallbackItemsMerged: false,
+        canonicalBindingAuthority: 'desktop-sqlite',
         fallbackUsed: fallbackUsed,
         addedFolderCount: 0,
         skippedFallbackVisibleFolderCount: skippedFallbackVisibleFolderCount,
@@ -690,6 +690,38 @@
     return null;
   }
 
+  function hasDesktopFolderStoreAuthority(store) {
+    return !!(store && (
+      typeof store.getCanonicalChatFolderBindingForChat === 'function' ||
+      typeof store.listCanonicalChatFolderBindingsForChat === 'function' ||
+      typeof store.listCanonicalChatFolderBindings === 'function' ||
+      typeof store.listChats === 'function' ||
+      typeof store.list === 'function' ||
+      typeof store.getAll === 'function' ||
+      typeof store.get === 'function'
+    ));
+  }
+
+  async function getCanonicalFolderForChat(store, chatIdRaw) {
+    var chatId = cleanString(chatIdRaw);
+    if (!store || !chatId || typeof store.getCanonicalChatFolderBindingForChat !== 'function') return null;
+    try {
+      var binding = await store.getCanonicalChatFolderBindingForChat(chatId);
+      var folderId = cleanString(binding && (binding.folderId || binding.folder_id || binding.id));
+      if (!folderId) return null;
+      var folder = await getStoreRow(store, folderId);
+      if (folder) return folder;
+      return {
+        id: folderId,
+        folderId: folderId,
+        name: cleanString(binding && (binding.folderName || binding.folder_name || binding.name)) || folderId,
+        source: 'desktop-canonical-chat-folder-bindings',
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function peerTransportFailure(input, error, status) {
     var inp = safeObject(input);
     var syncPeerId = cleanString(inp.syncPeerId);
@@ -790,11 +822,14 @@
 
   async function collectRelated(stores, chat, folderStateFallback) {
     var chatId = cleanString(chat && chat.chatId);
+    var folderStore = stores && stores.folders;
+    var hasCanonicalFolderStore = hasDesktopFolderStoreAuthority(folderStore);
     var folderRows = await listForChat(stores.folders, chatId);
     var folder = folderRows[0] || null;
+    if (!folder) folder = await getCanonicalFolderForChat(folderStore, chatId);
     if (!folder && chat && chat.folderId) folder = await getStoreRow(stores.folders, chat.folderId);
-    if (!folder) folder = findFolderForChat(folderStateFallback, chatId);
-    if (!folder && chat && chat.folderId) {
+    if (!folder && !hasCanonicalFolderStore) folder = findFolderForChat(folderStateFallback, chatId);
+    if (!folder && !hasCanonicalFolderStore && chat && chat.folderId) {
       var fallbackState = normalizeFolderState(folderStateFallback, 'folder-state-cache');
       var fallbackFolders = asArray(fallbackState.folders);
       var wantedId = cleanString(chat.folderId);
