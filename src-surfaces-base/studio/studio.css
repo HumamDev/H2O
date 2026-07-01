@@ -8060,18 +8060,26 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
  * Studio classes are touched.
  * ──────────────────────────────────────────────────────────────────── */
 
+/* D2: three-state visibility model.
+ *   - Non-reader route: fully hidden.
+ *   - Reader route + closed: rail visible (44px), body collapsed.
+ *   - Reader route + open (.wbDock--open present): rail + body visible.
+ * Prior model hid the entire Dock when closed, which hid the rail too.
+ * The shell no longer toggles the `hidden` attribute on close — it
+ * strips the initial `hidden` attribute once at mount and controls
+ * state via the .wbDock--open class only. */
 #studioDock {
   display: none;
 }
 
-body[data-route="reader"] #studioDock.wbDock--open {
+/* Reader route, closed — rail-only strip on the right edge. */
+body[data-route="reader"] #studioDock {
   display: flex;
   position: fixed;
   top: 56px;
   right: 0;
   bottom: 0;
-  width: 340px;
-  max-width: 96vw;
+  width: 44px;
   z-index: 30;
   flex-direction: row;
   background: rgba(20, 20, 22, 0.94);
@@ -8081,6 +8089,18 @@ body[data-route="reader"] #studioDock.wbDock--open {
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
   backdrop-filter: saturate(140%) blur(6px);
   -webkit-backdrop-filter: saturate(140%) blur(6px);
+}
+
+/* Reader route, open — full panel (rail + body). */
+body[data-route="reader"] #studioDock.wbDock--open {
+  width: 340px;
+  max-width: 96vw;
+}
+
+/* When closed on the reader route, hide the body area entirely so only
+ * the rail column is visible. The rail continues to render. */
+body[data-route="reader"] #studioDock:not(.wbDock--open) [data-role="dock-body"] {
+  display: none;
 }
 
 .wbDockRail {

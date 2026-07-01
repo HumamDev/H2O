@@ -149,6 +149,11 @@
   const railListeners = [];        /* [{ el, fn }] */
   let activeRenderCleanup = null;  /* function | null */
 
+  /* D2: route refresh listeners. Bound once at install; removed at
+   * unmount. Idempotent — bindRouteRefresh() guards on the flag. */
+  let routeListenerBound = false;
+  let routeChangeHandler = null;
+
   /* ── Helpers ──────────────────────────────────────────────────────── */
   function isPlainObject(v) {
     return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -158,6 +163,42 @@
   }
   function isElement(v) {
     return !!v && typeof v === 'object' && typeof v.nodeType === 'number' && v.nodeType === 1;
+  }
+
+  /* D2: resolve the current Studio reader chat context for tab renders.
+   * Reads from three sources, all read-only:
+   *   1. document.body.dataset.route  (set by studio.js routeNameToBodyRoute)
+   *   2. H2O.Studio.getReaderContext() (added to studio.js for this
+   *      lane — exposes { snapshotId, chatId } from module-scoped
+   *      state.currentReaderSnapshot; returns empty strings when no
+   *      reader is open)
+   *   3. document.getElementById('viewReader') for tabs like Attachments
+   *      that scan the reader DOM.
+   * NEVER mutates state; NEVER invents an id; NEVER writes to storage. */
+  function resolveDockContext() {
+    const doc = (typeof document !== 'undefined') ? document : null;
+    const bodyRoute = (doc && doc.body && doc.body.dataset)
+      ? String(doc.body.dataset.route || '')
+      : '';
+    const isReader = bodyRoute === 'reader';
+    let snapshotId = '';
+    let chatId = '';
+    try {
+      const S = (typeof globalThis !== 'undefined' && globalThis.H2O && globalThis.H2O.Studio) || null;
+      if (S && typeof S.getReaderContext === 'function') {
+        const rc = S.getReaderContext() || {};
+        if (typeof rc.snapshotId === 'string') snapshotId = rc.snapshotId;
+        if (typeof rc.chatId === 'string')     chatId     = rc.chatId;
+      }
+    } catch (e) { recordError('resolveDockContext', e); }
+    return {
+      isReader: isReader,
+      route: bodyRoute,
+      snapshotId: snapshotId,
+      chatId: chatId,
+      externalId: chatId,   /* Studio: chatId IS the native external id */
+      readerRoot: doc ? doc.getElementById('viewReader') : null,
+    };
   }
   function recordError(op, e) {
     try {
@@ -203,22 +244,30 @@
   }
 
   /* ── DOM helpers ──────────────────────────────────────────────────── */
-  /* Apply current internalState.open to the mounted container, if any.
-   * Sets both the `hidden` attribute (for assistive tech and default
-   * CSS) and the open class (which the route-gated CSS rule keys off).
+  /* D2: apply current internalState.open to the mounted container.
+   *
+   * Prior model toggled the `hidden` HTML attribute on close, which
+   * forces `display: none` and defeats the reader-route-rail-visible
+   * CSS. New model uses CSS + the .wbDock--open class ONLY:
+   *
+   *   - Non-reader route: CSS default `#studioDock { display: none }`
+   *   - Reader route + closed: rail visible, body collapsed (CSS)
+   *   - Reader route + open (.wbDock--open present): rail + body visible
+   *
+   * We strip the initial `hidden` attribute from studio.html once (it
+   * exists for pre-JS a11y safety); after that state is class-only.
    * No-op when not mounted. */
   function applyOpenToDom() {
     if (!dockRefs.container) return;
     try {
+      /* One-shot: strip the initial `hidden` attribute if present. Any
+       * subsequent hiding is done via CSS on the route selector. */
+      if (dockRefs.container.hasAttribute('hidden')) {
+        dockRefs.container.removeAttribute('hidden');
+      }
       if (internalState.open) {
-        if (dockRefs.container.hasAttribute('hidden')) {
-          dockRefs.container.removeAttribute('hidden');
-        }
         dockRefs.container.classList.add(OPEN_CLASS);
       } else {
-        if (!dockRefs.container.hasAttribute('hidden')) {
-          dockRefs.container.setAttribute('hidden', '');
-        }
         dockRefs.container.classList.remove(OPEN_CLASS);
       }
     } catch (e) {
@@ -356,8 +405,15 @@
         ico.setAttribute('aria-hidden', 'true');
         ico.textContent = label;
         btn.appendChild(ico);
+        /* D2: rail click both switches tab AND opens the body if
+         * closed. Native-like: the rail is always visible in reader
+         * route (see studio.css), and clicking a rail button expands
+         * the body panel. If already open, just switch tab. */
         const handler = (function (tabId) {
-          return function () { setView(tabId); };
+          return function () {
+            if (!internalState.open) open();
+            setView(tabId);
+          };
         })(id);
         btn.addEventListener('click', handler);
         railListeners.push({ el: btn, fn: handler });
@@ -403,12 +459,22 @@
       } catch (e) { recordError('renderActiveView:empty', e); }
       return;
     }
+    /* D2: resolve current reader context and pass it to the tab. Tabs
+     * that need a chat id (Bookmarks/Notes/Context/Navigator/Capture/
+     * Finder) use ctx.chatId → ctx.externalId → ctx.snapshotId to pick
+     * the first non-empty; all empty means "no linked chat" and tabs
+     * render the linked-chat empty state. Attachments uses ctx.readerRoot
+     * only. Finder aggregates all six stores keyed by ctx.chatId. */
+    const dockCtx = resolveDockContext();
     const ctx = {
       surface: 'studio',
       phase: PHASE,
-      chatId: null,
-      externalId: null,
-      snapshotId: null,
+      chatId: dockCtx.chatId,
+      externalId: dockCtx.externalId,
+      snapshotId: dockCtx.snapshotId,
+      route: dockCtx.route,
+      isReader: dockCtx.isReader,
+      readerRoot: dockCtx.readerRoot,
     };
     try {
       const ret = def.render(dockRefs.view, ctx);
@@ -458,7 +524,47 @@
      * after mount trigger their own renderRail() via registerTab(). */
     renderRail();
     renderActiveView();
+    /* D2: bind route-change refresh so opening a different saved chat
+     * re-renders the active tab with the new chatId. Idempotent. */
+    bindRouteRefresh();
     softEmit(DOCK_SHELL_EVENTS.ready, { mounted: true });
+  }
+
+  /* D2: idempotent hashchange + reader-refresh listener. Studio.js
+   * updates state.currentReaderSnapshot synchronously in its own
+   * hashchange handler, but our handler may fire before or after —
+   * we defer via setTimeout(0) so the state has settled by the time
+   * we re-resolve context. */
+  function bindRouteRefresh() {
+    if (routeListenerBound) return;
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    routeChangeHandler = function () {
+      if (!dockRefs.container) return;
+      try {
+        setTimeout(function () {
+          if (!dockRefs.container) return;
+          renderActiveView();
+        }, 0);
+      } catch (e) { recordError('routeChangeHandler', e); }
+    };
+    try {
+      window.addEventListener('hashchange', routeChangeHandler, false);
+      window.addEventListener('evt:h2o:studio:reader-refresh-requested', routeChangeHandler, false);
+      routeListenerBound = true;
+    } catch (e) { recordError('bindRouteRefresh', e); }
+  }
+
+  function unbindRouteRefresh() {
+    if (!routeListenerBound) return;
+    if (typeof window === 'undefined' || typeof window.removeEventListener !== 'function') { routeListenerBound = false; routeChangeHandler = null; return; }
+    try {
+      if (routeChangeHandler) {
+        window.removeEventListener('hashchange', routeChangeHandler, false);
+        window.removeEventListener('evt:h2o:studio:reader-refresh-requested', routeChangeHandler, false);
+      }
+    } catch (e) { recordError('unbindRouteRefresh', e); }
+    routeListenerBound = false;
+    routeChangeHandler = null;
   }
   function unmount() {
     if (dockRefs.close && closeListener && typeof dockRefs.close.removeEventListener === 'function') {
@@ -474,6 +580,8 @@
       catch (e) { recordError('unmount:activeRenderCleanup', e); }
       activeRenderCleanup = null;
     }
+    /* D2: unbind the route-refresh listeners. */
+    unbindRouteRefresh();
     dockRefs.container = null;
     dockRefs.rail = null;
     dockRefs.body = null;

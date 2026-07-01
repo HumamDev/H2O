@@ -143,6 +143,22 @@ const state = {
   interfaceMetaByChat: {},
 };
 
+// D2 blocker: expose a read-only accessor for the current reader chat
+// context so the Studio Dock shell (dock-shell.studio.js) can route
+// per-chat Dock tabs to the correct data buckets. Returns empty strings
+// when no reader is open. Safe to call any time. Never mutates state.
+(function () {
+  const H2O = W.H2O = W.H2O || {};
+  H2O.Studio = H2O.Studio || {};
+  H2O.Studio.getReaderContext = function () {
+    const snap = state.currentReaderSnapshot;
+    return {
+      snapshotId: snap && snap.snapshotId ? String(snap.snapshotId) : "",
+      chatId:     snap && snap.chatId     ? String(snap.chatId)     : "",
+    };
+  };
+})();
+
 function esc(s){
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }

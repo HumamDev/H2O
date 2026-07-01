@@ -1,6 +1,6 @@
 # `src-surfaces-base/studio/dock/`
 
-Status: **Phase 2C is complete.** Phases 0B through 2C-F landed. All eight Dock tabs now render real read-only data: **Highlights**, **Bookmarks**, **Context**, **Notes**, **Navigator**, and **Capture** each render via their respective `H2O.Studio.store.*` façades; **Attachments** renders from the current Studio reader DOM (`#viewReader`); and **Finder** aggregates a local, in-memory, read-only search across the six persisted-store sources (Attachments search remains in the Attachments tab itself). Capture stays **inert in V1** with an always-on inert/V1 notice. No write-back, no conversion, no editing, no scroll/navigation integration in any tab.
+Status: **Phase 2C + D2 complete.** Phases 0B through 2C-F landed (all eight Dock tabs render real read-only data), and D2 wired the shell to the current Studio saved-chat context, added route-aware refresh, and switched the closed-state model so the rail is always visible on the reader route (native-like). Capture stays **inert in V1**; no write-back, no conversion, no editing, no scroll/navigation integration in any tab.
 
 Audience: anyone implementing or reviewing Phase 0B and later Dock Panel work.
 
@@ -784,3 +784,49 @@ What the tab renders:
 - No fuzzy matching / ranking — simple case-insensitive substring match for V1.
 - No grouping by source in the rendered list (sorted by source order, but no group headers).
 - No write-back / mutation surface anywhere in the tab.
+
+## D2 — what landed (chat-context sync + rail-visible-when-closed)
+
+Phase 2C shipped the 8 read-only tabs, but two behaviors were wrong:
+1. Every tab render received `{ chatId: null, externalId: null, snapshotId: null }` — so chat-scoped tabs always fell to the "Open a linked chat" empty state, and Highlights leaked data across all answer ids.
+2. The Dock rail was invisible when the Dock was closed — CSS hid the entire `#studioDock` container. Users on the reader route saw no affordance to open the Dock.
+
+D2 fixes both, plus wires route-change refresh.
+
+### What changed
+
+**`studio.js`** — one new read-only accessor:
+- `H2O.Studio.getReaderContext()` returns `{ snapshotId, chatId }` from the module-scoped `state.currentReaderSnapshot`. Empty strings when no reader is open. Never mutates. This is the minimal blocker (the shell can't reach `state` directly because it's module-scoped).
+
+**`dock-shell.studio.js`**:
+- New `resolveDockContext()` helper reads `document.body.dataset.route` + `H2O.Studio.getReaderContext()` + `document.getElementById('viewReader')` and returns `{ isReader, route, snapshotId, chatId, externalId, readerRoot }`. All read-only.
+- `renderActiveView()` now builds `ctx` from `resolveDockContext()` — real `chatId` / `externalId` / `snapshotId` / `route` / `isReader` / `readerRoot` flow to every tab.
+- New `bindRouteRefresh()` binds a single `hashchange` + `evt:h2o:studio:reader-refresh-requested` listener at mount. The handler defers via `setTimeout(fn, 0)` so studio.js has time to update `state.currentReaderSnapshot` before the shell re-resolves context.
+- `unmount()` calls `unbindRouteRefresh()`.
+- `applyOpenToDom()` no longer toggles the `hidden` HTML attribute. It strips the initial `hidden` attribute once at mount (kept in the HTML for pre-JS a11y safety), then toggles the `wbDock--open` class only.
+- Rail button click handler now calls `open()` before `setView(tabId)` — clicking a rail button in the closed state expands the body.
+
+**`studio.css`** — three-state visibility model:
+- Default (non-reader route): `#studioDock { display: none; }`
+- Reader route + closed: `body[data-route="reader"] #studioDock { display: flex; width: 44px; ... }` — rail-only strip on the right edge
+- Reader route + open (`.wbDock--open`): `width: 340px; max-width: 96vw;`
+- Body hidden when closed: `body[data-route="reader"] #studioDock:not(.wbDock--open) [data-role="dock-body"] { display: none; }`
+
+### Read-only / no-side-effects discipline (still holds)
+
+- No feature-store writes. Only `h2o:studio:dock*` prefs writes (open/view) from the shell.
+- No new persistence surface. The reader-context accessor is a pure read.
+- No `MutationObserver`, no `setInterval`, no polling. The route refresh listener is bound once at mount and unbound at unmount.
+- No `<button>` / `<a>` / `<img>` / `<textarea>` / `<input>` added to Capture or any other tab's DOM.
+- Capture remains inert. Finder query remains local-only.
+
+### Acceptance criteria (met by D2)
+
+- Opening saved chat A shows chat A's data in Bookmarks / Notes / Context / Navigator / Capture / Finder.
+- Opening saved chat B (via `#/read/<B>`) refreshes the active tab to chat B's data.
+- Missing `chatId` (snapshot-only chat) shows the linked-chat empty state — no `'unknown'` bucket contamination.
+- Reader route + closed: 8 rail buttons visible in a 44px column on the right edge.
+- Reader route + open: rail + 340px body panel visible; active tab content rendered from correct chat.
+- Non-reader routes: `#studioDock` fully hidden.
+- Clicking any rail button in the closed state opens the body AND switches to that tab.
+- All 8 tabs remain read-only. No write-back added anywhere.
