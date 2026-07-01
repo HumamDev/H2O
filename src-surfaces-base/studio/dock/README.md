@@ -830,3 +830,107 @@ D2 fixes both, plus wires route-change refresh.
 - Non-reader routes: `#studioDock` fully hidden.
 - Clicking any rail button in the closed state opens the body AND switches to that tab.
 - All 8 tabs remain read-only. No write-back added anywhere.
+
+## D3.1 — Native placement parity decision record (docs only)
+
+**Status:** Decision recorded. Not yet implemented. No code changes in this commit.
+
+### Why D3 is needed
+
+D2 fixed the *functional* Dock behavior (context flow, route refresh, rail visibility when closed), but the *placement* of the Dock is architecturally wrong for the product goal. Manual browser smoke confirmed:
+
+- The Studio Dock renders as a fixed right-edge panel anchored to the right side of `.wbStage` (44px rail column when closed, 340px full panel when open).
+- The native ChatGPT extension Dock renders on the **LEFT** side of the viewport.
+- The user's product intent is strict visual/behavioral parity with the native extension.
+
+D2 is therefore **functionally correct but placement-wrong** for the product goal.
+
+### Native Dock model (evidence from `src-runtime-base/3A1a.…Dock Panel.js`)
+
+| Aspect | Native behavior | Source |
+|---|---|---|
+| Rail host | `#stage-sidebar-tiny-bar` — ChatGPT's sidebar tiny-bar (the icon strip visible when the ChatGPT sidebar is collapsed) | 3A1a:185 (`SB_TINY_RAIL`), :669, :1433 |
+| Rail insertion | `stack.appendChild(wrap)` — the 8 rail button wrappers are appended into a stack inside the tiny-bar; each wrapper is a clone of the existing native `a[data-sidebar-item="true"]` template so it inherits native styling | 3A1a:1451-1559 |
+| Rail visibility | Rail lives inside the tiny-bar, which is **only shown when the ChatGPT sidebar is collapsed** | 3A1a:668-681 (`UI_DP_isSidebarCollapsedByRail`) |
+| Panel body host | `<aside>` created and `document.body.appendChild(panel)` — body-level element, not inside sidebar | 3A1a:883-933 (`UI_DPANEL_ensurePanel`) |
+| Panel positioning | `panel.style.left = <sidebar-rect.left>px; panel.style.width = <sidebar-rect.width>px;` — panel **overlays** the sidebar area using inline styles derived from the live sidebar rect. When sidebar is closed: `left = 0`, `width = 260`. | 3A1a:810-819 (`UI_DP_alignPanelToSidebar`) |
+| Closed state | Only rail (inside tiny-bar) is visible; panel is absent or `[cgxui-state=""]` | 3A1a:944, 1006, 1041 |
+| Open state | Rail + panel body overlays the sidebar column; does NOT push content, does NOT overlay the reader | above |
+
+**Native model summary:**
+- Rail buttons live **inside the sidebar's tiny-bar** (LEFT edge).
+- Panel body **overlays the sidebar area** (LEFT side, same left/width as the sidebar).
+- Panel is NOT a right-edge overlay of the main content.
+
+### Studio target model (strict native-placement parity)
+
+| Aspect | Studio target |
+|---|---|
+| Rail host | Inside `.wbRail` (Studio's tiny-bar equivalent at studio.html:35, currently a 56px left column shown when `body[data-sidebar="closed"]`) |
+| Rail insertion | New `<div class="wbDockRailStack" data-role="dock-rail">` appended into `.wbRail` after `#railSidebarBtn`; contains 8 rail buttons matching native color/txt/order |
+| Rail visibility | Reader route: rail buttons visible (regardless of sidebar state, or force sidebar collapse — resolved in D3.2). Non-reader route: hidden. |
+| Panel body host | New `<aside id="studioDockPanel" data-role="dock-body">` at the **shell level** — child of `.wbShell`, sibling to `.wbRail` / `.wbSide--sidebar` / `.wbStage`. **NOT inside `.wbStage`.** |
+| Panel positioning | `position: absolute; top: 0; bottom: 0; left: var(--wb-rail-w); width: var(--wb-side-w); z-index: 5;` — overlays the sidebar column. Closed: `display: none`. |
+| Route hiding | `body:not([data-route="reader"]) .wbDockRailStack, body:not([data-route="reader"]) #studioDockPanel { display: none; }` |
+| Existing `#studioDock` in `.wbStage` | **Removed.** The right-edge model does not exist in the target. |
+
+### Explicit decisions
+
+1. **Strict native-placement parity.** Studio Dock rail must appear at the LEFT edge, in the same position and orientation as the native ChatGPT Dock rail.
+2. **Left-side rail.** Rail buttons live inside `.wbRail`, not `.wbStage`. Buttons keep the same 44×44 colored-square + single-letter-txt shape mirrored from native (H/#C7A106, B/#2C7A4A, N/#A83A3A, A/#345E9E, V/#D47A38, C/#6740A8, P/#C05C95, F/#3FA7D6).
+3. **Sidebar-column overlay.** The Dock panel body overlays the `.wbSide--sidebar` column (LEFT), NOT the reader content (right). Its positioning mirrors native's `UI_DP_alignPanelToSidebar` behavior.
+4. **No right-edge Dock.** The current `#studioDock` inside `.wbStage` will be removed. There is no right-side Dock host in the target model.
+5. **D2 context resolver remains valid.** `H2O.Studio.getReaderContext()` (in studio.js) and `resolveDockContext()` (in dock-shell.studio.js) are unchanged by D3. The context flow, hashchange refresh, and `evt:h2o:studio:reader-refresh-requested` handler carry over verbatim.
+6. **All 8 tabs stay read-only.** No tab code, no store code, no tab CSS classes change. D3 is purely structural — moving the host DOM and repositioning via CSS.
+7. **Capture stays inert, Finder stays local-only.** No behavior change to either tab in D3.
+
+### Route/state behavior (target)
+
+| State | `.wbRail` | `.wbDockRailStack` (new) | `#studioDockPanel` (new) | `.wbSide--sidebar` |
+|---|---|---|---|---|
+| Non-reader route | Unchanged (Studio default: hidden when sidebar open, visible when sidebar closed) | Hidden | Hidden | Unchanged |
+| Reader route + Dock closed | Visible per Studio sidebar state; rail-stack overlays if needed | Visible (8 buttons) | Hidden | Visible (default) |
+| Reader route + Dock open | Visible | Visible (8 buttons; active button highlighted) | Visible — overlays sidebar column | Hidden underneath overlay |
+
+Clicking a rail button opens the Dock body and switches to that tab (D2 behavior, preserved verbatim). Close button collapses the Dock body but keeps the rail available. Route hiding is CSS-controlled by `body[data-route]`.
+
+### Files touched in the future D3 implementation phases
+
+| File | Expected D3 change | Phase |
+|---|---|---|
+| `src-surfaces-base/studio/studio.html` | Remove `#studioDock` from `.wbStage`; add `<div class="wbDockRailStack" data-role="dock-rail">` inside `.wbRail`; add `<aside id="studioDockPanel" data-role="dock-body">` at shell level | D3.2 |
+| `src-surfaces-base/studio/studio.css` | Remove D2 right-edge Dock rules; add rail-stack CSS and sidebar-overlay panel CSS with route gating | D3.3 |
+| `src-surfaces-base/studio/dock/dock-shell.studio.js` | Update `mount()` to accept split rail-host + body-host DOM refs; leave all context/refresh/render logic unchanged | D3.4 |
+| `src-surfaces-base/studio/dock/README.md` | Document each D3 sub-phase (2/3/4) and the browser-smoke results (5) | D3.2–D3.5 |
+
+### Non-goals (explicitly excluded from D3)
+
+- **No write-back.** All 8 tabs remain strictly read-only.
+- **No tab code changes.** `dock/tabs/*.tab.studio.js` are untouched.
+- **No store code changes.** `store/{highlights,bookmarks,notes,context,navigator,capture,prefs}.js` are untouched.
+- **No native runtime edits.** `src-runtime-base/*` is not touched.
+- **No Ribbon / Overlay / appearance / Tauri / sync file edits.** D3 is scoped to the Dock host + CSS + shell mount code only.
+- **No feature/UX additions** beyond placement parity (no thumbnails, no click-to-scroll, no keyboard shortcuts, no persistence, no new controls).
+- **No changes to `H2O.Studio.getReaderContext()`.** The D2 accessor stays as-is.
+- **No changes to `dock-keys.js` or route-refresh listeners.** D2 wiring carries over verbatim.
+
+### Open questions to resolve before D3.2 (implementation)
+
+1. Should the Dock rail (`.wbDockRailStack`) be visible on reader route **regardless of sidebar state**, or ONLY when `body[data-sidebar="closed"]` (strict native — native rail only shows when ChatGPT sidebar is collapsed)?
+2. When the user opens Dock on reader route with the sidebar open, should Studio **force sidebar collapse** (via `body.dataset.sidebar = "closed"`), or should the Dock panel simply overlay the visible sidebar?
+3. Does the sidebar-column overlay use `position: absolute` (inside `.wbShell`) or `position: fixed` (with inline `left`/`width` mirroring native's `UI_DP_alignPanelToSidebar` pattern)?
+
+These are resolved at the start of D3.2 based on visual comparison against native and user preference.
+
+### Acceptance for D3.1 (this record)
+
+- [x] D2 outcome (functional correctness, wrong placement) documented.
+- [x] Native placement model documented with source-line references.
+- [x] Studio target model documented with explicit DOM/CSS positioning.
+- [x] Explicit decisions listed.
+- [x] Route/state behavior table provided.
+- [x] Future-phase file plan listed.
+- [x] Non-goals listed.
+- [x] No code files changed in this commit.
+
+Next step: **D3.2 — split-host Dock placement** (implementation phase, blocked on the three open questions above).
