@@ -3294,6 +3294,48 @@
     return strip;
   }
 
+  /* Phase 8b — OneNote-style iconification of already-wired Format-tab
+   * actions. Keyed by action.id: if an entry exists here, the button
+   * render below replaces its text label with the SVG icon (label
+   * stays as aria-label + title for a11y + tooltip). All icons are
+   * original 16×16 viewBox with 1.6px currentColor strokes and
+   * rounded caps/joins — matches the visual language of the existing
+   * Undo/Redo/collapse chevron icons shipped in Phase 7b repair 11.
+   *
+   * DELIBERATELY NOT ICONIFIED:
+   *  - edit-mode (Phase 7a filled-blue pill stays as text)
+   *  - h1/h2/h3 (labels ARE the meaningful glyph)
+   *  - text-color-*, highlight-brush-* (Phase 6c compact color dots)
+   *  - text-color-none, highlight-clear-message, highlight-visibility
+   *    (semantic text pills)
+   *  - visual-tag-* (Annotate group — semantic labels)
+   *
+   * No new action IDs. No handler changes. No behavior changes. */
+  const ACTION_ICONS = {
+    /* Font group */
+    'bold': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3v10"/><path d="M4 3h4a2.5 2.5 0 0 1 0 5H4"/><path d="M4 8h5a2.5 2.5 0 0 1 0 5H4"/></svg>',
+    'italic': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 3H11"/><path d="M5 13h4.5"/><path d="M9.5 3l-3 10"/></svg>',
+    'underline': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3v5a4 4 0 0 0 8 0V3"/><path d="M3 14h10"/></svg>',
+    'strikethrough': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5a3 3 0 0 0-3-2h-1a2.3 2.3 0 0 0 0 4.6h2A2.7 2.7 0 0 1 11 10.3v.2A2.5 2.5 0 0 1 8.5 13H7a3 3 0 0 1-3-2"/><path d="M2 8h12"/></svg>',
+    'clear-formatting': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3h6"/><path d="M8 3v6"/><path d="M2 14l12-12"/></svg>',
+    /* Paragraph group — lists */
+    'list-bullet': '<svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true" focusable="false"><circle cx="3" cy="4" r="1"/><circle cx="3" cy="8" r="1"/><circle cx="3" cy="12" r="1"/><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" d="M6.5 4h7.5M6.5 8h7.5M6.5 12h7.5"/></svg>',
+    'list-numbered': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 4h7.5"/><path d="M6.5 8h7.5"/><path d="M6.5 12h7.5"/><text x="1" y="5" fill="currentColor" stroke="none" font-family="Helvetica,Arial,sans-serif" font-size="4.5" font-weight="600">1</text><text x="1" y="9" fill="currentColor" stroke="none" font-family="Helvetica,Arial,sans-serif" font-size="4.5" font-weight="600">2</text><text x="1" y="13" fill="currentColor" stroke="none" font-family="Helvetica,Arial,sans-serif" font-size="4.5" font-weight="600">3</text></svg>',
+    /* Paragraph group — alignment */
+    'align-left': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h12"/><path d="M2 7h8"/><path d="M2 11h12"/><path d="M2 15h8"/></svg>',
+    'align-center': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h12"/><path d="M4 7h8"/><path d="M2 11h12"/><path d="M4 15h8"/></svg>',
+    'align-right': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h12"/><path d="M6 7h8"/><path d="M2 11h12"/><path d="M6 15h8"/></svg>',
+    /* Paragraph group — indentation */
+    'indent': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h12"/><path d="M6 7h8"/><path d="M6 11h8"/><path d="M2 15h12"/><path d="M2 7l3 2-3 2"/></svg>',
+    'outdent': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h12"/><path d="M6 7h8"/><path d="M6 11h8"/><path d="M2 15h12"/><path d="M5 7l-3 2 3 2"/></svg>',
+    /* Blocks group */
+    'quote': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 4a2 2 0 0 1 2 2v1a3 3 0 0 1-3 3"/><path d="M9 4a2 2 0 0 1 2 2v1a3 3 0 0 1-3 3"/><path d="M3 4h2"/><path d="M9 4h2"/></svg>',
+    'code': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 4L2 8l3 4"/><path d="M11 4l3 4-3 4"/></svg>',
+    'callout': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6"/><path d="M8 7v4"/><circle cx="8" cy="5" r=".6" fill="currentColor" stroke="none"/></svg>',
+    /* Cleanup group */
+    'clean-spacing': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 2h10"/><path d="M3 14h10"/><path d="M8 5v6"/><path d="M6 7l2-2 2 2"/><path d="M6 9l2 2 2-2"/></svg>',
+  };
+
   function buildPanels(shell, visibleTabs, activeTabId) {
     const panels = el('div', { class: 'wbRibbonPanels' });
     /* Phase 1b — context-aware enabled/disabled decision per action. */
@@ -3437,6 +3479,20 @@
             attrs.disabled = 'disabled';
           }
           const btn = el('button', attrs, action.label);
+          /* Phase 8b — iconify existing wired Format-tab actions. Only
+           * actions listed in ACTION_ICONS get the SVG treatment; all
+           * others fall through unchanged (text pills for H1/H2/H3 /
+           * Edit Mode / None / Clear / Hide / Annotate tags, compact
+           * dots for 6c swatches). The action.label stays as the
+           * accessible name (aria-label) + tooltip (title). No action
+           * ID or handler is touched. */
+          const iconSvg = ACTION_ICONS[action.id];
+          if (iconSvg) {
+            btn.classList.add('wbRibbonAction--icon');
+            btn.setAttribute('aria-label', action.label);
+            btn.setAttribute('title', action.label);
+            btn.innerHTML = iconSvg;
+          }
           actionsRow.appendChild(btn);
         });
         groupEl.appendChild(actionsRow);

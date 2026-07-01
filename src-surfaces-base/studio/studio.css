@@ -7302,6 +7302,28 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   border-color:transparent;
   box-shadow:none;
 }
+/* Phase 8b — OneNote-style icon variant for wired Format-tab actions.
+ * S0Y1a's render pass adds .wbRibbonAction--icon (via ACTION_ICONS
+ * lookup by action.id) for Font / Paragraph / Blocks / Cleanup
+ * actions that have SVG icons. Text labels stay in the DOM as
+ * aria-label + title. Layers above the 8a bare-by-default base
+ * (transparent border/bg, hover surface, focus-visible outline) and
+ * does NOT interfere with 6c swatch overrides (which use
+ * higher-specificity [data-action-id^="text-color-"] /
+ * [^="highlight-brush-"] selectors) or 7a Edit Mode filled-blue pill
+ * (which uses [data-action-id="edit-mode"][aria-pressed="true"]). */
+.wbRibbonAction--icon{
+  width:28px;
+  min-width:28px;
+  padding:0;
+  font-size:0;
+}
+.wbRibbonAction--icon > svg{
+  width:14px;
+  height:14px;
+  flex:0 0 auto;
+  display:block;
+}
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{
   opacity:.45;
