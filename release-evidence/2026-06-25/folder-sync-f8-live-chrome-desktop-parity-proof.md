@@ -2,7 +2,7 @@
 
 F8 DESKTOP EXPORT PARITY - PASSED_DESKTOP_EXPORT_PARITY
 
-CHROME_PROOF_PENDING
+F8 CHROME DESKTOP FOLDER PARITY - PASSED_CHROME_DESKTOP_FOLDER_PARITY
 
 ## Result
 
@@ -11,9 +11,9 @@ F8 Desktop export parity passed after the committed export parity fix:
 - fix commit: `58a09933bfe52388a5e714a16f30647ad3ef05a1`
 - fix commit message: `fix(sync): skip orphan folder export items`
 - Desktop export parity verdict: `PASSED_DESKTOP_EXPORT_PARITY`
-- Chrome proof status: `CHROME_PROOF_PENDING`
+- Chrome proof status: `PASSED_CHROME_DESKTOP_FOLDER_PARITY`
 
-F8 did not proceed to Chrome proof in this slice. The purpose of this evidence is only to prove the fresh Desktop export is internally consistent after the orphan `folderState.items` filter.
+F8 Chrome proof used existing gated Chrome Studio CDP diagnostics against the already imported clean Desktop export. The direct `syncNow({ direction: "desktop-to-chrome" })` import command was not run by the agent because live-profile mutation was rejected by policy; this is not a parity blocker because read-only diagnostics showed Chrome had already imported the Desktop export from `2026-07-01T10:59:17.139Z`.
 
 ## Initial Blocked Export
 
@@ -150,7 +150,88 @@ The DevTools `copy()` helper failed with `ReferenceError: Can't find variable: c
 
 F8 Desktop export parity passed.
 
-The correct Chrome expected active canonical count is `12`. Chrome proof remains pending and must start from this clean Desktop export baseline.
+The correct Chrome expected active canonical count is `12`. Chrome proof was collected from this clean Desktop export baseline and passed.
+
+## Chrome Proof After Desktop Pass
+
+Chrome Studio target:
+
+- surface: `chrome-extension-studio`
+- adapter: `mv3`
+- CDP port: `9247`
+- target URL: `chrome-extension://<redacted>/surfaces/studio/studio.html?h2oSmokeBridge=folder-sync-rc#/library/category/cat_product_ux_design`
+- proof mode: existing gated read-only diagnostics
+- direct mutation/import attempt: not executed by agent because live Chrome profile mutation was rejected by policy
+- Chrome proof verdict: `PASSED_CHROME_DESKTOP_FOLDER_PARITY`
+
+Desktop latest identity observed by Chrome diagnostics:
+
+- Desktop latest exportedAt: `2026-07-01T10:59:17.139Z`
+- Desktop visible set importedAt: `2026-07-01T11:08:06.161Z`
+- Desktop latest path: `H2O Studio Sync/latest.json`
+- Desktop latest file size: `849375`
+- Desktop latest file last modified: `1782903557155`
+- Desktop baseline contentSha256: `sha256:6c79db9cd2adc045f914ae7ae9e64913afc7f4ac55c8248ca08c5f40265a5eb4`
+- Desktop baseline fileSha256: `sha256:fb2303ff9c3cc59163304709740913a38b0cd2c32b5128bff7e634d0ba5da95a`
+- schema: `h2o.studio.fullBundle.v2`
+
+Chrome folder catalog / visible-set parity:
+
+- exported folder catalog count: `6`
+- Chrome known canonical fallback raw folder count: `6`
+- Desktop latest visible folder count: `5`
+- Chrome visible folder count: `5`
+- Chrome-only visible folder count: `0`
+- Desktop-only visible folder count: `0`
+- latest-only visible folder count: `0`
+- duplicate names with different ids: `0`
+- hidden-but-exported count: `0`
+- visible-but-not-exported count: `0`
+- desktop fallback mirror visible authority: `false`
+- desktop fallback mirror metadata fill only: `true`
+- no tombstone apply on Chrome: `true`
+- no tombstone create on Chrome: `true`
+
+Chrome folder binding parity:
+
+- canonical source: `desktop-canonical-chat-folder-bindings`
+- totalBindingCount: `12`
+- importedDesktopCanonicalBindingCount: `12`
+- chromeBindingCount: `12`
+- chromeDisplayBindingCount: `12`
+- chromeCanonicalBindingCount: `12`
+- comparableBindingCount: `12`
+- missingInChromeCount: `0`
+- extraInChromeCount: `0`
+- folderCountMismatchCount: `0`
+- desktopInvalidBindingCount: `0`
+- chromeInvalidBindingCount: `0`
+- parityComparable: `true`
+- parityOk: `true`
+- chromeCanonicalBindingProjectionAvailable: `true`
+- chromeCanonicalBindingProjectionSchema: `h2o.studio.chat-folder-bindings.desktop-canonical.v1`
+- chatFolderBindingRequestPendingCount: `0`
+- chromePendingBindingRequestCount: `0`
+- chatFolderBindingRequestTotalCount: `0`
+- chromeBindingRequestsAreRequestOnly: `true`
+- noChromeDestructiveBindingApply: `true`
+- noDesktopCanonicalMutation: `true`
+
+Chrome product / transport boundary proof:
+
+- productSyncReady: `false`
+- fullBundleV3Present: `false`
+- webdavCloudArchiveCasMarkersPresent: `false`
+- chatSavingPackageBodyMarkersPresent: `false`
+- no Chrome canonical folder mutation: `true`
+- no Chrome destructive folder apply: `true`
+- no hard delete: `true`
+- no purge: `true`
+- no chat delete: `true`
+- no snapshot delete: `true`
+- no folder binding repair/write-through: `true`
+
+The read-only diagnostics contained raw runtime rows in command output, but this evidence records only redacted paths, counts, hashes, booleans, and schemas. No raw chat titles/content are included here.
 
 ## Fix Summary
 
@@ -175,11 +256,12 @@ Validator follow-up should extend F7/F8 coverage to prove:
 - active exported canonical count is the Chrome comparison count
 - `folderState.items` excludes orphan folder ids not present in the folder catalog
 - skipped orphan primary item count is recorded
-- Chrome proof remains pending
+- Chrome proof passed from the clean Desktop export baseline
 
 ## Boundaries Preserved
 
-- No Chrome proof was run in this slice.
+- Chrome proof was run through gated read-only diagnostics only.
+- No agent-driven live Chrome import mutation was performed.
 - No archive package code was touched.
 - No WebDAV/cloud/archive CAS implementation.
 - No `fullBundle.v3` mint.
