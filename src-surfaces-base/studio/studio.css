@@ -7324,6 +7324,137 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   flex:0 0 auto;
   display:block;
 }
+
+/* ── Phase 8c-1 — OneNote-style split-button primitive ───────────────────────
+ *
+ * A composite two-half pill for palette groups whose per-action buttons
+ * would otherwise flood the ribbon (Text Color first; Highlight and
+ * Alignment in later slices). Both halves are wrapped in one
+ * .wbRibbonSplitBtn container so they visually read as ONE control:
+ * the left half re-invokes the last-picked palette entry, the right
+ * half opens a popover of every entry. See __buildSplitButton in
+ * S0Y1a. */
+.wbRibbonSplitBtn{
+  display:inline-flex;
+  align-items:stretch;
+  height:28px;
+  border-radius:4px;
+  overflow:visible;
+  background:transparent;
+}
+.wbRibbonSplitBtn__main,
+.wbRibbonSplitBtn__chevron{
+  appearance:none;
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--sui-text, currentColor);
+  font:inherit;
+  padding:0;
+  margin:0;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:28px;
+  border-radius:0;
+  transition:background-color 120ms ease, border-color 120ms ease;
+}
+.wbRibbonSplitBtn__main{
+  min-width:32px;
+  padding:0 6px;
+  border-top-left-radius:4px;
+  border-bottom-left-radius:4px;
+  gap:2px;
+  flex-direction:column;
+}
+.wbRibbonSplitBtn__chevron{
+  min-width:16px;
+  padding:0 3px;
+  border-top-right-radius:4px;
+  border-bottom-right-radius:4px;
+}
+.wbRibbonSplitBtn__main:hover:not([disabled]),
+.wbRibbonSplitBtn__chevron:hover:not([disabled]){
+  background:var(--sui-hover, rgba(0,0,0,.06));
+  border-color:var(--sui-border, rgba(0,0,0,.14));
+}
+.wbRibbonSplitBtn__main:focus-visible,
+.wbRibbonSplitBtn__chevron:focus-visible{
+  outline:2px solid var(--sui-focus, #2d7bd8);
+  outline-offset:1px;
+}
+.wbRibbonSplitBtn__main[disabled],
+.wbRibbonSplitBtn__chevron[disabled]{
+  opacity:.45;
+  cursor:not-allowed;
+}
+.wbRibbonSplitBtn__main > svg,
+.wbRibbonSplitBtn__chevron > svg{
+  display:block;
+  pointer-events:none;
+  flex:0 0 auto;
+}
+.wbRibbonSplitBtn__main > svg{
+  width:14px;
+  height:12px;
+}
+.wbRibbonSplitBtn__chevron > svg{
+  width:10px;
+  height:6px;
+}
+.wbRibbonSplitBtn__swatch{
+  display:block;
+  width:14px;
+  height:3px;
+  border-radius:1px;
+  background:currentColor;
+  flex:0 0 auto;
+}
+
+/* Popover mounted at document.body so it can escape ribbon overflow
+ * clipping. Click-outside and Escape both close it — see
+ * __openSplitPopoverFor in S0Y1a for the capture-phase listener wiring
+ * that mirrors the existing appearance-panel three-dots menu pattern. */
+.wbRibbonPopover{
+  position:absolute;
+  z-index:1000;
+  padding:6px;
+  background:var(--sui-surface, #fff);
+  border:1px solid var(--sui-border, rgba(0,0,0,.16));
+  border-radius:6px;
+  box-shadow:0 4px 14px rgba(0,0,0,.14);
+  display:grid;
+  grid-template-columns:repeat(5, 24px);
+  gap:4px;
+}
+.wbRibbonPopover__item{
+  appearance:none;
+  border:1px solid transparent;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  padding:0;
+  margin:0;
+  cursor:pointer;
+  width:24px;
+  height:24px;
+  border-radius:4px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+.wbRibbonPopover__item[data-swatch-color]{
+  background:var(--wbRibbonPopoverItemColor, transparent);
+  border-color:rgba(0,0,0,.14);
+}
+.wbRibbonPopover__item:hover:not([disabled]){
+  border-color:var(--sui-focus, #2d7bd8);
+}
+.wbRibbonPopover__item:focus-visible{
+  outline:2px solid var(--sui-focus, #2d7bd8);
+  outline-offset:1px;
+}
+
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{
   opacity:.45;

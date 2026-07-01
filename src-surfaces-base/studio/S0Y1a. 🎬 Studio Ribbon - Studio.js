@@ -3336,6 +3336,168 @@
     'clean-spacing': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 2h10"/><path d="M3 14h10"/><path d="M8 5v6"/><path d="M6 7l2-2 2 2"/><path d="M6 9l2 2 2-2"/></svg>',
   };
 
+  /* Phase 8c-1 — OneNote-style split-button primitive.
+   *
+   * Some Format-tab groups (Text Color for now; Highlight and Alignment
+   * follow in 8c-2/8c-3) are palettes rather than icon rows. Rendering
+   * every palette entry as a full 28x28 icon button drowns the ribbon
+   * and diverges from the OneNote reference. Instead, when a group id
+   * appears in SPLIT_BUTTONS the render pass collapses the palette
+   * into ONE composite button: a main half that re-invokes the last-
+   * picked palette entry and a chevron half that opens a popover of
+   * every entry.
+   *
+   * Intentionally minimal — no new action ids, no new overlay op
+   * types, no new ACTION_HANDLERS entries. Both halves dispatch
+   * through the existing catalogue actions via data-action-id and
+   * the ribbon's existing delegated click handler. Popover open/
+   * close is local DOM state, and last-picked-per-group persists
+   * across re-renders in a module-level map.
+   */
+  const TEXT_COLOR_SWATCH_HEX = {
+    'text-color-red':    '#C53030',
+    'text-color-green':  '#2F855A',
+    'text-color-blue':   '#2C5282',
+    'text-color-orange': '#C05621',
+    'text-color-gray':   '#4A5568',
+  };
+  const CHEVRON_ICON = '<svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M1 1.5l4 3 4-3"/></svg>';
+  const TEXT_COLOR_GLYPH_ICON = '<svg viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 11L7.5 3l3.5 8"/><path d="M5 8h5"/></svg>';
+  const SPLIT_BUTTONS = {
+    'text-color': {
+      kind: 'text-color',
+      mainAriaLabel: 'Apply text color',
+      chevronAriaLabel: 'Choose text color',
+      defaultActionId: 'text-color-red',
+      glyphIcon: TEXT_COLOR_GLYPH_ICON,
+      hexById: TEXT_COLOR_SWATCH_HEX,
+    },
+  };
+  const __splitBtnLastPicked = { 'text-color': 'text-color-red' };
+  let __openSplitPopover = null;
+
+  function __closeSplitPopover() {
+    if (!__openSplitPopover) return;
+    const rec = __openSplitPopover;
+    __openSplitPopover = null;
+    try { document.removeEventListener('mousedown', rec.onDocMouseDown, true); } catch (_) {}
+    try { document.removeEventListener('keydown', rec.onDocKeydown, true); } catch (_) {}
+    if (rec.node && rec.node.parentNode) rec.node.parentNode.removeChild(rec.node);
+    if (rec.trigger) { try { rec.trigger.setAttribute('aria-expanded', 'false'); } catch (_) {} }
+  }
+
+  function __openSplitPopoverFor(cfg, actions, ctx, triggerEl, onPick) {
+    __closeSplitPopover();
+    const pop = el('div', {
+      class: 'wbRibbonPopover wbRibbonPopover--' + cfg.kind,
+      role: 'menu',
+      'aria-label': cfg.chevronAriaLabel || 'Choose',
+    });
+    Object.keys(actions).forEach(function (aid) {
+      const action = actions[aid];
+      const item = el('button', {
+        type: 'button',
+        class: 'wbRibbonPopover__item wbRibbonPopover__item--' + cfg.kind,
+        role: 'menuitem',
+        'data-action-id': action.id,
+        title: action.label,
+        'aria-label': action.label,
+      });
+      if (cfg.kind === 'text-color' && cfg.hexById && cfg.hexById[action.id]) {
+        item.setAttribute('data-swatch-color', action.id.replace('text-color-', ''));
+        item.style.setProperty('--wbRibbonPopoverItemColor', cfg.hexById[action.id]);
+      }
+      item.addEventListener('click', function () {
+        __splitBtnLastPicked[cfg.kind] = action.id;
+        try { if (typeof onPick === 'function') onPick(action); } catch (_) {}
+        __closeSplitPopover();
+      });
+      pop.appendChild(item);
+    });
+    document.body.appendChild(pop);
+    const r = triggerEl.getBoundingClientRect();
+    pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
+    pop.style.left = (window.scrollX + r.left) + 'px';
+
+    const onDocMouseDown = function (ev) {
+      if (pop.contains(ev.target) || triggerEl.contains(ev.target)) return;
+      __closeSplitPopover();
+    };
+    const onDocKeydown = function (ev) {
+      if (ev.key === 'Escape') { __closeSplitPopover(); try { triggerEl.focus(); } catch (_) {} }
+    };
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    document.addEventListener('keydown',  onDocKeydown,  true);
+    __openSplitPopover = {
+      node: pop, trigger: triggerEl,
+      onDocMouseDown: onDocMouseDown, onDocKeydown: onDocKeydown,
+    };
+    try { triggerEl.setAttribute('aria-expanded', 'true'); } catch (_) {}
+  }
+
+  function __buildSplitButton(cfg, actions, ctx) {
+    const currentId = __splitBtnLastPicked[cfg.kind] || cfg.defaultActionId;
+    const currentAction = actions[currentId] || null;
+    const anyAid = currentAction ? currentAction.id : Object.keys(actions)[0];
+    const anyHandler = anyAid && ACTION_HANDLERS[anyAid];
+    let enabled = false;
+    if (anyHandler && typeof anyHandler.isEnabled === 'function') {
+      try { enabled = !!anyHandler.isEnabled(ctx); } catch (_) { enabled = false; }
+    }
+    const wrap = el('div', { class: 'wbRibbonSplitBtn wbRibbonSplitBtn--' + cfg.kind });
+    const main = el('button', {
+      type: 'button',
+      class: 'wbRibbonSplitBtn__main wbRibbonSplitBtn__main--' + cfg.kind,
+      'data-action-id': currentAction ? currentAction.id : '',
+      'aria-label': cfg.mainAriaLabel || (currentAction ? currentAction.label : ''),
+      'aria-disabled': enabled ? 'false' : 'true',
+      title: (cfg.mainAriaLabel || 'Apply') + (currentAction ? (' — ' + currentAction.label) : ''),
+    });
+    if (!enabled) main.setAttribute('disabled', 'disabled');
+    main.innerHTML = cfg.glyphIcon || '';
+    if (cfg.kind === 'text-color') {
+      const swatch = el('span', { class: 'wbRibbonSplitBtn__swatch' });
+      if (cfg.hexById && cfg.hexById[currentId]) {
+        swatch.style.background = cfg.hexById[currentId];
+      }
+      main.appendChild(swatch);
+    }
+    const chev = el('button', {
+      type: 'button',
+      class: 'wbRibbonSplitBtn__chevron wbRibbonSplitBtn__chevron--' + cfg.kind,
+      'aria-label': cfg.chevronAriaLabel || 'Open',
+      'aria-haspopup': 'menu',
+      'aria-expanded': 'false',
+      'aria-disabled': enabled ? 'false' : 'true',
+    });
+    if (!enabled) chev.setAttribute('disabled', 'disabled');
+    chev.innerHTML = CHEVRON_ICON;
+    chev.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!enabled) return;
+      if (__openSplitPopover && __openSplitPopover.trigger === chev) {
+        __closeSplitPopover();
+        return;
+      }
+      __openSplitPopoverFor(cfg, actions, ctx, chev, function (picked) {
+        try {
+          main.setAttribute('data-action-id', picked.id);
+          main.setAttribute('title', (cfg.mainAriaLabel || 'Apply') + ' — ' + picked.label);
+          if (cfg.kind === 'text-color') {
+            const sw = main.querySelector('.wbRibbonSplitBtn__swatch');
+            if (sw && cfg.hexById && cfg.hexById[picked.id]) {
+              sw.style.background = cfg.hexById[picked.id];
+            }
+          }
+        } catch (_) {}
+      });
+    });
+    wrap.appendChild(main);
+    wrap.appendChild(chev);
+    return wrap;
+  }
+
   function buildPanels(shell, visibleTabs, activeTabId) {
     const panels = el('div', { class: 'wbRibbonPanels' });
     /* Phase 1b — context-aware enabled/disabled decision per action. */
@@ -3358,8 +3520,17 @@
         const groupEl = el('div', { class: 'wbRibbonGroup', 'data-group-id': group.id });
         const actionsRow = el('div', { class: 'wbRibbonGroupActions' });
         const actions = shell.actionsForGroup(tab.id, group.id);
+        /* Phase 8c-1 — Split-button render for palette-style groups.
+         * When a group id appears in SPLIT_BUTTONS (Text Color for
+         * now; Highlight + Alignment in later slices) we render one
+         * composite split button here and skip the per-action pass. */
+        const __splitCfg = SPLIT_BUTTONS[group.id];
+        if (__splitCfg) {
+          actionsRow.appendChild(__buildSplitButton(__splitCfg, actions, ctx));
+        }
         Object.keys(actions).forEach(function (aid) {
           const action = actions[aid];
+          if (__splitCfg) return;
           if (tab.id === 'home' && action.id === 'refresh-reader') {
             const refreshButton = prepareRefreshButton(getRefreshButton());
             if (refreshButton) {
