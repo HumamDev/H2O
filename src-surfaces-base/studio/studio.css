@@ -8235,76 +8235,85 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * Studio Dock Panel (Phase 2A — UI shell, no feature tabs yet)
+ * Studio Dock Panel — native-left split-host placement (D3.2)
  *
- * The dock-shell module auto-mounts onto #studioDock at DOMContentLoaded
- * and toggles .wbDock--open via open() / close(). CSS controls
- * visibility:
- *   - default: hidden everywhere
- *   - shown only when route is "reader" AND .wbDock--open is set
+ * D3.2 moved the Dock from a right-edge overlay (D2) to native-parity
+ * placement mirroring the ChatGPT extension Dock:
+ *   - Rail buttons live in .wbDockRailStack inside .wbRail (Studio's
+ *     left tiny-rail — the analog of ChatGPT's #stage-sidebar-tiny-bar).
+ *   - Panel body #studioDockPanel lives at .wbShell level and overlays
+ *     the sidebar column (position:absolute; left:rail-w; width:side-w),
+ *     mirroring native's UI_DP_alignPanelToSidebar.
  *
- * The panel floats over the right edge of the viewport (position:fixed)
- * so adding it does not restructure .wbStage / .wbMain. Phase 2B/2C
- * may switch to an integrated flex layout once feature tabs land.
+ * Visibility:
+ *   - Non-reader route: rail + panel hidden.
+ *   - Reader route: shell reveals the tiny-rail with Dock buttons; the
+ *     panel toggles via the .wbDock--open class.
  *
- * Class scope: all rules begin with .wbDock or #studioDock — no other
- * Studio classes are touched.
+ * The reader-route grid override reveals the tiny-rail regardless of the
+ * saved sidebar state. It is a scoped, NON-persistent CSS override — it
+ * never writes data-sidebar, so the user's saved sidebar preference is
+ * intact and restored on leaving the reader route.
+ *
+ * Class scope: all rules begin with .wbDock / #studioDockPanel, plus a
+ * reader-route-scoped override of .wbShell / .wbRail. No other Studio
+ * classes are restructured.
  * ──────────────────────────────────────────────────────────────────── */
 
-/* D2: three-state visibility model.
- *   - Non-reader route: fully hidden.
- *   - Reader route + closed: rail visible (44px), body collapsed.
- *   - Reader route + open (.wbDock--open present): rail + body visible.
- * Prior model hid the entire Dock when closed, which hid the rail too.
- * The shell no longer toggles the `hidden` attribute on close — it
- * strips the initial `hidden` attribute once at mount and controls
- * state via the .wbDock--open class only. */
-#studioDock {
-  display: none;
+/* Positioning context for the absolutely-placed panel. */
+.wbShell {
+  position: relative;
 }
 
-/* Reader route, closed — rail-only strip on the right edge. */
-body[data-route="reader"] #studioDock {
+/* Reader route: reveal the tiny-rail column (Dock buttons live there)
+ * and collapse the sidebar column. Native-faithful — the Dock context
+ * uses the collapsed tiny-bar. Does NOT mutate data-sidebar. */
+body[data-route="reader"] .wbShell {
+  grid-template-columns: var(--wb-rail-w) 0 minmax(0, 1fr);
+}
+body[data-route="reader"] .wbRail {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Dock rail stack — vertical column of tab buttons under the sidebar
+ * toggle in the tiny-rail. Hidden off the reader route. Individual
+ * button styling (.wbDockRailBtn) is unchanged from Phase 2B. */
+.wbDockRailStack {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 4px 0;
+}
+body[data-route="reader"] .wbDockRailStack {
   display: flex;
-  position: fixed;
-  top: 56px;
-  right: 0;
+}
+
+/* Dock panel body — overlays the sidebar column. Hidden until open.
+ * left/width mirror native's panel-over-sidebar alignment. */
+#studioDockPanel {
+  display: none;
+  position: absolute;
+  top: 0;
   bottom: 0;
-  width: 44px;
-  z-index: 30;
-  flex-direction: row;
+  left: var(--wb-rail-w);
+  width: var(--wb-side-w);
+  max-width: 96vw;
+  z-index: 20;
+  flex-direction: column;
   background: rgba(20, 20, 22, 0.94);
   color: rgba(255, 255, 255, 0.94);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.4);
   backdrop-filter: saturate(140%) blur(6px);
   -webkit-backdrop-filter: saturate(140%) blur(6px);
 }
-
-/* Reader route, open — full panel (rail + body). */
-body[data-route="reader"] #studioDock.wbDock--open {
-  width: 340px;
-  max-width: 96vw;
-}
-
-/* When closed on the reader route, hide the body area entirely so only
- * the rail column is visible. The rail continues to render. */
-body[data-route="reader"] #studioDock:not(.wbDock--open) [data-role="dock-body"] {
-  display: none;
-}
-
-.wbDockRail {
-  flex: 0 0 44px;
-  background: rgba(255, 255, 255, 0.03);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.wbDockBody {
-  flex: 1 1 auto;
+body[data-route="reader"] #studioDockPanel.wbDock--open {
   display: flex;
-  flex-direction: column;
-  min-width: 0;
 }
 
 .wbDockHead {
@@ -8362,10 +8371,10 @@ body[data-route="reader"] #studioDock:not(.wbDock--open) [data-role="dock-body"]
   padding: 24px 12px;
 }
 
-/* Narrow viewports — narrower panel, no horizontal width fight. */
+/* Narrow viewports — clamp the overlay panel width. */
 @media (max-width: 720px) {
-  body[data-route="reader"] #studioDock.wbDock--open {
-    width: min(100%, 320px);
+  body[data-route="reader"] #studioDockPanel.wbDock--open {
+    width: min(var(--wb-side-w), 320px);
   }
 }
 

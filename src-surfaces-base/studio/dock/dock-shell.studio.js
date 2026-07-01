@@ -56,23 +56,28 @@
  *                  hasContainer, hasRail, hasBody, hasView,
  *                  errors }
  *
- * Route gating (Phase 2A):
- *   The Dock container is permanently in studio.html, but visibility
- *   is controlled by CSS:
- *     body[data-route="reader"] #studioDock.wbDock--open { display: flex; ... }
- *     #studioDock { display: none; }                  (default rule)
+ * Route gating (Phase 2A; placement updated in D3.2):
+ *   The Dock hosts are permanently in studio.html, but visibility is
+ *   controlled by CSS. D3.2 moved the Dock to native-left placement:
+ *     body[data-route="reader"] #studioDockPanel.wbDock--open { display: flex }
+ *     #studioDockPanel { display: none; }              (default rule)
+ *   The rail (.wbDockRailStack inside .wbRail) is likewise route-gated.
  *   studio.js sets `body.dataset.route` ("list" | "reader" | "linked")
  *   when the user navigates; the existing route plumbing therefore
  *   handles Dock visibility with no JS coupling. open() / close()
- *   manage the .wbDock--open class only — they do not check or
- *   manipulate the route attribute.
+ *   manage the .wbDock--open class (on the panel) plus a scoped,
+ *   non-persistent `wbDockPanelOpen` body marker — they do not check or
+ *   manipulate the route attribute or the saved sidebar preference.
  *
- * Auto-mount:
+ * Auto-mount (D3.2 split-host):
  *   On DOM ready (or immediately if the document is already
- *   interactive), the shell looks up `#studioDock` and calls
- *   mount(container) automatically. Manual mount() from console is
- *   still supported. In environments without `document` (e.g. node
- *   smoke tests), the auto-mount is silently skipped.
+ *   interactive), the shell looks up `#studioDockPanel` (the panel host)
+ *   and calls mount(container). mount() resolves the rail host
+ *   (.wbDockRailStack) separately — it lives in .wbRail, a different DOM
+ *   branch from the panel. Manual mount() from console is still
+ *   supported. In environments without `document` (e.g. node smoke
+ *   tests), the auto-mount is silently skipped; those tests may pass a
+ *   single container that holds both rail and body inline.
  *
  * Contracts:
  *   docs/contracts/studio-dock-tab-registration.md
@@ -84,7 +89,7 @@
  *   - H2O global (created by H2O Core, loaded earlier in studio.html)
  *   - Optional: H2O.events.emit (used if present; soft-fails otherwise)
  *   - Optional: H2O.Studio.store.prefs (used if present; soft-fails)
- *   - Optional: a DOM container with id="studioDock" (used if present)
+ *   - Optional: a DOM container with id="studioDockPanel" (used if present)
  *
  * Does NOT depend on:
  *   - chrome.* / localStorage / IndexedDB
@@ -128,9 +133,14 @@
     mountContainer: null,
   };
 
-  /* DOM references captured at mount time. Cleared at unmount. */
+  /* DOM references captured at mount time. Cleared at unmount.
+   * D3.2: the Dock is now split across two DOM branches — the rail lives
+   * inside .wbRail and the panel body lives at .wbShell level. `container`
+   * and `panel` both point at the panel host (#studioDockPanel); `rail`
+   * points at the separate .wbDockRailStack. */
   const dockRefs = {
     container: null,
+    panel: null,
     rail: null,
     body: null,
     head: null,
@@ -250,9 +260,9 @@
    * forces `display: none` and defeats the reader-route-rail-visible
    * CSS. New model uses CSS + the .wbDock--open class ONLY:
    *
-   *   - Non-reader route: CSS default `#studioDock { display: none }`
-   *   - Reader route + closed: rail visible, body collapsed (CSS)
-   *   - Reader route + open (.wbDock--open present): rail + body visible
+   *   - Non-reader route: CSS default `#studioDockPanel { display: none }`
+   *   - Reader route + closed: rail visible (.wbRail), panel hidden (CSS)
+   *   - Reader route + open (.wbDock--open present): rail + panel visible
    *
    * We strip the initial `hidden` attribute from studio.html once (it
    * exists for pre-JS a11y safety); after that state is class-only.
@@ -269,6 +279,12 @@
         dockRefs.container.classList.add(OPEN_CLASS);
       } else {
         dockRefs.container.classList.remove(OPEN_CLASS);
+      }
+      /* D3.2: scoped, NON-persistent body marker so CSS can react to the
+       * Dock-open state (e.g. cover the sidebar column). This never
+       * touches the saved sidebar preference (body.dataset.sidebar). */
+      if (typeof document !== 'undefined' && document.body && document.body.classList) {
+        document.body.classList.toggle('wbDockPanelOpen', !!internalState.open);
       }
     } catch (e) {
       recordError('applyOpenToDom', e);
@@ -504,12 +520,26 @@
     internalState.mountContainer = container;
     internalState.mounted = true;
     dockRefs.container = container;
+    dockRefs.panel = container;
     try {
-      dockRefs.rail  = container.querySelector('[data-role="dock-rail"]')  || null;
-      dockRefs.body  = container.querySelector('[data-role="dock-body"]')  || null;
-      dockRefs.head  = container.querySelector('.wbDockHead')              || null;
-      dockRefs.view  = container.querySelector('[data-role="dock-view"]')  || null;
-      dockRefs.close = container.querySelector('[data-dock-action="close"]') || null;
+      /* D3.2 split-host resolution:
+       *   - rail: prefer a rail INSIDE the container (Phase 2A/2B and
+       *     node smoke tests pass a single container with everything
+       *     inside); fall back to the document-level .wbDockRailStack
+       *     which, in the production DOM, lives in .wbRail — a separate
+       *     branch from the panel host.
+       *   - body/head/view/close: inside the panel host. In the new DOM
+       *     the panel IS the body, so `body` falls back to the container.
+       *   - close: accept both the new data-role="dock-close" and the
+       *     legacy data-dock-action="close". */
+      dockRefs.rail  = container.querySelector('[data-role="dock-rail"]')
+        || (typeof document !== 'undefined' ? document.querySelector('[data-role="dock-rail"]') : null);
+      dockRefs.body  = container.querySelector('[data-role="dock-body"]') || container;
+      dockRefs.head  = container.querySelector('.wbDockHead')
+        || container.querySelector('[data-role="dock-head"]') || null;
+      dockRefs.view  = container.querySelector('[data-role="dock-view"]') || null;
+      dockRefs.close = container.querySelector('[data-dock-action="close"]')
+        || container.querySelector('[data-role="dock-close"]') || null;
     } catch (e) {
       recordError('mount:querySelector', e);
     }
@@ -582,7 +612,15 @@
     }
     /* D2: unbind the route-refresh listeners. */
     unbindRouteRefresh();
+    /* D3.2: clear the scoped open marker so no stale state leaks after
+     * unmount. */
+    try {
+      if (typeof document !== 'undefined' && document.body && document.body.classList) {
+        document.body.classList.remove('wbDockPanelOpen');
+      }
+    } catch (e) { recordError('unmount:bodyClass', e); }
     dockRefs.container = null;
+    dockRefs.panel = null;
     dockRefs.rail = null;
     dockRefs.body = null;
     dockRefs.head = null;
@@ -784,7 +822,12 @@
   function autoMount() {
     try {
       if (typeof document === 'undefined') return;
-      const el = document.getElementById('studioDock');
+      /* D3.2: mount onto the panel host (#studioDockPanel). Fall back to
+       * the legacy #studioDock id for safety during transition — after
+       * the HTML change that element no longer exists, so the fallback
+       * is a harmless no-op. */
+      const el = document.getElementById('studioDockPanel')
+        || document.getElementById('studioDock');
       if (el) {
         mount(el);
       }
@@ -839,6 +882,6 @@
   /* Bind prefs after install so subscribers can find dockApi if needed. */
   bindPrefs();
 
-  /* Schedule auto-mount onto #studioDock once the DOM is ready. */
+  /* Schedule auto-mount onto #studioDockPanel once the DOM is ready. */
   scheduleAutoMount();
 })(globalThis);

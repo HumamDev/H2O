@@ -934,3 +934,66 @@ These are resolved at the start of D3.2 based on visual comparison against nativ
 - [x] No code files changed in this commit.
 
 Next step: **D3.2 — split-host Dock placement** (implementation phase, blocked on the three open questions above).
+
+## D3.2 — what landed (native-left split-host placement)
+
+The Dock moved from the D2 right-edge overlay to native-parity left placement. The single `#studioDock` host inside `.wbStage` was split into two DOM branches:
+
+- **Rail host** — `<div class="wbDockRailStack" data-role="dock-rail">` inside `<aside class="wbRail">` (Studio's tiny-rail; the analog of native ChatGPT's `#stage-sidebar-tiny-bar`). The dock-shell renders one `.wbDockRailBtn` per registered tab into this stack. Buttons keep their Phase 2B styling (44×44-ish colored squares with single-letter txt + per-tab `--wb-dock-rail-color`).
+- **Panel host** — `<aside id="studioDockPanel" data-role="dock-panel">` at `.wbShell` level (sibling to `.wbRail` / `.wbSide--sidebar` / `.wbStage`), containing the head (`data-role="dock-head"` + close button) and view (`data-role="dock-view"`).
+
+The old `#studioDock` right-edge host was removed from `.wbStage`.
+
+### CSS placement (studio.css)
+
+- `.wbShell { position: relative; }` — positioning context for the absolute panel.
+- `body[data-route="reader"] .wbShell { grid-template-columns: var(--wb-rail-w) 0 minmax(0, 1fr); }` — reader route reveals the tiny-rail column and collapses the sidebar column. **This is a scoped, non-persistent CSS override — it never writes `data-sidebar`, so the saved sidebar preference is intact and restored on leaving the reader route.**
+- `body[data-route="reader"] .wbRail { opacity: 1; pointer-events: auto; }` — the tiny-rail is normally faded out when the sidebar is open; on reader routes it's shown so the Dock buttons are reachable.
+- `.wbDockRailStack` — hidden by default; `display: flex` (vertical) on reader routes.
+- `#studioDockPanel` — `position: absolute; top: 0; bottom: 0; left: var(--wb-rail-w); width: var(--wb-side-w); z-index: 20;` — overlays the sidebar column, mirroring native's `UI_DP_alignPanelToSidebar` (panel over the sidebar area). Hidden until `.wbDock--open` is set on the reader route.
+
+### Shell changes (dock-shell.studio.js)
+
+- `dockRefs` gains a `panel` field. `container` and `panel` both point at `#studioDockPanel`; `rail` points at the separate `.wbDockRailStack`.
+- `mount()` resolves the rail via a container-first, document-fallback chain: `container.querySelector('[data-role="dock-rail"]')` (back-compat: node smoke tests pass a single inline container) → `document.querySelector('[data-role="dock-rail"]')` (production: rail is in a different branch). Body/head/view/close resolve inside the panel; close accepts both `data-role="dock-close"` and the legacy `data-dock-action="close"`.
+- `applyOpenToDom()` toggles `.wbDock--open` on the panel AND a scoped, non-persistent `wbDockPanelOpen` class on `document.body`. It never touches `body.dataset.sidebar`.
+- `unmount()` clears the `wbDockPanelOpen` body class.
+- `autoMount()` mounts onto `#studioDockPanel` (with a harmless `#studioDock` fallback for transition safety).
+- **Preserved from D2 verbatim:** `resolveDockContext()`, real ctx passed to tabs, route refresh via `hashchange` + `evt:h2o:studio:reader-refresh-requested` with `setTimeout(fn, 0)` defer, rail-click `open()` + `setView(tabId)`, and `H2O.Studio.getReaderContext()` in studio.js.
+
+### Behavior model (target, resolved from D3.1 open questions)
+
+| State | `.wbDockRailStack` | `#studioDockPanel` | Sidebar column |
+|---|---|---|---|
+| Non-reader route | hidden | hidden | normal (per saved pref) |
+| Reader route + Dock closed | visible (8 buttons) | hidden | collapsed to tiny-rail (CSS-only, non-persistent) |
+| Reader route + Dock open | visible | overlays sidebar column area | covered by opaque panel |
+
+Resolution of the three D3.1 open questions:
+1. Rail visible on reader route **regardless of saved sidebar state** — achieved via the reader-route grid override (does not mutate `data-sidebar`).
+2. Opening the Dock **covers** the sidebar column with the opaque panel (native "overlay" model), rather than mutating sidebar state.
+3. Panel uses **`position: absolute` inside `.wbShell`** per the user decision.
+
+### Read-only / no-side-effect discipline (still holds)
+
+- No feature-store writes. Only the existing `h2o:studio:dock*` prefs writes (open/view) from the shell.
+- No new persistence. The `wbDockPanelOpen` body class is in-memory only, cleared on unmount.
+- No `MutationObserver`, `setInterval`, `fetch`, `window.open`, clipboard, or scroll behavior added.
+- No tab or store code changed. Capture stays inert; Finder stays local-only.
+- `studio.js` NOT edited in D3.2 (the D2 `getReaderContext` accessor already suffices; the sidebar overlay is CSS-only, so no sidebar-collapse API was needed).
+
+### Known follow-ups (not blocking D3.2)
+
+- The Phase 2B `.wbDockRail` rule (old in-container rail class) is now dead CSS — harmless (no element carries that class). Can be pruned in a later cleanup.
+- On reader routes the full sidebar is collapsed to the tiny-rail. Re-expanding the sidebar mid-read (via `#railSidebarBtn`) while the reader-route grid override is active is a follow-up refinement.
+- `aria-hidden` review of the rail region (native-parity a11y) remains a follow-up.
+
+### Acceptance for D3.2
+
+- [x] Rail buttons hosted inside `.wbRail` (left), not `.wbStage` (right).
+- [x] Panel hosted at `.wbShell` level, overlaying the sidebar column.
+- [x] Old right-edge `#studioDock` removed from `.wbStage`.
+- [x] Non-reader route hides rail + panel; reader route shows rail; open shows panel.
+- [x] D2 context resolver + route refresh preserved.
+- [x] No write-back, no tab/store changes, no native runtime edits.
+- [ ] Browser side-by-side vs native (pending manual smoke).

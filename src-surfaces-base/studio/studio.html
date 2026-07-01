@@ -40,6 +40,17 @@
           </svg>
         </span>
       </button>
+
+      <!-- ── Studio Dock rail (D3.2 — native-left placement) ──────────────
+           Rail host for the Studio Dock Panel tab buttons. The dock-shell
+           module (src-surfaces-base/studio/dock/dock-shell.studio.js)
+           renders one button per registered tab into this stack. It lives
+           inside .wbRail (Studio's tiny-rail — the analog of the native
+           ChatGPT #stage-sidebar-tiny-bar) so the Dock buttons appear on
+           the LEFT edge, matching the native extension. CSS route-gates
+           visibility to reader routes. The paired panel body is
+           #studioDockPanel at .wbShell level (below). -->
+      <div class="wbDockRailStack" data-role="dock-rail" aria-label="Dock Panel tabs"></div>
     </aside>
 
     <aside class="wbSide wbSide--sidebar" id="studioSidebar" aria-label="Studio sidebar">
@@ -155,6 +166,25 @@
       </section>
     </aside>
 
+    <!-- ── Studio Dock Panel body (D3.2 — native-left placement) ──────────
+         Panel host for the Studio Dock Panel. Lives at .wbShell level
+         (sibling to .wbRail / .wbSide--sidebar / .wbStage), NOT inside
+         .wbStage. The dock-shell module auto-mounts onto this element and
+         toggles the `wbDock--open` class via open() / close(). CSS places
+         it absolutely over the sidebar column (left: rail width, width:
+         sidebar width), mirroring the native ChatGPT Dock which overlays
+         the sidebar area. Route-gated to reader routes. The paired rail
+         host is .wbDockRailStack inside .wbRail (above). -->
+    <aside id="studioDockPanel" class="wbDockPanel" data-role="dock-panel" hidden aria-label="Studio Dock Panel">
+      <header class="wbDockHead" data-role="dock-head">
+        <div class="wbDockTitle">Dock</div>
+        <button type="button" class="wbDockClose" data-role="dock-close" data-dock-action="close" aria-label="Close Dock">×</button>
+      </header>
+      <div class="wbDockView" data-role="dock-view">
+        <div class="wbDockEmpty">Open a saved chat to view its Dock tabs.</div>
+      </div>
+    </aside>
+
     <div class="wbStage">
       <!-- ── Studio Ribbon (Phase 1a — passive shell) ─────────────────────
            OneNote-inspired tabbed action bar for the currently opened chat.
@@ -216,28 +246,10 @@
         <section id="viewReader" class="wbReader" hidden></section>
       </main>
 
-      <!-- ── Studio Dock Panel shell (Phase 2A — UI shell, no tabs) ───────
-           Visible Dock container. Hidden by default; the dock-shell
-           module (src-surfaces-base/studio/dock/dock-shell.studio.js)
-           auto-mounts onto this element at DOMContentLoaded and
-           toggles the `wbDock--open` class via open() / close().
-           CSS additionally route-gates visibility to reader routes
-           only (`body[data-route="reader"] #studioDock.wbDock--open`).
-           Feature tabs (Highlights/Bookmarks/Notes/Navigator/Context/
-           Capture) land in Phase 2B; Phase 2A renders only a
-           placeholder inside the view area. -->
-      <aside id="studioDock" class="wbDock" hidden aria-label="Studio Dock Panel">
-        <div class="wbDockRail" data-role="dock-rail" aria-hidden="true"></div>
-        <section class="wbDockBody" data-role="dock-body">
-          <header class="wbDockHead">
-            <div class="wbDockTitle">Dock</div>
-            <button type="button" class="wbDockClose" data-dock-action="close" aria-label="Close Dock">×</button>
-          </header>
-          <div class="wbDockView" data-role="dock-view">
-            <div class="wbDockEmpty">Dock tabs will appear in Phase 2B.</div>
-          </div>
-        </section>
-      </aside>
+      <!-- D3.2: the Studio Dock Panel moved out of .wbStage. Its rail host
+           (.wbDockRailStack) now lives inside .wbRail and its panel body
+           (#studioDockPanel) lives at .wbShell level — see the two blocks
+           above. The old right-edge #studioDock host was removed here. -->
     </div>
   </div>
 
