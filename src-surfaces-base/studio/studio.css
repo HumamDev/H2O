@@ -8289,29 +8289,33 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * Studio Dock Panel — native-left split-host placement (D3.2)
+ * Studio Dock Panel — native sidebar-rail integration (D3.2 + D3.2.1)
  *
- * D3.2 moved the Dock from a right-edge overlay (D2) to native-parity
- * placement mirroring the ChatGPT extension Dock:
- *   - Rail buttons live in .wbDockRailStack inside .wbRail (Studio's
- *     left tiny-rail — the analog of ChatGPT's #stage-sidebar-tiny-bar).
- *   - Panel body #studioDockPanel lives at .wbShell level and overlays
- *     the sidebar column (position:absolute; left:rail-w; width:side-w),
- *     mirroring native's UI_DP_alignPanelToSidebar.
+ * D3.2 moved the Dock to native-left split-host placement. D3.2.1 fixes
+ * the sidebar integration so the Dock buttons behave EXACTLY like the
+ * native ChatGPT extension Dock: they are additional buttons in the
+ * collapsed tiny-rail (.wbRail), below the sidebar hamburger — NOT a
+ * separate competing rail, and NOT a forced grid/sidebar override.
  *
- * Visibility:
- *   - Non-reader route: rail + panel hidden.
- *   - Reader route: shell reveals the tiny-rail with Dock buttons; the
- *     panel toggles via the .wbDock--open class.
+ * The D3.2 mistake (removed in D3.2.1): it forced
+ *   body[data-route="reader"] .wbShell { grid-template-columns: rail 0 1fr }
+ *   body[data-route="reader"] .wbRail  { opacity:1; pointer-events:auto }
+ * on EVERY reader route. That collapsed the sidebar to ~0/20px even when
+ * data-sidebar="open", and made the hamburger appear broken (the route
+ * override ignored the toggled sidebar state). Both rules are gone.
  *
- * The reader-route grid override reveals the tiny-rail regardless of the
- * saved sidebar state. It is a scoped, NON-persistent CSS override — it
- * never writes data-sidebar, so the user's saved sidebar preference is
- * intact and restored on leaving the reader route.
+ * Corrected model — let Studio's own sidebar state drive everything:
+ *   - Studio shows .wbRail (tiny-rail) only when body[data-sidebar="closed"]
+ *     (studio.css:293). That is the native "collapsed tiny-bar" state.
+ *   - Dock buttons live inside .wbRail, below #railSidebarBtn, and appear
+ *     only in that collapsed state — exactly like native's tiny-bar.
+ *   - Sidebar OPEN: full sidebar shows, no Dock buttons (tiny-bar absent),
+ *     hamburger toggles normally. No override touches the grid.
+ *   - Sidebar CLOSED: tiny-rail shows hamburger + Dock buttons; clicking a
+ *     Dock button opens the panel over the sidebar lane.
  *
- * Class scope: all rules begin with .wbDock / #studioDockPanel, plus a
- * reader-route-scoped override of .wbShell / .wbRail. No other Studio
- * classes are restructured.
+ * Class scope: .wbDock* / #studioDockPanel, plus reader+sidebar-closed
+ * gating. NO grid/.wbRail overrides. Sidebar preference never mutated.
  * ──────────────────────────────────────────────────────────────────── */
 
 /* Positioning context for the absolutely-placed panel. */
@@ -8319,35 +8323,27 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
   position: relative;
 }
 
-/* Reader route: reveal the tiny-rail column (Dock buttons live there)
- * and collapse the sidebar column. Native-faithful — the Dock context
- * uses the collapsed tiny-bar. Does NOT mutate data-sidebar. */
-body[data-route="reader"] .wbShell {
-  grid-template-columns: var(--wb-rail-w) 0 minmax(0, 1fr);
-}
-body[data-route="reader"] .wbRail {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* Dock rail stack — vertical column of tab buttons under the sidebar
- * toggle in the tiny-rail. Hidden off the reader route. Individual
- * button styling (.wbDockRailBtn) is unchanged from Phase 2B. */
+/* Dock rail stack — additional tab buttons below the hamburger inside the
+ * collapsed tiny-rail. Shown ONLY on the reader route AND when the tiny-
+ * rail is naturally visible (sidebar collapsed) — matching native, and
+ * avoiding any clipping while the sidebar is open (rail is 0-width then). */
 .wbDockRailStack {
   display: none;
   flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   width: 100%;
-  margin-top: 10px;
-  padding: 8px 4px 0;
+  margin-top: 8px;
+  padding: 8px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
-body[data-route="reader"] .wbDockRailStack {
+body[data-route="reader"][data-sidebar="closed"] .wbDockRailStack {
   display: flex;
 }
 
-/* Dock panel body — overlays the sidebar column. Hidden until open.
- * left/width mirror native's panel-over-sidebar alignment. */
+/* Dock panel body — overlays the sidebar lane, beside the tiny-rail.
+ * Opens only when the tiny-rail is visible (reader + sidebar closed), so
+ * it never fights the open full sidebar. Hidden until .wbDock--open. */
 #studioDockPanel {
   display: none;
   position: absolute;
@@ -8366,7 +8362,7 @@ body[data-route="reader"] .wbDockRailStack {
   backdrop-filter: saturate(140%) blur(6px);
   -webkit-backdrop-filter: saturate(140%) blur(6px);
 }
-body[data-route="reader"] #studioDockPanel.wbDock--open {
+body[data-route="reader"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
   display: flex;
 }
 
@@ -8427,7 +8423,7 @@ body[data-route="reader"] #studioDockPanel.wbDock--open {
 
 /* Narrow viewports — clamp the overlay panel width. */
 @media (max-width: 720px) {
-  body[data-route="reader"] #studioDockPanel.wbDock--open {
+  body[data-route="reader"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
     width: min(var(--wb-side-w), 320px);
   }
 }
@@ -8455,34 +8451,38 @@ body[data-route="reader"] #studioDockPanel.wbDock--open {
   overflow: hidden;
 }
 
-/* Per-tab accent color is set inline by the shell as the custom
- * property --wb-dock-rail-color (from def.color). The button uses
- * it for the active-state left bar and hover background tint.
- * Falls back to a neutral tint if unset. */
+/* D3.2.1: native-parity rail tiles. Each button is a solid rounded
+ * square filled with the tab's accent color (set inline by the shell as
+ * --wb-dock-rail-color from def.color), with a bold white single-letter
+ * badge — mirroring the native ChatGPT Dock rail buttons. 34×34 hit area
+ * fits the 44px tiny-rail with no clipping. */
 .wbDockRailBtn {
-  --wb-dock-rail-color: rgba(255, 255, 255, 0.18);
+  --wb-dock-rail-color: rgba(255, 255, 255, 0.28);
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
   margin: 0;
   padding: 0;
-  background: transparent;
+  background: var(--wb-dock-rail-color);
   border: 0;
-  border-radius: 8px;
-  color: rgba(255, 255, 255, 0.78);
+  border-radius: 9px;
+  color: #fff;
   cursor: pointer;
-  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
-  letter-spacing: 0.04em;
-  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+  font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.25);
+  opacity: 0.9;
+  transition: opacity 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease;
   user-select: none;
 }
 
 .wbDockRailBtn:hover {
-  background: color-mix(in srgb, var(--wb-dock-rail-color) 18%, rgba(255, 255, 255, 0.04));
-  color: #fff;
+  opacity: 1;
+  transform: translateY(-1px);
 }
 
 .wbDockRailBtn:active {
@@ -8491,29 +8491,18 @@ body[data-route="reader"] #studioDockPanel.wbDock--open {
 
 .wbDockRailBtn:focus-visible {
   outline: 2px solid #6aa0ff;
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
-/* Active state — soft tinted background + 3px left bar in the tab's
- * accent color. Mirrors native rail's "current view" feel. */
+/* Active (current view) — full opacity + a white ring, mirroring the
+ * native rail's selected-item emphasis. */
 .wbDockRailBtn--active {
-  background: color-mix(in srgb, var(--wb-dock-rail-color) 22%, rgba(255, 255, 255, 0.06));
-  color: #fff;
-}
-.wbDockRailBtn--active::before {
-  content: "";
-  position: absolute;
-  left: -4px;
-  top: 6px;
-  bottom: 6px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--wb-dock-rail-color);
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18), 0 0 0 2px rgba(255, 255, 255, 0.85);
 }
 
-/* Single-letter icon (txt) — uppercase, slightly heavier than the
- * idle rail color so it reads at a glance. Emojis (fallback) also
- * render here cleanly. */
+/* Single-letter icon (txt) — bold uppercase white, centered. Emoji
+ * fallbacks also render here cleanly. */
 .wbDockRailBtnIcon {
   display: inline-flex;
   align-items: center;
@@ -8521,8 +8510,10 @@ body[data-route="reader"] #studioDockPanel.wbDock--open {
   width: 100%;
   height: 100%;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
   pointer-events: none;
 }
 

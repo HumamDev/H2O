@@ -997,3 +997,42 @@ Resolution of the three D3.1 open questions:
 - [x] D2 context resolver + route refresh preserved.
 - [x] No write-back, no tab/store changes, no native runtime edits.
 - [ ] Browser side-by-side vs native (pending manual smoke).
+
+## D3.2.1 — what landed (native sidebar-rail integration fix)
+
+D3.2 placed the Dock on the left but browser smoke exposed three real bugs, all caused by **one CSS mistake**: D3.2 force-overrode the shell grid and rail on every reader route —
+
+```css
+body[data-route="reader"] .wbShell { grid-template-columns: var(--wb-rail-w) 0 minmax(0,1fr); }
+body[data-route="reader"] .wbRail  { opacity: 1; pointer-events: auto; }
+```
+
+**Root cause:** Studio's `.wbShell` grid and `.wbRail` are driven by `body[data-sidebar]` (open ⇒ `0 side 1fr`, rail hidden; closed ⇒ `rail 0 1fr`, rail shown — studio.css:264/272/293). The D3.2 route override ignored `data-sidebar` and forced the sidebar column to `0` on **every** reader route. Consequences:
+- The sidebar half-collapsed (~20px) even when `data-sidebar="open"`.
+- The hamburger (`#railSidebarBtn`) appeared broken — toggling `data-sidebar` had no visible effect because the route override always won.
+- The forced-visible `.wbRail` showed the Dock buttons in a broken, clipped half-state.
+
+**D3.2.1 fix — let Studio's own sidebar state drive everything:**
+- **Removed** both forced-override rules. No grid override, no `.wbRail` opacity override. The hamburger and sidebar behave exactly as before.
+- Dock buttons (`.wbDockRailStack`) are gated to `body[data-route="reader"][data-sidebar="closed"]` — they appear **only when the tiny-rail is naturally visible** (sidebar collapsed), matching native's tiny-bar behavior. No clipping (the rail has real width in that state).
+- The panel is likewise gated to `[data-sidebar="closed"]`, so it never fights an open full sidebar.
+- Result — native-parity states:
+  - **Reader + sidebar open:** full sidebar shows, hamburger toggles normally, no Dock buttons (tiny-bar absent).
+  - **Reader + sidebar closed:** tiny-rail shows the hamburger + Dock buttons below it; clicking a Dock button opens the panel over the sidebar lane.
+
+**Button visual parity (`.wbDockRailBtn`):** changed from transparent/tint-on-hover to **solid rounded colored tiles** (filled with the tab's `--wb-dock-rail-color`) with a bold white single-letter badge, 34×34, inner shadow for depth, hover lift, and a white ring for the active/current view — mirroring the native ChatGPT Dock rail buttons. Order preserved: H/B/N/A/V/C/P/F.
+
+**Shell unchanged:** the bug was purely CSS. `dock-shell.studio.js` (rail-click `open()`+`setView`, D2 context resolver, route refresh, the non-persistent `wbDockPanelOpen` body marker) is untouched. `studio.html` is untouched (the D3.2 hosts are already correct).
+
+### Model note / known follow-up
+- The Dock buttons live inside the existing `.wbRail` tiny-rail (below the hamburger) as **additional buttons**, not a separate competing rail. When the panel is open, the tiny-rail with the Dock buttons remains visible on the far left (at `left:0`, 44px) beside the panel (`left: var(--wb-rail-w)`), which keeps tab-switching functional. Native covers the tiny-bar and switches tabs via an in-panel dropdown; **adding that in-panel view switcher (so the panel can fully cover the rail) is a deferred follow-up (D3.3)** — it is out of scope for this placement fix.
+- The dead `.wbDockRail` Phase 2B rule (old in-container rail class) remains harmless dead CSS; prune in a later cleanup.
+
+### Acceptance for D3.2.1
+- [x] Removed the forced `.wbShell` grid + `.wbRail` opacity overrides.
+- [x] Hamburger / sidebar open-close behavior restored (no route override touches the grid).
+- [x] Dock buttons gated to reader + sidebar-closed (native tiny-bar parity), no clipping.
+- [x] Panel gated likewise; opens on the left over the sidebar lane, never the right.
+- [x] Button tiles restyled to native-parity colored squares with white badges + active ring.
+- [x] No write-back, no tab/store changes, no native runtime edits, sidebar preference never mutated.
+- [ ] Browser side-by-side vs native (pending manual smoke).
