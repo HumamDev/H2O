@@ -1881,6 +1881,13 @@
        this module only attaches a frozen read-only namespace and adds no UI
        rendering, XPath, sidecar, or A1 integration. -->
   <script src="./reader-notes/highlight-resolution-consumer.studio.js"></script>
+  <!-- Reader & Notes — MVP-A2a.5: operator-only, read-only reader-root
+       resolution probe. Loads after the consumer. The flag
+       'studio.readerNotes.highlightResolutionUi.enabled' defaults off and also
+       requires an operator opt-in key; this module renders nothing, adds no
+       marks/overlay layers, mutates no DOM, writes no storage, and only reads
+       the live reader root to invoke the read-only consumer for inspection. -->
+  <script src="./reader-notes/highlight-resolution-ui.studio.js"></script>
   <!-- R4.5.1.a — Desktop-first folder organization modals (folders only in this
        slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
        silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no

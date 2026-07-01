@@ -1239,6 +1239,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // (explicit invocation only, flag-gated, default off). Keep parallel to
   // ARCHIVE_WORKBENCH_OUT_FILES below.
   "reader-notes/highlight-resolution-consumer.studio.js",
+
+  // Reader & Notes — MVP-A2a.5 operator-only read-only reader-root resolution
+  // probe (no rendering, flag-gated + opt-in, default off). Keep parallel to
+  // ARCHIVE_WORKBENCH_OUT_FILES below.
+  "reader-notes/highlight-resolution-ui.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1586,6 +1591,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Reader & Notes — MVP-A2a.4.2 highlight resolution consumer — see SOURCE_FILES.
   "reader-notes/highlight-resolution-consumer.studio.js",
+
+  // Reader & Notes — MVP-A2a.5 reader-root resolution probe — see SOURCE_FILES.
+  "reader-notes/highlight-resolution-ui.studio.js",
 ]);
 
 function ensureDir(dirPath) {

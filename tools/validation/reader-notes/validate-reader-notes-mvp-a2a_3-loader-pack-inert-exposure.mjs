@@ -17,6 +17,7 @@ const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const CORE_REL = 'src-surfaces-base/studio/reader-notes/anchor-resolver.studio.js';
 const DOM_REL = 'src-surfaces-base/studio/reader-notes/anchor-resolver-dom.studio.js';
 const CONSUMER_REL = 'src-surfaces-base/studio/reader-notes/highlight-resolution-consumer.studio.js';
+const UI_REL = 'src-surfaces-base/studio/reader-notes/highlight-resolution-ui.studio.js';
 const A1_LIBRARY_REL = 'src-surfaces-base/studio/reader-notes/library-item-view.studio.js';
 const A1_ANNOTATION_REL = 'src-surfaces-base/studio/reader-notes/annotation-facade.studio.js';
 const CHROME_EVIDENCE_REL = 'release-evidence/2026-06-30/reader-notes-a2a2-real-dom-smoke.md';
@@ -39,13 +40,18 @@ const ORDER = [
   'reader-notes/anchor-resolver.studio.js',
   'reader-notes/anchor-resolver-dom.studio.js',
   'reader-notes/highlight-resolution-consumer.studio.js',
+  'reader-notes/highlight-resolution-ui.studio.js',
 ];
 const FLAG_KEY = 'studio.readerNotes.anchorResolver.enabled';
 const CONSUMER_FLAG_KEY = 'studio.readerNotes.highlightResolutionConsumer.enabled';
+const UI_FLAG_KEY = 'studio.readerNotes.highlightResolutionUi.enabled';
+const UI_OPT_IN_KEY = 'h2o.readerNotes.highlightResolutionUi.operatorOptIn';
 const CONSUMER_TOKENS = [
   'H2O.Studio.readerNotes.anchorResolver',
   'H2O.Studio.readerNotes.anchorResolverDom',
   'H2O.Studio.readerNotes.highlightResolutionConsumer',
+  'H2O.Studio.readerNotes.highlightResolutionUi',
+  'highlightResolutionUi',
   'resolveHighlight',
   'resolveInText',
   'flattenRoot',
@@ -56,6 +62,7 @@ const ALLOWED_CONSUMER_RELS = new Set([
   CORE_REL,
   DOM_REL,
   CONSUMER_REL,
+  UI_REL,
   STUDIO_HTML_REL,
 ]);
 const FORBIDDEN_DIRS = [
@@ -216,11 +223,12 @@ function makeInstrumentedSandbox(flagValue) {
   return { sandbox, storageCalls, domCalls, flagCalls, writeCalls, hookCalls };
 }
 
-function loadResolvers(flagValue, includeConsumer = false) {
+function loadResolvers(flagValue, includeConsumer = false, includeUi = false) {
   const rt = makeInstrumentedSandbox(flagValue);
   vm.runInContext(read(CORE_REL), rt.sandbox, { filename: CORE_REL });
   vm.runInContext(read(DOM_REL), rt.sandbox, { filename: DOM_REL });
   if (includeConsumer) vm.runInContext(read(CONSUMER_REL), rt.sandbox, { filename: CONSUMER_REL });
+  if (includeUi) vm.runInContext(read(UI_REL), rt.sandbox, { filename: UI_REL });
   return rt;
 }
 
@@ -261,8 +269,8 @@ check('pack-studio includes resolver files in both lockstep lists with matching 
   }
   const srcOrder = ORDER.map((token) => sourceEntries.indexOf(token));
   const outOrder = ORDER.map((token) => outEntries.indexOf(token));
-  assert.deepEqual(srcOrder, srcOrder.slice().sort((a, b) => a - b), 'source order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer');
-  assert.deepEqual(outOrder, outOrder.slice().sort((a, b) => a - b), 'out order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer');
+  assert.deepEqual(srcOrder, srcOrder.slice().sort((a, b) => a - b), 'source order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer/A2a.5 UI probe');
+  assert.deepEqual(outOrder, outOrder.slice().sort((a, b) => a - b), 'out order must be A1.1/A1.2/A2a core/A2a DOM/A2a.4 consumer/A2a.5 UI probe');
 });
 
 check('resolver and consumer module load installs frozen APIs and performs no storage, DOM, or hook writes', () => {
@@ -324,6 +332,21 @@ check('selfCheck and diagnose report frozen read-only APIs with XPath deferred',
   assert.deepEqual(rt.domCalls, []);
   assert.deepEqual(rt.writeCalls, []);
   assert.deepEqual(rt.hookCalls, []);
+});
+
+check('A2a.5 UI probe module loads frozen, default-off, and inert', () => {
+  const rt = loadResolvers(undefined, true, true);
+  const uiApi = rt.sandbox.H2O.Studio.readerNotes.highlightResolutionUi;
+  assert.ok(uiApi && uiApi.__installed === true, 'UI probe installed');
+  assert.ok(Object.isFrozen(uiApi), 'UI probe frozen');
+  assert.equal(uiApi.readonly, true);
+  assert.equal(uiApi.flagKey, UI_FLAG_KEY);
+  assert.equal(uiApi.optInKey, UI_OPT_IN_KEY);
+  assert.equal(typeof uiApi.probe, 'function');
+  assert.deepEqual(storageWrites(rt.storageCalls), [], 'UI load must not write storage');
+  assert.deepEqual(rt.domCalls, [], 'UI load must not touch DOM');
+  assert.deepEqual(rt.hookCalls, [], 'UI load must not install hooks or timers');
+  assert.equal(uiApi.isEnabled(), false, 'UI probe default-off (no flag, no opt-in)');
 });
 
 check('no A1 integration, UI consumer, or resolver auto-invocation exists outside allowed modules', () => {
