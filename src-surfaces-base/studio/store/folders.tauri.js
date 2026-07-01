@@ -85,6 +85,12 @@
   var PHASE6A_PERMANENT_PURGE_SOURCE = 'desktop-recently-deleted-operator-purge';
   var PHASE6A_REPAIR_SOURCE = 'desktop-recently-deleted-resurrection-repair';
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  var F11_RENDER_MIRROR_REBUILD_GATE = 'folder-sync-f11-render-only-mirror-rebuild';
+  var F11_RENDER_MIRROR_REBUILD_SCHEMA = 'h2o.studio.folder-sync.f11-render-only-mirror-rebuild.v1';
+  var F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES = {
+    'missing-mirror-folder': true,
+    'field-mismatch:color': true,
+  };
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
     archive: true,
@@ -628,6 +634,206 @@
       recordWarning('Phase4A folder-state mirror restore failed: ' + ((e && e.message) || e));
       return { ok: false, status: 'error', error: String((e && e.message) || e) };
     });
+  }
+
+  function f11CleanAllowedRenderMirrorClasses(classes) {
+    var input = Array.isArray(classes) && classes.length
+      ? classes
+      : Object.keys(F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES);
+    var allowed = [];
+    var blocked = [];
+    input.forEach(function (entry) {
+      var code = cleanString(entry);
+      if (!code) return;
+      if (F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES[code]) {
+        if (allowed.indexOf(code) === -1) allowed.push(code);
+        return;
+      }
+      if (blocked.indexOf(code) === -1) blocked.push(code);
+    });
+    return { allowed: allowed, blocked: blocked };
+  }
+
+  function f11BuildRenderMirrorFolderRow(folder, existingRow, updatedAt) {
+    var canonical = safeMeta(folder);
+    var prior = safeMeta(existingRow);
+    var folderId = getFolderId(canonical);
+    var name = cleanString(canonical.name || canonical.title || prior.name || prior.title || folderId);
+    var color = cleanString(canonical.color || canonical.iconColor || '');
+    var next = Object.assign({}, prior, {
+      id: folderId,
+      folderId: folderId,
+      name: name,
+      title: name,
+      normalizedName: normalizeFolderName(name),
+      source: cleanString(prior.source || 'desktop-sqlite-render-mirror-rebuild') || 'desktop-sqlite-render-mirror-rebuild',
+      stateSource: 'desktop-sqlite-render-mirror-rebuild',
+      color: color,
+      iconColor: color,
+      updatedAt: updatedAt,
+      meta: Object.assign({}, safeMeta(prior.meta), {
+        materializedUserFolder: true,
+        trustedFolderDisplay: true,
+        shownInNormalMode: true,
+        f11RenderOnlyMirrorRebuild: true,
+      }),
+      userCreated: true,
+      materializedUserFolder: true,
+      trustedFolderDisplay: true,
+      shownInNormalMode: true,
+    });
+    if (cleanString(canonical.parentId || prior.parentId)) next.parentId = cleanString(canonical.parentId || prior.parentId);
+    if (cleanString(canonical.icon || prior.icon)) next.icon = cleanString(canonical.icon || prior.icon);
+    delete next.sortOrder;
+    delete next.sort_order;
+    return next;
+  }
+
+  async function f11RedactedFolderToken(folderId) {
+    var digest = await sha256Hex({ phase: 'F11', subject: 'folder', folderId: cleanString(folderId) });
+    return digest ? ('sha256:' + digest.slice(0, 16)) : 'sha256:unavailable';
+  }
+
+  async function f11RedactedRows(rows) {
+    var out = [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] || {};
+      out.push({
+        class: cleanString(row.class),
+        folderToken: await f11RedactedFolderToken(row.folderId),
+      });
+    }
+    return out;
+  }
+
+  async function rebuildRenderMirrorFromSqlite(options) {
+    var opts = safeMeta(options);
+    var classSelection = f11CleanAllowedRenderMirrorClasses(opts.classes || opts.driftClasses);
+    var result = {
+      schema: F11_RENDER_MIRROR_REBUILD_SCHEMA,
+      ok: false,
+      status: '',
+      gate: F11_RENDER_MIRROR_REBUILD_GATE,
+      gateSatisfied: cleanString(opts.gate) === F11_RENDER_MIRROR_REBUILD_GATE,
+      applyRequested: opts.apply === true,
+      dryRun: opts.apply !== true,
+      source: 'desktop-sqlite-folders',
+      target: 'FOLDER_STATE_DATA_KEY',
+      targetKey: FOLDER_STATE_DATA_KEY,
+      renderMirrorOnly: true,
+      desktopSQLiteCanonical: true,
+      allowedClasses: classSelection.allowed.slice(),
+      blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch']),
+      handledClasses: [],
+      rebuiltMissingMirrorFolderCount: 0,
+      rebuiltColorMismatchCount: 0,
+      skippedSortOrderRebuildCount: 0,
+      skippedBindingRepairCount: 0,
+      mirrorWriteAttempted: false,
+      mirrorWriteOk: false,
+      noSQLiteWrite: true,
+      noBindingWrite: true,
+      noTombstoneWrite: true,
+      noFolderDelete: true,
+      noFolderPurge: true,
+      noSortOrderOverwrite: true,
+      noBindingRepair: true,
+      noChromeCanonicalMutation: true,
+      noTransportWrite: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      privacy: { redacted: true, hashOnly: true },
+      diagnostics: [],
+    };
+    if (!result.gateSatisfied) {
+      result.status = 'blocked-dev-diagnostic-gate-required';
+      result.blockers = ['dev-diagnostic-gate-required'];
+      return result;
+    }
+    if (!classSelection.allowed.length) {
+      result.status = 'blocked-no-approved-render-only-classes';
+      result.blockers = ['no-approved-render-only-classes'];
+      return result;
+    }
+    var canonicalFolders = await listFolders();
+    var rawMirror = await chromeStorageGet(FOLDER_STATE_DATA_KEY);
+    var current = safeMeta(rawMirror);
+    var mirrorFolders = Array.isArray(current.folders) ? current.folders.slice() : [];
+    var items = safeMeta(current.items);
+    var updatedAt = new Date().toISOString();
+    var byId = Object.create(null);
+    mirrorFolders.forEach(function (row, index) {
+      var id = getFolderId(row);
+      if (id && !byId[id]) byId[id] = { row: row, index: index };
+    });
+    var diagnostics = [];
+    canonicalFolders.forEach(function (folder) {
+      var folderId = getFolderId(folder);
+      if (!folderId) return;
+      var found = byId[folderId];
+      if (!found && classSelection.allowed.indexOf('missing-mirror-folder') !== -1) {
+        var inserted = f11BuildRenderMirrorFolderRow(folder, null, updatedAt);
+        mirrorFolders.push(inserted);
+        if (!Array.isArray(items[folderId])) items[folderId] = [];
+        diagnostics.push({ class: 'missing-mirror-folder', folderId: folderId });
+        result.rebuiltMissingMirrorFolderCount += 1;
+        if (result.handledClasses.indexOf('missing-mirror-folder') === -1) result.handledClasses.push('missing-mirror-folder');
+        return;
+      }
+      if (!found || classSelection.allowed.indexOf('field-mismatch:color') === -1) return;
+      var canonicalColor = cleanString(folder.color || folder.iconColor || '');
+      var mirrorColor = cleanString(found.row.color || found.row.iconColor || '');
+      if (canonicalColor !== mirrorColor) {
+        var nextRow = Object.assign({}, found.row, {
+          color: canonicalColor,
+          iconColor: canonicalColor,
+          updatedAt: updatedAt,
+        });
+        mirrorFolders[found.index] = nextRow;
+        diagnostics.push({ class: 'field-mismatch:color', folderId: folderId });
+        result.rebuiltColorMismatchCount += 1;
+        if (result.handledClasses.indexOf('field-mismatch:color') === -1) result.handledClasses.push('field-mismatch:color');
+      }
+    });
+    result.diagnosticCount = diagnostics.length;
+    result.diagnostics = await f11RedactedRows(diagnostics);
+    result.skippedSortOrderRebuildCount = classSelection.blocked.indexOf('field-mismatch:sortOrder') !== -1 ? 1 : 0;
+    result.skippedBindingRepairCount = classSelection.blocked.indexOf('binding-mismatch') !== -1 ? 1 : 0;
+    if (!diagnostics.length) {
+      result.ok = true;
+      result.status = 'no-op-render-mirror-already-converged';
+      return result;
+    }
+    if (opts.apply !== true) {
+      result.ok = true;
+      result.status = 'dry-run-render-mirror-rebuild-ready';
+      return result;
+    }
+    var nextState = Object.assign({}, current, {
+      schemaVersion: Number(current.schemaVersion || current.version || 1) || 1,
+      source: cleanString(current.source || current.exportedFrom || 'stored-folder-state') || 'stored-folder-state',
+      updatedAt: updatedAt,
+      folders: mirrorFolders,
+      items: items,
+      f11LastRenderOnlyMirrorRebuild: {
+        schema: F11_RENDER_MIRROR_REBUILD_SCHEMA,
+        at: updatedAt,
+        classes: result.handledClasses.slice(),
+        renderMirrorOnly: true,
+        noSQLiteWrite: true,
+        noBindingWrite: true,
+        noTombstoneWrite: true,
+        noSortOrderOverwrite: true,
+        noBindingRepair: true,
+        productSyncReady: false,
+      },
+    });
+    result.mirrorWriteAttempted = true;
+    result.mirrorWriteOk = await chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState }) !== false;
+    result.ok = result.mirrorWriteOk;
+    result.status = result.mirrorWriteOk ? 'render-only-mirror-rebuilt' : 'mirror-storage-unavailable';
+    return result;
   }
 
   function buildFolderBindingTombstone(folderId, chatId, opts) {
@@ -3539,6 +3745,7 @@
     purgeRecentlyDeletedFolders: purgeRecentlyDeletedFolders,
     previewRecentlyDeletedRestoredHistoryClear: previewRecentlyDeletedRestoredHistoryClear,
     clearRecentlyDeletedRestoredHistory: clearRecentlyDeletedRestoredHistory,
+    rebuildRenderMirrorFromSqlite: rebuildRenderMirrorFromSqlite,
     remove: softDeleteEmptyFolder,
     'delete': softDeleteEmptyFolder,
     bindChat: bindChat,
