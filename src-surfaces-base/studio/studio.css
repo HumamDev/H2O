@@ -7454,6 +7454,44 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   outline:2px solid var(--sui-focus, #2d7bd8);
   outline-offset:1px;
 }
+.wbRibbonPopover__item[disabled]{
+  opacity:.4;
+  cursor:not-allowed;
+}
+/* Phase 6e-1 parity inside the popover — mark the swatch matching the
+ * live H2O.IHighlighter brush color. Mirrors the outline/box-shadow
+ * idiom of .wbRibbonAction[data-action-id^="highlight-brush-"][aria-pressed]. */
+.wbRibbonPopover__item[aria-pressed="true"]{
+  outline:2px solid var(--sui-focus, #2d7bd8);
+  outline-offset:2px;
+  box-shadow:0 0 0 2px rgba(122,182,255,.18);
+}
+
+/* ── Phase 8c-2 — Highlight split-button popover ─────────────────────────────
+ * The Highlight group carries eight brush swatches plus two command
+ * actions (Clear / Hide). Swatches sit in a compact 4-column grid; the
+ * commands render as full-width rows beneath, each separated by a hair
+ * line so the popover reads like a small OneNote flyout menu. */
+.wbRibbonPopover--highlight{
+  grid-template-columns:repeat(4, 24px);
+}
+.wbRibbonPopover__item--command{
+  grid-column:1 / -1;
+  width:auto;
+  height:auto;
+  min-height:26px;
+  justify-content:flex-start;
+  padding:4px 8px;
+  font-size:12px;
+  line-height:1.2;
+  white-space:nowrap;
+  border-top:1px solid var(--sui-border, rgba(0,0,0,.12));
+  border-radius:4px;
+}
+.wbRibbonPopover__item--command:hover:not([disabled]){
+  background:var(--sui-hover, rgba(0,0,0,.06));
+  border-color:var(--sui-border, rgba(0,0,0,.12));
+}
 
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{

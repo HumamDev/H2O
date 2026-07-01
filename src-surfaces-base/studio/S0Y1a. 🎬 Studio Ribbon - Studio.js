@@ -3361,8 +3361,26 @@
     'text-color-orange': '#C05621',
     'text-color-gray':   '#4A5568',
   };
+  /* Phase 8c-2 — Highlight brush palette. Mirrors the eight
+   * H2O.IHighlighter brush hexes already declared in studio.css
+   * (.wbRibbonAction[data-action-id="highlight-brush-*"]::before).
+   * Kept in sync by copy, same as TEXT_COLOR_SWATCH_HEX. */
+  const HIGHLIGHT_SWATCH_HEX = {
+    'highlight-brush-blue':   '#3B82F6',
+    'highlight-brush-red':    '#FF4C4C',
+    'highlight-brush-green':  '#22C55E',
+    'highlight-brush-gold':   '#FFD54F',
+    'highlight-brush-sky':    '#7DD3FC',
+    'highlight-brush-pink':   '#F472B6',
+    'highlight-brush-purple': '#A855F7',
+    'highlight-brush-orange': '#FF914D',
+  };
   const CHEVRON_ICON = '<svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M1 1.5l4 3 4-3"/></svg>';
   const TEXT_COLOR_GLYPH_ICON = '<svg viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 11L7.5 3l3.5 8"/><path d="M5 8h5"/></svg>';
+  /* Highlighter-marker glyph. The colored underline below the tip is
+   * the shared .wbRibbonSplitBtn__swatch (current brush color), so the
+   * icon itself is a neutral marker outline. */
+  const HIGHLIGHT_GLYPH_ICON = '<svg viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9.5 2.2l4.3 4.3-5.6 5.6-3.4.5.5-3.4z"/><path d="M8 3.7l4.3 4.3"/></svg>';
   const SPLIT_BUTTONS = {
     'text-color': {
       kind: 'text-color',
@@ -3371,10 +3389,37 @@
       defaultActionId: 'text-color-red',
       glyphIcon: TEXT_COLOR_GLYPH_ICON,
       hexById: TEXT_COLOR_SWATCH_HEX,
+      swatchIdPrefix: 'text-color-',
+    },
+    /* Phase 8c-2 — Highlight. Reuses the shared primitive. `hexById`
+     * covers the 8 brush swatches; `commandIds` are the two non-swatch
+     * actions (Clear / Hide) rendered as full-width command rows.
+     * `currentColorFromEngine` seeds the main button from the live
+     * H2O.IHighlighter brush color so the split button always reflects
+     * the real global brush (Phase 6e-1 parity). */
+    'highlight': {
+      kind: 'highlight',
+      mainAriaLabel: 'Apply highlight brush',
+      chevronAriaLabel: 'Choose highlight',
+      defaultActionId: 'highlight-brush-blue',
+      glyphIcon: HIGHLIGHT_GLYPH_ICON,
+      hexById: HIGHLIGHT_SWATCH_HEX,
+      swatchIdPrefix: 'highlight-brush-',
+      commandIds: ['highlight-clear-message', 'highlight-visibility'],
+      currentColorFromEngine: true,
     },
   };
-  const __splitBtnLastPicked = { 'text-color': 'text-color-red' };
+  const __splitBtnLastPicked = {
+    'text-color': 'text-color-red',
+    'highlight': 'highlight-brush-blue',
+  };
   let __openSplitPopover = null;
+  /* Phase 8c-2 — module ref to the live ribbon shell, stashed by
+   * render(). Lets the split-button popover dispatch actions with a
+   * FRESH context (matching the delegated handler's freshness) and
+   * defensively re-render after a brush change, without threading the
+   * shell through every buildPanels/__buildSplitButton call. */
+  let __ribbonShell = null;
 
   function __closeSplitPopover() {
     if (!__openSplitPopover) return;
@@ -3386,8 +3431,79 @@
     if (rec.trigger) { try { rec.trigger.setAttribute('aria-expanded', 'false'); } catch (_) {} }
   }
 
+  /* Phase 8c-2 — dispatch a split-button action through the SAME path
+   * the delegated ribbon handler uses (ACTION_HANDLERS[id].onClick).
+   * Needed because the split button's main half is not a .wbRibbonAction
+   * and the popover is mounted on document.body — both live outside the
+   * container-scoped click delegation, so they can't rely on it.
+   *
+   * `setStatus` is derived by walking up from the trigger to the ribbon
+   * container (the ancestor that hosts .wbRibbonStatus); context comes
+   * fresh from the stashed shell so selection-sensitive actions (e.g.
+   * highlight-clear-message) see the current selection, not a stale
+   * render-time snapshot. Brush changes trigger a defensive re-render
+   * mirroring the delegated handler's Phase 6e-1 behavior. */
+  function __dispatchSplitAction(actionId, triggerEl) {
+    const handler = actionId && ACTION_HANDLERS[actionId];
+    if (!handler || typeof handler.onClick !== 'function') return;
+    let root = triggerEl;
+    while (root && !(root.querySelector && root.querySelector('.wbRibbonStatus'))) {
+      root = root.parentElement;
+    }
+    const setStatus = makeSetStatus(root || document.body);
+    let ctx = null;
+    try { ctx = (__ribbonShell && typeof __ribbonShell.getContext === 'function') ? __ribbonShell.getContext() : null; }
+    catch (_) { ctx = null; }
+    try { handler.onClick(ctx, setStatus, triggerEl); }
+    catch (e) {
+      const msg = (e && (e.message || String(e))) || 'unknown error';
+      setStatus('Action failed: ' + msg);
+    }
+    if (root && __ribbonShell && typeof actionId === 'string' && actionId.indexOf('highlight-brush-') === 0) {
+      try { render(root, __ribbonShell); } catch (_) { /* swallow — subscription re-render normally covers this */ }
+    }
+  }
+
+  /* Resolve the action id the split button's main half currently
+   * represents. Highlight seeds from the live IHighlighter brush color
+   * (Phase 6e-1 parity) so the button mirrors global brush state; other
+   * kinds use the sticky last-picked value. Falls back to the config
+   * default when neither is available in the group. */
+  function __resolveSplitCurrentId(cfg, actions) {
+    if (cfg.currentColorFromEngine) {
+      try {
+        const ih = getIHighlighter();
+        const cur = (ih && typeof ih.getCurrentColor === 'function')
+          ? String(ih.getCurrentColor() || '').trim().toLowerCase()
+          : '';
+        if (cur) {
+          const candidate = (cfg.swatchIdPrefix || '') + cur;
+          if (actions[candidate]) return candidate;
+        }
+      } catch (_) { /* fall through to last-picked */ }
+    }
+    const picked = __splitBtnLastPicked[cfg.kind];
+    if (picked && actions[picked]) return picked;
+    return cfg.defaultActionId;
+  }
+
   function __openSplitPopoverFor(cfg, actions, ctx, triggerEl, onPick) {
     __closeSplitPopover();
+    /* Prefer a fresh context so per-item enabled/disabled state reflects
+     * the current selection at open time (Phase 8c-2). */
+    try { if (__ribbonShell && typeof __ribbonShell.getContext === 'function') ctx = __ribbonShell.getContext(); }
+    catch (_) { /* keep passed-in ctx */ }
+    /* Phase 8c-2 — current brush color, used to mark the active swatch
+     * (Phase 6e-1 parity) inside the popover for highlight groups. */
+    let currentSwatchColor = '';
+    if (cfg.currentColorFromEngine) {
+      try {
+        const ih = getIHighlighter();
+        currentSwatchColor = (ih && typeof ih.getCurrentColor === 'function')
+          ? String(ih.getCurrentColor() || '').trim().toLowerCase()
+          : '';
+      } catch (_) { currentSwatchColor = ''; }
+    }
     const pop = el('div', {
       class: 'wbRibbonPopover wbRibbonPopover--' + cfg.kind,
       role: 'menu',
@@ -3395,22 +3511,52 @@
     });
     Object.keys(actions).forEach(function (aid) {
       const action = actions[aid];
+      const isSwatch = !!(cfg.hexById && cfg.hexById[action.id]);
+      const isCommand = !!(cfg.commandIds && cfg.commandIds.indexOf(action.id) !== -1);
+      /* Per-item enablement — mirrors the render pass so selection-
+       * sensitive actions (e.g. highlight-clear-message) grey out when
+       * unavailable. Swatch brushes are global-state and stay enabled
+       * whenever the engine is present. */
+      let itemEnabled = true;
+      const itemHandler = ACTION_HANDLERS[action.id];
+      if (itemHandler && typeof itemHandler.isEnabled === 'function') {
+        try { itemEnabled = !!itemHandler.isEnabled(ctx); } catch (_) { itemEnabled = false; }
+      }
       const item = el('button', {
         type: 'button',
-        class: 'wbRibbonPopover__item wbRibbonPopover__item--' + cfg.kind,
+        class: 'wbRibbonPopover__item wbRibbonPopover__item--' + cfg.kind
+          + (isCommand ? ' wbRibbonPopover__item--command' : '')
+          + (isSwatch ? ' wbRibbonPopover__item--swatch' : ''),
         role: 'menuitem',
         'data-action-id': action.id,
         title: action.label,
         'aria-label': action.label,
+        'aria-disabled': itemEnabled ? 'false' : 'true',
       });
-      if (cfg.kind === 'text-color' && cfg.hexById && cfg.hexById[action.id]) {
-        item.setAttribute('data-swatch-color', action.id.replace('text-color-', ''));
+      if (isSwatch) {
+        const suffix = action.id.slice((cfg.swatchIdPrefix || '').length);
+        item.setAttribute('data-swatch-color', suffix);
         item.style.setProperty('--wbRibbonPopoverItemColor', cfg.hexById[action.id]);
+        if (currentSwatchColor && currentSwatchColor === suffix) {
+          item.setAttribute('aria-pressed', 'true');
+        }
+      }
+      if (isCommand) {
+        item.appendChild(document.createTextNode(action.label));
+      }
+      if (!itemEnabled) {
+        item.setAttribute('disabled', 'disabled');
       }
       item.addEventListener('click', function () {
-        __splitBtnLastPicked[cfg.kind] = action.id;
-        try { if (typeof onPick === 'function') onPick(action); } catch (_) {}
+        if (!itemEnabled) return;
+        if (isSwatch) {
+          __splitBtnLastPicked[cfg.kind] = action.id;
+        }
+        /* Close first so a brush-triggered re-render doesn't race the
+         * live popover node, then dispatch through the real handler. */
         __closeSplitPopover();
+        __dispatchSplitAction(action.id, triggerEl);
+        if (isSwatch) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
       });
       pop.appendChild(item);
     });
@@ -3436,7 +3582,7 @@
   }
 
   function __buildSplitButton(cfg, actions, ctx) {
-    const currentId = __splitBtnLastPicked[cfg.kind] || cfg.defaultActionId;
+    const currentId = __resolveSplitCurrentId(cfg, actions);
     const currentAction = actions[currentId] || null;
     const anyAid = currentAction ? currentAction.id : Object.keys(actions)[0];
     const anyHandler = anyAid && ACTION_HANDLERS[anyAid];
@@ -3455,13 +3601,23 @@
     });
     if (!enabled) main.setAttribute('disabled', 'disabled');
     main.innerHTML = cfg.glyphIcon || '';
-    if (cfg.kind === 'text-color') {
+    if (cfg.hexById) {
       const swatch = el('span', { class: 'wbRibbonSplitBtn__swatch' });
-      if (cfg.hexById && cfg.hexById[currentId]) {
+      if (cfg.hexById[currentId]) {
         swatch.style.background = cfg.hexById[currentId];
       }
       main.appendChild(swatch);
     }
+    /* Phase 8c-2 — main half applies the current action (e.g. the live
+     * highlight brush). Dispatched directly because the main button is
+     * not a .wbRibbonAction and so is outside the container delegation. */
+    main.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!enabled) return;
+      const targetId = main.getAttribute('data-action-id');
+      if (targetId) __dispatchSplitAction(targetId, main);
+    });
     const chev = el('button', {
       type: 'button',
       class: 'wbRibbonSplitBtn__chevron wbRibbonSplitBtn__chevron--' + cfg.kind,
@@ -3484,9 +3640,9 @@
         try {
           main.setAttribute('data-action-id', picked.id);
           main.setAttribute('title', (cfg.mainAriaLabel || 'Apply') + ' — ' + picked.label);
-          if (cfg.kind === 'text-color') {
+          if (cfg.hexById) {
             const sw = main.querySelector('.wbRibbonSplitBtn__swatch');
-            if (sw && cfg.hexById && cfg.hexById[picked.id]) {
+            if (sw && cfg.hexById[picked.id]) {
               sw.style.background = cfg.hexById[picked.id];
             }
           }
@@ -3682,6 +3838,9 @@
 
   /* ── Render orchestration ─────────────────────────────────────────── */
   function render(container, shell) {
+    /* Phase 8c-2 — stash the live shell so split-button popovers can
+     * dispatch with fresh context + re-render after a brush change. */
+    __ribbonShell = shell;
     const ctx = shell.getContext();
     const contextChatType = (ctx && ctx.chatType) || null;
     const chatType = contextChatType || 'saved';
