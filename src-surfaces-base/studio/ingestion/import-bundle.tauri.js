@@ -261,9 +261,28 @@
     var sourceVersion = null;
     if (schema === 'h2o.studio.fullBundle.v2') sourceVersion = 'v2';
     else if (schema === 'h2o.studio.fullBundle.v1') sourceVersion = 'v1';
+    else if (schema === 'h2o.chatArchive.bundle.v1') sourceVersion = 'chatArchive.v1'; /* top-level bundle.chats[] */
     else if (raw.chatArchive && typeof raw.chatArchive === 'object') sourceVersion = 'v1'; /* tolerant */
     else return { bundle: null, error: 'Unrecognized bundle schema: ' + (schema || '(missing)') };
     return { bundle: raw, sourceVersion: sourceVersion };
+  }
+
+  /* ── Chat extraction: tolerate both bundle shapes ─────────────────────
+   * h2o.studio.fullBundle.v2 nests chats under bundle.chatArchive.chats[];
+   * h2o.chatArchive.bundle.v1 stores them at top-level bundle.chats[]. Return
+   * the chat array for whichever shape is present, WITHOUT mutating the bundle
+   * or inventing IDs, so the dry-run counter and every merge writer see the
+   * same chats for both schemas. The chatArchive.chats nesting wins when both
+   * exist, preserving existing v2 behavior exactly. */
+  function getBundleChats(bundle) {
+    if (bundle && bundle.chatArchive && Array.isArray(bundle.chatArchive.chats)) {
+      return bundle.chatArchive.chats;
+    }
+    if (bundle && String(bundle.schema || '').trim() === 'h2o.chatArchive.bundle.v1'
+        && Array.isArray(bundle.chats)) {
+      return bundle.chats;
+    }
+    return [];
   }
 
   /* ── Dry-run: count incoming, compare against SQLite stores ──────── */
@@ -290,8 +309,7 @@
     var errors = [];
 
     /* ── Chats + nested snapshots ──────────────────────────────────── */
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var newChatIds = [], dupChatIds = [];
     var incomingSnapshots = 0, newSnapshots = 0, dupSnapshots = 0;
     var newSnapshotIds = [], dupSnapshotIds = [];
@@ -1605,8 +1623,7 @@
     return cleanString(opts.importBatchId || bundle.exportId || bundle.bundleId || bundle.sourceSyncPeerId || '');
   }
   function collectAutoTagCandidates(bundle) {
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var byId = Object.create(null);
     chats.forEach(function (chat) {
       var org = chat && chat.chatIndex && chat.chatIndex.organization;
@@ -1868,8 +1885,7 @@
    * exists. 'skipped' means the chat row was already present — bindings to
    * it are still valid. */
   async function importChats(bundle, stores, result, chatStateIndex, suppressCategoryId) {
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var chatStore = stores.chats;
     if (!chatStore || typeof chatStore.upsert !== 'function') {
       if (chats.length > 0) result.warnings.push({ kind: 'chats', warn: 'store.chats unavailable' });
@@ -2140,8 +2156,7 @@
   }
 
   async function importSnapshots(bundle, stores, result, chatStateIndex) {
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var snapStore = stores.snapshots;
     if (!snapStore || typeof snapStore.create !== 'function') {
       var total = 0;
@@ -2432,8 +2447,7 @@
    * `{id, name}` fallback; if no name info is available, the binding is
    * skipped with an orphan-tag-id warning. */
   async function importTagBindings(bundle, stores, result, chatStateIndex) {
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var chatStore = stores.chats;
     var tagStore = stores.tags;
     if (!tagStore || typeof tagStore.bindChat !== 'function') {
@@ -2545,8 +2559,7 @@
       result.errors.push({ kind: 'library-bulk-migration', phase: 'bindings', error: 'library bulk migration unavailable; shim fallback disabled' });
       return true;
     }
-    var chats = (bundle.chatArchive && Array.isArray(bundle.chatArchive.chats))
-      ? bundle.chatArchive.chats : [];
+    var chats = getBundleChats(bundle);
     var chatStore = stores.chats;
     var lblStore = stores.labels;
     var tagStore = stores.tags;
