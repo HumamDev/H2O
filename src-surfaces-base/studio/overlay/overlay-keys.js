@@ -82,6 +82,15 @@
      * (deterministic CSS stacks + DOCX mapping, no font-fingerprint
      * surface). clear-formatting resets it via defaultMessageState. */
     fontFamily: 'font-family',
+    /* Phase 8d-2 — message-level font size. Payload size is one of the 3
+     * curated semantic tokens ('small'|'large'|'xlarge') or `null` to
+     * clear back to the appearance/theme default. Message-level only;
+     * "last op of (type, target) wins", same as `font-family`. Screen/
+     * print CSS scale with RELATIVE em so per-message size composes on top
+     * of the global --wb-appearance-font-size; the DOCX writer maps tokens
+     * to absolute w:sz half-points (Phase 8d-2b). clear-formatting resets
+     * it via defaultMessageState. */
+    fontSize: 'font-size',
     /* Phase 4-3 — message-level paragraph controls. All three operate on
      * the entire selected turn (no inline text selection); reducer state
      * follows the Phase 2b "last op of (type, target) wins" rule.

@@ -103,6 +103,14 @@
           { id: 'font-family-mono',     label: 'Mono' },
           { id: 'font-family-humanist', label: 'Humanist' },
           { id: 'font-family-default',  label: 'Default' },
+          /* Phase 8d-2 — Font Size. Three curated semantic size tokens plus
+           * a "Default" (normal) to clear. Collapsed into a second dropdown
+           * split button (SPLIT_BUTTONS['font-size']) rendered after Font
+           * Family and before B/I/U/S/Clear. */
+          { id: 'font-size-small',   label: 'Small' },
+          { id: 'font-size-default', label: 'Default' },
+          { id: 'font-size-large',   label: 'Large' },
+          { id: 'font-size-xlarge',  label: 'X-Large' },
           { id: 'bold',          label: 'B' },
           { id: 'italic',        label: 'I' },
           { id: 'underline',     label: 'U' },
@@ -2429,6 +2437,36 @@
   ACTION_HANDLERS['font-family-humanist'] = buildFontFamilyHandler('humanist', 'Humanist');
   ACTION_HANDLERS['font-family-default']  = buildFontFamilyHandler(null,       'Default');
 
+  /* ── Phase 8d-2 — Font Size (message-level overlay op) ───────────────
+   * Applies one of the 3 curated semantic size tokens (or clears to the
+   * appearance default) to the whole selected turn via the `font-size`
+   * overlay op. Message-level only — no inline/range variant. Mirrors the
+   * font-family handler; `size === null` clears (Default/normal). */
+  function buildFontSizeHandler(size, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const isClear = (size === null);
+        const opSpec = {
+          type: 'font-size',
+          target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+          payload: { size: size },
+        };
+        runOverlayOp(opSpec, setStatus, {
+          pending: isClear ? 'Clearing font size…' : ('Applying font size (' + label + ')…'),
+          success: isClear ? 'Font size: default' : ('Font size: ' + label),
+          fail: 'Font size change failed',
+        });
+      },
+    };
+  }
+  ACTION_HANDLERS['font-size-small']   = buildFontSizeHandler('small',  'Small');
+  ACTION_HANDLERS['font-size-default'] = buildFontSizeHandler(null,     'Default');
+  ACTION_HANDLERS['font-size-large']   = buildFontSizeHandler('large',  'Large');
+  ACTION_HANDLERS['font-size-xlarge']  = buildFontSizeHandler('xlarge', 'X-Large');
+
   /* ── Phase 4-3 — Paragraph controls (overlay ops list / align / indent) ─
    * Seven handlers operate on the entire selected turn:
    *   - Bullet / Numbered: list-mode toggles. Clicking the same kind a
@@ -3422,6 +3460,25 @@
    * the shared .wbRibbonSplitBtn__swatch (current brush color), so the
    * icon itself is a neutral marker outline. */
   const HIGHLIGHT_GLYPH_ICON = '<svg viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9.5 2.2l4.3 4.3-5.6 5.6-3.4.5.5-3.4z"/><path d="M8 3.7l4.3 4.3"/></svg>';
+  /* Phase 8d-1/8d-2 — short token per label-dropdown action id. The
+   * split-button primitive reads cfg.tokenById to render the main preview
+   * + each popover row in the picked token (via cfg.previewAttr:
+   * data-font / data-size). '' = the "Default"/clear row (no preview
+   * attr). Declared before SPLIT_BUTTONS so the configs can reference
+   * them directly. */
+  const FONT_FAMILY_TOKEN = {
+    'font-family-sans':     'sans',
+    'font-family-serif':    'serif',
+    'font-family-mono':     'mono',
+    'font-family-humanist': 'humanist',
+    'font-family-default':  '',
+  };
+  const FONT_SIZE_TOKEN = {
+    'font-size-small':   'small',
+    'font-size-default': '',
+    'font-size-large':   'large',
+    'font-size-xlarge':  'xlarge',
+  };
   const SPLIT_BUTTONS = {
     'text-color': {
       kind: 'text-color',
@@ -3489,24 +3546,34 @@
       defaultActionId: 'font-family-sans',
       labelItems: true,
       labelMain: true,
+      tokenById: FONT_FAMILY_TOKEN,
+      previewText: 'Aa',
+      previewAttr: 'data-font',
     },
-  };
-  /* Phase 8d-1 — short token per font-family action id, used to render the
-   * main "Aa" preview in the picked font (data-font) and (later) map back
-   * to the CSS stack. Kept beside SPLIT_BUTTONS so the primitive can read
-   * it without re-parsing action ids. */
-  const FONT_FAMILY_TOKEN = {
-    'font-family-sans':     'sans',
-    'font-family-serif':    'serif',
-    'font-family-mono':     'mono',
-    'font-family-humanist': 'humanist',
-    'font-family-default':  '',
+    /* Phase 8d-2 — Font Size. A second sub-group split inside the Font
+     * group. Same labelItems/labelMain primitive as Font Family, but the
+     * preview is a size step, not a typeface: `previewAttr: 'data-size'`
+     * scales the main "A" and each popover row by the picked size token. */
+    'font-size': {
+      kind: 'font-size',
+      groupId: 'font',
+      actionIds: ['font-size-small', 'font-size-default', 'font-size-large', 'font-size-xlarge'],
+      mainAriaLabel: 'Font size',
+      chevronAriaLabel: 'Choose size',
+      defaultActionId: 'font-size-default',
+      labelItems: true,
+      labelMain: true,
+      tokenById: FONT_SIZE_TOKEN,
+      previewText: 'A',
+      previewAttr: 'data-size',
+    },
   };
   const __splitBtnLastPicked = {
     'text-color': 'text-color-red',
     'highlight': 'highlight-brush-blue',
     'align': 'align-left',
     'font-family': 'font-family-sans',
+    'font-size': 'font-size-default',
   };
   let __openSplitPopover = null;
   /* Phase 8c-2 — module ref to the live ribbon shell, stashed by
@@ -3766,11 +3833,12 @@
         }
       }
       if (isLabel) {
-        /* Phase 8d-1 — text-label row; the label IS the visible content.
-         * For font tokens, preview the label in its own typeface via
-         * data-font so "Serif" reads serif, "Mono" reads mono, etc. */
-        const labelTok = FONT_FAMILY_TOKEN[action.id];
-        if (labelTok) { item.setAttribute('data-font', labelTok); }
+        /* Phase 8d-1/8d-2 — text-label row; the label IS the visible
+         * content. cfg.tokenById + cfg.previewAttr preview each row in the
+         * picked token: Font Family (data-font) renders "Serif" in serif;
+         * Font Size (data-size) renders "Large" at the large size. */
+        const labelTok = cfg.tokenById && cfg.tokenById[action.id];
+        if (labelTok && cfg.previewAttr) { item.setAttribute(cfg.previewAttr, labelTok); }
         item.appendChild(document.createTextNode(action.label));
         if (currentLabelId && currentLabelId === action.id) {
           item.setAttribute('aria-pressed', 'true');
@@ -3888,14 +3956,17 @@
     if (!enabled) main.setAttribute('disabled', 'disabled');
     /* Phase 8c-3 — icon kinds (Alignment) show the current action's 8b
      * glyph so the main button mirrors the last-picked alignment; Phase
-     * 8d-1 label-main kinds (Font Family) show a compact "Aa" preview
-     * rendered in the current token's font (via data-font); other kinds
-     * show their static config glyph. */
+     * 8d-1/8d-2 label-main kinds show a compact preview (cfg.previewText)
+     * rendered in the current token via cfg.previewAttr — Font Family shows
+     * "Aa" in the picked typeface (data-font); Font Size shows "A" at the
+     * picked size (data-size); other kinds show their static config glyph. */
     if (cfg.labelMain) {
-      const mainTok = FONT_FAMILY_TOKEN[currentId];
-      if (mainTok) { main.setAttribute('data-font', mainTok); }
-      else { main.removeAttribute('data-font'); }
-      main.textContent = 'Aa';
+      const mainTok = cfg.tokenById && cfg.tokenById[currentId];
+      if (cfg.previewAttr) {
+        if (mainTok) { main.setAttribute(cfg.previewAttr, mainTok); }
+        else { main.removeAttribute(cfg.previewAttr); }
+      }
+      main.textContent = cfg.previewText || '';
     } else if (cfg.iconFromActionIcons) {
       main.innerHTML = (currentAction && ACTION_ICONS[currentAction.id]) || cfg.glyphIcon || '';
     } else {
@@ -3950,10 +4021,12 @@
             main.innerHTML = ACTION_ICONS[picked.id];
           }
           if (cfg.labelMain) {
-            const pickTok = FONT_FAMILY_TOKEN[picked.id];
-            if (pickTok) { main.setAttribute('data-font', pickTok); }
-            else { main.removeAttribute('data-font'); }
-            main.textContent = 'Aa';
+            const pickTok = cfg.tokenById && cfg.tokenById[picked.id];
+            if (cfg.previewAttr) {
+              if (pickTok) { main.setAttribute(cfg.previewAttr, pickTok); }
+              else { main.removeAttribute(cfg.previewAttr); }
+            }
+            main.textContent = cfg.previewText || '';
           }
         } catch (_) {}
       });

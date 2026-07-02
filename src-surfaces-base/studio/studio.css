@@ -7624,6 +7624,37 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
 .wbRibbonSplitBtn__main--font-family[data-font="mono"]{     font-family:var(--wb-ff-mono); }
 .wbRibbonSplitBtn__main--font-family[data-font="humanist"]{ font-family:var(--wb-ff-humanist); }
 
+/* ── Phase 8d-2 — Font Size dropdown ─────────────────────────────────────────
+ * Semantic size steps as em multipliers, shared by the reader body rules and
+ * the dropdown preview. In the reader body the em is relative to
+ * --wb-appearance-font-size (composes on top of it, never overrides it); in the
+ * dropdown the em is relative to the control's own font size. Reuses the shared
+ * .wbRibbonPopover__item--label base from Font Family. */
+:root{
+  --wb-fs-small: 0.85em;
+  --wb-fs-large: 1.25em;
+  --wb-fs-xlarge: 1.5em;
+}
+.wbRibbonPopover--font-size{
+  grid-template-columns:1fr;
+  gap:2px;
+  min-width:120px;
+}
+/* Preview each size row at its own size (Default has no data-size → base). */
+.wbRibbonPopover__item--label[data-size="small"]{  font-size:var(--wb-fs-small); }
+.wbRibbonPopover__item--label[data-size="large"]{  font-size:var(--wb-fs-large); }
+.wbRibbonPopover__item--label[data-size="xlarge"]{ font-size:var(--wb-fs-xlarge); }
+/* Main "A" preview — text scaled to the current size token. */
+.wbRibbonSplitBtn__main--font-size{
+  min-width:30px;
+  font-size:13px;
+  font-weight:600;
+  line-height:1;
+}
+.wbRibbonSplitBtn__main--font-size[data-size="small"]{  font-size:var(--wb-fs-small); }
+.wbRibbonSplitBtn__main--font-size[data-size="large"]{  font-size:var(--wb-fs-large); }
+.wbRibbonSplitBtn__main--font-size[data-size="xlarge"]{ font-size:var(--wb-fs-xlarge); }
+
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{
   opacity:.45;
@@ -8226,6 +8257,19 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 .wbReader [data-turn][data-overlay-font-family] [data-message-author-role] code{
   font-family:var(--mono);
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Phase 8d-2 — Message-level font size (screen)
+ * Relative em so per-message size composes on top of the global
+ * --wb-appearance-font-size (never overrides that var). Targets the message
+ * body like the font-family rules above. Cascade note: headings decorate the
+ * role label (a separate element) and are unaffected; code blocks (pre) use
+ * their own absolute size and naturally resist scaling; inline code (.92em)
+ * scales proportionally with the prose — all readable, none distorted, so no
+ * re-assertion is required (unlike font-family's mono guarantee). */
+.wbReader [data-turn][data-overlay-font-size="small"]  [data-message-author-role]{ font-size:var(--wb-fs-small); }
+.wbReader [data-turn][data-overlay-font-size="large"]  [data-message-author-role]{ font-size:var(--wb-fs-large); }
+.wbReader [data-turn][data-overlay-font-size="xlarge"] [data-message-author-role]{ font-size:var(--wb-fs-xlarge); }
 
 /* ──────────────────────────────────────────────────────────────────────
  * Phase 4-3 — Message-level paragraph controls

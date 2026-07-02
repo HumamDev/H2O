@@ -325,6 +325,11 @@
        * tokens. Mirrors the textColor shape. `clear-formatting` resets to
        * null for free via defaultMessageState. */
       fontFamily: null,       /* { token: 'sans'|'serif'|'mono'|'humanist' } | null */
+      /* Phase 8d-2 — message-level font size. Null = appearance/theme
+       * default; { token: ... } when the user picked a semantic size step.
+       * Mirrors the fontFamily shape. `clear-formatting` resets to null for
+       * free via defaultMessageState. */
+      fontSize: null,         /* { token: 'small'|'large'|'xlarge' } | null */
       /* Phase 4-3 — paragraph controls.
        *   list   — null when no list mode is active; otherwise
        *            { kind: 'bullet' | 'numbered' }.
@@ -476,6 +481,18 @@
             state.fontFamily = { token: ffTok };
           } else {
             state.fontFamily = null;
+          }
+          break;
+        }
+        /* Phase 8d-2 — message-level font size. Last op wins; unknown /
+         * empty / null size clears to the appearance/theme default
+         * (defensive; never throws). Mirrors the font-family case above. */
+        case 'font-size': {
+          var fsTok = String(payload.size || '');
+          if (fsTok === 'small' || fsTok === 'large' || fsTok === 'xlarge') {
+            state.fontSize = { token: fsTok };
+          } else {
+            state.fontSize = null;
           }
           break;
         }
@@ -1111,6 +1128,18 @@
         }
       } else if (turnEl.hasAttribute('data-overlay-font-family')) {
         turnEl.removeAttribute('data-overlay-font-family');
+        changed = true;
+      }
+
+      /* Phase 8d-2 — font-size attribute (same value-bearing shape as
+       * data-overlay-font-family; studio.css scales the body with em). */
+      if (state.fontSize && state.fontSize.token) {
+        if (turnEl.getAttribute('data-overlay-font-size') !== state.fontSize.token) {
+          turnEl.setAttribute('data-overlay-font-size', state.fontSize.token);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-font-size')) {
+        turnEl.removeAttribute('data-overlay-font-size');
         changed = true;
       }
 
