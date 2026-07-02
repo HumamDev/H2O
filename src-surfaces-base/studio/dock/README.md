@@ -1036,3 +1036,39 @@ body[data-route="reader"] .wbRail  { opacity: 1; pointer-events: auto; }
 - [x] Button tiles restyled to native-parity colored squares with white badges + active ring.
 - [x] No write-back, no tab/store changes, no native runtime edits, sidebar preference never mutated.
 - [ ] Browser side-by-side vs native (pending manual smoke).
+
+## D3.2.2 — what landed (Dock eligibility keyed off the editor pane, not the route)
+
+D3.2/D3.2.1 gated the Dock on `body[data-route="reader"]`. Browser smoke found a saved-chat/editor screen where `body.dataset.route` stays `"list"` (hash `#/saved`) while a chat is shown in the `#viewReader` pane — so the Dock CSS hid the panel and `H2O.Studio.getReaderContext()` returned empty (it only reads `state.currentReaderSnapshot`, which that path doesn't set).
+
+**Root cause:** the D2/D3 route model assumed every open chat lives under `body[data-route="reader"]` + `state.currentReaderSnapshot`. That is not true — a saved chat/editor can be shown in `#viewReader` under `#/saved` (inline editor / linked placeholder) or in a route-timing window where `#viewReader` is un-hidden before the route settles.
+
+**Fix — key eligibility off the editor pane, not the route:**
+- **`H2O.Studio.getDockContext()`** (new, in studio.js; `getReaderContext()` kept for back-compat) — read-only. Returns `{ snapshotId, chatId, source, eligible }`:
+  - `state.currentReaderSnapshot` present → `{ ...ids, source: "reader", eligible: true }`.
+  - else `#viewReader` visible (`.hidden === false`) → `{ ids from state.selectedSnapshotId/selectedChatId, source: "saved-editor", eligible: true }`.
+  - else (plain saved list / library / settings — `#viewReader` hidden) → `{ "", "", source: "none", eligible: false }`.
+  - Never invents ids; never mutates state.
+- **`body.dataset.dockEligible`** — set from `getDockContext().eligible` in `applyUiState()` (runs on every route/UI change) and directly in `renderLinkedReaderPlaceholder()` (the inline path with no hashchange). Read-only marker; the sidebar preference is never touched.
+- **Shell refresh on no-hashchange opens:** `renderLinkedReaderPlaceholder()` and the async tail of `renderReader()` dispatch the existing `evt:h2o:studio:reader-refresh-requested` event, so the Dock shell re-renders the active tab with the resolved `chatId`.
+- **Shell** — `resolveDockContext()` now consumes `getDockContext()` (falls back to `getReaderContext()` + route when absent) and surfaces `dockEligible` / `source` in the ctx.
+- **CSS** — the gate changed from `body[data-route="reader"][data-sidebar="closed"]` to `body[data-dock-eligible="true"][data-sidebar="closed"]` for `.wbDockRailStack` and `#studioDockPanel.wbDock--open` (+ the narrow-viewport rule). No forced grid/rail overrides reintroduced; native tile styling unchanged.
+
+**Exact eligibility rule:**
+| Screen | `#viewReader` | `dockEligible` | Dock (sidebar closed) |
+|---|---|---|---|
+| Plain saved list (no chat open) | hidden | `false` | hidden |
+| Saved-chat/editor open under `#/saved` | visible | `true` | visible |
+| Reader route (`#/read/…`) | visible | `true` | visible |
+| Library / Settings | hidden | `false` | hidden |
+
+No write-back, no tab/store changes, no native runtime edits. Capture stays inert; Finder stays local-only.
+
+### Acceptance for D3.2.2
+- [x] Eligibility keyed off `#viewReader` visibility / `currentReaderSnapshot`, not `route === "reader"`.
+- [x] `body.dataset.dockEligible` marker drives the CSS gate.
+- [x] Saved-chat/editor open under `#/saved` (route "list") now shows the Dock (sidebar closed).
+- [x] Plain saved list still hides the Dock.
+- [x] Reader route still works; context flows to tabs; chat A→B refresh preserved.
+- [x] No forced layout overrides; no write-back; no native runtime edits.
+- [ ] Browser smoke on `http://127.0.0.1:1430/studio.html#/saved` (pending).

@@ -8345,7 +8345,9 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 }
 
 /* Dock rail stack — additional tab buttons below the hamburger inside the
- * collapsed tiny-rail. Shown ONLY on the reader route AND when the tiny-
+ * collapsed tiny-rail. Shown ONLY when a saved chat/editor is open
+ * (body[data-dock-eligible="true"], set by studio.js from getDockContext
+ * — reader route OR inline editor under #/saved) AND when the tiny-
  * rail is naturally visible (sidebar collapsed) — matching native, and
  * avoiding any clipping while the sidebar is open (rail is 0-width then). */
 .wbDockRailStack {
@@ -8358,12 +8360,12 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
   padding: 8px 0 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
-body[data-route="reader"][data-sidebar="closed"] .wbDockRailStack {
+body[data-dock-eligible="true"][data-sidebar="closed"] .wbDockRailStack {
   display: flex;
 }
 
 /* Dock panel body — overlays the sidebar lane, beside the tiny-rail.
- * Opens only when the tiny-rail is visible (reader + sidebar closed), so
+ * Opens only when a chat/editor is open + sidebar closed, so
  * it never fights the open full sidebar. Hidden until .wbDock--open. */
 #studioDockPanel {
   display: none;
@@ -8383,7 +8385,7 @@ body[data-route="reader"][data-sidebar="closed"] .wbDockRailStack {
   backdrop-filter: saturate(140%) blur(6px);
   -webkit-backdrop-filter: saturate(140%) blur(6px);
 }
-body[data-route="reader"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
+body[data-dock-eligible="true"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
   display: flex;
 }
 
@@ -8444,7 +8446,7 @@ body[data-route="reader"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
 
 /* Narrow viewports — clamp the overlay panel width. */
 @media (max-width: 720px) {
-  body[data-route="reader"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
+  body[data-dock-eligible="true"][data-sidebar="closed"] #studioDockPanel.wbDock--open {
     width: min(var(--wb-side-w), 320px);
   }
 }

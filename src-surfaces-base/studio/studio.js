@@ -147,15 +147,53 @@ const state = {
 // context so the Studio Dock shell (dock-shell.studio.js) can route
 // per-chat Dock tabs to the correct data buckets. Returns empty strings
 // when no reader is open. Safe to call any time. Never mutates state.
+//
+// D3.2.2: getDockContext() generalizes eligibility beyond the reader
+// route. A saved chat/editor can be shown in the #viewReader pane while
+// body.dataset.route is still "list" (inline editor / linked placeholder
+// under #/saved, or a route-timing window). Dock eligibility therefore
+// keys off the reader PANE being visible (or an active reader snapshot),
+// NOT off body.dataset.route. Read-only; never invents ids; returns
+// empty ids + eligible:false when only the saved list is shown.
 (function () {
   const H2O = W.H2O = W.H2O || {};
   H2O.Studio = H2O.Studio || {};
+
   H2O.Studio.getReaderContext = function () {
     const snap = state.currentReaderSnapshot;
     return {
       snapshotId: snap && snap.snapshotId ? String(snap.snapshotId) : "",
       chatId:     snap && snap.chatId     ? String(snap.chatId)     : "",
     };
+  };
+
+  H2O.Studio.getDockContext = function () {
+    const snap = state.currentReaderSnapshot;
+    if (snap) {
+      return {
+        snapshotId: snap.snapshotId ? String(snap.snapshotId) : "",
+        chatId:     snap.chatId     ? String(snap.chatId)     : "",
+        source: "reader",
+        eligible: true,
+      };
+    }
+    // No reader snapshot — check whether the reader/editor PANE is
+    // showing a chat (inline editor / linked placeholder under any
+    // route). The plain saved list keeps #viewReader hidden.
+    let readerVisible = false;
+    try {
+      const reader = document.getElementById("viewReader");
+      readerVisible = !!(reader && reader.hidden === false);
+    } catch (_) { readerVisible = false; }
+    if (readerVisible) {
+      return {
+        snapshotId: state.selectedSnapshotId ? String(state.selectedSnapshotId) : "",
+        chatId:     state.selectedChatId     ? String(state.selectedChatId)     : "",
+        source: "saved-editor",
+        eligible: true,
+      };
+    }
+    return { snapshotId: "", chatId: "", source: "none", eligible: false };
   };
 })();
 
@@ -1357,6 +1395,19 @@ function applyUiState(){
   document.body.dataset.density = state.density;
   applyAdaptiveReaderLayoutMarker();
   document.body.dataset.route = state.currentReaderSnapshot ? "reader" : "list";
+
+  // D3.2.2: Dock eligibility is broader than the reader route — a saved
+  // chat/editor can be shown in the #viewReader pane while the route is
+  // still "list". The CSS gates the Dock rail/panel on this marker (plus
+  // sidebar-closed), so the Dock appears for any open chat/editor and
+  // stays hidden on the plain saved list / library / settings. Read-only
+  // marker; never mutates the sidebar preference.
+  try {
+    const dockCtx = (W.H2O && W.H2O.Studio && typeof W.H2O.Studio.getDockContext === "function")
+      ? W.H2O.Studio.getDockContext()
+      : null;
+    document.body.dataset.dockEligible = (dockCtx && dockCtx.eligible) ? "true" : "false";
+  } catch (_) { /* ignore */ }
 
   const sidebarOpen = !!state.sidebarExpanded;
   const sidebarButtons = ["#sidebarCollapseBtn", "#railSidebarBtn"];
@@ -5565,6 +5616,16 @@ function renderLinkedReaderPlaceholder(row){
 
   setRouteMeta("Studio", "Linked chat", title);
   try { document.body.dataset.route = "reader"; } catch (_) { /* ignore */ }
+  /* D3.2.2: this inline placeholder opens with no hashchange, so notify
+   * the Dock shell to re-sync eligibility + context. Mark eligible now
+   * (the reader pane is visible) and fire the reader-refresh event the
+   * shell already listens for. */
+  try {
+    document.body.dataset.dockEligible = "true";
+    W.dispatchEvent(new CustomEvent("evt:h2o:studio:reader-refresh-requested", {
+      detail: { snapshotId: state.selectedSnapshotId || null, source: "linked-placeholder" },
+    }));
+  } catch (_) { /* ignore */ }
   /* Phase 1a Studio Ribbon — narrow, explicit setContext call. The linked
    * placeholder is reached via in-page row click (Phase K-1) without a URL
    * change, so renderRoute does NOT fire for this transition and the
@@ -6051,6 +6112,15 @@ async function renderReader(snapshotId){
     setActiveSidebarChat(state.selectedSnapshotId);
     syncSelectionControls();
     applyUiState();
+    /* D3.2.2: the snapshot loaded asynchronously after the initial
+     * hashchange, so notify the Dock shell to re-render the active tab
+     * with the now-resolved chatId. applyUiState() above already
+     * refreshed the dockEligible marker. */
+    try {
+      W.dispatchEvent(new CustomEvent("evt:h2o:studio:reader-refresh-requested", {
+        detail: { snapshotId: state.currentReaderSnapshot?.snapshotId || null, source: "reader-loaded" },
+      }));
+    } catch (_) { /* ignore */ }
   } catch (error){
     if (token !== state.renderToken) return;
     if (readerEl) {

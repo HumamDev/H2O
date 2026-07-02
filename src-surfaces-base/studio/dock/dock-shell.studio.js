@@ -175,13 +175,16 @@
     return !!v && typeof v === 'object' && typeof v.nodeType === 'number' && v.nodeType === 1;
   }
 
-  /* D2: resolve the current Studio reader chat context for tab renders.
-   * Reads from three sources, all read-only:
-   *   1. document.body.dataset.route  (set by studio.js routeNameToBodyRoute)
-   *   2. H2O.Studio.getReaderContext() (added to studio.js for this
-   *      lane — exposes { snapshotId, chatId } from module-scoped
-   *      state.currentReaderSnapshot; returns empty strings when no
-   *      reader is open)
+  /* D2/D3.2.2: resolve the current Studio chat/editor context for tab
+   * renders. Read-only. Sources:
+   *   1. document.body.dataset.route ("reader" | "list" | ...) — kept for
+   *      informational `route`, but no longer the eligibility gate.
+   *   2. H2O.Studio.getDockContext() (D3.2.2) — exposes
+   *      { snapshotId, chatId, source, eligible }. `eligible` is true
+   *      whenever a saved chat/editor is shown in the #viewReader pane
+   *      (reader route OR inline editor under #/saved), NOT just when
+   *      route === "reader". Falls back to getReaderContext() (D2) when
+   *      the newer accessor is absent.
    *   3. document.getElementById('viewReader') for tabs like Attachments
    *      that scan the reader DOM.
    * NEVER mutates state; NEVER invents an id; NEVER writes to storage. */
@@ -190,19 +193,31 @@
     const bodyRoute = (doc && doc.body && doc.body.dataset)
       ? String(doc.body.dataset.route || '')
       : '';
-    const isReader = bodyRoute === 'reader';
     let snapshotId = '';
     let chatId = '';
+    let source = 'none';
+    let eligible = false;
     try {
       const S = (typeof globalThis !== 'undefined' && globalThis.H2O && globalThis.H2O.Studio) || null;
-      if (S && typeof S.getReaderContext === 'function') {
+      if (S && typeof S.getDockContext === 'function') {
+        const dc = S.getDockContext() || {};
+        if (typeof dc.snapshotId === 'string') snapshotId = dc.snapshotId;
+        if (typeof dc.chatId === 'string')     chatId     = dc.chatId;
+        if (typeof dc.source === 'string')     source     = dc.source;
+        eligible = !!dc.eligible;
+      } else if (S && typeof S.getReaderContext === 'function') {
+        /* Back-compat: older studio.js without getDockContext. */
         const rc = S.getReaderContext() || {};
         if (typeof rc.snapshotId === 'string') snapshotId = rc.snapshotId;
         if (typeof rc.chatId === 'string')     chatId     = rc.chatId;
+        eligible = bodyRoute === 'reader';
+        source = eligible ? 'reader' : 'none';
       }
     } catch (e) { recordError('resolveDockContext', e); }
     return {
-      isReader: isReader,
+      isReader: bodyRoute === 'reader',
+      dockEligible: eligible,
+      source: source,
       route: bodyRoute,
       snapshotId: snapshotId,
       chatId: chatId,
@@ -490,6 +505,8 @@
       snapshotId: dockCtx.snapshotId,
       route: dockCtx.route,
       isReader: dockCtx.isReader,
+      dockEligible: dockCtx.dockEligible,
+      source: dockCtx.source,
       readerRoot: dockCtx.readerRoot,
     };
     try {
