@@ -1900,6 +1900,13 @@
        marks/overlay layers, mutates no DOM, writes no storage, and only reads
        the live reader root to invoke the read-only consumer for inspection. -->
   <script src="./reader-notes/highlight-resolution-ui.studio.js"></script>
+  <!-- Reader & Notes — NV1: read-only non-visual annotation report consumer.
+       Loads after the operator-only highlight-resolution probe. The flag
+       'studio.readerNotes.annotationReport.enabled' defaults off and also
+       requires an operator opt-in key; this module returns serializable report
+       data only and performs no rendering, XPath, A2b, storage write, or DOM
+       mutation. -->
+  <script src="./reader-notes/annotation-report.studio.js"></script>
   <!-- R4.5.1.a — Desktop-first folder organization modals (folders only in this
        slice; categories / labels / tags follow in R4.5.2 / R4.5.3). Tauri-gated;
        silent no-op on MV3. Calls H2O.Studio.actions.folders.* — no SQLite / no

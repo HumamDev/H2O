@@ -1244,6 +1244,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // probe (no rendering, flag-gated + opt-in, default off). Keep parallel to
   // ARCHIVE_WORKBENCH_OUT_FILES below.
   "reader-notes/highlight-resolution-ui.studio.js",
+
+  // Reader & Notes — NV1 read-only annotation report consumer (non-visual,
+  // flag-gated + opt-in, default off). Keep parallel to
+  // ARCHIVE_WORKBENCH_OUT_FILES below.
+  "reader-notes/annotation-report.studio.js",
 ]);
 export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "studio.html",
@@ -1594,6 +1599,9 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
 
   // Reader & Notes — MVP-A2a.5 reader-root resolution probe — see SOURCE_FILES.
   "reader-notes/highlight-resolution-ui.studio.js",
+
+  // Reader & Notes — NV1 annotation report consumer — see SOURCE_FILES.
+  "reader-notes/annotation-report.studio.js",
 ]);
 
 function ensureDir(dirPath) {
