@@ -78,6 +78,11 @@
        * render in some viewers but break round-trip; the DOCX writer
        * + screen + print CSS carry the colour instead). */
       textColor: null,
+      /* Phase 8d-1 — font family is INTENTIONALLY LOSSY in Markdown (no
+       * portable syntax; the same policy as textColor/align/indent). The
+       * serializer never reads state.fontFamily — the DOCX writer (rFonts)
+       * and screen + print CSS carry the typeface instead. No field is
+       * mirrored here because nothing consumes it. */
       /* Phase 4-3 — paragraph controls.
        *   list   — Markdown emits per-line "- " (bullet) or "N. "
        *            (numbered) prefixes on the body. Skipped when

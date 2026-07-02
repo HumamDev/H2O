@@ -449,6 +449,25 @@
     return '<w:color w:val="' + hex + '"/>';
   }
 
+  /* Phase 8d-1b — curated font-family token → Word font face. One
+   * representative face per token that renders on a white page without our
+   * CSS (mirrors the studio.css screen/print stacks). Emits an <w:rFonts>
+   * fragment; because rFonts MUST come first inside rPr (OOXML schema),
+   * callers place fontFamilyRPr() as the BASE rProps, before charFormatRPr.
+   * Code runs are excluded by the caller — they keep Consolas. */
+  var FONT_FAMILY_DOCX = {
+    sans:     'Calibri',
+    serif:    'Cambria',
+    mono:     'Consolas',
+    humanist: 'Segoe UI',
+  };
+  function fontFamilyRPr(state) {
+    if (!state || !state.fontFamily || !state.fontFamily.token) return '';
+    var face = FONT_FAMILY_DOCX[state.fontFamily.token];
+    if (!face) return '';
+    return '<w:rFonts w:ascii="' + face + '" w:hAnsi="' + face + '" w:cs="' + face + '"/>';
+  }
+
   /* Phase 4-1 — compose `<w:rPr>` fragments for the 4 character toggles
    * (Phase 4-2 extends with text color). Combines with any prior rPr
    * (e.g. Consolas font for code). Returns a string suitable for
@@ -601,6 +620,11 @@
      * regardless of state.bold so it remains visually distinct. Code
      * font (Consolas) and the character toggles compose freely. */
     var charRPr = charFormatRPr(state);
+    /* Phase 8d-1b — message font family as the BASE rPr (rFonts first) for
+     * non-code runs. Code messages keep Consolas, so font-family is
+     * suppressed there (msgFontRPr stays ''); the code branch never reads
+     * msgFontRPr and hardcodes Consolas. */
+    var msgFontRPr = (state && state.code) ? '' : fontFamilyRPr(state);
     if (charRPr) {
       if (state.bold)          opsCount += 1;
       if (state.italic)        opsCount += 1;
@@ -702,7 +726,7 @@
        * Phase 4-4 — visual-tag leading run prepended to FIRST line only. */
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
-        var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : '';
+        var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : msgFontRPr;
         /* Phase 5d-2 — inline runs when available (code suppresses inline,
          * so bodyHasCode and useInline are mutually exclusive). */
         var lineRun = useInline ? emitRunsXml(inlineLines[bi], baseRPr) : runXml(line, combineRProps(baseRPr, charRPr));
@@ -744,7 +768,7 @@
       var listLines = String(body).split('\n');
       for (var li = 0; li < listLines.length; li += 1) {
         var listLinePrefix = (li === 0) ? vtLeadingRun : '';
-        var listLineRun = useInline ? emitRunsXml(inlineLines[li], '') : runXml(listLines[li], charRPr || null);
+        var listLineRun = useInline ? emitRunsXml(inlineLines[li], msgFontRPr) : runXml(listLines[li], combineRProps(msgFontRPr, charRPr) || null);
         xml += paragraphXmlWithProps(listStyleId, bodyAlignIndPPr, listLinePrefix + listLineRun);
       }
     } else if (state && state.quote) {
@@ -752,7 +776,7 @@
       var quoteLines = String(body).split('\n');
       for (var qi = 0; qi < quoteLines.length; qi += 1) {
         var quoteLinePrefix = (qi === 0) ? vtLeadingRun : '';
-        var quoteLineRun = useInline ? emitRunsXml(inlineLines[qi], '') : runXml(quoteLines[qi], charRPr || null);
+        var quoteLineRun = useInline ? emitRunsXml(inlineLines[qi], msgFontRPr) : runXml(quoteLines[qi], combineRProps(msgFontRPr, charRPr) || null);
         xml += paragraphXmlWithProps('IntenseQuote', bodyAlignIndPPr, quoteLinePrefix + quoteLineRun);
       }
     } else {
@@ -760,7 +784,7 @@
       var plainLines = String(body).split('\n');
       for (var pi = 0; pi < plainLines.length; pi += 1) {
         var plainLinePrefix = (pi === 0) ? vtLeadingRun : '';
-        var plainLineRun = useInline ? emitRunsXml(inlineLines[pi], '') : runXml(plainLines[pi], charRPr || null);
+        var plainLineRun = useInline ? emitRunsXml(inlineLines[pi], msgFontRPr) : runXml(plainLines[pi], combineRProps(msgFontRPr, charRPr) || null);
         xml += paragraphXmlWithProps(null, bodyAlignIndPPr, plainLinePrefix + plainLineRun);
       }
     }
