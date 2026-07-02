@@ -6268,6 +6268,19 @@ function openSidebar(){
   setSidebarExpanded(true);
 }
 
+function openSidebarForDock(){
+  // Dock rail clicks should reveal the sidebar lane without changing the
+  // user's persisted sidebar preference.
+  state.sidebarExpanded = true;
+  applyUiState();
+}
+
+(() => {
+  const H2O = W.H2O = W.H2O || {};
+  H2O.Studio = H2O.Studio || {};
+  H2O.Studio.openSidebarForDock = openSidebarForDock;
+})();
+
 function closeSidebar(){
   setSidebarExpanded(false);
 }

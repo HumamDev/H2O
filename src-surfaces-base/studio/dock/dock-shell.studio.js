@@ -306,6 +306,26 @@
     }
   }
 
+  function openStudioSidebarForDock() {
+    try {
+      const S = (typeof globalThis !== 'undefined' && globalThis.H2O && globalThis.H2O.Studio) || null;
+      if (S && typeof S.openSidebarForDock === 'function') {
+        S.openSidebarForDock();
+        return true;
+      }
+      if (typeof document !== 'undefined') {
+        const btn = document.getElementById('railSidebarBtn');
+        if (btn && typeof btn.click === 'function') {
+          btn.click();
+          return true;
+        }
+      }
+    } catch (e) {
+      recordError('openStudioSidebarForDock', e);
+    }
+    return false;
+  }
+
   /* ── Tab registry ─────────────────────────────────────────────────── */
   function registerTab(id, def) {
     if (!isNonEmptyString(id)) return;
@@ -436,14 +456,14 @@
         ico.setAttribute('aria-hidden', 'true');
         ico.textContent = label;
         btn.appendChild(ico);
-        /* D2: rail click both switches tab AND opens the body if
-         * closed. Native-like: the rail is always visible in reader
-         * route (see studio.css), and clicking a rail button expands
-         * the body panel. If already open, just switch tab. */
+        /* D3.3: rail click switches tab, opens the Dock body, then expands
+         * the Studio sidebar lane so the selected Dock tab renders in/on the
+         * sidebar area instead of as a competing right-edge panel. */
         const handler = (function (tabId) {
           return function () {
-            if (!internalState.open) open();
             setView(tabId);
+            if (!internalState.open) open();
+            openStudioSidebarForDock();
           };
         })(id);
         btn.addEventListener('click', handler);
