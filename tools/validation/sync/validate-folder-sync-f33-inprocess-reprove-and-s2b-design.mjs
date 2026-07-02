@@ -115,11 +115,20 @@ assert(api && typeof api.validate === 'function' && typeof api.classify === 'fun
 
 // ---- synthetic canonical snapshot (tokenized ids) ----
 const SNAP = {
+  visibleOrderIds: ['fa', 'fb', 'fc'],
   knownSet: { fa: true, fb: true, fc: true, fd: true, fe: true, fh: true },
   presentSet: { fa: true, fb: true, fc: true, fh: true },
   tombSet: { fd: true },
   visibleSet: { fa: true, fb: true, fc: true },
   sortOrderById: { fa: 0, fb: 1, fc: 2, fh: 3 },
+};
+const TIED_SORTORDER_SNAP = {
+  visibleOrderIds: ['fa', 'fb', 'fc'],
+  knownSet: { fa: true, fb: true, fc: true },
+  presentSet: { fa: true, fb: true, fc: true },
+  tombSet: {},
+  visibleSet: { fa: true, fb: true, fc: true },
+  sortOrderById: { fa: 0, fb: 0, fc: 0 },
 };
 function mkReq(over) {
   return Object.assign({
@@ -148,6 +157,27 @@ if (api) {
   assert(vAccept && vAccept.ok === true, 'F33 accepted: real validate must pass');
   assert(cAccept === null, `F33 accepted: real classify must return null (accepted); got ${cAccept}`);
   matrix.push({ name: 'accepted', reason: cAccept });
+
+  // F32c: all-tied sortOrder must derive current order from canonical visible order, not proposed payload order.
+  const tiedAcceptedBasis = api.orderingHash(['fa', 'fb', 'fc']);
+  const tiedRequested = api.orderingHash(['fb', 'fa', 'fc']);
+  const rTiedAccept = mkReq({
+    orderPayload: [{ folderId: 'fb', position: 0 }, { folderId: 'fa', position: 1 }, { folderId: 'fc', position: 2 }],
+    basisOrderingHash: tiedAcceptedBasis,
+    requestedOrderingHash: tiedRequested,
+  });
+  const cTiedAccept = api.classify(rTiedAccept, TIED_SORTORDER_SNAP, {});
+  assert(cTiedAccept === null, `F33 F32c tied-sortOrder genuine reorder: got ${cTiedAccept}`);
+  matrix.push({ name: 'tied-sortorder-genuine-reorder-accepted', reason: cTiedAccept });
+
+  const rTiedWrongBasis = mkReq({
+    orderPayload: [{ folderId: 'fb', position: 0 }, { folderId: 'fa', position: 1 }, { folderId: 'fc', position: 2 }],
+    basisOrderingHash: tiedRequested,
+    requestedOrderingHash: tiedRequested,
+  });
+  const cTiedWrongBasis = api.classify(rTiedWrongBasis, TIED_SORTORDER_SNAP, {});
+  assert(cTiedWrongBasis === 'stale-basis', `F33 F32c tied-sortOrder wrong basis: got ${cTiedWrongBasis}`);
+  matrix.push({ name: 'tied-sortorder-wrong-basis-stale', reason: cTiedWrongBasis });
 
   // 2. duplicate
   const rDup = mkReq({ basisOrderingHash: acceptedBasis, idempotencyKey: 'idem_seen' });
@@ -194,7 +224,7 @@ if (api) {
   }
   assert(rcpt.mirrorReprojection === 'deferred-to-s2b', 'F33 receipt: mirrorReprojection must be deferred-to-s2b');
 }
-assert(matrix.length === 9, `F33 matrix must cover 9 fixtures (got ${matrix.length})`);
+assert(matrix.length === 11, `F33 matrix must cover 11 fixtures including F32c tied-sortOrder cases (got ${matrix.length})`);
 
 // ---- structural re-assertions on the real handler ----
 if (src) {
@@ -206,6 +236,7 @@ if (src) {
   assert(code.includes('cleanString(opts.gate) === FOLDER_SORTORDER_REORDER_APPLY_GATE'), 'real handler must require the apply gate');
   assert(code.includes('canonicalWriteCount: 0'), 'real handler conflict/dry-run paths must be zero-write');
   assert(code.includes('folders.patch(order[i], { sortOrder: i })'), 'real handler accepted apply writes only sort_order');
+  assert(code.includes('visibleIndexById'), 'real handler must use visibleOrderIds as tied-sortOrder basis tie-break');
   for (const banned of ['folder_bindings', 'DELETE FROM folders', 'chromeStorageSet', 'FOLDER_STATE_DATA_KEY',
     'rebuildRenderMirrorFromSqlite', 'bindChat', 'unbindChat', 'sqlExecute(']) {
     assert(!code.includes(banned), `real handler body must NOT contain (no mirror/binding/delete write): ${banned}`);

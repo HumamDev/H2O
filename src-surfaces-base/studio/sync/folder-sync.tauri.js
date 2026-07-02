@@ -5621,8 +5621,23 @@
   }
 
   function f32CurrentPayloadOrder(payloadIds, snapshot) {
-    var s = safeObject(snapshot).sortOrderById || Object.create(null);
-    return payloadIds.slice().sort(function (a, b) { return (Number(s[a]) || 0) - (Number(s[b]) || 0); });
+    var snap = safeObject(snapshot);
+    var s = snap.sortOrderById || Object.create(null);
+    var visibleIndexById = Object.create(null);
+    f32Arr(snap.visibleOrderIds).forEach(function (id, index) {
+      var cleanId = cleanString(id);
+      if (cleanId && typeof visibleIndexById[cleanId] === 'undefined') visibleIndexById[cleanId] = index;
+    });
+    return payloadIds.slice().sort(function (a, b) {
+      var aid = cleanString(a); var bid = cleanString(b);
+      var av = Number(s[aid]); var bv = Number(s[bid]);
+      av = isFinite(av) ? av : 0; bv = isFinite(bv) ? bv : 0;
+      if (av !== bv) return av - bv;
+      var ai = typeof visibleIndexById[aid] === 'number' ? visibleIndexById[aid] : Number.MAX_SAFE_INTEGER;
+      var bi = typeof visibleIndexById[bid] === 'number' ? visibleIndexById[bid] : Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return aid < bid ? -1 : (aid > bid ? 1 : 0);
+    });
   }
 
   /* Conflict precedence (existence-first, so real folder problems surface before basis):

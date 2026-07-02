@@ -83,12 +83,12 @@ async function runBehavioralProof() {
   seed.run('fa', 0, 0); seed.run('fb', 1, 0); seed.run('fc', 2, 0); seed.run('ft', 3, 1);
   const folderRowCount = () => db.prepare('SELECT COUNT(*) AS n FROM folders').all()[0].n;
   const tombIds = () => db.prepare('SELECT id FROM folders WHERE tombstoned = 1').all().map((r) => r.id).join(',');
-  const orderedVisible = () => db.prepare('SELECT id FROM folders WHERE tombstoned = 0 ORDER BY sort_order ASC').all().map((r) => r.id);
+  const orderedVisible = () => db.prepare('SELECT id FROM folders WHERE tombstoned = 0 ORDER BY sort_order ASC, id ASC').all().map((r) => r.id);
 
   const writes = { patchSortOrder: 0, otherStoreWrite: 0 };
   const foldersStore = {
     async getAll() {
-      return db.prepare('SELECT id, sort_order FROM folders WHERE tombstoned = 0 ORDER BY sort_order ASC')
+      return db.prepare('SELECT id, sort_order FROM folders WHERE tombstoned = 0 ORDER BY sort_order ASC, id ASC')
         .all().map((r) => ({ id: r.id, folderId: r.id, sortOrder: Number(r.sort_order) }));
     },
     async listRecentlyDeletedFolders() {
@@ -184,6 +184,26 @@ async function runBehavioralProof() {
   assert(writes.patchSortOrder === w0, 'F32b dry-run: must write 0 canonical rows');
   assert((await ledgerKeysConsumed()) === 0, 'F32b dry-run: must NOT consume idempotency key');
 
+  // PROOF 1b — F32c tied-sortOrder: genuine reorder dry-run accepted using visible-order basis, 0 writes, no consume
+  db.prepare('UPDATE folders SET sort_order = 0 WHERE tombstoned = 0').run();
+  const tiedBasis = oh(['fa', 'fb', 'fc']);
+  const tiedRequested = oh(['fb', 'fa', 'fc']);
+  const wTied = writes.patchSortOrder;
+  const reqTiedDry = mkReq({
+    idempotencyKey: 'idem_tied_dry',
+    orderPayload: [{ folderId: 'fb', position: 0 }, { folderId: 'fa', position: 1 }, { folderId: 'fc', position: 2 }],
+    basisOrderingHash: tiedBasis,
+    requestedOrderingHash: tiedRequested,
+  });
+  const rTiedDry = await reorder.apply(reqTiedDry, {});
+  assert(rTiedDry && rTiedDry.status === 'dry-run', `F32b F32c tied dry-run: expected dry-run, got ${rTiedDry && rTiedDry.status}/${rTiedDry && rTiedDry.reason}`);
+  assert(rTiedDry && rTiedDry.canonicalWriteCount === 0, 'F32b F32c tied dry-run: canonicalWriteCount must be 0');
+  assert(writes.patchSortOrder === wTied, 'F32b F32c tied dry-run: must write 0 canonical rows');
+  const tiedDryRunConsumedRows = await ledgerKeysConsumed();
+  const tiedDryRunWrites = writes.patchSortOrder - wTied;
+  assert(tiedDryRunConsumedRows === 0, 'F32b F32c tied dry-run: must NOT consume idempotency key');
+  db.prepare('UPDATE folders SET sort_order = CASE id WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 WHEN ? THEN 3 ELSE sort_order END').run('fa', 'fb', 'fc', 'ft');
+
   // PROOF 2 — gated apply (accepted): writes only sort_order, reorders canonical, consumes
   const reqApply = mkReq({ idempotencyKey: 'idem_apply_fixed',
     orderPayload: [{ folderId: 'fc', position: 0 }, { folderId: 'fb', position: 1 }, { folderId: 'fa', position: 2 }],
@@ -272,6 +292,9 @@ async function runBehavioralProof() {
     blocked: false,
     sqliteMode: 'node:sqlite',
     dryRunWrites: 0,
+    tiedSortOrderDryRunStatus: rTiedDry.status,
+    tiedSortOrderDryRunWrites: tiedDryRunWrites,
+    tiedSortOrderDryRunConsumedRows: tiedDryRunConsumedRows,
     applyWrites: 3,
     finalCanonicalOrder: orderedVisible().join(','),
     replayWrites: 0,
@@ -361,6 +384,9 @@ console.log(JSON.stringify({
   reproveApproach: 'real-handler+real-ledger over node:sqlite temp DB (no live Desktop, no Tauri webview)',
   sqliteMode: proof ? proof.sqliteMode : 'unknown',
   dryRunWrites: proof ? proof.dryRunWrites : null,
+  tiedSortOrderDryRunStatus: proof ? proof.tiedSortOrderDryRunStatus : null,
+  tiedSortOrderDryRunWrites: proof ? proof.tiedSortOrderDryRunWrites : null,
+  tiedSortOrderDryRunConsumedRows: proof ? proof.tiedSortOrderDryRunConsumedRows : null,
   applyWrites: proof ? proof.applyWrites : null,
   finalCanonicalOrder: proof ? proof.finalCanonicalOrder : null,
   replayWrites: proof ? proof.replayWrites : null,
