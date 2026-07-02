@@ -94,6 +94,15 @@
          * 4-2) for the selected turn. Same enable rule as Headings
          * (saved-reader with a selected turn). */
         { id: 'font', label: 'Font', actions: [
+          /* Phase 8d-1 — Font Family. Four curated typeface tokens plus a
+           * "Default" to clear. Collapsed into one dropdown split button
+           * (SPLIT_BUTTONS['font-family']) rendered before B/I/U/S/Clear;
+           * those remain independent icon buttons. */
+          { id: 'font-family-sans',     label: 'Sans' },
+          { id: 'font-family-serif',    label: 'Serif' },
+          { id: 'font-family-mono',     label: 'Mono' },
+          { id: 'font-family-humanist', label: 'Humanist' },
+          { id: 'font-family-default',  label: 'Default' },
           { id: 'bold',          label: 'B' },
           { id: 'italic',        label: 'I' },
           { id: 'underline',     label: 'U' },
@@ -2388,6 +2397,38 @@
   ACTION_HANDLERS['text-color-gray']   = buildTextColorHandler('gray',   'gray');
   ACTION_HANDLERS['text-color-none']   = buildTextColorHandler(null,     'none');
 
+  /* ── Phase 8d-1 — Font Family (message-level overlay op) ─────────────
+   * Applies one of the 4 curated typeface tokens (or clears to theme
+   * default) to the whole selected turn via the `font-family` overlay op.
+   * Message-level only — no inline/range variant. Mirrors the message-
+   * level branch of buildTextColorHandler; there is deliberately NO
+   * inline-selection path here. `token === null` clears (Default). */
+  function buildFontFamilyHandler(token, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        if (!Number.isFinite(turnIdx) || turnIdx <= 0) { setStatus('Select a message first'); return; }
+        const isClear = (token === null);
+        const opSpec = {
+          type: 'font-family',
+          target: { kind: 'message', turnIdx: turnIdx, messageId: ctx.selectedMessageId || null },
+          payload: { token: token },
+        };
+        runOverlayOp(opSpec, setStatus, {
+          pending: isClear ? 'Clearing font…' : ('Applying font (' + label + ')…'),
+          success: isClear ? 'Font: default' : ('Font: ' + label),
+          fail: 'Font change failed',
+        });
+      },
+    };
+  }
+  ACTION_HANDLERS['font-family-sans']     = buildFontFamilyHandler('sans',     'Sans');
+  ACTION_HANDLERS['font-family-serif']    = buildFontFamilyHandler('serif',    'Serif');
+  ACTION_HANDLERS['font-family-mono']     = buildFontFamilyHandler('mono',     'Mono');
+  ACTION_HANDLERS['font-family-humanist'] = buildFontFamilyHandler('humanist', 'Humanist');
+  ACTION_HANDLERS['font-family-default']  = buildFontFamilyHandler(null,       'Default');
+
   /* ── Phase 4-3 — Paragraph controls (overlay ops list / align / indent) ─
    * Seven handlers operate on the entire selected turn:
    *   - Bullet / Numbered: list-mode toggles. Clicking the same kind a
@@ -3432,11 +3473,40 @@
       iconFromActionIcons: true,
       showItemLabel: true,
     },
+    /* Phase 8d-1 — Font Family. A sub-group split inside the Font group
+     * (like Alignment inside Paragraph): the 5 font-family actions collapse
+     * into one dropdown; B/I/U/S/Clear keep rendering as icon buttons.
+     * `labelItems` renders text-label radio rows (Sans / Serif / … /
+     * Default); `labelMain` renders a compact "Aa" preview in the current
+     * token's font on the main button. No color swatch, no icon glyph. */
+    'font-family': {
+      kind: 'font-family',
+      groupId: 'font',
+      actionIds: ['font-family-sans', 'font-family-serif', 'font-family-mono',
+        'font-family-humanist', 'font-family-default'],
+      mainAriaLabel: 'Font',
+      chevronAriaLabel: 'Choose font',
+      defaultActionId: 'font-family-sans',
+      labelItems: true,
+      labelMain: true,
+    },
+  };
+  /* Phase 8d-1 — short token per font-family action id, used to render the
+   * main "Aa" preview in the picked font (data-font) and (later) map back
+   * to the CSS stack. Kept beside SPLIT_BUTTONS so the primitive can read
+   * it without re-parsing action ids. */
+  const FONT_FAMILY_TOKEN = {
+    'font-family-sans':     'sans',
+    'font-family-serif':    'serif',
+    'font-family-mono':     'mono',
+    'font-family-humanist': 'humanist',
+    'font-family-default':  '',
   };
   const __splitBtnLastPicked = {
     'text-color': 'text-color-red',
     'highlight': 'highlight-brush-blue',
     'align': 'align-left',
+    'font-family': 'font-family-sans',
   };
   let __openSplitPopover = null;
   /* Phase 8c-2 — module ref to the live ribbon shell, stashed by
@@ -3612,6 +3682,12 @@
     if (cfg.iconFromActionIcons) {
       try { currentIconId = __resolveSplitCurrentId(cfg, actions); } catch (_) { currentIconId = ''; }
     }
+    /* Phase 8d-1 — current action id for label kinds (Font Family), used to
+     * mark that text-label row as checked inside the popover. */
+    let currentLabelId = '';
+    if (cfg.labelItems) {
+      try { currentLabelId = __resolveSplitCurrentId(cfg, actions); } catch (_) { currentLabelId = ''; }
+    }
     const pop = el('div', {
       class: 'wbRibbonPopover wbRibbonPopover--' + cfg.kind,
       role: 'menu',
@@ -3625,9 +3701,12 @@
       /* Phase 8c-4 — "no color" / clear item (text-color-none): swatch-
        * sized cell with a CSS slash so it isn't a blank cell. */
       const isNoColor = !!(cfg.noColorIds && cfg.noColorIds.indexOf(action.id) !== -1);
-      /* Phase 8d-0 — pick-one items (swatch / icon / none) are radios;
-       * command rows (Clear / Hide) stay plain menu items. */
-      const isRadio = isSwatch || isIcon || isNoColor;
+      /* Phase 8d-1 — text-label pick-one row (Font Family) for kinds that
+       * are neither swatch nor icon nor command. */
+      const isLabel = !!(cfg.labelItems && !isSwatch && !isCommand && !isIcon && !isNoColor);
+      /* Phase 8d-0 — pick-one items (swatch / icon / none / label) are
+       * radios; command rows (Clear / Hide) stay plain menu items. */
+      const isRadio = isSwatch || isIcon || isNoColor || isLabel;
       /* Per-item enablement — mirrors the render pass so selection-
        * sensitive actions (e.g. highlight-clear-message) grey out when
        * unavailable. Swatch brushes are global-state and stay enabled
@@ -3643,7 +3722,8 @@
           + (isCommand ? ' wbRibbonPopover__item--command' : '')
           + (isSwatch ? ' wbRibbonPopover__item--swatch' : '')
           + (isIcon ? ' wbRibbonPopover__item--icon' : '')
-          + (isNoColor ? ' wbRibbonPopover__item--noColor' : ''),
+          + (isNoColor ? ' wbRibbonPopover__item--noColor' : '')
+          + (isLabel ? ' wbRibbonPopover__item--label' : ''),
         role: isRadio ? 'menuitemradio' : 'menuitem',
         /* Phase 8d-0 — roving tabindex: all items start non-tabbable; the
          * open path promotes exactly one to tabindex 0 and moves it with
@@ -3685,12 +3765,24 @@
           item.setAttribute('aria-checked', 'true');
         }
       }
+      if (isLabel) {
+        /* Phase 8d-1 — text-label row; the label IS the visible content.
+         * For font tokens, preview the label in its own typeface via
+         * data-font so "Serif" reads serif, "Mono" reads mono, etc. */
+        const labelTok = FONT_FAMILY_TOKEN[action.id];
+        if (labelTok) { item.setAttribute('data-font', labelTok); }
+        item.appendChild(document.createTextNode(action.label));
+        if (currentLabelId && currentLabelId === action.id) {
+          item.setAttribute('aria-pressed', 'true');
+          item.setAttribute('aria-checked', 'true');
+        }
+      }
       if (!itemEnabled) {
         item.setAttribute('disabled', 'disabled');
       }
       item.addEventListener('click', function () {
         if (!itemEnabled) return;
-        if (isSwatch || isIcon) {
+        if (isSwatch || isIcon || isLabel) {
           __splitBtnLastPicked[cfg.kind] = action.id;
         }
         /* Close first so a brush-triggered re-render doesn't race the
@@ -3699,7 +3791,7 @@
          * re-render then detaches it, re-focus the rebuilt one below. */
         __closeSplitPopover('select');
         __dispatchSplitAction(action.id, triggerEl);
-        if (isSwatch || isIcon) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
+        if (isSwatch || isIcon || isLabel) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
         if (triggerEl && !triggerEl.isConnected && __popoverContainer) {
           const __fresh = __popoverContainer.querySelector('.wbRibbonSplitBtn__chevron--' + cfg.kind);
           if (__fresh) { try { __fresh.focus(); } catch (_) {} }
@@ -3795,9 +3887,16 @@
     });
     if (!enabled) main.setAttribute('disabled', 'disabled');
     /* Phase 8c-3 — icon kinds (Alignment) show the current action's 8b
-     * glyph so the main button mirrors the last-picked alignment; other
-     * kinds show their static config glyph. */
-    if (cfg.iconFromActionIcons) {
+     * glyph so the main button mirrors the last-picked alignment; Phase
+     * 8d-1 label-main kinds (Font Family) show a compact "Aa" preview
+     * rendered in the current token's font (via data-font); other kinds
+     * show their static config glyph. */
+    if (cfg.labelMain) {
+      const mainTok = FONT_FAMILY_TOKEN[currentId];
+      if (mainTok) { main.setAttribute('data-font', mainTok); }
+      else { main.removeAttribute('data-font'); }
+      main.textContent = 'Aa';
+    } else if (cfg.iconFromActionIcons) {
       main.innerHTML = (currentAction && ACTION_ICONS[currentAction.id]) || cfg.glyphIcon || '';
     } else {
       main.innerHTML = cfg.glyphIcon || '';
@@ -3849,6 +3948,12 @@
           }
           if (cfg.iconFromActionIcons && ACTION_ICONS[picked.id]) {
             main.innerHTML = ACTION_ICONS[picked.id];
+          }
+          if (cfg.labelMain) {
+            const pickTok = FONT_FAMILY_TOKEN[picked.id];
+            if (pickTok) { main.setAttribute('data-font', pickTok); }
+            else { main.removeAttribute('data-font'); }
+            main.textContent = 'Aa';
           }
         } catch (_) {}
       });

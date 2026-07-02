@@ -320,6 +320,11 @@
        * semantic palette names. `clear-formatting` resets to null for
        * free via defaultMessageState. */
       textColor: null,        /* { kind: 'red'|'green'|'blue'|'orange'|'gray' } | null */
+      /* Phase 8d-1 — message-level font family. Null = theme default;
+       * { token: ... } when the user picked one of the 4 curated typeface
+       * tokens. Mirrors the textColor shape. `clear-formatting` resets to
+       * null for free via defaultMessageState. */
+      fontFamily: null,       /* { token: 'sans'|'serif'|'mono'|'humanist' } | null */
       /* Phase 4-3 — paragraph controls.
        *   list   — null when no list mode is active; otherwise
        *            { kind: 'bullet' | 'numbered' }.
@@ -458,6 +463,19 @@
             state.textColor = { kind: tcKind };
           } else {
             state.textColor = null;
+          }
+          break;
+        }
+        /* Phase 8d-1 — message-level font family. Last op wins; unknown /
+         * empty / null token clears to theme default (defensive; never
+         * throws). Mirrors the text-color case above. */
+        case 'font-family': {
+          var ffTok = String(payload.token || '');
+          if (ffTok === 'sans' || ffTok === 'serif'
+              || ffTok === 'mono' || ffTok === 'humanist') {
+            state.fontFamily = { token: ffTok };
+          } else {
+            state.fontFamily = null;
           }
           break;
         }
@@ -1081,6 +1099,18 @@
         }
       } else if (turnEl.hasAttribute('data-overlay-text-color')) {
         turnEl.removeAttribute('data-overlay-text-color');
+        changed = true;
+      }
+
+      /* Phase 8d-1 — font-family attribute (same value-bearing shape as
+       * data-overlay-text-color; studio.css rules select on it). */
+      if (state.fontFamily && state.fontFamily.token) {
+        if (turnEl.getAttribute('data-overlay-font-family') !== state.fontFamily.token) {
+          turnEl.setAttribute('data-overlay-font-family', state.fontFamily.token);
+          changed = true;
+        }
+      } else if (turnEl.hasAttribute('data-overlay-font-family')) {
+        turnEl.removeAttribute('data-overlay-font-family');
         changed = true;
       }
 

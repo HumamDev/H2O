@@ -7568,6 +7568,62 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   height:15px;
 }
 
+/* ── Phase 8d-1 — Font Family dropdown ───────────────────────────────────────
+ * Curated token → stack, defined once and shared by the reader body rules,
+ * the dropdown label previews, and the main "Aa" preview. Never arbitrary
+ * font names. --wb-ff-mono defers to the existing --mono. */
+:root{
+  --wb-ff-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --wb-ff-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --wb-ff-mono: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --wb-ff-humanist: Seravek, "Gill Sans Nova", Ubuntu, Calibri, "DejaVu Sans", "Segoe UI", sans-serif;
+}
+/* Single-column menu of text-label rows (Sans / Serif / Mono / Humanist /
+ * Default). */
+.wbRibbonPopover--font-family{
+  grid-template-columns:1fr;
+  gap:2px;
+  min-width:140px;
+}
+.wbRibbonPopover__item--label{
+  grid-column:1 / -1;
+  width:auto;
+  height:auto;
+  min-height:28px;
+  justify-content:flex-start;
+  padding:4px 12px;
+  border-radius:4px;
+  white-space:nowrap;
+  font-size:13px;
+  line-height:1.2;
+}
+.wbRibbonPopover__item--label:hover:not([disabled]){
+  background:var(--sui-hover, rgba(0,0,0,.06));
+}
+/* Selected (last-picked) row — flat highlight, matching the alignment rows. */
+.wbRibbonPopover__item--label[aria-pressed="true"]{
+  outline:none;
+  box-shadow:none;
+  background:var(--sui-hover, rgba(0,0,0,.06));
+  font-weight:600;
+}
+/* Preview each token in its own typeface. */
+.wbRibbonPopover__item--label[data-font="sans"]{     font-family:var(--wb-ff-sans); }
+.wbRibbonPopover__item--label[data-font="serif"]{    font-family:var(--wb-ff-serif); }
+.wbRibbonPopover__item--label[data-font="mono"]{     font-family:var(--wb-ff-mono); }
+.wbRibbonPopover__item--label[data-font="humanist"]{ font-family:var(--wb-ff-humanist); }
+/* Main "Aa" preview button — text, not a glyph; shows the current token. */
+.wbRibbonSplitBtn__main--font-family{
+  min-width:34px;
+  font-size:13px;
+  font-weight:600;
+  line-height:1;
+}
+.wbRibbonSplitBtn__main--font-family[data-font="sans"]{     font-family:var(--wb-ff-sans); }
+.wbRibbonSplitBtn__main--font-family[data-font="serif"]{    font-family:var(--wb-ff-serif); }
+.wbRibbonSplitBtn__main--font-family[data-font="mono"]{     font-family:var(--wb-ff-mono); }
+.wbRibbonSplitBtn__main--font-family[data-font="humanist"]{ font-family:var(--wb-ff-humanist); }
+
 .wbRibbonAction[disabled],
 .wbRibbonAction[aria-disabled="true"]{
   opacity:.45;
@@ -8153,6 +8209,22 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 }
 .wbReader [data-turn][data-overlay-text-color="gray"] [data-message-author-role]{
   color:#4A5568;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Phase 8d-1 — Message-level font family (screen)
+ * Curated deterministic stacks (shared --wb-ff-* vars); targets the
+ * message body exactly like the text-color rules above. Code / pre keep
+ * their own var(--mono): a direct font-family rule on those elements
+ * always beats the inherited body font-family regardless of specificity.
+ * The re-assertion below makes that guarantee explicit and defensive. */
+.wbReader [data-turn][data-overlay-font-family="sans"]     [data-message-author-role]{ font-family:var(--wb-ff-sans); }
+.wbReader [data-turn][data-overlay-font-family="serif"]    [data-message-author-role]{ font-family:var(--wb-ff-serif); }
+.wbReader [data-turn][data-overlay-font-family="mono"]     [data-message-author-role]{ font-family:var(--wb-ff-mono); }
+.wbReader [data-turn][data-overlay-font-family="humanist"] [data-message-author-role]{ font-family:var(--wb-ff-humanist); }
+.wbReader [data-turn][data-overlay-font-family] [data-message-author-role] pre,
+.wbReader [data-turn][data-overlay-font-family] [data-message-author-role] code{
+  font-family:var(--mono);
 }
 
 /* ──────────────────────────────────────────────────────────────────────

@@ -74,6 +74,14 @@
      * Ribbon controls that system directly through its public APIs
      * rather than duplicating it as an overlay op. */
     textColor: 'text-color',
+    /* Phase 8d-1 — message-level font family. Payload token is one of the
+     * 4 curated typeface tokens ('sans'|'serif'|'mono'|'humanist') or
+     * `null` to clear back to the theme default. Message-level only (no
+     * inline/range variant); "last op of (type, target) wins", same as
+     * `text-color`. Curated closed token set — never arbitrary font names
+     * (deterministic CSS stacks + DOCX mapping, no font-fingerprint
+     * surface). clear-formatting resets it via defaultMessageState. */
+    fontFamily: 'font-family',
     /* Phase 4-3 — message-level paragraph controls. All three operate on
      * the entire selected turn (no inline text selection); reducer state
      * follows the Phase 2b "last op of (type, target) wins" rule.
