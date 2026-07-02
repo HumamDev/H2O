@@ -9181,6 +9181,13 @@ body[data-dock-eligible="true"][data-sidebar="closed"] #studioDockPanel.wbDock--
   .wbReader [data-turn][data-overlay-font-family] [data-message-author-role] pre,
   .wbReader [data-turn][data-overlay-font-family] [data-message-author-role] code { font-family: var(--mono) !important; }
 
+  /* ── Phase 8d-2b — font size in print (mirror of the screen rules).
+   * Same relative em (shared --wb-fs-* vars) so the exported PDF keeps the
+   * per-message size, composing on top of the print base size. */
+  .wbReader [data-turn][data-overlay-font-size="small"]  [data-message-author-role] { font-size: var(--wb-fs-small) !important; }
+  .wbReader [data-turn][data-overlay-font-size="large"]  [data-message-author-role] { font-size: var(--wb-fs-large) !important; }
+  .wbReader [data-turn][data-overlay-font-size="xlarge"] [data-message-author-role] { font-size: var(--wb-fs-xlarge) !important; }
+
   /* ── Phase 5d-A — inline (selected-range) formatting in print ──────
    * The PDF/Print path prints the LIVE reader DOM, which already
    * contains the inline spans injected by the Phase 5b-1/5c-1/5c-2
@@ -10226,10 +10233,17 @@ html[data-h2o-runtime="tauri"] .wbShell{
 
 html[data-h2o-runtime="tauri"] .wbTauriDragStrip{
   display:block;
-  flex:0 0 var(--wb-tauri-drag-h);
+  /* D3.2.2-topfix: the Jun-15 installed baseline overlays the drag strip
+   * (position:absolute; flex:0 0 0) so it reserves NO vertical space —
+   * the desktop chrome/tabs sit at the true top under the drag region.
+   * 500f49ca had turned it into a real flex spacer (position:relative;
+   * flex:0 0 var(--wb-tauri-drag-h)), which injected a blank strip that
+   * pushed all top chrome down, diverging from the installed baseline.
+   * Restored to the baseline overlay here. */
+  flex:0 0 0;
   height:var(--wb-tauri-drag-h);
   min-height:var(--wb-tauri-drag-h);
-  position:relative;
+  position:absolute;
   top:0;
   left:0;
   right:0;

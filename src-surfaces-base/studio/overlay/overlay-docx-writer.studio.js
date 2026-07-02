@@ -468,6 +468,26 @@
     return '<w:rFonts w:ascii="' + face + '" w:hAnsi="' + face + '" w:cs="' + face + '"/>';
   }
 
+  /* Phase 8d-2b — curated font-size token → Word half-point size. DOCX has
+   * no relative sizing, so the semantic tokens map to fixed half-points
+   * (w:val is half-points: 20 = 10pt, 30 = 15pt, 36 = 18pt) around a ~12pt
+   * body. Emits BOTH w:sz (ascii/hAnsi) and w:szCs (complex-script) so the
+   * size holds regardless of script run. Composes with fontFamilyRPr in the
+   * same base rProps (rFonts then sz); Word tolerates rPr child ordering
+   * (see charFormatRPr note). Applies to ALL runs incl. code — code keeps
+   * its Consolas FACE but takes the message SIZE. */
+  var FONT_SIZE_DOCX = {
+    small:  20,
+    large:  30,
+    xlarge: 36,
+  };
+  function fontSizeRPr(state) {
+    if (!state || !state.fontSize || !state.fontSize.token) return '';
+    var hp = FONT_SIZE_DOCX[state.fontSize.token];
+    if (!hp) return '';
+    return '<w:sz w:val="' + hp + '"/><w:szCs w:val="' + hp + '"/>';
+  }
+
   /* Phase 4-1 — compose `<w:rPr>` fragments for the 4 character toggles
    * (Phase 4-2 extends with text color). Combines with any prior rPr
    * (e.g. Consolas font for code). Returns a string suitable for
@@ -620,11 +640,18 @@
      * regardless of state.bold so it remains visually distinct. Code
      * font (Consolas) and the character toggles compose freely. */
     var charRPr = charFormatRPr(state);
+    /* Phase 8d-2b — message font SIZE as base rProps; unlike font-family it
+     * applies to ALL runs including code (code keeps its Consolas face but
+     * takes the message size). Empty when no font-size op is active. */
+    var msgSizeRPr = fontSizeRPr(state);
+    /* Consolas base for code runs (face) + the message size. */
+    var codeBaseRPr = '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' + msgSizeRPr;
     /* Phase 8d-1b — message font family as the BASE rPr (rFonts first) for
      * non-code runs. Code messages keep Consolas, so font-family is
-     * suppressed there (msgFontRPr stays ''); the code branch never reads
-     * msgFontRPr and hardcodes Consolas. */
-    var msgFontRPr = (state && state.code) ? '' : fontFamilyRPr(state);
+     * suppressed there (family part stays ''); Phase 8d-2b appends the
+     * message size so non-code runs carry rFonts + sz. The code branch uses
+     * codeBaseRPr (Consolas + sz) instead. */
+    var msgFontRPr = ((state && state.code) ? '' : fontFamilyRPr(state)) + msgSizeRPr;
     if (charRPr) {
       if (state.bold)          opsCount += 1;
       if (state.italic)        opsCount += 1;
@@ -726,7 +753,7 @@
        * Phase 4-4 — visual-tag leading run prepended to FIRST line only. */
       for (var bi = 0; bi < bodyLines.length; bi += 1) {
         var line = bodyLines[bi];
-        var baseRPr = bodyHasCode ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>' : msgFontRPr;
+        var baseRPr = bodyHasCode ? codeBaseRPr : msgFontRPr;
         /* Phase 5d-2 — inline runs when available (code suppresses inline,
          * so bodyHasCode and useInline are mutually exclusive). */
         var lineRun = useInline ? emitRunsXml(inlineLines[bi], baseRPr) : runXml(line, combineRProps(baseRPr, charRPr));
@@ -758,7 +785,7 @@
        * compact and Word renders embedded <w:br/> as soft line breaks.
        * Code skips list style but still honours align/indent. */
       xml += paragraphXmlWithProps(null, bodyAlignIndPPr,
-        vtLeadingRun + runXml(body, combineRProps('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>', charRPr)));
+        vtLeadingRun + runXml(body, combineRProps(codeBaseRPr, charRPr)));
     } else if (listStyleId) {
       /* List wins over quote when both set (list is more specific). One
        * paragraph per body line, each with the ListBullet / ListNumber

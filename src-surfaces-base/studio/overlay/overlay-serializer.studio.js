@@ -83,6 +83,9 @@
        * serializer never reads state.fontFamily — the DOCX writer (rFonts)
        * and screen + print CSS carry the typeface instead. No field is
        * mirrored here because nothing consumes it. */
+      /* Phase 8d-2 — font size is likewise INTENTIONALLY LOSSY in Markdown.
+       * The serializer never reads state.fontSize — the DOCX writer (w:sz)
+       * and screen + print CSS carry the size instead. */
       /* Phase 4-3 — paragraph controls.
        *   list   — Markdown emits per-line "- " (bullet) or "N. "
        *            (numbered) prefixes on the body. Skipped when
