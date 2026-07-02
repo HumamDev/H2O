@@ -28,6 +28,7 @@ const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const ledgerFile = 'src-surfaces-base/studio/sync/consumed-operation-ledger.tauri.js';
+const s5ImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -261,10 +262,16 @@ assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'F11 gate constant must remain');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 must STILL block field-mismatch:sortOrder + binding-mismatch (no allowed-set change)');
-  assert(store.includes('delete next.sortOrder;') && store.includes('delete next.sort_order;'),
-    'F11 rebuild helper must STILL strip sortOrder/sort_order (proving why S2b uses a new projection)');
+  if (exists(s5ImplementationEvidenceFile)) {
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'S5 must allow F11 field-mismatch:sortOrder');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'F11 must keep binding-mismatch blocked after S5');
+  } else {
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+      'F11 must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+    assert(store.includes('delete next.sortOrder;') && store.includes('delete next.sort_order;'),
+      'F11 rebuild helper must STILL strip sortOrder/sort_order before S5');
+  }
 }
 assert(exists(folderImportFile) && read(folderImportFile).includes("webdav: 'deferred'"), 'WebDAV must remain deferred in folder-import.mv3.js');
 assert(exists(ledgerFile), 'consumed-operation-ledger.tauri.js must exist');

@@ -90,6 +90,7 @@
   var F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES = {
     'missing-mirror-folder': true,
     'field-mismatch:color': true,
+    'field-mismatch:sortOrder': true,
   };
   var RESERVED_FOLDER_NAME_KEYS = {
     all: true,
@@ -684,8 +685,14 @@
     });
     if (cleanString(canonical.parentId || prior.parentId)) next.parentId = cleanString(canonical.parentId || prior.parentId);
     if (cleanString(canonical.icon || prior.icon)) next.icon = cleanString(canonical.icon || prior.icon);
-    delete next.sortOrder;
-    delete next.sort_order;
+    var sortOrder = Number(canonical.sortOrder != null ? canonical.sortOrder : canonical.sort_order);
+    if (Number.isFinite(sortOrder)) {
+      next.sortOrder = sortOrder;
+      next.sort_order = sortOrder;
+    } else {
+      delete next.sortOrder;
+      delete next.sort_order;
+    }
     return next;
   }
 
@@ -723,12 +730,15 @@
       renderMirrorOnly: true,
       desktopSQLiteCanonical: true,
       allowedClasses: classSelection.allowed.slice(),
-      blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch']),
+      blockedClasses: classSelection.blocked.concat(['binding-mismatch']),
       handledClasses: [],
       rebuiltMissingMirrorFolderCount: 0,
       rebuiltColorMismatchCount: 0,
+      rebuiltSortOrderMismatchCount: 0,
       skippedSortOrderRebuildCount: 0,
       skippedBindingRepairCount: 0,
+      sortOrderMirrorProjectionOnly: true,
+      noCanonicalSortOrderWrite: true,
       mirrorWriteAttempted: false,
       mirrorWriteOk: false,
       noSQLiteWrite: true,
@@ -736,7 +746,7 @@
       noTombstoneWrite: true,
       noFolderDelete: true,
       noFolderPurge: true,
-      noSortOrderOverwrite: true,
+      noSortOrderOverwrite: classSelection.allowed.indexOf('field-mismatch:sortOrder') === -1,
       noBindingRepair: true,
       noChromeCanonicalMutation: true,
       noTransportWrite: true,
@@ -794,6 +804,21 @@
         diagnostics.push({ class: 'field-mismatch:color', folderId: folderId });
         result.rebuiltColorMismatchCount += 1;
         if (result.handledClasses.indexOf('field-mismatch:color') === -1) result.handledClasses.push('field-mismatch:color');
+      }
+      if (classSelection.allowed.indexOf('field-mismatch:sortOrder') !== -1) {
+        var canonicalSortOrder = Number(folder.sortOrder != null ? folder.sortOrder : folder.sort_order);
+        var mirrorSortOrder = Number(found.row.sortOrder != null ? found.row.sortOrder : found.row.sort_order);
+        if (Number.isFinite(canonicalSortOrder) && mirrorSortOrder !== canonicalSortOrder) {
+          var nextSortRow = Object.assign({}, mirrorFolders[found.index], {
+            sortOrder: canonicalSortOrder,
+            sort_order: canonicalSortOrder,
+            updatedAt: updatedAt,
+          });
+          mirrorFolders[found.index] = nextSortRow;
+          diagnostics.push({ class: 'field-mismatch:sortOrder', folderId: folderId });
+          result.rebuiltSortOrderMismatchCount += 1;
+          if (result.handledClasses.indexOf('field-mismatch:sortOrder') === -1) result.handledClasses.push('field-mismatch:sortOrder');
+        }
       }
     });
     result.diagnosticCount = diagnostics.length;

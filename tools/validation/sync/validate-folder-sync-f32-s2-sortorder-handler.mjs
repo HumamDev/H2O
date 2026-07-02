@@ -27,6 +27,7 @@ const f31Doc = 'release-evidence/2026-06-25/folder-sync-f31-s2-preflight-gate.md
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const s5ImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -160,14 +161,20 @@ if (exists(folderSyncFile)) {
   }
 }
 
-// ---- F11 unchanged: still blocks both classes (S2 makes no allowed-set change) ----
+// ---- F11 boundary ----
 assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch (no allowed-set change in S2)');
+  if (exists(s5ImplementationEvidenceFile)) {
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'S5 must allow F11 field-mismatch:sortOrder');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'F11 helper must keep binding-mismatch blocked after S5');
+  } else {
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+      'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+  }
   assert(store.includes('folder_bindings') && store.includes('FOLDER_STATE_DATA_KEY') &&
     store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'),
     'folder substrate tokens must remain intact');

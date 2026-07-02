@@ -16,6 +16,7 @@ const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-01/folder-sync-f32c-tied-sortorder-basis-normalization-implementation.md';
 const preflightPath = 'release-evidence/2026-07-01/folder-sync-f32c-tied-sortorder-basis-normalization-preflight.md';
 const f34bEvidencePath = 'release-evidence/2026-06-25/folder-sync-f34b-classifier-introspection.md';
+const s5ImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const f33ValidatorPath = 'tools/validation/sync/validate-folder-sync-f33-inprocess-reprove-and-s2b-design.mjs';
 const f32bValidatorPath = 'tools/validation/sync/validate-folder-sync-f32b-persistent-idempotency-apply-proof.mjs';
@@ -163,8 +164,14 @@ for (const token of [
 
 assert.match(flatEvidence, /canonicalWriteCount` remains `0`|canonicalWriteCount.*0/i,
   'evidence must record zero canonical dry-run writes');
-assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-  'F11 allowed/blocked set unchanged');
+if (exists(s5ImplementationEvidencePath)) {
+  assertIncludes(foldersStore, "'field-mismatch:sortOrder': true", 'S5 allows F11 field-mismatch:sortOrder');
+  assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+    'F11 binding-mismatch remains blocked after S5');
+} else {
+  assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
+    'F11 allowed/blocked set unchanged before S5');
+}
 assert.ok(!source.includes('rebuildRenderMirrorFromSqlite'), 'F32c must not introduce mirror rebuild into folder-sync');
 
 const result = {

@@ -15,6 +15,7 @@ const evidencePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projectio
 const s2bImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s2b-sortorder-preserving-mirror-reprojection-implementation.md';
 const s2bPreflightEvidencePath = 'release-evidence/2026-07-01/folder-sync-s2b-sortorder-preserving-mirror-reprojection-preflight.md';
 const postS4EvidencePath = 'release-evidence/2026-07-01/folder-sync-post-s4-readback-idempotency.md';
+const s5ImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 
@@ -159,8 +160,14 @@ assert.ok(!folderSyncSource.includes('rebuildRenderMirrorFromSqlite'), 'folder-s
 assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
 assert.ok(!folderSyncSource.includes('productSyncReady: true'), 'productSyncReady must not flip true in folder-sync source');
 
-assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-  'F11 blocked classes remain protected');
+if (exists(s5ImplementationEvidencePath)) {
+  assertIncludes(foldersStoreSource, "'field-mismatch:sortOrder': true", 'S5 allows F11 field-mismatch:sortOrder');
+  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+    'F11 binding-mismatch remains blocked after S5');
+} else {
+  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
+    'F11 blocked classes remain protected before S5');
+}
 
 for (const forbidden of [
   'webdav package',

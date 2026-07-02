@@ -2,8 +2,8 @@
 //
 // Folder Sync S5/F11 - sortOrder allowed-set flip preflight.
 //
-// This validator proves the preflight is design-only and that the current source still
-// blocks sortOrder and binding mismatch until a separate S5 implementation slice.
+// This validator proves the preflight was design-only. After S5 implementation,
+// the current source may allow sortOrder while binding mismatch remains blocked.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,7 @@ const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip-preflight.md';
 const s2CloseoutPath = 'release-evidence/2026-07-01/folder-sync-s2-sortorder-local-closeout.md';
 const s2bLivePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projection-activation.md';
+const s5ImplementationPath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 
@@ -96,10 +97,16 @@ assertIncludes(s2Closeout, '`binding-mismatch` remains blocked', 'S2 closeout bi
 assertIncludes(s2bLive, 'S2B LIVE PROJECTION PASSED', 'S2b live verdict');
 assertIncludes(s2bLive, '"mirrorReprojection": "applied-sortorder-preserving-s2b"', 'S2b live mirror marker');
 
-assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-  'current F11 source still blocks sortOrder and binding mismatch');
-assertIncludes(foldersStoreSource, "result.skippedSortOrderRebuildCount = classSelection.blocked.indexOf('field-mismatch:sortOrder') !== -1 ? 1 : 0;",
-  'current F11 source still counts skipped sortOrder rebuild');
+if (exists(s5ImplementationPath)) {
+  const s5Implementation = read(s5ImplementationPath);
+  assertIncludes(s5Implementation, 'S5/F11 SORTORDER-ONLY ALLOWED-SET FLIP PASSED', 'S5 implementation supersedes source posture');
+  assertIncludes(foldersStoreSource, "'field-mismatch:sortOrder': true", 'current F11 source now allows sortOrder after S5');
+  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+    'current F11 source still blocks binding mismatch after S5');
+} else {
+  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
+    'current F11 source still blocks sortOrder and binding mismatch before S5');
+}
 assertIncludes(foldersStoreSource, "result.skippedBindingRepairCount = classSelection.blocked.indexOf('binding-mismatch') !== -1 ? 1 : 0;",
   'current F11 source still counts skipped binding repair');
 assertIncludes(folderSyncSource, 'async function s2bProjectSortOrderPreservingRenderMirror()', 'S2b helper exists');
@@ -128,7 +135,7 @@ const result = {
   productSourceEdited: false,
   allowedSetFlipPerformed: false,
   fieldMismatchSortOrderEligibleForLaterFlip: true,
-  fieldMismatchSortOrderCurrentlyBlockedInSource: true,
+  fieldMismatchSortOrderCurrentlyBlockedInSource: !exists(s5ImplementationPath),
   bindingMismatchBlocked: true,
   bindingReceiptSchemaMinted: false,
   productSyncReady: false,

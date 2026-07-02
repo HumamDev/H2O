@@ -16,6 +16,7 @@ const root = process.cwd();
 
 const f11Doc = 'release-evidence/2026-06-25/folder-sync-f11-render-only-mirror-rebuild.md';
 const f10Doc = 'release-evidence/2026-06-25/folder-sync-f10-mirror-write-through-rebuild-spec.md';
+const s5Doc = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
@@ -47,8 +48,12 @@ function extractFunction(source, name) {
 }
 
 function modelRebuild(canonicalFolders, mirrorState, options = {}) {
-  const allowed = new Set(options.classes || ['missing-mirror-folder', 'field-mismatch:color']);
-  const blocked = ['field-mismatch:sortOrder', 'binding-mismatch'];
+  const s5Enabled = exists(s5Doc);
+  const defaultClasses = s5Enabled
+    ? ['missing-mirror-folder', 'field-mismatch:color', 'field-mismatch:sortOrder']
+    : ['missing-mirror-folder', 'field-mismatch:color'];
+  const allowed = new Set(options.classes || defaultClasses);
+  const blocked = s5Enabled ? ['binding-mismatch'] : ['field-mismatch:sortOrder', 'binding-mismatch'];
   const folders = Array.isArray(mirrorState.folders) ? mirrorState.folders.map((row) => ({ ...row })) : [];
   const items = { ...(mirrorState.items || {}) };
   const byId = new Map(folders.map((row, index) => [row.folderId || row.id, { row, index }]));
@@ -57,7 +62,7 @@ function modelRebuild(canonicalFolders, mirrorState, options = {}) {
     const folderId = folder.folderId || folder.id;
     const found = byId.get(folderId);
     if (!found && allowed.has('missing-mirror-folder')) {
-      folders.push({
+      const inserted = {
         id: folderId,
         folderId,
         name: folder.name,
@@ -67,7 +72,13 @@ function modelRebuild(canonicalFolders, mirrorState, options = {}) {
         iconColor: folder.color || '',
         source: 'desktop-sqlite-render-mirror-rebuild',
         stateSource: 'desktop-sqlite-render-mirror-rebuild',
-      });
+      };
+      const insertedSortOrder = Number(folder.sortOrder ?? folder.sort_order);
+      if (s5Enabled && Number.isFinite(insertedSortOrder)) {
+        inserted.sortOrder = insertedSortOrder;
+        inserted.sort_order = insertedSortOrder;
+      }
+      folders.push(inserted);
       if (!Array.isArray(items[folderId])) items[folderId] = [];
       diagnostics.push({ class: 'missing-mirror-folder', folderToken: 'sha256:fixture' });
       continue;
@@ -82,6 +93,18 @@ function modelRebuild(canonicalFolders, mirrorState, options = {}) {
         iconColor: canonicalColor,
       };
       diagnostics.push({ class: 'field-mismatch:color', folderToken: 'sha256:fixture' });
+    }
+    if (allowed.has('field-mismatch:sortOrder')) {
+      const canonicalSortOrder = Number(folder.sortOrder ?? folder.sort_order);
+      const mirrorSortOrder = Number(folders[found.index].sortOrder ?? folders[found.index].sort_order);
+      if (Number.isFinite(canonicalSortOrder) && mirrorSortOrder !== canonicalSortOrder) {
+        folders[found.index] = {
+          ...folders[found.index],
+          sortOrder: canonicalSortOrder,
+          sort_order: canonicalSortOrder,
+        };
+        diagnostics.push({ class: 'field-mismatch:sortOrder', folderToken: 'sha256:fixture' });
+      }
     }
   }
   return {
@@ -103,6 +126,7 @@ const store = read(foldersStoreFile);
 const helper = extractFunction(store, 'rebuildRenderMirrorFromSqlite');
 const classCleaner = extractFunction(store, 'f11CleanAllowedRenderMirrorClasses');
 const rowBuilder = extractFunction(store, 'f11BuildRenderMirrorFolderRow');
+const s5Enabled = exists(s5Doc);
 
 for (const required of [
   'F11 RENDER-ONLY MIRROR REBUILD - PASS DETERMINISTIC IMPLEMENTATION/PROOF',
@@ -137,7 +161,14 @@ assert.match(store, /F11_RENDER_MIRROR_REBUILD_GATE = 'folder-sync-f11-render-on
 assert.match(store, /F11_RENDER_MIRROR_REBUILD_SCHEMA = 'h2o\.studio\.folder-sync\.f11-render-only-mirror-rebuild\.v1'/, 'F11 schema missing');
 assert.match(store, /'missing-mirror-folder': true/, 'missing-mirror-folder must be allowed');
 assert.match(store, /'field-mismatch:color': true/, 'field-mismatch:color must be allowed');
-assert.doesNotMatch(store, /'field-mismatch:sortOrder': true/, 'sortOrder must not be an allowed rebuild class');
+if (s5Enabled) {
+  assert.match(store, /'field-mismatch:sortOrder': true/, 'sortOrder must be an allowed rebuild class after S5');
+  assert.match(helper, /sortOrder: canonicalSortOrder/, 'F11 helper must project mirror sortOrder from canonical after S5');
+  assert.match(helper, /sort_order: canonicalSortOrder/, 'F11 helper must project mirror sort_order from canonical after S5');
+  assert.match(helper, /noCanonicalSortOrderWrite: true/, 'F11 helper must still avoid canonical sortOrder writes');
+} else {
+  assert.doesNotMatch(store, /'field-mismatch:sortOrder': true/, 'sortOrder must not be an allowed rebuild class before S5');
+}
 assert.doesNotMatch(store, /'binding-mismatch': true/, 'binding mismatch must not be an allowed rebuild class');
 assert.match(classCleaner, /F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES\[code\]/, 'class cleaner must only allow approved classes');
 assert.match(helper, /gateSatisfied: cleanString\(opts\.gate\) === F11_RENDER_MIRROR_REBUILD_GATE/, 'helper must require explicit gate');
@@ -150,12 +181,21 @@ assert.match(helper, /opts\.apply !== true/, 'helper must avoid mirror write unl
 assert.match(helper, /noSQLiteWrite: true/, 'helper result must prove no SQLite write');
 assert.match(helper, /noBindingWrite: true/, 'helper result must prove no binding write');
 assert.match(helper, /noTombstoneWrite: true/, 'helper result must prove no tombstone write');
-assert.match(helper, /noSortOrderOverwrite: true/, 'helper result must prove no sortOrder overwrite');
+if (s5Enabled) {
+  assert.match(helper, /noSortOrderOverwrite: classSelection\.allowed\.indexOf\('field-mismatch:sortOrder'\) === -1/, 'helper result must expose sortOrder projection eligibility');
+} else {
+  assert.match(helper, /noSortOrderOverwrite: true/, 'helper result must prove no sortOrder overwrite before S5');
+}
 assert.match(helper, /noBindingRepair: true/, 'helper result must prove no binding repair');
 assert.match(helper, /productSyncReady: false/, 'helper result must keep productSyncReady false');
 assert.match(helper, /privacy: \{ redacted: true, hashOnly: true \}/, 'helper must return redacted/hash-only diagnostics');
-assert.match(rowBuilder, /delete next\.sortOrder/, 'missing-row builder must not set sortOrder');
-assert.match(rowBuilder, /delete next\.sort_order/, 'missing-row builder must not set sort_order');
+if (s5Enabled) {
+  assert.match(rowBuilder, /next\.sortOrder = sortOrder/, 'missing-row builder may preserve canonical sortOrder after S5');
+  assert.match(rowBuilder, /next\.sort_order = sortOrder/, 'missing-row builder may preserve canonical sort_order after S5');
+} else {
+  assert.match(rowBuilder, /delete next\.sortOrder/, 'missing-row builder must not set sortOrder before S5');
+  assert.match(rowBuilder, /delete next\.sort_order/, 'missing-row builder must not set sort_order before S5');
+}
 assert.doesNotMatch(helper, /sqlExecute\(/, 'F11 helper must not execute SQLite writes');
 assert.doesNotMatch(helper, /bindChat\(|unbindChat\(|moveCanonicalChatFolderBinding\(/, 'F11 helper must not write bindings');
 assert.doesNotMatch(helper, /markRestored|writeFolderTombstone|softDeleteEmptyFolder|purgeRecentlyDeletedFolders/, 'F11 helper must not mutate tombstones/delete/purge');
@@ -177,12 +217,23 @@ const fixture = modelRebuild([
 const folderA = fixture.folders.find((row) => row.folderId === 'folder-a');
 const folderB = fixture.folders.find((row) => row.folderId === 'folder-b');
 assert.equal(folderA.color, '#111111', 'color mismatch must be repaired from canonical SQLite');
-assert.equal(folderA.sortOrder, 7, 'existing sortOrder must be preserved');
+if (s5Enabled) {
+  assert.equal(folderA.sortOrder, 99, 'sortOrder mismatch must be repaired from canonical SQLite after S5');
+} else {
+  assert.equal(folderA.sortOrder, 7, 'existing sortOrder must be preserved before S5');
+}
 assert.ok(folderB, 'missing mirror folder must be added');
-assert.equal(Object.prototype.hasOwnProperty.call(folderB, 'sortOrder'), false, 'new missing mirror row must not rebuild sortOrder');
+if (s5Enabled) {
+  assert.equal(folderB.sortOrder, 42, 'new missing mirror row may carry canonical sortOrder after S5');
+} else {
+  assert.equal(Object.prototype.hasOwnProperty.call(folderB, 'sortOrder'), false, 'new missing mirror row must not rebuild sortOrder before S5');
+}
 assert.deepEqual(fixture.bindingBucket, ['chat-1'], 'binding buckets must remain untouched');
-assert.deepEqual(fixture.diagnostics.map((row) => row.class).sort(), ['field-mismatch:color', 'missing-mirror-folder'], 'only approved classes should be handled');
-assert.deepEqual(fixture.blocked, ['field-mismatch:sortOrder', 'binding-mismatch'], 'blocked classes must remain blocked');
+assert.deepEqual(fixture.diagnostics.map((row) => row.class).sort(), s5Enabled
+  ? ['field-mismatch:color', 'field-mismatch:sortOrder', 'missing-mirror-folder']
+  : ['field-mismatch:color', 'missing-mirror-folder'], 'only approved classes should be handled');
+assert.deepEqual(fixture.blocked, s5Enabled ? ['binding-mismatch'] : ['field-mismatch:sortOrder', 'binding-mismatch'],
+  'blocked classes must match current S5 posture');
 
 assert.ok(read(folderSyncFile).includes("webdav: 'deferred'"), 'WebDAV must remain deferred in folder-sync.tauri.js');
 assert.ok(read(folderImportFile).includes("webdav: 'deferred'"), 'WebDAV must remain deferred in folder-import.mv3.js');
@@ -197,8 +248,8 @@ console.log(JSON.stringify({
   evidence: f11Doc,
   f10CommitReferenced: 'bc1a67e',
   sourceChanged: [foldersStoreFile],
-  handledClasses: ['missing-mirror-folder', 'field-mismatch:color'],
-  blockedClasses: ['field-mismatch:sortOrder', 'binding-mismatch'],
+  handledClasses: s5Enabled ? ['missing-mirror-folder', 'field-mismatch:color', 'field-mismatch:sortOrder'] : ['missing-mirror-folder', 'field-mismatch:color'],
+  blockedClasses: s5Enabled ? ['binding-mismatch'] : ['field-mismatch:sortOrder', 'binding-mismatch'],
   writeTarget: 'FOLDER_STATE_DATA_KEY',
   gate: 'folder-sync-f11-render-only-mirror-rebuild',
   defaultDryRun: true,

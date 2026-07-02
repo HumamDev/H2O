@@ -25,6 +25,7 @@ const s4Doc = 'release-evidence/2026-07-01/folder-sync-s4-controlled-apply-after
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const s5ImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -138,8 +139,14 @@ assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch');
+  if (exists(s5ImplementationEvidenceFile)) {
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'S5 must allow F11 field-mismatch:sortOrder');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'F11 helper must keep binding-mismatch blocked after S5');
+  } else {
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+      'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+  }
   assert(store.includes('folder_bindings') && store.includes('FOLDER_STATE_DATA_KEY') &&
     store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'), 'folder substrate tokens intact');
 }
