@@ -13,9 +13,11 @@
 // It proves: dry-run default writes 0 rows and does not consume; gated apply writes only sort_order and
 // reorders canonical to the requested order; a SEPARATE replay call with the same idempotencyKey writes 0
 // rows and returns a duplicate/skipped receipt (PERSISTENT, ledger-sourced — not caller-context); conflict
-// rejects write 0 rows and do not consume; no folder delete/purge/tombstone/chat/binding/mirror write; the
-// receipt uses the receipt schema + canonicalAuthority desktop-sqlite + no-destructive flags; mirror stays
-// deferred-to-s2b; F11 unchanged; productSyncReady false; binding receipt unminted; WebDAV deferred.
+// rejects write 0 rows and do not consume; no folder delete/purge/tombstone/chat/binding write; the
+// receipt uses the receipt schema + canonicalAuthority desktop-sqlite + no-destructive flags; the successful
+// applied path now runs the S2b sortOrder-preserving mirror projection (marker applied-sortorder-preserving-s2b)
+// but no-ops without writing a mirror when none is seeded; conflict/dry-run paths stay deferred-to-s2b; F11
+// unchanged; productSyncReady false; binding receipt unminted; WebDAV deferred.
 // If node:sqlite / DatabaseSync is unavailable, it STOPS and reports the blocker (it does not fake a proof).
 
 import fs from 'node:fs';
@@ -217,7 +219,12 @@ async function runBehavioralProof() {
   assert(orderedVisible().join(',') === 'fc,fb,fa', `F32b apply: canonical order must become fc,fb,fa; got ${orderedVisible().join(',')}`);
   assert(rApply && rApply.idempotencyPersisted === true, 'F32b apply: idempotencyPersisted must be true (recorded to ledger)');
   assert(rApply && rApply.canonicalAuthority === 'desktop-sqlite', 'F32b apply: canonicalAuthority must be desktop-sqlite');
-  assert(rApply && rApply.mirrorReprojection === 'deferred-to-s2b', 'F32b apply: mirror must remain deferred-to-s2b');
+  // S2b: the successful applied path now runs the sortOrder-preserving mirror projection and flips the marker.
+  assert(rApply && rApply.mirrorReprojection === 'applied-sortorder-preserving-s2b',
+    `F32b apply: applied path must carry the S2b mirror marker, got ${rApply && rApply.mirrorReprojection}`);
+  // no render mirror was seeded in this harness → the S2b projection is a safe no-op (writes no mirror).
+  assert(!Object.prototype.hasOwnProperty.call(mem, FOLDER_STATE_DATA_KEY),
+    'F32b apply: with no render mirror present, the S2b projection must not materialize/write a mirror');
   for (const k of ['noDestructiveMutation', 'noFolderDelete', 'noFolderPurge', 'noChatDelete', 'noBindingMutation', 'noTombstoneMutation']) {
     assert(rApply && rApply[k] === true, `F32b apply receipt: ${k} must be true`);
   }
@@ -397,7 +404,7 @@ console.log(JSON.stringify({
   consumedRows: proof ? proof.consumedRows : null,
   otherStoreWrites: proof ? proof.otherStoreWrites : null,
   mirrorWritten: proof ? proof.mirrorWritten : null,
-  mirrorReprojection: 'deferred-to-s2b',
+  mirrorReprojection: 'applied-sortorder-preserving-s2b (applied path); deferred-to-s2b (dry-run/conflict)',
   s2StillOpen: true,
   f11AllowedSetChanged: false,
   productSyncReady: false,

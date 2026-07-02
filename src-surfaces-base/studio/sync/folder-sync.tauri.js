@@ -5747,14 +5747,113 @@
     if (afterHash === cleanString(request.requestedOrderingHash)) {
       // F32b: record the consumed operation so a later separate call is a persistent no-op.
       var recorded = await f32RecordReorderConsumed(request);
-      return buildFolderSortorderReorderReceipt(request, 'applied', 'sortorder-reorder-applied',
+      var appliedReceipt = buildFolderSortorderReorderReceipt(request, 'applied', 'sortorder-reorder-applied',
         { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash,
           idempotencyPersisted: recorded.ok });
+      // S2b: sortOrder-preserving render-mirror re-projection. Runs ONLY here — strictly AFTER validation,
+      // the canonical sort_order write, AND post-apply ordering-hash verification. It never leads canonical
+      // (reads canonical via the store, writes ONLY the render mirror), is idempotent + bounded, and does
+      // NOT reuse the F11 rebuild helper (which strips sortOrder). The projection function lives OUTSIDE this
+      // handler region; the marker below is overridden only on this successful applied path.
+      var s2bMirror = await s2bProjectSortOrderPreservingRenderMirror();
+      appliedReceipt.mirrorReprojection = 'applied-sortorder-preserving-s2b';
+      appliedReceipt.mirrorReprojectionResult = (s2bMirror && s2bMirror.status) ? s2bMirror.status : 'unknown';
+      return appliedReceipt;
     }
     return buildFolderSortorderReorderReceipt(request, 'rejected', 'post-apply-ordering-hash-mismatch',
       { dryRun: false, canonicalWriteCount: writeCount, resultingOrderingHash: afterHash });
   }
   /* ===================== end F32 S2 sortOrder reorder handler ===================== */
+
+  /* ===================== S2b: sortOrder-preserving render-mirror re-projection =====================
+   * A NEW, focused projection (deliberately NOT the F11 render-mirror rebuild helper, which STRIPS
+   * sortOrder). It is invoked ONLY by the F32 applied path, strictly after the canonical sort_order write +
+   * post-apply hash verification. It reads canonical order from the store and writes ONLY the render mirror
+   * (FOLDER_STATE_DATA_KEY) via writeKv, preserving each folder's sortOrder/sort_order and reordering the
+   * mirror folders array to match canonical order. It never leads canonical, is idempotent (no write when the
+   * mirror already preserves the canonical order) and bounded (a single mirror write; no new rows, no binding/
+   * items/tombstone/chat/delete mutation, no transport/WebDAV/CAS, no productSyncReady flip). If the mirror is
+   * absent it is a safe no-op (S2b preserves order on an existing render mirror; it does not materialize one). */
+  var S2B_RENDER_MIRROR_STATE_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+  function s2bFolderIdOf(row) { return cleanString(row && (row.id || row.folderId)); }
+  async function s2bCanonicalOrderForMirror() {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var folders = stores && stores.folders;
+    if (!folders || typeof folders.getAll !== 'function') return null;
+    var rows = f32Arr(await folders.getAll());
+    var sortOrderById = Object.create(null);
+    var orderIndexById = Object.create(null);
+    var ordered = rows.slice().sort(function (a, b) {
+      return (Number(a && a.sortOrder) || 0) - (Number(b && b.sortOrder) || 0);
+    });
+    ordered.forEach(function (row, index) {
+      var id = s2bFolderIdOf(row);
+      if (!id) return;
+      sortOrderById[id] = Number(row && row.sortOrder) || 0;
+      if (typeof orderIndexById[id] === 'undefined') orderIndexById[id] = index;
+    });
+    return { sortOrderById: sortOrderById, orderIndexById: orderIndexById };
+  }
+  async function s2bProjectSortOrderPreservingRenderMirror() {
+    var result = {
+      schema: 'h2o.studio.folder-sortorder-mirror-reprojection.s2b.v1',
+      ok: false, status: '', wrote: false, reusedF11RebuildHelper: false,
+      sortOrderPreserving: true, mirrorNeverLeadsCanonical: true, renderMirrorOnly: true,
+      projectedFolderCount: 0, reorderedMirror: false, canonicalNotInMirrorCount: 0,
+      noBindingMutation: true, noTombstoneMutation: true, noFolderDelete: true, noChatDelete: true,
+      noItemsMutation: true, noTransportWrite: true, noWebdavWrite: true, noChatSavingCas: true,
+      productSyncReady: false,
+    };
+    try {
+      var canon = await s2bCanonicalOrderForMirror();
+      if (!canon) { result.ok = true; result.status = 'store-unavailable'; return result; }
+      var raw = await readKv(S2B_RENDER_MIRROR_STATE_KEY);
+      var current = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : null;
+      var mirrorFolders = current && Array.isArray(current.folders) ? current.folders.slice() : null;
+      if (!mirrorFolders || !mirrorFolders.length) { result.ok = true; result.status = 'no-op-mirror-absent'; return result; }
+      var changed = false;
+      var nextFolders = mirrorFolders.map(function (row) {
+        var id = s2bFolderIdOf(row);
+        if (id && Object.prototype.hasOwnProperty.call(canon.sortOrderById, id)) {
+          var so = canon.sortOrderById[id];
+          if (Number(row.sortOrder) !== so || Number(row.sort_order) !== so) {
+            changed = true; result.projectedFolderCount += 1;
+            return Object.assign({}, row, { sortOrder: so, sort_order: so }); // PRESERVE (opposite of F11 strip)
+          }
+        } else if (id) {
+          result.canonicalNotInMirrorCount += 0; // rows not in canonical are left untouched (bounded)
+        }
+        return row;
+      });
+      var big = Number.MAX_SAFE_INTEGER;
+      var sortedFolders = nextFolders.slice().sort(function (a, b) {
+        var ai = canon.orderIndexById[s2bFolderIdOf(a)]; var bi = canon.orderIndexById[s2bFolderIdOf(b)];
+        ai = typeof ai === 'number' ? ai : big; bi = typeof bi === 'number' ? bi : big;
+        return ai - bi;
+      });
+      for (var i = 0; i < sortedFolders.length; i += 1) {
+        if (s2bFolderIdOf(sortedFolders[i]) !== s2bFolderIdOf(nextFolders[i])) { changed = true; result.reorderedMirror = true; break; }
+      }
+      if (!changed) { result.ok = true; result.status = 'no-op-mirror-already-preserves-sortorder'; return result; }
+      var nextState = Object.assign({}, current, {
+        folders: sortedFolders,
+        updatedAt: new Date().toISOString(),
+        s2bLastSortOrderPreservingProjection: {
+          schema: result.schema, at: new Date().toISOString(),
+          projectedFolderCount: result.projectedFolderCount, reorderedMirror: result.reorderedMirror,
+          renderMirrorOnly: true, sortOrderPreserving: true, mirrorNeverLeadsCanonical: true,
+          noBindingMutation: true, noTombstoneMutation: true, productSyncReady: false,
+        },
+      });
+      await writeKv(S2B_RENDER_MIRROR_STATE_KEY, nextState);
+      result.ok = true; result.wrote = true; result.status = 'projected';
+      return result;
+    } catch (e) {
+      result.ok = false; result.status = 'mirror-unavailable'; result.error = e && e.message ? e.message : String(e);
+      return result;
+    }
+  }
+  /* ===================== end S2b sortOrder-preserving render-mirror re-projection ===================== */
 
   H2O.Studio.sync = Object.assign({}, existingSync, desktopSyncApi, {
     folder: folderApi,
