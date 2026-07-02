@@ -7603,6 +7603,7 @@ function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
       <div style="display:flex;flex-direction:column;gap:12px">
         ${settingsStorageDiagnosticsHtml(meta, cardStyle)}
         ${settingsArchiveHealthCardHtml(cardStyle)}
+        ${settingsArchiveRequestDeliveryCardHtml(cardStyle)}
         ${settingsFolderOperatorModeDiagnosticsHtml(cardStyle, btnStyle)}
         ${settingsInfoCardHtml(
           "Folder Parity Diagnostics",
@@ -7866,6 +7867,24 @@ function mountSettingsArchiveHealthCard(panel){
   } catch (_) { /* read-only diagnostics card must never break Settings */ }
 }
 
+/* Phase D.3C.2 — mount the manual Chrome archive-request delivery utility card.
+   Renders only into its own box; never repaints Settings, never touches the
+   Archive Health card, and degrades to a "Chrome Studio only" message when the
+   delivery APIs are absent (e.g. on Desktop). */
+function mountSettingsArchiveRequestDeliveryCard(panel){
+  try {
+    const box = panel?.querySelector?.("#wbSettingsArchiveRequestDeliveryBox");
+    if (!box || box.dataset.archiveRequestDeliveryMounted === "1") return;
+    const deliveryUi = W?.H2O?.Studio?.archiveRequestDeliveryUi;
+    if (deliveryUi && typeof deliveryUi.renderArchiveRequestDeliveryCard === "function") {
+      deliveryUi.renderArchiveRequestDeliveryCard(box);
+      box.dataset.archiveRequestDeliveryMounted = "1";
+    } else {
+      box.textContent = "Archive request delivery is available in Chrome Studio only.";
+    }
+  } catch (_) { /* manual delivery utility card must never break Settings */ }
+}
+
 function renderSettingsSectionShell(panel, section){
   const key = SETTINGS_TOP_LEVEL_ROUTES[section] ? section : "account";
   const meta = settingsTopLevelMeta(key);
@@ -7896,12 +7915,10 @@ function renderSettingsSectionShell(panel, section){
   settingsBindEvaluationControls(panel);
   settingsBindFolderOperatorModeControls(panel);
   if (key === "diagnostics") mountSettingsArchiveHealthCard(panel);
+  if (key === "diagnostics") mountSettingsArchiveRequestDeliveryCard(panel);
   if (key === "diagnostics" || key === "about") refreshSettingsDiagnostics(panel);
 }
 
-async function renderSettingsTopLevelRoute(panel, route){
-  const section = SETTINGS_TOP_LEVEL_ROUTES[String(route && route.section || "").toLowerCase()]
-    ? String(route.section).toLowerCase()
 /* Phase D.3C.2 — minimal manual Chrome delivery utility. Separate card from the
    read-only Archive Health card above; the delivery UI module renders its
    diagnostics + manual buttons into this box under an explicit user gesture. */
@@ -7914,10 +7931,14 @@ function settingsArchiveRequestDeliveryCardHtml(cardStyle){
   `;
 }
 
+async function renderSettingsTopLevelRoute(panel, route){
+  const section = SETTINGS_TOP_LEVEL_ROUTES[String(route && route.section || "").toLowerCase()]
+    ? String(route.section).toLowerCase()
     : "account";
   const routeKey = section;
   if (panel.dataset.settingsRendered === "1" && panel.dataset.settingsRenderedKey === routeKey && panel.firstChild) {
     if (section === "diagnostics") mountSettingsArchiveHealthCard(panel);
+    if (section === "diagnostics") mountSettingsArchiveRequestDeliveryCard(panel);
     if (section === "diagnostics" || section === "about") refreshSettingsDiagnostics(panel);
     return;
   }
@@ -7974,7 +7995,6 @@ function settingsWrapFolderParityRoute(panel, parityNode){
     settingsFolderParitySetOperationStatus(panel, "folderDiagnostics", "failed", "Refresh failed");
     settingsFolderParityLog(panel, String(err && (err.stack || err.message || err)));
   });
-        ${settingsArchiveRequestDeliveryCardHtml(cardStyle)}
 }
 
 function renderSettingsHostedConvergenceHidden(panel, route){
@@ -8238,24 +8258,6 @@ async function renderSettingsRoute(route = { section: "account", subsection: "" 
       <div id="wbSettingsFolderParityPanelMirrorRefresh" data-folder-parity-panel="mirror-refresh" ${FOLDER_PARITY_SETTINGS_UI_STATE.activeTab === "mirror-refresh" ? "" : "hidden"} style="display:flex;flex-direction:column;gap:8px">
       <div id="wbSettingsFolderMirrorRefresh" style="${STUDIO_isTauri() ? "display:flex" : "display:none"};flex-direction:column;gap:8px;padding:10px;margin-top:0;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);border-radius:8px">
         ${settingsFolderSectionTabsHtml("parity-mirror-refresh", [
-/* Phase D.3C.2 — mount the manual Chrome archive-request delivery utility card.
-   Renders only into its own box; never repaints Settings, never touches the
-   Archive Health card, and degrades to a "Chrome Studio only" message when the
-   delivery APIs are absent (e.g. on Desktop). */
-function mountSettingsArchiveRequestDeliveryCard(panel){
-  try {
-    const box = panel?.querySelector?.("#wbSettingsArchiveRequestDeliveryBox");
-    if (!box || box.dataset.archiveRequestDeliveryMounted === "1") return;
-    const deliveryUi = W?.H2O?.Studio?.archiveRequestDeliveryUi;
-    if (deliveryUi && typeof deliveryUi.renderArchiveRequestDeliveryCard === "function") {
-      deliveryUi.renderArchiveRequestDeliveryCard(box);
-      box.dataset.archiveRequestDeliveryMounted = "1";
-    } else {
-      box.textContent = "Archive request delivery is available in Chrome Studio only.";
-    }
-  } catch (_) { /* manual delivery utility card must never break Settings */ }
-}
-
           { id: "input", label: "Input" },
           { id: "preview", label: "Preview" },
           { id: "confirmation", label: "Confirmation" },
@@ -8287,7 +8289,6 @@ function mountSettingsArchiveRequestDeliveryCard(panel){
         </div>
         </div>
         <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "confirmation", "input")}>
-  if (key === "diagnostics") mountSettingsArchiveRequestDeliveryCard(panel);
         <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">
           <span style="opacity:.72">Type <code>${esc(FOLDER_DESKTOP_MIRROR_REFRESH_CONFIRM_TEXT)}</code> to enable mirror refresh.</span>
           <input id="wbSettingsFolderMirrorRefreshConfirm" type="text" autocomplete="off" spellcheck="false"
@@ -8298,7 +8299,6 @@ function mountSettingsArchiveRequestDeliveryCard(panel){
         </div>
         <div ${settingsFolderSectionPanelAttrs("parity-mirror-refresh", "result", "input")}>
         <div id="wbSettingsFolderMirrorRefreshStatus" style="font-size:12px;opacity:.72">${esc(FOLDER_DESKTOP_MIRROR_REFRESH_STATE.status || "Desktop mirror only. Native, Chrome, folders, and folder_bindings are not changed.")}</div>
-    if (section === "diagnostics") mountSettingsArchiveRequestDeliveryCard(panel);
         <div id="wbSettingsFolderMirrorRefreshDeltaSummary" style="display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.45" hidden></div>
         <pre id="wbSettingsFolderMirrorRefreshPreviewOut" style="white-space:pre-wrap;background:rgba(0,0,0,.18);padding:10px;border-radius:6px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45;margin:0" hidden></pre>
         </div>
@@ -8601,6 +8601,7 @@ function mountSettingsArchiveRequestDeliveryCard(panel){
   settingsBindFolderOperatorModeControls(panel);
   bindSettingsSyncControls(panel);
   mountSettingsArchiveHealthCard(panel);
+  mountSettingsArchiveRequestDeliveryCard(panel);
   refreshSettingsDiagnostics(panel);
 
   /* Phase I — restore the last-picked folder-state import path if one
@@ -8958,7 +8959,6 @@ function settingsFolderParitySetOperationStatus(panel, key, status, detail = "",
     target.innerHTML = `${settingsFolderParityStatusBadgeHtml(entry.status, entry.label)}${entry.detail ? ` <span style="opacity:.72">${esc(entry.detail)}</span>` : ""}`;
   }
   if (panel?.querySelector?.("#wbSettingsFolderParityOperationsRows")) {
-  mountSettingsArchiveRequestDeliveryCard(panel);
     settingsFolderParityRenderOperationRows(panel);
   }
 }
