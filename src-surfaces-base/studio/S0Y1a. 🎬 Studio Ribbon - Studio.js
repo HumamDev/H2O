@@ -3446,14 +3446,31 @@
    * shell through every buildPanels/__buildSplitButton call. */
   let __ribbonShell = null;
 
-  function __closeSplitPopover() {
+  function __closeSplitPopover(reason) {
     if (!__openSplitPopover) return;
     const rec = __openSplitPopover;
     __openSplitPopover = null;
     try { document.removeEventListener('mousedown', rec.onDocMouseDown, true); } catch (_) {}
     try { document.removeEventListener('keydown', rec.onDocKeydown, true); } catch (_) {}
     if (rec.node && rec.node.parentNode) rec.node.parentNode.removeChild(rec.node);
-    if (rec.trigger) { try { rec.trigger.setAttribute('aria-expanded', 'false'); } catch (_) {} }
+    if (rec.trigger) {
+      try { rec.trigger.setAttribute('aria-expanded', 'false'); } catch (_) {}
+      try { rec.trigger.removeAttribute('aria-controls'); } catch (_) {}
+    }
+    /* Phase 8d-0 — return focus to the chevron for keyboard-driven closes
+     * (Escape / Tab / keyboard item select). Outside-click passes no reason,
+     * so focus is left wherever the user clicked. If the original chevron was
+     * detached by a dispatch re-render (highlight brush), re-query the live
+     * one by kind inside the ribbon container. */
+    if (reason === 'escape' || reason === 'tab' || reason === 'select') {
+      let target = rec.trigger;
+      try {
+        if ((!target || !target.isConnected) && rec.container && rec.kind) {
+          target = rec.container.querySelector('.wbRibbonSplitBtn__chevron--' + rec.kind);
+        }
+      } catch (_) { /* keep original target */ }
+      if (target) { try { target.focus(); } catch (_) {} }
+    }
   }
 
   /* Phase 8c-2 — dispatch a split-button action through the SAME path
@@ -3540,8 +3557,40 @@
     return { whole: whole, anchor: anchor, covered: covered };
   }
 
+  /* Phase 8d-0 — enabled popover items in DOM (== visual) order; the single
+   * source of nav ordering for every split kind (swatch grid, icon list,
+   * command rows). Disabled items (e.g. Clear with no selection) are skipped. */
+  function __splitPopoverItems(pop) {
+    if (!pop || typeof pop.querySelectorAll !== 'function') return [];
+    return Array.prototype.slice.call(
+      pop.querySelectorAll('.wbRibbonPopover__item:not([disabled])')
+    );
+  }
+
+  /* Phase 8d-0 — roving-tabindex focus move: the focused item becomes
+   * tabindex 0, all others tabindex -1; index wraps around. No-op on an
+   * empty list. */
+  function __focusSplitItem(items, idx) {
+    if (!items || !items.length) return;
+    const n = items.length;
+    let i = idx % n;
+    if (i < 0) i += n;
+    for (let k = 0; k < n; k += 1) {
+      try { items[k].setAttribute('tabindex', k === i ? '0' : '-1'); } catch (_) {}
+    }
+    try { items[i].focus(); } catch (_) {}
+  }
+
   function __openSplitPopoverFor(cfg, actions, ctx, triggerEl, onPick) {
     __closeSplitPopover();
+    /* Phase 8d-0 — ribbon container (the .wbRibbonStatus host) captured up
+     * front so focus can return to the chevron after close, re-queried by
+     * kind if a dispatch re-render replaces it. */
+    let __popoverContainer = triggerEl;
+    while (__popoverContainer && !(__popoverContainer.querySelector
+        && __popoverContainer.querySelector('.wbRibbonStatus'))) {
+      __popoverContainer = __popoverContainer.parentElement;
+    }
     /* Prefer a fresh context so per-item enabled/disabled state reflects
      * the current selection at open time (Phase 8c-2). */
     try { if (__ribbonShell && typeof __ribbonShell.getContext === 'function') ctx = __ribbonShell.getContext(); }
@@ -3576,6 +3625,9 @@
       /* Phase 8c-4 — "no color" / clear item (text-color-none): swatch-
        * sized cell with a CSS slash so it isn't a blank cell. */
       const isNoColor = !!(cfg.noColorIds && cfg.noColorIds.indexOf(action.id) !== -1);
+      /* Phase 8d-0 — pick-one items (swatch / icon / none) are radios;
+       * command rows (Clear / Hide) stay plain menu items. */
+      const isRadio = isSwatch || isIcon || isNoColor;
       /* Per-item enablement — mirrors the render pass so selection-
        * sensitive actions (e.g. highlight-clear-message) grey out when
        * unavailable. Swatch brushes are global-state and stay enabled
@@ -3592,18 +3644,27 @@
           + (isSwatch ? ' wbRibbonPopover__item--swatch' : '')
           + (isIcon ? ' wbRibbonPopover__item--icon' : '')
           + (isNoColor ? ' wbRibbonPopover__item--noColor' : ''),
-        role: 'menuitem',
+        role: isRadio ? 'menuitemradio' : 'menuitem',
+        /* Phase 8d-0 — roving tabindex: all items start non-tabbable; the
+         * open path promotes exactly one to tabindex 0 and moves it with
+         * the arrow keys. */
+        tabindex: '-1',
         'data-action-id': action.id,
         title: action.label,
         'aria-label': action.label,
         'aria-disabled': itemEnabled ? 'false' : 'true',
       });
+      /* Phase 8d-0 — radios carry aria-checked (default false; the current
+       * pick sets true below, alongside aria-pressed which the shipped CSS
+       * selectors still key on). */
+      if (isRadio) { try { item.setAttribute('aria-checked', 'false'); } catch (_) {} }
       if (isSwatch) {
         const suffix = action.id.slice((cfg.swatchIdPrefix || '').length);
         item.setAttribute('data-swatch-color', suffix);
         item.style.setProperty('--wbRibbonPopoverItemColor', cfg.hexById[action.id]);
         if (currentSwatchColor && currentSwatchColor === suffix) {
           item.setAttribute('aria-pressed', 'true');
+          item.setAttribute('aria-checked', 'true');
         }
       }
       if (isCommand) {
@@ -3621,6 +3682,7 @@
         }
         if (currentIconId && currentIconId === action.id) {
           item.setAttribute('aria-pressed', 'true');
+          item.setAttribute('aria-checked', 'true');
         }
       }
       if (!itemEnabled) {
@@ -3632,10 +3694,16 @@
           __splitBtnLastPicked[cfg.kind] = action.id;
         }
         /* Close first so a brush-triggered re-render doesn't race the
-         * live popover node, then dispatch through the real handler. */
-        __closeSplitPopover();
+         * live popover node, then dispatch through the real handler.
+         * Phase 8d-0 — 'select' returns focus to the chevron; if a brush
+         * re-render then detaches it, re-focus the rebuilt one below. */
+        __closeSplitPopover('select');
         __dispatchSplitAction(action.id, triggerEl);
         if (isSwatch || isIcon) { try { if (typeof onPick === 'function') onPick(action); } catch (_) {} }
+        if (triggerEl && !triggerEl.isConnected && __popoverContainer) {
+          const __fresh = __popoverContainer.querySelector('.wbRibbonSplitBtn__chevron--' + cfg.kind);
+          if (__fresh) { try { __fresh.focus(); } catch (_) {} }
+        }
       });
       pop.appendChild(item);
     });
@@ -3644,20 +3712,67 @@
     pop.style.top  = (window.scrollY + r.bottom + 4) + 'px';
     pop.style.left = (window.scrollX + r.left) + 'px';
 
+    /* Phase 8d-0 — link the trigger to the menu for assistive tech. */
+    try { pop.id = 'wbRibbonSplitPopover-' + cfg.kind; } catch (_) {}
+    try { triggerEl.setAttribute('aria-controls', pop.id); } catch (_) {}
+
     const onDocMouseDown = function (ev) {
       if (pop.contains(ev.target) || triggerEl.contains(ev.target)) return;
+      /* Outside click: close without stealing focus (no reason). */
       __closeSplitPopover();
     };
     const onDocKeydown = function (ev) {
-      if (ev.key === 'Escape') { __closeSplitPopover(); try { triggerEl.focus(); } catch (_) {} }
+      /* Escape routes through the close-reason path (focus → chevron). */
+      if (ev.key === 'Escape') { __closeSplitPopover('escape'); }
+    };
+    /* Phase 8d-0 — menu keyboard navigation. Bound to the popover node so it
+     * dies with the node on close (no duplicate-listener risk, no manual
+     * removal). Enter / Space fall through to native <button> activation,
+     * which fires the existing per-item click handler. */
+    const onPopKeydown = function (ev) {
+      const items = __splitPopoverItems(pop);
+      if (!items.length) return;
+      const cur = items.indexOf(document.activeElement);
+      const key = ev.key;
+      if (key === 'ArrowDown' || key === 'ArrowRight') {
+        ev.preventDefault();
+        __focusSplitItem(items, cur < 0 ? 0 : cur + 1);
+      } else if (key === 'ArrowUp' || key === 'ArrowLeft') {
+        ev.preventDefault();
+        __focusSplitItem(items, cur < 0 ? items.length - 1 : cur - 1);
+      } else if (key === 'Home') {
+        ev.preventDefault();
+        __focusSplitItem(items, 0);
+      } else if (key === 'End') {
+        ev.preventDefault();
+        __focusSplitItem(items, items.length - 1);
+      } else if (key === 'Tab') {
+        /* Menu pattern: Tab exits the menu. Close and return to the
+         * chevron rather than leaking into the end-of-body tab order
+         * (the popover is mounted on document.body). */
+        ev.preventDefault();
+        __closeSplitPopover('tab');
+      }
     };
     document.addEventListener('mousedown', onDocMouseDown, true);
     document.addEventListener('keydown',  onDocKeydown,  true);
+    pop.addEventListener('keydown', onPopKeydown);
     __openSplitPopover = {
-      node: pop, trigger: triggerEl,
+      node: pop, trigger: triggerEl, kind: cfg.kind, container: __popoverContainer,
       onDocMouseDown: onDocMouseDown, onDocKeydown: onDocKeydown,
     };
     try { triggerEl.setAttribute('aria-expanded', 'true'); } catch (_) {}
+
+    /* Phase 8d-0 — move focus into the menu (WAI-ARIA menu pattern): the
+     * currently-checked pick if one is marked, else the first enabled item.
+     * Roving tabindex is applied by __focusSplitItem. */
+    const __navItems = __splitPopoverItems(pop);
+    let __startIdx = 0;
+    for (let __k = 0; __k < __navItems.length; __k += 1) {
+      if (__navItems[__k].getAttribute('aria-checked') === 'true'
+          || __navItems[__k].getAttribute('aria-pressed') === 'true') { __startIdx = __k; break; }
+    }
+    __focusSplitItem(__navItems, __startIdx);
   }
 
   function __buildSplitButton(cfg, actions, ctx) {
