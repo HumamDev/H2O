@@ -3452,6 +3452,75 @@
     });
   }
 
+  /* Binding durable-persistence confirmation (detection + safe-fail hardening; NOT a persistence fix).
+   * The durable-confirmation surface for the repair path's canonical binding writes
+   * (moveCanonicalChatFolderBinding / bindChat / unbindChat): it performs a best-effort JS-reachable SQLite
+   * persistence fence (WAL checkpoint TRUNCATE), then a FRESH canonical re-read via the reader the sync
+   * handler trusts (listCanonicalChatFolderBindings), and — when the caller injects its row-hash convention +
+   * expected hash — reports whether the durably-fenced canonical state matches the requested hash. It NEVER
+   * claims durable:true without a confirmed fence: if a checkpoint cannot be confirmed it returns
+   * durable:false / unverifiable:true so the caller safe-fails. It does NOT rewrite transactions, does NOT
+   * change binding SQL, and does NOT route through the Rust writer identity. */
+  function bindingDurablePersistenceFence() {
+    // PRAGMA wal_checkpoint(TRUNCATE) flushes the WAL into the main DB file. Prefer select (it returns a row);
+    // fall back to execute. Any confirmed non-throwing result counts as a fence.
+    return sqlSelect('PRAGMA wal_checkpoint(TRUNCATE)', [])
+      .then(function (r) { return { ok: true, via: 'select', rows: r }; })
+      .catch(function () {
+        return sqlExecute('PRAGMA wal_checkpoint(TRUNCATE)', [])
+          .then(function () { return { ok: true, via: 'execute' }; })
+          .catch(function (e) { return { ok: false, error: String((e && e.message) || e) }; });
+      });
+  }
+  async function confirmCanonicalChatFolderBindingDurable(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var identity = canonicalBindingStoreIdentity();
+    var result = {
+      durable: false,
+      unverifiable: true,
+      method: '',
+      canonicalBindingHash: '',
+      matchesRequested: false,
+      checkpointed: false,
+      storeIdentity: identity,
+      reason: '',
+      rows: [],
+    };
+    try {
+      var fence = await bindingDurablePersistenceFence();
+      result.checkpointed = !!(fence && fence.ok);
+      var methods = [result.checkpointed ? ('wal_checkpoint(TRUNCATE):' + fence.via) : 'wal_checkpoint-unavailable'];
+      // Fresh canonical re-read AFTER the fence, via the reader the handler trusts (direct SQL; no cache).
+      var rows = await listCanonicalChatFolderBindings();
+      result.rows = Array.isArray(rows) ? rows : [];
+      methods.push('fresh-canonical-reread');
+      result.method = methods.join('+');
+      if (typeof options.hashRows === 'function') {
+        try { result.canonicalBindingHash = cleanString(await options.hashRows(result.rows)); }
+        catch (eh) { result.canonicalBindingHash = ''; }
+        var reqHash = cleanString(options.requestedBindingHash);
+        result.matchesRequested = !!result.canonicalBindingHash && !!reqHash && result.canonicalBindingHash === reqHash;
+      }
+      // Durable ONLY if a real fence was confirmed. Absent a confirmed checkpoint we cannot prove durability
+      // from JS -> unverifiable (safe-fail); never swallow uncertainty as success.
+      if (result.checkpointed) {
+        result.durable = true;
+        result.unverifiable = false;
+        result.reason = 'checkpoint-fenced-canonical-reread';
+      } else {
+        result.durable = false;
+        result.unverifiable = true;
+        result.reason = 'durability-fence-unavailable-js-only';
+      }
+      return result;
+    } catch (e) {
+      result.durable = false;
+      result.unverifiable = true;
+      result.reason = 'durable-confirmation-threw:' + String((e && e.message) || e);
+      return result;
+    }
+  }
+
   function moveCanonicalChatFolderBinding(folderIdInput, chatIdInput, opts) {
     var folderId = getFolderId(folderIdInput);
     var chatId = cleanString(chatIdInput);
@@ -3784,6 +3853,7 @@
     listCanonicalChatFolderBindingsForChat: listCanonicalChatFolderBindingsForChat,
     moveCanonicalChatFolderBinding: moveCanonicalChatFolderBinding,
     canonicalBindingStoreIdentity: canonicalBindingStoreIdentity,
+    confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
     listForChat: listForChat,
     count: countFolders,
   };

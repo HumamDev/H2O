@@ -259,7 +259,9 @@ for (const forbidden of [
 }
 
 assertIncludes(evidence, FAILURE_REASON, 'failure reason evidence');
-assert.ok(!folderSync.includes(FAILURE_REASON), 'product source must not implement the new failure reason in preflight');
+// Superseded by the durable-gate implementation slice: the failure reason is now implemented in product
+// source. (This design-only preflight recorded it as not-yet-implemented; the implementation landed after.)
+assert.ok(folderSync.includes(FAILURE_REASON), 'durable-gate implementation now implements the failure reason in product source (source-fix preflight superseded)');
 
 const result = {
   schema: 'h2o.studio.folder-sync.binding-persistence-source-fix-preflight.validator.v1',

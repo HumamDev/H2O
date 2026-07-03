@@ -193,6 +193,27 @@ async function runHarness() {
       if (!opts || opts.skipBindingTombstone !== true) writes.tombstone += 1;
       return { ok: true, status: 'chat-folder-binding-moved', changed: true, rowsAffected: 1 };
     },
+    // durable-confirmation surface: a fenced FRESH canonical re-read; matchesRequested reflects whether the
+    // canonical binding actually landed (the durable gate rejects when it did not).
+    async confirmCanonicalChatFolderBindingDurable(opts) {
+      const freshRows = rows();
+      let canonicalBindingHash = '';
+      if (opts && typeof opts.hashRows === 'function') {
+        try { canonicalBindingHash = String(await opts.hashRows(freshRows)); } catch (_) { canonicalBindingHash = ''; }
+      }
+      const requestedBindingHash = opts ? String(opts.requestedBindingHash || '') : '';
+      return {
+        durable: true,
+        unverifiable: false,
+        method: 'harness-fence+fresh-canonical-reread',
+        checkpointed: true,
+        canonicalBindingHash,
+        matchesRequested: !!canonicalBindingHash && canonicalBindingHash === requestedBindingHash,
+        storeIdentity: { adapter: 'harness', tableName: 'folder_bindings' },
+        reason: 'harness-durable',
+        rows: freshRows,
+      };
+    },
   };
   const chatsStore = {
     async get(chatId) {

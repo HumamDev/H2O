@@ -5788,6 +5788,28 @@
       return buildChatFolderBindingRepairReceipt(request, 'rejected', 'post-apply-binding-hash-mismatch',
         { dryRun: false, canonicalBindingWriteCount: writeCount, resultingBindingHash: afterHash || snapshot.bindingHash });
     }
+    // DURABLE PERSISTENCE GATE (detection + safe-fail hardening; NOT the final Rust/competing-writer fix).
+    // Runs AFTER the same-session post-apply-binding-hash-mismatch gate (which is preserved above) and BEFORE
+    // any ledger consume / applied / idempotencyPersisted. A real canonical binding write must be durably
+    // confirmed: a JS-reachable persistence fence + a FRESH canonical re-read whose hash equals
+    // requestedBindingHash. If durability is false, unverifiable, missing, or does not match, return
+    // rejected:persistence-verification-failure and consume NOTHING. Never treat uncertainty as success.
+    if (!acceptedNoWrite) {
+      var durableConfirmation = (folders && typeof folders.confirmCanonicalChatFolderBindingDurable === 'function')
+        ? await folders.confirmCanonicalChatFolderBindingDurable({
+          hashRows: chatFolderBindingHashFromRows,
+          requestedBindingHash: cleanString(req.requestedBindingHash),
+        })
+        : { durable: false, unverifiable: true, matchesRequested: false, canonicalBindingHash: '', reason: 'durable-confirmation-helper-unavailable' };
+      var durableOk = !!(durableConfirmation && durableConfirmation.durable === true &&
+        durableConfirmation.unverifiable !== true && durableConfirmation.matchesRequested === true);
+      if (!durableOk) {
+        return buildChatFolderBindingRepairReceipt(request, 'rejected', 'persistence-verification-failure',
+          { dryRun: false, canonicalBindingWriteCount: 0,
+            resultingBindingHash: cleanString(durableConfirmation && durableConfirmation.canonicalBindingHash) || afterHash || snapshot.bindingHash,
+            idempotencyPersisted: false });
+      }
+    }
     var recorded = acceptedNoWrite ? { ok: false } : await bindingRepairRecordConsumed(request);
     var status = acceptedNoWrite ? 'skipped' : 'applied';
     var reason = acceptedNoWrite ? conflict : (acceptedPrimaryKeyMove ? 'duplicate-binding-resolved-primary-key' : 'binding-repair-applied');
