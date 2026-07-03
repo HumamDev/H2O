@@ -3461,16 +3461,61 @@
    * claims durable:true without a confirmed fence: if a checkpoint cannot be confirmed it returns
    * durable:false / unverifiable:true so the caller safe-fails. It does NOT rewrite transactions, does NOT
    * change binding SQL, and does NOT route through the Rust writer identity. */
-  function bindingDurablePersistenceFence() {
-    // PRAGMA wal_checkpoint(TRUNCATE) flushes the WAL into the main DB file. Prefer select (it returns a row);
-    // fall back to execute. Any confirmed non-throwing result counts as a fence.
-    return sqlSelect('PRAGMA wal_checkpoint(TRUNCATE)', [])
-      .then(function (r) { return { ok: true, via: 'select', rows: r }; })
-      .catch(function () {
-        return sqlExecute('PRAGMA wal_checkpoint(TRUNCATE)', [])
-          .then(function () { return { ok: true, via: 'execute' }; })
-          .catch(function (e) { return { ok: false, error: String((e && e.message) || e) }; });
-      });
+  function bindingCheckpointRowParse(raw) {
+    // PRAGMA wal_checkpoint returns a single row (busy, log, checkpointed) — object-keyed or positional.
+    var rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : (raw != null ? [raw] : []));
+    var row = rows.length ? rows[0] : null;
+    var out = { present: !!row, busy: null, log: null, checkpointed: null };
+    if (!row) return out;
+    if (Array.isArray(row)) {
+      if (row.length > 0) out.busy = Number(row[0]);
+      if (row.length > 1) out.log = Number(row[1]);
+      if (row.length > 2) out.checkpointed = Number(row[2]);
+    } else if (typeof row === 'object') {
+      var has = function (k) { return Object.prototype.hasOwnProperty.call(row, k); };
+      out.busy = has('busy') ? Number(row.busy) : null;
+      out.log = has('log') ? Number(row.log) : null;
+      out.checkpointed = has('checkpointed') ? Number(row.checkpointed) : null;
+      var keys = Object.keys(row);
+      if (out.busy === null && keys.length >= 1) out.busy = Number(row[keys[0]]);
+      if (out.log === null && keys.length >= 2) out.log = Number(row[keys[1]]);
+      if (out.checkpointed === null && keys.length >= 3) out.checkpointed = Number(row[keys[2]]);
+    }
+    return out;
+  }
+  async function bindingDurablePersistenceFence() {
+    // Busy-aware WAL checkpoint fence. PREFER the select path — it returns the (busy, log, checkpointed) row so
+    // the checkpoint can be INSPECTED. A non-throwing checkpoint is NOT enough: busy===1 means the checkpoint
+    // was blocked/incomplete. The execute path is insufficient (it returns execute-metadata, not the checkpoint
+    // columns), so an execute-only result is UNVERIFIABLE, never durable. Uncertainty never becomes durable.
+    var fence = { ok: false, via: 'none', busy: null, log: null, checkpointed: null, interpretation: 'unavailable', durable: false, error: '' };
+    var selRaw = null; var selThrew = false;
+    try { selRaw = await sqlSelect('PRAGMA wal_checkpoint(TRUNCATE)', []); }
+    catch (e) { selThrew = true; fence.error = String((e && e.message) || e); }
+    if (!selThrew) {
+      fence.ok = true; fence.via = 'select';
+      var parsed = bindingCheckpointRowParse(selRaw);
+      fence.busy = parsed.busy; fence.log = parsed.log; fence.checkpointed = parsed.checkpointed;
+      if (parsed.busy === 1) {
+        fence.interpretation = 'busy-incomplete'; fence.durable = false;               // checkpoint blocked
+      } else if (parsed.log === -1 && parsed.checkpointed === -1) {
+        fence.interpretation = 'non-wal-no-checkpoint-needed'; fence.durable = true;    // rollback-journal autocommit already durable
+      } else if (parsed.busy === 0) {
+        fence.interpretation = 'checkpoint-confirmed'; fence.durable = true;            // WAL flushed to main DB
+      } else {
+        fence.interpretation = 'unverifiable'; fence.durable = false;                   // present but unparseable busy column
+      }
+      return fence;
+    }
+    // select unavailable: probe execute only for reachability, but it CANNOT confirm durability (no columns).
+    try {
+      await sqlExecute('PRAGMA wal_checkpoint(TRUNCATE)', []);
+      fence.ok = true; fence.via = 'execute'; fence.interpretation = 'unverifiable'; fence.durable = false;
+    } catch (e2) {
+      fence.ok = false; fence.via = 'none'; fence.interpretation = 'unavailable'; fence.durable = false;
+      fence.error = fence.error || String((e2 && e2.message) || e2);
+    }
+    return fence;
   }
   async function confirmCanonicalChatFolderBindingDurable(opts) {
     var options = opts && typeof opts === 'object' ? opts : {};
@@ -3488,29 +3533,33 @@
     };
     try {
       var fence = await bindingDurablePersistenceFence();
-      result.checkpointed = !!(fence && fence.ok);
-      var methods = [result.checkpointed ? ('wal_checkpoint(TRUNCATE):' + fence.via) : 'wal_checkpoint-unavailable'];
+      // A CONFIRMED fence (busy===0 checkpoint, or non-WAL no-checkpoint-needed) — not merely non-throwing.
+      result.checkpointed = fence && fence.durable === true;
+      result.fenceInterpretation = fence ? fence.interpretation : 'unavailable';
+      result.checkpointBusy = fence ? fence.busy : null;
+      result.checkpointLog = fence ? fence.log : null;
+      result.checkpointFrames = fence ? fence.checkpointed : null;
+      result.method = (fence && fence.via ? ('wal_checkpoint(TRUNCATE):' + fence.via) : 'wal_checkpoint-unavailable') + '+fresh-canonical-reread';
       // Fresh canonical re-read AFTER the fence, via the reader the handler trusts (direct SQL; no cache).
       var rows = await listCanonicalChatFolderBindings();
       result.rows = Array.isArray(rows) ? rows : [];
-      methods.push('fresh-canonical-reread');
-      result.method = methods.join('+');
       if (typeof options.hashRows === 'function') {
         try { result.canonicalBindingHash = cleanString(await options.hashRows(result.rows)); }
         catch (eh) { result.canonicalBindingHash = ''; }
         var reqHash = cleanString(options.requestedBindingHash);
         result.matchesRequested = !!result.canonicalBindingHash && !!reqHash && result.canonicalBindingHash === reqHash;
       }
-      // Durable ONLY if a real fence was confirmed. Absent a confirmed checkpoint we cannot prove durability
-      // from JS -> unverifiable (safe-fail); never swallow uncertainty as success.
-      if (result.checkpointed) {
+      // Durable ONLY if the fence CONFIRMED durability (checkpoint-confirmed / non-wal-no-checkpoint-needed).
+      // busy-incomplete / execute-only / unavailable / unparseable -> unverifiable (safe-fail); never swallow
+      // uncertainty as success.
+      if (fence && fence.durable === true) {
         result.durable = true;
         result.unverifiable = false;
-        result.reason = 'checkpoint-fenced-canonical-reread';
+        result.reason = fence.interpretation; // 'checkpoint-confirmed' | 'non-wal-no-checkpoint-needed'
       } else {
         result.durable = false;
         result.unverifiable = true;
-        result.reason = 'durability-fence-unavailable-js-only';
+        result.reason = (fence && fence.interpretation) || 'durability-fence-unavailable-js-only';
       }
       return result;
     } catch (e) {

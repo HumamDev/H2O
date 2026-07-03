@@ -47,7 +47,7 @@ async function runHarness() {
     { id: token('folder-b'), folderId: token('folder-b'), sortOrder: 1 },
   ];
   const tombstoned = [];
-  const liveChats = new Set([token('chat-c'), token('chat-d'), token('chat-e')]);
+  const liveChats = new Set([token('chat-c'), token('chat-d'), token('chat-e'), token('chat-f')]);
   const bindings = new Map();
   const writes = { canonicalBinding: 0, tombstone: 0 };
   const rows = () => Array.from(bindings.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([chatId, folderId]) => ({
@@ -77,6 +77,10 @@ async function runHarness() {
       const requestedBindingHash = opts ? String(opts.requestedBindingHash || '') : '';
       if (durableMode === 'non-durable') {
         return { durable: false, unverifiable: true, method: 'wal_checkpoint-unavailable', checkpointed: false, canonicalBindingHash: '', matchesRequested: false, storeIdentity: { adapter: 'harness' }, reason: 'durability-fence-unavailable-js-only', rows: freshRows };
+      }
+      if (durableMode === 'busy-incomplete') {
+        // the shape the busy-aware fence returns for a busy=1 (blocked/incomplete) checkpoint
+        return { durable: false, unverifiable: true, method: 'wal_checkpoint(TRUNCATE):select+fresh-canonical-reread', checkpointed: false, fenceInterpretation: 'busy-incomplete', canonicalBindingHash: '', matchesRequested: false, storeIdentity: { adapter: 'harness' }, reason: 'busy-incomplete', rows: freshRows };
       }
       if (durableMode === 'revert') {
         return { durable: true, unverifiable: false, method: 'wal_checkpoint(TRUNCATE)+fresh-canonical-reread', checkpointed: true, canonicalBindingHash: 'sha256:reverted-old-state', matchesRequested: false, storeIdentity: { adapter: 'harness' }, reason: 'checkpoint-fenced-canonical-reread', rows: freshRows };
@@ -164,6 +168,17 @@ async function runHarness() {
   assert(r3.status === 'rejected' && r3.reason === 'persistence-verification-failure', `revert case: expected persistence-verification-failure, got ${r3.status}/${r3.reason}`);
   assert(r3.idempotencyPersisted !== true && r3.canonicalBindingWriteCount === 0, 'revert case: no idempotency persist, zero write count');
   assert((await consumedCount()) === consumedBefore3, 'revert case: revert DETECTED, consumes ZERO ledger rows');
+
+  // CASE 4 — busy-incomplete (busy=1 checkpoint): rejected persistence-verification-failure, consume 0
+  durableMode = 'busy-incomplete';
+  const req4 = baseReq({ chatId: token('chat-f'), targetFolderId: token('folder-a'),
+    basisBindingHash: await currentHash(), requestedBindingHash: await hashFor([{ chatId: token('chat-f'), folderId: token('folder-a') }]) });
+  const consumedBefore4 = await consumedCount();
+  const r4 = await api.apply(req4, { apply: true, gate: APPLY_GATE });
+  out.busyIncompleteStatus = r4.status; out.busyIncompleteReason = r4.reason;
+  assert(r4.status === 'rejected' && r4.reason === 'persistence-verification-failure', `busy-incomplete case: expected persistence-verification-failure, got ${r4.status}/${r4.reason}`);
+  assert(r4.idempotencyPersisted !== true && r4.canonicalBindingWriteCount === 0, 'busy-incomplete case: no idempotency persist, zero write count');
+  assert((await consumedCount()) === consumedBefore4, 'busy-incomplete (busy=1) case: consumes ZERO ledger rows');
 
   out.blocked = false;
   return out;
