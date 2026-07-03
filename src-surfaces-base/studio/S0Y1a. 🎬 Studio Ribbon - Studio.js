@@ -74,6 +74,7 @@
          * button; Cut / Paste / Format Painter are deferred to later slices. */
         { id: 'clipboard', label: 'Clipboard', actions: [
           { id: 'copy-message', label: 'Copy' },
+          { id: 'format-painter', label: 'Format Painter' },
         ] },
         /* Phase 7a — Edit mode toggle. Single button at the very start
          * of the Format tab that flips a ribbon-local editMode boolean
@@ -2434,6 +2435,55 @@
     },
   };
 
+  /* Phase 8g-1 — Format Painter (message-level, single-use). Clicking ARMS
+   * the painter: it captures the selected message's message-level formatting
+   * (via bridge.getMessageStateForTurn) and, on the NEXT target-message
+   * selection, replays it onto that turn (bridge.applyMessageFormatPaint,
+   * handled in the shell contextChanged subscriber), then disarms. Escape
+   * cancels. Inline ranges / highlights / text-replace / content are never
+   * touched. Saved chats only. */
+  ACTION_HANDLERS['format-painter'] = {
+    isEnabled: function (ctx) {
+      if (!ctx || ctx.chatType !== 'saved') return false;
+      const turnIdx = Number(ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx < 1) return false;
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getMessageStateForTurn !== 'function' || typeof bridge.applyMessageFormatPaint !== 'function') return false;
+      return true;
+    },
+    onClick: function (ctx, setStatus, actionBtn) {
+      const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx < 1) { setStatus('Select a message first'); return; }
+      /* Block while a live in-place edit (contentEditable) is open. */
+      let editing = false;
+      try { editing = !!document.querySelector('.wbTurn--editing'); } catch (_) { editing = false; }
+      if (editing) { setStatus('Finish editing first'); return; }
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getMessageStateForTurn !== 'function' || typeof bridge.applyMessageFormatPaint !== 'function') {
+        setStatus('Format Painter unavailable'); return;
+      }
+      setStatus('Capturing formatting…');
+      Promise.resolve(bridge.getMessageStateForTurn(turnIdx)).then(
+        function (payload) {
+          const p = (payload && typeof payload === 'object') ? payload : null;
+          if (!p) { setStatus('Nothing to paint'); return; }
+          __formatPainterArmed = { payload: p, sourceTurnIdx: turnIdx };
+          /* Escape cancels the armed painter (document-level, focus-agnostic). */
+          __formatPainterEsc = function (ev) {
+            if (ev && ev.key === 'Escape' && __formatPainterArmed) {
+              __formatPainterDisarm();
+              try { setStatus('Format Painter off'); } catch (_) {}
+            }
+          };
+          try { document.addEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
+          if (actionBtn) { try { actionBtn.setAttribute('aria-pressed', 'true'); } catch (_) {} }
+          setStatus('Format Painter: select a target message');
+        },
+        function () { setStatus('Nothing to paint'); }
+      );
+    },
+  };
+
   /* Clear formatting — selection-aware (Phase 5c-1).
    *   - Valid held inline selection on the selected turn → submit a
    *     range-scoped `inline-format { style:'clear-inline' }` op, which
@@ -3541,6 +3591,8 @@
   const ACTION_ICONS = {
     /* Clipboard group — Phase 8f-1. Classic two-sheet "copy" glyph. */
     'copy-message': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"/></svg>',
+    /* Phase 8g-1 — Format Painter (paint-roller: head + arm + pad). */
+    'format-painter': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="2.5" width="9" height="4" rx="1"/><path d="M11 4.5h1.5a1 1 0 0 1 1 1v1.3a1 1 0 0 1-1 1H7a1 1 0 0 0-1 1v0.7"/><rect x="4.5" y="10.5" width="3" height="3.5" rx="1"/></svg>',
     /* Font group */
     'bold': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3v10"/><path d="M4 3h4a2.5 2.5 0 0 1 0 5H4"/><path d="M4 8h5a2.5 2.5 0 0 1 0 5H4"/></svg>',
     'italic': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 3H11"/><path d="M5 13h4.5"/><path d="M9.5 3l-3 10"/></svg>',
@@ -3736,6 +3788,25 @@
    * defensively re-render after a brush change, without threading the
    * shell through every buildPanels/__buildSplitButton call. */
   let __ribbonShell = null;
+  /* Phase 8g-1 — Format Painter armed state (single-use). Holds the captured
+   * source message-level formatting + source turn; the next target-message
+   * selection applies it, then disarms. Module-scoped; never persisted. */
+  let __formatPainterArmed = null;   /* { payload, sourceTurnIdx } | null */
+  let __formatPainterEsc = null;     /* document keydown handler while armed */
+  function __formatPainterSetArmedUI(on) {
+    try {
+      const btn = document.querySelector('.wbRibbonAction[data-action-id="format-painter"]');
+      if (btn) { if (on) btn.setAttribute('aria-pressed', 'true'); else btn.removeAttribute('aria-pressed'); }
+    } catch (_) { /* swallow */ }
+  }
+  function __formatPainterDisarm() {
+    __formatPainterArmed = null;
+    if (__formatPainterEsc) {
+      try { document.removeEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
+      __formatPainterEsc = null;
+    }
+    __formatPainterSetArmedUI(false);
+  }
 
   function __closeSplitPopover(reason) {
     if (!__openSplitPopover) return;
@@ -4343,6 +4414,10 @@
           if (action.id === 'edit-mode' && editMode) {
             attrs['aria-pressed'] = 'true';
           }
+          /* Phase 8g-1 — Format Painter armed state reflects on re-render. */
+          if (action.id === 'format-painter' && __formatPainterArmed) {
+            attrs['aria-pressed'] = 'true';
+          }
           if (enabled) {
             /* Drop the "Coming soon" placeholder tooltip when the action is
              * wired — except for Phase 6c swatches, where the label IS the
@@ -4584,6 +4659,31 @@
       shell.subscribe(function (evt) {
         const name = evt && evt.event;
         if (name === evts.contextChanged) {
+          /* Phase 8g-1 — armed Format Painter applies to the next target
+           * message (a turn different from the source), then disarms. */
+          if (__formatPainterArmed) {
+            let nctx = null;
+            try { nctx = shell.getContext(); } catch (_) { nctx = null; }
+            const nTurn = nctx ? Number(nctx.selectedTurnIdx) : NaN;
+            if (Number.isFinite(nTurn) && nTurn >= 1 && nTurn !== __formatPainterArmed.sourceTurnIdx) {
+              const armed = __formatPainterArmed;
+              __formatPainterDisarm();
+              const fpStatus = makeSetStatus(container);
+              const bridge = getRibbonBridge();
+              if (bridge && typeof bridge.applyMessageFormatPaint === 'function') {
+                fpStatus('Applying formatting…');
+                Promise.resolve(bridge.applyMessageFormatPaint(nTurn, armed.payload)).then(
+                  function (r) {
+                    if (r && r.ok) fpStatus(r.reason === 'no-change' ? 'Formatting matched — no change' : 'Formatting applied');
+                    else fpStatus('Format paint failed: ' + ((r && r.reason) || 'unknown'));
+                  },
+                  function () { fpStatus('Format paint failed'); }
+                );
+              } else {
+                fpStatus('Format Painter unavailable');
+              }
+            }
+          }
           render(container, shell);
         } else if (name === evts.tabChanged) {
           render(container, shell);

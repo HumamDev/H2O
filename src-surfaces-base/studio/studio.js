@@ -16948,6 +16948,111 @@ function __ribbonBridge_publishAndRender(snap, saved){
   return outcome;
 }
 
+/* Phase 8g-1 — message-level Format Painter apply. Replays a captured
+ * message-level formatting set onto the target turn using ONLY the existing
+ * message-level overlay ops (heading / quote / code / callout / list / align /
+ * indent / text-color / font-family / font-size / bold / italic / underline /
+ * strikethrough / visual-tag). Each dimension is SET to the source value —
+ * including clearing to null/false when the source lacks it — so the target's
+ * message-level look matches the source. To keep undo steps minimal, only
+ * dimensions whose CURRENT target value differs from the source are appended.
+ * NEVER touches message text / text-replace / inline ranges / structure /
+ * highlights / snapshot; adds NO new OverlayOpType. Persists + re-renders
+ * ONCE via publishAndRender. Read-only wrt the snapshot; never throws.
+ * Returns { ok, applied:[dims], failed:[dims], reason? }. */
+function __ribbonBridge_applyMessageFormatPaint(targetTurnIdx, formatPayload){
+  return Promise.resolve().then(function () {
+    const result = { ok: false, applied: [], failed: [], reason: '' };
+    const idx = Number(targetTurnIdx);
+    if (!Number.isInteger(idx) || idx < 1) { result.reason = 'invalid-turn'; return result; }
+    const src = (formatPayload && typeof formatPayload === 'object') ? formatPayload : null;
+    if (!src) { result.reason = 'no-payload'; return result; }
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) { result.reason = 'no-snapshot'; return result; }
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ov || typeof ov.appendOp !== 'function' || typeof ov.computeBaseDigest !== 'function' || typeof ov.computeMessageState !== 'function') {
+      result.reason = 'overlay-unavailable'; return result;
+    }
+    if (!ovStore || typeof ovStore.get !== 'function' || typeof ovStore.upsert !== 'function') { result.reason = 'store-unavailable'; return result; }
+
+    const target = { kind: 'message', turnIdx: idx };
+    const hLvl = (src.heading && (Number(src.heading.level) === 1 || Number(src.heading.level) === 2 || Number(src.heading.level) === 3)) ? Number(src.heading.level) : null;
+    const alignVal = (src.align === 'left' || src.align === 'center' || src.align === 'right') ? src.align : null;
+    const calloutKind = (src.callout && src.callout.kind) ? String(src.callout.kind) : null;
+    const listKind = (src.list && src.list.kind) ? String(src.list.kind) : null;
+    const colorKind = (src.textColor && src.textColor.kind) ? String(src.textColor.kind) : null;
+    const ffTok = (src.fontFamily && src.fontFamily.token) ? String(src.fontFamily.token) : null;
+    const fsTok = (src.fontSize && src.fontSize.token) ? String(src.fontSize.token) : null;
+    const indentLvl = Number(src.indent) || 0;
+    const VT = ['todo', 'important', 'question', 'definition', 'warning', 'idea'];
+    const vt = (src.visualTags && typeof src.visualTags === 'object') ? src.visualTags : {};
+
+    const sid = String(snap.snapshotId);
+    return Promise.resolve(ovStore.get(sid)).then(function (existing) {
+      let overlay = existing;
+      if (!overlay) {
+        try { overlay = ov.createEmpty({ snapshot: snap }); } catch (_) { overlay = null; }
+        if (!overlay) { result.reason = 'create-empty-failed'; return result; }
+      }
+      const currentDigest = ov.computeBaseDigest(snap);
+      if (overlay.baseDigest && overlay.baseDigest !== currentDigest) { result.reason = 'drift-detected'; return result; }
+
+      /* Current target message-level state → append only CHANGED dimensions. */
+      let cur = {};
+      try { cur = ov.computeMessageState(overlay, idx) || {}; } catch (_) { cur = {}; }
+      const curVt = (cur.visualTags && typeof cur.visualTags === 'object') ? cur.visualTags : {};
+      const plan = [
+        { dim: 'heading',       type: 'heading',       cur: (cur.heading && cur.heading.level) || null,        next: hLvl,        payload: { level: hLvl } },
+        { dim: 'quote',         type: 'quote',         cur: !!cur.quote,                                        next: !!src.quote, payload: { enabled: !!src.quote } },
+        { dim: 'code',          type: 'code',          cur: !!cur.code,                                         next: !!src.code,  payload: { enabled: !!src.code } },
+        { dim: 'callout',       type: 'callout',       cur: (cur.callout && cur.callout.kind) || null,          next: calloutKind, payload: { kind: calloutKind } },
+        { dim: 'list',          type: 'list',          cur: (cur.list && cur.list.kind) || null,                next: listKind,    payload: { kind: listKind } },
+        { dim: 'align',         type: 'align',         cur: cur.align || null,                                  next: alignVal,    payload: { value: alignVal } },
+        { dim: 'indent',        type: 'indent',        cur: Number(cur.indent) || 0,                            next: indentLvl,   payload: { level: indentLvl } },
+        { dim: 'text-color',    type: 'text-color',    cur: (cur.textColor && cur.textColor.kind) || null,      next: colorKind,   payload: { kind: colorKind } },
+        { dim: 'font-family',   type: 'font-family',   cur: (cur.fontFamily && cur.fontFamily.token) || null,   next: ffTok,       payload: { token: ffTok } },
+        { dim: 'font-size',     type: 'font-size',     cur: (cur.fontSize && cur.fontSize.token) || null,       next: fsTok,       payload: { size: fsTok } },
+        { dim: 'bold',          type: 'bold',          cur: !!cur.bold,          next: !!src.bold,          payload: { enabled: !!src.bold } },
+        { dim: 'italic',        type: 'italic',        cur: !!cur.italic,        next: !!src.italic,        payload: { enabled: !!src.italic } },
+        { dim: 'underline',     type: 'underline',     cur: !!cur.underline,     next: !!src.underline,     payload: { enabled: !!src.underline } },
+        { dim: 'strikethrough', type: 'strikethrough', cur: !!cur.strikethrough, next: !!src.strikethrough, payload: { enabled: !!src.strikethrough } },
+      ];
+      for (let v = 0; v < VT.length; v += 1) {
+        plan.push({ dim: 'visual-tag:' + VT[v], type: 'visual-tag', cur: !!curVt[VT[v]], next: !!vt[VT[v]], payload: { kind: VT[v], enabled: !!vt[VT[v]] } });
+      }
+
+      let acc = overlay;
+      for (let i = 0; i < plan.length; i += 1) {
+        if (plan[i].cur === plan[i].next) continue; /* no change → skip (fewer undo steps) */
+        try {
+          const nx = ov.appendOp(acc, { type: plan[i].type, target: target, payload: plan[i].payload });
+          if (nx) { acc = nx; result.applied.push(plan[i].dim); }
+          else { result.failed.push(plan[i].dim); }
+        } catch (_) { result.failed.push(plan[i].dim); }
+      }
+      if (result.applied.length === 0 && result.failed.length === 0) { result.ok = true; result.reason = 'no-change'; return result; }
+      if (result.applied.length === 0) { result.reason = 'no-ops-applied'; return result; }
+
+      return Promise.resolve(ovStore.upsert(acc)).then(function (saved) {
+        try { __ribbonBridge_publishAndRender(snap, saved); } catch (_) { /* persisted ops stand */ }
+        result.ok = true;
+        return result;
+      }, function (err) {
+        result.reason = 'upsert-failed';
+        result.error = String((err && err.message) || err || '');
+        return result;
+      });
+    }, function () {
+      result.reason = 'store-read-failed';
+      return result;
+    });
+  }).catch(function () {
+    return { ok: false, applied: [], failed: [], reason: 'error' };
+  });
+}
+
 /* Phase 2d — derive a short human label from an op (for status feedback
  * like "Undone: H2", "Redone: Section"). Returns null when the op has no
  * recognisable shape. Synchronous, never throws. Labels are advisory
@@ -17851,6 +17956,7 @@ try {
       getInlineStateForTurn: __ribbonBridge_getInlineStateForTurn,
       getStructureState: __ribbonBridge_getStructureState,
       applyOverlayOp: __ribbonBridge_applyOverlayOp,
+      applyMessageFormatPaint: __ribbonBridge_applyMessageFormatPaint,
       undo: __ribbonBridge_undo,
       redo: __ribbonBridge_redo,
       getHistoryState: __ribbonBridge_getHistoryState,
@@ -17874,6 +17980,7 @@ try {
     if (!W.H2O.Studio.RibbonBridge.getInlineStateForTurn) W.H2O.Studio.RibbonBridge.getInlineStateForTurn = __ribbonBridge_getInlineStateForTurn;
     if (!W.H2O.Studio.RibbonBridge.getStructureState) W.H2O.Studio.RibbonBridge.getStructureState = __ribbonBridge_getStructureState;
     if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
+    if (!W.H2O.Studio.RibbonBridge.applyMessageFormatPaint) W.H2O.Studio.RibbonBridge.applyMessageFormatPaint = __ribbonBridge_applyMessageFormatPaint;
     /* Phase 2d — undo/redo/getHistoryState additive upgrade. */
     if (!W.H2O.Studio.RibbonBridge.undo) W.H2O.Studio.RibbonBridge.undo = __ribbonBridge_undo;
     if (!W.H2O.Studio.RibbonBridge.redo) W.H2O.Studio.RibbonBridge.redo = __ribbonBridge_redo;
