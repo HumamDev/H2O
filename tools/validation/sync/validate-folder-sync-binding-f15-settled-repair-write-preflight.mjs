@@ -88,7 +88,10 @@ if (exists(foldersStorePath)) {
 assert(exists(folderSyncPath), `${folderSyncPath}: missing`);
 if (exists(folderSyncPath)) {
   const src = read(folderSyncPath);
-  assert(src.includes('explicitF7Fallback: true'), 'repair writeOpts must currently set explicitF7Fallback:true (the thing the fix removes)');
+  // Superseded by the F15-settled implementation: the repair now routes through useF15FolderBindingDelegation
+  // and no longer sets explicitF7Fallback:true (the design-only preflight recorded the pre-fix bare-path state).
+  assert(src.includes('useF15FolderBindingDelegation: true') && !src.includes('explicitF7Fallback: true'),
+    'F15-settled fix landed: repair routes through useF15FolderBindingDelegation and no longer sets explicitF7Fallback:true');
   assert(src.includes('post-apply-binding-hash-mismatch'), 'existing hash gate must remain');
   assert(src.includes('confirmCanonicalChatFolderBindingDurable('), 'handler must still call the durable helper');
   assert(!src.includes('productSyncReady: true') && !src.includes('productSyncReady = true'), 'productSyncReady must not be flipped');

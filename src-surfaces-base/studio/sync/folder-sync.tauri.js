@@ -5750,7 +5750,13 @@
       expectedCurrentFolderId: previousFolderId || currentFolderId,
       skipBindingTombstone: true,
       suppressBindingSubscribers: false,
-      explicitF7Fallback: true,
+      // F15-settled routing: the normal binding repair write MUST update the F15-settled source-of-truth so a
+      // later settlement/materialization/reconcile does NOT revert it. Force the F15-settled delegation and do
+      // NOT allow the bare/legacy F7 fallback (no allowF7Fallback): if F15 delegation is unavailable/fails, the
+      // write returns falsy and the handler safe-fails (rejected, zero ledger consume). Replaces the prior
+      // bare-path write opts (explicitF7Fallback was a no-op key; the bare moveCanonicalChatFolderBinding path
+      // is no longer the repair route).
+      useF15FolderBindingDelegation: true,
       noHardDelete: true,
       noChatDelete: true,
       noSnapshotDelete: true,
@@ -5763,17 +5769,15 @@
       writeOk = await folders.unbindChat(previousFolderId || currentFolderId, chatId, writeOpts);
       writeCount = writeOk ? 1 : 0;
       writeStatus = writeOk ? 'unbound' : 'canonical-binding-unbind-failed';
-    } else if ((intent === 'move' || acceptedPrimaryKeyMove) && currentFolderId && currentFolderId !== targetFolderId &&
-        typeof folders.moveCanonicalChatFolderBinding === 'function') {
-      var moveResult = await folders.moveCanonicalChatFolderBinding(targetFolderId, chatId, writeOpts);
-      writeOk = !!(moveResult && moveResult.ok === true);
-      writeCount = writeOk && moveResult.changed !== false ? (Number(moveResult.rowsAffected) || 1) : 0;
-      writeStatus = writeOk ? cleanString(moveResult.status || 'moved') : cleanString(moveResult && moveResult.status) || 'canonical-binding-move-failed';
-    } else if (intent === 'bind' || intent === 'move') {
+    } else if (intent === 'bind' || intent === 'move' || acceptedPrimaryKeyMove) {
+      // F15-settled repair write for BOTH bind and move (rebind): bindChat with useF15FolderBindingDelegation
+      // decomposes a rebind (unbind-old + bind-new) through the F15 settlement pipeline, updating the settled
+      // source-of-truth. The bare moveCanonicalChatFolderBinding path is deliberately NOT used for the normal
+      // repair write (that bare write did not settle and was reverted by later settlement/reconcile).
       if (typeof folders.bindChat !== 'function') return buildChatFolderBindingRepairReceipt(request, 'rejected', 'canonical-binding-bind-unavailable', { dryRun: false, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
       writeOk = await folders.bindChat(targetFolderId, chatId, writeOpts);
       writeCount = writeOk ? 1 : 0;
-      writeStatus = writeOk ? 'bound' : 'canonical-binding-bind-failed';
+      writeStatus = writeOk ? ((intent === 'move' || acceptedPrimaryKeyMove) ? 'moved' : 'bound') : 'canonical-binding-bind-failed';
     } else {
       writeOk = false;
       writeStatus = 'forbidden-intent';

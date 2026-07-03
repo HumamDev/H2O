@@ -106,7 +106,9 @@ if (exists(folderSyncPath)) {
   assert(src.includes('post-apply-binding-hash-mismatch'), 'existing post-apply-binding-hash-mismatch gate must remain');
   assert(src.includes("'persistence-verification-failure'"), 'durable gate persistence-verification-failure must remain');
   assert(src.includes('confirmCanonicalChatFolderBindingDurable('), 'handler must still call the durable helper');
-  assert(src.includes('explicitF7Fallback'), 'handler must still carry the explicitF7Fallback repair write opts (the bare-path evidence)');
+  // The investigation identified the bare-path explicitF7Fallback usage; the F15-settled fix later removed it
+  // and routes the repair through the F15-settled delegation (bare-path evidence superseded by the fix).
+  assert(src.includes('useF15FolderBindingDelegation: true'), 'binding repair now routes through the F15-settled delegation (bare-path explicitF7Fallback superseded by the F15-settled fix)');
   assert(!src.includes('productSyncReady: true') && !src.includes('productSyncReady = true'), 'productSyncReady must not be flipped');
   assert(!src.includes('fullBundle.v3'), 'no fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), 'WebDAV must remain deferred (no cloud/relay/CAS)');
