@@ -16,6 +16,7 @@ const s2bImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s
 const s2bPreflightEvidencePath = 'release-evidence/2026-07-01/folder-sync-s2b-sortorder-preserving-mirror-reprojection-preflight.md';
 const postS4EvidencePath = 'release-evidence/2026-07-01/folder-sync-post-s4-readback-idempotency.md';
 const s5ImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 
@@ -157,7 +158,17 @@ assertIncludes(folderSyncSource, "var S2B_RENDER_MIRROR_STATE_KEY = 'h2o:prm:cgx
 assertIncludes(folderSyncSource, "var FOLDER_SORTORDER_REORDER_APPLY_GATE = 'folder-sync-f32-sortorder-apply';", 'F32 apply gate exists');
 assertIncludes(folderSyncSource, "sortOrder: so, sort_order: so", 'S2b preserves sortOrder and sort_order');
 assert.ok(!folderSyncSource.includes('rebuildRenderMirrorFromSqlite'), 'folder-sync source must not reuse rebuildRenderMirrorFromSqlite');
-assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+if (exists(bindingImplementationEvidencePath)) {
+  const implementationEvidence = read(bindingImplementationEvidencePath);
+  assertIncludes(implementationEvidence, 'BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN',
+    'binding implementation evidence verdict');
+  assertIncludes(folderSyncSource, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+    'binding receipt schema minted by later binding implementation');
+  assertIncludes(folderSyncSource, 'bindingMismatchAllowed: false',
+    'binding-mismatch remains blocked after binding implementation');
+} else {
+  assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+}
 assert.ok(!folderSyncSource.includes('productSyncReady: true'), 'productSyncReady must not flip true in folder-sync source');
 
 if (exists(s5ImplementationEvidencePath)) {

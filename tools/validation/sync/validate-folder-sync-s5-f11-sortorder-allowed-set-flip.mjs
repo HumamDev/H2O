@@ -15,6 +15,7 @@ const evidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-a
 const s2CloseoutPath = 'release-evidence/2026-07-01/folder-sync-s2-sortorder-local-closeout.md';
 const s2bLivePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projection-activation.md';
 const preflightPath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip-preflight.md';
+const bindingImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 
@@ -109,7 +110,18 @@ assertIncludes(folderSync, 'async function s2bProjectSortOrderPreservingRenderMi
 assertIncludes(folderSync, "appliedReceipt.mirrorReprojection = 'applied-sortorder-preserving-s2b';", 'S2b marker remains present');
 
 const combinedSource = `${foldersStore}\n${folderSync}`;
-assert.ok(!combinedSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema remains unminted');
+const bindingRepairImplemented = exists(bindingImplementationEvidencePath);
+if (bindingRepairImplemented) {
+  const implementationEvidence = read(bindingImplementationEvidencePath);
+  assertIncludes(implementationEvidence, 'BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN',
+    'binding repair implementation evidence verdict');
+  assertIncludes(folderSync, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+    'binding repair receipt schema minted by later implementation');
+  assertIncludes(folderSync, 'bindingMismatchAllowed: false',
+    'binding-mismatch remains blocked until later allowed-set flip');
+} else {
+  assert.ok(!combinedSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema remains unminted');
+}
 assert.ok(!combinedSource.includes('productSyncReady: true'), 'productSyncReady must not flip true');
 assert.doesNotMatch(combinedSource, /fullBundle\.v3|h2o\.studio\.fullBundle\.v3/i, 'fullBundle.v3 must not be introduced');
 assert.doesNotMatch(f11Helper, /bindChat\(|unbindChat\(|moveCanonicalChatFolderBinding\(/, 'binding repair must not be introduced');
@@ -136,7 +148,8 @@ const result = {
   sourceChanged: [foldersStorePath],
   allowedOnly: ['field-mismatch:sortOrder'],
   bindingMismatchBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: bindingRepairImplemented,
+  bindingRepairImplementationEvidence: bindingRepairImplemented ? bindingImplementationEvidencePath : null,
   productSyncReady: false,
   webdavCloudRelayStarted: false,
   chatSavingCasBlocked: true,

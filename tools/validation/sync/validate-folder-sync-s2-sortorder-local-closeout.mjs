@@ -14,6 +14,7 @@ const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-01/folder-sync-s2-sortorder-local-closeout.md';
 const s2bLiveEvidencePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projection-activation.md';
 const s5ImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 
@@ -116,7 +117,17 @@ assertIncludes(folderSyncSource, 'async function s2bProjectSortOrderPreservingRe
 assertIncludes(folderSyncSource, "appliedReceipt.mirrorReprojection = 'applied-sortorder-preserving-s2b';", 'S2b applied marker exists');
 assertIncludes(folderSyncSource, "sortOrder: so, sort_order: so", 'S2b preserves sortOrder and sort_order');
 assert.ok(!folderSyncSource.includes('rebuildRenderMirrorFromSqlite'), 'folder-sync source must not reuse rebuildRenderMirrorFromSqlite');
-assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+if (exists(bindingImplementationEvidencePath)) {
+  const implementationEvidence = read(bindingImplementationEvidencePath);
+  assertIncludes(implementationEvidence, 'BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN',
+    'binding implementation evidence verdict');
+  assertIncludes(folderSyncSource, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+    'binding receipt schema minted by later binding implementation');
+  assertIncludes(folderSyncSource, 'bindingMismatchAllowed: false',
+    'binding-mismatch remains blocked after binding implementation');
+} else {
+  assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+}
 assert.ok(!folderSyncSource.includes('productSyncReady: true'), 'productSyncReady must not flip true in folder-sync source');
 
 if (exists(s5ImplementationEvidencePath)) {

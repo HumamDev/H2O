@@ -3225,9 +3225,11 @@
     }).catch(function (e) { recordError('bindChat', e); return false; });
   }
 
-  function unbindChatLegacy(folderIdInput, chatIdInput) {
+  function unbindChatLegacy(folderIdInput, chatIdInput, opts) {
     var folderId = getFolderId(folderIdInput);
     var chatId = String(chatIdInput || '').trim();
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var skipBindingTombstone = options.skipBindingTombstone === true || options.smokeSkipBindingTombstone === true;
     if (!folderId || !chatId) return Promise.resolve(false);
     return executeFolderBindingsLegacyFallback(
       'DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?',
@@ -3238,6 +3240,7 @@
       if (ok) {
         recordWrite('unbindChat');
         notifySubscribers({ source: 'local', op: 'unbindChat', folderId: folderId, chatId: chatId });
+        if (skipBindingTombstone) return true;
         return writeFolderBindingTombstoneSafely(folderId, chatId).then(function () { return true; });
       }
       return false;
@@ -3294,7 +3297,7 @@
     var chatId = String(chatIdInput || '').trim();
     if (!folderId || !chatId) return Promise.resolve(false);
     if (!f15FolderBindingDelegationEnabled(opts)) {
-      return unbindChatLegacy(folderId, chatId);
+      return unbindChatLegacy(folderId, chatId, opts);
     }
     return delegateF15FolderBindingWrite('unbind', folderId, chatId, opts).then(function (result) {
       if (result && result.ok === true) {

@@ -29,6 +29,7 @@ const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const s5SortOrderFlipDoc = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidenceDoc = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -154,7 +155,17 @@ if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must define the chat-folder-binding request schema (reused)');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'F28 plan-only: proposed binding receipt schema must NOT be minted in source');
+  if (exists(bindingImplementationEvidenceDoc)) {
+    const implementationEvidence = read(bindingImplementationEvidenceDoc);
+    assert(implementationEvidence.includes('BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN'),
+      'binding implementation evidence must record implemented/proven verdict');
+    assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"),
+      'binding receipt schema must be minted by the later binding implementation');
+    assert(src.includes('bindingMismatchAllowed: false'),
+      'binding-mismatch must remain blocked after binding implementation');
+  } else {
+    assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'F28 plan-only: proposed binding receipt schema must NOT be minted in source');
+  }
   assert(src.includes(SORTORDER_REQUEST_SCHEMA) && src.includes(SORTORDER_RECEIPT_SCHEMA),
     'sortOrder schemas now present in source (minted inert by F30 S1)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
@@ -209,11 +220,12 @@ console.log(JSON.stringify({
   exitCriteriaCount: (flat.match(/exit criteria:/gi) || []).length,
   invariantsPreservedCount: (flat.match(/invariants preserved:/gi) || []).length,
   anythingImplemented: false,
-  anySchemaMinted: false,
+  anySchemaMinted: exists(bindingImplementationEvidenceDoc),
   anyF11SetChange: false,
   anyProductSyncReadyFlip: false,
   bindingMismatchBlocked: true,
-  sortOrderGated: true,
+  sortOrderGated: !exists(s5SortOrderFlipDoc),
+  sortOrderSupersededByS5: exists(s5SortOrderFlipDoc),
   productSyncReady: false,
   publicPremiumBlocked: true,
   realRemoteWebdavDeferred: true,

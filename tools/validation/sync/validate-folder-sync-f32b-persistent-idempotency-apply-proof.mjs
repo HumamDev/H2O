@@ -49,6 +49,7 @@ const RECEIPT_SCHEMA = 'h2o.studio.folder-sortorder-reorder-receipt.v1';
 const BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
 const LEDGER_KEY = 'h2o:sync:consumed-operation-ledger:v1';
 const FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
+const bindingImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 
 function fail(msg) { failures.push(msg); }
 function done() {
@@ -344,7 +345,17 @@ if (exists(folderSyncFile)) {
     'handler must reference the existing consumed-operation ledger APIs');
   assert(src.includes("mirrorReprojection: 'deferred-to-s2b'"), 'mirror re-projection must remain deferred-to-s2b');
   assert(!src.includes('rebuildRenderMirrorFromSqlite'), 'handler file must not call rebuildRenderMirrorFromSqlite');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain unminted');
+  if (exists(bindingImplementationEvidenceFile)) {
+    const implementationEvidence = read(bindingImplementationEvidenceFile);
+    assert(implementationEvidence.includes('BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN'),
+      'binding implementation evidence must record implemented/proven verdict');
+    assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"),
+      'binding receipt schema must be minted by the later binding implementation');
+    assert(src.includes('bindingMismatchAllowed: false'),
+      'binding-mismatch must remain blocked after binding implementation');
+  } else {
+    assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain unminted');
+  }
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'fullBundle must remain v2');
   assert(!src.includes('fullBundle.v3'), 'no fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), 'WebDAV must remain deferred');
@@ -415,7 +426,7 @@ console.log(JSON.stringify({
   s2StillOpen: true,
   f11AllowedSetChanged: false,
   productSyncReady: false,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: exists(bindingImplementationEvidenceFile),
   supersedesF33LiveDryRunRecommendation: true,
   recommendedNext: 'S3 live Desktop dry-run — only if strict review accepts F32b (separate explicit approval); mirror-after-write remains S2b/S5',
 }, null, 2));

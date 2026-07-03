@@ -15,6 +15,7 @@ const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-preflight-after-sortorder.md';
 const readinessRecheckPath = 'release-evidence/2026-07-01/folder-sync-productsyncready-readiness-recheck-after-s5.md';
 const s5EvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportPath = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
@@ -66,6 +67,7 @@ const folderSync = read(folderSyncPath);
 const folderImport = read(folderImportPath);
 const canonicalDesktopSource = `${foldersStore}\n${folderSync}`;
 const combinedSource = `${canonicalDesktopSource}\n${folderImport}`;
+const bindingRepairImplemented = exists(bindingImplementationEvidencePath);
 
 for (const token of [
   'BINDING-MISMATCH REPAIR PREFLIGHT REQUIRED',
@@ -99,8 +101,19 @@ assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['bi
 assert.ok(!foldersStore.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
   'sortOrder must no longer be force-blocked with binding-mismatch');
 
-assert.ok(!canonicalDesktopSource.includes('h2o.studio.chat-folder-binding-receipt.v1'),
-  'canonical Desktop binding repair/handler receipt schema remains unminted');
+if (bindingRepairImplemented) {
+  const implementationEvidence = read(bindingImplementationEvidencePath);
+  assertIncludes(implementationEvidence, 'BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN',
+    'binding repair implementation evidence verdict');
+  assertIncludes(folderSync, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+    'canonical Desktop binding repair receipt schema minted by implementation');
+  assertIncludes(folderSync, 'bindingRepair: {', 'binding repair API exposed after implementation');
+  assertIncludes(folderSync, 'bindingMismatchAllowed: false',
+    'binding-mismatch remains blocked until later allowed-set flip');
+} else {
+  assert.ok(!canonicalDesktopSource.includes('h2o.studio.chat-folder-binding-receipt.v1'),
+    'canonical Desktop binding repair/handler receipt schema remains unminted');
+}
 assertIncludes(folderImport, 'chat-folder-binding-receipt-import-blocked', 'binding receipt import remains blocked');
 assert.ok(!combinedSource.includes('productSyncReady: true'), 'productSyncReady must not be true in source');
 assert.ok(!combinedSource.includes('productSyncReady = true'), 'productSyncReady assignment must not flip true');
@@ -135,7 +148,8 @@ const result = {
   verdict: 'BINDING_MISMATCH_REPAIR_PREFLIGHT_REQUIRED',
   sortOrderActiveBlocker: false,
   bindingMismatchBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: bindingRepairImplemented,
+  bindingRepairImplementationEvidence: bindingRepairImplemented ? bindingImplementationEvidencePath : null,
   productSyncReady: false,
   webdavCloudRelayStarted: false,
   chatSavingCasBlocked: true,

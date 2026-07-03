@@ -15,6 +15,7 @@ const evidencePath = 'release-evidence/2026-07-01/folder-sync-productsyncready-r
 const s5EvidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 const s2CloseoutPath = 'release-evidence/2026-07-01/folder-sync-s2-sortorder-local-closeout.md';
 const s2bLivePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projection-activation.md';
+const bindingImplementationEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportPath = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
@@ -56,6 +57,7 @@ const foldersStore = read(foldersStorePath);
 const folderSync = read(folderSyncPath);
 const folderImport = read(folderImportPath);
 const combinedSource = `${foldersStore}\n${folderSync}\n${folderImport}`;
+const bindingRepairImplemented = exists(bindingImplementationEvidencePath);
 
 for (const token of [
   'productSyncReady remains NOT READY after S5',
@@ -97,8 +99,19 @@ assertIncludes(folderSync, "appliedReceipt.mirrorReprojection = 'applied-sortord
 assertIncludes(folderSync, "webdav: 'deferred'", 'folder sync WebDAV remains deferred');
 assertIncludes(folderImport, "webdav: 'deferred'", 'folder import WebDAV remains deferred');
 
-assert.ok(!`${foldersStore}\n${folderSync}`.includes('h2o.studio.chat-folder-binding-receipt.v1'),
-  'canonical binding repair/handler receipt schema remains unminted');
+if (bindingRepairImplemented) {
+  const implementationEvidence = read(bindingImplementationEvidencePath);
+  assertIncludes(implementationEvidence, 'BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN',
+    'binding repair implementation evidence verdict');
+  assertIncludes(folderSync, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+    'canonical binding repair receipt schema minted by implementation');
+  assertIncludes(folderSync, 'bindingRepair: {', 'binding repair API exposed after implementation');
+  assertIncludes(folderSync, 'bindingMismatchAllowed: false',
+    'binding-mismatch remains blocked until later allowed-set flip');
+} else {
+  assert.ok(!`${foldersStore}\n${folderSync}`.includes('h2o.studio.chat-folder-binding-receipt.v1'),
+    'canonical binding repair/handler receipt schema remains unminted');
+}
 assertIncludes(folderImport, 'chat-folder-binding-receipt-import-blocked', 'binding receipt import remains blocked');
 assert.ok(!combinedSource.includes('productSyncReady: true'), 'productSyncReady must not be true in source');
 assert.ok(!combinedSource.includes('productSyncReady = true'), 'productSyncReady assignment must not flip true');
@@ -124,7 +137,8 @@ const result = {
   verdict: 'NOT_READY',
   sortOrderActiveBlocker: false,
   bindingMismatchBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: bindingRepairImplemented,
+  bindingRepairImplementationEvidence: bindingRepairImplemented ? bindingImplementationEvidencePath : null,
   productSyncReady: false,
   webdavCloudRelayStarted: false,
   chatSavingCasBlocked: true,

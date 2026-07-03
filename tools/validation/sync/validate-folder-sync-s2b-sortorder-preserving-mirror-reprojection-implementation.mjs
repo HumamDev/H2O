@@ -29,6 +29,7 @@ const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const ledgerFile = 'src-surfaces-base/studio/sync/consumed-operation-ledger.tauri.js';
 const s5ImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -252,7 +253,17 @@ if (exists(folderSyncFile)) {
   }
   assert(src.includes("mirrorReprojection: 'deferred-to-s2b'"), 'receipt builder default must remain deferred-to-s2b (dry-run/conflict paths)');
   assert(!src.includes('rebuildRenderMirrorFromSqlite'), 'folder-sync must NOT reference/reuse the F11 rebuild helper');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain unminted');
+  if (exists(bindingImplementationEvidenceFile)) {
+    const implementationEvidence = read(bindingImplementationEvidenceFile);
+    assert(implementationEvidence.includes('BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN'),
+      'binding implementation evidence must record implemented/proven verdict');
+    assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"),
+      'binding receipt schema must be minted by the later binding implementation');
+    assert(src.includes('bindingMismatchAllowed: false'),
+      'binding-mismatch must remain blocked after binding implementation');
+  } else {
+    assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain unminted');
+  }
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'fullBundle must remain v2');
   assert(!src.includes('fullBundle.v3'), 'no fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), 'WebDAV must remain deferred');
@@ -311,7 +322,7 @@ console.log(JSON.stringify({
   dryRunWritesMirror: false,
   s5F11FlipBlocked: true,
   productSyncReady: false,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: exists(bindingImplementationEvidenceFile),
   chatSavingCasBlocked: true,
   fullS2Closed: false,
   recommendedNext: 'live Desktop S2b readback confirmation (separately approved) before declaring S2 closed; NOT S5/productSyncReady/WebDAV',

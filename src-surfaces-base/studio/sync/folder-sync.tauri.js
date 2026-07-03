@@ -61,6 +61,7 @@
   var FOLDER_DELETE_REQUEST_SCHEMA = 'h2o.studio.folder-delete-request.v1';
   var FOLDER_RESTORE_REQUEST_SCHEMA = 'h2o.studio.folder-restore-request.v1';
   var CHAT_FOLDER_BINDING_REQUEST_SCHEMA = 'h2o.studio.chat-folder-binding-request.v1';
+  var CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1';
   /* F30 (folder-sync S1): inert sortOrder reorder request/receipt schema constants. Declared only —
      NOT wired into any validate/apply/receipt handler, request loop, or transport/import/export path.
      field-mismatch:sortOrder remains gated (blocked in the F11 render-only rebuild helper). */
@@ -5467,6 +5468,335 @@
     dismissPending: dismissPending,
   });
 
+  /* ===================== Binding repair Desktop handler =====================
+   * Scope: canonical Desktop SQLite folder_bindings apply ONLY. Dry-run by default; gated apply.
+   * Emits CHAT_FOLDER_BINDING_RECEIPT_SCHEMA. Writes ONLY folder_bindings through store.folders
+   * bindChat / unbindChat / moveCanonicalChatFolderBinding. NO folder/chat delete, NO purge, NO
+   * tombstone mutation (passes skipBindingTombstone), NO mirror write-through, NO WebDAV/CAS,
+   * NO productSyncReady flip, and NO F11 allowed-set change. Chrome/native/mobile remain
+   * non-canonical proposers. */
+  var CHAT_FOLDER_BINDING_REPAIR_APPLY_GATE = 'folder-sync-chat-folder-binding-repair-apply';
+  var CHAT_FOLDER_BINDING_REPAIR_OPERATION_KIND = 'chat-folder-binding-repair';
+  var CHAT_FOLDER_BINDING_REPAIR_INTENTS = ['bind', 'unbind', 'move'];
+  var CHAT_FOLDER_BINDING_REPAIR_FORBIDDEN_KEYS = ['name', 'title', 'content'];
+
+  function bindingRepairArr(v) { return Array.isArray(v) ? v : []; }
+  function bindingRepairFolderId(row) { return cleanString(row && (row.folderId || row.folder_id || row.id)); }
+  function bindingRepairChatId(row) { return cleanString(row && (row.chatId || row.chat_id || row.conversationId)); }
+  function bindingRepairHasForbiddenKeys(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    var keys = Object.keys(obj);
+    for (var i = 0; i < keys.length; i += 1) {
+      var k = keys[i];
+      if (CHAT_FOLDER_BINDING_REPAIR_FORBIDDEN_KEYS.indexOf(k) !== -1) return true;
+      var v = obj[k];
+      if (v && typeof v === 'object' && bindingRepairHasForbiddenKeys(v)) return true;
+    }
+    return false;
+  }
+  async function chatFolderBindingHashFromRows(rows) {
+    var parts = bindingRepairArr(rows).map(function (row) {
+      var chatId = bindingRepairChatId(row);
+      var folderId = bindingRepairFolderId(row);
+      return chatId && folderId ? chatId + '>' + folderId : '';
+    }).filter(Boolean).sort();
+    return 'sha256:' + await sha256Hex('chat-folder-binding-repair|' + parts.join('|'));
+  }
+  function bindingRepairConsumedLedger() {
+    var d = H2O && H2O.Desktop && H2O.Desktop.Sync;
+    if (d && typeof d.listConsumedOperations === 'function' &&
+        typeof d.recordConsumedOperation === 'function') return d;
+    return null;
+  }
+  async function bindingRepairDedupeKey(request) {
+    var req = safeObject(request);
+    try { return await sha256Hex(CHAT_FOLDER_BINDING_REPAIR_OPERATION_KIND + '|dedupe|' + cleanString(req.idempotencyKey)); }
+    catch (e) { return ''; }
+  }
+  async function bindingRepairEventDigest(request) {
+    var req = safeObject(request);
+    try {
+      return await sha256Hex(CHAT_FOLDER_BINDING_REPAIR_OPERATION_KIND + '|digest|' + cleanString(req.schema) + '|' +
+        cleanString(req.idempotencyKey) + '|' + cleanString(req.basisBindingHash) + '|' + cleanString(req.requestedBindingHash));
+    } catch (e) { return ''; }
+  }
+  async function bindingRepairAlreadyConsumed(request) {
+    var ledger = bindingRepairConsumedLedger();
+    if (!ledger) return { available: false, consumed: false, dedupeKey: '' };
+    var dedupeKey = await bindingRepairDedupeKey(request);
+    if (!dedupeKey) return { available: false, consumed: false, dedupeKey: '' };
+    var listed = null;
+    try { listed = await ledger.listConsumedOperations(); }
+    catch (e) { return { available: false, consumed: false, dedupeKey: dedupeKey }; }
+    var rows = listed && Array.isArray(listed.rows) ? listed.rows : [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] || {};
+      if (cleanString(row.operationKind) === CHAT_FOLDER_BINDING_REPAIR_OPERATION_KIND &&
+          cleanString(row.dedupeKey).toLowerCase() === dedupeKey.toLowerCase()) {
+        return { available: true, consumed: true, dedupeKey: dedupeKey };
+      }
+    }
+    return { available: true, consumed: false, dedupeKey: dedupeKey };
+  }
+  async function bindingRepairRecordConsumed(request) {
+    var ledger = bindingRepairConsumedLedger();
+    if (!ledger) return { ok: false, reason: 'ledger-unavailable' };
+    var dedupeKey = await bindingRepairDedupeKey(request);
+    var eventDigest = await bindingRepairEventDigest(request);
+    if (!dedupeKey || !eventDigest) return { ok: false, reason: 'digest-unavailable' };
+    var res = null;
+    try {
+      res = await ledger.recordConsumedOperation({
+        eventDigest: eventDigest,
+        dedupeKey: dedupeKey,
+        envelopeKind: 'applyEvent',
+        operationKind: CHAT_FOLDER_BINDING_REPAIR_OPERATION_KIND,
+        consumedStatus: 'consumed',
+        reason: 'chat-folder-binding-repair-applied',
+      });
+    } catch (e) { return { ok: false, reason: 'record-threw' }; }
+    return { ok: !!(res && res.ok), reason: (res && res.ok) ? 'recorded'
+      : (res && Array.isArray(res.blockers) && res.blockers.length ? res.blockers.join(',') : 'record-failed') };
+  }
+  function validateChatFolderBindingRepairRequestForDesktopApply(request) {
+    var blockers = [];
+    var req = safeObject(request);
+    var intent = cleanString(req.intent);
+    if (cleanString(req.schema) !== CHAT_FOLDER_BINDING_REQUEST_SCHEMA) blockers.push('chat-folder-binding-request-schema-invalid');
+    if (CHAT_FOLDER_BINDING_REPAIR_INTENTS.indexOf(intent) === -1) blockers.push('chat-folder-binding-request-intent-invalid');
+    if (!cleanString(req.requestId || req.reviewId)) blockers.push('chat-folder-binding-request-id-required');
+    if (!cleanString(req.sourcePeerId) && !cleanString(req.deviceId)) blockers.push('chat-folder-binding-request-peer-id-required');
+    if (['chrome-extension', 'native-extension', 'mobile'].indexOf(cleanString(req.surfaceKind)) === -1) blockers.push('chat-folder-binding-request-surface-kind-invalid');
+    if (!cleanString(req.chatId || req.conversationId)) blockers.push('chat-folder-binding-request-chat-id-required');
+    if ((intent === 'bind' || intent === 'move') && !cleanString(req.targetFolderId || req.folderId)) {
+      blockers.push('chat-folder-binding-request-target-folder-id-required');
+    }
+    if ((intent === 'move' || intent === 'unbind') && !cleanString(req.previousFolderId || req.expectedCurrentFolderId || req.currentFolderId)) {
+      blockers.push('chat-folder-binding-request-previous-folder-id-required');
+    }
+    if (!cleanString(req.basisBindingHash)) blockers.push('chat-folder-binding-request-basis-hash-required');
+    if (!cleanString(req.requestedBindingHash)) blockers.push('chat-folder-binding-request-requested-hash-required');
+    if (!cleanString(req.createdAt) || Number.isNaN(Date.parse(cleanString(req.createdAt)))) blockers.push('chat-folder-binding-request-created-at-invalid');
+    if (!cleanString(req.idempotencyKey)) blockers.push('chat-folder-binding-request-idempotency-key-required');
+    if (req.desktopApplyRequired !== true || req.noLocalApply !== true) blockers.push('chat-folder-binding-request-apply-flags-invalid');
+    if (req.noChromeCanonicalMutation !== true && req.noChromeBindingAuthority !== true) blockers.push('chat-folder-binding-request-chrome-authority-flag-required');
+    if (req.noHardDelete !== true || req.noPurge !== true || req.noChatDelete !== true ||
+        req.noFolderDelete !== true || req.noTombstoneMutation !== true) {
+      blockers.push('chat-folder-binding-request-safety-flags-invalid');
+    }
+    var privacy = safeObject(req.privacy);
+    if (privacy.rawFolderNames === true || privacy.rawChatTitles === true || privacy.rawChatContent === true) {
+      blockers.push('chat-folder-binding-request-privacy-flags-invalid');
+    }
+    if (bindingRepairHasForbiddenKeys(req)) blockers.push('chat-folder-binding-request-redaction-violation');
+    return { ok: blockers.length === 0, blockers: blockers };
+  }
+  async function chatFolderBindingCanonicalSnapshot() {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var folders = stores && stores.folders;
+    if (!folders || typeof folders.listCanonicalChatFolderBindings !== 'function') return null;
+    var visible = typeof folders.getAll === 'function' ? bindingRepairArr(await folders.getAll()) : [];
+    var tomb = [];
+    if (typeof folders.listRecentlyDeletedFolders === 'function') {
+      try { tomb = bindingRepairArr(await folders.listRecentlyDeletedFolders({ limit: 1000 })); } catch (e) { tomb = []; }
+    }
+    var presentSet = Object.create(null);
+    visible.forEach(function (row) { var id = bindingRepairFolderId(row); if (id) presentSet[id] = true; });
+    var tombSet = Object.create(null);
+    tomb.forEach(function (row) { var id = bindingRepairFolderId(row); if (id) tombSet[id] = true; });
+    var rows = bindingRepairArr(await folders.listCanonicalChatFolderBindings());
+    var bindingByChatId = Object.create(null);
+    rows.forEach(function (row) {
+      var chatId = bindingRepairChatId(row);
+      var folderId = bindingRepairFolderId(row);
+      if (chatId && folderId && typeof bindingByChatId[chatId] === 'undefined') bindingByChatId[chatId] = folderId;
+    });
+    return {
+      rows: rows,
+      bindingByChatId: bindingByChatId,
+      presentFolderSet: presentSet,
+      tombstonedFolderSet: tombSet,
+      bindingHash: await chatFolderBindingHashFromRows(rows),
+    };
+  }
+  async function chatFolderBindingRepairChatExists(chatId) {
+    var stores = H2O.Studio && H2O.Studio.store;
+    var chats = stores && stores.chats;
+    if (!chats || typeof chats.get !== 'function') return true;
+    try { return !!(await chats.get(chatId)); } catch (e) { return false; }
+  }
+  async function classifyChatFolderBindingRepairConflict(request, snapshot, ctx) {
+    var req = safeObject(request);
+    var snap = safeObject(snapshot);
+    var intent = cleanString(req.intent);
+    var chatId = cleanString(req.chatId || req.conversationId);
+    var targetFolderId = cleanString(req.targetFolderId || req.folderId);
+    var previousFolderId = cleanString(req.previousFolderId || req.expectedCurrentFolderId || req.currentFolderId);
+    ctx = safeObject(ctx);
+    var appliedKeys = safeObject(ctx.appliedKeys);
+    if (appliedKeys[cleanString(req.idempotencyKey)]) return 'duplicate';
+    if (cleanString(req.basisBindingHash) !== cleanString(snap.bindingHash)) {
+      return ctx.priorAppliedInBatch ? 'superseded-concurrent' : 'stale-basis';
+    }
+    if (!(await chatFolderBindingRepairChatExists(chatId))) return 'orphan-chat-binding';
+    var folderToCheck = intent === 'unbind' ? previousFolderId : targetFolderId;
+    if (folderToCheck && snap.tombstonedFolderSet && snap.tombstonedFolderSet[folderToCheck]) return 'tombstoned-folder-binding';
+    if ((intent === 'bind' || intent === 'move') && (!snap.presentFolderSet || !snap.presentFolderSet[targetFolderId])) return 'orphan-folder-binding';
+    var currentFolderId = cleanString(snap.bindingByChatId && snap.bindingByChatId[chatId]);
+    if ((intent === 'move' || intent === 'unbind') && previousFolderId && currentFolderId !== previousFolderId) {
+      return 'previous-folder-mismatch';
+    }
+    if (intent === 'bind' && currentFolderId && currentFolderId !== targetFolderId) return 'duplicate-binding-resolved-primary-key';
+    if ((intent === 'bind' || intent === 'move') && currentFolderId === targetFolderId) return 'already-targeted';
+    if (intent === 'unbind' && !currentFolderId) return 'already-unbound';
+    return null;
+  }
+  function buildChatFolderBindingRepairReceipt(request, status, reason, extra) {
+    var req = safeObject(request);
+    var data = safeObject(extra);
+    var now = new Date().toISOString();
+    var cleanStatus = cleanString(status) || 'rejected';
+    return {
+      schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA,
+      version: '0.1.0-binding-repair',
+      phase: 'binding-mismatch-repair-desktop-apply',
+      requestId: cleanString(req.requestId || req.reviewId),
+      reviewId: cleanString(req.reviewId || req.requestId),
+      idempotencyKeyPresent: !!cleanString(req.idempotencyKey),
+      status: cleanStatus,
+      reason: cleanString(reason) || cleanStatus,
+      resultingBindingHash: cleanString(data.resultingBindingHash) || cleanString(req.basisBindingHash),
+      canonicalAuthority: 'desktop-sqlite',
+      noDestructiveMutation: true,
+      noFolderDelete: true,
+      noFolderPurge: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noBindingDeleteBeyondRequestedUnbind: true,
+      noTombstoneMutation: true,
+      noMirrorWrite: true,
+      noTransportWrite: true,
+      noWebdavWrite: true,
+      mirrorReprojection: 'deferred-to-binding-live-proof',
+      bindingMismatchAllowed: false,
+      canonicalBindingWriteCount: Number(data.canonicalBindingWriteCount) || 0,
+      canonicalWriteCount: Number(data.canonicalBindingWriteCount) || 0,
+      idempotencyPersisted: data.idempotencyPersisted === true,
+      dryRun: data.dryRun === true,
+      appliedAt: cleanStatus === 'applied' ? now : null,
+      decidedAt: now,
+      productSyncReady: false,
+      privacy: { redacted: true, hashOnly: true },
+      requestSource: {
+        surface: cleanString(req.surfaceKind) || 'chrome-extension',
+        peerIdPresent: !!cleanString(req.sourcePeerId || req.deviceId),
+      },
+    };
+  }
+  async function applyChatFolderBindingRepairRequest(request, options) {
+    var opts = safeObject(options);
+    var ctx = safeObject(opts.ctx);
+    var dryRun = opts.apply !== true;
+    var gateOk = cleanString(opts.gate) === CHAT_FOLDER_BINDING_REPAIR_APPLY_GATE;
+    var validation = validateChatFolderBindingRepairRequestForDesktopApply(request);
+    if (!validation.ok) {
+      var invalidReason = validation.blockers.indexOf('chat-folder-binding-request-redaction-violation') !== -1
+        ? 'privacy-redaction-violation' : 'invalid-request-envelope';
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', invalidReason, { dryRun: dryRun, canonicalBindingWriteCount: 0 });
+    }
+    var snapshot = ctx.snapshot || await chatFolderBindingCanonicalSnapshot();
+    if (!snapshot) {
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: dryRun, canonicalBindingWriteCount: 0 });
+    }
+    var persisted = await bindingRepairAlreadyConsumed(request);
+    var effCtx = ctx;
+    if (persisted.consumed) {
+      effCtx = Object.assign({}, ctx, { appliedKeys: Object.assign({}, ctx.appliedKeys) });
+      effCtx.appliedKeys[cleanString(safeObject(request).idempotencyKey)] = true;
+    }
+    var conflict = await classifyChatFolderBindingRepairConflict(request, snapshot, effCtx);
+    var acceptedNoWrite = conflict === 'already-targeted' || conflict === 'already-unbound';
+    var acceptedPrimaryKeyMove = conflict === 'duplicate-binding-resolved-primary-key';
+    if (conflict && !acceptedNoWrite && !acceptedPrimaryKeyMove) {
+      var conflictStatus = conflict === 'duplicate' ? 'skipped' : 'rejected';
+      return buildChatFolderBindingRepairReceipt(request, conflictStatus, conflict,
+        { dryRun: dryRun, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+    }
+    if (dryRun) {
+      return buildChatFolderBindingRepairReceipt(request, 'dry-run', 'dry-run-binding-repair-plan-ready',
+        { dryRun: true, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+    }
+    if (!gateOk) {
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', 'apply-gate-required',
+        { dryRun: false, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+    }
+    var stores = H2O.Studio && H2O.Studio.store;
+    var folders = stores && stores.folders;
+    if (!folders) {
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: false, canonicalBindingWriteCount: 0 });
+    }
+    var req = safeObject(request);
+    var intent = cleanString(req.intent);
+    var chatId = cleanString(req.chatId || req.conversationId);
+    var targetFolderId = cleanString(req.targetFolderId || req.folderId);
+    var previousFolderId = cleanString(req.previousFolderId || req.expectedCurrentFolderId || req.currentFolderId);
+    var currentFolderId = cleanString(snapshot.bindingByChatId && snapshot.bindingByChatId[chatId]);
+    var writeCount = 0;
+    var writeOk = true;
+    var writeStatus = '';
+    var writeOpts = {
+      reason: 'binding-mismatch-repair-desktop-apply',
+      assignedAt: Date.now(),
+      expectedCurrentFolderId: previousFolderId || currentFolderId,
+      skipBindingTombstone: true,
+      suppressBindingSubscribers: false,
+      explicitF7Fallback: true,
+      noHardDelete: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noAssetDelete: true,
+    };
+    if (acceptedNoWrite) {
+      writeStatus = conflict;
+    } else if (intent === 'unbind') {
+      if (typeof folders.unbindChat !== 'function') return buildChatFolderBindingRepairReceipt(request, 'rejected', 'canonical-binding-unbind-unavailable', { dryRun: false, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+      writeOk = await folders.unbindChat(previousFolderId || currentFolderId, chatId, writeOpts);
+      writeCount = writeOk ? 1 : 0;
+      writeStatus = writeOk ? 'unbound' : 'canonical-binding-unbind-failed';
+    } else if ((intent === 'move' || acceptedPrimaryKeyMove) && currentFolderId && currentFolderId !== targetFolderId &&
+        typeof folders.moveCanonicalChatFolderBinding === 'function') {
+      var moveResult = await folders.moveCanonicalChatFolderBinding(targetFolderId, chatId, writeOpts);
+      writeOk = !!(moveResult && moveResult.ok === true);
+      writeCount = writeOk && moveResult.changed !== false ? (Number(moveResult.rowsAffected) || 1) : 0;
+      writeStatus = writeOk ? cleanString(moveResult.status || 'moved') : cleanString(moveResult && moveResult.status) || 'canonical-binding-move-failed';
+    } else if (intent === 'bind' || intent === 'move') {
+      if (typeof folders.bindChat !== 'function') return buildChatFolderBindingRepairReceipt(request, 'rejected', 'canonical-binding-bind-unavailable', { dryRun: false, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+      writeOk = await folders.bindChat(targetFolderId, chatId, writeOpts);
+      writeCount = writeOk ? 1 : 0;
+      writeStatus = writeOk ? 'bound' : 'canonical-binding-bind-failed';
+    } else {
+      writeOk = false;
+      writeStatus = 'forbidden-intent';
+    }
+    if (!writeOk) {
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', writeStatus,
+        { dryRun: false, canonicalBindingWriteCount: 0, resultingBindingHash: snapshot.bindingHash });
+    }
+    var after = await chatFolderBindingCanonicalSnapshot();
+    var afterHash = after ? after.bindingHash : '';
+    if (afterHash !== cleanString(req.requestedBindingHash) && !acceptedNoWrite) {
+      return buildChatFolderBindingRepairReceipt(request, 'rejected', 'post-apply-binding-hash-mismatch',
+        { dryRun: false, canonicalBindingWriteCount: writeCount, resultingBindingHash: afterHash || snapshot.bindingHash });
+    }
+    var recorded = acceptedNoWrite ? { ok: false } : await bindingRepairRecordConsumed(request);
+    var status = acceptedNoWrite ? 'skipped' : 'applied';
+    var reason = acceptedNoWrite ? conflict : (acceptedPrimaryKeyMove ? 'duplicate-binding-resolved-primary-key' : 'binding-repair-applied');
+    return buildChatFolderBindingRepairReceipt(request, status, reason,
+      { dryRun: false, canonicalBindingWriteCount: acceptedNoWrite ? 0 : writeCount,
+        resultingBindingHash: afterHash || snapshot.bindingHash, idempotencyPersisted: recorded.ok });
+  }
+  /* ===================== end binding repair Desktop handler ===================== */
+
   /* ===================== F32 (folder-sync S2): sortOrder reorder Desktop handler =====================
    * Scope: canonical Desktop SQLite sort_order apply ONLY. Dry-run by default; gated apply. Basis-gated,
    * idempotent (applies the FULL requested order; atomic-on-retry). Emits a receipt via
@@ -5857,6 +6187,15 @@
 
   H2O.Studio.sync = Object.assign({}, existingSync, desktopSyncApi, {
     folder: folderApi,
+    bindingRepair: {
+      applyGate: CHAT_FOLDER_BINDING_REPAIR_APPLY_GATE,
+      validate: validateChatFolderBindingRepairRequestForDesktopApply,
+      classify: classifyChatFolderBindingRepairConflict,
+      bindingHash: chatFolderBindingHashFromRows,
+      buildReceipt: buildChatFolderBindingRepairReceipt,
+      snapshot: chatFolderBindingCanonicalSnapshot,
+      apply: applyChatFolderBindingRepairRequest,
+    },
     sortOrderReorder: {
       applyGate: FOLDER_SORTORDER_REORDER_APPLY_GATE,
       validate: validateFolderSortorderReorderRequestForDesktopApply,

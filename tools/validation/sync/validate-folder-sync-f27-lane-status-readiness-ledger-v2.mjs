@@ -29,6 +29,7 @@ const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const s5SortOrderFlipDoc = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingImplementationEvidenceDoc = 'release-evidence/2026-07-01/folder-sync-binding-mismatch-repair-implementation.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -155,7 +156,17 @@ if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must define the chat-folder-binding request schema (reused)');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'proposed binding receipt schema must NOT be minted in source');
+  if (exists(bindingImplementationEvidenceDoc)) {
+    const implementationEvidence = read(bindingImplementationEvidenceDoc);
+    assert(implementationEvidence.includes('BINDING-MISMATCH REPAIR IMPLEMENTED_AND_PROVEN'),
+      'binding implementation evidence must record implemented/proven verdict');
+    assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"),
+      'binding receipt schema must be minted by the later binding implementation');
+    assert(src.includes('bindingMismatchAllowed: false'),
+      'binding-mismatch must remain blocked after binding implementation');
+  } else {
+    assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'proposed binding receipt schema must NOT be minted in source');
+  }
   assert(src.includes(SORTORDER_REQUEST_SCHEMA) && src.includes(SORTORDER_RECEIPT_SCHEMA),
     'sortOrder schemas now present in source (minted inert by F30 S1)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
@@ -210,11 +221,13 @@ console.log(JSON.stringify({
     'field-mismatch:sortOrder': exists(s5SortOrderFlipDoc)
       ? 'desktop-sqlite-canonical-closed-allowed-after-s5'
       : 'desktop-sqlite-canonical-design-inprocess-proven-gated-unimplemented',
-    'binding-mismatch': 'desktop-sqlite-folder_bindings-canonical-design-inprocess-proven-blocked-unimplemented',
+    'binding-mismatch': exists(bindingImplementationEvidenceDoc)
+      ? 'desktop-sqlite-folder_bindings-canonical-implemented-proven-blocked-until-allowed-set-flip'
+      : 'desktop-sqlite-folder_bindings-canonical-design-inprocess-proven-blocked-unimplemented',
   },
   provenPhases: LANE_PHASES,
   proposedSortOrderSchemasMinted: false,
-  proposedBindingReceiptMinted: false,
+  proposedBindingReceiptMinted: exists(bindingImplementationEvidenceDoc),
   bindingRequestSchemaPresent: true,
   productSyncReady: false,
   publicPremiumBlocked: true,
