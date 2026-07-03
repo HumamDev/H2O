@@ -143,6 +143,8 @@ const state = {
   interfaceMetaByChat: {},
 };
 
+let activeRailPopoverButton = null;
+
 // D2 blocker: expose a read-only accessor for the current reader chat
 // context so the Studio Dock shell (dock-shell.studio.js) can route
 // per-chat Dock tabs to the correct data buckets. Returns empty strings
@@ -6281,8 +6283,177 @@ function openSidebarForDock(){
   H2O.Studio.openSidebarForDock = openSidebarForDock;
 })();
 
+function closeDockSidebarModeIfOpen(){
+  try {
+    const dock = W.H2O && W.H2O.Studio && W.H2O.Studio.dock;
+    const dockState = dock && typeof dock.getState === "function" ? dock.getState() : null;
+    if (dockState && dockState.open && typeof dock.close === "function") dock.close();
+  } catch {}
+}
+
 function closeSidebar(){
+  closeDockSidebarModeIfOpen();
   setSidebarExpanded(false);
+}
+
+function setRailButtonExpanded(button, expanded){
+  if (!button) return;
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function railChatIconSvg(){
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7A2.5 2.5 0 0 1 16.5 16H10l-4 3v-3.25A2.5 2.5 0 0 1 5 13.5v-7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+}
+
+function railFolderIconSvg(){
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.75 6.5A2.25 2.25 0 0 1 6 4.25h4.15l1.85 2H18A2.25 2.25 0 0 1 20.25 8.5v7.75A2.25 2.25 0 0 1 18 18.5H6a2.25 2.25 0 0 1-2.25-2.25V6.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+}
+
+function railEmptyHtml(message){
+  return `<div class="wbRailPopoverEmpty">${esc(message)}</div>`;
+}
+
+function railSearchEmptyHtml(message){
+  return `<div class="wbRailPopoverEmpty">${esc(message)}</div>`;
+}
+
+function railRecentHref(row){
+  const readerSnapshotId = rowReaderSnapshotId(row);
+  if (readerSnapshotId && !rowIsLinkOnly(row)) return `#/read/${encodeURIComponent(readerSnapshotId)}`;
+  return buildListHash("linked", state.lastFolderId || "");
+}
+
+function railRecentRows(query = "", limit = 10){
+  const rows = collectCanonicalSidebarRecentChats(state.rowsCache || [], "", query);
+  const cap = Math.max(1, Number(limit) || 10);
+  return rows.slice(0, cap);
+}
+
+function railFolderItems(limit = 16){
+  const items = collectFolderSidebarItems(state.rowsCache || [], state.lastView || "saved", "canonical")
+    .filter((item) => item && item.kind === "folder");
+  const cap = Math.max(1, Number(limit) || 16);
+  return items.slice(0, cap);
+}
+
+function closeRailPopover(){
+  const pop = $("#wbRailPopover");
+  if (pop) pop.hidden = true;
+  if (activeRailPopoverButton) setRailButtonExpanded(activeRailPopoverButton, false);
+  activeRailPopoverButton = null;
+}
+
+function closeRailSearchOverlay(){
+  const overlay = $("#wbRailSearchOverlay");
+  if (overlay) overlay.hidden = true;
+  setRailButtonExpanded($("#railSearchBtn"), false);
+}
+
+function closeRailSurfaces(){
+  closeRailPopover();
+  closeRailSearchOverlay();
+}
+
+function positionRailPopover(anchor){
+  const pop = $("#wbRailPopover");
+  if (!(pop && anchor)) return;
+  const railRect = $(".wbRail")?.getBoundingClientRect?.();
+  const anchorRect = anchor.getBoundingClientRect();
+  const left = Math.round((railRect?.right || anchorRect.right) + 4);
+  const height = pop.offsetHeight || 320;
+  const top = Math.max(16, Math.min(Math.round(anchorRect.top - 16), Math.round(window.innerHeight - height - 16)));
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function openRailPopover(kind, anchor){
+  const pop = $("#wbRailPopover");
+  const title = $("#wbRailPopoverTitle");
+  const list = $("#wbRailPopoverList");
+  if (!(pop && title && list && anchor)) return;
+  const sameOpen = activeRailPopoverButton === anchor && !pop.hidden;
+  closeRailSearchOverlay();
+  closeRailPopover();
+  if (sameOpen) return;
+
+  if (kind === "folders"){
+    title.textContent = "Folders";
+    const items = railFolderItems();
+    list.innerHTML = items.length
+      ? items.map((item) => {
+        const count = folderSidebarSimpleCountLabel(item);
+        const href = buildListHash(state.lastView || "saved", item.folderId);
+        return `
+          <button type="button" class="wbRailPopoverItem" role="menuitem" data-rail-href="${esc(href)}">
+            <span class="wbRailPopoverIcon">${railFolderIconSvg()}</span>
+            <span class="wbRailPopoverBody">
+              <span class="wbRailPopoverLabel">${esc(item.label || item.folderId || "Folder")}</span>
+              <span class="wbRailPopoverMeta">${esc(count || "Folder")}</span>
+            </span>
+          </button>`;
+      }).join("")
+      : railEmptyHtml("No folders available.");
+  } else {
+    title.textContent = "Recents";
+    const rows = railRecentRows("", 10);
+    list.innerHTML = rows.length
+      ? rows.map((row) => {
+        const href = railRecentHref(row);
+        const meta = rowMetaParts(row).join(" · ");
+        return `
+          <button type="button" class="wbRailPopoverItem" role="menuitem" data-rail-href="${esc(href)}">
+            <span class="wbRailPopoverIcon">${railChatIconSvg()}</span>
+            <span class="wbRailPopoverBody">
+              <span class="wbRailPopoverLabel">${esc(row.title || "Untitled chat")}</span>
+              <span class="wbRailPopoverMeta">${esc(meta || "Saved chat")}</span>
+            </span>
+          </button>`;
+      }).join("")
+      : railEmptyHtml("No recent chats available.");
+  }
+
+  activeRailPopoverButton = anchor;
+  setRailButtonExpanded(anchor, true);
+  pop.hidden = false;
+  positionRailPopover(anchor);
+}
+
+function renderRailSearchResults(){
+  const input = $("#wbRailSearchInput");
+  const host = $("#wbRailSearchResults");
+  if (!(input && host)) return;
+  const query = String(input.value || "").trim();
+  const rows = railRecentRows(query, 12);
+  if (!rows.length) {
+    host.innerHTML = railSearchEmptyHtml(query ? "No chats match this search." : "No recent chats available.");
+    return;
+  }
+  host.innerHTML = `
+    <div class="wbRailSearchGroup">${esc(query ? "Results" : "Recent chats")}</div>
+    ${rows.map((row) => {
+      const href = railRecentHref(row);
+      const meta = rowMetaParts(row).join(" · ");
+      return `
+        <button type="button" class="wbRailSearchItem" role="option" data-rail-href="${esc(href)}">
+          <span class="wbRailSearchIcon">${railChatIconSvg()}</span>
+          <span class="wbRailSearchText">
+            <span class="wbRailSearchTitle">${esc(row.title || "Untitled chat")}</span>
+            <span class="wbRailSearchMeta">${esc(meta || "Saved chat")}</span>
+          </span>
+        </button>`;
+    }).join("")}`;
+}
+
+function openRailSearchOverlay(){
+  const overlay = $("#wbRailSearchOverlay");
+  const input = $("#wbRailSearchInput");
+  if (!(overlay && input)) return;
+  closeRailPopover();
+  overlay.hidden = false;
+  setRailButtonExpanded($("#railSearchBtn"), true);
+  input.value = "";
+  renderRailSearchResults();
+  requestAnimationFrame(() => input.focus());
 }
 
 function toggleDensity(){
@@ -15094,6 +15265,50 @@ function boot(){
 
   $("#sidebarCollapseBtn")?.addEventListener("click", closeSidebar);
   $("#railSidebarBtn")?.addEventListener("click", openSidebar);
+  $("#railNewNoteBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+  });
+  $("#railSearchBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    openRailSearchOverlay();
+  });
+  $("#railLibraryBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    closeRailSurfaces();
+    closeDockSidebarModeIfOpen();
+    if (location.hash !== "#/library/dashboard") location.hash = "#/library/dashboard";
+  });
+  $("#railFoldersBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    openRailPopover("folders", ev.currentTarget);
+  });
+  $("#railRecentsBtn")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    openRailPopover("recents", ev.currentTarget);
+  });
+  $("#wbRailSearchCloseBtn")?.addEventListener("click", closeRailSearchOverlay);
+  $("#wbRailSearchInput")?.addEventListener("input", renderRailSearchResults);
+  $("#wbRailSearchOverlay")?.addEventListener("click", (ev) => {
+    if (ev.target === ev.currentTarget) closeRailSearchOverlay();
+  });
+  $("#wbRailPopover")?.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target.closest("[data-rail-href]") : null;
+    if (!target) return;
+    const href = String(target.getAttribute("data-rail-href") || "").trim();
+    if (!href) return;
+    closeRailSurfaces();
+    closeDockSidebarModeIfOpen();
+    if (location.hash !== href) location.hash = href;
+  });
+  $("#wbRailSearchResults")?.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target.closest("[data-rail-href]") : null;
+    if (!target) return;
+    const href = String(target.getAttribute("data-rail-href") || "").trim();
+    if (!href) return;
+    closeRailSurfaces();
+    closeDockSidebarModeIfOpen();
+    if (location.hash !== href) location.hash = href;
+  });
   $("#folderAssignSelect")?.addEventListener("change", () => {
     handleFolderAssignChange().catch(console.error);
   });
@@ -15114,12 +15329,18 @@ function boot(){
   });
 
   document.addEventListener("click", (ev) => {
-    const target = ev.target instanceof HTMLElement ? ev.target : null;
+    const target = ev.target instanceof Element ? ev.target : null;
+    if (target?.closest(".wbRailPopover, .wbRailActionBtn, .wbRailSearchCard")) return;
+    closeRailPopover();
+    if (target?.closest(".wbRailSearchOverlay")) return;
     if (target?.closest(".wbRowPopover, .wbRowTools, .ho-emoji-picker")) return;
     closeRowPopovers();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeRowPopovers();
+    if (ev.key === "Escape") {
+      closeRailSurfaces();
+      closeRowPopovers();
+    }
   });
 
   let nativeMetaRefreshTimer = 0;

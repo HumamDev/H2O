@@ -92,6 +92,11 @@
   --wb-header-h:52px;
   --wb-control-size:36px;
   --wb-rail-w:56px;
+  --wb-rail-btn-hit:40px;
+  --wb-rail-btn-icon:22px;
+  --wb-rail-badge-size:28px;
+  --wb-rail-badge-radius:8px;
+  --wb-rail-stack-gap:8px;
   --wb-thread-w:48rem;
   --wb-thread-wide:54rem;
   --wb-thread-gap:1.25rem;
@@ -297,6 +302,16 @@ body[data-sidebar="closed"] .wbRail{
 
 .wbRailOpenBtn{
   flex:0 0 auto;
+  width:var(--wb-rail-btn-hit);
+  height:var(--wb-rail-btn-hit);
+  border-radius:12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.wbRailOpenBtn:hover{
+  background:var(--wb-surface-hover);
 }
 
 .wbSide{
@@ -8460,6 +8475,77 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
   position: relative;
 }
 
+/* Collapsed-rail action stack — native-like controls above Dock tabs. */
+.wbRailActionStack {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--wb-rail-stack-gap);
+  width: 100%;
+  margin-top: 8px;
+}
+
+body[data-sidebar="closed"] .wbRailActionStack {
+  display: flex;
+}
+
+.wbRailActionBtn {
+  width: var(--wb-rail-btn-hit);
+  height: var(--wb-rail-btn-hit);
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.92);
+  opacity: 0.9;
+  cursor: pointer;
+  transition: background-color 0.12s ease, opacity 0.12s ease, transform 0.08s ease, color 0.12s ease;
+}
+
+.wbRailActionBtn:hover,
+.wbRailActionBtn[aria-expanded="true"] {
+  background: var(--wb-surface-hover);
+  opacity: 1;
+}
+
+.wbRailActionBtn:active {
+  transform: scale(0.96);
+}
+
+.wbRailActionBtn:focus-visible {
+  outline: 2px solid var(--wb-focus);
+  outline-offset: 2px;
+}
+
+.wbRailActionBtn[aria-disabled="true"] {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.wbRailActionBtn[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.wbRailActionIcon {
+  width: var(--wb-rail-btn-icon);
+  height: var(--wb-rail-btn-icon);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wbRailActionIcon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* Dock rail stack — additional tab buttons below the hamburger inside the
  * collapsed tiny-rail. Visibility follows only the sidebar collapsed state;
  * getDockContext() still controls the data ctx passed to tab renderers. */
@@ -8467,11 +8553,10 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
   display: none;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: var(--wb-rail-stack-gap);
   width: 100%;
-  margin-top: 8px;
-  padding: 8px 0 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 4px;
+  padding: 0;
 }
 body[data-sidebar="closed"] .wbDockRailStack {
   display: flex;
@@ -8592,11 +8677,8 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
   overflow: hidden;
 }
 
-/* D3.2.1: native-parity rail tiles. Each button is a solid rounded
- * square filled with the tab's accent color (set inline by the shell as
- * --wb-dock-rail-color from def.color), with a bold white single-letter
- * badge — mirroring the native ChatGPT Dock rail buttons. 34×34 hit area
- * fits the 44px tiny-rail with no clipping. */
+/* D3.2.1+: native-parity rail tiles. The button owns the common native
+ * hit-area; .wbDockRailBtnIcon owns the compact colored badge. */
 .wbDockRailBtn {
   --wb-dock-rail-color: rgba(255, 255, 255, 0.28);
   position: relative;
@@ -8604,26 +8686,25 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: var(--wb-rail-btn-hit);
+  height: var(--wb-rail-btn-hit);
   margin: 0;
   padding: 0;
-  background: var(--wb-dock-rail-color);
+  background: transparent;
   border: 0;
-  border-radius: 9px;
+  border-radius: 12px;
   color: #fff;
   cursor: pointer;
   font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
-  letter-spacing: 0.02em;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.25);
-  opacity: 0.9;
-  transition: opacity 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease;
+  letter-spacing: 0;
+  transition: transform 0.08s ease;
   user-select: none;
 }
 
-.wbDockRailBtn:hover {
+.wbDockRailBtn:hover .wbDockRailBtnIcon {
   opacity: 1;
-  transform: translateY(-1px);
+  filter: brightness(1.08);
+  box-shadow: 0 0 6px 2px rgba(255, 255, 255, 0.08), 0 2px 4px rgba(0, 0, 0, 0.25);
 }
 
 .wbDockRailBtn:active {
@@ -8631,15 +8712,15 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
 }
 
 .wbDockRailBtn:focus-visible {
-  outline: 2px solid #6aa0ff;
+  outline: 2px solid var(--wb-focus);
   outline-offset: 2px;
 }
 
 /* Active (current view) — full opacity + a white ring, mirroring the
  * native rail's selected-item emphasis. */
-.wbDockRailBtn--active {
+.wbDockRailBtn--active .wbDockRailBtnIcon {
   opacity: 1;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18), 0 0 0 2px rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 0 1px rgba(255, 255, 255, 0.05), 0 0 0 2px rgba(255, 255, 255, 0.85);
 }
 
 /* Single-letter icon (txt) — bold uppercase white, centered. Emoji
@@ -8648,14 +8729,263 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  height: 100%;
+  width: var(--wb-rail-badge-size);
+  height: var(--wb-rail-badge-size);
+  border-radius: var(--wb-rail-badge-radius);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.10)), var(--wb-dock-rail-color);
+  box-shadow: inset 0 0 1px rgba(255, 255, 255, 0.05), 0 2px 5px rgba(0, 0, 0, 0.30);
+  opacity: 0.78;
   font-size: 13px;
   font-weight: 800;
   text-transform: uppercase;
   color: #fff;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
   pointer-events: none;
+  transition: opacity 0.18s ease, filter 0.18s ease, box-shadow 0.18s ease;
+}
+
+.wbRailPopover {
+  position: fixed;
+  z-index: 80;
+  width: min(416px, calc(100vw - 76px));
+  max-height: min(640px, calc(100vh - 40px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  background: #303030;
+  color: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.wbRailPopover[hidden] {
+  display: none !important;
+}
+
+.wbRailPopoverTitle {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.wbRailPopoverList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+}
+
+.wbRailPopoverItem {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  border-radius: 10px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wbRailPopoverItem:hover,
+.wbRailPopoverItem:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wbRailPopoverIcon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.wbRailPopoverBody {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.wbRailPopoverLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.wbRailPopoverMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.wbRailPopoverEmpty {
+  padding: 8px 2px 2px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.wbRailSearchOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  background: rgba(18, 18, 18, 0.72);
+}
+
+.wbRailSearchOverlay[hidden] {
+  display: none !important;
+}
+
+.wbRailSearchCard {
+  width: min(904px, calc(100vw - 96px));
+  max-height: min(588px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 22px;
+  background: #303030;
+  color: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.wbRailSearchField {
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.wbRailSearchInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.wbRailSearchInput::placeholder {
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.wbRailSearchClose {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+}
+
+.wbRailSearchClose:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.wbRailSearchClose svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.wbRailSearchResults {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+}
+
+.wbRailSearchGroup {
+  margin: 4px 0 8px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.wbRailSearchItem {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wbRailSearchItem:hover,
+.wbRailSearchItem:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wbRailSearchIcon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.wbRailSearchText {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.wbRailSearchTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.wbRailSearchMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
 }
 
 /* Placeholder view box. Strong title + secondary copy.
