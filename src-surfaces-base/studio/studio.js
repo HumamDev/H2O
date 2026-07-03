@@ -15836,6 +15836,264 @@ function __ribbonBridge_getTurnClean(turnIdx, opts){
   });
 }
 
+/* ═══ Phase 8f-2a — turn-scoped HTML serialization (bridge-private, pure) ═══
+ * Emits self-contained semantic HTML for a single message by reusing the
+ * applier's PUBLIC buildInlineRuns segmenter. NEVER scrapes the reader DOM,
+ * never emits app classes / ids / data-* attributes / event surfaces, and
+ * only ever writes VALUES from the fixed whitelisted maps below (no overlay
+ * value is interpolated raw into a style=). Consumed by the clipboard rich-
+ * copy path in 8f-2b; not wired to Copy yet. */
+var __RB_HTML_COLOR_HEX = { red: '#C53030', green: '#2F855A', blue: '#2C5282', orange: '#C05621', gray: '#4A5568' };
+var __RB_HTML_FONT_STACK = {
+  sans: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  serif: "Georgia, Cambria, 'Times New Roman', Times, serif",
+  mono: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  humanist: "Optima, Candara, 'Segoe UI', Seravek, sans-serif"
+};
+var __RB_HTML_FONT_SIZE = { small: '0.85em', large: '1.25em', xlarge: '1.5em' };
+
+/* Escape the 5 HTML-significant characters. ALL text/labels pass through
+ * this before entering markup. */
+function __ribbonBridge_escapeHtml(s){
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/* Inline segmenter runs -> semantic HTML. Deterministic wrapper order
+ * (bold -> italic -> underline -> strike -> sub -> sup -> color span).
+ * Sub/sup are mutually exclusive (8e); subscript applied first so a
+ * defensive both-set run nests <sup> outside <sub>. Color only from the
+ * fixed whitelist; unknown kinds emit no style. \n -> <br>. */
+function __ribbonBridge_runsToHtml(runs){
+  if (!Array.isArray(runs)) return '';
+  var out = '';
+  for (var i = 0; i < runs.length; i += 1) {
+    var r = runs[i] || {};
+    var x = __ribbonBridge_escapeHtml(r.text == null ? '' : r.text).replace(/\n/g, '<br>');
+    if (r.bold)          x = '<strong>' + x + '</strong>';
+    if (r.italic)        x = '<em>' + x + '</em>';
+    if (r.underline)     x = '<u>' + x + '</u>';
+    if (r.strikethrough) x = '<s>' + x + '</s>';
+    if (r.subscript)     x = '<sub>' + x + '</sub>';
+    if (r.superscript)   x = '<sup>' + x + '</sup>';
+    var hex = __RB_HTML_COLOR_HEX[r.textColor];
+    if (hex) x = '<span style="color:' + hex + '">' + x + '</span>';
+    out += x;
+  }
+  return out;
+}
+
+/* Split segmenter runs into per-line run groups (style flags preserved) so
+ * list items keep inline formatting. Local mirror of the DOCX splitRunsByLine. */
+function __ribbonBridge_runsByLine(runs){
+  var lines = [[]];
+  if (!Array.isArray(runs)) return lines;
+  for (var i = 0; i < runs.length; i += 1) {
+    var run = runs[i];
+    if (!run || typeof run !== 'object') continue;
+    var pieces = String(run.text == null ? '' : run.text).split('\n');
+    for (var p = 0; p < pieces.length; p += 1) {
+      if (p > 0) lines.push([]);
+      if (pieces[p] !== '') {
+        var copy = {};
+        for (var k in run) { if (Object.prototype.hasOwnProperty.call(run, k)) copy[k] = run[k]; }
+        copy.text = pieces[p];
+        lines[lines.length - 1].push(copy);
+      }
+    }
+  }
+  return lines;
+}
+
+/* Build one message's HTML from (body, messageState, inlineState). Honors
+ * text-replace (uses state.textReplace.body, inline suppressed), clean-
+ * spacing (collapse blank lines, inline suppressed), and code (literal,
+ * inline suppressed) exactly like the Markdown serializer. Message-level
+ * formatting (font family/size/align/list/code/quote/callout/heading) is
+ * rendered with semantic tags + whitelisted inline styles. `opts.label`
+ * is the role label; `opts.offsetAdjust` rebases inline offsets. Pure. */
+function __ribbonBridge_serializeTurnHtml(bodyText, messageState, inlineState, opts){
+  var esc = __ribbonBridge_escapeHtml;
+  var state = (messageState && typeof messageState === 'object') ? messageState : {};
+  var options = (opts && typeof opts === 'object') ? opts : {};
+
+  var replaced = !!(state.textReplace && typeof state.textReplace.body === 'string');
+  var body = replaced ? state.textReplace.body : String(bodyText == null ? '' : bodyText);
+  if (state.cleanSpacing) body = String(body).replace(/\n{3,}/g, '\n\n');
+
+  var isCode = !!state.code;
+  var listKind = (!isCode && state.list && (state.list.kind === 'bullet' || state.list.kind === 'numbered')) ? state.list.kind : null;
+  var useInline = !isCode && !replaced && !state.cleanSpacing;
+
+  var runs = null;
+  if (useInline) {
+    try {
+      var ov = W.H2O && W.H2O.Studio && W.H2O.Studio.overlay;
+      if (ov && typeof ov.buildInlineRuns === 'function') {
+        var rr = ov.buildInlineRuns(body, state, inlineState, { offsetAdjust: Number(options.offsetAdjust) || 0 });
+        if (rr && rr.ok && Array.isArray(rr.runs)) runs = rr.runs;
+      }
+    } catch (_) { runs = null; }
+  }
+
+  /* Fallback per-line renderer: escaped text + message-level char wrappers
+   * (used when inline runs are unavailable/suppressed). */
+  function charWrap(text){
+    var x = esc(text).replace(/\n/g, '<br>');
+    if (!isCode) {
+      if (state.bold)          x = '<strong>' + x + '</strong>';
+      if (state.italic)        x = '<em>' + x + '</em>';
+      if (state.underline)     x = '<u>' + x + '</u>';
+      if (state.strikethrough) x = '<s>' + x + '</s>';
+    }
+    return x;
+  }
+
+  var inner;
+  if (isCode) {
+    inner = '<pre><code>' + esc(body) + '</code></pre>';
+  } else if (listKind) {
+    var tag = (listKind === 'numbered') ? 'ol' : 'ul';
+    var items = '';
+    if (runs) {
+      var groups = __ribbonBridge_runsByLine(runs);
+      for (var g = 0; g < groups.length; g += 1) items += '<li>' + __ribbonBridge_runsToHtml(groups[g]) + '</li>';
+    } else {
+      var lns = String(body).split('\n');
+      for (var li = 0; li < lns.length; li += 1) items += '<li>' + charWrap(lns[li]) + '</li>';
+    }
+    inner = '<' + tag + '>' + items + '</' + tag + '>';
+  } else {
+    inner = '<p>' + (runs ? __ribbonBridge_runsToHtml(runs) : charWrap(body)) + '</p>';
+  }
+
+  /* Role label — heading (H1-3) decorates the label, mirroring "# A:". */
+  var label = String(options.label == null ? '' : options.label);
+  var hLevel = (state.heading && (state.heading.level === 1 || state.heading.level === 2 || state.heading.level === 3)) ? state.heading.level : 0;
+  var labelHtml = label
+    ? (hLevel ? ('<h' + hLevel + '>' + esc(label) + '</h' + hLevel + '>') : ('<div><strong>' + esc(label) + '</strong></div>'))
+    : '';
+
+  var content = labelHtml + inner;
+
+  if (state.callout && state.callout.kind) {
+    content = '<blockquote><p><strong>[!' + esc(state.callout.kind) + ']</strong></p>' + content + '</blockquote>';
+  } else if (state.quote) {
+    content = '<blockquote>' + content + '</blockquote>';
+  }
+
+  var styles = [];
+  if (state.fontFamily && __RB_HTML_FONT_STACK[state.fontFamily.token]) styles.push('font-family:' + __RB_HTML_FONT_STACK[state.fontFamily.token]);
+  if (state.fontSize && __RB_HTML_FONT_SIZE[state.fontSize.token]) styles.push('font-size:' + __RB_HTML_FONT_SIZE[state.fontSize.token]);
+  if (state.align === 'left' || state.align === 'center' || state.align === 'right') styles.push('text-align:' + state.align);
+  if (styles.length) content = '<div style="' + styles.join(';') + '">' + content + '</div>';
+
+  return content;
+}
+
+/* Turn-scoped HTML copy. Same single-message projection + turnIdx-1 remap +
+ * overlay-fetch + drift + never-throws contract as getTurnClean, but emits
+ * HTML via serializeTurnHtml. `turnIdx` is 1-based. Read-only: never mutates
+ * snap or overlay. Returns { html, overlayIncluded, overlaySkipped, reason? }. */
+function __ribbonBridge_getTurnHtml(turnIdx, opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeOverlay = options.includeOverlay !== false; /* default true */
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || typeof snap !== 'object') {
+      return { html: '', overlayIncluded: false, overlaySkipped: false, reason: 'no-snapshot' };
+    }
+    const messages = Array.isArray(snap.messages) ? snap.messages : [];
+    const idx = Number(turnIdx);
+    if (!Number.isInteger(idx) || idx < 1 || idx > messages.length) {
+      return { html: '', overlayIncluded: false, overlaySkipped: false, reason: 'invalid-turn' };
+    }
+    const targetMsg = messages[idx - 1];
+    const role = String((targetMsg && targetMsg.role) || '').toLowerCase();
+    let label = '';
+    if (role === 'user') label = 'User:';
+    else if (role === 'assistant') label = 'A:';
+    else if (role === 'system') label = 'System:';
+    const rawText = String((targetMsg && targetMsg.text) == null ? '' : targetMsg.text);
+    const trimmedBody = rawText.trim();
+    const leadingTrim = rawText.length - rawText.replace(/^\s+/, '').length;
+
+    if (!label || !trimmedBody) {
+      return { html: '', overlayIncluded: false, overlaySkipped: false, reason: 'empty-message' };
+    }
+
+    const ov = W.H2O?.Studio?.overlay;
+
+    function rawResult(reasonIfAny){
+      const html = '<div><strong>' + __ribbonBridge_escapeHtml(label) + '</strong></div><p>'
+        + __ribbonBridge_escapeHtml(trimmedBody).replace(/\n/g, '<br>') + '</p>';
+      const obj = { html: html, overlayIncluded: false, overlaySkipped: !!reasonIfAny };
+      if (reasonIfAny) obj.reason = String(reasonIfAny);
+      return obj;
+    }
+
+    if (!includeOverlay) return rawResult(null);
+    if (!ov || typeof ov.computeMessageState !== 'function' || typeof ov.computeInlineState !== 'function') {
+      return rawResult('reducer-unavailable');
+    }
+
+    /* Project the overlay onto this turn @ turnIdx 1 (drop structure/other-
+     * turn ops); render HTML. Never mutates `overlay`. */
+    function buildFromOverlay(overlay){
+      let overlay2;
+      try {
+        const ops = Array.isArray(overlay && overlay.ops) ? overlay.ops : [];
+        const remapped = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          const op = ops[i];
+          if (!op || typeof op !== 'object') continue;
+          const tgt = op.target;
+          if (!tgt || typeof tgt !== 'object') continue;
+          if (Number(tgt.turnIdx) !== idx) continue;
+          remapped.push(Object.assign({}, op, { target: Object.assign({}, tgt, { turnIdx: 1 }) }));
+        }
+        overlay2 = Object.assign({}, overlay, { ops: remapped });
+      } catch (_) { overlay2 = Object.assign({}, overlay, { ops: [] }); }
+
+      let mstate;
+      try { mstate = ov.computeMessageState(overlay2, 1) || {}; }
+      catch (_) { return rawResult('reducer-error'); }
+      let istate = null;
+      try { istate = ov.computeInlineState(overlay2, 1); } catch (_) { istate = null; }
+      let html = '';
+      try { html = __ribbonBridge_serializeTurnHtml(trimmedBody, mstate, istate, { label: label, offsetAdjust: leadingTrim }); }
+      catch (_) { return rawResult('serializer-error'); }
+      const applied = Array.isArray(overlay2.ops) && overlay2.ops.length > 0;
+      return { html: String(html || ''), overlayIncluded: !!applied, overlaySkipped: false };
+    }
+
+    const sid = String(snap.snapshotId || '');
+    if (!sid) return buildFromOverlay({ ops: [] });
+
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ovStore || typeof ovStore.get !== 'function') return rawResult('store-unavailable');
+
+    return Promise.resolve(ovStore.get(sid)).then(function (overlay) {
+      if (!overlay) return buildFromOverlay({ ops: [] });
+      if (ov && typeof ov.computeBaseDigest === 'function' && overlay.baseDigest) {
+        let cur = '';
+        try { cur = ov.computeBaseDigest(snap); } catch (_) { cur = ''; }
+        if (cur && overlay.baseDigest !== cur) return rawResult('drift-detected');
+      }
+      return buildFromOverlay(overlay);
+    }, function () {
+      return rawResult('store-unavailable');
+    });
+  }).catch(function () {
+    return { html: '', overlayIncluded: false, overlaySkipped: false, reason: 'error' };
+  });
+}
+
 /* ─── Phase 3a — Markdown export helpers + bridge method ──────────────────
  * Pure helpers (no DOM, no I/O) used by __ribbonBridge_exportMarkdown
  * to compose the .md file contents and produce a filesystem-safe
@@ -17587,6 +17845,7 @@ try {
       version: '0.1.0-phase-3c-b',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
       getTurnClean: __ribbonBridge_getTurnClean,
+      getTurnHtml: __ribbonBridge_getTurnHtml,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
       getInlineStateForTurn: __ribbonBridge_getInlineStateForTurn,
@@ -17626,6 +17885,8 @@ try {
     W.H2O.Studio.RibbonBridge.getCleanTranscript = __ribbonBridge_getCleanTranscript;
     /* Phase 8f-1 — turn-scoped clean copy. Reinstall reference on hot reload. */
     W.H2O.Studio.RibbonBridge.getTurnClean = __ribbonBridge_getTurnClean;
+    /* Phase 8f-2a — turn-scoped HTML serialization. Reinstall on hot reload. */
+    W.H2O.Studio.RibbonBridge.getTurnHtml = __ribbonBridge_getTurnHtml;
     /* Phase 3a — Markdown export. Reinstall reference on hot reload. */
     W.H2O.Studio.RibbonBridge.exportMarkdown = __ribbonBridge_exportMarkdown;
     if (!W.H2O.Studio.RibbonBridge._sanitizeFilenameStem) W.H2O.Studio.RibbonBridge._sanitizeFilenameStem = __ribbonBridge_sanitizeFilenameStem;
