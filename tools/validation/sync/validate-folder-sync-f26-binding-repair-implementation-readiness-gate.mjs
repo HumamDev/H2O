@@ -27,6 +27,7 @@ const f25Doc = 'release-evidence/2026-06-25/folder-sync-f25-binding-repair-negat
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const s5SortOrderFlipDoc = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -123,8 +124,13 @@ assert(/retained|RETAINED/i.test(flat), 'F26 doc must require the F24/F25 harnes
 // ---- postures ----
 assert(/`binding-mismatch` remains BLOCKED|binding-mismatch` REMAINS BLOCKED|binding-mismatch remains blocked/i.test(flat),
   'F26 doc must keep binding-mismatch blocked');
-assert(/`field-mismatch:sortOrder` remains GATED|field-mismatch:sortOrder`?: REMAINS GATED|field-mismatch:sortOrder remains gated/i.test(flat),
-  'F26 doc must keep field-mismatch:sortOrder gated');
+if (exists(s5SortOrderFlipDoc)) {
+  const s5 = read(s5SortOrderFlipDoc);
+  assert(s5.includes('S5/F11 SORTORDER-ONLY ALLOWED-SET FLIP PASSED'), 'S5 must supersede the historical sortOrder gated posture');
+} else {
+  assert(/`field-mismatch:sortOrder` remains GATED|field-mismatch:sortOrder`?: REMAINS GATED|field-mismatch:sortOrder remains gated/i.test(flat),
+    'F26 doc must keep field-mismatch:sortOrder gated before S5');
+}
 assert(/productSyncReady` remains `false`|NOT READY TO FLIP/i.test(flat), 'F26 doc must keep productSyncReady false');
 assert(/Chat Saving WebDAV\/cloud\/archive CAS[^.]*(REMAINS BLOCKED|remains blocked|BLOCKED)/i.test(flat),
   'F26 doc must keep Chat Saving CAS blocked');
@@ -172,8 +178,14 @@ if (exists(foldersStoreFile)) {
   assert(store.includes('INSERT OR REPLACE INTO folder_bindings'), 'source bindChat must INSERT OR REPLACE folder_bindings');
   assert(store.includes('DELETE FROM folder_bindings WHERE chat_id'), 'source unbindChat must DELETE from folder_bindings');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch');
+  if (exists(s5SortOrderFlipDoc)) {
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'source F11 helper must allow field-mismatch:sortOrder after S5');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'source F11 helper must still block binding-mismatch after S5');
+  } else {
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+      'source F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+  }
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
 }

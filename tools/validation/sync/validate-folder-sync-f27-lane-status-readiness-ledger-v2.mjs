@@ -28,6 +28,7 @@ const f20Doc = 'release-evidence/2026-06-25/folder-sync-f20-lane-status-readines
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const s5SortOrderFlipDoc = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -104,8 +105,13 @@ assert(/`missing-mirror-folder`[^|]*HANDLED|missing-mirror-folder`?: handled/i.t
 assert(/`field-mismatch:color`[^|]*HANDLED|field-mismatch:color`?: handled/i.test(flat),
   'F27 doc must state field-mismatch:color handled/idempotent');
 assert(/idempotent/i.test(flat), 'F27 doc must state the handled classes are idempotent');
-assert(/field-mismatch:sortOrder`?[^.]*(GATED|gated|not started|unimplemented)/i.test(flat),
-  'F27 doc must state field-mismatch:sortOrder gated/unimplemented in product runtime');
+if (exists(s5SortOrderFlipDoc)) {
+  const s5 = read(s5SortOrderFlipDoc);
+  assert(s5.includes('S5/F11 SORTORDER-ONLY ALLOWED-SET FLIP PASSED'), 'S5 must supersede the historical sortOrder gated posture');
+} else {
+  assert(/field-mismatch:sortOrder`?[^.]*(GATED|gated|not started|unimplemented)/i.test(flat),
+    'F27 doc must state field-mismatch:sortOrder gated/unimplemented in product runtime before S5');
+}
 // binding-mismatch: design + in-process proven but still blocked
 assert(/binding-mismatch`?[^.]*(BLOCKED|blocked)/i.test(flat), 'F27 doc must state binding-mismatch blocked');
 assert(/binding-mismatch[\s\S]*?(in-process|accepted\/negative proofs|design \+ in-process)/i.test(flat) ||
@@ -169,8 +175,14 @@ if (exists(foldersStoreFile)) {
   assert(store.includes('folder_bindings'), 'source must contain the folder_bindings table');
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch');
+  if (exists(s5SortOrderFlipDoc)) {
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'source F11 helper must allow field-mismatch:sortOrder after S5');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'source F11 helper must still block binding-mismatch after S5');
+  } else {
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+      'source F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+  }
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
 }
@@ -195,7 +207,9 @@ console.log(JSON.stringify({
   driftPosture: {
     'missing-mirror-folder': 'handled-applied-idempotent',
     'field-mismatch:color': 'handled-applied-idempotent',
-    'field-mismatch:sortOrder': 'desktop-sqlite-canonical-design-inprocess-proven-gated-unimplemented',
+    'field-mismatch:sortOrder': exists(s5SortOrderFlipDoc)
+      ? 'desktop-sqlite-canonical-closed-allowed-after-s5'
+      : 'desktop-sqlite-canonical-design-inprocess-proven-gated-unimplemented',
     'binding-mismatch': 'desktop-sqlite-folder_bindings-canonical-design-inprocess-proven-blocked-unimplemented',
   },
   provenPhases: LANE_PHASES,
