@@ -16970,6 +16970,8 @@ function __ribbonBridge_applyMessageFormatPaint(targetTurnIdx, formatPayload){
 
     const snap = state && state.currentReaderSnapshot;
     if (!snap || !snap.snapshotId) { result.reason = 'no-snapshot'; return result; }
+    const messages = Array.isArray(snap.messages) ? snap.messages : [];
+    if (idx > messages.length) { result.reason = 'invalid-turn'; return result; }
     const ov = W.H2O?.Studio?.overlay;
     const ovStore = W.H2O?.Studio?.store?.editOverlay;
     if (!ov || typeof ov.appendOp !== 'function' || typeof ov.computeBaseDigest !== 'function' || typeof ov.computeMessageState !== 'function') {
