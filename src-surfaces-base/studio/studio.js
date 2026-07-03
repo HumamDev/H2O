@@ -15710,6 +15710,132 @@ function __ribbonBridge_getCleanTranscript(opts){
   });
 }
 
+/* Phase 8f-1 — turn-scoped clean copy. Serializes ONLY the requested turn's
+ * Markdown by projecting the reader snapshot down to that single message and
+ * remapping its overlay ops onto turnIdx 1, so structure ops (afterTurnIdx)
+ * and other turns are dropped and the output is just the message body (no
+ * section headers / dividers / TOC). Mirrors getCleanTranscript's overlay
+ * fetch + drift-check + never-throws contract. `turnIdx` is 1-based
+ * (ctx.selectedTurnIdx). Read-only: never mutates snap or overlay. Returns
+ * { text, overlayIncluded, overlaySkipped, reason? }. Includes the serializer
+ * role label (e.g. "A:") exactly like getCleanTranscript. */
+function __ribbonBridge_getTurnClean(turnIdx, opts){
+  return Promise.resolve().then(function () {
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const includeOverlay = options.includeOverlay !== false; /* default true */
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || typeof snap !== 'object') {
+      return { text: '', overlayIncluded: false, overlaySkipped: false };
+    }
+    const messages = Array.isArray(snap.messages) ? snap.messages : [];
+    const idx = Number(turnIdx);
+    if (!Number.isInteger(idx) || idx < 1 || idx > messages.length) {
+      return { text: '', overlayIncluded: false, overlaySkipped: false };
+    }
+    const targetMsg = messages[idx - 1];
+    /* Single-message projection so the serializer emits only this turn. */
+    const snap2 = Object.assign({}, snap, { messages: [targetMsg] });
+
+    const serializer = W.H2O?.Studio?.overlaySerializer;
+
+    /* Turn-scoped raw fallback (label + trimmed body) — mirrors
+     * getCleanTranscript.rawResult but for the single projected message. */
+    function rawResult(reasonIfAny) {
+      try {
+        let txt = '';
+        if (targetMsg && typeof targetMsg === 'object') {
+          const t = String(targetMsg.text == null ? '' : targetMsg.text).trim();
+          const role = String(targetMsg.role || '').toLowerCase();
+          let label = null;
+          if (role === 'user') label = 'User:';
+          else if (role === 'assistant') label = 'A:';
+          else if (role === 'system') label = 'System:';
+          if (label && t) txt = label + '\n' + t;
+        }
+        const obj = { text: txt, overlayIncluded: false, overlaySkipped: !!reasonIfAny };
+        if (reasonIfAny) obj.reason = String(reasonIfAny);
+        return obj;
+      } catch (_) {
+        const obj = { text: '', overlayIncluded: false, overlaySkipped: !!reasonIfAny };
+        if (reasonIfAny) obj.reason = String(reasonIfAny);
+        return obj;
+      }
+    }
+
+    if (!includeOverlay) return rawResult(null);
+    if (!serializer || typeof serializer.serialize !== 'function') {
+      return rawResult('serializer-unavailable');
+    }
+
+    const sid = String(snap.snapshotId || '');
+    if (!sid) {
+      const r0 = serializer.serialize(snap2, null, { includeOverlay: true, includeToc: false, collapsedMode: 'include-marked' });
+      return { text: String(r0 && r0.text || ''), overlayIncluded: false, overlaySkipped: false };
+    }
+
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ovStore || typeof ovStore.get !== 'function') {
+      return rawResult('store-unavailable');
+    }
+
+    return Promise.resolve(ovStore.get(sid)).then(function (overlay) {
+      if (!overlay) {
+        const r1 = serializer.serialize(snap2, null, { includeOverlay: true, includeToc: false, collapsedMode: 'include-marked' });
+        return { text: String(r1 && r1.text || ''), overlayIncluded: false, overlaySkipped: false };
+      }
+
+      /* Drift check against the FULL snapshot (overlay.baseDigest spans the
+       * whole snap, not the single-turn projection). On drift → raw. */
+      if (ov && typeof ov.computeBaseDigest === 'function' && overlay.baseDigest) {
+        let currentDigest = '';
+        try { currentDigest = ov.computeBaseDigest(snap); }
+        catch (_) { currentDigest = ''; }
+        if (currentDigest && overlay.baseDigest !== currentDigest) {
+          return rawResult('drift-detected');
+        }
+      }
+
+      /* Project the overlay onto the single turn: keep only ops that target
+       * this turnIdx (message-level + inline), remap to turnIdx 1; drop
+       * structure ops (afterTurnIdx-based) and other turns. Op ids preserved
+       * so undoStack's active-set still applies. Never mutates `overlay`. */
+      let overlay2;
+      try {
+        const ops = Array.isArray(overlay.ops) ? overlay.ops : [];
+        const remapped = [];
+        for (let i = 0; i < ops.length; i += 1) {
+          const op = ops[i];
+          if (!op || typeof op !== 'object') continue;
+          const tgt = op.target;
+          if (!tgt || typeof tgt !== 'object') continue;
+          if (Number(tgt.turnIdx) !== idx) continue;
+          remapped.push(Object.assign({}, op, { target: Object.assign({}, tgt, { turnIdx: 1 }) }));
+        }
+        overlay2 = Object.assign({}, overlay, { ops: remapped });
+      } catch (_) {
+        overlay2 = Object.assign({}, overlay, { ops: [] });
+      }
+
+      let result = null;
+      try {
+        result = serializer.serialize(snap2, overlay2, { includeOverlay: true, includeToc: false, collapsedMode: 'include-marked' });
+      } catch (_) {
+        return rawResult('serializer-error');
+      }
+      if (!result || typeof result !== 'object') return rawResult('serializer-error');
+      if (result.reason === 'serializer-error') return rawResult('serializer-error');
+      const applied = Number(result.opsApplied) > 0;
+      return { text: String(result.text || ''), overlayIncluded: !!applied, overlaySkipped: false };
+    }, function () {
+      return rawResult('store-unavailable');
+    });
+  }).catch(function () {
+    return { text: '', overlayIncluded: false, overlaySkipped: false };
+  });
+}
+
 /* ─── Phase 3a — Markdown export helpers + bridge method ──────────────────
  * Pure helpers (no DOM, no I/O) used by __ribbonBridge_exportMarkdown
  * to compose the .md file contents and produce a filesystem-safe
@@ -17460,6 +17586,7 @@ try {
       __installed: true,
       version: '0.1.0-phase-3c-b',
       getCleanTranscript: __ribbonBridge_getCleanTranscript,
+      getTurnClean: __ribbonBridge_getTurnClean,
       getOverlay: __ribbonBridge_getOverlay,
       getMessageStateForTurn: __ribbonBridge_getMessageStateForTurn,
       getInlineStateForTurn: __ribbonBridge_getInlineStateForTurn,
@@ -17497,6 +17624,8 @@ try {
      * older RibbonBridge is already installed, so hot-reloads pick up
      * the new contract instead of holding the Phase 1b sync version. */
     W.H2O.Studio.RibbonBridge.getCleanTranscript = __ribbonBridge_getCleanTranscript;
+    /* Phase 8f-1 — turn-scoped clean copy. Reinstall reference on hot reload. */
+    W.H2O.Studio.RibbonBridge.getTurnClean = __ribbonBridge_getTurnClean;
     /* Phase 3a — Markdown export. Reinstall reference on hot reload. */
     W.H2O.Studio.RibbonBridge.exportMarkdown = __ribbonBridge_exportMarkdown;
     if (!W.H2O.Studio.RibbonBridge._sanitizeFilenameStem) W.H2O.Studio.RibbonBridge._sanitizeFilenameStem = __ribbonBridge_sanitizeFilenameStem;

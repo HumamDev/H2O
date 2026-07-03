@@ -68,6 +68,13 @@
       id: 'format', label: 'Format',
       chatTypes: ['saved'],
       groups: [
+        /* Phase 8f-1 — Clipboard group. First group in the Format tab.
+         * One Copy action that writes the selected message as Markdown via
+         * bridge.getTurnClean + platform.clipboard.writeText. Not a split
+         * button; Cut / Paste / Format Painter are deferred to later slices. */
+        { id: 'clipboard', label: 'Clipboard', actions: [
+          { id: 'copy-message', label: 'Copy' },
+        ] },
         /* Phase 7a — Edit mode toggle. Single button at the very start
          * of the Format tab that flips a ribbon-local editMode boolean
          * and toggles data-edit-mode="on" on the reader root .wbReader.
@@ -2352,6 +2359,46 @@
   ACTION_HANDLERS['subscript']   = buildSubSupHandler('subscript',   'Subscript');
   ACTION_HANDLERS['superscript'] = buildSubSupHandler('superscript', 'Superscript');
 
+  /* Phase 8f-1 — Copy the selected message as Markdown. Read-only: reuses
+   * the turn-scoped clean-copy bridge (getTurnClean) + the existing
+   * platform.clipboard.writeText (browser + Tauri). No readText, no
+   * ClipboardItem, no overlay op, no snapshot mutation. Saved chats only. */
+  ACTION_HANDLERS['copy-message'] = {
+    isEnabled: function (ctx) {
+      if (!ctx || ctx.chatType !== 'saved') return false;
+      const turnIdx = Number(ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx < 1) return false;
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getTurnClean !== 'function') return false;
+      const platform = getPlatform();
+      const clip = platform && platform.clipboard;
+      if (!clip || typeof clip.writeText !== 'function') return false;
+      return true;
+    },
+    onClick: function (ctx, setStatus) {
+      const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+      if (!Number.isFinite(turnIdx) || turnIdx < 1) { setStatus('No message selected'); return; }
+      const bridge = getRibbonBridge();
+      if (!bridge || typeof bridge.getTurnClean !== 'function') { setStatus('Clipboard unavailable'); return; }
+      const platform = getPlatform();
+      const clip = platform && platform.clipboard;
+      if (!clip || typeof clip.writeText !== 'function') { setStatus('Clipboard unavailable'); return; }
+      setStatus('Copying…');
+      Promise.resolve(bridge.getTurnClean(turnIdx, { includeOverlay: true })).then(
+        function (result) {
+          const safe = (result && typeof result === 'object') ? result : { text: '' };
+          const text = String(safe.text || '');
+          if (!text.trim()) { setStatus('Nothing to copy'); return; }
+          Promise.resolve(clip.writeText(text)).then(
+            function () { setStatus('Copied'); },
+            function () { setStatus('Clipboard unavailable'); }
+          );
+        },
+        function () { setStatus('Clipboard unavailable'); }
+      );
+    },
+  };
+
   /* Clear formatting — selection-aware (Phase 5c-1).
    *   - Valid held inline selection on the selected turn → submit a
    *     range-scoped `inline-format { style:'clear-inline' }` op, which
@@ -3457,6 +3504,8 @@
    *
    * No new action IDs. No handler changes. No behavior changes. */
   const ACTION_ICONS = {
+    /* Clipboard group — Phase 8f-1. Classic two-sheet "copy" glyph. */
+    'copy-message': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"/></svg>',
     /* Font group */
     'bold': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3v10"/><path d="M4 3h4a2.5 2.5 0 0 1 0 5H4"/><path d="M4 8h5a2.5 2.5 0 0 1 0 5H4"/></svg>',
     'italic': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 3H11"/><path d="M5 13h4.5"/><path d="M9.5 3l-3 10"/></svg>',
