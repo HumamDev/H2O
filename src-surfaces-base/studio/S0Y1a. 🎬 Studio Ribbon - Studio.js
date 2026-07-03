@@ -2359,10 +2359,13 @@
   ACTION_HANDLERS['subscript']   = buildSubSupHandler('subscript',   'Subscript');
   ACTION_HANDLERS['superscript'] = buildSubSupHandler('superscript', 'Superscript');
 
-  /* Phase 8f-1 — Copy the selected message as Markdown. Read-only: reuses
-   * the turn-scoped clean-copy bridge (getTurnClean) + the existing
-   * platform.clipboard.writeText (browser + Tauri). No readText, no
-   * ClipboardItem, no overlay op, no snapshot mutation. Saved chats only. */
+  /* Phase 8f-2b — Copy the selected message with RICH HTML + Markdown
+   * fallback. Prefers a two-flavor ClipboardItem (text/html via getTurnHtml
+   * + text/plain via getTurnClean Markdown) when the runtime supports
+   * ClipboardItem + navigator.clipboard.write (browser); otherwise falls
+   * back to the Phase 8f-1 platform.clipboard.writeText(Markdown) path,
+   * which also covers Tauri WKWebView. Read-only: no readText, no overlay
+   * op, no snapshot mutation. Saved chats only; never throws. */
   ACTION_HANDLERS['copy-message'] = {
     isEnabled: function (ctx) {
       if (!ctx || ctx.chatType !== 'saved') return false;
@@ -2384,14 +2387,46 @@
       const clip = platform && platform.clipboard;
       if (!clip || typeof clip.writeText !== 'function') { setStatus('Clipboard unavailable'); return; }
       setStatus('Copying…');
+
+      /* Phase 8f-1 Markdown fallback (also the Tauri path): writeText only. */
+      function writeMarkdown(markdown) {
+        Promise.resolve(clip.writeText(markdown)).then(
+          function () { setStatus('Copied as Markdown'); },
+          function () { setStatus('Clipboard unavailable'); }
+        );
+      }
+
       Promise.resolve(bridge.getTurnClean(turnIdx, { includeOverlay: true })).then(
-        function (result) {
-          const safe = (result && typeof result === 'object') ? result : { text: '' };
-          const text = String(safe.text || '');
-          if (!text.trim()) { setStatus('Nothing to copy'); return; }
-          Promise.resolve(clip.writeText(text)).then(
-            function () { setStatus('Copied'); },
-            function () { setStatus('Clipboard unavailable'); }
+        function (mdResult) {
+          const md = String((mdResult && typeof mdResult === 'object' ? mdResult.text : '') || '');
+          if (!md.trim()) { setStatus('Nothing to copy'); return; }
+
+          /* Rich clipboard requires the HTML bridge + global ClipboardItem +
+           * navigator.clipboard.write. Absent on Tauri WKWebView → fall back. */
+          const nav = (typeof window !== 'undefined') ? window.navigator : null;
+          const richSupported = (typeof bridge.getTurnHtml === 'function')
+            && (typeof window !== 'undefined')
+            && (typeof window.ClipboardItem === 'function')
+            && !!(nav && nav.clipboard && typeof nav.clipboard.write === 'function');
+          if (!richSupported) { writeMarkdown(md); return; }
+
+          Promise.resolve(bridge.getTurnHtml(turnIdx, { includeOverlay: true })).then(
+            function (htmlResult) {
+              const html = String((htmlResult && typeof htmlResult === 'object' ? htmlResult.html : '') || '');
+              if (!html.trim()) { writeMarkdown(md); return; }
+              let item = null;
+              try {
+                item = new window.ClipboardItem({
+                  'text/html': new window.Blob([html], { type: 'text/html' }),
+                  'text/plain': new window.Blob([md], { type: 'text/plain' }),
+                });
+              } catch (_) { writeMarkdown(md); return; }
+              Promise.resolve(nav.clipboard.write([item])).then(
+                function () { setStatus('Copied'); },
+                function () { writeMarkdown(md); }   /* rich write rejected → Markdown */
+              );
+            },
+            function () { writeMarkdown(md); }         /* getTurnHtml rejected → Markdown */
           );
         },
         function () { setStatus('Clipboard unavailable'); }
