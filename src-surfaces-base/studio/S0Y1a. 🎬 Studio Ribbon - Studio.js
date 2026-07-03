@@ -115,6 +115,11 @@
           { id: 'italic',        label: 'I' },
           { id: 'underline',     label: 'U' },
           { id: 'strikethrough', label: 'S' },
+          /* Phase 8e-1 — Subscript / Superscript. Inline (per-range) toggles
+           * over a held text selection; individual icon buttons (NOT in any
+           * SPLIT_BUTTONS), rendered after Strikethrough and before Clear. */
+          { id: 'subscript',   label: 'x₂' },
+          { id: 'superscript', label: 'x²' },
           { id: 'clear-formatting', label: 'Clear' },
         ] },
         /* Phase 4-2 — Text Color group. Five semantic colors plus a
@@ -2286,6 +2291,67 @@
     failLabel: 'Strikethrough failed',
   });
 
+  /* ── Phase 8e-1 — Subscript / Superscript (inline-only) ──────────────
+   * Toggle the style over a held text selection via the existing
+   * `inline-format` op (new styles 'subscript'/'superscript'; the reducer
+   * enforces mutual exclusion). Unlike bold/italic there is NO message-
+   * level fallback — whole-turn subscript is meaningless — so an invalid
+   * selection just sets a status. `enabled` toggles off when the selection
+   * is already fully covered (read via getInlineStateForTurn), so the
+   * button reflects covered state through the toggle. */
+  function buildSubSupHandler(style, label) {
+    return {
+      isEnabled: formatActionsIsEnabled,
+      onClick: function (ctx, setStatus) {
+        const turnIdx = Number(ctx && ctx.selectedTurnIdx);
+        const held = getHeldInlineCapture();
+        const pos = held && held.anchor && held.anchor.textPos;
+        const inlineValid = !!(held && held.ok && held.anchor && pos
+          && Number.isFinite(turnIdx) && turnIdx > 0
+          && Number(held.selectedTurnIdx) === turnIdx
+          && Number.isFinite(Number(pos.start)) && Number.isFinite(Number(pos.end))
+          && Number(pos.end) > Number(pos.start));
+        if (!inlineValid) { setStatus('Select text first'); return; }
+
+        const start = Number(pos.start);
+        const end = Number(pos.end);
+        const bridge = getRibbonBridge();
+        const readP = (bridge && typeof bridge.getInlineStateForTurn === 'function')
+          ? Promise.resolve(bridge.getInlineStateForTurn(turnIdx))
+          : Promise.resolve({});
+        readP.then(function (inlineState) {
+          const ov = getOverlayApi();
+          const intervals = (inlineState && Array.isArray(inlineState[style])) ? inlineState[style] : [];
+          let covered = false;
+          if (ov && typeof ov.intervalsCover === 'function') {
+            try { covered = ov.intervalsCover(intervals, start, end); } catch (_) { covered = false; }
+          }
+          const enabled = !covered; /* toggle: covered → remove, else apply */
+          const opSpec = {
+            type: 'inline-format',
+            target: {
+              kind: 'inline',
+              turnIdx: turnIdx,
+              messageId: held.selectedMessageId || ctx.selectedMessageId || null,
+              anchor: held.anchor,
+            },
+            payload: { style: style, enabled: enabled },
+            inverse: { style: style, enabled: covered },
+          };
+          runOverlayOp(opSpec, setStatus, {
+            pending: enabled ? ('Applying ' + label.toLowerCase() + ' to selection…')
+                             : ('Removing ' + label.toLowerCase() + ' from selection…'),
+            success: enabled ? (label + ' applied to selection')
+                             : (label + ' removed from selection'),
+            fail: label + ' failed',
+          });
+        }, function () { setStatus(label + ' failed: state read'); });
+      },
+    };
+  }
+  ACTION_HANDLERS['subscript']   = buildSubSupHandler('subscript',   'Subscript');
+  ACTION_HANDLERS['superscript'] = buildSubSupHandler('superscript', 'Superscript');
+
   /* Clear formatting — selection-aware (Phase 5c-1).
    *   - Valid held inline selection on the selected turn → submit a
    *     range-scoped `inline-format { style:'clear-inline' }` op, which
@@ -3396,6 +3462,10 @@
     'italic': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6.5 3H11"/><path d="M5 13h4.5"/><path d="M9.5 3l-3 10"/></svg>',
     'underline': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3v5a4 4 0 0 0 8 0V3"/><path d="M3 14h10"/></svg>',
     'strikethrough': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5a3 3 0 0 0-3-2h-1a2.3 2.3 0 0 0 0 4.6h2A2.7 2.7 0 0 1 11 10.3v.2A2.5 2.5 0 0 1 8.5 13H7a3 3 0 0 1-3-2"/><path d="M2 8h12"/></svg>',
+    /* Phase 8e-1 — Subscript (x with a low 2) and Superscript (x with a
+     * high 2). The "x" strokes + a small numeral 2 rendered as text. */
+    'subscript': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3l5 7"/><path d="M7 3l-5 7"/><text x="9.5" y="15" fill="currentColor" stroke="none" font-family="Helvetica,Arial,sans-serif" font-size="6" font-weight="600">2</text></svg>',
+    'superscript': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 6l5 7"/><path d="M7 6l-5 7"/><text x="9.5" y="7" fill="currentColor" stroke="none" font-family="Helvetica,Arial,sans-serif" font-size="6" font-weight="600">2</text></svg>',
     'clear-formatting': '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 3h6"/><path d="M8 3v6"/><path d="M2 14l12-12"/></svg>',
     /* Paragraph group — lists */
     'list-bullet': '<svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true" focusable="false"><circle cx="3" cy="4" r="1"/><circle cx="3" cy="8" r="1"/><circle cx="3" cy="12" r="1"/><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" d="M6.5 4h7.5M6.5 8h7.5M6.5 12h7.5"/></svg>',

@@ -922,8 +922,10 @@
     var stateItalic = [];
     var stateUnderline = [];
     var stateStrikethrough = [];
+    var stateSubscript = [];
+    var stateSuperscript = [];
     var stateColor = [];
-    var emptyResult = { bold: [], italic: [], underline: [], strikethrough: [], textColor: [] };
+    var emptyResult = { bold: [], italic: [], underline: [], strikethrough: [], subscript: [], superscript: [], textColor: [] };
     if (!isObject(overlay)) return emptyResult;
     var ops = Array.isArray(overlay.ops) ? overlay.ops : [];
     var idx = Number(turnIdx);
@@ -955,6 +957,8 @@
           stateItalic = [];
           stateUnderline = [];
           stateStrikethrough = [];
+          stateSubscript = [];
+          stateSuperscript = [];
           stateColor = [];
         }
         continue;
@@ -982,6 +986,23 @@
         stateUnderline = enabled ? unionInterval(stateUnderline, s, e) : subtractInterval(stateUnderline, s, e);
       } else if (style === 'strikethrough') {
         stateStrikethrough = enabled ? unionInterval(stateStrikethrough, s, e) : subtractInterval(stateStrikethrough, s, e);
+      } else if (style === 'subscript') {
+        /* Phase 8e-1 — vertical-align channel. Subscript and superscript are
+         * mutually exclusive over any range: enabling one unions itself and
+         * subtracts its sibling; disabling only subtracts itself. */
+        if (enabled) {
+          stateSubscript = unionInterval(stateSubscript, s, e);
+          stateSuperscript = subtractInterval(stateSuperscript, s, e);
+        } else {
+          stateSubscript = subtractInterval(stateSubscript, s, e);
+        }
+      } else if (style === 'superscript') {
+        if (enabled) {
+          stateSuperscript = unionInterval(stateSuperscript, s, e);
+          stateSubscript = subtractInterval(stateSubscript, s, e);
+        } else {
+          stateSuperscript = subtractInterval(stateSuperscript, s, e);
+        }
       } else if (style === 'text-color') {
         /* Phase 5c-2 — value/paint channel. kind paints (last-wins via
          * cut-then-paint); null cuts (clear color over range). Unknown
@@ -1000,10 +1021,12 @@
         stateItalic = subtractInterval(stateItalic, s, e);
         stateUnderline = subtractInterval(stateUnderline, s, e);
         stateStrikethrough = subtractInterval(stateStrikethrough, s, e);
+        stateSubscript = subtractInterval(stateSubscript, s, e);
+        stateSuperscript = subtractInterval(stateSuperscript, s, e);
         stateColor = cutColorSegments(stateColor, s, e);
       }
     }
-    return { bold: stateBold, italic: stateItalic, underline: stateUnderline, strikethrough: stateStrikethrough, textColor: stateColor };
+    return { bold: stateBold, italic: stateItalic, underline: stateUnderline, strikethrough: stateStrikethrough, subscript: stateSubscript, superscript: stateSuperscript, textColor: stateColor };
   }
 
   /* Apply a computed state to a single turn element by toggling

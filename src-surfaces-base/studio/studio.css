@@ -8428,6 +8428,22 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
 .wbReader [data-turn] [data-message-author-role] [data-overlay-inline="strikethrough"]{
   text-decoration-line:line-through;
 }
+/* Phase 8e-1 — inline subscript / superscript. The render pass injects
+ * <sub data-overlay-inline="subscript"> / <sup data-overlay-inline="superscript">.
+ * Native <sub>/<sup> already shift + shrink; we pin a consistent 0.75em and
+ * line-height:0 so the raised/lowered text never disturbs the line box, and
+ * the em keeps it scaling relative to any Font Size on the message. */
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="subscript"],
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="superscript"]{
+  font-size:0.75em;
+  line-height:0;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="subscript"]{
+  vertical-align:sub;
+}
+.wbReader [data-turn] [data-message-author-role] [data-overlay-inline="superscript"]{
+  vertical-align:super;
+}
 /* Phase 5c-2 — inline Text Color. The render pass injects
  * <span data-overlay-inline="text-color" data-overlay-inline-color="red">.
  * Hex values are pinned to the Phase 4-2 message-level text-color palette

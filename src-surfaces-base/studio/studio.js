@@ -17251,7 +17251,7 @@ function __inlineRender_wrapRange(range, style, colorKind){
    * strikethrough→<s>. Phase 5c-2: text-color→<span> carrying the color
    * VALUE in data-overlay-inline-color. The attribute value mirrors the
    * style name (text-color spans always use val="text-color"). */
-  const TAG_BY_STYLE = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's', 'text-color': 'span' };
+  const TAG_BY_STYLE = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's', subscript: 'sub', superscript: 'sup', 'text-color': 'span' };
   const isColor = (style === 'text-color');
   const val = (TAG_BY_STYLE[style] ? style : 'bold');
   const tag = TAG_BY_STYLE[val];
@@ -17352,14 +17352,17 @@ function __inlineRender_apply(scopeEl, snap, overlay){
       const italicIv = Array.isArray(inline.italic) ? inline.italic : [];
       const underlineIv = Array.isArray(inline.underline) ? inline.underline : [];
       const strikeIv = Array.isArray(inline.strikethrough) ? inline.strikethrough : [];
+      /* Phase 8e-1 — vertical-align channels: subscript→<sub>, superscript→<sup>. */
+      const subIv = Array.isArray(inline.subscript) ? inline.subscript : [];
+      const supIv = Array.isArray(inline.superscript) ? inline.superscript : [];
       /* Phase 5c-2 — color segments: array of { start, end, kind }. */
       const colorSegs = Array.isArray(inline.textColor) ? inline.textColor : [];
-      if (!boldIv.length && !italicIv.length && !underlineIv.length && !strikeIv.length && !colorSegs.length) continue;
+      if (!boldIv.length && !italicIv.length && !underlineIv.length && !strikeIv.length && !subIv.length && !supIv.length && !colorSegs.length) continue;
       /* Same message-root basis as Phase 5a capture. */
       const msgRoot = (turn.querySelector && turn.querySelector('[data-message-author-role], [data-message-id]')) || turn;
       /* Fixed apply order → deterministic nesting + idempotent re-render.
        * Color is applied LAST so its <span> nests innermost. */
-      const styles = [['bold', boldIv], ['italic', italicIv], ['underline', underlineIv], ['strikethrough', strikeIv]];
+      const styles = [['bold', boldIv], ['italic', italicIv], ['underline', underlineIv], ['strikethrough', strikeIv], ['subscript', subIv], ['superscript', supIv]];
       for (let k = 0; k < styles.length; k += 1) {
         const style = styles[k][0];
         const intervals = styles[k][1];
