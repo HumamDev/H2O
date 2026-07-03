@@ -1127,6 +1127,107 @@
     };
   }
 
+  function compactF15CanonicalBinding(binding) {
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return null;
+    return {
+      objectType: binding.objectType || 'libraryBinding',
+      subjectType: binding.subjectType || 'library.binding',
+      subjectId: String(binding.subjectId || '').trim().toLowerCase(),
+      revisionHash: String(binding.revisionHash || '').trim().toLowerCase(),
+      bindingKind: binding.bindingKind || 'chat-folder',
+      leftSubjectId: String(binding.leftSubjectId || '').trim().toLowerCase(),
+      rightSubjectId: String(binding.rightSubjectId || '').trim().toLowerCase(),
+      leftSubjectType: binding.leftSubjectType || 'chat.metadata',
+      rightSubjectType: binding.rightSubjectType || 'folder.metadata',
+      originAccountIdHash: String(binding.originAccountIdHash || '').trim().toLowerCase(),
+      schemaVersion: binding.schemaVersion || 'h2o.library.binding.v1',
+      bindingState: binding.bindingState || 'bound',
+      boundAtIso: binding.boundAtIso || null,
+      unboundAtIso: binding.unboundAtIso || null,
+      sourceTag: binding.sourceTag || 'desktop',
+      sourceTagHash: String(binding.sourceTagHash || '').trim().toLowerCase(),
+      observedAtIso: binding.observedAtIso || null,
+      redactionClass: binding.redactionClass || 'redacted'
+    };
+  }
+
+  async function buildF15CanonicalChatFolderBinding(chatSubjectId, folderSubjectId, originAccountIdHash,
+                                                   perEnvelopeSalt, observedAtIso) {
+    var row = {
+      bindingKind: 'chat-folder',
+      bindingState: 'bound',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      originAccountIdHash: originAccountIdHash,
+      perEnvelopeSalt: perEnvelopeSalt,
+      sourceTag: 'desktop',
+      observedAtIso: observedAtIso,
+      boundAtIso: observedAtIso
+    };
+    var sync = getSync();
+    if (sync && typeof sync.canonicalizeLibraryBinding === 'function') {
+      var result = await sync.canonicalizeLibraryBinding(row);
+      var canonical = result && (result.canonicalBinding || result.canonical);
+      if (result && result.ok === true && canonical) return compactF15CanonicalBinding(canonical);
+      return null;
+    }
+    var sourceTagHash = await sha256Hex('desktop');
+    var subjectId = await sha256Hex(canonicalJSON({
+      subjectType: 'library.binding',
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      perEnvelopeSalt: perEnvelopeSalt
+    }));
+    var revisionHash = await sha256Hex(canonicalJSON({
+      bindingState: 'bound',
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      originAccountIdHash: originAccountIdHash,
+      schemaVersion: 'h2o.library.binding.v1',
+      sourceTagHash: sourceTagHash
+    }));
+    if (!isSha256Hex(subjectId) || !isSha256Hex(revisionHash) || !isSha256Hex(sourceTagHash)) return null;
+    return {
+      objectType: 'libraryBinding',
+      subjectType: 'library.binding',
+      subjectId: subjectId,
+      revisionHash: revisionHash,
+      bindingKind: 'chat-folder',
+      leftSubjectId: chatSubjectId,
+      rightSubjectId: folderSubjectId,
+      leftSubjectType: 'chat.metadata',
+      rightSubjectType: 'folder.metadata',
+      originAccountIdHash: originAccountIdHash,
+      schemaVersion: 'h2o.library.binding.v1',
+      bindingState: 'bound',
+      boundAtIso: observedAtIso,
+      unboundAtIso: null,
+      sourceTag: 'desktop',
+      sourceTagHash: sourceTagHash,
+      observedAtIso: observedAtIso,
+      redactionClass: 'redacted'
+    };
+  }
+
+  function cleanF15SiblingBindings(bindings, currentSubjectId) {
+    if (!Array.isArray(bindings)) return [];
+    var out = [];
+    bindings.forEach(function (entry) {
+      var binding = entry && entry.canonicalBinding ? entry.canonicalBinding : entry;
+      var compacted = compactF15CanonicalBinding(binding);
+      if (!compacted || !isSha256Hex(compacted.subjectId)) return;
+      if (currentSubjectId && compacted.subjectId === currentSubjectId) return;
+      out.push(compacted);
+    });
+    return out;
+  }
+
   async function buildF15FolderBindingDelegationInput(operation, folderId, chatId, opts) {
     opts = opts || {};
     var chatSubjectId = isSha256Hex(opts.chatSubjectId)
@@ -1150,22 +1251,29 @@
       ? new Date(opts.observedAtIso).toISOString().replace(/\.\d{3}Z$/, 'Z')
       : nowIsoSeconds();
     var actorPeer = await resolveDelegationActorPeer(opts);
+    var canonicalBinding = await buildF15CanonicalChatFolderBinding(
+      chatSubjectId,
+      folderSubjectId,
+      originAccountIdHash,
+      perEnvelopeSalt,
+      observedAtIso
+    );
+    var siblingBindings = cleanF15SiblingBindings(opts.siblingBindings, canonicalBinding && canonicalBinding.subjectId);
     return {
       operation: operation,
-      bindingKind: 'chat-folder',
-      bindingState: operation === 'unbind' ? 'unbound' : 'bound',
-      leftSubjectId: chatSubjectId,
-      rightSubjectId: folderSubjectId,
-      leftSubjectType: 'chat.metadata',
-      rightSubjectType: 'folder.metadata',
+      diagnosticIntent: operation,
+      canonicalBinding: canonicalBinding,
       originAccountIdHash: originAccountIdHash,
       localAccountIdHash: originAccountIdHash,
       perEnvelopeSalt: perEnvelopeSalt,
       actorPeer: actorPeer,
       ownerStatus: 'reachable',
-      sourceTag: 'f7-folder-binding-compat',
+      sourceTag: 'desktop',
+      relatedCatalogs: [],
       relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatSubjectId }],
-      siblingBindings: Array.isArray(opts.siblingBindings) ? opts.siblingBindings : [],
+      siblingBindings: siblingBindings,
+      existingBindings: siblingBindings,
+      materializedCacheObservation: { status: 'fresh' },
       sourceMirror: { ok: true, fresh: true, mirrorFresh: true },
       replayContext: { ok: true, replaySafe: true },
       watermarkState: { ok: true, watermarkSafe: true },
