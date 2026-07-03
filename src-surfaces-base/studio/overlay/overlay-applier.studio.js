@@ -785,7 +785,8 @@
   /* ── Phase 5d-1 — pure inline-run segmenter (export foundation) ────────
    *
    * buildInlineRuns(bodyText, messageState, inlineState, opts) ->
-   *   { ok, runs: [{ text, bold, italic, underline, strikethrough, textColor }], reason? }
+   *   { ok, runs: [{ text, bold, italic, underline, strikethrough,
+   *                  subscript, superscript, textColor }], reason? }
    *
    * Folds message-level character formatting (treated as full-range base
    * layer) + inline interval/segment state into a single ordered list of
@@ -845,8 +846,12 @@
       var italic = rebaseIntervals(is.italic);
       var underline = rebaseIntervals(is.underline);
       var strike = rebaseIntervals(is.strikethrough);
+      /* Phase 8e-2 — vertical-align channels (inline-only; no message-level base). */
+      var subscript = rebaseIntervals(is.subscript);
+      var superscript = rebaseIntervals(is.superscript);
       var color = rebaseSegments(is.textColor);
-      if (bold === null || italic === null || underline === null || strike === null || color === null) {
+      if (bold === null || italic === null || underline === null || strike === null
+          || subscript === null || superscript === null || color === null) {
         return { ok: false, reason: 'inline-out-of-range' };
       }
 
@@ -862,6 +867,7 @@
       bset[0] = true; bset[len] = true;
       function addIntervalBounds(list) { for (var i = 0; i < list.length; i += 1) { bset[list[i][0]] = true; bset[list[i][1]] = true; } }
       addIntervalBounds(bold); addIntervalBounds(italic); addIntervalBounds(underline); addIntervalBounds(strike);
+      addIntervalBounds(subscript); addIntervalBounds(superscript);
       for (var ci = 0; ci < color.length; ci += 1) { bset[color[ci].start] = true; bset[color[ci].end] = true; }
       var bounds = Object.keys(bset).map(Number).filter(function (n) { return n >= 0 && n <= len; }).sort(function (a, b) { return a - b; });
 
@@ -890,6 +896,8 @@
           italic: msItalic || covered(italic, a, b),
           underline: msUnderline || covered(underline, a, b),
           strikethrough: msStrike || covered(strike, a, b),
+          subscript: covered(subscript, a, b),
+          superscript: covered(superscript, a, b),
           textColor: colorForRange(a, b),
         });
       }

@@ -545,6 +545,13 @@
       var hex = TEXT_COLOR_HEX[run.textColor];
       if (hex) parts.push('<w:color w:val="' + hex + '"/>');
     }
+    /* Phase 8e-2 — vertical align. Appended after the base font rFonts/sz
+     * (via combineRProps) and the b/i/u/strike/color fragments, so it
+     * composes with all of them. Only one <w:vertAlign> is schema-valid and
+     * the reducer keeps subscript/superscript mutually exclusive; if both
+     * are set defensively, subscript wins deterministically. */
+    if (run.subscript)        parts.push('<w:vertAlign w:val="subscript"/>');
+    else if (run.superscript) parts.push('<w:vertAlign w:val="superscript"/>');
     return parts.join('');
   }
 
@@ -569,6 +576,7 @@
             text: seg,
             bold: !!run.bold, italic: !!run.italic,
             underline: !!run.underline, strikethrough: !!run.strikethrough,
+            subscript: !!run.subscript, superscript: !!run.superscript,
             textColor: run.textColor || null,
           });
         }
@@ -598,6 +606,8 @@
       (Array.isArray(inlineState.italic) && inlineState.italic.length) ||
       (Array.isArray(inlineState.underline) && inlineState.underline.length) ||
       (Array.isArray(inlineState.strikethrough) && inlineState.strikethrough.length) ||
+      (Array.isArray(inlineState.subscript) && inlineState.subscript.length) ||
+      (Array.isArray(inlineState.superscript) && inlineState.superscript.length) ||
       (Array.isArray(inlineState.textColor) && inlineState.textColor.length)
     );
   }

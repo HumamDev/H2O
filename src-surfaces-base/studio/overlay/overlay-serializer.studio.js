@@ -226,6 +226,13 @@
           if (r.italic)        x = '*' + x + '*';
           if (r.underline)     x = '<u>' + x + '</u>';
           if (r.strikethrough) x = '~~' + x + '~~';
+          /* Phase 8e-2 — vertical align via HTML passthrough (Markdown has no
+           * native sub/sup), mirroring the <u> underline precedent. Mutual
+           * exclusion means at most one is set per run; if both are set
+           * defensively, subscript is applied first so superscript nests
+           * outside it (deterministic). */
+          if (r.subscript)     x = '<sub>' + x + '</sub>';
+          if (r.superscript)   x = '<sup>' + x + '</sup>';
           /* textColor: intentionally no Markdown output. */
         }
         lines[li] = x;
@@ -285,6 +292,8 @@
       (Array.isArray(inlineState.italic) && inlineState.italic.length) ||
       (Array.isArray(inlineState.underline) && inlineState.underline.length) ||
       (Array.isArray(inlineState.strikethrough) && inlineState.strikethrough.length) ||
+      (Array.isArray(inlineState.subscript) && inlineState.subscript.length) ||
+      (Array.isArray(inlineState.superscript) && inlineState.superscript.length) ||
       (Array.isArray(inlineState.textColor) && inlineState.textColor.length)
     ));
     if (hasInline && !(state && state.code) && !(state && state.cleanSpacing)) {
