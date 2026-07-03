@@ -89,9 +89,9 @@
            renders one button per registered tab into this stack. It lives
            inside .wbRail (Studio's tiny-rail — the analog of the native
            ChatGPT #stage-sidebar-tiny-bar) so the Dock buttons appear on
-           the LEFT edge, matching the native extension. CSS route-gates
-           visibility to reader routes. The paired panel body is
-           #studioDockPanel at .wbShell level (below). -->
+           the LEFT edge, matching the native extension. CSS shows this stack
+           when the sidebar is collapsed. The paired panel body is
+           #studioDockPanel inside the normal sidebar lane (below). -->
       <div class="wbDockRailStack" data-role="dock-rail" aria-label="Dock Panel tabs"></div>
     </aside>
 
@@ -123,17 +123,18 @@
       -->
       <input id="q" type="hidden" value="" autocomplete="off" />
 
-      <nav class="wbSidebarTopNav" aria-label="Studio navigation">
-        <a id="wbStudioNavSearch" class="wbStudioNavItem" href="#/library/explorer" data-action="search-chats" aria-label="Search saved chats">
-          <span class="wbStudioNavIcon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <circle cx="11" cy="11" r="6" />
-              <path d="m15.5 15.5 4 4" />
-            </svg>
-          </span>
-          <span class="wbStudioNavLabel">Search chats</span>
-        </a>
-      </nav>
+      <div class="wbSidebarScroll">
+        <nav class="wbSidebarTopNav" aria-label="Studio navigation">
+          <a id="wbStudioNavSearch" class="wbStudioNavItem" href="#/library/explorer" data-action="search-chats" aria-label="Search saved chats">
+            <span class="wbStudioNavIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="m15.5 15.5 4 4" />
+              </svg>
+            </span>
+            <span class="wbStudioNavLabel">Search chats</span>
+          </a>
+        </nav>
 
       <!--
         Legacy Library/Saved/Pinned/Archive sidebar block removed in v2.6.
@@ -144,50 +145,50 @@
         renderList, so any inbound deep link continues to work.
       -->
 
-      <section class="wbSidebarSection wbSidebarSection--folders">
-        <div class="wbSideLabel">Folders</div>
-        <div id="folderList" class="wbFolderList">
-          <div class="wbSideEmpty">Loading folder bindings…</div>
-        </div>
-      </section>
+        <section class="wbSidebarSection wbSidebarSection--folders">
+          <div class="wbSideLabel">Folders</div>
+          <div id="folderList" class="wbFolderList">
+            <div class="wbSideEmpty">Loading folder bindings…</div>
+          </div>
+        </section>
 
       <!-- Labels — collapsible section populated by S0Z1g Library Sidebar Sections.
            Starts as a heading-only collapsed state when empty so the sidebar
            stays uncluttered for users without labels yet. -->
-      <section class="wbSidebarSection wbSidebarSection--labels">
-        <div class="wbSideLabel">Labels</div>
-        <div id="labelList" class="wbLabelList">
-          <div class="wbSideEmpty">Loading labels…</div>
-        </div>
-      </section>
+        <section class="wbSidebarSection wbSidebarSection--labels">
+          <div class="wbSideLabel">Labels</div>
+          <div id="labelList" class="wbLabelList">
+            <div class="wbSideEmpty">Loading labels…</div>
+          </div>
+        </section>
 
       <!-- Categories — un-hidden in v2.7. Populated by S0Z1g from
            H2O.LibraryWorkspace.getCategories(). -->
-      <section class="wbSidebarSection wbSidebarSection--categories">
-        <div class="wbSideLabel">Categories</div>
-        <div id="categoryList" class="wbCategoryList">
-          <div class="wbSideEmpty">Loading categories…</div>
-        </div>
-      </section>
+        <section class="wbSidebarSection wbSidebarSection--categories">
+          <div class="wbSideLabel">Categories</div>
+          <div id="categoryList" class="wbCategoryList">
+            <div class="wbSideEmpty">Loading categories…</div>
+          </div>
+        </section>
 
       <!-- Projects — collapsible section populated by S0Z1g from
            H2O.LibraryIndex.facets().byProject. -->
-      <section class="wbSidebarSection wbSidebarSection--projects">
-        <div class="wbSideLabel">Projects</div>
-        <div id="projectList" class="wbProjectList">
-          <div class="wbSideEmpty">Loading projects…</div>
-        </div>
-      </section>
+        <section class="wbSidebarSection wbSidebarSection--projects">
+          <div class="wbSideLabel">Projects</div>
+          <div id="projectList" class="wbProjectList">
+            <div class="wbSideEmpty">Loading projects…</div>
+          </div>
+        </section>
 
-      <section class="wbSidebarSection wbSidebarSection--recent">
-        <div class="wbSidebarSectionHead">
-          <div id="sidebarChatsLabel" class="wbSideLabel">Recents</div>
-          <div id="sidebarChatsMeta" class="wbSideMeta"></div>
-        </div>
-        <div id="sidebarChatList" class="wbSidebarChatList">
-          <div class="wbSideEmpty">Loading recents…</div>
-        </div>
-      </section>
+        <section class="wbSidebarSection wbSidebarSection--recent">
+          <div class="wbSidebarSectionHead">
+            <div id="sidebarChatsLabel" class="wbSideLabel">Recents</div>
+            <div id="sidebarChatsMeta" class="wbSideMeta"></div>
+          </div>
+          <div id="sidebarChatList" class="wbSidebarChatList">
+            <div class="wbSideEmpty">Loading recents…</div>
+          </div>
+        </section>
 
       <!-- Settings sits at the bottom of the sidebar as a normal product nav
            item (not mixed in with data sections like Folders/Labels). Owns the
@@ -195,36 +196,38 @@
            Storage Diagnostics). Inside Settings, the Import / Export buttons
            navigate to the existing #/migrate/* routes — no migration backend
            changes; pure UI exposure. -->
-      <section class="wbSidebarSection wbSidebarSection--settings">
-        <a id="wbStudioNavSettings" class="wbStudioNavItem" href="#/settings" data-action="open-settings" aria-label="Studio settings">
-          <span class="wbStudioNavIcon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </span>
-          <span class="wbStudioNavLabel">Settings</span>
-        </a>
-      </section>
-    </aside>
-
-    <!-- ── Studio Dock Panel body (D3.2 — native-left placement) ──────────
-         Panel host for the Studio Dock Panel. Lives at .wbShell level
-         (sibling to .wbRail / .wbSide--sidebar / .wbStage), NOT inside
-         .wbStage. The dock-shell module auto-mounts onto this element and
-         toggles the `wbDock--open` class via open() / close(). CSS places
-         it absolutely over the sidebar column (left: rail width, width:
-         sidebar width), mirroring the native ChatGPT Dock which overlays
-         the sidebar area. Route-gated to reader routes. The paired rail
-         host is .wbDockRailStack inside .wbRail (above). -->
-    <aside id="studioDockPanel" class="wbDockPanel" data-role="dock-panel" hidden aria-label="Studio Dock Panel">
-      <header class="wbDockHead" data-role="dock-head">
-        <div class="wbDockTitle">Dock</div>
-        <button type="button" class="wbDockClose" data-role="dock-close" data-dock-action="close" aria-label="Close Dock">×</button>
-      </header>
-      <div class="wbDockView" data-role="dock-view">
-        <div class="wbDockEmpty">Open a saved chat to view its Dock tabs.</div>
+        <section class="wbSidebarSection wbSidebarSection--settings">
+          <a id="wbStudioNavSettings" class="wbStudioNavItem" href="#/settings" data-action="open-settings" aria-label="Studio settings">
+            <span class="wbStudioNavIcon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </span>
+            <span class="wbStudioNavLabel">Settings</span>
+          </a>
+        </section>
       </div>
+
+      <!-- ── Studio Dock Panel body (sidebar mode) ───────────────────────
+           The Dock panel lives inside the normal Studio sidebar lane. The
+           rail host remains in .wbRail above; clicking a rail tile opens the
+           normal sidebar and switches this sidebar content mode on. -->
+      <aside id="studioDockPanel" class="wbDockPanel" data-role="dock-panel" hidden aria-label="Studio Dock Panel">
+        <header class="wbDockHead" data-role="dock-head">
+          <div class="wbDockTitle">Dock</div>
+          <button type="button" class="wbIconBtn wbDockBackBtn" data-role="dock-back" data-dock-action="back" aria-label="Back to collapsed sidebar" title="Back to collapsed sidebar">
+            <span class="wbIco" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="m14.5 6.75-5.25 5.25 5.25 5.25" />
+              </svg>
+            </span>
+          </button>
+        </header>
+        <div class="wbDockView" data-role="dock-view">
+          <div class="wbDockEmpty">Open a saved chat to view its Dock tabs.</div>
+        </div>
+      </aside>
     </aside>
 
     <div class="wbStage">
@@ -290,7 +293,7 @@
 
       <!-- D3.2: the Studio Dock Panel moved out of .wbStage. Its rail host
            (.wbDockRailStack) now lives inside .wbRail and its panel body
-           (#studioDockPanel) lives at .wbShell level — see the two blocks
+           (#studioDockPanel) lives inside .wbSide--sidebar — see the two blocks
            above. The old right-edge #studioDock host was removed here. -->
     </div>
   </div>

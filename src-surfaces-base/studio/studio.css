@@ -346,25 +346,35 @@ body[data-sidebar="closed"] .wbRail{
   padding:10px 10px 14px;
   border-right:1px solid var(--wb-border);
   background:var(--wb-sidebar);
+  overflow:hidden;
+  transition:transform .18s ease, opacity .16s ease;
+}
+
+.wbSide--sidebar > .wbSidebarHead,
+.wbSide--sidebar > .wbSidebarSection--libraryLink{
+  flex:0 0 auto;
+}
+
+.wbSidebarScroll{
+  flex:1 1 auto;
+  min-width:0;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
   overflow-y:auto;
   overflow-x:hidden;
   overscroll-behavior:contain;
   scrollbar-width:none;
-  transition:transform .18s ease, opacity .16s ease;
+  padding-bottom:6px;
 }
 
-/* Each top-level sidebar child sizes to content and never flex-shrinks —
-   if total content exceeds the viewport the whole sidebar scrolls. */
-.wbSide--sidebar > .wbSidebarHead,
-.wbSide--sidebar > .wbSidebarTopNav,
-.wbSide--sidebar > .wbSidebarSection{
+.wbSidebarScroll > .wbSidebarTopNav,
+.wbSidebarScroll > .wbSidebarSection{
   flex:0 0 auto;
 }
 
-/* The Recent (Saved chats) section was previously the sole scroll target
-   inside an `overflow:hidden` sidebar; now the whole sidebar scrolls and
-   Recent simply sizes to its content like every other section. */
-.wbSide--sidebar > .wbSidebarSection--recent{
+.wbSidebarScroll > .wbSidebarSection--recent{
   flex:0 0 auto;
   min-height:0;
 }
@@ -377,14 +387,14 @@ body[data-sidebar="closed"] .wbRail{
    Saved-chats section and a guaranteed visible gap below the link
    regardless of scroll position. No change to flex behavior
    (flex:0 0 auto already inherited). */
-.wbSide--sidebar > .wbSidebarSection--settings{
+.wbSide--sidebar .wbSidebarSection--settings{
   margin-top:6px;
   padding-top:8px;
   padding-bottom:6px;
   border-top:1px solid var(--wb-border);
 }
 
-.wbSide--sidebar::-webkit-scrollbar{
+.wbSidebarScroll::-webkit-scrollbar{
   width:0;
   height:0;
 }
@@ -8562,42 +8572,37 @@ body[data-sidebar="closed"] .wbDockRailStack {
   display: flex;
 }
 
-/* Dock panel body — overlays the sidebar lane, beside the tiny-rail.
- * Opens when Dock state is open; tab renderers decide whether to show
- * context-specific data or their safe empty state. Hidden until
+/* Dock panel body — sidebar content mode. The panel lives inside
+ * .wbSide--sidebar and therefore inherits the exact normal sidebar width,
+ * top spacing, divider, and open/closed grid geometry. Hidden until
  * .wbDock--open. */
 #studioDockPanel {
   display: none;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: var(--wb-rail-w);
-  width: var(--wb-side-w);
-  max-width: 96vw;
-  z-index: 20;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
   flex-direction: column;
-  background: rgba(20, 20, 22, 0.94);
-  color: rgba(255, 255, 255, 0.94);
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.4);
-  backdrop-filter: saturate(140%) blur(6px);
-  -webkit-backdrop-filter: saturate(140%) blur(6px);
+  color: var(--wb-text);
+  font: inherit;
+  overflow: hidden;
 }
 body.wbDockPanelOpen #studioDockPanel.wbDock--open {
   display: flex;
 }
 
-body[data-sidebar="open"] #studioDockPanel.wbDock--open {
-  left: 0;
+body.wbDockPanelOpen .wbSidebarScroll {
+  display: none;
 }
 
 .wbDockHead {
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+  border-bottom: 0;
 }
 
 .wbDockTitle {
@@ -8608,34 +8613,21 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
   opacity: 0.78;
 }
 
-.wbDockClose {
-  background: transparent;
-  border: 0;
+.wbDockBackBtn {
+  flex: 0 0 auto;
   color: inherit;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  padding: 4px 8px;
-  margin: 0;
-  opacity: 0.7;
-  border-radius: 4px;
-  transition: background 0.12s ease, opacity 0.12s ease;
 }
 
-.wbDockClose:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.wbDockClose:focus-visible {
-  outline: 2px solid #6aa0ff;
-  outline-offset: 1px;
+.wbDockBackBtn .wbIco {
+  width: 18px;
+  height: 18px;
 }
 
 .wbDockView {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  padding: 14px;
+  padding: 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
 }
@@ -8650,7 +8642,7 @@ body[data-sidebar="open"] #studioDockPanel.wbDock--open {
 /* Narrow viewports — clamp the overlay panel width. */
 @media (max-width: 720px) {
   body.wbDockPanelOpen #studioDockPanel.wbDock--open {
-    width: min(var(--wb-side-w), 320px);
+    width: 100%;
   }
 }
 

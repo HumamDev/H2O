@@ -56,18 +56,16 @@
  *                  hasContainer, hasRail, hasBody, hasView,
  *                  errors }
  *
- * Route gating (Phase 2A; placement updated in D3.2):
+ * Rail/panel placement (Phase 2A; placement updated in D3.2/D3.3):
  *   The Dock hosts are permanently in studio.html, but visibility is
- *   controlled by CSS. D3.2 moved the Dock to native-left placement:
- *     body[data-route="reader"] #studioDockPanel.wbDock--open { display: flex }
- *     #studioDockPanel { display: none; }              (default rule)
- *   The rail (.wbDockRailStack inside .wbRail) is likewise route-gated.
- *   studio.js sets `body.dataset.route` ("list" | "reader" | "linked")
- *   when the user navigates; the existing route plumbing therefore
- *   handles Dock visibility with no JS coupling. open() / close()
- *   manage the .wbDock--open class (on the panel) plus a scoped,
- *   non-persistent `wbDockPanelOpen` body marker — they do not check or
- *   manipulate the route attribute or the saved sidebar preference.
+ *   controlled by CSS. D3.2 moved the Dock to native-left placement. D3.3
+ *   rail buttons are visible whenever the Studio sidebar rail is collapsed;
+ *   getDockContext() only controls tab data context and empty states.
+ *   Rail clicks ask studio.js to open the normal sidebar so the panel can
+ *   render as the sidebar content mode. open() / close() manage the
+ *   .wbDock--open class (on the panel) plus a scoped, non-persistent
+ *   `wbDockPanelOpen` body marker — they do not mutate route state or the
+ *   saved sidebar preference.
  *
  * Auto-mount (D3.2 split-host):
  *   On DOM ready (or immediately if the document is already
@@ -95,7 +93,8 @@
  *   - chrome.* / localStorage / IndexedDB
  *   - any feature store (highlights / context / bookmarks / notes /
  *     navigator / capture) — the shell does not call them
- *   - studio.js — route gating is via CSS only, no JS hook needed
+ *   - feature-specific Studio data logic; the only studio.js bridge used
+ *     here is the transient sidebar expansion helper for rail clicks
  */
 (function (global) {
   'use strict';
@@ -275,9 +274,9 @@
    * forces `display: none` and defeats the reader-route-rail-visible
    * CSS. New model uses CSS + the .wbDock--open class ONLY:
    *
-   *   - Non-reader route: CSS default `#studioDockPanel { display: none }`
-   *   - Reader route + closed: rail visible (.wbRail), panel hidden (CSS)
-   *   - Reader route + open (.wbDock--open present): rail + panel visible
+   *   - Sidebar closed: rail visible (.wbRail), panel hidden
+   *   - Dock open: panel visible in/on the sidebar lane
+   *   - Missing chat/editor context: tabs render their safe empty states
    *
    * We strip the initial `hidden` attribute from studio.html once (it
    * exists for pre-JS a11y safety); after that state is class-only.
@@ -324,6 +323,31 @@
       recordError('openStudioSidebarForDock', e);
     }
     return false;
+  }
+
+  function closeStudioSidebarForDock() {
+    try {
+      const S = (typeof globalThis !== 'undefined' && globalThis.H2O && globalThis.H2O.Studio) || null;
+      if (S && typeof S.closeSidebarForDock === 'function') {
+        S.closeSidebarForDock();
+        return true;
+      }
+      if (typeof document !== 'undefined') {
+        const btn = document.getElementById('sidebarCollapseBtn');
+        if (btn && typeof btn.click === 'function') {
+          btn.click();
+          return true;
+        }
+      }
+    } catch (e) {
+      recordError('closeStudioSidebarForDock', e);
+    }
+    return false;
+  }
+
+  function closeDockSidebarMode() {
+    close();
+    closeStudioSidebarForDock();
   }
 
   /* ── Tab registry ─────────────────────────────────────────────────── */
@@ -456,9 +480,9 @@
         ico.setAttribute('aria-hidden', 'true');
         ico.textContent = label;
         btn.appendChild(ico);
-        /* D3.3: rail click switches tab, opens the Dock body, then expands
-         * the Studio sidebar lane so the selected Dock tab renders in/on the
-         * sidebar area instead of as a competing right-edge panel. */
+        /* D3.3: rail click switches tab, opens the Dock body, then uses the
+         * normal Studio sidebar open path so the selected Dock tab renders as
+         * sidebar content instead of as a competing shell-level panel. */
         const handler = (function (tabId) {
           return function () {
             setView(tabId);
@@ -565,23 +589,24 @@
        *     inside); fall back to the document-level .wbDockRailStack
        *     which, in the production DOM, lives in .wbRail — a separate
        *     branch from the panel host.
-       *   - body/head/view/close: inside the panel host. In the new DOM
-       *     the panel IS the body, so `body` falls back to the container.
-       *   - close: accept both the new data-role="dock-close" and the
-       *     legacy data-dock-action="close". */
+       *   - body/head/view/back: inside the sidebar-mode panel host. The
+       *     panel lives inside .wbSide--sidebar and inherits the normal
+       *     sidebar geometry.
+       *   - back: sidebar-mode arrow closes Dock and collapses the sidebar
+       *     back to the rail. */
       dockRefs.rail  = container.querySelector('[data-role="dock-rail"]')
         || (typeof document !== 'undefined' ? document.querySelector('[data-role="dock-rail"]') : null);
       dockRefs.body  = container.querySelector('[data-role="dock-body"]') || container;
       dockRefs.head  = container.querySelector('.wbDockHead')
         || container.querySelector('[data-role="dock-head"]') || null;
       dockRefs.view  = container.querySelector('[data-role="dock-view"]') || null;
-      dockRefs.close = container.querySelector('[data-dock-action="close"]')
-        || container.querySelector('[data-role="dock-close"]') || null;
+      dockRefs.close = container.querySelector('[data-dock-action="back"]')
+        || container.querySelector('[data-role="dock-back"]') || null;
     } catch (e) {
       recordError('mount:querySelector', e);
     }
     if (dockRefs.close && typeof dockRefs.close.addEventListener === 'function') {
-      closeListener = function () { close(); };
+      closeListener = function () { closeDockSidebarMode(); };
       try { dockRefs.close.addEventListener('click', closeListener); }
       catch (e) { recordError('mount:closeListener', e); closeListener = null; }
     }

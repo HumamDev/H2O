@@ -6271,9 +6271,13 @@ function openSidebar(){
 }
 
 function openSidebarForDock(){
-  // Dock rail clicks should reveal the sidebar lane without changing the
+  openSidebar();
+}
+
+function closeSidebarForDock(){
+  // Dock back/arrow returns to the collapsed rail without changing the
   // user's persisted sidebar preference.
-  state.sidebarExpanded = true;
+  state.sidebarExpanded = false;
   applyUiState();
 }
 
@@ -6281,6 +6285,7 @@ function openSidebarForDock(){
   const H2O = W.H2O = W.H2O || {};
   H2O.Studio = H2O.Studio || {};
   H2O.Studio.openSidebarForDock = openSidebarForDock;
+  H2O.Studio.closeSidebarForDock = closeSidebarForDock;
 })();
 
 function closeDockSidebarModeIfOpen(){
