@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,8 @@ const DEFAULT_DB = path.join(os.homedir(), 'Library/Application Support/org.h2o.
 const DEFAULT_BACKUP_DIR = '/private/tmp/h2o-studio-db-backups';
 const DEFAULT_PACKAGE_BACKUP_DIR = '/private/tmp/h2o-studio-package-backups';
 const DEFAULT_PACKAGES_DIR = path.join(os.homedir(), 'Library/Application Support/org.h2o.studio.desktop/archive/packages');
+const DEFAULT_SYNC_ROOT = path.join(os.homedir(), 'H2O Studio Sync');
+const DEFAULT_SYNC_BACKUP_DIR = '/private/tmp/h2o-studio-sync-bundle-backups';
 
 const ID_PREFIXES = [
   /^c4_4_/,
@@ -45,6 +48,8 @@ function parseArgs(argv) {
     backupDir: DEFAULT_BACKUP_DIR,
     packagesDir: DEFAULT_PACKAGES_DIR,
     packageBackupDir: DEFAULT_PACKAGE_BACKUP_DIR,
+    syncRoot: DEFAULT_SYNC_ROOT,
+    syncBackupDir: DEFAULT_SYNC_BACKUP_DIR,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -56,6 +61,8 @@ function parseArgs(argv) {
     else if (arg === '--backup-dir') out.backupDir = argv[++i] || '';
     else if (arg === '--packages-dir') out.packagesDir = argv[++i] || '';
     else if (arg === '--package-backup-dir') out.packageBackupDir = argv[++i] || '';
+    else if (arg === '--sync-root') out.syncRoot = argv[++i] || '';
+    else if (arg === '--sync-backup-dir') out.syncBackupDir = argv[++i] || '';
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!out.mode) throw new Error('Pass one of --dry-run, --apply, or --verify');
@@ -234,6 +241,115 @@ function backupAndRemovePackages(packageCandidates, backupRoot) {
   return { packageBackupDir, removedPackages };
 }
 
+function collectSyncBundlePaths(syncRoot) {
+  if (!syncRoot || !fs.existsSync(syncRoot)) return [];
+  const paths = [
+    path.join(syncRoot, 'latest.json'),
+    path.join(syncRoot, 'chrome-latest.json'),
+    path.join(syncRoot, 'chrome-latest.json.tmp'),
+  ];
+  const devicesDir = path.join(syncRoot, 'devices');
+  if (fs.existsSync(devicesDir)) {
+    for (const deviceName of fs.readdirSync(devicesDir)) {
+      paths.push(path.join(devicesDir, deviceName, 'latest.json'));
+    }
+  }
+  return [...new Set(paths)].filter((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+}
+
+function inspectSyncBundleFile(file, candidateIds) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+  const chats = Array.isArray(parsed?.chatArchive?.chats) ? parsed.chatArchive.chats : [];
+  if (!chats.length) return null;
+  const matchingChats = chats
+    .filter((chat) => candidateIds.has(String(chat?.chatId || chat?.id || '')))
+    .map((chat) => ({
+      chatId: String(chat?.chatId || chat?.id || ''),
+      title: String(chat?.chatIndex?.displayTitle || chat?.chatIndex?.title || chat?.title || ''),
+    }));
+  return {
+    path: file,
+    schema: parsed.schema || '',
+    chatCount: Number(parsed?.chatArchive?.chatCount || chats.length) || chats.length,
+    matchingCount: matchingChats.length,
+    matchingChats,
+  };
+}
+
+function inspectSyncBundles(syncRoot, candidates) {
+  const candidateIds = new Set(candidates.map((row) => row.id));
+  return collectSyncBundlePaths(syncRoot)
+    .map((file) => inspectSyncBundleFile(file, candidateIds))
+    .filter(Boolean)
+    .filter((summary) => summary.matchingCount > 0);
+}
+
+function backupAndPruneSyncBundles(syncRoot, candidates, backupRoot) {
+  const candidateIds = new Set(candidates.map((row) => row.id));
+  const impacted = inspectSyncBundles(syncRoot, candidates);
+  if (!impacted.length) return { syncBundleBackupDir: '', cleanedSyncBundles: [] };
+  const syncBundleBackupDir = path.join(backupRoot, `sync-bundles-before-smoke-cleanup-${nowStamp()}`);
+  fs.mkdirSync(syncBundleBackupDir, { recursive: true });
+  const cleanedSyncBundles = [];
+  for (const item of impacted) {
+    const raw = fs.readFileSync(item.path, 'utf8');
+    const parsed = JSON.parse(raw);
+    const backupPath = path.join(syncBundleBackupDir, path.basename(item.path));
+    let finalBackupPath = backupPath;
+    let suffix = 1;
+    while (fs.existsSync(finalBackupPath)) {
+      finalBackupPath = path.join(syncBundleBackupDir, `${path.basename(item.path)}.${suffix}`);
+      suffix += 1;
+    }
+    fs.writeFileSync(finalBackupPath, raw);
+    const beforeChats = parsed.chatArchive.chats.length;
+    parsed.chatArchive.chats = parsed.chatArchive.chats.filter((chat) => !candidateIds.has(String(chat?.chatId || chat?.id || '')));
+    parsed.chatArchive.chatCount = parsed.chatArchive.chats.length;
+    if (parsed.summary && typeof parsed.summary === 'object') {
+      parsed.summary.chatCount = parsed.chatArchive.chats.length;
+      parsed.summary.snapshotCount = parsed.chatArchive.chats.reduce(
+        (sum, chat) => sum + (Array.isArray(chat?.snapshots) ? chat.snapshots.length : 0),
+        0,
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(parsed, 'contentSha256')) {
+      const withoutContentSha = { ...parsed };
+      delete withoutContentSha.contentSha256;
+      const preimage = `${JSON.stringify(withoutContentSha, null, 2)}\n`;
+      parsed.contentSha256 = `sha256:${crypto.createHash('sha256').update(preimage, 'utf8').digest('hex')}`;
+    }
+    const nextText = `${JSON.stringify(parsed, null, 2)}\n`;
+    fs.writeFileSync(item.path, nextText);
+    const sidecarPath = path.join(path.dirname(item.path), 'latest.sha256');
+    let sidecarBackupPath = '';
+    if (path.basename(item.path) === 'latest.json' && fs.existsSync(sidecarPath)) {
+      sidecarBackupPath = path.join(syncBundleBackupDir, `${path.basename(path.dirname(item.path)) || 'root'}-latest.sha256`);
+      let finalSidecarBackupPath = sidecarBackupPath;
+      let sidecarSuffix = 1;
+      while (fs.existsSync(finalSidecarBackupPath)) {
+        finalSidecarBackupPath = path.join(syncBundleBackupDir, `${path.basename(path.dirname(item.path)) || 'root'}-latest.sha256.${sidecarSuffix}`);
+        sidecarSuffix += 1;
+      }
+      fs.copyFileSync(sidecarPath, finalSidecarBackupPath);
+      sidecarBackupPath = finalSidecarBackupPath;
+      fs.writeFileSync(sidecarPath, `sha256:${crypto.createHash('sha256').update(nextText, 'utf8').digest('hex')}\n`);
+    }
+    cleanedSyncBundles.push({
+      path: item.path,
+      backupPath: finalBackupPath,
+      sidecarBackupPath,
+      removedChats: beforeChats - parsed.chatArchive.chats.length,
+      remainingChats: parsed.chatArchive.chats.length,
+    });
+  }
+  return { syncBundleBackupDir, cleanedSyncBundles };
+}
+
 async function deleteCandidates(db, candidates) {
   const { DatabaseSync } = await import('node:sqlite');
   const chatIds = candidates.map((row) => row.id);
@@ -298,6 +414,7 @@ async function main() {
   const beforeCounts = liveCounts(args.db);
   const { candidates, ambiguous } = loadCandidates(args.db);
   const { packageCandidates, packageAmbiguous } = loadPackageCandidates(candidates, args.packagesDir || DEFAULT_PACKAGES_DIR);
+  const syncBundleCandidates = inspectSyncBundles(args.syncRoot || DEFAULT_SYNC_ROOT, candidates);
   const counts = dependentCounts(args.db, candidates);
   const base = {
     schema: 'h2o.studio.cleanup.saved-chat-smoke-rows.v1',
@@ -308,6 +425,7 @@ async function main() {
     candidates,
     ambiguous: [...ambiguous, ...packageAmbiguous],
     packageCandidates,
+    syncBundleCandidates,
     dependentCounts: counts,
   };
 
@@ -329,6 +447,11 @@ async function main() {
   let backupPath = '';
   if (args.backup) backupPath = backupDb(args.db, args.backupDir || DEFAULT_BACKUP_DIR);
   const packageRemoval = backupAndRemovePackages(packageCandidates, args.packageBackupDir || DEFAULT_PACKAGE_BACKUP_DIR);
+  const syncBundleCleanup = backupAndPruneSyncBundles(
+    args.syncRoot || DEFAULT_SYNC_ROOT,
+    candidates,
+    args.syncBackupDir || DEFAULT_SYNC_BACKUP_DIR,
+  );
   await deleteCandidates(args.db, candidates);
   const after = verify(args.db);
   const afterCounts = after.liveCounts;
@@ -337,6 +460,7 @@ async function main() {
     status: after.remainingCandidates.length ? 'apply-incomplete' : 'applied',
     backupPath,
     ...packageRemoval,
+    ...syncBundleCleanup,
     afterCounts,
     removedCounts: {
       chats: beforeCounts.chats - afterCounts.chats,
