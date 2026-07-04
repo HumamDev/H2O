@@ -240,6 +240,14 @@ assert.ok(read(folderImportFile).includes("webdav: 'deferred'"), 'WebDAV must re
 assert.doesNotMatch(store, /productSyncReady\s*[:=]\s*true\b/, 'F11 source must not flip productSyncReady true');
 assert.doesNotMatch(store, /h2o\.studio\.fullBundle\.v3/i, 'F11 source must not mint fullBundle.v3');
 
+// F28 S10: binding-mismatch is routed to the reviewed F15-settled request->apply->receipt repair path, while the
+// render mirror stays render-only (still a blocked render-mirror class; noBindingRepair remains true).
+assert.match(store, /reviewedRepairPathClasses: \['binding-mismatch'\]/, 'S10: binding-mismatch routed to reviewed repair path');
+assert.match(store, /bindingMismatchRoutedToReviewedRepairPath: true/, 'S10: binding-mismatch reviewed-repair routing flag present');
+assert.match(store, /reviewedRepairApplyGate: 'folder-sync-chat-folder-binding-repair-apply'/, 'S10: reviewed repair apply gate referenced');
+assert.match(store, /noBindingRepair: true/, 'S10: render mirror remains render-only (no binding repair)');
+assert.doesNotMatch(store, /'binding-mismatch': true/, 'S10: binding-mismatch must still NOT be an allowed render-mirror rebuild class');
+
 console.log(JSON.stringify({
   schema: 'h2o.studio.folder-sync.f11-render-only-mirror-rebuild.validation.v1',
   lane: 'folder-sync',

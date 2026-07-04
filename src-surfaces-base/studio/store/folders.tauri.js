@@ -738,6 +738,14 @@
       desktopSQLiteCanonical: true,
       allowedClasses: classSelection.allowed.slice(),
       blockedClasses: classSelection.blocked.concat(['binding-mismatch']),
+      // F28 S10: this render-only mirror rebuild does NOT repair binding-mismatch (noBindingRepair stays true and it
+      // remains a blocked render-mirror class). binding-mismatch is instead ROUTED to the reviewed, F15-settled
+      // request -> apply -> receipt binding repair path (already live-proven). This declares the routing explicitly so
+      // binding-mismatch is not silently dropped; it does not turn the render mirror into a binding repair writer.
+      reviewedRepairPathClasses: ['binding-mismatch'],
+      bindingMismatchRoutedToReviewedRepairPath: true,
+      reviewedRepairRequestSchema: 'h2o.studio.chat-folder-binding-request.v1',
+      reviewedRepairApplyGate: 'folder-sync-chat-folder-binding-repair-apply',
       handledClasses: [],
       rebuiltMissingMirrorFolderCount: 0,
       rebuiltColorMismatchCount: 0,
