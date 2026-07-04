@@ -9,8 +9,9 @@
 // -> sortOrder-preserving mirror projection), the "never leads canonical" rule, idempotent/bounded, and the
 // no-binding/tombstone/chat/delete/WebDAV/CAS invariants; states that rebuildRenderMirrorFromSqlite must NOT
 // be reused BECAUSE the F11 helper strips sortOrder/sort_order; keeps S5/F11/productSyncReady/Chat-Saving-CAS
-// blocked. It grounds anchors against REAL SOURCE (mirror still deferred; binding receipt unminted; fullBundle
-// v2; webdav deferred; F11 blocks both classes; the F11 rebuild helper strips sortOrder). Binds no socket;
+// blocked. It grounds anchors against REAL SOURCE (mirror still deferred; binding request+receipt minted+live-proven;
+// fullBundle v2; webdav deferred; F11 blocks binding-mismatch (sortOrder allowed post-S5); the F11 rebuild helper
+// strips sortOrder). Binds no socket;
 // performs no write; runs no live Desktop; edits no product source.
 
 import fs from 'node:fs';
@@ -25,6 +26,7 @@ const postS4Doc = 'release-evidence/2026-07-01/folder-sync-post-s4-readback-idem
 const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
+const bindingLiveCloseoutFile = 'release-evidence/2026-07-01/folder-sync-binding-f15-live-restart-survival-closeout.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -120,8 +122,11 @@ if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes('function applyFolderSortorderReorderRequest('), 'F32 handler must still be present');
   assert(src.includes("mirrorReprojection: 'deferred-to-s2b'"), 'source must still defer mirror re-projection (S2b not implemented)');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
-  assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema must remain present');
+  // Post-S5/F15: the chat-folder binding request + receipt schemas are minted and live-proven (restart-survival closeout).
+  assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"), 'binding receipt schema now minted in source');
+  assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema present in source');
+  assert(exists(bindingLiveCloseoutFile) && read(bindingLiveCloseoutFile).includes('reconcileSurvivalProven:true'),
+    'binding request/receipt path is live-proven (restart-survival closeout)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), 'WebDAV must remain deferred in folder-sync.tauri.js');
@@ -136,8 +141,13 @@ assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch');
+  // Post-S5 allowed-set flip: sortOrder was moved into the allowed rebuild set; only binding-mismatch stays blocked.
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'F11 helper blocks binding-mismatch (post-S5 blocked-set)');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'F11 allowed-set now allows field-mismatch:sortOrder after the S5 flip');
+  assert(!store.includes("concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+    'F11 helper must NOT force-block field-mismatch:sortOrder after the S5 flip');
   // the exact reason S2b cannot reuse the F11 helper: it strips ordering.
   assert(store.includes('function rebuildRenderMirrorFromSqlite('), 'F11 rebuild helper must still exist in source');
   assert(store.includes('delete next.sortOrder;') && store.includes('delete next.sort_order;'),
@@ -182,7 +192,9 @@ console.log(JSON.stringify({
   noChatDelete: true,
   noWebdavCloudArchiveCas: true,
   s5F11FlipBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  sortOrderForceBlockedInSource: false,
+  bindingReceiptSchemaMinted: true,
+  bindingRequestReceiptLiveProven: true,
   productSyncReady: false,
   chatSavingCasBlocked: true,
   metadataCorePresent: METADATA_CORE_TYPES.every((t) => appliedNow.includes(t)),

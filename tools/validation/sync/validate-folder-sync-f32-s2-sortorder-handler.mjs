@@ -11,8 +11,8 @@
 // body contains no folder_bindings write, no DELETE FROM folders, no tombstone/chat/binding mutation, no
 // folder delete/purge, no mirror (FOLDER_STATE_DATA_KEY/chromeStorageSet) write; receipt carries
 // canonicalAuthority desktop-sqlite + no-delete markers + mirrorReprojection deferred-to-s2b; a post-apply
-// hash check gates the applied verdict; conflict cases build receipts with canonicalWriteCount 0; F11 still
-// blocks both classes; binding receipt unminted; fullBundle v2/no v3; WebDAV deferred; bounded metadata
+// hash check gates the applied verdict; conflict cases build receipts with canonicalWriteCount 0; F11 blocks
+// binding-mismatch (sortOrder allowed post-S5); binding request+receipt minted+live-proven; fullBundle v2/no v3; WebDAV deferred; bounded metadata
 // guard; productSyncReady not flipped; no CAS/Chat Saving/archive code added. Binds no socket; no write.
 
 import fs from 'node:fs';
@@ -28,6 +28,7 @@ const foldersStoreFile = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncFile = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const folderImportFile = 'src-surfaces-base/studio/sync/folder-import.mv3.js';
 const s5ImplementationEvidenceFile = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingLiveCloseoutFile = 'release-evidence/2026-07-01/folder-sync-binding-f15-live-restart-survival-closeout.md';
 
 function read(file) { return fs.readFileSync(path.join(root, file), 'utf8'); }
 function exists(file) { return fs.existsSync(path.join(root, file)); }
@@ -147,8 +148,11 @@ if (exists(folderSyncFile)) {
     'classify must compute the current payload-order hash for the strict basis stale-check');
 
   // whole-file boundaries
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
-  assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema must remain present');
+  // Post-S5/F15: the chat-folder binding request + receipt schemas are minted and live-proven (restart-survival closeout).
+  assert(src.includes("CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = '" + BINDING_RECEIPT_SCHEMA + "'"), 'binding receipt schema now minted in source');
+  assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema present in source');
+  assert(exists(bindingLiveCloseoutFile) && read(bindingLiveCloseoutFile).includes('reconcileSurvivalProven:true'),
+    'binding request/receipt path is live-proven (restart-survival closeout)');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
   assert(src.includes("webdav: 'deferred'"), "WebDAV must remain deferred in folder-sync.tauri.js");
@@ -211,9 +215,10 @@ console.log(JSON.stringify({
   gatedApply: true,
   mirrorReprojection: 'deferred-to-s2b',
   f11AllowedSetChanged: false,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: true,
+  bindingRequestReceiptLiveProven: true,
   bindingMismatchBlocked: true,
-  sortOrderGatedInF11: true,
+  sortOrderGatedInF11: false,
   productSyncReady: false,
   fullBundleV3Present: false,
   chatSavingCasBlocked: true,
