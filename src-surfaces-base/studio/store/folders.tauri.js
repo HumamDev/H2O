@@ -1301,9 +1301,15 @@
       return { ok: false, blockers: ['f15-folder-binding-delegation-api-missing'], missingApis: missing };
     }
     var input = await buildF15FolderBindingDelegationInput(operation, folderId, chatId, opts);
+    var canonicalBinding = input && input.canonicalBinding;
+    if (!canonicalBinding ||
+        !isSha256Hex(canonicalBinding.leftSubjectId) ||
+        !isSha256Hex(canonicalBinding.rightSubjectId)) {
+      return { ok: false, blockers: ['f15-folder-binding-canonical-row-invalid'], input: input };
+    }
     var shadow = await sync.createLibraryFolderBindingMigrationShadow({
-      chatSubjectId: input.leftSubjectId,
-      folderSubjectId: input.rightSubjectId,
+      chatSubjectId: canonicalBinding.leftSubjectId,
+      folderSubjectId: canonicalBinding.rightSubjectId,
       perEnvelopeSalt: input.perEnvelopeSalt,
       observedAtIso: input.observedAtIso
     });

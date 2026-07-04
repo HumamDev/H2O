@@ -16,12 +16,14 @@ import vm from 'node:vm';
 const root = process.cwd();
 
 const evidencePath = 'release-evidence/2026-07-01/folder-sync-binding-f15-canonical-row-enrichment-implementation.md';
+const shadowRegressionEvidencePath = 'release-evidence/2026-07-01/folder-sync-binding-f15-canonical-row-shadow-regression-fix.md';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const canonicalizerPath = 'src-surfaces-base/studio/sync/library/library-binding-canonicalizer.tauri.js';
 const diagnosticsPath = 'src-surfaces-base/studio/sync/library/library-binding-diagnostics.tauri.js';
 const preflightPath = 'src-surfaces-base/studio/sync/library/library-binding-preflight.tauri.js';
 const proposalPath = 'src-surfaces-base/studio/sync/library/library-binding-proposal-candidate-generator.tauri.js';
+const shadowPath = 'src-surfaces-base/studio/sync/library/library-folder-binding-migration-shadow.tauri.js';
 const privacyPath = 'src-surfaces-base/studio/sync/kernel/privacy-scan.tauri.js';
 const identityPath = 'src-surfaces-base/studio/sync/kernel/identity-kit.tauri.js';
 const lifecyclePath = 'src-surfaces-base/studio/sync/kernel/lifecycle-framework.tauri.js';
@@ -61,12 +63,14 @@ function sha256(value) {
 
 for (const rel of [
   evidencePath,
+  shadowRegressionEvidencePath,
   foldersStorePath,
   folderSyncPath,
   canonicalizerPath,
   diagnosticsPath,
   preflightPath,
   proposalPath,
+  shadowPath,
   privacyPath,
   identityPath,
   lifecyclePath,
@@ -80,18 +84,42 @@ for (const rel of [
 }
 
 const evidence = read(evidencePath);
+const shadowRegressionEvidence = read(shadowRegressionEvidencePath);
 const flatEvidence = compact(evidence);
+const flatShadowRegressionEvidence = compact(shadowRegressionEvidence);
 const foldersStore = read(foldersStorePath);
 const folderSync = read(folderSyncPath);
 const canonicalizer = read(canonicalizerPath);
 const diagnostics = read(diagnosticsPath);
 const preflight = read(preflightPath);
 const proposal = read(proposalPath);
+const shadowSource = read(shadowPath);
 const folderImport = read(folderImportPath);
 const combinedRuntime = `${foldersStore}\n${folderSync}\n${folderImport}`;
 
 for (const commit of PRIOR_COMMITS.concat(IMPLEMENTATION_COMMIT)) {
   assertIncludes(evidence, commit, `evidence commit ${commit}`);
+}
+
+for (const token of [
+  'BINDING F15 CANONICAL-ROW SHADOW REGRESSION FIXED',
+  '501635ae865b460ac0bb4e0cb4e5d6196714022d',
+  'input.canonicalBinding.leftSubjectId',
+  'input.canonicalBinding.rightSubjectId',
+  'missing-chat-subject-hash',
+  'missing-folder-subject-hash',
+  'f15-folder-binding-shadow-failed',
+  'f15-folder-binding-canonical-row-invalid',
+  'validator now proves shadow plus proposal behavior',
+  'No fallback was restored',
+  'No live apply was run',
+  'Phase A was not retried',
+  '`binding-mismatch` remains blocked',
+  '`productSyncReady` remains false',
+  'WebDAV/cloud/relay/fullBundle.v3 remains blocked',
+  'Chat Saving WebDAV/cloud/archive CAS remains blocked',
+]) {
+  assertIncludes(flatShadowRegressionEvidence, token, `shadow regression evidence token ${token}`);
 }
 
 for (const token of [
@@ -133,6 +161,18 @@ assertIncludes(foldersStore, 'async function buildF15CanonicalChatFolderBinding'
 assertIncludes(foldersStore, 'function cleanF15SiblingBindings', 'sibling compactor helper');
 assertIncludes(foldersStore, 'canonicalizeLibraryBinding(row)', 'store uses real F15 canonicalizer when present');
 assertIncludes(foldersStore, 'canonicalBinding: canonicalBinding', 'delegation input supplies canonicalBinding');
+assertIncludes(foldersStore, 'var canonicalBinding = input && input.canonicalBinding',
+  'pipeline must read canonicalBinding for shadow contract');
+assertIncludes(foldersStore, 'f15-folder-binding-canonical-row-invalid',
+  'pipeline must fail safely for missing/invalid canonical rows');
+assertIncludes(foldersStore, 'chatSubjectId: canonicalBinding.leftSubjectId',
+  'shadow step must read chat subject from canonicalBinding');
+assertIncludes(foldersStore, 'folderSubjectId: canonicalBinding.rightSubjectId',
+  'shadow step must read folder subject from canonicalBinding');
+assertNotIncludes(foldersStore, 'chatSubjectId: input.leftSubjectId',
+  'shadow step must not read removed top-level chat subject');
+assertNotIncludes(foldersStore, 'folderSubjectId: input.rightSubjectId',
+  'shadow step must not read removed top-level folder subject');
 assertIncludes(foldersStore, 'relatedCatalogs: []', 'delegation input explicitly supplies catalog context');
 assertIncludes(foldersStore, "relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatSubjectId }]",
   'delegation input supplies chat context');
@@ -165,6 +205,8 @@ assertIncludes(preflight, 'library-binding-row-contains-forbidden-field', 'prefl
 assertIncludes(diagnostics, 'library-binding-row-contains-forbidden-field', 'diagnostics forbidden-field blocker retained');
 assertIncludes(proposal, 'scanDomain(SUBJECT_TYPE, args, \'device-local\'', 'proposal privacy scan retained');
 assertIncludes(proposal, 'library-binding-preflight-not-ok', 'proposal preflight blocker retained');
+assertIncludes(shadowSource, 'missing-chat-subject-hash', 'shadow missing chat subject blocker retained');
+assertIncludes(shadowSource, 'missing-folder-subject-hash', 'shadow missing folder subject blocker retained');
 
 assert.ok(!combinedRuntime.includes('productSyncReady: true'), 'productSyncReady must not be true');
 assert.ok(!combinedRuntime.includes('productSyncReady = true'), 'productSyncReady assignment must not flip true');
@@ -251,6 +293,7 @@ async function runProposalHarness() {
     diagnosticsPath,
     preflightPath,
     proposalPath,
+    shadowPath,
   ]) {
     runFile(context, rel);
   }
@@ -259,6 +302,7 @@ async function runProposalHarness() {
   assert.equal(typeof sync.diagnoseLibraryBinding, 'function', 'diagnostics must load in harness');
   assert.equal(typeof sync.preflightLibraryBinding, 'function', 'preflight must load in harness');
   assert.equal(typeof sync.generateLibraryBindingProposalCandidate, 'function', 'proposal generator must load in harness');
+  assert.equal(typeof sync.createLibraryFolderBindingMigrationShadow, 'function', 'shadow helper must load in harness');
 
   const common = {
     account: sha256('f15.local-account'),
@@ -334,6 +378,29 @@ async function runProposalHarness() {
   assert.equal(cleanContextScan.ok, true, 'clean canonicalBinding wrapper must pass privacy scan');
   assert.equal((cleanContextScan.forbiddenFields || []).length, 0, 'clean canonicalBinding wrapper has no forbidden fields');
 
+  const enrichedInputWithoutTopLevelSubjects = proposalInputFor(canonicalBinding, 'unbind', common);
+  const brokenShadow = await sync.createLibraryFolderBindingMigrationShadow({
+    chatSubjectId: enrichedInputWithoutTopLevelSubjects.leftSubjectId,
+    folderSubjectId: enrichedInputWithoutTopLevelSubjects.rightSubjectId,
+    perEnvelopeSalt: enrichedInputWithoutTopLevelSubjects.perEnvelopeSalt,
+    observedAtIso: enrichedInputWithoutTopLevelSubjects.observedAtIso,
+  });
+  const brokenShadowBlockers = codeList(brokenShadow.blockers);
+  assert.equal(brokenShadow.ok, false, 'old removed top-level subject shadow path should fail');
+  assert.ok(brokenShadowBlockers.includes('missing-chat-subject-hash'),
+    'old removed top-level subject shadow path should miss chat subject hash');
+  assert.ok(brokenShadowBlockers.includes('missing-folder-subject-hash'),
+    'old removed top-level subject shadow path should miss folder subject hash');
+
+  const patchedShadow = await sync.createLibraryFolderBindingMigrationShadow({
+    chatSubjectId: canonicalBinding.leftSubjectId,
+    folderSubjectId: canonicalBinding.rightSubjectId,
+    perEnvelopeSalt: enrichedInputWithoutTopLevelSubjects.perEnvelopeSalt,
+    observedAtIso: enrichedInputWithoutTopLevelSubjects.observedAtIso,
+  });
+  assert.equal(patchedShadow.ok, true, `patched canonicalBinding shadow failed: ${codeList(patchedShadow.blockers).join(',')}`);
+  assert.equal(patchedShadow.privacy.ok, true, 'patched canonicalBinding shadow privacy ok');
+
   const unbindProposal = await sync.generateLibraryBindingProposalCandidate(
     proposalInputFor(canonicalBinding, 'unbind', common)
   );
@@ -374,6 +441,8 @@ async function runProposalHarness() {
   return {
     beforeBlockers: codeList(before.blockers),
     beforeSourceKind: before.diagnostics.sourceKind,
+    brokenShadowBlockers,
+    patchedShadowOk: patchedShadow.ok === true,
     unbindSubjectId: unbindProposal.subjectId,
     bindSubjectId: bindProposal.subjectId,
   };
@@ -397,6 +466,7 @@ const result = {
   lane: 'folder-sync-binding',
   phase: 'binding-f15-canonical-row-enrichment-implementation',
   evidence: evidencePath,
+  shadowRegressionEvidence: shadowRegressionEvidencePath,
   verdict: 'BINDING_F15_CANONICAL_ROW_ENRICHMENT_IMPLEMENTED',
   priorBlockerCommit: IMPLEMENTATION_COMMIT,
   sourceChanged: foldersStorePath,
@@ -406,6 +476,10 @@ const result = {
   fallbackRestored: false,
   beforeCompatSourceKind: harness.beforeSourceKind,
   beforeCompatBlockers: harness.beforeBlockers,
+  brokenShadowMissingSubjectHashes: harness.brokenShadowBlockers.includes('missing-chat-subject-hash') &&
+    harness.brokenShadowBlockers.includes('missing-folder-subject-hash'),
+  patchedShadowOk: harness.patchedShadowOk,
+  shadowReadsCanonicalBinding: true,
   unbindProposalGenerated: true,
   bindProposalGenerated: true,
   f15RouteRetained: true,
