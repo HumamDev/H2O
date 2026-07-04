@@ -2460,29 +2460,43 @@
     onClick: function (ctx, setStatus, actionBtn) {
       const bridge = getRibbonBridge();
 
-      /* ── Armed: apply (inline) or cancel (message-level) ──────────────── */
+      /* ── Armed: apply (inline) / lock (double-click) / cancel ──────────── */
       if (__formatPainterArmed) {
-        if (__formatPainterArmed.mode === 'inline') {
-          const armed = __formatPainterArmed;
+        const armed = __formatPainterArmed;
+        /* A second click within the lock window promotes a one-shot arm to
+         * sticky (Phase 8g-3a). Inline: only when there is no fresh target,
+         * so a genuine apply-click is never hijacked. Message: always, since
+         * a button click is never an apply in message mode. */
+        const canPromote = !armed.sticky && (Date.now() - __formatPainterLastArmAt) <= FP_STICKY_DBLCLICK_MS;
+
+        if (armed.mode === 'inline') {
           const held = getHeldInlineCapture();
           const hpos = held && held.anchor && held.anchor.textPos;
           const tTurn = held ? Number(held.selectedTurnIdx) : NaN;
           const tValid = !!(held && held.ok && hpos && Number.isFinite(tTurn) && tTurn > 0
             && Number.isFinite(Number(hpos.start)) && Number.isFinite(Number(hpos.end)) && Number(hpos.end) > Number(hpos.start));
-          if (!tValid) { setStatus('Select target text first'); return; } /* keep armed */
+          if (canPromote && !tValid) { armed.sticky = true; __formatPainterSetArmedUI(true); setStatus('Format Painter locked'); return; }
+          if (!tValid) { setStatus('Select target text first'); return; } /* keep armed (incl. sticky) */
           if (!bridge || typeof bridge.applyInlineFormatPaint !== 'function') { __formatPainterDisarm(); setStatus('Format Painter unavailable'); return; }
           const targetAnchor = { textPos: { start: Number(hpos.start), end: Number(hpos.end) }, messageId: held.selectedMessageId || null };
+          const wasSticky = !!armed.sticky, keepStyles = armed.styles, keepSrc = armed.sourceTurnIdx;
           setStatus('Applying inline formatting…');
-          Promise.resolve(bridge.applyInlineFormatPaint(tTurn, targetAnchor, armed.styles)).then(
+          Promise.resolve(bridge.applyInlineFormatPaint(tTurn, targetAnchor, keepStyles)).then(
             function (r) {
-              __formatPainterDisarm();
-              if (r && r.ok) setStatus('Inline formatting applied');
-              else setStatus('Inline paint failed: ' + ((r && r.reason) || 'unknown'));
+              if (r && r.ok) {
+                if (wasSticky) __formatPainterEngage({ mode: 'inline', styles: keepStyles, sourceTurnIdx: keepSrc, sticky: true }, setStatus, actionBtn, 'Inline formatting applied — select next target');
+                else { __formatPainterDisarm(); setStatus('Inline formatting applied'); }
+              } else { __formatPainterDisarm(); setStatus('Inline paint failed: ' + ((r && r.reason) || 'unknown')); }
             },
             function () { __formatPainterDisarm(); setStatus('Inline paint failed'); }
           );
           return;
         }
+
+        /* Message mode — a button click never applies (contextChanged does).
+         * Double-click locks; any other click cancels (incl. a single click
+         * while sticky-armed). Preserves the pre-8g-3a "second click cancels". */
+        if (canPromote) { armed.sticky = true; __formatPainterSetArmedUI(true); setStatus('Format Painter locked'); return; }
         __formatPainterDisarm();
         setStatus('Format Painter off');
         return;
@@ -2523,7 +2537,7 @@
             };
             const any = styles.bold || styles.italic || styles.underline || styles.strikethrough || styles.subscript || styles.superscript || !!styles.textColor;
             if (!any) { setStatus('Nothing to paint'); return; }
-            __formatPainterEngage({ mode: 'inline', styles: styles, sourceTurnIdx: turnIdx }, setStatus, actionBtn, 'Inline Format Painter: select target text, then click Format Painter');
+            __formatPainterEngage({ mode: 'inline', styles: styles, sourceTurnIdx: turnIdx, sticky: false }, setStatus, actionBtn, 'Inline Format Painter: select target text, then click Format Painter');
           },
           function () { setStatus('Nothing to paint'); }
         );
@@ -2536,7 +2550,7 @@
         function (payload) {
           const p = (payload && typeof payload === 'object') ? payload : null;
           if (!p) { setStatus('Nothing to paint'); return; }
-          __formatPainterEngage({ mode: 'message', payload: p, sourceTurnIdx: turnIdx }, setStatus, actionBtn, 'Format Painter: select a target message');
+          __formatPainterEngage({ mode: 'message', payload: p, sourceTurnIdx: turnIdx, sticky: false }, setStatus, actionBtn, 'Format Painter: select a target message');
         },
         function () { setStatus('Nothing to paint'); }
       );
@@ -3854,6 +3868,8 @@
    * the next button click). Module-scoped; never persisted. */
   let __formatPainterArmed = null;
   let __formatPainterEsc = null;     /* document keydown handler while armed */
+  let __formatPainterLastArmAt = 0;  /* ms of the last engage — dbl-click lock detect (8g-3a) */
+  const FP_STICKY_DBLCLICK_MS = 350; /* Phase 8g-3a — a second arm-click within this window locks */
   function __formatPainterSetArmedUI(on) {
     try {
       const btn = document.querySelector('.wbRibbonAction[data-action-id="format-painter"]');
@@ -3869,9 +3885,18 @@
     __formatPainterSetArmedUI(false);
   }
   /* Arm the painter: store state, install Escape-cancel + armed button UI, set
-   * the arm status. Shared by the message-level and inline capture paths. */
+   * the arm status. Shared by the message-level and inline capture paths, and
+   * by sticky re-arm (Phase 8g-3a). Idempotent: removes any prior Escape
+   * listener first so a sticky re-arm never leaks handlers. The armed object
+   * carries an optional `sticky` flag. aria-pressed is set on the LIVE button
+   * (re-queried) so re-arm after a mid-apply re-render still reflects. */
   function __formatPainterEngage(armed, setStatus, actionBtn, armStatus) {
     __formatPainterArmed = armed;
+    __formatPainterLastArmAt = Date.now();
+    if (__formatPainterEsc) {
+      try { document.removeEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
+      __formatPainterEsc = null;
+    }
     __formatPainterEsc = function (ev) {
       if (ev && ev.key === 'Escape' && __formatPainterArmed) {
         __formatPainterDisarm();
@@ -3880,6 +3905,7 @@
     };
     try { document.addEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
     if (actionBtn) { try { actionBtn.setAttribute('aria-pressed', 'true'); } catch (_) {} }
+    __formatPainterSetArmedUI(true);
     try { setStatus(armStatus); } catch (_) {}
   }
 
@@ -4744,15 +4770,22 @@
             const nTurn = nctx ? Number(nctx.selectedTurnIdx) : NaN;
             if (Number.isFinite(nTurn) && nTurn >= 1 && nTurn !== __formatPainterArmed.sourceTurnIdx) {
               const armed = __formatPainterArmed;
+              /* Phase 8g-3a — capture sticky state + captured payload BEFORE the
+               * upfront disarm, so a locked painter can re-arm on success and
+               * keep painting the same formatting onto further target messages.
+               * Failure/drift leaves it disarmed (no re-arm). */
+              const wasSticky = !!armed.sticky, keepPayload = armed.payload, keepSrc = armed.sourceTurnIdx;
               __formatPainterDisarm();
               const fpStatus = makeSetStatus(container);
               const bridge = getRibbonBridge();
               if (bridge && typeof bridge.applyMessageFormatPaint === 'function') {
                 fpStatus('Applying formatting…');
-                Promise.resolve(bridge.applyMessageFormatPaint(nTurn, armed.payload)).then(
+                Promise.resolve(bridge.applyMessageFormatPaint(nTurn, keepPayload)).then(
                   function (r) {
-                    if (r && r.ok) fpStatus(r.reason === 'no-change' ? 'Formatting matched — no change' : 'Formatting applied');
-                    else fpStatus('Format paint failed: ' + ((r && r.reason) || 'unknown'));
+                    if (r && r.ok) {
+                      if (wasSticky) __formatPainterEngage({ mode: 'message', payload: keepPayload, sourceTurnIdx: keepSrc, sticky: true }, fpStatus, null, r.reason === 'no-change' ? 'Formatting matched — select next target' : 'Formatting applied — select next target');
+                      else fpStatus(r.reason === 'no-change' ? 'Formatting matched — no change' : 'Formatting applied');
+                    } else fpStatus('Format paint failed: ' + ((r && r.reason) || 'unknown'));
                   },
                   function () { fpStatus('Format paint failed'); }
                 );
