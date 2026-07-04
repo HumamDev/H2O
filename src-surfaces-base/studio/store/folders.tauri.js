@@ -104,6 +104,9 @@
   var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN = 'r:2f29d39a6c4f';
   var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN = 'r:2d5469848470';
   var OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN = 'row:a950a44b859f';
+  var OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_CHAT_TOKEN = 'r:650c3cb39924';
+  var OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_FOLDER_TOKEN = 'r:0226fecaed5b';
+  var OPERATIONAL5_LOCAL_EXPORTABLE_SYNC_READY_SCHEMA = 'h2o.studio.operational5.local-exportable-sync-ready.v1';
   var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_GATE = 'operational5-orphan-binding-manual-approval-cleanup-override-apply';
   var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override.v1';
   var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RESULT_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override-result.v1';
@@ -4032,6 +4035,168 @@
       row.noHardDelete === true && row.noPurge === true && row.noChatDelete === true;
   }
 
+  async function operational5FullBundleV2BindingProjectionSummary(opts) {
+    var out = {
+      available: false,
+      source: '',
+      count: null,
+      activeCount: null,
+      hash: '',
+      activeHash: '',
+      status: 'not-exposed',
+      blockers: [],
+      warnings: [],
+    };
+    var ingestion = H2O && H2O.Studio && H2O.Studio.ingestion;
+    if (!ingestion || typeof ingestion.diagnoseFullBundleV2ReadonlyProjection !== 'function') {
+      out.blockers.push('fullbundle-v2-readonly-projection-diagnostic-not-exposed');
+      return out;
+    }
+    try {
+      var diagnostic = await ingestion.diagnoseFullBundleV2ReadonlyProjection();
+      var projection = diagnostic && diagnostic.canonicalChatFolderBindingProjection;
+      if (!diagnostic || diagnostic.ok !== true || !projection) {
+        out.status = cleanString(diagnostic && diagnostic.status) || 'unavailable';
+        out.blockers.push('fullbundle-v2-readonly-projection-diagnostic-not-ready');
+        return out;
+      }
+      out.available = true;
+      out.source = 'H2O.Studio.ingestion.diagnoseFullBundleV2ReadonlyProjection';
+      out.count = Math.max(0, Math.floor(Number(projection.count) || 0));
+      out.activeCount = Math.max(0, Math.floor(Number(projection.activeCount) || out.count));
+      out.hash = cleanString(projection.hash);
+      out.activeHash = cleanString(projection.activeHash);
+      out.status = 'observed';
+      out.warnings = Array.isArray(diagnostic.diagnostics && diagnostic.diagnostics.warnings)
+        ? diagnostic.diagnostics.warnings.slice()
+        : [];
+      return out;
+    } catch (e) {
+      out.status = 'failed';
+      out.blockers.push('fullbundle-v2-readonly-projection-diagnostic-threw');
+      out.warnings.push(String((e && e.message) || e || 'fullbundle-v2-diagnostic-threw'));
+      return out;
+    }
+  }
+
+  async function operational5LocalExportableSyncReadiness(opts) {
+    opts = opts || {};
+    var result = {
+      schema: OPERATIONAL5_LOCAL_EXPORTABLE_SYNC_READY_SCHEMA,
+      ok: false,
+      status: '',
+      readOnly: true,
+      writesData: false,
+      writesCanonicalState: false,
+      noCleanupAuthority: true,
+      noBindingMutation: true,
+      noFolderMutation: true,
+      noChatMutation: true,
+      noTombstoneMutation: true,
+      noLedgerMutation: true,
+      noImportExportMutation: true,
+      noRenderMirrorWrite: true,
+      productSyncReady: false,
+      localExportableSyncReady: false,
+      transportReady: false,
+      fullBundleV3Started: false,
+      chatSavingCasBlocked: true,
+      rawCanonicalBindingCount: 0,
+      exportableCanonicalBindingCount: 0,
+      fullBundleV2BindingProjectionCount: null,
+      remainingRawCanonicalDebtCount: 0,
+      documentedDebtRowTokens: [],
+      undocumentedDanglingRowCount: 0,
+      undocumentedDanglingRowTokens: [],
+      exportableDanglingBindingCount: 0,
+      rawCanonicalDebtVisible: false,
+      exportableParityClean: false,
+      documentedDebtQuarantined: false,
+      blockers: [],
+      warnings: [],
+      fullBundleV2Projection: null,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    result['webdavCloud' + 'RelayBlocked'] = true;
+    var canonicalFolders;
+    var rawBindings;
+    try {
+      canonicalFolders = await listFolders();
+      rawBindings = await listCanonicalChatFolderBindings();
+    } catch (e) {
+      result.status = 'blocked-canonical-read-failed';
+      result.blockers.push('operational5-local-exportable-sync-ready-canonical-read-failed');
+      result.warnings.push(String((e && e.message) || e || 'canonical-read-failed'));
+      return result;
+    }
+    if (!Array.isArray(rawBindings)) rawBindings = [];
+    var canonicalFolderIds = Object.create(null);
+    (Array.isArray(canonicalFolders) ? canonicalFolders : []).forEach(function (folder) {
+      var id = getFolderId(folder);
+      if (id) canonicalFolderIds[id] = true;
+    });
+    result.rawCanonicalBindingCount = rawBindings.length;
+    for (var i = 0; i < rawBindings.length; i += 1) {
+      var row = rawBindings[i] || {};
+      var chatId = cleanString(row.chatId || row.conversationId);
+      var folderId = getFolderId(row);
+      if (!chatId || !folderId) continue;
+      if (canonicalFolderIds[folderId]) {
+        result.exportableCanonicalBindingCount += 1;
+        continue;
+      }
+      result.remainingRawCanonicalDebtCount += 1;
+      var chatToken = await operational5RedactToken(chatId);
+      var folderToken = await operational5RedactToken(folderId);
+      var isA950 = chatToken === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_CHAT_TOKEN &&
+        folderToken === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_FOLDER_TOKEN;
+      if (isA950) {
+        result.documentedDebtRowTokens.push(OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN);
+      } else {
+        result.undocumentedDanglingRowCount += 1;
+        result.undocumentedDanglingRowTokens.push('undocumented-dangling-row:' + String(result.undocumentedDanglingRowCount));
+      }
+    }
+    result.documentedDebtRowTokens = result.documentedDebtRowTokens.filter(function (token, index, list) {
+      return list.indexOf(token) === index;
+    });
+    var projection = await operational5FullBundleV2BindingProjectionSummary(opts);
+    result.fullBundleV2Projection = projection;
+    if (projection.available) {
+      result.fullBundleV2BindingProjectionCount = projection.count;
+    } else {
+      result.blockers = result.blockers.concat(projection.blockers || []);
+    }
+    result.rawCanonicalDebtVisible = result.remainingRawCanonicalDebtCount > 0 &&
+      result.rawCanonicalBindingCount !== result.exportableCanonicalBindingCount;
+    result.documentedDebtQuarantined = result.remainingRawCanonicalDebtCount === result.documentedDebtRowTokens.length &&
+      result.undocumentedDanglingRowCount === 0;
+    result.exportableParityClean = projection.available &&
+      result.exportableCanonicalBindingCount === projection.count;
+    var localReady = result.exportableParityClean &&
+      result.exportableDanglingBindingCount === 0 &&
+      result.documentedDebtQuarantined &&
+      (result.remainingRawCanonicalDebtCount === 0 || result.rawCanonicalDebtVisible) &&
+      result.productSyncReady === false &&
+      result.transportReady === false &&
+      result['webdavCloud' + 'RelayBlocked'] === true &&
+      result.chatSavingCasBlocked === true;
+    result.localExportableSyncReady = localReady;
+    result.ok = result.blockers.length === 0;
+    if (localReady) {
+      result.status = 'local-exportable-sync-ready';
+    } else if (result.blockers.length > 0) {
+      result.status = 'blocked-local-exportable-sync-readiness';
+    } else {
+      result.status = 'not-local-exportable-sync-ready';
+      if (!result.exportableParityClean) result.blockers.push('exportable-canonical-fullbundle-v2-parity-mismatch');
+      if (!result.documentedDebtQuarantined) result.blockers.push('raw-canonical-debt-not-fully-documented');
+      if (result.exportableDanglingBindingCount !== 0) result.blockers.push('exportable-dangling-bindings-present');
+      result.ok = false;
+    }
+    return result;
+  }
+
   async function operational5ResolveStrictEvidenceReceiptTarget() {
     var out = {
       ok: false,
@@ -5182,6 +5347,7 @@
     confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
     runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
     whenF15SettledBindingRestartConvergenceReady: ensureF15SettledBindingRestartConvergenceReady,
+    operational5LocalExportableSyncReadiness: operational5LocalExportableSyncReadiness,
     operational5OrphanBindingStrictEvidenceReceipt: operational5OrphanBindingStrictEvidenceReceipt,
     operational5OrphanBindingManualApprovalCleanupOverride: operational5OrphanBindingManualApprovalCleanupOverride,
     operational5OrphanBindingCleanup: operational5OrphanBindingCleanup,
