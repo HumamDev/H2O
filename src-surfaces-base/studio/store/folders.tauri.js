@@ -95,6 +95,15 @@
   var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_APPLY_GATE = 'operational5-orphan-binding-cleanup-apply';
   var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_SCHEMA = 'h2o.studio.folder-sync.operational5-orphan-binding-cleanup.v1';
   var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_RECEIPT_SCHEMA = 'h2o.studio.folder-sync.operational5-orphan-binding-cleanup-receipt.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_GATE = 'operational5-orphan-binding-strict-evidence-receipt-record';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_SCHEMA = 'h2o.studio.operational5.orphan-binding-strict-evidence-receipt.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_RESULT_SCHEMA = 'h2o.studio.operational5.orphan-binding-strict-evidence-receipt-result.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_KEY = 'h2o:studio:operational5:orphan-binding-strict-evidence-receipts:v1';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_SCHEMA = 'h2o.studio.operational5.orphan-binding-strict-evidence-receipt-ledger.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN = 'row:fdd2456fc8a2';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN = 'r:2f29d39a6c4f';
+  var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN = 'r:2d5469848470';
+  var OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN = 'row:a950a44b859f';
   var F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES = {
     'missing-mirror-folder': true,
     'field-mismatch:color': true,
@@ -3978,6 +3987,241 @@
     try { return 'r:' + (await sha256Hex(String(id))).slice(0, 12); } catch (_) { return 'r:redacted'; }
   }
 
+  function operational5StrictEvidenceReceiptId(rowToken) {
+    return 'operational5-orphan-binding-strict-evidence-receipt:' + cleanString(rowToken);
+  }
+
+  function operational5StrictEvidenceLedgerShape(input) {
+    var raw = input && typeof input === 'object' ? input : {};
+    var receipts = Array.isArray(raw.receipts) ? raw.receipts : [];
+    return {
+      schema: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_SCHEMA,
+      storageKey: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_KEY,
+      createdAt: cleanString(raw.createdAt) || nowIsoSeconds(),
+      updatedAt: cleanString(raw.updatedAt) || '',
+      receipts: receipts.filter(function (receipt) {
+        return receipt && typeof receipt === 'object' &&
+          cleanString(receipt.schema) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_SCHEMA &&
+          cleanString(receipt.receiptId);
+      }),
+    };
+  }
+
+  async function readOperational5StrictEvidenceLedger() {
+    try {
+      return operational5StrictEvidenceLedgerShape(await chromeStorageGet(OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_KEY));
+    } catch (_) {
+      return operational5StrictEvidenceLedgerShape(null);
+    }
+  }
+
+  async function writeOperational5StrictEvidenceLedger(ledger) {
+    var payload = {};
+    payload[OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_LEDGER_KEY] = ledger;
+    return chromeStorageSet(payload);
+  }
+
+  function operational5ReceiptSafeShape(row) {
+    return row && row.source === 'desktop-canonical-folder-bindings-sqlite' &&
+      row.sourceSurface === 'desktop-studio' && row.authority === 'desktop' &&
+      row.status === 'active' && row.state === 'active' &&
+      row.noHardDelete === true && row.noPurge === true && row.noChatDelete === true;
+  }
+
+  async function operational5OrphanBindingStrictEvidenceReceipt(opts) {
+    opts = opts || {};
+    var rowToken = cleanString(opts.rowToken);
+    var chatToken = cleanString(opts.chatToken);
+    var folderToken = cleanString(opts.folderToken);
+    var writeRequested = opts.write === true || opts.record === true;
+    var gateSatisfied = cleanString(opts.gate) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_GATE;
+    var result = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_RESULT_SCHEMA,
+      ok: false,
+      status: '',
+      gate: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_GATE,
+      gateSatisfied: gateSatisfied,
+      writeRequested: writeRequested,
+      dryRun: !(writeRequested && gateSatisfied),
+      targetRowToken: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN,
+      documentedDebtRowToken: OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN,
+      rowA950DocumentedDebt: true,
+      rowFddEligibleForReceiptOnly: true,
+      cleanupApplyApproved: false,
+      tombstoneSubstitute: false,
+      manualApprovalPrerequisiteOnly: true,
+      noFolderDelete: true,
+      noChatDelete: true,
+      noBindingDelete: true,
+      noTombstoneMutation: true,
+      noLedgerMutation: true,
+      noImportExportMutation: true,
+      noRenderMirrorWrite: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      blockers: [],
+      warnings: [],
+      receipt: null,
+      receiptPersisted: false,
+      duplicateReceiptZeroWrite: false,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    if (rowToken === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN) {
+      result.status = 'rejected-documented-debt-row-not-eligible-for-strict-evidence-receipt';
+      result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-row-a950-documented-debt');
+      return result;
+    }
+    if (rowToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN ||
+        chatToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN ||
+        folderToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN) {
+      result.status = 'rejected-target-token-mismatch';
+      result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-target-token-mismatch');
+      return result;
+    }
+
+    var canonicalFolders;
+    var rawBindings;
+    try {
+      canonicalFolders = await listFolders();
+      rawBindings = await listCanonicalChatFolderBindings();
+    } catch (e) {
+      result.status = 'blocked-canonical-read-failed';
+      result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-canonical-read-failed');
+      return result;
+    }
+    var canonicalFolderIds = Object.create(null);
+    (Array.isArray(canonicalFolders) ? canonicalFolders : []).forEach(function (f) {
+      var id = getFolderId(f); if (id) canonicalFolderIds[id] = true;
+    });
+    var matches = [];
+    var bindings = Array.isArray(rawBindings) ? rawBindings : [];
+    var exportableCount = 0;
+    for (var i = 0; i < bindings.length; i += 1) {
+      var row = bindings[i] || {};
+      var chatId = cleanString(row.chatId || row.conversationId);
+      var folderId = getFolderId(row);
+      if (!chatId || !folderId) continue;
+      if (canonicalFolderIds[folderId]) { exportableCount += 1; continue; }
+      var rowChatToken = await operational5RedactToken(chatId);
+      var rowFolderToken = await operational5RedactToken(folderId);
+      if (rowChatToken === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
+          rowFolderToken === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN) {
+        matches.push({ row: row, chatId: chatId, folderId: folderId });
+      }
+    }
+    if (matches.length !== 1) {
+      result.status = 'blocked-target-row-not-uniquely-resolved';
+      result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-target-row-not-uniquely-resolved');
+      result.targetMatchCount = matches.length;
+      return result;
+    }
+
+    var target = matches[0];
+    var tombstones = getTombstoneStore();
+    var folderTomb = null;
+    var bindingTomb = null;
+    if (tombstones && typeof tombstones.getTombstone === 'function') {
+      try { folderTomb = await tombstones.getTombstone('folder', folderTombstoneRecordId(target.folderId)); } catch (_) { folderTomb = null; }
+      try { bindingTomb = await tombstones.getTombstone('folderBinding', 'folderBinding:' + encodeURIComponent(target.chatId) + ':' + encodeURIComponent(target.folderId)); } catch (_) { bindingTomb = null; }
+    }
+    var chatsStore = (H2O.Studio && H2O.Studio.store && H2O.Studio.store.chats) || null;
+    var chatRow = null;
+    if (chatsStore && typeof chatsStore.get === 'function') {
+      try { chatRow = await chatsStore.get(target.chatId); } catch (_) { chatRow = null; }
+    }
+    var safeShape = operational5ReceiptSafeShape(target.row);
+    var folderAbsent = !canonicalFolderIds[target.folderId];
+    var eligible = !!chatRow && folderAbsent && safeShape && !folderTomb && !!bindingTomb;
+    if (!eligible) {
+      result.status = 'blocked-strict-evidence-receipt-eligibility-failed';
+      if (!chatRow) result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-chat-not-live');
+      if (!folderAbsent) result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-folder-present');
+      if (!safeShape) result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-row-safe-shape-failed');
+      if (folderTomb) result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-folder-tombstone-present-use-cleanup-preflight');
+      if (!bindingTomb) result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-binding-tombstone-missing');
+      return result;
+    }
+
+    var exactFolderRecordToken = await operational5RedactToken(folderTombstoneRecordId(target.folderId));
+    var exactFolderBindingRecordToken = await operational5RedactToken('folderBinding:' + encodeURIComponent(target.chatId) + ':' + encodeURIComponent(target.folderId));
+    var receiptId = operational5StrictEvidenceReceiptId(rowToken);
+    var receipt = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_SCHEMA,
+      receiptId: receiptId,
+      rowToken: rowToken,
+      chatToken: chatToken,
+      folderToken: folderToken,
+      exactFolderRecordToken: exactFolderRecordToken,
+      exactFolderBindingRecordToken: exactFolderBindingRecordToken,
+      exactFolderTombstonePresent: false,
+      exactFolderBindingTombstonePresent: true,
+      chatLive: true,
+      folderAbsentFromCanonicalFolders: true,
+      rowSafeShape: true,
+      rawCanonicalBindingCount: bindings.length,
+      exportableCanonicalBindingCount: exportableCount,
+      noExportableBindingRemoval: true,
+      cleanupApplyApproved: false,
+      tombstoneSubstitute: false,
+      manualApprovalPrerequisiteOnly: true,
+      noFolderDelete: true,
+      noChatDelete: true,
+      noBindingDelete: true,
+      noTombstoneMutation: true,
+      noLedgerMutation: true,
+      noImportExportMutation: true,
+      noRenderMirrorWrite: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      privacy: { redacted: true, hashOnly: true, rawIdsLogged: false, rawNamesLogged: false },
+    };
+    receipt.receiptHash = await sha256Hex(canonicalJSON(Object.assign({}, receipt, { receiptHash: '' })));
+    result.receipt = receipt;
+    if (result.dryRun) {
+      if (writeRequested && !gateSatisfied) {
+        result.status = 'blocked-receipt-gate-required';
+        result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-gate-required');
+      } else {
+        result.ok = true;
+        result.status = 'dry-run-strict-evidence-receipt-ready';
+      }
+      return result;
+    }
+
+    var ledger = await readOperational5StrictEvidenceLedger();
+    var existing = ledger.receipts.filter(function (candidate) {
+      return cleanString(candidate.receiptId) === receiptId;
+    });
+    if (existing.length > 0) {
+      if (existing.some(function (candidate) { return cleanString(candidate.receiptHash) !== receipt.receiptHash; })) {
+        result.status = 'blocked-conflicting-strict-evidence-receipt';
+        result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-conflict');
+        return result;
+      }
+      result.ok = true;
+      result.status = 'already-recorded-strict-evidence-receipt';
+      result.duplicateReceiptZeroWrite = true;
+      result.receiptPersisted = false;
+      return result;
+    }
+    ledger.receipts.push(Object.assign({ recordedAt: nowIsoSeconds() }, receipt));
+    ledger.updatedAt = nowIsoSeconds();
+    try {
+      await writeOperational5StrictEvidenceLedger(ledger);
+    } catch (e2) {
+      result.status = 'blocked-receipt-storage-write-failed';
+      result.blockers.push('operational5-orphan-binding-strict-evidence-receipt-storage-write-failed');
+      result.warnings.push(String((e2 && e2.message) || e2 || 'storage-write-failed'));
+      return result;
+    }
+    result.ok = true;
+    result.status = 'recorded-strict-evidence-receipt';
+    result.receiptPersisted = true;
+    return result;
+  }
+
   /* Operational.5 reviewed orphan-binding cleanup. Removes ONLY dangling raw canonical `folder_bindings` rows
    * whose folder is absent from the current canonical folder list AND that are backed by both a folder tombstone
    * and a folderBinding tombstone AND carry the expected safe desktop-canonical shape. Dry-run by default; the
@@ -4673,6 +4917,7 @@
     confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
     runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
     whenF15SettledBindingRestartConvergenceReady: ensureF15SettledBindingRestartConvergenceReady,
+    operational5OrphanBindingStrictEvidenceReceipt: operational5OrphanBindingStrictEvidenceReceipt,
     operational5OrphanBindingCleanup: operational5OrphanBindingCleanup,
     listForChat: listForChat,
     count: countFolders,
