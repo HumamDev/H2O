@@ -137,12 +137,12 @@ assertIncludes(cleanupBody, "tombstones.getTombstone('folderBinding', 'folderBin
 assertIncludes(cleanupBody, 'var verified = safeShape && !!folderTomb && !!bindingTomb && !canonicalFolderIds[folderId]',
   'cleanup strict tombstone verification remains unchanged');
 
-for (const forbidden of [
-  'operational5-orphan-binding-manual-approval-cleanup-override-apply',
-  'manual-approval-cleanup-override',
-]) {
-  assertNotIncludes(foldersStore, forbidden, `manual override must not be implemented in source yet: ${forbidden}`);
-}
+assertIncludes(foldersStore, 'operational5OrphanBindingManualApprovalCleanupOverride',
+  'manual override implementation may now exist after this design');
+assertIncludes(foldersStore, 'operational5-orphan-binding-manual-approval-cleanup-override-apply',
+  'manual override gate may now exist after this design');
+assertIncludes(foldersStore, 'OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN',
+  'documented debt row token remains source-anchored');
 
 const runtimeCombined = [foldersStore, folderSync, folderImport, webdavGates].join('\n');
 assert.ok(!runtimeCombined.includes('productSyncReady: true'), 'productSyncReady must not be true');

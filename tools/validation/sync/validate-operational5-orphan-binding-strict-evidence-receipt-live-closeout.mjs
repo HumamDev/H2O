@@ -113,7 +113,7 @@ assertIncludes(implementationEvidence, 'OPERATIONAL.5 ORPHAN-BINDING STRICT EVID
 assertIncludes(writeIntentEvidence, 'OPERATIONAL.5 ORPHAN-BINDING STRICT EVIDENCE RECEIPT WRITE-INTENT FIX IMPLEMENTED - CLEANUP STILL BLOCKED',
   'write-intent fix retained');
 
-const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', '/* Operational.5 reviewed orphan-binding cleanup.');
+const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', 'async function operational5OrphanBindingManualApprovalCleanupOverride');
 for (const token of [
   'var writeRequested = opts.apply === true || opts.write === true || opts.record === true',
   'dryRun: !(writeRequested && gateSatisfied)',

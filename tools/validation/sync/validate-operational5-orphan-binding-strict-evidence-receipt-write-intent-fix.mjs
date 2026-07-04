@@ -86,7 +86,7 @@ for (const token of [
 assertIncludes(implementationEvidence, 'OPERATIONAL.5 ORPHAN-BINDING STRICT EVIDENCE RECEIPT PATH IMPLEMENTED - CLEANUP STILL BLOCKED',
   'base strict evidence implementation retained');
 
-const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', '/* Operational.5 reviewed orphan-binding cleanup.');
+const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', 'async function operational5OrphanBindingManualApprovalCleanupOverride');
 assertIncludes(receiptBody, 'var writeRequested = opts.apply === true || opts.write === true || opts.record === true',
   'write intent must include apply true');
 assertIncludes(receiptBody, 'dryRun: !(writeRequested && gateSatisfied)', 'dry-run remains tied to write intent plus gate');

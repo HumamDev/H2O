@@ -104,6 +104,10 @@
   var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN = 'r:2f29d39a6c4f';
   var OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN = 'r:2d5469848470';
   var OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN = 'row:a950a44b859f';
+  var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_GATE = 'operational5-orphan-binding-manual-approval-cleanup-override-apply';
+  var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RESULT_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override-result.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RECEIPT_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override-receipt.v1';
   var F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES = {
     'missing-mirror-folder': true,
     'field-mismatch:color': true,
@@ -4028,6 +4032,110 @@
       row.noHardDelete === true && row.noPurge === true && row.noChatDelete === true;
   }
 
+  async function operational5ResolveStrictEvidenceReceiptTarget() {
+    var out = {
+      ok: false,
+      blockers: [],
+      canonicalFolders: [],
+      rawBindings: [],
+      exportableCount: 0,
+      target: null,
+      folderAbsent: false,
+      chatLive: false,
+      rowSafeShape: false,
+      strictEvidenceReceipt: null,
+      strictEvidenceReceiptPresent: false,
+      strictEvidenceReceiptMatches: false,
+    };
+    try {
+      out.canonicalFolders = await listFolders();
+      out.rawBindings = await listCanonicalChatFolderBindings();
+    } catch (e) {
+      out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-canonical-read-failed');
+      return out;
+    }
+    var canonicalFolderIds = Object.create(null);
+    (Array.isArray(out.canonicalFolders) ? out.canonicalFolders : []).forEach(function (f) {
+      var id = getFolderId(f); if (id) canonicalFolderIds[id] = true;
+    });
+    var matches = [];
+    var bindings = Array.isArray(out.rawBindings) ? out.rawBindings : [];
+    for (var i = 0; i < bindings.length; i += 1) {
+      var row = bindings[i] || {};
+      var chatId = cleanString(row.chatId || row.conversationId);
+      var folderId = getFolderId(row);
+      if (!chatId || !folderId) continue;
+      if (canonicalFolderIds[folderId]) { out.exportableCount += 1; continue; }
+      var rowChatToken = await operational5RedactToken(chatId);
+      var rowFolderToken = await operational5RedactToken(folderId);
+      if (rowChatToken === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
+          rowFolderToken === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN) {
+        matches.push({ row: row, chatId: chatId, folderId: folderId });
+      }
+    }
+    if (matches.length !== 1) {
+      out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-target-row-not-uniquely-resolved');
+      out.targetMatchCount = matches.length;
+      return out;
+    }
+    out.target = matches[0];
+    out.folderAbsent = !canonicalFolderIds[out.target.folderId];
+    out.rowSafeShape = operational5ReceiptSafeShape(out.target.row);
+    var chatsStore = (H2O.Studio && H2O.Studio.store && H2O.Studio.store.chats) || null;
+    if (chatsStore && typeof chatsStore.get === 'function') {
+      try { out.chatLive = !!(await chatsStore.get(out.target.chatId)); } catch (_) { out.chatLive = false; }
+    }
+    var ledger = await readOperational5StrictEvidenceLedger();
+    var receiptId = operational5StrictEvidenceReceiptId(OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN);
+    var receipts = Array.isArray(ledger.receipts) ? ledger.receipts : [];
+    out.strictEvidenceReceipt = receipts.filter(function (receipt) {
+      return cleanString(receipt.receiptId) === receiptId;
+    })[0] || null;
+    out.strictEvidenceReceiptPresent = !!out.strictEvidenceReceipt;
+    out.strictEvidenceReceiptMatches = !!out.strictEvidenceReceipt &&
+      cleanString(out.strictEvidenceReceipt.rowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN &&
+      cleanString(out.strictEvidenceReceipt.chatToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
+      cleanString(out.strictEvidenceReceipt.folderToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN &&
+      out.strictEvidenceReceipt.chatLive === true &&
+      out.strictEvidenceReceipt.folderAbsentFromCanonicalFolders === true &&
+      out.strictEvidenceReceipt.exactFolderBindingTombstonePresent === true &&
+      out.strictEvidenceReceipt.exactFolderTombstonePresent === false &&
+      out.strictEvidenceReceipt.rowSafeShape === true &&
+      out.strictEvidenceReceipt.cleanupApplyApproved === false &&
+      out.strictEvidenceReceipt.tombstoneSubstitute === false &&
+      out.strictEvidenceReceipt.manualApprovalPrerequisiteOnly === true;
+    if (!out.chatLive) out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-chat-not-live');
+    if (!out.folderAbsent) out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-folder-present');
+    if (!out.rowSafeShape) out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-row-safe-shape-failed');
+    if (!out.strictEvidenceReceiptPresent) out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-strict-evidence-receipt-missing');
+    if (out.strictEvidenceReceiptPresent && !out.strictEvidenceReceiptMatches) out.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-strict-evidence-receipt-mismatch');
+    out.ok = out.blockers.length === 0;
+    return out;
+  }
+
+  function operational5ManualApprovalCleanupOverrideAccepted(approval, strictEvidenceReceipt) {
+    var a = approval && typeof approval === 'object' ? approval : {};
+    var receiptId = operational5StrictEvidenceReceiptId(OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN);
+    return cleanString(a.schema) === OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA &&
+      a.approved === true &&
+      cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN &&
+      cleanString(a.rejectedRowTokenShouldRemainDebt || a.excludedRowToken) === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN &&
+      cleanString(a.chatToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
+      cleanString(a.folderToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN &&
+      cleanString(a.strictEvidenceReceiptId) === receiptId &&
+      (!a.strictEvidenceReceiptHash || cleanString(a.strictEvidenceReceiptHash) === cleanString(strictEvidenceReceipt && strictEvidenceReceipt.receiptHash)) &&
+      a.removeOnlyExactDanglingFolderBindingRow === true &&
+      a.noFolderDelete === true &&
+      a.noChatDelete === true &&
+      a.noTombstoneMutation === true &&
+      a.noLedgerMutation === true &&
+      a.noImportExportMutation === true &&
+      a.noRenderMirrorWrite === true &&
+      a.noWebdavWrite === true &&
+      a.noChatSavingCas === true &&
+      a.productSyncReady === false;
+  }
+
   async function operational5OrphanBindingStrictEvidenceReceipt(opts) {
     opts = opts || {};
     var rowToken = cleanString(opts.rowToken);
@@ -4219,6 +4327,147 @@
     result.ok = true;
     result.status = 'recorded-strict-evidence-receipt';
     result.receiptPersisted = true;
+    return result;
+  }
+
+  async function operational5OrphanBindingManualApprovalCleanupOverride(opts) {
+    opts = opts || {};
+    var applyRequested = opts.apply === true;
+    var gateSatisfied = cleanString(opts.gate) === OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_GATE;
+    var result = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RESULT_SCHEMA,
+      ok: false,
+      status: '',
+      gate: OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_GATE,
+      gateSatisfied: gateSatisfied,
+      applyRequested: applyRequested,
+      dryRun: !(applyRequested && gateSatisfied),
+      targetRowToken: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN,
+      excludedRowToken: OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN,
+      rowA950Excluded: true,
+      strictEvidenceReceiptRequired: true,
+      manualApprovalRequired: true,
+      cleanupApplyApprovedByStrictEvidenceReceipt: false,
+      tombstoneSubstitute: false,
+      noFolderDelete: true,
+      noChatDelete: true,
+      noTombstoneMutation: true,
+      noLedgerMutation: true,
+      noImportExportMutation: true,
+      noRenderMirrorWrite: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      rawCanonicalBindingCountBefore: 0,
+      rawCanonicalBindingCountAfter: 0,
+      exportableCanonicalBindingCount: 0,
+      expectedFullBundleV2BindingProjectionCount: 12,
+      removedCount: 0,
+      duplicateApplyZeroWrite: false,
+      blockers: [],
+      warnings: [],
+      receipt: null,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    var rowToken = cleanString(opts.rowToken);
+    var chatToken = cleanString(opts.chatToken);
+    var folderToken = cleanString(opts.folderToken);
+    if (rowToken === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN) {
+      result.status = 'rejected-documented-debt-row-excluded';
+      result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-row-a950-excluded');
+      return result;
+    }
+    if (rowToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN ||
+        chatToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN ||
+        folderToken !== OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN) {
+      result.status = 'rejected-target-token-mismatch';
+      result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-target-token-mismatch');
+      return result;
+    }
+    var resolved = await operational5ResolveStrictEvidenceReceiptTarget();
+    result.rawCanonicalBindingCountBefore = Array.isArray(resolved.rawBindings) ? resolved.rawBindings.length : 0;
+    result.rawCanonicalBindingCountAfter = result.rawCanonicalBindingCountBefore;
+    result.exportableCanonicalBindingCount = resolved.exportableCount || 0;
+    if (!resolved.ok) {
+      result.status = 'blocked-override-preconditions-failed';
+      result.blockers = result.blockers.concat(resolved.blockers);
+      return result;
+    }
+    if (!operational5ManualApprovalCleanupOverrideAccepted(opts.manualApproval || opts.approval, resolved.strictEvidenceReceipt)) {
+      result.status = 'blocked-manual-approval-required';
+      result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-manual-approval-required');
+      return result;
+    }
+    result.receipt = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RECEIPT_SCHEMA,
+      at: nowIsoSeconds(),
+      dryRun: result.dryRun,
+      targetRowToken: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN,
+      excludedRowToken: OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN,
+      strictEvidenceReceiptId: operational5StrictEvidenceReceiptId(OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN),
+      strictEvidenceReceiptHash: cleanString(resolved.strictEvidenceReceipt && resolved.strictEvidenceReceipt.receiptHash),
+      chatToken: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN,
+      folderToken: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN,
+      manualApprovalSchema: OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA,
+      cleanupApplyApprovedByStrictEvidenceReceipt: false,
+      tombstoneSubstitute: false,
+      removedCount: 0,
+      rawCanonicalBindingCountBefore: result.rawCanonicalBindingCountBefore,
+      rawCanonicalBindingCountAfter: result.rawCanonicalBindingCountAfter,
+      exportableCanonicalBindingCount: result.exportableCanonicalBindingCount,
+      expectedFullBundleV2BindingProjectionCount: result.expectedFullBundleV2BindingProjectionCount,
+      noFolderDelete: true,
+      noChatDelete: true,
+      noTombstoneMutation: true,
+      noLedgerMutation: true,
+      noImportExportMutation: true,
+      noRenderMirrorWrite: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    if (result.dryRun) {
+      if (applyRequested && !gateSatisfied) {
+        result.status = 'blocked-override-apply-gate-required';
+        result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-apply-gate-required');
+      } else {
+        result.ok = true;
+        result.status = 'dry-run-manual-approval-cleanup-override-ready';
+      }
+      return result;
+    }
+    var stillRows = [];
+    try { stillRows = await listCanonicalChatFolderBindingsForChat(resolved.target.chatId); } catch (_) { stillRows = []; }
+    var stillPresent = (Array.isArray(stillRows) ? stillRows : []).some(function (r) {
+      return getFolderId(r) === resolved.target.folderId;
+    });
+    if (!stillPresent) {
+      result.ok = true;
+      result.status = 'already-removed-manual-approval-cleanup-override';
+      result.duplicateApplyZeroWrite = true;
+      result.receipt.dryRun = false;
+      result.receipt.duplicateApplyZeroWrite = true;
+      return result;
+    }
+    var del;
+    try { del = await sqlExecute('DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?', [resolved.target.chatId, resolved.target.folderId]); }
+    catch (e) {
+      result.status = 'blocked-override-delete-threw';
+      result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-delete-threw');
+      result.warnings.push(String((e && e.message) || e || 'delete-threw'));
+      return result;
+    }
+    result.removedCount = readRowsAffected(del) > 0 ? 1 : 0;
+    var afterRows = [];
+    try { afterRows = await listCanonicalChatFolderBindings(); } catch (_) { afterRows = []; }
+    result.rawCanonicalBindingCountAfter = Array.isArray(afterRows) ? afterRows.length : result.rawCanonicalBindingCountBefore - result.removedCount;
+    result.receipt.dryRun = false;
+    result.receipt.removedCount = result.removedCount;
+    result.receipt.rawCanonicalBindingCountAfter = result.rawCanonicalBindingCountAfter;
+    result.ok = result.removedCount === 1;
+    result.status = result.ok ? 'applied-manual-approval-cleanup-override' : 'blocked-override-delete-zero-rows';
+    if (!result.ok) result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-delete-zero-rows');
     return result;
   }
 
@@ -4918,6 +5167,7 @@
     runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
     whenF15SettledBindingRestartConvergenceReady: ensureF15SettledBindingRestartConvergenceReady,
     operational5OrphanBindingStrictEvidenceReceipt: operational5OrphanBindingStrictEvidenceReceipt,
+    operational5OrphanBindingManualApprovalCleanupOverride: operational5OrphanBindingManualApprovalCleanupOverride,
     operational5OrphanBindingCleanup: operational5OrphanBindingCleanup,
     listForChat: listForChat,
     count: countFolders,

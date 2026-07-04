@@ -149,7 +149,7 @@ for (const token of [
   assertIncludes(foldersStore, token, `source token ${token}`);
 }
 
-const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', '/* Operational.5 reviewed orphan-binding cleanup.');
+const receiptBody = functionBody(foldersStore, 'operational5OrphanBindingStrictEvidenceReceipt', 'async function operational5OrphanBindingManualApprovalCleanupOverride');
 for (const token of [
   "rowToken === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN",
   "result.status = 'rejected-documented-debt-row-not-eligible-for-strict-evidence-receipt'",
