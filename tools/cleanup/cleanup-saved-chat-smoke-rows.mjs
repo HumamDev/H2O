@@ -40,10 +40,45 @@ const TITLE_PATTERNS = [
   /^Writer identity debug snapshot$/,
 ];
 
+// A running Desktop Studio holds the smoke/debug rows in memory and can re-export
+// them into the local fullBundle v2 sync artifacts, after which focus-import
+// reinserts them into SQLite — silently undoing a cleanup that "verified" clean.
+// So apply refuses to run while Desktop Studio is running (override: --force).
+// productName "H2O Studio" (.app), bundle id org.h2o.studio.desktop, dev binary
+// h2o-studio-desktop. Matched against the full command line, case-insensitive.
+const DESKTOP_PROCESS_PATTERNS = ['H2O Studio.app', 'org.h2o.studio.desktop', 'h2o-studio-desktop'];
+const RECHECK_DELAY_MS = 5000;
+
+// Conservative detection: pgrep -f (full command line) per pattern, exclude this
+// cleanup process (by pid) and the cleanup script itself (by resolved command).
+// Fails OPEN (returns []) if pgrep is unavailable — the delayed re-check is the
+// backstop in that case.
+function detectRunningDesktop() {
+  const pids = new Set();
+  for (const pattern of DESKTOP_PROCESS_PATTERNS) {
+    const result = spawnSync('pgrep', ['-f', '-i', pattern], { encoding: 'utf8' });
+    if (result.error || result.status !== 0 || !result.stdout) continue; // status 1 = no match
+    for (const line of result.stdout.trim().split('\n')) {
+      const pid = line.trim();
+      if (/^\d+$/.test(pid) && pid !== String(process.pid)) pids.add(pid);
+    }
+  }
+  const found = [];
+  for (const pid of pids) {
+    const ps = spawnSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8' });
+    const command = String(ps.stdout || '').trim();
+    if (!command) continue;
+    if (command.includes('cleanup-saved-chat-smoke-rows')) continue; // never self-flag
+    found.push({ pid, command });
+  }
+  return found;
+}
+
 function parseArgs(argv) {
   const out = {
     mode: '',
     db: DEFAULT_DB,
+    force: false,
     backup: false,
     backupDir: DEFAULT_BACKUP_DIR,
     packagesDir: DEFAULT_PACKAGES_DIR,
@@ -56,6 +91,7 @@ function parseArgs(argv) {
     if (arg === '--dry-run') out.mode = 'dry-run';
     else if (arg === '--apply') out.mode = 'apply';
     else if (arg === '--verify') out.mode = 'verify';
+    else if (arg === '--force') out.force = true;
     else if (arg === '--backup') out.backup = true;
     else if (arg === '--db') out.db = argv[++i] || '';
     else if (arg === '--backup-dir') out.backupDir = argv[++i] || '';
@@ -411,6 +447,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(args.db)) throw new Error(`DB not found: ${args.db}`);
 
+  const desktopRunning = detectRunningDesktop();
   const beforeCounts = liveCounts(args.db);
   const { candidates, ambiguous } = loadCandidates(args.db);
   const { packageCandidates, packageAmbiguous } = loadPackageCandidates(candidates, args.packagesDir || DEFAULT_PACKAGES_DIR);
@@ -421,6 +458,7 @@ async function main() {
     mode: args.mode,
     dbPath: args.db,
     beforeCounts,
+    desktopRunning,
     candidateCount: candidates.length,
     candidates,
     ambiguous: [...ambiguous, ...packageAmbiguous],
@@ -434,6 +472,16 @@ async function main() {
     process.exit(2);
   }
 
+  // Pre-flight running-Desktop guard. A running Desktop Studio can re-export the
+  // smoke rows into the sync bundle and focus-import them back into SQLite, silently
+  // undoing a cleanup. Warn for every mode; refuse apply (without --force) BEFORE any
+  // mutation (backup / SQLite write / sync-bundle write / sidecar update).
+  if (desktopRunning.length) {
+    console.error('WARNING: Desktop Studio appears to be running:');
+    for (const proc of desktopRunning) console.error(`  pid ${proc.pid}: ${proc.command}`);
+    console.error('A running Desktop can re-export smoke rows into the sync bundle and focus-import them back into SQLite.');
+  }
+
   if (args.mode === 'dry-run') {
     console.log(JSON.stringify({ ...base, status: 'dry-run-ok' }, null, 2));
     return;
@@ -442,6 +490,20 @@ async function main() {
   if (args.mode === 'verify') {
     console.log(JSON.stringify({ ...base, status: candidates.length ? 'verify-failed' : 'verified', verify: verify(args.db) }, null, 2));
     process.exit(candidates.length ? 3 : 0);
+  }
+
+  if (desktopRunning.length && !args.force) {
+    console.error('Close Desktop Studio completely, then rerun cleanup.');
+    console.log(JSON.stringify({
+      ...base,
+      status: 'blocked',
+      reason: 'desktop-running',
+      hint: 'Close Desktop Studio, or rerun with --force to override (accepts the rehydration risk).',
+    }, null, 2));
+    process.exit(5);
+  }
+  if (desktopRunning.length && args.force) {
+    console.error('--force: proceeding despite a running Desktop Studio (rehydration risk accepted).');
   }
 
   let backupPath = '';
@@ -473,6 +535,27 @@ async function main() {
     verify: after,
   }, null, 2));
   if (after.remainingCandidates.length) process.exit(4);
+
+  // Delayed post-verify re-check: a still-running Desktop (or an export/import cycle
+  // triggered during cleanup) can reinsert the smoke rows seconds after a clean apply.
+  // Wait a fixed interval, then re-count. Deterministic: one wait, one re-count.
+  await new Promise((resolve) => setTimeout(resolve, RECHECK_DELAY_MS));
+  const recheckCandidates = loadCandidates(args.db).candidates;
+  const recheckChats = liveCounts(args.db).chats;
+  console.log(JSON.stringify({
+    schema: base.schema,
+    mode: 'apply',
+    stage: 'delayed-recheck',
+    status: recheckCandidates.length ? 'rehydrated' : 'stable',
+    recheckDelayMs: RECHECK_DELAY_MS,
+    recheckChats,
+    recheckSmoke: recheckCandidates.length,
+    recheckCandidateIds: recheckCandidates.map((row) => row.id),
+  }, null, 2));
+  if (recheckCandidates.length) {
+    console.error('Smoke rows reappeared after cleanup; likely reinserted by a running Desktop/export/import process.');
+    process.exit(6);
+  }
 }
 
 try {

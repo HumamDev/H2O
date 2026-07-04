@@ -1,6 +1,12 @@
 # Saved Chats Smoke Row Cleanup
 
-Status: RUNTIME DATA CLEANUP BLOCKED - SOURCE IDENTIFIED
+Status: RUNTIME DATA CLEANUP DONE - ROOT CAUSE IDENTIFIED - TOOL HARDENED
+
+The 21 smoke/debug rows are removed and the state is stable (chats|20, smoke|0,
+verified across a Desktop reopen). The root cause of the earlier "cleanup undone"
+behavior was a still-running Desktop Studio; the cleanup tool now refuses `apply`
+while Desktop is running (unless `--force`) and re-checks after a delay. See
+"Root cause: running-Desktop rehydration" and "Tool hardening" below.
 
 ## Scope
 
@@ -147,6 +153,67 @@ Expected final counts after successful apply:
 - snapshot turns: 51
 - candidate count: 0
 
+## Root cause: running-Desktop rehydration
+
+The first cleanup **appeared** to succeed — it scrubbed SQLite (→ chats 20 / smoke 0),
+scrubbed the local fullBundle v2 sync bundles (`latest.json`, `chrome-latest.json`,
+device `latest.json`), and its immediate verify reported `candidateCount: 0`. But the
+rows returned:
+
+- Desktop Studio was **still running** during/after that cleanup. It held the 21
+  smoke/debug rows in its in-memory library.
+- The running app's **auto-export** path (`auto-export.tauri.js`) re-wrote the just-
+  cleaned sync bundle from that in-memory state, re-introducing the 21 rows.
+- On the next focus, **focus-import** (`focus-import.tauri.js`) re-imported the bundle
+  into SQLite, re-growing it to chats 41 / smoke 21. Live DevTools then showed the rows
+  really in SQLite (`source: desktop-sqlite`, `sqliteChats: 41`), not stale DOM or a
+  LibraryIndex cache, and the Terminal DB agreed (41 / 21).
+
+Ruled out: another DB/source (only one `studio-v1.db`; app + Terminal same path/counts),
+LibraryIndex persisted cache (SQLite itself was 41/21), stale DOM (DOM + index + SQLite
+all showed 21). **Best explanation: a running Desktop reinserted the rows via
+auto-export → focus-import.**
+
+The second cleanup, run with Desktop Studio **fully closed**, had no writer to undo it,
+and reopen rebuilt memory from clean SQLite — so the cycle was broken.
+
+**Cleanup must run with Desktop Studio fully closed.**
+
+## Final confirmed safe state
+
+```text
+chats | 20
+smoke | 0
+```
+
+Stable after a Desktop reopen (startup did not rehydrate). Confirmed again post-hardening
+via `--verify` (exit 0, `status: verified`, `candidateCount: 0`).
+
+## Tool hardening
+
+`tools/cleanup/cleanup-saved-chat-smoke-rows.mjs` now guards against this recurrence:
+
+- **Pre-flight running-Desktop guard.** Before any backup / SQLite write / sync-bundle
+  write / sidecar update, it detects a running Desktop Studio via `pgrep -f` (matching
+  `H2O Studio.app`, `org.h2o.studio.desktop`, and the dev binary `h2o-studio-desktop`;
+  self-excluded by pid). Verified: it correctly detected the running dev binary
+  (`target/debug/h2o-studio-desktop`).
+- **`apply` refuses while Desktop is running**, unless `--force`: it prints
+  `Close Desktop Studio completely, then rerun cleanup.`, emits
+  `status: blocked / reason: desktop-running`, and exits non-zero (5) **before any
+  mutation** (verified: DB stayed at 20 across a blocked apply). `--force` bypasses only
+  when the operator explicitly accepts the rehydration risk.
+- **`--dry-run` and `--verify` warn** if Desktop is running (and report `desktopRunning`
+  in the JSON) but never mutate.
+- **Delayed post-verify re-check.** After a clean `apply`, it waits ~5 s, re-counts, and
+  if smoke candidates reappear exits non-zero (6) with
+  `Smoke rows reappeared after cleanup; likely reinserted by a running Desktop/export/import process.`
+
+Existing behavior is unchanged: device-bundle globbing, `latest.sha256` sidecar handling,
+backups, strict candidate matching (id-prefix **and** title), ambiguous-row protection,
+and dry-run/apply/verify. No folders/labels/tags/categories or real user chats are ever
+deleted.
+
 ## Boundaries Preserved
 
 - No UI hiding fix.
@@ -155,5 +222,7 @@ Expected final counts after successful apply:
 - No `productSyncReady` flip.
 - No `fullBundle.v3` mint.
 - No sync metadata implementation changes.
+- No runtime sync/import/export path change (`auto-export.tauri.js` / `focus-import.tauri.js`
+  untouched; only the cleanup tool + this note changed).
 - No appearance/ribbon/studio.html cache-bust dirty files touched.
 - No archive package behavior code changed.
