@@ -168,11 +168,13 @@ for (const token of [
 // Static source/boundary anchors.
 assertIncludes(folderSync, 'function f32CurrentPayloadOrder(payloadIds, snapshot)', 'F32 helper anchor');
 assertIncludes(folderSync, "mirrorReprojection: 'deferred-to-s2b'", 'S2b deferral');
-assert.ok(!folderSync.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted in folder-sync');
+assert.ok(folderSync.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema is now minted and live-proven in folder-sync');
 assert.ok(!folderSync.includes('productSyncReady: true'), 'folder-sync must not flip productSyncReady true');
-assert.ok(!folderSync.includes('FOLDER_STATE_DATA_KEY'), 'folder-sync F32 path must not introduce mirror write-through');
-assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-  'F11 blocked class anchor');
+assertIncludes(folderSync, 'async function s2bProjectSortOrderPreservingRenderMirror()', 'S2b owns current mirror projection');
+assert.ok(!folderSync.includes('rebuildRenderMirrorFromSqlite'), 'folder-sync must not use the old sortOrder-stripping mirror rebuild');
+assertIncludes(foldersStore, "'field-mismatch:sortOrder': true", 'S5 allows F11 field-mismatch:sortOrder');
+assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+  'F11 binding-mismatch remains blocked/reviewed in current post-S5 source');
 assertIncludes(f11Evidence, 'field-mismatch:sortOrder', 'F11 sortOrder blocked evidence');
 assertIncludes(f11Evidence, 'binding-mismatch', 'F11 binding blocked evidence');
 assertIncludes(f11Evidence, '`FOLDER_STATE_DATA_KEY` remains a derived render mirror', 'F11 mirror derivation evidence');

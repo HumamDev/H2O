@@ -245,7 +245,7 @@ if (src) {
   assert(code.includes("mirrorReprojection: 'deferred-to-s2b'"), 'F32 must still defer mirror re-projection (S2b not implemented)');
 
   // whole-file boundaries
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
+  assert(src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema is now minted and live-proven');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema must remain present');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
@@ -269,8 +269,9 @@ if (exists(foldersStoreFile)) {
     assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
       'F11 helper must keep binding-mismatch blocked after S5');
   } else {
-    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-      'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+    assert(store.includes("'field-mismatch:sortOrder': true"), 'S5 allows F11 field-mismatch:sortOrder');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'F11 helper must keep binding-mismatch blocked/reviewed in current post-S5 source');
     assert(store.includes('delete next.sortOrder;') && store.includes('delete next.sort_order;'),
       'F11 rebuild still strips sortOrder before S5');
   }
@@ -300,10 +301,10 @@ console.log(JSON.stringify({
   realHandlerReproven: true,
   s2bImplemented: false,
   s2bReusesF11Rebuild: false,
-  f11AllowedSetChanged: false,
-  bindingReceiptSchemaMinted: false,
+  f11AllowedSetChanged: true,
+  bindingReceiptSchemaMinted: true,
   bindingMismatchBlocked: true,
-  sortOrderGatedInF11: true,
+  sortOrderGatedInF11: false,
   productSyncReady: false,
   fullBundleV3Present: false,
   chatSavingCasBlocked: true,

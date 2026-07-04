@@ -105,7 +105,7 @@ assertIncludes(source, 'f32Arr(snap.visibleOrderIds)', 'visibleOrderIds source')
 assertIncludes(source, 'Number.MAX_SAFE_INTEGER', 'missing visible-index fallback');
 assertIncludes(source, 'return aid < bid ? -1 : (aid > bid ? 1 : 0);', 'stable id fallback');
 assertIncludes(source, "mirrorReprojection: 'deferred-to-s2b'", 'mirror deferral');
-assert.ok(!source.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+assert.ok(source.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema is now minted and live-proven');
 assert.ok(!source.includes('productSyncReady: true'), 'productSyncReady must not flip true');
 assert.ok(!source.includes('fullBundle.v3'), 'fullBundle.v3 must remain absent');
 
@@ -169,8 +169,8 @@ if (exists(s5ImplementationEvidencePath)) {
   assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
     'F11 binding-mismatch remains blocked after S5');
 } else {
-  assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-    'F11 allowed/blocked set unchanged before S5');
+  assertIncludes(foldersStore, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+    'F11 binding-mismatch remains blocked/reviewed in current post-S5 source');
 }
 assert.ok(!source.includes('rebuildRenderMirrorFromSqlite'), 'F32c must not introduce mirror rebuild into folder-sync');
 
@@ -188,8 +188,8 @@ const result = {
   dryRunWrites: 0,
   dryRunConsumedLedgerRows: 0,
   mirrorReprojection: 'deferred-to-s2b',
-  f11AllowedSetChanged: false,
-  bindingReceiptSchemaMinted: false,
+  f11AllowedSetChanged: true,
+  bindingReceiptSchemaMinted: true,
   productSyncReady: false,
   chatSavingCasBlocked: true,
   s3Retry: 'separate-live-dry-run-slice',

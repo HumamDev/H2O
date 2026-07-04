@@ -135,7 +135,7 @@ assertIncludes(folderSyncSource, 'var dryRun = opts.apply !== true;', 'source ap
 assertIncludes(folderSyncSource, 'var gateOk = cleanString(opts.gate) === FOLDER_SORTORDER_REORDER_APPLY_GATE;', 'source gate check');
 assertIncludes(folderSyncSource, "buildFolderSortorderReorderReceipt(request, 'applied', 'sortorder-reorder-applied'", 'source applied receipt');
 assertIncludes(folderSyncSource, "mirrorReprojection: 'deferred-to-s2b'", 'source mirror deferral');
-assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must remain unminted');
+assert.ok(folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema is now minted and live-proven');
 assert.ok(!folderSyncSource.includes('productSyncReady: true'), 'productSyncReady must not flip true');
 assert.ok(!folderSyncSource.includes('rebuildRenderMirrorFromSqlite'), 'no mirror write-through should be introduced in folder-sync source');
 if (exists(s5ImplementationEvidencePath)) {
@@ -143,8 +143,9 @@ if (exists(s5ImplementationEvidencePath)) {
   assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
     'F11 binding-mismatch remains blocked after S5');
 } else {
-  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])",
-    'F11 blocked classes remain protected before S5');
+  assertIncludes(foldersStoreSource, "'field-mismatch:sortOrder': true", 'S5 allows F11 field-mismatch:sortOrder');
+  assertIncludes(foldersStoreSource, "blockedClasses: classSelection.blocked.concat(['binding-mismatch'])",
+    'F11 binding-mismatch remains blocked/reviewed in current post-S5 source');
 }
 
 assert.match(flat, /S2b remains blocked\/design-only/i, 'S2b must remain blocked/design-only');

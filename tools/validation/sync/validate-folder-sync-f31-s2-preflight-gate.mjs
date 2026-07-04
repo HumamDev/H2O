@@ -159,8 +159,8 @@ if (exists(folderSyncFile)) {
   assert(src.includes('function validateFolderSortorderReorderRequestForDesktopApply(') &&
     src.includes('function applyFolderSortorderReorderRequest('),
     'the F32 S2 sortOrder validate/apply handler is now present in source');
-  // binding receipt still unminted; binding request present
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
+  // binding request/receipt schemas are now minted and live-proven by the later binding lane.
+  assert(src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema is now minted and live-proven');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must still define the real binding request schema');
   // fullBundle v2 / no v3; webdav deferred; bounded metadata guard
@@ -180,8 +180,9 @@ if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch (no allowed-set change in S2)');
+  assert(store.includes("'field-mismatch:sortOrder': true"), 'S5 allows F11 field-mismatch:sortOrder');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'F11 helper must keep binding-mismatch blocked/reviewed after S5');
   assert(store.includes('folder_bindings') && store.includes('FOLDER_STATE_DATA_KEY') &&
     store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'),
     'folder substrate tokens must remain intact');
@@ -211,10 +212,10 @@ console.log(JSON.stringify({
   receiptConstOccurrences: countOccurrences(src, RECEIPT_CONST),
   constantsInert: countOccurrences(src, REQUEST_CONST) === 1 && countOccurrences(src, RECEIPT_CONST) === 1,
   handlerExists: src.includes('function applyFolderSortorderReorderRequest('),
-  f11AllowedSetChanged: false,
-  bindingReceiptSchemaMinted: false,
+  f11AllowedSetChanged: true,
+  bindingReceiptSchemaMinted: true,
   bindingMismatchBlocked: true,
-  sortOrderGated: true,
+  sortOrderGated: false,
   productSyncReady: false,
   publicPremiumBlocked: true,
   realRemoteWebdavDeferred: true,
