@@ -4033,7 +4033,7 @@
     var rowToken = cleanString(opts.rowToken);
     var chatToken = cleanString(opts.chatToken);
     var folderToken = cleanString(opts.folderToken);
-    var writeRequested = opts.write === true || opts.record === true;
+    var writeRequested = opts.apply === true || opts.write === true || opts.record === true;
     var gateSatisfied = cleanString(opts.gate) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_GATE;
     var result = {
       schema: OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_RECEIPT_RESULT_SCHEMA,

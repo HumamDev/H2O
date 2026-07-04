@@ -144,6 +144,7 @@ for (const token of [
   'function operational5ReceiptSafeShape(row)',
   'async function operational5OrphanBindingStrictEvidenceReceipt(opts)',
   'operational5OrphanBindingStrictEvidenceReceipt: operational5OrphanBindingStrictEvidenceReceipt',
+  'var writeRequested = opts.apply === true || opts.write === true || opts.record === true',
 ]) {
   assertIncludes(foldersStore, token, `source token ${token}`);
 }
@@ -212,7 +213,7 @@ function model(opts) {
   const chatToken = opts.chatToken;
   const folderToken = opts.folderToken;
   const gate = opts.gate === 'operational5-orphan-binding-strict-evidence-receipt-record';
-  const write = opts.write === true;
+  const write = opts.apply === true || opts.write === true || opts.record === true;
   if (rowToken === 'row:a950a44b859f') return { status: 'rejected-documented-debt-row-not-eligible-for-strict-evidence-receipt' };
   if (rowToken !== 'row:fdd2456fc8a2' || chatToken !== 'r:2f29d39a6c4f' || folderToken !== 'r:2d5469848470') {
     return { status: 'rejected-target-token-mismatch' };
@@ -236,19 +237,19 @@ assert.equal(model({ rowToken: 'row:fdd2456fc8a2', chatToken: 'r:2f29d39a6c4f', 
   'dry-run-strict-evidence-receipt-ready',
   'model dry-run ready');
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', chatToken: 'r:2f29d39a6c4f', folderToken: 'r:2d5469848470',
-  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, write: true }).status,
+  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, apply: true }).status,
   'blocked-receipt-gate-required',
-  'model write requires gate');
+  'model apply requires gate');
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', chatToken: 'r:2f29d39a6c4f', folderToken: 'r:2d5469848470',
-  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, write: true,
+  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, apply: true,
   gate: 'operational5-orphan-binding-strict-evidence-receipt-record' }).writes,
   1,
-  'model gated write records exactly one receipt');
+  'model gated apply records exactly one receipt');
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', chatToken: 'r:2f29d39a6c4f', folderToken: 'r:2d5469848470',
-  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, write: true,
+  chatLive: true, folderAbsent: true, safeShape: true, folderTombstone: false, bindingTombstone: true, apply: true,
   gate: 'operational5-orphan-binding-strict-evidence-receipt-record', alreadyRecorded: true }).writes,
   0,
-  'model duplicate write zero-write');
+  'model duplicate apply zero-write');
 
 const runtimeCombined = [foldersStore, folderSync, folderImport, webdavGates].join('\n');
 assert.ok(!runtimeCombined.includes('productSyncReady: true'), 'productSyncReady must not be true');
