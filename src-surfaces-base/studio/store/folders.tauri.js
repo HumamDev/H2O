@@ -1282,6 +1282,41 @@
     };
   }
 
+  async function buildF15SettlementExistingBindingContext(chatId, chatSubjectId, opts) {
+    opts = opts || {};
+    var canonicalChatId = cleanString(chatId);
+    if (!canonicalChatId) return null;
+    var leftSubjectId = isSha256Hex(chatSubjectId) ? String(chatSubjectId).trim().toLowerCase() : '';
+    if (!leftSubjectId) return null;
+    var rows;
+    try {
+      rows = await listCanonicalChatFolderBindingsForChat(canonicalChatId);
+    } catch (_) {
+      return null;
+    }
+    if (!Array.isArray(rows)) return null;
+    var out = [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i] || {};
+      var folderId = getFolderId(row);
+      if (!folderId) continue;
+      var rightSubjectId = await hashLegacyEndpoint('folder.metadata', folderId);
+      if (!isSha256Hex(rightSubjectId)) return null;
+      out.push({
+        subjectType: 'library.binding',
+        bindingKind: 'chat-folder',
+        bindingState: 'bound',
+        leftSubjectType: 'chat.metadata',
+        rightSubjectType: 'folder.metadata',
+        leftSubjectId: leftSubjectId,
+        rightSubjectId: rightSubjectId,
+        sourceTag: 'desktop',
+        observedAtIso: (opts && opts.observedAtIso) || null
+      });
+    }
+    return out;
+  }
+
   function requiredF15FolderBindingApis(sync) {
     return [
       'createLibraryFolderBindingMigrationShadow',
@@ -1355,6 +1390,14 @@
     if (!execute || execute.ok !== true || !execute.envelope) {
       return { ok: false, blockers: ['f15-folder-binding-execute-envelope-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping, execute: execute };
     }
+    var settlementExistingBindings = await buildF15SettlementExistingBindingContext(
+      chatId,
+      canonicalBinding.leftSubjectId,
+      { observedAtIso: input.observedAtIso }
+    );
+    if (!Array.isArray(settlementExistingBindings)) {
+      return { ok: false, blockers: ['f15-folder-binding-settlement-context-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping, execute: execute };
+    }
     var settlement = await sync.settleLibraryExecuteEnvelope({
       envelope: execute.envelope,
       receipt: receipt,
@@ -1368,6 +1411,7 @@
           observedAtIso: input.observedAtIso
         }))
       },
+      existingBindings: settlementExistingBindings,
       observedAtIso: input.observedAtIso
     });
     if (!settlement || settlement.ok !== true || settlement.settled !== true) {
