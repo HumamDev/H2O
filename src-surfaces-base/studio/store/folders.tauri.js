@@ -92,6 +92,9 @@
   var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1';
   var F11_RENDER_MIRROR_REBUILD_GATE = 'folder-sync-f11-render-only-mirror-rebuild';
   var F11_RENDER_MIRROR_REBUILD_SCHEMA = 'h2o.studio.folder-sync.f11-render-only-mirror-rebuild.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_APPLY_GATE = 'operational5-orphan-binding-cleanup-apply';
+  var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_SCHEMA = 'h2o.studio.folder-sync.operational5-orphan-binding-cleanup.v1';
+  var OPERATIONAL5_ORPHAN_BINDING_CLEANUP_RECEIPT_SCHEMA = 'h2o.studio.folder-sync.operational5-orphan-binding-cleanup-receipt.v1';
   var F11_RENDER_MIRROR_REBUILD_ALLOWED_CLASSES = {
     'missing-mirror-folder': true,
     'field-mismatch:color': true,
@@ -3971,6 +3974,164 @@
     });
   }
 
+  async function operational5RedactToken(id) {
+    try { return 'r:' + (await sha256Hex(String(id))).slice(0, 12); } catch (_) { return 'r:redacted'; }
+  }
+
+  /* Operational.5 reviewed orphan-binding cleanup. Removes ONLY dangling raw canonical `folder_bindings` rows
+   * whose folder is absent from the current canonical folder list AND that are backed by both a folder tombstone
+   * and a folderBinding tombstone AND carry the expected safe desktop-canonical shape. Dry-run by default; the
+   * scoped, exact-row DELETE fires only under the explicit reviewed apply gate. It never deletes folders, chats,
+   * tombstones, ledgers, receipts, import/export or render-mirror state, never removes an exportable binding, never
+   * creates a tombstone, and never uses a bare/delete-all SQL. Redacted/hash-only result; idempotent (dry-run zero
+   * write; duplicate apply zero-write once the rows are gone). Does not flip productSyncReady. */
+  async function operational5OrphanBindingCleanup(opts) {
+    opts = opts || {};
+    var applyRequested = opts.apply === true;
+    var gateSatisfied = cleanString(opts.gate) === OPERATIONAL5_ORPHAN_BINDING_CLEANUP_APPLY_GATE;
+    var result = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_CLEANUP_SCHEMA,
+      ok: false,
+      status: '',
+      gate: OPERATIONAL5_ORPHAN_BINDING_CLEANUP_APPLY_GATE,
+      gateSatisfied: gateSatisfied,
+      applyRequested: applyRequested,
+      dryRun: !(applyRequested && gateSatisfied),
+      noHardDelete: true,
+      noPurge: true,
+      noChatDelete: true,
+      noFolderDelete: true,
+      noTombstoneMutation: true,
+      noTombstoneCreate: true,
+      noReceiptDelete: true,
+      noLedgerMutation: true,
+      noRenderMirrorWrite: true,
+      noExportableBindingRemoval: true,
+      noBareDeleteAll: true,
+      noChromeCanonicalMutation: true,
+      noWebdavWrite: true,
+      noChatSavingCas: true,
+      productSyncReady: false,
+      rawCanonicalBindingCountBefore: 0,
+      rawCanonicalBindingCountAfter: 0,
+      exportableBindingCount: 0,
+      candidateCount: 0,
+      verifiedCount: 0,
+      removedCount: 0,
+      skippedCount: 0,
+      candidates: [],
+      blockers: [],
+      warnings: [],
+      receipt: null,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    var canonicalFolders;
+    var rawBindings;
+    try {
+      canonicalFolders = await listFolders();
+      rawBindings = await listCanonicalChatFolderBindings();
+    } catch (e) {
+      result.status = 'blocked-canonical-read-failed';
+      result.blockers.push('operational5-orphan-binding-cleanup-canonical-read-failed');
+      return result;
+    }
+    if (!Array.isArray(rawBindings)) rawBindings = [];
+    var canonicalFolderIds = Object.create(null);
+    (Array.isArray(canonicalFolders) ? canonicalFolders : []).forEach(function (f) {
+      var id = getFolderId(f); if (id) canonicalFolderIds[id] = true;
+    });
+    result.rawCanonicalBindingCountBefore = rawBindings.length;
+    var tombstones = getTombstoneStore();
+    var verifiedExactRows = []; /* internal exact ids for the scoped delete; never exposed in the redacted result */
+    for (var i = 0; i < rawBindings.length; i += 1) {
+      var row = rawBindings[i] || {};
+      var chatId = cleanString(row.chatId || row.conversationId);
+      var folderId = getFolderId(row);
+      if (!chatId || !folderId) continue;
+      if (canonicalFolderIds[folderId]) { result.exportableBindingCount += 1; continue; } /* folder present -> exportable, never removed */
+      /* dangling candidate: folder absent from current canonical folders */
+      var safeShape = row.source === 'desktop-canonical-folder-bindings-sqlite' &&
+        row.sourceSurface === 'desktop-studio' && row.authority === 'desktop' &&
+        row.status === 'active' && row.state === 'active' &&
+        row.noHardDelete === true && row.noPurge === true && row.noChatDelete === true;
+      var folderTomb = null; var bindingTomb = null;
+      if (tombstones && typeof tombstones.getTombstone === 'function') {
+        try { folderTomb = await tombstones.getTombstone('folder', folderTombstoneRecordId(folderId)); } catch (_) { folderTomb = null; }
+        try { bindingTomb = await tombstones.getTombstone('folderBinding', 'folderBinding:' + encodeURIComponent(chatId) + ':' + encodeURIComponent(folderId)); } catch (_) { bindingTomb = null; }
+      }
+      var verified = safeShape && !!folderTomb && !!bindingTomb && !canonicalFolderIds[folderId];
+      var candidate = {
+        chatToken: await operational5RedactToken(chatId),
+        folderToken: await operational5RedactToken(folderId),
+        folderAbsentFromCanonical: true,
+        safeShape: safeShape,
+        folderTombstonePresent: !!folderTomb,
+        folderBindingTombstonePresent: !!bindingTomb,
+        exportable: false,
+        verified: verified,
+        removed: false,
+        status: verified ? 'verified-dangling-tombstone-backed' : 'skipped-not-fully-tombstone-verified',
+      };
+      result.candidateCount += 1;
+      if (verified) {
+        result.verifiedCount += 1;
+        verifiedExactRows.push({ chatId: chatId, folderId: folderId, index: result.candidates.length });
+      } else {
+        result.skippedCount += 1;
+      }
+      result.candidates.push(candidate);
+    }
+    result.rawCanonicalBindingCountAfter = result.rawCanonicalBindingCountBefore;
+    result.receipt = {
+      schema: OPERATIONAL5_ORPHAN_BINDING_CLEANUP_RECEIPT_SCHEMA,
+      at: nowIsoSeconds(),
+      dryRun: result.dryRun,
+      verifiedCount: result.verifiedCount,
+      removedCount: 0,
+      exportableBindingCount: result.exportableBindingCount,
+      noFolderDelete: true,
+      noChatDelete: true,
+      noTombstoneMutation: true,
+      noHardDelete: true,
+      noPurge: true,
+      productSyncReady: false,
+      privacy: { redacted: true, hashOnly: true },
+    };
+    if (result.dryRun) {
+      if (applyRequested && !gateSatisfied) {
+        result.ok = false;
+        result.status = 'blocked-apply-gate-required';
+        result.blockers.push('operational5-orphan-binding-cleanup-apply-gate-required');
+      } else {
+        result.ok = true;
+        result.status = 'dry-run-orphan-binding-cleanup-ready';
+      }
+      return result;
+    }
+    /* Controlled apply: scoped exact-row DELETE only for verified tombstone-backed dangling rows. Idempotent. */
+    for (var j = 0; j < verifiedExactRows.length; j += 1) {
+      var target = verifiedExactRows[j];
+      var candidateRef = result.candidates[target.index] || {};
+      var stillRows;
+      try { stillRows = await listCanonicalChatFolderBindingsForChat(target.chatId); } catch (_) { stillRows = []; }
+      var stillPresent = (Array.isArray(stillRows) ? stillRows : []).some(function (r) { return getFolderId(r) === target.folderId; });
+      if (!stillPresent) { candidateRef.status = 'already-removed-idempotent'; result.skippedCount += 1; continue; }
+      var del;
+      try { del = await sqlExecute('DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?', [target.chatId, target.folderId]); }
+      catch (e) { candidateRef.status = 'delete-threw'; result.warnings.push('operational5-orphan-binding-cleanup-delete-threw'); continue; }
+      if (readRowsAffected(del) > 0) { candidateRef.removed = true; candidateRef.status = 'removed'; result.removedCount += 1; }
+      else { candidateRef.status = 'delete-zero-rows'; result.skippedCount += 1; }
+    }
+    var afterRaw = [];
+    try { afterRaw = await listCanonicalChatFolderBindings(); } catch (_) { afterRaw = []; }
+    result.rawCanonicalBindingCountAfter = Array.isArray(afterRaw) ? afterRaw.length : result.rawCanonicalBindingCountBefore;
+    result.receipt.removedCount = result.removedCount;
+    result.receipt.dryRun = false;
+    result.ok = true;
+    result.status = 'applied-orphan-binding-cleanup';
+    return result;
+  }
+
   function canonicalBindingStoreIdentity() {
     var sqliteStatus = null;
     try {
@@ -4512,6 +4673,7 @@
     confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
     runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
     whenF15SettledBindingRestartConvergenceReady: ensureF15SettledBindingRestartConvergenceReady,
+    operational5OrphanBindingCleanup: operational5OrphanBindingCleanup,
     listForChat: listForChat,
     count: countFolders,
   };
