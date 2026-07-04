@@ -1470,6 +1470,111 @@
     return runF15FolderBindingDelegationPipeline(operation, folderId, chatId, safeOpts);
   }
 
+  async function materializeSettledCanonicalChatFolderBinding(operation, folderIdInput, chatIdInput, opts, delegationResult) {
+    var op = cleanString(operation);
+    var folderId = getFolderId(folderIdInput);
+    var chatId = cleanString(chatIdInput);
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var base = {
+      ok: false,
+      operation: op,
+      chatId: chatId,
+      folderId: folderId,
+      canonicalBindingWriteCount: 0,
+      rowsAffected: 0,
+      noChromeDestructiveBindingApply: true,
+      noChatDelete: true,
+      noSnapshotDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+    };
+    if (!folderId || !chatId) {
+      base.status = 'settled-binding-materialization-identity-missing';
+      base.blockers = [base.status];
+      return base;
+    }
+    if (!delegationResult ||
+        delegationResult.ok !== true ||
+        !delegationResult.settlement ||
+        delegationResult.settlement.ok !== true ||
+        delegationResult.settlement.settled !== true) {
+      base.status = 'f15-settlement-not-confirmed';
+      base.blockers = [base.status];
+      return base;
+    }
+    var assignedAt = (typeof options.assignedAt === 'number' && options.assignedAt > 0)
+      ? options.assignedAt
+      : Date.now();
+    try {
+      if (op === 'bind') {
+        var bindWrite = await sqlExecute(
+          'INSERT OR REPLACE INTO folder_bindings (chat_id, folder_id, assigned_at) VALUES (?, ?, ?)',
+          [chatId, folderId, assignedAt]
+        );
+        var bindRows = await listCanonicalChatFolderBindingsForChat(chatId);
+        var bound = Array.isArray(bindRows) && bindRows.length ? bindRows[0] : null;
+        var boundFolderId = getFolderId(bound);
+        var bindDuplicateCount = Math.max(0, (Array.isArray(bindRows) ? bindRows.length : 0) - 1);
+        var bindBlockers = [];
+        base.rowsAffected = readRowsAffected(bindWrite);
+        base.canonicalBindingWriteCount = base.rowsAffected > 0 ? 1 : 0;
+        base.writeResult = bindWrite;
+        base.canonicalRowsForChat = bindRows || [];
+        base.canonicalRowsForChatCount = Array.isArray(bindRows) ? bindRows.length : 0;
+        base.duplicateCanonicalBindingRowsForChatCount = bindDuplicateCount;
+        base.assignedAt = assignedAt;
+        if (base.rowsAffected <= 0) bindBlockers.push('settled-binding-materialization-zero-write');
+        if (boundFolderId !== folderId) bindBlockers.push('settled-binding-materialization-not-visible');
+        if (bindDuplicateCount > 0) bindBlockers.push('duplicate-canonical-binding-rows-for-chat');
+        if (bindBlockers.length) {
+          base.status = bindBlockers[0];
+          base.blockers = bindBlockers;
+          return base;
+        }
+        base.ok = true;
+        base.status = 'settled-binding-materialized';
+        base.blockers = [];
+        return base;
+      }
+      if (op === 'unbind') {
+        var unbindWrite = await sqlExecute(
+          'DELETE FROM folder_bindings WHERE chat_id = ? AND folder_id = ?',
+          [chatId, folderId]
+        );
+        var unbindRows = await listCanonicalChatFolderBindingsForChat(chatId);
+        var stillBound = (Array.isArray(unbindRows) ? unbindRows : []).some(function (row) {
+          return getFolderId(row) === folderId;
+        });
+        base.rowsAffected = readRowsAffected(unbindWrite);
+        base.canonicalBindingWriteCount = base.rowsAffected > 0 ? 1 : 0;
+        base.writeResult = unbindWrite;
+        base.canonicalRowsForChat = unbindRows || [];
+        base.canonicalRowsForChatCount = Array.isArray(unbindRows) ? unbindRows.length : 0;
+        var unbindBlockers = [];
+        if (base.rowsAffected <= 0) unbindBlockers.push('settled-binding-materialization-zero-write');
+        if (stillBound) unbindBlockers.push('settled-binding-materialization-not-visible');
+        if (unbindBlockers.length) {
+          base.status = unbindBlockers[0];
+          base.blockers = unbindBlockers;
+          return base;
+        }
+        base.ok = true;
+        base.status = 'settled-binding-materialized';
+        base.blockers = [];
+        return base;
+      }
+      base.status = 'settled-binding-materialization-operation-unsupported';
+      base.blockers = [base.status];
+      return base;
+    } catch (e) {
+      recordError('materializeSettledCanonicalChatFolderBinding', e);
+      base.status = 'settled-binding-materialization-threw';
+      base.blockers = [base.status];
+      base.error = String((e && e.message) || e);
+      return base;
+    }
+  }
+
   function patchToCols(patch) {
     var columns = Object.create(null);
     var mergeMeta = null;
@@ -3451,10 +3556,19 @@
       }
       return delegateF15FolderBindingWrite('bind', folderId, chatId, opts).then(function (result) {
         if (result && result.ok === true) {
-          recordWrite('bindChat.f15');
-          api.__lastF15FolderBindingDelegationResult = result;
-          notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
-          return true;
+          return materializeSettledCanonicalChatFolderBinding('bind', folderId, chatId, opts, result)
+            .then(function (materialization) {
+              result.materialization = materialization;
+              api.__lastF15FolderBindingDelegationResult = result;
+              if (!materialization || materialization.ok !== true) {
+                recordWarning('bindChat F15 settled materialization failed: ' + JSON.stringify((materialization && materialization.blockers) || ['unknown']));
+                return false;
+              }
+              recordWrite('bindChat.f15');
+              recordWrite('bindChat.f15.materialized');
+              notifySubscribers({ source: 'local', op: 'bindChat', folderId: folderId, chatId: chatId, f15Delegated: true, f15Materialized: true });
+              return true;
+            });
         }
         recordWarning('bindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
         api.__lastF15FolderBindingDelegationResult = result || null;
@@ -3483,10 +3597,19 @@
     }
     return delegateF15FolderBindingWrite('unbind', folderId, chatId, opts).then(function (result) {
       if (result && result.ok === true) {
-        recordWrite('unbindChat.f15');
-        api.__lastF15FolderBindingDelegationResult = result;
-        notifySubscribers({ source: 'local', op: 'unbindChat', folderId: folderId, chatId: chatId, f15Delegated: true });
-        return true;
+        return materializeSettledCanonicalChatFolderBinding('unbind', folderId, chatId, opts, result)
+          .then(function (materialization) {
+            result.materialization = materialization;
+            api.__lastF15FolderBindingDelegationResult = result;
+            if (!materialization || materialization.ok !== true) {
+              recordWarning('unbindChat F15 settled materialization failed: ' + JSON.stringify((materialization && materialization.blockers) || ['unknown']));
+              return false;
+            }
+            recordWrite('unbindChat.f15');
+            recordWrite('unbindChat.f15.materialized');
+            notifySubscribers({ source: 'local', op: 'unbindChat', folderId: folderId, chatId: chatId, f15Delegated: true, f15Materialized: true });
+            return true;
+          });
       }
       recordWarning('unbindChat F15 delegation failed: ' + JSON.stringify((result && result.blockers) || ['unknown']));
       api.__lastF15FolderBindingDelegationResult = result || null;
