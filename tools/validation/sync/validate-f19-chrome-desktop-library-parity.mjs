@@ -206,14 +206,14 @@ async function runVmProof() {
   assert(chromeSnapshot.surface === 'chrome-studio', 'Chrome snapshot surface mismatch');
   assert(desktopSnapshot.surface === 'desktop-studio', 'Desktop snapshot surface mismatch');
   assert(chromeSnapshot.sourceMetadata.libraryIndexRows === 10, 'Chrome raw LibraryIndex row metadata mismatch');
-  assert(chromeSnapshot.sourceMetadata.libraryIndexActiveRows === 9, 'Chrome active LibraryIndex row metadata mismatch');
+  assert(chromeSnapshot.sourceMetadata.libraryIndexActiveRows === 10, 'Chrome active LibraryIndex row metadata mismatch');
   assert(desktopSnapshot.sourceMetadata.libraryIndexRows === 7, 'Desktop raw LibraryIndex row metadata mismatch');
-  assert(desktopSnapshot.sourceMetadata.libraryIndexActiveRows === 6, 'Desktop active LibraryIndex row metadata mismatch');
-  assert(chromeSnapshot.counts.total === 9, 'Chrome canonical active total count mismatch');
+  assert(desktopSnapshot.sourceMetadata.libraryIndexActiveRows === 7, 'Desktop active LibraryIndex row metadata mismatch');
+  assert(chromeSnapshot.counts.total === 10, 'Chrome canonical active total count mismatch');
   assert(chromeSnapshot.counts.archived === 1, 'Chrome canonical archived count mismatch');
   assert(chromeSnapshot.counts.link === 1, 'Chrome canonical link count mismatch');
   assert(chromeSnapshot.counts.linked === chromeSnapshot.counts.link, 'Chrome linked alias mismatch');
-  assert(desktopSnapshot.counts.total === 6, 'Desktop canonical active total count mismatch');
+  assert(desktopSnapshot.counts.total === 7, 'Desktop canonical active total count mismatch');
   assert(desktopSnapshot.counts.archived === 1, 'Desktop canonical archived count mismatch');
   assert(desktopSnapshot.counts.link === 0, 'Desktop canonical link count mismatch');
   assert(desktopSnapshot.counts.linked === desktopSnapshot.counts.link, 'Desktop linked alias mismatch');
@@ -268,15 +268,15 @@ function runCanonicalHeadlineProof() {
   assert(typeof core?.canonicalHeadlineCounts === 'function', 'canonicalHeadlineCounts missing');
   const rows = makeCanonicalHeadlineRows();
   const counts = core.canonicalHeadlineCounts(rows);
-  assert(counts.total === 17, 'canonical active total must exclude archived rows');
-  assert(counts.saved === 7, 'saved+linked rows must count as saved');
+  assert(counts.total === 20, 'canonical active total must include saved rows even when archive-displayed');
+  assert(counts.saved === 10, 'saved+linked and saved+archived rows must count as saved');
   assert(counts.link === 10, 'link-only rows must count as link');
   assert(counts.linked === counts.link, 'linked alias must equal link');
   assert(counts.pinned === 1, 'active pinned count mismatch');
   assert(counts.archived === 3, 'archived side bucket mismatch');
-  assert(counts.folders === 1, 'folder count must use active rows only');
-  assert(counts.labels === 1, 'label count must use active rows only');
-  assert(counts.categories === 1, 'category count must use active rows only');
+  assert(counts.folders === 2, 'folder count must include saved archived rows as saved members');
+  assert(counts.labels === 2, 'label count must include saved archived rows as saved members');
+  assert(counts.categories === 2, 'category count must include saved archived rows as saved members');
 
   assert(typeof core.canonicalActiveRows === 'function', 'canonicalActiveRows missing');
   assert(typeof core.canonicalArchivedRows === 'function', 'canonicalArchivedRows missing');
@@ -286,16 +286,16 @@ function runCanonicalHeadlineProof() {
   assert(typeof core.rowHasTranscriptEvidence === 'function', 'rowHasTranscriptEvidence missing');
   assert(typeof core.rowIsSavedRecentEligible === 'function', 'rowIsSavedRecentEligible missing');
   assert(typeof core.canonicalActiveFacets === 'function', 'canonicalActiveFacets missing');
-  assert(core.canonicalActiveRows(rows).length === 17, 'canonicalActiveRows must return 17 active rows');
+  assert(core.canonicalActiveRows(rows).length === 20, 'canonicalActiveRows must include saved archived rows');
   assert(core.canonicalArchivedRows(rows).length === 3, 'canonicalArchivedRows must return 3 archived rows');
-  assert(core.canonicalExplorerRows(rows, { view: 'all' }).length === 17, 'canonicalExplorerRows all view must use active rows');
+  assert(core.canonicalExplorerRows(rows, { view: 'all' }).length === 20, 'canonicalExplorerRows all view must use active rows plus saved archived rows');
   assert(core.canonicalExplorerRows(rows, { view: 'archive' }).length === 3, 'canonicalExplorerRows archive view must use archived rows');
   const recentRows = core.canonicalRecentRows(rows, 99);
-  assert(recentRows.length === 17, 'canonicalRecentRows must exclude archived rows');
-  assert(recentRows.every((row) => !row.archived && !row.state?.isArchived), 'canonicalRecentRows returned an archived row');
+  assert(recentRows.length === 20, 'canonicalRecentRows must include saved archived rows');
+  assert(recentRows.every((row) => !row.archived || row.state?.isSaved), 'canonicalRecentRows returned a non-saved archived row');
   const savedRecentRows = core.canonicalSavedRecentRows(rows, 99);
-  assert(savedRecentRows.length === 7, 'canonicalSavedRecentRows must include only active saved transcript rows');
-  assert(savedRecentRows.every((row) => row.snapshotId && row.state?.isSaved && !row.archived && !row.state?.isArchived), 'canonicalSavedRecentRows returned a non-saved, link-only, or archived row');
+  assert(savedRecentRows.length === 10, 'canonicalSavedRecentRows must include saved archived transcript rows');
+  assert(savedRecentRows.every((row) => row.snapshotId && row.state?.isSaved), 'canonicalSavedRecentRows returned a non-saved or link-only row');
   assert(core.canonicalRowView(savedRecentRows[0]) === 'saved', 'saved+linked payload-backed rows must classify as saved');
   assert(rows.filter((row) => !row.state?.isSaved && !row.state?.isArchived).every((row) => core.canonicalRowView(row) === 'linked'), 'link-only rows must classify as linked');
   const chromeStyleLinkWithTranscriptEvidence = {
@@ -349,11 +349,11 @@ function runCanonicalHeadlineProof() {
     { chatId: 'unknown-archived', snapshotId: 'snap-archived', title: 'Archived', view: 'saved', archived: true, state: { isSaved: true, isArchived: true } },
   ];
   const deterministicSavedRecents = core.canonicalSavedRecentRows(unknownDateRows, 99);
-  assert(deterministicSavedRecents.length === 2, 'saved recents must exclude unknown-date link-only and archived rows');
-  assert(deterministicSavedRecents.map((row) => row.chatId).join(',') === 'unknown-a,unknown-b', 'unknown-date saved recents must sort by title/id fallback deterministically');
+  assert(deterministicSavedRecents.length === 3, 'saved recents must exclude unknown-date link-only rows while including saved archived rows');
+  assert(deterministicSavedRecents.map((row) => row.chatId).join(',') === 'unknown-a,unknown-archived,unknown-b', 'unknown-date saved recents must sort by title/id fallback deterministically');
   const activeFacets = core.canonicalActiveFacets(rows);
   assert(Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'active-folder'), 'canonicalActiveFacets missing active folder');
-  assert(!Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'archived-folder'), 'canonicalActiveFacets must exclude archived folder');
+  assert(Object.prototype.hasOwnProperty.call(activeFacets.byFolder, 'archived-folder'), 'canonicalActiveFacets must include saved archived folder membership');
 }
 
 function runTriplicateProof() {

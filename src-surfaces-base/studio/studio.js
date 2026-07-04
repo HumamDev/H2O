@@ -3567,8 +3567,8 @@ function canonicalSavedRecentLibraryIndexRows(limit = 30){
   const source = Array.isArray(rows) ? rows.slice() : [];
   const saved = source.filter((row) => {
     const view = String(row?.view || row?.displayView || row?.badgeKind || "").toLowerCase();
-    if (view === "archive" || view === "archived" || view === "deleted" || view === "tombstone") return false;
-    if (row?.archived || row?.isArchived || row?.deleted || row?.isDeleted || row?.tombstoned) return false;
+    if (view === "deleted" || view === "tombstone") return false;
+    if (row?.deleted || row?.isDeleted || row?.tombstoned) return false;
     return libraryRowIsSavedTranscript(row);
   });
   saved.sort((a, b) => {
@@ -4133,20 +4133,23 @@ async function enrichRowsWithFolderData(rows, force = false){
 function matchesView(row, view){
   if (!row) return false;
   const next = normalizeArchiveView(view);
+  const rowView = String(row.view || "").toLowerCase();
+  const rowState = row.state && typeof row.state === "object" ? row.state : {};
+  const saved = rowView === "saved" || row.saved === true || row.isSaved === true || row.is_saved === true || rowState.isSaved === true;
   const archived = !!(row.archived || row.isArchived);
   const deleted = !!(row.deleted || row.isDeleted || row.tombstoned);
   if (deleted) return false;
   if (next === "archive") return archived;
-  if (archived) return false;
+  if (archived && !saved) return false;
   if (next === "pinned") return !!row.pinned;
   /* Phase K-1 — Linked view: only rows projected as linked-only by
    * Library Index (state.isLinked && !state.isSaved). Saved rows
    * (even if they also carry linked metadata) belong in #/saved by
    * the precedence rule documented in normalizeLinkedOnlyProjection. */
-  if (next === "linked") return String(row.view || "").toLowerCase() === "linked";
+  if (next === "linked") return rowView === "linked" && !saved;
   /* Saved view: explicitly exclude linked-only rows so a chat without
    * a snapshot does not surface alongside Saved snapshots. */
-  if (next === "saved") return String(row.view || "").toLowerCase() !== "linked";
+  if (next === "saved") return saved;
   return true;
 }
 
@@ -4609,7 +4612,7 @@ function collectCanonicalSidebarRecentChats(rows, folderId = "", query = ""){
     : (Array.isArray(state.rowsCache) ? state.rowsCache : []);
   const source = sourceIsCanonical ? fromIndex : fallback;
   const filtered = source.filter((row) => {
-    if (!row || row.archived || row.isArchived || row.deleted || row.isDeleted || row.tombstoned) return false;
+    if (!row || row.deleted || row.isDeleted || row.tombstoned) return false;
     if (!libraryRowIsSavedTranscript(row)) return false;
     if (!matchesFolder(row, folderId)) return false;
     if (state.lastTagFilter && !(Array.isArray(row.tags) ? row.tags : []).includes(state.lastTagFilter)) return false;

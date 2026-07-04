@@ -921,8 +921,13 @@
   function canonicalRowIsArchived(row) {
     return !!(row && typeof row === 'object' && rowArchivedForHeadline(row));
   }
+  function canonicalRowIsActiveMember(row) {
+    if (!row || typeof row !== 'object') return false;
+    if (canonicalRowIsDeleted(row)) return false;
+    return !canonicalRowIsArchived(row) || rowSavedForHeadline(row);
+  }
   function canonicalActiveRows(rows) {
-    return canonicalDedupeRows(rows).filter((row) => !canonicalRowIsDeleted(row) && !canonicalRowIsArchived(row));
+    return canonicalDedupeRows(rows).filter(canonicalRowIsActiveMember);
   }
   function canonicalArchivedRows(rows) {
     return canonicalDedupeRows(rows).filter((row) => !canonicalRowIsDeleted(row) && canonicalRowIsArchived(row));
@@ -939,7 +944,7 @@
   }
   function rowIsSavedRecentEligible(row) {
     if (!row || typeof row !== 'object') return false;
-    if (canonicalRowIsDeleted(row) || canonicalRowIsArchived(row)) return false;
+    if (canonicalRowIsDeleted(row)) return false;
     const view = rowViewForHeadline(row);
     if (view === 'link' || view === 'linked') return false;
     if (ensureString(row.opens || row.openTarget || row.openKind).trim().toLowerCase() === 'placeholder-details') return false;
@@ -965,7 +970,7 @@
       if (canonicalRowIsDeleted(row)) return;
       if (canonicalRowIsArchived(row)) {
         counts.archived += 1;
-        return;
+        if (!rowSavedForHeadline(row)) return;
       }
       const view = canonicalRowView(row);
       counts.total += 1;
