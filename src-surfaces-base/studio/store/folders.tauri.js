@@ -1288,6 +1288,12 @@
     if (!canonicalChatId) return null;
     var leftSubjectId = isSha256Hex(chatSubjectId) ? String(chatSubjectId).trim().toLowerCase() : '';
     if (!leftSubjectId) return null;
+    var operation = cleanString(opts.operation);
+    var plannedUnbindFolderId = operation === 'bind' ? getFolderId(opts.plannedUnbindFolderId) : '';
+    var plannedUnbindSubjectId = plannedUnbindFolderId
+      ? await hashLegacyEndpoint('folder.metadata', plannedUnbindFolderId)
+      : '';
+    if (plannedUnbindFolderId && !isSha256Hex(plannedUnbindSubjectId)) return null;
     var rows;
     try {
       rows = await listCanonicalChatFolderBindingsForChat(canonicalChatId);
@@ -1296,12 +1302,17 @@
     }
     if (!Array.isArray(rows)) return null;
     var out = [];
+    var plannedUnbindEdgePresent = false;
     for (var i = 0; i < rows.length; i += 1) {
       var row = rows[i] || {};
       var folderId = getFolderId(row);
       if (!folderId) continue;
       var rightSubjectId = await hashLegacyEndpoint('folder.metadata', folderId);
       if (!isSha256Hex(rightSubjectId)) return null;
+      if (plannedUnbindSubjectId && rightSubjectId === plannedUnbindSubjectId && plannedUnbindEdgePresent !== true) {
+        plannedUnbindEdgePresent = true;
+        continue;
+      }
       out.push({
         subjectType: 'library.binding',
         bindingKind: 'chat-folder',
@@ -1314,6 +1325,7 @@
         observedAtIso: (opts && opts.observedAtIso) || null
       });
     }
+    if (plannedUnbindFolderId && plannedUnbindEdgePresent !== true) return null;
     return out;
   }
 
@@ -1393,7 +1405,11 @@
     var settlementExistingBindings = await buildF15SettlementExistingBindingContext(
       chatId,
       canonicalBinding.leftSubjectId,
-      { observedAtIso: input.observedAtIso }
+      {
+        operation: operation,
+        plannedUnbindFolderId: opts && opts.plannedUnbindFolderId,
+        observedAtIso: input.observedAtIso
+      }
     );
     if (!Array.isArray(settlementExistingBindings)) {
       return { ok: false, blockers: ['f15-folder-binding-settlement-context-failed'], shadow: shadow, proposal: proposal, handoff: handoff, receipt: receipt, bookkeeping: bookkeeping, execute: execute };
@@ -1433,17 +1449,25 @@
 
   async function delegateF15FolderBindingWrite(operation, folderId, chatId, opts) {
     opts = opts || {};
+    var safeOpts = Object.assign({}, opts);
+    delete safeOpts.plannedUnbindFolderId;
     if (operation === 'bind' && opts.skipRebindDecompose !== true) {
       var previousRows = await listForChat(chatId);
       var previous = previousRows && previousRows[0];
       var previousFolderId = previous && getFolderId(previous);
+      var declaredPreviousFolderId = getFolderId(opts.previousFolderId || opts.expectedCurrentFolderId || opts.currentFolderId);
+      if (declaredPreviousFolderId && declaredPreviousFolderId !== previousFolderId) {
+        return { ok: false, blockers: ['f15-folder-binding-planned-unbind-mismatch'], declaredPreviousFolderId: declaredPreviousFolderId, detectedPreviousFolderId: previousFolderId || '' };
+      }
       if (previousFolderId && previousFolderId !== folderId) {
         var unbound = await delegateF15FolderBindingWrite('unbind', previousFolderId, chatId,
-          Object.assign({}, opts, { skipRebindDecompose: true }));
+          Object.assign({}, safeOpts, { skipRebindDecompose: true }));
         if (!unbound || unbound.ok !== true) return unbound;
+        return runF15FolderBindingDelegationPipeline(operation, folderId, chatId,
+          Object.assign({}, safeOpts, { plannedUnbindFolderId: previousFolderId }));
       }
     }
-    return runF15FolderBindingDelegationPipeline(operation, folderId, chatId, opts);
+    return runF15FolderBindingDelegationPipeline(operation, folderId, chatId, safeOpts);
   }
 
   function patchToCols(patch) {
