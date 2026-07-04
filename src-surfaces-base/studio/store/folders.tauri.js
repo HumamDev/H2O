@@ -4121,6 +4121,7 @@
     var targetOk = !a.targetRowToken || cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN;
     var reasonOk = !!cleanString(a.reason);
     var dryRunOnlyOk = a.noCleanupApplyYet === true;
+    var exactRowIntentOk = a.removeOnlyExactDanglingFolderBindingRow !== false;
     if (!requireApplyApproval) {
       return approved && scopeOk && targetOk && dryRunOnlyOk && reasonOk;
     }
@@ -4129,13 +4130,13 @@
       scopeOk &&
       cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN &&
       cleanString(a.rejectedRowTokenShouldRemainDebt || a.excludedRowToken) === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN &&
-      cleanString(a.chatToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
-      cleanString(a.folderToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN &&
+      (!a.chatToken || cleanString(a.chatToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN) &&
+      (!a.folderToken || cleanString(a.folderToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN) &&
       cleanString(a.strictEvidenceReceiptId) === receiptId &&
       (!a.strictEvidenceReceiptHash || cleanString(a.strictEvidenceReceiptHash) === cleanString(strictEvidenceReceipt && strictEvidenceReceipt.receiptHash)) &&
       a.reviewedOverrideApproved === true &&
       a.cleanupApplyApproved === true &&
-      a.removeOnlyExactDanglingFolderBindingRow === true &&
+      exactRowIntentOk &&
       a.noFolderDelete === true &&
       a.noChatDelete === true &&
       a.noTombstoneMutation === true &&
