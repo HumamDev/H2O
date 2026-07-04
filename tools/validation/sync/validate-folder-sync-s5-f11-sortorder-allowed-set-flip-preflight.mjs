@@ -15,6 +15,7 @@ const evidencePath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-a
 const s2CloseoutPath = 'release-evidence/2026-07-01/folder-sync-s2-sortorder-local-closeout.md';
 const s2bLivePath = 'release-evidence/2026-07-01/folder-sync-s2b-live-projection-activation.md';
 const s5ImplementationPath = 'release-evidence/2026-07-01/folder-sync-s5-f11-sortorder-allowed-set-flip.md';
+const bindingLiveCloseoutPath = 'release-evidence/2026-07-01/folder-sync-binding-f15-live-restart-survival-closeout.md';
 const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const foldersStorePath = 'src-surfaces-base/studio/store/folders.tauri.js';
 
@@ -111,7 +112,14 @@ assertIncludes(foldersStoreSource, "result.skippedBindingRepairCount = classSele
   'current F11 source still counts skipped binding repair');
 assertIncludes(folderSyncSource, 'async function s2bProjectSortOrderPreservingRenderMirror()', 'S2b helper exists');
 assertIncludes(folderSyncSource, "appliedReceipt.mirrorReprojection = 'applied-sortorder-preserving-s2b';", 'S2b applied marker exists');
-assert.ok(!folderSyncSource.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema remains unminted');
+// Post-preflight source truth: the chat-folder binding request + receipt schemas have since been minted and
+// live-proven (the preflight doc's "remains unminted" posture has been superseded by implementation).
+assertIncludes(folderSyncSource, "CHAT_FOLDER_BINDING_REQUEST_SCHEMA = 'h2o.studio.chat-folder-binding-request.v1'",
+  'binding request schema now minted in source');
+assertIncludes(folderSyncSource, "CHAT_FOLDER_BINDING_RECEIPT_SCHEMA = 'h2o.studio.chat-folder-binding-receipt.v1'",
+  'binding receipt schema now minted in source');
+assert.ok(exists(bindingLiveCloseoutPath) && read(bindingLiveCloseoutPath).includes('reconcileSurvivalProven:true'),
+  'binding request/receipt path is live-proven (restart-survival closeout)');
 assert.ok(!folderSyncSource.includes('productSyncReady: true'), 'productSyncReady must not flip true in folder-sync source');
 
 for (const forbidden of [
@@ -137,7 +145,9 @@ const result = {
   fieldMismatchSortOrderEligibleForLaterFlip: true,
   fieldMismatchSortOrderCurrentlyBlockedInSource: !exists(s5ImplementationPath),
   bindingMismatchBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingRequestSchemaMinted: true,
+  bindingReceiptSchemaMinted: true,
+  bindingRequestReceiptLiveProven: true,
   productSyncReady: false,
   webdavCloudRelayStarted: false,
   chatSavingCasBlocked: true,

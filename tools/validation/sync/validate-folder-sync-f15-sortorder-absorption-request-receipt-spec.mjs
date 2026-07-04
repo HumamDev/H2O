@@ -190,14 +190,19 @@ if (exists(folderSyncFile)) {
   }
 }
 
-// ---- REAL SOURCE: folder substrate + F11 helper still keeps sortOrder blocked ----
+// ---- REAL SOURCE: folder substrate + F11 helper (post-S5: sortOrder no longer force-blocked; binding-mismatch still blocked) ----
 assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must still block field-mismatch:sortOrder + binding-mismatch');
+  // Post-S5 allowed-set flip: sortOrder was moved into the allowed rebuild set; only binding-mismatch stays blocked.
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'source F11 helper blocks binding-mismatch (post-S5 blocked-set)');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'source F11 allowed-set now allows field-mismatch:sortOrder after the S5 flip');
+  assert(!store.includes("concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+    'source F11 helper must NOT force-block field-mismatch:sortOrder after the S5 flip');
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
 }
@@ -226,6 +231,7 @@ console.log(JSON.stringify({
   proposedSchemasMintedInSource: false,
   conflictCases: CONFLICT_CASES,
   sortOrderCanJoinRebuildLater: 'conditional-after-loop-implemented-and-proven',
+  sortOrderForceBlockedInSource: false,
   bindingMismatchBlocked: true,
   productSyncReady: false,
   publicPremiumBlocked: true,
