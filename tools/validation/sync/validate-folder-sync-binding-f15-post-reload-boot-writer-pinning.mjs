@@ -132,7 +132,7 @@ assertIncludes(foldersStore, 'function chromeStorageLocal', 'chrome.storage.loca
 assertIncludes(foldersStore, 'api.storage.local ? api.storage.local : null', 'mirror is chrome.storage.local-backed (absent/no-op in Tauri)');
 assertIncludes(foldersStore, "var DB_URL = 'sqlite:studio-v1.db'", 'single canonical DB path');
 assertIncludes(foldersStore, 'function init()', 'store init present');
-assertIncludes(foldersStore, "source: 'init'", 'init now runs bounded F15 settled restart convergence');
+assertIncludes(foldersStore, "ensureF15SettledBindingRestartConvergenceReady('init')", 'init now runs bounded F15 settled restart convergence (via one-shot ready gate)');
 assertIncludes(foldersStore, 'runF15SettledBindingRestartConvergence', 'restart convergence helper present');
 assertIncludes(rustLib, 'f5g4-proof-chat-001', 'Rust folder_bindings writes are F5G.4 proof/test only');
 

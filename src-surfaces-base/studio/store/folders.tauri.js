@@ -123,6 +123,7 @@
     warnMax: 20,
     subscribers: new Set(),
     lastF15SettledBindingRestartConvergence: null,
+    f15RestartConvergenceReadyPromise: null,
     phase4a: {
       installed: true,
       phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
@@ -1539,6 +1540,7 @@
       result.ok = false;
       result.blockers.push('f15-settled-binding-materialization-ledger-unavailable');
       state.lastF15SettledBindingRestartConvergence = result;
+      try { api.__lastF15SettledBindingRestartConvergenceResult = result; } catch (_) {}
       return result;
     }
     var records = Array.isArray(ledger.records) ? ledger.records.slice() : [];
@@ -1587,7 +1589,19 @@
       result.convergedCount += 1;
     }
     state.lastF15SettledBindingRestartConvergence = result;
+    try { api.__lastF15SettledBindingRestartConvergenceResult = result; } catch (_) {}
     return result;
+  }
+
+  function ensureF15SettledBindingRestartConvergenceReady(source) {
+    if (!state.f15RestartConvergenceReadyPromise) {
+      state.f15RestartConvergenceReadyPromise = runF15SettledBindingRestartConvergence({ source: cleanString(source) || 'ensure' })
+        .catch(function (e) {
+          recordError('f15SettledBindingRestartConvergence.ensure', e);
+          return { ok: false, blockers: ['f15-settled-binding-restart-convergence-threw'] };
+        });
+    }
+    return state.f15RestartConvergenceReadyPromise;
   }
 
   function requiredF15FolderBindingApis(sync) {
@@ -4380,10 +4394,7 @@
       }
       state.ready = true;
       state.lastReloadedAt = Date.now();
-      return runF15SettledBindingRestartConvergence({ source: 'init' }).catch(function (e) {
-        recordError('f15SettledBindingRestartConvergence.init', e);
-        return { ok: false, blockers: ['f15-settled-binding-restart-convergence-threw'] };
-      }).then(function (convergence) {
+      return ensureF15SettledBindingRestartConvergenceReady('init').then(function (convergence) {
         return countFolders().then(function (n) {
           return { rowCount: n, f15SettledBindingRestartConvergence: convergence };
         });
@@ -4400,10 +4411,8 @@
 
   function reload() {
     state.lastReloadedAt = Date.now();
-    return runF15SettledBindingRestartConvergence({ source: 'reload' }).catch(function (e) {
-      recordError('f15SettledBindingRestartConvergence.reload', e);
-      return { ok: false, blockers: ['f15-settled-binding-restart-convergence-threw'] };
-    }).then(function (convergence) {
+    state.f15RestartConvergenceReadyPromise = null;
+    return ensureF15SettledBindingRestartConvergenceReady('reload').then(function (convergence) {
       notifySubscribers({ source: 'reload', f15SettledBindingRestartConvergence: convergence });
       return countFolders().then(function (n) { return { rowCount: n, f15SettledBindingRestartConvergence: convergence }; });
     })
@@ -4494,6 +4503,7 @@
     canonicalBindingStoreIdentity: canonicalBindingStoreIdentity,
     confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
     runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
+    whenF15SettledBindingRestartConvergenceReady: ensureF15SettledBindingRestartConvergenceReady,
     listForChat: listForChat,
     count: countFolders,
   };

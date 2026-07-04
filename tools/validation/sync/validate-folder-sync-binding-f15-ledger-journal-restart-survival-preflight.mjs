@@ -113,7 +113,7 @@ assert.ok(!resumeOnBoot.includes('folder_bindings') && !resumeOnBoot.includes('b
   'execute-resume-on-boot must not write folder_bindings directly');
 assertIncludes(foldersStore, 'async function materializeSettledCanonicalChatFolderBinding', 'settled materializer present (reusable by boot convergence)');
 assertIncludes(foldersStore, 'runF15SettledBindingRestartConvergence', 'store-level restart convergence now exists');
-assertIncludes(foldersStore, "source: 'init'", 'init runs restart convergence');
+assertIncludes(foldersStore, "ensureF15SettledBindingRestartConvergenceReady('init')", 'init runs restart convergence (via one-shot ready gate)');
 assertIncludes(foldersStore, "source: 'reload'", 'reload runs restart convergence');
 assertIncludes(foldersStore, 'f15SettledJournalConfirmsMaterializationRecord', 'convergence verifies survived settled journal');
 

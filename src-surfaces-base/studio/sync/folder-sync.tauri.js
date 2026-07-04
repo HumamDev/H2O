@@ -5595,6 +5595,13 @@
     var stores = H2O.Studio && H2O.Studio.store;
     var folders = stores && stores.folders;
     if (!folders || typeof folders.listCanonicalChatFolderBindings !== 'function') return null;
+    // Ensure the boot/reload F15 settled-binding restart convergence has completed before reading canonical
+    // truth, so a post-restart snapshot reflects the re-materialized folder_bindings and never a stale
+    // pre-convergence read. One-shot + fail-safe: convergence is bounded and always resolves; a failure never
+    // blocks the snapshot.
+    if (typeof folders.whenF15SettledBindingRestartConvergenceReady === 'function') {
+      try { await folders.whenF15SettledBindingRestartConvergenceReady('binding-snapshot'); } catch (e) {}
+    }
     var visible = typeof folders.getAll === 'function' ? bindingRepairArr(await folders.getAll()) : [];
     var tomb = [];
     if (typeof folders.listRecentlyDeletedFolders === 'function') {

@@ -186,7 +186,7 @@ for (const token of [
   'convergedCount',
   'materializeSettledCanonicalChatFolderBinding(op, folderId, chatId',
   'skipF15SettledMaterializationRecord: true',
-  "source: 'init'",
+  "ensureF15SettledBindingRestartConvergenceReady('init')",
   "source: 'reload'",
 ]) {
   assertIncludes(foldersStore, token, `restart convergence anchor ${token}`);
