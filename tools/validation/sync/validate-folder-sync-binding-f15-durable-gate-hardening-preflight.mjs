@@ -2,12 +2,10 @@
 //
 // Folder Sync - F15 durable-gate hardening preflight validator (design-only).
 //
-// Static validator for the design-only preflight that pins the durable-gate bug: confirmCanonicalChatFolderBindingDurable()
-// sets result.durable from the checkpoint fence ALONE (busy===0), decoupled from matchesRequested, so durable:true can
-// coexist with matchesRequested:false. It anchors: the current decoupling in source; that the Phase A handler already
-// requires matchesRequested===true (compensating); the exposed diagnostic fields; the proposed stricter composite
-// criteria; hash-gate/durable/ledger ordering; and that the design is honest that hardening prevents false positives but
-// does NOT alone fix Phase B restart survival. No source fix, no live apply, no Phase A/B, no reload.
+// Static validator for the design-only preflight that pinned the durable-gate bug. The historical evidence still records
+// that confirmCanonicalChatFolderBindingDurable() previously set result.durable from the checkpoint fence alone. After the
+// restart-survival implementation, this validator now accepts the fixed source posture: durable true is composite
+// (checkpoint fence + requested hash match), while preserving the same evidence/boundary checks.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -97,20 +95,17 @@ for (const token of [
   assertIncludes(flat, token, `evidence token ${token}`);
 }
 
-// ---- REAL SOURCE anchors: the durable-gate decoupling bug ----
+// ---- REAL SOURCE anchors: the durable-gate bug was fixed after this preflight ----
 assertIncludes(foldersStore, 'function confirmCanonicalChatFolderBindingDurable', 'durable confirm entry present');
 assertIncludes(foldersStore, 'result.matchesRequested = !!result.canonicalBindingHash && !!reqHash && result.canonicalBindingHash === reqHash',
   'matchesRequested computed separately');
-assertIncludes(foldersStore, 'if (fence && fence.durable === true) {', 'durable branch guarded by fence only');
-assertIncludes(foldersStore, 'result.durable = true;', 'durable currently set from fence alone');
-// structural: between the fence-only guard and result.durable=true there is NO matchesRequested term (documents the bug)
-const guardIdx = foldersStore.indexOf('if (fence && fence.durable === true) {');
-const durTrueIdx = foldersStore.indexOf('result.durable = true;', guardIdx);
-assert.ok(guardIdx !== -1 && durTrueIdx !== -1 && durTrueIdx - guardIdx < 80,
-  'result.durable=true sits directly under the fence-only guard');
-const betweenGuardAndDurable = foldersStore.slice(guardIdx, durTrueIdx);
-assert.ok(!betweenGuardAndDurable.includes('matchesRequested'),
-  'current durable assignment does NOT combine matchesRequested (the pinned bug)');
+assertIncludes(foldersStore, 'if (fence && fence.durable === true && result.matchesRequested === true)',
+  'durable branch now combines fence and requested hash match');
+assertIncludes(foldersStore, "fresh-canonical-hash-mismatch-not-durable", 'hash mismatch is explicitly not durable');
+assertIncludes(foldersStore, "fence.interpretation = 'checkpoint-not-fully-merged'; fence.durable = false",
+  'partial checkpoint is not durable');
+assertIncludes(foldersStore, 'parsed.log >= 0 && parsed.checkpointed >= 0 && parsed.log === parsed.checkpointed',
+  'busy zero alone is no longer enough');
 
 // ---- REAL SOURCE anchors: exposed diagnostic fields (callers can distinguish cases) ----
 assertIncludes(foldersStore, 'result.checkpointBusy = fence ? fence.busy : null', 'checkpointBusy exposed');

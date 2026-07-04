@@ -2,12 +2,10 @@
 //
 // Folder Sync - F15 ledger/journal/restart-survival audit validator (design-only).
 //
-// Static validator for the audit that maps where Phase A artifacts persist and pins the recovery-blocking behavior:
-// the consumed ledger and the execute/settlement journal are SQLite-backed (survive restart), folder_bindings reverted,
-// startup does NOT reconcile the surviving journal into folder_bindings, and the surviving consumed ledger short-circuits
-// a replay to 'duplicate' (skipped) BEFORE any current-state check - permanently blocking recovery. It anchors these
-// against REAL source, plus the proposed convergence/ordering direction and all release/safety boundaries. No source
-// fix, no live apply, no Phase A/B, no reload.
+// Static validator for the audit that mapped where Phase A artifacts persist and pinned the recovery-blocking behavior.
+// The historical evidence still records the pre-fix posture. After the restart-survival implementation, this validator
+// now accepts the fixed source posture: startup/reload convergence exists, and consumed-ledger duplicate handling is
+// current-state aware instead of short-circuiting before canonical state verification.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -110,23 +108,34 @@ assertIncludes(folderSync, 'bindingRepairAlreadyConsumed', 'consumed-ledger prec
 // ---- REAL SOURCE anchors: execute/settlement journal persistence (SQLite-backed KV) ----
 assertIncludes(executeJournal, 'global.chrome.storage.local', 'execute journal persists via SQLite-backed KV shim');
 
-// ---- REAL SOURCE anchors: startup does NOT reconcile journal -> folder_bindings ----
+// ---- REAL SOURCE anchors: restart convergence now exists outside execute-resume-on-boot ----
 assert.ok(!resumeOnBoot.includes('folder_bindings') && !resumeOnBoot.includes('bindChat'),
-  'execute-resume-on-boot must not write folder_bindings (no boot re-materialization)');
+  'execute-resume-on-boot must not write folder_bindings directly');
 assertIncludes(foldersStore, 'async function materializeSettledCanonicalChatFolderBinding', 'settled materializer present (reusable by boot convergence)');
+assertIncludes(foldersStore, 'runF15SettledBindingRestartConvergence', 'store-level restart convergence now exists');
+assertIncludes(foldersStore, "source: 'init'", 'init runs restart convergence');
+assertIncludes(foldersStore, "source: 'reload'", 'reload runs restart convergence');
+assertIncludes(foldersStore, 'f15SettledJournalConfirmsMaterializationRecord', 'convergence verifies survived settled journal');
 
-// ---- REAL SOURCE anchors: the ledger-blocks-recovery ordering (duplicate before current-state) ----
+// ---- REAL SOURCE anchors: ledger duplicate handling is now current-state aware ----
 assertIncludes(folderSync, 'function classifyChatFolderBindingRepairConflict', 'classify present');
-assertIncludes(folderSync, "if (appliedKeys[cleanString(req.idempotencyKey)]) return 'duplicate';",
-  'classify returns duplicate on the ledger key');
+assertIncludes(folderSync, 'var currentFolderId = cleanString(snap.bindingByChatId && snap.bindingByChatId[chatId]);',
+  'classify reads current canonical state before consumed duplicate decision');
+assertIncludes(folderSync, "if ((intent === 'bind' || intent === 'move') && currentFolderId === targetFolderId) return 'duplicate';",
+  'consumed bind/move duplicate requires target already current');
+assertIncludes(folderSync, "if (intent === 'unbind' && !currentFolderId) return 'duplicate';",
+  'consumed unbind duplicate requires already unbound');
 assertIncludes(folderSync, 'effCtx.appliedKeys[cleanString(safeObject(request).idempotencyKey)] = true',
   'handler sets appliedKeys from the surviving consumed ledger');
-assertIncludes(folderSync, 'if (persisted.consumed) {', 'appliedKeys is set only when the ledger survived');
-// structural: the duplicate short-circuit precedes the current-canonical-state read (the recovery-blocking ordering)
-const dupIdx = folderSync.indexOf("if (appliedKeys[cleanString(req.idempotencyKey)]) return 'duplicate';");
+assertIncludes(folderSync, 'if (consumedBeforeApply) {', 'appliedKeys is set only when the ledger survived');
+assertIncludes(folderSync, "already-consumed-before-recovery", 'consumed-but-diverged recovery keeps idempotency persisted after gates');
+assert.ok(!folderSync.includes("if (appliedKeys[cleanString(req.idempotencyKey)]) return 'duplicate';"),
+  'old consumed-ledger immediate duplicate short-circuit must be gone');
+// structural: current-canonical-state read precedes the consumed duplicate decision.
 const curStateIdx = folderSync.indexOf('var currentFolderId = cleanString(snap.bindingByChatId');
-assert.ok(dupIdx !== -1 && curStateIdx !== -1 && dupIdx < curStateIdx,
-  'ledger duplicate short-circuit must currently precede the current-state check (documents the recovery-blocking bug)');
+const appliedIdx = folderSync.indexOf('if (appliedKeys[cleanString(req.idempotencyKey)])', curStateIdx);
+assert.ok(curStateIdx !== -1 && appliedIdx !== -1 && curStateIdx < appliedIdx,
+  'current-state read must precede consumed duplicate decision');
 
 // ---- REAL SOURCE anchors: gates + boundaries intact and unedited ----
 assertIncludes(folderSync, 'post-apply-binding-hash-mismatch', 'post-apply hash gate present');
@@ -163,10 +172,12 @@ const result = {
   folderBindingsBacking: 'sqlite:studio-v1.db folder_bindings',
   consumedLedgerSurvivesRestart: true,
   settlementJournalSurvivesRestart: true,
-  folderBindingsSurvivedRestart: false,
-  startupReconcilesJournalIntoBindings: false,
-  consumedLedgerBlocksRecovery: true,
-  recoveryBlockMechanism: "classify returns 'duplicate' on appliedKeys[idempotencyKey] before the current-state check; handler maps duplicate -> skipped zero-write",
+  folderBindingsSurvivedRestartInAuditedLiveRun: false,
+  historicalStartupReconcilesJournalIntoBindings: false,
+  currentSourceStartupConvergencePresent: true,
+  historicalConsumedLedgerBlocksRecovery: true,
+  currentSourceConsumedLedgerRecoveryOrderingFixed: true,
+  recoveryBlockMechanismHistorical: "classify returned 'duplicate' on appliedKeys[idempotencyKey] before the current-state check; handler mapped duplicate -> skipped zero-write",
   recommendedDirection: 'boot settled-journal -> folder_bindings convergence (C/E) + ledger-dedup ordering conditioned on current-state match; merge with durable-gate hardening',
   requiredForPhaseB: true,
   mergeWithDurableGateHardening: true,

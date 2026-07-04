@@ -111,19 +111,19 @@ for (const token of [
   assertIncludes(flat, token, `evidence token ${token}`);
 }
 
-// ---- REAL SOURCE anchors: the durable fence false-positive (busy===0 => durable, no full-merge check) ----
+// ---- REAL SOURCE anchors: durable fence false-positive is fixed after restart-survival implementation ----
 assertIncludes(foldersStore, 'PRAGMA wal_checkpoint(TRUNCATE)', 'durable fence uses TRUNCATE checkpoint');
 assertIncludes(foldersStore, "fence.interpretation = 'checkpoint-confirmed'; fence.durable = true",
   'fence declares durable on the checkpoint-confirmed branch');
 assertIncludes(foldersStore, 'parsed.busy === 0', 'fence classifies durability on busy===0');
 assertIncludes(foldersStore, 'function bindingCheckpointRowParse', 'checkpoint (busy,log,checkpointed) parser present');
 assertIncludes(foldersStore, 'confirmCanonicalChatFolderBindingDurable', 'durable confirm entry present');
-// the current busy===0 branch does NOT gate on log/checkpointed full-merge (root-cause gap): the durable=true assignment
-// sits immediately after the `parsed.busy === 0` guard with no `parsed.log === 0` / `checkpointed === log` condition.
-const busyIdx = foldersStore.indexOf('} else if (parsed.busy === 0) {');
-const durableTrueIdx = foldersStore.indexOf("fence.interpretation = 'checkpoint-confirmed'; fence.durable = true", busyIdx);
-assert.ok(busyIdx !== -1 && durableTrueIdx !== -1 && durableTrueIdx - busyIdx < 120,
-  'busy===0 branch must currently assign durable:true directly (documents the missing full-merge check)');
+assertIncludes(foldersStore, 'parsed.log >= 0 && parsed.checkpointed >= 0 && parsed.log === parsed.checkpointed',
+  'busy zero now requires full checkpoint merge');
+assertIncludes(foldersStore, "fence.interpretation = 'checkpoint-not-fully-merged'; fence.durable = false",
+  'partial checkpoint is not durable');
+assertIncludes(foldersStore, 'if (fence && fence.durable === true && result.matchesRequested === true)',
+  'durable true now also requires requested hash match');
 
 // ---- REAL SOURCE anchors: ruled-out boot writers ----
 assertIncludes(foldersStore, 'function rebuildRenderMirrorFromSqlite', 'render mirror rebuild present (SQLite->mirror)');
@@ -131,8 +131,9 @@ assertIncludes(foldersStore, "targetKey: FOLDER_STATE_DATA_KEY", 'render mirror 
 assertIncludes(foldersStore, 'function chromeStorageLocal', 'chrome.storage.local facade present');
 assertIncludes(foldersStore, 'api.storage.local ? api.storage.local : null', 'mirror is chrome.storage.local-backed (absent/no-op in Tauri)');
 assertIncludes(foldersStore, "var DB_URL = 'sqlite:studio-v1.db'", 'single canonical DB path');
-assertIncludes(foldersStore, 'function init()', 'store init present (read-only: waitForSqlite + countFolders)');
-assertIncludes(foldersStore, 'return countFolders().then(function (n) { return { rowCount: n }; });', 'init is read-only (no folder_bindings seed)');
+assertIncludes(foldersStore, 'function init()', 'store init present');
+assertIncludes(foldersStore, "source: 'init'", 'init now runs bounded F15 settled restart convergence');
+assertIncludes(foldersStore, 'runF15SettledBindingRestartConvergence', 'restart convergence helper present');
 assertIncludes(rustLib, 'f5g4-proof-chat-001', 'Rust folder_bindings writes are F5G.4 proof/test only');
 
 // ---- REAL SOURCE anchors: snapshot source + ledger/journal ----

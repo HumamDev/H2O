@@ -70,6 +70,11 @@
   var F16_FOLDER_LEGACY_FALLBACK_VERSION = '0.1.0-f16.4.b';
   var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_GUARDED = true;
   var F16_FOLDER_BINDINGS_TRIGGER_PROTECTION_DEFAULT_ENABLED = false;
+  var F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_KEY = 'h2o:studio:folder-bindings:f15-settled-materialization:v1';
+  var F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_SCHEMA = 'h2o.studio.folder-sync.f15-settled-binding-materialization-ledger.v1';
+  var F15_SETTLED_BINDING_MATERIALIZATION_RECORD_SCHEMA = 'h2o.studio.folder-sync.f15-settled-binding-materialization-record.v1';
+  var F15_SETTLED_BINDING_RESTART_CONVERGENCE_SCHEMA = 'h2o.studio.folder-sync.f15-settled-binding-restart-convergence.v1';
+  var F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_LIMIT = 200;
   var PHASE4A_FOLDER_SOFT_DELETE_ENABLED = true;
   var PHASE4A_FOLDER_SOFT_DELETE_PHASE = 'desktop-local-soft-delete';
   var PHASE4D3_RECENTLY_DELETED_SCHEMA = 'h2o.studio.folder-recently-deleted-diagnostics.v1';
@@ -117,6 +122,7 @@
     warnings: [],
     warnMax: 20,
     subscribers: new Set(),
+    lastF15SettledBindingRestartConvergence: null,
     phase4a: {
       installed: true,
       phase: PHASE4A_FOLDER_SOFT_DELETE_PHASE,
@@ -1329,6 +1335,261 @@
     return out;
   }
 
+  function executeJournalLedgerKey() {
+    try {
+      var d = H2O && H2O.Desktop && H2O.Desktop.Sync;
+      return cleanString(d && d.__executeJournalLedgerKey) || 'h2o:sync:execute-journal:v1';
+    } catch (_) {
+      return 'h2o:sync:execute-journal:v1';
+    }
+  }
+
+  function normalizeF15SettledBindingMaterializationLedger(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
+        raw.schema !== F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_SCHEMA ||
+        !Array.isArray(raw.records)) {
+      return {
+        schema: F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_SCHEMA,
+        createdAtIso: nowIsoSeconds(),
+        updatedAtIso: '',
+        records: [],
+      };
+    }
+    return {
+      schema: F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_SCHEMA,
+      createdAtIso: cleanString(raw.createdAtIso) || nowIsoSeconds(),
+      updatedAtIso: cleanString(raw.updatedAtIso),
+      records: raw.records.slice(0, F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_LIMIT),
+    };
+  }
+
+  async function readF15SettledBindingMaterializationLedger() {
+    var raw = await chromeStorageGet(F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_KEY);
+    return normalizeF15SettledBindingMaterializationLedger(raw);
+  }
+
+  async function writeF15SettledBindingMaterializationLedger(ledger) {
+    var payload = {};
+    payload[F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_KEY] = ledger;
+    return chromeStorageSet(payload);
+  }
+
+  function settledBindingJournalRowsFromLedger(raw) {
+    var events = raw && typeof raw === 'object' && Array.isArray(raw.events) ? raw.events : [];
+    return events.map(function (event) {
+      var row = event && event.row && typeof event.row === 'object' ? event.row : {};
+      return {
+        phase: cleanString(row.phase),
+        domainId: cleanString(row.domainId),
+        operationKind: cleanString(row.operationKind),
+        subjectId: cleanString(row.subjectId).toLowerCase(),
+        dedupeKey: cleanString(row.dedupeKey).toLowerCase(),
+        eventDigest: cleanString(row.eventDigest).toLowerCase(),
+        journalRowId: cleanString(row.journalRowId),
+        evidence: row.evidence && typeof row.evidence === 'object' ? row.evidence : {},
+      };
+    });
+  }
+
+  function f15MaterializationOperationKind(operation) {
+    var op = cleanString(operation);
+    return op ? 'library-binding-' + op + '-applied' : '';
+  }
+
+  async function f15SettledJournalConfirmsMaterializationRecord(record) {
+    var rec = record && typeof record === 'object' ? record : {};
+    if (rec.schema !== F15_SETTLED_BINDING_MATERIALIZATION_RECORD_SCHEMA) return false;
+    var expectedOperationKind = f15MaterializationOperationKind(rec.operation);
+    if (!expectedOperationKind || !isSha256Hex(rec.subjectId) || !isSha256Hex(rec.settlementDigest)) return false;
+    var raw = await chromeStorageGet(executeJournalLedgerKey());
+    var rows = settledBindingJournalRowsFromLedger(raw);
+    for (var i = 0; i < rows.length; i += 1) {
+      var row = rows[i];
+      var evidence = row.evidence && typeof row.evidence === 'object' ? row.evidence : {};
+      if (row.phase === 'settled' &&
+          row.domainId === 'library.binding' &&
+          row.operationKind === expectedOperationKind &&
+          row.subjectId === cleanString(rec.subjectId).toLowerCase() &&
+          (!rec.dedupeKey || row.dedupeKey === cleanString(rec.dedupeKey).toLowerCase()) &&
+          (!rec.eventDigest || row.eventDigest === cleanString(rec.eventDigest).toLowerCase()) &&
+          cleanString(evidence.settlementDigest).toLowerCase() === cleanString(rec.settlementDigest).toLowerCase()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function f15MaterializationRecordIdentity(record) {
+    var rec = record && typeof record === 'object' ? record : {};
+    return [
+      cleanString(rec.operation),
+      cleanString(rec.chatId),
+      cleanString(rec.folderId),
+      cleanString(rec.settlementDigest) || cleanString(rec.subjectId) || cleanString(rec.dedupeKey)
+    ].join('|');
+  }
+
+  async function persistF15SettledBindingMaterializationRecord(operation, folderIdInput, chatIdInput, opts, delegationResult, materialization) {
+    var op = cleanString(operation);
+    var folderId = getFolderId(folderIdInput);
+    var chatId = cleanString(chatIdInput);
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var result = materialization && typeof materialization === 'object' ? materialization : {};
+    if (options.skipF15SettledMaterializationRecord === true) return { ok: true, skipped: true };
+    if (result.ok !== true || !op || !folderId || !chatId) return { ok: false, skipped: true, reason: 'materialization-record-input-invalid' };
+    var delegation = delegationResult && typeof delegationResult === 'object' ? delegationResult : {};
+    var execute = delegation.execute && typeof delegation.execute === 'object' ? delegation.execute : {};
+    var envelope = execute.envelope && typeof execute.envelope === 'object' ? execute.envelope : {};
+    var shapes = envelope.settlementShapes && typeof envelope.settlementShapes === 'object' ? envelope.settlementShapes : {};
+    var settlement = delegation.settlement && typeof delegation.settlement === 'object' ? delegation.settlement : {};
+    var settlementDigest = cleanString(shapes.settlementDigest || settlement.settlementDigest).toLowerCase();
+    var subjectId = cleanString(envelope.subjectId).toLowerCase();
+    if (!isSha256Hex(settlementDigest) || !isSha256Hex(subjectId)) {
+      return { ok: false, skipped: true, reason: 'materialization-record-settlement-identity-missing' };
+    }
+    var now = nowIsoSeconds();
+    var record = {
+      schema: F15_SETTLED_BINDING_MATERIALIZATION_RECORD_SCHEMA,
+      operation: op,
+      chatId: chatId,
+      folderId: folderId,
+      assignedAt: Number(result.assignedAt || options.assignedAt) || Date.now(),
+      subjectId: subjectId,
+      dedupeKey: cleanString(envelope.dedupeKey).toLowerCase(),
+      eventDigest: cleanString(envelope.eventDigest).toLowerCase(),
+      operationKind: cleanString(envelope.operationKind),
+      settlementDigest: settlementDigest,
+      createdAtIso: now,
+      updatedAtIso: now,
+    };
+    try {
+      var ledger = await readF15SettledBindingMaterializationLedger();
+      var identity = f15MaterializationRecordIdentity(record);
+      var records = ledger.records.filter(function (entry) {
+        return f15MaterializationRecordIdentity(entry) !== identity;
+      });
+      records.push(record);
+      if (records.length > F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_LIMIT) {
+        records = records.slice(records.length - F15_SETTLED_BINDING_MATERIALIZATION_LEDGER_LIMIT);
+      }
+      ledger.records = records;
+      ledger.updatedAtIso = now;
+      await writeF15SettledBindingMaterializationLedger(ledger);
+      return { ok: true, recordPersisted: true, record: record };
+    } catch (e) {
+      recordWarning('F15 settled binding materialization record persist failed: ' + String((e && e.message) || e));
+      return { ok: false, reason: 'materialization-record-persist-failed' };
+    }
+  }
+
+  function syntheticF15SettledDelegationResultFromMaterializationRecord(record) {
+    var rec = record && typeof record === 'object' ? record : {};
+    return {
+      ok: true,
+      restartConvergence: true,
+      execute: {
+        envelope: {
+          subjectId: cleanString(rec.subjectId).toLowerCase(),
+          dedupeKey: cleanString(rec.dedupeKey).toLowerCase(),
+          eventDigest: cleanString(rec.eventDigest).toLowerCase(),
+          operationKind: cleanString(rec.operationKind) || f15MaterializationOperationKind(rec.operation),
+          settlementShapes: { settlementDigest: cleanString(rec.settlementDigest).toLowerCase() },
+        },
+      },
+      settlement: {
+        ok: true,
+        settled: true,
+        settlementDigest: cleanString(rec.settlementDigest).toLowerCase(),
+        restartConvergenceVerifiedFromJournal: true,
+      },
+    };
+  }
+
+  async function currentCanonicalFolderBindingForChat(chatId) {
+    var rows = await listCanonicalChatFolderBindingsForChat(chatId);
+    var row = Array.isArray(rows) && rows.length ? rows[0] : null;
+    return getFolderId(row) || '';
+  }
+
+  async function runF15SettledBindingRestartConvergence(opts) {
+    var options = opts && typeof opts === 'object' ? opts : {};
+    var result = {
+      schema: F15_SETTLED_BINDING_RESTART_CONVERGENCE_SCHEMA,
+      source: cleanString(options.source) || 'manual',
+      ok: true,
+      checkedCount: 0,
+      convergedCount: 0,
+      alreadyCurrentCount: 0,
+      skippedCount: 0,
+      journalVerifiedCount: 0,
+      blockers: [],
+      warnings: [],
+      noChatDelete: true,
+      noFolderDelete: true,
+      noHardDelete: true,
+      noPurge: true,
+      noTombstoneMutation: true,
+      noWebdavWrite: true,
+      productSyncReady: false,
+    };
+    var ledger;
+    try {
+      ledger = await readF15SettledBindingMaterializationLedger();
+    } catch (e) {
+      result.ok = false;
+      result.blockers.push('f15-settled-binding-materialization-ledger-unavailable');
+      state.lastF15SettledBindingRestartConvergence = result;
+      return result;
+    }
+    var records = Array.isArray(ledger.records) ? ledger.records.slice() : [];
+    records.sort(function (a, b) {
+      return String(a && a.createdAtIso || '').localeCompare(String(b && b.createdAtIso || ''));
+    });
+    for (var i = 0; i < records.length; i += 1) {
+      var rec = records[i] && typeof records[i] === 'object' ? records[i] : {};
+      result.checkedCount += 1;
+      var op = cleanString(rec.operation);
+      var chatId = cleanString(rec.chatId);
+      var folderId = getFolderId(rec.folderId);
+      if ((op !== 'bind' && op !== 'unbind') || !chatId || !folderId) {
+        result.skippedCount += 1;
+        result.warnings.push('materialization-record-invalid');
+        continue;
+      }
+      var journalOk = false;
+      try { journalOk = await f15SettledJournalConfirmsMaterializationRecord(rec); }
+      catch (_) { journalOk = false; }
+      if (journalOk !== true) {
+        result.skippedCount += 1;
+        result.warnings.push('materialization-record-journal-not-confirmed');
+        continue;
+      }
+      result.journalVerifiedCount += 1;
+      var currentFolderId = '';
+      try { currentFolderId = await currentCanonicalFolderBindingForChat(chatId); }
+      catch (_) { currentFolderId = ''; }
+      if ((op === 'bind' && currentFolderId === folderId) ||
+          (op === 'unbind' && currentFolderId !== folderId)) {
+        result.alreadyCurrentCount += 1;
+        continue;
+      }
+      var materialized = await materializeSettledCanonicalChatFolderBinding(op, folderId, chatId, {
+        assignedAt: Number(rec.assignedAt) || Date.now(),
+        restartConvergence: true,
+        skipF15SettledMaterializationRecord: true,
+      }, syntheticF15SettledDelegationResultFromMaterializationRecord(rec));
+      if (!materialized || materialized.ok !== true) {
+        result.ok = false;
+        result.skippedCount += 1;
+        result.blockers.push('f15-settled-binding-restart-convergence-materialization-failed');
+        continue;
+      }
+      result.convergedCount += 1;
+    }
+    state.lastF15SettledBindingRestartConvergence = result;
+    return result;
+  }
+
   function requiredF15FolderBindingApis(sync) {
     return [
       'createLibraryFolderBindingMigrationShadow',
@@ -1534,6 +1795,7 @@
         base.ok = true;
         base.status = 'settled-binding-materialized';
         base.blockers = [];
+        base.restartConvergenceRecord = await persistF15SettledBindingMaterializationRecord(op, folderId, chatId, options, delegationResult, base);
         return base;
       }
       if (op === 'unbind') {
@@ -1561,6 +1823,7 @@
         base.ok = true;
         base.status = 'settled-binding-materialized';
         base.blockers = [];
+        base.restartConvergenceRecord = await persistF15SettledBindingMaterializationRecord(op, folderId, chatId, options, delegationResult, base);
         return base;
       }
       base.status = 'settled-binding-materialization-operation-unsupported';
@@ -3805,8 +4068,12 @@
         fence.interpretation = 'busy-incomplete'; fence.durable = false;               // checkpoint blocked
       } else if (parsed.log === -1 && parsed.checkpointed === -1) {
         fence.interpretation = 'non-wal-no-checkpoint-needed'; fence.durable = true;    // rollback-journal autocommit already durable
+      } else if (parsed.busy === 0 &&
+          Number.isFinite(parsed.log) && Number.isFinite(parsed.checkpointed) &&
+          parsed.log >= 0 && parsed.checkpointed >= 0 && parsed.log === parsed.checkpointed) {
+        fence.interpretation = 'checkpoint-confirmed'; fence.durable = true;            // WAL frames fully checkpointed
       } else if (parsed.busy === 0) {
-        fence.interpretation = 'checkpoint-confirmed'; fence.durable = true;            // WAL flushed to main DB
+        fence.interpretation = 'checkpoint-not-fully-merged'; fence.durable = false;    // no busy flag, but merge is not proven
       } else {
         fence.interpretation = 'unverifiable'; fence.durable = false;                   // present but unparseable busy column
       }
@@ -3854,13 +4121,18 @@
         var reqHash = cleanString(options.requestedBindingHash);
         result.matchesRequested = !!result.canonicalBindingHash && !!reqHash && result.canonicalBindingHash === reqHash;
       }
-      // Durable ONLY if the fence CONFIRMED durability (checkpoint-confirmed / non-wal-no-checkpoint-needed).
-      // busy-incomplete / execute-only / unavailable / unparseable -> unverifiable (safe-fail); never swallow
-      // uncertainty as success.
-      if (fence && fence.durable === true) {
+      // Durable ONLY if the fence confirmed durability AND the fresh canonical re-read equals the requested
+      // binding hash. A checkpointed-but-mismatched state is a verified failure, not a durable success.
+      if (fence && fence.durable === true && result.matchesRequested === true) {
         result.durable = true;
         result.unverifiable = false;
         result.reason = fence.interpretation; // 'checkpoint-confirmed' | 'non-wal-no-checkpoint-needed'
+      } else if (fence && fence.durable === true && result.matchesRequested !== true) {
+        result.durable = false;
+        result.unverifiable = false;
+        result.reason = result.canonicalBindingHash
+          ? 'fresh-canonical-hash-mismatch-not-durable'
+          : 'fresh-canonical-hash-unavailable-not-durable';
       } else {
         result.durable = false;
         result.unverifiable = true;
@@ -4108,7 +4380,14 @@
       }
       state.ready = true;
       state.lastReloadedAt = Date.now();
-      return countFolders().then(function (n) { return { rowCount: n }; });
+      return runF15SettledBindingRestartConvergence({ source: 'init' }).catch(function (e) {
+        recordError('f15SettledBindingRestartConvergence.init', e);
+        return { ok: false, blockers: ['f15-settled-binding-restart-convergence-threw'] };
+      }).then(function (convergence) {
+        return countFolders().then(function (n) {
+          return { rowCount: n, f15SettledBindingRestartConvergence: convergence };
+        });
+      });
     }).catch(function (e) {
       state.initError = String((e && e.message) || e);
       recordError('init', e);
@@ -4121,8 +4400,13 @@
 
   function reload() {
     state.lastReloadedAt = Date.now();
-    notifySubscribers({ source: 'reload' });
-    return countFolders().then(function (n) { return { rowCount: n }; })
+    return runF15SettledBindingRestartConvergence({ source: 'reload' }).catch(function (e) {
+      recordError('f15SettledBindingRestartConvergence.reload', e);
+      return { ok: false, blockers: ['f15-settled-binding-restart-convergence-threw'] };
+    }).then(function (convergence) {
+      notifySubscribers({ source: 'reload', f15SettledBindingRestartConvergence: convergence });
+      return countFolders().then(function (n) { return { rowCount: n, f15SettledBindingRestartConvergence: convergence }; });
+    })
       .catch(function () { return { rowCount: 0 }; });
   }
 
@@ -4153,6 +4437,7 @@
       lastReloadedAt: state.lastReloadedAt,
       lastWriteAt: state.lastWriteAt,
       writesSinceBoot: state.writesSinceBoot,
+      lastF15SettledBindingRestartConvergence: state.lastF15SettledBindingRestartConvergence,
       subscribers: state.subscribers.size,
       initError: state.initError,
       errors: state.errors.slice(),
@@ -4208,6 +4493,7 @@
     moveCanonicalChatFolderBinding: moveCanonicalChatFolderBinding,
     canonicalBindingStoreIdentity: canonicalBindingStoreIdentity,
     confirmCanonicalChatFolderBindingDurable: confirmCanonicalChatFolderBindingDurable,
+    runF15SettledBindingRestartConvergence: runF15SettledBindingRestartConvergence,
     listForChat: listForChat,
     count: countFolders,
   };

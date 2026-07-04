@@ -5634,7 +5634,11 @@
     var previousFolderId = cleanString(req.previousFolderId || req.expectedCurrentFolderId || req.currentFolderId);
     ctx = safeObject(ctx);
     var appliedKeys = safeObject(ctx.appliedKeys);
-    if (appliedKeys[cleanString(req.idempotencyKey)]) return 'duplicate';
+    var currentFolderId = cleanString(snap.bindingByChatId && snap.bindingByChatId[chatId]);
+    if (appliedKeys[cleanString(req.idempotencyKey)]) {
+      if ((intent === 'bind' || intent === 'move') && currentFolderId === targetFolderId) return 'duplicate';
+      if (intent === 'unbind' && !currentFolderId) return 'duplicate';
+    }
     if (cleanString(req.basisBindingHash) !== cleanString(snap.bindingHash)) {
       return ctx.priorAppliedInBatch ? 'superseded-concurrent' : 'stale-basis';
     }
@@ -5642,7 +5646,6 @@
     var folderToCheck = intent === 'unbind' ? previousFolderId : targetFolderId;
     if (folderToCheck && snap.tombstonedFolderSet && snap.tombstonedFolderSet[folderToCheck]) return 'tombstoned-folder-binding';
     if ((intent === 'bind' || intent === 'move') && (!snap.presentFolderSet || !snap.presentFolderSet[targetFolderId])) return 'orphan-folder-binding';
-    var currentFolderId = cleanString(snap.bindingByChatId && snap.bindingByChatId[chatId]);
     if ((intent === 'move' || intent === 'unbind') && previousFolderId && currentFolderId !== previousFolderId) {
       return 'previous-folder-mismatch';
     }
@@ -5709,8 +5712,9 @@
       return buildChatFolderBindingRepairReceipt(request, 'rejected', 'desktop-store-unavailable', { dryRun: dryRun, canonicalBindingWriteCount: 0 });
     }
     var persisted = await bindingRepairAlreadyConsumed(request);
+    var consumedBeforeApply = persisted.consumed === true;
     var effCtx = ctx;
-    if (persisted.consumed) {
+    if (consumedBeforeApply) {
       effCtx = Object.assign({}, ctx, { appliedKeys: Object.assign({}, ctx.appliedKeys) });
       effCtx.appliedKeys[cleanString(safeObject(request).idempotencyKey)] = true;
     }
@@ -5814,7 +5818,9 @@
             idempotencyPersisted: false });
       }
     }
-    var recorded = acceptedNoWrite ? { ok: false } : await bindingRepairRecordConsumed(request);
+    var recorded = acceptedNoWrite ? { ok: false } : (consumedBeforeApply
+      ? { ok: true, reason: 'already-consumed-before-recovery' }
+      : await bindingRepairRecordConsumed(request));
     var status = acceptedNoWrite ? 'skipped' : 'applied';
     var reason = acceptedNoWrite ? conflict : (acceptedPrimaryKeyMove ? 'duplicate-binding-resolved-primary-key' : 'binding-repair-applied');
     return buildChatFolderBindingRepairReceipt(request, status, reason,
