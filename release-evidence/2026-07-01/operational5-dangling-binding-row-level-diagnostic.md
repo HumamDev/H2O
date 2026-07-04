@@ -7,6 +7,26 @@ This slice prepares the read-only row-level diagnostic required after cleanup pr
 canonical state, does not approve cleanup, does not flip `productSyncReady`, does not start
 WebDAV/cloud/relay/`fullBundle.v3`, and does not touch Chat Saving WebDAV/cloud/archive CAS.
 
+## Correction (2026-07-04) - broad matching superseded by strict verification
+
+The first live run of the cleanup command's dry-run (`9fdf2dab`) reported `verifiedCount:0`: both dangling rows
+were `skipped-not-fully-tombstone-verified` (candidate 1 had neither an exact active folder tombstone nor an exact
+active folderBinding tombstone; candidate 2 had the exact active folderBinding tombstone but NO exact active folder
+tombstone). This contradicted this diagnostic's original classification of both rows as "tombstone/receipt
+explained".
+
+Root cause: the original diagnostic used BROAD matching that the strict cleanup command does not accept -
+`folderBindingTombstoneMatches` accepted a meta-only match (including `meta.oldFolderId`, i.e. move edges),
+`receiptMatches` accepted the folderId appearing in ANY receipt field, and `alreadyExplained` required only a
+binding-tombstone-OR-receipt and did NOT require a folder tombstone at all. Those are FALSE POSITIVES. The cleanup
+command is authoritative and correct: it requires a strict exact active folder tombstone AND a strict exact active
+folderBinding tombstone (via `store.tombstones.getTombstone`, which matches `record_kind = ? AND record_id = ? AND
+restored_at IS NULL`). See `operational5-orphan-binding-cleanup-tombstone-verification-fix.md`.
+
+This snippet has been corrected to score evidence with the SAME strict exact + active tombstone bar. Loose meta /
+receipt-field / substring matches are retained only as clearly-labeled non-authoritative context and never drive the
+"explained" verdict. Controlled cleanup apply remains BLOCKED; both rows require manual review.
+
 ## Purpose
 
 The previous Operational.5 slices proved:
@@ -42,21 +62,26 @@ The diagnostic reads:
 The diagnostic does **not** call apply, delete, restore, bind, unbind, purge, import, export, restart
 convergence, ledger write, tombstone write, `chrome.storage.local.set`, or any gate.
 
-## Classification Rules
+## Classification Rules (strict - corrected 2026-07-04)
 
-For each dangling row:
+Evidence is scored ONLY on strict, exact, active (`restored_at IS NULL`) tombstone rows - the identical bar
+used by `operational5OrphanBindingCleanup` / `store.tombstones.getTombstone`. Loose meta / receipt-field /
+substring matches are recorded as non-authoritative context and NEVER establish "explained". For each
+dangling row:
 
-- `restore-folder-candidate`: chat is live and a folder tombstone/recovery snapshot exists for the
-  missing folder.
-- `reviewed-rebind-or-unbind-candidate`: chat is live, no restorable folder context is proven, and no
-  folderBinding tombstone/receipt already explains the edge.
-- `tombstone-receipt-already-explains-it`: folderBinding tombstone or reviewed receipt context already
-  represents the edge.
-- `unsafe-needs-manual-review`: chat liveness is false/unknown, row context is incomplete, or exposed
-  APIs cannot prove a non-destructive next step.
+- `tombstone-receipt-already-explains-it`: a strict exact active folder tombstone
+  (`folder:<encodeURIComponent(folderId)>`) AND a strict exact active folderBinding tombstone
+  (`folderBinding:<encodeURIComponent(chatId)>:<encodeURIComponent(folderId)>`) both exist.
+- `binding-tombstone-present-folder-tombstone-missing-needs-manual-review`: a strict active folderBinding
+  tombstone exists but NO strict active folder tombstone does - insufficient for cleanup; manual review.
+- `restore-folder-candidate`: chat is live and a strict active folder tombstone / recovery snapshot exists.
+- `reviewed-rebind-or-unbind-candidate`: chat is live and no strict tombstone evidence proves the edge.
+- `unsafe-needs-manual-review`: chat liveness is false/unknown, or exposed APIs cannot prove a strict,
+  non-destructive next step.
 
-Cleanup remains blocked after this diagnostic. A later implementation must be separately reviewed and
-must dry-run first.
+Cleanup remains blocked after this diagnostic. A later implementation must be separately reviewed and must
+dry-run first. A `tombstone-receipt-already-explains-it` classification is necessary but NOT sufficient to
+approve cleanup: the cleanup command re-verifies strict evidence live and stays dry-run-first behind its gate.
 
 ## DevTools Snippet
 
@@ -165,7 +190,29 @@ Paste this into Desktop Studio WebView DevTools:
     return 'folderBinding:' + encodeURIComponent(chatId) + ':' + encodeURIComponent(folderId);
   }
 
-  function folderBindingTombstoneMatches(row, chatId, folderId) {
+  function folderTombstoneRecordId(folderId) {
+    return 'folder:' + encodeURIComponent(folderId);
+  }
+
+  function tombstoneRestored(row) {
+    return !!clean(row && (row.restoredAt || row.restored_at));
+  }
+
+  // STRICT, cleanup-grade evidence: exact record_id + active (restored_at IS NULL), the identical bar used by
+  // operational5OrphanBindingCleanup / store.tombstones.getTombstone. Broad meta / recordId-decode / receipt-field /
+  // substring matching is NOT accepted as cleanup proof (it produced false positives in the first diagnostic run).
+  function strictActiveFolderTombstoneMatch(row, folderId) {
+    const recordId = clean(row && (row.recordId || row.record_id || row.id));
+    return recordId === folderTombstoneRecordId(folderId) && !tombstoneRestored(row);
+  }
+
+  function strictActiveFolderBindingTombstoneMatch(row, chatId, folderId) {
+    const recordId = clean(row && (row.recordId || row.record_id || row.id));
+    return recordId === bindingRecordId(chatId, folderId) && !tombstoneRestored(row);
+  }
+
+  // NON-AUTHORITATIVE loose matcher: retained only as diagnostic context; must NOT drive cleanup eligibility.
+  function looseFolderBindingMetaMatch(row, chatId, folderId) {
     const meta = parseJsonObject(row && (row.meta || row.metaJson || row.meta_json));
     const recordId = clean(row && (row.recordId || row.record_id || row.id));
     return recordId === bindingRecordId(chatId, folderId) ||
@@ -242,19 +289,31 @@ Paste this into Desktop Studio WebView DevTools:
       const meta = parseJsonObject(t && (t.meta || t.metaJson || t.meta_json));
       return !!(meta.recoverySnapshot && meta.recoverySnapshot.folder);
     });
-    const relatedBindingTombstones = folderBindingTombstones.filter((t) => folderBindingTombstoneMatches(t, chatId, folderId));
-    const relatedReceipts = receipts.filter((r) => receiptMatches(r, chatId, folderId));
+    // AUTHORITATIVE: strict exact + active tombstone evidence (identical bar to the cleanup command).
+    const strictActiveFolderTombstones = folderTombstones.filter((t) => strictActiveFolderTombstoneMatch(t, folderId));
+    const strictActiveBindingTombstones = folderBindingTombstones.filter((t) => strictActiveFolderBindingTombstoneMatch(t, chatId, folderId));
+    const strictFolderTombstonePresent = strictActiveFolderTombstones.length > 0;
+    const strictFolderBindingTombstonePresent = strictActiveBindingTombstones.length > 0;
+    const strictTombstoneBacked = strictFolderTombstonePresent && strictFolderBindingTombstonePresent;
+
+    // NON-AUTHORITATIVE context only (broad meta / receipt-field / substring matches). NOT cleanup proof.
+    const looseFolderBindingMetaMatches = folderBindingTombstones.filter((t) => looseFolderBindingMetaMatch(t, chatId, folderId));
+    const looseReceiptFieldMatches = receipts.filter((r) => receiptMatches(r, chatId, folderId));
     const renderMirrorFolderPresent = safeArray(mirror.folders).some((f) => folderIdOf(f) === folderId);
     const renderMirrorItemBucketPresent = !!(safeObject(mirror.items)[folderId]);
 
     const chatLive = !!chatRow;
-    const folderRestorable = activeFolderTombstones.length > 0 || recoverySnapshots.length > 0;
-    const alreadyExplained = relatedBindingTombstones.length > 0 || relatedReceipts.length > 0;
+    const folderRestorable = strictFolderTombstonePresent || recoverySnapshots.length > 0;
+    // Only strict exact+active folder AND folderBinding tombstones count as "already explained". A loose meta match,
+    // a receipt-field match, or a folderBinding tombstone WITHOUT a folder tombstone is NOT cleanup proof.
     let classification = 'unsafe-needs-manual-review';
     let recommendedAction = 'blocked-insufficient-context';
-    if (alreadyExplained) {
+    if (strictTombstoneBacked) {
       classification = 'tombstone-receipt-already-explains-it';
       recommendedAction = 'verify-existing-tombstone-or-receipt-before-any-row-cleanup';
+    } else if (strictFolderBindingTombstonePresent && !strictFolderTombstonePresent) {
+      classification = 'binding-tombstone-present-folder-tombstone-missing-needs-manual-review';
+      recommendedAction = 'manual-review-missing-folder-tombstone-before-any-row-cleanup';
     } else if (chatLive && folderRestorable) {
       classification = 'restore-folder-candidate';
       recommendedAction = 'reviewed-folder-restore-reconciliation-dry-run-first';
@@ -287,13 +346,19 @@ Paste this into Desktop Studio WebView DevTools:
         activeFolderTombstoneCount: activeFolderTombstones.length,
         restoredFolderTombstoneCount: restoredFolderTombstones.length,
         recoverySnapshotCount: recoverySnapshots.length,
+        strictActiveFolderTombstoneCount: strictActiveFolderTombstones.length,
+        strictFolderTombstonePresent,
         renderMirrorFolderPresent,
         renderMirrorItemBucketPresent
       },
       bindingContext: {
         perChatCanonicalBindingCount: perChatRows.length,
-        folderBindingTombstoneCount: relatedBindingTombstones.length,
-        reviewedReceiptCount: relatedReceipts.length,
+        folderBindingTombstoneCount: strictActiveBindingTombstones.length,
+        strictFolderBindingTombstonePresent,
+        strictTombstoneBacked,
+        looseFolderBindingMetaMatchCount: looseFolderBindingMetaMatches.length,
+        looseReceiptFieldMatchCount: looseReceiptFieldMatches.length,
+        reviewedReceiptCount: looseReceiptFieldMatches.length,
         f15MaterializationRecordExposure: foldersDiag.lastF15SettledBindingRestartConvergence ? 'restart-convergence-summary-only' : 'not-exposed',
         consumedLedgerRelatedCount: safeArray(consumed.rows).filter((r) => consumedMatches(r, chatToken, folderToken)).length
       },
@@ -380,8 +445,11 @@ Expected successful shape:
 - row classification is one of:
   - `restore-folder-candidate`
   - `reviewed-rebind-or-unbind-candidate`
-  - `tombstone-receipt-already-explains-it`
+  - `tombstone-receipt-already-explains-it` (strict: exact active folder AND folderBinding tombstone)
+  - `binding-tombstone-present-folder-tombstone-missing-needs-manual-review`
   - `unsafe-needs-manual-review`
+- for the recorded live run both rows were NOT strict-tombstone-backed (`strictTombstoneBacked:false`); cleanup
+  stays blocked
 - `productSyncReady:false`
 - `webdavCloudRelay:"blocked"`
 - `fullBundleV3:"not-started"`

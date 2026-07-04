@@ -85,6 +85,11 @@ for (const token of [
   'reviewed-rebind-or-unbind-candidate',
   'tombstone-receipt-already-explains-it',
   'unsafe-needs-manual-review',
+  'Correction (2026-07-04) - broad matching superseded by strict verification',
+  'FALSE POSITIVES',
+  'operational5-orphan-binding-cleanup-tombstone-verification-fix.md',
+  'Classification Rules (strict - corrected 2026-07-04)',
+  'binding-tombstone-present-folder-tombstone-missing-needs-manual-review',
   'No product source edited.',
   'No live Desktop run by Codex.',
   'No cleanup/write/apply/delete/restore/rebind/unbind/purge.',
@@ -188,6 +193,31 @@ for (const token of [
 ]) {
   assertIncludes(snippet, token, `classification rule ${token}`);
 }
+
+// ---- STRICT verification (corrected): exact + active tombstone bar, identical to the cleanup command ----
+for (const token of [
+  'function folderTombstoneRecordId(folderId)',
+  "return 'folder:' + encodeURIComponent(folderId);",
+  'function strictActiveFolderTombstoneMatch(row, folderId)',
+  'recordId === folderTombstoneRecordId(folderId) && !tombstoneRestored(row)',
+  'function strictActiveFolderBindingTombstoneMatch(row, chatId, folderId)',
+  'recordId === bindingRecordId(chatId, folderId) && !tombstoneRestored(row)',
+  'const strictTombstoneBacked = strictFolderTombstonePresent && strictFolderBindingTombstonePresent;',
+  'if (strictTombstoneBacked) {',
+  "classification = 'binding-tombstone-present-folder-tombstone-missing-needs-manual-review'",
+  'strictActiveFolderTombstoneCount',
+  'strictFolderTombstonePresent',
+  'strictFolderBindingTombstonePresent',
+  'looseFolderBindingMetaMatchCount',
+  'looseReceiptFieldMatchCount',
+  'NON-AUTHORITATIVE',
+]) {
+  assertIncludes(snippet, token, `strict verification token ${token}`);
+}
+// The "explained" verdict must NOT be driven by the old broad OR-match (binding-meta OR receipt, no folder tombstone).
+assertNotIncludes(snippet, 'const alreadyExplained = relatedBindingTombstones.length > 0 || relatedReceipts.length > 0;',
+  'broad OR-match must no longer drive the explained verdict');
+assertNotIncludes(snippet, 'function folderBindingTombstoneMatches(', 'broad binding matcher renamed to non-authoritative loose matcher');
 
 for (const forbidden of [
   '.apply(',
