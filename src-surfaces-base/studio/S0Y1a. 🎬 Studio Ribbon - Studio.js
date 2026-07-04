@@ -2435,13 +2435,19 @@
     },
   };
 
-  /* Phase 8g-1 — Format Painter (message-level, single-use). Clicking ARMS
-   * the painter: it captures the selected message's message-level formatting
-   * (via bridge.getMessageStateForTurn) and, on the NEXT target-message
-   * selection, replays it onto that turn (bridge.applyMessageFormatPaint,
-   * handled in the shell contextChanged subscriber), then disarms. Escape
-   * cancels. Inline ranges / highlights / text-replace / content are never
-   * touched. Saved chats only. */
+  /* Phase 8g-1 / 8g-2a — Format Painter, single-use, mode auto-detected at
+   * arm time:
+   *   • MESSAGE-LEVEL (8g-1): click with NO held inline selection → capture the
+   *     message's message-level formatting; the next target-message selection
+   *     applies it (contextChanged subscriber), then disarms.
+   *   • INLINE (8g-2a): click WITH a valid held inline selection on the selected
+   *     turn → capture the inline STYLE SET (bold/…/textColor); a SECOND click
+   *     applies it to the then-current held selection (target) via
+   *     bridge.applyInlineFormatPaint — offsets are never transferred — then
+   *     disarms. A held-selection-less second click on a message-armed painter
+   *     cancels. Escape cancels. Never touches text / text-replace / highlights
+   *     / content; inline replay uses existing inline-format ops only. Saved
+   *     chats only. */
   ACTION_HANDLERS['format-painter'] = {
     isEnabled: function (ctx) {
       if (!ctx || ctx.chatType !== 'saved') return false;
@@ -2452,32 +2458,85 @@
       return true;
     },
     onClick: function (ctx, setStatus, actionBtn) {
+      const bridge = getRibbonBridge();
+
+      /* ── Armed: apply (inline) or cancel (message-level) ──────────────── */
+      if (__formatPainterArmed) {
+        if (__formatPainterArmed.mode === 'inline') {
+          const armed = __formatPainterArmed;
+          const held = getHeldInlineCapture();
+          const hpos = held && held.anchor && held.anchor.textPos;
+          const tTurn = held ? Number(held.selectedTurnIdx) : NaN;
+          const tValid = !!(held && held.ok && hpos && Number.isFinite(tTurn) && tTurn > 0
+            && Number.isFinite(Number(hpos.start)) && Number.isFinite(Number(hpos.end)) && Number(hpos.end) > Number(hpos.start));
+          if (!tValid) { setStatus('Select target text first'); return; } /* keep armed */
+          if (!bridge || typeof bridge.applyInlineFormatPaint !== 'function') { __formatPainterDisarm(); setStatus('Format Painter unavailable'); return; }
+          const targetAnchor = { textPos: { start: Number(hpos.start), end: Number(hpos.end) }, messageId: held.selectedMessageId || null };
+          setStatus('Applying inline formatting…');
+          Promise.resolve(bridge.applyInlineFormatPaint(tTurn, targetAnchor, armed.styles)).then(
+            function (r) {
+              __formatPainterDisarm();
+              if (r && r.ok) setStatus('Inline formatting applied');
+              else setStatus('Inline paint failed: ' + ((r && r.reason) || 'unknown'));
+            },
+            function () { __formatPainterDisarm(); setStatus('Inline paint failed'); }
+          );
+          return;
+        }
+        __formatPainterDisarm();
+        setStatus('Format Painter off');
+        return;
+      }
+
+      /* ── Not armed: arm INLINE (held selection) or MESSAGE-LEVEL ───────── */
       const turnIdx = Number(ctx && ctx.selectedTurnIdx);
       if (!Number.isFinite(turnIdx) || turnIdx < 1) { setStatus('Select a message first'); return; }
-      /* Block while a live in-place edit (contentEditable) is open. */
       let editing = false;
       try { editing = !!document.querySelector('.wbTurn--editing'); } catch (_) { editing = false; }
       if (editing) { setStatus('Finish editing first'); return; }
-      const bridge = getRibbonBridge();
       if (!bridge || typeof bridge.getMessageStateForTurn !== 'function' || typeof bridge.applyMessageFormatPaint !== 'function') {
         setStatus('Format Painter unavailable'); return;
       }
+
+      /* Inline capture: a valid held inline selection on the selected turn. */
+      const held = getHeldInlineCapture();
+      const spos = held && held.anchor && held.anchor.textPos;
+      const inlineValid = !!(held && held.ok && spos && Number(held.selectedTurnIdx) === turnIdx
+        && Number.isFinite(Number(spos.start)) && Number.isFinite(Number(spos.end)) && Number(spos.end) > Number(spos.start));
+      if (inlineValid && typeof bridge.getInlineStateForTurn === 'function' && typeof bridge.applyInlineFormatPaint === 'function') {
+        const ss = Number(spos.start), se = Number(spos.end);
+        setStatus('Capturing inline formatting…');
+        Promise.resolve(bridge.getInlineStateForTurn(turnIdx)).then(
+          function (inlineState) {
+            const isSt = (inlineState && typeof inlineState === 'object') ? inlineState : {};
+            const ov = getOverlayApi();
+            const cover = function (list) { return !!(ov && typeof ov.intervalsCover === 'function' && Array.isArray(list) && ov.intervalsCover(list, ss, se)); };
+            const colorKind = (function (segs) {
+              if (!Array.isArray(segs)) return null;
+              for (let i = 0; i < segs.length; i += 1) { const g = segs[i]; if (g && Number(g.start) <= ss && Number(g.end) >= se) return (g.kind == null ? null : String(g.kind)); }
+              return null;
+            })(isSt.textColor);
+            const styles = {
+              bold: cover(isSt.bold), italic: cover(isSt.italic), underline: cover(isSt.underline),
+              strikethrough: cover(isSt.strikethrough), subscript: cover(isSt.subscript),
+              superscript: cover(isSt.superscript), textColor: colorKind,
+            };
+            const any = styles.bold || styles.italic || styles.underline || styles.strikethrough || styles.subscript || styles.superscript || !!styles.textColor;
+            if (!any) { setStatus('Nothing to paint'); return; }
+            __formatPainterEngage({ mode: 'inline', styles: styles, sourceTurnIdx: turnIdx }, setStatus, actionBtn, 'Inline Format Painter: select target text, then click Format Painter');
+          },
+          function () { setStatus('Nothing to paint'); }
+        );
+        return;
+      }
+
+      /* Message-level capture (8g-1). */
       setStatus('Capturing formatting…');
       Promise.resolve(bridge.getMessageStateForTurn(turnIdx)).then(
         function (payload) {
           const p = (payload && typeof payload === 'object') ? payload : null;
           if (!p) { setStatus('Nothing to paint'); return; }
-          __formatPainterArmed = { payload: p, sourceTurnIdx: turnIdx };
-          /* Escape cancels the armed painter (document-level, focus-agnostic). */
-          __formatPainterEsc = function (ev) {
-            if (ev && ev.key === 'Escape' && __formatPainterArmed) {
-              __formatPainterDisarm();
-              try { setStatus('Format Painter off'); } catch (_) {}
-            }
-          };
-          try { document.addEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
-          if (actionBtn) { try { actionBtn.setAttribute('aria-pressed', 'true'); } catch (_) {} }
-          setStatus('Format Painter: select a target message');
+          __formatPainterEngage({ mode: 'message', payload: p, sourceTurnIdx: turnIdx }, setStatus, actionBtn, 'Format Painter: select a target message');
         },
         function () { setStatus('Nothing to paint'); }
       );
@@ -3788,10 +3847,12 @@
    * defensively re-render after a brush change, without threading the
    * shell through every buildPanels/__buildSplitButton call. */
   let __ribbonShell = null;
-  /* Phase 8g-1 — Format Painter armed state (single-use). Holds the captured
-   * source message-level formatting + source turn; the next target-message
-   * selection applies it, then disarms. Module-scoped; never persisted. */
-  let __formatPainterArmed = null;   /* { payload, sourceTurnIdx } | null */
+  /* Phase 8g-1 / 8g-2a — Format Painter armed state (single-use). Either
+   * { mode:'message', payload, sourceTurnIdx } (message-level, applies on the
+   * next target-message contextChanged) or { mode:'inline', styles,
+   * sourceTurnIdx } (inline style set, applies to the target held selection on
+   * the next button click). Module-scoped; never persisted. */
+  let __formatPainterArmed = null;
   let __formatPainterEsc = null;     /* document keydown handler while armed */
   function __formatPainterSetArmedUI(on) {
     try {
@@ -3806,6 +3867,20 @@
       __formatPainterEsc = null;
     }
     __formatPainterSetArmedUI(false);
+  }
+  /* Arm the painter: store state, install Escape-cancel + armed button UI, set
+   * the arm status. Shared by the message-level and inline capture paths. */
+  function __formatPainterEngage(armed, setStatus, actionBtn, armStatus) {
+    __formatPainterArmed = armed;
+    __formatPainterEsc = function (ev) {
+      if (ev && ev.key === 'Escape' && __formatPainterArmed) {
+        __formatPainterDisarm();
+        try { setStatus('Format Painter off'); } catch (_) {}
+      }
+    };
+    try { document.addEventListener('keydown', __formatPainterEsc, true); } catch (_) {}
+    if (actionBtn) { try { actionBtn.setAttribute('aria-pressed', 'true'); } catch (_) {} }
+    try { setStatus(armStatus); } catch (_) {}
   }
 
   function __closeSplitPopover(reason) {
@@ -4659,9 +4734,11 @@
       shell.subscribe(function (evt) {
         const name = evt && evt.event;
         if (name === evts.contextChanged) {
-          /* Phase 8g-1 — armed Format Painter applies to the next target
-           * message (a turn different from the source), then disarms. */
-          if (__formatPainterArmed) {
+          /* Phase 8g-1 — armed MESSAGE-LEVEL Format Painter applies to the next
+           * target message (a turn different from the source), then disarms.
+           * Inline-mode (8g-2a) ignores contextChanged — it applies on the next
+           * button click to the held selection, so this path is message-only. */
+          if (__formatPainterArmed && __formatPainterArmed.mode === 'message') {
             let nctx = null;
             try { nctx = shell.getContext(); } catch (_) { nctx = null; }
             const nTurn = nctx ? Number(nctx.selectedTurnIdx) : NaN;

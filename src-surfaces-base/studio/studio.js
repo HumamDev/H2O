@@ -17055,6 +17055,111 @@ function __ribbonBridge_applyMessageFormatPaint(targetTurnIdx, formatPayload){
   });
 }
 
+/* Phase 8g-2a — inline-range Format Painter apply. Replays a captured inline
+ * STYLE SET (bold/italic/underline/strikethrough/subscript/superscript/
+ * textColor) onto the TARGET's held selection range using ONLY existing
+ * `inline-format` ops. Source character offsets are NEVER transferred — the
+ * target range comes from `targetAnchor.textPos` (the target's own held
+ * selection). Each channel is SET to the captured value (incl. clearing to
+ * false/null), so the target range matches the source style set; sub/sup
+ * mutual exclusion is enforced by the reducer. Only CHANGED channels are
+ * appended (fewer undo steps); persist + render ONCE. Blocks a text-replaced
+ * target (`target-text-replaced`) since inline is suppressed there and offsets
+ * cannot rebase. Never touches text / message-level state / structure /
+ * highlights / snapshot; adds NO new OverlayOpType. Never throws. Returns
+ * { ok, applied:[dims], failed:[dims], reason? }. */
+function __ribbonBridge_applyInlineFormatPaint(targetTurnIdx, targetAnchor, styles){
+  return Promise.resolve().then(function () {
+    const result = { ok: false, applied: [], failed: [], reason: '' };
+    const idx = Number(targetTurnIdx);
+    if (!Number.isInteger(idx) || idx < 1) { result.reason = 'invalid-turn'; return result; }
+    const anchor = (targetAnchor && typeof targetAnchor === 'object') ? targetAnchor : null;
+    const pos = anchor && anchor.textPos;
+    const start = pos ? Number(pos.start) : NaN;
+    const end = pos ? Number(pos.end) : NaN;
+    if (!pos || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) { result.reason = 'invalid-anchor'; return result; }
+    const sty = (styles && typeof styles === 'object') ? styles : null;
+    if (!sty) { result.reason = 'no-styles'; return result; }
+
+    const snap = state && state.currentReaderSnapshot;
+    if (!snap || !snap.snapshotId) { result.reason = 'no-snapshot'; return result; }
+    const ov = W.H2O?.Studio?.overlay;
+    const ovStore = W.H2O?.Studio?.store?.editOverlay;
+    if (!ov || typeof ov.appendOp !== 'function' || typeof ov.computeBaseDigest !== 'function' || typeof ov.computeInlineState !== 'function') { result.reason = 'overlay-unavailable'; return result; }
+    if (!ovStore || typeof ovStore.get !== 'function' || typeof ovStore.upsert !== 'function') { result.reason = 'store-unavailable'; return result; }
+
+    /* Kind of a color segment that FULLY covers [start,end], else null. */
+    function colorKindOver(segs) {
+      if (!Array.isArray(segs)) return null;
+      for (let i = 0; i < segs.length; i += 1) {
+        const g = segs[i];
+        if (g && Number(g.start) <= start && Number(g.end) >= end) return (g.kind == null ? null : String(g.kind));
+      }
+      return null;
+    }
+    const wantColor = (sty.textColor && typeof sty.textColor === 'object' && sty.textColor.kind) ? String(sty.textColor.kind)
+      : (typeof sty.textColor === 'string' && sty.textColor ? sty.textColor : null);
+
+    const sid = String(snap.snapshotId);
+    return Promise.resolve(ovStore.get(sid)).then(function (existing) {
+      let overlay = existing;
+      if (!overlay) {
+        try { overlay = ov.createEmpty({ snapshot: snap }); } catch (_) { overlay = null; }
+        if (!overlay) { result.reason = 'create-empty-failed'; return result; }
+      }
+      const currentDigest = ov.computeBaseDigest(snap);
+      if (overlay.baseDigest && overlay.baseDigest !== currentDigest) { result.reason = 'drift-detected'; return result; }
+
+      /* Block a text-replaced target: inline is suppressed + offsets can't rebase. */
+      let ms = {};
+      try { if (typeof ov.computeMessageState === 'function') ms = ov.computeMessageState(overlay, idx) || {}; } catch (_) { ms = {}; }
+      if (ms.textReplace && typeof ms.textReplace.body === 'string') { result.reason = 'target-text-replaced'; return result; }
+
+      /* Current target inline coverage over [start,end] → append only changed channels. */
+      let cur = {};
+      try { cur = ov.computeInlineState(overlay, idx) || {}; } catch (_) { cur = {}; }
+      const cover = function (list) { return (typeof ov.intervalsCover === 'function' && Array.isArray(list)) ? !!ov.intervalsCover(list, start, end) : false; };
+      const anchorTarget = { kind: 'inline', turnIdx: idx, messageId: (anchor.messageId || null), anchor: { textPos: { start: start, end: end } } };
+      const plan = [
+        { dim: 'bold',          cur: cover(cur.bold),          next: !!sty.bold,          payload: { style: 'bold',          enabled: !!sty.bold } },
+        { dim: 'italic',        cur: cover(cur.italic),        next: !!sty.italic,        payload: { style: 'italic',        enabled: !!sty.italic } },
+        { dim: 'underline',     cur: cover(cur.underline),     next: !!sty.underline,     payload: { style: 'underline',     enabled: !!sty.underline } },
+        { dim: 'strikethrough', cur: cover(cur.strikethrough), next: !!sty.strikethrough, payload: { style: 'strikethrough', enabled: !!sty.strikethrough } },
+        { dim: 'subscript',     cur: cover(cur.subscript),     next: !!sty.subscript,     payload: { style: 'subscript',     enabled: !!sty.subscript } },
+        { dim: 'superscript',   cur: cover(cur.superscript),   next: !!sty.superscript,   payload: { style: 'superscript',   enabled: !!sty.superscript } },
+        { dim: 'text-color',    cur: colorKindOver(cur.textColor), next: wantColor,        payload: { style: 'text-color',    kind: wantColor } },
+      ];
+
+      let acc = overlay;
+      for (let i = 0; i < plan.length; i += 1) {
+        if (plan[i].cur === plan[i].next) continue; /* no change → skip (fewer undo steps) */
+        try {
+          const nx = ov.appendOp(acc, { type: 'inline-format', target: anchorTarget, payload: plan[i].payload });
+          if (nx) { acc = nx; result.applied.push(plan[i].dim); }
+          else { result.failed.push(plan[i].dim); }
+        } catch (_) { result.failed.push(plan[i].dim); }
+      }
+      if (result.applied.length === 0 && result.failed.length === 0) { result.ok = true; result.reason = 'no-change'; return result; }
+      if (result.applied.length === 0) { result.reason = 'no-ops-applied'; return result; }
+
+      return Promise.resolve(ovStore.upsert(acc)).then(function (saved) {
+        try { __ribbonBridge_publishAndRender(snap, saved); } catch (_) { /* persisted ops stand */ }
+        result.ok = true;
+        return result;
+      }, function (err) {
+        result.reason = 'upsert-failed';
+        result.error = String((err && err.message) || err || '');
+        return result;
+      });
+    }, function () {
+      result.reason = 'store-read-failed';
+      return result;
+    });
+  }).catch(function () {
+    return { ok: false, applied: [], failed: [], reason: 'error' };
+  });
+}
+
 /* Phase 2d — derive a short human label from an op (for status feedback
  * like "Undone: H2", "Redone: Section"). Returns null when the op has no
  * recognisable shape. Synchronous, never throws. Labels are advisory
@@ -17959,6 +18064,7 @@ try {
       getStructureState: __ribbonBridge_getStructureState,
       applyOverlayOp: __ribbonBridge_applyOverlayOp,
       applyMessageFormatPaint: __ribbonBridge_applyMessageFormatPaint,
+      applyInlineFormatPaint: __ribbonBridge_applyInlineFormatPaint,
       undo: __ribbonBridge_undo,
       redo: __ribbonBridge_redo,
       getHistoryState: __ribbonBridge_getHistoryState,
@@ -17983,6 +18089,7 @@ try {
     if (!W.H2O.Studio.RibbonBridge.getStructureState) W.H2O.Studio.RibbonBridge.getStructureState = __ribbonBridge_getStructureState;
     if (!W.H2O.Studio.RibbonBridge.applyOverlayOp) W.H2O.Studio.RibbonBridge.applyOverlayOp = __ribbonBridge_applyOverlayOp;
     if (!W.H2O.Studio.RibbonBridge.applyMessageFormatPaint) W.H2O.Studio.RibbonBridge.applyMessageFormatPaint = __ribbonBridge_applyMessageFormatPaint;
+    if (!W.H2O.Studio.RibbonBridge.applyInlineFormatPaint) W.H2O.Studio.RibbonBridge.applyInlineFormatPaint = __ribbonBridge_applyInlineFormatPaint;
     /* Phase 2d — undo/redo/getHistoryState additive upgrade. */
     if (!W.H2O.Studio.RibbonBridge.undo) W.H2O.Studio.RibbonBridge.undo = __ribbonBridge_undo;
     if (!W.H2O.Studio.RibbonBridge.redo) W.H2O.Studio.RibbonBridge.redo = __ribbonBridge_redo;
