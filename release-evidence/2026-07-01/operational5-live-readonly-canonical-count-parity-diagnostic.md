@@ -107,6 +107,32 @@ Paste this into the Desktop Studio WebView DevTools console:
   const sortOrder = (row) => row && row.sortOrder !== undefined ? numberOrZero(row.sortOrder)
     : (row && row.sort_order !== undefined ? numberOrZero(row.sort_order) : 0);
 
+  function parseJsonObject(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string' || !value.trim()) return {};
+    try {
+      return safeObject(JSON.parse(value));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function tombstoneFolderId(row) {
+    const meta = parseJsonObject(row && (row.meta || row.metaJson || row.meta_json));
+    const recordId = clean(row && (row.recordId || row.record_id || row.tombstoneId || row.id));
+    if (meta.folderId) return clean(meta.folderId);
+    if (recordId.indexOf('folder:') === 0) return decodeURIComponent(recordId.slice('folder:'.length));
+    return folderId(row);
+  }
+
+  function isActiveTombstone(row) {
+    if (!row) return false;
+    if (row.active === false || row.isActive === false) return false;
+    if (row.restoredAt || row.restored_at || row.clearedAt || row.cleared_at) return false;
+    const status = clean(row.status || row.state).toLowerCase();
+    return !(status === 'restored' || status === 'cleared' || status === 'inactive');
+  }
+
   function stableStringify(value) {
     if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
     if (value && typeof value === 'object') {
@@ -235,6 +261,21 @@ Paste this into the Desktop Studio WebView DevTools console:
   const canonicalFolders = await summarizeFolders(canonicalFolderRows);
   const canonicalBindings = await summarizeBindings(canonicalBindingRows);
   const tombstones = await summarizeTombstones(tombstoneRows);
+  const canonicalFolderIds = new Set(canonicalFolderRows.map(folderId).filter(Boolean));
+  const activeDeletedFolderIds = new Set(tombstoneRows.filter(isActiveTombstone).map(tombstoneFolderId).filter(Boolean));
+  const canonicalExportableBindingRows = canonicalBindingRows.filter((row) => {
+    const fid = folderId(row);
+    return chatId(row) && fid && canonicalFolderIds.has(fid) && !activeDeletedFolderIds.has(fid);
+  });
+  const canonicalMissingFolderBindingRows = canonicalBindingRows.filter((row) => {
+    const fid = folderId(row);
+    return chatId(row) && fid && !canonicalFolderIds.has(fid);
+  });
+  const canonicalDeletedFolderBindingRows = canonicalBindingRows.filter((row) => {
+    const fid = folderId(row);
+    return chatId(row) && fid && canonicalFolderIds.has(fid) && activeDeletedFolderIds.has(fid);
+  });
+  const canonicalExportableBindings = await summarizeBindings(canonicalExportableBindingRows);
   const mirrorFolders = await summarizeFolders(safeArray(mirror.folders));
   const mirrorBindings = await summarizeBindings(mirrorBindingRows(mirror.items));
   const mirrorFolderIds = new Set(safeArray(mirror.folders).map(folderId).filter(Boolean));
@@ -290,10 +331,10 @@ Paste this into the Desktop Studio WebView DevTools console:
   }, {
     folderCount: canonicalFolders.count,
     folderHash: canonicalFolders.hash,
-    desktopCanonicalChatFolderBindingCount: canonicalBindings.count,
-    desktopCanonicalChatFolderBindingHash: canonicalBindings.hash,
-    activeDesktopCanonicalChatFolderBindingCount: canonicalBindings.count,
-    activeDesktopCanonicalChatFolderBindingHash: canonicalBindings.hash,
+    desktopCanonicalChatFolderBindingCount: canonicalExportableBindings.count,
+    desktopCanonicalChatFolderBindingHash: canonicalExportableBindings.hash,
+    activeDesktopCanonicalChatFolderBindingCount: canonicalExportableBindings.count,
+    activeDesktopCanonicalChatFolderBindingHash: canonicalExportableBindings.hash,
     chatFolderBindingReceiptCount: receiptSummary.receiptCount,
     chatFolderBindingReceiptHash: receiptSummary.receiptHash
   }) : {
@@ -353,6 +394,21 @@ Paste this into the Desktop Studio WebView DevTools console:
       count: canonicalBindings.count,
       hash: canonicalBindings.hash
     },
+    compare('desktop-canonical-binding-exportability', {
+      rawCanonicalBindingCount: canonicalBindings.count,
+      exportableCanonicalBindingCount: canonicalExportableBindings.count,
+      missingFolderBindingCount: canonicalMissingFolderBindingRows.length,
+      deletedFolderBindingCount: canonicalDeletedFolderBindingRows.length,
+      activeDanglingFolderBindingCount: canonicalMissingFolderBindingRows.length,
+      fallbackUnfiledBindingCount: canonicalMissingFolderBindingRows.length + canonicalDeletedFolderBindingRows.length
+    }, {
+      rawCanonicalBindingCount: canonicalBindings.count,
+      exportableCanonicalBindingCount: numberOrZero(exportBindingProjection.count),
+      missingFolderBindingCount: numberOrZero(exportBindingProjection.diagnostics && exportBindingProjection.diagnostics.missingFolderBindingCount),
+      deletedFolderBindingCount: numberOrZero(exportBindingProjection.diagnostics && exportBindingProjection.diagnostics.deletedFolderBindingCount),
+      activeDanglingFolderBindingCount: numberOrZero(exportBindingProjection.diagnostics && exportBindingProjection.diagnostics.activeDanglingFolderBindingCount),
+      fallbackUnfiledBindingCount: numberOrZero(exportBindingProjection.diagnostics && exportBindingProjection.diagnostics.fallbackUnfiledBindingCount)
+    }),
     {
       surface: 'desktop-tombstones-recently-deleted',
       status: foldersStore && typeof foldersStore.listRecentlyDeletedFolders === 'function' ? 'match' : 'not-exposed',
@@ -424,6 +480,13 @@ Paste this into the Desktop Studio WebView DevTools console:
     canonical: {
       folders: canonicalFolders,
       folderBindings: canonicalBindings,
+      exportableFolderBindings: canonicalExportableBindings,
+      filteredFolderBindings: {
+        missingFolderBindingCount: canonicalMissingFolderBindingRows.length,
+        deletedFolderBindingCount: canonicalDeletedFolderBindingRows.length,
+        activeDanglingFolderBindingCount: canonicalMissingFolderBindingRows.length,
+        fallbackUnfiledBindingCount: canonicalMissingFolderBindingRows.length + canonicalDeletedFolderBindingRows.length
+      },
       tombstones
     },
     renderMirror: mirrorSummary,

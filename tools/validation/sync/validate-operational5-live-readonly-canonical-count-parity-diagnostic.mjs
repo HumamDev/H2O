@@ -161,6 +161,10 @@ for (const token of [
   'foldersStore.listCanonicalChatFolderBindings()',
   'foldersStore.listRecentlyDeletedFolders({ limit: 1000 })',
   'readChromeStorageKey(FOLDER_STATE_DATA_KEY)',
+  'canonicalExportableBindingRows',
+  'canonicalMissingFolderBindingRows',
+  'canonicalDeletedFolderBindingRows',
+  'canonicalExportableBindings',
   'ingestion.diagnoseFullBundleV2ReadonlyProjection()',
   'ingestion.diagnoseExportBundle()',
   'folderSync.diagnose()',
@@ -181,6 +185,7 @@ for (const surface of [
   'render-mirror-folders',
   'render-mirror-bindings',
   'render-mirror-orphan-buckets',
+  'desktop-canonical-binding-exportability',
   'fullBundle.v2-readonly-projection-diagnostic',
   'chrome-mv3-import-projection',
   'request-receipt-ledgers',
@@ -209,6 +214,11 @@ for (const forbidden of [
 }
 
 assertIncludes(snippet, 'exportFullBundle-not-called-by-this-diagnostic', 'snippet marks export follow-up instead of exporting');
+assertIncludes(snippet, 'desktopCanonicalChatFolderBindingCount: canonicalExportableBindings.count',
+  'snippet compares fullBundle binding count to canonical exportable subset');
+assertIncludes(snippet, 'desktopCanonicalChatFolderBindingHash: canonicalExportableBindings.hash',
+  'snippet compares fullBundle binding hash to canonical exportable subset');
+assertIncludes(snippet, 'filteredFolderBindings', 'snippet reports filtered raw canonical rows');
 assertIncludes(snippet, 'runF15SettledBindingRestartConvergence/whenReady intentionally not called',
   'snippet marks convergence follow-up instead of convergence call');
 assertIncludes(snippet, 'operational5-live-readonly-canonical-count-parity-diagnostic-failed', 'snippet error prefix');
