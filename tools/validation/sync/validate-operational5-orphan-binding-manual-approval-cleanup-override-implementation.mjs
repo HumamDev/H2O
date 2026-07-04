@@ -99,7 +99,7 @@ for (const token of [
   "OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RESULT_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override-result.v1'",
   "OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_RECEIPT_SCHEMA = 'h2o.studio.operational5.orphan-binding-manual-approval-cleanup-override-receipt.v1'",
   'async function operational5ResolveStrictEvidenceReceiptTarget()',
-  'function operational5ManualApprovalCleanupOverrideAccepted(approval, strictEvidenceReceipt)',
+  'function operational5ManualApprovalCleanupOverrideAccepted(approval, strictEvidenceReceipt, requireApplyApproval)',
   'async function operational5OrphanBindingManualApprovalCleanupOverride(opts)',
   'operational5OrphanBindingManualApprovalCleanupOverride: operational5OrphanBindingManualApprovalCleanupOverride',
 ]) {
@@ -153,10 +153,17 @@ for (const token of [
 
 const approvalBody = functionBody(foldersStore, 'operational5ManualApprovalCleanupOverrideAccepted', 'async function operational5OrphanBindingStrictEvidenceReceipt');
 for (const token of [
+  "cleanString(a.scope) === 'row:fdd2456fc8a2-only'",
+  'var targetOk = !a.targetRowToken || cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN',
+  'a.noCleanupApplyYet === true',
+  '!!cleanString(a.reason)',
+  'if (!requireApplyApproval)',
   'cleanString(a.schema) === OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA',
   'a.approved === true',
   'cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN',
   'OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN',
+  'reviewedOverrideApproved === true',
+  'cleanupApplyApproved === true',
   'removeOnlyExactDanglingFolderBindingRow === true',
   'noFolderDelete === true',
   'noChatDelete === true',
@@ -197,6 +204,7 @@ function model(opts) {
   if (opts.rowToken === 'row:a950a44b859f') return { status: 'rejected-documented-debt-row-excluded', writes: 0 };
   if (opts.rowToken !== 'row:fdd2456fc8a2') return { status: 'rejected-target-token-mismatch', writes: 0 };
   if (!opts.strictEvidenceReceipt || !opts.manualApproval) return { status: 'blocked-manual-approval-required', writes: 0 };
+  if (opts.apply === true && !opts.applyApproval) return { status: 'blocked-manual-approval-required', writes: 0 };
   if (opts.apply === true && opts.gate !== 'operational5-orphan-binding-manual-approval-cleanup-override-apply') {
     return { status: 'blocked-override-apply-gate-required', writes: 0 };
   }
@@ -209,11 +217,14 @@ assert.equal(model({ rowToken: 'row:a950a44b859f' }).status, 'rejected-documente
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', strictEvidenceReceipt: true, manualApproval: true }).writes, 0,
   'dry-run zero-write');
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', strictEvidenceReceipt: true, manualApproval: true, apply: true }).status,
+  'blocked-manual-approval-required', 'apply requires full approval');
+assert.equal(model({ rowToken: 'row:fdd2456fc8a2', strictEvidenceReceipt: true, manualApproval: true, applyApproval: true, apply: true }).status,
   'blocked-override-apply-gate-required', 'apply requires gate');
 const applyResult = model({
   rowToken: 'row:fdd2456fc8a2',
   strictEvidenceReceipt: true,
   manualApproval: true,
+  applyApproval: true,
   apply: true,
   gate: 'operational5-orphan-binding-manual-approval-cleanup-override-apply',
 });
@@ -223,7 +234,7 @@ assert.equal(applyResult.rawAfter, 13, 'modeled raw after 13');
 assert.equal(applyResult.exportable, 12, 'modeled exportable remains 12');
 assert.equal(applyResult.bundle, 12, 'modeled fullBundle.v2 remains 12');
 assert.equal(model({ rowToken: 'row:fdd2456fc8a2', strictEvidenceReceipt: true, manualApproval: true, apply: true,
-  gate: 'operational5-orphan-binding-manual-approval-cleanup-override-apply', alreadyRemoved: true }).writes, 0,
+  applyApproval: true, gate: 'operational5-orphan-binding-manual-approval-cleanup-override-apply', alreadyRemoved: true }).writes, 0,
   'duplicate apply zero-write');
 
 const runtimeCombined = [foldersStore, folderSync, folderImport, webdavGates].join('\n');

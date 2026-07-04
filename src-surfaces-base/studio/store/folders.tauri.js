@@ -4113,17 +4113,28 @@
     return out;
   }
 
-  function operational5ManualApprovalCleanupOverrideAccepted(approval, strictEvidenceReceipt) {
+  function operational5ManualApprovalCleanupOverrideAccepted(approval, strictEvidenceReceipt, requireApplyApproval) {
     var a = approval && typeof approval === 'object' ? approval : {};
     var receiptId = operational5StrictEvidenceReceiptId(OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN);
+    var approved = a.approved === true;
+    var scopeOk = cleanString(a.scope) === 'row:fdd2456fc8a2-only';
+    var targetOk = !a.targetRowToken || cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN;
+    var reasonOk = !!cleanString(a.reason);
+    var dryRunOnlyOk = a.noCleanupApplyYet === true;
+    if (!requireApplyApproval) {
+      return approved && scopeOk && targetOk && dryRunOnlyOk && reasonOk;
+    }
     return cleanString(a.schema) === OPERATIONAL5_ORPHAN_BINDING_MANUAL_APPROVAL_CLEANUP_OVERRIDE_SCHEMA &&
-      a.approved === true &&
+      approved &&
+      scopeOk &&
       cleanString(a.targetRowToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_ROW_TOKEN &&
       cleanString(a.rejectedRowTokenShouldRemainDebt || a.excludedRowToken) === OPERATIONAL5_ORPHAN_BINDING_DOCUMENTED_DEBT_ROW_TOKEN &&
       cleanString(a.chatToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_CHAT_TOKEN &&
       cleanString(a.folderToken) === OPERATIONAL5_ORPHAN_BINDING_STRICT_EVIDENCE_TARGET_FOLDER_TOKEN &&
       cleanString(a.strictEvidenceReceiptId) === receiptId &&
       (!a.strictEvidenceReceiptHash || cleanString(a.strictEvidenceReceiptHash) === cleanString(strictEvidenceReceipt && strictEvidenceReceipt.receiptHash)) &&
+      a.reviewedOverrideApproved === true &&
+      a.cleanupApplyApproved === true &&
       a.removeOnlyExactDanglingFolderBindingRow === true &&
       a.noFolderDelete === true &&
       a.noChatDelete === true &&
@@ -4393,7 +4404,11 @@
       result.blockers = result.blockers.concat(resolved.blockers);
       return result;
     }
-    if (!operational5ManualApprovalCleanupOverrideAccepted(opts.manualApproval || opts.approval, resolved.strictEvidenceReceipt)) {
+    if (!operational5ManualApprovalCleanupOverrideAccepted(
+      opts.manualApproval || opts.approval,
+      resolved.strictEvidenceReceipt,
+      applyRequested
+    )) {
       result.status = 'blocked-manual-approval-required';
       result.blockers.push('operational5-orphan-binding-manual-approval-cleanup-override-manual-approval-required');
       return result;
