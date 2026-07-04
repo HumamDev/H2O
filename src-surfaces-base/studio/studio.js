@@ -17025,6 +17025,7 @@ function __ribbonBridge_applyMessageFormatPaint(targetTurnIdx, formatPayload){
         plan.push({ dim: 'visual-tag:' + VT[v], type: 'visual-tag', cur: !!curVt[VT[v]], next: !!vt[VT[v]], payload: { kind: VT[v], enabled: !!vt[VT[v]] } });
       }
 
+      const base = Array.isArray(overlay.ops) ? overlay.ops.length : 0;
       let acc = overlay;
       for (let i = 0; i < plan.length; i += 1) {
         if (plan[i].cur === plan[i].next) continue; /* no change → skip (fewer undo steps) */
@@ -17036,6 +17037,9 @@ function __ribbonBridge_applyMessageFormatPaint(targetTurnIdx, formatPayload){
       }
       if (result.applied.length === 0 && result.failed.length === 0) { result.ok = true; result.reason = 'no-change'; return result; }
       if (result.applied.length === 0) { result.reason = 'no-ops-applied'; return result; }
+
+      /* Phase 8g-3b — group this multi-op paint for one-step undo/redo. */
+      __ribbonBridge_stampGroupId(acc, base);
 
       return Promise.resolve(ovStore.upsert(acc)).then(function (saved) {
         try { __ribbonBridge_publishAndRender(snap, saved); } catch (_) { /* persisted ops stand */ }
@@ -17130,6 +17134,7 @@ function __ribbonBridge_applyInlineFormatPaint(targetTurnIdx, targetAnchor, styl
         { dim: 'text-color',    cur: colorKindOver(cur.textColor), next: wantColor,        payload: { style: 'text-color',    kind: wantColor } },
       ];
 
+      const base = Array.isArray(overlay.ops) ? overlay.ops.length : 0;
       let acc = overlay;
       for (let i = 0; i < plan.length; i += 1) {
         if (plan[i].cur === plan[i].next) continue; /* no change → skip (fewer undo steps) */
@@ -17141,6 +17146,9 @@ function __ribbonBridge_applyInlineFormatPaint(targetTurnIdx, targetAnchor, styl
       }
       if (result.applied.length === 0 && result.failed.length === 0) { result.ok = true; result.reason = 'no-change'; return result; }
       if (result.applied.length === 0) { result.reason = 'no-ops-applied'; return result; }
+
+      /* Phase 8g-3b — group this multi-op paint for one-step undo/redo. */
+      __ribbonBridge_stampGroupId(acc, base);
 
       return Promise.resolve(ovStore.upsert(acc)).then(function (saved) {
         try { __ribbonBridge_publishAndRender(snap, saved); } catch (_) { /* persisted ops stand */ }
@@ -17190,6 +17198,32 @@ function __ribbonBridge_labelForOp(op){
   } catch (_) { return null; }
 }
 
+/* Phase 8g-3b — find an op by id (most-recent-first). Shared by group-aware
+ * undo/redo. Synchronous, never throws. */
+function __ribbonBridge_findOpById(overlay, id){
+  const ops = (overlay && Array.isArray(overlay.ops)) ? overlay.ops : [];
+  for (let i = ops.length - 1; i >= 0; i -= 1) {
+    if (ops[i] && String(ops[i].id) === String(id)) return ops[i];
+  }
+  return null;
+}
+
+/* Phase 8g-3b — stamp a shared groupId on the ops appended since `base`
+ * (only when 2+ were added). Mutates overlay.ops in place — these are the
+ * fresh, unshared op objects this paint just appended — so the whole batch
+ * undoes/redoes in ONE step. groupId rides along inside the wholesale-cloned
+ * ops and is inert to reducers/serializers. No new op type; no schema change.
+ * Returns the gid, or null when nothing was stamped. Never throws. */
+function __ribbonBridge_stampGroupId(overlay, base){
+  try {
+    const ops = (overlay && Array.isArray(overlay.ops)) ? overlay.ops : null;
+    if (!ops || (ops.length - base) < 2) return null;
+    const gid = 'fpg_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    for (let i = base; i < ops.length; i += 1) { if (ops[i]) ops[i].groupId = gid; }
+    return gid;
+  } catch (_) { return null; }
+}
+
 /* Phase 2d — undo the most recent active op on the current snapshot's
  * overlay. Uses the reducer-filter active-set model: ops are NOT deleted
  * from overlay.ops; instead the op id is moved from undoStack to
@@ -17221,14 +17255,29 @@ function __ribbonBridge_undo(){
       if (existing.baseDigest && existing.baseDigest !== currentDigest) {
         return { ok: false, reason: 'drift-detected', overlay: existing, currentDigest: currentDigest };
       }
-      /* Identify the op that's about to be undone (for the label). */
+      /* Identify the op about to be undone (for the label + group check). */
       const undoneOpId = undo[undo.length - 1];
-      const ops = Array.isArray(existing.ops) ? existing.ops : [];
-      let undoneOp = null;
-      for (let i = ops.length - 1; i >= 0; i -= 1) {
-        if (ops[i] && String(ops[i].id) === String(undoneOpId)) { undoneOp = ops[i]; break; }
+      const undoneOp = __ribbonBridge_findOpById(existing, undoneOpId);
+      /* Phase 8g-3b — one-step group undo: when the top op belongs to a
+       * Format Painter batch, pop the whole contiguous same-groupId run in
+       * memory (bounded guard), then persist + render ONCE. Ungrouped ops
+       * keep the pre-8g-3b single-pop behavior. */
+      const gid = (undoneOp && undoneOp.groupId != null) ? String(undoneOp.groupId) : null;
+      let next = existing;
+      if (gid) {
+        let popped = 0, guard = 0;
+        while (next && Array.isArray(next.undoStack) && next.undoStack.length && guard < 1000) {
+          const tId = next.undoStack[next.undoStack.length - 1];
+          const tOp = __ribbonBridge_findOpById(next, tId);
+          if (!tOp || String(tOp.groupId) !== gid) break;
+          const p = ov.popUndo(next);
+          if (!p) break;
+          next = p; popped += 1; guard += 1;
+        }
+        if (popped === 0) next = ov.popUndo(existing);
+      } else {
+        next = ov.popUndo(existing);
       }
-      const next = ov.popUndo(existing);
       if (!next) return { ok: false, reason: 'pop-undo-failed' };
       return Promise.resolve(ovStore.upsert(next)).then(function (saved) {
         const outcome = __ribbonBridge_publishAndRender(snap, saved);
@@ -17238,7 +17287,7 @@ function __ribbonBridge_undo(){
           outcome: outcome,
           undoCount: (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0,
           redoCount: (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0,
-          label: __ribbonBridge_labelForOp(undoneOp),
+          label: gid ? 'Format Painter' : __ribbonBridge_labelForOp(undoneOp),
         };
       }, function (err) {
         return { ok: false, reason: 'upsert-failed', error: String((err && err.message) || err || '') };
@@ -17277,12 +17326,25 @@ function __ribbonBridge_redo(){
         return { ok: false, reason: 'drift-detected', overlay: existing, currentDigest: currentDigest };
       }
       const redoneOpId = redo[redo.length - 1];
-      const ops = Array.isArray(existing.ops) ? existing.ops : [];
-      let redoneOp = null;
-      for (let i = ops.length - 1; i >= 0; i -= 1) {
-        if (ops[i] && String(ops[i].id) === String(redoneOpId)) { redoneOp = ops[i]; break; }
+      const redoneOp = __ribbonBridge_findOpById(existing, redoneOpId);
+      /* Phase 8g-3b — one-step group redo: mirror of the group undo, against
+       * redoStack. Re-promotes the whole Format Painter batch in one call. */
+      const gid = (redoneOp && redoneOp.groupId != null) ? String(redoneOp.groupId) : null;
+      let next = existing;
+      if (gid) {
+        let promoted = 0, guard = 0;
+        while (next && Array.isArray(next.redoStack) && next.redoStack.length && guard < 1000) {
+          const tId = next.redoStack[next.redoStack.length - 1];
+          const tOp = __ribbonBridge_findOpById(next, tId);
+          if (!tOp || String(tOp.groupId) !== gid) break;
+          const p = ov.popRedo(next);
+          if (!p) break;
+          next = p; promoted += 1; guard += 1;
+        }
+        if (promoted === 0) next = ov.popRedo(existing);
+      } else {
+        next = ov.popRedo(existing);
       }
-      const next = ov.popRedo(existing);
       if (!next) return { ok: false, reason: 'pop-redo-failed' };
       return Promise.resolve(ovStore.upsert(next)).then(function (saved) {
         const outcome = __ribbonBridge_publishAndRender(snap, saved);
@@ -17292,7 +17354,7 @@ function __ribbonBridge_redo(){
           outcome: outcome,
           undoCount: (saved && Array.isArray(saved.undoStack)) ? saved.undoStack.length : 0,
           redoCount: (saved && Array.isArray(saved.redoStack)) ? saved.redoStack.length : 0,
-          label: __ribbonBridge_labelForOp(redoneOp),
+          label: gid ? 'Format Painter' : __ribbonBridge_labelForOp(redoneOp),
         };
       }, function (err) {
         return { ok: false, reason: 'upsert-failed', error: String((err && err.message) || err || '') };
