@@ -161,6 +161,7 @@ for (const token of [
   'foldersStore.listCanonicalChatFolderBindings()',
   'foldersStore.listRecentlyDeletedFolders({ limit: 1000 })',
   'readChromeStorageKey(FOLDER_STATE_DATA_KEY)',
+  'ingestion.diagnoseFullBundleV2ReadonlyProjection()',
   'ingestion.diagnoseExportBundle()',
   'folderSync.diagnose()',
   'tombstoneReviews.listChatFolderBindingReceipts({ limit: 1000 })',
@@ -180,7 +181,7 @@ for (const surface of [
   'render-mirror-folders',
   'render-mirror-bindings',
   'render-mirror-orphan-buckets',
-  'fullBundle.v2-export-diagnostic',
+  'fullBundle.v2-readonly-projection-diagnostic',
   'chrome-mv3-import-projection',
   'request-receipt-ledgers',
   'restart-convergence-records',
@@ -219,6 +220,7 @@ assertIncludes(foldersStore, 'listRecentlyDeletedFolders: listRecentlyDeletedFol
 assertIncludes(foldersStore, 'listCanonicalChatFolderBindings: listCanonicalChatFolderBindings', 'canonical binding export');
 assertIncludes(foldersStore, "var FOLDER_STATE_DATA_KEY = 'h2o:prm:cgx:fldrs:state:data:v1'", 'mirror key source');
 assertIncludes(exportBundle, 'diagnoseExportBundle: diagnose', 'export diagnose API source');
+assertIncludes(exportBundle, 'diagnoseFullBundleV2ReadonlyProjection: function ()', 'fullBundle.v2 read-only projection diagnostic source');
 assertIncludes(exportBundle, 'exportFullBundle: function', 'exportFullBundle exists but snippet must not call it');
 assertIncludes(folderImport, 'diagnose: diagnose', 'folder import diagnose API source');
 assertIncludes(consumedLedger, 'async function listConsumedOperations()', 'consumed ledger read API source');
@@ -252,13 +254,14 @@ const result = {
   productSyncReadyFlipped: false,
   productSyncReadyFalseLiteralCount: productSyncReadyFalseCount,
   snippetReadOnly: true,
-  productSourceChanged: false,
+  productSourceChanged: true,
+  productSourceChangeKind: 'diagnostic-read-only-fullBundle-v2-projection',
   surfacesCovered: [
     'Desktop canonical folders',
     'canonical folder_bindings',
     'tombstones/recently deleted',
     'render mirror/FOLDER_STATE_DATA_KEY',
-    'fullBundle.v2 export diagnostic',
+    'fullBundle.v2 read-only projection diagnostic',
     'Chrome/MV3 import diagnostic',
     'request/receipt ledgers',
     'restart convergence records classified without unsafe call',

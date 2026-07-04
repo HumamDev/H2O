@@ -3,10 +3,12 @@
 Verdict: **OPERATIONAL.5 LIVE READ-ONLY CANONICAL COUNT PARITY DIAGNOSTIC READY - PENDING DEVTOOLS OUTPUT**.
 
 This slice prepares the live Desktop Studio diagnostic required after the read-only parity harness
-commit `52264289de23207b6db8a376f5b46dc1a127a766`. It is evidence/validator-only: no product source
-was edited, no live Desktop runtime was run by Codex, no SQLite/chrome.storage/KV state was mutated,
-`productSyncReady` stayed `false`, WebDAV/cloud/relay/`fullBundle.v3` was not started, and Chat Saving
-WebDAV/cloud/archive CAS remains blocked/deferred.
+commit `52264289de23207b6db8a376f5b46dc1a127a766`. It was later updated by the
+Operational.5 `fullBundle.v2` read-only projection diagnostic slice so the live snippet can observe
+that projection without running a real export. No live Desktop runtime was run by Codex, no
+SQLite/chrome.storage/KV state was mutated, `productSyncReady` stayed `false`,
+WebDAV/cloud/relay/`fullBundle.v3` was not started, and Chat Saving WebDAV/cloud/archive CAS remains
+blocked/deferred.
 
 Live Operational.5 parity remains pending DevTools output.
 
@@ -30,7 +32,9 @@ The snippet reads:
 - Canonical `folder_bindings` via `listCanonicalChatFolderBindings()`.
 - Tombstones / recently deleted via `listRecentlyDeletedFolders()`.
 - Render mirror via `chrome.storage.local.get('h2o:prm:cgx:fldrs:state:data:v1')`.
-- Export projection diagnostics via `H2O.Studio.ingestion.diagnoseExportBundle()` only.
+- `fullBundle.v2` projection counts/hashes via
+  `H2O.Studio.ingestion.diagnoseFullBundleV2ReadonlyProjection()`.
+- Export state diagnostics via `H2O.Studio.ingestion.diagnoseExportBundle()` only.
 - Chrome/MV3 import/projection diagnostics via `H2O.Studio.sync.folder.diagnose()` only.
 - Chat-folder binding receipts via `H2O.Studio.store.tombstoneReviews.listChatFolderBindingReceipts()`.
 - Consumed-operation ledger via `H2O.Desktop.Sync.listConsumedOperations()`.
@@ -246,44 +250,6 @@ Paste this into the Desktop Studio WebView DevTools console:
     orphanItemBucketHash: await sha256(orphanItemBuckets)
   };
 
-  const exportDiagnostic = ingestion && typeof ingestion.diagnoseExportBundle === 'function'
-    ? safeObject(ingestion.diagnoseExportBundle())
-    : {};
-  const exportSummary = safeObject(exportDiagnostic.lastSummary);
-  const exportSurface = exportSummary && Object.keys(exportSummary).length ? compare('fullBundle.v2-export-diagnostic', {
-    folderCount: numberOrZero(exportSummary.folderCount),
-    desktopCanonicalChatFolderBindingCount: numberOrZero(exportSummary.desktopCanonicalChatFolderBindingCount),
-    tombstoneCount: numberOrZero(exportSummary.tombstoneCount),
-    chatFolderBindingReceiptCount: numberOrZero(exportSummary.chatFolderBindingReceiptCount),
-    applyEventCount: numberOrZero(exportSummary.applyEventCount)
-  }, {
-    folderCount: canonicalFolders.count,
-    desktopCanonicalChatFolderBindingCount: canonicalBindings.count,
-    tombstoneCount: tombstones.count,
-    chatFolderBindingReceiptCount: numberOrZero(exportSummary.chatFolderBindingReceiptCount),
-    applyEventCount: numberOrZero(exportSummary.applyEventCount)
-  }) : {
-    surface: 'fullBundle.v2-export-diagnostic',
-    status: 'requires-live-follow-up',
-    reason: 'diagnoseExportBundle.lastSummary-not-present; exportFullBundle-not-called-by-this-diagnostic',
-    mismatchCount: 0,
-    mismatches: []
-  };
-
-  const importDiagnostic = folderSync && typeof folderSync.diagnose === 'function'
-    ? safeObject(folderSync.diagnose())
-    : {};
-  const chromeMv3Surface = importDiagnostic && Object.keys(importDiagnostic).length ? {
-    surface: 'chrome-mv3-import-projection',
-    status: 'requires-live-follow-up',
-    reason: 'folder.diagnose is present; compare against a current latest/fullBundle.v2 import output in the evidence slice',
-    lastSummarySignaturePresent: !!clean(importDiagnostic.lastSummarySignature),
-    connected: importDiagnostic.connected === true,
-    autoSyncEnabled: importDiagnostic.autoSyncEnabled === true,
-    mismatchCount: 0,
-    mismatches: []
-  } : classifyUnavailable('chrome-mv3-import-projection', 'H2O.Studio.sync.folder.diagnose unavailable in this surface');
-
   const receiptRows = tombstoneReviews && typeof tombstoneReviews.listChatFolderBindingReceipts === 'function'
     ? safeArray(await tombstoneReviews.listChatFolderBindingReceipts({ limit: 1000 }))
     : [];
@@ -305,6 +271,58 @@ Paste this into the Desktop Studio WebView DevTools console:
       consumedStatus: clean(row && row.consumedStatus)
     })).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))))
   };
+
+  const exportProjectionDiagnostic = ingestion && typeof ingestion.diagnoseFullBundleV2ReadonlyProjection === 'function'
+    ? safeObject(await ingestion.diagnoseFullBundleV2ReadonlyProjection())
+    : {};
+  const exportFolderProjection = safeObject(exportProjectionDiagnostic.folderProjection);
+  const exportBindingProjection = safeObject(exportProjectionDiagnostic.canonicalChatFolderBindingProjection);
+  const exportReceiptProjection = safeObject(exportProjectionDiagnostic.chatFolderBindingReceiptProjection);
+  const exportSurface = exportProjectionDiagnostic && exportProjectionDiagnostic.ok === true ? compare('fullBundle.v2-readonly-projection-diagnostic', {
+    folderCount: numberOrZero(exportFolderProjection.count),
+    folderHash: clean(exportFolderProjection.hash),
+    desktopCanonicalChatFolderBindingCount: numberOrZero(exportBindingProjection.count),
+    desktopCanonicalChatFolderBindingHash: clean(exportBindingProjection.hash),
+    activeDesktopCanonicalChatFolderBindingCount: numberOrZero(exportBindingProjection.activeCount),
+    activeDesktopCanonicalChatFolderBindingHash: clean(exportBindingProjection.activeHash),
+    chatFolderBindingReceiptCount: numberOrZero(exportReceiptProjection.count),
+    chatFolderBindingReceiptHash: clean(exportReceiptProjection.hash)
+  }, {
+    folderCount: canonicalFolders.count,
+    folderHash: canonicalFolders.hash,
+    desktopCanonicalChatFolderBindingCount: canonicalBindings.count,
+    desktopCanonicalChatFolderBindingHash: canonicalBindings.hash,
+    activeDesktopCanonicalChatFolderBindingCount: canonicalBindings.count,
+    activeDesktopCanonicalChatFolderBindingHash: canonicalBindings.hash,
+    chatFolderBindingReceiptCount: receiptSummary.receiptCount,
+    chatFolderBindingReceiptHash: receiptSummary.receiptHash
+  }) : {
+    surface: 'fullBundle.v2-readonly-projection-diagnostic',
+    status: 'not-exposed',
+    reason: 'diagnoseFullBundleV2ReadonlyProjection-not-present-or-not-ok; exportFullBundle-not-called-by-this-diagnostic',
+    mismatchCount: 0,
+    mismatches: []
+  };
+
+  const exportDiagnostic = ingestion && typeof ingestion.diagnoseExportBundle === 'function'
+    ? safeObject(ingestion.diagnoseExportBundle())
+    : {};
+  const exportSummary = safeObject(exportDiagnostic.lastSummary);
+
+  const importDiagnostic = folderSync && typeof folderSync.diagnose === 'function'
+    ? safeObject(folderSync.diagnose())
+    : {};
+  const chromeMv3Surface = importDiagnostic && Object.keys(importDiagnostic).length ? {
+    surface: 'chrome-mv3-import-projection',
+    status: 'requires-live-follow-up',
+    reason: 'folder.diagnose is present; compare against a current latest/fullBundle.v2 import output in the evidence slice',
+    lastSummarySignaturePresent: !!clean(importDiagnostic.lastSummarySignature),
+    connected: importDiagnostic.connected === true,
+    autoSyncEnabled: importDiagnostic.autoSyncEnabled === true,
+    mismatchCount: 0,
+    mismatches: []
+  } : classifyUnavailable('chrome-mv3-import-projection', 'H2O.Studio.sync.folder.diagnose unavailable in this surface');
+
   const ledgerSurface = exportSummary && Object.keys(exportSummary).length ? compare('request-receipt-ledgers', {
     receiptCount: receiptSummary.receiptCount,
     consumedOperationCount: receiptSummary.consumedOperationCount

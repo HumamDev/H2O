@@ -169,6 +169,21 @@
     }
   }
 
+  function stableProjectionStringify(value) {
+    if (Array.isArray(value)) return '[' + value.map(stableProjectionStringify).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(function (key) {
+        return JSON.stringify(key) + ':' + stableProjectionStringify(value[key]);
+      }).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  async function projectionSha256(value) {
+    var hex = await sha256Hex(stableProjectionStringify(value));
+    return hex ? ('sha256:' + hex) : '';
+  }
+
   function sqlSelect(query, values) {
     var invoke = getTauriInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
@@ -2485,6 +2500,144 @@
     }
   }
 
+  async function diagnoseFullBundleV2ReadonlyProjection() {
+    var startedAt = Date.now();
+    var warnings = [];
+    var stores = getStores();
+    var availability = storeAvailability(stores);
+    var folderFallback = await readAvailableFolderStateFallback();
+    var chatRows = [];
+    try {
+      chatRows = await listFromStore(stores.chats);
+    } catch (eChats) {
+      warnings.push({
+        code: 'fullbundle-v2-readonly-chat-count-failed',
+        warning: 'store.chats read failed while building read-only fullBundle.v2 projection diagnostic',
+        error: String((eChats && eChats.message) || eChats),
+      });
+      chatRows = [];
+    }
+    var folderStateBuild = await buildFolderState(stores, {}, folderFallback.state);
+    var folderState = folderStateBuild.state;
+    var desktopCanonicalChatFolderBindings = await buildDesktopCanonicalChatFolderBindingProjection(stores, chatRows.length);
+    var chatFolderBindingReceiptExport = await buildChatFolderBindingReceiptPayloadSafely(stores);
+
+    var folderRows = asArray(folderState && folderState.folders).map(function (row) {
+      return {
+        id: cleanString(row && (row.id || row.folderId)),
+        sortOrder: Math.floor(numberOrZero(row && row.sortOrder)),
+        kind: cleanString(row && row.kind),
+        source: cleanString(row && row.source),
+        hasColor: !!cleanString(row && (row.color || row.iconColor)),
+        hasIcon: !!cleanString(row && row.icon),
+      };
+    }).filter(function (row) { return !!row.id; }).sort(function (a, b) {
+      return cleanString(a.id).localeCompare(cleanString(b.id));
+    });
+
+    var folderStateBindingRows = [];
+    Object.keys(safeObject(folderState && folderState.items)).sort().forEach(function (folderId) {
+      uniqStrings(folderState.items[folderId]).forEach(function (chatId) {
+        folderStateBindingRows.push({
+          chatId: cleanString(chatId),
+          folderId: cleanString(folderId),
+        });
+      });
+    });
+    folderStateBindingRows.sort(function (a, b) {
+      return cleanString(a.folderId).localeCompare(cleanString(b.folderId)) ||
+        cleanString(a.chatId).localeCompare(cleanString(b.chatId));
+    });
+
+    var canonicalBindingRows = asArray(desktopCanonicalChatFolderBindings && desktopCanonicalChatFolderBindings.bindings).map(function (row) {
+      return {
+        chatId: cleanString(row && (row.chatId || row.conversationId)),
+        folderId: cleanString(row && row.folderId),
+        status: cleanString(row && (row.status || row.state || 'active')) || 'active',
+      };
+    }).filter(function (row) { return row.chatId && row.folderId; }).sort(function (a, b) {
+      return cleanString(a.folderId).localeCompare(cleanString(b.folderId)) ||
+        cleanString(a.chatId).localeCompare(cleanString(b.chatId));
+    });
+    var activeCanonicalBindingRows = canonicalBindingRows.filter(function (row) {
+      return row.status === 'active' || row.status === 'bound';
+    });
+
+    var receiptRows = asArray(chatFolderBindingReceiptExport && chatFolderBindingReceiptExport.receipts).map(function (receipt) {
+      return {
+        schema: cleanString(receipt && receipt.schema),
+        status: cleanString(receipt && receipt.status),
+        reason: cleanString(receipt && receipt.reason),
+        receiptHash: cleanString(receipt && (receipt.receiptHash || receipt.hash || receipt.requestHash || receipt.operationHash)),
+        statusOnly: receipt && receipt.statusOnly === true,
+      };
+    }).sort(function (a, b) {
+      return stableProjectionStringify(a).localeCompare(stableProjectionStringify(b));
+    });
+
+    return {
+      schema: 'h2o.studio.fullBundle.v2.readonly-projection-diagnostic.v1',
+      fullBundleSchema: FULL_BUNDLE_SCHEMA,
+      surface: 'desktop-tauri',
+      status: 'read-only-projection-ready',
+      ok: true,
+      readOnlyProjection: true,
+      writesData: false,
+      writesFiles: false,
+      writesTransport: false,
+      mutatesExportState: false,
+      noExportFullBundleCall: true,
+      noExportLatestSyncBundleCall: true,
+      noSequenceMutation: true,
+      noExportIdMutation: true,
+      noWebdavWrite: true,
+      noCloudWrite: true,
+      noRelayWrite: true,
+      noCasWrite: true,
+      productSyncReady: false,
+      storeAvailability: availability,
+      folderProjection: {
+        schema: FOLDER_STATE_KEY,
+        count: folderRows.length,
+        hash: await projectionSha256(folderRows),
+        readOnlyProjection: true,
+      },
+      folderStateBindingProjection: {
+        schema: FOLDER_STATE_KEY + '.items',
+        count: folderStateBindingRows.length,
+        hash: await projectionSha256(folderStateBindingRows),
+        readOnlyProjection: true,
+      },
+      canonicalChatFolderBindingProjection: {
+        schema: DESKTOP_CANONICAL_CHAT_FOLDER_BINDING_SCHEMA,
+        count: canonicalBindingRows.length,
+        hash: await projectionSha256(canonicalBindingRows),
+        activeCount: activeCanonicalBindingRows.length,
+        activeHash: await projectionSha256(activeCanonicalBindingRows),
+        readOnlyProjection: true,
+        diagnostics: safeObject(desktopCanonicalChatFolderBindings && desktopCanonicalChatFolderBindings.diagnostics),
+      },
+      chatFolderBindingReceiptProjection: {
+        schema: CHAT_FOLDER_BINDING_RECEIPT_SCHEMA,
+        count: receiptRows.length,
+        hash: await projectionSha256(receiptRows),
+        readOnlyProjection: true,
+        diagnostics: safeObject(chatFolderBindingReceiptExport && chatFolderBindingReceiptExport.diagnostics),
+      },
+      folderFallback: {
+        available: !!(folderFallback && (folderFallback.folderCount || folderFallback.bindingCount)),
+        source: cleanString(folderFallback && folderFallback.source),
+        folderCount: Number(folderFallback && folderFallback.folderCount) || 0,
+        bindingCount: Number(folderFallback && folderFallback.bindingCount) || 0,
+      },
+      diagnostics: {
+        durationMs: Date.now() - startedAt,
+        folderSource: safeObject(folderStateBuild && folderStateBuild.diagnostics),
+        warnings: warnings,
+      },
+    };
+  }
+
   async function exportFullBundle(options) {
     var startedAt = Date.now();
     var warnings = [];
@@ -2957,6 +3110,26 @@
     },
     exportLatestSyncBundle: exportLatestSyncBundle,
     diagnoseExportBundle: diagnose,
+    diagnoseFullBundleV2ReadonlyProjection: function () {
+      return diagnoseFullBundleV2ReadonlyProjection().catch(function (error) {
+        return {
+          schema: 'h2o.studio.fullBundle.v2.readonly-projection-diagnostic.v1',
+          fullBundleSchema: FULL_BUNDLE_SCHEMA,
+          surface: 'desktop-tauri',
+          status: 'read-only-projection-failed',
+          ok: false,
+          readOnlyProjection: true,
+          writesData: false,
+          writesFiles: false,
+          writesTransport: false,
+          mutatesExportState: false,
+          noExportFullBundleCall: true,
+          noExportLatestSyncBundleCall: true,
+          productSyncReady: false,
+          error: String(error && (error.stack || error.message || error)),
+        };
+      });
+    },
     diagnose: function () {
       var base = {};
       if (previous && typeof previous.diagnose === 'function') {
