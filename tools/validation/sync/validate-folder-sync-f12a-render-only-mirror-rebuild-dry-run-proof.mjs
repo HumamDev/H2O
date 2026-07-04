@@ -181,8 +181,17 @@ if (exists(foldersStoreFile)) {
   assert(store.includes('if (opts.apply !== true) {'), 'source helper must early-return before the mirror write on dry-run');
   assert(store.includes('chromeStorageSet({ [FOLDER_STATE_DATA_KEY]: nextState })'),
     'source helper must write ONLY the FOLDER_STATE_DATA_KEY mirror on apply');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source helper must always block field-mismatch:sortOrder + binding-mismatch');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'source helper must force-block binding-mismatch (post-S5: sortOrder no longer force-blocked)');
+  assert(!store.includes("classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
+    'post-S5: field-mismatch:sortOrder must no longer be force-blocked alongside binding-mismatch');
+  assert(store.includes("reviewedRepairPathClasses: ['binding-mismatch']") &&
+    store.includes('bindingMismatchRoutedToReviewedRepairPath: true') &&
+    store.includes("reviewedRepairRequestSchema: 'h2o.studio.chat-folder-binding-request.v1'") &&
+    store.includes("reviewedRepairApplyGate: 'folder-sync-chat-folder-binding-repair-apply'"),
+    'S10: binding-mismatch routed to the reviewed F15 request->apply->receipt repair path');
+  assert(store.includes('noBindingRepair: true') && store.includes('noBindingWrite: true'),
+    'F11 render mirror remains render-only (noBindingRepair + noBindingWrite)');
   assert(store.includes('skippedSortOrderRebuildCount') && store.includes('skippedBindingRepairCount'),
     'source helper must expose the sortOrder/binding skip counters');
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
