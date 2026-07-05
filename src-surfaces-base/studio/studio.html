@@ -1514,6 +1514,20 @@
        enqueue, WebDAV/cloud/CAS write, file write, export mutation, or boot
        resume dispatch. -->
   <script src="./sync/relay-idempotency-restart-proof-harness.js"></script>
+  <!-- W1: real transport evaluator chain. Evaluate-only, non-writing, no
+       remote IO. Registers standalone dry-run/console substrates for
+       hash-only diagnostics; no WebDAV/cloud/relay/CAS/file writes, no
+       enqueue, no outbox/ledger/store mutation, and no readiness flip. -->
+  <script src="./sync/real-transport-target-config.js"></script>
+  <script src="./sync/real-transport-kill-switch.js"></script>
+  <script src="./sync/real-transport-idempotency.js"></script>
+  <script src="./sync/real-transport-enqueue-boundary.js"></script>
+  <script src="./sync/real-transport-conflict-recovery.js"></script>
+  <script src="./sync/real-transport-sequence-export.js"></script>
+  <script src="./sync/real-transport-approval.js"></script>
+  <script src="./sync/real-transport-readiness.js"></script>
+  <script src="./sync/real-transport-dry-run.js"></script>
+  <script src="./sync/real-transport-console.js"></script>
   <!-- F4.x: Desktop-only read-only peer discovery diagnostics. Scans the
        existing devices/* peer mirror layout and reports state/checksum
        integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,

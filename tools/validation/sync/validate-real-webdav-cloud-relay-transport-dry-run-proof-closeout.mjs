@@ -4,7 +4,9 @@
 //
 // Re-executes the real dry-run substrate in a VM/source harness, proves a valid
 // real transport dry-run is ready with zero writes, proves blocked cases fail
-// closed, and verifies the module remains standalone/non-wired.
+// closed, and verifies the module remains standalone/non-writing. The loader
+// assertion is W1b-aware: before W1b the module must be non-wired; after W1b it
+// may be wired only through the expected evaluate-only loader entries.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,6 +30,41 @@ const relayCloseoutPath = 'release-evidence/2026-07-01/relay-idempotency-restart
 const webdavCloseoutPath = 'release-evidence/2026-07-01/webdav-transport-readiness-dry-run-live-closeout.md';
 const studioHtmlPath = 'src-surfaces-base/studio/studio.html';
 const packStudioPath = 'tools/product/studio/pack-studio.mjs';
+const w1bEvidencePath = 'release-evidence/2026-07-05/real-transport-w1b-loader-registration.md';
+const w1bValidatorPath = 'tools/validation/sync/validate-real-transport-w1b-loader-registration.mjs';
+
+const w1Modules = [
+  'sync/real-transport-target-config.js',
+  'sync/real-transport-kill-switch.js',
+  'sync/real-transport-idempotency.js',
+  'sync/real-transport-enqueue-boundary.js',
+  'sync/real-transport-conflict-recovery.js',
+  'sync/real-transport-sequence-export.js',
+  'sync/real-transport-approval.js',
+  'sync/real-transport-readiness.js',
+  'sync/real-transport-dry-run.js',
+  'sync/real-transport-console.js',
+];
+
+const w1ForbiddenTokens = [
+  'fetch(',
+  'XMLHttpRequest',
+  'localStorage.setItem',
+  'sqlExecute',
+  'writeFile',
+  'invoke(',
+  'enqueuesRelay:true',
+  'writesWebDAV:true',
+  'writesCloud:true',
+  'writesRelay:true',
+  'writesCAS:true',
+  'writesFiles:true',
+  'productSyncReady:true',
+  'transportReady:true',
+  'fullBundleV3Started:true',
+  'mintsExportId:true',
+  'burnsSequence:true',
+];
 
 function read(rel) {
   const abs = path.join(root, rel);
@@ -45,6 +82,28 @@ function assertIncludes(src, token, label) {
 
 function assertNotIncludes(src, token, label) {
   assert.ok(!String(src).includes(token), `${label}: forbidden ${token}`);
+}
+
+function hasForbiddenToken(src, token) {
+  const source = String(src);
+  if (token === 'writeFile') return /(^|[^\w$])writeFile([^\w$]|$)/.test(source);
+  return source.includes(token);
+}
+
+function assertForbiddenTokenAbsent(src, token, label) {
+  assert.ok(!hasForbiddenToken(src, token), `${label}: forbidden ${token}`);
+}
+
+function countOccurrences(haystack, needle) {
+  return String(haystack).split(needle).length - 1;
+}
+
+function scriptLiteral(rel) {
+  return `<script src="./${rel}"></script>`;
+}
+
+function packLiteral(rel) {
+  return `"${rel}"`;
 }
 
 function H(d) {
@@ -217,8 +276,42 @@ assertIncludes(read(webdavCloseoutPath), 'WEBDAV TRANSPORT READINESS DRY-RUN LIV
 // ---------------------------------------------------------------------------
 assertIncludes(moduleSource, 'H2O.Studio.sync.realTransportDryRun.evaluateRealTransportDryRun =',
   'dry-run API exposed');
-assertNotIncludes(studioHtml, 'real-transport-dry-run.js', 'not wired into studio.html');
-assertNotIncludes(packStudio, 'real-transport-dry-run.js', 'not wired into pack-studio');
+
+const w1bPresent =
+  studioHtml.includes(scriptLiteral('sync/real-transport-dry-run.js')) ||
+  studioHtml.includes(scriptLiteral('sync/real-transport-console.js')) ||
+  packStudio.includes(packLiteral('sync/real-transport-dry-run.js')) ||
+  packStudio.includes(packLiteral('sync/real-transport-console.js'));
+
+if (!w1bPresent) {
+  assertNotIncludes(studioHtml, 'real-transport-dry-run.js', 'pre-W1b not wired into studio.html');
+  assertNotIncludes(packStudio, 'real-transport-dry-run.js', 'pre-W1b not wired into pack-studio');
+} else {
+  read(w1bEvidencePath);
+  read(w1bValidatorPath);
+
+  for (const rel of w1Modules) {
+    assert.equal(countOccurrences(studioHtml, scriptLiteral(rel)), 1, `W1b studio.html expected script ${rel}`);
+    assert.equal(countOccurrences(packStudio, packLiteral(rel)), 2, `W1b pack-studio expected list entries ${rel}`);
+  }
+
+  const htmlWebdav = studioHtml.indexOf(scriptLiteral('sync/webdav-transport-gates.js'));
+  const htmlRelay = studioHtml.indexOf(scriptLiteral('sync/relay-idempotency-restart-proof-harness.js'));
+  const htmlDryRun = studioHtml.indexOf(scriptLiteral('sync/real-transport-dry-run.js'));
+  const htmlConsole = studioHtml.indexOf(scriptLiteral('sync/real-transport-console.js'));
+  assert.ok(htmlWebdav >= 0, 'W1b studio.html WebDAV gate entry present');
+  assert.ok(htmlRelay > htmlWebdav, 'W1b studio.html relay proof follows WebDAV gate');
+  assert.ok(htmlDryRun > htmlRelay, 'W1b dry-run script follows transport/WebDAV gate area');
+  assert.ok(htmlConsole > htmlDryRun, 'W1b console script follows dry-run script');
+
+  for (const rel of w1Modules) {
+    const source = read(`src-surfaces-base/studio/${rel}`);
+    for (const forbidden of w1ForbiddenTokens) {
+      assertForbiddenTokenAbsent(source, forbidden, `W1b evaluate-only source ${rel}`);
+    }
+  }
+}
+
 for (const forbidden of [
   'sqlExecute',
   'fetch(',
@@ -302,7 +395,9 @@ console.log(JSON.stringify({
   implementationRespected: 'f93350d4',
   validStatus: validResult.status,
   blockedCases: blockCases.length,
-  standaloneNonWired: true,
+  standaloneNonWriting: true,
+  w1bLoaderAware: true,
+  w1bLoaderRegistered: w1bPresent,
   realTransportWrite: validResult.realTransportWrite,
   writesWebDAV: validResult.writesWebDAV,
   enqueuesRelay: validResult.enqueuesRelay,

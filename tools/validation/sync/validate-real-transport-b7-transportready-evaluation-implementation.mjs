@@ -33,6 +33,39 @@ const folderSyncPath = 'src-surfaces-base/studio/sync/folder-sync.tauri.js';
 const studioHtmlPath = 'src-surfaces-base/studio/studio.html';
 const packStudioPath = 'tools/product/studio/pack-studio.mjs';
 const chatSavingBoundaryPath = 'tools/validation/studio/validate-saved-chat-archive-cloud-sync-boundary-v1.mjs';
+const w1bEvidencePath = 'release-evidence/2026-07-05/real-transport-w1b-loader-registration.md';
+const w1bValidatorPath = 'tools/validation/sync/validate-real-transport-w1b-loader-registration.mjs';
+const w1Modules = [
+  'sync/real-transport-target-config.js',
+  'sync/real-transport-kill-switch.js',
+  'sync/real-transport-idempotency.js',
+  'sync/real-transport-enqueue-boundary.js',
+  'sync/real-transport-conflict-recovery.js',
+  'sync/real-transport-sequence-export.js',
+  'sync/real-transport-approval.js',
+  'sync/real-transport-readiness.js',
+  'sync/real-transport-dry-run.js',
+  'sync/real-transport-console.js',
+];
+const w1ForbiddenTokens = [
+  'fetch(',
+  'XMLHttpRequest',
+  'localStorage.setItem',
+  'sqlExecute',
+  'writeFile',
+  'invoke(',
+  'enqueuesRelay:true',
+  'writesWebDAV:true',
+  'writesCloud:true',
+  'writesRelay:true',
+  'writesCAS:true',
+  'writesFiles:true',
+  'productSyncReady:true',
+  'transportReady:true',
+  'fullBundleV3Started:true',
+  'mintsExportId:true',
+  'burnsSequence:true',
+];
 
 function read(rel) {
   const abs = path.join(root, rel);
@@ -50,6 +83,46 @@ function assertIncludes(src, token, label) {
 
 function assertNotIncludes(src, token, label) {
   assert.ok(!String(src).includes(token), `${label}: forbidden ${token}`);
+}
+
+function countOccurrences(haystack, needle) {
+  return String(haystack).split(needle).length - 1;
+}
+
+function scriptLiteral(rel) { return `<script src="./${rel}"></script>`; }
+function packLiteral(rel) { return `"${rel}"`; }
+
+function hasForbiddenToken(src, token) {
+  const source = String(src);
+  if (token === 'writeFile') return /(^|[^\w$])writeFile([^\w$]|$)/.test(source);
+  return source.includes(token);
+}
+
+function assertW1bAwareWiring(rel, label) {
+  const w1bPresent =
+    studioHtml.includes(scriptLiteral('sync/real-transport-dry-run.js')) ||
+    studioHtml.includes(scriptLiteral('sync/real-transport-console.js')) ||
+    packStudio.includes(packLiteral('sync/real-transport-dry-run.js')) ||
+    packStudio.includes(packLiteral('sync/real-transport-console.js'));
+  if (!w1bPresent) {
+    assertNotIncludes(studioHtml, path.basename(rel), `${label} pre-W1b not wired into studio.html`);
+    assertNotIncludes(packStudio, path.basename(rel), `${label} pre-W1b not wired into pack-studio`);
+    return;
+  }
+  read(w1bEvidencePath);
+  read(w1bValidatorPath);
+  assert.equal(countOccurrences(studioHtml, scriptLiteral(rel)), 1, `${label} W1b studio.html script`);
+  assert.equal(countOccurrences(packStudio, packLiteral(rel)), 2, `${label} W1b pack-studio entries`);
+  assert.equal(countOccurrences(studioHtml, scriptLiteral('sync/real-transport-console.js')), 1,
+    `${label} W1b console studio.html script`);
+  assert.equal(countOccurrences(packStudio, packLiteral('sync/real-transport-console.js')), 2,
+    `${label} W1b console pack-studio entries`);
+  for (const w1Rel of w1Modules) {
+    const source = read(`src-surfaces-base/studio/${w1Rel}`);
+    for (const forbidden of w1ForbiddenTokens) {
+      assert.ok(!hasForbiddenToken(source, forbidden), `${label} ${w1Rel}: forbidden ${forbidden}`);
+    }
+  }
 }
 
 function assertPrivacySafe(src, label) {
@@ -233,8 +306,7 @@ for (const forbidden of [
 for (const writePrimitive of ['fetch(', 'XMLHttpRequest', 'sendBeacon', 'writeFile(', 'appendFile(', 'localStorage.setItem', 'indexedDB.open']) {
   assertNotIncludes(moduleSource, writePrimitive, `B7 module must remain pure/non-writing (${writePrimitive})`);
 }
-assertNotIncludes(studioHtml, 'real-transport-readiness.js', 'B7 must not be wired into studio.html');
-assertNotIncludes(packStudio, 'real-transport-readiness.js', 'B7 must not be wired into pack-studio');
+assertW1bAwareWiring('sync/real-transport-readiness.js', 'B7');
 assertPrivacySafe(moduleSource, 'B7 source');
 
 // ---------------------------------------------------------------------------
