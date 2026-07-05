@@ -844,6 +844,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Phase 30: disabled-by-default WebDAV transport dry-run gates. Builds
   // redacted manifests and guard decisions only; no remote IO or sync writes.
   "sync/webdav-transport-gates.js",
+  // Phase 31: relay idempotency/restart proof harness. Models duplicate replay,
+  // restart, and fail-closed cases only; no relay enqueue or transport writes.
+  "sync/relay-idempotency-restart-proof-harness.js",
   // F4.x: Desktop-only read-only peer discovery diagnostics for devices/*
   // state/checksum integrity. No imports, writes, polling, manifests, or history.
   "sync/peer-discovery.js",
@@ -1450,6 +1453,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/export-log.js",
   "sync/peer-transport.js",
   "sync/webdav-transport-gates.js",
+  "sync/relay-idempotency-restart-proof-harness.js",
   "sync/peer-discovery.js",
   "sync/peer-watermarks.js",
   "sync/multi-peer-diff.js",

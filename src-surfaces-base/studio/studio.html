@@ -1508,6 +1508,11 @@
        evaluation and redacted control-plane manifest builder only. No fetch,
        remote write, remote read, local storage write, or sync behavior change. -->
   <script src="./sync/webdav-transport-gates.js"></script>
+  <!-- Phase 31: Relay idempotency/restart proof harness. Models relay keys,
+       duplicate replay, restart, and fail-closed outcomes only. No relay
+       enqueue, WebDAV/cloud/CAS write, file write, export mutation, or boot
+       resume dispatch. -->
+  <script src="./sync/relay-idempotency-restart-proof-harness.js"></script>
   <!-- F4.x: Desktop-only read-only peer discovery diagnostics. Scans the
        existing devices/* peer mirror layout and reports state/checksum
        integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,
