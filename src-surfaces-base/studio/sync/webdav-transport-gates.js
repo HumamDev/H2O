@@ -11,15 +11,23 @@
   H2O.Studio = H2O.Studio || {};
   H2O.Studio.sync = H2O.Studio.sync || {};
   H2O.Studio.sync.webdavTransportGates = H2O.Studio.sync.webdavTransportGates || {};
+  H2O.Studio.sync.fullBundleTransportEnvelope = H2O.Studio.sync.fullBundleTransportEnvelope || {};
   if (H2O.Studio.sync.webdavTransportGates.__installed) return;
 
   var SCHEMA = 'h2o.studio.sync.webdav-transport-control-plane.v1';
   var VERSION = '0.1.0-phase30-dry-run';
+  var ENVELOPE_VERSION = '0.1.0-phase32-v2-envelope-preflight';
   var DEV_ONLY_WRITE_FLAG = 'webdav-dev-only-do-not-ship';
   var ACTIVE_TRANSPORT = 'local-sync-folder-json';
+  var FULL_BUNDLE_V2_SCHEMA = 'h2o.studio.fullBundle.v2';
   var READINESS_DRY_RUN_REQUEST_SCHEMA = 'h2o.studio.transport.webdav-readiness-dry-run-request.v1';
   var READINESS_DRY_RUN_RESULT_SCHEMA = 'h2o.studio.transport.webdav-readiness-dry-run-result.v1';
   var TRANSPORT_READINESS_DRY_RUN_GATE = 'webdav-transport-readiness-dry-run-evaluate';
+  var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA =
+    'h2o.studio.transport.fullbundle-v2-transport-envelope-preflight-request.v1';
+  var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA =
+    'h2o.studio.transport.fullbundle-v2-transport-envelope-preflight-result.v1';
+  var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_GATE = 'fullbundle-v2-transport-envelope-preflight-evaluate';
   var TRANSPORT_CONTROLLED_APPLY_GATE = 'webdav-cloud-relay-transport-controlled-apply';
   var APPLIED_TYPES = Object.freeze([
     'chat-category-assign',
@@ -393,6 +401,77 @@
       objectHash(input, 'target', ['remoteRootRefHash', 'remoteRootHash', 'remoteRootTargetHash']);
   }
 
+  function transportPeerTargetHash(input) {
+    return firstHash(input, ['peerTargetHash', 'peerIdHash', 'localMockTargetHash']) ||
+      objectHash(input, 'candidate', ['peerTargetHash', 'peerIdHash', 'targetHash']) ||
+      objectHash(input, 'peerTarget', ['peerTargetHash', 'peerIdHash', 'targetHash']) ||
+      objectHash(input, 'target', ['peerTargetHash', 'peerIdHash', 'targetHash']);
+  }
+
+  function transportRemoteRootHash(input) {
+    return firstHash(input, ['remoteRootRefHash', 'remoteRootHash']) ||
+      objectHash(input, 'candidate', ['remoteRootRefHash', 'remoteRootHash', 'rootHash']) ||
+      objectHash(input, 'remoteRootRef', ['remoteRootRefHash', 'remoteRootHash']) ||
+      objectHash(input, 'target', ['remoteRootRefHash', 'remoteRootHash', 'remoteRootTargetHash', 'rootHash']);
+  }
+
+  function expectedProjectionCount(input) {
+    var inp = safeObject(input);
+    var expectedBundle = safeObject(inp.expectedBundle);
+    var projection = safeObject(inp.projection);
+    var value = valueOrFallback(inp.fullBundleV2BindingProjectionCount,
+      valueOrFallback(inp.bindingProjectionCount,
+        valueOrFallback(expectedBundle.bindingProjectionCount,
+          valueOrFallback(projection.bindingProjectionCount, projection.count))));
+    return integerOrNull(value);
+  }
+
+  function expectedProjectionHash(input) {
+    return firstHash(input, [
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'fullBundleV2BindingProjectionHash'
+    ]) || objectHash(input, 'expectedProjection', [
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'hash',
+      'activeHash'
+    ]) || objectHash(input, 'expectedBundle', [
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'expectedHash',
+      'hash',
+      'activeHash'
+    ]) || objectHash(input, 'projection', [
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'hash',
+      'activeHash'
+    ]);
+  }
+
+  function hasEnvelopeRawPrivateInput(input) {
+    var inp = safeObject(input);
+    var expectedBundle = safeObject(inp.expectedBundle);
+    var expectedProjection = safeObject(inp.expectedProjection);
+    var privateFound = hasRawPrivateInput(inp);
+    var privateFields = [
+      expectedBundle.rawChatTitle,
+      expectedBundle.rawChatContent,
+      expectedBundle.rawChatId,
+      expectedBundle.rawFolderId,
+      expectedBundle.rawFolderName,
+      expectedBundle.rawPath,
+      expectedProjection.rawChatTitle,
+      expectedProjection.rawChatContent,
+      expectedProjection.rawChatId,
+      expectedProjection.rawFolderId,
+      expectedProjection.rawFolderName,
+      expectedProjection.rawPath
+    ];
+    return privateFound || privateFields.some(function (value) { return cleanString(value); });
+  }
+
   function valueOrFallback(value, fallback) {
     return value === undefined ? fallback : value;
   }
@@ -566,6 +645,189 @@
     };
   }
 
+  function evaluateFullBundleV2TransportEnvelopePreflight(request) {
+    var inp = safeObject(request);
+    var readiness = safeObject(inp.readiness);
+    var expectedBundle = safeObject(inp.expectedBundle);
+    var expectedProjection = safeObject(inp.expectedProjection);
+    var sequence = safeObject(inp.sequence);
+    var target = safeObject(inp.target);
+    var transport = safeObject(inp.transport);
+    var safety = safeObject(inp.safety);
+    var privacyObject = safeObject(inp.privacy);
+    var blockers = [];
+    var gate = cleanString(inp.gate);
+    var payloadSchema = cleanString(inp.payloadSchema || expectedBundle.schema || FULL_BUNDLE_V2_SCHEMA);
+    var candidateHash = firstHash(inp, [
+      'candidatePayloadHash',
+      'candidateBundleHash',
+      'fullBundleV2PayloadHash',
+      'fullBundleV2BindingProjectionHash',
+      'expectedBundleHash'
+    ]) || objectHash(inp, 'candidate', [
+      'candidatePayloadHash',
+      'candidateBundleHash',
+      'fullBundleV2PayloadHash',
+      'hash'
+    ]) || objectHash(inp, 'expectedBundle', [
+      'candidatePayloadHash',
+      'candidateBundleHash',
+      'expectedHash',
+      'hash'
+    ]);
+    var checksumHash = firstHash(inp, ['checksumHash', 'expectedChecksumHash', 'expectedFileHash', 'fileHash']) ||
+      objectHash(inp, 'expectedBundle', ['checksumHash', 'expectedChecksumHash', 'expectedFileHash', 'fileHash']) ||
+      candidateHash;
+    var projectionHash = expectedProjectionHash(inp);
+    var projectionCount = expectedProjectionCount(inp);
+    var expectedCount = integerOrNull(valueOrFallback(inp.expectedBindingProjectionCount,
+      valueOrFallback(expectedBundle.expectedBindingProjectionCount, expectedProjection.expectedBindingProjectionCount)));
+    var peerHash = transportPeerTargetHash(inp);
+    var rootHash = transportRemoteRootHash(inp);
+    var privacyMode = cleanString(inp.privacyMode || privacyObject.mode || (privacyObject.hashOnly === true ? 'hash-only' : ''));
+    var sequenceMode = cleanString(inp.sequenceMode || sequence.sequenceMode ||
+      (sequence.mintNewExport === false && sequence.burnSequence === false && sequence.requireExistingOnly === true ?
+        'not-minted-in-dry-run' : ''));
+    var expectedSeq = integerOrNull(valueOrFallback(inp.expectedSequenceNumber,
+      valueOrFallback(sequence.expectedSequenceNumber, valueOrFallback(inp.sequenceNumber, sequence.sequenceNumber))));
+    var previousSeq = integerOrNull(valueOrFallback(inp.previousSequenceNumber, sequence.previousSequenceNumber));
+    var requestedProductSyncReady = valueOrFallback(inp.productSyncReady, readiness.productSyncReady);
+    var requestedTransportReady = valueOrFallback(inp.transportReady, readiness.transportReady);
+    var requestedLocalExportableSyncReady = valueOrFallback(inp.localExportableSyncReady,
+      readiness.localExportableSyncReady);
+    var requestedTransportEligibility = valueOrFallback(inp.transportEligibilityFromLocalExportableReady,
+      readiness.transportEligibilityFromLocalExportableReady);
+    var a950Quarantined = inp.a950DocumentedDebtQuarantined === true ||
+      readiness.a950DocumentedDebtQuarantined === true ||
+      inp.a950DocumentedDebtVisible === true ||
+      readiness.a950DocumentedDebtVisible === true ||
+      safety.a950DocumentedDebtQuarantined === true;
+    var a950Leak = bool(inp.a950LeaksIntoExportablePayload) ||
+      bool(expectedBundle.a950LeaksIntoExportablePayload) ||
+      bool(expectedProjection.a950LeaksIntoExportablePayload) ||
+      bool(safety.a950LeaksIntoExportablePayload);
+    var payloadMutationRequested = bool(inp.mutatePayload) || bool(inp.payloadMutationRequested) ||
+      bool(inp.alterFullBundleV2Payload) || bool(expectedBundle.mutatePayload) ||
+      bool(expectedBundle.payloadMutationRequested) || bool(expectedBundle.alterFullBundleV2Payload);
+    var writeLikeRequested = bool(inp.writeRequested) || bool(inp.writesData) || bool(inp.writeData) ||
+      bool(inp.writeWebDAV) || bool(inp.writesWebDAV) || bool(inp.writeCloud) || bool(inp.writesCloud) ||
+      bool(inp.writeRemote) || bool(transport.writeRemote) || bool(transport.writeWebDAV) ||
+      bool(transport.writeCloud);
+    var relayRequested = bool(inp.enqueueRelay) || bool(inp.enqueuesRelay) || bool(inp.writeRelay) ||
+      bool(inp.writesRelay) || bool(transport.enqueueRelay) || bool(transport.writeRelay);
+    var casRequested = bool(inp.writeCAS) || bool(inp.writesCAS) || bool(inp.touchChatSavingCAS) ||
+      bool(transport.touchChatSavingCAS) || bool(transport.writeCAS);
+    var fileWriteRequested = bool(inp.writeFiles) || bool(inp.writesFiles) || bool(inp.writeFile) ||
+      bool(transport.writeFiles) || bool(transport.writeFile);
+    var fullBundleV3Requested = bool(inp.fullBundleV3Started) || bool(inp.startFullBundleV3) ||
+      bool(inp.mintFullBundleV3) || bool(inp.fullBundleV3MintRequested) ||
+      bool(transport.startFullBundleV3) || bool(transport.mintFullBundleV3);
+    var exportMutationRequested = bool(inp.mutatesExportState) || bool(inp.mintExportId) ||
+      bool(inp.mintsExportId) || bool(inp.burnsSequence) || bool(sequence.mintNewExport) ||
+      bool(sequence.burnSequence);
+    var cleanupRequested = bool(inp.cleanupAuthority) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
+      bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
+      bool(safety.mutateA950);
+    var targetAmbiguous = bool(inp.peerTargetAmbiguous) || bool(inp.targetAmbiguous) || bool(target.ambiguous);
+    var rawPrivateInput = hasEnvelopeRawPrivateInput(inp) || bool(inp.rawPrivateFieldsLogged) ||
+      bool(privacyObject.rawPrivateFieldsLogged);
+
+    if (!gate) addUnique(blockers, 'fullbundle-v2-envelope-gate-missing');
+    else if (gate !== FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_GATE) {
+      addUnique(blockers, 'fullbundle-v2-envelope-gate-invalid');
+    }
+    if (inp.dryRun !== true) addUnique(blockers, 'fullbundle-v2-envelope-dry-run-required');
+    if (inp.apply === true) addUnique(blockers, 'fullbundle-v2-envelope-apply-forbidden');
+    if (payloadSchema !== FULL_BUNDLE_V2_SCHEMA) addUnique(blockers, 'fullbundle-v2-envelope-schema-mismatch');
+    if (!candidateHash || !checksumHash || !projectionHash || candidateHash !== checksumHash ||
+        candidateHash !== projectionHash) {
+      addUnique(blockers, 'fullbundle-v2-envelope-checksum-mismatch');
+    }
+    if (projectionCount == null || expectedCount == null || projectionCount !== expectedCount) {
+      addUnique(blockers, 'fullbundle-v2-envelope-projection-count-mismatch');
+    }
+    if (privacyMode !== 'hash-only' || privacyObject.hashOnly === false || rawPrivateInput) {
+      addUnique(blockers, 'fullbundle-v2-envelope-private-input-rejected');
+    }
+    if (sequenceMode !== 'not-minted-in-dry-run') addUnique(blockers, 'fullbundle-v2-envelope-sequence-mismatch');
+    if (expectedSeq != null && previousSeq != null && expectedSeq < previousSeq) {
+      addUnique(blockers, 'fullbundle-v2-envelope-sequence-mismatch');
+    }
+    if (!peerHash || targetAmbiguous) addUnique(blockers, 'fullbundle-v2-envelope-peer-target-ambiguous');
+    if (fullBundleV3Requested) addUnique(blockers, 'fullbundle-v2-envelope-fullbundle-v3-forbidden');
+    if (payloadMutationRequested) addUnique(blockers, 'fullbundle-v2-envelope-payload-mutation-forbidden');
+    if (exportMutationRequested) addUnique(blockers, 'fullbundle-v2-envelope-export-mutation-forbidden');
+    if (writeLikeRequested) addUnique(blockers, 'fullbundle-v2-envelope-webdav-cloud-write-forbidden');
+    if (relayRequested) addUnique(blockers, 'fullbundle-v2-envelope-relay-enqueue-forbidden');
+    if (casRequested) addUnique(blockers, 'fullbundle-v2-envelope-cas-write-forbidden');
+    if (fileWriteRequested) addUnique(blockers, 'fullbundle-v2-envelope-file-write-forbidden');
+    if (a950Leak || !a950Quarantined) addUnique(blockers, 'fullbundle-v2-envelope-a950-leakage-blocked');
+    if (requestedProductSyncReady !== false) addUnique(blockers, 'fullbundle-v2-envelope-product-sync-ready-mismatch');
+    if (requestedTransportReady !== false) addUnique(blockers, 'fullbundle-v2-envelope-transport-ready-mismatch');
+    if (requestedLocalExportableSyncReady !== true) addUnique(blockers, 'fullbundle-v2-envelope-local-exportable-not-ready');
+    if (requestedTransportEligibility !== true) {
+      addUnique(blockers, 'fullbundle-v2-envelope-transport-eligibility-missing');
+    }
+    if (cleanupRequested) addUnique(blockers, 'fullbundle-v2-envelope-cleanup-authority-forbidden');
+
+    return {
+      schema: FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA,
+      requestSchema: FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA,
+      version: ENVELOPE_VERSION,
+      ok: blockers.length === 0,
+      status: blockers.length === 0 ? 'fullbundle-v2-transport-envelope-preflight-ready' :
+        'blocked-fullbundle-v2-transport-envelope-preflight',
+      reason: blockers.length === 0 ? 'fullbundle-v2-transport-envelope-preflight-ready' : blockers[0],
+      gate: gate,
+      gateSatisfied: gate === FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_GATE,
+      fullBundleV2EnvelopePreflight: true,
+      selectedPayloadBoundary: 'fullBundle.v2-transport-envelope',
+      payloadSchema: FULL_BUNDLE_V2_SCHEMA,
+      fullBundleV3Required: false,
+      fullBundleV3Deferred: true,
+      fullBundleV3Started: false,
+      payloadUnmodified: true,
+      writesWebDAV: false,
+      writesCloud: false,
+      writesRelay: false,
+      enqueuesRelay: false,
+      writesCAS: false,
+      writesFiles: false,
+      mutatesExportState: false,
+      mintsExportId: false,
+      burnsSequence: false,
+      productSyncReady: false,
+      transportReady: false,
+      localExportableSyncReady: requestedLocalExportableSyncReady === true,
+      localExportableSyncReadyIsAuthorization: false,
+      transportEligibilityFromLocalExportableReady: requestedTransportEligibility === true,
+      webdavCloudRelayBlocked: true,
+      chatSavingCasBlocked: true,
+      a950DocumentedDebtQuarantined: true,
+      a950LeaksIntoExportablePayload: false,
+      noCleanupAuthority: true,
+      candidatePayloadHash: candidateHash,
+      candidateBundleHash: candidateHash,
+      expectedProjectionHash: projectionHash,
+      expectedProjectionCount: projectionCount,
+      peerTargetHash: peerHash,
+      remoteRootRefHash: rootHash,
+      sequenceMode: sequenceMode || 'not-minted-in-dry-run',
+      expectedSequenceNumber: expectedSeq,
+      previousSequenceNumber: previousSeq,
+      transportControlledApplyGateReserved: TRANSPORT_CONTROLLED_APPLY_GATE,
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawPrivateFieldsLogged: false,
+        rawInputRejected: rawPrivateInput
+      },
+      blockers: blockers,
+      warnings: [],
+      activeTransport: ACTIVE_TRANSPORT
+    };
+  }
+
   function diagnose() {
     return {
       installed: true,
@@ -608,5 +870,16 @@
   });
   H2O.Studio.sync.webdavTransportGates.__installed = true;
   H2O.Studio.sync.webdavTransportGates.__version = VERSION;
+
+  H2O.Studio.sync.fullBundleTransportEnvelope.evaluateFullBundleV2TransportEnvelopePreflight =
+    evaluateFullBundleV2TransportEnvelopePreflight;
+  H2O.Studio.sync.fullBundleTransportEnvelope.constants = Object.freeze({
+    FULL_BUNDLE_V2_SCHEMA: FULL_BUNDLE_V2_SCHEMA,
+    FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA: FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA,
+    FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA: FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA,
+    FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_GATE: FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_GATE,
+    TRANSPORT_CONTROLLED_APPLY_GATE: TRANSPORT_CONTROLLED_APPLY_GATE,
+    ACTIVE_TRANSPORT: ACTIVE_TRANSPORT
+  });
 
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
