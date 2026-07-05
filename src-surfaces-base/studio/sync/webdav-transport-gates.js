@@ -28,6 +28,10 @@
   var CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA =
     'h2o.studio.transport.controlled-write-kill-switch-proof-result.v1';
   var CONTROLLED_WRITE_KILL_SWITCH_GATE = 'webdav-controlled-write-kill-switch-evaluate';
+  var CONTROLLED_LOCAL_MOCK_TRANSPORT_REQUEST_SCHEMA =
+    'h2o.studio.transport.controlled-local-mock-webdav-transport-request.v1';
+  var CONTROLLED_LOCAL_MOCK_TRANSPORT_RESULT_SCHEMA =
+    'h2o.studio.transport.controlled-local-mock-webdav-transport-result.v1';
   var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA =
     'h2o.studio.transport.fullbundle-v2-transport-envelope-preflight-request.v1';
   var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA =
@@ -990,6 +994,191 @@
     };
   }
 
+  function approvalAccepted(approval, expected) {
+    var app = safeObject(approval);
+    if (app.approved !== true || app.reviewedTransportApplyApproved !== true) return false;
+    if (cleanString(app.scope) !== 'local-mock-webdav-target-only') return false;
+    if (cleanString(app.controlledGate) !== TRANSPORT_CONTROLLED_APPLY_GATE) return false;
+    if (app.killSwitchEnabled !== true) return false;
+    if (hashLike(app.idempotencyKeyHash) !== expected.idempotencyKeyHash) return false;
+    if (hashLike(app.candidatePayloadHash) !== expected.candidatePayloadHash) return false;
+    if (hashLike(app.candidateBundleHash) !== expected.candidateBundleHash) return false;
+    if (hashLike(app.peerTargetHash) !== expected.peerTargetHash) return false;
+    if (hashLike(app.remoteRootRefHash) !== expected.remoteRootRefHash) return false;
+    if (app.productSyncReady !== false || app.transportReady !== false) return false;
+    if (app.noChatSavingCas !== true || app.noFullBundleV3 !== true || app.noA950Mutation !== true) return false;
+    if (app.privacyHashOnly !== true) return false;
+    return true;
+  }
+
+  function evaluateControlledLocalMockTransport(request) {
+    var inp = safeObject(request);
+    var readiness = safeObject(inp.readiness);
+    var killSwitch = safeObject(inp.killSwitch || inp.controlledWriteKillSwitch);
+    var approval = safeObject(inp.operatorApproval || inp.approval || inp.manualApproval);
+    var candidate = safeObject(inp.candidate);
+    var target = safeObject(inp.target);
+    var sequence = safeObject(inp.sequence);
+    var transport = safeObject(inp.transport);
+    var safety = safeObject(inp.safety);
+    var privacyObject = safeObject(inp.privacy);
+    var duplicateReplay = safeObject(inp.duplicateReplay);
+    var restart = safeObject(inp.restart);
+    var blockers = [];
+    var gate = cleanString(inp.gate || inp.controlledGate || inp.controlledApplyGate);
+    var dryRun = inp.dryRun === true;
+    var applyRequested = inp.apply === true;
+    var killSwitchEnabled = killSwitch.enabled === true || inp.killSwitchEnabled === true;
+    var targetMode = cleanString(inp.targetMode || target.mode);
+    var localMockTarget = targetMode === 'local-mock-webdav' || targetMode === 'mock-peer' ||
+      target.localMockTarget === true || inp.localMockTarget === true;
+    var candidatePayloadHash = firstHash(inp, ['candidatePayloadHash', 'payloadHash']) ||
+      objectHash(inp, 'candidate', ['candidatePayloadHash', 'payloadHash', 'hash']);
+    var candidateBundleHash = firstHash(inp, ['candidateBundleHash', 'bundleHash']) ||
+      objectHash(inp, 'candidate', ['candidateBundleHash', 'bundleHash', 'hash']);
+    var idempotencyKeyHash = firstHash(inp, ['idempotencyKeyHash']) ||
+      objectHash(inp, 'idempotency', ['idempotencyKeyHash', 'keyHash']) ||
+      objectHash(inp, 'candidate', ['idempotencyKeyHash']);
+    var peerHash = transportPeerTargetHash(inp);
+    var rootHash = transportRemoteRootHash(inp);
+    var requestedProductSyncReady = valueOrFallback(inp.productSyncReady, readiness.productSyncReady);
+    var requestedTransportReady = valueOrFallback(inp.transportReady, readiness.transportReady);
+    var requestedLocalExportableSyncReady = valueOrFallback(inp.localExportableSyncReady,
+      readiness.localExportableSyncReady);
+    var requestedTransportEligibility = valueOrFallback(inp.transportEligibilityFromLocalExportableReady,
+      readiness.transportEligibilityFromLocalExportableReady);
+    var privacyMode = cleanString(inp.privacyMode || privacyObject.mode || (privacyObject.hashOnly === true ? 'hash-only' : ''));
+    var rawPrivateInput = hasEnvelopeRawPrivateInput(inp) || bool(inp.rawPrivateFieldsLogged) ||
+      bool(privacyObject.rawPrivateFieldsLogged);
+    var sequenceMode = cleanString(inp.sequenceMode || sequence.sequenceMode ||
+      (sequence.mintNewExport === false && sequence.burnSequence === false && sequence.requireExistingOnly === true ?
+        'not-minted-in-controlled-mock' : ''));
+    var writeLikeRequested = bool(inp.realWebDAVWrite) || bool(inp.writeWebDAV) || bool(inp.writesWebDAV) ||
+      bool(inp.writeCloud) || bool(inp.writesCloud) || bool(inp.writeRemote) || bool(transport.writeWebDAV) ||
+      bool(transport.writeCloud) || bool(transport.writeRemote);
+    var realTargetRequested = targetMode === 'webdav' || targetMode === 'real-webdav' || targetMode === 'cloud' ||
+      bool(target.realWebDAVTarget) || bool(inp.realWebDAVTarget);
+    var relayRequested = bool(inp.enqueueRelay) || bool(inp.enqueuesRelay) || bool(inp.writeRelay) ||
+      bool(inp.writesRelay) || bool(transport.enqueueRelay) || bool(transport.writeRelay);
+    var casRequested = bool(inp.writeCAS) || bool(inp.writesCAS) || bool(inp.touchChatSavingCAS) ||
+      bool(transport.touchChatSavingCAS) || bool(transport.writeCAS);
+    var fileWriteRequested = bool(inp.writeFiles) || bool(inp.writesFiles) || bool(inp.writeFile) ||
+      bool(transport.writeFiles) || bool(transport.writeFile);
+    var fullBundleV3Requested = bool(inp.fullBundleV3Started) || bool(inp.startFullBundleV3) ||
+      bool(inp.mintFullBundleV3) || bool(transport.startFullBundleV3) || bool(transport.mintFullBundleV3);
+    var exportMutationRequested = bool(inp.mutatesExportState) || bool(inp.mintExportId) ||
+      bool(inp.mintsExportId) || bool(inp.burnsSequence) || bool(sequence.mintNewExport) ||
+      bool(sequence.burnSequence);
+    var cleanupRequested = bool(inp.cleanupAuthority) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
+      bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
+      bool(safety.mutateA950);
+    var approvalOk = approvalAccepted(approval, {
+      idempotencyKeyHash: idempotencyKeyHash,
+      candidatePayloadHash: candidatePayloadHash,
+      candidateBundleHash: candidateBundleHash,
+      peerTargetHash: peerHash,
+      remoteRootRefHash: rootHash
+    });
+    var duplicateZeroWrite = duplicateReplay.sameIdempotencyKey === true &&
+      duplicateReplay.samePayloadTargetSequence === true && duplicateReplay.expectZeroWrite === true;
+    var duplicateReplayed = duplicateReplay.replayed === true;
+    var restartFailClosed = restart.expectFailClosed === true &&
+      restart.allowDispatchWithoutControlledGate === false;
+
+    if (!dryRun && !applyRequested) addUnique(blockers, 'controlled-local-mock-dry-run-or-apply-required');
+    if (dryRun && applyRequested) addUnique(blockers, 'controlled-local-mock-dry-run-apply-conflict');
+    if (applyRequested && !killSwitchEnabled) addUnique(blockers, 'controlled-local-mock-kill-switch-disabled');
+    if (gate !== TRANSPORT_CONTROLLED_APPLY_GATE) addUnique(blockers, 'controlled-local-mock-controlled-gate-required');
+    if (applyRequested && !approvalOk) addUnique(blockers, 'controlled-local-mock-operator-approval-required');
+    if (!idempotencyKeyHash) addUnique(blockers, 'controlled-local-mock-idempotency-key-required');
+    if (!candidatePayloadHash || !candidateBundleHash || candidatePayloadHash !== candidateBundleHash) {
+      addUnique(blockers, 'controlled-local-mock-payload-hash-mismatch');
+    }
+    if (!peerHash || !rootHash || !localMockTarget || realTargetRequested || target.ambiguous === true) {
+      addUnique(blockers, 'controlled-local-mock-target-required');
+    }
+    if (requestedProductSyncReady !== false) addUnique(blockers, 'controlled-local-mock-product-sync-ready-mismatch');
+    if (requestedTransportReady !== false) addUnique(blockers, 'controlled-local-mock-transport-ready-mismatch');
+    if (requestedLocalExportableSyncReady !== true) addUnique(blockers, 'controlled-local-mock-local-exportable-not-ready');
+    if (requestedTransportEligibility !== true) addUnique(blockers, 'controlled-local-mock-transport-eligibility-missing');
+    if (privacyMode !== 'hash-only' || privacyObject.hashOnly === false || rawPrivateInput) {
+      addUnique(blockers, 'controlled-local-mock-private-input-rejected');
+    }
+    if (!duplicateZeroWrite) addUnique(blockers, 'controlled-local-mock-duplicate-replay-proof-required');
+    if (!restartFailClosed) addUnique(blockers, 'controlled-local-mock-restart-fail-closed-proof-required');
+    if (sequenceMode !== 'not-minted-in-controlled-mock') addUnique(blockers, 'controlled-local-mock-sequence-mismatch');
+    if (writeLikeRequested || realTargetRequested) addUnique(blockers, 'controlled-local-mock-real-webdav-cloud-write-forbidden');
+    if (relayRequested) addUnique(blockers, 'controlled-local-mock-relay-enqueue-forbidden');
+    if (casRequested) addUnique(blockers, 'controlled-local-mock-cas-write-forbidden');
+    if (fileWriteRequested) addUnique(blockers, 'controlled-local-mock-file-write-forbidden');
+    if (fullBundleV3Requested) addUnique(blockers, 'controlled-local-mock-fullbundle-v3-forbidden');
+    if (exportMutationRequested) addUnique(blockers, 'controlled-local-mock-export-mutation-forbidden');
+    if (cleanupRequested) addUnique(blockers, 'controlled-local-mock-cleanup-authority-forbidden');
+
+    return {
+      schema: CONTROLLED_LOCAL_MOCK_TRANSPORT_RESULT_SCHEMA,
+      requestSchema: CONTROLLED_LOCAL_MOCK_TRANSPORT_REQUEST_SCHEMA,
+      version: VERSION,
+      ok: blockers.length === 0,
+      status: blockers.length === 0 ?
+        (applyRequested ? 'controlled-local-mock-webdav-transport-applied' :
+          'controlled-local-mock-webdav-transport-dry-run-ready') :
+        'blocked-controlled-local-mock-webdav-transport',
+      reason: blockers.length === 0 ? 'controlled-local-mock-webdav-transport-ready' : blockers[0],
+      controlledMockTransport: true,
+      targetMode: 'local-mock-webdav',
+      gate: gate,
+      gateSatisfied: gate === TRANSPORT_CONTROLLED_APPLY_GATE,
+      dryRun: dryRun,
+      applyRequested: applyRequested,
+      killSwitchEnabled: killSwitchEnabled,
+      operatorApprovalAccepted: approvalOk,
+      controlledApplyGate: TRANSPORT_CONTROLLED_APPLY_GATE,
+      reservedControlledGateUsedForLocalMockOnly: gate === TRANSPORT_CONTROLLED_APPLY_GATE && localMockTarget,
+      controlledMockTransportImplementationPresent: true,
+      controlledTransportScope: 'local-mock-webdav-target-only',
+      modeledMockApply: blockers.length === 0 && applyRequested,
+      modeledMockWriteCount: blockers.length === 0 && applyRequested && !duplicateReplayed ? 1 : 0,
+      realWebDAVWrite: false,
+      writesWebDAV: false,
+      writesCloud: false,
+      writesRelay: false,
+      enqueuesRelay: false,
+      writesCAS: false,
+      writesFiles: false,
+      mutatesExportState: false,
+      mintsExportId: false,
+      burnsSequence: false,
+      fullBundleV3Started: false,
+      productSyncReady: false,
+      transportReady: false,
+      localExportableSyncReady: requestedLocalExportableSyncReady === true,
+      transportEligibilityFromLocalExportableReady: requestedTransportEligibility === true,
+      localExportableSyncReadyIsAuthorization: false,
+      duplicateReplayZeroWrite: duplicateZeroWrite,
+      restartFailClosed: restartFailClosed,
+      bootResumeDispatch: false,
+      webdavCloudRelayBlocked: true,
+      chatSavingCasBlocked: true,
+      a950DocumentedDebtQuarantined: true,
+      noCleanupAuthority: true,
+      idempotencyKeyHash: idempotencyKeyHash,
+      candidatePayloadHash: candidatePayloadHash,
+      candidateBundleHash: candidateBundleHash,
+      peerTargetHash: peerHash,
+      remoteRootRefHash: rootHash,
+      privacy: {
+        redacted: true,
+        hashOnly: true,
+        rawPrivateFieldsLogged: false,
+        rawInputRejected: rawPrivateInput
+      },
+      blockers: blockers,
+      warnings: [],
+      activeTransport: ACTIVE_TRANSPORT
+    };
+  }
+
   function diagnose() {
     return {
       installed: true,
@@ -1007,6 +1196,9 @@
       controlledWriteKillSwitchDefaultEnabled: false,
       controlledWriteKillSwitchGate: CONTROLLED_WRITE_KILL_SWITCH_GATE,
       transportControlledApplyGateUsable: false,
+      controlledLocalMockTransportApiAvailable: true,
+      controlledLocalMockTransportScope: 'local-mock-webdav-target-only',
+      realWebDAVTransportAvailable: false,
       sameEnvelopes: SAME_ENVELOPES.slice(),
       appliedRequestTypeAllowlist: APPLIED_TYPES.slice(),
       guards: GUARDS.slice(),
@@ -1020,6 +1212,8 @@
   H2O.Studio.sync.webdavTransportGates.dryRun = dryRun;
   H2O.Studio.sync.webdavTransportGates.evaluateTransportReadinessDryRun = evaluateTransportReadinessDryRun;
   H2O.Studio.sync.webdavTransportGates.evaluateControlledWriteKillSwitch = evaluateControlledWriteKillSwitch;
+  H2O.Studio.sync.webdavTransportGates.evaluateControlledLocalMockTransport =
+    evaluateControlledLocalMockTransport;
   H2O.Studio.sync.webdavTransportGates.diagnose = diagnose;
   H2O.Studio.sync.webdavTransportGates.constants = Object.freeze({
     SCHEMA: SCHEMA,
@@ -1032,6 +1226,8 @@
     CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA: CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA,
     CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA: CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA,
     CONTROLLED_WRITE_KILL_SWITCH_GATE: CONTROLLED_WRITE_KILL_SWITCH_GATE,
+    CONTROLLED_LOCAL_MOCK_TRANSPORT_REQUEST_SCHEMA: CONTROLLED_LOCAL_MOCK_TRANSPORT_REQUEST_SCHEMA,
+    CONTROLLED_LOCAL_MOCK_TRANSPORT_RESULT_SCHEMA: CONTROLLED_LOCAL_MOCK_TRANSPORT_RESULT_SCHEMA,
     TRANSPORT_CONTROLLED_APPLY_GATE: TRANSPORT_CONTROLLED_APPLY_GATE,
     APPLIED_TYPES: APPLIED_TYPES.slice(),
     SAME_ENVELOPES: SAME_ENVELOPES.slice(),
