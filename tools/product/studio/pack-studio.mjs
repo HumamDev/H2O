@@ -860,6 +860,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "sync/real-transport-readiness.js",
   "sync/real-transport-dry-run.js",
   "sync/real-transport-console.js",
+  // W2a: real transport first-write preflight. Evaluate-only, zero-write,
+  // non-activating candidate receipt core builder; no token mint or writes.
+  "sync/real-transport-first-write-preflight.js",
   // F4.x: Desktop-only read-only peer discovery diagnostics for devices/*
   // state/checksum integrity. No imports, writes, polling, manifests, or history.
   "sync/peer-discovery.js",
@@ -1477,6 +1480,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "sync/real-transport-readiness.js",
   "sync/real-transport-dry-run.js",
   "sync/real-transport-console.js",
+  "sync/real-transport-first-write-preflight.js",
   "sync/peer-discovery.js",
   "sync/peer-watermarks.js",
   "sync/multi-peer-diff.js",

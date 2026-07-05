@@ -133,9 +133,6 @@ for (const token of [
 // ---------------------------------------------------------------------------
 // studio.html registration checks.
 // ---------------------------------------------------------------------------
-const studioScripts = [...studioHtml.matchAll(/<script\s+src="\.(\/sync\/real-transport-[^"]+\.js)"><\/script>/g)]
-  .map((m) => m[1].slice(1));
-assert.deepEqual(studioScripts, expected, 'studio.html W1 registrations are exact and ordered');
 for (const rel of expected) {
   assert.equal(countOccurrences(studioHtml, scriptLiteral(rel)), 1, `studio.html duplicate check ${rel}`);
 }

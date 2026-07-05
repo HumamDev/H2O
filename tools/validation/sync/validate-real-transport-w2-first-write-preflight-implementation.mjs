@@ -19,6 +19,11 @@ const root = process.cwd();
 const modulePath = 'src-surfaces-base/studio/sync/real-transport-first-write-preflight.js';
 const evidencePath = 'release-evidence/2026-07-05/real-transport-w2a-first-write-preflight-implementation.md';
 const w1HarnessPath = 'tools/validation/sync/run-real-transport-console-dry-run.mjs';
+const studioHtmlPath = 'src-surfaces-base/studio/studio.html';
+const packStudioPath = 'tools/product/studio/pack-studio.mjs';
+const w2bValidatorPath = 'tools/validation/sync/validate-real-transport-w2b-loader-registration.mjs';
+const w2bEvidencePath = 'release-evidence/2026-07-05/real-transport-w2b-loader-registration.md';
+const w2aLoaderEntry = 'sync/real-transport-first-write-preflight.js';
 
 const w1Modules = [
   'src-surfaces-base/studio/sync/webdav-transport-gates.js',
@@ -35,8 +40,6 @@ const w1Modules = [
 ];
 
 const protectedPaths = [
-  'src-surfaces-base/studio/studio.html',
-  'tools/product/studio/pack-studio.mjs',
   'src-surfaces-base/studio/sync/webdav-transport-gates.js',
   ...w1Modules.filter((p) => /real-transport-.*\.js$/.test(p)),
 ].filter((p) => p !== modulePath);
@@ -251,6 +254,48 @@ function gitClean(rel) {
   assert.equal(staged, '', `${rel}: staged changes present`);
 }
 
+function countOccurrences(source, needle) {
+  return String(source).split(needle).length - 1;
+}
+
+function packListSections(source) {
+  const webdavMatches = [...source.matchAll(/"sync\/webdav-transport-gates\.js"/g)].map((m) => m.index);
+  assert.equal(webdavMatches.length, 2, 'pack-studio has two explicit WebDAV gate entries');
+  return [
+    source.slice(0, webdavMatches[1]),
+    source.slice(webdavMatches[1]),
+  ];
+}
+
+function assertW2bAwareLoaderState() {
+  const studioHtml = read(studioHtmlPath);
+  const packStudio = read(packStudioPath);
+  const htmlNeedle = `<script src="./${w2aLoaderEntry}"></script>`;
+  const packNeedle = `"${w2aLoaderEntry}"`;
+  const htmlCount = countOccurrences(studioHtml, htmlNeedle);
+  const packCount = countOccurrences(packStudio, packNeedle);
+  const w2bPresent = htmlCount > 0
+    || packCount > 0
+    || fs.existsSync(path.join(root, w2bValidatorPath))
+    || fs.existsSync(path.join(root, w2bEvidencePath));
+
+  if (!w2bPresent) {
+    assert.equal(htmlCount, 0, 'pre-W2b studio.html W2a loader absent');
+    assert.equal(packCount, 0, 'pre-W2b pack-studio W2a loader absent');
+    gitClean(studioHtmlPath);
+    gitClean(packStudioPath);
+    return;
+  }
+
+  assert.ok(fs.existsSync(path.join(root, w2bValidatorPath)), 'W2b loader validator exists');
+  assert.ok(fs.existsSync(path.join(root, w2bEvidencePath)), 'W2b loader evidence exists');
+  assert.equal(htmlCount, 1, 'W2b studio.html W2a loader appears exactly once');
+  assert.equal(packCount, 2, 'W2b pack-studio W2a loader appears once per explicit list');
+  for (const [idx, section] of packListSections(packStudio).entries()) {
+    assert.equal(countOccurrences(section, packNeedle), 1, `W2b pack-studio explicit list ${idx + 1} W2a loader appears exactly once`);
+  }
+}
+
 function buildW1RequestFromHarness() {
   const harness = read(w1HarnessPath);
   const hSrc = harness.match(/function H\(d\) \{[\s\S]*?\n\}/)?.[0];
@@ -310,6 +355,7 @@ for (const forbidden of [
 ]) {
   assertNotIncludes(source, forbidden, `module source token ${forbidden}`);
 }
+assertW2bAwareLoaderState();
 for (const rel of protectedPaths) gitClean(rel);
 
 // Load-time inertness and API exposure.

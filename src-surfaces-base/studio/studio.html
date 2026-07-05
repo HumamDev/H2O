@@ -1528,6 +1528,11 @@
   <script src="./sync/real-transport-readiness.js"></script>
   <script src="./sync/real-transport-dry-run.js"></script>
   <script src="./sync/real-transport-console.js"></script>
+  <!-- W2a: real transport first-write preflight substrate. Evaluate-only,
+       zero-write, non-activating candidate receipt core builder. No token
+       mint, remote IO, enqueue, outbox/ledger/store mutation, export mutation,
+       fullBundle.v3 start, or readiness flip. -->
+  <script src="./sync/real-transport-first-write-preflight.js"></script>
   <!-- F4.x: Desktop-only read-only peer discovery diagnostics. Scans the
        existing devices/* peer mirror layout and reports state/checksum
        integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,
