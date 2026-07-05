@@ -23,6 +23,11 @@
   var READINESS_DRY_RUN_REQUEST_SCHEMA = 'h2o.studio.transport.webdav-readiness-dry-run-request.v1';
   var READINESS_DRY_RUN_RESULT_SCHEMA = 'h2o.studio.transport.webdav-readiness-dry-run-result.v1';
   var TRANSPORT_READINESS_DRY_RUN_GATE = 'webdav-transport-readiness-dry-run-evaluate';
+  var CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA =
+    'h2o.studio.transport.controlled-write-kill-switch-proof-request.v1';
+  var CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA =
+    'h2o.studio.transport.controlled-write-kill-switch-proof-result.v1';
+  var CONTROLLED_WRITE_KILL_SWITCH_GATE = 'webdav-controlled-write-kill-switch-evaluate';
   var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_REQUEST_SCHEMA =
     'h2o.studio.transport.fullbundle-v2-transport-envelope-preflight-request.v1';
   var FULL_BUNDLE_V2_ENVELOPE_PREFLIGHT_RESULT_SCHEMA =
@@ -851,6 +856,140 @@
     };
   }
 
+  function evaluateControlledWriteKillSwitch(request) {
+    var inp = safeObject(request);
+    var readiness = safeObject(inp.readiness);
+    var killSwitch = safeObject(inp.killSwitch || inp.controlledWriteKillSwitch);
+    var controlled = safeObject(inp.controlled || inp.controlledTransport);
+    var transport = safeObject(inp.transport);
+    var safety = safeObject(inp.safety);
+    var gate = cleanString(inp.gate);
+    var proofBlockers = [];
+    var controlledWriteBlockers = [];
+    var modeledMissingKillSwitch = inp.killSwitchExists === false || killSwitch.exists === false ||
+      bool(inp.modelMissingKillSwitch) || bool(killSwitch.modelMissing);
+    var killSwitchExists = !modeledMissingKillSwitch;
+    var killSwitchEnabled = killSwitchExists && (inp.killSwitchEnabled === true || killSwitch.enabled === true);
+    var providedControlledGate = cleanString(inp.controlledGate || inp.controlledApplyGate ||
+      controlled.gate || controlled.controlledGate || controlled.controlledApplyGate);
+    var controlledGateProvided = !!providedControlledGate || bool(inp.controlledGateProvided) ||
+      bool(controlled.controlledGateProvided);
+    var requestedProductSyncReady = valueOrFallback(inp.productSyncReady, readiness.productSyncReady);
+    var requestedTransportReady = valueOrFallback(inp.transportReady, readiness.transportReady);
+    var requestedLocalExportableSyncReady = valueOrFallback(inp.localExportableSyncReady,
+      readiness.localExportableSyncReady);
+    var requestedTransportEligibility = valueOrFallback(inp.transportEligibilityFromLocalExportableReady,
+      readiness.transportEligibilityFromLocalExportableReady);
+    var writeLikeRequested = bool(inp.writeRequested) || bool(inp.writesData) || bool(inp.writeData) ||
+      bool(inp.writeWebDAV) || bool(inp.writesWebDAV) || bool(inp.writeCloud) || bool(inp.writesCloud) ||
+      bool(inp.writeRemote) || bool(transport.writeRemote) || bool(transport.writeWebDAV) ||
+      bool(transport.writeCloud) || bool(controlled.writeWebDAV) || bool(controlled.writeCloud);
+    var relayRequested = bool(inp.enqueueRelay) || bool(inp.enqueuesRelay) || bool(inp.writeRelay) ||
+      bool(inp.writesRelay) || bool(transport.enqueueRelay) || bool(transport.writeRelay) ||
+      bool(controlled.enqueueRelay) || bool(controlled.writeRelay);
+    var casRequested = bool(inp.writeCAS) || bool(inp.writesCAS) || bool(inp.touchChatSavingCAS) ||
+      bool(transport.touchChatSavingCAS) || bool(transport.writeCAS) || bool(controlled.writeCAS) ||
+      bool(controlled.touchChatSavingCAS);
+    var fileWriteRequested = bool(inp.writeFiles) || bool(inp.writesFiles) || bool(inp.writeFile) ||
+      bool(transport.writeFiles) || bool(transport.writeFile) || bool(controlled.writeFiles);
+    var fullBundleV3Requested = bool(inp.fullBundleV3Started) || bool(inp.startFullBundleV3) ||
+      bool(inp.mintFullBundleV3) || bool(transport.startFullBundleV3) || bool(transport.mintFullBundleV3) ||
+      bool(controlled.startFullBundleV3) || bool(controlled.mintFullBundleV3);
+    var exportMutationRequested = bool(inp.mutatesExportState) || bool(inp.mintExportId) ||
+      bool(inp.mintsExportId) || bool(inp.burnsSequence) || bool(safeObject(inp.sequence).mintNewExport) ||
+      bool(safeObject(inp.sequence).burnSequence) || bool(controlled.mutatesExportState) ||
+      bool(controlled.mintExportId) || bool(controlled.burnsSequence);
+    var cleanupRequested = bool(inp.cleanupAuthority) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
+      bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
+      bool(safety.mutateA950) || bool(controlled.cleanupAuthority) || bool(controlled.mutateA950);
+
+    if (!gate) addUnique(proofBlockers, 'transport-kill-switch-proof-gate-missing');
+    else if (gate !== CONTROLLED_WRITE_KILL_SWITCH_GATE) {
+      addUnique(proofBlockers, 'transport-kill-switch-proof-gate-invalid');
+    }
+    if (inp.dryRun !== true) addUnique(proofBlockers, 'transport-kill-switch-proof-dry-run-required');
+    if (inp.apply === true) addUnique(proofBlockers, 'transport-kill-switch-proof-apply-forbidden');
+    if (requestedProductSyncReady !== false) addUnique(proofBlockers, 'transport-kill-switch-product-sync-ready-mismatch');
+    if (requestedTransportReady !== false) addUnique(proofBlockers, 'transport-kill-switch-transport-ready-mismatch');
+    if (requestedLocalExportableSyncReady === true && bool(inp.localExportableSyncReadyIsAuthorization)) {
+      addUnique(proofBlockers, 'transport-kill-switch-local-exportable-authorization-forbidden');
+    }
+    if (writeLikeRequested) addUnique(proofBlockers, 'transport-kill-switch-webdav-cloud-write-forbidden');
+    if (relayRequested) addUnique(proofBlockers, 'transport-kill-switch-relay-enqueue-forbidden');
+    if (casRequested) addUnique(proofBlockers, 'transport-kill-switch-cas-write-forbidden');
+    if (fileWriteRequested) addUnique(proofBlockers, 'transport-kill-switch-file-write-forbidden');
+    if (fullBundleV3Requested) addUnique(proofBlockers, 'transport-kill-switch-fullbundle-v3-forbidden');
+    if (exportMutationRequested) addUnique(proofBlockers, 'transport-kill-switch-export-mutation-forbidden');
+    if (cleanupRequested) addUnique(proofBlockers, 'transport-kill-switch-cleanup-authority-forbidden');
+
+    if (!killSwitchExists) addUnique(controlledWriteBlockers, 'transport-controlled-write-kill-switch-missing');
+    if (killSwitchExists && !killSwitchEnabled) {
+      addUnique(controlledWriteBlockers, 'transport-controlled-write-kill-switch-disabled-by-default');
+    }
+    if (killSwitchEnabled && !controlledGateProvided) {
+      addUnique(controlledWriteBlockers, 'transport-controlled-write-controlled-gate-required');
+    }
+    if (killSwitchEnabled && controlledGateProvided && providedControlledGate !== TRANSPORT_CONTROLLED_APPLY_GATE) {
+      addUnique(controlledWriteBlockers, 'transport-controlled-write-controlled-gate-invalid');
+    }
+    if (killSwitchEnabled && controlledGateProvided && providedControlledGate === TRANSPORT_CONTROLLED_APPLY_GATE) {
+      addUnique(controlledWriteBlockers, 'transport-controlled-write-implementation-not-present');
+      addUnique(controlledWriteBlockers, 'transport-controlled-apply-gate-reserved-only');
+    }
+
+    return {
+      schema: CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA,
+      requestSchema: CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA,
+      version: VERSION,
+      ok: proofBlockers.length === 0,
+      status: proofBlockers.length === 0 ? 'transport-controlled-write-kill-switch-proof-ready' :
+        'blocked-transport-controlled-write-kill-switch-proof',
+      reason: proofBlockers.length === 0 ? 'transport-controlled-write-kill-switch-proof-ready' : proofBlockers[0],
+      gate: gate,
+      gateSatisfied: gate === CONTROLLED_WRITE_KILL_SWITCH_GATE,
+      controlledWriteKillSwitchProof: true,
+      dryRun: true,
+      applyRequested: false,
+      killSwitchExists: killSwitchExists,
+      killSwitchDefaultEnabled: false,
+      killSwitchEnabled: killSwitchEnabled,
+      killSwitchSeparateFromProductSyncReady: true,
+      killSwitchSeparateFromTransportReady: true,
+      killSwitchSeparateFromLocalExportableSyncReady: true,
+      killSwitchSeparateFromTransportEligibility: true,
+      controlledWritesBlocked: true,
+      controlledWriteBlockers: controlledWriteBlockers,
+      controlledTransportImplementationPresent: false,
+      reservedControlledGate: TRANSPORT_CONTROLLED_APPLY_GATE,
+      transportControlledApplyGateReserved: TRANSPORT_CONTROLLED_APPLY_GATE,
+      transportControlledApplyGateUsable: false,
+      reservedControlledGateUsable: false,
+      writesData: false,
+      writesWebDAV: false,
+      writesCloud: false,
+      writesRelay: false,
+      enqueuesRelay: false,
+      writesCAS: false,
+      writesFiles: false,
+      mutatesExportState: false,
+      mintsExportId: false,
+      burnsSequence: false,
+      fullBundleV3Started: false,
+      productSyncReady: false,
+      transportReady: false,
+      localExportableSyncReady: requestedLocalExportableSyncReady === true,
+      transportEligibilityFromLocalExportableReady: requestedTransportEligibility === true,
+      localExportableSyncReadyIsAuthorization: false,
+      webdavCloudRelayBlocked: true,
+      chatSavingCasBlocked: true,
+      a950DocumentedDebtQuarantined: true,
+      noCleanupAuthority: true,
+      blockers: proofBlockers,
+      warnings: [],
+      activeTransport: ACTIVE_TRANSPORT
+    };
+  }
+
   function diagnose() {
     return {
       installed: true,
@@ -864,6 +1003,10 @@
       localSyncFolderJsonActive: true,
       remoteFilesWritten: false,
       webdavWritesEnabled: false,
+      controlledWriteKillSwitchExists: true,
+      controlledWriteKillSwitchDefaultEnabled: false,
+      controlledWriteKillSwitchGate: CONTROLLED_WRITE_KILL_SWITCH_GATE,
+      transportControlledApplyGateUsable: false,
       sameEnvelopes: SAME_ENVELOPES.slice(),
       appliedRequestTypeAllowlist: APPLIED_TYPES.slice(),
       guards: GUARDS.slice(),
@@ -876,6 +1019,7 @@
   H2O.Studio.sync.webdavTransportGates.evaluateGuards = evaluateGuards;
   H2O.Studio.sync.webdavTransportGates.dryRun = dryRun;
   H2O.Studio.sync.webdavTransportGates.evaluateTransportReadinessDryRun = evaluateTransportReadinessDryRun;
+  H2O.Studio.sync.webdavTransportGates.evaluateControlledWriteKillSwitch = evaluateControlledWriteKillSwitch;
   H2O.Studio.sync.webdavTransportGates.diagnose = diagnose;
   H2O.Studio.sync.webdavTransportGates.constants = Object.freeze({
     SCHEMA: SCHEMA,
@@ -885,6 +1029,9 @@
     READINESS_DRY_RUN_REQUEST_SCHEMA: READINESS_DRY_RUN_REQUEST_SCHEMA,
     READINESS_DRY_RUN_RESULT_SCHEMA: READINESS_DRY_RUN_RESULT_SCHEMA,
     TRANSPORT_READINESS_DRY_RUN_GATE: TRANSPORT_READINESS_DRY_RUN_GATE,
+    CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA: CONTROLLED_WRITE_KILL_SWITCH_REQUEST_SCHEMA,
+    CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA: CONTROLLED_WRITE_KILL_SWITCH_RESULT_SCHEMA,
+    CONTROLLED_WRITE_KILL_SWITCH_GATE: CONTROLLED_WRITE_KILL_SWITCH_GATE,
     TRANSPORT_CONTROLLED_APPLY_GATE: TRANSPORT_CONTROLLED_APPLY_GATE,
     APPLIED_TYPES: APPLIED_TYPES.slice(),
     SAME_ENVELOPES: SAME_ENVELOPES.slice(),
