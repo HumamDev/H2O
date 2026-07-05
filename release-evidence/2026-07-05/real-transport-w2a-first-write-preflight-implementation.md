@@ -89,6 +89,7 @@ Every blocker is fail-closed and uses the `real-transport-w2-*` prefix:
 - `real-transport-w2-payload-envelope-mismatch`
 - `real-transport-w2-scope-not-single-payload`
 - `real-transport-w2-invocation-scope-invalid`
+- `real-transport-w2-expiry-expired`
 - `real-transport-w2-transport-ready-claim-rejected`
 - `real-transport-w2-product-sync-ready-claim-rejected`
 - `real-transport-w2-sequence-constraint-mismatch`
@@ -113,6 +114,12 @@ preflight evaluator. This patch adds the explicit
 `real-transport-w2-execute-requested` blocker so any execution request fails
 closed before W2c live proof. W2c live proof remains pending and was not
 performed by this patch.
+
+Pre-W2c static checking also found that expired
+`w3InvocationScope.expiryUtc` values were not blocked when the timestamp shape
+was valid. This patch adds the explicit `real-transport-w2-expiry-expired`
+blocker so expired candidate receipts fail closed. W2c live proof remains
+pending and was not performed by this patch.
 
 ## Boundaries Held
 

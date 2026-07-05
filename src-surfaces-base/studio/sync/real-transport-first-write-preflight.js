@@ -92,6 +92,13 @@
     return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text) ? text : '';
   }
 
+  function utcExpired(value) {
+    var text = utcString(value);
+    if (!text) return false;
+    var ms = Date.parse(text);
+    return isFinite(ms) && ms <= Date.now();
+  }
+
   function rawInputPresent(scopes, hashRefs) {
     for (var s = 0; s < scopes.length; s += 1) {
       var scope = safeObject(scopes[s]);
@@ -300,6 +307,7 @@
     var eligibilityReady = firstBool(scopes, ['transportEligibilityFromLocalExportableReady']);
     var targetScopeValid = payloadKind === 'single-fullbundle-v2-envelope' && payloadCount === 1 && !!targetRefHash;
     var invocationScopeValid = operationKind === 'first-controlled-real-write' && maxInvocations === 1 && !!expiryUtc;
+    var expiryExpired = invocationScopeValid && utcExpired(expiryUtc);
     var sequenceMismatch = !!sequenceExportConstraintRefHash && !!b6SequenceExportRefHash &&
       sequenceExportConstraintRefHash !== b6SequenceExportRefHash;
     var rawRefs = [
@@ -330,6 +338,7 @@
     if (!payloadHashesMatch) addUnique(blockers, 'real-transport-w2-payload-envelope-mismatch');
     if (!targetScopeValid) addUnique(blockers, 'real-transport-w2-scope-not-single-payload');
     if (!invocationScopeValid) addUnique(blockers, 'real-transport-w2-invocation-scope-invalid');
+    if (expiryExpired) addUnique(blockers, 'real-transport-w2-expiry-expired');
     if (firstValue(scopes, ['transportReady']) === true || firstValue(scopes, ['transportReadyFlipAuthorized']) === true) {
       addUnique(blockers, 'real-transport-w2-transport-ready-claim-rejected');
     }

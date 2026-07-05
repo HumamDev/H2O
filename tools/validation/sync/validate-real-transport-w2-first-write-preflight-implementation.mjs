@@ -113,6 +113,7 @@ const blockerMatrix = [
   ['payload-envelope-mismatch', (r) => { r.candidateBundleHash = H('b'); }],
   ['scope-not-single-payload', (r) => { r.targetScope.payloadCount = 2; }],
   ['invocation-scope-invalid', (r) => { r.w3InvocationScope.maxInvocations = 2; }],
+  ['expiry-expired', (r) => { r.w3InvocationScope.expiryUtc = '2000-01-01T00:00:00.000Z'; }],
   ['transport-ready-claim-rejected', (r) => { r.transportReady = true; }],
   ['product-sync-ready-claim-rejected', (r) => { r.productSyncReady = true; }],
   ['sequence-constraint-mismatch', (r) => { r.sequenceExportConstraintRefHash = H('e'); }],
@@ -233,7 +234,7 @@ function validRequest() {
     w3InvocationScope: {
       operationKind: 'first-controlled-real-write',
       maxInvocations: 1,
-      expiryUtc: '2026-07-06T00:00:00.000Z',
+      expiryUtc: '2099-07-06T00:00:00.000Z',
     },
   };
 }
