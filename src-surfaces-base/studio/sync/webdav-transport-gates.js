@@ -417,12 +417,15 @@
 
   function expectedProjectionCount(input) {
     var inp = safeObject(input);
+    var candidate = safeObject(inp.candidate);
     var expectedBundle = safeObject(inp.expectedBundle);
     var projection = safeObject(inp.projection);
     var value = valueOrFallback(inp.fullBundleV2BindingProjectionCount,
       valueOrFallback(inp.bindingProjectionCount,
-        valueOrFallback(expectedBundle.bindingProjectionCount,
-          valueOrFallback(projection.bindingProjectionCount, projection.count))));
+        valueOrFallback(candidate.expectedProjectionCount,
+          valueOrFallback(candidate.projectionCount,
+            valueOrFallback(expectedBundle.bindingProjectionCount,
+              valueOrFallback(projection.bindingProjectionCount, projection.count))))));
     return integerOrNull(value);
   }
 
@@ -436,6 +439,13 @@
       'expectedBindingProjectionHash',
       'hash',
       'activeHash'
+    ]) || objectHash(input, 'candidate', [
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'projectionHash',
+      'payloadHash',
+      'bundleHash',
+      'hash'
     ]) || objectHash(input, 'expectedBundle', [
       'expectedProjectionHash',
       'expectedBindingProjectionHash',
@@ -648,6 +658,7 @@
   function evaluateFullBundleV2TransportEnvelopePreflight(request) {
     var inp = safeObject(request);
     var readiness = safeObject(inp.readiness);
+    var candidate = safeObject(inp.candidate);
     var expectedBundle = safeObject(inp.expectedBundle);
     var expectedProjection = safeObject(inp.expectedProjection);
     var sequence = safeObject(inp.sequence);
@@ -658,9 +669,8 @@
     var blockers = [];
     var gate = cleanString(inp.gate);
     var payloadSchema = cleanString(inp.payloadSchema || expectedBundle.schema || FULL_BUNDLE_V2_SCHEMA);
-    var candidateHash = firstHash(inp, [
+    var candidatePayloadHash = firstHash(inp, [
       'candidatePayloadHash',
-      'candidateBundleHash',
       'fullBundleV2PayloadHash',
       'fullBundleV2BindingProjectionHash',
       'expectedBundleHash'
@@ -668,6 +678,10 @@
       'candidatePayloadHash',
       'candidateBundleHash',
       'fullBundleV2PayloadHash',
+      'payloadHash',
+      'expectedProjectionHash',
+      'expectedBindingProjectionHash',
+      'bundleHash',
       'hash'
     ]) || objectHash(inp, 'expectedBundle', [
       'candidatePayloadHash',
@@ -675,13 +689,18 @@
       'expectedHash',
       'hash'
     ]);
+    var candidateBundleHash = firstHash(inp, ['candidateBundleHash']) ||
+      objectHash(inp, 'candidate', ['candidateBundleHash', 'bundleHash']) ||
+      objectHash(inp, 'expectedBundle', ['candidateBundleHash', 'expectedHash', 'hash']);
+    var candidateHash = candidatePayloadHash || candidateBundleHash;
     var checksumHash = firstHash(inp, ['checksumHash', 'expectedChecksumHash', 'expectedFileHash', 'fileHash']) ||
       objectHash(inp, 'expectedBundle', ['checksumHash', 'expectedChecksumHash', 'expectedFileHash', 'fileHash']) ||
-      candidateHash;
+      candidateBundleHash || candidateHash;
     var projectionHash = expectedProjectionHash(inp);
     var projectionCount = expectedProjectionCount(inp);
     var expectedCount = integerOrNull(valueOrFallback(inp.expectedBindingProjectionCount,
-      valueOrFallback(expectedBundle.expectedBindingProjectionCount, expectedProjection.expectedBindingProjectionCount)));
+      valueOrFallback(candidate.expectedBindingProjectionCount,
+        valueOrFallback(expectedBundle.expectedBindingProjectionCount, expectedProjection.expectedBindingProjectionCount))));
     var peerHash = transportPeerTargetHash(inp);
     var rootHash = transportRemoteRootHash(inp);
     var privacyMode = cleanString(inp.privacyMode || privacyObject.mode || (privacyObject.hashOnly === true ? 'hash-only' : ''));
@@ -708,7 +727,9 @@
       bool(safety.a950LeaksIntoExportablePayload);
     var payloadMutationRequested = bool(inp.mutatePayload) || bool(inp.payloadMutationRequested) ||
       bool(inp.alterFullBundleV2Payload) || bool(expectedBundle.mutatePayload) ||
-      bool(expectedBundle.payloadMutationRequested) || bool(expectedBundle.alterFullBundleV2Payload);
+      bool(expectedBundle.payloadMutationRequested) || bool(expectedBundle.alterFullBundleV2Payload) ||
+      bool(candidate.mutatePayload) || bool(candidate.payloadMutationRequested) ||
+      bool(candidate.alterFullBundleV2Payload);
     var writeLikeRequested = bool(inp.writeRequested) || bool(inp.writesData) || bool(inp.writeData) ||
       bool(inp.writeWebDAV) || bool(inp.writesWebDAV) || bool(inp.writeCloud) || bool(inp.writesCloud) ||
       bool(inp.writeRemote) || bool(transport.writeRemote) || bool(transport.writeWebDAV) ||
@@ -721,7 +742,9 @@
       bool(transport.writeFiles) || bool(transport.writeFile);
     var fullBundleV3Requested = bool(inp.fullBundleV3Started) || bool(inp.startFullBundleV3) ||
       bool(inp.mintFullBundleV3) || bool(inp.fullBundleV3MintRequested) ||
-      bool(transport.startFullBundleV3) || bool(transport.mintFullBundleV3);
+      bool(transport.startFullBundleV3) || bool(transport.mintFullBundleV3) ||
+      bool(candidate.startFullBundleV3) || bool(candidate.mintFullBundleV3) ||
+      bool(candidate.fullBundleV3Required) || bool(candidate.fullBundleV3MintRequested);
     var exportMutationRequested = bool(inp.mutatesExportState) || bool(inp.mintExportId) ||
       bool(inp.mintsExportId) || bool(inp.burnsSequence) || bool(sequence.mintNewExport) ||
       bool(sequence.burnSequence);
@@ -740,7 +763,7 @@
     if (inp.apply === true) addUnique(blockers, 'fullbundle-v2-envelope-apply-forbidden');
     if (payloadSchema !== FULL_BUNDLE_V2_SCHEMA) addUnique(blockers, 'fullbundle-v2-envelope-schema-mismatch');
     if (!candidateHash || !checksumHash || !projectionHash || candidateHash !== checksumHash ||
-        candidateHash !== projectionHash) {
+        candidateHash !== projectionHash || (candidateBundleHash && candidateHash !== candidateBundleHash)) {
       addUnique(blockers, 'fullbundle-v2-envelope-checksum-mismatch');
     }
     if (projectionCount == null || expectedCount == null || projectionCount !== expectedCount) {
@@ -807,7 +830,7 @@
       a950LeaksIntoExportablePayload: false,
       noCleanupAuthority: true,
       candidatePayloadHash: candidateHash,
-      candidateBundleHash: candidateHash,
+      candidateBundleHash: candidateBundleHash || candidateHash,
       expectedProjectionHash: projectionHash,
       expectedProjectionCount: projectionCount,
       peerTargetHash: peerHash,
