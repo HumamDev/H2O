@@ -11,7 +11,7 @@ Artifact fields:
 - killSwitchEnableTokenHash: PENDING_OPERATOR_HASH:killSwitchEnableTokenHash
 - disableRehearsalReceiptHash: PENDING_OPERATOR_HASH:disableRehearsalReceiptHash
 - rollbackRehearsalReceiptHash: PENDING_OPERATOR_HASH:rollbackRehearsalReceiptHash
-- b2KillSwitchRefHash: PENDING_OPERATOR_HASH:b2KillSwitchRefHash
+- b2KillSwitchRefHash: sha256:89912f3960b373ef42ab16d719028ed2384b3eaa6a8311e7145f7273c8353705
 - disableBlocksPreflight: true
 - disableBlocksApply: true
 - missingDisableReceiptBlocks: true
@@ -48,3 +48,6 @@ Boundary assertions:
 - No one-shot token is minted.
 - No W2 receipt was generated.
 - W2c live proof remains blocked until every PENDING_OPERATOR_HASH field is replaced by a real sha256:<64hex> value.
+
+Repo-safe bindings:
+- The B2 kill-switch reference value is the sha256 digest of the committed B2 implementation evidence file.

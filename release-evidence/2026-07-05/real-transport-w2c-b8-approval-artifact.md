@@ -23,9 +23,9 @@ Artifact fields:
 - credentialRefHash: PENDING_OPERATOR_HASH:credentialRefHash
 - peerIdentityBindingHash: PENDING_OPERATOR_HASH:peerIdentityBindingHash
 - localClientIdentityHash: PENDING_OPERATOR_HASH:localClientIdentityHash
-- candidatePayloadHash: PENDING_OPERATOR_HASH:candidatePayloadHash
-- candidateBundleHash: PENDING_OPERATOR_HASH:candidateBundleHash
-- fullBundleV2EnvelopeHash: PENDING_OPERATOR_HASH:fullBundleV2EnvelopeHash
+- candidatePayloadHash: sha256:a721ebdad94e398a4f45bc46c437f465402ad9e8ac2e68cc120eef96df9bbb85
+- candidateBundleHash: sha256:a721ebdad94e398a4f45bc46c437f465402ad9e8ac2e68cc120eef96df9bbb85
+- fullBundleV2EnvelopeHash: sha256:a721ebdad94e398a4f45bc46c437f465402ad9e8ac2e68cc120eef96df9bbb85
 - productSyncReady: false
 - transportReady: false
 - noA950Mutation: true
@@ -52,3 +52,6 @@ Boundary assertions:
 - No one-shot token is minted.
 - No W2 receipt was generated.
 - W2c live proof remains blocked until every PENDING_OPERATOR_HASH field is replaced by a real sha256:<64hex> value.
+
+Repo-safe bindings:
+- The candidate payload, candidate bundle, and fullBundle.v2 envelope values are sourced from committed fullBundle.v2 transport-envelope live closeout evidence.
