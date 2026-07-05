@@ -1,7 +1,7 @@
 <!--
- * @version 2.5.37
+ * @version 2.5.46
  * Changes: fixed shell, collapsed rail, simplified topbar;
- *          stylesheet href carries ?v=2.5.37 cache-bust because the Tauri
+ *          stylesheet href carries ?v=2.5.46 cache-bust because the Tauri
  *          V2 dev server (http://127.0.0.1:1430/) emits no
  *          Last-Modified/ETag/Cache-Control headers, so WKWebView
  *          otherwise serves previously-fetched Studio assets indefinitely
@@ -28,7 +28,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>H2O Studio vNext</title>
-  <link rel="stylesheet" href="./studio.css?v=2.5.37" />
+  <link rel="stylesheet" href="./studio.css?v=2.5.46" />
 </head>
 <body data-h2o-studio-mode="1">
   <div class="wbShell">
@@ -328,7 +328,7 @@
        STUDIO_PORTABILITY_CONTRACT.md. -->
   <script src="./platform/index.js"></script>
   <script src="./platform/platform.mv3.js"></script>
-  <script src="./platform/platform.tauri.js?v=2.5.35"></script>
+  <script src="./platform/platform.tauri.js?v=2.5.37"></script>
   <script src="./platform/selectors.contract.js"></script>
 
   <!-- ── Studio Dock Constants (Phase 0B) ───────────────────────────────
@@ -700,7 +700,8 @@
        no read-back, no delivery/Desktop calls, no timers/watchers, no storage
        writes. Consumed by studio.js renderRow via a single delegation call. -->
   <script src="./ingestion/saved-chat-archive-status-badge.studio.js"></script>
-       existing Desktop store state read-only. No queue, package write, Chrome
+  <!-- Desktop-only: saved-chat archive request facade. Reads existing Desktop
+       store state read-only. No queue, package write, Chrome
        runtime, sync transport, import/recovery, CAS, DB mutation, or UI. -->
   <script src="./ingestion/saved-chat-archive-requests.tauri.js"></script>
   <!-- Desktop-only: saved-chat archive request inbox (Phase D.3B.1).
@@ -756,6 +757,9 @@
   <script src="./ingestion/archive-health-ui.studio.js"></script>
   <!-- F14.2.2: Desktop/Tauri L0 privacy kernel primitive. Registers
        H2O.Desktop.Sync.kernel.scanPrivacy / findForbiddenFields /
+       enforceRedactionClass. No domain adoption, publication, replay,
+       watermark, apply, convergence, storage, network, or mobile behavior. -->
+  <script src="./sync/kernel/privacy-scan.tauri.js"></script>
   <!-- Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
        manual Settings utility card that provides the user gesture for the
        D.3C.1 delivery APIs (connect/disconnect folder, send one metadata-only
@@ -763,9 +767,6 @@
        sync, CAS, package writer, queue/materializer call, or Archive Health UI
        change. Shows a "Chrome Studio only" message when the API is absent. -->
   <script src="./ingestion/saved-chat-archive-request-delivery-ui.studio.js"></script>
-       enforceRedactionClass. No domain adoption, publication, replay,
-       watermark, apply, convergence, storage, network, or mobile behavior. -->
-  <script src="./sync/kernel/privacy-scan.tauri.js"></script>
   <!-- F14.2.3: Desktop/Tauri L0 identity kit primitive. Registers
        canonicalJSON, sha256Hex, subjectId/dedupeKey/lineageId generation, and
        identity validation helpers. No domain adoption, publication, replay,
@@ -2014,6 +2015,6 @@
   <script src="./S9D1a. 🎬 Auto Emoji Title - Studio.js"></script>
   <!-- ─────────────────────────────────────────────────────────────────── -->
 
-  <script src="./studio.js?v=2.5.77"></script>
+  <script src="./studio.js?v=2.5.80"></script>
 </body>
 </html>

@@ -324,20 +324,6 @@ body[data-sidebar="closed"] .wbRail{
 .wbSide--sidebar{
   position:relative;
   z-index:3;
-  /* v2.8: switched from a fixed 5-row CSS Grid to a flex column. The old
-     `grid-template-rows:auto auto auto auto minmax(0,1fr)` allocated the
-     1fr stretch slot to whichever child happened to be at index 5 — once
-     the sidebar grew to 9 children (header, hidden #q input, library nav,
-     top nav, folders, labels, categories, projects, recent), the 1fr slot
-     landed on the Labels section instead of the Recent chats section, and
-     the other sections were squeezed into too-small tracks whose contents
-     spilled visibly into the rows below.
-     A flex column sizes each section to its content. To stop the flex
-     algorithm from compressing tall sections when the total exceeds the
-     viewport (which would also cause overflow into the next section), we
-     pin every section to `flex-shrink:0` and let the whole sidebar scroll
-     vertically — same behaviour as the native ChatGPT sidebar when many
-     folders/labels/categories are expanded. */
   display:flex;
   flex-direction:column;
   gap:14px;
@@ -1072,6 +1058,39 @@ body[data-route="reader"] .wbMain{
   gap:6px;
   align-content:start;
   grid-auto-rows:auto;
+}
+
+body[data-route="list"] .wbMain,
+body[data-route="library"] .wbMain,
+body[data-route="settings"] .wbMain,
+body[data-route="migrate"] .wbMain{
+  overflow-y:auto;
+  overflow-x:hidden;
+  overscroll-behavior:contain;
+}
+
+body[data-route="list"] .wbMain{
+  align-content:start;
+  align-items:start;
+  justify-items:center;
+}
+
+body[data-route="list"] .wbPanel--list,
+body[data-route="library"] .wbPanel--list{
+  height:auto;
+  min-height:100%;
+  grid-template-rows:auto auto;
+}
+
+body[data-route="list"] .wbPanel--list{
+  align-self:start;
+  min-height:0;
+}
+
+body[data-route="list"] .wbHistory,
+body[data-route="library"] .wbHistory{
+  overflow:visible;
+  padding-right:0;
 }
 
 .wbPanel{
@@ -4299,6 +4318,10 @@ body[data-route="reader"] :is(
   overflow: hidden;
 }
 
+body[data-route="library"] .wbPanel--libraryRegion{
+  overflow:visible;
+}
+
 .wbPanel--libraryRegion[hidden] {
   display: none !important;
 }
@@ -5576,6 +5599,7 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 .wbLibraryPage {
+  --wb-library-content-w:88rem;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -5583,6 +5607,24 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   padding: 28px 32px 0;
   gap: 18px;
   overflow: hidden;
+}
+
+body[data-route="library"] .wbLibraryPage{
+  flex:0 0 auto;
+  min-height:100%;
+  overflow:visible;
+}
+
+body[data-route="library"] :where(
+  .wbLibraryPageHeader,
+  .wbLibraryPageSearchRow,
+  .wbLibraryPageTabs,
+  .wbLibraryPageBody
+){
+  width:min(100%, var(--wb-library-content-w));
+  max-width:var(--wb-library-content-w);
+  margin-left:auto;
+  margin-right:auto;
 }
 
 /* Header row */
@@ -5778,6 +5820,13 @@ body[data-cmdbar-open] [data-library-overlay="1"] {
   padding: 18px 32px 32px;
   display: flex;
   flex-direction: column;
+}
+
+body[data-route="library"] .wbLibraryPageBody{
+  flex:0 0 auto;
+  overflow:visible;
+  padding-left:0;
+  padding-right:0;
 }
 
 /* Per-tab bodies were originally designed to fill their parent panel. With the
@@ -8475,28 +8524,29 @@ html[data-h2o-runtime="tauri"] .wbReader [data-turn].is-ribbon-selected::after{
  * collapsed tiny-rail (.wbRail), below the sidebar hamburger — NOT a
  * separate competing rail, and NOT a forced grid/sidebar override.
  *
- * The D3.2 mistake (removed in D3.2.1): it forced
- *   body[data-route="reader"] .wbShell { grid-template-columns: rail 0 1fr }
- *   body[data-route="reader"] .wbRail  { opacity:1; pointer-events:auto }
- * on EVERY reader route. That collapsed the sidebar to ~0/20px even when
+ * The D3.2 mistake (removed in D3.2.1): it forced reader-route grid and
+ * rail visibility overrides on EVERY reader route. That collapsed the sidebar to ~0/20px even when
  * data-sidebar="open", and made the hamburger appear broken (the route
  * override ignored the toggled sidebar state). Both rules are gone.
  *
- * Corrected model — let Studio's own sidebar state drive everything:
+ * Corrected model — let Studio's own sidebar state drive rail visibility:
  *   - Studio shows .wbRail (tiny-rail) only when body[data-sidebar="closed"]
  *     (studio.css:293). That is the native "collapsed tiny-bar" state.
- *   - Dock buttons live inside .wbRail, below #railSidebarBtn, and appear
- *     only in that collapsed state — exactly like native's tiny-bar.
+ *   - Native-style action buttons and Dock buttons live inside .wbRail, below
+ *     #railSidebarBtn, and appear whenever that collapsed rail is visible.
+ *     Active chat/editor context affects Dock tab content, not button presence.
  *   - Sidebar OPEN: full sidebar shows, no Dock buttons (tiny-bar absent),
  *     hamburger toggles normally. No override touches the grid.
- *   - Sidebar CLOSED: tiny-rail shows hamburger + Dock buttons; clicking a
- *     Dock button opens the panel over the sidebar lane.
+ *   - Sidebar CLOSED: tiny-rail shows hamburger + reserved actions + Dock
+ *     buttons; clicking a Dock button expands the sidebar and opens the
+ *     selected Dock tab over the sidebar lane.
  *
- * Class scope: .wbDock* / #studioDockPanel, plus reader+sidebar-closed
- * gating. NO grid/.wbRail overrides. Sidebar preference never mutated.
+ * Class scope: .wbDock* / #studioDockPanel, plus sidebar-state and
+ * Dock-open gating. NO grid/.wbRail overrides. Sidebar preference never
+ * mutated by Dock rail clicks.
  * ──────────────────────────────────────────────────────────────────── */
 
-/* Positioning context for the absolutely-placed panel. */
+/* Keep the shell as a positioning context for rail-attached surfaces. */
 .wbShell {
   position: relative;
 }
@@ -8572,9 +8622,9 @@ body[data-sidebar="closed"] .wbRailActionStack {
   stroke-linejoin: round;
 }
 
-/* Dock rail stack — additional tab buttons below the hamburger inside the
- * collapsed tiny-rail. Visibility follows only the sidebar collapsed state;
- * getDockContext() still controls the data ctx passed to tab renderers. */
+/* Dock rail stack — additional tab buttons below the reserved native rail
+ * actions. Visibility follows only the sidebar collapsed state; getDockContext()
+ * still controls the data ctx passed to tab renderers. */
 .wbDockRailStack {
   display: none;
   flex-direction: column;
@@ -10535,12 +10585,13 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
  * bar. The window content extends full-bleed under the title-bar area;
  * macOS still owns the topmost ~28px as a drag region.
  *
- * The Tauri adapter creates a desktop chrome strip before .wbShell and
+ * The Tauri adapter creates an overlay chrome host before .wbShell and
  * re-homes #studioRibbon there at runtime. Keeping the static HTML in its
  * normal .wbStage location preserves MV3/Chrome layout, while Tauri gets
- * an app-level ribbon above the route title bar. The traffic-light band is
- * a real flex row, not a fixed overlay, so the sidebar and stage never sit
- * underneath the macOS window buttons. Rules are scoped to
+ * an app-level ribbon over the reserved top band. The reserved band belongs
+ * to the real Studio compartments (.wbSide--sidebar and .wbStage), not to
+ * the overlay host, so the sidebar background, pane background, and divider
+ * continue through the top of the window with no visual cut. Rules are scoped to
  * `html[data-h2o-runtime="tauri"]` (set by platform.tauri.js) so MV3/web
  * extension Studio is untouched.
  * ─────────────────────────────────────────────────────────────────────── */
@@ -10548,39 +10599,51 @@ html[data-h2o-plain-text="on"] .wbReader .cgxui-mnmp-wash-orange::before{
 html[data-h2o-runtime="tauri"] body{
   --wb-tauri-titlebar-h:52px;
   --wb-tauri-drag-h:42px;
-  display:flex;
-  flex-direction:column;
+  --wb-tauri-ribbon-expanded-h:0px;
+  --wb-tauri-safe-h:calc(var(--wb-tauri-drag-h) + var(--wb-tauri-ribbon-expanded-h, 0px));
+  display:block;
   min-height:100vh;
   min-height:100dvh;
 }
 
+html[data-h2o-runtime="tauri"][data-h2o-desktop-view-zoom-mode="css"] body{
+  width:calc(100vw * var(--h2o-desktop-view-zoom-inverse, 1));
+  min-width:calc(100vw * var(--h2o-desktop-view-zoom-inverse, 1));
+  height:calc(100vh * var(--h2o-desktop-view-zoom-inverse, 1));
+  height:calc(100dvh * var(--h2o-desktop-view-zoom-inverse, 1));
+  min-height:calc(100vh * var(--h2o-desktop-view-zoom-inverse, 1));
+  min-height:calc(100dvh * var(--h2o-desktop-view-zoom-inverse, 1));
+}
+
 html[data-h2o-runtime="tauri"] .wbTauriDesktopChrome{
-  display:flex;
-  flex:0 0 auto;
-  flex-direction:column;
+  display:block;
   min-width:0;
-  position:relative;
+  height:var(--wb-tauri-safe-h);
+  min-height:var(--wb-tauri-safe-h);
+  position:fixed;
+  top:0;
+  left:0;
+  right:0;
   z-index:80;
-  background:var(--wb-ribbon-bg);
+  background:transparent;
+  pointer-events:none;
 }
 
 html[data-h2o-runtime="tauri"] .wbShell{
-  flex:1 1 auto;
   min-height:0 !important;
-  height:auto !important;
+  height:100vh !important;
+  height:100dvh !important;
   margin-top:0;
+}
+
+html[data-h2o-runtime="tauri"][data-h2o-desktop-view-zoom-mode="css"] .wbShell{
+  height:calc(100vh * var(--h2o-desktop-view-zoom-inverse, 1)) !important;
+  height:calc(100dvh * var(--h2o-desktop-view-zoom-inverse, 1)) !important;
 }
 
 html[data-h2o-runtime="tauri"] .wbTauriDragStrip{
   display:block;
-  /* D3.2.2-topfix: the Jun-15 installed baseline overlays the drag strip
-   * (position:absolute; flex:0 0 0) so it reserves NO vertical space —
-   * the desktop chrome/tabs sit at the true top under the drag region.
-   * 500f49ca had turned it into a real flex spacer (position:relative;
-   * flex:0 0 var(--wb-tauri-drag-h)), which injected a blank strip that
-   * pushed all top chrome down, diverging from the installed baseline.
-   * Restored to the baseline overlay here. */
-  flex:0 0 0;
+  flex:0 0 auto;
   height:var(--wb-tauri-drag-h);
   min-height:var(--wb-tauri-drag-h);
   position:absolute;
@@ -10588,7 +10651,7 @@ html[data-h2o-runtime="tauri"] .wbTauriDragStrip{
   left:0;
   right:0;
   z-index:1;
-  background:var(--wb-ribbon-bg);
+  background:transparent;
   border-bottom:0;
   box-shadow:none;
   pointer-events:auto;
@@ -10630,10 +10693,32 @@ html[data-h2o-runtime="tauri"] .wbRouteTitle{
   font-size:16px;
 }
 
+html[data-h2o-runtime="tauri"] body:not([data-dock-eligible="true"]) .wbTop{
+  display:none;
+}
+
+html[data-h2o-runtime="tauri"] body:not([data-dock-eligible="true"]) .wbStage{
+  grid-template-rows:var(--wb-tauri-safe-h) minmax(0,1fr);
+}
+
+html[data-h2o-runtime="tauri"] body:not([data-dock-eligible="true"]) .wbMain{
+  grid-row:2;
+}
+
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]){
-  flex:0 0 auto;
-  position:relative;
+  position:absolute;
+  top:0;
+  left:0;
+  right:0;
+  pointer-events:auto;
+  min-height:var(--wb-tauri-drag-h);
   z-index:2;
+}
+
+html[data-h2o-runtime="tauri"] #studioDesktopChrome[data-library-ribbon-hidden="true"] #studioRibbon,
+html[data-h2o-runtime="tauri"] #studioDesktopChrome[data-reader-ribbon-hidden="true"] #studioRibbon{
+  opacity:0 !important;
+  pointer-events:none !important;
 }
 
 html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) .wbRibbonBar{
@@ -10706,23 +10791,39 @@ html[data-h2o-runtime="tauri"] .wbRibbon:not([hidden]) :where(
 html[data-h2o-runtime="tauri"] .wbStage{
   position:relative;
   z-index:70;
-  grid-template-rows:var(--wb-tauri-titlebar-h) minmax(0,1fr);
+  grid-template-rows:var(--wb-tauri-safe-h) var(--wb-tauri-titlebar-h) minmax(0,1fr);
   padding-top:0;
   min-height:0 !important;
   height:100% !important;
 }
 
-html[data-h2o-runtime="tauri"] .wbMain{
+html[data-h2o-runtime="tauri"] .wbTop{
   grid-row:2;
+}
+
+html[data-h2o-runtime="tauri"] .wbMain{
+  grid-row:3;
   min-height:0;
 }
 
 html[data-h2o-runtime="tauri"] .wbRail{
-  padding-top:10px;
+  padding-top:calc(var(--wb-tauri-safe-h) + 10px);
 }
 
 html[data-h2o-runtime="tauri"] .wbSide--sidebar{
-  padding-top:10px;
+  padding-top:calc(var(--wb-tauri-safe-h) + 10px);
+}
+
+html[data-h2o-runtime="tauri"] body[data-route="library"] .wbStage{
+  background:
+    radial-gradient(900px 600px at 8% -10%,
+      color-mix(in srgb, var(--wb-library-accent) 7%, transparent) 0%,
+      transparent 60%),
+    var(--wb-page);
+}
+
+html[data-h2o-runtime="tauri"] body[data-route="library"] .wbPanel--libraryRegion{
+  background:transparent;
 }
 
 html[data-h2o-runtime="tauri"] body[data-sidebar="closed"] .wbRail{

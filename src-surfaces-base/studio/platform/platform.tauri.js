@@ -591,6 +591,196 @@
     }
   }
 
+  /* ── Desktop view zoom shortcuts ──────────────────────────────────
+   * Desktop-only browser-style zoom for the entire Studio view:
+   *   Cmd/Ctrl + +  => larger
+   *   Cmd/Ctrl + -  => smaller
+   *   Cmd/Ctrl + 0  => reset
+   *
+   * Prefer a native Tauri webview zoom method if the runtime exposes one.
+   * Current builds usually do not expose that method to page JS, so the
+   * fallback uses CSS `zoom` on <body>. This stays scoped to Tauri because
+   * platform.tauri.js does not register outside the desktop runtime. */
+  var DESKTOP_VIEW_ZOOM_KEY = 'h2o:studio:desktop:view-zoom:v1';
+  var DESKTOP_VIEW_ZOOM_MIN = 0.75;
+  var DESKTOP_VIEW_ZOOM_MAX = 1.6;
+  var DESKTOP_VIEW_ZOOM_STEP = 0.1;
+  var desktopViewZoomValue = 1;
+
+  function normalizeDesktopViewZoom(value) {
+    var n = Number(value);
+    if (!Number.isFinite(n)) n = 1;
+    n = Math.max(DESKTOP_VIEW_ZOOM_MIN, Math.min(DESKTOP_VIEW_ZOOM_MAX, n));
+    return Math.round(n * 100) / 100;
+  }
+
+  function readDesktopViewZoom() {
+    try {
+      return normalizeDesktopViewZoom(global.localStorage.getItem(DESKTOP_VIEW_ZOOM_KEY));
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function saveDesktopViewZoom(value) {
+    try {
+      if (value === 1) global.localStorage.removeItem(DESKTOP_VIEW_ZOOM_KEY);
+      else global.localStorage.setItem(DESKTOP_VIEW_ZOOM_KEY, String(value));
+    } catch (_) { /* ignore */ }
+  }
+
+  function setDesktopViewZoomDataset(value, mode) {
+    try {
+      var doc = global.document;
+      if (!doc || !doc.documentElement) return;
+      var inverse = value ? (1 / value) : 1;
+      doc.documentElement.setAttribute('data-h2o-desktop-view-zoom', String(Math.round(value * 100)));
+      doc.documentElement.setAttribute('data-h2o-desktop-view-zoom-mode', mode || 'css');
+      doc.documentElement.style.setProperty('--h2o-desktop-view-zoom', String(value));
+      doc.documentElement.style.setProperty('--h2o-desktop-view-zoom-inverse', String(Math.round(inverse * 10000) / 10000));
+    } catch (_) { /* ignore */ }
+  }
+
+  function applyCssDesktopViewZoom(value) {
+    try {
+      var doc = global.document;
+      if (!doc || !doc.body) return false;
+      doc.body.style.zoom = value === 1 ? '' : String(value);
+      setDesktopViewZoomDataset(value, 'css');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function clearCssDesktopViewZoom() {
+    try {
+      var doc = global.document;
+      if (doc && doc.body) doc.body.style.zoom = '';
+    } catch (_) { /* ignore */ }
+  }
+
+  function getTauriZoomTargets() {
+    var targets = [];
+    var tauri = global.__TAURI__ || null;
+    try {
+      if (tauri && tauri.webview && typeof tauri.webview.getCurrentWebview === 'function') {
+        targets.push(tauri.webview.getCurrentWebview());
+      }
+    } catch (_) { /* ignore */ }
+    try {
+      if (tauri && tauri.webviewWindow && typeof tauri.webviewWindow.getCurrentWebviewWindow === 'function') {
+        targets.push(tauri.webviewWindow.getCurrentWebviewWindow());
+      }
+    } catch (_) { /* ignore */ }
+    try {
+      var currentWindow = getCurrentTauriWindow();
+      if (currentWindow) targets.push(currentWindow);
+    } catch (_) { /* ignore */ }
+    return targets.filter(Boolean);
+  }
+
+  function tryNativeDesktopViewZoom(value) {
+    var targets = getTauriZoomTargets();
+    var methods = ['setZoom', 'setZoomFactor'];
+    for (var i = 0; i < targets.length; i += 1) {
+      for (var j = 0; j < methods.length; j += 1) {
+        var target = targets[i];
+        var method = methods[j];
+        if (!target || typeof target[method] !== 'function') continue;
+        try {
+          var p = target[method](value);
+          if (p && typeof p.then === 'function') {
+            return p.then(function () { return true; }, function () { return false; });
+          }
+          return Promise.resolve(true);
+        } catch (_) {
+          /* Try the next candidate. */
+        }
+      }
+    }
+    return Promise.resolve(false);
+  }
+
+  function windowSetViewZoom(value, opts) {
+    var next = normalizeDesktopViewZoom(value);
+    desktopViewZoomValue = next;
+    if (!opts || opts.persist !== false) saveDesktopViewZoom(next);
+    setDesktopViewZoomDataset(next, 'pending');
+    return tryNativeDesktopViewZoom(next).then(function (nativeApplied) {
+      if (nativeApplied) {
+        clearCssDesktopViewZoom();
+        setDesktopViewZoomDataset(next, 'native');
+      } else {
+        applyCssDesktopViewZoom(next);
+      }
+      return { ok: true, zoom: next, percent: Math.round(next * 100), mode: nativeApplied ? 'native' : 'css' };
+    });
+  }
+
+  function windowGetViewZoom() {
+    return {
+      ok: true,
+      zoom: desktopViewZoomValue,
+      percent: Math.round(desktopViewZoomValue * 100),
+      min: DESKTOP_VIEW_ZOOM_MIN,
+      max: DESKTOP_VIEW_ZOOM_MAX,
+      step: DESKTOP_VIEW_ZOOM_STEP,
+    };
+  }
+
+  function windowZoomIn() {
+    return windowSetViewZoom(desktopViewZoomValue + DESKTOP_VIEW_ZOOM_STEP);
+  }
+
+  function windowZoomOut() {
+    return windowSetViewZoom(desktopViewZoomValue - DESKTOP_VIEW_ZOOM_STEP);
+  }
+
+  function windowResetViewZoom() {
+    return windowSetViewZoom(1);
+  }
+
+  function desktopViewZoomShortcutAction(ev) {
+    if (!ev || ev.defaultPrevented) return '';
+    if (!(ev.metaKey || ev.ctrlKey)) return '';
+    if (ev.altKey) return '';
+    var key = String(ev.key || '').toLowerCase();
+    var code = String(ev.code || '').toLowerCase();
+    if (key === '+' || key === '=' || code === 'equal' || code === 'numpadadd') return 'in';
+    if (key === '-' || key === '_' || code === 'minus' || code === 'numpadsubtract') return 'out';
+    if (key === '0' || code === 'digit0' || code === 'numpad0') return 'reset';
+    return '';
+  }
+
+  function installDesktopViewZoomShortcuts() {
+    if (global.__h2oDesktopViewZoomShortcutsInstalled) return;
+    global.__h2oDesktopViewZoomShortcutsInstalled = true;
+
+    desktopViewZoomValue = readDesktopViewZoom();
+    windowSetViewZoom(desktopViewZoomValue, { persist: false }).catch(function (e) {
+      try { console.warn('[H2O.Studio.platform.tauri] initial view zoom failed', e); }
+      catch (_) { /* ignore */ }
+    });
+
+    global.addEventListener('keydown', function (ev) {
+      var action = desktopViewZoomShortcutAction(ev);
+      if (!action) return;
+      try { ev.preventDefault(); } catch (_) { /* ignore */ }
+      try { ev.stopPropagation(); } catch (_) { /* ignore */ }
+      try { ev.stopImmediatePropagation(); } catch (_) { /* ignore */ }
+
+      var p;
+      if (action === 'in') p = windowZoomIn();
+      else if (action === 'out') p = windowZoomOut();
+      else p = windowResetViewZoom();
+      Promise.resolve(p).catch(function (e) {
+        try { console.warn('[H2O.Studio.platform.tauri] view zoom shortcut failed', e); }
+        catch (_) { /* ignore */ }
+      });
+    }, true);
+  }
+
   function installRibbonMenuDrag(chrome) {
     if (!chrome || chrome.__h2oRibbonMenuDragInstalled) return;
     chrome.__h2oRibbonMenuDragInstalled = true;
@@ -601,6 +791,11 @@
       if (!ev || ev.button !== 0) return null;
       var target = ev.target;
       if (!target || typeof target.closest !== 'function') return null;
+      if (chrome.getAttribute('data-library-ribbon-hidden') === 'true' ||
+          chrome.getAttribute('data-reader-ribbon-hidden') === 'true') {
+        var hiddenHit = target.closest('.wbRibbon,.wbTauriDragStrip,.wbTauriDesktopChrome');
+        if (hiddenHit && chrome.contains(hiddenHit)) return { bar: chrome, tab: null };
+      }
       var bar = target.closest('.wbRibbonBar');
       if (!bar || !chrome.contains(bar)) return null;
       if (target.closest('input,select,textarea,a,[contenteditable="true"],.wbRibbonCollapse')) return null;
@@ -654,7 +849,7 @@
     chrome.addEventListener('click', function (ev) {
       if (Date.now() > suppressClickUntil) return;
       if (!ev || !ev.target || typeof ev.target.closest !== 'function') return;
-      if (!ev.target.closest('.wbRibbonBar')) return;
+      if (!ev.target.closest('.wbRibbonBar,.wbRibbon,.wbTauriDragStrip')) return;
       try { ev.preventDefault(); } catch (_) { /* ignore */ }
       try { ev.stopPropagation(); } catch (_) { /* ignore */ }
       try { ev.stopImmediatePropagation(); } catch (_) { /* ignore */ }
@@ -743,6 +938,11 @@
       setAlwaysOnTop: windowSetAlwaysOnTop,
       openDevtools: windowOpenDevtools,
       startDragging: windowStartDragging,
+      setViewZoom: windowSetViewZoom,
+      getViewZoom: windowGetViewZoom,
+      zoomIn: windowZoomIn,
+      zoomOut: windowZoomOut,
+      resetViewZoom: windowResetViewZoom,
     },
     /* Tauri-specific extension (not part of the fallback shape; callers
      * may feature-detect via `platform.openUrl` or `platform.env.isTauri`). */
@@ -753,6 +953,7 @@
     platform.__registerAdapter(adapter);
     try { console.log('[H2O.Studio.platform] tauri adapter registered'); } catch (_) { /* ignore */ }
     installTauriDesktopChrome();
+    installDesktopViewZoomShortcuts();
   } catch (e) {
     try { console.error('[H2O.Studio.platform.tauri] registration failed', e); } catch (_) { /* ignore */ }
   }

@@ -134,6 +134,7 @@ const state = {
   lastFolderId: "",
   lastFetchDiag: null,
   currentReaderSnapshot: null,
+  activeRoute: "list",
   sidebarExpanded: true,
   density: "cozy",
   layout: "focused",
@@ -1391,12 +1392,58 @@ function installAdaptiveReaderLayout(){
   window.addEventListener("resize", onChange, { passive: true });
 }
 
+function normalizeStudioRouteScope(routeName){
+  const key = String(routeName || "").trim().toLowerCase();
+  if (key === "reader" || key === "library" || key === "settings" || key === "migrate") return key;
+  return "list";
+}
+
+function getDesktopChromeEl(){
+  try { return document.getElementById("studioDesktopChrome"); }
+  catch { return null; }
+}
+
+function syncDesktopRibbonHiddenScope(routeScope){
+  const chrome = getDesktopChromeEl();
+  if (!chrome) return;
+  if (routeScope !== "library") chrome.removeAttribute("data-library-ribbon-hidden");
+  if (routeScope !== "reader") chrome.removeAttribute("data-reader-ribbon-hidden");
+}
+
+function setDesktopReaderRibbonHidden(hidden){
+  const chrome = getDesktopChromeEl();
+  const H2O = W.H2O = W.H2O || {};
+  H2O.Studio = H2O.Studio || {};
+  H2O.Studio.readerRibbonOpenSession = !hidden;
+  if (chrome) {
+    if (hidden) chrome.setAttribute("data-reader-ribbon-hidden", "true");
+    else chrome.removeAttribute("data-reader-ribbon-hidden");
+  }
+  try {
+    const ribbon = W.H2O?.Studio?.ribbon;
+    if (ribbon && typeof ribbon.setCollapsed === "function") ribbon.setCollapsed(true);
+  } catch {}
+}
+
+function applyDesktopReaderRibbonSession(){
+  const open = W.H2O?.Studio?.readerRibbonOpenSession !== false;
+  setDesktopReaderRibbonHidden(!open);
+}
+
+function setStudioRouteScope(routeName, opts = {}){
+  state.activeRoute = normalizeStudioRouteScope(routeName);
+  if (opts && opts.clearReader) state.currentReaderSnapshot = null;
+  syncDesktopRibbonHiddenScope(state.activeRoute);
+  applyUiState();
+}
+
 function applyUiState(){
   installAdaptiveReaderLayout();
   document.body.dataset.sidebar = state.sidebarExpanded ? "open" : "closed";
   document.body.dataset.density = state.density;
   applyAdaptiveReaderLayoutMarker();
-  document.body.dataset.route = state.currentReaderSnapshot ? "reader" : "list";
+  const routeScope = state.currentReaderSnapshot ? "reader" : normalizeStudioRouteScope(state.activeRoute);
+  document.body.dataset.route = routeScope;
 
   // D3.2.2: Dock eligibility is broader than the reader route — a saved
   // chat/editor can be shown in the #viewReader pane while the route is
@@ -5525,6 +5572,7 @@ function renderLinkedReaderPlaceholder(row){
   const readerEl = document.getElementById("viewReader");
   const listPanel = document.getElementById("viewListPanel");
   if (!readerEl) return;
+  state.activeRoute = "reader";
   if (listPanel) listPanel.hidden = true;
   readerEl.hidden = false;
 
@@ -5939,7 +5987,7 @@ async function renderList(view, folderId = "", opts = {}){
   state.currentReaderSnapshot = null;
   state.lastView = nextView;
   state.lastFolderId = selectedFolderId;
-  applyUiState();
+  setStudioRouteScope("list");
   setActiveNav(nextView);
 
   const listHash = buildListHash(nextView, selectedFolderId);
@@ -6046,12 +6094,76 @@ async function renderList(view, folderId = "", opts = {}){
   }
 }
 
+function ensureReaderTopbarActions(){
+  const slot = document.querySelector('[data-role="topbar-actions"]');
+  if (!slot) return;
+
+  let refreshBtn = document.getElementById("wbReaderRefreshBtn");
+  if (!refreshBtn) {
+    refreshBtn = document.createElement("button");
+    refreshBtn.id = "wbReaderRefreshBtn";
+    refreshBtn.type = "button";
+    refreshBtn.className = "wbLibraryPageRefreshBtn wbReaderTopbarBtn wbReaderRefreshBtn";
+    refreshBtn.setAttribute("aria-label", "Refresh chat transcript");
+    refreshBtn.setAttribute("title", "Refresh chat transcript");
+    refreshBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3.5-7.1"/><path d="M21 4v5h-5"/></svg>';
+    refreshBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const sid = String(state.currentReaderSnapshot?.snapshotId || state.selectedSnapshotId || "").trim();
+      if (!sid) return;
+      refreshBtn.classList.add("is-spinning");
+      renderReader(sid).catch(console.warn).finally(() => {
+        setTimeout(() => refreshBtn.classList.remove("is-spinning"), 400);
+      });
+    });
+  }
+
+  let ribbonBtn = document.getElementById("wbReaderRibbonToggleBtn");
+  if (!ribbonBtn) {
+    ribbonBtn = document.createElement("button");
+    ribbonBtn.id = "wbReaderRibbonToggleBtn";
+    ribbonBtn.type = "button";
+    ribbonBtn.className = "wbLibraryPageRefreshBtn wbReaderTopbarBtn wbReaderRibbonToggleBtn";
+    ribbonBtn.setAttribute("aria-label", "Toggle chat ribbon menu");
+    ribbonBtn.setAttribute("title", "Toggle chat ribbon menu");
+    ribbonBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h16"/></svg>';
+    ribbonBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const chrome = getDesktopChromeEl();
+      const hidden = !!(chrome && chrome.getAttribute("data-reader-ribbon-hidden") === "true");
+      setDesktopReaderRibbonHidden(!hidden);
+      updateReaderTopbarActionState();
+    });
+  }
+
+  const appearanceBtn = slot.querySelector(".wbAppearanceBtn");
+  slot.appendChild(refreshBtn);
+  slot.appendChild(ribbonBtn);
+  if (appearanceBtn) slot.appendChild(appearanceBtn);
+  updateReaderTopbarActionState();
+}
+
+function updateReaderTopbarActionState(){
+  const chrome = getDesktopChromeEl();
+  const hidden = !!(chrome && chrome.getAttribute("data-reader-ribbon-hidden") === "true");
+  const ribbonBtn = document.getElementById("wbReaderRibbonToggleBtn");
+  if (ribbonBtn) {
+    ribbonBtn.setAttribute("aria-pressed", hidden ? "false" : "true");
+    ribbonBtn.classList.toggle("is-on", !hidden);
+  }
+}
+
 async function renderReader(snapshotId){
   const token = ++state.renderToken;
   const sid = String(snapshotId || "").trim();
   const listPanel = $("#viewListPanel");
   const readerEl = $("#viewReader");
 
+  setStudioRouteScope("reader");
+  applyDesktopReaderRibbonSession();
+  ensureReaderTopbarActions();
   if (listPanel) listPanel.hidden = true;
   if (readerEl) readerEl.hidden = false;
   if (readerEl) readerEl.innerHTML = `<div class="wbState">Loading reader…</div>`;
@@ -6065,6 +6177,7 @@ async function renderReader(snapshotId){
       state.selectedSnapshotId = "";
       state.selectedChatId = "";
       state.currentReaderSnapshot = null;
+      setStudioRouteScope("reader");
       syncSelectionControls();
       return;
     }
@@ -6134,6 +6247,7 @@ async function renderReader(snapshotId){
     state.selectedSnapshotId = "";
     state.selectedChatId = "";
     state.currentReaderSnapshot = null;
+    setStudioRouteScope("reader");
     setActiveSidebarChat("");
     syncSelectionControls();
   }
@@ -6813,8 +6927,7 @@ async function hydrateVisibleStudioFoldersRouteShell(force = false){
 
 async function renderVisibleStudioFoldersPageBody(opts = {}){
   const token = ++state.renderToken;
-  state.currentReaderSnapshot = null;
-  applyUiState();
+  setStudioRouteScope("library", { clearReader: true });
   setActiveNav(state.lastView || "saved");
   studioHostUnmount("studio:library-folders-visible-body");
   const listEl = prepareVisibleStudioFoldersBody();
@@ -7005,6 +7118,7 @@ async function renderRoute(opts = {}){
     }
   } catch {}
   if (route.name === "library") {
+    setStudioRouteScope("library", { clearReader: true });
     // Library overlay is owned by S0F1d Library Insights and toggled by S0Z1f's
     // route subscriber. Most Library routes still bail out here so renderList
     // does not rewrite the hash back to "#/saved"; folders is the explicit
@@ -7032,10 +7146,12 @@ async function renderRoute(opts = {}){
     return;
   }
   if (route.name === "migrate") {
+    setStudioRouteScope("migrate", { clearReader: true });
     renderMigrateRoute(route.action);
     return;
   }
   if (route.name === "settings") {
+    setStudioRouteScope("settings", { clearReader: true });
     await renderSettingsRoute(route);
     return;
   }
@@ -7174,19 +7290,11 @@ function settingsOverlayEnsure(){
     panel.style.margin = "0 auto";
     panel.style.fontSize = "14px";
     panel.style.lineHeight = "1.55";
-    /* Settings scroll fix. With the Local Sync section now carrying
-     * Phase E/H folder-state import controls + extended status grid,
-     * Settings content can exceed the viewport. Bound the panel to
-     * viewport height (minus a small safe margin for surrounding
-     * chrome) and let it scroll vertically inside its own box.
-     * box-sizing:border-box keeps the existing padding inside the
-     * max-height calc. overscroll-behavior:contain stops scroll
-     * chaining into the parent (.wbMain) when the user reaches the
-     * top/bottom. Works identically in Desktop/Tauri and MV3 Studio
-     * Launcher — no platform-specific branching. */
-    panel.style.maxHeight = "calc(100vh - 40px)";
-    panel.style.overflowY = "auto";
-    panel.style.overscrollBehavior = "contain";
+    // Settings uses .wbMain as the scroll root so the scrollbar stays at the
+    // right pane edge instead of inside the settings card.
+    panel.style.maxHeight = "none";
+    panel.style.overflowY = "visible";
+    panel.style.overscrollBehavior = "auto";
     panel.style.boxSizing = "border-box";
     main.appendChild(panel);
   }
@@ -17933,6 +18041,7 @@ function __inlineRender_wrapRange(range, style, colorKind){
     if (e <= s) continue;
     const slice = tn.nodeValue.slice(s, e);
     if (!slice) continue;
+    if (isColor && !slice.trim()) continue;
     try {
       if (tn.parentElement && typeof tn.parentElement.closest === 'function' && tn.parentElement.closest(sel)) {
         continue; /* already wrapped in same style (same color for text-color) */

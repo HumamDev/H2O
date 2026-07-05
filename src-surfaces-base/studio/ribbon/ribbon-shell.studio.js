@@ -67,7 +67,7 @@
   });
 
   /* Allowed chatType values — null means "no chat context, ribbon hidden". */
-  const CHAT_TYPES = new Set(['saved', 'indexed', 'imported', 'readonly']);
+  const CHAT_TYPES = new Set(['saved', 'indexed', 'imported', 'readonly', 'library']);
 
   /* ── Internal state ───────────────────────────────────────────────── */
   /* Registries: tab id -> tab def; tab id -> (group id -> group def);

@@ -39,6 +39,25 @@ The ribbon is visible only when the **currently opened context is a chat**:
 `imported` and `readonly` chat-type constants are reserved for future phases
 when the snapshot record carries a discriminator for them.
 
+## Desktop/Tauri chrome invariant
+
+Desktop/Tauri re-homes the ribbon into the app chrome row above `.wbShell`.
+Any change to ribbon visibility must preserve the sidebar/topbar geometry rules
+in `../STUDIO_DEVELOPMENT_RULES.md`:
+
+- Showing or hiding a ribbon menu strip must not move the sidebar logo/title row.
+- Hidden Library and hidden reader/chat ribbon menu strips use the same model:
+  the desktop chrome is out of normal flow, while the sidebar and right pane own
+  their own mac-safe empty space.
+- Hidden reader/chat ribbon menu strips must also leave the reader title topbar
+  below its mac-safe empty space; hiding the ribbon menu must not pull that
+  titlebar up to the traffic-light row.
+- Do not implement a hidden ribbon by adding a full-width transparent, blurred,
+  glass, or separate strip above `.wbShell`; that breaks the sidebar background
+  and divider continuity.
+- Ribbon menu controls can sit in the draggable top strip, but buttons/inputs
+  must remain `-webkit-app-region: no-drag`.
+
 ## Boot order
 
 Loaded from `studio.html` in this sequence:

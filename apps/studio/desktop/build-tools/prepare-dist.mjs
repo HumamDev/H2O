@@ -237,18 +237,19 @@ function rewriteHtmlReferences(htmlPath) {
   let edits = 0;
   for (const [orig, safe] of renameMap) {
     /* `src="./<orig>"` and `src="<orig>"` are the two patterns
-     * studio.html uses for these script tags. Replace both forms. */
-    const a = `src="./${orig}"`;
-    const aNew = `src="./${safe}"`;
-    if (html.includes(a)) {
-      html = html.split(a).join(aNew);
-      edits += 1;
-    }
-    const b = `src="${orig}"`;
-    const bNew = `src="${safe}"`;
-    if (html.includes(b)) {
-      html = html.split(b).join(bNew);
-      edits += 1;
+     * studio.html uses for these script tags. Replace both forms,
+     * including cache-busted `?v=...` variants. */
+    const variants = [
+      [`src="./${orig}"`, `src="./${safe}"`],
+      [`src="./${orig}?`, `src="./${safe}?`],
+      [`src="${orig}"`, `src="${safe}"`],
+      [`src="${orig}?`, `src="${safe}?`],
+    ];
+    for (const [needle, replacement] of variants) {
+      if (html.includes(needle)) {
+        html = html.split(needle).join(replacement);
+        edits += 1;
+      }
     }
   }
   if (edits > 0) fs.writeFileSync(htmlPath, html);

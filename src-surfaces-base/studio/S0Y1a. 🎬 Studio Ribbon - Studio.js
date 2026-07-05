@@ -45,6 +45,23 @@
    * Phase 1a actions are all { disabled: true, tooltip: 'Coming soon' }. */
   const TAB_CATALOGUE = [
     {
+      id: 'library-home', label: 'Home',
+      chatTypes: ['library'],
+      groups: [
+        { id: 'library-view', label: 'Library', actions: [
+          { id: 'library-dashboard', label: 'Dashboard' },
+          { id: 'library-explorer',  label: 'Explorer' },
+          { id: 'library-recents',   label: 'Recents' },
+          { id: 'library-saved',     label: 'Saved' },
+          { id: 'library-link',      label: 'Link' },
+          { id: 'library-organize',  label: 'Organize' },
+        ] },
+        { id: 'library-index', label: 'Index', actions: [
+          { id: 'library-refresh-index', label: 'Refresh index' },
+        ] },
+      ],
+    },
+    {
       id: 'home', label: 'Home',
       chatTypes: ['saved', 'indexed', 'imported', 'readonly'],
       groups: [
@@ -1277,6 +1294,21 @@
     return status.available ? '' : (status.message || 'AI provider unavailable');
   }
 
+  function libraryContextIsEnabled(ctx) {
+    return !!(ctx && ctx.chatType === 'library');
+  }
+
+  function navigateLibrary(view, label) {
+    return {
+      isEnabled: libraryContextIsEnabled,
+      onClick: function (_ctx, setStatus) {
+        const target = '#/library/' + String(view || 'dashboard');
+        try { global.location.hash = target; } catch (_) { /* ignore */ }
+        setStatus(label || 'Library');
+      },
+    };
+  }
+
   /* ── Phase 1b — wired action handlers ────────────────────────────────
    * Map of actionId -> { isEnabled(ctx), onClick(ctx, setStatus) }.
    * Actions NOT present in this map render disabled with "Coming soon"
@@ -1291,6 +1323,24 @@
    *                         non-empty text.
    */
   const ACTION_HANDLERS = {
+    'library-dashboard': navigateLibrary('dashboard', 'Dashboard'),
+    'library-explorer':  navigateLibrary('explorer',  'Explorer'),
+    'library-recents':   navigateLibrary('recents',   'Recents'),
+    'library-saved':     navigateLibrary('saved',     'Saved'),
+    'library-link':      navigateLibrary('linked',    'Link'),
+    'library-organize':  navigateLibrary('organize',  'Organize'),
+    'library-refresh-index': {
+      isEnabled: libraryContextIsEnabled,
+      onClick: function (_ctx, setStatus) {
+        const btn = document.querySelector('.wbLibraryPageRefreshBtn');
+        if (btn && typeof btn.click === 'function') {
+          btn.click();
+          setStatus('Refreshing Library');
+          return;
+        }
+        setStatus('Refresh unavailable');
+      },
+    },
     'copy-title': {
       isEnabled: function (ctx) { return !!(ctx && ctx.title && String(ctx.title).trim()); },
       onClick: function (ctx, setStatus) {
@@ -4559,6 +4609,54 @@
     return panels;
   }
 
+  function syncTauriRibbonLayout(container, chatType, collapsed) {
+    let root = null;
+    let chrome = null;
+    try {
+      root = document.documentElement;
+      if (!root || root.dataset.h2oRuntime !== 'tauri') return;
+      chrome = document.getElementById('studioDesktopChrome');
+    } catch (_) {
+      return;
+    }
+    if (!chrome) return;
+
+    const surface = chatType === 'library' ? 'library' : (chatType ? 'chat' : '');
+    const hiddenByChrome =
+      surface === 'library'
+        ? chrome.getAttribute('data-library-ribbon-hidden') === 'true'
+        : surface === 'chat'
+          ? chrome.getAttribute('data-reader-ribbon-hidden') === 'true'
+          : true;
+    const expanded = !!(surface && !collapsed && !container.hidden && !hiddenByChrome);
+
+    root.setAttribute('data-h2o-tauri-ribbon-surface', surface);
+    root.setAttribute('data-h2o-tauri-ribbon-expanded', expanded ? 'true' : 'false');
+    chrome.setAttribute('data-ribbon-surface', surface);
+    chrome.setAttribute('data-ribbon-expanded', expanded ? 'true' : 'false');
+
+    const writeHeight = function () {
+      let height = 0;
+      if (expanded) {
+        const panels = container.querySelector('.wbRibbonPanels');
+        const rect = panels && panels.getBoundingClientRect ? panels.getBoundingClientRect() : null;
+        height = Math.max(0, Math.ceil((rect && rect.height) || 0));
+      }
+      const value = height + 'px';
+      root.style.setProperty('--wb-tauri-ribbon-expanded-h', value);
+      if (document.body && document.body.style) {
+        document.body.style.setProperty('--wb-tauri-ribbon-expanded-h', value);
+      }
+      chrome.style.setProperty('--wb-tauri-ribbon-expanded-h', value);
+    };
+
+    writeHeight();
+    try {
+      const raf = window.requestAnimationFrame || function (fn) { return window.setTimeout(fn, 0); };
+      raf(writeHeight);
+    } catch (_) {}
+  }
+
   /* ── Render orchestration ─────────────────────────────────────────── */
   function render(container, shell) {
     /* Phase 8c-2 — stash the live shell so split-button popovers can
@@ -4566,19 +4664,21 @@
     __ribbonShell = shell;
     const ctx = shell.getContext();
     const contextChatType = (ctx && ctx.chatType) || null;
-    const chatType = contextChatType || 'saved';
+    const chatType = contextChatType;
     const collapsed = !!shell.getCollapsed();
     parkRefreshControl(container);
     parkMetadataControls(container);
 
     container.hidden = false;
-    container.dataset.chatType = chatType;
+    container.dataset.chatType = chatType || '';
+    container.dataset.surface = chatType === 'library' ? 'library' : (chatType ? 'chat' : '');
     container.dataset.collapsed = collapsed ? 'true' : '';
 
     const visibleTabs = visibleTabsFor(chatType);
     if (!visibleTabs.length) {
       container.hidden = true;
       container.innerHTML = '';
+      syncTauriRibbonLayout(container, null, true);
       return;
     }
 
@@ -4599,6 +4699,7 @@
         syncMetadataButtons(container);
       }
     }
+    syncTauriRibbonLayout(container, chatType, collapsed);
   }
 
   function focusActiveTab(container) {

@@ -3,8 +3,8 @@
 // @name               S0Z1f. 🎬 Library Sidebar Tab - Studio
 // @namespace          H2O.Premium.CGX.library_sidebar_tab.studio
 // @author             HumamDev
-// @version            1.2.0
-// @revision           003
+// @version            1.2.1
+// @revision           004
 // @build              260511-000030
 // @description        Studio Library sidebar entry v1.2: a SINGLE "Library" nav item (no sub-navigation, no badges, no inline actions). Clicking opens the full Library page (#/library/dashboard); Dashboard / Explorer / Analytics live as tabs inside the page, not in the sidebar. Matches Studio's wbNavItem style so it sits cleanly next to the existing Saved / Pinned / Archive items.
 // @match              https://chatgpt.com/*
@@ -30,6 +30,8 @@
   // The injected DOM lives inside a section we own. We re-use the previous
   // SECTION_ID so any leftover instance from v1.1 is replaced cleanly.
   const SECTION_ID = 'wbLibrarySection';
+  const FOLDER_ICON_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>';
+  const UNFILED_ICON_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5.2 10.8h13.6l-1.1 6.1A2.6 2.6 0 0 1 15.1 19H8.9a2.6 2.6 0 0 1-2.6-2.1l-1.1-6.1Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M7.4 10.8 8.3 7a2.1 2.1 0 0 1 2-1.6h3.4a2.1 2.1 0 0 1 2 1.6l.9 3.8" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.8 14h1.6a1.8 1.8 0 0 0 3.2 0h1.6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7.2 13.8 9 12 10.8 10.2 9 12 7.2Z" fill="currentColor" stroke="none"/></svg>';
 
   const diag = { t0: performance.now(), steps: [], errors: [], bufMax: 40, errMax: 15 };
   const step = (s, o = '') => { try { diag.steps.push({ t: Math.round(performance.now() - diag.t0), s: String(s), o: String(o) }); if (diag.steps.length > diag.bufMax) diag.steps.splice(0, diag.steps.length - diag.bufMax); } catch {} };
@@ -146,11 +148,16 @@
     nav.appendChild(link);
     sec.appendChild(nav);
 
-    // Insertion order: pin Library to the very top of the nav block so it
-    // sits above the Search chats row (which lives inside .wbSidebarTopNav).
-    // Falls back to "above Folders" if the top-nav block is absent (older
-    // HTML snapshots).
-    if (!sec.isConnected) {
+    // Insertion order: pin Library above the lower sidebar scroll region.
+    // Search chats and every section below it live inside .wbSidebarScroll,
+    // so inserting before that wrapper keeps the logo/title and Library row
+    // fixed while the rest of the sidebar scrolls underneath.
+    const scroll = root.querySelector('.wbSidebarScroll');
+    if (scroll && scroll.parentElement === root) {
+      if (sec.parentElement !== root || sec.nextElementSibling !== scroll) {
+        root.insertBefore(sec, scroll);
+      }
+    } else if (!sec.isConnected) {
       const topNav = root.querySelector('.wbSidebarTopNav');
       if (topNav && topNav.parentElement === root) {
         root.insertBefore(sec, topNav);
@@ -306,7 +313,7 @@
       class: 'wbFolderPageIcon',
       'aria-hidden': 'true',
       style: `display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.10);color:${color};background:rgba(255,255,255,.035);flex:0 0 auto`,
-      html: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>',
+      html: row.isUnfiled ? UNFILED_ICON_SVG : FOLDER_ICON_SVG,
     });
     const titleChildren = [
       makeEl('span', { style: 'font-weight:650;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, row.name),

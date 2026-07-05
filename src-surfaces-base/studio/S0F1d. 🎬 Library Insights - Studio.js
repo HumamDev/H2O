@@ -21,6 +21,10 @@
   const D = document;
   const H2O = (W.H2O = W.H2O || {});
   H2O.Library = H2O.Library || {};
+  H2O.Studio = H2O.Studio || {};
+  if (typeof H2O.Studio.libraryRibbonOpenSession !== 'boolean') {
+    H2O.Studio.libraryRibbonOpenSession = false;
+  }
 
   const PREFS_KEY = 'h2o:prm:cgx:library-insights:studio:prefs:v2';
 
@@ -1809,6 +1813,107 @@
     return el('div', { class: 'wbDetailBodyWrap' }, [head, body]);
   }
 
+  function libraryFolderOverviewRows(idx) {
+    const rows = idx?.getAll?.() || [];
+    const facets = idx?.facets?.()?.byFolder || {};
+    const seen = new Set();
+    const items = [];
+
+    for (const folder of (pageData.folders || [])) {
+      const id = String(folder?.id || folder?.folderId || '').trim();
+      if (!id) continue;
+      const name = String(folder?.name || folder?.folderName || folder?.label || id).trim();
+      const count = Array.isArray(facets[id]) ? facets[id].length : 0;
+      seen.add(id);
+      items.push({
+        id,
+        name: name || id,
+        count,
+        color: String(folder?.iconColor || folder?.color || '').trim(),
+      });
+    }
+
+    for (const [id, value] of Object.entries(facets)) {
+      if (!id || seen.has(id)) continue;
+      items.push({
+        id,
+        name: labelFor('folder', id, idx),
+        count: Array.isArray(value) ? value.length : Number(value) || 0,
+        color: '',
+      });
+    }
+
+    const unfiledCount = rows.filter((row) => !String(row?.folderId || '').trim()).length;
+    if (unfiledCount > 0) {
+      items.push({
+        id: '__unfiled__',
+        name: 'Unfiled',
+        count: unfiledCount,
+        color: '',
+        synthetic: true,
+      });
+    }
+
+    return items.sort((a, b) => {
+      if (a.synthetic && !b.synthetic) return 1;
+      if (!a.synthetic && b.synthetic) return -1;
+      return (b.count - a.count) || String(a.name).localeCompare(String(b.name));
+    });
+  }
+
+  function renderLibraryFoldersOverview(idx) {
+    const folders = libraryFolderOverviewRows(idx);
+    const total = folders.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+    const head = el('section', { class: 'wbDetailHead' }, [
+      el('div', { class: 'wbDetailEyebrow' }, 'library folders'),
+      el('h2', { class: 'wbDetailTitle' }, 'Folders'),
+      el('div', { class: 'wbDetailMeta' },
+        `${formatNumber(folders.length)} ${folders.length === 1 ? 'folder' : 'folders'} · ${formatNumber(total)} ${total === 1 ? 'chat' : 'chats'}`),
+    ]);
+
+    const body = el('section', { class: 'wbDetailBody' });
+    if (!folders.length) {
+      body.appendChild(el('div', { class: 'wbExpEmpty' }, [
+        el('div', { class: 'wbExpEmptyTitle' }, 'No folders yet'),
+        el('div', { class: 'wbExpEmptySub' }, 'Folder assignments will appear here after chats are saved into folders.'),
+      ]));
+    } else {
+      body.appendChild(el('div', {
+        class: 'wbLibraryFoldersOverviewList',
+        role: 'list',
+        style: 'border:1px solid var(--wb-border);border-radius:8px;overflow:hidden;background:var(--wb-card)',
+      },
+        folders.map((folder) => {
+          const href = folder.synthetic
+            ? '#/library/explorer'
+            : (getRouteSvc()?.buildLibraryHash?.('folder', folder.id) || `#/library/folder/${encodeURIComponent(folder.id)}`);
+          const color = /^#[0-9a-f]{3,8}$/i.test(String(folder.color || ''))
+            ? String(folder.color)
+            : 'var(--wb-library-accent)';
+          return el('a', {
+            class: 'wbLibraryFoldersOverviewRow',
+            href,
+            role: 'listitem',
+            style: 'display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:14px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--wb-border);color:inherit;text-decoration:none',
+          }, [
+            el('span', {
+              class: `wbLibraryFoldersOverviewIcon${folder.synthetic ? ' is-unfiled' : ''}`,
+              style: `display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;border:1px solid var(--wb-border);background:var(--wb-surface);color:${color}`,
+              'aria-hidden': 'true',
+              html: folder.synthetic
+                ? '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l1 12H5L6 8Z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/><path d="M9 13h6"/></svg>'
+                : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z"/></svg>',
+            }),
+            el('span', { class: 'wbLibraryFoldersOverviewName', style: 'font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, folder.name),
+            el('span', { class: 'wbLibraryFoldersOverviewCount', style: 'color:var(--wb-muted);font-size:12px;font-variant-numeric:tabular-nums' }, formatNumber(folder.count)),
+          ]);
+        })
+      ));
+    }
+
+    return el('div', { class: 'wbDetailBodyWrap wbLibraryFoldersOverview' }, [head, body]);
+  }
+
   function currentLibraryView() {
     const route = getRouteSvc()?.current?.() || null;
     return route?.name === 'library' ? String(route.view || 'dashboard').trim().toLowerCase() : '';
@@ -1849,7 +1954,7 @@
     }).finally(() => {
       if (requestId !== bucket.requestId) return;
       bucket.loading = false;
-      if (state.visible && ['folders', 'organize'].includes(currentLibraryView())) render();
+      if (state.visible && ['folders', 'folder-groups', 'organize'].includes(currentLibraryView())) render();
     });
   }
 
@@ -2205,6 +2310,92 @@
     finally { pageDataInFlight = null; }
   }
 
+  function isTauriRuntime() {
+    try {
+      return !!(D.documentElement.dataset.h2oRuntime === 'tauri'
+        || H2O.Studio?.platform?.env?.isTauri === true);
+    } catch { return false; }
+  }
+
+  function getRibbonShell() {
+    try { return H2O.Studio?.ribbon || null; }
+    catch { return null; }
+  }
+
+  function setDesktopLibraryRibbonHidden(hidden) {
+    if (!isTauriRuntime()) return false;
+    const chrome = D.getElementById('studioDesktopChrome');
+    if (!chrome) return false;
+    if (hidden) chrome.setAttribute('data-library-ribbon-hidden', 'true');
+    else chrome.removeAttribute('data-library-ribbon-hidden');
+    return true;
+  }
+
+  function setLibraryRibbonContext(collapsed) {
+    const ribbon = getRibbonShell();
+    if (!ribbon || typeof ribbon.setContext !== 'function') return false;
+    H2O.Studio.libraryRibbonOpenSession = true;
+    setDesktopLibraryRibbonHidden(false);
+    ribbon.setContext({
+      route: 'library',
+      chatType: 'library',
+      snapshotId: null,
+      chatId: null,
+      title: 'Library',
+      originalUrl: null,
+      readOnly: true,
+    });
+    if (typeof ribbon.setCollapsed === 'function') {
+      ribbon.setCollapsed(!!collapsed);
+    }
+    return true;
+  }
+
+  function hideLibraryRibbonContext() {
+    const ribbon = getRibbonShell();
+    if (!ribbon || typeof ribbon.setContext !== 'function') return false;
+    H2O.Studio.libraryRibbonOpenSession = false;
+    if (setDesktopLibraryRibbonHidden(true)) {
+      if (typeof ribbon.setCollapsed === 'function') ribbon.setCollapsed(true);
+      return true;
+    }
+    ribbon.setContext({
+      route: 'library',
+      chatType: null,
+      snapshotId: null,
+      chatId: null,
+      title: 'Library',
+      originalUrl: null,
+      readOnly: true,
+    });
+    if (typeof ribbon.setCollapsed === 'function') {
+      ribbon.setCollapsed(true);
+    }
+    return true;
+  }
+
+  function renderLibraryRibbonToggle() {
+    const btn = el('button', {
+      type: 'button',
+      class: 'wbLibraryPageRefreshBtn wbLibraryRibbonToggleBtn',
+      'aria-label': 'Toggle Library ribbon',
+      title: 'Toggle Library ribbon',
+      html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h16"/></svg>',
+    });
+    btn.addEventListener('click', () => {
+      const ribbon = getRibbonShell();
+      const ctx = ribbon && typeof ribbon.getContext === 'function' ? ribbon.getContext() : null;
+      const chrome = D.getElementById('studioDesktopChrome');
+      const hiddenReserved = !!(chrome && chrome.getAttribute('data-library-ribbon-hidden') === 'true');
+      if (ctx && ctx.chatType === 'library' && !hiddenReserved) {
+        hideLibraryRibbonContext();
+        return;
+      }
+      setLibraryRibbonContext(true);
+    });
+    return btn;
+  }
+
   // ── Page-shell renderers (header / search / secondary nav / tabs) ──────────
   function renderPageHeader(idx) {
     const rows = idx.getAll();
@@ -2234,6 +2425,16 @@
       finally { setTimeout(() => refreshBtn.classList.remove('is-spinning'), 400); }
     });
 
+    const actions = [
+      refreshBtn,
+      renderLibraryRibbonToggle(),
+      el('div', {
+        class: 'wbLibraryPageAppearanceSlot',
+        'data-role': 'library-ribbon-actions',
+        'aria-label': 'Library appearance actions',
+      }),
+    ];
+
     return el('header', { class: 'wbLibraryPageHeader' }, [
       el('div', { class: 'wbLibraryPageBrand' }, [
         el('span', { class: 'wbLibraryPageBrandIcon', html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h6v14H4z"/><path d="M14 4h6v16h-6z"/><path d="M4 9h6"/><path d="M14 8h6"/></svg>' }),
@@ -2242,7 +2443,7 @@
           el('div', { class: 'wbLibraryPageStats' }, statsLine),
         ]),
       ]),
-      el('div', { class: 'wbLibraryPageActions' }, [refreshBtn]),
+      el('div', { class: 'wbLibraryPageActions' }, actions),
     ]);
   }
 
@@ -2279,23 +2480,30 @@
       clearBtn,
     ]);
 
-    // Secondary nav: clicking a facet sets groupBy and switches to Explorer.
+    // Secondary nav: Folders opens the dedicated folders page; the remaining
+    // facets group the Explorer view.
     const onFacet = (groupBy) => () => {
       prefs.groupBy = groupBy;
       savePrefs(prefs);
       W.location.hash = '#/library/explorer';
     };
 
-    const secondaryNav = el('nav', { class: 'wbLibraryPageSecondaryNav', 'aria-label': 'Group library by' }, [
-      ['Folders',    'folder'],
-      ['Labels',     'label'],
-      ['Categories', 'category'],
-      ['Projects',   'project'],
-    ].map(([label, gb]) => {
-      const b = el('button', { type: 'button', class: 'wbLibraryPageSecondaryItem' }, label);
-      b.addEventListener('click', onFacet(gb));
-      return b;
-    }));
+    const secondaryNav = el('nav', { class: 'wbLibraryPageSecondaryNav', 'aria-label': 'Library sections' }, [
+      el('a', {
+        class: `wbLibraryPageSecondaryItem${currentLibraryView() === 'folder-groups' ? ' is-active' : ''}`,
+        href: '#/library/folder-groups',
+        'aria-current': currentLibraryView() === 'folder-groups' ? 'page' : null,
+      }, 'Folders'),
+      ...[
+        ['Labels',     'label'],
+        ['Categories', 'category'],
+        ['Projects',   'project'],
+      ].map(([label, gb]) => {
+        const b = el('button', { type: 'button', class: 'wbLibraryPageSecondaryItem' }, label);
+        b.addEventListener('click', onFacet(gb));
+        return b;
+      }),
+    ]);
 
     return el('div', { class: 'wbLibraryPageSearchRow' }, [search, secondaryNav]);
   }
@@ -2563,6 +2771,7 @@
     else if (view === 'analytics')   bodyContent = renderAnalytics(idx);
     else if (view === 'recents')     bodyContent = renderRecents(idx);
     else if (view === 'organize')    bodyContent = renderOrganize(idx);
+    else if (view === 'folder-groups') bodyContent = renderLibraryFoldersOverview(idx);
     else if (view === 'folders')     bodyContent = renderFoldersPage(idx);
     else if (view === 'all' || view === 'saved' || view === 'pinned' || view === 'archive' || view === 'linked') {
       /* Phase K-2 — 'linked' joins the saved/pinned/archive branch so
