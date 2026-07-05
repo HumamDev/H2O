@@ -135,18 +135,23 @@
       candidateBundleHash: firstHash(inp, ['candidateBundleHash', 'bundleHash']) ||
         objectHash(inp, 'candidate', ['candidateBundleHash', 'bundleHash']),
       peerTargetHash: firstHash(inp, ['peerTargetHash', 'peerHash']) ||
+        objectHash(inp, 'candidate', ['peerTargetHash', 'peerHash', 'targetHash']) ||
         objectHash(inp, 'target', ['peerTargetHash', 'peerHash', 'targetHash']),
       remoteRootRefHash: firstHash(inp, ['remoteRootRefHash', 'remoteRootHash']) ||
+        objectHash(inp, 'candidate', ['remoteRootRefHash', 'remoteRootHash', 'rootHash', 'remoteRootHash']) ||
         objectHash(inp, 'target', ['remoteRootRefHash', 'remoteRootHash', 'rootHash']),
-      sequenceMode: cleanString(inp.sequenceMode || sequence.sequenceMode || 'not-minted-in-dry-run'),
+      sequenceMode: cleanString(inp.sequenceMode || sequence.sequenceMode ||
+        (sequence.mintNewExport === false && sequence.burnSequence === false && sequence.requireExistingOnly === true ?
+          'not-minted-in-dry-run' : 'not-minted-in-dry-run')),
       expectedSequenceNumber: integerOrNull(valueOrFallback(inp.expectedSequenceNumber, sequence.expectedSequenceNumber)),
       previousSequenceNumber: integerOrNull(valueOrFallback(inp.previousSequenceNumber, sequence.previousSequenceNumber)),
       exportConstraint: cleanString(inp.exportConstraint || sequence.exportConstraint || 'existing-export-only'),
       operationKind: cleanString(inp.operationKind || candidate.operationKind || 'webdav-cloud-relay-dry-run'),
-      activeTransport: cleanString(inp.activeTransport || transport.activeTransport || ACTIVE_TRANSPORT),
+      activeTransport: cleanString(inp.activeTransport || candidate.activeTransport || transport.activeTransport || ACTIVE_TRANSPORT),
       reservedControlledGate: cleanString(valueOrFallback(inp.reservedControlledGate,
         valueOrFallback(inp.transportControlledApplyGateReserved,
-          valueOrFallback(transport.reservedControlledGate, TRANSPORT_CONTROLLED_APPLY_GATE)))),
+          valueOrFallback(candidate.reservedControlledGate,
+            valueOrFallback(transport.reservedControlledGate, TRANSPORT_CONTROLLED_APPLY_GATE))))),
       requestedProductSyncReady: valueOrFallback(inp.productSyncReady, readiness.productSyncReady),
       requestedTransportReady: valueOrFallback(inp.transportReady, readiness.transportReady),
       requestedLocalExportableSyncReady: valueOrFallback(inp.localExportableSyncReady,
@@ -154,9 +159,10 @@
       requestedTransportEligibility: valueOrFallback(inp.transportEligibilityFromLocalExportableReady,
         readiness.transportEligibilityFromLocalExportableReady),
       chatSavingCasBlocked: inp.chatSavingCasBlocked === true || readiness.chatSavingCasBlocked === true ||
-        transport.chatSavingCasBlocked === true,
+        transport.chatSavingCasBlocked === true || transport.touchChatSavingCAS === false,
       a950Quarantined: inp.a950DocumentedDebtQuarantined === true || readiness.a950DocumentedDebtQuarantined === true ||
-        inp.a950DocumentedDebtVisible === true || readiness.a950DocumentedDebtVisible === true,
+        inp.a950DocumentedDebtVisible === true || readiness.a950DocumentedDebtVisible === true ||
+        (safety.mutateA950 === false && safety.cleanupAuthority === false),
       noCleanupAuthority: inp.noCleanupAuthority === true || safety.cleanupAuthority === false,
       rawPrivateInput: hasRawPrivateInput(inp),
       writeTransitionRequested: bool(inp.writeTransitionRequested) || bool(transport.writeTransitionRequested),

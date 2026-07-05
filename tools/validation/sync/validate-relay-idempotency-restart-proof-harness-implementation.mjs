@@ -304,6 +304,47 @@ const changedPayload = api.evaluateRelayIdempotencyRestartProof({
 });
 assert.notEqual(changedPayload.idempotencyKey, good.idempotencyKey, 'changed payload changes modeled key');
 
+const nestedLiveShape = api.evaluateRelayIdempotencyRestartProof({
+  dryRun: true,
+  apply: false,
+  gate: 'relay-idempotency-restart-proof-harness-evaluate',
+  readiness: {
+    productSyncReady: false,
+    transportReady: false,
+    localExportableSyncReady: true,
+    transportEligibilityFromLocalExportableReady: true,
+  },
+  candidate: {
+    payloadHash: 'sha256:' + 'a'.repeat(64),
+    bundleHash: 'sha256:' + 'b'.repeat(64),
+    peerTargetHash: 'sha256:' + 'c'.repeat(64),
+    remoteRootHash: 'sha256:' + 'd'.repeat(64),
+    operationKind: 'webdav-cloud-relay-transport-dry-run',
+    activeTransport: 'local-sync-folder-json',
+    reservedControlledGate: 'webdav-cloud-relay-transport-controlled-apply',
+  },
+  sequence: {
+    mintNewExport: false,
+    burnSequence: false,
+    requireExistingOnly: true,
+  },
+  transport: {
+    enqueueRelay: false,
+    writeWebDAV: false,
+    writeCloud: false,
+    touchChatSavingCAS: false,
+    startFullBundleV3: false,
+  },
+  safety: {
+    mutateA950: false,
+    cleanupAuthority: false,
+  },
+});
+assert.equal(nestedLiveShape.ok, true, 'nested live request shape should pass');
+assert.equal(nestedLiveShape.idempotencyKeyHashOnly, true, 'nested live request hashes are accepted');
+assert.equal(nestedLiveShape.duplicateReplayZeroWrite, true, 'nested live request duplicate zero-write');
+assert.equal(nestedLiveShape.warnings.length, 0, 'nested live request should not warn on CAS/a950 visibility');
+
 function expectBlock(label, patch, blocker) {
   const result = api.evaluateRelayIdempotencyRestartProof({ ...validRequest, ...patch });
   assert.equal(result.ok, false, `${label}: expected block`);
