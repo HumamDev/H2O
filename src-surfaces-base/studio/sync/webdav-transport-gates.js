@@ -383,20 +383,39 @@
 
   function peerTargetHash(input) {
     return firstHash(input, ['peerTargetHash', 'peerIdHash', 'localMockTargetHash']) ||
-      objectHash(input, 'peerTarget', ['peerTargetHash', 'peerIdHash', 'targetHash']);
+      objectHash(input, 'peerTarget', ['peerTargetHash', 'peerIdHash', 'targetHash']) ||
+      objectHash(input, 'target', ['peerTargetHash', 'peerIdHash', 'targetHash']);
   }
 
   function remoteRootHash(input) {
     return firstHash(input, ['remoteRootRefHash', 'remoteRootHash']) ||
-      objectHash(input, 'remoteRootRef', ['remoteRootRefHash', 'remoteRootHash']);
+      objectHash(input, 'remoteRootRef', ['remoteRootRefHash', 'remoteRootHash']) ||
+      objectHash(input, 'target', ['remoteRootRefHash', 'remoteRootHash', 'remoteRootTargetHash']);
+  }
+
+  function valueOrFallback(value, fallback) {
+    return value === undefined ? fallback : value;
+  }
+
+  function safeToken(value, prefix) {
+    var text = cleanString(value);
+    if (!text) return '';
+    return text.indexOf(prefix) === 0 ? text : '';
   }
 
   function evaluateTransportReadinessDryRun(request) {
     var inp = safeObject(request);
+    var readiness = safeObject(inp.readiness);
+    var expectedBundle = safeObject(inp.expectedBundle);
+    var sequence = safeObject(inp.sequence);
+    var target = safeObject(inp.target);
+    var transport = safeObject(inp.transport);
+    var safety = safeObject(inp.safety);
     var blockers = [];
     var warnings = [];
     var gate = cleanString(inp.gate);
-    var localMockTarget = bool(inp.localMockTarget);
+    var targetMode = cleanString(target.mode);
+    var localMockTarget = bool(inp.localMockTarget) || bool(target.localMockTarget) || targetMode === 'mock-peer';
     var peerHash = peerTargetHash(inp);
     var rootHash = remoteRootHash(inp);
     var bundleHash = firstHash(inp, [
@@ -405,38 +424,67 @@
       'expectedBundleHash',
       'expectedContentSha256',
       'contentHash'
+    ]) || objectHash(inp, 'expectedBundle', [
+      'candidatePayloadHash',
+      'candidateBundleHash',
+      'expectedHash',
+      'expectedBundleHash',
+      'expectedContentSha256',
+      'contentHash'
     ]);
-    var checksumHash = firstHash(inp, ['expectedFileHash', 'fileHash', 'expectedChecksum', 'checksumHash']);
-    var expectedSeq = integerOrNull(inp.expectedSequenceNumber == null ? inp.sequenceNumber : inp.expectedSequenceNumber);
-    var previousSeq = integerOrNull(inp.previousSequenceNumber);
-    var sequenceMode = cleanString(inp.sequenceMode);
+    var checksumHash = firstHash(inp, ['expectedFileHash', 'fileHash', 'expectedChecksum', 'checksumHash']) ||
+      objectHash(inp, 'expectedBundle', ['expectedFileHash', 'fileHash', 'expectedChecksum', 'checksumHash']);
+    var expectedSeq = integerOrNull(valueOrFallback(inp.expectedSequenceNumber,
+      valueOrFallback(sequence.expectedSequenceNumber, valueOrFallback(inp.sequenceNumber, sequence.sequenceNumber))));
+    var previousSeq = integerOrNull(valueOrFallback(inp.previousSequenceNumber, sequence.previousSequenceNumber));
+    var sequenceMode = cleanString(inp.sequenceMode || sequence.sequenceMode ||
+      (sequence.mintNewExport === false && sequence.requireExistingOnly === true ? 'not-minted-in-dry-run' : ''));
     var privacy = privacyRedactionStatus(inp);
-    var privacyMode = cleanString(inp.privacyMode);
     var privacyObject = safeObject(inp.privacy);
-    var peerTargetProvided = isObject(inp.peerTarget) || cleanString(inp.peerTargetHash) || cleanString(inp.peerIdHash) ||
-      cleanString(inp.localMockTargetHash) || localMockTarget;
-    var remoteRootProvided = isObject(inp.remoteRootRef) || cleanString(inp.remoteRootRefHash) || cleanString(inp.remoteRootHash);
+    var privacyMode = cleanString(inp.privacyMode || privacyObject.mode || (privacyObject.hashOnly === true ? 'hash-only' : ''));
+    var peerToken = safeToken(target.peerToken, 'peer:');
+    var remoteRootToken = safeToken(target.remoteRootToken, 'root:');
+    var peerTargetProvided = isObject(inp.peerTarget) || isObject(inp.target) || cleanString(inp.peerTargetHash) ||
+      cleanString(inp.peerIdHash) || cleanString(inp.localMockTargetHash) || peerToken || localMockTarget;
+    var remoteRootProvided = isObject(inp.remoteRootRef) || isObject(inp.target) || cleanString(inp.remoteRootRefHash) ||
+      cleanString(inp.remoteRootHash) || remoteRootToken;
     var writeLikeRequested = bool(inp.writeRequested) || bool(inp.writesData) || bool(inp.writeData) ||
       bool(inp.writeWebDAV) || bool(inp.writesWebDAV) || bool(inp.webdavWrite) ||
-      bool(inp.writesCloud) || bool(inp.cloudWrite) || bool(inp.remoteWriteAttempted);
+      bool(inp.writesCloud) || bool(inp.cloudWrite) || bool(inp.remoteWriteAttempted) ||
+      bool(transport.writeRemote) || bool(transport.writeWebDAV) || bool(transport.writeCloud);
     var relayRequested = bool(inp.writeRelay) || bool(inp.writesRelay) || bool(inp.relayEnqueueAttempted) ||
-      bool(inp.enqueueRelay) || bool(inp.relayDispatchRequested);
+      bool(inp.enqueueRelay) || bool(inp.relayDispatchRequested) || bool(transport.enqueueRelay) ||
+      bool(transport.writeRelay);
     var casRequested = bool(inp.writeCAS) || bool(inp.writesCAS) || bool(inp.casWrite) ||
-      bool(inp.chatSavingCasTouched) || bool(inp.chatSavingCasRequested);
+      bool(inp.chatSavingCasTouched) || bool(inp.chatSavingCasRequested) || bool(transport.touchChatSavingCAS) ||
+      bool(transport.writeCAS);
     var fullBundleV3Requested = bool(inp.fullBundleV3Started) || bool(inp.startFullBundleV3) ||
-      bool(inp.mintFullBundleV3) || bool(inp.fullBundleV3MintRequested);
+      bool(inp.mintFullBundleV3) || bool(inp.fullBundleV3MintRequested) || bool(transport.startFullBundleV3) ||
+      bool(transport.mintFullBundleV3);
     var cleanupRequested = bool(inp.cleanupAuthorityIntroduced) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
-      bool(inp.a950MutationAttempted) || bool(inp.mutateA950);
-    var exportMintRequested = bool(inp.exportIdMinted) || bool(inp.mintExportId) || cleanString(inp.mintedExportId);
+      bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
+      bool(safety.mutateA950);
+    var exportMintRequested = bool(inp.exportIdMinted) || bool(inp.mintExportId) || cleanString(inp.mintedExportId) ||
+      bool(sequence.mintNewExport);
+    var requestedProductSyncReady = valueOrFallback(inp.productSyncReady, readiness.productSyncReady);
+    var requestedTransportReady = valueOrFallback(inp.transportReady, readiness.transportReady);
+    var requestedLocalExportableSyncReady = valueOrFallback(inp.localExportableSyncReady, readiness.localExportableSyncReady);
+    var requestedTransportEligibility = valueOrFallback(inp.transportEligibilityFromLocalExportableReady,
+      readiness.transportEligibilityFromLocalExportableReady);
+    var casBlockedSupplied = inp.chatSavingCasBlocked === true || readiness.chatSavingCasBlocked === true ||
+      transport.chatSavingCasBlocked === true || transport.touchChatSavingCAS === false;
+    var a950VisibleSupplied = inp.a950DocumentedDebtVisible === true || inp.a950DocumentedDebtQuarantined === true ||
+      readiness.a950DocumentedDebtVisible === true || readiness.a950DocumentedDebtQuarantined === true ||
+      (safety.mutateA950 === false && safety.cleanupAuthority === false);
 
     if (!gate) addUnique(blockers, 'webdav-dry-run-gate-missing');
     else if (gate !== TRANSPORT_READINESS_DRY_RUN_GATE) addUnique(blockers, 'webdav-dry-run-gate-invalid');
     if (inp.dryRun !== true) addUnique(blockers, 'webdav-dry-run-required');
     if (inp.apply === true) addUnique(blockers, 'webdav-dry-run-apply-forbidden');
-    if (inp.productSyncReady !== false) addUnique(blockers, 'webdav-product-sync-ready-mismatch');
-    if (inp.transportReady !== false) addUnique(blockers, 'webdav-transport-ready-mismatch');
-    if (inp.localExportableSyncReady !== true) addUnique(blockers, 'webdav-local-exportable-not-ready');
-    if (inp.transportEligibilityFromLocalExportableReady !== true) addUnique(blockers, 'webdav-transport-eligibility-missing');
+    if (requestedProductSyncReady !== false) addUnique(blockers, 'webdav-product-sync-ready-mismatch');
+    if (requestedTransportReady !== false) addUnique(blockers, 'webdav-transport-ready-mismatch');
+    if (requestedLocalExportableSyncReady !== true) addUnique(blockers, 'webdav-local-exportable-not-ready');
+    if (requestedTransportEligibility !== true) addUnique(blockers, 'webdav-transport-eligibility-missing');
     if (privacyMode !== 'hash-only' || privacyObject.hashOnly === false || bool(inp.rawPrivateFieldsLogged) || privacy.rawInputRejected) {
       addUnique(blockers, 'webdav-private-input-rejected');
     }
@@ -447,7 +495,9 @@
     if (expectedSeq != null && previousSeq != null && expectedSeq < previousSeq) addUnique(blockers, 'webdav-sequence-regression');
     if (exportMintRequested) addUnique(blockers, 'webdav-export-id-minted-in-dry-run');
     if (!peerTargetProvided || (!peerHash && !localMockTarget)) addUnique(blockers, 'webdav-peer-target-ambiguous');
-    if (isObject(inp.peerTarget) && !peerHash && !localMockTarget) addUnique(blockers, 'webdav-peer-hash-required');
+    if ((isObject(inp.peerTarget) || (isObject(inp.target) && targetMode !== 'mock-peer')) && !peerHash && !localMockTarget) {
+      addUnique(blockers, 'webdav-peer-hash-required');
+    }
     if (peerHash && localMockTarget) addUnique(blockers, 'webdav-peer-target-ambiguous');
     if (!localMockTarget && (!remoteRootProvided || !rootHash)) addUnique(blockers, 'webdav-remote-root-ambiguous');
     if (writeLikeRequested) addUnique(blockers, 'webdav-dry-run-remote-write-forbidden');
@@ -455,8 +505,8 @@
     if (casRequested) addUnique(blockers, 'webdav-chat-saving-cas-boundary-violation');
     if (fullBundleV3Requested) addUnique(blockers, 'webdav-fullbundle-v3-start-forbidden');
     if (cleanupRequested) addUnique(blockers, 'webdav-cleanup-authority-forbidden');
-    if (inp.chatSavingCasBlocked !== true) addUnique(warnings, 'chat-saving-cas-blocked-flag-not-supplied');
-    if (inp.a950DocumentedDebtVisible !== true && inp.a950DocumentedDebtQuarantined !== true) {
+    if (!casBlockedSupplied) addUnique(warnings, 'chat-saving-cas-blocked-flag-not-supplied');
+    if (!a950VisibleSupplied) {
       addUnique(warnings, 'a950-documented-debt-visibility-not-supplied');
     }
 
@@ -485,8 +535,8 @@
       fullBundleV3Started: false,
       productSyncReady: false,
       transportReady: false,
-      localExportableSyncReady: inp.localExportableSyncReady === true,
-      transportEligibilityFromLocalExportableReady: inp.transportEligibilityFromLocalExportableReady === true,
+      localExportableSyncReady: requestedLocalExportableSyncReady === true,
+      transportEligibilityFromLocalExportableReady: requestedTransportEligibility === true,
       transportControlledApplyGateReserved: TRANSPORT_CONTROLLED_APPLY_GATE,
       webdavCloudRelayBlocked: true,
       chatSavingCasBlocked: true,
