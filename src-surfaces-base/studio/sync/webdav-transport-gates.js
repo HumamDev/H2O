@@ -996,6 +996,18 @@
 
   function approvalAccepted(approval, expected, mode) {
     var app = safeObject(approval);
+    function explicitTrue(names) {
+      for (var i = 0; i < names.length; i += 1) {
+        if (app[names[i]] === true) return true;
+      }
+      return false;
+    }
+    function explicitFalse(names) {
+      for (var i = 0; i < names.length; i += 1) {
+        if (app[names[i]] === false) return true;
+      }
+      return false;
+    }
     if (app.approved !== true) return false;
     if (mode === 'apply' &&
         (app.reviewedTransportApplyApproved !== true || app.controlledLocalMockApplyApproved !== true)) {
@@ -1015,9 +1027,17 @@
     if (hashLike(app.remoteRootRefHash || app.remoteRootHash) &&
         hashLike(app.remoteRootRefHash || app.remoteRootHash) !== expected.remoteRootRefHash) return false;
     if (app.productSyncReady !== false || app.transportReady !== false) return false;
-    if (app.noChatSavingCas !== true && app.noChatSavingCAS !== true) return false;
-    if (app.noFullBundleV3 !== true || app.noA950Mutation !== true) return false;
-    if (app.privacyHashOnly !== true) return false;
+    if (explicitTrue(['realWebDAVApproved', 'realTransportApproved', 'webdavCloudRelayApproved',
+        'writeWebDAV', 'writeCloud', 'enqueueRelay', 'writeRelay', 'writeCAS', 'writeFiles',
+        'startFullBundleV3', 'mintFullBundleV3', 'mutateExportState', 'mintExportId', 'burnSequence',
+        'mutateA950', 'cleanupAuthority'])) return false;
+    if (!explicitTrue(['noChatSavingCas', 'noChatSavingCAS', 'noCASWrite', 'noCasWrite',
+        'noCAS', 'noChatSavingCasWrite'])) return false;
+    if (!explicitTrue(['noFullBundleV3', 'noFullBundleV3Start', 'noFullBundleV3Started',
+        'noFullBundleV3Mint', 'noV3Start', 'noV3Mint'])) return false;
+    if (!explicitTrue(['noA950Mutation', 'noA950Mutate', 'noCleanupAuthority']) &&
+        !explicitFalse(['mutateA950', 'cleanupAuthority'])) return false;
+    if (!explicitTrue(['privacyHashOnly', 'hashOnly', 'privacyRedactedHashOnly'])) return false;
     return true;
   }
 
@@ -1083,6 +1103,9 @@
     var cleanupRequested = bool(inp.cleanupAuthority) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
       bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
       bool(safety.mutateA950);
+    var approvalRealTransportRequested = bool(approval.realWebDAVApproved) || bool(approval.realTransportApproved) ||
+      bool(approval.webdavCloudRelayApproved) || bool(approval.writeWebDAV) || bool(approval.writeCloud) ||
+      bool(approval.enqueueRelay) || bool(approval.writeRelay);
     var approvalExpected = {
       idempotencyKeyHash: idempotencyKeyHash,
       candidatePayloadHash: candidatePayloadHash,
@@ -1127,6 +1150,7 @@
     if (!restartFailClosed) addUnique(blockers, 'controlled-local-mock-restart-fail-closed-proof-required');
     if (sequenceMode !== 'not-minted-in-controlled-mock') addUnique(blockers, 'controlled-local-mock-sequence-mismatch');
     if (writeLikeRequested || realTargetRequested) addUnique(blockers, 'controlled-local-mock-real-webdav-cloud-write-forbidden');
+    if (approvalRealTransportRequested) addUnique(blockers, 'controlled-local-mock-real-transport-approval-forbidden');
     if (relayRequested) addUnique(blockers, 'controlled-local-mock-relay-enqueue-forbidden');
     if (casRequested) addUnique(blockers, 'controlled-local-mock-cas-write-forbidden');
     if (fileWriteRequested) addUnique(blockers, 'controlled-local-mock-file-write-forbidden');

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// Controlled local mock WebDAV approval reporting fix validator.
+// Controlled local mock WebDAV dry-run approval predicate fix validator.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,12 +11,9 @@ import vm from 'node:vm';
 const root = process.cwd();
 
 const sourcePath = 'src-surfaces-base/studio/sync/webdav-transport-gates.js';
-const evidencePath = 'release-evidence/2026-07-01/controlled-local-mock-approval-reporting-fix.md';
+const evidencePath = 'release-evidence/2026-07-01/controlled-local-mock-dry-run-approval-predicate-fix.md';
+const reportingPath = 'release-evidence/2026-07-01/controlled-local-mock-approval-reporting-fix.md';
 const contractPath = 'release-evidence/2026-07-01/controlled-local-mock-operator-approval-contract-fix.md';
-const dryRunCloseoutPath =
-  'release-evidence/2026-07-01/controlled-local-mock-webdav-transport-dry-run-live-closeout.md';
-const liveContractFixPath =
-  'release-evidence/2026-07-01/controlled-local-mock-webdav-transport-live-contract-fix.md';
 const implementationPath =
   'release-evidence/2026-07-01/controlled-local-mock-webdav-transport-implementation.md';
 
@@ -48,26 +45,27 @@ function installWebdavGates() {
 const source = read(sourcePath);
 const evidence = read(evidencePath);
 const flatEvidence = compact(evidence);
-const contractEvidence = read(contractPath);
-const dryRunCloseout = read(dryRunCloseoutPath);
-const liveContractFix = read(liveContractFixPath);
+const reporting = read(reportingPath);
+const contract = read(contractPath);
 const implementation = read(implementationPath);
 
 for (const token of [
-  'CONTROLLED LOCAL MOCK APPROVAL REPORTING FIXED',
-  '050286fe4f695102e529c646e5a72fe60d5266d0',
-  '2e9850e672710fea2157df2f34e00277c6723274',
+  'CONTROLLED LOCAL MOCK DRY-RUN APPROVAL PREDICATE FIXED',
+  '8a57a9226a0c80b285439f63fc892957d57b221e',
   '2cf439116db984f18060dfe24a394e0b474bafbe',
-  'd2e57ea360191cd159922fb23ee9670b74effda1',
+  '2e9850e672710fea2157df2f34e00277c6723274',
+  '050286fe4f695102e529c646e5a72fe60d5266d0',
+  'operatorDryRunApprovalAccepted:false',
+  'predicate/field mismatch',
+  'noCASWrite:true',
+  'noFullBundleV3Start:true',
+  'hashOnly:true',
+  'remoteRootHash',
   'operatorDryRunApprovalAccepted:true',
   'operatorApplyApprovalAccepted:false',
-  'operatorApprovalAccepted:true',
   'localMockApplyApproved:false',
   'realTransportApprovalAccepted:false',
-  'noChatSavingCAS: true',
-  'reviewedTransportApplyApproved:true',
-  'controlledLocalMockApplyApproved:true',
-  'Real WebDAV/cloud/relay approval remains impossible',
+  'controlled-local-mock-real-transport-approval-forbidden',
   'no local mock apply was run',
   '`productSyncReady:false` remains authoritative',
   '`transportReady:false` remains authoritative',
@@ -93,29 +91,33 @@ for (const forbidden of [
   assertNotIncludes(flatEvidence, forbidden, `evidence forbidden ${forbidden}`);
 }
 
-assertIncludes(contractEvidence, 'CONTROLLED LOCAL MOCK OPERATOR APPROVAL CONTRACT DOCUMENTED',
-  'operator approval contract respected');
-assertIncludes(dryRunCloseout,
-  'CONTROLLED LOCAL MOCK WEBDAV TRANSPORT DRY-RUN LIVE PROVEN - ZERO WRITE; LOCAL MOCK APPLY NOT APPROVED',
-  'dry-run closeout respected');
-assertIncludes(liveContractFix, 'CONTROLLED LOCAL MOCK WEBDAV TRANSPORT LIVE CONTRACT FIXED',
-  'live contract fix respected');
+assertIncludes(reporting, 'CONTROLLED LOCAL MOCK APPROVAL REPORTING FIXED',
+  'approval reporting fix respected');
+assertIncludes(contract, 'CONTROLLED LOCAL MOCK OPERATOR APPROVAL CONTRACT DOCUMENTED',
+  'operator contract respected');
 assertIncludes(implementation, 'CONTROLLED LOCAL MOCK WEBDAV TRANSPORT IMPLEMENTED - MOCK ONLY / REAL TRANSPORT STILL BLOCKED',
-  'controlled local mock implementation respected');
+  'implementation respected');
 
 for (const token of [
+  'function explicitTrue(names)',
+  'function explicitFalse(names)',
+  'noCASWrite',
+  'noFullBundleV3Start',
+  'noA950Mutation',
+  'privacyRedactedHashOnly',
+  'realWebDAVApproved',
+  'webdavCloudRelayApproved',
+  'approvalRealTransportRequested',
+  'controlled-local-mock-real-transport-approval-forbidden',
+  'enqueueRelay',
+  'mintFullBundleV3',
+  'burnSequence',
   'operatorDryRunApprovalAccepted: dryRunApprovalOk',
   'operatorApplyApprovalAccepted: applyApprovalOk',
   'localMockApplyApproved: blockers.length === 0 && applyRequested && applyApprovalOk',
   'realTransportApprovalAccepted: false',
-  'operatorApprovalAccepted: approvalOk',
-  'noCASWrite',
-  'noFullBundleV3Start',
-  'privacyRedactedHashOnly',
-  'app.reviewedTransportApplyApproved !== true || app.controlledLocalMockApplyApproved !== true',
-  'mode === \'dry-run\' && app.reviewedTransportDryRunApproved !== true',
 ]) {
-  assertIncludes(source, token, `source reporting token ${token}`);
+  assertIncludes(source, token, `source predicate token ${token}`);
 }
 
 const api = installWebdavGates();
@@ -125,9 +127,11 @@ assert.equal(typeof api?.evaluateControlledLocalMockTransport, 'function',
 const payloadHash = 'sha256:a721ebdad94e398a4f45bc46c437f465402ad9e8ac2e68cc120eef96df9bbb85';
 const idempotencyKeyHash = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const peerTargetHash = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
-const remoteRootRefHash = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+const remoteRootHash = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
 
-const baseRequest = {
+const liveStrictDryRunRequest = {
+  dryRun: true,
+  apply: false,
   gate: 'webdav-cloud-relay-transport-controlled-apply',
   readiness: {
     localExportableSyncReady: true,
@@ -136,6 +140,30 @@ const baseRequest = {
     transportReady: false,
   },
   killSwitch: { enabled: true },
+  operatorApproval: {
+    schema: 'h2o.studio.transport.webdav-cloud-relay-controlled-dry-run-approval.v1',
+    approved: true,
+    reviewedTransportDryRunApproved: true,
+    scope: 'local-mock-webdav-target-only',
+    targetMode: 'local-mock-webdav',
+    gate: 'webdav-cloud-relay-transport-controlled-apply',
+    killSwitchEnabled: true,
+    idempotencyKeyHash,
+    candidatePayloadHash: payloadHash,
+    candidateBundleHash: payloadHash,
+    peerTargetHash,
+    remoteRootHash,
+    productSyncReady: false,
+    transportReady: false,
+    hashOnly: true,
+    noCASWrite: true,
+    noRelayWrite: true,
+    noFileWrite: true,
+    noFullBundleV3Start: true,
+    noExportStateMutation: true,
+    noSequenceBurn: true,
+    noA950Mutation: true,
+  },
   candidate: {
     kind: 'fullBundle.v2-readonly-projection',
     payloadHash,
@@ -146,7 +174,7 @@ const baseRequest = {
   target: {
     mode: 'local-mock-webdav',
     peerTargetHash,
-    remoteRootHash: remoteRootRefHash,
+    remoteRootHash,
     ambiguous: false,
   },
   sequence: {
@@ -179,43 +207,18 @@ const baseRequest = {
   },
 };
 
-const strictDryRunApproval = {
-  schema: 'h2o.studio.transport.webdav-cloud-relay-controlled-dry-run-approval.v1',
-  approved: true,
-  reviewedTransportDryRunApproved: true,
-  scope: 'local-mock-webdav-target-only',
-  controlledGate: 'webdav-cloud-relay-transport-controlled-apply',
-  killSwitchEnabled: true,
-  idempotencyKeyHash,
-  candidatePayloadHash: payloadHash,
-  candidateBundleHash: payloadHash,
-  peerTargetHash,
-  remoteRootRefHash,
-  productSyncReady: false,
-  transportReady: false,
-  noChatSavingCAS: true,
-  noFullBundleV3: true,
-  noA950Mutation: true,
-  privacyHashOnly: true,
-};
-
-const strictDryRun = api.evaluateControlledLocalMockTransport({
-  ...baseRequest,
-  dryRun: true,
-  apply: false,
-  operatorApproval: strictDryRunApproval,
-});
-assert.equal(strictDryRun.ok, true, 'strict dry-run approval passes');
+const strictDryRun = api.evaluateControlledLocalMockTransport(liveStrictDryRunRequest);
+assert.equal(strictDryRun.ok, true, 'live strict dry-run shape passes');
 assert.equal(strictDryRun.status, 'controlled-local-mock-webdav-transport-dry-run-ready');
-assert.equal(strictDryRun.operatorApprovalAccepted, true, 'current-mode approval accepted');
-assert.equal(strictDryRun.operatorDryRunApprovalAccepted, true, 'dry-run approval explicitly accepted');
-assert.equal(strictDryRun.operatorApplyApprovalAccepted, false, 'apply approval remains false in dry-run');
-assert.equal(strictDryRun.localMockApplyApproved, false, 'dry-run does not approve local mock apply');
-assert.equal(strictDryRun.realTransportApprovalAccepted, false, 'real transport approval impossible');
-assert.equal(strictDryRun.modeledMockApply, false, 'no modeled apply in dry-run');
-assert.equal(strictDryRun.modeledMockWriteCount, 0, 'dry-run zero modeled writes');
-assert.equal(strictDryRun.duplicateReplayZeroWrite, true, 'duplicate replay zero-write');
-assert.equal(strictDryRun.restartFailClosed, true, 'restart fail-closed');
+assert.equal(strictDryRun.operatorApprovalAccepted, true);
+assert.equal(strictDryRun.operatorDryRunApprovalAccepted, true);
+assert.equal(strictDryRun.operatorApplyApprovalAccepted, false);
+assert.equal(strictDryRun.localMockApplyApproved, false);
+assert.equal(strictDryRun.realTransportApprovalAccepted, false);
+assert.equal(strictDryRun.modeledMockApply, false);
+assert.equal(strictDryRun.modeledMockWriteCount, 0);
+assert.equal(strictDryRun.duplicateReplayZeroWrite, true);
+assert.equal(strictDryRun.restartFailClosed, true);
 assert.equal(strictDryRun.realWebDAVWrite, false);
 assert.equal(strictDryRun.writesWebDAV, false);
 assert.equal(strictDryRun.writesCloud, false);
@@ -233,23 +236,24 @@ assert.equal(strictDryRun.blockers.length, 0, 'strict dry-run has no blockers');
 assert.equal(strictDryRun.warnings.length, 0, 'strict dry-run has no warnings');
 
 const missingApprovalApply = api.evaluateControlledLocalMockTransport({
-  ...baseRequest,
+  ...liveStrictDryRunRequest,
   dryRun: false,
   apply: true,
+  operatorApproval: undefined,
 });
 assert.equal(missingApprovalApply.ok, false, 'missing apply approval blocks');
 assert.ok(missingApprovalApply.blockers.includes('controlled-local-mock-operator-approval-required'),
   `missing approval blockers: ${missingApprovalApply.blockers.join(',')}`);
 
 const invalidApprovalApply = api.evaluateControlledLocalMockTransport({
-  ...baseRequest,
+  ...liveStrictDryRunRequest,
   dryRun: false,
   apply: true,
   operatorApproval: {
-    ...strictDryRunApproval,
+    ...liveStrictDryRunRequest.operatorApproval,
+    approved: false,
     reviewedTransportApplyApproved: true,
     controlledLocalMockApplyApproved: true,
-    approved: false,
   },
 });
 assert.equal(invalidApprovalApply.ok, false, 'invalid approval blocks');
@@ -257,10 +261,9 @@ assert.ok(invalidApprovalApply.blockers.includes('controlled-local-mock-operator
   `invalid approval blockers: ${invalidApprovalApply.blockers.join(',')}`);
 
 const dryRunApprovalCannotApply = api.evaluateControlledLocalMockTransport({
-  ...baseRequest,
+  ...liveStrictDryRunRequest,
   dryRun: false,
   apply: true,
-  operatorApproval: strictDryRunApproval,
 });
 assert.equal(dryRunApprovalCannotApply.ok, false, 'dry-run approval does not approve apply');
 assert.equal(dryRunApprovalCannotApply.operatorDryRunApprovalAccepted, true);
@@ -271,10 +274,7 @@ assert.ok(dryRunApprovalCannotApply.blockers.includes('controlled-local-mock-ope
 
 function expectBlock(label, patch, blocker) {
   const result = api.evaluateControlledLocalMockTransport({
-    ...baseRequest,
-    dryRun: true,
-    apply: false,
-    operatorApproval: strictDryRunApproval,
+    ...liveStrictDryRunRequest,
     ...patch,
   });
   assert.equal(result.ok, false, `${label} blocks`);
@@ -284,8 +284,14 @@ function expectBlock(label, patch, blocker) {
   assert.equal(result.writesCAS, false, `${label}: no CAS write`);
 }
 
+expectBlock('real transport approval', {
+  operatorApproval: {
+    ...liveStrictDryRunRequest.operatorApproval,
+    realTransportApproved: true,
+  },
+}, 'controlled-local-mock-real-transport-approval-forbidden');
 expectBlock('real WebDAV target', {
-  target: { mode: 'real-webdav', peerTargetHash, remoteRootHash: remoteRootRefHash, ambiguous: false },
+  target: { mode: 'real-webdav', peerTargetHash, remoteRootHash, ambiguous: false },
 }, 'controlled-local-mock-target-required');
 expectBlock('cloud write', { transport: { writeCloud: true } },
   'controlled-local-mock-real-webdav-cloud-write-forbidden');
@@ -297,26 +303,24 @@ expectBlock('file write', { transport: { writeFiles: true } },
   'controlled-local-mock-file-write-forbidden');
 expectBlock('fullBundle.v3 start', { transport: { startFullBundleV3: true } },
   'controlled-local-mock-fullbundle-v3-forbidden');
-expectBlock('export mutation', { sequence: { mintNewExport: true, burnSequence: false, requireExistingOnly: true } },
-  'controlled-local-mock-sequence-mismatch');
 expectBlock('productSyncReady mismatch', {
-  readiness: { ...baseRequest.readiness, productSyncReady: true },
+  readiness: { ...liveStrictDryRunRequest.readiness, productSyncReady: true },
 }, 'controlled-local-mock-product-sync-ready-mismatch');
 expectBlock('transportReady mismatch', {
-  readiness: { ...baseRequest.readiness, transportReady: true },
+  readiness: { ...liveStrictDryRunRequest.readiness, transportReady: true },
 }, 'controlled-local-mock-transport-ready-mismatch');
 expectBlock('a950 mutation', { safety: { mutateA950: true } },
   'controlled-local-mock-cleanup-authority-forbidden');
 
 console.log(JSON.stringify({
-  schema: 'h2o.studio.transport.controlled-local-mock-approval-reporting-fix.validator.v1',
-  verdict: 'CONTROLLED_LOCAL_MOCK_APPROVAL_REPORTING_FIXED',
-  strictDryRunApprovalAccepted: true,
+  schema: 'h2o.studio.transport.controlled-local-mock-dry-run-approval-predicate-fix.validator.v1',
+  verdict: 'CONTROLLED_LOCAL_MOCK_DRY_RUN_APPROVAL_PREDICATE_FIXED',
   operatorApprovalAccepted: true,
   operatorDryRunApprovalAccepted: true,
   operatorApplyApprovalAccepted: false,
   localMockApplyApproved: false,
   realTransportApprovalAccepted: false,
+  dryRunZeroWrite: true,
   duplicateReplayZeroWrite: true,
   restartFailClosed: true,
   realWebDAVWrite: false,
