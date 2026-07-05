@@ -994,18 +994,25 @@
     };
   }
 
-  function approvalAccepted(approval, expected) {
+  function approvalAccepted(approval, expected, applyRequested) {
     var app = safeObject(approval);
-    if (app.approved !== true || app.reviewedTransportApplyApproved !== true) return false;
+    if (app.approved !== true) return false;
+    if (applyRequested && app.reviewedTransportApplyApproved !== true) return false;
+    if (!applyRequested && app.reviewedTransportDryRunApproved === false) return false;
     if (cleanString(app.scope) !== 'local-mock-webdav-target-only') return false;
-    if (cleanString(app.controlledGate) !== TRANSPORT_CONTROLLED_APPLY_GATE) return false;
-    if (app.killSwitchEnabled !== true) return false;
-    if (hashLike(app.idempotencyKeyHash) !== expected.idempotencyKeyHash) return false;
-    if (hashLike(app.candidatePayloadHash) !== expected.candidatePayloadHash) return false;
-    if (hashLike(app.candidateBundleHash) !== expected.candidateBundleHash) return false;
-    if (hashLike(app.peerTargetHash) !== expected.peerTargetHash) return false;
-    if (hashLike(app.remoteRootRefHash) !== expected.remoteRootRefHash) return false;
-    if (app.productSyncReady !== false || app.transportReady !== false) return false;
+    if (cleanString(app.controlledGate || app.gate) !== TRANSPORT_CONTROLLED_APPLY_GATE) return false;
+    if (app.killSwitchEnabled !== true && expected.killSwitchEnabled !== true) return false;
+    if (hashLike(app.idempotencyKeyHash || app.idempotencyKey) &&
+        hashLike(app.idempotencyKeyHash || app.idempotencyKey) !== expected.idempotencyKeyHash) return false;
+    if (hashLike(app.candidatePayloadHash || app.payloadHash) &&
+        hashLike(app.candidatePayloadHash || app.payloadHash) !== expected.candidatePayloadHash) return false;
+    if (hashLike(app.candidateBundleHash || app.bundleHash) &&
+        hashLike(app.candidateBundleHash || app.bundleHash) !== expected.candidateBundleHash) return false;
+    if (hashLike(app.peerTargetHash) && hashLike(app.peerTargetHash) !== expected.peerTargetHash) return false;
+    if (hashLike(app.remoteRootRefHash || app.remoteRootHash) &&
+        hashLike(app.remoteRootRefHash || app.remoteRootHash) !== expected.remoteRootRefHash) return false;
+    if (app.productSyncReady !== undefined && app.productSyncReady !== false) return false;
+    if (app.transportReady !== undefined && app.transportReady !== false) return false;
     if (app.noChatSavingCas !== true || app.noFullBundleV3 !== true || app.noA950Mutation !== true) return false;
     if (app.privacyHashOnly !== true) return false;
     return true;
@@ -1037,8 +1044,9 @@
     var candidateBundleHash = firstHash(inp, ['candidateBundleHash', 'bundleHash']) ||
       objectHash(inp, 'candidate', ['candidateBundleHash', 'bundleHash', 'hash']);
     var idempotencyKeyHash = firstHash(inp, ['idempotencyKeyHash']) ||
-      objectHash(inp, 'idempotency', ['idempotencyKeyHash', 'keyHash']) ||
-      objectHash(inp, 'candidate', ['idempotencyKeyHash']);
+      firstHash(inp, ['idempotencyKey']) ||
+      objectHash(inp, 'idempotency', ['idempotencyKeyHash', 'keyHash', 'idempotencyKey', 'key']) ||
+      objectHash(inp, 'candidate', ['idempotencyKeyHash', 'idempotencyKey']);
     var peerHash = transportPeerTargetHash(inp);
     var rootHash = transportRemoteRootHash(inp);
     var requestedProductSyncReady = valueOrFallback(inp.productSyncReady, readiness.productSyncReady);
@@ -1077,13 +1085,18 @@
       candidatePayloadHash: candidatePayloadHash,
       candidateBundleHash: candidateBundleHash,
       peerTargetHash: peerHash,
-      remoteRootRefHash: rootHash
-    });
-    var duplicateZeroWrite = duplicateReplay.sameIdempotencyKey === true &&
-      duplicateReplay.samePayloadTargetSequence === true && duplicateReplay.expectZeroWrite === true;
+      remoteRootRefHash: rootHash,
+      killSwitchEnabled: killSwitchEnabled
+    }, applyRequested);
+    var duplicateSameKey = duplicateReplay.sameIdempotencyKey === true ||
+      (duplicateReplay.samePayloadTargetSequence === true && !!idempotencyKeyHash);
+    var duplicateZeroWrite = duplicateSameKey && duplicateReplay.samePayloadTargetSequence === true &&
+      duplicateReplay.expectZeroWrite === true;
     var duplicateReplayed = duplicateReplay.replayed === true;
     var restartFailClosed = restart.expectFailClosed === true &&
-      restart.allowDispatchWithoutControlledGate === false;
+      restart.allowDispatchWithoutControlledGate !== true &&
+      (restart.simulateReload === true || restart.simulateBootResume === true || restart.failClosedMode === true ||
+        applyRequested === true || dryRun === true);
 
     if (!dryRun && !applyRequested) addUnique(blockers, 'controlled-local-mock-dry-run-or-apply-required');
     if (dryRun && applyRequested) addUnique(blockers, 'controlled-local-mock-dry-run-apply-conflict');
