@@ -1,6 +1,6 @@
-# Real Transport W1c Studio Webview Proof
+# Real Transport W1c Desktop Studio Webview Proof
 
-Verdict: W1c real Studio webview proof PASS.
+Verdict: W1c Desktop Studio webview proof PASS.
 
 ## Anchors
 
@@ -12,13 +12,19 @@ Verdict: W1c real Studio webview proof PASS.
 - B8 approval acceptance: `a477752896cf3747b0292d619a0eef9a120bc0a3`
 - B1-B6 implementation rollup: `10e1ee6c740449f2f5b804f4ed73b23c812caacf`
 
-## Runtime Proof Method
+## Desktop Studio Runtime Proof Method
 
-The proof was collected from the loaded Studio runtime DevTools console after
-W1b registered the real transport evaluator chain in the loader surfaces.
-Automated Node/CDP access to the local DevTools endpoint was sandbox-blocked
-with `EPERM`, so this W1c closeout uses the manual DevTools console proof
-result supplied from the actual loaded Studio runtime.
+The primary proof was collected from the loaded Desktop Studio runtime
+DevTools console after W1b registered the real transport evaluator chain in
+the loader surfaces. Automated Node/CDP access to the local DevTools endpoint
+was sandbox-blocked with `EPERM`, so this W1c closeout uses the manual
+DevTools console proof result supplied from the actual loaded Desktop Studio
+runtime.
+
+A previous loaded Studio runtime proof also passed at
+`2026-07-05T18:37:28.243Z` with the same PASS fields. That earlier result is
+secondary corroboration only; the primary W1c evidence is the Desktop Studio
+DevTools proof at `2026-07-05T18:38:26.060Z`.
 
 No W2 first-write preflight was implemented. No real transport path was
 started. The snippet called only:
@@ -26,12 +32,12 @@ started. The snippet called only:
 - `H2O.Studio.sync.realTransportConsole.diagnose()`
 - `H2O.Studio.sync.realTransportConsole.runChainedDryRun(request)`
 
-## Manual DevTools Result
+## Primary Desktop Studio DevTools Result
 
 ```json
 {
   "proofName": "W1c real Studio webview W1 console proof",
-  "timestamp": "2026-07-05T18:37:28.243Z",
+  "timestamp": "2026-07-05T18:38:26.060Z",
   "diagnoseOk": true,
   "validDryRunOk": true,
   "failClosedOk": true,
@@ -115,7 +121,7 @@ started. The snippet called only:
 
 ## Proof Summary
 
-- W1 console API was available in the loaded Studio runtime.
+- W1 console API was available in the loaded Desktop Studio runtime.
 - `diagnose()` passed.
 - `diagnose()` reported no missing substrates.
 - `diagnose()` included substrate keys: `b1`, `b2`, `b3`, `b4`, `b5`,

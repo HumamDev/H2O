@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 //
-// W1c real Studio webview proof validator.
+// W1c real Desktop Studio webview proof validator.
 //
-// Validates the manual DevTools proof recorded for the loaded Studio runtime
-// after W1b loader registration. This validator only reads evidence and
-// asserts the recorded W1 console chain proof and non-activation boundaries.
+// Validates the manual DevTools proof recorded for the loaded Desktop Studio
+// runtime after W1b loader registration. This validator only reads evidence
+// and asserts the recorded W1 console chain proof and non-activation
+// boundaries.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -37,7 +38,7 @@ const flat = compact(evidence);
 
 // Anchors.
 for (const token of [
-  'W1c real Studio webview proof PASS',
+  'W1c Desktop Studio webview proof PASS',
   '6cb1c6ba59fcb1ecb296cb996d6c8f981d0b886b',
   '826c4153ba944bda7c59910a35705e160d167159',
   'ba5844f7637c84136a505b3025838c755b8081af',
@@ -51,19 +52,22 @@ for (const token of [
 
 // Manual runtime proof method.
 for (const token of [
+  'The primary proof was collected from the loaded Desktop Studio runtime',
   'Automated Node/CDP access to the local DevTools endpoint was sandbox-blocked',
   'EPERM',
   'manual DevTools console proof',
+  'secondary corroboration only',
+  '2026-07-05T18:37:28.243Z',
   'H2O.Studio.sync.realTransportConsole.diagnose()',
   'H2O.Studio.sync.realTransportConsole.runChainedDryRun(request)',
 ]) {
-  assertIncludes(evidence, token, `runtime proof token ${token}`);
+  assertIncludes(flat, token, `runtime proof token ${token}`);
 }
 
 // Exact manual proof result fields.
 for (const token of [
   '"proofName": "W1c real Studio webview W1 console proof"',
-  '"timestamp": "2026-07-05T18:37:28.243Z"',
+  '"timestamp": "2026-07-05T18:38:26.060Z"',
   '"diagnoseOk": true',
   '"validDryRunOk": true',
   '"failClosedOk": true',
