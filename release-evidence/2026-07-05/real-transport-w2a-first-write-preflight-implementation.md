@@ -74,6 +74,7 @@ Every blocker is fail-closed and uses the `real-transport-w2-*` prefix:
 
 - `real-transport-w2-wrong-gate`
 - `real-transport-w2-apply-requested`
+- `real-transport-w2-execute-requested`
 - `real-transport-w2-w1c-proof-missing`
 - `real-transport-w2-b8-artifact-missing`
 - `real-transport-w2-approval-missing`
@@ -104,6 +105,14 @@ closeout deferred. The module is not wired into `studio.html` or
 
 W2a does not edit any existing real-transport module body and does not edit
 `webdav-transport-gates.js`.
+
+## Safety Patch
+
+Pre-W2c static checking found that `execute:true` was not blocked by the W2a
+preflight evaluator. This patch adds the explicit
+`real-transport-w2-execute-requested` blocker so any execution request fails
+closed before W2c live proof. W2c live proof remains pending and was not
+performed by this patch.
 
 ## Boundaries Held
 

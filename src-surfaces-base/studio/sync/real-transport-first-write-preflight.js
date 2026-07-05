@@ -237,6 +237,8 @@
     var gate = cleanString(firstValue(scopes, ['gate']));
     var operation = cleanString(firstValue(scopes, ['operation']));
     var applyRequested = firstValue(scopes, ['apply']) === true || firstValue(scopes, ['applyRequested']) === true;
+    var executeRequested = firstValue(scopes, ['execute']) === true ||
+      firstValue(scopes, ['executeRequested']) === true;
     var targetMode = cleanString(firstValue(scopes, ['targetMode', 'mode']));
     var approvalSchema = cleanString(firstValue(scopes, ['approvalSchema', 'schema']));
     var approvalScope = cleanString(firstValue(scopes, ['scope']));
@@ -311,6 +313,7 @@
 
     if (gate !== PREFLIGHT_GATE || operation !== 'preflight') addUnique(blockers, 'real-transport-w2-wrong-gate');
     if (applyRequested) addUnique(blockers, 'real-transport-w2-apply-requested');
+    if (executeRequested) addUnique(blockers, 'real-transport-w2-execute-requested');
     if (!w1cProofReceiptHash) addUnique(blockers, 'real-transport-w2-w1c-proof-missing');
     if (!b8ApprovalArtifactHash) addUnique(blockers, 'real-transport-w2-b8-artifact-missing');
     if (!approvalReady) addUnique(blockers, 'real-transport-w2-approval-missing');

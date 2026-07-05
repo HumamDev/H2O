@@ -98,6 +98,7 @@ const w1FalseFlags = [
 const blockerMatrix = [
   ['wrong-gate', (r) => { r.gate = 'wrong'; }],
   ['apply-requested', (r) => { r.apply = true; }],
+  ['execute-requested', (r) => { r.execute = true; }],
   ['w1c-proof-missing', (r) => { delete r.w1cProofReceiptHash; }],
   ['b8-artifact-missing', (r) => { delete r.b8ApprovalArtifactHash; }],
   ['approval-missing', (r) => { r.b8ApprovalAccepted = false; }],
