@@ -62,10 +62,14 @@ const CATALOG_CRUD_TYPES = [
   'un-delete',
 ];
 
+// Anchor on a non-identifier boundary before productSyncReady so real
+// property/assignment flips are caught, but longer camelCase names that merely
+// end in ...ProductSyncReady (e.g. killSwitchSeparateFromProductSyncReady: true)
+// are not falsely flagged.
 const PRODUCT_READY_TRUE_PATTERNS = [
-  /productSyncReady\s*:\s*true\b/i,
-  /productSyncReady\s*=\s*true\b/i,
-  /productSyncReady['"]?\s*,\s*true\b/i,
+  /(?<![A-Za-z0-9_$])productSyncReady\s*:\s*true\b/i,
+  /(?<![A-Za-z0-9_$])productSyncReady\s*=\s*true\b/i,
+  /(?<![A-Za-z0-9_$])productSyncReady['"]?\s*,\s*true\b/i,
 ];
 
 const V3_RUNTIME_PATTERNS = [
