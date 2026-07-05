@@ -151,7 +151,7 @@ if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes(SORTORDER_REQUEST_SCHEMA), 'sortOrder request schema now present in source (minted inert by F30 S1, which F29 gated)');
   assert(src.includes(SORTORDER_RECEIPT_SCHEMA), 'sortOrder receipt schema now present in source (minted inert by F30 S1, which F29 gated)');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'F29 pre-flight: binding receipt schema must NOT be minted in source');
+  assert(src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema is now minted and live-proven (superseded F29 pre-flight posture)');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must define the real binding request schema');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
@@ -170,8 +170,10 @@ if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'source F11 helper keeps binding-mismatch blocked/reviewed after S5');
   assert(store.includes('folder_bindings') && store.includes('FOLDER_STATE_DATA_KEY') &&
     store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'),
     'folder substrate tokens must remain intact');
@@ -199,10 +201,10 @@ console.log(JSON.stringify({
   anythingMinted: false,
   sortOrderRequestSchemaMinted: false,
   sortOrderReceiptSchemaMinted: false,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: true,
   bindingRequestSchemaPresent: true,
   bindingMismatchBlocked: true,
-  sortOrderGated: true,
+  sortOrderGated: false,
   productSyncReady: false,
   publicPremiumBlocked: true,
   realRemoteWebdavDeferred: true,

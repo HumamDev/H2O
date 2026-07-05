@@ -115,7 +115,7 @@ assert(exists(folderSyncFile), `${folderSyncFile}: missing`);
 if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes("mirrorReprojection: 'deferred-to-s2b'"), 'folder-sync source must still defer mirror reprojection');
-  assert(!src.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema must stay unminted');
+  assert(src.includes('h2o.studio.chat-folder-binding-receipt.v1'), 'binding receipt schema is now minted and live-proven');
   assert(!src.includes('fullBundle.v3'), 'fullBundle.v3 must not be present in source');
   assert(src.includes("webdav: 'deferred'"), 'WebDAV must remain deferred in folder-sync source');
 }
@@ -123,8 +123,10 @@ if (exists(folderSyncFile)) {
 assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 blockedClasses must still include field-mismatch:sortOrder and binding-mismatch');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'F11 blockedClasses keeps binding-mismatch blocked/reviewed after S5');
   assert(store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'), 'folder store should still carry hard-delete and soft-delete guard tokens');
 }
 assert(exists(folderImportFile), `${folderImportFile}: missing`);
@@ -167,9 +169,9 @@ console.log(JSON.stringify({
   s4ControlledApply: false,
   s2bDesignOnly: true,
   s5F11FlipBlocked: true,
-  fieldMismatchSortOrderBlocked: true,
+  fieldMismatchSortOrderBlocked: false,
   bindingMismatchBlocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: true,
   productSyncReady: false,
   chatSavingCasBlocked: true,
 }, null, 2));

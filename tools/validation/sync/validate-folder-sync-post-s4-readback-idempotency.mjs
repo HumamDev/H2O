@@ -123,7 +123,7 @@ if (exists(folderSyncFile)) {
   const src = read(folderSyncFile);
   assert(src.includes('function applyFolderSortorderReorderRequest('), 'F32 handler must still be present');
   assert(src.includes("mirrorReprojection: 'deferred-to-s2b'"), 'F32 handler must still defer mirror re-projection (S2b not implemented)');
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted');
+  assert(src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema is now minted and live-proven');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"), 'binding request schema must remain present');
   assert(src.includes("FULL_BUNDLE_SCHEMA = 'h2o.studio.fullBundle.v2'"), 'source fullBundle schema must remain v2');
   assert(!src.includes('fullBundle.v3'), 'source must not contain fullBundle.v3');
@@ -144,8 +144,10 @@ if (exists(foldersStoreFile)) {
     assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
       'F11 helper must keep binding-mismatch blocked after S5');
   } else {
-    assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-      'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch before S5');
+    assert(store.includes("'field-mismatch:sortOrder': true"),
+      'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+    assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+      'F11 helper keeps binding-mismatch blocked/reviewed in current post-S5 source');
   }
   assert(store.includes('folder_bindings') && store.includes('FOLDER_STATE_DATA_KEY') &&
     store.includes('hardDeleteBlocked') && store.includes('softDeleteEmptyFolder'), 'folder substrate tokens intact');
@@ -192,7 +194,7 @@ console.log(JSON.stringify({
   noNewApplyOrWrite: true,
   s2bBlocked: true,
   s5F11Blocked: true,
-  bindingReceiptSchemaMinted: false,
+  bindingReceiptSchemaMinted: true,
   productSyncReady: false,
   chatSavingCasBlocked: true,
   metadataCorePresent: METADATA_CORE_TYPES.every((t) => appliedNow.includes(t)),

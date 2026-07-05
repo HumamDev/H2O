@@ -118,7 +118,7 @@ if (exists(folderSyncFile)) {
   }
 
   // binding receipt schema still NOT minted; binding request schema present
-  assert(!src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema must remain NOT minted (S6, not S1)');
+  assert(src.includes(BINDING_RECEIPT_SCHEMA), 'binding receipt schema is now minted and live-proven');
   assert(src.includes("CHAT_FOLDER_BINDING_REQUEST_SCHEMA = '" + BINDING_REQUEST_SCHEMA + "'"),
     'source must still define the real binding request schema');
 
@@ -140,8 +140,10 @@ assert(exists(foldersStoreFile), `${foldersStoreFile}: missing`);
 if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'F11 helper must STILL block field-mismatch:sortOrder + binding-mismatch (no allowed-set change in S1)');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'F11 helper keeps binding-mismatch blocked/reviewed after S5');
   assert(store.includes('folder_bindings') && store.includes("var sortCol = 'sort_order'") &&
     store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
@@ -170,10 +172,10 @@ console.log(JSON.stringify({
   receiptConstOccurrences: countOccurrences(read(folderSyncFile), RECEIPT_CONST),
   inert: true,
   applyHandlerAdded: false,
-  f11AllowedSetChanged: false,
-  bindingReceiptSchemaMinted: false,
+  f11AllowedSetChanged: true,
+  bindingReceiptSchemaMinted: true,
   bindingMismatchBlocked: true,
-  sortOrderGated: true,
+  sortOrderGated: false,
   productSyncReady: false,
   fullBundleV3Present: false,
   chatSavingCasBlocked: true,

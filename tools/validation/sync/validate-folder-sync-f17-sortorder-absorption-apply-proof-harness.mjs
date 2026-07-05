@@ -311,8 +311,10 @@ if (exists(foldersStoreFile)) {
   const store = read(foldersStoreFile);
   assert(store.includes("var sortCol = 'sort_order'"), 'source listFolders must order by the canonical sort_order column');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must still block field-mismatch:sortOrder + binding-mismatch');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'source F11 helper keeps binding-mismatch blocked/reviewed after S5');
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
 }
@@ -342,7 +344,7 @@ console.log(JSON.stringify({
   writes: proof ? proof.writes : null,
   probeWriteCallCount: proof ? proof.probeWriteCallCount : null,
   proposedSchemasMintedInSource: false,
-  sortOrderGated: true,
+  sortOrderGated: false,
   bindingMismatchBlocked: true,
   productSyncReady: false,
   publicPremiumBlocked: true,

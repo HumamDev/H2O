@@ -151,8 +151,10 @@ if (exists(foldersStoreFile)) {
   assert(store.includes('delete next.sortOrder;') && store.includes('delete next.sort_order;'),
     'source F11 rebuild row builder must delete sortOrder (never writes mirror ordering)');
   assert(store.includes("F11_RENDER_MIRROR_REBUILD_GATE = '" + F11_GATE + "'"), 'source must define the F11 gate constant');
-  assert(store.includes("blockedClasses: classSelection.blocked.concat(['field-mismatch:sortOrder', 'binding-mismatch'])"),
-    'source F11 helper must always block field-mismatch:sortOrder + binding-mismatch');
+  assert(store.includes("'field-mismatch:sortOrder': true"),
+    'S5 flipped field-mismatch:sortOrder into the F11 allowed set');
+  assert(store.includes("blockedClasses: classSelection.blocked.concat(['binding-mismatch'])"),
+    'source F11 helper keeps binding-mismatch blocked/reviewed after S5');
   assert(store.includes('FOLDER_STATE_DATA_KEY') && store.includes('hardDeleteBlocked') &&
     store.includes('softDeleteEmptyFolder'), 'folder substrate tokens must remain intact');
 }
