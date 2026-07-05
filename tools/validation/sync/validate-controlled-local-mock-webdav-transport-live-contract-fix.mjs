@@ -146,7 +146,7 @@ assertIncludes(webdavCloseout, 'WEBDAV TRANSPORT READINESS DRY-RUN LIVE PROOF PA
   'WebDAV dry-run closeout respected');
 
 for (const token of [
-  'function approvalAccepted(approval, expected, applyRequested)',
+  'function approvalAccepted(approval, expected, mode)',
   'reviewedTransportDryRunApproved',
   'hashLike(app.idempotencyKeyHash || app.idempotencyKey)',
   "objectHash(inp, 'candidate', ['idempotencyKeyHash', 'idempotencyKey'])",

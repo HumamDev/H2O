@@ -116,18 +116,23 @@ assertIncludes(killSwitch, 'TRANSPORT CONTROLLED-WRITE KILL SWITCH IMPLEMENTED -
   'kill switch respected');
 
 for (const token of [
-  'function approvalAccepted(approval, expected, applyRequested)',
+  'function approvalAccepted(approval, expected, mode)',
   'app.approved !== true',
   'app.reviewedTransportApplyApproved !== true',
-  'app.reviewedTransportDryRunApproved === false',
+  'app.controlledLocalMockApplyApproved !== true',
+  'app.reviewedTransportDryRunApproved !== true',
   'local-mock-webdav-target-only',
   'TRANSPORT_CONTROLLED_APPLY_GATE',
   'noChatSavingCas',
+  'noChatSavingCAS',
   'noFullBundleV3',
   'noA950Mutation',
   'privacyHashOnly',
   'operatorApprovalAccepted: approvalOk',
-  'if (applyRequested && !approvalOk) addUnique(blockers, \'controlled-local-mock-operator-approval-required\')',
+  'operatorDryRunApprovalAccepted: dryRunApprovalOk',
+  'operatorApplyApprovalAccepted: applyApprovalOk',
+  'localMockApplyApproved: blockers.length === 0 && applyRequested && applyApprovalOk',
+  'if (applyRequested && !applyApprovalOk) addUnique(blockers, \'controlled-local-mock-operator-approval-required\')',
 ]) {
   assertIncludes(source, token, `source approval contract token ${token}`);
 }

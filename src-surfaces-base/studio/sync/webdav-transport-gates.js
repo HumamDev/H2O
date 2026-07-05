@@ -994,11 +994,14 @@
     };
   }
 
-  function approvalAccepted(approval, expected, applyRequested) {
+  function approvalAccepted(approval, expected, mode) {
     var app = safeObject(approval);
     if (app.approved !== true) return false;
-    if (applyRequested && app.reviewedTransportApplyApproved !== true) return false;
-    if (!applyRequested && app.reviewedTransportDryRunApproved === false) return false;
+    if (mode === 'apply' &&
+        (app.reviewedTransportApplyApproved !== true || app.controlledLocalMockApplyApproved !== true)) {
+      return false;
+    }
+    if (mode === 'dry-run' && app.reviewedTransportDryRunApproved !== true) return false;
     if (cleanString(app.scope) !== 'local-mock-webdav-target-only') return false;
     if (cleanString(app.controlledGate || app.gate) !== TRANSPORT_CONTROLLED_APPLY_GATE) return false;
     if (app.killSwitchEnabled !== true && expected.killSwitchEnabled !== true) return false;
@@ -1011,9 +1014,9 @@
     if (hashLike(app.peerTargetHash) && hashLike(app.peerTargetHash) !== expected.peerTargetHash) return false;
     if (hashLike(app.remoteRootRefHash || app.remoteRootHash) &&
         hashLike(app.remoteRootRefHash || app.remoteRootHash) !== expected.remoteRootRefHash) return false;
-    if (app.productSyncReady !== undefined && app.productSyncReady !== false) return false;
-    if (app.transportReady !== undefined && app.transportReady !== false) return false;
-    if (app.noChatSavingCas !== true || app.noFullBundleV3 !== true || app.noA950Mutation !== true) return false;
+    if (app.productSyncReady !== false || app.transportReady !== false) return false;
+    if (app.noChatSavingCas !== true && app.noChatSavingCAS !== true) return false;
+    if (app.noFullBundleV3 !== true || app.noA950Mutation !== true) return false;
     if (app.privacyHashOnly !== true) return false;
     return true;
   }
@@ -1080,14 +1083,17 @@
     var cleanupRequested = bool(inp.cleanupAuthority) || bool(inp.cleanupApply) || bool(inp.cleanupRequested) ||
       bool(inp.a950MutationAttempted) || bool(inp.mutateA950) || bool(safety.cleanupAuthority) ||
       bool(safety.mutateA950);
-    var approvalOk = approvalAccepted(approval, {
+    var approvalExpected = {
       idempotencyKeyHash: idempotencyKeyHash,
       candidatePayloadHash: candidatePayloadHash,
       candidateBundleHash: candidateBundleHash,
       peerTargetHash: peerHash,
       remoteRootRefHash: rootHash,
       killSwitchEnabled: killSwitchEnabled
-    }, applyRequested);
+    };
+    var dryRunApprovalOk = approvalAccepted(approval, approvalExpected, 'dry-run');
+    var applyApprovalOk = approvalAccepted(approval, approvalExpected, 'apply');
+    var approvalOk = dryRun ? dryRunApprovalOk : (applyRequested ? applyApprovalOk : false);
     var duplicateSameKey = duplicateReplay.sameIdempotencyKey === true ||
       (duplicateReplay.samePayloadTargetSequence === true && !!idempotencyKeyHash);
     var duplicateZeroWrite = duplicateSameKey && duplicateReplay.samePayloadTargetSequence === true &&
@@ -1102,7 +1108,7 @@
     if (dryRun && applyRequested) addUnique(blockers, 'controlled-local-mock-dry-run-apply-conflict');
     if (applyRequested && !killSwitchEnabled) addUnique(blockers, 'controlled-local-mock-kill-switch-disabled');
     if (gate !== TRANSPORT_CONTROLLED_APPLY_GATE) addUnique(blockers, 'controlled-local-mock-controlled-gate-required');
-    if (applyRequested && !approvalOk) addUnique(blockers, 'controlled-local-mock-operator-approval-required');
+    if (applyRequested && !applyApprovalOk) addUnique(blockers, 'controlled-local-mock-operator-approval-required');
     if (!idempotencyKeyHash) addUnique(blockers, 'controlled-local-mock-idempotency-key-required');
     if (!candidatePayloadHash || !candidateBundleHash || candidatePayloadHash !== candidateBundleHash) {
       addUnique(blockers, 'controlled-local-mock-payload-hash-mismatch');
@@ -1146,6 +1152,10 @@
       applyRequested: applyRequested,
       killSwitchEnabled: killSwitchEnabled,
       operatorApprovalAccepted: approvalOk,
+      operatorDryRunApprovalAccepted: dryRunApprovalOk,
+      operatorApplyApprovalAccepted: applyApprovalOk,
+      localMockApplyApproved: blockers.length === 0 && applyRequested && applyApprovalOk,
+      realTransportApprovalAccepted: false,
       controlledApplyGate: TRANSPORT_CONTROLLED_APPLY_GATE,
       reservedControlledGateUsedForLocalMockOnly: gate === TRANSPORT_CONTROLLED_APPLY_GATE && localMockTarget,
       controlledMockTransportImplementationPresent: true,

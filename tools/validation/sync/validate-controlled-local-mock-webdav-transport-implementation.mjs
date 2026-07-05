@@ -303,6 +303,7 @@ const approval = {
   schema: 'h2o.studio.transport.webdav-cloud-relay-controlled-apply-approval.v1',
   approved: true,
   reviewedTransportApplyApproved: true,
+  controlledLocalMockApplyApproved: true,
   scope: 'local-mock-webdav-target-only',
   controlledGate: 'webdav-cloud-relay-transport-controlled-apply',
   killSwitchEnabled: true,
