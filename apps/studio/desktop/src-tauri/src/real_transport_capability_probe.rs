@@ -79,9 +79,22 @@ pub struct RtCapabilityProbeRequest {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadOnlyRequestShape {
+    pub target_shape: &'static str,
+    pub trailing_slash: bool,
+    pub double_slash: bool,
+    pub auth_header_present: bool,
+    pub propfind_depth_header_present: bool,
+    pub propfind_body_present: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadOnlyMethodStatusFamily {
     pub operation: &'static str,
+    pub status_code: u16,
     pub status_family: &'static str,
+    pub request_shape: ReadOnlyRequestShape,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -1043,6 +1056,33 @@ fn status_family(status: u16) -> &'static str {
     }
 }
 
+fn redacted_request_shape(
+    endpoint_url_private: &str,
+    remote_root_path_private: &str,
+    operation: ReadOnlyProbeOperation,
+    auth_header_private: Option<&String>,
+) -> Result<ReadOnlyRequestShape, ResolverFailure> {
+    let target_url = ReqwestReadOnlyProbeClient::build_target_url(
+        endpoint_url_private,
+        remote_root_path_private,
+        operation.targets_nonexistent_child(),
+    )?;
+    Ok(ReadOnlyRequestShape {
+        target_shape: if remote_root_path_private.trim().trim_matches('/').is_empty() {
+            "endpoint-only"
+        } else {
+            "endpoint-plus-folder"
+        },
+        trailing_slash: target_url.path().ends_with('/'),
+        double_slash: target_url.path().contains("//"),
+        auth_header_present: auth_header_private
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        propfind_depth_header_present: operation.depth().is_some(),
+        propfind_body_present: false,
+    })
+}
+
 fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
     request: &RtCapabilityProbeRequest,
     registry: &DescriptorRegistry,
@@ -1068,6 +1108,12 @@ fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
         .iter()
         .filter_map(|operation| ReadOnlyProbeOperation::from_request(operation))
     {
+        let request_shape = redacted_request_shape(
+            &endpoint_url_private,
+            &remote_root_path_private,
+            operation,
+            registry.auth_header_private.as_ref(),
+        )?;
         let response = client.send(ReadOnlyProbeHttpRequest {
             operation,
             endpoint_url_private: endpoint_url_private.clone(),
@@ -1079,7 +1125,9 @@ fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
             .method_status_families
             .push(ReadOnlyMethodStatusFamily {
                 operation: operation.redacted_label(),
+                status_code: response.status,
                 status_family: status_family(response.status),
+                request_shape,
             });
         if operation.targets_nonexistent_child() {
             outcome.child_404_ok = Some(response.status == 404);
@@ -1637,19 +1685,55 @@ mod tests {
             vec![
                 ReadOnlyMethodStatusFamily {
                     operation: "OPTIONS",
-                    status_family: "2xx"
+                    status_code: 204,
+                    status_family: "2xx",
+                    request_shape: ReadOnlyRequestShape {
+                        target_shape: "endpoint-plus-folder",
+                        trailing_slash: true,
+                        double_slash: false,
+                        auth_header_present: true,
+                        propfind_depth_header_present: false,
+                        propfind_body_present: false,
+                    },
                 },
                 ReadOnlyMethodStatusFamily {
                     operation: "PROPFIND Depth 0",
-                    status_family: "2xx"
+                    status_code: 207,
+                    status_family: "2xx",
+                    request_shape: ReadOnlyRequestShape {
+                        target_shape: "endpoint-plus-folder",
+                        trailing_slash: true,
+                        double_slash: false,
+                        auth_header_present: true,
+                        propfind_depth_header_present: true,
+                        propfind_body_present: false,
+                    },
                 },
                 ReadOnlyMethodStatusFamily {
                     operation: "HEAD root",
-                    status_family: "2xx"
+                    status_code: 200,
+                    status_family: "2xx",
+                    request_shape: ReadOnlyRequestShape {
+                        target_shape: "endpoint-plus-folder",
+                        trailing_slash: true,
+                        double_slash: false,
+                        auth_header_present: true,
+                        propfind_depth_header_present: false,
+                        propfind_body_present: false,
+                    },
                 },
                 ReadOnlyMethodStatusFamily {
                     operation: "HEAD deterministic nonexistent child",
-                    status_family: "4xx"
+                    status_code: 404,
+                    status_family: "4xx",
+                    request_shape: ReadOnlyRequestShape {
+                        target_shape: "endpoint-plus-folder",
+                        trailing_slash: false,
+                        double_slash: false,
+                        auth_header_present: true,
+                        propfind_depth_header_present: false,
+                        propfind_body_present: false,
+                    },
                 },
             ]
         );
