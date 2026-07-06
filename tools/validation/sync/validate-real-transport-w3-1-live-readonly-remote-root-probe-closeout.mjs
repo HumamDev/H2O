@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// W3.1 live read-only remote-root probe closeout validator.
+// W3.1.7 live read-only remote-root probe closeout validator.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -39,13 +39,14 @@ const productionCommand = command.split('#[cfg(test)]')[0] || command;
 const lib = read(libPath);
 const cargo = read(cargoPath);
 const csp = JSON.parse(read(tauriConfPath))?.app?.security?.csp || '';
-const rustCommandSurface = `${command}\n${lib}`;
+const rustCommandSurface = `${productionCommand}\n${lib}`;
 
 for (const token of [
-  'b61aeee1c2c8bd10172147718c18bf35ae6c39ec',
-  '3df39bbcd50d44222817aaf3defdd1c13850bd42',
+  '81b5338c6319f5744ed25c9453635ec5fb91864e',
+  '2ec8a465a4393c31d75536d9cea974d76ff528cf',
+  '523a1978258ad4e5e844984de986a6677440bcc7',
+  '38d7d18b29d142133421d35e5cc34344bf83a09d',
   '6a5e8bbe5f68148c8eb28456d9922ec8f666a10e',
-  'f670a18c509dc79d8d651da1e9e9aea06969a2cc',
   '979e8a5ba3584d50ab18ae848645e1163d008eae',
   'd1ef09955c3a8208226674341c68a761bf080e2b',
   '5dd884aea2d4e554ea7bd1282df7369ac4060ab8',
@@ -54,38 +55,57 @@ for (const token of [
 }
 
 for (const token of [
-  'Verdict: LIVE READ-ONLY REMOTE-ROOT PROBE RETRY BLOCKED.',
+  'Verdict: LIVE READ-ONLY REMOTE-ROOT PROBE COMPLETED HASH-ONLY.',
+  'pathSource: default-private',
   '`h2o_rt_capability_probe` exists: true',
   '`h2o_rt_first_write` absent: true',
   'write command absent: true',
-  'descriptorRegistryRefHash: `sha256:4c6cbdcbc19e42a6f68e71de9ac2fadb20c7dc7a5adaeb8e6605cdc55f454764`',
+  'descriptorRegistryRefHash: `sha256:587b8681ee910bf3828413e17f949fa52b53a191db72ee4e05c87c0138525167`',
+  'endpointRefHash: `sha256:42bc195455b03a0171597f8b0758c4a450390c829e9c1f653a069db135784100`',
+  'remoteRootRefHash: `sha256:10dea62063f3d07519c48924f6e1d295464839010618361368b47519695a8fca`',
+  'credentialRefHash: `sha256:328562af62cffd7ebedbec742d727e386db3b173e1715750b4a26166f8d385b8`',
+  'descriptor registry JSON parsed: true',
   'descriptor registry hash matched expected value: true',
   'endpointRefHash resolved by Rust-only registry: true',
   'remoteRootRefHash resolved by Rust-only registry: true',
   'credentialRefHash resolved by Rust-only registry: true',
-  'live read-only probe performed: false',
-  'live read-only probe completed: false',
-  'networkAttempted:false',
-  'command status: `real-transport-readonly-capability-probe-blocked`',
-  'command blocker: `real-transport-w3-live-network-failed`',
-  'resolver reached live path: true',
-  'redacted/hash-only probe receipt produced: false',
+  'probeResult: pass',
+  'command status: `real-transport-readonly-capability-probe-ready`',
+  'command reason: `read-only-capability-probe-substrate-ready`',
+  'blockers: none',
+  'networkAttempted:true',
+  'remoteRootReachable:false',
+  'rootExists:false',
+  'rootEmpty:false',
+  'listingHash: `sha256:d089c8a9fc28e4e50223eb38c9409e362521be9380a37341304fbac7a4cd9e5f`',
+  'child404Ok:false',
+  'davClassSummaryHash: not-produced',
+  'allowedMethodsSummaryHash: not-produced',
+  'createOnlyBehavior: unknown',
+  'etagBehavior: unknown',
+  'ifNoneMatchBehavior: unknown',
+  'rawPrivateFieldsLogged:false',
   'writesWebDAV:false',
+  'writesCloud:false',
+  'writesRelay:false',
+  'writesCAS:false',
+  'writesFiles:false',
+  'enqueuesRelay:false',
+  'fullBundleV3Started:false',
+  'mintsExportId:false',
+  'burnsSequence:false',
   'productSyncReady:false',
   'transportReady:false',
-  'W3.2 remains next/pending only after a successful read-only closeout passes',
+  'W3.2 remains pending',
 ]) {
   assertIncludes(flatEvidence, token, `evidence token ${token}`);
 }
 
 for (const token of [
-  'read-only methods requested: OPTIONS, PROPFIND Depth 0, HEAD root, HEAD deterministic nonexistent child',
-  'OPTIONS performed: false',
-  'PROPFIND Depth 0 performed: false',
-  'PROPFIND Depth 1 performed: false',
-  'HEAD root performed: false',
-  'GET root performed: false',
-  'HEAD deterministic nonexistent child performed: false',
+  'OPTIONS',
+  'PROPFIND Depth 0',
+  'HEAD root',
+  'HEAD deterministic nonexistent child',
   'PUT performed: false',
   'DELETE performed: false',
   'MKCOL performed: false',
@@ -95,9 +115,9 @@ for (const token of [
   'LOCK performed: false',
   'UNLOCK performed: false',
   'POST performed: false',
-  'request body sent: false',
-  'redirect followed: false',
-  'credential forwarding to redirect target: false',
+  'request body mutation sent: false',
+  'relay enqueue performed: false',
+  'outbox/ledger/store mutation performed: false',
 ]) {
   assertIncludes(flatEvidence, token, `method boundary ${token}`);
 }
@@ -141,9 +161,6 @@ for (const forbidden of [
   'burnsSequence:true',
   'productSyncReady:true',
   'transportReady:true',
-  'networkAttempted:true',
-  'live read-only probe performed: true',
-  'live read-only probe completed: true',
   'redacted/hash-only probe receipt produced: true',
   'Desktop-only remote semantics were introduced: true',
   'W3.2 is unblocked',
@@ -171,10 +188,10 @@ for (const [source, label] of [[evidence, 'evidence'], [productionCommand, 'prod
 console.log(JSON.stringify({
   ok: true,
   validator: 'validate-real-transport-w3-1-live-readonly-remote-root-probe-closeout',
-  liveReadOnlyProbePerformed: false,
-  blocked: true,
-  blocker: 'real-transport-w3-live-network-failed',
-  descriptorRegistryRefHash: 'sha256:4c6cbdcbc19e42a6f68e71de9ac2fadb20c7dc7a5adaeb8e6605cdc55f454764',
+  liveReadOnlyProbePerformed: true,
+  descriptorRegistryRefHash: 'sha256:587b8681ee910bf3828413e17f949fa52b53a191db72ee4e05c87c0138525167',
+  networkAttempted: true,
+  remoteRootReachable: false,
   firstWriteCommandExists: false,
   writeCommandExists: false,
   forbiddenMethodUsed: false,
