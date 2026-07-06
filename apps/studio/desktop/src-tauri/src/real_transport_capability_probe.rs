@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const SCHEMA: &str = "h2o.studio.transport.real-capability-probe-result.v1";
@@ -12,6 +13,8 @@ pub const READONLY_PROBE_GATE: &str =
     "real-webdav-cloud-relay-transport-readonly-capability-probe-evaluate";
 pub const LIVE_READONLY_PROBE_GATE: &str = "real-transport-w3-readonly-remote-root-probe";
 const DESCRIPTOR_REGISTRY_FILE_ENV: &str = "H2O_RT_DESCRIPTOR_REGISTRY_FILE";
+const DEFAULT_DESCRIPTOR_REGISTRY_FILE: &str =
+    "/private/tmp/h2o-real-transport-w3-live-descriptor-registry.json";
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
 const READONLY_TIMEOUT_SECONDS: u64 = 8;
 
@@ -261,6 +264,122 @@ struct DescriptorRegistry {
     extra: BTreeMap<String, JsonValue>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritableDescriptorRegistry<'a> {
+    schema: &'static str,
+    descriptor_mode: &'static str,
+    endpoint_ref_hash: &'a str,
+    remote_root_ref_hash: &'a str,
+    credential_ref_hash: &'a str,
+    endpoint_url_private: &'a str,
+    remote_root_path_private: &'a str,
+    auth_header_private: &'a str,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RtWebDavSetupRequest {
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub root_path: Option<String>,
+    #[serde(default)]
+    pub credential_identifier: Option<String>,
+    #[serde(default)]
+    pub credential_secret: Option<String>,
+    #[serde(default)]
+    pub endpoint_descriptor_label: Option<String>,
+    #[serde(default)]
+    pub remote_root_descriptor_label: Option<String>,
+    #[serde(default)]
+    pub credential_descriptor_label: Option<String>,
+    #[serde(default)]
+    pub confirm_non_production: Option<bool>,
+    #[serde(default)]
+    pub confirm_read_only_safe: Option<bool>,
+    #[serde(default)]
+    pub confirm_sacrificial_write_not_approved: Option<bool>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RtWebDavSetupStatusResult {
+    pub schema: &'static str,
+    pub ok: bool,
+    pub status: &'static str,
+    pub reason: &'static str,
+    pub command: &'static str,
+    pub registry_path_class: &'static str,
+    pub descriptor_registry_ref_hash: Option<String>,
+    pub endpoint_ref_hash: Option<String>,
+    pub remote_root_ref_hash: Option<String>,
+    pub credential_ref_hash: Option<String>,
+    pub json_parses: bool,
+    pub required_private_fields_present: bool,
+    pub endpoint_no_longer_reserved_invalid_domain: bool,
+    pub reachable_candidate: bool,
+    pub network_attempted: bool,
+    pub real_webdav_transport_available: bool,
+    pub product_sync_ready: bool,
+    pub transport_ready: bool,
+    pub writes_webdav: bool,
+    pub writes_cloud: bool,
+    pub writes_relay: bool,
+    pub writes_cas: bool,
+    pub writes_files: bool,
+    pub enqueues_relay: bool,
+    pub full_bundle_v3_started: bool,
+    pub mints_export_id: bool,
+    pub burns_sequence: bool,
+    pub raw_private_fields_logged: bool,
+    pub blockers: Vec<&'static str>,
+    pub warnings: Vec<&'static str>,
+}
+
+impl RtWebDavSetupStatusResult {
+    fn base(
+        ok: bool,
+        status: &'static str,
+        reason: &'static str,
+        command: &'static str,
+        blockers: Vec<&'static str>,
+    ) -> Self {
+        Self {
+            schema: "h2o.studio.transport.real-webdav-setup-status.v1",
+            ok,
+            status,
+            reason,
+            command,
+            registry_path_class: "private-out-of-repo-descriptor-registry",
+            descriptor_registry_ref_hash: None,
+            endpoint_ref_hash: None,
+            remote_root_ref_hash: None,
+            credential_ref_hash: None,
+            json_parses: false,
+            required_private_fields_present: false,
+            endpoint_no_longer_reserved_invalid_domain: false,
+            reachable_candidate: false,
+            network_attempted: false,
+            real_webdav_transport_available: false,
+            product_sync_ready: false,
+            transport_ready: false,
+            writes_webdav: false,
+            writes_cloud: false,
+            writes_relay: false,
+            writes_cas: false,
+            writes_files: false,
+            enqueues_relay: false,
+            full_bundle_v3_started: false,
+            mints_export_id: false,
+            burns_sequence: false,
+            raw_private_fields_logged: false,
+            blockers,
+            warnings: vec!["real-transport-webdav-setup-storage-only-no-probe"],
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum ResolverFailure {
     MissingConfig,
@@ -310,6 +429,23 @@ fn sha256_ref(bytes: &[u8]) -> String {
     format!("sha256:{:x}", digest)
 }
 
+fn descriptor_registry_path_for_probe(request: &RtCapabilityProbeRequest) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    let default = PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE);
+    if request.descriptor_registry_ref_hash.is_some() && default.exists() {
+        return Some(default);
+    }
+    None
+}
+
+fn descriptor_registry_path_for_setup() -> PathBuf {
+    std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE))
+}
+
 fn registry_contains_raw_or_private(registry: &DescriptorRegistry) -> bool {
     registry.extra.iter().any(|(key, value)| {
         key_looks_raw_or_private(key) || value_looks_raw_or_private(&value.to_string())
@@ -323,7 +459,7 @@ fn resolve_descriptor_registry(
         return Ok(None);
     }
 
-    let Some(registry_file) = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV) else {
+    let Some(registry_file) = descriptor_registry_path_for_probe(request) else {
         return Err(ResolverFailure::MissingConfig);
     };
     let bytes = fs::read(registry_file).map_err(|_| ResolverFailure::MissingConfig)?;
@@ -354,6 +490,311 @@ fn resolve_descriptor_registry(
     }
 
     Ok(Some(registry))
+}
+
+fn descriptor_ref_hash(kind: &str, label: &str) -> String {
+    let mut descriptor = BTreeMap::new();
+    descriptor.insert("kind", kind.to_string());
+    descriptor.insert("label", label.trim().to_string());
+    descriptor.insert(
+        "schema",
+        "h2o.studio.transport.real-descriptor-ref.v1".to_string(),
+    );
+    let bytes = serde_json::to_vec(&descriptor).expect("descriptor ref serialization");
+    sha256_ref(&bytes)
+}
+
+fn trim_required(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn endpoint_is_reserved_invalid_domain(server_url: &str) -> bool {
+    let normalized = server_url.to_ascii_lowercase();
+    if normalized.contains("reserved-invalid-domain") || normalized.contains("private.invalid") {
+        return true;
+    }
+    match reqwest::Url::parse(server_url) {
+        Ok(url) => url
+            .host_str()
+            .map(|host| host.eq_ignore_ascii_case("invalid") || host.ends_with(".invalid"))
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+fn endpoint_is_reachable_candidate(server_url: &str) -> bool {
+    match reqwest::Url::parse(server_url) {
+        Ok(url) => {
+            matches!(url.scheme(), "http" | "https")
+                && !endpoint_is_reserved_invalid_domain(server_url)
+        }
+        Err(_) => false,
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] } else { 0 };
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < bytes.len() {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    out
+}
+
+fn build_auth_header_private(identifier: &str, credential_secret: &str) -> String {
+    let material = credential_secret.trim();
+    let lower = material.to_ascii_lowercase();
+    if lower.starts_with("basic ") || lower.starts_with("bearer ") {
+        return material.to_string();
+    }
+    let pair = format!("{}:{}", identifier.trim(), material);
+    format!("Basic {}", base64_encode(pair.as_bytes()))
+}
+
+fn write_private_registry_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| ())?;
+    }
+    fs::write(path, bytes).map_err(|_| ())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSetupStatusResult {
+    let registry_hash = sha256_ref(bytes);
+    let mut result = RtWebDavSetupStatusResult::base(
+        false,
+        "real-transport-webdav-setup-blocked",
+        "real-transport-webdav-setup-registry-invalid",
+        command,
+        vec!["real-transport-webdav-setup-registry-invalid"],
+    );
+    result.descriptor_registry_ref_hash = Some(registry_hash);
+    let Ok(registry) = serde_json::from_slice::<DescriptorRegistry>(bytes) else {
+        return result;
+    };
+    result.json_parses = true;
+    result.endpoint_ref_hash = Some(registry.endpoint_ref_hash.clone());
+    result.remote_root_ref_hash = Some(registry.remote_root_ref_hash.clone());
+    result.credential_ref_hash = Some(registry.credential_ref_hash.clone());
+
+    let required_private_fields_present = is_hash_ref(&Some(registry.endpoint_ref_hash.clone()))
+        && is_hash_ref(&Some(registry.remote_root_ref_hash.clone()))
+        && is_hash_ref(&Some(registry.credential_ref_hash.clone()))
+        && registry
+            .endpoint_url_private
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        && registry
+            .remote_root_path_private
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        && registry
+            .auth_header_private
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+    result.required_private_fields_present = required_private_fields_present;
+    result.endpoint_no_longer_reserved_invalid_domain = registry
+        .endpoint_url_private
+        .as_deref()
+        .map(|value| !endpoint_is_reserved_invalid_domain(value))
+        .unwrap_or(false);
+    result.reachable_candidate = required_private_fields_present
+        && registry
+            .endpoint_url_private
+            .as_deref()
+            .map(endpoint_is_reachable_candidate)
+            .unwrap_or(false);
+
+    let mut blockers = Vec::new();
+    if registry.schema != "h2o.studio.transport.real-descriptor-registry.v1" {
+        blockers.push("real-transport-webdav-setup-registry-schema-invalid");
+    }
+    if registry.descriptor_mode.as_deref() != Some("hash-only-redacted") {
+        blockers.push("real-transport-webdav-setup-descriptor-mode-invalid");
+    }
+    if registry_contains_raw_or_private(&registry) {
+        blockers.push("real-transport-webdav-setup-extra-raw-config-rejected");
+    }
+    if !required_private_fields_present {
+        blockers.push("real-transport-webdav-setup-required-private-fields-missing");
+    }
+    if !result.endpoint_no_longer_reserved_invalid_domain {
+        blockers.push("real-transport-webdav-setup-reserved-invalid-domain");
+    }
+    if !result.reachable_candidate {
+        blockers.push("real-transport-webdav-setup-not-reachable-candidate");
+    }
+    result.blockers = blockers;
+    result.ok = result.blockers.is_empty();
+    result.status = if result.ok {
+        "real-transport-webdav-setup-ready"
+    } else {
+        "real-transport-webdav-setup-blocked"
+    };
+    result.reason = if result.ok {
+        "real-transport-webdav-setup-ready"
+    } else {
+        result.blockers[0]
+    };
+    result
+}
+
+pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatusResult {
+    let command = "h2o_rt_prepare_webdav_setup";
+    let mut blockers = Vec::new();
+    let server_url = trim_required(&request.server_url);
+    let root_path = trim_required(&request.root_path);
+    let credential_identifier = trim_required(&request.credential_identifier);
+    let credential_secret = trim_required(&request.credential_secret);
+    let endpoint_descriptor_label = trim_required(&request.endpoint_descriptor_label);
+    let remote_root_descriptor_label = trim_required(&request.remote_root_descriptor_label);
+    let credential_descriptor_label = trim_required(&request.credential_descriptor_label);
+
+    if server_url.is_none() {
+        blockers.push("real-transport-webdav-setup-server-url-required");
+    }
+    if root_path.is_none() {
+        blockers.push("real-transport-webdav-setup-root-path-required");
+    }
+    if credential_identifier.is_none() || credential_secret.is_none() {
+        blockers.push("real-transport-webdav-setup-credential-required");
+    }
+    if endpoint_descriptor_label.is_none()
+        || remote_root_descriptor_label.is_none()
+        || credential_descriptor_label.is_none()
+    {
+        blockers.push("real-transport-webdav-setup-descriptor-labels-required");
+    }
+    if request.confirm_non_production != Some(true) {
+        blockers.push("real-transport-webdav-setup-non-production-confirmation-required");
+    }
+    if request.confirm_read_only_safe != Some(true) {
+        blockers.push("real-transport-webdav-setup-readonly-confirmation-required");
+    }
+    if request.confirm_sacrificial_write_not_approved != Some(true) {
+        blockers.push("real-transport-webdav-setup-no-sacrificial-write-confirmation-required");
+    }
+    if server_url
+        .as_deref()
+        .map(endpoint_is_reachable_candidate)
+        .unwrap_or(false)
+        == false
+    {
+        blockers.push("real-transport-webdav-setup-reachable-candidate-required");
+    }
+    for label in [
+        endpoint_descriptor_label.as_deref(),
+        remote_root_descriptor_label.as_deref(),
+        credential_descriptor_label.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value_looks_raw_or_private(label) {
+            blockers.push("real-transport-webdav-setup-descriptor-label-raw-rejected");
+            break;
+        }
+    }
+    if !blockers.is_empty() {
+        return RtWebDavSetupStatusResult::base(
+            false,
+            "real-transport-webdav-setup-blocked",
+            blockers[0],
+            command,
+            blockers,
+        );
+    }
+
+    let server_url = server_url.expect("validated serverUrl");
+    let root_path = root_path.expect("validated rootPath");
+    let credential_identifier = credential_identifier.expect("validated credentialIdentifier");
+    let credential_secret = credential_secret.expect("validated credentialSecret");
+    let endpoint_descriptor_label =
+        endpoint_descriptor_label.expect("validated endpoint descriptor label");
+    let remote_root_descriptor_label =
+        remote_root_descriptor_label.expect("validated remote root descriptor label");
+    let credential_descriptor_label =
+        credential_descriptor_label.expect("validated credential descriptor label");
+    let endpoint_ref_hash = descriptor_ref_hash("endpoint", &endpoint_descriptor_label);
+    let remote_root_ref_hash = descriptor_ref_hash("remote-root", &remote_root_descriptor_label);
+    let credential_ref_hash = descriptor_ref_hash("credential", &credential_descriptor_label);
+    let auth_header_private = build_auth_header_private(&credential_identifier, &credential_secret);
+    let registry = WritableDescriptorRegistry {
+        schema: "h2o.studio.transport.real-descriptor-registry.v1",
+        descriptor_mode: "hash-only-redacted",
+        endpoint_ref_hash: &endpoint_ref_hash,
+        remote_root_ref_hash: &remote_root_ref_hash,
+        credential_ref_hash: &credential_ref_hash,
+        endpoint_url_private: &server_url,
+        remote_root_path_private: &root_path,
+        auth_header_private: &auth_header_private,
+    };
+    let bytes = match serde_json::to_vec_pretty(&registry) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return RtWebDavSetupStatusResult::base(
+                false,
+                "real-transport-webdav-setup-blocked",
+                "real-transport-webdav-setup-registry-serialize-failed",
+                command,
+                vec!["real-transport-webdav-setup-registry-serialize-failed"],
+            )
+        }
+    };
+    let registry_path = descriptor_registry_path_for_setup();
+    if write_private_registry_file(&registry_path, &bytes).is_err() {
+        return RtWebDavSetupStatusResult::base(
+            false,
+            "real-transport-webdav-setup-blocked",
+            "real-transport-webdav-setup-registry-write-failed",
+            command,
+            vec!["real-transport-webdav-setup-registry-write-failed"],
+        );
+    }
+    status_from_registry_bytes(command, &bytes)
+}
+
+pub fn webdav_setup_status() -> RtWebDavSetupStatusResult {
+    let command = "h2o_rt_webdav_setup_status";
+    let registry_path = descriptor_registry_path_for_setup();
+    match fs::read(&registry_path) {
+        Ok(bytes) => status_from_registry_bytes(command, &bytes),
+        Err(_) => RtWebDavSetupStatusResult::base(
+            false,
+            "real-transport-webdav-setup-blocked",
+            "real-transport-webdav-setup-registry-missing",
+            command,
+            vec!["real-transport-webdav-setup-registry-missing"],
+        ),
+    }
 }
 
 fn is_allowed_operation(value: &str) -> bool {
@@ -754,6 +1195,18 @@ pub fn h2o_rt_capability_probe(
     Ok(evaluate_capability_probe(request))
 }
 
+#[tauri::command]
+pub fn h2o_rt_prepare_webdav_setup(
+    request: RtWebDavSetupRequest,
+) -> Result<RtWebDavSetupStatusResult, String> {
+    Ok(prepare_webdav_setup(request))
+}
+
+#[tauri::command]
+pub fn h2o_rt_webdav_setup_status() -> Result<RtWebDavSetupStatusResult, String> {
+    Ok(webdav_setup_status())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,6 +1349,21 @@ mod tests {
             "head-deterministic-nonexistent-child".to_string(),
         ]);
         request
+    }
+
+    fn setup_request() -> RtWebDavSetupRequest {
+        RtWebDavSetupRequest {
+            server_url: Some(format!("{}://{}", "https", "nonproduction-webdav.local")),
+            root_path: Some(format!("/{}/", "w3-readonly-root")),
+            credential_identifier: Some("operator-test-identity".to_string()),
+            credential_secret: Some("non-production-credential-material".to_string()),
+            endpoint_descriptor_label: Some("non-production-webdav-endpoint".to_string()),
+            remote_root_descriptor_label: Some("non-production-webdav-root".to_string()),
+            credential_descriptor_label: Some("non-production-webdav-credential".to_string()),
+            confirm_non_production: Some(true),
+            confirm_read_only_safe: Some(true),
+            confirm_sacrificial_write_not_approved: Some(true),
+        }
     }
 
     #[test]
@@ -1137,5 +1605,66 @@ mod tests {
         assert!(!serialized.contains("redacted-root"));
         assert!(!serialized.contains("Bearer redacted"));
         assert!(!serialized.contains("redacted-listing-summary"));
+    }
+
+    #[test]
+    fn webdav_setup_requires_confirmations_and_never_attempts_network() {
+        let result = prepare_webdav_setup(RtWebDavSetupRequest::default());
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(!result.writes_webdav);
+        assert!(!result.enqueues_relay);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-webdav-setup-non-production-confirmation-required"));
+        assert!(result
+            .blockers
+            .contains(&"real-transport-webdav-setup-readonly-confirmation-required"));
+        assert!(result
+            .blockers
+            .contains(&"real-transport-webdav-setup-no-sacrificial-write-confirmation-required"));
+    }
+
+    #[test]
+    fn webdav_setup_prepares_private_registry_and_returns_redacted_status() {
+        let _guard = env_lock();
+        let registry_path =
+            std::env::temp_dir().join(format!("h2o-rt-webdav-setup-{}.json", std::process::id()));
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let result = prepare_webdav_setup(setup_request());
+        assert!(result.ok);
+        assert!(is_hash_ref(&result.descriptor_registry_ref_hash));
+        assert!(is_hash_ref(&result.endpoint_ref_hash));
+        assert!(is_hash_ref(&result.remote_root_ref_hash));
+        assert!(is_hash_ref(&result.credential_ref_hash));
+        assert!(result.json_parses);
+        assert!(result.required_private_fields_present);
+        assert!(result.endpoint_no_longer_reserved_invalid_domain);
+        assert!(result.reachable_candidate);
+        assert!(!result.network_attempted);
+        assert!(!result.real_webdav_transport_available);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+        assert!(!result.writes_webdav);
+        let serialized = serde_json::to_string(&result).expect("serialize setup result");
+        assert!(!serialized.contains("nonproduction-webdav.local"));
+        assert!(!serialized.contains("w3-readonly-root"));
+        assert!(!serialized.contains("operator-test-identity"));
+        assert!(!serialized.contains("credential-material"));
+
+        let status = webdav_setup_status();
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(status.ok);
+        assert_eq!(
+            status.descriptor_registry_ref_hash,
+            result.descriptor_registry_ref_hash
+        );
+        assert!(!status.network_attempted);
+        assert!(!status.writes_webdav);
+        assert!(!status.product_sync_ready);
+        assert!(!status.transport_ready);
     }
 }

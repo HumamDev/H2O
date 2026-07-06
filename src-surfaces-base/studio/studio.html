@@ -1533,6 +1533,11 @@
        mint, remote IO, enqueue, outbox/ledger/store mutation, export mutation,
        fullBundle.v3 start, or readiness flip. -->
   <script src="./sync/real-transport-first-write-preflight.js"></script>
+  <!-- W3.1.5L: Desktop WebDAV setup UI for the Rust-only resolver registry.
+       Operator-triggered setup/storage only; no live probe, remote IO,
+       WebDAV/cloud/relay/CAS/file write, token/export mint, sequence burn,
+       fullBundle.v3 start, or readiness flip. -->
+  <script src="./sync/webdav-transport-setup-ui.tauri.js"></script>
   <!-- F4.x: Desktop-only read-only peer discovery diagnostics. Scans the
        existing devices/* peer mirror layout and reports state/checksum
        integrity through H2O.Studio.peerDiscovery. No imports, writes, polling,
