@@ -57,6 +57,9 @@
   var INPUT_STYLE = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-size:13px';
   var GRID_STYLE = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px';
   var STATUS_GRID_STYLE = 'display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace';
+  var DEFAULT_ENDPOINT_DESCRIPTOR_LABEL = 'Non-production WebDAV endpoint';
+  var DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL = 'Non-production WebDAV folder';
+  var DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL = 'Non-production WebDAV credential';
 
   var state = {
     mounted: false,
@@ -139,12 +142,9 @@
   function validation() {
     var missing = [];
     if (!value(ID.serverUrl)) missing.push('Server URL is required.');
-    if (!value(ID.rootPath)) missing.push('Remote root is required.');
-    if (!value(ID.credentialIdentifier)) missing.push('Credential identifier is required.');
-    if (!value(ID.credentialSecret)) missing.push('Credential material is required.');
-    if (!value(ID.endpointLabel)) missing.push('Endpoint descriptor label is required.');
-    if (!value(ID.remoteRootLabel)) missing.push('Remote-root descriptor label is required.');
-    if (!value(ID.credentialLabel)) missing.push('Credential descriptor label is required.');
+    if (!value(ID.rootPath)) missing.push('Folder / remote root is required.');
+    if (!value(ID.credentialIdentifier)) missing.push('Username is required.');
+    if (!value(ID.credentialSecret)) missing.push('Password/token is required.');
     if (looksReservedInvalid(value(ID.serverUrl))) missing.push('Endpoint still looks like a placeholder.');
     if (!checked(ID.confirmNonProduction)) missing.push('Confirm this is a non-production endpoint.');
     if (!checked(ID.confirmReadOnly)) missing.push('Confirm read-only method safety.');
@@ -152,13 +152,18 @@
     return { ok: missing.length === 0, missing: missing };
   }
 
-  function fieldHtml(id, label, type, autocomplete, placeholder) {
+  function fieldHtml(id, label, type, autocomplete, placeholder, helper, defaultValue) {
     return ''
       + '<label style="display:flex;flex-direction:column;gap:5px;font-size:12px">'
       +   '<span style="opacity:.78">' + esc(label) + '</span>'
       +   '<input id="' + id + '" type="' + type + '" autocomplete="' + esc(autocomplete || 'off') + '" spellcheck="false"'
-      +     ' placeholder="' + esc(placeholder || '') + '" style="' + INPUT_STYLE + '" />'
+      +     ' placeholder="' + esc(placeholder || '') + '" value="' + esc(defaultValue || '') + '" style="' + INPUT_STYLE + '" />'
+      +   (helper ? '<span style="' + MUTED_STYLE + '">' + esc(helper) + '</span>' : '')
       + '</label>';
+  }
+
+  function descriptorLabelValue(id, fallback) {
+    return value(id) || fallback;
   }
 
   function checkboxHtml(id, label) {
@@ -187,15 +192,22 @@
       +   '</div>'
       +   '<div id="' + ID.desktopOnly + '" style="' + MUTED_STYLE + ';' + (desktop ? 'display:none' : '') + '">Desktop Studio is required. Browser and extension surfaces keep this setup disabled until a compatible native resolver is available.</div>'
       +   '<form id="' + ID.form + '" style="display:flex;flex-direction:column;gap:12px;' + (desktop ? '' : 'opacity:.55;pointer-events:none') + '">'
+      +     '<div style="' + MUTED_STYLE + '">Use the same URL and Folder as the native extension. For Koofr, URL is usually https://app.koofr.net/dav/Koofr and Folder can be H2O-Test for this W3.1 setup.</div>'
       +     '<div style="' + GRID_STYLE + '">'
       +       fieldHtml(ID.serverUrl, 'Server URL', 'url', 'off', 'WebDAV server address')
-      +       fieldHtml(ID.rootPath, 'Remote root', 'text', 'off', '/non-production-root/')
+      +       fieldHtml(ID.rootPath, 'Folder / remote root', 'text', 'off', 'H2O-Test', 'Use the same folder as the native extension, e.g. H2O. Use a non-production test folder for W3.1.')
       +       fieldHtml(ID.credentialIdentifier, 'Username or credential identifier', 'text', 'username', 'operator or key label')
-      +       fieldHtml(ID.credentialSecret, 'Password, token, or auth source', 'password', 'current-password', '')
-      +       fieldHtml(ID.endpointLabel, 'Endpoint descriptor label', 'text', 'off', 'Non-production WebDAV endpoint')
-      +       fieldHtml(ID.remoteRootLabel, 'Remote-root descriptor label', 'text', 'off', 'Non-production WebDAV root')
-      +       fieldHtml(ID.credentialLabel, 'Credential descriptor label', 'text', 'off', 'Non-production WebDAV credential')
+      +       fieldHtml(ID.credentialSecret, 'Password / token', 'password', 'current-password', '')
       +     '</div>'
+      +     '<details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+      +       '<summary style="cursor:pointer;font-weight:650;font-size:13px">Advanced descriptor labels</summary>'
+      +       '<div style="' + MUTED_STYLE + ';margin:6px 0 10px">These labels are generated for the private Rust resolver. Most operators should leave them unchanged.</div>'
+      +       '<div style="' + GRID_STYLE + '">'
+      +         fieldHtml(ID.endpointLabel, 'Endpoint descriptor label', 'text', 'off', DEFAULT_ENDPOINT_DESCRIPTOR_LABEL, '', DEFAULT_ENDPOINT_DESCRIPTOR_LABEL)
+      +         fieldHtml(ID.remoteRootLabel, 'Folder descriptor label', 'text', 'off', DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL, '', DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL)
+      +         fieldHtml(ID.credentialLabel, 'Credential descriptor label', 'text', 'off', DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL, '', DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL)
+      +       '</div>'
+      +     '</details>'
       +     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;padding:10px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(0,0,0,.10)">'
       +       checkboxHtml(ID.confirmNonProduction, 'This endpoint is non-production and safe for setup.')
       +       checkboxHtml(ID.confirmReadOnly, 'The endpoint is safe for future read-only OPTIONS, PROPFIND, HEAD, and GET checks.')
@@ -273,7 +285,7 @@
     if (!state.lastStatus) {
       setText(ID.statusSummary, validationResult.ok
         ? 'Ready to prepare resolver storage. No probe or write will run.'
-        : validationResult.missing[0] || 'Fill all required fields.');
+        : 'Missing: ' + (validationResult.missing.join(' ') || 'Fill all required fields and confirmations.'));
     }
   }
 
@@ -316,9 +328,9 @@
           rootPath: value(ID.rootPath),
           credentialIdentifier: value(ID.credentialIdentifier),
           credentialSecret: value(ID.credentialSecret),
-          endpointDescriptorLabel: value(ID.endpointLabel),
-          remoteRootDescriptorLabel: value(ID.remoteRootLabel),
-          credentialDescriptorLabel: value(ID.credentialLabel),
+          endpointDescriptorLabel: descriptorLabelValue(ID.endpointLabel, DEFAULT_ENDPOINT_DESCRIPTOR_LABEL),
+          remoteRootDescriptorLabel: descriptorLabelValue(ID.remoteRootLabel, DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL),
+          credentialDescriptorLabel: descriptorLabelValue(ID.credentialLabel, DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL),
           confirmNonProduction: checked(ID.confirmNonProduction),
           confirmReadOnlySafe: checked(ID.confirmReadOnly),
           confirmSacrificialWriteNotApproved: checked(ID.confirmNoSacrificialWrite),
