@@ -77,6 +77,13 @@ pub struct RtCapabilityProbeRequest {
     pub extra: BTreeMap<String, JsonValue>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadOnlyMethodStatusFamily {
+    pub operation: &'static str,
+    pub status_family: &'static str,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RtCapabilityProbeResult {
@@ -105,6 +112,7 @@ pub struct RtCapabilityProbeResult {
     pub root_empty: Option<bool>,
     pub listing_hash: Option<String>,
     pub child_404_ok: Option<bool>,
+    pub method_status_families: Vec<ReadOnlyMethodStatusFamily>,
     pub dav_class_summary_hash: Option<String>,
     pub allowed_methods_summary_hash: Option<String>,
     pub create_only_behavior: &'static str,
@@ -160,6 +168,7 @@ impl RtCapabilityProbeResult {
             root_empty: None,
             listing_hash: None,
             child_404_ok: None,
+            method_status_families: vec![],
             dav_class_summary_hash: None,
             allowed_methods_summary_hash: None,
             create_only_behavior: "unknown",
@@ -216,6 +225,7 @@ impl RtCapabilityProbeResult {
             root_empty: live_probe.root_empty,
             listing_hash: live_probe.listing_hash,
             child_404_ok: live_probe.child_404_ok,
+            method_status_families: live_probe.method_status_families,
             dav_class_summary_hash: live_probe.dav_class_summary_hash,
             allowed_methods_summary_hash: live_probe.allowed_methods_summary_hash,
             create_only_behavior: "unknown",
@@ -876,6 +886,17 @@ impl ReadOnlyProbeOperation {
         }
     }
 
+    fn redacted_label(self) -> &'static str {
+        match self {
+            Self::Options => "OPTIONS",
+            Self::PropfindDepth0 => "PROPFIND Depth 0",
+            Self::PropfindDepth1 => "PROPFIND Depth 1",
+            Self::HeadRoot => "HEAD root",
+            Self::GetRoot => "GET root",
+            Self::HeadDeterministicNonexistentChild => "HEAD deterministic nonexistent child",
+        }
+    }
+
     fn depth(self) -> Option<&'static str> {
         match self {
             Self::PropfindDepth0 => Some("0"),
@@ -912,6 +933,7 @@ struct LiveReadOnlyProbeOutcome {
     root_empty: Option<bool>,
     listing_hash: Option<String>,
     child_404_ok: Option<bool>,
+    method_status_families: Vec<ReadOnlyMethodStatusFamily>,
     dav_class_summary_hash: Option<String>,
     allowed_methods_summary_hash: Option<String>,
 }
@@ -1010,6 +1032,17 @@ fn redacted_summary_hash(value: Option<&str>) -> Option<String> {
     value.map(|value| sha256_ref(value.as_bytes()))
 }
 
+fn status_family(status: u16) -> &'static str {
+    match status {
+        100..=199 => "1xx",
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "other",
+    }
+}
+
 fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
     request: &RtCapabilityProbeRequest,
     registry: &DescriptorRegistry,
@@ -1042,6 +1075,12 @@ fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
             auth_header_private: registry.auth_header_private.clone(),
         })?;
         let status_success = (200..300).contains(&response.status);
+        outcome
+            .method_status_families
+            .push(ReadOnlyMethodStatusFamily {
+                operation: operation.redacted_label(),
+                status_family: status_family(response.status),
+            });
         if operation.targets_nonexistent_child() {
             outcome.child_404_ok = Some(response.status == 404);
         } else if matches!(
@@ -1593,6 +1632,27 @@ mod tests {
         assert_eq!(result.root_exists, Some(true));
         assert_eq!(result.root_empty, Some(false));
         assert_eq!(result.child_404_ok, Some(true));
+        assert_eq!(
+            result.method_status_families,
+            vec![
+                ReadOnlyMethodStatusFamily {
+                    operation: "OPTIONS",
+                    status_family: "2xx"
+                },
+                ReadOnlyMethodStatusFamily {
+                    operation: "PROPFIND Depth 0",
+                    status_family: "2xx"
+                },
+                ReadOnlyMethodStatusFamily {
+                    operation: "HEAD root",
+                    status_family: "2xx"
+                },
+                ReadOnlyMethodStatusFamily {
+                    operation: "HEAD deterministic nonexistent child",
+                    status_family: "4xx"
+                },
+            ]
+        );
         assert!(is_hash_ref(&result.listing_hash));
         assert!(is_hash_ref(&result.dav_class_summary_hash));
         assert!(is_hash_ref(&result.allowed_methods_summary_hash));
