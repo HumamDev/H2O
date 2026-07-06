@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fs;
 
 pub const SCHEMA: &str = "h2o.studio.transport.real-capability-probe-result.v1";
 pub const REQUEST_SCHEMA: &str = "h2o.studio.transport.real-capability-probe-request.v1";
 pub const READONLY_PROBE_GATE: &str =
     "real-webdav-cloud-relay-transport-readonly-capability-probe-evaluate";
+const DESCRIPTOR_REGISTRY_FILE_ENV: &str = "H2O_RT_DESCRIPTOR_REGISTRY_FILE";
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +31,10 @@ pub struct RtCapabilityProbeRequest {
     pub credential_ref_hash: Option<String>,
     #[serde(default)]
     pub capability_probe_receipt_hash: Option<String>,
+    #[serde(default)]
+    pub resolver_check: Option<bool>,
+    #[serde(default)]
+    pub descriptor_registry_ref_hash: Option<String>,
     #[serde(default)]
     pub requested_operations: Option<Vec<String>>,
     #[serde(default)]
@@ -78,6 +85,11 @@ pub struct RtCapabilityProbeResult {
     pub remote_root_ref_hash: Option<String>,
     pub credential_ref_hash: Option<String>,
     pub capability_probe_receipt_hash: Option<String>,
+    pub resolver_available: bool,
+    pub endpoint_descriptor_resolved: bool,
+    pub remote_root_descriptor_resolved: bool,
+    pub credential_descriptor_resolved: bool,
+    pub descriptor_registry_ref_hash: Option<String>,
     pub receipt_core_placeholder: Option<&'static str>,
     pub root_exists: Option<bool>,
     pub root_empty: Option<bool>,
@@ -124,6 +136,11 @@ impl RtCapabilityProbeResult {
             remote_root_ref_hash: None,
             credential_ref_hash: None,
             capability_probe_receipt_hash: None,
+            resolver_available: false,
+            endpoint_descriptor_resolved: false,
+            remote_root_descriptor_resolved: false,
+            credential_descriptor_resolved: false,
+            descriptor_registry_ref_hash: None,
             receipt_core_placeholder: None,
             root_exists: None,
             root_empty: None,
@@ -149,7 +166,7 @@ impl RtCapabilityProbeResult {
         }
     }
 
-    fn ready(request: &RtCapabilityProbeRequest) -> Self {
+    fn ready(request: &RtCapabilityProbeRequest, resolver_ready: bool) -> Self {
         Self {
             schema: SCHEMA,
             request_schema: REQUEST_SCHEMA,
@@ -166,6 +183,11 @@ impl RtCapabilityProbeResult {
             remote_root_ref_hash: request.remote_root_ref_hash.clone(),
             credential_ref_hash: request.credential_ref_hash.clone(),
             capability_probe_receipt_hash: request.capability_probe_receipt_hash.clone(),
+            resolver_available: resolver_ready,
+            endpoint_descriptor_resolved: resolver_ready,
+            remote_root_descriptor_resolved: resolver_ready,
+            credential_descriptor_resolved: resolver_ready,
+            descriptor_registry_ref_hash: request.descriptor_registry_ref_hash.clone(),
             receipt_core_placeholder: Some("not-generated-in-w3-1-implementation-slice"),
             root_exists: None,
             root_empty: None,
@@ -192,6 +214,40 @@ impl RtCapabilityProbeResult {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DescriptorRegistry {
+    schema: String,
+    endpoint_ref_hash: String,
+    remote_root_ref_hash: String,
+    credential_ref_hash: String,
+    #[serde(default)]
+    descriptor_mode: Option<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ResolverFailure {
+    MissingConfig,
+    ConfigInvalid,
+    RegistryHashMismatch,
+    DescriptorHashMismatch,
+    RawConfigRejected,
+}
+
+impl ResolverFailure {
+    fn blocker(&self) -> &'static str {
+        match self {
+            Self::MissingConfig => "real-transport-w3-resolver-config-missing",
+            Self::ConfigInvalid => "real-transport-w3-resolver-config-invalid",
+            Self::RegistryHashMismatch => "real-transport-w3-resolver-registry-hash-mismatch",
+            Self::DescriptorHashMismatch => "real-transport-w3-descriptor-hash-mismatch",
+            Self::RawConfigRejected => "real-transport-w3-resolver-raw-config-rejected",
+        }
+    }
+}
+
 fn is_hash_ref(value: &Option<String>) -> bool {
     let Some(value) = value.as_deref() else {
         return false;
@@ -203,6 +259,55 @@ fn is_hash_ref(value: &Option<String>) -> bool {
         && hex
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn sha256_ref(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("sha256:{:x}", digest)
+}
+
+fn registry_contains_raw_or_private(registry: &DescriptorRegistry) -> bool {
+    registry.extra.iter().any(|(key, value)| {
+        key_looks_raw_or_private(key) || value_looks_raw_or_private(&value.to_string())
+    })
+}
+
+fn resolve_descriptors(request: &RtCapabilityProbeRequest) -> Result<bool, ResolverFailure> {
+    if request.resolver_check != Some(true) {
+        return Ok(false);
+    }
+
+    let Some(registry_file) = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV) else {
+        return Err(ResolverFailure::MissingConfig);
+    };
+    let bytes = fs::read(registry_file).map_err(|_| ResolverFailure::MissingConfig)?;
+    if let Some(expected_hash) = &request.descriptor_registry_ref_hash {
+        if !is_hash_ref(&Some(expected_hash.clone())) {
+            return Err(ResolverFailure::RegistryHashMismatch);
+        }
+        if sha256_ref(&bytes) != *expected_hash {
+            return Err(ResolverFailure::RegistryHashMismatch);
+        }
+    }
+    let registry: DescriptorRegistry =
+        serde_json::from_slice(&bytes).map_err(|_| ResolverFailure::ConfigInvalid)?;
+    if registry.schema != "h2o.studio.transport.real-descriptor-registry.v1" {
+        return Err(ResolverFailure::ConfigInvalid);
+    }
+    if registry.descriptor_mode.as_deref() != Some("hash-only-redacted") {
+        return Err(ResolverFailure::ConfigInvalid);
+    }
+    if registry_contains_raw_or_private(&registry) {
+        return Err(ResolverFailure::RawConfigRejected);
+    }
+    if Some(registry.endpoint_ref_hash) != request.endpoint_ref_hash
+        || Some(registry.remote_root_ref_hash) != request.remote_root_ref_hash
+        || Some(registry.credential_ref_hash) != request.credential_ref_hash
+    {
+        return Err(ResolverFailure::DescriptorHashMismatch);
+    }
+
+    Ok(true)
 }
 
 fn is_allowed_operation(value: &str) -> bool {
@@ -278,6 +383,11 @@ pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabil
             blockers.push("real-transport-w3-readonly-receipt-hash-invalid");
         }
     }
+    if let Some(registry_hash) = &request.descriptor_registry_ref_hash {
+        if !is_hash_ref(&Some(registry_hash.clone())) {
+            blockers.push("real-transport-w3-resolver-registry-hash-mismatch");
+        }
+    }
     let operations = request.requested_operations.as_deref().unwrap_or(&[]);
     if operations.is_empty() || operations.iter().any(|op| !is_allowed_operation(op)) {
         blockers.push("real-transport-w3-readonly-operation-invalid");
@@ -306,6 +416,17 @@ pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabil
     } else if !request.extra.is_empty() {
         blockers.push("real-transport-w3-unknown-field-rejected");
     }
+    let resolver = if blockers.is_empty() {
+        match resolve_descriptors(&request) {
+            Ok(resolver_ready) => resolver_ready,
+            Err(err) => {
+                blockers.push(err.blocker());
+                false
+            }
+        }
+    } else {
+        false
+    };
 
     if !blockers.is_empty() {
         return RtCapabilityProbeResult::blocked(
@@ -315,7 +436,7 @@ pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabil
         );
     }
 
-    RtCapabilityProbeResult::ready(&request)
+    RtCapabilityProbeResult::ready(&request, resolver)
 }
 
 #[tauri::command]
@@ -328,9 +449,18 @@ pub fn h2o_rt_capability_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
 
     fn h(d: char) -> String {
         format!("sha256:{}", d.to_string().repeat(64))
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_MUTEX: Mutex<()> = Mutex::new(());
+        ENV_MUTEX.lock().expect("resolver env lock")
     }
 
     fn valid_request() -> RtCapabilityProbeRequest {
@@ -351,6 +481,29 @@ mod tests {
             ]),
             ..Default::default()
         }
+    }
+
+    fn registry_file(
+        name: &str,
+        endpoint: &str,
+        remote_root: &str,
+        credential: &str,
+    ) -> (PathBuf, String) {
+        let path = std::env::temp_dir().join(format!(
+            "h2o-rt-resolver-{name}-{}.json",
+            std::process::id()
+        ));
+        let bytes = serde_json::to_vec(&json!({
+            "schema": "h2o.studio.transport.real-descriptor-registry.v1",
+            "descriptorMode": "hash-only-redacted",
+            "endpointRefHash": endpoint,
+            "remoteRootRefHash": remote_root,
+            "credentialRefHash": credential
+        }))
+        .expect("serialize test registry");
+        fs::write(&path, &bytes).expect("write test registry");
+        let registry_hash = sha256_ref(&bytes);
+        (path, registry_hash)
     }
 
     #[test]
@@ -402,5 +555,74 @@ mod tests {
             .contains(&"real-transport-w3-raw-input-rejected"));
         let serialized = serde_json::to_string(&result).expect("serialize result");
         assert!(!serialized.contains("redacted-marker"));
+    }
+
+    #[test]
+    fn resolver_missing_registry_fails_closed() {
+        let _guard = env_lock();
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        let mut request = valid_request();
+        request.resolver_check = Some(true);
+        let result = evaluate_capability_probe(request);
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-w3-resolver-config-missing"));
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+    }
+
+    #[test]
+    fn resolver_descriptor_hash_mismatch_fails_closed() {
+        let _guard = env_lock();
+        let (registry_path, registry_hash) = registry_file("mismatch", &h('e'), &h('b'), &h('c'));
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let mut request = valid_request();
+        request.resolver_check = Some(true);
+        request.descriptor_registry_ref_hash = Some(registry_hash);
+        let result = evaluate_capability_probe(request);
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-w3-descriptor-hash-mismatch"));
+        assert!(!result.writes_webdav);
+    }
+
+    #[test]
+    fn resolver_ready_response_is_hash_only_and_no_network() {
+        let _guard = env_lock();
+        let request = valid_request();
+        let endpoint = request.endpoint_ref_hash.clone().expect("endpoint hash");
+        let remote_root = request
+            .remote_root_ref_hash
+            .clone()
+            .expect("remote root hash");
+        let credential = request
+            .credential_ref_hash
+            .clone()
+            .expect("credential hash");
+        let (registry_path, registry_hash) =
+            registry_file("ready", &endpoint, &remote_root, &credential);
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let mut request = request;
+        request.resolver_check = Some(true);
+        request.descriptor_registry_ref_hash = Some(registry_hash);
+        let result = evaluate_capability_probe(request);
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(result.ok);
+        assert!(result.resolver_available);
+        assert!(result.endpoint_descriptor_resolved);
+        assert!(result.remote_root_descriptor_resolved);
+        assert!(result.credential_descriptor_resolved);
+        assert!(!result.network_attempted);
+        assert!(!result.writes_webdav);
+        let serialized = serde_json::to_string(&result).expect("serialize result");
+        assert!(!serialized.contains("://"));
+        assert!(!serialized.contains("credentialValue"));
     }
 }

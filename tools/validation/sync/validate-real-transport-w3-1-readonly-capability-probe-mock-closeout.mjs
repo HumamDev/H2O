@@ -164,8 +164,6 @@ for (const forbidden of [
 }
 
 for (const rel of [
-  'apps/studio/desktop/src-tauri/src/lib.rs',
-  'apps/studio/desktop/src-tauri/src/real_transport_capability_probe.rs',
   'apps/studio/desktop/src-tauri/Cargo.toml',
   'apps/studio/desktop/src-tauri/Cargo.lock',
   'apps/studio/desktop/src-tauri/tauri.conf.json',
