@@ -3,12 +3,17 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
+use std::time::Duration;
 
 pub const SCHEMA: &str = "h2o.studio.transport.real-capability-probe-result.v1";
 pub const REQUEST_SCHEMA: &str = "h2o.studio.transport.real-capability-probe-request.v1";
 pub const READONLY_PROBE_GATE: &str =
     "real-webdav-cloud-relay-transport-readonly-capability-probe-evaluate";
+pub const LIVE_READONLY_PROBE_GATE: &str = "real-transport-w3-readonly-remote-root-probe";
 const DESCRIPTOR_REGISTRY_FILE_ENV: &str = "H2O_RT_DESCRIPTOR_REGISTRY_FILE";
+const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
+const READONLY_TIMEOUT_SECONDS: u64 = 8;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +40,8 @@ pub struct RtCapabilityProbeRequest {
     pub resolver_check: Option<bool>,
     #[serde(default)]
     pub descriptor_registry_ref_hash: Option<String>,
+    #[serde(default)]
+    pub live_read_only_probe: Option<bool>,
     #[serde(default)]
     pub requested_operations: Option<Vec<String>>,
     #[serde(default)]
@@ -93,6 +100,10 @@ pub struct RtCapabilityProbeResult {
     pub receipt_core_placeholder: Option<&'static str>,
     pub root_exists: Option<bool>,
     pub root_empty: Option<bool>,
+    pub listing_hash: Option<String>,
+    pub child_404_ok: Option<bool>,
+    pub dav_class_summary_hash: Option<String>,
+    pub allowed_methods_summary_hash: Option<String>,
     pub create_only_behavior: &'static str,
     pub etag_behavior: &'static str,
     pub if_none_match_behavior: &'static str,
@@ -144,6 +155,10 @@ impl RtCapabilityProbeResult {
             receipt_core_placeholder: None,
             root_exists: None,
             root_empty: None,
+            listing_hash: None,
+            child_404_ok: None,
+            dav_class_summary_hash: None,
+            allowed_methods_summary_hash: None,
             create_only_behavior: "unknown",
             etag_behavior: "unknown",
             if_none_match_behavior: "unknown",
@@ -166,7 +181,12 @@ impl RtCapabilityProbeResult {
         }
     }
 
-    fn ready(request: &RtCapabilityProbeRequest, resolver_ready: bool) -> Self {
+    fn ready(
+        request: &RtCapabilityProbeRequest,
+        resolver_ready: bool,
+        live_probe: Option<LiveReadOnlyProbeOutcome>,
+    ) -> Self {
+        let live_probe = live_probe.unwrap_or_default();
         Self {
             schema: SCHEMA,
             request_schema: REQUEST_SCHEMA,
@@ -178,7 +198,7 @@ impl RtCapabilityProbeResult {
             diagnostic_only: true,
             read_only: true,
             dry_run: true,
-            network_attempted: false,
+            network_attempted: live_probe.network_attempted,
             endpoint_ref_hash: request.endpoint_ref_hash.clone(),
             remote_root_ref_hash: request.remote_root_ref_hash.clone(),
             credential_ref_hash: request.credential_ref_hash.clone(),
@@ -189,8 +209,12 @@ impl RtCapabilityProbeResult {
             credential_descriptor_resolved: resolver_ready,
             descriptor_registry_ref_hash: request.descriptor_registry_ref_hash.clone(),
             receipt_core_placeholder: Some("not-generated-in-w3-1-implementation-slice"),
-            root_exists: None,
-            root_empty: None,
+            root_exists: live_probe.root_exists,
+            root_empty: live_probe.root_empty,
+            listing_hash: live_probe.listing_hash,
+            child_404_ok: live_probe.child_404_ok,
+            dav_class_summary_hash: live_probe.dav_class_summary_hash,
+            allowed_methods_summary_hash: live_probe.allowed_methods_summary_hash,
             create_only_behavior: "unknown",
             etag_behavior: "unknown",
             if_none_match_behavior: "unknown",
@@ -209,18 +233,28 @@ impl RtCapabilityProbeResult {
             raw_private_fields_logged: false,
             raw_input_rejected: false,
             blockers: vec![],
-            warnings: vec!["real-remote-probe-not-performed-in-this-slice"],
+            warnings: if live_probe.network_attempted {
+                vec!["real-remote-probe-readonly-only"]
+            } else {
+                vec!["real-remote-probe-not-performed-in-this-slice"]
+            },
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct DescriptorRegistry {
     schema: String,
     endpoint_ref_hash: String,
     remote_root_ref_hash: String,
     credential_ref_hash: String,
+    #[serde(default)]
+    endpoint_url_private: Option<String>,
+    #[serde(default)]
+    remote_root_path_private: Option<String>,
+    #[serde(default)]
+    auth_header_private: Option<String>,
     #[serde(default)]
     descriptor_mode: Option<String>,
     #[serde(flatten)]
@@ -234,6 +268,10 @@ enum ResolverFailure {
     RegistryHashMismatch,
     DescriptorHashMismatch,
     RawConfigRejected,
+    LiveDescriptorPrivateFieldsMissing,
+    LiveUrlInvalid,
+    LiveNetworkFailed,
+    LiveResponseTooLarge,
 }
 
 impl ResolverFailure {
@@ -244,6 +282,12 @@ impl ResolverFailure {
             Self::RegistryHashMismatch => "real-transport-w3-resolver-registry-hash-mismatch",
             Self::DescriptorHashMismatch => "real-transport-w3-descriptor-hash-mismatch",
             Self::RawConfigRejected => "real-transport-w3-resolver-raw-config-rejected",
+            Self::LiveDescriptorPrivateFieldsMissing => {
+                "real-transport-w3-live-descriptor-private-fields-missing"
+            }
+            Self::LiveUrlInvalid => "real-transport-w3-live-url-invalid",
+            Self::LiveNetworkFailed => "real-transport-w3-live-network-failed",
+            Self::LiveResponseTooLarge => "real-transport-w3-live-response-too-large",
         }
     }
 }
@@ -272,9 +316,11 @@ fn registry_contains_raw_or_private(registry: &DescriptorRegistry) -> bool {
     })
 }
 
-fn resolve_descriptors(request: &RtCapabilityProbeRequest) -> Result<bool, ResolverFailure> {
+fn resolve_descriptor_registry(
+    request: &RtCapabilityProbeRequest,
+) -> Result<Option<DescriptorRegistry>, ResolverFailure> {
     if request.resolver_check != Some(true) {
-        return Ok(false);
+        return Ok(None);
     }
 
     let Some(registry_file) = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV) else {
@@ -300,14 +346,14 @@ fn resolve_descriptors(request: &RtCapabilityProbeRequest) -> Result<bool, Resol
     if registry_contains_raw_or_private(&registry) {
         return Err(ResolverFailure::RawConfigRejected);
     }
-    if Some(registry.endpoint_ref_hash) != request.endpoint_ref_hash
-        || Some(registry.remote_root_ref_hash) != request.remote_root_ref_hash
-        || Some(registry.credential_ref_hash) != request.credential_ref_hash
+    if Some(registry.endpoint_ref_hash.clone()) != request.endpoint_ref_hash
+        || Some(registry.remote_root_ref_hash.clone()) != request.remote_root_ref_hash
+        || Some(registry.credential_ref_hash.clone()) != request.credential_ref_hash
     {
         return Err(ResolverFailure::DescriptorHashMismatch);
     }
 
-    Ok(true)
+    Ok(Some(registry))
 }
 
 fn is_allowed_operation(value: &str) -> bool {
@@ -357,14 +403,256 @@ fn has_forbidden_extra(request: &RtCapabilityProbeRequest) -> bool {
         .unwrap_or(false)
 }
 
-pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabilityProbeResult {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReadOnlyProbeOperation {
+    Options,
+    PropfindDepth0,
+    PropfindDepth1,
+    HeadRoot,
+    GetRoot,
+    HeadDeterministicNonexistentChild,
+}
+
+impl ReadOnlyProbeOperation {
+    fn from_request(value: &str) -> Option<Self> {
+        match value {
+            "options" => Some(Self::Options),
+            "propfind-depth-0" => Some(Self::PropfindDepth0),
+            "propfind-depth-1" => Some(Self::PropfindDepth1),
+            "head-root" => Some(Self::HeadRoot),
+            "get-root" => Some(Self::GetRoot),
+            "head-deterministic-nonexistent-child" => Some(Self::HeadDeterministicNonexistentChild),
+            _ => None,
+        }
+    }
+
+    fn method(self) -> &'static str {
+        match self {
+            Self::Options => "OPTIONS",
+            Self::PropfindDepth0 | Self::PropfindDepth1 => "PROPFIND",
+            Self::HeadRoot | Self::HeadDeterministicNonexistentChild => "HEAD",
+            Self::GetRoot => "GET",
+        }
+    }
+
+    fn depth(self) -> Option<&'static str> {
+        match self {
+            Self::PropfindDepth0 => Some("0"),
+            Self::PropfindDepth1 => Some("1"),
+            _ => None,
+        }
+    }
+
+    fn targets_nonexistent_child(self) -> bool {
+        self == Self::HeadDeterministicNonexistentChild
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReadOnlyProbeHttpRequest {
+    operation: ReadOnlyProbeOperation,
+    endpoint_url_private: String,
+    remote_root_path_private: String,
+    auth_header_private: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ReadOnlyProbeHttpResponse {
+    status: u16,
+    dav_header: Option<String>,
+    allow_header: Option<String>,
+    body: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LiveReadOnlyProbeOutcome {
+    network_attempted: bool,
+    root_exists: Option<bool>,
+    root_empty: Option<bool>,
+    listing_hash: Option<String>,
+    child_404_ok: Option<bool>,
+    dav_class_summary_hash: Option<String>,
+    allowed_methods_summary_hash: Option<String>,
+}
+
+trait ReadOnlyProbeClient {
+    fn send(
+        &self,
+        request: ReadOnlyProbeHttpRequest,
+    ) -> Result<ReadOnlyProbeHttpResponse, ResolverFailure>;
+}
+
+struct ReqwestReadOnlyProbeClient;
+
+impl ReqwestReadOnlyProbeClient {
+    fn build_target_url(
+        endpoint_url_private: &str,
+        remote_root_path_private: &str,
+        child: bool,
+    ) -> Result<reqwest::Url, ResolverFailure> {
+        let mut url = reqwest::Url::parse(endpoint_url_private)
+            .map_err(|_| ResolverFailure::LiveUrlInvalid)?;
+        if url.scheme() != "http" && url.scheme() != "https" {
+            return Err(ResolverFailure::LiveUrlInvalid);
+        }
+        let mut root = remote_root_path_private.trim_start_matches('/').to_string();
+        if child {
+            if !root.ends_with('/') {
+                root.push('/');
+            }
+            root.push_str(".h2o-readonly-probe-nonexistent");
+        }
+        url = url
+            .join(&root)
+            .map_err(|_| ResolverFailure::LiveUrlInvalid)?;
+        Ok(url)
+    }
+}
+
+impl ReadOnlyProbeClient for ReqwestReadOnlyProbeClient {
+    fn send(
+        &self,
+        request: ReadOnlyProbeHttpRequest,
+    ) -> Result<ReadOnlyProbeHttpResponse, ResolverFailure> {
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(READONLY_TIMEOUT_SECONDS))
+            .build()
+            .map_err(|_| ResolverFailure::LiveNetworkFailed)?;
+        let url = Self::build_target_url(
+            &request.endpoint_url_private,
+            &request.remote_root_path_private,
+            request.operation.targets_nonexistent_child(),
+        )?;
+        let method = reqwest::Method::from_bytes(request.operation.method().as_bytes())
+            .map_err(|_| ResolverFailure::LiveNetworkFailed)?;
+        let mut builder = client.request(method, url);
+        if let Some(depth) = request.operation.depth() {
+            builder = builder.header("Depth", depth);
+        }
+        if let Some(auth_header) = request.auth_header_private {
+            builder = builder.header("Authorization", auth_header);
+        }
+        let mut response = builder
+            .send()
+            .map_err(|_| ResolverFailure::LiveNetworkFailed)?;
+        let status = response.status().as_u16();
+        let dav_header = response
+            .headers()
+            .get("DAV")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let allow_header = response
+            .headers()
+            .get("Allow")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let mut body = Vec::new();
+        response
+            .by_ref()
+            .take((MAX_READONLY_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| ResolverFailure::LiveNetworkFailed)?;
+        if body.len() > MAX_READONLY_RESPONSE_BYTES {
+            return Err(ResolverFailure::LiveResponseTooLarge);
+        }
+        Ok(ReadOnlyProbeHttpResponse {
+            status,
+            dav_header,
+            allow_header,
+            body,
+        })
+    }
+}
+
+fn redacted_summary_hash(value: Option<&str>) -> Option<String> {
+    value.map(|value| sha256_ref(value.as_bytes()))
+}
+
+fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
+    request: &RtCapabilityProbeRequest,
+    registry: &DescriptorRegistry,
+    client: &C,
+) -> Result<LiveReadOnlyProbeOutcome, ResolverFailure> {
+    let endpoint_url_private = registry
+        .endpoint_url_private
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ResolverFailure::LiveDescriptorPrivateFieldsMissing)?;
+    let remote_root_path_private = registry
+        .remote_root_path_private
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(ResolverFailure::LiveDescriptorPrivateFieldsMissing)?;
+    let operations = request.requested_operations.as_deref().unwrap_or(&[]);
+    let mut outcome = LiveReadOnlyProbeOutcome {
+        network_attempted: true,
+        ..Default::default()
+    };
+
+    for operation in operations
+        .iter()
+        .filter_map(|operation| ReadOnlyProbeOperation::from_request(operation))
+    {
+        let response = client.send(ReadOnlyProbeHttpRequest {
+            operation,
+            endpoint_url_private: endpoint_url_private.clone(),
+            remote_root_path_private: remote_root_path_private.clone(),
+            auth_header_private: registry.auth_header_private.clone(),
+        })?;
+        let status_success = (200..300).contains(&response.status);
+        if operation.targets_nonexistent_child() {
+            outcome.child_404_ok = Some(response.status == 404);
+        } else if matches!(
+            operation,
+            ReadOnlyProbeOperation::HeadRoot
+                | ReadOnlyProbeOperation::GetRoot
+                | ReadOnlyProbeOperation::PropfindDepth0
+                | ReadOnlyProbeOperation::PropfindDepth1
+        ) {
+            outcome.root_exists = Some(status_success);
+        }
+        if matches!(
+            operation,
+            ReadOnlyProbeOperation::GetRoot
+                | ReadOnlyProbeOperation::PropfindDepth0
+                | ReadOnlyProbeOperation::PropfindDepth1
+        ) && !response.body.is_empty()
+        {
+            outcome.listing_hash = Some(sha256_ref(&response.body));
+            outcome.root_empty = Some(false);
+        }
+        outcome.dav_class_summary_hash = outcome
+            .dav_class_summary_hash
+            .or_else(|| redacted_summary_hash(response.dav_header.as_deref()));
+        outcome.allowed_methods_summary_hash = outcome
+            .allowed_methods_summary_hash
+            .or_else(|| redacted_summary_hash(response.allow_header.as_deref()));
+    }
+
+    Ok(outcome)
+}
+
+fn evaluate_capability_probe_with_client<C: ReadOnlyProbeClient>(
+    request: RtCapabilityProbeRequest,
+    client: &C,
+) -> RtCapabilityProbeResult {
     let mut blockers = Vec::new();
+    let live_probe_requested = request.live_read_only_probe == Some(true);
+    let expected_gate = if live_probe_requested {
+        LIVE_READONLY_PROBE_GATE
+    } else {
+        READONLY_PROBE_GATE
+    };
 
     if request.schema.as_deref() != Some(REQUEST_SCHEMA) {
         blockers.push("real-transport-w3-readonly-request-schema-required");
     }
-    if request.gate.as_deref() != Some(READONLY_PROBE_GATE) {
+    if request.gate.as_deref() != Some(expected_gate) {
         blockers.push("real-transport-w3-readonly-gate-required");
+    }
+    if live_probe_requested && request.resolver_check != Some(true) {
+        blockers.push("real-transport-w3-live-resolver-required");
     }
     if request.diagnostic_only != Some(true)
         || request.read_only != Some(true)
@@ -416,16 +704,32 @@ pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabil
     } else if !request.extra.is_empty() {
         blockers.push("real-transport-w3-unknown-field-rejected");
     }
-    let resolver = if blockers.is_empty() {
-        match resolve_descriptors(&request) {
-            Ok(resolver_ready) => resolver_ready,
+    let registry = if blockers.is_empty() {
+        match resolve_descriptor_registry(&request) {
+            Ok(registry) => registry,
             Err(err) => {
                 blockers.push(err.blocker());
-                false
+                None
             }
         }
     } else {
-        false
+        None
+    };
+    let resolver = registry.is_some();
+    let live_probe = if blockers.is_empty() && live_probe_requested {
+        match registry
+            .as_ref()
+            .ok_or(ResolverFailure::LiveDescriptorPrivateFieldsMissing)
+            .and_then(|registry| run_live_readonly_probe(&request, registry, client))
+        {
+            Ok(outcome) => Some(outcome),
+            Err(err) => {
+                blockers.push(err.blocker());
+                None
+            }
+        }
+    } else {
+        None
     };
 
     if !blockers.is_empty() {
@@ -436,7 +740,11 @@ pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabil
         );
     }
 
-    RtCapabilityProbeResult::ready(&request, resolver)
+    RtCapabilityProbeResult::ready(&request, resolver, live_probe)
+}
+
+pub fn evaluate_capability_probe(request: RtCapabilityProbeRequest) -> RtCapabilityProbeResult {
+    evaluate_capability_probe_with_client(request, &ReqwestReadOnlyProbeClient)
 }
 
 #[tauri::command]
@@ -506,6 +814,90 @@ mod tests {
         (path, registry_hash)
     }
 
+    fn registry_file_with_private(
+        name: &str,
+        endpoint: &str,
+        remote_root: &str,
+        credential: &str,
+    ) -> (PathBuf, String) {
+        let path = std::env::temp_dir().join(format!(
+            "h2o-rt-live-probe-{name}-{}.json",
+            std::process::id()
+        ));
+        let bytes = serde_json::to_vec(&json!({
+            "schema": "h2o.studio.transport.real-descriptor-registry.v1",
+            "descriptorMode": "hash-only-redacted",
+            "endpointRefHash": endpoint,
+            "remoteRootRefHash": remote_root,
+            "credentialRefHash": credential,
+            "endpointUrlPrivate": format!("{}://{}", "https", "private.invalid"),
+            "remoteRootPathPrivate": "/redacted-root/",
+            "authHeaderPrivate": "Bearer redacted"
+        }))
+        .expect("serialize private test registry");
+        fs::write(&path, &bytes).expect("write private test registry");
+        let registry_hash = sha256_ref(&bytes);
+        (path, registry_hash)
+    }
+
+    #[derive(Default)]
+    struct MockReadOnlyProbeClient;
+
+    impl ReadOnlyProbeClient for MockReadOnlyProbeClient {
+        fn send(
+            &self,
+            request: ReadOnlyProbeHttpRequest,
+        ) -> Result<ReadOnlyProbeHttpResponse, ResolverFailure> {
+            assert!(request.endpoint_url_private.contains("private.invalid"));
+            assert_eq!(request.remote_root_path_private, "/redacted-root/");
+            assert_eq!(
+                request.auth_header_private.as_deref(),
+                Some("Bearer redacted")
+            );
+            Ok(match request.operation {
+                ReadOnlyProbeOperation::Options => ReadOnlyProbeHttpResponse {
+                    status: 204,
+                    allow_header: Some("OPTIONS, PROPFIND, HEAD, GET".to_string()),
+                    ..Default::default()
+                },
+                ReadOnlyProbeOperation::PropfindDepth0 | ReadOnlyProbeOperation::PropfindDepth1 => {
+                    ReadOnlyProbeHttpResponse {
+                        status: 207,
+                        dav_header: Some("1, 2".to_string()),
+                        body: b"redacted-listing-summary".to_vec(),
+                        ..Default::default()
+                    }
+                }
+                ReadOnlyProbeOperation::HeadRoot | ReadOnlyProbeOperation::GetRoot => {
+                    ReadOnlyProbeHttpResponse {
+                        status: 200,
+                        ..Default::default()
+                    }
+                }
+                ReadOnlyProbeOperation::HeadDeterministicNonexistentChild => {
+                    ReadOnlyProbeHttpResponse {
+                        status: 404,
+                        ..Default::default()
+                    }
+                }
+            })
+        }
+    }
+
+    fn live_request() -> RtCapabilityProbeRequest {
+        let mut request = valid_request();
+        request.gate = Some(LIVE_READONLY_PROBE_GATE.to_string());
+        request.resolver_check = Some(true);
+        request.live_read_only_probe = Some(true);
+        request.requested_operations = Some(vec![
+            "options".to_string(),
+            "propfind-depth-0".to_string(),
+            "head-root".to_string(),
+            "head-deterministic-nonexistent-child".to_string(),
+        ]);
+        request
+    }
+
     #[test]
     fn valid_probe_is_redacted_and_zero_write() {
         let result = evaluate_capability_probe(valid_request());
@@ -538,6 +930,33 @@ mod tests {
         assert!(!result.enqueues_relay);
         assert!(!result.product_sync_ready);
         assert!(!result.transport_ready);
+    }
+
+    #[test]
+    fn forbidden_method_names_are_not_accepted() {
+        for method in [
+            "PUT",
+            "DELETE",
+            "MKCOL",
+            "PROPPATCH",
+            "MOVE",
+            "COPY",
+            "LOCK",
+            "UNLOCK",
+            "POST",
+        ] {
+            let mut request = valid_request();
+            request.requested_operations = Some(vec![method.to_string()]);
+            let result = evaluate_capability_probe(request);
+            assert!(!result.ok, "{method} must be rejected");
+            assert!(!result.network_attempted);
+            assert!(result
+                .blockers
+                .contains(&"real-transport-w3-readonly-operation-invalid"));
+            assert!(!result.writes_webdav);
+            assert!(!result.product_sync_ready);
+            assert!(!result.transport_ready);
+        }
     }
 
     #[test]
@@ -624,5 +1043,99 @@ mod tests {
         let serialized = serde_json::to_string(&result).expect("serialize result");
         assert!(!serialized.contains("://"));
         assert!(!serialized.contains("credentialValue"));
+    }
+
+    #[test]
+    fn live_probe_requires_live_gate_before_network() {
+        let _guard = env_lock();
+        let mut request = valid_request();
+        request.live_read_only_probe = Some(true);
+        request.resolver_check = Some(true);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        let result = evaluate_capability_probe_with_client(request, &MockReadOnlyProbeClient);
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-w3-readonly-gate-required"));
+        assert!(!result.writes_webdav);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+    }
+
+    #[test]
+    fn live_probe_missing_registry_fails_closed_before_network() {
+        let _guard = env_lock();
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        let result =
+            evaluate_capability_probe_with_client(live_request(), &MockReadOnlyProbeClient);
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-w3-resolver-config-missing"));
+        assert!(!result.writes_webdav);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+    }
+
+    #[test]
+    fn live_probe_descriptor_mismatch_fails_closed_before_network() {
+        let _guard = env_lock();
+        let (registry_path, registry_hash) =
+            registry_file_with_private("live-mismatch", &h('e'), &h('b'), &h('c'));
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let mut request = live_request();
+        request.descriptor_registry_ref_hash = Some(registry_hash);
+        let result = evaluate_capability_probe_with_client(request, &MockReadOnlyProbeClient);
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(!result.ok);
+        assert!(!result.network_attempted);
+        assert!(result
+            .blockers
+            .contains(&"real-transport-w3-descriptor-hash-mismatch"));
+        assert!(!result.writes_webdav);
+    }
+
+    #[test]
+    fn live_probe_mock_response_is_redacted_hash_only_and_zero_write() {
+        let _guard = env_lock();
+        let request = live_request();
+        let endpoint = request.endpoint_ref_hash.clone().expect("endpoint hash");
+        let remote_root = request
+            .remote_root_ref_hash
+            .clone()
+            .expect("remote root hash");
+        let credential = request
+            .credential_ref_hash
+            .clone()
+            .expect("credential hash");
+        let (registry_path, registry_hash) =
+            registry_file_with_private("live-ready", &endpoint, &remote_root, &credential);
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let mut request = request;
+        request.descriptor_registry_ref_hash = Some(registry_hash);
+        let result = evaluate_capability_probe_with_client(request, &MockReadOnlyProbeClient);
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(result.ok);
+        assert!(result.resolver_available);
+        assert!(result.network_attempted);
+        assert_eq!(result.root_exists, Some(true));
+        assert_eq!(result.root_empty, Some(false));
+        assert_eq!(result.child_404_ok, Some(true));
+        assert!(is_hash_ref(&result.listing_hash));
+        assert!(is_hash_ref(&result.dav_class_summary_hash));
+        assert!(is_hash_ref(&result.allowed_methods_summary_hash));
+        assert!(!result.writes_webdav);
+        assert!(!result.enqueues_relay);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+        let serialized = serde_json::to_string(&result).expect("serialize result");
+        assert!(!serialized.contains("private.invalid"));
+        assert!(!serialized.contains("redacted-root"));
+        assert!(!serialized.contains("Bearer redacted"));
+        assert!(!serialized.contains("redacted-listing-summary"));
     }
 }

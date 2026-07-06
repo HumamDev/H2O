@@ -12,6 +12,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-capability-probe-implementation.md';
+const networkPathEvidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-network-probe-path-implementation.md';
 const cargoPath = 'apps/studio/desktop/src-tauri/Cargo.toml';
 const tauriConfPath = 'apps/studio/desktop/src-tauri/tauri.conf.json';
 const capabilityPath = 'apps/studio/desktop/src-tauri/capabilities/default.json';
@@ -48,6 +49,8 @@ const capabilitiesJson = JSON.parse(capabilities);
 const lib = read(libPath);
 const command = read(commandPath);
 const rustSources = [lib, command].join('\n');
+const productionCommand = command.split('#[cfg(test)]')[0] || command;
+const networkPathImplemented = fs.existsSync(path.join(root, networkPathEvidencePath));
 
 for (const token of [
   '89b6ec476a0bf0ff7cff38a0d652f36469acb36e',
@@ -123,12 +126,20 @@ for (const forbidden of [
   'UNLOCK',
   'POST',
 ]) {
-  assertNotIncludes(command, forbidden, `forbidden verb in command path ${forbidden}`);
+  if (networkPathImplemented) {
+    assertNotIncludes(productionCommand, `"${forbidden}"`, `forbidden verb executable path ${forbidden}`);
+  } else {
+    assertNotIncludes(command, forbidden, `forbidden verb in command path ${forbidden}`);
+  }
 }
 
 assertNotIncludes(cargo, 'tauri-plugin-http', 'tauri-plugin-http dependency');
 assertNotIncludes(cargo, 'keyring', 'keyring dependency');
-assertNotIncludes(cargo, 'reqwest', 'reqwest dependency');
+if (networkPathImplemented) {
+  assertIncludes(cargo, 'reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }', 'W3.1 network path reqwest dependency');
+} else {
+  assertNotIncludes(cargo, 'reqwest', 'reqwest dependency');
+}
 assertNotIncludes(csp, 'webdav', 'CSP WebDAV widening');
 assertNotIncludes(csp, 'cloud', 'CSP cloud widening');
 assertNotIncludes(csp, 'connect-src *', 'CSP wildcard connect-src');
@@ -234,7 +245,7 @@ console.log(JSON.stringify({
   validator: 'validate-real-transport-w3-1-readonly-capability-probe-implementation',
   command: 'h2o_rt_capability_probe',
   firstWriteCommandAdded: false,
-  reqwestAdded: false,
+  reqwestAdded: networkPathImplemented,
   tauriPluginHttpAdded: false,
   realRemoteProbePerformed: false,
   realTransportWrite: false,

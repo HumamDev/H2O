@@ -14,6 +14,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-capability-probe-mock-closeout.md';
+const networkPathEvidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-network-probe-path-implementation.md';
 const commandPath = 'apps/studio/desktop/src-tauri/src/real_transport_capability_probe.rs';
 const libPath = 'apps/studio/desktop/src-tauri/src/lib.rs';
 
@@ -51,6 +52,7 @@ const flat = compact(evidence);
 const command = read(commandPath);
 const lib = read(libPath);
 const rustSources = `${command}\n${lib}`;
+const networkPathImplemented = fs.existsSync(path.join(root, networkPathEvidencePath));
 
 assertIncludes(evidence, '5dd884aea2d4e554ea7bd1282df7369ac4060ab8', 'W3.1 implementation commit');
 assertIncludes(evidence, 'h2o_rt_capability_probe', 'capability probe command');
@@ -171,6 +173,13 @@ for (const rel of [
   'src-surfaces-base/studio/studio.html',
   'tools/product/studio/pack-studio.mjs',
 ]) {
+  if (
+    networkPathImplemented
+    && (rel === 'apps/studio/desktop/src-tauri/Cargo.toml'
+      || rel === 'apps/studio/desktop/src-tauri/Cargo.lock')
+  ) {
+    continue;
+  }
   gitClean(rel);
 }
 optionalGitClean('Cargo.toml');

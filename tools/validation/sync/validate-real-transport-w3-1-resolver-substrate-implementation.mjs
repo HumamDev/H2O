@@ -12,6 +12,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-resolver-substrate-implementation.md';
+const networkPathEvidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-network-probe-path-implementation.md';
 const commandPath = 'apps/studio/desktop/src-tauri/src/real_transport_capability_probe.rs';
 const libPath = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const cargoPath = 'apps/studio/desktop/src-tauri/Cargo.toml';
@@ -45,6 +46,7 @@ const tauriConf = read(tauriConfPath);
 const csp = JSON.parse(tauriConf)?.app?.security?.csp || '';
 const capabilities = JSON.parse(read(capabilityPath));
 const rustSources = `${command}\n${lib}`;
+const networkPathImplemented = fs.existsSync(path.join(root, networkPathEvidencePath));
 
 for (const token of [
   '5dd884aea2d4e554ea7bd1282df7369ac4060ab8',
@@ -70,7 +72,7 @@ for (const token of [
   'endpoint_descriptor_resolved',
   'remote_root_descriptor_resolved',
   'credential_descriptor_resolved',
-  'resolve_descriptors',
+  'resolve_descriptor_registry',
   'DescriptorRegistry',
   'descriptor_mode',
   'hash-only-redacted',
@@ -113,7 +115,11 @@ for (const token of [
 
 assertNotIncludes(cargo, 'tauri-plugin-http', 'tauri-plugin-http dependency');
 assertNotIncludes(cargo, 'keyring', 'keyring dependency');
-assertNotIncludes(cargo, 'reqwest', 'reqwest dependency');
+if (networkPathImplemented) {
+  assertIncludes(cargo, 'reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls"] }', 'W3.1 network path reqwest dependency');
+} else {
+  assertNotIncludes(cargo, 'reqwest', 'reqwest dependency');
+}
 assertNotIncludes(csp, 'webdav', 'CSP WebDAV widening');
 assertNotIncludes(csp, 'cloud', 'CSP cloud widening');
 assertNotIncludes(csp, 'connect-src *', 'CSP wildcard connect-src');

@@ -12,6 +12,7 @@ import process from 'node:process';
 
 const root = process.cwd();
 const evidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-live-readonly-remote-root-probe-closeout.md';
+const networkPathEvidencePath = 'release-evidence/2026-07-06/real-transport-w3-1-readonly-network-probe-path-implementation.md';
 const commandPath = 'apps/studio/desktop/src-tauri/src/real_transport_capability_probe.rs';
 const libPath = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const cargoPath = 'apps/studio/desktop/src-tauri/Cargo.toml';
@@ -42,6 +43,7 @@ const lib = read(libPath);
 const cargo = read(cargoPath);
 const csp = JSON.parse(read(tauriConfPath))?.app?.security?.csp || '';
 const rustCommandSurface = `${command}\n${lib}`;
+const networkPathImplemented = fs.existsSync(path.join(root, networkPathEvidencePath));
 
 for (const token of [
   'f670a18c509dc79d8d651da1e9e9aea06969a2cc',
@@ -99,7 +101,11 @@ assertIncludes(lib, 'real_transport_capability_probe::h2o_rt_capability_probe', 
 assertNotIncludes(rustCommandSurface, 'h2o_rt_first_write', 'first write command');
 assertNotIncludes(rustCommandSurface, 'first_write', 'write command family');
 assertIncludes(command, 'network_attempted: false', 'network false source');
-assertNotIncludes(command, 'reqwest', 'reqwest command use');
+if (networkPathImplemented) {
+  assertIncludes(command, 'ReqwestReadOnlyProbeClient', 'W3.1 network path client');
+} else {
+  assertNotIncludes(command, 'reqwest', 'reqwest command use');
+}
 assertNotIncludes(command, 'TcpStream', 'raw TCP command use');
 assertNotIncludes(cargo, 'tauri-plugin-http', 'tauri-plugin-http dependency');
 assertNotIncludes(csp, 'connect-src *', 'CSP wildcard connect-src');
