@@ -40,6 +40,11 @@ pub mod sync_conflict_decision;
 // install a non-empty identity on the acquired SQLite connection.
 pub mod sqlite_writer_identity;
 
+// W3.1 — read-only real transport capability probe substrate. Redacted,
+// hash-only command surface; no write command and no network attempt in the
+// implementation slice.
+pub mod real_transport_capability_probe;
+
 // F7.4.2b — exact-gated real DB rollback proof for future folder.metadata
 // color apply. Always rolls back and verifies unchanged state; no apply path.
 pub mod folder_metadata_apply_rollback_proof;
@@ -2484,6 +2489,7 @@ macro_rules! h2o_studio_invoke_handler {
             sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
             sqlite_writer_identity::f16_configure_folder_bindings_trigger_protection,
             sqlite_writer_identity::f16_prove_folder_bindings_trigger_protection,
+            real_transport_capability_probe::h2o_rt_capability_probe,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
@@ -2507,6 +2513,7 @@ macro_rules! h2o_studio_invoke_handler {
             sqlite_writer_identity::f15_prove_sqlite_writer_identity_sentinel,
             sqlite_writer_identity::f16_configure_folder_bindings_trigger_protection,
             sqlite_writer_identity::f16_prove_folder_bindings_trigger_protection,
+            real_transport_capability_probe::h2o_rt_capability_probe,
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
