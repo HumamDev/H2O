@@ -17,6 +17,9 @@ const DEFAULT_DESCRIPTOR_REGISTRY_FILE: &str =
     "/private/tmp/h2o-real-transport-w3-live-descriptor-registry.json";
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
 const READONLY_TIMEOUT_SECONDS: u64 = 8;
+const WEBDAV_PROPFIND_BODY: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:resourcetype/></D:prop></D:propfind>";
+const WEBDAV_XML_ACCEPT: &str = "application/xml,text/xml,*/*";
+const WEBDAV_XML_CONTENT_TYPE: &str = "application/xml; charset=utf-8";
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +89,8 @@ pub struct ReadOnlyRequestShape {
     pub auth_header_present: bool,
     pub propfind_depth_header_present: bool,
     pub propfind_body_present: bool,
+    pub propfind_content_type_class: &'static str,
+    pub accept_header_class: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -1032,6 +1037,26 @@ impl ReadOnlyProbeOperation {
         }
     }
 
+    fn sends_propfind_body(self) -> bool {
+        matches!(self, Self::PropfindDepth0 | Self::PropfindDepth1)
+    }
+
+    fn propfind_content_type_class(self) -> &'static str {
+        if self.sends_propfind_body() {
+            "xml"
+        } else {
+            "none"
+        }
+    }
+
+    fn accept_header_class(self) -> &'static str {
+        if self.sends_propfind_body() {
+            "xml"
+        } else {
+            "none"
+        }
+    }
+
     fn targets_nonexistent_child(self) -> bool {
         self == Self::HeadDeterministicNonexistentChild
     }
@@ -1085,16 +1110,41 @@ impl ReqwestReadOnlyProbeClient {
         if url.scheme() != "http" && url.scheme() != "https" {
             return Err(ResolverFailure::LiveUrlInvalid);
         }
-        let mut root = remote_root_path_private.trim_start_matches('/').to_string();
-        if child {
-            if !root.ends_with('/') {
-                root.push('/');
+        url.set_query(None);
+        url.set_fragment(None);
+
+        let endpoint_segments = url
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let remote_root_segments = remote_root_path_private
+            .split('/')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| ResolverFailure::LiveUrlInvalid)?;
+            segments.clear();
+            for segment in endpoint_segments {
+                segments.push(&segment);
             }
-            root.push_str(".h2o-readonly-probe-nonexistent");
+            for segment in remote_root_segments {
+                segments.push(segment);
+            }
+            if child {
+                segments.push(".h2o-readonly-probe-nonexistent");
+            } else {
+                segments.push("");
+            }
         }
-        url = url
-            .join(&root)
-            .map_err(|_| ResolverFailure::LiveUrlInvalid)?;
         Ok(url)
     }
 }
@@ -1119,6 +1169,13 @@ impl ReadOnlyProbeClient for ReqwestReadOnlyProbeClient {
         let mut builder = client.request(method, url);
         if let Some(depth) = request.operation.depth() {
             builder = builder.header("Depth", depth);
+        }
+        if request.operation.sends_propfind_body() {
+            builder = builder
+                .header(reqwest::header::ACCEPT, WEBDAV_XML_ACCEPT)
+                .header(reqwest::header::CONTENT_TYPE, WEBDAV_XML_CONTENT_TYPE)
+                .header(reqwest::header::CACHE_CONTROL, "no-cache")
+                .body(WEBDAV_PROPFIND_BODY.to_string());
         }
         if let Some(auth_header) = request.auth_header_private {
             builder = builder.header("Authorization", auth_header);
@@ -1193,7 +1250,9 @@ fn redacted_request_shape(
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false),
         propfind_depth_header_present: operation.depth().is_some(),
-        propfind_body_present: false,
+        propfind_body_present: operation.sends_propfind_body(),
+        propfind_content_type_class: operation.propfind_content_type_class(),
+        accept_header_class: operation.accept_header_class(),
     })
 }
 
@@ -1252,7 +1311,11 @@ fn run_live_readonly_probe<C: ReadOnlyProbeClient>(
                 | ReadOnlyProbeOperation::PropfindDepth0
                 | ReadOnlyProbeOperation::PropfindDepth1
         ) {
-            outcome.root_exists = Some(status_success);
+            if status_success {
+                outcome.root_exists = Some(true);
+            } else if outcome.root_exists != Some(true) {
+                outcome.root_exists = Some(false);
+            }
         }
         if matches!(
             operation,
@@ -1808,6 +1871,8 @@ mod tests {
                         auth_header_present: true,
                         propfind_depth_header_present: false,
                         propfind_body_present: false,
+                        propfind_content_type_class: "none",
+                        accept_header_class: "none",
                     },
                 },
                 ReadOnlyMethodStatusFamily {
@@ -1820,7 +1885,9 @@ mod tests {
                         double_slash: false,
                         auth_header_present: true,
                         propfind_depth_header_present: true,
-                        propfind_body_present: false,
+                        propfind_body_present: true,
+                        propfind_content_type_class: "xml",
+                        accept_header_class: "xml",
                     },
                 },
                 ReadOnlyMethodStatusFamily {
@@ -1834,6 +1901,8 @@ mod tests {
                         auth_header_present: true,
                         propfind_depth_header_present: false,
                         propfind_body_present: false,
+                        propfind_content_type_class: "none",
+                        accept_header_class: "none",
                     },
                 },
                 ReadOnlyMethodStatusFamily {
@@ -1847,6 +1916,8 @@ mod tests {
                         auth_header_present: true,
                         propfind_depth_header_present: false,
                         propfind_body_present: false,
+                        propfind_content_type_class: "none",
+                        accept_header_class: "none",
                     },
                 },
             ]
