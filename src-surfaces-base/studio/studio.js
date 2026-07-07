@@ -7343,6 +7343,7 @@ const SETTINGS_SYNC_SUBROUTES = Object.freeze({
   "proposal-review": { label: "Proposal Review", hash: "#/settings/sync/proposal-review" },
   "conflict-review": { label: "Conflict Review", hash: "#/settings/sync/conflict-review" },
   "apply-log": { label: "Apply Log", hash: "#/settings/sync/apply-log" },
+  webdav: { label: "WebDAV", hash: "#/settings/sync/webdav" },
 });
 
 const SETTINGS_CONVERGENCE_SUBROUTES = Object.freeze({
@@ -7940,6 +7941,15 @@ function settingsTopLevelContentHtml(section, cardStyle, btnStyle, meta){
 
 function settingsToolSpec(section, subsection){
   if (section === "sync") {
+    if (subsection === "webdav") {
+      return {
+        title: "WebDAV",
+        eyebrow: "Transport setup",
+        description: "Prepare the Desktop WebDAV resolver configuration. Setup only: no probe, no sync, no write.",
+        panelId: "wbRealTransportWebDavSetupSubtab",
+        open: () => W.H2O?.Studio?.sync?.realTransportWebDavSetupUi?.openSettingsSubtab?.(),
+      };
+    }
     return {
       title: "Sync",
       eyebrow: "Manual relay tools",
@@ -8104,6 +8114,17 @@ async function settingsMountEmbeddedTool(section, subsection){
       host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">${esc(spec.title)} API is not installed in this runtime.</div>`;
       return;
     }
+    if (section === "sync" && subsection === "webdav") {
+      host.innerHTML = "";
+      const mounted = await spec.open();
+      const webDavPanel = document.getElementById(spec.panelId);
+      if (!mounted || !webDavPanel) {
+        host.innerHTML = `<div class="wbSettingsCard wbSettingsEmbeddedLoading">${esc(spec.title)} panel did not mount.</div>`;
+        return;
+      }
+      webDavPanel.setAttribute("data-settings-hosted", "true");
+      return;
+    }
     await spec.open();
     const toolPanel = document.getElementById(spec.panelId);
     if (!toolPanel) {
@@ -8113,7 +8134,7 @@ async function settingsMountEmbeddedTool(section, subsection){
     host.innerHTML = "";
     toolPanel.setAttribute("data-settings-hosted", "true");
     host.appendChild(toolPanel);
-    if (section === "sync") {
+    if (section === "sync" && subsection !== "webdav") {
       settingsFocusManualSyncSection(subsection);
       settingsInstallManualSyncFilter(host, subsection);
     }

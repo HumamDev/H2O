@@ -25,6 +25,8 @@
     rootPath: 'wbRealTransportWebDavRootPath',
     credentialIdentifier: 'wbRealTransportWebDavCredentialIdentifier',
     credentialSecret: 'wbRealTransportWebDavCredentialSecret',
+    credentialReady: 'wbRealTransportWebDavCredentialReady',
+    credentialMessage: 'wbRealTransportWebDavCredentialMessage',
     endpointLabel: 'wbRealTransportWebDavEndpointLabel',
     remoteRootLabel: 'wbRealTransportWebDavRemoteRootLabel',
     credentialLabel: 'wbRealTransportWebDavCredentialLabel',
@@ -55,12 +57,14 @@
     desktopOnly: 'wbRealTransportWebDavDesktopOnly',
   };
 
-  var CARD_STYLE = 'display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid rgba(96,165,250,.24);border-radius:10px;background:rgba(96,165,250,.045);margin:0 0 28px';
+  var SUBTAB_ID = 'wbRealTransportWebDavSetupSubtab';
+  var CARD_STYLE = 'display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid rgba(96,165,250,.24);border-radius:10px;background:rgba(96,165,250,.045);margin:0';
   var MUTED_STYLE = 'opacity:.72;font-size:12px;line-height:1.45';
   var BTN_STYLE = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;text-decoration:none;display:inline-block';
   var INPUT_STYLE = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.18);color:inherit;font:inherit;font-size:13px';
   var GRID_STYLE = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px';
-  var STATUS_GRID_STYLE = 'display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace';
+  var STATUS_GRID_STYLE = 'display:grid;grid-template-columns:minmax(110px,max-content) minmax(0,1fr);gap:6px 14px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;min-width:0';
+  var STATUS_VALUE_STYLE = 'min-width:0;overflow-wrap:anywhere;word-break:break-word';
   var DEFAULT_ENDPOINT_DESCRIPTOR_LABEL = 'Non-production WebDAV endpoint';
   var DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL = 'Non-production WebDAV folder';
   var DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL = 'Non-production WebDAV credential';
@@ -123,6 +127,12 @@
     if (el) el.textContent = value == null || value === '' ? '-' : String(value);
   }
 
+  function shortHash(value) {
+    var text = String(value || '');
+    if (!/^sha256:[a-f0-9]{64}$/.test(text)) return text;
+    return text.slice(0, 15) + '…' + text.slice(-8);
+  }
+
   function yesNo(value) {
     if (value === true) return 'yes';
     if (value === false) return 'no';
@@ -166,6 +176,19 @@
       + '</label>';
   }
 
+  function credentialFieldHtml() {
+    return ''
+      + '<label style="display:flex;flex-direction:column;gap:5px;font-size:12px">'
+      +   '<span style="opacity:.78">Password / token</span>'
+      +   '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center">'
+      +     '<input id="' + ID.credentialSecret + '" type="password" autocomplete="current-password" spellcheck="false"'
+      +       ' placeholder="" style="' + INPUT_STYLE + '" />'
+      +     '<span id="' + ID.credentialReady + '" style="white-space:nowrap;border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:7px 9px;font-size:12px;opacity:.72">Credential required</span>'
+      +   '</div>'
+      +   '<span style="' + MUTED_STYLE + '">Save / Prepare stores this in the private Desktop resolver registry only. No probe or write runs.</span>'
+      + '</label>';
+  }
+
   function descriptorLabelValue(id, fallback) {
     return value(id) || fallback;
   }
@@ -179,7 +202,21 @@
   }
 
   function statusRowHtml(label, id) {
-    return '<span style="opacity:.62">' + esc(label) + '</span><span id="' + id + '">-</span>';
+    return '<span style="opacity:.62">' + esc(label) + '</span><span id="' + id + '" style="' + STATUS_VALUE_STYLE + '">-</span>';
+  }
+
+  function credentialStatusMessage(result) {
+    if (!result || typeof result !== 'object') return '-';
+    if (result.credentialInputReceivedThisSave === true && result.credentialMaterialUpdatedThisSave === true) {
+      return 'Credential updated for this prepare.';
+    }
+    if (result.credentialInputReceivedThisSave === true && result.credentialMaterialUpdatedThisSave === false) {
+      return 'Credential received; same as existing saved credential.';
+    }
+    if (result.credentialMaterialPresent === true) {
+      return 'Existing credential is present.';
+    }
+    return 'Credential has not been prepared.';
   }
 
   function buildCardHtml() {
@@ -201,7 +238,7 @@
       +       fieldHtml(ID.serverUrl, 'Server URL', 'url', 'off', 'WebDAV server address')
       +       fieldHtml(ID.rootPath, 'Folder / remote root', 'text', 'off', 'H2O-Test', 'Use the same folder as the native extension, e.g. H2O. Use a non-production test folder for W3.1.')
       +       fieldHtml(ID.credentialIdentifier, 'Username or credential identifier', 'text', 'username', 'operator or key label')
-      +       fieldHtml(ID.credentialSecret, 'Password / token', 'password', 'current-password', '')
+      +       credentialFieldHtml()
       +     '</div>'
       +     '<details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
       +       '<summary style="cursor:pointer;font-weight:650;font-size:13px">Advanced descriptor labels</summary>'
@@ -224,6 +261,7 @@
       +       '<button type="button" style="' + BTN_STYLE + ';opacity:.55;cursor:not-allowed" disabled title="Future phase: separately approved write">Write approval</button>'
       +       '<span id="' + ID.statusSummary + '" style="' + MUTED_STYLE + '">Fill all fields and confirmations to prepare resolver storage.</span>'
       +     '</div>'
+      +     '<div id="' + ID.credentialMessage + '" style="' + MUTED_STYLE + '">Credential input is required before Save / Prepare.</div>'
       +   '</form>'
       +   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">'
       +     '<div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
@@ -266,13 +304,14 @@
       badge.style.background = ok ? 'rgba(34,197,94,.18)' : 'rgba(248,113,113,.18)';
     }
     setText(ID.statusSummary, ok ? 'Resolver registry is prepared. No probe or write was run.' : 'Resolver setup is blocked. Review required fields and confirmations.');
-    setText(ID.registryHash, result && result.descriptorRegistryRefHash);
+    setText(ID.registryHash, shortHash(result && result.descriptorRegistryRefHash));
     setText(ID.registryPathSource, result && result.registryPathSource);
     setText(ID.jsonParses, yesNo(result && result.jsonParses));
     setText(ID.privateFields, yesNo(result && result.requiredPrivateFieldsPresent));
     setText(ID.credentialMaterialPresent, yesNo(result && result.credentialMaterialPresent));
     setText(ID.credentialInputReceivedThisSave, yesNo(result && result.credentialInputReceivedThisSave));
     setText(ID.credentialMaterialUpdatedThisSave, yesNo(result && result.credentialMaterialUpdatedThisSave));
+    setText(ID.credentialMessage, credentialStatusMessage(result));
     setText(ID.endpointReady, yesNo(result && result.endpointNoLongerReservedInvalidDomain));
     setText(ID.reachableCandidate, yesNo(result && result.reachableCandidate));
     setText(ID.networkAttempted, yesNo(result && result.networkAttempted));
@@ -289,6 +328,14 @@
   function renderValidation() {
     var validationResult = validation();
     var save = document.getElementById(ID.saveBtn);
+    var credentialReady = document.getElementById(ID.credentialReady);
+    var hasCredential = !!value(ID.credentialSecret);
+    if (credentialReady) {
+      credentialReady.textContent = hasCredential ? 'Credential ready to save' : 'Credential required';
+      credentialReady.style.opacity = hasCredential ? '1' : '.72';
+      credentialReady.style.borderColor = hasCredential ? 'rgba(34,197,94,.38)' : 'rgba(255,255,255,.12)';
+      credentialReady.style.background = hasCredential ? 'rgba(34,197,94,.12)' : 'transparent';
+    }
     if (save) {
       save.disabled = state.inFlight || !validationResult.ok || !detectTauri();
       save.style.opacity = save.disabled ? '.55' : '1';
@@ -298,6 +345,9 @@
       setText(ID.statusSummary, validationResult.ok
         ? 'Ready to prepare resolver storage. No probe or write will run.'
         : 'Missing: ' + (validationResult.missing.join(' ') || 'Fill all required fields and confirmations.'));
+      setText(ID.credentialMessage, hasCredential
+        ? 'Credential ready to save with Save / Prepare.'
+        : 'Credential input is required before Save / Prepare.');
     }
   }
 
@@ -387,16 +437,36 @@
 
   var activeObserver = null;
 
-  function tryMount() {
-    try {
-      if (document.getElementById(ID.card)) return true;
-      var anchor = document.querySelector('#wbSettingsSyncBox');
-      if (!anchor) return false;
-      anchor.insertAdjacentHTML('afterend', buildCardHtml());
-      wireCard();
-      state.mounted = true;
+  function isWebDavSettingsRoute() {
+    return String(global.location && global.location.hash || '').toLowerCase() === '#/settings/sync/webdav';
+  }
+
+  function mountIntoHost(host) {
+    if (!host) return false;
+    var panel = document.getElementById(SUBTAB_ID);
+    if (panel && panel.parentElement === host && document.getElementById(ID.card)) {
       if (state.lastStatus) renderStatus(state.lastStatus);
       return true;
+    }
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = SUBTAB_ID;
+    }
+    panel.innerHTML = buildCardHtml();
+    host.appendChild(panel);
+    wireCard();
+    state.mounted = true;
+    if (state.lastStatus) renderStatus(state.lastStatus);
+    return true;
+  }
+
+  function tryMount() {
+    try {
+      if (!isWebDavSettingsRoute()) return false;
+      var host = document.querySelector('#wbSettingsEmbeddedToolHost');
+      if (!host) return false;
+      if (document.getElementById(ID.card)) return true;
+      return mountIntoHost(host);
     } catch (_) {
       return false;
     }
@@ -438,6 +508,12 @@
       productSyncReady: false,
       transportReady: false,
     };
+  };
+
+  API.openSettingsSubtab = function () {
+    var host = document.querySelector('#wbSettingsEmbeddedToolHost');
+    if (!host) return false;
+    return mountIntoHost(host);
   };
 
   H2O.Studio.sync.__realTransportWebDavSetupUiInstalled = true;

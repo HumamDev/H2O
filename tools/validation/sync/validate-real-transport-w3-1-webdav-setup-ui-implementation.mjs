@@ -10,6 +10,7 @@ const files = {
   lib: 'apps/studio/desktop/src-tauri/src/lib.rs',
   cargo: 'apps/studio/desktop/src-tauri/Cargo.toml',
   tauriConf: 'apps/studio/desktop/src-tauri/tauri.conf.json',
+  studio: 'src-surfaces-base/studio/studio.js',
   ui: 'src-surfaces-base/studio/sync/webdav-transport-setup-ui.tauri.js',
   html: 'src-surfaces-base/studio/studio.html',
   pack: 'tools/product/studio/pack-studio.mjs',
@@ -40,6 +41,7 @@ const rust = read(files.rust);
 const lib = read(files.lib);
 const cargo = read(files.cargo);
 const tauriConf = read(files.tauriConf);
+const studio = read(files.studio);
 const ui = read(files.ui);
 const html = read(files.html);
 const pack = read(files.pack);
@@ -87,6 +89,7 @@ assert(count(lib, 'real_transport_capability_probe::h2o_rt_webdav_setup_status')
 
 mustNotContain(rust, 'h2o_rt_first_write', 'rust source');
 mustNotContain(lib, 'h2o_rt_first_write', 'invoke handler');
+mustNotContain(studio, 'h2o_rt_first_write', 'settings shell');
 mustNotContain(ui, 'h2o_rt_first_write', 'ui source');
 mustNotContain(evidence, 'h2o_rt_first_write was added', 'evidence');
 
@@ -107,6 +110,14 @@ mustContain(ui, 'wbRealTransportWebDavSetupCard', 'ui card id');
 mustContain(ui, 'h2o_rt_prepare_webdav_setup', 'ui setup invoke');
 mustContain(ui, 'h2o_rt_webdav_setup_status', 'ui status invoke');
 mustNotContain(ui, 'h2o_rt_capability_probe', 'ui must not run live probe');
+mustContain(studio, 'webdav: { label: "WebDAV", hash: "#/settings/sync/webdav" }', 'settings sync WebDAV subtab');
+mustContain(studio, 'subsection === "webdav"', 'settings WebDAV route handling');
+mustContain(studio, 'realTransportWebDavSetupUi?.openSettingsSubtab', 'settings WebDAV subtab opener');
+mustContain(studio, 'subsection !== "webdav"', 'settings manual sync filter must not hide WebDAV panel');
+mustContain(ui, 'openSettingsSubtab', 'ui settings subtab API');
+mustContain(ui, '#/settings/sync/webdav', 'ui mounts only on WebDAV sync subtab');
+mustContain(ui, 'wbRealTransportWebDavSetupSubtab', 'ui subtab panel id');
+mustNotContain(ui, "insertAdjacentHTML('afterend'", 'ui must not mount buried duplicate after sync box');
 mustContain(ui, 'Use the same URL and Folder as the native extension.', 'native extension model helper');
 mustContain(ui, 'For Koofr, URL is usually https://app.koofr.net/dav/Koofr', 'native extension URL helper');
 mustContain(ui, 'Folder can be H2O-Test for this W3.1 setup.', 'native extension folder example');
@@ -114,7 +125,12 @@ mustContain(ui, 'Server URL is required.', 'user-actionable server missing state
 mustContain(ui, 'Folder / remote root is required.', 'user-actionable folder missing state');
 mustContain(ui, 'Username is required.', 'user-actionable username missing state');
 mustContain(ui, 'Password/token is required.', 'user-actionable credential missing state');
-mustContain(ui, "'password'", 'credential field must be masked');
+mustContain(ui, 'type="password"', 'credential field must be masked');
+mustContain(ui, 'Credential ready to save', 'credential ready indicator');
+mustContain(ui, 'Credential updated for this prepare.', 'credential updated friendly message');
+mustContain(ui, 'Credential received; same as existing saved credential.', 'credential same-as-existing friendly message');
+mustContain(ui, 'Existing credential is present.', 'existing credential friendly message');
+mustContain(ui, 'credentialStatusMessage', 'credential message helper');
 mustContain(ui, 'if (secret) secret.value = \'\';', 'credential field cleared after prepare');
 mustContain(ui, 'registry path source', 'redacted registry path source status');
 mustContain(ui, 'credential material present', 'redacted credential material presence status');
@@ -124,6 +140,9 @@ mustContain(ui, 'result && result.registryPathSource', 'registry path source ren
 mustContain(ui, 'result && result.credentialMaterialPresent', 'credential material presence render');
 mustContain(ui, 'result && result.credentialInputReceivedThisSave', 'credential input receipt render');
 mustContain(ui, 'result && result.credentialMaterialUpdatedThisSave', 'credential update render');
+mustContain(ui, 'shortHash(result && result.descriptorRegistryRefHash)', 'visible registry hash must be shortened');
+mustContain(ui, 'overflow-wrap:anywhere', 'status values must wrap');
+mustContain(ui, 'minmax(0,1fr)', 'status grid must prevent overflow');
 mustContain(ui, 'confirmNonProduction', 'non-production confirmation');
 mustContain(ui, 'confirmReadOnlySafe', 'read-only confirmation');
 mustContain(ui, 'confirmSacrificialWriteNotApproved', 'no sacrificial write confirmation');
