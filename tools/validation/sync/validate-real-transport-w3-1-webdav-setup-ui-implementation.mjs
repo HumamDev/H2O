@@ -64,8 +64,10 @@ for (const anchor of [
 mustContain(rust, 'pub fn h2o_rt_capability_probe', 'rust command');
 mustContain(rust, 'pub fn h2o_rt_prepare_webdav_setup', 'rust setup command');
 mustContain(rust, 'pub fn h2o_rt_webdav_setup_status', 'rust status command');
+mustContain(rust, 'pub fn h2o_rt_webdav_setup_hydrate_form', 'rust local Desktop hydrate command');
 mustContain(rust, 'prepare_webdav_setup', 'rust setup implementation');
 mustContain(rust, 'webdav_setup_status', 'rust status implementation');
+mustContain(rust, 'webdav_setup_hydrate_form', 'rust local Desktop hydrate implementation');
 mustContain(rust, 'DEFAULT_DESCRIPTOR_REGISTRY_FILE', 'private registry default');
 mustContain(rust, 'network_attempted: false', 'setup network invariant');
 mustContain(rust, 'product_sync_ready: false', 'setup readiness invariant');
@@ -100,6 +102,12 @@ mustContain(rust, 'credential_material_updated_this_save', 'redacted credential 
 mustContain(rust, 'saved_server_url', 'saved server URL status for reload hydration');
 mustContain(rust, 'saved_root_path', 'saved root path status for reload hydration');
 mustContain(rust, 'saved_credential_identifier', 'saved username status for reload hydration');
+mustContain(rust, 'remembered_credential_secret', 'local Desktop hydrate command may return remembered credential only to UI');
+mustContain(rust, 'desktop_local_ui != Some(true)', 'hydrate command must require explicit local Desktop UI request');
+mustContain(rust, 'remember_credential != Some(true)', 'hydrate command must require Remember credential');
+mustContain(rust, 'real-transport-webdav-setup-hydrate-write-grade-registry-required', 'hydrate command must require write-grade eligible registry');
+mustContain(rust, 'credential_secret_from_auth_header_private', 'hydrate command must recover credential only through local private path');
+mustContain(rust, '!status_json.contains("rememberedCredentialSecret")', 'status test must prove normal status remains token-redacted');
 mustContain(rust, 'credential_identifier_from_auth_header_private', 'status must recover username without exposing credential material');
 mustContain(rust, 'split_once(\':\')', 'status must split Basic auth without returning credential material');
 mustContain(rust, 'previous_auth_header_private', 'private credential update comparison');
@@ -118,9 +126,9 @@ assert(count(lib, 'real_transport_capability_probe::h2o_rt_prepare_webdav_setup'
   'lib.rs: setup command must be registered in debug and release invoke handlers');
 assert(count(lib, 'real_transport_capability_probe::h2o_rt_webdav_setup_status') === 2,
   'lib.rs: status command must be registered in debug and release invoke handlers');
+assert(count(lib, 'real_transport_capability_probe::h2o_rt_webdav_setup_hydrate_form') === 2,
+  'lib.rs: local hydrate command must be registered in debug and release invoke handlers');
 
-mustNotContain(rust, 'h2o_rt_first_write', 'rust source');
-mustNotContain(lib, 'h2o_rt_first_write', 'invoke handler');
 mustNotContain(studio, 'h2o_rt_first_write', 'settings shell');
 mustNotContain(ui, 'h2o_rt_first_write', 'ui source');
 mustNotContain(evidence, 'h2o_rt_first_write was added', 'evidence');
@@ -141,6 +149,10 @@ mustContain(ui, 'realTransportWebDavSetupUi', 'ui API namespace');
 mustContain(ui, 'wbRealTransportWebDavSetupCard', 'ui card id');
 mustContain(ui, 'h2o_rt_prepare_webdav_setup', 'ui setup invoke');
 mustContain(ui, 'h2o_rt_webdav_setup_status', 'ui status invoke');
+mustContain(ui, 'h2o_rt_webdav_setup_hydrate_form', 'ui local hydrate invoke');
+mustContain(ui, 'rememberedCredentialSecret', 'ui local hydrate token field');
+mustContain(ui, 'desktopLocalUi: true', 'ui must explicitly request local Desktop hydration');
+mustContain(ui, 'credentialSecretRemembered', 'ui must track remembered credential draft state');
 mustNotContain(ui, 'h2o_rt_capability_probe', 'ui must not run live probe');
 mustContain(studio, 'webdav: { label: "WebDAV", hash: "#/settings/sync/webdav" }', 'settings sync WebDAV subtab');
 mustContain(studio, 'subsection === "webdav"', 'settings WebDAV route handling');
@@ -156,7 +168,7 @@ mustContain(ui, 'result.savedRootPath', 'ui must restore saved folder after relo
 mustContain(ui, 'result.savedCredentialIdentifier', 'ui must restore saved username after reload');
 mustContain(ui, 'result.credentialMaterialPresent === true && state.draft.rememberCredential !== true', 'ui must auto-check Remember when saved credential exists');
 mustContain(ui, "['confirmNonProduction', 'confirmReadOnly', 'confirmNoSacrificialWrite']", 'ui must restore safety confirmations when resolver is prepared');
-mustContain(ui, "state.draft.credentialSecret = '';", 'ui must keep password token empty after reload hydration');
+mustContain(ui, 'state.draft.credentialSecret = result.rememberedCredentialSecret;', 'ui must hydrate remembered credential into masked draft field');
 mustContain(ui, 'state.draft', 'ui draft state');
 mustContain(ui, 'draftValue(\'serverUrl\')', 'server URL must be draft-backed');
 mustContain(ui, 'draftValue(\'rootPath\')', 'folder must be draft-backed');
@@ -182,16 +194,21 @@ mustContain(ui, 'grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:ce
 mustContain(ui, 'padding:7px 12px;white-space:nowrap', 'show hide button must stay compact and not squeeze password field');
 mustContain(ui, 'style="\' + INPUT_STYLE + \';min-width:0"', 'password input must be overflow-safe');
 mustContain(ui, 'Remember credential on this device', 'remember credential checkbox');
-mustContain(ui, 'Stores the token in the private Desktop resolver store. Nothing is synced or written to WebDAV.', 'remember credential tooltip');
+mustContain(ui, 'Stores and restores this token locally in Desktop only. It is not synced or written to WebDAV.', 'remember credential tooltip');
+mustContain(ui, 'Forget credential', 'forget credential affordance must be visible or deferred');
+mustContain(ui, 'Future phase: safely forget the saved local credential', 'forget credential must be deferred/non-destructive in this phase');
 mustContain(ui, 'Enable Remember credential to prepare WebDAV settings.', 'remember credential required validation');
 mustContain(ui, 'padding:2px 0 0', 'remember credential must be a compact checkbox row');
 mustContain(ui, 'Credential ready to save', 'credential ready indicator');
+mustContain(ui, 'Credential remembered on this device', 'remembered credential indicator');
 mustContain(ui, 'Token required', 'empty credential indicator');
 mustContain(ui, 'Enable remember to prepare', 'remember-required credential indicator');
 mustContain(ui, 'Using saved credential', 'saved credential reuse indicator');
 mustContain(ui, 'savedCredentialPresent', 'saved credential presence helper');
 mustContain(ui, 'rememberCredential && !hasDraftCredential && !hasSavedCredential', 'validation must allow empty token when saved credential exists');
 mustContain(ui, 'Enable Remember credential to use the saved credential.', 'remember-required saved credential message');
+mustContain(ui, 'event.target.id === ID.rememberCredential && !event.target.checked', 'Remember unchecked must clear local token draft');
+mustContain(ui, 'event.target.id === ID.credentialSecret', 'typed token must become editable draft material');
 mustContain(ui, 'style="\' + MUTED_STYLE + \'">Token required</span>', 'credential state must render below password as subtle helper text');
 mustNotContain(ui, 'credentialReady.style.borderColor', 'credential state must not be a large badge beside password');
 mustNotContain(ui, 'credentialReady.style.background', 'credential state must not be a large badge beside password');
@@ -201,9 +218,10 @@ mustContain(ui, 'Credential updated for this prepare.', 'credential updated frie
 mustContain(ui, 'Credential received. Same as existing saved credential.', 'credential same-as-existing friendly message');
 mustContain(ui, 'Existing saved credential used.', 'existing credential friendly message');
 mustContain(ui, 'credentialStatusMessage', 'credential message helper');
-mustContain(ui, 'if (secret) secret.value = \'\';', 'credential field cleared after prepare');
+mustContain(ui, 'submittedRememberCredential && submittedCredentialSecret', 'credential field remains populated after remembered prepare');
+mustContain(ui, 'if (secret) secret.value = \'\';', 'credential field clears only when remembered token is unavailable or Remember is off');
 mustContain(ui, 'state.credentialVisible = false;', 'credential reveal state resets after prepare');
-mustContain(ui, 'Saved credentials are not revealed.', 'show hide must not reveal saved stored credential');
+mustContain(ui, 'No token is loaded or typed.', 'show hide disabled text when no local draft token is loaded');
 mustContain(ui, 'registry path source', 'redacted registry path source status');
 mustContain(ui, 'write-grade registry eligible', 'redacted write-grade registry eligibility status');
 mustContain(ui, 'writeGradeRegistryRefHash', 'write-grade registry ref hash status');

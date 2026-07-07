@@ -460,6 +460,89 @@ impl RtWebDavSetupStatusResult {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RtWebDavSetupHydrateFormRequest {
+    #[serde(default)]
+    pub remember_credential: Option<bool>,
+    #[serde(default)]
+    pub desktop_local_ui: Option<bool>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RtWebDavSetupHydrateFormResult {
+    pub schema: &'static str,
+    pub ok: bool,
+    pub status: &'static str,
+    pub reason: &'static str,
+    pub command: &'static str,
+    pub registry_path_class: &'static str,
+    pub registry_path_source: &'static str,
+    pub write_grade_registry_eligible: bool,
+    pub registry_owner_ok: bool,
+    pub registry_permission_ok: bool,
+    pub saved_server_url: Option<String>,
+    pub saved_root_path: Option<String>,
+    pub saved_credential_identifier: Option<String>,
+    pub remembered_credential_secret: Option<String>,
+    pub credential_material_present: bool,
+    pub remember_credential_enabled: bool,
+    pub network_attempted: bool,
+    pub writes_webdav: bool,
+    pub writes_cloud: bool,
+    pub writes_relay: bool,
+    pub writes_cas: bool,
+    pub writes_files: bool,
+    pub enqueues_relay: bool,
+    pub full_bundle_v3_started: bool,
+    pub mints_export_id: bool,
+    pub burns_sequence: bool,
+    pub product_sync_ready: bool,
+    pub transport_ready: bool,
+    pub raw_private_fields_logged: bool,
+    pub blockers: Vec<&'static str>,
+    pub warnings: Vec<&'static str>,
+}
+
+impl RtWebDavSetupHydrateFormResult {
+    fn blocked(reason: &'static str, blockers: Vec<&'static str>) -> Self {
+        Self {
+            schema: "h2o.studio.transport.real-webdav-setup-hydrate-form.v1",
+            ok: false,
+            status: "real-transport-webdav-setup-hydrate-form-blocked",
+            reason,
+            command: "h2o_rt_webdav_setup_hydrate_form",
+            registry_path_class: "private-out-of-repo-descriptor-registry",
+            registry_path_source: descriptor_registry_path_source_for_setup(),
+            write_grade_registry_eligible: false,
+            registry_owner_ok: false,
+            registry_permission_ok: false,
+            saved_server_url: None,
+            saved_root_path: None,
+            saved_credential_identifier: None,
+            remembered_credential_secret: None,
+            credential_material_present: false,
+            remember_credential_enabled: false,
+            network_attempted: false,
+            writes_webdav: false,
+            writes_cloud: false,
+            writes_relay: false,
+            writes_cas: false,
+            writes_files: false,
+            enqueues_relay: false,
+            full_bundle_v3_started: false,
+            mints_export_id: false,
+            burns_sequence: false,
+            product_sync_ready: false,
+            transport_ready: false,
+            raw_private_fields_logged: false,
+            blockers,
+            warnings: vec!["local-desktop-ui-hydration-only-no-probe-no-write"],
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RtFirstWriteRequest {
@@ -1060,6 +1143,33 @@ fn credential_identifier_from_auth_header_private(auth_header_private: &str) -> 
     }
 }
 
+fn credential_secret_from_auth_header_private(
+    auth_header_private: &str,
+    expected_identifier: Option<&str>,
+) -> Option<String> {
+    let value = auth_header_private.trim();
+    if value.len() >= 6 && value[..6].eq_ignore_ascii_case("basic ") {
+        let decoded = base64_decode(&value[6..])?;
+        let decoded = String::from_utf8(decoded).ok()?;
+        let (identifier, secret) = decoded.split_once(':')?;
+        if let Some(expected) = expected_identifier {
+            if identifier.trim() != expected.trim() {
+                return None;
+            }
+        }
+        let secret = secret.trim();
+        if secret.is_empty() {
+            None
+        } else {
+            Some(secret.to_string())
+        }
+    } else if value.len() >= 7 && value[..7].eq_ignore_ascii_case("bearer ") {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
 fn write_private_registry_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| ())?;
@@ -1464,6 +1574,126 @@ pub fn webdav_setup_status() -> RtWebDavSetupStatusResult {
             apply_registry_storage_status(&mut result, &registry_path_info);
             result
         }
+    }
+}
+
+pub fn webdav_setup_hydrate_form(
+    request: RtWebDavSetupHydrateFormRequest,
+) -> RtWebDavSetupHydrateFormResult {
+    let command = "h2o_rt_webdav_setup_hydrate_form";
+    if request.desktop_local_ui != Some(true) {
+        return RtWebDavSetupHydrateFormResult::blocked(
+            "real-transport-webdav-setup-hydrate-local-desktop-required",
+            vec!["real-transport-webdav-setup-hydrate-local-desktop-required"],
+        );
+    }
+    if request.remember_credential != Some(true) {
+        return RtWebDavSetupHydrateFormResult::blocked(
+            "real-transport-webdav-setup-hydrate-remember-required",
+            vec!["real-transport-webdav-setup-hydrate-remember-required"],
+        );
+    }
+
+    let path_info = descriptor_registry_path_for_setup_status();
+    let bytes = match fs::read(&path_info.path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let mut result = RtWebDavSetupHydrateFormResult::blocked(
+                "real-transport-webdav-setup-hydrate-registry-missing",
+                vec!["real-transport-webdav-setup-hydrate-registry-missing"],
+            );
+            result.registry_path_source = path_info.source;
+            return result;
+        }
+    };
+    let status = status_from_registry_bytes(command, &bytes, &path_info);
+    if !status.write_grade_registry_eligible
+        || !write_grade_registry_source_candidate(status.registry_path_source)
+    {
+        let mut result = RtWebDavSetupHydrateFormResult::blocked(
+            "real-transport-webdav-setup-hydrate-write-grade-registry-required",
+            vec!["real-transport-webdav-setup-hydrate-write-grade-registry-required"],
+        );
+        result.registry_path_source = status.registry_path_source;
+        result.write_grade_registry_eligible = status.write_grade_registry_eligible;
+        result.registry_owner_ok = status.registry_owner_ok;
+        result.registry_permission_ok = status.registry_permission_ok;
+        return result;
+    }
+    if !status.credential_material_present {
+        let mut result = RtWebDavSetupHydrateFormResult::blocked(
+            "real-transport-webdav-setup-hydrate-credential-missing",
+            vec!["real-transport-webdav-setup-hydrate-credential-missing"],
+        );
+        result.registry_path_source = status.registry_path_source;
+        result.write_grade_registry_eligible = status.write_grade_registry_eligible;
+        result.registry_owner_ok = status.registry_owner_ok;
+        result.registry_permission_ok = status.registry_permission_ok;
+        return result;
+    }
+
+    let registry: DescriptorRegistry = match serde_json::from_slice(&bytes) {
+        Ok(registry) => registry,
+        Err(_) => {
+            let mut result = RtWebDavSetupHydrateFormResult::blocked(
+                "real-transport-webdav-setup-hydrate-registry-invalid",
+                vec!["real-transport-webdav-setup-hydrate-registry-invalid"],
+            );
+            result.registry_path_source = status.registry_path_source;
+            return result;
+        }
+    };
+    let credential_secret = registry.auth_header_private.as_deref().and_then(|value| {
+        credential_secret_from_auth_header_private(
+            value,
+            status.saved_credential_identifier.as_deref(),
+        )
+    });
+    if credential_secret.is_none() {
+        let mut result = RtWebDavSetupHydrateFormResult::blocked(
+            "real-transport-webdav-setup-hydrate-credential-unavailable",
+            vec!["real-transport-webdav-setup-hydrate-credential-unavailable"],
+        );
+        result.registry_path_source = status.registry_path_source;
+        result.write_grade_registry_eligible = status.write_grade_registry_eligible;
+        result.registry_owner_ok = status.registry_owner_ok;
+        result.registry_permission_ok = status.registry_permission_ok;
+        result.credential_material_present = status.credential_material_present;
+        return result;
+    }
+
+    RtWebDavSetupHydrateFormResult {
+        schema: "h2o.studio.transport.real-webdav-setup-hydrate-form.v1",
+        ok: true,
+        status: "real-transport-webdav-setup-hydrate-form-ready",
+        reason: "real-transport-webdav-setup-hydrate-form-ready",
+        command,
+        registry_path_class: status.registry_path_class,
+        registry_path_source: status.registry_path_source,
+        write_grade_registry_eligible: status.write_grade_registry_eligible,
+        registry_owner_ok: status.registry_owner_ok,
+        registry_permission_ok: status.registry_permission_ok,
+        saved_server_url: status.saved_server_url,
+        saved_root_path: status.saved_root_path,
+        saved_credential_identifier: status.saved_credential_identifier,
+        remembered_credential_secret: credential_secret,
+        credential_material_present: true,
+        remember_credential_enabled: true,
+        network_attempted: false,
+        writes_webdav: false,
+        writes_cloud: false,
+        writes_relay: false,
+        writes_cas: false,
+        writes_files: false,
+        enqueues_relay: false,
+        full_bundle_v3_started: false,
+        mints_export_id: false,
+        burns_sequence: false,
+        product_sync_ready: false,
+        transport_ready: false,
+        raw_private_fields_logged: false,
+        blockers: vec![],
+        warnings: vec!["local-desktop-ui-hydration-only-no-probe-no-write"],
     }
 }
 
@@ -2461,6 +2691,13 @@ pub fn h2o_rt_webdav_setup_status() -> Result<RtWebDavSetupStatusResult, String>
 }
 
 #[tauri::command]
+pub fn h2o_rt_webdav_setup_hydrate_form(
+    request: RtWebDavSetupHydrateFormRequest,
+) -> Result<RtWebDavSetupHydrateFormResult, String> {
+    Ok(webdav_setup_hydrate_form(request))
+}
+
+#[tauri::command]
 pub fn h2o_rt_first_write(
     request: Option<RtFirstWriteRequest>,
 ) -> Result<RtFirstWriteResult, String> {
@@ -3206,6 +3443,76 @@ mod tests {
         assert!(!status.writes_webdav);
         assert!(!status.product_sync_ready);
         assert!(!status.transport_ready);
+    }
+
+    #[test]
+    fn webdav_hydrate_form_is_local_desktop_only_and_keeps_status_redacted() {
+        let _guard = env_lock();
+        let registry_path =
+            std::env::temp_dir().join(format!("h2o-rt-webdav-hydrate-{}.json", std::process::id()));
+        std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
+        let prepared = prepare_webdav_setup(setup_request());
+        assert!(prepared.ok);
+
+        let status = webdav_setup_status();
+        let status_json = serde_json::to_string(&status).expect("serialize status");
+        assert!(status.credential_material_present);
+        assert!(!status_json.contains("credential-material"));
+        assert!(!status_json.contains("credentialSecret"));
+        assert!(!status_json.contains("rememberedCredentialSecret"));
+
+        let browser_like = webdav_setup_hydrate_form(RtWebDavSetupHydrateFormRequest {
+            remember_credential: Some(true),
+            desktop_local_ui: Some(false),
+        });
+        assert!(!browser_like.ok);
+        assert_eq!(
+            browser_like.reason,
+            "real-transport-webdav-setup-hydrate-local-desktop-required"
+        );
+        assert!(browser_like.remembered_credential_secret.is_none());
+
+        let remember_unchecked = webdav_setup_hydrate_form(RtWebDavSetupHydrateFormRequest {
+            remember_credential: Some(false),
+            desktop_local_ui: Some(true),
+        });
+        assert!(!remember_unchecked.ok);
+        assert_eq!(
+            remember_unchecked.reason,
+            "real-transport-webdav-setup-hydrate-remember-required"
+        );
+        assert!(remember_unchecked.remembered_credential_secret.is_none());
+
+        let hydrated = webdav_setup_hydrate_form(RtWebDavSetupHydrateFormRequest {
+            remember_credential: Some(true),
+            desktop_local_ui: Some(true),
+        });
+        let _ = fs::remove_file(registry_path);
+        std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
+        assert!(hydrated.ok);
+        assert_eq!(hydrated.registry_path_source, "env");
+        assert!(hydrated.write_grade_registry_eligible);
+        assert!(hydrated.credential_material_present);
+        assert_eq!(
+            hydrated.saved_server_url.as_deref(),
+            Some("https://nonproduction-webdav.local")
+        );
+        assert_eq!(
+            hydrated.saved_root_path.as_deref(),
+            Some("/w3-readonly-root/")
+        );
+        assert_eq!(
+            hydrated.saved_credential_identifier.as_deref(),
+            Some("operator-test-identity")
+        );
+        assert_eq!(
+            hydrated.remembered_credential_secret.as_deref(),
+            Some("non-production-credential-material")
+        );
+        assert!(!hydrated.network_attempted);
+        assert!(!hydrated.writes_webdav);
+        assert!(!hydrated.product_sync_ready);
+        assert!(!hydrated.transport_ready);
     }
 
     #[test]

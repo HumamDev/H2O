@@ -29,6 +29,7 @@
     credentialReady: 'wbRealTransportWebDavCredentialReady',
     credentialMessage: 'wbRealTransportWebDavCredentialMessage',
     rememberCredential: 'wbRealTransportWebDavRememberCredential',
+    forgetCredential: 'wbRealTransportWebDavForgetCredential',
     endpointLabel: 'wbRealTransportWebDavEndpointLabel',
     remoteRootLabel: 'wbRealTransportWebDavRemoteRootLabel',
     credentialLabel: 'wbRealTransportWebDavCredentialLabel',
@@ -90,6 +91,7 @@
     lastStatus: null,
     draftDirty: false,
     credentialVisible: false,
+    credentialSecretRemembered: false,
     statusRequestedOnMount: false,
     draft: {
       serverUrl: '',
@@ -218,6 +220,17 @@
     });
   }
 
+  function setCredentialInputType() {
+    var secret = document.getElementById(ID.credentialSecret);
+    if (secret) secret.type = state.credentialVisible ? 'text' : 'password';
+    var revealBtn = document.getElementById(ID.credentialReveal);
+    if (revealBtn) {
+      revealBtn.textContent = state.credentialVisible ? 'Hide' : 'Show';
+      revealBtn.title = state.credentialVisible ? 'Hide password / token' : 'Show password / token';
+      revealBtn.setAttribute('aria-pressed', state.credentialVisible ? 'true' : 'false');
+    }
+  }
+
   function draftValue(key, fallback) {
     var value = state.draft[key];
     return value == null || value === '' ? (fallback || '') : String(value);
@@ -263,7 +276,7 @@
   function credentialFieldHtml() {
     return ''
       + '<label style="display:flex;flex-direction:column;gap:5px;font-size:12px">'
-      +   '<span style="' + LABEL_STYLE + '">Password / token' + infoIconHtml('Use an app-specific WebDAV password or token. It is sent only to the Desktop Rust resolver storage command and is never logged or shown here.') + '</span>'
+      +   '<span style="' + LABEL_STYLE + '">Password / token' + infoIconHtml('Use an app-specific WebDAV password or token. When Remember is enabled, Desktop restores it locally into this masked field. It is never synced or written to WebDAV.') + '</span>'
       +   '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0">'
       +     '<input id="' + ID.credentialSecret + '" type="' + (state.credentialVisible ? 'text' : 'password') + '" autocomplete="current-password" spellcheck="false"'
       +       ' placeholder="" value="' + esc(draftValue('credentialSecret')) + '" style="' + INPUT_STYLE + ';min-width:0" />'
@@ -322,10 +335,6 @@
         }
       });
     }
-    if (state.draft.credentialSecret !== '') {
-      state.draft.credentialSecret = '';
-      changed = true;
-    }
     if (changed) applyDraftToDom();
   }
 
@@ -365,7 +374,10 @@
       +       fieldHtml(ID.credentialIdentifier, 'Username', 'text', 'username', 'Username or credential identifier', 'Use the username or credential identifier from the native extension WebDAV setup.', draftValue('credentialIdentifier'))
       +       credentialFieldHtml()
       +     '</div>'
-      +     '<div style="padding:2px 0 0">' + checkboxHtml(ID.rememberCredential, 'Remember credential on this device', 'Stores the token in the private Desktop resolver store. Nothing is synced or written to WebDAV.') + '</div>'
+      +     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 0 0">'
+      +       checkboxHtml(ID.rememberCredential, 'Remember credential on this device', 'Stores and restores this token locally in Desktop only. It is not synced or written to WebDAV.')
+      +       '<button id="' + ID.forgetCredential + '" type="button" style="' + BTN_STYLE + ';opacity:.55;cursor:not-allowed;padding:6px 10px;font-size:12px" disabled title="Future phase: safely forget the saved local credential">Forget credential</button>'
+      +     '</div>'
       +     '<details style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
       +       '<summary style="cursor:pointer;font-weight:650;font-size:13px">Advanced descriptor labels</summary>'
       +       '<div style="' + MUTED_STYLE + ';margin:6px 0 10px">These labels are generated for the private Rust resolver. Most operators should leave them unchanged.</div>'
@@ -481,7 +493,9 @@
     var rememberCredential = checked(ID.rememberCredential);
     if (credentialReady) {
       credentialReady.textContent = hasCredential
-        ? (rememberCredential ? 'Credential ready to save' : 'Enable remember to prepare')
+        ? (rememberCredential
+          ? (state.credentialSecretRemembered ? 'Credential remembered on this device' : 'Credential ready to save')
+          : 'Enable remember to prepare')
         : (hasSavedCredential && rememberCredential ? 'Using saved credential' : 'Token required');
       credentialReady.style.opacity = hasCredential || hasSavedCredential ? '1' : '.72';
     }
@@ -491,7 +505,7 @@
       revealBtn.style.cursor = hasCredential ? 'pointer' : 'not-allowed';
       revealBtn.title = hasCredential
         ? (state.credentialVisible ? 'Hide password / token' : 'Show password / token')
-        : 'Enter a token to use Show / Hide. Saved credentials are not revealed.';
+        : 'No token is loaded or typed.';
     }
     if (save) {
       save.disabled = state.inFlight || !validationResult.ok || !detectTauri();
@@ -499,7 +513,9 @@
       save.style.cursor = save.disabled ? 'not-allowed' : 'pointer';
     }
     if (hasCredential && rememberCredential) {
-      setText(ID.credentialMessage, 'Credential ready to save.');
+      setText(ID.credentialMessage, state.credentialSecretRemembered
+        ? 'Credential remembered on this device.'
+        : 'Credential ready to save.');
     } else if (hasCredential && !rememberCredential) {
       setText(ID.credentialMessage, 'Enable Remember credential to prepare.');
     } else if (!hasCredential && hasSavedCredential && rememberCredential) {
@@ -522,6 +538,39 @@
     }
   }
 
+  async function invokeHydrateForm(statusResult) {
+    if (!detectTauri() || state.draftDirty) return false;
+    var invoke = getInvoke();
+    if (!invoke) return false;
+    var shouldRemember = checked(ID.rememberCredential) ||
+      !!(statusResult && statusResult.credentialMaterialPresent === true);
+    if (!shouldRemember) return false;
+    try {
+      var result = await invoke('h2o_rt_webdav_setup_hydrate_form', {
+        request: {
+          rememberCredential: true,
+          desktopLocalUi: true,
+        },
+      });
+      if (!result || result.ok !== true || typeof result.rememberedCredentialSecret !== 'string' || !result.rememberedCredentialSecret) {
+        return false;
+      }
+      state.draft.serverUrl = typeof result.savedServerUrl === 'string' ? result.savedServerUrl : state.draft.serverUrl;
+      state.draft.rootPath = typeof result.savedRootPath === 'string' ? result.savedRootPath : state.draft.rootPath;
+      state.draft.credentialIdentifier = typeof result.savedCredentialIdentifier === 'string' ? result.savedCredentialIdentifier : state.draft.credentialIdentifier;
+      state.draft.credentialSecret = result.rememberedCredentialSecret;
+      state.draft.rememberCredential = true;
+      state.credentialSecretRemembered = true;
+      state.credentialVisible = false;
+      applyDraftToDom();
+      setCredentialInputType();
+      renderValidation();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function invokeStatus() {
     var invoke = getInvoke();
     if (!invoke) {
@@ -533,6 +582,7 @@
     try {
       var result = await invoke('h2o_rt_webdav_setup_status');
       renderStatus(result);
+      await invokeHydrateForm(result);
     } catch (_) {
       renderStatus({ ok: false, blockers: ['real-transport-webdav-setup-status-command-failed'] });
     } finally {
@@ -554,13 +604,15 @@
     }
     state.inFlight = true;
     renderValidation();
+    var submittedCredentialSecret = value(ID.credentialSecret);
+    var submittedRememberCredential = checked(ID.rememberCredential);
     try {
       var result = await invoke('h2o_rt_prepare_webdav_setup', {
         request: {
           serverUrl: value(ID.serverUrl),
           rootPath: value(ID.rootPath),
           credentialIdentifier: value(ID.credentialIdentifier),
-          credentialSecret: value(ID.credentialSecret),
+          credentialSecret: submittedCredentialSecret,
           endpointDescriptorLabel: descriptorLabelValue(ID.endpointLabel, DEFAULT_ENDPOINT_DESCRIPTOR_LABEL),
           remoteRootDescriptorLabel: descriptorLabelValue(ID.remoteRootLabel, DEFAULT_REMOTE_ROOT_DESCRIPTOR_LABEL),
           credentialDescriptorLabel: descriptorLabelValue(ID.credentialLabel, DEFAULT_CREDENTIAL_DESCRIPTOR_LABEL),
@@ -570,11 +622,19 @@
         },
       });
       var secret = document.getElementById(ID.credentialSecret);
-      if (secret) secret.value = '';
-      state.draft.credentialSecret = '';
+      if (submittedRememberCredential && submittedCredentialSecret) {
+        state.draft.credentialSecret = submittedCredentialSecret;
+        state.credentialSecretRemembered = true;
+      } else {
+        if (secret) secret.value = '';
+        state.draft.credentialSecret = '';
+        state.credentialSecretRemembered = false;
+      }
       state.credentialVisible = false;
       state.draftDirty = false;
       renderStatus(result);
+      applyDraftToDom();
+      setCredentialInputType();
     } catch (_) {
       renderStatus({ ok: false, blockers: ['real-transport-webdav-setup-prepare-command-failed'] });
     } finally {
@@ -592,13 +652,26 @@
         captureDraftFromDom();
         invokePrepare();
       });
-      form.addEventListener('input', function () {
+      form.addEventListener('input', function (event) {
         captureDraftFromDom();
+        if (event && event.target && event.target.id === ID.credentialSecret) {
+          state.credentialSecretRemembered = false;
+        }
         state.draftDirty = true;
         renderValidation();
       });
-      form.addEventListener('change', function () {
+      form.addEventListener('change', function (event) {
         captureDraftFromDom();
+        if (event && event.target && event.target.id === ID.credentialSecret) {
+          state.credentialSecretRemembered = false;
+        }
+        if (event && event.target && event.target.id === ID.rememberCredential && !event.target.checked) {
+          state.draft.credentialSecret = '';
+          state.credentialSecretRemembered = false;
+          state.credentialVisible = false;
+          applyDraftToDom();
+          setCredentialInputType();
+        }
         state.draftDirty = true;
         renderValidation();
       });
@@ -617,11 +690,7 @@
         captureDraftFromDom();
         if (!value(ID.credentialSecret)) return;
         state.credentialVisible = !state.credentialVisible;
-        var secret = document.getElementById(ID.credentialSecret);
-        if (secret) secret.type = state.credentialVisible ? 'text' : 'password';
-        revealBtn.textContent = state.credentialVisible ? 'Hide' : 'Show';
-        revealBtn.title = state.credentialVisible ? 'Hide password / token' : 'Show password / token';
-        revealBtn.setAttribute('aria-pressed', state.credentialVisible ? 'true' : 'false');
+        setCredentialInputType();
       });
     }
     renderValidation();
@@ -638,7 +707,10 @@
     var panel = document.getElementById(SUBTAB_ID);
     if (panel && panel.parentElement === host && document.getElementById(ID.card)) {
       captureDraftFromDom();
-      if (state.lastStatus) renderStatus(state.lastStatus);
+      if (state.lastStatus) {
+        renderStatus(state.lastStatus);
+        try { global.setTimeout(function () { invokeHydrateForm(state.lastStatus); }, 0); } catch (_) { /* hydrate is best effort */ }
+      }
       renderValidation();
       return true;
     }
@@ -651,7 +723,10 @@
     host.appendChild(panel);
     wireCard();
     state.mounted = true;
-    if (state.lastStatus) renderStatus(state.lastStatus);
+    if (state.lastStatus) {
+      renderStatus(state.lastStatus);
+      try { global.setTimeout(function () { invokeHydrateForm(state.lastStatus); }, 0); } catch (_) { /* hydrate is best effort */ }
+    }
     if (detectTauri() && !state.lastStatus && !state.statusRequestedOnMount) {
       state.statusRequestedOnMount = true;
       try { global.setTimeout(invokeStatus, 0); } catch (_) { /* status is best effort */ }
