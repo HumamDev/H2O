@@ -1,0 +1,40 @@
+{
+  "bindings": {
+    "credentialRefHash": "sha256:328562af62cffd7ebedbec742d727e386db3b173e1715750b4a26166f8d385b8",
+    "endpointRefHash": "sha256:42bc195455b03a0171597f8b0758c4a450390c829e9c1f653a069db135784100",
+    "killSwitchTokenHash": "sha256:9a44ae6a81e8224b8cb60f89b2d4a83219deeb9a1dac8a68567c348ff33bddac",
+    "oneShotTokenHash": "sha256:e857e0672692770f92f7b50a36918d863ec344713f80c8579b4a0938bcdbc3a9",
+    "operatorApprovalArtifactHash": "sha256:19261aedee989dc33f2c35ffa98c57b06531be21858049e49c399f753a81d800",
+    "remoteRootRefHash": "sha256:10dea62063f3d07519c48924f6e1d295464839010618361368b47519695a8fca",
+    "w31AlignmentCommit": "70e7fcc9669b939b505de96a7bb0ec61509c3370",
+    "w31CloseoutCommit": "7862270237955b86d48d943263fd53947cc71f72",
+    "w32MockProofCommit": "649849e7e48c7e5bc5924bc811d857f2435866ae",
+    "w33DesignCommit": "671fdc1c855b345185e5ea257b206c0a07cdab36",
+    "w33HashBoundaryCommit": "aba4c70068d95ee373d157fddea06bfb31b505b0",
+    "w33RegistryHardeningCommit": "388a952745ab7a21ba9556531eccf5c7e0ffe1ce",
+    "w34aRefusedCommandCommit": "a830ccb6b633a9d6cee35e6db92464e870d5693d",
+    "w34b0ApprovalPackageCommit": "d196f4b26d904394c435c15dd14d12cd18f03190",
+    "w34b1OperatorApprovalCommit": "db4cdc5ccbd436913f05aa7b526fc14fec03e5ea",
+    "writeGradeRegistryHashBoundary": "descriptor-refs-only-excludes-private-material",
+    "writeGradeRegistryRefHash": "sha256:3222f11719c7bb17047cc3c6b6b01145d0748921792fb84fb5064c19541ee0ff"
+  },
+  "canonicalization": "json-sorted-keys-v1",
+  "expiryUtc": "2026-07-10T16:00:00Z",
+  "maxInvocations": 1,
+  "mintUtc": "2026-07-07T19:25:52Z",
+  "operationKind": "first-sacrificial-probe-write",
+  "payloadCount": 1,
+  "payloadKind": "capability-probe-object",
+  "receiptGrade": "write-grade",
+  "requestBudget": {
+    "createOnlyPutMax": 2,
+    "otherMethods": 0,
+    "readbackGetMax": 1
+  },
+  "sacrificialObject": {
+    "pathClassRefHash": "sha256:8aedee795f789ede1887eb8e7f9ca909fc7aea6939aa0348313c56777218fc61",
+    "payloadByteMax": 256,
+    "payloadHash": "sha256:7d9491ac8a547de8e9e7138d8408b8d609359e4f74b690960201d093e1aaf440"
+  },
+  "schema": "h2o.sync.real-transport.write-grade-receipt.v1"
+}
