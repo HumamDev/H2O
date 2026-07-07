@@ -80,6 +80,7 @@
     lastStatus: null,
     draftDirty: false,
     credentialVisible: false,
+    statusRequestedOnMount: false,
     draft: {
       serverUrl: '',
       rootPath: '',
@@ -221,11 +222,14 @@
 
   function validation() {
     var missing = [];
+    var hasDraftCredential = !!value(ID.credentialSecret);
+    var hasSavedCredential = savedCredentialPresent();
+    var rememberCredential = checked(ID.rememberCredential);
     if (!value(ID.serverUrl)) missing.push('Server URL is required.');
     if (!value(ID.rootPath)) missing.push('Folder / remote root is required.');
     if (!value(ID.credentialIdentifier)) missing.push('Username is required.');
-    if (!value(ID.credentialSecret)) missing.push('Password/token is required.');
-    if (!checked(ID.rememberCredential)) missing.push('Remember credential on this device is required.');
+    if (!rememberCredential) missing.push('Enable Remember credential to prepare WebDAV settings.');
+    if (rememberCredential && !hasDraftCredential && !hasSavedCredential) missing.push('Password/token is required.');
     if (looksReservedInvalid(value(ID.serverUrl))) missing.push('Endpoint still looks like a placeholder.');
     if (!checked(ID.confirmNonProduction)) missing.push('Confirm this is a non-production endpoint.');
     if (!checked(ID.confirmReadOnly)) missing.push('Confirm read-only method safety.');
@@ -279,6 +283,10 @@
     return '<span style="opacity:.62">' + esc(label) + '</span><span id="' + id + '" style="' + HASH_VALUE_STYLE + '">-</span>';
   }
 
+  function savedCredentialPresent() {
+    return !!(state.lastStatus && state.lastStatus.credentialMaterialPresent === true);
+  }
+
   function credentialStatusMessage(result) {
     if (!result || typeof result !== 'object') return '-';
     if (result.credentialInputReceivedThisSave === true && result.credentialMaterialUpdatedThisSave === true) {
@@ -288,7 +296,7 @@
       return 'Credential received. Same as existing saved credential.';
     }
     if (result.credentialMaterialPresent === true) {
-      return 'Existing credential is present.';
+      return 'Existing saved credential used.';
     }
     return 'Credential has not been prepared.';
   }
@@ -405,13 +413,23 @@
     var validationResult = validation();
     var save = document.getElementById(ID.saveBtn);
     var credentialReady = document.getElementById(ID.credentialReady);
+    var revealBtn = document.getElementById(ID.credentialReveal);
     var hasCredential = !!value(ID.credentialSecret);
+    var hasSavedCredential = savedCredentialPresent();
     var rememberCredential = checked(ID.rememberCredential);
     if (credentialReady) {
       credentialReady.textContent = hasCredential
         ? (rememberCredential ? 'Credential ready to save' : 'Enable remember to prepare')
-        : 'Token required';
-      credentialReady.style.opacity = hasCredential ? '1' : '.72';
+        : (hasSavedCredential && rememberCredential ? 'Using saved credential' : 'Token required');
+      credentialReady.style.opacity = hasCredential || hasSavedCredential ? '1' : '.72';
+    }
+    if (revealBtn) {
+      revealBtn.disabled = !hasCredential;
+      revealBtn.style.opacity = hasCredential ? '1' : '.55';
+      revealBtn.style.cursor = hasCredential ? 'pointer' : 'not-allowed';
+      revealBtn.title = hasCredential
+        ? (state.credentialVisible ? 'Hide password / token' : 'Show password / token')
+        : 'Enter a token to use Show / Hide. Saved credentials are not revealed.';
     }
     if (save) {
       save.disabled = state.inFlight || !validationResult.ok || !detectTauri();
@@ -421,11 +439,15 @@
     if (hasCredential && rememberCredential) {
       setText(ID.credentialMessage, 'Credential ready to save.');
     } else if (hasCredential && !rememberCredential) {
-      setText(ID.credentialMessage, 'Enable remember to prepare.');
+      setText(ID.credentialMessage, 'Enable Remember credential to prepare.');
+    } else if (!hasCredential && hasSavedCredential && rememberCredential) {
+      setText(ID.credentialMessage, 'Using saved credential.');
+    } else if (!hasCredential && hasSavedCredential && !rememberCredential) {
+      setText(ID.credentialMessage, 'Enable Remember credential to use the saved credential.');
     } else if (state.lastStatus) {
       setText(ID.credentialMessage, credentialStatusMessage(state.lastStatus));
     } else {
-      setText(ID.credentialMessage, 'Enter a token to update the saved credential.');
+      setText(ID.credentialMessage, 'Token required.');
     }
     if (state.draftDirty) {
       setText(ID.statusSummary, validationResult.ok
@@ -488,6 +510,7 @@
       var secret = document.getElementById(ID.credentialSecret);
       if (secret) secret.value = '';
       state.draft.credentialSecret = '';
+      state.credentialVisible = false;
       state.draftDirty = false;
       renderStatus(result);
     } catch (_) {
@@ -530,6 +553,7 @@
       revealBtn.addEventListener('click', function (event) {
         event.preventDefault();
         captureDraftFromDom();
+        if (!value(ID.credentialSecret)) return;
         state.credentialVisible = !state.credentialVisible;
         var secret = document.getElementById(ID.credentialSecret);
         if (secret) secret.type = state.credentialVisible ? 'text' : 'password';
@@ -566,6 +590,10 @@
     wireCard();
     state.mounted = true;
     if (state.lastStatus) renderStatus(state.lastStatus);
+    if (detectTauri() && !state.lastStatus && !state.statusRequestedOnMount) {
+      state.statusRequestedOnMount = true;
+      try { global.setTimeout(invokeStatus, 0); } catch (_) { /* status is best effort */ }
+    }
     return true;
   }
 

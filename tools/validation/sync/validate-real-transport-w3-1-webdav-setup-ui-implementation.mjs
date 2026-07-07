@@ -81,6 +81,12 @@ mustContain(rust, 'credential_input_received_this_save', 'redacted credential in
 mustContain(rust, 'credential_material_updated_this_save', 'redacted credential material update output');
 mustContain(rust, 'previous_auth_header_private', 'private credential update comparison');
 mustContain(rust, 'previous_auth_header.as_deref() != Some(auth_header_private.as_str())', 'credential update comparison must stay private');
+mustContain(rust, 'credential_secret.is_none() && previous_auth_header.is_none()', 'setup must require credential only when no saved material exists');
+mustContain(rust, 'let credential_input_received_this_save = credential_secret.is_some();', 'setup must distinguish new credential input from saved material reuse');
+mustContain(rust, '.or_else(|| previous_auth_header.clone())', 'setup must preserve saved private credential when token input is empty');
+mustContain(rust, 'preserved.credential_secret = None;', 'rust tests must cover saved credential reuse');
+mustContain(rust, 'assert!(!preserved_result.credential_input_received_this_save);', 'rust tests must prove reuse does not claim new credential input');
+mustContain(rust, 'assert!(!preserved_result.credential_material_updated_this_save);', 'rust tests must prove reuse does not claim credential update');
 
 assert(count(lib, 'real_transport_capability_probe::h2o_rt_prepare_webdav_setup') === 2,
   'lib.rs: setup command must be registered in debug and release invoke handlers');
@@ -144,22 +150,27 @@ mustContain(ui, 'padding:7px 12px;white-space:nowrap', 'show hide button must st
 mustContain(ui, 'style="\' + INPUT_STYLE + \';min-width:0"', 'password input must be overflow-safe');
 mustContain(ui, 'Remember credential on this device', 'remember credential checkbox');
 mustContain(ui, 'Stores the token in the private Desktop resolver store. Nothing is synced or written to WebDAV.', 'remember credential tooltip');
-mustContain(ui, 'Remember credential on this device is required.', 'remember credential required validation');
+mustContain(ui, 'Enable Remember credential to prepare WebDAV settings.', 'remember credential required validation');
 mustContain(ui, 'padding:2px 0 0', 'remember credential must be a compact checkbox row');
 mustContain(ui, 'Credential ready to save', 'credential ready indicator');
 mustContain(ui, 'Token required', 'empty credential indicator');
 mustContain(ui, 'Enable remember to prepare', 'remember-required credential indicator');
+mustContain(ui, 'Using saved credential', 'saved credential reuse indicator');
+mustContain(ui, 'savedCredentialPresent', 'saved credential presence helper');
+mustContain(ui, 'rememberCredential && !hasDraftCredential && !hasSavedCredential', 'validation must allow empty token when saved credential exists');
+mustContain(ui, 'Enable Remember credential to use the saved credential.', 'remember-required saved credential message');
 mustContain(ui, 'style="\' + MUTED_STYLE + \'">Token required</span>', 'credential state must render below password as subtle helper text');
 mustNotContain(ui, 'credentialReady.style.borderColor', 'credential state must not be a large badge beside password');
 mustNotContain(ui, 'credentialReady.style.background', 'credential state must not be a large badge beside password');
-mustContain(ui, 'Enable remember to prepare.', 'remember-required credential friendly message');
+mustContain(ui, 'Enable Remember credential to prepare.', 'remember-required credential friendly message');
 mustContain(ui, 'Credential ready to save.', 'credential ready friendly message');
 mustContain(ui, 'Credential updated for this prepare.', 'credential updated friendly message');
 mustContain(ui, 'Credential received. Same as existing saved credential.', 'credential same-as-existing friendly message');
-mustContain(ui, 'Existing credential is present.', 'existing credential friendly message');
-mustContain(ui, 'Enter a token to update the saved credential.', 'empty credential friendly message');
+mustContain(ui, 'Existing saved credential used.', 'existing credential friendly message');
 mustContain(ui, 'credentialStatusMessage', 'credential message helper');
 mustContain(ui, 'if (secret) secret.value = \'\';', 'credential field cleared after prepare');
+mustContain(ui, 'state.credentialVisible = false;', 'credential reveal state resets after prepare');
+mustContain(ui, 'Saved credentials are not revealed.', 'show hide must not reveal saved stored credential');
 mustContain(ui, 'registry path source', 'redacted registry path source status');
 mustContain(ui, 'credential material present', 'redacted credential material presence status');
 mustContain(ui, 'credential received this prepare', 'redacted credential input receipt status');

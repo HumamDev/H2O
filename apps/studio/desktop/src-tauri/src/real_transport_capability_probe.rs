@@ -732,7 +732,11 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
     if root_path.is_none() {
         blockers.push("real-transport-webdav-setup-root-path-required");
     }
-    if credential_identifier.is_none() || credential_secret.is_none() {
+    let registry_path = descriptor_registry_path_for_setup();
+    let previous_auth_header = previous_auth_header_private(&registry_path);
+    if credential_identifier.is_none()
+        || (credential_secret.is_none() && previous_auth_header.is_none())
+    {
         blockers.push("real-transport-webdav-setup-credential-required");
     }
     if endpoint_descriptor_label.is_none()
@@ -784,7 +788,6 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
     let server_url = server_url.expect("validated serverUrl");
     let root_path = root_path.expect("validated rootPath");
     let credential_identifier = credential_identifier.expect("validated credentialIdentifier");
-    let credential_secret = credential_secret.expect("validated credentialSecret");
     let endpoint_descriptor_label =
         endpoint_descriptor_label.expect("validated endpoint descriptor label");
     let remote_root_descriptor_label =
@@ -794,11 +797,14 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
     let endpoint_ref_hash = descriptor_ref_hash("endpoint", &endpoint_descriptor_label);
     let remote_root_ref_hash = descriptor_ref_hash("remote-root", &remote_root_descriptor_label);
     let credential_ref_hash = descriptor_ref_hash("credential", &credential_descriptor_label);
-    let auth_header_private = build_auth_header_private(&credential_identifier, &credential_secret);
-    let registry_path = descriptor_registry_path_for_setup();
-    let previous_auth_header = previous_auth_header_private(&registry_path);
-    let credential_material_updated_this_save =
-        previous_auth_header.as_deref() != Some(auth_header_private.as_str());
+    let credential_input_received_this_save = credential_secret.is_some();
+    let auth_header_private = credential_secret
+        .as_deref()
+        .map(|secret| build_auth_header_private(&credential_identifier, secret))
+        .or_else(|| previous_auth_header.clone())
+        .expect("validated credential material");
+    let credential_material_updated_this_save = credential_input_received_this_save
+        && previous_auth_header.as_deref() != Some(auth_header_private.as_str());
     let registry = WritableDescriptorRegistry {
         schema: "h2o.studio.transport.real-descriptor-registry.v1",
         descriptor_mode: "hash-only-redacted",
@@ -831,7 +837,7 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
         );
     }
     let mut result = status_from_registry_bytes(command, &bytes);
-    result.credential_input_received_this_save = true;
+    result.credential_input_received_this_save = credential_input_received_this_save;
     result.credential_material_updated_this_save = credential_material_updated_this_save;
     result
 }
@@ -1858,6 +1864,22 @@ mod tests {
         );
         assert_eq!(
             changed_result.credential_ref_hash,
+            result.credential_ref_hash
+        );
+
+        let mut preserved = setup_request();
+        preserved.credential_secret = None;
+        let preserved_result = prepare_webdav_setup(preserved);
+        assert!(preserved_result.ok);
+        assert!(preserved_result.credential_material_present);
+        assert!(!preserved_result.credential_input_received_this_save);
+        assert!(!preserved_result.credential_material_updated_this_save);
+        assert_eq!(
+            preserved_result.descriptor_registry_ref_hash,
+            changed_result.descriptor_registry_ref_hash
+        );
+        assert_eq!(
+            preserved_result.credential_ref_hash,
             result.credential_ref_hash
         );
 
