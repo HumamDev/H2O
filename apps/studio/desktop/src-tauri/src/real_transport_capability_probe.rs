@@ -15,6 +15,8 @@ pub const LIVE_READONLY_PROBE_GATE: &str = "real-transport-w3-readonly-remote-ro
 const DESCRIPTOR_REGISTRY_FILE_ENV: &str = "H2O_RT_DESCRIPTOR_REGISTRY_FILE";
 const DEFAULT_DESCRIPTOR_REGISTRY_FILE: &str =
     "/private/tmp/h2o-real-transport-w3-live-descriptor-registry.json";
+const APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME: &str =
+    "h2o-real-transport-w3-live-descriptor-registry.json";
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
 const READONLY_TIMEOUT_SECONDS: u64 = 8;
 const WEBDAV_PROPFIND_BODY: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:resourcetype/></D:prop></D:propfind>";
@@ -340,6 +342,11 @@ pub struct RtWebDavSetupStatusResult {
     pub command: &'static str,
     pub registry_path_class: &'static str,
     pub registry_path_source: &'static str,
+    pub write_grade_registry_eligible: bool,
+    pub registry_file_owner_current_user: bool,
+    pub registry_file_private_permissions: bool,
+    pub registry_parent_owner_current_user: bool,
+    pub registry_parent_private_permissions: bool,
     pub descriptor_registry_ref_hash: Option<String>,
     pub endpoint_ref_hash: Option<String>,
     pub remote_root_ref_hash: Option<String>,
@@ -388,6 +395,11 @@ impl RtWebDavSetupStatusResult {
             command,
             registry_path_class: "private-out-of-repo-descriptor-registry",
             registry_path_source: descriptor_registry_path_source_for_setup(),
+            write_grade_registry_eligible: false,
+            registry_file_owner_current_user: false,
+            registry_file_private_permissions: false,
+            registry_parent_owner_current_user: false,
+            registry_parent_private_permissions: false,
             descriptor_registry_ref_hash: None,
             endpoint_ref_hash: None,
             remote_root_ref_hash: None,
@@ -471,29 +483,151 @@ fn sha256_ref(bytes: &[u8]) -> String {
     format!("sha256:{:x}", digest)
 }
 
-fn descriptor_registry_path_for_probe(request: &RtCapabilityProbeRequest) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV) {
-        return Some(PathBuf::from(path));
+#[derive(Clone, Debug)]
+struct DescriptorRegistryPathInfo {
+    path: PathBuf,
+    source: &'static str,
+}
+
+fn app_local_descriptor_registry_file() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").filter(|value| !value.is_empty())?;
+        return Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("H2O Studio")
+                .join("real-transport")
+                .join(APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME),
+        );
     }
-    let default = PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE);
-    if request.descriptor_registry_ref_hash.is_some() && default.exists() {
-        return Some(default);
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var_os("APPDATA").filter(|value| !value.is_empty())?;
+        return Some(
+            PathBuf::from(appdata)
+                .join("H2O Studio")
+                .join("real-transport")
+                .join(APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME),
+        );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty())
+        {
+            return Some(
+                PathBuf::from(data_home)
+                    .join("h2o-studio")
+                    .join("real-transport")
+                    .join(APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME),
+            );
+        }
+        let home = std::env::var_os("HOME").filter(|value| !value.is_empty())?;
+        Some(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("h2o-studio")
+                .join("real-transport")
+                .join(APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME),
+        )
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        None
+    }
+}
+
+fn legacy_default_descriptor_registry_file() -> PathBuf {
+    PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE)
+}
+
+fn env_descriptor_registry_path_info() -> Option<DescriptorRegistryPathInfo> {
+    let path = std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV)?;
+    if path.is_empty() {
+        return Some(DescriptorRegistryPathInfo {
+            path: PathBuf::new(),
+            source: "invalid",
+        });
+    }
+    Some(DescriptorRegistryPathInfo {
+        path: PathBuf::from(path),
+        source: "env",
+    })
+}
+
+fn descriptor_registry_path_for_probe(
+    request: &RtCapabilityProbeRequest,
+) -> Option<DescriptorRegistryPathInfo> {
+    if let Some(info) = env_descriptor_registry_path_info() {
+        return Some(info);
+    }
+    if let Some(app_local) = app_local_descriptor_registry_file() {
+        if request.descriptor_registry_ref_hash.is_some() && app_local.exists() {
+            return Some(DescriptorRegistryPathInfo {
+                path: app_local,
+                source: "app-local",
+            });
+        }
+    }
+    let legacy = legacy_default_descriptor_registry_file();
+    if request.descriptor_registry_ref_hash.is_some() && legacy.exists() {
+        return Some(DescriptorRegistryPathInfo {
+            path: legacy,
+            source: "default-private-legacy",
+        });
     }
     None
 }
 
-fn descriptor_registry_path_for_setup() -> PathBuf {
-    std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE))
+fn descriptor_registry_path_for_setup_write() -> DescriptorRegistryPathInfo {
+    if let Some(info) = env_descriptor_registry_path_info() {
+        return info;
+    }
+    if let Some(path) = app_local_descriptor_registry_file() {
+        return DescriptorRegistryPathInfo {
+            path,
+            source: "app-local",
+        };
+    }
+    DescriptorRegistryPathInfo {
+        path: legacy_default_descriptor_registry_file(),
+        source: "default-private-legacy",
+    }
+}
+
+fn descriptor_registry_path_for_setup_status() -> DescriptorRegistryPathInfo {
+    if let Some(info) = env_descriptor_registry_path_info() {
+        return info;
+    }
+    if let Some(path) = app_local_descriptor_registry_file() {
+        if path.exists() {
+            return DescriptorRegistryPathInfo {
+                path,
+                source: "app-local",
+            };
+        }
+        let legacy = legacy_default_descriptor_registry_file();
+        if legacy.exists() {
+            return DescriptorRegistryPathInfo {
+                path: legacy,
+                source: "default-private-legacy",
+            };
+        }
+        return DescriptorRegistryPathInfo {
+            path,
+            source: "app-local",
+        };
+    }
+    DescriptorRegistryPathInfo {
+        path: legacy_default_descriptor_registry_file(),
+        source: "default-private-legacy",
+    }
 }
 
 fn descriptor_registry_path_source_for_setup() -> &'static str {
-    if std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV).is_some() {
-        "env"
-    } else {
-        "default-private"
-    }
+    descriptor_registry_path_for_setup_status().source
 }
 
 fn registry_contains_raw_or_private(registry: &DescriptorRegistry) -> bool {
@@ -512,7 +646,7 @@ fn resolve_descriptor_registry(
     let Some(registry_file) = descriptor_registry_path_for_probe(request) else {
         return Err(ResolverFailure::MissingConfig);
     };
-    let bytes = fs::read(registry_file).map_err(|_| ResolverFailure::MissingConfig)?;
+    let bytes = fs::read(&registry_file.path).map_err(|_| ResolverFailure::MissingConfig)?;
     if let Some(expected_hash) = &request.descriptor_registry_ref_hash {
         if !is_hash_ref(&Some(expected_hash.clone())) {
             return Err(ResolverFailure::RegistryHashMismatch);
@@ -679,6 +813,11 @@ fn credential_identifier_from_auth_header_private(auth_header_private: &str) -> 
 fn write_private_registry_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| ())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     fs::write(path, bytes).map_err(|_| ())?;
     #[cfg(unix)]
@@ -689,7 +828,83 @@ fn write_private_registry_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
-fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSetupStatusResult {
+#[cfg(unix)]
+fn current_effective_user_id() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() }
+}
+
+#[cfg(unix)]
+fn owner_is_current_user(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.uid() == current_effective_user_id()
+}
+
+#[cfg(not(unix))]
+fn owner_is_current_user(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn file_has_private_permissions(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o077 == 0
+}
+
+#[cfg(not(unix))]
+fn file_has_private_permissions(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn parent_has_private_permissions(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o022 == 0
+}
+
+#[cfg(not(unix))]
+fn parent_has_private_permissions(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+fn write_grade_registry_source_candidate(source: &str) -> bool {
+    matches!(source, "app-local" | "env")
+}
+
+fn apply_registry_storage_status(
+    result: &mut RtWebDavSetupStatusResult,
+    path_info: &DescriptorRegistryPathInfo,
+) {
+    result.registry_path_source = path_info.source;
+    if let Ok(metadata) = fs::metadata(&path_info.path) {
+        result.registry_file_owner_current_user = owner_is_current_user(&metadata);
+        result.registry_file_private_permissions = file_has_private_permissions(&metadata);
+    }
+    if let Some(parent) = path_info.path.parent() {
+        if let Ok(metadata) = fs::metadata(parent) {
+            result.registry_parent_owner_current_user = owner_is_current_user(&metadata);
+            result.registry_parent_private_permissions = parent_has_private_permissions(&metadata);
+        }
+    }
+    result.write_grade_registry_eligible = write_grade_registry_source_candidate(path_info.source)
+        && result.registry_file_owner_current_user
+        && result.registry_file_private_permissions
+        && result.registry_parent_owner_current_user
+        && result.registry_parent_private_permissions;
+    if path_info.source == "default-private-legacy" {
+        result
+            .warnings
+            .push("real-transport-webdav-registry-legacy-not-write-grade");
+    }
+}
+
+fn status_from_registry_bytes(
+    command: &'static str,
+    bytes: &[u8],
+    path_info: &DescriptorRegistryPathInfo,
+) -> RtWebDavSetupStatusResult {
     let registry_hash = sha256_ref(bytes);
     let mut result = RtWebDavSetupStatusResult::base(
         false,
@@ -698,6 +913,7 @@ fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSe
         command,
         vec!["real-transport-webdav-setup-registry-invalid"],
     );
+    apply_registry_storage_status(&mut result, path_info);
     result.descriptor_registry_ref_hash = Some(registry_hash);
     let Ok(registry) = serde_json::from_slice::<DescriptorRegistry>(bytes) else {
         return result;
@@ -797,9 +1013,22 @@ fn previous_auth_header_private(path: &Path) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn previous_auth_header_private_for_setup(
+    path_info: &DescriptorRegistryPathInfo,
+) -> Option<String> {
+    previous_auth_header_private(&path_info.path).or_else(|| {
+        if path_info.source == "app-local" {
+            previous_auth_header_private(&legacy_default_descriptor_registry_file())
+        } else {
+            None
+        }
+    })
+}
+
 pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatusResult {
     let command = "h2o_rt_prepare_webdav_setup";
     let mut blockers = Vec::new();
+    let registry_path_info = descriptor_registry_path_for_setup_write();
     let server_url = trim_required(&request.server_url);
     let root_path = trim_required(&request.root_path);
     let credential_identifier = trim_required(&request.credential_identifier);
@@ -814,8 +1043,7 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
     if root_path.is_none() {
         blockers.push("real-transport-webdav-setup-root-path-required");
     }
-    let registry_path = descriptor_registry_path_for_setup();
-    let previous_auth_header = previous_auth_header_private(&registry_path);
+    let previous_auth_header = previous_auth_header_private_for_setup(&registry_path_info);
     if credential_identifier.is_none()
         || (credential_secret.is_none() && previous_auth_header.is_none())
     {
@@ -858,13 +1086,15 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
         }
     }
     if !blockers.is_empty() {
-        return RtWebDavSetupStatusResult::base(
+        let mut result = RtWebDavSetupStatusResult::base(
             false,
             "real-transport-webdav-setup-blocked",
             blockers[0],
             command,
             blockers,
         );
+        apply_registry_storage_status(&mut result, &registry_path_info);
+        return result;
     }
 
     let server_url = server_url.expect("validated serverUrl");
@@ -909,16 +1139,18 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
             )
         }
     };
-    if write_private_registry_file(&registry_path, &bytes).is_err() {
-        return RtWebDavSetupStatusResult::base(
+    if write_private_registry_file(&registry_path_info.path, &bytes).is_err() {
+        let mut result = RtWebDavSetupStatusResult::base(
             false,
             "real-transport-webdav-setup-blocked",
             "real-transport-webdav-setup-registry-write-failed",
             command,
             vec!["real-transport-webdav-setup-registry-write-failed"],
         );
+        apply_registry_storage_status(&mut result, &registry_path_info);
+        return result;
     }
-    let mut result = status_from_registry_bytes(command, &bytes);
+    let mut result = status_from_registry_bytes(command, &bytes, &registry_path_info);
     result.credential_input_received_this_save = credential_input_received_this_save;
     result.credential_material_updated_this_save = credential_material_updated_this_save;
     result
@@ -926,16 +1158,20 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
 
 pub fn webdav_setup_status() -> RtWebDavSetupStatusResult {
     let command = "h2o_rt_webdav_setup_status";
-    let registry_path = descriptor_registry_path_for_setup();
-    match fs::read(&registry_path) {
-        Ok(bytes) => status_from_registry_bytes(command, &bytes),
-        Err(_) => RtWebDavSetupStatusResult::base(
-            false,
-            "real-transport-webdav-setup-blocked",
-            "real-transport-webdav-setup-registry-missing",
-            command,
-            vec!["real-transport-webdav-setup-registry-missing"],
-        ),
+    let registry_path_info = descriptor_registry_path_for_setup_status();
+    match fs::read(&registry_path_info.path) {
+        Ok(bytes) => status_from_registry_bytes(command, &bytes, &registry_path_info),
+        Err(_) => {
+            let mut result = RtWebDavSetupStatusResult::base(
+                false,
+                "real-transport-webdav-setup-blocked",
+                "real-transport-webdav-setup-registry-missing",
+                command,
+                vec!["real-transport-webdav-setup-registry-missing"],
+            );
+            apply_registry_storage_status(&mut result, &registry_path_info);
+            result
+        }
     }
 }
 

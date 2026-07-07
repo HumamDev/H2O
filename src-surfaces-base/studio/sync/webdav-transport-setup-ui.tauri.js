@@ -40,6 +40,11 @@
     statusBadge: 'wbRealTransportWebDavStatusBadge',
     statusSummary: 'wbRealTransportWebDavStatusSummary',
     registryPathSource: 'wbRealTransportWebDavRegistryPathSource',
+    writeGradeRegistryEligible: 'wbRealTransportWebDavWriteGradeRegistryEligible',
+    registryFileOwner: 'wbRealTransportWebDavRegistryFileOwner',
+    registryFilePrivate: 'wbRealTransportWebDavRegistryFilePrivate',
+    registryParentOwner: 'wbRealTransportWebDavRegistryParentOwner',
+    registryParentPrivate: 'wbRealTransportWebDavRegistryParentPrivate',
     registryHash: 'wbRealTransportWebDavRegistryHash',
     jsonParses: 'wbRealTransportWebDavJsonParses',
     privateFields: 'wbRealTransportWebDavPrivateFields',
@@ -385,6 +390,11 @@
       +       '<div style="' + STATUS_GRID_STYLE + '">'
       +         statusRowHtml('descriptorRegistryRefHash', ID.registryHash)
       +         statusRowHtml('registry path source', ID.registryPathSource)
+      +         statusRowHtml('write-grade registry eligible', ID.writeGradeRegistryEligible)
+      +         statusRowHtml('registry file owner', ID.registryFileOwner)
+      +         statusRowHtml('registry file private', ID.registryFilePrivate)
+      +         statusRowHtml('registry parent owner', ID.registryParentOwner)
+      +         statusRowHtml('registry parent private', ID.registryParentPrivate)
       +         statusRowHtml('JSON parses', ID.jsonParses)
       +         statusRowHtml('private fields', ID.privateFields)
       +         statusRowHtml('credential material present', ID.credentialMaterialPresent)
@@ -423,6 +433,11 @@
     setText(ID.statusSummary, ok ? 'Resolver registry is prepared. No probe or write was run.' : 'Resolver setup is blocked. Review required fields and confirmations.');
     setText(ID.registryHash, shortHash(result && result.descriptorRegistryRefHash));
     setText(ID.registryPathSource, result && result.registryPathSource);
+    setText(ID.writeGradeRegistryEligible, yesNo(result && result.writeGradeRegistryEligible));
+    setText(ID.registryFileOwner, yesNo(result && result.registryFileOwnerCurrentUser));
+    setText(ID.registryFilePrivate, yesNo(result && result.registryFilePrivatePermissions));
+    setText(ID.registryParentOwner, yesNo(result && result.registryParentOwnerCurrentUser));
+    setText(ID.registryParentPrivate, yesNo(result && result.registryParentPrivatePermissions));
     setText(ID.jsonParses, yesNo(result && result.jsonParses));
     setText(ID.privateFields, yesNo(result && result.requiredPrivateFieldsPresent));
     setText(ID.credentialMaterialPresent, yesNo(result && result.credentialMaterialPresent));
