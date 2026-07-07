@@ -98,10 +98,12 @@ for (const token of [
 
 for (const token of [
   'pub fn h2o_rt_first_write',
-  'request.mock_only != Some(true) || request.loopback_mock != Some(true)',
+  'FIRST_WRITE_LIVE_GATE',
   'real-transport-w3-first-write-loopback-mock-required',
   'DefaultFirstWriteLoopbackClient',
+  'ReqwestFirstWriteLiveClient',
   'evaluate_first_write_with_client(request, &DefaultFirstWriteLoopbackClient)',
+  'evaluate_first_write_live_with_client(request, &ReqwestFirstWriteLiveClient)',
   'network_attempted: false',
   'writes_webdav: false',
   'product_sync_ready: false',
@@ -167,7 +169,6 @@ for (const token of [
   '.post(',
   'product_sync_ready: true',
   'transport_ready: true',
-  'writes_webdav: true',
 ]) {
   mustNotContain(productionRust, token, `production Rust forbidden ${token}`);
 }

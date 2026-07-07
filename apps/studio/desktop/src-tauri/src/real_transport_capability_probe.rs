@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -22,15 +22,20 @@ const WRITE_GRADE_REGISTRY_REF_SCHEMA: &str =
 const WRITE_GRADE_REGISTRY_HASH_BOUNDARY: &str = "descriptor-refs-only-excludes-private-material";
 const FIRST_WRITE_REQUEST_SCHEMA: &str = "h2o.studio.transport.first-write-request.v1";
 const WRITE_GRADE_RECEIPT_SCHEMA: &str = "h2o.sync.real-transport.write-grade-receipt.v1";
+const WRITE_GRADE_RECEIPT_CANONICALIZATION: &str = "json-sorted-keys-v1";
 const FIRST_WRITE_OPERATION_KIND: &str = "first-sacrificial-probe-write";
 const FIRST_WRITE_PAYLOAD_KIND: &str = "capability-probe-object";
 const FIRST_WRITE_GATE: &str = "real-transport-w3-4a-refused-first-write-loopback";
+const FIRST_WRITE_LIVE_GATE: &str = "real-transport-w3-4b-live-sacrificial-webdav-invocation";
 const W31_CLOSEOUT_COMMIT: &str = "7862270237955b86d48d943263fd53947cc71f72";
 const W31_ALIGNMENT_COMMIT: &str = "70e7fcc9669b939b505de96a7bb0ec61509c3370";
 const W32_MOCK_PROOF_COMMIT: &str = "649849e7e48c7e5bc5924bc811d857f2435866ae";
 const W33A_DESIGN_COMMIT: &str = "671fdc1c855b345185e5ea257b206c0a07cdab36";
 const W33B_STORAGE_COMMIT: &str = "388a952745ab7a21ba9556531eccf5c7e0ffe1ce";
 const W33C_HASH_BOUNDARY_COMMIT: &str = "aba4c70068d95ee373d157fddea06bfb31b505b0";
+const W34A_REFUSED_COMMAND_COMMIT: &str = "a830ccb6b633a9d6cee35e6db92464e870d5693d";
+const W34B0_APPROVAL_PACKAGE_COMMIT: &str = "d196f4b26d904394c435c15dd14d12cd18f03190";
+const W34B1_OPERATOR_APPROVAL_COMMIT: &str = "db4cdc5ccbd436913f05aa7b526fc14fec03e5ea";
 const WRITE_GRADE_MAX_RECEIPT_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const FIRST_WRITE_RECOMMENDED_AGE_SECONDS: i64 = 72 * 60 * 60;
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -555,7 +560,13 @@ pub struct RtFirstWriteRequest {
     #[serde(default)]
     pub loopback_mock: Option<bool>,
     #[serde(default)]
+    pub live_webdav_invocation: Option<bool>,
+    #[serde(default)]
     pub invocation_utc: Option<String>,
+    #[serde(default)]
+    pub receipt_core_hash: Option<String>,
+    #[serde(default)]
+    pub approval_expiry_utc: Option<String>,
     #[serde(default)]
     pub write_grade_receipt: Option<WriteGradeReceipt>,
     #[serde(default)]
@@ -614,11 +625,13 @@ pub struct RtFirstWriteRequest {
     pub extra: BTreeMap<String, JsonValue>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteGradeReceipt {
     #[serde(default)]
     pub schema: Option<String>,
+    #[serde(default)]
+    pub canonicalization: Option<String>,
     #[serde(default)]
     pub receipt_grade: Option<String>,
     #[serde(default)]
@@ -641,7 +654,7 @@ pub struct WriteGradeReceipt {
     pub bindings: Option<WriteGradeReceiptBindings>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteGradeRequestBudget {
     #[serde(default)]
@@ -652,7 +665,7 @@ pub struct WriteGradeRequestBudget {
     pub other_methods: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteGradeSacrificialObject {
     #[serde(default)]
@@ -663,7 +676,7 @@ pub struct WriteGradeSacrificialObject {
     pub payload_byte_max: Option<usize>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteGradeReceiptBindings {
     #[serde(default)]
@@ -674,6 +687,8 @@ pub struct WriteGradeReceiptBindings {
     pub credential_ref_hash: Option<String>,
     #[serde(default)]
     pub write_grade_registry_ref_hash: Option<String>,
+    #[serde(default)]
+    pub write_grade_registry_hash_boundary: Option<String>,
     #[serde(default)]
     pub w31_closeout_commit: Option<String>,
     #[serde(default)]
@@ -686,6 +701,12 @@ pub struct WriteGradeReceiptBindings {
     pub w33b_registry_hardening_commit: Option<String>,
     #[serde(default)]
     pub w33c_hash_boundary_commit: Option<String>,
+    #[serde(default)]
+    pub w34a_refused_command_commit: Option<String>,
+    #[serde(default)]
+    pub w34b0_approval_package_commit: Option<String>,
+    #[serde(default)]
+    pub w34b1_operator_approval_commit: Option<String>,
     #[serde(default)]
     pub operator_approval_artifact_hash: Option<String>,
     #[serde(default)]
@@ -2220,6 +2241,38 @@ fn token_hash_matches(raw: &Option<String>, expected: &Option<String>) -> bool {
     sha256_ref(raw.as_bytes()) == expected
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FirstWriteMode {
+    LoopbackMock,
+    LiveWebDav,
+}
+
+fn sorted_json_value(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(values) => {
+            JsonValue::Array(values.into_iter().map(sorted_json_value).collect())
+        }
+        JsonValue::Object(map) => {
+            let mut entries = map.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in entries {
+                sorted.insert(key, sorted_json_value(value));
+            }
+            JsonValue::Object(sorted)
+        }
+        value => value,
+    }
+}
+
+fn write_grade_receipt_core_hash(receipt: &WriteGradeReceipt) -> Option<String> {
+    let value = serde_json::to_value(receipt).ok()?;
+    let sorted = sorted_json_value(value);
+    serde_json::to_vec(&sorted)
+        .ok()
+        .map(|bytes| sha256_ref(&bytes))
+}
+
 fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
@@ -2264,6 +2317,7 @@ struct FirstWriteLoopbackResponse {
     body: Vec<u8>,
     redirected: bool,
     timeout_after_send: bool,
+    network_failed: bool,
 }
 
 trait FirstWriteLoopbackClient {
@@ -2271,6 +2325,201 @@ trait FirstWriteLoopbackClient {
     fn put_create_first(&self, payload: &[u8]) -> FirstWriteLoopbackResponse;
     fn put_create_second(&self, payload: &[u8]) -> FirstWriteLoopbackResponse;
     fn get_readback(&self) -> FirstWriteLoopbackResponse;
+}
+
+struct FirstWriteLiveTarget {
+    endpoint_url_private: String,
+    remote_root_path_private: String,
+    auth_header_private: String,
+    path_class_ref_hash: String,
+}
+
+trait FirstWriteLiveClient {
+    fn propfind_absence(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse;
+    fn put_create_first(
+        &self,
+        target: &FirstWriteLiveTarget,
+        payload: &[u8],
+    ) -> FirstWriteLoopbackResponse;
+    fn put_create_second(
+        &self,
+        target: &FirstWriteLiveTarget,
+        payload: &[u8],
+    ) -> FirstWriteLoopbackResponse;
+    fn get_readback(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse;
+}
+
+enum FirstWriteLiveOperation {
+    PropfindAbsence,
+    PutCreateFirst,
+    PutCreateSecond,
+    GetReadback,
+}
+
+impl FirstWriteLiveOperation {
+    fn method(&self) -> &'static str {
+        match self {
+            Self::PropfindAbsence => "PROPFIND",
+            Self::PutCreateFirst | Self::PutCreateSecond => "PUT",
+            Self::GetReadback => "GET",
+        }
+    }
+
+    fn sends_propfind_body(&self) -> bool {
+        matches!(self, Self::PropfindAbsence)
+    }
+
+    fn sends_create_only_payload(&self) -> bool {
+        matches!(self, Self::PutCreateFirst | Self::PutCreateSecond)
+    }
+}
+
+struct ReqwestFirstWriteLiveClient;
+
+impl ReqwestFirstWriteLiveClient {
+    fn build_target_url(target: &FirstWriteLiveTarget) -> Result<reqwest::Url, ResolverFailure> {
+        let mut url = ReqwestReadOnlyProbeClient::build_target_url(
+            &target.endpoint_url_private,
+            &target.remote_root_path_private,
+            false,
+        )?;
+        let hash_suffix = target
+            .path_class_ref_hash
+            .strip_prefix("sha256:")
+            .unwrap_or(&target.path_class_ref_hash)
+            .chars()
+            .filter(|value| value.is_ascii_hexdigit())
+            .take(16)
+            .collect::<String>();
+        if hash_suffix.len() != 16 {
+            return Err(ResolverFailure::LiveUrlInvalid);
+        }
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| ResolverFailure::LiveUrlInvalid)?;
+            segments.pop_if_empty();
+            segments.push(".h2o-w3-sacrificial-probe");
+            segments.push(&format!("{hash_suffix}.sentinel"));
+        }
+        Ok(url)
+    }
+
+    fn send(
+        &self,
+        target: &FirstWriteLiveTarget,
+        operation: FirstWriteLiveOperation,
+        payload: Option<&[u8]>,
+    ) -> FirstWriteLoopbackResponse {
+        let Ok(url) = Self::build_target_url(target) else {
+            return FirstWriteLoopbackResponse {
+                network_failed: true,
+                ..Default::default()
+            };
+        };
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(READONLY_TIMEOUT_SECONDS))
+            .build()
+        else {
+            return FirstWriteLoopbackResponse {
+                network_failed: true,
+                ..Default::default()
+            };
+        };
+        let Ok(method) = reqwest::Method::from_bytes(operation.method().as_bytes()) else {
+            return FirstWriteLoopbackResponse {
+                network_failed: true,
+                ..Default::default()
+            };
+        };
+        let mut builder = client
+            .request(method, url)
+            .header("Authorization", target.auth_header_private.clone())
+            .header(reqwest::header::CACHE_CONTROL, "no-cache");
+        if operation.sends_propfind_body() {
+            builder = builder
+                .header("Depth", "0")
+                .header(reqwest::header::ACCEPT, WEBDAV_XML_ACCEPT)
+                .header(reqwest::header::CONTENT_TYPE, WEBDAV_XML_CONTENT_TYPE)
+                .body(WEBDAV_PROPFIND_BODY.to_string());
+        } else if operation.sends_create_only_payload() {
+            builder = builder
+                .header(reqwest::header::IF_NONE_MATCH, "*")
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(payload.unwrap_or_default().to_vec());
+        }
+        let response = builder.send();
+        let mut response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return FirstWriteLoopbackResponse {
+                    timeout_after_send: operation.sends_create_only_payload() && error.is_timeout(),
+                    network_failed: true,
+                    ..Default::default()
+                };
+            }
+        };
+        let status = response.status();
+        let redirected = status.is_redirection();
+        let mut body = Vec::new();
+        if matches!(operation, FirstWriteLiveOperation::GetReadback) {
+            if response
+                .by_ref()
+                .take((MAX_READONLY_RESPONSE_BYTES + 1) as u64)
+                .read_to_end(&mut body)
+                .is_err()
+                || body.len() > MAX_READONLY_RESPONSE_BYTES
+            {
+                return FirstWriteLoopbackResponse {
+                    status: status.as_u16(),
+                    redirected,
+                    network_failed: true,
+                    ..Default::default()
+                };
+            }
+        }
+        FirstWriteLoopbackResponse {
+            status: status.as_u16(),
+            body,
+            redirected,
+            ..Default::default()
+        }
+    }
+}
+
+impl FirstWriteLiveClient for ReqwestFirstWriteLiveClient {
+    fn propfind_absence(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse {
+        self.send(target, FirstWriteLiveOperation::PropfindAbsence, None)
+    }
+
+    fn put_create_first(
+        &self,
+        target: &FirstWriteLiveTarget,
+        payload: &[u8],
+    ) -> FirstWriteLoopbackResponse {
+        self.send(
+            target,
+            FirstWriteLiveOperation::PutCreateFirst,
+            Some(payload),
+        )
+    }
+
+    fn put_create_second(
+        &self,
+        target: &FirstWriteLiveTarget,
+        payload: &[u8],
+    ) -> FirstWriteLoopbackResponse {
+        self.send(
+            target,
+            FirstWriteLiveOperation::PutCreateSecond,
+            Some(payload),
+        )
+    }
+
+    fn get_readback(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse {
+        self.send(target, FirstWriteLiveOperation::GetReadback, None)
+    }
 }
 
 #[derive(Default)]
@@ -2311,18 +2560,22 @@ fn push_status(
     statuses: &mut Vec<RtFirstWriteMethodStatus>,
     operation: &'static str,
     response: &FirstWriteLoopbackResponse,
+    loopback_only: bool,
 ) {
     statuses.push(RtFirstWriteMethodStatus {
         operation,
         status_code: response.status,
         status_family: status_family(response.status),
-        loopback_only: true,
+        loopback_only,
     });
 }
 
 fn first_write_response_blocker(response: &FirstWriteLoopbackResponse) -> Option<&'static str> {
     if response.timeout_after_send {
         return Some("real-transport-w3-first-write-remote-write-uncertain");
+    }
+    if response.network_failed {
+        return Some("real-transport-w3-first-write-network-failed");
     }
     if response.redirected || (300..400).contains(&response.status) {
         return Some("real-transport-w3-first-write-redirect-refused");
@@ -2333,16 +2586,30 @@ fn first_write_response_blocker(response: &FirstWriteLoopbackResponse) -> Option
     None
 }
 
-fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Vec<&'static str>) {
+fn validate_write_grade_receipt(
+    request: &RtFirstWriteRequest,
+    blockers: &mut Vec<&'static str>,
+) -> Option<FirstWriteMode> {
     if request.schema.as_deref() != Some(FIRST_WRITE_REQUEST_SCHEMA) {
         blockers.push("real-transport-w3-first-write-request-schema-required");
     }
-    if request.gate.as_deref() != Some(FIRST_WRITE_GATE) {
-        blockers.push("real-transport-w3-first-write-gate-required");
-    }
-    if request.mock_only != Some(true) || request.loopback_mock != Some(true) {
+    let mode = if request.mock_only == Some(true) && request.loopback_mock == Some(true) {
+        if request.gate.as_deref() != Some(FIRST_WRITE_GATE) {
+            blockers.push("real-transport-w3-first-write-gate-required");
+        }
+        Some(FirstWriteMode::LoopbackMock)
+    } else if request.live_webdav_invocation == Some(true)
+        && request.mock_only == Some(false)
+        && request.loopback_mock != Some(true)
+    {
+        if request.gate.as_deref() != Some(FIRST_WRITE_LIVE_GATE) {
+            blockers.push("real-transport-w3-first-write-live-gate-required");
+        }
+        Some(FirstWriteMode::LiveWebDav)
+    } else {
         blockers.push("real-transport-w3-first-write-loopback-mock-required");
-    }
+        None
+    };
     if request.product_sync_ready == Some(true)
         || request.transport_ready == Some(true)
         || request.writes_webdav == Some(true)
@@ -2368,10 +2635,13 @@ fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Ve
 
     let Some(receipt) = request.write_grade_receipt.as_ref() else {
         blockers.push("real-transport-w3-write-grade-receipt-missing");
-        return;
+        return mode;
     };
     if receipt.schema.as_deref() != Some(WRITE_GRADE_RECEIPT_SCHEMA) {
         blockers.push("real-transport-w3-write-grade-receipt-schema-invalid");
+    }
+    if receipt.canonicalization.as_deref() != Some(WRITE_GRADE_RECEIPT_CANONICALIZATION) {
+        blockers.push("real-transport-w3-write-grade-receipt-canonicalization-invalid");
     }
     match receipt.receipt_grade.as_deref() {
         Some("write-grade") => {}
@@ -2433,6 +2703,11 @@ fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Ve
     {
         blockers.push("real-transport-w3-write-grade-registry-ref-hash-mismatch");
     }
+    if bindings.and_then(|value| value.write_grade_registry_hash_boundary.as_deref())
+        != Some(WRITE_GRADE_REGISTRY_HASH_BOUNDARY)
+    {
+        blockers.push("real-transport-w3-write-grade-registry-hash-boundary-mismatch");
+    }
     if request.registry_path_source.as_deref() == Some("default-private-legacy")
         || request.registry_path_source.as_deref() == Some("invalid")
         || !matches!(
@@ -2459,6 +2734,12 @@ fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Ve
             != Some(W33B_STORAGE_COMMIT)
         || bindings.and_then(|value| value.w33c_hash_boundary_commit.as_deref())
             != Some(W33C_HASH_BOUNDARY_COMMIT)
+        || bindings.and_then(|value| value.w34a_refused_command_commit.as_deref())
+            != Some(W34A_REFUSED_COMMAND_COMMIT)
+        || bindings.and_then(|value| value.w34b0_approval_package_commit.as_deref())
+            != Some(W34B0_APPROVAL_PACKAGE_COMMIT)
+        || bindings.and_then(|value| value.w34b1_operator_approval_commit.as_deref())
+            != Some(W34B1_OPERATOR_APPROVAL_COMMIT)
     {
         blockers.push("real-transport-w3-first-write-commit-binding-mismatch");
     }
@@ -2489,15 +2770,15 @@ fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Ve
         .and_then(parse_utc_seconds)
     else {
         blockers.push("real-transport-w3-first-write-invocation-time-invalid");
-        return;
+        return mode;
     };
     let Some(mint_utc) = receipt.mint_utc.as_deref().and_then(parse_utc_seconds) else {
         blockers.push("real-transport-w3-write-grade-receipt-time-invalid");
-        return;
+        return mode;
     };
     let Some(expiry_utc) = receipt.expiry_utc.as_deref().and_then(parse_utc_seconds) else {
         blockers.push("real-transport-w3-write-grade-receipt-time-invalid");
-        return;
+        return mode;
     };
     if mint_utc > invocation_utc {
         blockers.push("real-transport-w3-write-grade-receipt-future-mint-refused");
@@ -2511,6 +2792,138 @@ fn validate_write_grade_receipt(request: &RtFirstWriteRequest, blockers: &mut Ve
     if invocation_utc - mint_utc > FIRST_WRITE_RECOMMENDED_AGE_SECONDS {
         blockers.push("real-transport-w3-first-write-receipt-age-exceeds-72h");
     }
+    if mode == Some(FirstWriteMode::LiveWebDav) {
+        if !is_hash_ref(&request.receipt_core_hash) {
+            blockers.push("real-transport-w3-write-grade-receipt-core-hash-required");
+        } else if write_grade_receipt_core_hash(receipt) != request.receipt_core_hash {
+            blockers.push("real-transport-w3-write-grade-receipt-core-hash-mismatch");
+        }
+        let Some(approval_expiry_utc) = request
+            .approval_expiry_utc
+            .as_deref()
+            .and_then(parse_utc_seconds)
+        else {
+            blockers.push("real-transport-w3-write-grade-approval-expiry-required");
+            return mode;
+        };
+        if expiry_utc > approval_expiry_utc {
+            blockers.push("real-transport-w3-write-grade-receipt-exceeds-approval-expiry");
+        }
+    }
+    mode
+}
+
+fn resolve_first_write_live_registry(
+    request: &RtFirstWriteRequest,
+) -> Result<DescriptorRegistry, &'static str> {
+    let path_info = descriptor_registry_path_for_setup_status();
+    let bytes =
+        fs::read(&path_info.path).map_err(|_| "real-transport-w3-write-grade-registry-missing")?;
+    let status = status_from_registry_bytes("h2o_rt_first_write", &bytes, &path_info);
+    if status.registry_path_source != request.registry_path_source.as_deref().unwrap_or("") {
+        return Err("real-transport-w3-write-grade-registry-source-refused");
+    }
+    if !write_grade_registry_source_candidate(status.registry_path_source) {
+        return Err("real-transport-w3-write-grade-registry-source-refused");
+    }
+    if !status.write_grade_registry_eligible
+        || !status.registry_owner_ok
+        || !status.registry_permission_ok
+    {
+        return Err("real-transport-w3-write-grade-registry-owner-permission-refused");
+    }
+    if status.write_grade_registry_ref_hash != request.write_grade_registry_ref_hash {
+        return Err("real-transport-w3-write-grade-registry-ref-hash-mismatch");
+    }
+    if !status.credential_material_present {
+        return Err("real-transport-w3-first-write-credential-material-missing");
+    }
+    let registry = serde_json::from_slice::<DescriptorRegistry>(&bytes)
+        .map_err(|_| "real-transport-w3-write-grade-registry-invalid")?;
+    let Some(bindings) = request
+        .write_grade_receipt
+        .as_ref()
+        .and_then(|receipt| receipt.bindings.as_ref())
+    else {
+        return Err("real-transport-w3-write-grade-receipt-missing");
+    };
+    if Some(registry.endpoint_ref_hash.clone()) != bindings.endpoint_ref_hash
+        || Some(registry.remote_root_ref_hash.clone()) != bindings.remote_root_ref_hash
+        || Some(registry.credential_ref_hash.clone()) != bindings.credential_ref_hash
+    {
+        return Err("real-transport-w3-first-write-descriptor-bindings-required");
+    }
+    if registry
+        .endpoint_url_private
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        || registry
+            .remote_root_path_private
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        || registry
+            .auth_header_private
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return Err("real-transport-w3-first-write-private-registry-fields-missing");
+    }
+    Ok(registry)
+}
+
+fn first_write_consumed_marker_path(receipt_hash: &str) -> Option<PathBuf> {
+    let path_info = descriptor_registry_path_for_setup_status();
+    let parent = path_info.path.parent()?;
+    let hash = receipt_hash.strip_prefix("sha256:")?;
+    if hash.len() != 64 || !hash.chars().all(|value| value.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(
+        parent
+            .join("first-write-consumed")
+            .join(format!("{hash}.json")),
+    )
+}
+
+fn write_first_write_apply_intent_marker(
+    receipt_hash: &str,
+    invocation_utc: &str,
+) -> Result<(), &'static str> {
+    let Some(path) = first_write_consumed_marker_path(receipt_hash) else {
+        return Err("real-transport-w3-first-write-consumed-marker-path-invalid");
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|_| "real-transport-w3-first-write-consumed-marker-write-failed")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+    }
+    let body = format!(
+        "{{\"schema\":\"h2o.sync.real-transport.first-write-consumed-marker.v1\",\"receiptCoreHash\":\"{}\",\"invocationUtc\":\"{}\",\"networkAttempted\":false}}\n",
+        receipt_hash, invocation_utc
+    );
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|_| "real-transport-w3-first-write-receipt-already-consumed")?;
+    file.write_all(body.as_bytes())
+        .map_err(|_| "real-transport-w3-first-write-consumed-marker-write-failed")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
@@ -2525,7 +2938,10 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
     };
 
     let mut blockers = Vec::new();
-    validate_write_grade_receipt(&request, &mut blockers);
+    let mode = validate_write_grade_receipt(&request, &mut blockers);
+    if mode != Some(FirstWriteMode::LoopbackMock) {
+        blockers.push("real-transport-w3-first-write-loopback-mock-required");
+    }
     if !blockers.is_empty() {
         return RtFirstWriteResult::blocked(blockers[0], blockers);
     }
@@ -2538,6 +2954,7 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
         &mut method_statuses,
         "PROPFIND pre-write absence check",
         &propfind,
+        true,
     );
     if let Some(blocker) = first_write_response_blocker(&propfind) {
         return RtFirstWriteResult {
@@ -2560,7 +2977,7 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
     }
 
     let first_put = client.put_create_first(&payload);
-    push_status(&mut method_statuses, "PUT create-only #1", &first_put);
+    push_status(&mut method_statuses, "PUT create-only #1", &first_put, true);
     if let Some(blocker) = first_write_response_blocker(&first_put) {
         return RtFirstWriteResult {
             reason: blocker,
@@ -2582,7 +2999,12 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
     }
 
     let second_put = client.put_create_second(&payload);
-    push_status(&mut method_statuses, "PUT create-only #2", &second_put);
+    push_status(
+        &mut method_statuses,
+        "PUT create-only #2",
+        &second_put,
+        true,
+    );
     if let Some(blocker) = first_write_response_blocker(&second_put) {
         return RtFirstWriteResult {
             reason: blocker,
@@ -2614,7 +3036,7 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
     }
 
     let readback = client.get_readback();
-    push_status(&mut method_statuses, "GET read-back", &readback);
+    push_status(&mut method_statuses, "GET read-back", &readback, true);
     if let Some(blocker) = first_write_response_blocker(&readback) {
         return RtFirstWriteResult {
             reason: blocker,
@@ -2667,8 +3089,268 @@ fn evaluate_first_write_with_client<C: FirstWriteLoopbackClient>(
     }
 }
 
+fn first_write_live_blocked(
+    reason: &'static str,
+    blockers: Vec<&'static str>,
+    write_grade_registry_ref_hash: Option<String>,
+    method_statuses: Vec<RtFirstWriteMethodStatus>,
+    network_attempted: bool,
+    writes_webdav: bool,
+    create_only_behavior: &'static str,
+) -> RtFirstWriteResult {
+    RtFirstWriteResult {
+        reason,
+        blockers,
+        write_grade_registry_ref_hash,
+        method_statuses,
+        network_attempted,
+        mock_only: false,
+        create_only_behavior,
+        writes_webdav,
+        warnings: vec!["live-first-write-failed-closed"],
+        ..RtFirstWriteResult::blocked(reason, vec![reason])
+    }
+}
+
+fn evaluate_first_write_live_with_client<C: FirstWriteLiveClient>(
+    request: Option<RtFirstWriteRequest>,
+    client: &C,
+) -> RtFirstWriteResult {
+    let Some(request) = request else {
+        return RtFirstWriteResult::blocked(
+            "real-transport-w3-write-grade-approval-missing",
+            vec!["real-transport-w3-write-grade-approval-missing"],
+        );
+    };
+
+    let mut blockers = Vec::new();
+    let mode = validate_write_grade_receipt(&request, &mut blockers);
+    if mode != Some(FirstWriteMode::LiveWebDav) {
+        blockers.push("real-transport-w3-first-write-live-gate-required");
+    }
+    let registry = if blockers.is_empty() {
+        match resolve_first_write_live_registry(&request) {
+            Ok(registry) => Some(registry),
+            Err(blocker) => {
+                blockers.push(blocker);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if !blockers.is_empty() {
+        return RtFirstWriteResult::blocked(blockers[0], blockers);
+    }
+
+    let registry = registry.expect("registry checked when blockers are empty");
+    let receipt = request
+        .write_grade_receipt
+        .as_ref()
+        .expect("receipt checked when blockers are empty");
+    let object = receipt
+        .sacrificial_object
+        .as_ref()
+        .expect("object checked when blockers are empty");
+    let payload = request
+        .payload
+        .as_deref()
+        .expect("payload checked when blockers are empty")
+        .as_bytes()
+        .to_vec();
+    let receipt_hash = request
+        .receipt_core_hash
+        .as_deref()
+        .expect("receipt hash checked when blockers are empty");
+    let invocation_utc = request
+        .invocation_utc
+        .as_deref()
+        .expect("invocation time checked when blockers are empty");
+    if let Err(blocker) = write_first_write_apply_intent_marker(receipt_hash, invocation_utc) {
+        return RtFirstWriteResult::blocked(blocker, vec![blocker]);
+    }
+
+    let target = FirstWriteLiveTarget {
+        endpoint_url_private: registry.endpoint_url_private.unwrap_or_default(),
+        remote_root_path_private: registry.remote_root_path_private.unwrap_or_default(),
+        auth_header_private: registry.auth_header_private.unwrap_or_default(),
+        path_class_ref_hash: object.path_class_ref_hash.clone().unwrap_or_default(),
+    };
+    let mut method_statuses = Vec::new();
+
+    let propfind = client.propfind_absence(&target);
+    push_status(
+        &mut method_statuses,
+        "PROPFIND pre-write absence check",
+        &propfind,
+        false,
+    );
+    if let Some(blocker) = first_write_response_blocker(&propfind) {
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            false,
+            "not-attempted",
+        );
+    }
+    if propfind.status != 404 {
+        let blocker = "real-transport-w3-first-write-target-exists";
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            false,
+            "not-attempted",
+        );
+    }
+
+    let first_put = client.put_create_first(&target, &payload);
+    push_status(
+        &mut method_statuses,
+        "PUT create-only #1",
+        &first_put,
+        false,
+    );
+    if let Some(blocker) = first_write_response_blocker(&first_put) {
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            first_put.timeout_after_send,
+            "not-attempted",
+        );
+    }
+    if first_put.status != 201 {
+        let blocker = "real-transport-w3-first-write-put1-unexpected-status";
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            false,
+            "not-attempted",
+        );
+    }
+
+    let second_put = client.put_create_second(&target, &payload);
+    push_status(
+        &mut method_statuses,
+        "PUT create-only #2",
+        &second_put,
+        false,
+    );
+    if let Some(blocker) = first_write_response_blocker(&second_put) {
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            true,
+            "live-put1-created",
+        );
+    }
+    if (200..300).contains(&second_put.status) {
+        let blocker = "real-transport-w3-first-write-create-only-not-enforced";
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            true,
+            "not-enforced",
+        );
+    }
+    if second_put.status != 412 {
+        let blocker = "real-transport-w3-first-write-put2-unexpected-status";
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            true,
+            "live-put1-created",
+        );
+    }
+
+    let readback = client.get_readback(&target);
+    push_status(&mut method_statuses, "GET read-back", &readback, false);
+    if let Some(blocker) = first_write_response_blocker(&readback) {
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            true,
+            "live-201-then-412",
+        );
+    }
+    if readback.status != 200
+        || sha256_ref(&readback.body) != request.payload_hash.clone().unwrap_or_default()
+    {
+        let blocker = "real-transport-w3-first-write-readback-hash-mismatch";
+        return first_write_live_blocked(
+            blocker,
+            vec![blocker],
+            request.write_grade_registry_ref_hash,
+            method_statuses,
+            true,
+            true,
+            "live-201-then-412",
+        );
+    }
+
+    RtFirstWriteResult {
+        schema: "h2o.studio.transport.first-write-result.v1",
+        ok: true,
+        status: "real-transport-w3-first-write-live-passed",
+        reason: "real-transport-w3-first-write-live-sacrificial-probe-complete",
+        command: "h2o_rt_first_write",
+        mock_only: false,
+        gate_satisfied: true,
+        network_attempted: true,
+        loopback_attempted: false,
+        write_grade_registry_ref_hash: request.write_grade_registry_ref_hash,
+        create_only_behavior: "live-201-then-412",
+        method_statuses,
+        writes_webdav: true,
+        writes_cloud: false,
+        writes_relay: false,
+        writes_cas: false,
+        writes_files: false,
+        enqueues_relay: false,
+        full_bundle_v3_started: false,
+        mints_export_id: false,
+        burns_sequence: false,
+        product_sync_ready: false,
+        transport_ready: false,
+        raw_private_fields_logged: false,
+        blockers: vec![],
+        warnings: vec!["live-sacrificial-webdav-write-only-no-cleanup-no-product-readiness"],
+    }
+}
+
 pub fn evaluate_first_write(request: Option<RtFirstWriteRequest>) -> RtFirstWriteResult {
-    evaluate_first_write_with_client(request, &DefaultFirstWriteLoopbackClient)
+    if request
+        .as_ref()
+        .map(|request| request.live_webdav_invocation == Some(true))
+        .unwrap_or(false)
+    {
+        evaluate_first_write_live_with_client(request, &ReqwestFirstWriteLiveClient)
+    } else {
+        evaluate_first_write_with_client(request, &DefaultFirstWriteLoopbackClient)
+    }
 }
 
 #[tauri::command]
@@ -2927,7 +3609,10 @@ mod tests {
             gate: Some(FIRST_WRITE_GATE.to_string()),
             mock_only: Some(true),
             loopback_mock: Some(true),
+            live_webdav_invocation: Some(false),
             invocation_utc: Some("2026-07-07T01:00:00Z".to_string()),
+            receipt_core_hash: None,
+            approval_expiry_utc: None,
             approval_artifact_hash: Some(approval_hash.clone()),
             one_shot_token: Some(one_shot_token),
             one_shot_token_hash: Some(one_shot_token_hash.clone()),
@@ -2945,6 +3630,7 @@ mod tests {
             payload_byte_max: Some(256),
             write_grade_receipt: Some(WriteGradeReceipt {
                 schema: Some(WRITE_GRADE_RECEIPT_SCHEMA.to_string()),
+                canonicalization: Some(WRITE_GRADE_RECEIPT_CANONICALIZATION.to_string()),
                 receipt_grade: Some("write-grade".to_string()),
                 mint_utc: Some("2026-07-07T00:00:00Z".to_string()),
                 expiry_utc: Some("2026-07-09T00:00:00Z".to_string()),
@@ -2967,12 +3653,20 @@ mod tests {
                     remote_root_ref_hash: Some(h('b')),
                     credential_ref_hash: Some(h('c')),
                     write_grade_registry_ref_hash: Some(write_grade_registry_ref_hash),
+                    write_grade_registry_hash_boundary: Some(
+                        WRITE_GRADE_REGISTRY_HASH_BOUNDARY.to_string(),
+                    ),
                     w31_closeout_commit: Some(W31_CLOSEOUT_COMMIT.to_string()),
                     w31_alignment_commit: Some(W31_ALIGNMENT_COMMIT.to_string()),
                     w32_mock_proof_commit: Some(W32_MOCK_PROOF_COMMIT.to_string()),
                     w33a_design_commit: Some(W33A_DESIGN_COMMIT.to_string()),
                     w33b_registry_hardening_commit: Some(W33B_STORAGE_COMMIT.to_string()),
                     w33c_hash_boundary_commit: Some(W33C_HASH_BOUNDARY_COMMIT.to_string()),
+                    w34a_refused_command_commit: Some(W34A_REFUSED_COMMAND_COMMIT.to_string()),
+                    w34b0_approval_package_commit: Some(W34B0_APPROVAL_PACKAGE_COMMIT.to_string()),
+                    w34b1_operator_approval_commit: Some(
+                        W34B1_OPERATOR_APPROVAL_COMMIT.to_string(),
+                    ),
                     operator_approval_artifact_hash: Some(approval_hash),
                     one_shot_token_hash: Some(one_shot_token_hash),
                     kill_switch_token_hash: Some(kill_switch_token_hash),
@@ -2980,6 +3674,20 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn live_first_write_request() -> RtFirstWriteRequest {
+        let mut request = first_write_request();
+        request.gate = Some(FIRST_WRITE_LIVE_GATE.to_string());
+        request.mock_only = Some(false);
+        request.loopback_mock = Some(false);
+        request.live_webdav_invocation = Some(true);
+        request.approval_expiry_utc = Some("2026-07-09T00:00:00Z".to_string());
+        request.receipt_core_hash = request
+            .write_grade_receipt
+            .as_ref()
+            .and_then(write_grade_receipt_core_hash);
+        request
     }
 
     #[test]
@@ -3599,6 +4307,63 @@ mod tests {
             .contains(&"real-transport-w3-first-write-payload-too-large"));
         assert!(!result.network_attempted);
         assert!(!result.writes_webdav);
+    }
+
+    #[test]
+    fn first_write_live_path_refuses_incomplete_ceremony_before_network() {
+        let cases = [
+            (
+                {
+                    let mut request = live_first_write_request();
+                    request.approval_artifact_hash = None;
+                    request
+                },
+                "real-transport-w3-write-grade-approval-missing",
+            ),
+            (
+                {
+                    let mut request = live_first_write_request();
+                    request.one_shot_token = None;
+                    request
+                },
+                "real-transport-w3-one-shot-token-missing-or-mismatch",
+            ),
+            (
+                {
+                    let mut request = live_first_write_request();
+                    request.kill_switch_enabled = Some(false);
+                    request
+                },
+                "real-transport-w3-kill-switch-disabled-or-stale",
+            ),
+            (
+                {
+                    let mut request = live_first_write_request();
+                    request.registry_path_source = Some("default-private-legacy".to_string());
+                    request.write_grade_registry_eligible = Some(false);
+                    request
+                },
+                "real-transport-w3-write-grade-registry-source-refused",
+            ),
+            (
+                {
+                    let mut request = live_first_write_request();
+                    request.receipt_core_hash = Some(h('0'));
+                    request
+                },
+                "real-transport-w3-write-grade-receipt-core-hash-mismatch",
+            ),
+        ];
+        for (request, blocker) in cases {
+            let result = evaluate_first_write(Some(request));
+            assert!(!result.ok, "{blocker}");
+            assert!(result.blockers.contains(&blocker), "{blocker}");
+            assert!(!result.network_attempted);
+            assert!(!result.loopback_attempted);
+            assert!(!result.writes_webdav);
+            assert!(!result.product_sync_ready);
+            assert!(!result.transport_ready);
+        }
     }
 
     #[test]
