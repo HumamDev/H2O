@@ -334,12 +334,16 @@ pub struct RtWebDavSetupStatusResult {
     pub reason: &'static str,
     pub command: &'static str,
     pub registry_path_class: &'static str,
+    pub registry_path_source: &'static str,
     pub descriptor_registry_ref_hash: Option<String>,
     pub endpoint_ref_hash: Option<String>,
     pub remote_root_ref_hash: Option<String>,
     pub credential_ref_hash: Option<String>,
     pub json_parses: bool,
     pub required_private_fields_present: bool,
+    pub credential_material_present: bool,
+    pub credential_input_received_this_save: bool,
+    pub credential_material_updated_this_save: bool,
     pub endpoint_no_longer_reserved_invalid_domain: bool,
     pub reachable_candidate: bool,
     pub network_attempted: bool,
@@ -375,12 +379,16 @@ impl RtWebDavSetupStatusResult {
             reason,
             command,
             registry_path_class: "private-out-of-repo-descriptor-registry",
+            registry_path_source: descriptor_registry_path_source_for_setup(),
             descriptor_registry_ref_hash: None,
             endpoint_ref_hash: None,
             remote_root_ref_hash: None,
             credential_ref_hash: None,
             json_parses: false,
             required_private_fields_present: false,
+            credential_material_present: false,
+            credential_input_received_this_save: false,
+            credential_material_updated_this_save: false,
             endpoint_no_longer_reserved_invalid_domain: false,
             reachable_candidate: false,
             network_attempted: false,
@@ -467,6 +475,14 @@ fn descriptor_registry_path_for_setup() -> PathBuf {
     std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DESCRIPTOR_REGISTRY_FILE))
+}
+
+fn descriptor_registry_path_source_for_setup() -> &'static str {
+    if std::env::var_os(DESCRIPTOR_REGISTRY_FILE_ENV).is_some() {
+        "env"
+    } else {
+        "default-private"
+    }
 }
 
 fn registry_contains_raw_or_private(registry: &DescriptorRegistry) -> bool {
@@ -624,6 +640,11 @@ fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSe
     result.endpoint_ref_hash = Some(registry.endpoint_ref_hash.clone());
     result.remote_root_ref_hash = Some(registry.remote_root_ref_hash.clone());
     result.credential_ref_hash = Some(registry.credential_ref_hash.clone());
+    result.credential_material_present = registry
+        .auth_header_private
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
 
     let required_private_fields_present = is_hash_ref(&Some(registry.endpoint_ref_hash.clone()))
         && is_hash_ref(&Some(registry.remote_root_ref_hash.clone()))
@@ -638,11 +659,7 @@ fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSe
             .as_deref()
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
-        && registry
-            .auth_header_private
-            .as_deref()
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
+        && result.credential_material_present;
     result.required_private_fields_present = required_private_fields_present;
     result.endpoint_no_longer_reserved_invalid_domain = registry
         .endpoint_url_private
@@ -688,6 +705,14 @@ fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSe
         result.blockers[0]
     };
     result
+}
+
+fn previous_auth_header_private(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let registry = serde_json::from_slice::<DescriptorRegistry>(&bytes).ok()?;
+    registry
+        .auth_header_private
+        .filter(|value| !value.trim().is_empty())
 }
 
 pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatusResult {
@@ -770,6 +795,10 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
     let remote_root_ref_hash = descriptor_ref_hash("remote-root", &remote_root_descriptor_label);
     let credential_ref_hash = descriptor_ref_hash("credential", &credential_descriptor_label);
     let auth_header_private = build_auth_header_private(&credential_identifier, &credential_secret);
+    let registry_path = descriptor_registry_path_for_setup();
+    let previous_auth_header = previous_auth_header_private(&registry_path);
+    let credential_material_updated_this_save =
+        previous_auth_header.as_deref() != Some(auth_header_private.as_str());
     let registry = WritableDescriptorRegistry {
         schema: "h2o.studio.transport.real-descriptor-registry.v1",
         descriptor_mode: "hash-only-redacted",
@@ -792,7 +821,6 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
             )
         }
     };
-    let registry_path = descriptor_registry_path_for_setup();
     if write_private_registry_file(&registry_path, &bytes).is_err() {
         return RtWebDavSetupStatusResult::base(
             false,
@@ -802,7 +830,10 @@ pub fn prepare_webdav_setup(request: RtWebDavSetupRequest) -> RtWebDavSetupStatu
             vec!["real-transport-webdav-setup-registry-write-failed"],
         );
     }
-    status_from_registry_bytes(command, &bytes)
+    let mut result = status_from_registry_bytes(command, &bytes);
+    result.credential_input_received_this_save = true;
+    result.credential_material_updated_this_save = credential_material_updated_this_save;
+    result
 }
 
 pub fn webdav_setup_status() -> RtWebDavSetupStatusResult {
@@ -1779,12 +1810,16 @@ mod tests {
         std::env::set_var(DESCRIPTOR_REGISTRY_FILE_ENV, &registry_path);
         let result = prepare_webdav_setup(setup_request());
         assert!(result.ok);
+        assert_eq!(result.registry_path_source, "env");
         assert!(is_hash_ref(&result.descriptor_registry_ref_hash));
         assert!(is_hash_ref(&result.endpoint_ref_hash));
         assert!(is_hash_ref(&result.remote_root_ref_hash));
         assert!(is_hash_ref(&result.credential_ref_hash));
         assert!(result.json_parses);
         assert!(result.required_private_fields_present);
+        assert!(result.credential_material_present);
+        assert!(result.credential_input_received_this_save);
+        assert!(result.credential_material_updated_this_save);
         assert!(result.endpoint_no_longer_reserved_invalid_domain);
         assert!(result.reachable_candidate);
         assert!(!result.network_attempted);
@@ -1798,13 +1833,45 @@ mod tests {
         assert!(!serialized.contains("operator-test-identity"));
         assert!(!serialized.contains("credential-material"));
 
+        let repeated = prepare_webdav_setup(setup_request());
+        assert!(repeated.ok);
+        assert_eq!(repeated.registry_path_source, "env");
+        assert!(repeated.credential_material_present);
+        assert!(repeated.credential_input_received_this_save);
+        assert!(!repeated.credential_material_updated_this_save);
+        assert_eq!(
+            repeated.descriptor_registry_ref_hash,
+            result.descriptor_registry_ref_hash
+        );
+        assert_eq!(repeated.credential_ref_hash, result.credential_ref_hash);
+
+        let mut changed = setup_request();
+        changed.credential_secret = Some("changed-non-production-credential-material".to_string());
+        let changed_result = prepare_webdav_setup(changed);
+        assert!(changed_result.ok);
+        assert!(changed_result.credential_material_present);
+        assert!(changed_result.credential_input_received_this_save);
+        assert!(changed_result.credential_material_updated_this_save);
+        assert_ne!(
+            changed_result.descriptor_registry_ref_hash,
+            result.descriptor_registry_ref_hash
+        );
+        assert_eq!(
+            changed_result.credential_ref_hash,
+            result.credential_ref_hash
+        );
+
         let status = webdav_setup_status();
         let _ = fs::remove_file(registry_path);
         std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
         assert!(status.ok);
+        assert_eq!(status.registry_path_source, "env");
+        assert!(status.credential_material_present);
+        assert!(!status.credential_input_received_this_save);
+        assert!(!status.credential_material_updated_this_save);
         assert_eq!(
             status.descriptor_registry_ref_hash,
-            result.descriptor_registry_ref_hash
+            changed_result.descriptor_registry_ref_hash
         );
         assert!(!status.network_attempted);
         assert!(!status.writes_webdav);

@@ -73,6 +73,12 @@ mustContain(rust, 'descriptor_ref_hash("endpoint"', 'endpoint descriptor semanti
 mustContain(rust, 'descriptor_ref_hash("remote-root"', 'remote root descriptor semantics');
 mustContain(rust, 'descriptor_ref_hash("credential"', 'credential descriptor semantics');
 mustContain(rust, 'credential_ref_hash', 'credential ref hash output');
+mustContain(rust, 'registry_path_source', 'redacted registry path source output');
+mustContain(rust, 'credential_material_present', 'redacted credential material presence output');
+mustContain(rust, 'credential_input_received_this_save', 'redacted credential input receipt output');
+mustContain(rust, 'credential_material_updated_this_save', 'redacted credential material update output');
+mustContain(rust, 'previous_auth_header_private', 'private credential update comparison');
+mustContain(rust, 'previous_auth_header.as_deref() != Some(auth_header_private.as_str())', 'credential update comparison must stay private');
 
 assert(count(lib, 'real_transport_capability_probe::h2o_rt_prepare_webdav_setup') === 2,
   'lib.rs: setup command must be registered in debug and release invoke handlers');
@@ -109,6 +115,15 @@ mustContain(ui, 'Folder / remote root is required.', 'user-actionable folder mis
 mustContain(ui, 'Username is required.', 'user-actionable username missing state');
 mustContain(ui, 'Password/token is required.', 'user-actionable credential missing state');
 mustContain(ui, "'password'", 'credential field must be masked');
+mustContain(ui, 'if (secret) secret.value = \'\';', 'credential field cleared after prepare');
+mustContain(ui, 'registry path source', 'redacted registry path source status');
+mustContain(ui, 'credential material present', 'redacted credential material presence status');
+mustContain(ui, 'credential received this prepare', 'redacted credential input receipt status');
+mustContain(ui, 'credential updated this prepare', 'redacted credential update status');
+mustContain(ui, 'result && result.registryPathSource', 'registry path source render');
+mustContain(ui, 'result && result.credentialMaterialPresent', 'credential material presence render');
+mustContain(ui, 'result && result.credentialInputReceivedThisSave', 'credential input receipt render');
+mustContain(ui, 'result && result.credentialMaterialUpdatedThisSave', 'credential update render');
 mustContain(ui, 'confirmNonProduction', 'non-production confirmation');
 mustContain(ui, 'confirmReadOnlySafe', 'read-only confirmation');
 mustContain(ui, 'confirmSacrificialWriteNotApproved', 'no sacrificial write confirmation');

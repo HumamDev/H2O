@@ -35,9 +35,13 @@
     statusBtn: 'wbRealTransportWebDavStatusBtn',
     statusBadge: 'wbRealTransportWebDavStatusBadge',
     statusSummary: 'wbRealTransportWebDavStatusSummary',
+    registryPathSource: 'wbRealTransportWebDavRegistryPathSource',
     registryHash: 'wbRealTransportWebDavRegistryHash',
     jsonParses: 'wbRealTransportWebDavJsonParses',
     privateFields: 'wbRealTransportWebDavPrivateFields',
+    credentialMaterialPresent: 'wbRealTransportWebDavCredentialMaterialPresent',
+    credentialInputReceivedThisSave: 'wbRealTransportWebDavCredentialInputReceivedThisSave',
+    credentialMaterialUpdatedThisSave: 'wbRealTransportWebDavCredentialMaterialUpdatedThisSave',
     endpointReady: 'wbRealTransportWebDavEndpointReady',
     reachableCandidate: 'wbRealTransportWebDavReachableCandidate',
     networkAttempted: 'wbRealTransportWebDavNetworkAttempted',
@@ -226,8 +230,12 @@
       +       '<div style="font-weight:650;font-size:13px;margin-bottom:8px">Redacted readiness</div>'
       +       '<div style="' + STATUS_GRID_STYLE + '">'
       +         statusRowHtml('descriptorRegistryRefHash', ID.registryHash)
+      +         statusRowHtml('registry path source', ID.registryPathSource)
       +         statusRowHtml('JSON parses', ID.jsonParses)
       +         statusRowHtml('private fields', ID.privateFields)
+      +         statusRowHtml('credential material present', ID.credentialMaterialPresent)
+      +         statusRowHtml('credential received this prepare', ID.credentialInputReceivedThisSave)
+      +         statusRowHtml('credential updated this prepare', ID.credentialMaterialUpdatedThisSave)
       +         statusRowHtml('endpoint ready', ID.endpointReady)
       +         statusRowHtml('reachable candidate', ID.reachableCandidate)
       +         statusRowHtml('networkAttempted', ID.networkAttempted)
@@ -259,8 +267,12 @@
     }
     setText(ID.statusSummary, ok ? 'Resolver registry is prepared. No probe or write was run.' : 'Resolver setup is blocked. Review required fields and confirmations.');
     setText(ID.registryHash, result && result.descriptorRegistryRefHash);
+    setText(ID.registryPathSource, result && result.registryPathSource);
     setText(ID.jsonParses, yesNo(result && result.jsonParses));
     setText(ID.privateFields, yesNo(result && result.requiredPrivateFieldsPresent));
+    setText(ID.credentialMaterialPresent, yesNo(result && result.credentialMaterialPresent));
+    setText(ID.credentialInputReceivedThisSave, yesNo(result && result.credentialInputReceivedThisSave));
+    setText(ID.credentialMaterialUpdatedThisSave, yesNo(result && result.credentialMaterialUpdatedThisSave));
     setText(ID.endpointReady, yesNo(result && result.endpointNoLongerReservedInvalidDomain));
     setText(ID.reachableCandidate, yesNo(result && result.reachableCandidate));
     setText(ID.networkAttempted, yesNo(result && result.networkAttempted));
