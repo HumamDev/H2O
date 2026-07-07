@@ -339,6 +339,9 @@ pub struct RtWebDavSetupStatusResult {
     pub endpoint_ref_hash: Option<String>,
     pub remote_root_ref_hash: Option<String>,
     pub credential_ref_hash: Option<String>,
+    pub saved_server_url: Option<String>,
+    pub saved_root_path: Option<String>,
+    pub saved_credential_identifier: Option<String>,
     pub json_parses: bool,
     pub required_private_fields_present: bool,
     pub credential_material_present: bool,
@@ -384,6 +387,9 @@ impl RtWebDavSetupStatusResult {
             endpoint_ref_hash: None,
             remote_root_ref_hash: None,
             credential_ref_hash: None,
+            saved_server_url: None,
+            saved_root_path: None,
+            saved_credential_identifier: None,
             json_parses: false,
             required_private_fields_present: false,
             credential_material_present: false,
@@ -600,6 +606,45 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let bytes = input.trim().as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity((bytes.len() / 4) * 3);
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let final_chunk = index == (bytes.len() / 4).saturating_sub(1);
+        let pad2 = chunk[2] == b'=';
+        let pad3 = chunk[3] == b'=';
+        if (pad2 || pad3) && !final_chunk {
+            return None;
+        }
+        let a = base64_value(chunk[0])?;
+        let b = base64_value(chunk[1])?;
+        let c = if pad2 { 0 } else { base64_value(chunk[2])? };
+        let d = if pad3 { 0 } else { base64_value(chunk[3])? };
+        out.push((a << 2) | (b >> 4));
+        if !pad2 {
+            out.push(((b & 0x0f) << 4) | (c >> 2));
+        }
+        if !pad3 {
+            out.push(((c & 0x03) << 6) | d);
+        }
+    }
+    Some(out)
+}
+
 fn build_auth_header_private(identifier: &str, credential_secret: &str) -> String {
     let material = credential_secret.trim();
     let lower = material.to_ascii_lowercase();
@@ -608,6 +653,22 @@ fn build_auth_header_private(identifier: &str, credential_secret: &str) -> Strin
     }
     let pair = format!("{}:{}", identifier.trim(), material);
     format!("Basic {}", base64_encode(pair.as_bytes()))
+}
+
+fn credential_identifier_from_auth_header_private(auth_header_private: &str) -> Option<String> {
+    let value = auth_header_private.trim();
+    if value.len() < 6 || !value[..6].eq_ignore_ascii_case("basic ") {
+        return None;
+    }
+    let decoded = base64_decode(&value[6..])?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (identifier, _) = decoded.split_once(':')?;
+    let identifier = identifier.trim();
+    if identifier.is_empty() {
+        None
+    } else {
+        Some(identifier.to_string())
+    }
 }
 
 fn write_private_registry_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
@@ -640,6 +701,22 @@ fn status_from_registry_bytes(command: &'static str, bytes: &[u8]) -> RtWebDavSe
     result.endpoint_ref_hash = Some(registry.endpoint_ref_hash.clone());
     result.remote_root_ref_hash = Some(registry.remote_root_ref_hash.clone());
     result.credential_ref_hash = Some(registry.credential_ref_hash.clone());
+    result.saved_server_url = registry
+        .endpoint_url_private
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    result.saved_root_path = registry
+        .remote_root_path_private
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    result.saved_credential_identifier = registry
+        .auth_header_private
+        .as_deref()
+        .and_then(credential_identifier_from_auth_header_private);
     result.credential_material_present = registry
         .auth_header_private
         .as_deref()
@@ -1821,6 +1898,18 @@ mod tests {
         assert!(is_hash_ref(&result.endpoint_ref_hash));
         assert!(is_hash_ref(&result.remote_root_ref_hash));
         assert!(is_hash_ref(&result.credential_ref_hash));
+        assert_eq!(
+            result.saved_server_url.as_deref(),
+            Some("https://nonproduction-webdav.local")
+        );
+        assert_eq!(
+            result.saved_root_path.as_deref(),
+            Some("/w3-readonly-root/")
+        );
+        assert_eq!(
+            result.saved_credential_identifier.as_deref(),
+            Some("operator-test-identity")
+        );
         assert!(result.json_parses);
         assert!(result.required_private_fields_present);
         assert!(result.credential_material_present);
@@ -1834,9 +1923,6 @@ mod tests {
         assert!(!result.transport_ready);
         assert!(!result.writes_webdav);
         let serialized = serde_json::to_string(&result).expect("serialize setup result");
-        assert!(!serialized.contains("nonproduction-webdav.local"));
-        assert!(!serialized.contains("w3-readonly-root"));
-        assert!(!serialized.contains("operator-test-identity"));
         assert!(!serialized.contains("credential-material"));
 
         let repeated = prepare_webdav_setup(setup_request());
@@ -1888,6 +1974,18 @@ mod tests {
         std::env::remove_var(DESCRIPTOR_REGISTRY_FILE_ENV);
         assert!(status.ok);
         assert_eq!(status.registry_path_source, "env");
+        assert_eq!(
+            status.saved_server_url.as_deref(),
+            Some("https://nonproduction-webdav.local")
+        );
+        assert_eq!(
+            status.saved_root_path.as_deref(),
+            Some("/w3-readonly-root/")
+        );
+        assert_eq!(
+            status.saved_credential_identifier.as_deref(),
+            Some("operator-test-identity")
+        );
         assert!(status.credential_material_present);
         assert!(!status.credential_input_received_this_save);
         assert!(!status.credential_material_updated_this_save);

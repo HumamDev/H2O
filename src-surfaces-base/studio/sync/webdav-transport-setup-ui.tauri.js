@@ -287,6 +287,38 @@
     return !!(state.lastStatus && state.lastStatus.credentialMaterialPresent === true);
   }
 
+  function hydrateDraftFromStatus(result) {
+    if (!result || typeof result !== 'object' || state.draftDirty) return;
+    var changed = false;
+    function hydrateField(key, value) {
+      if (typeof value !== 'string' || !value) return;
+      if (state.draft[key] !== value) {
+        state.draft[key] = value;
+        changed = true;
+      }
+    }
+    hydrateField('serverUrl', result.savedServerUrl);
+    hydrateField('rootPath', result.savedRootPath);
+    hydrateField('credentialIdentifier', result.savedCredentialIdentifier);
+    if (result.credentialMaterialPresent === true && state.draft.rememberCredential !== true) {
+      state.draft.rememberCredential = true;
+      changed = true;
+    }
+    if (result.ok === true && result.requiredPrivateFieldsPresent === true) {
+      ['confirmNonProduction', 'confirmReadOnly', 'confirmNoSacrificialWrite'].forEach(function (key) {
+        if (state.draft[key] !== true) {
+          state.draft[key] = true;
+          changed = true;
+        }
+      });
+    }
+    if (state.draft.credentialSecret !== '') {
+      state.draft.credentialSecret = '';
+      changed = true;
+    }
+    if (changed) applyDraftToDom();
+  }
+
   function credentialStatusMessage(result) {
     if (!result || typeof result !== 'object') return '-';
     if (result.credentialInputReceivedThisSave === true && result.credentialMaterialUpdatedThisSave === true) {
@@ -381,6 +413,7 @@
 
   function renderStatus(result) {
     state.lastStatus = result || null;
+    hydrateDraftFromStatus(result);
     var ok = !!(result && result.ok);
     var badge = document.getElementById(ID.statusBadge);
     if (badge) {

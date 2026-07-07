@@ -79,6 +79,11 @@ mustContain(rust, 'registry_path_source', 'redacted registry path source output'
 mustContain(rust, 'credential_material_present', 'redacted credential material presence output');
 mustContain(rust, 'credential_input_received_this_save', 'redacted credential input receipt output');
 mustContain(rust, 'credential_material_updated_this_save', 'redacted credential material update output');
+mustContain(rust, 'saved_server_url', 'saved server URL status for reload hydration');
+mustContain(rust, 'saved_root_path', 'saved root path status for reload hydration');
+mustContain(rust, 'saved_credential_identifier', 'saved username status for reload hydration');
+mustContain(rust, 'credential_identifier_from_auth_header_private', 'status must recover username without exposing credential material');
+mustContain(rust, 'split_once(\':\')', 'status must split Basic auth without returning credential material');
 mustContain(rust, 'previous_auth_header_private', 'private credential update comparison');
 mustContain(rust, 'previous_auth_header.as_deref() != Some(auth_header_private.as_str())', 'credential update comparison must stay private');
 mustContain(rust, 'credential_secret.is_none() && previous_auth_header.is_none()', 'setup must require credential only when no saved material exists');
@@ -87,6 +92,9 @@ mustContain(rust, '.or_else(|| previous_auth_header.clone())', 'setup must prese
 mustContain(rust, 'preserved.credential_secret = None;', 'rust tests must cover saved credential reuse');
 mustContain(rust, 'assert!(!preserved_result.credential_input_received_this_save);', 'rust tests must prove reuse does not claim new credential input');
 mustContain(rust, 'assert!(!preserved_result.credential_material_updated_this_save);', 'rust tests must prove reuse does not claim credential update');
+mustContain(rust, 'status.saved_server_url.as_deref()', 'rust tests must prove saved server URL returns for reload hydration');
+mustContain(rust, 'status.saved_root_path.as_deref()', 'rust tests must prove saved folder returns for reload hydration');
+mustContain(rust, 'status.saved_credential_identifier.as_deref()', 'rust tests must prove saved username returns for reload hydration');
 
 assert(count(lib, 'real_transport_capability_probe::h2o_rt_prepare_webdav_setup') === 2,
   'lib.rs: setup command must be registered in debug and release invoke handlers');
@@ -124,6 +132,13 @@ mustContain(ui, 'openSettingsSubtab', 'ui settings subtab API');
 mustContain(ui, 'captureDraft', 'ui draft capture API');
 mustContain(ui, 'captureDraftFromDom', 'ui draft capture helper');
 mustContain(ui, 'applyDraftToDom', 'ui draft restore helper');
+mustContain(ui, 'hydrateDraftFromStatus', 'ui must hydrate form from prepared resolver status after reload');
+mustContain(ui, 'result.savedServerUrl', 'ui must restore saved server URL after reload');
+mustContain(ui, 'result.savedRootPath', 'ui must restore saved folder after reload');
+mustContain(ui, 'result.savedCredentialIdentifier', 'ui must restore saved username after reload');
+mustContain(ui, 'result.credentialMaterialPresent === true && state.draft.rememberCredential !== true', 'ui must auto-check Remember when saved credential exists');
+mustContain(ui, "['confirmNonProduction', 'confirmReadOnly', 'confirmNoSacrificialWrite']", 'ui must restore safety confirmations when resolver is prepared');
+mustContain(ui, "state.draft.credentialSecret = '';", 'ui must keep password token empty after reload hydration');
 mustContain(ui, 'state.draft', 'ui draft state');
 mustContain(ui, 'draftValue(\'serverUrl\')', 'server URL must be draft-backed');
 mustContain(ui, 'draftValue(\'rootPath\')', 'folder must be draft-backed');
