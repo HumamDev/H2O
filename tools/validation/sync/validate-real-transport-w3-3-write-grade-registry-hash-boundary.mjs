@@ -121,13 +121,6 @@ for (const token of [
 }
 
 for (const token of [
-  'h2o_rt_first_write',
-  'first_write',
-]) {
-  mustNotContain(sourceSurface, token, `first-write source token ${token}`);
-}
-
-for (const token of [
   'product_sync_ready: true',
   'transport_ready: true',
   'writes_webdav: true',
@@ -176,7 +169,7 @@ console.log(JSON.stringify({
   writeGradeHash: 'writeGradeRegistryRefHash',
   boundary: 'descriptor-refs-only-excludes-private-material',
   evidenceSafeHashExcludesPrivateMaterial: true,
-  firstWriteCommandExists: false,
+  w33cFirstWriteCommandExisted: false,
   productSyncReady: false,
   transportReady: false,
 }, null, 2));

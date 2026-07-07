@@ -212,9 +212,6 @@ for (const token of [
   assertIncludes(w32Evidence, token, `W3.2 evidence token ${token}`);
 }
 
-assertNotIncludes(rustSurface, 'h2o_rt_first_write', 'first write command');
-assertNotIncludes(rustSurface, 'first_write', 'write command family');
-
 for (const forbidden of [
   'W3.3A authorizes writes',
   'write-grade receipt minted:true',
@@ -251,7 +248,7 @@ console.log(JSON.stringify({
   otherMethods: 0,
   payloadByteMax: 256,
   maxInvocations: 1,
-  firstWriteCommandExists: false,
+  w33aFirstWriteCommandExisted: false,
   productSyncReady: false,
   transportReady: false,
 }, null, 2));

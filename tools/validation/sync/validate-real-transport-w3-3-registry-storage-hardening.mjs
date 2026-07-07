@@ -139,15 +139,6 @@ for (const token of [
 }
 
 for (const token of [
-  'h2o_rt_first_write',
-  'first_write',
-]) {
-  mustNotContain(sourceSurface, token, `source command ${token}`);
-}
-
-for (const token of [
-  'pub fn h2o_rt_first_write',
-  'tauri::command] pub fn first_write',
   'product_sync_ready: true',
   'transport_ready: true',
   'writes_webdav: true',
@@ -192,7 +183,7 @@ console.log(JSON.stringify({
   pathSources: ['app-local', 'env', 'default-private-legacy', 'invalid'],
   legacyPrivateTmpWriteGradeEligible: false,
   ownerPermissionChecksRepresented: true,
-  firstWriteCommandExists: false,
+  w33bFirstWriteCommandExisted: false,
   productSyncReady: false,
   transportReady: false,
 }, null, 2));
