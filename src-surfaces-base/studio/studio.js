@@ -8115,6 +8115,12 @@ async function settingsMountEmbeddedTool(section, subsection){
       return;
     }
     if (section === "sync" && subsection === "webdav") {
+      const existingWebDavPanel = document.getElementById(spec.panelId);
+      if (existingWebDavPanel && existingWebDavPanel.parentElement === host) {
+        existingWebDavPanel.setAttribute("data-settings-hosted", "true");
+        return;
+      }
+      W.H2O?.Studio?.sync?.realTransportWebDavSetupUi?.captureDraft?.();
       host.innerHTML = "";
       const mounted = await spec.open();
       const webDavPanel = document.getElementById(spec.panelId);
