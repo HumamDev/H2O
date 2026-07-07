@@ -17,6 +17,9 @@ const DEFAULT_DESCRIPTOR_REGISTRY_FILE: &str =
     "/private/tmp/h2o-real-transport-w3-live-descriptor-registry.json";
 const APP_LOCAL_DESCRIPTOR_REGISTRY_FILE_NAME: &str =
     "h2o-real-transport-w3-live-descriptor-registry.json";
+const WRITE_GRADE_REGISTRY_REF_SCHEMA: &str =
+    "h2o.studio.transport.write-grade-registry-public-ref.v1";
+const WRITE_GRADE_REGISTRY_HASH_BOUNDARY: &str = "descriptor-refs-only-excludes-private-material";
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
 const READONLY_TIMEOUT_SECONDS: u64 = 8;
 const WEBDAV_PROPFIND_BODY: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:propfind xmlns:D=\"DAV:\"><D:prop><D:resourcetype/></D:prop></D:propfind>";
@@ -347,6 +350,11 @@ pub struct RtWebDavSetupStatusResult {
     pub registry_file_private_permissions: bool,
     pub registry_parent_owner_current_user: bool,
     pub registry_parent_private_permissions: bool,
+    pub registry_owner_ok: bool,
+    pub registry_permission_ok: bool,
+    pub write_grade_registry_ref_hash: Option<String>,
+    pub write_grade_registry_hash_boundary: &'static str,
+    pub private_content_hash_available: bool,
     pub descriptor_registry_ref_hash: Option<String>,
     pub endpoint_ref_hash: Option<String>,
     pub remote_root_ref_hash: Option<String>,
@@ -400,6 +408,11 @@ impl RtWebDavSetupStatusResult {
             registry_file_private_permissions: false,
             registry_parent_owner_current_user: false,
             registry_parent_private_permissions: false,
+            registry_owner_ok: false,
+            registry_permission_ok: false,
+            write_grade_registry_ref_hash: None,
+            write_grade_registry_hash_boundary: WRITE_GRADE_REGISTRY_HASH_BOUNDARY,
+            private_content_hash_available: false,
             descriptor_registry_ref_hash: None,
             endpoint_ref_hash: None,
             remote_root_ref_hash: None,
@@ -873,6 +886,44 @@ fn write_grade_registry_source_candidate(source: &str) -> bool {
     matches!(source, "app-local" | "env")
 }
 
+fn write_grade_registry_ref_hash(registry: &DescriptorRegistry) -> Option<String> {
+    if registry.descriptor_mode.as_deref() != Some("hash-only-redacted")
+        || !is_hash_ref(&Some(registry.endpoint_ref_hash.clone()))
+        || !is_hash_ref(&Some(registry.remote_root_ref_hash.clone()))
+        || !is_hash_ref(&Some(registry.credential_ref_hash.clone()))
+    {
+        return None;
+    }
+    let mut canonical = BTreeMap::new();
+    canonical.insert(
+        "credentialRefHash".to_string(),
+        registry.credential_ref_hash.clone(),
+    );
+    canonical.insert(
+        "descriptorMode".to_string(),
+        "hash-only-redacted".to_string(),
+    );
+    canonical.insert(
+        "endpointRefHash".to_string(),
+        registry.endpoint_ref_hash.clone(),
+    );
+    canonical.insert(
+        "hashBoundary".to_string(),
+        WRITE_GRADE_REGISTRY_HASH_BOUNDARY.to_string(),
+    );
+    canonical.insert(
+        "remoteRootRefHash".to_string(),
+        registry.remote_root_ref_hash.clone(),
+    );
+    canonical.insert(
+        "schema".to_string(),
+        WRITE_GRADE_REGISTRY_REF_SCHEMA.to_string(),
+    );
+    serde_json::to_vec(&canonical)
+        .ok()
+        .map(|bytes| sha256_ref(&bytes))
+}
+
 fn apply_registry_storage_status(
     result: &mut RtWebDavSetupStatusResult,
     path_info: &DescriptorRegistryPathInfo,
@@ -888,11 +939,13 @@ fn apply_registry_storage_status(
             result.registry_parent_private_permissions = parent_has_private_permissions(&metadata);
         }
     }
+    result.registry_owner_ok =
+        result.registry_file_owner_current_user && result.registry_parent_owner_current_user;
+    result.registry_permission_ok =
+        result.registry_file_private_permissions && result.registry_parent_private_permissions;
     result.write_grade_registry_eligible = write_grade_registry_source_candidate(path_info.source)
-        && result.registry_file_owner_current_user
-        && result.registry_file_private_permissions
-        && result.registry_parent_owner_current_user
-        && result.registry_parent_private_permissions;
+        && result.registry_owner_ok
+        && result.registry_permission_ok;
     if path_info.source == "default-private-legacy" {
         result
             .warnings
@@ -915,10 +968,12 @@ fn status_from_registry_bytes(
     );
     apply_registry_storage_status(&mut result, path_info);
     result.descriptor_registry_ref_hash = Some(registry_hash);
+    result.private_content_hash_available = true;
     let Ok(registry) = serde_json::from_slice::<DescriptorRegistry>(bytes) else {
         return result;
     };
     result.json_parses = true;
+    result.write_grade_registry_ref_hash = write_grade_registry_ref_hash(&registry);
     result.endpoint_ref_hash = Some(registry.endpoint_ref_hash.clone());
     result.remote_root_ref_hash = Some(registry.remote_root_ref_hash.clone());
     result.credential_ref_hash = Some(registry.credential_ref_hash.clone());
@@ -2202,6 +2257,12 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.registry_path_source, "env");
         assert!(is_hash_ref(&result.descriptor_registry_ref_hash));
+        assert!(is_hash_ref(&result.write_grade_registry_ref_hash));
+        assert_eq!(
+            result.write_grade_registry_hash_boundary,
+            WRITE_GRADE_REGISTRY_HASH_BOUNDARY
+        );
+        assert!(result.private_content_hash_available);
         assert!(is_hash_ref(&result.endpoint_ref_hash));
         assert!(is_hash_ref(&result.remote_root_ref_hash));
         assert!(is_hash_ref(&result.credential_ref_hash));
@@ -2242,6 +2303,10 @@ mod tests {
             repeated.descriptor_registry_ref_hash,
             result.descriptor_registry_ref_hash
         );
+        assert_eq!(
+            repeated.write_grade_registry_ref_hash,
+            result.write_grade_registry_ref_hash
+        );
         assert_eq!(repeated.credential_ref_hash, result.credential_ref_hash);
 
         let mut changed = setup_request();
@@ -2254,6 +2319,10 @@ mod tests {
         assert_ne!(
             changed_result.descriptor_registry_ref_hash,
             result.descriptor_registry_ref_hash
+        );
+        assert_eq!(
+            changed_result.write_grade_registry_ref_hash,
+            result.write_grade_registry_ref_hash
         );
         assert_eq!(
             changed_result.credential_ref_hash,
@@ -2270,6 +2339,10 @@ mod tests {
         assert_eq!(
             preserved_result.descriptor_registry_ref_hash,
             changed_result.descriptor_registry_ref_hash
+        );
+        assert_eq!(
+            preserved_result.write_grade_registry_ref_hash,
+            changed_result.write_grade_registry_ref_hash
         );
         assert_eq!(
             preserved_result.credential_ref_hash,
@@ -2300,6 +2373,11 @@ mod tests {
             status.descriptor_registry_ref_hash,
             changed_result.descriptor_registry_ref_hash
         );
+        assert_eq!(
+            status.write_grade_registry_ref_hash,
+            changed_result.write_grade_registry_ref_hash
+        );
+        assert!(status.private_content_hash_available);
         assert!(!status.network_attempted);
         assert!(!status.writes_webdav);
         assert!(!status.product_sync_ready);

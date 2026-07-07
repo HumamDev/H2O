@@ -45,6 +45,11 @@
     registryFilePrivate: 'wbRealTransportWebDavRegistryFilePrivate',
     registryParentOwner: 'wbRealTransportWebDavRegistryParentOwner',
     registryParentPrivate: 'wbRealTransportWebDavRegistryParentPrivate',
+    registryOwnerOk: 'wbRealTransportWebDavRegistryOwnerOk',
+    registryPermissionOk: 'wbRealTransportWebDavRegistryPermissionOk',
+    writeGradeRegistryHash: 'wbRealTransportWebDavWriteGradeRegistryHash',
+    writeGradeHashBoundary: 'wbRealTransportWebDavWriteGradeHashBoundary',
+    privateContentHashAvailable: 'wbRealTransportWebDavPrivateContentHashAvailable',
     registryHash: 'wbRealTransportWebDavRegistryHash',
     jsonParses: 'wbRealTransportWebDavJsonParses',
     privateFields: 'wbRealTransportWebDavPrivateFields',
@@ -388,9 +393,13 @@
       +     '<div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
       +       '<div style="font-weight:650;font-size:13px;margin-bottom:8px">Redacted readiness</div>'
       +       '<div style="' + STATUS_GRID_STYLE + '">'
-      +         statusRowHtml('descriptorRegistryRefHash', ID.registryHash)
+      +         statusRowHtml('writeGradeRegistryRefHash', ID.writeGradeRegistryHash)
+      +         statusRowHtml('hash boundary', ID.writeGradeHashBoundary)
+      +         statusRowHtml('private content hash available', ID.privateContentHashAvailable)
       +         statusRowHtml('registry path source', ID.registryPathSource)
       +         statusRowHtml('write-grade registry eligible', ID.writeGradeRegistryEligible)
+      +         statusRowHtml('registry owner ok', ID.registryOwnerOk)
+      +         statusRowHtml('registry permission ok', ID.registryPermissionOk)
       +         statusRowHtml('registry file owner', ID.registryFileOwner)
       +         statusRowHtml('registry file private', ID.registryFilePrivate)
       +         statusRowHtml('registry parent owner', ID.registryParentOwner)
@@ -431,9 +440,14 @@
       badge.style.background = ok ? 'rgba(34,197,94,.18)' : 'rgba(248,113,113,.18)';
     }
     setText(ID.statusSummary, ok ? 'Resolver registry is prepared. No probe or write was run.' : 'Resolver setup is blocked. Review required fields and confirmations.');
-    setText(ID.registryHash, shortHash(result && result.descriptorRegistryRefHash));
+    setText(ID.writeGradeRegistryHash, shortHash(result && result.writeGradeRegistryRefHash));
+    setText(ID.writeGradeHashBoundary, result && result.writeGradeRegistryHashBoundary);
+    setText(ID.privateContentHashAvailable, yesNo(result && result.privateContentHashAvailable));
+    setText(ID.registryHash, yesNo(result && result.privateContentHashAvailable));
     setText(ID.registryPathSource, result && result.registryPathSource);
     setText(ID.writeGradeRegistryEligible, yesNo(result && result.writeGradeRegistryEligible));
+    setText(ID.registryOwnerOk, yesNo(result && result.registryOwnerOk));
+    setText(ID.registryPermissionOk, yesNo(result && result.registryPermissionOk));
     setText(ID.registryFileOwner, yesNo(result && result.registryFileOwnerCurrentUser));
     setText(ID.registryFilePrivate, yesNo(result && result.registryFilePrivatePermissions));
     setText(ID.registryParentOwner, yesNo(result && result.registryParentOwnerCurrentUser));

@@ -77,6 +77,13 @@ mustContain(rust, 'descriptor_ref_hash("credential"', 'credential descriptor sem
 mustContain(rust, 'credential_ref_hash', 'credential ref hash output');
 mustContain(rust, 'registry_path_source', 'redacted registry path source output');
 mustContain(rust, 'write_grade_registry_eligible', 'redacted write-grade registry eligibility output');
+mustContain(rust, 'write_grade_registry_ref_hash', 'evidence-safe write-grade registry ref hash output');
+mustContain(rust, 'WRITE_GRADE_REGISTRY_REF_SCHEMA', 'write-grade registry ref schema');
+mustContain(rust, 'WRITE_GRADE_REGISTRY_HASH_BOUNDARY', 'write-grade registry hash boundary');
+mustContain(rust, 'descriptor-refs-only-excludes-private-material', 'write-grade registry hash boundary value');
+mustContain(rust, 'private_content_hash_available', 'private exact-file hash availability output');
+mustContain(rust, 'registry_owner_ok', 'aggregate registry owner status output');
+mustContain(rust, 'registry_permission_ok', 'aggregate registry permission status output');
 mustContain(rust, 'registry_file_owner_current_user', 'redacted registry file owner output');
 mustContain(rust, 'registry_file_private_permissions', 'redacted registry file permission output');
 mustContain(rust, 'registry_parent_owner_current_user', 'redacted registry parent owner output');
@@ -199,6 +206,11 @@ mustContain(ui, 'state.credentialVisible = false;', 'credential reveal state res
 mustContain(ui, 'Saved credentials are not revealed.', 'show hide must not reveal saved stored credential');
 mustContain(ui, 'registry path source', 'redacted registry path source status');
 mustContain(ui, 'write-grade registry eligible', 'redacted write-grade registry eligibility status');
+mustContain(ui, 'writeGradeRegistryRefHash', 'write-grade registry ref hash status');
+mustContain(ui, 'hash boundary', 'write-grade hash boundary status');
+mustContain(ui, 'private content hash available', 'private exact-file hash availability status');
+mustContain(ui, 'registry owner ok', 'aggregate registry owner status');
+mustContain(ui, 'registry permission ok', 'aggregate registry permission status');
 mustContain(ui, 'registry file owner', 'redacted registry file owner status');
 mustContain(ui, 'registry file private', 'redacted registry file permission status');
 mustContain(ui, 'registry parent owner', 'redacted registry parent owner status');
@@ -208,6 +220,11 @@ mustContain(ui, 'credential received this prepare', 'redacted credential input r
 mustContain(ui, 'credential updated this prepare', 'redacted credential update status');
 mustContain(ui, 'result && result.registryPathSource', 'registry path source render');
 mustContain(ui, 'result && result.writeGradeRegistryEligible', 'write-grade registry eligibility render');
+mustContain(ui, 'shortHash(result && result.writeGradeRegistryRefHash)', 'visible write-grade registry hash must be shortened');
+mustContain(ui, 'result && result.writeGradeRegistryHashBoundary', 'write-grade hash boundary render');
+mustContain(ui, 'result && result.privateContentHashAvailable', 'private exact-file hash availability render');
+mustContain(ui, 'result && result.registryOwnerOk', 'registry owner aggregate render');
+mustContain(ui, 'result && result.registryPermissionOk', 'registry permission aggregate render');
 mustContain(ui, 'result && result.registryFileOwnerCurrentUser', 'registry file owner render');
 mustContain(ui, 'result && result.registryFilePrivatePermissions', 'registry file permission render');
 mustContain(ui, 'result && result.registryParentOwnerCurrentUser', 'registry parent owner render');
@@ -215,7 +232,7 @@ mustContain(ui, 'result && result.registryParentPrivatePermissions', 'registry p
 mustContain(ui, 'result && result.credentialMaterialPresent', 'credential material presence render');
 mustContain(ui, 'result && result.credentialInputReceivedThisSave', 'credential input receipt render');
 mustContain(ui, 'result && result.credentialMaterialUpdatedThisSave', 'credential update render');
-mustContain(ui, 'shortHash(result && result.descriptorRegistryRefHash)', 'visible registry hash must be shortened');
+mustNotContain(ui, 'shortHash(result && result.descriptorRegistryRefHash)', 'UI must not display secret-derived exact registry hash');
 mustContain(ui, 'overflow-wrap:anywhere', 'status values must wrap');
 mustContain(ui, 'minmax(0,1fr)', 'status grid must prevent overflow');
 mustContain(ui, 'HASH_VALUE_STYLE', 'advanced hash values must have dedicated wrapping');
