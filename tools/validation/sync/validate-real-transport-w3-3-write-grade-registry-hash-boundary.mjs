@@ -123,7 +123,6 @@ for (const token of [
 for (const token of [
   'product_sync_ready: true',
   'transport_ready: true',
-  'writes_webdav: true',
   'enqueues_relay: true',
   'full_bundle_v3_started: true',
   'mints_export_id: true',
@@ -170,6 +169,7 @@ console.log(JSON.stringify({
   boundary: 'descriptor-refs-only-excludes-private-material',
   evidenceSafeHashExcludesPrivateMaterial: true,
   w33cFirstWriteCommandExisted: false,
+  currentW34bExecutorMaySetWriteFlagAfterCeremony: true,
   productSyncReady: false,
   transportReady: false,
 }, null, 2));
