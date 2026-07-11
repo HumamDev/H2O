@@ -313,6 +313,107 @@
     msgEl.style.setProperty('--h2o-at-wash-glow', c);
   }
 
+  // A title-list stack rehosts the real title bar outside its assistant
+  // message, so inherited --h2o-at-wash-* variables no longer reach it.
+  // Washer remains the state/color owner and projects the same resolved
+  // values directly onto that single visible bar instance.
+  function resolveWashState(primaryAId) {
+    const rawId = String(primaryAId || '').trim();
+    const id = resolvePrimaryAId(rawId);
+    const candidateIds = new Set([id, rawId].filter(Boolean));
+    try {
+      const turnId = String(
+        W?.H2O_MM_turnIdByAId?.get?.(rawId)
+        || W?.H2O_MM_turnIdByAId?.get?.(id)
+        || ''
+      ).trim();
+      if (turnId) {
+        candidateIds.add(turnId);
+        const turn = W?.H2O_MM_turnById?.get?.(turnId) || null;
+        candidateIds.add(String(turn?.primaryAId || '').trim());
+        candidateIds.add(String(turn?.answerId || '').trim());
+      }
+    } catch {}
+    try {
+      const rt = W?.H2O?.turnRuntime || null;
+      const record = rt?.getTurnRecordByAId?.(rawId)
+        || rt?.getTurnRecordByAId?.(id)
+        || rt?.getTurnRecordByTurnId?.(rawId)
+        || null;
+      candidateIds.add(String(record?.primaryAId || '').trim());
+      candidateIds.add(String(record?.turnId || '').trim());
+      for (const answerId of Array.isArray(record?.answerIds) ? record.answerIds : []) {
+        candidateIds.add(String(answerId || '').trim());
+      }
+      for (const aliasId of Array.isArray(record?._aliasIds) ? record._aliasIds : []) {
+        candidateIds.add(String(aliasId || '').trim());
+      }
+    } catch {}
+    let rawName = null;
+    let matchedId = '';
+    for (const candidateId of candidateIds) {
+      if (!candidateId) continue;
+      const candidateName = washMap?.[candidateId];
+      if (isValidWashName(candidateName)) {
+        rawName = candidateName;
+        matchedId = candidateId;
+        break;
+      }
+    }
+    const colorName = isValidWashName(rawName) ? String(rawName).trim().toLowerCase() : null;
+    const color = colorName ? (COLOR_BY_NAME?.[colorName] || null) : null;
+    const isGold = !!color && (colorName === 'gold' || String(color).toUpperCase() === '#FFD700');
+    const paintBg = color ? (isGold ? '#E6C200' : color) : '';
+    const textColor = paintBg ? bestTextColor(paintBg) : '';
+    return { id, matchedId, candidateIds: Array.from(candidateIds).filter(Boolean), colorName: color ? colorName : null, color, paintBg, textColor, isGold };
+  }
+
+  function applyTitleBarWash(primaryAId, barEl) {
+    if (!barEl?.style) return { ok: false, status: 'bar-missing', id: '', colorName: null };
+    const state = resolveWashState(primaryAId);
+    const { id, colorName, color, paintBg, textColor, isGold } = state;
+    const clear = () => {
+      const hadProjection = !!(
+        barEl.hasAttribute?.('data-h2o-title-wash')
+        || barEl.hasAttribute?.('data-h2o-title-wash-id')
+        || barEl.hasAttribute?.('data-h2o-wash')
+        || barEl.hasAttribute?.('data-cgxui-wash')
+        || barEl.style.getPropertyValue('--h2o-at-wash-color')
+        || barEl.style.getPropertyValue('--h2o-at-wash-text')
+        || barEl.style.getPropertyValue('--h2o-at-wash-glow')
+      );
+      try { barEl.removeAttribute('data-h2o-title-wash'); } catch {}
+      try { barEl.removeAttribute('data-h2o-title-wash-id'); } catch {}
+      try { barEl.removeAttribute('data-h2o-wash'); } catch {}
+      try { barEl.removeAttribute('data-cgxui-wash'); } catch {}
+      try { barEl.style.removeProperty('--h2o-at-wash-color'); } catch {}
+      try { barEl.style.removeProperty('--h2o-at-wash-text'); } catch {}
+      try { barEl.style.removeProperty('--h2o-at-wash-glow'); } catch {}
+      return hadProjection;
+    };
+    if (!id || !colorName) {
+      const changed = clear();
+      return { ok: true, status: changed ? 'clear' : 'noop', id, colorName: null };
+    }
+    let changed = false;
+    const setAttr = (name, value) => {
+      if (barEl.getAttribute(name) === value) return;
+      try { barEl.setAttribute(name, value); changed = true; } catch {}
+    };
+    const setStyle = (name, value) => {
+      if (barEl.style.getPropertyValue(name) === value) return;
+      try { barEl.style.setProperty(name, value); changed = true; } catch {}
+    };
+    setAttr('data-h2o-title-wash', colorName);
+    setAttr('data-h2o-title-wash-id', id);
+    setAttr('data-h2o-wash', colorName);
+    setAttr('data-cgxui-wash', '1');
+    setStyle('--h2o-at-wash-color', paintBg);
+    setStyle('--h2o-at-wash-text', textColor);
+    setStyle('--h2o-at-wash-glow', color);
+    return { ok: true, status: changed ? 'painted' : 'noop', id, matchedId: state.matchedId, colorName, color, paintBg, textColor, isGold };
+  }
+
   // -------- Paint MiniMap button (copied from MiniMap v12.5.21) --------
   function applyMiniMapWash(primaryId, btn) {
     if (!btn) return;
@@ -354,11 +455,23 @@
     const raw = String(anyId || '').trim();
     if (!raw) return '';
     try {
-      if (W?.H2O_MM_turnIdByAId?.has?.(raw)) return raw;
+      const turnId = String(W?.H2O_MM_turnIdByAId?.get?.(raw) || '').trim();
+      const turn = turnId ? (W?.H2O_MM_turnById?.get?.(turnId) || null) : null;
+      const primary = String(turn?.primaryAId || turn?.answerId || '').trim();
+      if (primary) return primary;
     } catch {}
     try {
       const t = W?.H2O_MM_turnById?.get?.(raw) || null;
       const pid = String(t?.primaryAId || '').trim();
+      if (pid) return pid;
+    } catch {}
+    try {
+      const rt = W?.H2O?.turnRuntime || null;
+      const record = rt?.getTurnRecordByAId?.(raw)
+        || rt?.getTurnRecordByTurnId?.(raw)
+        || rt?.getTurnRecordByQId?.(raw)
+        || null;
+      const pid = String(record?.primaryAId || record?.answerId || '').trim();
       if (pid) return pid;
     } catch {}
     return raw;
@@ -394,8 +507,13 @@
     const id = resolvePrimaryAId(primaryAId);
     if (!id) return;
     const msgEl = findAnswerElById(id);
-    if (!msgEl) return;
-    applyAnswerWash(msgEl, colorName, !!colorName);
+    if (msgEl) applyAnswerWash(msgEl, colorName, !!colorName);
+    try {
+      for (const bar of document.querySelectorAll('[data-cgxui="atns-answer-title"][data-answer-id]')) {
+        const barId = String(bar.getAttribute('data-answer-id') || '').trim();
+        if (resolvePrimaryAId(barId) === id) applyTitleBarWash(id, bar);
+      }
+    } catch {}
   }
 
   function restoreWashedAnswerById(anyId) {
@@ -809,6 +927,7 @@
     getWashMap: () => washMap,
     getColorByName: () => COLOR_BY_NAME,
     isValid: (name) => isValidWashName(name),
+    resolveForId: (primaryAId) => resolveWashState(String(primaryAId || '').trim()),
 
     // Persistence
     save: () => saveWashMap(),
@@ -816,6 +935,7 @@
     // Paint
     applyToMiniBtn: (primaryAId, btnEl) => applyMiniMapWash(String(primaryAId || '').trim(), btnEl),
     applyToAnswerEl: (answerEl, colorName, on = true) => applyAnswerWash(answerEl, colorName, !!on),
+    applyToTitleBar: (primaryAId, barEl) => applyTitleBarWash(String(primaryAId || '').trim(), barEl),
 
     // UI
     openPalette: (pointerEvent, targetPrimaryAId, anchorBtnEl = null) => {
