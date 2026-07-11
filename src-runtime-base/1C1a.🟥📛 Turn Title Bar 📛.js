@@ -234,6 +234,8 @@
 
   STATE_.titles = STATE_.titles || {};
   STATE_.collapsed = STATE_.collapsed || new Set(); // NEW: track collapsed answer ids
+  STATE_.titleIntentLastApplied = STATE_.titleIntentLastApplied || new Map();
+  STATE_.visitResetPending = STATE_.visitResetPending || false;
 
   STATE_.clean = STATE_.clean || {
     mo: null,
@@ -304,6 +306,92 @@
 
   const ENGINE_getUnmountApi = () => {
     try { return W.top?.H2O?.UM?.nmntmssgs?.api || W.H2O?.UM?.nmntmssgs?.api || null; } catch { return null; }
+  };
+
+  const TITLE_INTENT_API = () => {
+    try {
+      return W.top?.H2O?.ChatPageTitleIntent?.api
+        || W.H2O?.ChatPageTitleIntent?.api
+        || null;
+    } catch { return null; }
+  };
+
+  const TITLE_INTENT_isActiveDesired = (desired = null) => {
+    return !!desired && Number(desired.rev || 0) > 0
+      && (desired.source === 'page-intent' || desired.source === 'manual');
+  };
+
+  const TITLE_INTENT_projectionMatches = (bar, desired = null) => {
+    if (!bar || !desired) return false;
+    return String(bar.getAttribute?.('data-h2o-title-desired') || '') === String(desired.state || '')
+      && String(bar.getAttribute?.('data-h2o-title-state-source') || '') === String(desired.source || '')
+      && Number(bar.getAttribute?.('data-h2o-title-rev') || 0) === Math.max(0, Number(desired.rev || 0) || 0);
+  };
+
+  const TITLE_INTENT_actualState = (msgEl = null, bar = null) => {
+    if (!msgEl || !bar) return null;
+    const msgCollapsed = UTIL_getAttr(msgEl, ATTR_.COLLAPSED) === '1';
+    const barCollapsed = String(UTIL_getAttr(bar, ATTR_.CGXUI_STATE) || '').split(/\s+/).includes('collapsed');
+    return (msgCollapsed || barCollapsed) ? 'collapsed' : 'expanded';
+  };
+
+  const TITLE_INTENT_stampProjection = (bar, answerId, desired) => {
+    if (!bar || !answerId || !desired) return false;
+    try {
+      bar.setAttribute('data-h2o-title-answer-id', String(answerId));
+      if (desired.page != null) bar.setAttribute('data-h2o-title-page', String(desired.page));
+      else bar.removeAttribute('data-h2o-title-page');
+      bar.setAttribute('data-h2o-title-desired', String(desired.state || 'expanded'));
+      bar.setAttribute('data-h2o-title-state-source', String(desired.source || 'default'));
+      bar.setAttribute('data-h2o-title-rev', String(Math.max(0, Number(desired.rev || 0) || 0)));
+      bar.setAttribute('data-h2o-title-hydrated', '1');
+      return true;
+    } catch { return false; }
+  };
+
+  const TITLE_INTENT_applyProjection = (answerId, msgEl = null, bar = null, opts = {}) => {
+    const id = API_AT_normalizeAnswerId(answerId || DOM_getAnswerId(msgEl));
+    if (!id) return null;
+    const api = TITLE_INTENT_API();
+    if (!api || typeof api.resolveDesiredTitleState !== 'function') return null;
+    // Central gate: O(1) cached check with zero storage IO. This runs on hot
+    // paths (mutation reconcile, per-bar sync) thousands of times during
+    // chat-open hydration — while no page intent or override exists it must
+    // return before doing ANY bridge resolution or DOM work. A missing or
+    // failing gate means an older bridge — treat as inactive, never as "go".
+    try { if (api.isTitleIntentEngineActive?.() !== true) return null; } catch { return null; }
+    let desired = null;
+    try { desired = api.resolveDesiredTitleState(id); } catch { desired = null; }
+    if (!desired) return null;
+    if (!TITLE_INTENT_isActiveDesired(desired)) return desired;
+    const liveMsgEl = msgEl || API_AT_getMessageEl(id);
+    const liveBar = bar || API_AT_getBar(id);
+    const applyKey = `${id}:${desired.state}:${desired.source}:${Math.max(0, Number(desired.rev || 0) || 0)}`;
+    const actualState = TITLE_INTENT_actualState(liveMsgEl, liveBar);
+    if (actualState === desired.state
+      && TITLE_INTENT_projectionMatches(liveBar, desired)
+      && STATE_.titleIntentLastApplied.get(id) === applyKey) {
+      return desired;
+    }
+    TITLE_INTENT_stampProjection(liveBar, id, desired);
+    if (!liveMsgEl || !liveBar) return desired;
+    if (actualState === desired.state) {
+      STATE_.titleIntentLastApplied.set(id, applyKey);
+      return desired;
+    }
+    const collapsed = String(desired.state || '') === 'collapsed';
+    DOM_applyCollapseState(liveMsgEl, liveBar, collapsed, opts?.animate === true);
+    STATE_.titleIntentLastApplied.set(id, applyKey);
+    return desired;
+  };
+
+  const TITLE_INTENT_recordManual = (answerId, collapsed, source = 'answer-title') => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return false;
+    try {
+      const api = TITLE_INTENT_API();
+      return !!api?.recordManualTitleOverride?.(id, collapsed ? 'collapsed' : 'expanded', { source });
+    } catch { return false; }
   };
 
   const ENGINE_readUnmountCollapsed = (answerId, fallback = null, opts = {}) => {
@@ -675,6 +763,35 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_isPerfProbeLine = (line) => /__oai_(?:logHTML|logTTI|SSR_HTML|SSR_TTI)/.test(String(line || ''));
 
+  // Layout contract: one title shell belongs to one complete Q+A turn. The
+  // shell stays visible as the restore handle; collapse covers the question,
+  // answer body, and related answer chrome. Page dividers/title-list logic must
+  // anchor before this full turn and must not create NO ANSWER shells for the
+  // question half of an answered turn.
+  const DOM_isNoAnswerTitleBar = (bar = null) => String(bar?.getAttribute?.('data-at-no-answer') || '').trim() === '1';
+
+  const DOM_removeNoAnswerTitleBars = (root = null) => {
+    if (!root?.querySelectorAll) return 0;
+    let removed = 0;
+    try {
+      for (const bar of Array.from(root.querySelectorAll(`${SEL_.OWNED_BAR_ANY}[data-at-no-answer="1"]`))) {
+        try { bar.remove(); removed += 1; } catch {}
+      }
+      root.removeAttribute?.('data-cgxui-chat-page-no-answer');
+      root.removeAttribute?.('data-cgxui-chat-page-no-answer-hidden');
+      root.removeAttribute?.('data-cgxui-chat-page-no-answer-question-hidden');
+    } catch {}
+    return removed;
+  };
+
+  const DOM_removePairedNoAnswerTitleBars = (msgEl = null) => {
+    if (!msgEl) return 0;
+    let removed = 0;
+    try { removed += DOM_removeNoAnswerTitleBars(DOM_getAnswerTurnHost(msgEl)); } catch {}
+    try { removed += DOM_removeNoAnswerTitleBars(DOM_getQuestionTurnHost(msgEl)); } catch {}
+    return removed;
+  };
+
   const DOM_sanitizeAnswerText = (rawText) => {
     const lines = String(rawText || '')
       .split(/\r?\n/)
@@ -750,33 +867,74 @@ No quotes, no emojis, no numbering. Just the title text.`;
       }
     } catch {}
 
-    try {
-      const turnEl = msgEl?.closest?.(SEL_.TURN);
-      const turnsRoot = D.querySelector(SEL_.TURNS_ROOT) || turnEl?.parentElement;
-      if (turnEl && turnsRoot) {
-        const turns = Array.from(turnsRoot.querySelectorAll(SEL_.TURN));
-        const idx = turns.indexOf(turnEl);
-        if (idx >= 0) return idx + 1;
-      }
-    } catch {}
-
-    try {
-      const answers = DOM_getAssistantMessages();
-      const idx = answers.indexOf(msgEl);
-      if (idx >= 0) return idx + 1;
-    } catch {}
-
     return 0;
   };
 
   const DOM_selScoped = (uiToken) => `[${ATTR_.CGXUI}="${uiToken}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`;
 
-  const DOM_ensureTitleBar = (msgEl) => {
-    const S_BAR = DOM_selScoped(UI_.BAR);
-    let existing = null;
-    try { existing = msgEl.querySelector(`:scope > ${S_BAR}`); } catch {}
-    if (existing) return existing;
+  const DOM_resolvePrimaryAnswerId = (answerId) => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return '';
+    try {
+      const rt = W.H2O?.turnRuntime || null;
+      const record = rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null;
+      const primary = API_AT_normalizeAnswerId(record?.primaryAId || record?.answerId || '');
+      if (primary) return primary;
+    } catch {}
+    try {
+      const primary = API_AT_normalizeAnswerId(W.H2O?.turn?.getPrimaryAIdByAId?.(id) || '');
+      if (primary) return primary;
+    } catch {}
+    return id;
+  };
 
+  const DOM_resolveTurnNumberByAnswerId = (answerId) => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return 0;
+    try {
+      const rt = W.H2O?.turnRuntime || null;
+      const record = rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null;
+      const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+      if (turnNo) return turnNo;
+    } catch {}
+    return 0;
+  };
+
+  // A title bar relocated into a page title-bar stack (Thread Pages
+  // Controller) is still THE bar for its answer. Lookups must find it there
+  // and must NOT re-home it or create a duplicate inside the message element
+  // while the stack owns its placement.
+  const DOM_findStackedBarByAnswerId = (answerId) => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id) return null;
+    try {
+      const direct = D.querySelector(`[${ATTR_.CGXUI}="${UI_.BAR}"][data-answer-id="${CSS.escape(id)}"][data-h2o-in-title-stack]`);
+      if (direct) return direct;
+    } catch {}
+    // Hydration aliases may differ from the canonical answer id stored in the
+    // page ledger. Resolve identity before allowing DOM_ensureTitleBar to
+    // create a second flow bar and replace the visible stacked instance.
+    if (!D.querySelector('[data-cgxui="chat-page-title-list-synth"]')) return null;
+    const primary = DOM_resolvePrimaryAnswerId(id);
+    const turnNo = DOM_resolveTurnNumberByAnswerId(id);
+    try {
+      for (const bar of D.querySelectorAll(`[${ATTR_.CGXUI}="${UI_.BAR}"][data-h2o-in-title-stack]`)) {
+        if (bar.hasAttribute?.(ATTR_.NO_ANSWER || 'data-at-no-answer')) continue;
+        const barId = API_AT_normalizeAnswerId(
+          bar.getAttribute('data-answer-id') || bar.getAttribute('data-h2o-stack-key') || ''
+        );
+        if (barId && DOM_resolvePrimaryAnswerId(barId) === primary) return bar;
+        const barTurnNo = Math.max(0, Number(bar.getAttribute('data-h2o-stack-turn-no') || bar.getAttribute('data-h2o-turn-num') || 0) || 0);
+        if (turnNo && barTurnNo === turnNo) return bar;
+      }
+    } catch {}
+    return null;
+  };
+
+  // Bare bar skeleton — the ONE structural factory for answer title bars.
+  // Used by in-flow ensure AND by the detached-bar API so a stacked bar for
+  // an unhydrated turn is the exact same component, not an imitation.
+  const DOM_buildBarSkeleton = () => {
     const bar = D.createElement('div');
     UTIL_setAttr(bar, ATTR_.CGXUI_OWNER, SkID);
     UTIL_setAttr(bar, ATTR_.CGXUI, UI_.BAR);
@@ -810,12 +968,135 @@ No quotes, no emojis, no numbering. Just the title text.`;
     bar.appendChild(label);
     bar.appendChild(text);
     bar.appendChild(icon);
+    return bar;
+  };
+
+  const DOM_ensureTitleBar = (msgEl) => {
+    const S_BAR = DOM_selScoped(UI_.BAR);
+    let existing = null;
+    DOM_removePairedNoAnswerTitleBars(msgEl);
+    // Identity wiring must NOT depend on the title pipeline. After native
+    // rehydration a bar can be ensured before/without any title pass, and a
+    // hydration race can leave DOM_getAnswerId(msgEl) empty on the one pass
+    // that did run — producing a permanently unwired bar: no data-answer-id
+    // (ledger lookups return []), no dblclick collapse toggle (visible
+    // gesture dead) while the collapse ledger still holds the uuid. Ensure
+    // passes repeat, so wiring here self-heals as soon as the id resolves.
+    // All three wiring calls are idempotent (_collapseWired / editable-state
+    // guards), so re-invoking per pass is free.
+    const wireBarIdentity = (bar) => {
+      if (!bar) return bar;
+      try {
+        const wireId = DOM_getAnswerId(msgEl);
+        if (wireId) {
+          UTIL_setAttr(bar, 'data-answer-id', wireId);
+          DOM_enableTitleEditing(bar, wireId);
+          DOM_enableCollapseToggle(bar, msgEl, wireId);
+          // Washer/gold parity (§4): a rebuilt bar loses its wash paint;
+          // re-project through the SAME 1A2a executor the title-list rows
+          // use. Attr-presence guard keeps this a no-op on painted bars.
+          try {
+            if (!String(bar.getAttribute('data-h2o-title-wash') || '').trim()) {
+              const wash = W.top?.H2O?.MM?.wash || W.H2O?.MM?.wash || null;
+              wash?.applyToTitleBar?.(wireId, bar);
+            }
+          } catch {}
+          // Phase 3c — collapsed-state REPLAY (MECHANISMS_RULES §4 Same
+          // Collapse Authority Rule): the engine ledger is the one collapse
+          // truth for BOTH individual title double-click and Page Circle
+          // mass collapse. Native rehydration rebuilds the body/bar
+          // expanded; if the ledger still says collapsed, re-project
+          // collapsed onto THIS live pair. Done here — not via getBar
+          // lookups — so a stale duplicate/stacked bar can never absorb the
+          // replay meant for the visible one. Pure DOM projection: the UM
+          // record/fragment stays untouched, and a later expand flows
+          // through the Phase 3 hydration guard as usual.
+          //
+          // The skip-condition checks the LIVE pair, never a one-shot flag:
+          // ensure can run before native finishes hydrating the body, and
+          // hydration can also finish without ever re-triggering ensure
+          // (TIME_queueProcessAnswer skips seen ids). So replay whenever the
+          // ledger says collapsed but the bar token OR the body disagrees;
+          // DOM_applyCollapseState is idempotent on already-folded elements.
+          // The repair loop runs the same convergence check on its 5s tick
+          // as the trigger-independent safety net.
+          if (ENGINE_isUnmountEngineMode() && !STATE_.visitResetPending) {
+            let needsReplay = false;
+            try {
+              const barCollapsed = String(UTIL_getAttr(bar, ATTR_.CGXUI_STATE) || '')
+                .split(/\s+/).includes('collapsed');
+              const bodyUnfolded = DOM_getAnswerBody(msgEl)
+                .some((el) => String(el?.style?.maxHeight || '') !== '0px');
+              needsReplay = !barCollapsed || bodyUnfolded;
+            } catch {}
+            if (needsReplay
+              && ENGINE_readUnmountTitleShellCollapsed(wireId, false) === true) {
+              DOM_applyCollapseState(msgEl, bar, true, false);
+            }
+          }
+        }
+      } catch {}
+      return bar;
+    };
+    // Stack-relocated bar wins: reuse it in place (title/label/editing wiring
+    // all applies to it there) and clear any duplicate created inside the
+    // message element before the stack adopted the bar. This return path
+    // MUST wire like every other one: a detached-origin stack row has
+    // editing but no collapse toggle, and returning it bare left the visible
+    // bar gesture-dead in flow after the stack released it. In stack context
+    // the container's capture-phase dblclick handler suppresses the bar's
+    // own listener by design, so wiring here changes nothing for list rows.
+    try {
+      const aId = DOM_getAnswerId(msgEl);
+      const stacked = aId ? DOM_findStackedBarByAnswerId(aId) : null;
+      if (stacked) {
+        for (const bar of Array.from(msgEl.querySelectorAll(S_BAR))) {
+          if (bar === stacked || DOM_isNoAnswerTitleBar(bar)) continue;
+          try { bar.remove(); } catch {}
+        }
+        // A detached factory row becomes the real hydrated bar in place. Do
+        // not swap the node: preserve stack identity, washer, and open state.
+        try { stacked.removeAttribute('data-h2o-detached-title-bar'); } catch {}
+        try { stacked.setAttribute('data-answer-id', aId); } catch {}
+        return wireBarIdentity(stacked);
+      }
+    } catch {}
+    try {
+      const bars = Array.from(msgEl.querySelectorAll(S_BAR));
+      const answerBars = bars.filter((bar) => !DOM_isNoAnswerTitleBar(bar));
+      // Dedup survivor preference: a bar that already carries its identity
+      // (wired, possibly holding user edits) beats a fresh unwired skeleton —
+      // after native rehydration both can coexist briefly and keeping the
+      // skeleton stranded the gesture wiring.
+      existing = answerBars.find((bar) => bar.getAttribute('data-answer-id')) || answerBars[0] || null;
+      for (const bar of bars) {
+        if (bar === existing) continue;
+        try { bar.remove(); } catch {}
+      }
+      if (existing && existing.parentElement !== msgEl) {
+        msgEl.insertBefore(existing, msgEl.firstElementChild || null);
+      }
+    } catch {}
+    if (existing) return wireBarIdentity(existing);
+
+    const bar = DOM_buildBarSkeleton();
 
     const firstChild = msgEl.firstElementChild;
     if (firstChild) msgEl.insertBefore(bar, firstChild);
     else msgEl.appendChild(bar);
 
-    return bar;
+    return wireBarIdentity(bar);
+  };
+
+  const DOM_isPlaceholderTitle = (value) => {
+    const text = UTIL_textTrim(value).replace(/\s+/g, ' ');
+    return !text || /^(?:…|\.{2,}|untitled answer|answer(?:\s+\d+)?|\d+)$/i.test(text);
+  };
+
+  const DOM_getMeaningfulTitleFromBar = (bar) => {
+    const textEl = bar?.querySelector?.(DOM_selScoped(UI_.TEXT)) || null;
+    const text = UTIL_textTrim(textEl?.textContent || '');
+    return DOM_isPlaceholderTitle(text) ? '' : text;
   };
 
   const DOM_setTitleOnAnswer = (msgEl, title) => {
@@ -842,8 +1123,16 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_enableTitleEditing = (bar, answerId) => {
     if (!answerId) return;
-    if (UTIL_getAttr(bar, ATTR_.CGXUI_STATE) === 'editable') return;
-    UTIL_setAttr(bar, ATTR_.CGXUI_STATE, 'editable');
+    // Wired-guard by TOKEN, not exact match: a collapsed bar reads
+    // "collapsed editable", so an exact-match guard fell through and the
+    // unconditional overwrite below silently dropped the 'collapsed' token —
+    // a bar-only expand that left msgEl data-at-collapsed="1" behind (the §4
+    // forbidden split state) and re-attached the edit listeners on every
+    // pass. Merge tokens instead; this writer must never remove state it
+    // does not own.
+    const stateTokens = String(UTIL_getAttr(bar, ATTR_.CGXUI_STATE) || '').split(/\s+/).filter(Boolean);
+    if (stateTokens.includes('editable')) return;
+    UTIL_setAttr(bar, ATTR_.CGXUI_STATE, stateTokens.concat('editable').join(' '));
 
     const span = bar.querySelector(DOM_selScoped(UI_.TEXT));
     if (!span) return;
@@ -892,14 +1181,30 @@ No quotes, no emojis, no numbering. Just the title text.`;
       if (textEl?.isContentEditable) return;
       clearPendingEdit();
       try { e.stopPropagation(); e.preventDefault(); } catch {}
+      // Resolve the LIVE pair at event time, never trust the wire-time
+      // closure: native rehydration can replace the message element while
+      // this bar (and this closure) survives — _collapseWired then pins a
+      // detached msgEl here forever, making the legacy fallback toggle an
+      // invisible no-op on a dead node and handing intent projection a
+      // stale pair. The id prefers the bar's current stamp because alias
+      // repair may have upgraded it after wiring; the engine router is
+      // id-based either way.
+      const liveId = API_AT_normalizeAnswerId(bar.getAttribute?.('data-answer-id')) || answerId;
+      const liveMsgEl = (msgEl && msgEl.isConnected) ? msgEl : (API_AT_getMessageEl(liveId) || msgEl);
       const router = W.top?.H2O?.CM?.chtmech?.api || W.H2O?.CM?.chtmech?.api || null;
       const routed = router?.routeAnswerTitleDblClick?.({
-        answerId,
+        answerId: liveId,
         bar,
-        msgEl,
+        msgEl: liveMsgEl,
       });
-      if (routed?.handled === true) return;
-      DOM_toggleCollapse(msgEl, bar, answerId);
+      if (routed?.handled === true) {
+        const action = String(routed?.action || '');
+        if (/collapse-by-id|collapse$/i.test(action)) TITLE_INTENT_recordManual(liveId, true, 'answer-title');
+        else if (/expand-by-id|expand$/i.test(action)) TITLE_INTENT_recordManual(liveId, false, 'answer-title');
+        TITLE_INTENT_applyProjection(liveId, liveMsgEl, bar, { animate: false });
+        return;
+      }
+      DOM_toggleCollapse(liveMsgEl, bar, liveId);
     };
 
     // Use native dblclick (most reliable cross-browser)
@@ -1462,6 +1767,35 @@ ${S_BAR}:active{
   const TIME_startRepairLoop = () => {
     const intId = setInterval(() => {
       try {
+        // Phase 3c — steady-state collapse convergence (§4 Same Collapse
+        // Authority Rule). Every event-driven replay can fire before native
+        // rehydration is complete: the assistant node may not carry
+        // data-message-id yet when the added-node mapper runs, the body can
+        // hydrate after the last childList mutation, and processed ids are
+        // never re-queued — leaving a ledger-collapsed answer visibly
+        // expanded with no remaining trigger. This tick re-projects
+        // collapsed onto the LIVE bar+msgEl pair (closest-based — no getBar
+        // indirection a stale duplicate could absorb) until the DOM agrees
+        // with the ledger. Fold-only projection: expand stays with the
+        // router, manualCollapsedIds is read, never written.
+        const engineMode = ENGINE_isUnmountEngineMode();
+        let engineCollapsedSet = null;
+        const LEDGER_readCollapsedSet = () => {
+          if (engineCollapsedSet) return engineCollapsedSet;
+          engineCollapsedSet = new Set();
+          try {
+            const api = ENGINE_getUnmountApi();
+            for (const source of ['answer-title', 'title-list-row']) {
+              const ids = api?.getManualCollapsedIds?.({ source });
+              if (!Array.isArray(ids)) continue;
+              for (const cid of ids) {
+                const norm = API_AT_normalizeAnswerId(cid);
+                if (norm) engineCollapsedSet.add(norm);
+              }
+            }
+          } catch {}
+          return engineCollapsedSet;
+        };
         const textEls = D.querySelectorAll(SEL_.OWNED_TEXT_ANY);
         textEls.forEach((textEl) => {
           const bar = textEl.closest(SEL_.OWNED_BAR_ANY);
@@ -1471,8 +1805,52 @@ ${S_BAR}:active{
           const id = DOM_getAnswerId(msgEl);
           if (!id) return;
 
+          // Self-heal gesture identity (§4): a bar that survived — or was
+          // rebuilt around — native re-rendering may have missed every
+          // ensure pass (processed ids are never re-queued), leaving a
+          // visible bar with no data-answer-id, no collapse toggle, and no
+          // wash. All three repairs are idempotent (_collapseWired /
+          // editable-token / attr-presence guards), so re-invoking per tick
+          // is free. Washer re-projection goes through the SAME 1A2a
+          // executor the title-list rows use — one washer system.
+          try {
+            if (!bar.getAttribute('data-answer-id')) UTIL_setAttr(bar, 'data-answer-id', id);
+            DOM_enableTitleEditing(bar, id);
+            DOM_enableCollapseToggle(bar, msgEl, id);
+            if (!String(bar.getAttribute('data-h2o-title-wash') || '').trim()) {
+              const wash = W.top?.H2O?.MM?.wash || W.H2O?.MM?.wash || null;
+              wash?.applyToTitleBar?.(id, bar);
+            }
+          } catch {}
+
+          if (engineMode && !STATE_.visitResetPending && LEDGER_readCollapsedSet().has(id)) {
+            const barCollapsed = String(UTIL_getAttr(bar, ATTR_.CGXUI_STATE) || '')
+              .split(/\s+/).includes('collapsed');
+            const bodyUnfolded = DOM_getAnswerBody(msgEl)
+              .some((el) => String(el?.style?.maxHeight || '') !== '0px');
+            if (!barCollapsed || bodyUnfolded) DOM_applyCollapseState(msgEl, bar, true, false);
+          }
+
           const fullTextNow = DOM_getAnswerText(msgEl);
           ENGINE_applyRtlIfArabic(msgEl, fullTextNow);
+
+          // Numbers are stamped once from authoritative turn identity; repair
+          // stale stamps (from early hydration, when the runtime could not
+          // answer yet) instead of trusting whatever was written before.
+          try {
+            const canonicalNum = DOM_getTurnNumber(msgEl);
+            if (canonicalNum > 0) {
+              const numStr = String(canonicalNum);
+              const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
+              const expectedLabel = `TITLE ${numStr}`;
+              if (labelEl && labelEl.textContent !== expectedLabel) labelEl.textContent = expectedLabel;
+              if (UTIL_getAttr(bar, 'data-h2o-turn-num') !== numStr) UTIL_setAttr(bar, 'data-h2o-turn-num', numStr);
+            }
+            // Stale builds wrote the number into the badge element itself —
+            // clear any leftover text so the badge stays a pure dot.
+            const badgeEl = bar.querySelector(DOM_selScoped(UI_.BADGE));
+            if (badgeEl && badgeEl.textContent) badgeEl.textContent = '';
+          } catch {}
 
           const manual = STATE_.titles[id];
           if (manual) {

@@ -153,6 +153,51 @@ Page-level title-list state and individual title-bar open/collapse state are **s
 
 - A title bar must not appear both in the page title-list and in the original flow at the same time. No cloned duplicate + original in-flow bar.
 
+### Same Collapse Authority Rule (Circle = Mass Title Shortcut)
+
+- A Page Divider Circle click that collapses/expands all title bars into the page title-list is **semantically a mass
+  shortcut** for applying the same title-bar collapse/expand action to every page member individually.
+- Title Bar double-click and Page Divider Circle mass collapse/expand **share the same canonical collapse authority**
+  (the engine's source-tagged manual ledger in engine routing; the legacy collapse state in local routing). The circle
+  must never create a separate competing collapse pathway.
+- Per answer/title, circle collapse is **equivalent to calling the same collapse backend** used by individual
+  title-bar double-click — only the **source tag** differs (`answer-title` vs `title-list-row`, §8A).
+- **Circle/dot expand is a page-level mass expand:** it is equivalent to applying expand to every title in that
+  page. It therefore clears BOTH the `title-list-row` source AND the `answer-title` source for page members — a
+  title collapsed individually before the circle action expands with the rest of the page. Each source is still
+  removed by its own source-tagged expand call (§8A: every expand call removes exactly one source); the mass command
+  is a batch over the same per-title pathway, never a ledger wipe.
+- **Circle/dot expand is page-scoped:** it must not clear collapse sources for titles outside the current page, and
+  it must not clear unrelated mechanisms (background unmount records, pagination state, wash, titles).
+- The code may call this control “circle” or “dot” (`routeChatPageDotClick`, divider dot) — they are the SAME
+  control, and every rule here applies to both names.
+- **Unhydrated page members** cannot hold a physical engine record (`collapseManyByIds` reports them
+  `answer-missing` = deferred, not failed). While a title-list page is active, authoritative page membership carries
+  their pending `title-list-row` state and the pages controller re-applies it the moment a member hydrates. After a
+  circle/dot expand deactivates the page, hydrating members must come up expanded — no stale re-application. Probes
+  must read `getManualCollapsedIds({ source: 'title-list-row' })` as covering **hydrated members only**; the
+  under-count is by design, not drift.
+- The page title-list stack is an **additional UI projection**, not a different collapse truth.
+- **Native rehydration replay treats both sources identically:** if the collapse ledger
+  (`manualCollapsedIds` / engine records) says an answer is collapsed, any rehydrated title bar/body **must replay
+  the collapsed projection** — regardless of whether the collapse came from an individual title double-click or a
+  circle mass activation. A ledger-collapsed answer whose rehydrated bar shows expanded/`editable` state is a
+  forbidden runtime state.
+- Replay is a **projection** (DOM state on the live bar/body); it must not touch cached fragments. Expanding a
+  replayed-collapsed answer flows through the hydration-guarded executor (§8G) as usual.
+- **Scope/placement is the only difference between the two gestures:** individual title double-click acts on one
+  title in flow; the circle/dot applies the same per-title action to every page member and creates/reveals the
+  title-list projection. Neither gesture may gain semantics the other lacks.
+- **Gesture liveness:** a visible title bar must always answer its collapse/expand gesture. Handlers resolve the
+  **live** message element and answer id **at event time** — wire-time closures and one-shot wiring flags
+  (`_collapseWired`-style guards) must never pin a gesture to a detached node. Every ensure/repair pass re-wires
+  identity idempotently; a replayed-collapsed bar whose double-click does not route to the canonical executor is a
+  forbidden runtime state.
+- **Shared row treatment:** an individually collapsed in-flow title bar and a page title-list row are the SAME
+  component from the same skeleton factory and receive the same numeral, active-styling, and washer/gold treatment.
+  Washer paint is applied only through the 1A2a executor (`applyToTitleBar`) for both contexts; rehydration that
+  rebuilds a bar must re-project its wash, never fork a second styling path.
+
 ### Single Visible Instance Rule
 
 - There must be **exactly one visible title bar instance** for each page title member.

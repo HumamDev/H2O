@@ -389,6 +389,19 @@
     return [];
   }
 
+  // Read-only hydration-guard restore outcomes (MECHANISMS_RULES §8G proof
+  // surface). The stats live on the chat adapter; this facade delegation is
+  // required because H2O.UM.nmntmssgs.api is THIS module's whitelist, not
+  // the adapter object.
+  function API_UM_getRestoreGuardStats() {
+    const adapter = UM_getAdapter();
+    if (adapter && typeof adapter.getRestoreGuardStats === 'function') {
+      const out = adapter.getRestoreGuardStats();
+      return (out && typeof out === 'object') ? out : {};
+    }
+    return {};
+  }
+
   function API_UM_remountAll(why) {
     const adapter = UM_getAdapter();
     if (adapter && typeof adapter.remountAll === 'function') return adapter.remountAll(why);
@@ -466,6 +479,7 @@
   VAULT.api.expandManyByIds = API_UM_expandManyByIds;
   VAULT.api.isCollapsedById = API_UM_isCollapsedById;
   VAULT.api.getManualCollapsedIds = API_UM_getManualCollapsedIds;
+  VAULT.api.getRestoreGuardStats = API_UM_getRestoreGuardStats;
   VAULT.api.requestMountByUid = API_UM_requestMountByUid;
   VAULT.api.requestMountPairByUid = API_UM_requestMountPairByUid;
   VAULT.api.remountAll = API_UM_remountAll;

@@ -269,6 +269,16 @@
     manualCollapseById: new Map(),
     uidAliasToPrimary: new Map(),
 
+    // Hydration-guard restore outcomes (MECHANISMS_RULES §8G): read-only
+    // counters proving cached fragments are never re-appended over a body
+    // that native ChatGPT re-rendered while it was unmounted/collapsed.
+    restoreGuardStats: {
+      restoreGuardApplied: 0,
+      restoredFromFragment: 0,
+      skippedStaleFragmentBecauseNativeHydrated: 0,
+      discardedFragment: 0,
+    },
+
     // scheduler / throttle
     scheduled: false,
     lastPassAt: 0,
@@ -1827,13 +1837,42 @@
       const moved = Array.from(record.bodyFrag?.childNodes || []);
       const preserved = record.preservedBodySubtree || null;
       const hasPreserved = !!(preserved && record.preservedBodyIndex >= 0);
-      if (body?.replaceChildren && hasPreserved) {
+      // The title-list owner may have moved the preserved bar from the answer
+      // body into its stack after this record was created. Re-inserting that
+      // node here would steal the visible bar from the stack and create the
+      // fluctuating flow duplicate. Restore body content only; stack placement
+      // remains exclusively owned by the Thread Pages Controller.
+      const liveTitleBar = CORE_UM_getAnswerTitleBar(record.msgEl);
+      const preservedSupersededByStack = !!(
+        preserved?.matches?.(SEL_UNMOUNTM_ANSWER_TITLE_BAR)
+        && liveTitleBar && liveTitleBar !== preserved
+        && liveTitleBar.hasAttribute?.('data-h2o-in-title-stack')
+      );
+      const preservedIsStackOwned = preservedSupersededByStack || !!(
+        preserved?.hasAttribute?.('data-h2o-in-title-stack')
+        && preserved.parentElement !== body
+      );
+      // Hydration guard (§8G): native may have re-rendered the collapsed
+      // body from app state. In that case the cached bodyFrag is stale —
+      // keep the native content, discard the fragment, and reconcile only
+      // semantic state (hidden nodes + shell flags below still restore).
+      // The preserved title bar is NOT force-inserted here: the Title Bar
+      // system re-ensures bars on its own passes against the live body.
+      CORE_UM_bumpRestoreGuardStat('restoreGuardApplied');
+      if (body?.isConnected && CORE_UM_bodyHasNativeContent(body, { ignore: preserved })) {
+        CORE_UM_bumpRestoreGuardStat('skippedStaleFragmentBecauseNativeHydrated');
+        CORE_UM_discardStaleFragment(record.bodyFrag, body);
+      } else if (body?.replaceChildren && hasPreserved && !preservedIsStackOwned) {
         const insertAt = Math.max(0, Math.min(Number(record.preservedBodyIndex) || 0, moved.length));
         moved.splice(insertAt, 0, preserved);
         body.replaceChildren(...moved);
+        CORE_UM_bumpRestoreGuardStat('restoredFromFragment');
       } else {
         body?.replaceChildren?.();
-        if (record.bodyFrag) body?.appendChild?.(record.bodyFrag);
+        if (record.bodyFrag) {
+          body?.appendChild?.(record.bodyFrag);
+          CORE_UM_bumpRestoreGuardStat('restoredFromFragment');
+        }
       }
     } catch (_) {}
 
@@ -2158,6 +2197,62 @@
     });
   }
 
+  /** @critical Hydration guard (MECHANISMS_RULES §8G).
+   * Native ChatGPT re-renders message bodies from app state while they are
+   * unmounted/collapsed. If the live body already holds native-rendered
+   * children — anything that is not our placeholder or an H2O-owned node —
+   * the cached fragment is STALE: re-appending it (after replaceChildren)
+   * would clobber fresh native content with an old snapshot, or duplicate
+   * it. Callers must skip the fragment and reconcile semantic state only. */
+  function CORE_UM_bodyHasNativeContent(body, opts = {}) {
+    if (!body || !body.childNodes) return false;
+    const ignore = opts.ignore || null;
+    for (const node of body.childNodes) {
+      if (!node || node === ignore) continue;
+      if (node.nodeType === 3) {
+        if (String(node.nodeValue || '').trim()) return true;
+        continue;
+      }
+      if (node.nodeType !== 1) continue;
+      if (node.classList?.contains('cgxui-unmounted-placeholder')) continue;
+      if (node.matches?.(SEL_UNMOUNTM_PH)) continue;
+      if (node.hasAttribute?.('data-cgxui') || node.hasAttribute?.('data-cgxui-owner')) continue;
+      return true;
+    }
+    return false;
+  }
+
+  // Lazy ensure: the persisted vault may predate this field (VAULT.state is
+  // reused across re-injection), so BOTH the bump path and the read API must
+  // go through this — a fresh session must read zero-filled counters, not {}.
+  function CORE_UM_ensureRestoreGuardStats() {
+    return (S.restoreGuardStats = S.restoreGuardStats || {
+      restoreGuardApplied: 0,
+      restoredFromFragment: 0,
+      skippedStaleFragmentBecauseNativeHydrated: 0,
+      discardedFragment: 0,
+    });
+  }
+
+  function CORE_UM_bumpRestoreGuardStat(name) {
+    const stats = CORE_UM_ensureRestoreGuardStats();
+    stats[name] = Math.max(0, Number(stats[name] || 0) || 0) + 1;
+  }
+
+  // Discard a stale cached fragment safely (empty it so no detached native
+  // nodes are retained) and clean any placeholder we left in the body.
+  function CORE_UM_discardStaleFragment(frag, body) {
+    if (frag) {
+      try { while (frag.firstChild) frag.removeChild(frag.firstChild); } catch (_) {}
+      CORE_UM_bumpRestoreGuardStat('discardedFragment');
+    }
+    try {
+      for (const ph of Array.from(body?.querySelectorAll?.(`${SEL_UNMOUNTM_PH}, .cgxui-unmounted-placeholder`) || [])) {
+        try { ph.remove(); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   /** @critical Soft-remount one turn group. */
   function CORE_UM_softRemount(uid, why = STR_UNMOUNTM_RESTORE) {
     const id = UTIL_UM_normalizeId(uid);
@@ -2188,8 +2283,21 @@
         continue;
       }
 
-      body.replaceChildren();
-      if (entry.frag) body.appendChild(entry.frag);
+      // Hydration guard (§8G): if native re-rendered this body while it was
+      // unmounted, keep the native content — replaceChildren + the cached
+      // fragment would clobber it with a stale snapshot.
+      CORE_UM_bumpRestoreGuardStat('restoreGuardApplied');
+      if (CORE_UM_bodyHasNativeContent(body)) {
+        CORE_UM_bumpRestoreGuardStat('skippedStaleFragmentBecauseNativeHydrated');
+        CORE_UM_discardStaleFragment(entry.frag, body);
+        entry.frag = null;
+      } else {
+        body.replaceChildren();
+        if (entry.frag) {
+          body.appendChild(entry.frag);
+          CORE_UM_bumpRestoreGuardStat('restoredFromFragment');
+        }
+      }
       delete el.dataset[ATTR_UNMOUNTM_H2O_UNMOUNTED];
 
       let hasMarks = !!body.querySelector(SEL_UNMOUNTM_MARK_HL);
@@ -3155,6 +3263,9 @@
     expandManyByIds: API_UM_expandManyByIds,
     isCollapsedById: API_UM_isCollapsedById,
     getManualCollapsedIds: API_UM_getManualCollapsedIds,
+    // Read-only hydration-guard restore outcomes (§8G proof surface).
+    // Zero-filled on fresh sessions via the lazy ensure — never {}.
+    getRestoreGuardStats: () => ({ ...CORE_UM_ensureRestoreGuardStats() }),
     requestMountByUid: API_UM_requestMountByUid,
     requestMountPairByUid: API_UM_requestMountPairByUid,
     remountAll: API_UM_remountAll,

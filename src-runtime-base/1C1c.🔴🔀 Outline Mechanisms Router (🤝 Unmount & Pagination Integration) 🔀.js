@@ -270,13 +270,13 @@
     }
 
     const collapsed = typeof api.isCollapsedById === 'function'
-      ? !!api.isCollapsedById(answerId)
-      : !!api.getManualCollapsedIds?.()?.includes?.(answerId);
+      ? !!api.isCollapsedById(answerId, { source: 'answer-title' })
+      : !!api.getManualCollapsedIds?.({ source: 'answer-title' })?.includes?.(answerId);
     if (typeof api?.expandById !== 'function' || typeof api?.collapseById !== 'function') {
       return { handled: false, backend: 'engine', action: 'unmount-toggle-unavailable', reason: 'unmount-api-unavailable' };
     }
     const result = collapsed
-      ? api.expandById(answerId, { emitLegacyAnswerCollapse: true })
+      ? api.expandById(answerId, { source: 'answer-title', emitLegacyAnswerCollapse: true })
       : api.collapseById(answerId, {
           source: 'answer-title',
           preserveShell: 'answer-title',
@@ -319,18 +319,69 @@
     // nextEnabled=true means "collapse all", false means "expand all"
     const nextCollapse = !!ctx.nextEnabled;
 
-    const result = nextCollapse
-      ? api.collapseManyByIds(answerIds, {
-          source: 'answer-title',
-          preserveShell: 'answer-title',
-          emitLegacyAnswerCollapse: true,
-        })
-      : api.expandManyByIds(answerIds, {
-          source: 'answer-title',
-          emitLegacyAnswerCollapse: true,
-        });
+    // The id list is authoritative page membership (canonical map), so some
+    // ids may not be hydrated in the DOM yet. Those report 'answer-missing'
+    // and are DEFERRED, not failed: the pages controller re-applies
+    // title-list visuals when a row hydrates (onTitleSet), so they collapse
+    // the moment they exist. A batch counts as successful when every
+    // non-applied id is merely deferred.
+    const isBatchOkOrDeferred = (res) => {
+      if (isManualResultOk(res)) return true;
+      const items = Array.isArray(res?.results) ? res.results : null;
+      if (!items || !items.length) return false;
+      return items.every((item) => item?.ok || String(item?.status || '') === 'answer-missing');
+    };
 
-    if (!isManualResultOk(result)) {
+    let result;
+    let resultOk;
+    if (nextCollapse) {
+      result = api.collapseManyByIds(answerIds, {
+        source: 'title-list-row',
+        preserveShell: 'title-list-row',
+        // The page-circle owner commits state/stack visuals once after this
+        // batch. Per-row legacy events caused N divider renders plus RAF
+        // repairs, rebuilding the just-created stack after the gesture.
+        emitLegacyAnswerCollapse: false,
+      });
+      resultOk = isBatchOkOrDeferred(result);
+    } else {
+      // Circle/dot expand is a PAGE-LEVEL MASS EXPAND (MECHANISMS_RULES §4
+      // Same Collapse Authority): equivalent to applying expand to every
+      // title in this page, so it clears BOTH the page-wide `title-list-row`
+      // source AND the per-row `answer-title` sources — a title collapsed
+      // individually before the circle action expands with the rest of the
+      // page. Contract constraints kept here: page-scoped only (every batch
+      // filters to this page's canonical member ids), one source-tagged
+      // expand call per source (never a ledger wipe), and nothing else is
+      // touched (no background unmount records, no pagination state). Each
+      // pass targets only ids that actually hold that source —
+      // expandManyByIds reports rows without the source as failures.
+      const titleListIds = (typeof api.getManualCollapsedIds === 'function')
+        ? (api.getManualCollapsedIds({ source: 'title-list-row' }) || []).filter((id) => answerIds.includes(id))
+        : answerIds;
+      result = titleListIds.length
+        ? api.expandManyByIds(titleListIds, {
+            source: 'title-list-row',
+            emitLegacyAnswerCollapse: false,
+          })
+        : { ok: true, status: 'ok' };
+      resultOk = isBatchOkOrDeferred(result);
+      const manualIds = (typeof api.getManualCollapsedIds === 'function')
+        ? (api.getManualCollapsedIds({ source: 'answer-title' }) || []).filter((id) => answerIds.includes(id))
+        : [];
+      if (manualIds.length) {
+        const manualResult = api.expandManyByIds(manualIds, {
+          source: 'answer-title',
+          emitLegacyAnswerCollapse: false,
+        });
+        if (!isBatchOkOrDeferred(manualResult)) {
+          result = manualResult;
+          resultOk = false;
+        }
+      }
+    }
+
+    if (!resultOk) {
       return {
         handled: false,
         backend: 'engine',
