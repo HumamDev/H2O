@@ -386,21 +386,21 @@ const CFG_CH = {
         performance:'Centralized controls for keeping heavy chats responsive.',
       }},
     { key:'chatMechanisms',   label:'Mechanisms',   icon:'🔀',
-      subtitle:'Route title and page divider gestures between legacy and engine-backed behavior.',
+      subtitle:'Title, page, and divider gesture behavior plus chat visit state.',
       description:{
-        default:'Choose whether title and page-divider gestures keep using their legacy handlers or route into the new engines.',
-        focus:'Keep gesture behavior explicit while combining it with global chat optimization only when needed.',
-        review:'Switch between legacy and engine-backed gesture handling without mixing it into unrelated controls.',
-        performance:'Keep gesture routing and global optimizers together in one Performance workspace without widening Control Hub core.',
+        default:'Control what title bars, page circles, and page dividers do, and whether this chat remembers its collapsed layout.',
+        focus:'Tune gesture behavior without touching backend engines.',
+        review:'Gesture behavior and per-chat layout memory in one place; backend routing lives under Advanced.',
+        performance:'ChatGPT virtualizes message bodies natively — these controls manage what H2O folds and lists on top of that.',
       },
       hidden:true},
-    { key:'unmountMessages',   label:'Unmounting',   icon:'⛰️',
-      subtitle:'Soft virtual-scrolling for long chats.',
-      description:{default:'Unmount far-away messages.', focus:'Keep scroll light for focus mode.', review:'Re-mount when needed.', performance:'Keeps DOM small.'},
+    { key:'unmountMessages',   label:'Unmounting (Advanced)',   icon:'⛰️',
+      subtitle:'Legacy physical optimizer — diagnostics only.',
+      description:{default:'Legacy body-unmount engine. ChatGPT now virtualizes message bodies natively; use these controls for diagnostics only.', focus:'Diagnostics for the legacy unmount engine.', review:'Verify the legacy engine stays inert while disabled.', performance:'Native virtualization owns physical performance; this engine is a diagnostic fallback.'},
       hidden:true},
-    { key:'paginationWindowing', label:'Pagination Windowing', icon:'🪟',
-      subtitle:'Page long chats into answer windows.',
-      description:{default:'Split long threads into page-sized answer windows.', focus:'Keep attention on one window at a time.', review:'Jump across large answer sets quickly.', performance:'Window the thread before DOM weight spikes.'},
+    { key:'paginationWindowing', label:'Pagination Windowing (Advanced)', icon:'🪟',
+      subtitle:'Legacy physical windowing — diagnostics only.',
+      description:{default:'Legacy whole-turn windowing engine. ChatGPT now virtualizes message bodies natively; use these controls for diagnostics only.', focus:'Diagnostics for the legacy windowing engine.', review:'Verify windowing stays inert while disabled.', performance:'Native virtualization owns physical performance; this engine is a diagnostic fallback.'},
       hidden:true},
     { key:FEATURE_KEY_THEMES,  label:'Appearance',         icon:'🎨',
       subtitle:'Visual theme, Control Hub accents, and surface tuning.',
@@ -2255,14 +2255,39 @@ __ROOT__ .cgxui-qbig-number{
     return FEATURE_findMeta(key);
   }
 
+  // Phase 1b: the engine subtabs (Unmounting / Pagination Windowing) are
+  // Advanced/dev-only (§8G). They render only when the Mechanisms page's
+  // Advanced Diagnostics disclosure is on OR an advanced mechanism is active
+  // (safety auto-reveal — the Performance tab plugin owns that check and
+  // exposes it via H2O.ChubMechanismsAdvanced; the raw key is the fallback
+  // before that plugin loads).
+  const KEY_CHUB_MECHANISMS_ADVANCED_V1 = `${NS_DISK}:state:mechanisms-advanced:v1`;
+
+  function CHUB_CHAT_PERF_isAdvancedRevealed() {
+    try {
+      const bridge = W.H2O?.ChubMechanismsAdvanced || (W.top || W).H2O?.ChubMechanismsAdvanced;
+      if (bridge && typeof bridge.isRevealed === 'function') return !!bridge.isRevealed();
+    } catch {}
+    try { return UTIL_storage.getStr(KEY_CHUB_MECHANISMS_ADVANCED_V1, '0') === '1'; } catch { return false; }
+  }
+
+  function CHUB_CHAT_PERF_getVisibleSubtabs() {
+    if (CHUB_CHAT_PERF_isAdvancedRevealed()) return FEATURE_CHAT_PERFORMANCE_SUBTABS;
+    return FEATURE_CHAT_PERFORMANCE_SUBTABS.filter(
+      (k) => k !== 'unmountMessages' && k !== 'paginationWindowing'
+    );
+  }
+
   function CHUB_CHAT_PERF_getSubtab() {
-    const fallback = FEATURE_CHAT_PERFORMANCE_SUBTABS[0];
+    const visible = CHUB_CHAT_PERF_getVisibleSubtabs();
+    const fallback = visible[0] || FEATURE_CHAT_PERFORMANCE_SUBTABS[0];
     const raw = UTIL_storage.getStr(KEY_CHUB_CHAT_PERFORMANCE_SUBTAB_V1, fallback);
-    return FEATURE_CHAT_PERFORMANCE_SUBTABS.includes(raw) ? raw : fallback;
+    return visible.includes(raw) ? raw : fallback;
   }
 
   function CHUB_CHAT_PERF_setSubtab(key) {
-    const next = FEATURE_CHAT_PERFORMANCE_SUBTABS.includes(key) ? key : FEATURE_CHAT_PERFORMANCE_SUBTABS[0];
+    const visible = CHUB_CHAT_PERF_getVisibleSubtabs();
+    const next = visible.includes(key) ? key : (visible[0] || FEATURE_CHAT_PERFORMANCE_SUBTABS[0]);
     try { UTIL_storage.setStr(KEY_CHUB_CHAT_PERFORMANCE_SUBTAB_V1, next); } catch {}
     return next;
   }
@@ -2277,7 +2302,7 @@ __ROOT__ .cgxui-qbig-number{
 
 	  function CHUB_CHAT_PERF_mountSubtabs(panel) {
 	    CHUB_mountFeatureSubtabs(panel, {
-	      keys: FEATURE_CHAT_PERFORMANCE_SUBTABS,
+	      keys: CHUB_CHAT_PERF_getVisibleSubtabs(),
 	      getSubtabMeta: CHUB_CHAT_PERF_getSubtabMeta,
 	      getActiveKey: CHUB_CHAT_PERF_getActiveFeatureKey,
 	      setActiveKey: CHUB_CHAT_PERF_setSubtab,

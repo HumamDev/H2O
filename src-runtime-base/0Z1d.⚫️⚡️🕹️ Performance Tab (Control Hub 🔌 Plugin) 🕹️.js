@@ -38,6 +38,7 @@
     answerTitleDblClickMode: 'local-dom',
     dividerDotClickMode: 'local-dom',
     dividerDblClickMode: 'pagination-focus-page',
+    chatPageDividerHoverInfoBox: 'on',
     coordination: Object.freeze({
       manualWinsOverGlobal: true,
       preserveLegacyEvents: true,
@@ -252,6 +253,11 @@
     return (val === 'pagination-focus-page' || val === 'unmount-page-collapse') ? val : 'pagination-focus-page';
   }
 
+  function normalizeOnOff(raw, fallback = 'on') {
+    const val = String(raw || fallback || 'on').trim().toLowerCase();
+    return val === 'off' ? 'off' : 'on';
+  }
+
   function normalizeChatMechanismsConfig(input, globals = readLiveGlobals()) {
     const src = (input && typeof input === 'object') ? input : {};
     const gestureBackend = normalizeGestureBackend(src.gestureBackend, globals);
@@ -261,6 +267,7 @@
       answerTitleDblClickMode: normalizeAnswerTitleMode(src.answerTitleDblClickMode, gestureBackend),
       dividerDotClickMode: normalizeDividerDotMode(src.dividerDotClickMode, gestureBackend),
       dividerDblClickMode: normalizeDividerMode(src.dividerDblClickMode),
+      chatPageDividerHoverInfoBox: normalizeOnOff(src.chatPageDividerHoverInfoBox, CHAT_MECH_DEFAULT.chatPageDividerHoverInfoBox),
       coordination: {
         manualWinsOverGlobal: src?.coordination?.manualWinsOverGlobal !== false,
         preserveLegacyEvents: src?.coordination?.preserveLegacyEvents !== false,
@@ -366,9 +373,9 @@
     }
 
     invalidateHub();
-    if (!ok) return { message: 'Reset 3 mechanisms unavailable for current chat.' };
-    if (result?.ok === false || fallbackTitleResult?.ok === false) return { message: 'Reset 3 mechanisms completed with partial fallback.' };
-    return { message: 'Reset 3 mechanisms for current chat.' };
+    if (!ok) return { message: 'Restore is unavailable for the current chat.' };
+    if (result?.ok === false || fallbackTitleResult?.ok === false) return { message: 'Restored this chat’s layout with partial fallback.' };
+    return { message: 'Restored this chat’s layout.' };
   }
 
   function getMechanismsUiState() {
@@ -479,15 +486,19 @@
     const note = state.isLocalRouting
       ? 'Engine options are unavailable while Master Action Routing is set to Local DOM handlers.'
       : (state.isActionsOff
-        ? 'Click and double-click actions are disabled by Master Action Routing. Global optimization settings still work.'
+        ? 'Developer state: click and double-click actions are disabled. Pick a handler mode to re-enable them. Global optimization settings still work.'
         : '');
+    // 'off' is a developer/recovery state, not a normal product choice: it is
+    // shown only while it is the active stored value so the select stays
+    // truthful, and it disappears from the menu once the user leaves it.
+    const options = [
+      ['legacy', 'Use Local DOM handlers'],
+      ['engine', 'Use Engine handlers'],
+    ];
+    if (state.isActionsOff) options.push(['off', 'Developer: action handlers off']);
     return buildMechanismsSelect({
       value: state.master,
-      options: [
-        ['legacy', 'Use Local DOM handlers'],
-        ['engine', 'Use Engine handlers'],
-        ['off', 'Turn action handlers off'],
-      ],
+      options,
       note,
       onChange(value) {
         setChatMechanismsConfig({ gestureBackend: value });
@@ -498,14 +509,24 @@
   function renderAnswerTitleModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
+    const advanced = isMechanismsAdvancedRevealed();
+    const current = state.cfg.answerTitleDblClickMode || 'local-dom';
+    // Labels describe user-visible behavior (§1A / §8G). The backend choice
+    // is an Advanced routing detail: in Default view the select shows only
+    // the behavior label for the stored value (no engine wording); the
+    // backend variants appear once Advanced Diagnostics is revealed.
+    // Internal option VALUES are unchanged — stored preferences keep working.
     return buildMechanismsSelect({
-      value: state.cfg.answerTitleDblClickMode || 'local-dom',
+      value: current,
       disabled: state.isActionsOff,
-      disabledValues: state.isLocalRouting ? ['unmount-engine'] : [],
-      options: [
-        ['local-dom', 'Collapse/Expand Current Title Bar using Local DOM'],
-        ['unmount-engine', 'Collapse/Expand Current Title Bar using Unmount Engine'],
-      ],
+      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
+      options: advanced
+        ? [
+          ['local-dom', 'Collapse/Expand This Q&A'],
+          ['unmount-engine', 'Collapse/Expand This Q&A (engine-assisted)'],
+        ]
+        : [[current, 'Collapse/Expand This Q&A']],
+      note: 'Double-clicking an answer’s title bar folds or unfolds that question-and-answer pair.',
       onChange(value) {
         setChatMechanismsConfig({ answerTitleDblClickMode: value });
       },
@@ -515,14 +536,19 @@
   function renderDividerDotModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
+    const advanced = isMechanismsAdvancedRevealed();
+    const current = state.cfg.dividerDotClickMode || 'local-dom';
     return buildMechanismsSelect({
-      value: state.cfg.dividerDotClickMode || 'local-dom',
+      value: current,
       disabled: state.isActionsOff,
-      disabledValues: state.isLocalRouting ? ['unmount-engine'] : [],
-      options: [
-        ['local-dom', 'Mass Collapse/Expand Page Title Bars using Local DOM'],
-        ['unmount-engine', 'Mass Collapse/Expand Page Title Bars using Unmount Engine'],
-      ],
+      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
+      options: advanced
+        ? [
+          ['local-dom', 'Show/Hide Page Title List'],
+          ['unmount-engine', 'Show/Hide Page Title List (engine-assisted)'],
+        ]
+        : [[current, 'Show/Hide Page Title List']],
+      note: 'The page divider’s circle lists every title in the page. Double-click a listed title to open just that turn.',
       onChange(value) {
         setChatMechanismsConfig({ dividerDotClickMode: value });
       },
@@ -533,19 +559,47 @@
     const state = getMechanismsUiState();
     const disabled = state.isLocalRouting || state.isActionsOff;
     markMechanismRowDisabled(row, disabled);
-    const note = state.cfg.dividerDblClickMode === 'pagination-focus-page'
-      ? 'Keeps only this page attached to the DOM until toggled again.'
-      : '';
+    // NOTE (§8G/§1A): the 'pagination-focus-page' VALUE is a legacy internal
+    // id kept for stored-preference compatibility — the actual behavior is
+    // CSS/logical page lightening (the router never detaches or focuses).
+    // Only the user-facing label is corrected here; renaming the mode id
+    // requires a versioned config migration (deferred).
+    const advanced = isMechanismsAdvancedRevealed();
+    const current = state.cfg.dividerDblClickMode || 'pagination-focus-page';
+    const note = current === 'pagination-focus-page'
+      ? 'Folds the whole page to lighten the chat. The page divider stays visible so the page can be expanded again.'
+      : 'Folds the page by collapsing each turn individually. The page divider stays visible as the restore handle.';
+    const behaviorLabel = current === 'unmount-page-collapse'
+      ? 'Collapse/Expand Page (fold each turn)'
+      : 'Collapse/Expand Page (lightening)';
     return buildMechanismsSelect({
-      value: state.cfg.dividerDblClickMode || 'pagination-focus-page',
+      value: current,
       disabled,
-      options: [
-        ['unmount-page-collapse', 'Collapse/Expand Page using Unmount Engine'],
-        ['pagination-focus-page', 'Collapse/Expand Page using Pagination Engine'],
-      ],
+      options: advanced
+        ? [
+          ['unmount-page-collapse', 'Collapse/Expand Page (fold each turn)'],
+          ['pagination-focus-page', 'Collapse/Expand Page (lightening)'],
+        ]
+        : [[current, behaviorLabel]],
       note,
       onChange(value) {
         setChatMechanismsConfig({ dividerDblClickMode: value });
+      },
+    });
+  }
+
+  function renderDividerHoverInfoBoxControl({ row }) {
+    const state = getMechanismsUiState();
+    markMechanismRowDisabled(row, false);
+    return buildMechanismsSelect({
+      value: state.cfg.chatPageDividerHoverInfoBox || 'on',
+      options: [
+        ['on', 'On'],
+        ['off', 'Off'],
+      ],
+      note: 'Shows or hides the page-state info box when hovering over a Chat Page Divider.',
+      onChange(value) {
+        setChatMechanismsConfig({ chatPageDividerHoverInfoBox: value });
       },
     });
   }
@@ -556,6 +610,7 @@
     return buildMechanismsToggle({
       enabled: !!state.globalUnmount,
       disabled: state.isLocalRouting,
+      note: 'Advanced: ChatGPT now virtualizes message bodies natively. This legacy optimizer detaches body content into cached fragments — enable for diagnostics only.',
       onToggle(next) {
         setUnmountSetting('umEnabled', !!next);
       },
@@ -568,27 +623,92 @@
     return buildMechanismsToggle({
       enabled: !!state.globalPagination,
       disabled: state.isLocalRouting,
+      note: 'Advanced: physically windows whole turns in and out of the page. ChatGPT’s native virtualization already keeps far content light — enable for diagnostics only.',
       onToggle(next) {
         setPaginationSetting('pwEnabled', !!next);
       },
     });
   }
 
+  // ── Advanced Diagnostics disclosure (Phase 1b) ────────────────────────────
+  // Hub Mode Default shows only normal product controls. The Advanced /
+  // Diagnostics group (Master Action Routing + the legacy physical
+  // optimizers) and the two engine subtabs are revealed by this persisted
+  // toggle. SAFETY RULE: while Global Unmount, Global Pagination, or the
+  // developer 'off' routing state is ACTIVE, Advanced auto-reveals — the
+  // off-switch of an active mechanism must never be hidden (§1B).
+  const KEY_MECHANISMS_ADVANCED_V1 = 'h2o:prm:cgx:cntrlhb:state:mechanisms-advanced:v1';
+
+  function readMechanismsAdvancedToggle() {
+    try { return W.localStorage?.getItem(KEY_MECHANISMS_ADVANCED_V1) === '1'; } catch { return false; }
+  }
+
+  function writeMechanismsAdvancedToggle(on) {
+    try { W.localStorage?.setItem(KEY_MECHANISMS_ADVANCED_V1, on ? '1' : '0'); } catch {}
+    return !!on;
+  }
+
+  function isMechanismsAdvancedRevealed() {
+    if (readMechanismsAdvancedToggle()) return true;
+    try {
+      const state = getMechanismsUiState();
+      if (state.globalUnmount || state.globalPagination || state.isActionsOff) return true;
+    } catch {}
+    return false;
+  }
+
+  // Bridge for the Hub core (0Z1a) subtab filter — the engine-active safety
+  // check lives here where the engine settings are readable.
+  try {
+    H2O.ChubMechanismsAdvanced = Object.freeze({
+      isRevealed: () => isMechanismsAdvancedRevealed(),
+    });
+  } catch {}
+
+  // Chat visit state (global PREFERENCE key; the per-chat layout state lives
+  // in the pages controller's own per-chat keys — see 1C1b visit-state policy).
+  const KEY_VISIT_STATE_MODE_V1 = 'h2o:prm:cgx:mnmp:ui:chat-pages:visit-state-mode:v1';
+  const EV_VISIT_STATE_MODE_CHANGED = 'evt:h2o:chat-pages:visit-state-mode-changed';
+  function getVisitStateModePref() {
+    try {
+      const v = W.localStorage?.getItem(KEY_VISIT_STATE_MODE_V1);
+      return v === 'reset' ? 'reset' : 'remember';
+    } catch { return 'remember'; }
+  }
+  function setVisitStateModePref(v) {
+    const mode = v === 'reset' ? 'reset' : 'remember';
+    const previous = getVisitStateModePref();
+    try { W.localStorage?.setItem(KEY_VISIT_STATE_MODE_V1, mode); } catch {}
+    try {
+      W.dispatchEvent(new CustomEvent(EV_VISIT_STATE_MODE_CHANGED, {
+        detail: { mode, previous, source: 'control-hub:performance-mechanisms' },
+      }));
+    } catch {}
+    return mode;
+  }
+
   const CHAT_MECHANISMS_CONTROLS = [
     {
-      type: 'custom',
-      key: 'cmGestureBackend',
-      stackBelowLabel: true,
-      label: 'Master Action Routing',
-      group: 'Backend Mechanisms',
-      render(ctx) { return renderMasterRoutingControl(ctx); },
+      type: 'select',
+      key: 'cmVisitStateMode',
+      label: 'Chat visit state',
+      group: 'Chat Visit State',
+      help: 'Remember restores this chat’s collapsed title bars, title-list pages, and page collapse on revisit. Reset clears that per-chat layout state on every visit — the preference itself always persists.',
+      def: 'remember',
+      opts: [
+        ['remember', 'Remember collapsed/expanded state'],
+        ['reset', 'Reset on every chat visit'],
+      ],
+      getLive() { return getVisitStateModePref(); },
+      setLive(v) { setVisitStateModePref(v); },
     },
+    // ── Normal product gestures (labels describe user-visible behavior) ─────
     {
       type: 'custom',
       key: 'cmAnswerTitleMode',
       stackBelowLabel: true,
       label: 'Title Bar (Double-Click)',
-      group: 'Backend Mechanisms',
+      group: 'Gestures',
       render(ctx) { return renderAnswerTitleModeControl(ctx); },
     },
     {
@@ -596,7 +716,7 @@
       key: 'cmDividerDotClickMode',
       stackBelowLabel: true,
       label: 'Chat Page Divider Circle (Click)',
-      group: 'Backend Mechanisms',
+      group: 'Gestures',
       render(ctx) { return renderDividerDotModeControl(ctx); },
     },
     {
@@ -604,40 +724,81 @@
       key: 'cmDividerDblClickMode',
       stackBelowLabel: true,
       label: 'Chat Page Divider Button (Double-Click)',
-      group: 'Backend Mechanisms',
+      group: 'Gestures',
       render(ctx) { return renderDividerDblClickModeControl(ctx); },
+    },
+    {
+      type: 'custom',
+      key: 'cmDividerHoverInfoBox',
+      stackBelowLabel: true,
+      label: 'Chat Page Divider Hover Info Box',
+      group: 'Gestures',
+      render(ctx) { return renderDividerHoverInfoBoxControl(ctx); },
+    },
+    {
+      type: 'action',
+      key: 'cmResetAllMechanismsCurrentChat',
+      label: 'Restore This Chat’s Layout',
+      group: 'Actions',
+      statusText: '',
+      buttons: [
+        {
+          label: 'Restore This Chat’s Layout',
+          primary: true,
+          action: () => resetAllMechanismsCurrentChat(),
+          successText: 'Restored this chat’s layout.',
+          errorText: 'Restore failed.',
+        },
+      ],
+    },
+    // ── Disclosure: reveals the Advanced / Diagnostics group + engine
+    // subtabs. Always visible; auto-forced open while an advanced mechanism
+    // is active (§1B: never hide an active mechanism's off-switch).
+    {
+      type: 'select',
+      key: 'cmAdvancedDisclosure',
+      label: 'Advanced Diagnostics',
+      group: 'Advanced',
+      help: 'Reveals backend routing and the legacy physical optimizers (diagnostics only). Shown automatically while an advanced mechanism is active.',
+      def: 'hidden',
+      opts: [
+        ['hidden', 'Hidden'],
+        ['shown', 'Show Advanced Diagnostics'],
+      ],
+      getLive() { return readMechanismsAdvancedToggle() ? 'shown' : 'hidden'; },
+      setLive(v) {
+        writeMechanismsAdvancedToggle(v === 'shown');
+        invalidateHubSoon();
+      },
+    },
+    // ── Advanced / Diagnostics (§8G: backend routing + legacy physical
+    // optimizers — native ChatGPT now virtualizes message bodies natively;
+    // these are diagnostics, not normal product options). Hidden in Hub Mode
+    // Default unless the disclosure above is on or a mechanism is active —
+    // see getChatMechanismsControls(). ──────────────────────────────────────
+    {
+      type: 'custom',
+      key: 'cmGestureBackend',
+      stackBelowLabel: true,
+      label: 'Master Action Routing',
+      group: 'Advanced / Diagnostics',
+      render(ctx) { return renderMasterRoutingControl(ctx); },
     },
     {
       type: 'custom',
       key: 'cmGlobalUnmount',
       stackBelowLabel: true,
-      label: 'Global Unmount',
-      group: 'Global Chat Optimization',
+      label: 'Global Unmount (legacy physical optimizer)',
+      group: 'Advanced / Diagnostics',
       render(ctx) { return renderGlobalUnmountControl(ctx); },
     },
     {
       type: 'custom',
       key: 'cmGlobalPagination',
       stackBelowLabel: true,
-      label: 'Global Pagination',
-      group: 'Global Chat Optimization',
+      label: 'Global Pagination (legacy physical windowing)',
+      group: 'Advanced / Diagnostics',
       render(ctx) { return renderGlobalPaginationControl(ctx); },
-    },
-    {
-      type: 'action',
-      key: 'cmResetAllMechanismsCurrentChat',
-      label: 'Reset 3 Mechanisms (This Chat)',
-      group: 'Actions',
-      statusText: '',
-      buttons: [
-        {
-          label: 'Reset 3 Mechanisms (This Chat)',
-          primary: true,
-          action: () => resetAllMechanismsCurrentChat(),
-          successText: 'Reset 3 mechanisms for current chat.',
-          errorText: 'Reset 3 mechanisms failed.',
-        },
-      ],
     },
   ];
 
@@ -881,6 +1042,13 @@
     },
   ];
 
+  // Hub Mode Default: hide the Advanced / Diagnostics group unless the
+  // disclosure is on or an advanced mechanism is active (safety auto-reveal).
+  function getChatMechanismsControls() {
+    if (isMechanismsAdvancedRevealed()) return CHAT_MECHANISMS_CONTROLS;
+    return CHAT_MECHANISMS_CONTROLS.filter((c) => c.group !== 'Advanced / Diagnostics');
+  }
+
   function register() {
     const api = getApi();
     if (!api?.registerPlugin) return false;
@@ -890,7 +1058,7 @@
       api.registerPlugin({
         key: 'chatMechanisms',
         getControls() {
-          return CHAT_MECHANISMS_CONTROLS;
+          return getChatMechanismsControls();
         },
       });
       api.registerPlugin({
