@@ -140,6 +140,7 @@
     MIG_TITLES_V1: `${NS_.DISK}:migrate:titles:v1`,
     COLLAPSED_V1: `${NS_.DISK}:collapsed:v1`,   // NEW: persist collapse state
   });
+  const KEY_VISIT_STATE_MODE_V1 = 'h2o:prm:cgx:mnmp:ui:chat-pages:visit-state-mode:v1';
 
   const UI_CFG_ = Object.freeze({
     KEY: `${NS_.DISK}:cfg:ui:v1`,
@@ -431,6 +432,10 @@
     return ENGINE_readUnmountCollapsed(answerId, fallback, {
       sources: ['answer-title', 'title-list-row'],
     });
+  };
+
+  const ENGINE_isVisitResetMode = () => {
+    try { return W.localStorage?.getItem(KEY_VISIT_STATE_MODE_V1) === 'reset'; } catch { return false; }
   };
 
   const ENGINE_loadCollapsed = () => {
@@ -859,6 +864,25 @@ No quotes, no emojis, no numbering. Just the title text.`;
   };
 
   const DOM_getTurnNumber = (msgEl) => {
+    // Stable identity first: the number registered for this turn in the
+    // authoritative runtime map (section-derived, full chat). Never derive it
+    // from the visible/hydrated subset — ChatGPT hydrates content
+    // progressively and a positional index would renumber turns as content
+    // streams in or pages collapse/expand. When the runtime cannot answer
+    // yet, return 0 and let the repair pass stamp the number once it can.
+    try {
+      const aId = API_AT_normalizeAnswerId(DOM_getAnswerId(msgEl));
+      const rt = W.H2O?.turnRuntime || null;
+      if (aId && rt) {
+        const record = rt.getTurnRecordByAId?.(aId)
+          || rt.getTurnRecordByTurnId?.(aId)
+          || rt.getTurnRecordByTurnId?.(`turn:a:${aId}`)
+          || null;
+        const turnNo = Number(record?.turnNo || record?.idx || 0);
+        if (Number.isFinite(turnNo) && turnNo > 0) return Math.floor(turnNo);
+      }
+    } catch {}
+
     try {
       const tRaw = Number(W.H2O?.turn?.getTurnIndexByAEl?.(msgEl));
       if (Number.isFinite(tRaw)) {
@@ -1206,6 +1230,10 @@ No quotes, no emojis, no numbering. Just the title text.`;
     const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
     const turnNum = DOM_getTurnNumber(msgEl);
     if (labelEl) labelEl.textContent = turnNum > 0 ? `TITLE ${turnNum}` : 'TITLE';
+    // The small external collapsed number is rendered by a ::before
+    // pseudo-element from this attribute — generated content never enters the
+    // bar's text content and cannot break click/edit handlers.
+    if (turnNum > 0) UTIL_setAttr(bar, 'data-h2o-turn-num', String(turnNum));
 
     const id = DOM_getAnswerId(msgEl);
     if (id) {
@@ -1214,7 +1242,14 @@ No quotes, no emojis, no numbering. Just the title text.`;
       DOM_enableCollapseToggle(bar, msgEl, id);  // NEW
     }
     const textEl = bar.querySelector(DOM_selScoped(UI_.TEXT));
-    if (textEl && title) textEl.textContent = title;
+    const incoming = UTIL_textTrim(title);
+    const current = UTIL_textTrim(textEl?.textContent || '');
+    // Hydration/alias repair may arrive with an empty skeleton title after a
+    // real title is already visible in the stack. Title quality is monotonic:
+    // a placeholder may be upgraded, but it can never overwrite real text.
+    if (textEl && incoming && !(DOM_isPlaceholderTitle(incoming) && !DOM_isPlaceholderTitle(current))) {
+      if (current !== incoming) textEl.textContent = incoming;
+    }
 
     // Reconcile newly hydrated same-turn fragments against the current live
     // collapsed state without mutating ownership or persistence.
@@ -1366,25 +1401,56 @@ No quotes, no emojis, no numbering. Just the title text.`;
     return msgEl.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || msgEl.parentElement || null;
   };
 
-  // Find the preceding user-turn host (the question for this answer).
-  // Walks backwards through siblings of the assistant turn host to find
-  // the closest conversation-turn that contains a user message.
+  // Canonical Q+A pairing: ChatGPT wraps each turn <section data-testid=
+  // "conversation-turn-N" data-turn="user|assistant"> in its own only-child
+  // wrapper DIV, so sibling walks between turn hosts dead-end. Pair by
+  // document-order adjacency over the live turn-section list instead, guarded
+  // to the same conversation flow (main). Short cache keeps mass ops cheap.
+  const DOM_listTurnSections = (() => {
+    let cache = { at: 0, list: [] };
+    return () => {
+      const now = Date.now();
+      if (now - cache.at <= 300 && cache.list.length) return cache.list;
+      let list = [];
+      try { list = Array.from(D.querySelectorAll(SEL_.TURN)); } catch {}
+      cache = { at: now, list };
+      return list;
+    };
+  })();
+
+  const DOM_getAdjacentTurnHost = (host, dir) => {
+    const section = host?.closest?.(SEL_.TURN) || null;
+    if (!section) return null;
+    const list = DOM_listTurnSections();
+    const idx = list.indexOf(section);
+    if (idx < 0) return null;
+    const next = list[idx + (dir < 0 ? -1 : 1)] || null;
+    if (!next) return null;
+    const flowOf = (el) => el.closest?.('main') || el.ownerDocument?.body || null;
+    const flow = flowOf(section);
+    return flow && flow === flowOf(next) ? next : null;
+  };
+
+  const DOM_turnHostHasRole = (host, role) => {
+    if (!host) return false;
+    const turnAttr = String(host.getAttribute?.('data-turn') || '').trim().toLowerCase();
+    if (turnAttr) return turnAttr === role;
+    try { return !!host.querySelector?.(`[data-message-author-role="${role}"]`); } catch { return false; }
+  };
+
+  // Find the paired user-turn host (the question for this answer).
   const DOM_getQuestionTurnHost = (msgEl) => {
     const turnHost = DOM_getAnswerTurnHost(msgEl);
     if (!turnHost) return null;
-    let prev = turnHost.previousElementSibling;
-    while (prev) {
-      // Skip dividers and other non-turn elements
-      const role = String(prev.getAttribute?.('data-message-author-role') || '').toLowerCase();
-      const hasUser = !!prev.querySelector?.('[data-message-author-role="user"]');
-      const hasAssistant = !!prev.querySelector?.('[data-message-author-role="assistant"]');
-      if ((role === 'user' || hasUser) && !hasAssistant) return prev;
-      if (hasUser || role === 'user') return prev;
-      // If this is another assistant turn stop — don't cross another Q/A pair
-      if (role === 'assistant' || hasAssistant) break;
-      prev = prev.previousElementSibling;
-    }
-    return null;
+    try {
+      const sameTurnQuestion = turnHost.querySelector?.('[data-message-author-role="user"]') || null;
+      if (sameTurnQuestion && sameTurnQuestion !== msgEl && !sameTurnQuestion.contains?.(msgEl)) {
+        return sameTurnQuestion;
+      }
+    } catch {}
+    const prev = DOM_getAdjacentTurnHost(turnHost, -1);
+    if (!prev) return null;
+    return DOM_turnHostHasRole(prev, 'user') && !DOM_turnHostHasRole(prev, 'assistant') ? prev : null;
   };
 
   const DOM_getAnswerToolbars = (msgEl) => {
@@ -1431,6 +1497,7 @@ No quotes, no emojis, no numbering. Just the title text.`;
   const DOM_isAnswerCurrentlyCollapsed = (answerId, msgEl = null, bar = null) => {
     const id = API_AT_normalizeAnswerId(answerId || DOM_getAnswerId(msgEl));
     if (!id) return false;
+    if (STATE_.visitResetPending) return false;
 
     const liveMsgEl = msgEl || API_AT_getMessageEl(id);
     if (!liveMsgEl) return false;
@@ -1454,6 +1521,17 @@ No quotes, no emojis, no numbering. Just the title text.`;
     const msgEl = API_AT_getMessageEl(id);
     const bar = API_AT_getBar(id);
     if (!msgEl || !bar) return false;
+
+    // Mutation-driven caller: only consult the intent engine when it is
+    // active (O(1) cached gate). ChatGPT hydration emits thousands of
+    // mutations on chat open; an unconditional bridge consult here was one
+    // of the open-chat freeze drivers.
+    const intentApi = TITLE_INTENT_API();
+    if (intentApi?.isTitleIntentEngineActive?.() === true) {
+      try { intentApi.noteTitleIntentStat?.('mutationReplayRequests'); } catch {}
+      const desired = TITLE_INTENT_applyProjection(id, msgEl, bar, { animate: false });
+      if (desired && Number(desired.rev || 0) > 0) return true;
+    }
 
     if (ENGINE_isUnmountEngineMode()) {
       const engineCollapsed = ENGINE_readUnmountTitleShellCollapsed(id, null);
@@ -1598,6 +1676,8 @@ No quotes, no emojis, no numbering. Just the title text.`;
     if (nextCollapsed) STATE_.collapsed.add(answerId);
     else STATE_.collapsed.delete(answerId);
     ENGINE_saveCollapsed();
+    TITLE_INTENT_recordManual(answerId, nextCollapsed, 'answer-title');
+    TITLE_INTENT_applyProjection(answerId, msgEl, bar, { animate: false });
 
     // Notify other modules (e.g. MiniMap may want to reposition panels)
     UTIL_dispatch(EV_.ANSWER_COLLAPSE, { answerId, collapsed: nextCollapsed });
@@ -1661,6 +1741,7 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
     // Collapsed state selector
     const S_BAR_COLLAPSED = `${S_BAR}[${ATTR_.CGXUI_STATE}~="collapsed"]`;
+    const S_STACK_WASH = `${S_BAR}[data-h2o-in-title-stack][data-h2o-title-wash]`;
 
     return `
 /* ── Answer Title Bar ── */
@@ -1701,7 +1782,8 @@ ${S_BAR_COLLAPSED}{
   border-style: dashed;
 }
 
-[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}{
+[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR},
+${S_STACK_WASH}{
   --h2o-at-collapsed-text-resolved: var(--h2o-at-wash-text, inherit);
   background: linear-gradient(
     90deg,
@@ -1712,16 +1794,20 @@ ${S_BAR_COLLAPSED}{
   box-shadow: 0 0 10px color-mix(in srgb, var(--h2o-at-wash-glow, transparent) 16%, transparent);
 }
 
-html[data-cgxui-at-collapsed-text-mode="consistent"] [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}{
+html[data-cgxui-at-collapsed-text-mode="consistent"] [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR},
+html[data-cgxui-at-collapsed-text-mode="consistent"] ${S_STACK_WASH}{
   --h2o-at-collapsed-text-resolved: var(--h2o-at-collapsed-consistent-text, rgba(242, 246, 255, 0.95));
 }
 
-[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_TEXT}{
+[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_TEXT},
+${S_STACK_WASH} ${S_TEXT}{
   color: var(--h2o-at-collapsed-text-resolved, inherit) !important;
 }
 
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_LABEL},
-[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_ICON}{
+[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_ICON},
+${S_STACK_WASH} ${S_LABEL},
+${S_STACK_WASH} ${S_ICON}{
   color: color-mix(in srgb, var(--h2o-at-collapsed-text-resolved, currentColor) 72%, transparent) !important;
 }
 
@@ -1752,6 +1838,33 @@ ${S_BADGE}{
 [${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR} ${S_BADGE}{
   background: #facc15 !important;
   box-shadow: 0 0 6px rgba(250, 204, 21, 0.8) !important;
+}
+
+/* Collapsed bars show the small stable turn number OUTSIDE the bar, to its
+   left — the same visual language as the big question/answer numbers (bold,
+   neutral gray numeral, no chip/background), just smaller. It is a ::before
+   pseudo-element reading the bar's data-h2o-turn-num attribute: generated
+   content never enters the bar's text content, cannot be selected as title
+   text, and cannot interfere with click/dblclick/edit/hash controls. */
+[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}{
+  position: relative;
+  overflow: visible;
+}
+
+[${ATTR_.ROLE}="assistant"][${ATTR_.COLLAPSED}="1"] > ${S_BAR}[data-h2o-turn-num]::before{
+  content: attr(data-h2o-turn-num);
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-right: 10px;
+  min-width: 1.1em;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: rgba(128, 128, 128, 0.85);
+  text-align: right;
+  pointer-events: none;
 }
 
 /* NEW: Collapse chevron icon */
@@ -1970,7 +2083,7 @@ ${S_BAR}:active{
           }
 
           const current = UTIL_textTrim(textEl.textContent);
-          if (!current || current === 'Untitled Answer' || /^\d+$/.test(current)) {
+          if (DOM_isPlaceholderTitle(current)) {
             if (!fullTextNow || fullTextNow.length < CFG_.REPAIR_TEXT_MIN) return;
             const better = ENGINE_generateLocalTitle(fullTextNow);
             if (!ENGINE_isGarbageTitle(better) && better !== current) {
@@ -1982,6 +2095,21 @@ ${S_BAR}:active{
             }
           }
         });
+
+        // Sweep stale NO ANSWER shells: a user turn whose next adjacent turn is
+        // an assistant is a paired question and must not carry a NO ANSWER bar
+        // (the paired assistant answer owns the pair's only title bar).
+        try {
+          const staleBars = D.querySelectorAll(`${SEL_.OWNED_BAR_ANY}[data-at-no-answer="1"]`);
+          staleBars.forEach((bar) => {
+            const host = bar.closest?.(SEL_.TURN);
+            if (!host) return;
+            const next = DOM_getAdjacentTurnHost(host, 1);
+            if (next && DOM_turnHostHasRole(next, 'assistant')) {
+              DOM_removeNoAnswerTitleBars(host);
+            }
+          });
+        } catch (e) { DIAG_err('repair:noAnswerSweep', e); }
       } catch (e) { DIAG_err('repair:tick', e); }
     }, CFG_.REPAIR_EVERY_MS);
 
@@ -2009,9 +2137,42 @@ function API_AT_getMessageEl(answerId) {
 }
 
 function API_AT_getBar(answerId) {
+  // A bar relocated into a page title-bar stack is still THE bar.
+  const stacked = DOM_findStackedBarByAnswerId(answerId);
+  if (stacked) return stacked;
   const msgEl = API_AT_getMessageEl(answerId);
   if (!msgEl) return null;
   try { return msgEl.querySelector(DOM_selScoped(UI_.BAR)); } catch { return null; }
+}
+
+// Detached title bar for a turn whose message body is not hydrated: the SAME
+// component from the same skeleton factory, wired for the given answer id so
+// hydration upgrades it in place (DOM_ensureTitleBar finds it via the stack
+// lookup and reuses it — no swap, no duplicate). Callers own its placement.
+function API_AT_buildDetachedBar(opts = {}) {
+  const bar = DOM_buildBarSkeleton();
+  const turnNo = Math.max(0, Number(opts?.turnNo || 0) || 0);
+  const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
+  if (labelEl) labelEl.textContent = turnNo > 0 ? `TITLE ${turnNo}` : 'TITLE';
+  if (turnNo > 0) UTIL_setAttr(bar, 'data-h2o-turn-num', String(turnNo));
+  const textEl = bar.querySelector(DOM_selScoped(UI_.TEXT));
+  const title = UTIL_textTrim(opts?.title);
+  if (opts?.noAnswer) {
+    // Mirror the real NO ANSWER shell: attr + 'NO ANSWER' as the text.
+    UTIL_setAttr(bar, ATTR_.NO_ANSWER || 'data-at-no-answer', '1');
+    const noAnswerId = API_AT_normalizeAnswerId(opts?.answerId);
+    if (noAnswerId) UTIL_setAttr(bar, 'data-answer-id', noAnswerId);
+    if (textEl) textEl.textContent = 'NO ANSWER';
+  } else {
+    if (textEl) textEl.textContent = title || 'Untitled Answer';
+    const answerId = API_AT_normalizeAnswerId(opts?.answerId);
+    if (answerId) {
+      UTIL_setAttr(bar, 'data-answer-id', answerId);
+      DOM_enableTitleEditing(bar, answerId);
+    }
+  }
+  UTIL_setAttr(bar, 'data-h2o-detached-title-bar', '1');
+  return bar;
 }
 
 function API_AT_ensureBar(answerId) {
@@ -2032,9 +2193,22 @@ function API_AT_getTitles() {
   return Object.assign({}, STATE_.titles || {});
 }
 
-function API_AT_isCollapsed(answerId) {
+  function API_AT_isCollapsed(answerId) {
   const id = API_AT_normalizeAnswerId(answerId);
   if (!id) return false;
+  if (STATE_.visitResetPending) return false;
+  try {
+    // isCollapsed is the hottest read API in the module (row summaries call
+    // it per row, per pass). The resolver may only be consulted behind the
+    // O(1) engine-active gate — an ungated consult here cost a storage read
+    // + ledger parse per call and, with a persisted intent, a full membership
+    // scan per call, which froze chat open.
+    const intentApi = TITLE_INTENT_API();
+    if (intentApi?.isTitleIntentEngineActive?.() === true) {
+      const desired = intentApi.resolveDesiredTitleState?.(id) || null;
+      if (desired && Number(desired.rev || 0) > 0) return String(desired.state || '') === 'collapsed';
+    }
+  } catch {}
   if (ENGINE_isUnmountEngineMode()) {
     const engineCollapsed = ENGINE_readUnmountTitleShellCollapsed(id, null);
     if (engineCollapsed !== null) return !!engineCollapsed;
@@ -2057,7 +2231,10 @@ function API_AT_setCollapsed(answerId, collapsed, opts = {}) {
   const bar = ensured.bar || null;
   if (!bar) return { ok: false, status: 'bar-missing', answerId: id, collapsed: !!collapsed };
   const nextCollapsed = !!collapsed;
-  const currentCollapsed = API_AT_isCollapsed(id);
+  const source = String(opts?.source || '').trim();
+  const currentCollapsed = source.startsWith('title-intent:')
+    ? DOM_hasCollapsedDomResidue(msgEl, bar)
+    : API_AT_isCollapsed(id);
   if (currentCollapsed === nextCollapsed) {
     return { ok: true, status: 'ok', answerId: id, collapsed: nextCollapsed };
   }
@@ -2065,6 +2242,17 @@ function API_AT_setCollapsed(answerId, collapsed, opts = {}) {
   if (nextCollapsed) STATE_.collapsed.add(id);
   else STATE_.collapsed.delete(id);
   ENGINE_saveCollapsed();
+  {
+    // Manual overrides are recorded for explicit per-title gestures ONLY
+    // ('answer-title' = bar click). Batch sources ('title-list-row',
+    // 'chat-page-divider:dot', 'title-intent:*') must never record overrides:
+    // each override bumps the ledger rev, so a 25-member batch would create
+    // 25 overrides all NEWER than the page intent and permanently shadow it.
+    if (source === 'answer-title' || opts?.manualTitleIntent === true) {
+      TITLE_INTENT_recordManual(id, nextCollapsed, source || 'answer-title');
+      TITLE_INTENT_applyProjection(id, msgEl, bar, { animate: false });
+    }
+  }
   UTIL_dispatch(EV_.ANSWER_COLLAPSE, { answerId: id, collapsed: nextCollapsed });
   DIAG_step('collapse:set', { answerId: id, collapsed: nextCollapsed, source: String(opts?.source || 'api') });
   return { ok: true, status: 'ok', answerId: id, collapsed: nextCollapsed };
@@ -2115,11 +2303,15 @@ function API_AT_resetCollapsedForCurrentChat(opts = {}) {
   }
 
   ENGINE_saveCollapsed();
+  STATE_.visitResetPending = false;
   return {
     ok: true,
     status: 'ok',
     answers: ids.size,
     changed,
+    storageKey: KEY_.COLLAPSED_V1,
+    remaining: STATE_.collapsed.size,
+    persistedChanged: changed > 0,
   };
 }
 
@@ -2157,7 +2349,14 @@ function API_AT_sync(answerId, opts = {}) {
     titleApplied = true;
   }
   if (bar) {
-    const shouldBeCollapsed = ENGINE_isUnmountEngineMode()
+    const desired = TITLE_INTENT_applyProjection(id, msgEl, bar, { animate: opts?.animate === true });
+    if (desired && Number(desired.rev || 0) > 0) {
+      collapseApplied = true;
+      return { ok: true, status: 'ok', answerId: id, titleApplied, collapseApplied };
+    }
+    const shouldBeCollapsed = STATE_.visitResetPending
+      ? false
+      : ENGINE_isUnmountEngineMode()
       ? !!ENGINE_readUnmountTitleShellCollapsed(id, false)
       : STATE_.collapsed.has(id);
     if (shouldBeCollapsed) {
@@ -2198,6 +2397,7 @@ MOD_OBJ.api.public = Object.freeze({
   getMessageEl: API_AT_getMessageEl,
   getBar: API_AT_getBar,
   ensureBar: API_AT_ensureBar,
+  buildDetachedBar: API_AT_buildDetachedBar,
   sync: API_AT_sync,
   getConfig: API_AT_getConfig,
   applySetting: API_AT_applySetting,
@@ -2220,6 +2420,7 @@ MOD_OBJ.api.public = Object.freeze({
 
     ENGINE_migrateTitlesOnce();
     STATE_.titles = ENGINE_loadTitles();
+    STATE_.visitResetPending = ENGINE_isVisitResetMode();
     STATE_.collapsed = ENGINE_loadCollapsed();  // NEW
 
     // Listen for external title changes (MiniMap popup or other modules)
@@ -2431,7 +2632,10 @@ MOD_OBJ.api.public = Object.freeze({
       } else {
         const localTitle = ENGINE_generateLocalTitle(text || '');
         const stored = STATE_.titles[id];
-        const finalTitle = stored || localTitle;
+        const existing = DOM_getMeaningfulTitleFromBar(DOM_ensureTitleBar(msgEl));
+        const finalTitle = (!DOM_isPlaceholderTitle(stored) ? stored : '')
+          || existing
+          || localTitle;
         DOM_setTitleOnAnswer(msgEl, finalTitle);
 
         STATE_.titles[id] = finalTitle;
@@ -2452,7 +2656,11 @@ MOD_OBJ.api.public = Object.freeze({
     const localTitle = ENGINE_generateLocalTitle(text);
     const apiTitle = await ENGINE_generateApiTitle(text);
     const stored = STATE_.titles[id];
-    const finalTitle = stored || apiTitle || localTitle;
+    const existing = DOM_getMeaningfulTitleFromBar(DOM_ensureTitleBar(msgEl));
+    const finalTitle = (!DOM_isPlaceholderTitle(stored) ? stored : '')
+      || existing
+      || (!DOM_isPlaceholderTitle(apiTitle) ? apiTitle : '')
+      || localTitle;
 
     DOM_setTitleOnAnswer(msgEl, finalTitle);
 
