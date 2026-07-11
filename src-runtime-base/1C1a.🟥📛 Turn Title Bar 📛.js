@@ -900,6 +900,100 @@ No quotes, no emojis, no numbering. Just the title text.`;
     return 0;
   };
 
+  // Native hydration can briefly retain an older message shell while a new
+  // shell for the same canonical answer is already live. Per-message dedup is
+  // therefore insufficient: both bars can be connected, visible, and later
+  // upgraded by the repair loop. The live/stack-selected bar wins; remove only
+  // candidates whose answer identity resolves to the same canonical answer.
+  // Turn number is a fallback solely for an unstamped candidate — never use a
+  // stale number to merge two differently identified answers.
+  const DOM_removeDuplicateTitleBarsForAnswer = (answerId, keepBar, msgEl = null) => {
+    const id = API_AT_normalizeAnswerId(answerId);
+    if (!id || !keepBar) return 0;
+    const primaryId = DOM_resolvePrimaryAnswerId(id);
+    const turnNo = Math.max(0, Number(
+      DOM_getTurnNumber(msgEl) || DOM_resolveTurnNumberByAnswerId(id) || 0
+    ) || 0);
+    const meaningfulTitle = (bar) => {
+      const text = UTIL_textTrim(
+        bar?.querySelector?.(DOM_selScoped(UI_.TEXT))?.textContent || ''
+      ).replace(/\s+/g, ' ');
+      return (!text || /^(?:…|\.{2,}|untitled answer|answer(?:\s+\d+)?|\d+)$/i.test(text)) ? '' : text;
+    };
+    const candidateBars = new Set([keepBar]);
+    const identityIds = new Set([id, primaryId].filter(Boolean));
+    try {
+      const rt = W.H2O?.turnRuntime || null;
+      const record = rt?.getTurnRecordByAId?.(id)
+        || rt?.getTurnRecordByTurnId?.(id)
+        || (turnNo ? rt?.getTurnRecordByTurnNo?.(turnNo) : null)
+        || null;
+      for (const value of [
+        record?.primaryAId,
+        record?.answerId,
+        record?.turnId,
+        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+        ...(Array.isArray(record?._aliasIds) ? record._aliasIds : []),
+      ]) {
+        const familyId = API_AT_normalizeAnswerId(value);
+        if (familyId) identityIds.add(familyId);
+      }
+    } catch {}
+    // Indexed selectors keep the five-second repair O(answer aliases), not a
+    // full-document title-bar scan for every hydrated answer.
+    for (const familyId of identityIds) {
+      try {
+        const esc = (typeof CSS !== 'undefined' && CSS?.escape)
+          ? CSS.escape(familyId)
+          : familyId.replace(/(["\\])/g, '\\$1');
+        for (const candidate of D.querySelectorAll(`${DOM_selScoped(UI_.BAR)}[data-answer-id="${esc}"]`)) {
+          candidateBars.add(candidate);
+        }
+      } catch {}
+    }
+    if (turnNo > 0) {
+      try {
+        const S_BAR = DOM_selScoped(UI_.BAR);
+        for (const candidate of D.querySelectorAll(
+          `${S_BAR}:not([data-answer-id])[data-h2o-turn-num="${turnNo}"],`
+            + `${S_BAR}[data-answer-id=""][data-h2o-turn-num="${turnNo}"],`
+            + `${S_BAR}:not([data-answer-id])[data-h2o-stack-turn-no="${turnNo}"],`
+            + `${S_BAR}[data-answer-id=""][data-h2o-stack-turn-no="${turnNo}"]`
+        )) candidateBars.add(candidate);
+      } catch {}
+    }
+    let recoveredTitle = meaningfulTitle(keepBar);
+    let removed = 0;
+    try {
+      for (const candidate of candidateBars) {
+        if (candidate === keepBar || !candidate?.isConnected || DOM_isNoAnswerTitleBar(candidate)) continue;
+        const candidateId = API_AT_normalizeAnswerId(candidate.getAttribute('data-answer-id') || '');
+        const candidateTurnNo = Math.max(0, Number(
+          candidate.getAttribute('data-h2o-stack-turn-no')
+            || candidate.getAttribute('data-h2o-turn-num')
+            || 0
+        ) || 0);
+        const sameIdentity = candidateId
+          ? DOM_resolvePrimaryAnswerId(candidateId) === primaryId
+          : !!(turnNo && candidateTurnNo === turnNo);
+        if (!sameIdentity) continue;
+        if (!recoveredTitle) recoveredTitle = meaningfulTitle(candidate);
+        try { candidate.remove(); removed += 1; } catch {}
+      }
+    } catch {}
+    if (recoveredTitle && !meaningfulTitle(keepBar)) {
+      try {
+        const textEl = keepBar.querySelector(DOM_selScoped(UI_.TEXT));
+        if (textEl) textEl.textContent = recoveredTitle;
+        STATE_.titles[id] = recoveredTitle;
+      } catch {}
+    }
+    if (turnNo > 0) {
+      try { keepBar.setAttribute('data-h2o-turn-num', String(turnNo)); } catch {}
+    }
+    return removed;
+  };
+
   // A title bar relocated into a page title-bar stack (Thread Pages
   // Controller) is still THE bar for its answer. Lookups must find it there
   // and must NOT re-home it or create a duplicate inside the message element
@@ -1058,7 +1152,9 @@ No quotes, no emojis, no numbering. Just the title text.`;
         // not swap the node: preserve stack identity, washer, and open state.
         try { stacked.removeAttribute('data-h2o-detached-title-bar'); } catch {}
         try { stacked.setAttribute('data-answer-id', aId); } catch {}
-        return wireBarIdentity(stacked);
+        const survivor = wireBarIdentity(stacked);
+        DOM_removeDuplicateTitleBarsForAnswer(aId, survivor, msgEl);
+        return survivor;
       }
     } catch {}
     try {
@@ -1077,7 +1173,11 @@ No quotes, no emojis, no numbering. Just the title text.`;
         msgEl.insertBefore(existing, msgEl.firstElementChild || null);
       }
     } catch {}
-    if (existing) return wireBarIdentity(existing);
+    if (existing) {
+      const survivor = wireBarIdentity(existing);
+      DOM_removeDuplicateTitleBarsForAnswer(DOM_getAnswerId(msgEl), survivor, msgEl);
+      return survivor;
+    }
 
     const bar = DOM_buildBarSkeleton();
 
@@ -1085,7 +1185,9 @@ No quotes, no emojis, no numbering. Just the title text.`;
     if (firstChild) msgEl.insertBefore(bar, firstChild);
     else msgEl.appendChild(bar);
 
-    return wireBarIdentity(bar);
+    const survivor = wireBarIdentity(bar);
+    DOM_removeDuplicateTitleBarsForAnswer(DOM_getAnswerId(msgEl), survivor, msgEl);
+    return survivor;
   };
 
   const DOM_isPlaceholderTitle = (value) => {
@@ -1804,6 +1906,12 @@ ${S_BAR}:active{
 
           const id = DOM_getAnswerId(msgEl);
           if (!id) return;
+
+          // The ensure owner elects one live/stacked survivor and removes
+          // hydration/restoration remnants before this cadence wires or
+          // replays anything. Never legitimize both sides of a duplicate.
+          const canonicalBar = DOM_ensureTitleBar(msgEl);
+          if (!canonicalBar || canonicalBar !== bar) return;
 
           // Self-heal gesture identity (§4): a bar that survived — or was
           // rebuilt around — native re-rendering may have missed every
