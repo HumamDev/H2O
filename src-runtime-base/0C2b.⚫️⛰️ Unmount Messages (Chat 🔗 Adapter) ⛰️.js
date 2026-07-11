@@ -133,6 +133,10 @@
   const ATTR_UNMOUNTM_AREV_CUR = 'h2oARevCur';
   const ATTR_UNMOUNTM_AREV_TOTAL = 'h2oARevTotal';
   const ATTR_UNMOUNTM_TURN_HIDDEN = 'h2oUmTurnHidden';
+  const ATTR_UNMOUNTM_EXT_CHAT_PAGE_HIDDEN = 'data-cgxui-chat-page-hidden';
+  const ATTR_UNMOUNTM_EXT_CHAT_PAGE_QUESTION_HIDDEN = 'data-cgxui-chat-page-question-hidden';
+  const ATTR_UNMOUNTM_EXT_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
+  const ATTR_UNMOUNTM_EXT_CHAT_PAGE_TITLE_LIST_HIDDEN = 'data-cgxui-chat-page-title-list-hidden';
 
   // String tokens
   const STR_UNMOUNTM_ROLE_A = 'assistant';
@@ -208,6 +212,7 @@
   const NS_DISK_UNMOUNTM = `h2o:${SUITE}:${HOST}:${DsID}`;
   const KEY_UNMOUNTM_CFG_V1 = `${NS_DISK_UNMOUNTM}:cfg:runtime:v1`;
   const KEY_UNMOUNTM_MANUAL_ANSWER_TITLE_BY_CHAT_V1 = `${NS_DISK_UNMOUNTM}:state:manual-answer-title:chat`;
+  const KEY_VISIT_STATE_MODE_V1 = 'h2o:prm:cgx:mnmp:ui:chat-pages:visit-state-mode:v1';
   const CFG_UNMOUNTM_DEFAULT_ENABLED = true;
   const CFG_UNMOUNTM_DEFAULT_MIN_MSGS_FOR_UNMOUNT = 25;  /* 👈👈👈  ↑ Num. messages → automatic soft-unmount */
   const CFG_UNMOUNTM_DEFAULT_UNMOUNT_MARGIN_PX = 2000;
@@ -550,6 +555,20 @@
     }) || null;
   }
 
+  function CORE_UM_isExternallyPageHidden(el) {
+    let cur = el;
+    try {
+      while (cur && cur !== document.documentElement) {
+        if (String(cur.getAttribute?.(ATTR_UNMOUNTM_EXT_CHAT_PAGE_HIDDEN) || '').trim() === '1') return true;
+        if (String(cur.getAttribute?.(ATTR_UNMOUNTM_EXT_CHAT_PAGE_QUESTION_HIDDEN) || '').trim() === '1') return true;
+        if (String(cur.getAttribute?.(ATTR_UNMOUNTM_EXT_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN) || '').trim() === '1') return true;
+        if (String(cur.getAttribute?.(ATTR_UNMOUNTM_EXT_CHAT_PAGE_TITLE_LIST_HIDDEN) || '').trim()) return true;
+        cur = cur.parentElement;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   function CORE_UM_getTurnGroupBounds(group) {
     if (!group || !Array.isArray(group.items) || !group.items.length) return null;
 
@@ -561,6 +580,7 @@
       const el = item?.el;
       if (!el || !el.isConnected) continue;
       if (el.dataset?.[ATTR_UNMOUNTM_TURN_HIDDEN] === '1') continue;
+      if (CORE_UM_isExternallyPageHidden(el)) continue;
 
       const rect = el.getBoundingClientRect();
       if (!Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) continue;
@@ -655,6 +675,10 @@
     return id ? `${KEY_UNMOUNTM_MANUAL_ANSWER_TITLE_BY_CHAT_V1}:${id}:v1` : '';
   }
 
+  function CORE_UM_isVisitResetMode() {
+    try { return W.localStorage?.getItem?.(KEY_VISIT_STATE_MODE_V1) === 'reset'; } catch (_) { return false; }
+  }
+
   function CORE_UM_normalizeManualCollapsedIdList(raw) {
     const src = Array.isArray(raw) ? raw : [];
     const seen = new Set();
@@ -702,13 +726,10 @@
     const key = CORE_UM_getManualAnswerTitleStoreKey(chatId);
     if (!key) return false;
     try {
-      const mergedAnswerTitleIds = CORE_UM_normalizeManualCollapsedIdList([
-        ...CORE_UM_normalizeManualCollapsedIdList(state?.answerTitleIds || []),
-        ...CORE_UM_normalizeManualCollapsedIdList(state?.titleListRowIds || []),
-      ]);
+      const answerTitleIds = CORE_UM_normalizeManualCollapsedIdList(state?.answerTitleIds || []);
       const payload = {
         v: 2,
-        answerTitleIds: mergedAnswerTitleIds,
+        answerTitleIds,
         titleListRowIds: [],
       };
       W.localStorage?.setItem?.(key, JSON.stringify(payload));
@@ -722,7 +743,7 @@
     const answerTitleIds = [];
     for (const [id, record] of S.manualCollapseById.entries()) {
       if (!id || !record?.sources?.size) continue;
-      if (record.sources.has('answer-title') || record.sources.has('title-list-row')) {
+      if (record.sources.has('answer-title')) {
         answerTitleIds.push(id);
       }
     }
@@ -737,6 +758,26 @@
   }
 
   function CORE_UM_restoreManualAnswerTitleCollapsedFromDisk(attempt = 0) {
+    // Thread Pages Controller owns the full visit reset. This adapter-level
+    // gate prevents its per-chat engine ledger from re-collapsing titles before
+    // that owner reaches the live-DOM cleanup phase.
+    if (CORE_UM_isVisitResetMode()) {
+      const chatId = CORE_UM_resolveChatId();
+      const key = CORE_UM_getManualAnswerTitleStoreKey(chatId);
+      let existed = false;
+      try {
+        existed = !!(key && W.localStorage?.getItem?.(key) != null);
+        if (key) W.localStorage?.removeItem?.(key);
+      } catch (_) {}
+      const previous = S.visitResetSuppression || null;
+      S.visitResetSuppression = {
+        chatId,
+        key,
+        existed: existed || !!(previous?.chatId === chatId && previous?.existed),
+        at: Date.now(),
+      };
+      return { ok: true, status: 'visit-reset-suppressed', changed: 0, pending: 0 };
+    }
     const model = CORE_UM_readManualAnswerTitleCollapsedIds();
     const answerTitleIds = Array.isArray(model?.answerTitleIds) ? model.answerTitleIds : [];
     const legacyTitleListRowIds = Array.isArray(model?.titleListRowIds) ? model.titleListRowIds : [];
@@ -1552,6 +1593,40 @@
   }
 
   function CORE_UM_getAnswerTitleBar(msgEl) {
+    // A page title-list rehosts the real title bar outside the turn. Once the
+    // stack owns that bar, it must win over any stale flow copy so Unmount
+    // updates the visible restore handle and never records the wrong shell.
+    try {
+      const ids = [
+        msgEl?.dataset?.[ATTR_UNMOUNTM_H2O_UID],
+        msgEl?.getAttribute?.('data-message-id'),
+        msgEl?.getAttribute?.('data-h2o-ans-id'),
+        msgEl?.getAttribute?.('data-cgxui-id'),
+      ].map(UTIL_UM_normalizeId).filter(Boolean);
+      for (const id of new Set(ids)) {
+        const esc = (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"');
+        const stacked = document.querySelector(`${SEL_UNMOUNTM_ANSWER_TITLE_BAR}[data-answer-id="${esc}"][data-h2o-in-title-stack]`);
+        if (stacked) return stacked;
+      }
+      if (document.querySelector('[data-cgxui="chat-page-title-list-synth"]')) {
+        const primaryFor = (rawId) => {
+          const raw = UTIL_UM_normalizeId(rawId);
+          if (!raw) return '';
+          try {
+            const rt = CORE_UM_getTurnRuntimeApi();
+            const record = rt?.getTurnRecordByAId?.(raw) || rt?.getTurnRecordByTurnId?.(raw) || null;
+            const primary = UTIL_UM_normalizeId(record?.primaryAId || record?.answerId || '');
+            if (primary) return primary;
+          } catch (_) {}
+          return CORE_UM_resolvePrimaryUid(raw) || raw;
+        };
+        const wanted = new Set(ids.map(primaryFor).filter(Boolean));
+        for (const bar of document.querySelectorAll(`${SEL_UNMOUNTM_ANSWER_TITLE_BAR}[data-h2o-in-title-stack]`)) {
+          const barId = bar.getAttribute?.('data-answer-id') || bar.getAttribute?.('data-h2o-stack-key') || '';
+          if (wanted.has(primaryFor(barId))) return bar;
+        }
+      }
+    } catch (_) {}
     try {
       const local = msgEl?.querySelector?.(SEL_UNMOUNTM_ANSWER_TITLE_BAR) || null;
       if (local) return local;
@@ -1581,20 +1656,57 @@
     return msgEl.closest?.(SEL_UNMOUNTM_CONV_TURN) || msgEl.parentElement || null;
   }
 
+  // Canonical Q+A pairing: ChatGPT wraps each turn section in its own
+  // only-child wrapper DIV, so sibling walks between turn hosts dead-end.
+  // Pair by document-order adjacency over the live turn-section list instead,
+  // guarded to the same conversation flow (main).
+  let CORE_UM_turnSectionCache = { at: 0, list: [] };
+
+  function CORE_UM_listTurnSections() {
+    const now = Date.now();
+    if (now - CORE_UM_turnSectionCache.at <= 300 && CORE_UM_turnSectionCache.list.length) {
+      return CORE_UM_turnSectionCache.list;
+    }
+    let list = [];
+    try { list = Array.from(document.querySelectorAll(SEL_UNMOUNTM_CONV_TURN)); } catch (_) {}
+    CORE_UM_turnSectionCache = { at: now, list };
+    return list;
+  }
+
+  function CORE_UM_getAdjacentTurnHost(host, dir) {
+    const section = host?.closest?.(SEL_UNMOUNTM_CONV_TURN) || null;
+    if (!section) return null;
+    const list = CORE_UM_listTurnSections();
+    const idx = list.indexOf(section);
+    if (idx < 0) return null;
+    const next = list[idx + (dir < 0 ? -1 : 1)] || null;
+    if (!next) return null;
+    const flowOf = (el) => el.closest?.('main') || el.ownerDocument?.body || null;
+    const flow = flowOf(section);
+    return flow && flow === flowOf(next) ? next : null;
+  }
+
+  function CORE_UM_turnHostHasRole(host, role) {
+    if (!host) return false;
+    const turnAttr = String(host.getAttribute?.('data-turn') || '').trim().toLowerCase();
+    if (turnAttr) return turnAttr === role;
+    try { return !!host.querySelector?.(`[data-message-author-role="${role}"]`); } catch (_) { return false; }
+  }
+
   function CORE_UM_getQuestionTurnHost(msgEl) {
     const turnHost = CORE_UM_getAnswerTurnHost(msgEl);
     if (!turnHost) return null;
-    let prev = turnHost.previousElementSibling;
-    while (prev) {
-      const role = String(prev.getAttribute?.('data-message-author-role') || '').toLowerCase();
-      const hasUser = !!prev.querySelector?.(SEL_UNMOUNTM_MSG_Q);
-      const hasAssistant = !!prev.querySelector?.(SEL_UNMOUNTM_MSG_A);
-      if ((role === STR_UNMOUNTM_ROLE_Q || hasUser) && !hasAssistant) return prev;
-      if (hasUser || role === STR_UNMOUNTM_ROLE_Q) return prev;
-      if (role === STR_UNMOUNTM_ROLE_A || hasAssistant) break;
-      prev = prev.previousElementSibling;
-    }
-    return null;
+    try {
+      const sameTurnQuestion = turnHost.querySelector?.(SEL_UNMOUNTM_MSG_Q) || null;
+      if (sameTurnQuestion && sameTurnQuestion !== msgEl && !sameTurnQuestion.contains?.(msgEl)) {
+        return sameTurnQuestion;
+      }
+    } catch (_) {}
+    const prev = CORE_UM_getAdjacentTurnHost(turnHost, -1);
+    if (!prev) return null;
+    return CORE_UM_turnHostHasRole(prev, STR_UNMOUNTM_ROLE_Q) && !CORE_UM_turnHostHasRole(prev, STR_UNMOUNTM_ROLE_A)
+      ? prev
+      : null;
   }
 
   function CORE_UM_getAnswerTurnSiblings(msgEl) {
@@ -1668,6 +1780,13 @@
   function CORE_UM_restoreManualNode(snapshot) {
     const el = snapshot?.el;
     if (!el?.style) return false;
+    // Page/title-list visibility is owned by 1C1b. An engine/background
+    // restore must not expose that wrapper; the explicit stacked-row open
+    // path removes the ownership stamp before asking Unmount to restore.
+    if (CORE_UM_isExternallyPageHidden(el)) {
+      try { el.style.setProperty('display', 'none', 'important'); } catch (_) { el.style.display = 'none'; }
+      return true;
+    }
     const prev = String(snapshot?.displayBefore || '');
     if (prev) {
       el.style.display = prev;
@@ -2556,6 +2675,55 @@
     return CORE_UM_getManualCollapsedIds(opts);
   }
 
+  function API_UM_clearManualCollapsedForCurrentChat(opts = {}) {
+    const chatId = String(opts?.chatId || CORE_UM_resolveChatId()).trim();
+    const currentChatId = CORE_UM_resolveChatId();
+    const storageKey = CORE_UM_getManualAnswerTitleStoreKey(chatId);
+    let persistedExisted = false;
+    try { persistedExisted = !!(storageKey && W.localStorage?.getItem?.(storageKey) != null); } catch (_) {}
+
+    if (S.manualRestoreTimer && chatId === currentChatId) {
+      try { W.clearTimeout(S.manualRestoreTimer); } catch (_) {}
+      S.manualRestoreTimer = 0;
+    }
+
+    let restored = 0;
+    let liveRecords = 0;
+    if (chatId === currentChatId) {
+      for (const [answerId, record] of Array.from(S.manualCollapseById.entries())) {
+        liveRecords += 1;
+        try { record?.sources?.clear?.(); } catch (_) {}
+        try { record?.sourceMeta?.clear?.(); } catch (_) {}
+        S.manualCollapseById.delete(answerId);
+        try {
+          const result = CORE_UM_restoreManualRecord(record);
+          if (result?.ok) restored += 1;
+        } catch (_) {}
+        if (opts?.emitLegacyAnswerCollapse !== false) {
+          try { CORE_UM_emitLegacyAnswerCollapse(answerId, false); } catch (_) {}
+        }
+      }
+      try { S.manualCollapseById.clear(); } catch (_) {}
+    }
+
+    try { if (storageKey) W.localStorage?.removeItem?.(storageKey); } catch (_) {}
+    const suppressed = S.visitResetSuppression || null;
+    return {
+      ok: true,
+      status: 'cleared',
+      chatId,
+      storageKey,
+      persistedExisted: persistedExisted || !!(suppressed?.chatId === chatId && suppressed?.existed),
+      suppressedEarlier: !!(suppressed?.chatId === chatId),
+      liveRecords,
+      restored,
+    };
+  }
+
+  function API_UM_getVisitResetState() {
+    return S.visitResetSuppression ? { ...S.visitResetSuppression } : null;
+  }
+
   function API_UM_remountAll(why) {
     if (!S.unmountMap?.size) return 0;
 
@@ -3266,6 +3434,8 @@
     // Read-only hydration-guard restore outcomes (§8G proof surface).
     // Zero-filled on fresh sessions via the lazy ensure — never {}.
     getRestoreGuardStats: () => ({ ...CORE_UM_ensureRestoreGuardStats() }),
+    clearManualCollapsedForCurrentChat: API_UM_clearManualCollapsedForCurrentChat,
+    getVisitResetState: API_UM_getVisitResetState,
     requestMountByUid: API_UM_requestMountByUid,
     requestMountPairByUid: API_UM_requestMountPairByUid,
     remountAll: API_UM_remountAll,
