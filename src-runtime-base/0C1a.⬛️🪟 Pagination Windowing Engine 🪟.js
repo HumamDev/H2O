@@ -483,6 +483,7 @@
   function goNewer(reason = 'api:goNewer') { return delegate('goNewer', [reason], false); }
   function goFirst(reason = 'api:goFirst') { return delegate('goFirst', [reason], false); }
   function goLast(reason = 'api:goLast') { return delegate('goLast', [reason], false); }
+  function getDividerPaginationState() { return delegate('getDividerPaginationState', [], null); }
   function API_PG_ensureVisibleById(anyId, opts = {}) { return delegate('ensureVisibleById', [anyId, opts], Promise.resolve({ ok: false, reason: 'adapter-unavailable', id: String(anyId || '').trim() })); }
   function resolveAnyIdToTurnRecord(anyId) { return delegate('resolveAnyIdToTurnRecord', [anyId], null); }
   function resolveAnyIdToPage(anyId) { return delegate('resolveAnyIdToPage', [anyId], null); }
@@ -531,6 +532,7 @@
     goToPage,
     goToPageStart,
     focusPage,
+    getDividerPaginationState,
     goOlder,
     goNewer,
     goFirst,

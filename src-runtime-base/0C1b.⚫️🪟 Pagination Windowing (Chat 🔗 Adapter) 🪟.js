@@ -337,6 +337,19 @@ Self-check:
     return S.dividerPagination.chatId === targetChatId && S.dividerPagination.pageIndex === targetPageIndex;
   }
 
+  // Read-only snapshot for gesture routers: tells callers whether the divider
+  // double-click focus/window session is active, and for which chat/page.
+  function getDividerPaginationState() {
+    return {
+      active: isDividerPaginationStateActive(),
+      chatId: String(S.dividerPagination.chatId || ''),
+      pageIndex: Number.isFinite(S.dividerPagination.pageIndex) ? S.dividerPagination.pageIndex : -1,
+      pageCount: Math.max(0, Number(S.pageCount) || 0),
+      transient: !!S.transientWindowingActive,
+      enabled: isFeatureEnabled(),
+    };
+  }
+
   function safeLogWarn(msg, extra) {
     try { console.warn('[H2O Pagination]', msg, extra || ''); } catch (_) {}
   }
@@ -3798,6 +3811,7 @@ Self-check:
     ensureVisibleById: API_PG_ensureVisibleById,
     goToPage,
     goToPageStart,
+    getDividerPaginationState,
     goOlder,
     goNewer,
     goFirst,
