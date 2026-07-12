@@ -320,33 +320,25 @@
   function resolveWashState(primaryAId) {
     const rawId = String(primaryAId || '').trim();
     const id = resolvePrimaryAId(rawId);
-    const candidateIds = new Set([id, rawId].filter(Boolean));
-    try {
-      const turnId = String(
-        W?.H2O_MM_turnIdByAId?.get?.(rawId)
-        || W?.H2O_MM_turnIdByAId?.get?.(id)
-        || ''
-      ).trim();
-      if (turnId) {
-        candidateIds.add(turnId);
-        const turn = W?.H2O_MM_turnById?.get?.(turnId) || null;
-        candidateIds.add(String(turn?.primaryAId || '').trim());
-        candidateIds.add(String(turn?.answerId || '').trim());
-      }
-    } catch {}
+    // Prefer the exact live identity before its canonical projection. During
+    // hydration both can exist briefly; exact-first prevents a stale primary
+    // mapping from borrowing another turn's wash.
+    const candidateIds = new Set([rawId, id].filter(Boolean));
     try {
       const rt = W?.H2O?.turnRuntime || null;
       const record = rt?.getTurnRecordByAId?.(rawId)
         || rt?.getTurnRecordByAId?.(id)
         || rt?.getTurnRecordByTurnId?.(rawId)
         || null;
-      candidateIds.add(String(record?.primaryAId || '').trim());
-      candidateIds.add(String(record?.turnId || '').trim());
-      for (const answerId of Array.isArray(record?.answerIds) ? record.answerIds : []) {
-        candidateIds.add(String(answerId || '').trim());
-      }
-      for (const aliasId of Array.isArray(record?._aliasIds) ? record._aliasIds : []) {
-        candidateIds.add(String(aliasId || '').trim());
+      const recordPrimary = String(record?.primaryAId || record?.answerId || '').trim();
+      const recordAnswerIds = Array.isArray(record?.answerIds)
+        ? record.answerIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      const recordOwnsRawId = !!(rawId && (recordPrimary === rawId || recordAnswerIds.includes(rawId)));
+      const rawIsTurnId = !!(rawId && String(record?.turnId || '').trim() === rawId);
+      if (record && (recordOwnsRawId || rawIsTurnId)) {
+        candidateIds.add(recordPrimary);
+        for (const answerId of recordAnswerIds) candidateIds.add(answerId);
       }
     } catch {}
     let rawName = null;
@@ -366,6 +358,146 @@
     const paintBg = color ? (isGold ? '#E6C200' : color) : '';
     const textColor = paintBg ? bestTextColor(paintBg) : '';
     return { id, matchedId, candidateIds: Array.from(candidateIds).filter(Boolean), colorName: color ? colorName : null, color, paintBg, textColor, isGold };
+  }
+
+  function readPersistedWashMap() {
+    for (const key of [STORAGE_WASH_MAP_NEW, STORAGE_WASH_MAP_OLD]) {
+      try {
+        const parsed = UTIL_storage.getJSON(key, null);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return Object.create(null);
+  }
+
+  function resolveMiniMapCanonicalId(anyId) {
+    const rawId = String(anyId || '').trim();
+    if (!rawId) return '';
+    const viaPrimary = resolvePrimaryAId(rawId);
+    if (viaPrimary && viaPrimary !== rawId) return viaPrimary;
+    try {
+      const core = W?.H2O?.MM?.core || TOPW?.H2O_MM_SHARED?.get?.()?.api?.core || null;
+      const turn = core?.getTurnById?.(rawId) || null;
+      const answerId = String(turn?.answerId || turn?.primaryAId || '').trim();
+      if (answerId) return answerId;
+    } catch {}
+    return viaPrimary || rawId;
+  }
+
+  function resolveExpectedMiniMapTarget(rawId, fallbackCanonicalId = '') {
+    const id = String(rawId || '').trim();
+    const fallbackId = String(fallbackCanonicalId || '').trim();
+    const core = W?.H2O?.MM?.core || TOPW?.H2O_MM_SHARED?.get?.()?.api?.core || null;
+    let btn = null;
+    try { btn = core?.getBtnById?.(id) || (fallbackId ? core?.getBtnById?.(fallbackId) : null) || null; } catch {}
+    if (btn && !btn.isConnected) btn = null;
+    // Fallback only: Core's registry is the normal O(1) path.
+    if (!btn) {
+      try {
+        btn = Array.from(document.querySelectorAll(SEL_.MM_BTN)).find((candidate) => (
+          String(candidate?.dataset?.primaryAId || candidate?.getAttribute?.(ATTR_.PRIMARY_A_ID) || '').trim() === id
+        )) || null;
+      } catch {}
+    }
+    const buttonId = String(
+      btn?.dataset?.primaryAId
+        || btn?.getAttribute?.(ATTR_.PRIMARY_A_ID)
+        || ''
+    ).trim();
+    let turn = null;
+    try {
+      turn = core?.getTurnById?.(buttonId || id)
+        || core?.getTurnById?.(id)
+        || (fallbackId ? core?.getTurnById?.(fallbackId) : null)
+        || null;
+    } catch {}
+    const turnId = String(turn?.turnId || '').trim();
+    const turnNo = Math.max(0, Number(turn?.index || 0) || 0);
+    const canonicalId = buttonId || fallbackId || id;
+    const dedupeKey = buttonId
+      ? `button:${buttonId}`
+      : turnId
+        ? `turn:${turnId}`
+        : `canonical:${canonicalId}`;
+    return { buttonId, turnId, turnNo, canonicalId, dedupeKey };
+  }
+
+  function collectExpectedMiniMapWashes() {
+    // Persisted wash state is the durable expectation. Merge the live object
+    // over it so a transient MiniMap rebuild cannot make an expected wash
+    // disappear merely because current buttons lost their projection attrs.
+    const merged = Object.assign(Object.create(null), readPersistedWashMap(), washMap || {});
+    const byTarget = new Map();
+    for (const [rawIdValue, rawName] of Object.entries(merged)) {
+      const rawId = String(rawIdValue || '').trim();
+      const colorName = isValidWashName(rawName) ? String(rawName).trim().toLowerCase() : '';
+      if (!rawId || !colorName) continue;
+      const fallbackCanonicalId = resolveMiniMapCanonicalId(rawId);
+      const target = resolveExpectedMiniMapTarget(rawId, fallbackCanonicalId);
+      const canonicalId = target.canonicalId;
+      if (!canonicalId) continue;
+      const rank = rawId === target.buttonId ? 3 : target.buttonId ? 2 : target.turnId ? 1 : 0;
+      const prior = byTarget.get(target.dedupeKey) || null;
+      const aliasRawIds = Array.from(new Set([...(prior?.aliasRawIds || []), rawId]));
+      if (prior && Number(prior._rank || 0) > rank) {
+        prior.aliasRawIds = aliasRawIds;
+        continue;
+      }
+      byTarget.set(target.dedupeKey, {
+        rawId,
+        canonicalId,
+        matchedId: rawId,
+        colorName,
+        color: COLOR_BY_NAME[colorName] || null,
+        turnNo: target.turnNo,
+        buttonId: target.buttonId,
+        turnId: target.turnId,
+        dedupeKey: target.dedupeKey,
+        aliasRawIds,
+        source: Object.prototype.hasOwnProperty.call(washMap || {}, rawId) ? 'live+persisted' : 'persisted',
+        _rank: rank,
+      });
+    }
+    return Array.from(byTarget.values()).map(({ _rank, ...entry }) => entry);
+  }
+
+  function resolveMiniMapWashState(primaryId, btn = null) {
+    // MiniMap Core owns this identity projection and stamps the canonical
+    // answer id on every answer button. Do not expand it through turn aliases:
+    // those aliases can temporarily overlap during hydration reconciliation.
+    const explicitButtonId = String(
+      btn?.dataset?.primaryAId
+        || btn?.getAttribute?.(ATTR_.PRIMARY_A_ID)
+        || ''
+    ).trim();
+    const requestedId = String(primaryId || '').trim();
+    const buttonId = explicitButtonId || requestedId;
+    // MiniMap Core stamps data-primary-a-id as the button's stable answer
+    // identity. Once a real button supplies that id it is terminal for paint
+    // and audit matching; resolving it again through a post-hydration turn
+    // record can project it onto a different answer in the same turn family.
+    const canonicalId = explicitButtonId || resolveMiniMapCanonicalId(requestedId);
+    const candidateIds = Array.from(new Set([buttonId, canonicalId].filter(Boolean)));
+    const expected = collectExpectedMiniMapWashes().find((entry) => (
+      entry.canonicalId === canonicalId
+      || entry.rawId === buttonId
+      || entry.rawId === requestedId
+    )) || null;
+    const matchedId = String(expected?.matchedId || '');
+    const colorName = expected?.colorName || null;
+    const color = expected?.color || null;
+    return {
+      requestedId,
+      buttonId,
+      canonicalId,
+      candidateIds,
+      matchedId,
+      colorName,
+      color,
+      shouldWash: !!color,
+      expectedSource: String(expected?.source || ''),
+      identityBasis: explicitButtonId ? 'button-primary-a-id' : 'resolved-request',
+    };
   }
 
   function applyTitleBarWash(primaryAId, barEl) {
@@ -405,7 +537,7 @@
       try { barEl.style.setProperty(name, value); changed = true; } catch {}
     };
     setAttr('data-h2o-title-wash', colorName);
-    setAttr('data-h2o-title-wash-id', id);
+    setAttr('data-h2o-title-wash-id', state.matchedId || id);
     setAttr('data-h2o-wash', colorName);
     setAttr('data-cgxui-wash', '1');
     setStyle('--h2o-at-wash-color', paintBg);
@@ -415,40 +547,152 @@
   }
 
   // -------- Paint MiniMap button (copied from MiniMap v12.5.21) --------
-  function applyMiniMapWash(primaryId, btn) {
-    if (!btn) return;
-
-    const rawName = primaryId ? washMap?.[primaryId] : null;
-    const colorName = isValidWashName(rawName) ? rawName : null;
-
-    if (rawName && !colorName) {
-      try { delete washMap[primaryId]; } catch {}
+  function releaseMiniMapWashPaint(btn) {
+    if (!btn?.style) return;
+    for (const property of [
+      'background',
+      'color',
+      'text-shadow',
+      'box-shadow',
+      '--h2o-mm-wash-color',
+      '--h2o-mm-wash-bg',
+      '--h2o-mm-wash-text',
+    ]) {
+      try { btn.style.removeProperty(property); } catch {}
     }
+  }
 
-    const bg = colorName ? (COLOR_BY_NAME?.[colorName] || null) : null;
+  function cssContainsColor(cssText, color) {
+    const normalized = String(normalizeColor(color) || '').trim();
+    const rgb = hexToRgb(normalized);
+    if (!normalized || (!rgb.r && !rgb.g && !rgb.b)) return false;
+    const compact = String(cssText || '').replace(/\s+/g, '').toLowerCase();
+    const hex = normalized.toLowerCase();
+    return compact.includes(hex)
+      || compact.includes(`rgb(${rgb.r},${rgb.g},${rgb.b})`)
+      || compact.includes(`rgba(${rgb.r},${rgb.g},${rgb.b},`);
+  }
+
+  function inspectMiniMapWashVisual(btn, state) {
+    let computed = null;
+    let rect = null;
+    try { computed = btn ? getComputedStyle(btn) : null; } catch {}
+    try { rect = btn?.getBoundingClientRect?.() || null; } catch {}
+    const isGold = state?.colorName === 'gold' || normalizeColor(state?.color) === '#FFD700';
+    const expectedPaintBg = state?.color ? (isGold ? '#E6C200' : state.color) : '';
+    const computedBackground = String(computed?.background || '');
+    const visible = !!(btn && rect && rect.width > 0 && rect.height > 0
+      && computed?.display !== 'none'
+      && computed?.visibility !== 'hidden'
+      && Number.parseFloat(computed?.opacity || '1') > 0);
+    const actualWashClasses = Array.from(btn?.classList || [])
+      .filter((name) => /wash/i.test(String(name)));
+    const computedVisualWash = !!(state?.shouldWash
+      && visible
+      && cssContainsColor(computedBackground, expectedPaintBg));
+    const stateTokens = String(btn?.getAttribute?.('data-cgxui-state') || '').trim();
+    return {
+      visible,
+      selector: btn
+        ? `${String(btn.tagName || '').toLowerCase()}[data-cgxui="${String(btn.getAttribute?.('data-cgxui') || '')}"][data-primary-a-id="${String(btn.getAttribute?.(ATTR_.PRIMARY_A_ID) || '')}"]`
+        : '',
+      actualWashClasses,
+      cssVars: {
+        washColor: String(computed?.getPropertyValue?.('--h2o-at-wash-color') || '').trim(),
+        washBg: String(computed?.getPropertyValue?.('--h2o-at-wash-bg') || '').trim(),
+        washText: String(computed?.getPropertyValue?.('--h2o-at-wash-text') || '').trim(),
+        miniMapWashColor: String(computed?.getPropertyValue?.('--h2o-mm-wash-color') || '').trim(),
+        miniMapWashBg: String(computed?.getPropertyValue?.('--h2o-mm-wash-bg') || '').trim(),
+        miniMapWashText: String(computed?.getPropertyValue?.('--h2o-mm-wash-text') || '').trim(),
+      },
+      computedStyle: {
+        background: computedBackground,
+        backgroundColor: String(computed?.backgroundColor || ''),
+        borderColor: String(computed?.borderColor || ''),
+        boxShadow: String(computed?.boxShadow || ''),
+        color: String(computed?.color || ''),
+        opacity: String(computed?.opacity || ''),
+        display: String(computed?.display || ''),
+        visibility: String(computed?.visibility || ''),
+      },
+      expectedPaintBg,
+      computedVisualWash,
+      selectedOrCurrent: /(?:^|\s)(?:active|current|selected|inview)(?:\s|$)/.test(stateTokens)
+        || btn?.getAttribute?.('aria-current') === 'true',
+      selectedStateTokens: stateTokens,
+      selectedStyleMasksWash: !!(state?.shouldWash && visible && !computedVisualWash),
+    };
+  }
+
+  function applyMiniMapWash(primaryId, btn) {
+    if (!btn) return { ok: false, status: 'button-missing', id: '', colorName: null };
+    // MiniMap rebuilds can stamp an alias/current hydration id on the button.
+    // Reading washMap[rawId] made a delayed rebuild clear a valid canonical
+    // wash. Use the same family resolver as title bars and answer surfaces.
+    const state = resolveMiniMapWashState(primaryId, btn);
+    const { canonicalId: id, matchedId, colorName, color: bg } = state;
 
     if (bg) {
       const isGold = colorName === 'gold' || normalizeColor(bg) === '#FFD700';
       const paintBg = isGold ? '#E6C200' : bg;
       const text = bestTextColor(paintBg);
-      btn.style.background = `linear-gradient(145deg, rgba(255,255,255,0.06), rgba(0,0,0,0.10)), ${paintBg}`;
-      btn.style.color = text;
-      btn.style.textShadow = (text === '#fff')
+      const background = `linear-gradient(145deg, rgba(255,255,255,0.06), rgba(0,0,0,0.10)), ${paintBg}`;
+      // The MiniMap skin owns active/current rings. Keep that ring, but make
+      // the washer fill authoritative on the real visible button so an active
+      // state cannot visually replace a correctly projected wash with gray.
+      btn.style.setProperty('--h2o-mm-wash-color', bg);
+      btn.style.setProperty('--h2o-mm-wash-bg', paintBg);
+      btn.style.setProperty('--h2o-mm-wash-text', text);
+      btn.style.setProperty('background', background, 'important');
+      btn.style.setProperty('color', text, 'important');
+      btn.style.setProperty('text-shadow', (text === '#fff')
         ? '0 0 2px rgba(0,0,0,.35)'
-        : '0 1px 0 rgba(255,255,255,.35)';
+        : '0 1px 0 rgba(255,255,255,.35)', 'important');
       btn.style.boxShadow = isGold
         ? '0 0 5px 1px rgba(255,215,0,0.30)'
         : `0 0 6px 2px ${bg}40`;
       btn.dataset.wash = 'true';
       try { btn.setAttribute('data-cgxui-wash', '1'); } catch {}
+      try { btn.setAttribute('data-h2o-wash-id', matchedId || id); } catch {}
+      try { btn.setAttribute('data-h2o-wash-name', colorName); } catch {}
     } else {
-      btn.style.background = 'rgba(255,255,255,.06)';
-      btn.style.color = '#e5e7eb';
-      btn.style.textShadow = '0 0 2px rgba(0,0,0,.25)';
-      btn.style.boxShadow = 'none';
+      // Release paint to MiniMap Skin instead of pinning an inline gray fill,
+      // which would also mask the native active/current presentation.
+      releaseMiniMapWashPaint(btn);
       btn.dataset.wash = 'false';
       try { btn.removeAttribute('data-cgxui-wash'); } catch {}
+      try { btn.removeAttribute('data-h2o-wash-id'); } catch {}
+      try { btn.removeAttribute('data-h2o-wash-name'); } catch {}
     }
+    return { ok: true, status: bg ? 'painted' : 'clear', id, matchedId, colorName, color: bg };
+  }
+
+  let MINI_REPAIR_RAF = 0;
+  function repairAllMiniMapButtons(reason = 'washer:repair-minimap') {
+    void reason;
+    let checked = 0;
+    let washed = 0;
+    for (const btn of Array.from(document.querySelectorAll(SEL_.MM_BTN))) {
+      if (!btn?.closest?.(SEL_.MM_CONTAINER)) continue;
+      const buttonId = String(
+        btn.dataset?.primaryAId
+          || btn.getAttribute?.(ATTR_.PRIMARY_A_ID)
+          || ''
+      ).trim();
+      const result = applyMiniMapWash(buttonId, btn);
+      checked += 1;
+      if (result?.colorName) washed += 1;
+    }
+    return { ok: true, status: 'ok', checked, washed };
+  }
+
+  function scheduleMiniMapRepair(reason = 'washer:repair-minimap') {
+    if (MINI_REPAIR_RAF) return false;
+    MINI_REPAIR_RAF = requestAnimationFrame(() => {
+      MINI_REPAIR_RAF = 0;
+      repairAllMiniMapButtons(reason);
+    });
+    return true;
   }
 
   function resolvePrimaryAId(anyId) {
@@ -458,7 +702,10 @@
       const turnId = String(W?.H2O_MM_turnIdByAId?.get?.(raw) || '').trim();
       const turn = turnId ? (W?.H2O_MM_turnById?.get?.(turnId) || null) : null;
       const primary = String(turn?.primaryAId || turn?.answerId || '').trim();
-      if (primary) return primary;
+      const answerIds = Array.isArray(turn?.answerIds)
+        ? turn.answerIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      if (primary && (primary === raw || answerIds.includes(raw))) return primary;
     } catch {}
     try {
       const t = W?.H2O_MM_turnById?.get?.(raw) || null;
@@ -469,10 +716,14 @@
       const rt = W?.H2O?.turnRuntime || null;
       const record = rt?.getTurnRecordByAId?.(raw)
         || rt?.getTurnRecordByTurnId?.(raw)
-        || rt?.getTurnRecordByQId?.(raw)
         || null;
       const pid = String(record?.primaryAId || record?.answerId || '').trim();
-      if (pid) return pid;
+      const answerIds = Array.isArray(record?.answerIds)
+        ? record.answerIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      const isOwnedAnswer = pid === raw || answerIds.includes(raw);
+      const isExactTurnId = String(record?.turnId || '').trim() === raw;
+      if (pid && (isOwnedAnswer || isExactTurnId)) return pid;
     } catch {}
     return raw;
   }
@@ -503,49 +754,141 @@
     );
   }
 
-  function repaintAnswerNow(primaryAId, colorName) {
-    const id = resolvePrimaryAId(primaryAId);
-    if (!id) return;
-    const msgEl = findAnswerElById(id);
-    if (msgEl) applyAnswerWash(msgEl, colorName, !!colorName);
+  function replayWashForId(primaryAId, opts = {}) {
+    const state = resolveWashState(primaryAId);
+    const id = state.id;
+    if (!id) return { ok: false, status: 'invalid-id', id: '', colorName: null };
+    const hasOverride = Object.prototype.hasOwnProperty.call(opts || {}, 'colorName');
+    const overrideName = isValidWashName(opts?.colorName) ? String(opts.colorName).trim().toLowerCase() : null;
+    const colorName = hasOverride ? overrideName : state.colorName;
+    let answerPainted = 0;
+    let titleBarsPainted = 0;
+    let miniMapButtonsPainted = 0;
+    let msgEl = null;
+    if (opts?.answer !== false) {
+      for (const candidateId of state.candidateIds || []) {
+        msgEl = findAnswerElById(candidateId);
+        if (msgEl) break;
+      }
+      if (msgEl) {
+        applyAnswerWash(msgEl, colorName, !!colorName);
+        try { msgEl.setAttribute('data-h2o-wash-id', state.matchedId || id); } catch {}
+        answerPainted = 1;
+      }
+    }
     try {
-      for (const bar of document.querySelectorAll('[data-cgxui="atns-answer-title"][data-answer-id]')) {
+      const explicitBar = opts?.barEl || null;
+      const bars = explicitBar
+        ? [explicitBar]
+        : Array.from(document.querySelectorAll('[data-cgxui="atns-answer-title"][data-answer-id]'));
+      for (const bar of bars) {
         const barId = String(bar.getAttribute('data-answer-id') || '').trim();
-        if (resolvePrimaryAId(barId) === id) applyTitleBarWash(id, bar);
+        const barState = resolveWashState(barId);
+        const sameFamily = bar === explicitBar
+          || barState.id === id;
+        if (!sameFamily) continue;
+        applyTitleBarWash(primaryAId, bar);
+        titleBarsPainted += 1;
       }
     } catch {}
+    if (opts?.miniMap !== false) {
+      try {
+        for (const btn of document.querySelectorAll(SEL_.MM_BTN)) {
+          if (!btn?.closest?.(SEL_.MM_CONTAINER)) continue;
+          const btnId = String(
+            btn.dataset?.primaryAId
+              || btn.getAttribute?.(ATTR_.PRIMARY_A_ID)
+              || btn.dataset?.id
+              || btn.getAttribute?.(ATTR_.ID)
+              || ''
+          ).trim();
+          const btnState = resolveMiniMapWashState(btnId, btn);
+          const sameFamily = btnState.canonicalId === id;
+          if (!sameFamily) continue;
+          applyMiniMapWash(btnId || primaryAId, btn);
+          miniMapButtonsPainted += 1;
+        }
+      } catch {}
+    }
+    return {
+      ok: true,
+      status: colorName ? 'painted' : 'cleared',
+      id,
+      matchedId: state.matchedId,
+      candidateIds: state.candidateIds,
+      colorName,
+      answerPainted,
+      titleBarsPainted,
+      miniMapButtonsPainted,
+    };
+  }
+
+  function repaintAnswerNow(primaryAId, colorName) {
+    return replayWashForId(primaryAId, { colorName });
   }
 
   function restoreWashedAnswerById(anyId) {
-    const id = resolvePrimaryAId(anyId);
+    const state = resolveWashState(anyId);
+    const id = state.id;
     if (!id) return false;
-    const rawColor = washMap?.[id];
-    const colorName = isValidWashName(rawColor) ? String(rawColor) : null;
-    if (rawColor && !colorName) {
-      try { delete washMap[id]; } catch {}
-      return false;
-    }
+    const colorName = state.colorName;
     if (!colorName) return false;
-    repaintAnswerNow(id, colorName);
+    replayWashForId(anyId);
     return true;
   }
 
   let RESTORE_RAF = 0;
+  let FLOW_HYDRATION_OBSERVER = null;
+
+  function expectedWashCandidateIds(entry) {
+    return Array.from(new Set([
+      entry?.buttonId,
+      entry?.canonicalId,
+      entry?.rawId,
+      entry?.matchedId,
+      ...(Array.isArray(entry?.aliasRawIds) ? entry.aliasRawIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+  }
+
+  function restoreExpectedFlowWash(entry) {
+    const colorName = isValidWashName(entry?.colorName)
+      ? String(entry.colorName).trim().toLowerCase()
+      : '';
+    if (!colorName) return false;
+    const candidateIds = expectedWashCandidateIds(entry);
+    const candidateSet = new Set(candidateIds);
+    let restored = false;
+    let msgEl = null;
+    for (const candidateId of candidateIds) {
+      msgEl = findAnswerElById(candidateId);
+      if (msgEl) break;
+    }
+    if (msgEl) {
+      applyAnswerWash(msgEl, colorName, true);
+      try { msgEl.setAttribute('data-h2o-wash-id', String(entry?.matchedId || entry?.rawId || entry?.canonicalId || '')); } catch {}
+      try { msgEl.setAttribute('data-h2o-wash-name', colorName); } catch {}
+      restored = true;
+    }
+    // Preserve the pre-existing title replay behavior while keeping matching
+    // strict to this deduplicated answer family.
+    try {
+      for (const bar of document.querySelectorAll('[data-cgxui="atns-answer-title"][data-answer-id]')) {
+        const barId = String(bar.getAttribute('data-answer-id') || '').trim();
+        if (!candidateSet.has(barId)) continue;
+        applyTitleBarWash(barId, bar);
+        restored = true;
+      }
+    } catch {}
+    return restored;
+  }
+
   function restoreAllWashedAnswers(reason = 'washer:restore') {
     void reason;
-    const entries = Object.entries(washMap || {});
+    const entries = collectExpectedMiniMapWashes();
     if (!entries.length) return 0;
     let painted = 0;
-    for (const [rawId, rawColor] of entries) {
-      const id = resolvePrimaryAId(rawId);
-      if (!id) continue;
-      const colorName = isValidWashName(rawColor) ? String(rawColor) : null;
-      if (!colorName) {
-        try { delete washMap[id]; } catch {}
-        continue;
-      }
-      repaintAnswerNow(id, colorName);
-      painted += 1;
+    for (const entry of entries) {
+      if (restoreExpectedFlowWash(entry)) painted += 1;
     }
     return painted;
   }
@@ -558,6 +901,36 @@
       restoreAllWashedAnswers(reason);
     });
     return true;
+  }
+
+  function mutationTouchesAssistantHydration(mutation) {
+    const assistantSelector = `[${ATTR_.MSG_ROLE}="assistant"]`;
+    for (const node of Array.from(mutation?.addedNodes || [])) {
+      const el = node?.nodeType === 1 ? node : node?.parentElement;
+      if (!el) continue;
+      try {
+        if (el.matches?.(assistantSelector)
+          || el.closest?.(assistantSelector)
+          || el.querySelector?.(assistantSelector)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  function bindFlowHydrationReplay() {
+    if (FLOW_HYDRATION_OBSERVER || typeof MutationObserver !== 'function') return;
+    const root = document.body || document.documentElement;
+    if (!root) return;
+    FLOW_HYDRATION_OBSERVER = new MutationObserver((mutations) => {
+      if (!mutations.some((mutation) => mutationTouchesAssistantHydration(mutation))) return;
+      if (!collectExpectedMiniMapWashes().length) return;
+      scheduleRestoreAllWashedAnswers('native-assistant-hydration');
+    });
+    FLOW_HYDRATION_OBSERVER.observe(root, { childList: true, subtree: true });
+    CLEANUP.push(() => {
+      try { FLOW_HYDRATION_OBSERVER?.disconnect?.(); } catch {}
+      FLOW_HYDRATION_OBSERVER = null;
+    });
   }
 
   // -------- Washer -> Core notification (Core repaints answer + button) --------
@@ -871,9 +1244,11 @@
 
     const onAnswersScan = () => {
       scheduleRestoreAllWashedAnswers('answers:scan');
+      scheduleMiniMapRepair('answers:scan');
     };
     const onMmIndexHydrated = () => {
       scheduleRestoreAllWashedAnswers('index:hydrated');
+      scheduleMiniMapRepair('index:hydrated');
     };
     const onMmIndexAppended = (e) => {
       const d = e?.detail || {};
@@ -883,14 +1258,22 @@
         return;
       }
       restoreWashedAnswerById(appendedId);
+      scheduleMiniMapRepair('index:appended');
     };
     UTIL_on(window, 'evt:h2o:answers:scan', onAnswersScan);
     UTIL_on(window, 'h2o:answers:scan', onAnswersScan);
     UTIL_on(window, 'evt:h2o:minimap:index:hydrated', onMmIndexHydrated);
     UTIL_on(window, 'evt:h2o:minimap:index:appended', onMmIndexAppended);
 
+    bindFlowHydrationReplay();
     scheduleRestoreAllWashedAnswers('boot');
-    setTimeout(() => { scheduleRestoreAllWashedAnswers('boot:late'); }, 260);
+    for (const delay of [260, 1200, 4000]) {
+      const timer = setTimeout(() => {
+        scheduleRestoreAllWashedAnswers(`boot:late:${delay}`);
+        scheduleMiniMapRepair(`boot:late:${delay}`);
+      }, delay);
+      CLEANUP.push(() => { try { clearTimeout(timer); } catch {} });
+    }
   }
 
   function dispose() {
@@ -905,6 +1288,10 @@
     if (RESTORE_RAF) {
       try { cancelAnimationFrame(RESTORE_RAF); } catch {}
       RESTORE_RAF = 0;
+    }
+    if (MINI_REPAIR_RAF) {
+      try { cancelAnimationFrame(MINI_REPAIR_RAF); } catch {}
+      MINI_REPAIR_RAF = 0;
     }
     try { TOPW.H2O_MM_WASH_BRIDGE = false; } catch {}
     try { TOPW[BOOT_KEY] = false; } catch {}
@@ -925,9 +1312,34 @@
 
     // State
     getWashMap: () => washMap,
+    getExpectedMiniMapWashes: () => collectExpectedMiniMapWashes(),
     getColorByName: () => COLOR_BY_NAME,
     isValid: (name) => isValidWashName(name),
     resolveForId: (primaryAId) => resolveWashState(String(primaryAId || '').trim()),
+    inspectMiniBtn: (primaryAId, btnEl = null) => {
+      const state = resolveMiniMapWashState(String(primaryAId || '').trim(), btnEl);
+      const actualWashed = !!(btnEl && (
+        btnEl.getAttribute?.('data-cgxui-wash') === '1'
+        || btnEl.dataset?.wash === 'true'
+      ));
+      const projectedWashId = String(btnEl?.getAttribute?.('data-h2o-wash-id') || '');
+      const projectedWashName = String(btnEl?.getAttribute?.('data-h2o-wash-name') || '');
+      const visual = inspectMiniMapWashVisual(btnEl, state);
+      const attrsMatch = actualWashed === state.shouldWash
+        && (!state.shouldWash || (projectedWashId === state.matchedId && projectedWashName === state.colorName));
+      const visualMatches = !state.shouldWash || visual.computedVisualWash;
+      return {
+        ...state,
+        ...visual,
+        turnNo: Math.max(0, Number(btnEl?.dataset?.turnIdx || 0) || 0),
+        actualWashed,
+        projectedWashId,
+        projectedWashName,
+        attrsMatch,
+        visualMatches,
+        matchesExpected: attrsMatch && visualMatches,
+      };
+    },
 
     // Persistence
     save: () => saveWashMap(),
@@ -936,6 +1348,9 @@
     applyToMiniBtn: (primaryAId, btnEl) => applyMiniMapWash(String(primaryAId || '').trim(), btnEl),
     applyToAnswerEl: (answerEl, colorName, on = true) => applyAnswerWash(answerEl, colorName, !!on),
     applyToTitleBar: (primaryAId, barEl) => applyTitleBarWash(String(primaryAId || '').trim(), barEl),
+    replayForId: (primaryAId, opts = {}) => replayWashForId(String(primaryAId || '').trim(), opts),
+    replayAll: (reason = 'api:replay-all') => restoreAllWashedAnswers(String(reason || 'api:replay-all')),
+    repairMiniMap: (reason = 'api:repair-minimap') => scheduleMiniMapRepair(String(reason || 'api:repair-minimap')),
 
     // UI
     openPalette: (pointerEvent, targetPrimaryAId, anchorBtnEl = null) => {

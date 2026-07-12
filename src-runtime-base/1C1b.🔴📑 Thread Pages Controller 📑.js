@@ -107,6 +107,8 @@
     titleListRepairTimer: 0,
     titleListRepairPages: new Set(),
     titleListRepairAllPages: false,
+    dotExpandCampaignSeq: 0,
+    dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
     titleListBatchDirty: false,
     titleIntentReplayInFlight: false,
@@ -1924,9 +1926,14 @@
   function applyNoAnswerTitleCollapsedDom(host = null, collapsed = false, opts = {}) {
     const bar = opts?.bar || host?.querySelector?.('[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"][data-at-no-answer="1"]') || null;
     const questionHost = opts?.questionHost || null;
-    if (!host || !bar) return { ok: false, status: 'missing-no-answer-title' };
+    // Restore (collapsed=false) must NOT require the bar: on title-list
+    // release the stack row has already been torn down, so the no-answer
+    // question host would otherwise be stranded hidden (data-cgxui-at-hidden)
+    // because the early-return skipped the un-hide. Collapse still needs the
+    // bar to stamp its state.
+    if (!host || (collapsed && !bar)) return { ok: false, status: 'missing-no-answer-title' };
     const animate = opts.animate !== false;
-    const iconEl = bar.querySelector?.(ANSWER_TITLE_ICON_SEL) || null;
+    const iconEl = bar?.querySelector?.(ANSWER_TITLE_ICON_SEL) || null;
     const managedEls = getNoAnswerManagedEls(host, bar, questionHost);
     const setNoAnswerHiddenAttr = (target, enabled) => {
       if (!target) return;
@@ -1955,7 +1962,7 @@
         try { el.setAttribute('data-cgxui-at-hidden', '1'); } catch {}
       });
     } else {
-      bar.setAttribute('data-cgxui-state', 'editable');
+      if (bar) bar.setAttribute('data-cgxui-state', 'editable');
       setNoAnswerHiddenAttr(host, false);
       setNoAnswerHiddenAttr(questionHost, false);
       if (iconEl) iconEl.textContent = '⌄';
@@ -1976,6 +1983,25 @@
         try { el.removeAttribute('data-cgxui-at-hidden'); } catch {}
         if (animate) setTimeout(() => { try { el.style.transition = ''; } catch {} }, 270);
       });
+      // Stamp-driven safety sweep: collapse computes managedEls from the bar's
+      // ancestor path, but on title-list release the bar is gone so the
+      // managedEls set above (host.children) can miss the exact nodes collapse
+      // stamped deeper in the subtree. Clear any lingering hide marker under
+      // the host / question host directly so no-answer question turns cannot
+      // stay hidden after expand.
+      for (const scope of [host, questionHost]) {
+        if (!scope?.querySelectorAll) continue;
+        try {
+          for (const node of scope.querySelectorAll('[data-cgxui-at-hidden],[data-at-question-hidden]')) {
+            try { node.removeAttribute('data-cgxui-at-hidden'); } catch {}
+            try { node.removeAttribute('data-at-question-hidden'); } catch {}
+            _clearRestoreProps(node);
+          }
+        } catch {}
+        try {
+          if (scope.hasAttribute?.('data-at-question-hidden')) scope.removeAttribute('data-at-question-hidden');
+        } catch {}
+      }
     }
     return { ok: true, status: 'ok', host, bar, questionHost, collapsed: !!collapsed };
   }
@@ -2444,12 +2470,40 @@
       member.id,
       ...(Array.isArray(member.aliasIds) ? member.aliasIds : []),
     ].map((value) => String(value || '').trim()).filter(Boolean));
-    const rec = turnRecordForTitleListIdentity(member.answerId || member.id, member.turnNo);
+    let rec = null;
+    try { rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo) || null; } catch {}
+    if (!rec) rec = turnRecordForTitleListIdentity(member.answerId || member.id, 0);
+    const recTurnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
+    if (recTurnNo && member.turnNo && recTurnNo !== member.turnNo) rec = null;
     for (const value of [rec?.primaryAId, rec?.answerId, ...(Array.isArray(rec?.answerIds) ? rec.answerIds : []), ...(Array.isArray(rec?._aliasIds) ? rec._aliasIds : [])]) {
       const id = String(value || '').trim();
       if (id) ids.add(id);
     }
     return Array.from(ids);
+  }
+
+  function titleListIdentityMatchesMember(anyId = '', member = null) {
+    const id = String(anyId || '').trim();
+    if (!id || !member || member.type !== 'answer') return false;
+    if (titleListAnswerFamilyIds(member).includes(id)) return true;
+    const rec = turnRecordForTitleListIdentity(id, 0);
+    const recTurnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
+    return !!(recTurnNo && member.turnNo && recTurnNo === member.turnNo);
+  }
+
+  function titleBarStrictlyMatchesMember(bar = null, member = null) {
+    if (!bar || !member || member.type !== 'answer') return false;
+    const barTurnNo = Math.max(0, Number(
+      bar.getAttribute?.('data-h2o-stack-turn-no')
+        || bar.getAttribute?.('data-h2o-turn-num')
+        || 0
+    ) || 0);
+    // A canonical turn number is stronger than a transient hydration alias.
+    // If both sides have one, a mismatch is terminal: never borrow that bar.
+    const barId = String(bar.getAttribute?.('data-answer-id') || '').trim();
+    if (barTurnNo && member.turnNo && barTurnNo !== member.turnNo) return false;
+    if (barId) return titleListIdentityMatchesMember(barId, member);
+    return !!(barTurnNo && member.turnNo && barTurnNo === member.turnNo);
   }
 
   // Ranked title sources — a known real title must never regress to a lower
@@ -2461,25 +2515,38 @@
     if (member.type !== 'answer') return { text: '', source: 'no-answer', rank: 3 };
     const at = AT_PUBLIC();
     const familyIds = titleListAnswerFamilyIds(member);
+    let stackedCandidate = null;
     for (const answerId of familyIds) {
       try {
         const bar = at?.getBar?.(answerId) || null;
+        if (!titleBarStrictlyMatchesMember(bar, member)) continue;
         const liveText = String(bar?.querySelector?.('[data-cgxui="atns-answer-title-text"]')?.textContent || '').trim();
-        if (!isSyntheticTitlePlaceholder(liveText)) return { text: liveText, source: 'hydrated', rank: 3, answerId };
+        if (isSyntheticTitlePlaceholder(liveText)) continue;
+        if (bar?.hasAttribute?.('data-h2o-in-title-stack')) {
+          // A stacked row is a projection, not an independent authoritative
+          // source. Keep it only as a last-known fallback so a corrected cache
+          // or canonical metadata title can repair stale projected text.
+          if (!stackedCandidate) stackedCandidate = { text: liveText, source: 'stacked-existing', rank: 1, answerId };
+          continue;
+        }
+        return { text: liveText, source: 'hydrated', rank: 3, answerId };
       } catch {}
     }
     for (const answerId of familyIds) {
       try {
+        if (!titleListIdentityMatchesMember(answerId, member)) continue;
         const cached = String(at?.getTitle?.(answerId) || '').trim();
         if (!isSyntheticTitlePlaceholder(cached)) return { text: cached, source: 'cached', rank: 2, answerId };
       } catch {}
     }
     try {
-      const rec = turnRecordForTitleListIdentity(member.answerId || member.id, member.turnNo);
+      const rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo)
+        || turnRecordForTitleListIdentity(member.answerId || member.id, 0);
       const metaTitle = String(rec?.title || rec?.answerTitle || '').trim();
-      if (!isSyntheticTitlePlaceholder(metaTitle)) return { text: metaTitle, source: 'metadata', rank: 1 };
+      if (!isSyntheticTitlePlaceholder(metaTitle)) return { text: metaTitle, source: 'metadata', rank: 1, answerId: member.answerId };
     } catch {}
-    return { text: 'Untitled Answer', source: 'fallback', rank: 0 };
+    if (stackedCandidate) return stackedCandidate;
+    return { text: 'Untitled Answer', source: 'fallback', rank: 0, answerId: member.answerId };
   }
 
   function setTitleListMemberFlowHidden(member = null, pageNum = 0, hidden = false) {
@@ -2513,6 +2580,405 @@
       }
     } catch {}
     return released;
+  }
+
+  // Collapse-route markers a page-level expand must release from member
+  // sections. Page-collapse (lightening) markers are NOT listed — that
+  // mechanism owns its own stamps and sweeps (sweepPageHiddenDomState).
+  const MEMBER_RELEASE_MARKERS = [
+    'data-cgxui-at-hidden',
+    'data-at-question-hidden',
+    ATTR_CHAT_PAGE_QUESTION_HIDDEN,
+    ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN,
+    ATTR_TITLE_LIST_FLOW_HIDDEN,
+  ];
+  const MEMBER_RELEASE_SEL = MEMBER_RELEASE_MARKERS.map((a) => `[${a}]`).join(',');
+
+  function getPageMemberCollapseSources(member = null) {
+    const answerId = String(member?.answerId || '').trim();
+    const state = { answerTitle: false, titleListRow: false, pageCollapse: false, allManual: false };
+    if (!answerId) return state;
+    try {
+      const um = UM_PUBLIC();
+      state.answerTitle = !!um?.isCollapsedById?.(answerId, { source: 'answer-title' });
+      state.titleListRow = !!um?.isCollapsedById?.(answerId, { source: 'title-list-row' });
+      state.pageCollapse = !!um?.isCollapsedById?.(answerId, { source: 'page-collapse' });
+      state.allManual = !!um?.isCollapsedById?.(answerId);
+    } catch {}
+    return state;
+  }
+
+  function pageMemberFlowScopes(member = null) {
+    const scopes = new Set();
+    if (!member) return [];
+    try { for (const anchor of memberAllFlowAnchors(member)) if (anchor) scopes.add(anchor); } catch {}
+    try {
+      const sections = titleListMemberSections(member);
+      if (sections.questionSection) scopes.add(sections.questionSection);
+      if (sections.answerSection) scopes.add(sections.answerSection);
+    } catch {}
+    return Array.from(scopes).filter((node) => node?.isConnected);
+  }
+
+  function hasTitleCollapseInlineResidue(node = null) {
+    if (!node?.style) return false;
+    const style = node.style;
+    return String(style.maxHeight || '') === '0px'
+      || (String(style.height || '') === '0px' && String(style.overflow || '') === 'hidden')
+      || (String(style.opacity || '') === '0' && String(style.pointerEvents || '') === 'none');
+  }
+
+  function releasePageMemberProjection(member = null, pageNum = 0) {
+    if (!member) return { releasedNodes: 0, skippedActiveSource: false };
+    const sources = getPageMemberCollapseSources(member);
+    if (sources.allManual) return { releasedNodes: 0, skippedActiveSource: true, sources };
+    let releasedNodes = 0;
+    const seen = new Set();
+    for (const scope of pageMemberFlowScopes(member)) {
+      const nodes = new Set([scope]);
+      try {
+        for (const inner of scope.querySelectorAll?.(`${MEMBER_RELEASE_SEL}, [data-at-collapsed], [style]`) || []) {
+          if (inner.matches?.(MEMBER_RELEASE_SEL)
+            || inner.getAttribute?.('data-at-collapsed') === '1'
+            || hasTitleCollapseInlineResidue(inner)) nodes.add(inner);
+        }
+      } catch {}
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        let ownedResidue = hasTitleCollapseInlineResidue(node)
+          || node.getAttribute?.('data-at-collapsed') === '1';
+        for (const attr of MEMBER_RELEASE_MARKERS) {
+          try {
+            if (node.getAttribute?.(attr) != null) {
+              node.removeAttribute(attr);
+              ownedResidue = true;
+            }
+          } catch {}
+        }
+        try {
+          if (node.getAttribute?.('data-at-collapsed') === '1') {
+            node.removeAttribute('data-at-collapsed');
+            ownedResidue = true;
+          }
+        } catch {}
+        if (!ownedResidue) continue;
+        const pageCollapseOwned = !!(node.hasAttribute?.(ATTR_CHAT_PAGE_HIDDEN)
+          || node.hasAttribute?.(ATTR_CHAT_PAGE_WRAPPER_HIDDEN));
+        _clearRestoreProps(node);
+        if (!pageCollapseOwned) { try { node.style.removeProperty('display'); } catch {} }
+        try { node.style.removeProperty('--h2o-title-inline-display'); } catch {}
+        releasedNodes += 1;
+      }
+    }
+    return { releasedNodes, skippedActiveSource: false, sources };
+  }
+
+  // Page-member stamp release for circle/dot EXPAND. at.sync() only clears
+  // members whose assistant node is hydrated (unhydrated → 'answer-missing'
+  // no-op), and adjacency-based question resolution misses multi-variant
+  // "(2/2)" user turns — so answer-id/body-based cleanup alone strands their
+  // question sections stamped hidden. This sweep is CANONICAL-MEMBER based:
+  // the same record-backed section/anchor resolution the residual audit uses
+  // (persistent shells survive virtualization), so every node the audit can
+  // flag, this release can reach. Ledger-guarded per member: an id still
+  // manually collapsed (any source — i.e. individual state on this page or a
+  // race) keeps its projection untouched. Nodes owned by page-lightening keep
+  // their display state.
+  function releasePageMemberHideMarkers(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let releasedNodes = 0;
+    const releasedMemberIds = [];
+    const skippedMemberIds = [];
+    let membersScanned = 0;
+    for (const member of pureCanonicalPageMemberDetails(num)) {
+      membersScanned += 1;
+      const released = releasePageMemberProjection(member, num);
+      const memberNodes = Number(released.releasedNodes || 0);
+      if (released.skippedActiveSource) skippedMemberIds.push(member.id);
+      if (memberNodes) { releasedNodes += memberNodes; releasedMemberIds.push(member.id); }
+    }
+    return { ok: true, membersScanned, releasedNodes, releasedMemberIds, skippedMemberIds };
+  }
+
+  function clearResidualPageTitleCollapseSources(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const members = pureCanonicalPageMemberDetails(num).filter((member) => member.type === 'answer' && member.answerId);
+    const um = UM_PUBLIC();
+    const cleared = {};
+    for (const [key, source] of [['titleListRow', 'title-list-row'], ['answerTitle', 'answer-title']]) {
+      const ids = members.filter((member) => {
+        try { return !!um?.isCollapsedById?.(member.answerId, { source }); } catch { return false; }
+      }).map((member) => member.answerId);
+      if (!ids.length || typeof um?.expandManyByIds !== 'function') {
+        cleared[key] = { ids, result: null };
+        continue;
+      }
+      let result = null;
+      try { result = um.expandManyByIds(ids, { source, emitLegacyAnswerCollapse: false }); } catch {}
+      cleared[key] = { ids, result };
+    }
+    return cleared;
+  }
+
+  function pageMemberVisualState(node = null) {
+    if (!node) return null;
+    let cs = null; let rectHeight = 0; let rectWidth = 0;
+    try { cs = getComputedStyle(node); } catch {}
+    try {
+      const rect = node.getBoundingClientRect();
+      rectHeight = Number(rect.height || 0);
+      rectWidth = Number(rect.width || 0);
+    } catch {}
+    return {
+      exists: true,
+      visible: rectHeight > 0 && rectWidth > 0
+        && String(cs?.display || '') !== 'none'
+        && String(cs?.visibility || '') !== 'hidden'
+        && Number.parseFloat(String(cs?.opacity || '1')) > 0,
+      display: String(cs?.display || ''),
+      inlineDisplay: String(node.style?.display || ''),
+      maxHeight: String(node.style?.maxHeight || ''),
+      height: String(node.style?.height || ''),
+      overflow: String(node.style?.overflow || ''),
+      opacity: String(node.style?.opacity || ''),
+      rectHeight: Number(rectHeight.toFixed(2)),
+      styleCollapsed: hasTitleCollapseInlineResidue(node),
+    };
+  }
+
+  function auditExpandedPageMember(member = null, pageNum = 0) {
+    const at = AT_PUBLIC();
+    const sources = getPageMemberCollapseSources(member);
+    const sections = titleListMemberSections(member);
+    const answerProjection = member?.type === 'answer' && member.answerId
+      ? (at?.inspectCollapseProjection?.(member.answerId) || null)
+      : null;
+    const bars = [];
+    try {
+      for (const bar of Array.from(document.querySelectorAll('[data-cgxui="atns-answer-title"]'))) {
+        if (stackRowMatchesMember(bar, member)) bars.push(bar);
+      }
+    } catch {}
+    const visibleBars = bars.filter((bar) => pageMemberVisualState(bar)?.visible);
+    const questionRole = sections.questionSection?.matches?.('[data-message-author-role="user"]')
+      ? sections.questionSection
+      : sections.questionSection?.querySelector?.('[data-message-author-role="user"]') || null;
+    const answerRole = sections.answerSection?.matches?.('[data-message-author-role="assistant"]')
+      ? sections.answerSection
+      : sections.answerSection?.querySelector?.('[data-message-author-role="assistant"]') || null;
+    const questionHydrated = !!questionRole;
+    const answerHydrated = member?.type === 'answer' ? !!(answerRole || answerProjection?.hydrated) : false;
+    const questionState = pageMemberVisualState(sections.questionSection);
+    const answerState = pageMemberVisualState(sections.answerSection);
+    const markerDetails = [];
+    const markerNames = new Set();
+    const seen = new Set();
+    for (const scope of pageMemberFlowScopes(member)) {
+      const nodes = new Set([scope]);
+      try {
+        for (const inner of scope.querySelectorAll?.(`${MEMBER_RELEASE_SEL}, [data-at-collapsed], [style]`) || []) {
+          if (inner.matches?.(MEMBER_RELEASE_SEL)
+            || inner.getAttribute?.('data-at-collapsed') === '1'
+            || hasTitleCollapseInlineResidue(inner)) nodes.add(inner);
+        }
+      } catch {}
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        const markers = MEMBER_RELEASE_MARKERS.filter((attr) => node.getAttribute?.(attr) != null);
+        if (node.getAttribute?.('data-at-collapsed') === '1') markers.push('data-at-collapsed');
+        const styleCollapsed = hasTitleCollapseInlineResidue(node);
+        if (!markers.length && !styleCollapsed) continue;
+        markers.forEach((attr) => markerNames.add(attr));
+        if (markerDetails.length < 10) {
+          markerDetails.push({
+            tag: String(node.tagName || ''),
+            testid: String(node.getAttribute?.('data-testid') || node.closest?.('[data-testid^="conversation-turn"]')?.getAttribute?.('data-testid') || ''),
+            markers,
+            styleCollapsed,
+            visual: pageMemberVisualState(node),
+          });
+        }
+      }
+    }
+    const barStates = bars.map((bar) => String(bar.getAttribute?.('data-cgxui-state') || ''));
+    const barCollapsed = barStates.some((state) => state.split(/\s+/).includes('collapsed'));
+    const pageLightenCollapsed = isPageCollapsed(pageNum, resolveChatId());
+    const expectedExpanded = !pageLightenCollapsed;
+    const failures = [];
+    if (expectedExpanded) {
+      if (sources.answerTitle) failures.push('active-source:answer-title');
+      if (sources.titleListRow) failures.push('active-source:title-list-row');
+      if (sources.pageCollapse) failures.push('active-source:page-collapse-with-page-expanded');
+      if (sources.allManual && !sources.answerTitle && !sources.titleListRow && !sources.pageCollapse) {
+        failures.push('active-source:other-manual');
+      }
+      if (markerDetails.length) failures.push('collapse-marker-or-style-residue');
+      if (barCollapsed) failures.push('title-bar-collapsed');
+      if (member.type === 'answer' && answerHydrated && answerProjection?.actuallyExpanded !== true) failures.push('answer-projection-collapsed');
+      if (questionHydrated && questionState?.visible !== true) failures.push('question-host-hidden');
+      if (answerHydrated && answerState?.visible !== true) failures.push('answer-host-hidden');
+      if (member.type === 'answer' && answerHydrated && visibleBars.length !== 1) failures.push(`visible-title-bar-count:${visibleBars.length}`);
+      if (visibleBars.length > 1) failures.push(`duplicate-visible-title-bars:${visibleBars.length}`);
+    }
+    return {
+      id: member?.id || '',
+      answerId: member?.answerId || '',
+      questionId: member?.questionId || '',
+      turnNo: Number(member?.turnNo || 0),
+      type: member?.type || '',
+      activeSources: sources,
+      titleBarCount: bars.length,
+      visibleTitleBarCount: visibleBars.length,
+      titleBarState: barStates,
+      titleBarText: visibleBars.map((bar) => String(bar.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100)),
+      questionHostExists: !!sections.questionSection,
+      questionHostHydrated: questionHydrated,
+      questionHostVisible: questionState?.visible ?? false,
+      questionHost: questionState,
+      answerHostExists: !!sections.answerSection,
+      answerHostHydrated: answerHydrated,
+      answerHostVisible: answerState?.visible ?? false,
+      answerHost: answerState,
+      bodyFoldTargetExists: !!answerProjection?.bodyTargetExists,
+      bodyFoldTarget: answerProjection?.bodyTargets?.[0] || null,
+      bodyFoldTargets: answerProjection?.bodyTargets || [],
+      hideCollapseMarkers: Array.from(markerNames),
+      hideCollapseMarkerDetails: markerDetails,
+      expectedExpanded,
+      actuallyExpanded: expectedExpanded ? failures.length === 0 : false,
+      failures,
+    };
+  }
+
+  function auditExpandedPageFlow(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const members = pureCanonicalPageMemberDetails(num).map((member) => auditExpandedPageMember(member, num));
+    const failures = members.filter((member) => member.expectedExpanded && !member.actuallyExpanded);
+    const titleListActive = isTitleListActive(num, id);
+    const pageLightenCollapsed = isPageCollapsed(num, id);
+    return {
+      pageNum: num,
+      chatId: id,
+      titleListActive,
+      pageLightenCollapsed,
+      members,
+      residualCollapsedFlowMembers: failures,
+      residualCollapsedFlowMemberCount: failures.length,
+      pageMemberExpandedStateFailures: failures.map((member) => ({
+        id: member.id,
+        turnNo: member.turnNo,
+        type: member.type,
+        failures: member.failures,
+      })),
+      allPageMembersExpandedAfterDotExpand: !titleListActive && !pageLightenCollapsed && failures.length === 0,
+      pageFlowRestored: !titleListActive && !pageLightenCollapsed && failures.length === 0,
+    };
+  }
+
+  function convergeExpandedPageFlow(pageNum = 0, chatId = '', opts = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    if (isTitleListActive(num, id) || isPageCollapsed(num, id)) {
+      return { ok: true, status: 'not-expanded-page', pageNum: num, chatId: id, pageFlowRestored: false };
+    }
+    const sourceCleanup = opts?.clearSources === false ? null : clearResidualPageTitleCollapseSources(num);
+    const markerReleaseBefore = releasePageMemberHideMarkers(num);
+    const at = AT_PUBLIC();
+    const memberResults = [];
+    for (const member of pureCanonicalPageMemberDetails(num)) {
+      const sources = getPageMemberCollapseSources(member);
+      if (sources.allManual) {
+        memberResults.push({ id: member.id, turnNo: member.turnNo, status: 'active-collapse-source', sources });
+        continue;
+      }
+      if (member.type === 'answer' && member.answerId) {
+        let result = null;
+        try { result = at?.convergeExpandedProjection?.(member.answerId, { animate: false }) || null; } catch {}
+        // Expansion owns visibility; Washer owns color. Replay after the fold
+        // executor so a newly restored/rehydrated answer surface cannot remain
+        // unwashed while its MiniMap projection is already gold.
+        try { WASH_PUBLIC()?.replayForId?.(member.answerId); } catch {}
+        memberResults.push({ id: member.id, turnNo: member.turnNo, status: result?.status || 'title-api-unavailable', result });
+      } else {
+        const sections = titleListMemberSections(member);
+        const bar = Array.from(document.querySelectorAll('[data-cgxui="atns-answer-title"]'))
+          .find((candidate) => stackRowMatchesMember(candidate, member)) || null;
+        const result = applyNoAnswerTitleCollapsedDom(sections.questionSection, false, {
+          animate: false,
+          bar,
+          questionHost: sections.questionSection,
+        });
+        memberResults.push({
+          id: member.id,
+          turnNo: member.turnNo,
+          status: result?.status || 'no-answer-restore',
+          restored: result?.ok !== false,
+        });
+      }
+      releasePageMemberProjection(member, num);
+    }
+    const markerReleaseAfter = releasePageMemberHideMarkers(num);
+    const audit = auditExpandedPageFlow(num, id);
+    return {
+      ok: audit.pageFlowRestored,
+      status: audit.pageFlowRestored ? 'page-flow-restored' : 'page-flow-residual',
+      pageNum: num,
+      chatId: id,
+      sourceCleanup,
+      markerReleaseBefore,
+      markerReleaseAfter,
+      memberResults,
+      ...audit,
+    };
+  }
+
+  function dotExpandCampaignKey(pageNum = 0, chatId = '') {
+    return `${String(chatId || resolveChatId()).trim()}::${Math.max(1, Number(pageNum || 0) || 0)}`;
+  }
+
+  function cancelDotExpandConvergence(pageNum = 0, chatId = '') {
+    const key = dotExpandCampaignKey(pageNum, chatId);
+    const campaign = S.dotExpandCampaigns.get(key) || null;
+    if (campaign?.timer) { try { W.clearTimeout(campaign.timer); } catch {} }
+    if (campaign) S.dotExpandCampaigns.delete(key);
+    return !!campaign;
+  }
+
+  function scheduleDotExpandConvergence(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const key = dotExpandCampaignKey(num, id);
+    cancelDotExpandConvergence(num, id);
+    const campaign = {
+      token: ++S.dotExpandCampaignSeq,
+      startedAt: Date.now(),
+      runs: 0,
+      timer: 0,
+      lastResult: null,
+      completedAt: 0,
+    };
+    S.dotExpandCampaigns.set(key, campaign);
+    const delays = [0, 60, 260, 900, 1800];
+    const run = (index) => {
+      if (S.dotExpandCampaigns.get(key) !== campaign) return;
+      if (isTitleListActive(num, id) || isPageCollapsed(num, id)) {
+        cancelDotExpandConvergence(num, id);
+        return;
+      }
+      campaign.runs += 1;
+      campaign.lastResult = convergeExpandedPageFlow(num, id, { clearSources: true });
+      if (index >= delays.length - 1) {
+        campaign.completedAt = Date.now();
+        campaign.timer = 0;
+        return;
+      }
+      campaign.timer = W.setTimeout(() => run(index + 1), Math.max(0, delays[index + 1] - delays[index]));
+    };
+    run(0);
+    return campaign.lastResult;
   }
 
   function titleListStackRegistryKey(pageNum = 0, chatId = '') {
@@ -2702,19 +3168,13 @@
     const rowType = String(row.getAttribute?.('data-h2o-stack-type') || (row.hasAttribute?.('data-at-no-answer') ? 'no-answer' : 'answer'));
     if (rowType !== member.type) return false;
     const rowTurnNo = Math.max(0, Number(row.getAttribute?.('data-h2o-stack-turn-no') || row.getAttribute?.('data-h2o-turn-num') || 0) || 0);
-    if (rowTurnNo && member.turnNo && rowTurnNo === member.turnNo) return true;
+    if (rowTurnNo && member.turnNo) return rowTurnNo === member.turnNo;
     const rowId = titleBarMemberId(row);
     if (!rowId) return false;
     if (rowType !== 'answer') {
       return rowId === member.id || rowId === member.questionId;
     }
-    const family = new Set(titleListAnswerFamilyIds(member));
-    if (family.has(rowId)) return true;
-    const rowRecord = turnRecordForTitleListIdentity(rowId, rowTurnNo);
-    for (const value of [rowRecord?.primaryAId, rowRecord?.answerId, ...(Array.isArray(rowRecord?.answerIds) ? rowRecord.answerIds : []), ...(Array.isArray(rowRecord?._aliasIds) ? rowRecord._aliasIds : [])]) {
-      if (family.has(String(value || '').trim())) return true;
-    }
-    return false;
+    return titleListIdentityMatchesMember(rowId, member);
   }
 
   function findStackRowForMember(container = null, member = null) {
@@ -2739,6 +3199,7 @@
       if (changed) {
         bar.setAttribute('data-h2o-title-row-source', 'no-answer');
         bar.setAttribute('data-h2o-title-row-source-rank', '3');
+        bar.removeAttribute('data-h2o-title-row-source-id');
       }
       return { changed, preventedDowngrade: false, source: 'no-answer' };
     }
@@ -2750,9 +3211,19 @@
       : 0;
     const resolved = resolveSyntheticRowTitle(member);
     const resolvedReal = !isSyntheticTitlePlaceholder(resolved.text) && resolved.source !== 'fallback';
+    const currentSourceId = String(bar.getAttribute('data-h2o-title-row-source-id') || '').trim();
+    const resolvedSourceId = String(resolved.answerId || member.answerId || '').trim();
     let changed = false;
     let preventedDowngrade = false;
-    if (resolvedReal && (!currentReal || resolved.rank > currentRank)) {
+    // The resolver is now turn-validated. Equal-rank text from the canonical
+    // member must correct a row that was previously populated through a
+    // colliding alias; rank alone cannot make wrong text permanent.
+    if (resolvedReal && (
+      !currentReal
+      || resolved.rank > currentRank
+      || currentText !== resolved.text
+      || (resolvedSourceId && currentSourceId !== resolvedSourceId)
+    )) {
       if (textEl && currentText !== resolved.text) { textEl.textContent = resolved.text; changed = true; }
       if (bar.getAttribute('data-h2o-title-row-source') !== resolved.source) {
         bar.setAttribute('data-h2o-title-row-source', resolved.source);
@@ -2760,6 +3231,10 @@
       }
       if (bar.getAttribute('data-h2o-title-row-source-rank') !== String(resolved.rank)) {
         bar.setAttribute('data-h2o-title-row-source-rank', String(resolved.rank));
+        changed = true;
+      }
+      if (resolvedSourceId && currentSourceId !== resolvedSourceId) {
+        bar.setAttribute('data-h2o-title-row-source-id', resolvedSourceId);
         changed = true;
       }
     } else if (currentReal) {
@@ -2772,12 +3247,20 @@
         bar.setAttribute('data-h2o-title-row-source-rank', String(currentRank));
         changed = true;
       }
+      if (!bar.hasAttribute('data-h2o-title-row-source-id')) {
+        const barId = String(bar.getAttribute('data-answer-id') || member.answerId || '').trim();
+        if (barId) bar.setAttribute('data-h2o-title-row-source-id', barId);
+      }
     } else {
       const source = resolvedReal ? resolved.source : 'fallback';
       const rank = resolvedReal ? resolved.rank : 0;
       if (resolvedReal && textEl && currentText !== resolved.text) { textEl.textContent = resolved.text; changed = true; }
       if (bar.getAttribute('data-h2o-title-row-source') !== source) { bar.setAttribute('data-h2o-title-row-source', source); changed = true; }
       if (bar.getAttribute('data-h2o-title-row-source-rank') !== String(rank)) { bar.setAttribute('data-h2o-title-row-source-rank', String(rank)); changed = true; }
+      if (resolvedSourceId && bar.getAttribute('data-h2o-title-row-source-id') !== resolvedSourceId) {
+        bar.setAttribute('data-h2o-title-row-source-id', resolvedSourceId);
+        changed = true;
+      }
     }
     return {
       changed,
@@ -2821,8 +3304,9 @@
     const wash = WASH_PUBLIC();
     if (typeof wash?.applyToTitleBar !== 'function') return { ok: false, status: 'washer-api-unavailable' };
     const answerId = member?.type === 'answer' ? String(member.answerId || member.id || '').trim() : '';
+    let resolved = null;
     try {
-      const resolved = wash?.resolveForId?.(answerId) || null;
+      resolved = wash?.resolveForId?.(answerId) || null;
       const existing = String(bar.getAttribute?.('data-h2o-title-wash') || '').trim();
       // Stack reconciliation is not the washer removal executor. If canonical
       // identity is temporarily incomplete, preserve the already-projected
@@ -2831,7 +3315,12 @@
         return { ok: true, status: 'preserved-existing-on-identity-miss', colorName: existing };
       }
     } catch {}
-    try { return wash.applyToTitleBar(answerId, bar) || { ok: true, status: 'applied' }; } catch { return { ok: false, status: 'washer-apply-failed' }; }
+    try {
+      if (resolved?.colorName && typeof wash?.replayForId === 'function') {
+        return wash.replayForId(answerId, { barEl: bar }) || { ok: true, status: 'replayed' };
+      }
+      return wash.applyToTitleBar(answerId, bar) || { ok: true, status: 'applied' };
+    } catch { return { ok: false, status: 'washer-apply-failed' }; }
   }
 
   // ── Inline open: the opened turn renders in the title-list context ────────
@@ -3320,6 +3809,12 @@
       } else {
         try { bar.remove(); } catch {}
       }
+      // Rehosting removes the bar from the washed assistant subtree and the
+      // answer body may have just rehydrated. Reproject from washer state onto
+      // the restored flow answer, its one title bar, and the MiniMap button.
+      if (member?.type === 'answer' && answerId) {
+        try { WASH_PUBLIC()?.replayForId?.(answerId, { barEl: bar?.isConnected ? bar : null }); } catch {}
+      }
       released += 1;
     }
     return released;
@@ -3339,6 +3834,7 @@
       released += sweepSyntheticTitleListHidden(num);
       S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
       getTitleListStackStats(num, id).activeStackId = '';
+      try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-release:${reason}`); } catch {}
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
     const members = pureCanonicalPageMemberDetails(num);
@@ -3382,8 +3878,15 @@
       // upgrades all target the stacked element in place.)
       if (!bar && member.type === 'answer' && member.answerId) {
         let realBar = null;
-        try { realBar = at?.getBar?.(member.answerId) || null; } catch {}
-        if (realBar) bar = realBar;
+        try {
+          realBar = titleBarPool.find((candidate) => (
+            candidate?.isConnected && titleBarStrictlyMatchesMember(candidate, member)
+          )) || null;
+        } catch {}
+        if (!realBar) {
+          try { realBar = at?.getBar?.(member.answerId) || null; } catch {}
+        }
+        if (titleBarStrictlyMatchesMember(realBar, member)) bar = realBar;
       }
       if (!bar && member.type !== 'answer') {
         const qSection = titleListMemberSections(member).questionSection;
@@ -3406,6 +3909,7 @@
         if (!bar) continue;
         bar.setAttribute('data-h2o-title-row-source', resolved.source);
         bar.setAttribute('data-h2o-title-row-source-rank', String(resolved.rank));
+        if (resolved.answerId) bar.setAttribute('data-h2o-title-row-source-id', String(resolved.answerId));
         markTitleListStackMutation(stats, `row-created:${reason}`);
       }
       bar.setAttribute('data-h2o-in-title-stack', String(num));
@@ -3539,6 +4043,10 @@
       }
     } catch {}
     stats.lastListSettledAt = Date.now();
+    // One RAF-coalesced exact-ID pass clears any stale button projection left
+    // by a prior/hot-reloaded alias-aware build without multiplying work by
+    // the number of title-list rows.
+    try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-sync:${reason}`); } catch {}
     return { ok: true, status: 'ok', pageNum: num, rows: members.length, stackId: container.id, reason };
   }
 
@@ -3649,11 +4157,20 @@
     // Stable synthetic list: renders/updates the full-page canonical row list
     // while active; removes it and releases the flow stamps when inactive.
     const synth = syncSyntheticTitleList(num, id, !!active, { reason: String(opts?.source || 'apply-title-list-visuals') });
+
     const intentReplay = pageHasTitleIntent
       ? applyTitleIntentToPage(num, { chatId: id, answerIds, animate: opts?.animate === true, ledger })
       : { ok: true, status: 'skipped-inert', chatId: id, pageNum: num, members: 0, hydrated: 0, unhydrated: 0, results: [] };
     if (!pageHasTitleIntent) incTitleIntentStat('replaySkippedInert');
-    return { ok: true, status: 'ok', chatId: id, pageNum: num, rows: rows.length, active, driver, synth, intentReplay };
+    // Dot expand is an explicit bounded convergence campaign. Source clearing
+    // happens first (router + residual source check), then 1C1a's one title
+    // projection executor unfolds every hydrated canonical member. Repeated
+    // passes are bounded to 1.8s and page-scoped, covering native hydration
+    // races without introducing another open-chat/background repair loop.
+    let expandConvergence = null;
+    if (active) cancelDotExpandConvergence(num, id);
+    else if (explicitDotAction) expandConvergence = scheduleDotExpandConvergence(num, id);
+    return { ok: true, status: 'ok', chatId: id, pageNum: num, rows: rows.length, active, driver, synth, intentReplay, expandConvergence };
   }
 
   function setTitleListMode(pageNum = 0, enabled = false, opts = {}) {
@@ -4418,6 +4935,118 @@
       duplicateTitleBarsVisible = Array.from(visibleBarsByMember.values()).some((list) => list.length > 1);
       inFlowTitleBarsVisibleWhileStackActive = titleListActive ? inFlowVisibleBars.length : 0;
     } catch {}
+
+    // Residual-hide audit (Phase 4b acceptance). When the title-list is NOT
+    // active and the page is not lightening-collapsed, no current-page member
+    // wrapper/section may still carry a title-list / answer-collapse hide
+    // marker. Circle/dot expand must leave the page visually normal; a
+    // lingering data-cgxui-at-hidden (the engine's own marker) or a
+    // question/title-list hide stamp keeps a turn invisible via CSS even
+    // though the collapse ledger reads clean. The active-state pass fields did
+    // not cover this, so an incomplete expand could falsely pass. Page-collapse
+    // markers (data-cgxui-chat-page-hidden / -wrapper-hidden) are deliberately
+    // excluded: those belong to the separate page-lightening mechanism.
+    const RESIDUAL_HIDE_MARKERS = [
+      'data-cgxui-at-hidden',
+      'data-at-question-hidden',
+      ATTR_CHAT_PAGE_QUESTION_HIDDEN,
+      ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN,
+      ATTR_TITLE_LIST_FLOW_HIDDEN,
+    ];
+    const RESIDUAL_HIDE_SEL = RESIDUAL_HIDE_MARKERS.map((a) => `[${a}]`).join(',');
+    const residualHiddenFlowMembers = [];
+    let pageLightenCollapsed = false;
+    try { pageLightenCollapsed = isPageCollapsed(pageNum, chatId); } catch {}
+    if (!titleListActive && !pageLightenCollapsed) {
+      const markerAttrsOf = (el) => {
+        const hit = [];
+        if (!el?.getAttribute) return hit;
+        for (const attr of RESIDUAL_HIDE_MARKERS) {
+          const v = el.getAttribute(attr);
+          if (v != null && String(v).trim() && String(v).trim() !== '0') hit.push(attr);
+        }
+        return hit;
+      };
+      // Per-node evidence: report the EXACT element carrying each marker so a
+      // member-level flag can never be ambiguous about which DOM node (own
+      // section vs a descendant sibling/toolbar vs an anchor wrapper) is
+      // responsible.
+      const residualNodeDetail = (el, attrsHit) => {
+        let rectHeight = 0; let display = '';
+        try { rectHeight = Math.round(el.getBoundingClientRect?.().height || 0); } catch {}
+        try { display = getComputedStyle(el).display; } catch {}
+        const section = el.closest?.('section[data-testid^="conversation-turn"]') || null;
+        return {
+          markers: attrsHit,
+          testid: String(el.getAttribute?.('data-testid') || section?.getAttribute?.('data-testid') || ''),
+          selfIsSection: el === section,
+          tag: String(el.tagName || ''),
+          role: String(el.getAttribute?.('data-turn') || el.getAttribute?.('data-message-author-role') || ''),
+          display,
+          inlineDisplay: String(el.style?.display || ''),
+          rectHeight,
+          text: String(el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60),
+        };
+      };
+      for (const member of memberDetailsAll) {
+        const scopes = new Set();
+        for (const anchor of memberAllFlowAnchors(member)) if (anchor) scopes.add(anchor);
+        const secs = titleListMemberSections(member);
+        if (secs.answerSection) scopes.add(secs.answerSection);
+        if (secs.questionSection) scopes.add(secs.questionSection);
+        const markers = new Set();
+        const nodes = [];
+        const seenNodes = new Set();
+        for (const scope of scopes) {
+          try {
+            const candidates = new Set([scope]);
+            for (const inner of scope.querySelectorAll?.(RESIDUAL_HIDE_SEL) || []) candidates.add(inner);
+            for (const el of candidates) {
+              if (seenNodes.has(el)) continue;
+              seenNodes.add(el);
+              const hit = markerAttrsOf(el);
+              if (!hit.length) continue;
+              for (const attr of hit) markers.add(attr);
+              if (nodes.length < 6) nodes.push(residualNodeDetail(el, hit));
+            }
+          } catch {}
+        }
+        if (markers.size) {
+          residualHiddenFlowMembers.push({
+            id: member.id,
+            turnNo: member.turnNo,
+            type: member.type,
+            markers: Array.from(markers),
+            nodes,
+          });
+        }
+      }
+    }
+    // Strong post-expand proof: marker absence is necessary but insufficient.
+    // Inspect every canonical member through the title-bar owner and canonical
+    // question/answer sections so a collapsed bar token or markerless zero-
+    // height body fails even when residualHiddenFlowMembers is empty.
+    const expandedPageFlowAudit = (!titleListActive && !pageLightenCollapsed)
+      ? auditExpandedPageFlow(pageNum, chatId)
+      : {
+          pageFlowRestored: 'notApplicable',
+          allPageMembersExpandedAfterDotExpand: 'notApplicable',
+          residualCollapsedFlowMembers: [],
+          residualCollapsedFlowMemberCount: 0,
+          pageMemberExpandedStateFailures: [],
+          members: [],
+        };
+    const dotExpandCampaign = S.dotExpandCampaigns.get(dotExpandCampaignKey(pageNum, chatId)) || null;
+    const dotExpandConvergence = dotExpandCampaign ? {
+      token: dotExpandCampaign.token,
+      startedAt: dotExpandCampaign.startedAt,
+      completedAt: dotExpandCampaign.completedAt,
+      runs: dotExpandCampaign.runs,
+      pending: !!dotExpandCampaign.timer,
+      lastStatus: String(dotExpandCampaign.lastResult?.status || ''),
+      lastResidualCollapsedFlowMemberCount: Number(dotExpandCampaign.lastResult?.residualCollapsedFlowMemberCount || 0),
+      lastPageFlowRestored: dotExpandCampaign.lastResult?.pageFlowRestored === true,
+    } : null;
     // Divider/list order proof (read-only).
     let pageDividerEl = null;
     try {
@@ -4474,8 +5103,8 @@
     }).length;
     const listedNoAnswerRows = synthRows.filter((row) => row.getAttribute('data-h2o-stack-type') === 'no-answer').length;
     // Title quality accounting.
-    const rowSourceOf = (row) => String(row.getAttribute('data-h2o-title-row-source') || '');
-    const rowTitleOf = (row) => String(row.querySelector?.('[data-cgxui="atns-answer-title-text"]')?.textContent || '').trim();
+    const rowSourceOf = (row) => String(row?.getAttribute?.('data-h2o-title-row-source') || '');
+    const rowTitleOf = (row) => String(row?.querySelector?.('[data-cgxui="atns-answer-title-text"]')?.textContent || '').trim();
     const fallbackTitleRows = synthRows
       .filter((row) => row.getAttribute('data-h2o-stack-type') === 'answer'
         && (rowSourceOf(row) === 'fallback' || isSyntheticTitlePlaceholder(rowTitleOf(row))))
@@ -4513,6 +5142,27 @@
       hydrated: synthRows.filter((row) => row.getAttribute('data-h2o-title-row-hydrated') === '1').length,
       expandedByUser: manualOpenRows.length,
     };
+    const titleFidelityRows = memberDetailsAll.flatMap((member) => {
+      if (member.type !== 'answer') return [];
+      const row = synthRows.find((candidate) => stackRowMatchesMember(candidate, member)) || null;
+      const resolved = resolveSyntheticRowTitle(member);
+      const displayedTitle = rowTitleOf(row);
+      const expectedTitle = String(resolved?.text || '').trim();
+      const comparable = !!(row && expectedTitle && resolved?.source !== 'fallback');
+      return [{
+        memberId: member.id,
+        answerId: member.answerId,
+        turnNo: member.turnNo,
+        displayedTitle,
+        expectedTitle,
+        expectedSource: String(resolved?.source || ''),
+        expectedSourceId: String(resolved?.answerId || ''),
+        projectedSource: String(row?.getAttribute?.('data-h2o-title-row-source') || ''),
+        projectedSourceId: String(row?.getAttribute?.('data-h2o-title-row-source-id') || ''),
+        matches: comparable ? displayedTitle === expectedTitle : 'notApplicable',
+      }];
+    });
+    const titleFidelityMismatches = titleFidelityRows.filter((entry) => entry.matches === false);
     const washMap = (() => {
       try {
         const viaApi = WASH_PUBLIC()?.getWashMap?.();
@@ -4522,13 +5172,139 @@
       } catch { return {}; }
     })();
     const washApi = WASH_PUBLIC();
+    const canonicalExpectedMiniMapWashes = (() => {
+      try {
+        const viaApi = washApi?.getExpectedMiniMapWashes?.();
+        if (Array.isArray(viaApi)) return viaApi;
+      } catch {}
+      return Object.entries(washMap || {}).flatMap(([rawId, rawName]) => {
+        const colorName = String(rawName || '').trim().toLowerCase();
+        if (!rawId || !colorName) return [];
+        return [{ rawId, canonicalId: rawId, matchedId: rawId, colorName, turnNo: 0, source: 'snapshot-fallback' }];
+      });
+    })();
+    const inspectMiniMapButton = (btn) => {
+      const buttonId = String(btn.getAttribute('data-primary-a-id') || '').trim();
+      let inspected = null;
+      try { inspected = washApi?.inspectMiniBtn?.(buttonId, btn) || null; } catch {}
+      if (!inspected) {
+        const directColor = String(washMap?.[buttonId] || '').trim().toLowerCase();
+        const actualWashed = btn.getAttribute('data-cgxui-wash') === '1' || btn.dataset?.wash === 'true';
+        inspected = {
+          requestedId: buttonId,
+          buttonId,
+          canonicalId: buttonId,
+          matchedId: directColor ? buttonId : '',
+          colorName: directColor || null,
+          shouldWash: !!directColor,
+          actualWashed,
+          projectedWashId: String(btn.getAttribute('data-h2o-wash-id') || ''),
+          projectedWashName: String(btn.getAttribute('data-h2o-wash-name') || ''),
+          attrsMatch: actualWashed === !!directColor,
+          visualMatches: !directColor,
+          computedVisualWash: false,
+          visualInspectionUnavailable: true,
+          matchesExpected: actualWashed === !!directColor && !directColor,
+        };
+      }
+      const mismatchReason = inspected.matchesExpected
+        ? ''
+        : inspected.actualWashed && !inspected.shouldWash
+          ? 'unexpected-wash-on-unwashed-button'
+          : !inspected.actualWashed && inspected.shouldWash
+            ? 'missing-wash-on-washed-button'
+            : inspected.attrsMatch === true && inspected.visualMatches === false
+              ? inspected.visualInspectionUnavailable
+                ? 'computed-visual-wash-inspection-unavailable'
+                : inspected.selectedStyleMasksWash
+                  ? 'attrs-present-but-selected-style-masks-wash'
+                  : 'attrs-present-but-computed-visual-wash-missing'
+              : 'wash-id-or-color-mismatch';
+      return {
+        turnNo: Math.max(0, Number(btn.dataset?.turnIdx || inspected.turnNo || 0) || 0),
+        buttonId,
+        canonicalId: String(inspected.canonicalId || ''),
+        identityBasis: String(inspected.identityBasis || ''),
+        matchedWashId: String(inspected.matchedId || ''),
+        resolvedWash: String(inspected.colorName || ''),
+        shouldWash: !!inspected.shouldWash,
+        actualWashed: !!inspected.actualWashed,
+        projectedWashId: String(inspected.projectedWashId || ''),
+        projectedWashName: String(inspected.projectedWashName || ''),
+        visibleButtonSelector: String(inspected.selector || ''),
+        actualWashClasses: Array.isArray(inspected.actualWashClasses) ? inspected.actualWashClasses : [],
+        cssVars: inspected.cssVars || {},
+        computedStyle: inspected.computedStyle || {},
+        expectedPaintBg: String(inspected.expectedPaintBg || ''),
+        computedVisualWash: inspected.computedVisualWash === true,
+        selectedOrCurrent: inspected.selectedOrCurrent === true,
+        selectedStateTokens: String(inspected.selectedStateTokens || ''),
+        selectedStyleMasksWash: inspected.selectedStyleMasksWash === true,
+        attrsMatch: inspected.attrsMatch !== false,
+        visualMatches: inspected.visualMatches !== false,
+        matchesExpected: inspected.matchesExpected === true,
+        mismatchReason,
+      };
+    };
+    const miniMapWasherAudit = Array.from(document.querySelectorAll('[data-cgxui="mnmp-btn"]'))
+      .map((btn) => inspectMiniMapButton(btn));
+    for (const expected of canonicalExpectedMiniMapWashes) {
+      const canonicalId = String(expected?.canonicalId || expected?.rawId || '').trim();
+      if (!canonicalId) continue;
+      const represented = miniMapWasherAudit.some((entry) => (
+        entry.canonicalId === canonicalId
+        || entry.buttonId === String(expected?.rawId || '')
+      ));
+      if (represented) continue;
+      miniMapWasherAudit.push({
+        turnNo: Math.max(0, Number(expected?.turnNo || 0) || 0),
+        buttonId: '',
+        canonicalId,
+        matchedWashId: String(expected?.matchedId || expected?.rawId || ''),
+        resolvedWash: String(expected?.colorName || ''),
+        shouldWash: true,
+        actualWashed: false,
+        projectedWashId: '',
+        projectedWashName: '',
+        visibleButtonSelector: '',
+        actualWashClasses: [],
+        cssVars: {},
+        computedStyle: {},
+        expectedPaintBg: '',
+        computedVisualWash: false,
+        selectedOrCurrent: false,
+        selectedStateTokens: '',
+        selectedStyleMasksWash: false,
+        attrsMatch: false,
+        visualMatches: false,
+        matchesExpected: false,
+        mismatchReason: 'expected-washed-button-not-found',
+        expectedSource: String(expected?.source || ''),
+      });
+    }
+    const miniMapWasherMismatches = miniMapWasherAudit.filter((entry) => !entry.matchesExpected);
     const expectedWasherStates = memberDetailsAll.flatMap((member) => {
       if (member.type !== 'answer') return [];
       let resolved = null;
       try { resolved = washApi?.resolveForId?.(member.answerId) || null; } catch {}
       const fallbackColor = String(washMap?.[member.answerId] || '').trim().toLowerCase();
-      const colorName = String(resolved?.colorName || fallbackColor).trim().toLowerCase();
-      return colorName ? [{ memberId: member.id, answerId: member.answerId, turnNo: member.turnNo, colorName }] : [];
+      const resolvedCanonicalId = String(resolved?.id || member.answerId || '').trim();
+      const canonicalExpected = canonicalExpectedMiniMapWashes.find((entry) => (
+        String(entry?.canonicalId || '') === resolvedCanonicalId
+        || String(entry?.rawId || '') === String(member.answerId || '')
+        || (Array.isArray(entry?.aliasRawIds)
+          && entry.aliasRawIds.map((value) => String(value || '')).includes(String(member.answerId || '')))
+      )) || null;
+      const colorName = String(canonicalExpected?.colorName || resolved?.colorName || fallbackColor).trim().toLowerCase();
+      return colorName ? [{
+        memberId: member.id,
+        answerId: member.answerId,
+        turnNo: member.turnNo,
+        colorName,
+        canonicalId: String(canonicalExpected?.canonicalId || resolvedCanonicalId),
+        matchedId: String(canonicalExpected?.matchedId || resolved?.matchedId || member.answerId || ''),
+        candidateIds: Array.isArray(resolved?.candidateIds) ? resolved.candidateIds : [],
+      }] : [];
     });
     const expectedWasherMemberIds = expectedWasherStates.map((entry) => entry.memberId);
     const washerTitleBarsInStack = synthRows.filter((row) => !!String(row.getAttribute('data-h2o-title-wash') || '').trim());
@@ -4544,6 +5320,54 @@
         && String(row.getAttribute('data-h2o-title-wash') || '').trim().toLowerCase() === expected.colorName
       )));
     });
+    const washerFidelityRows = expectedWasherStates.map((expected) => {
+      const member = memberDetailsAll.find((candidate) => candidate.id === expected.memberId) || null;
+      const row = member ? synthRows.find((candidate) => stackRowMatchesMember(candidate, member)) || null : null;
+      const answerEl = (() => {
+        try { return AT_PUBLIC()?.getMessageEl?.(expected.answerId) || titleListMemberSections(member).answerSection || null; } catch { return null; }
+      })();
+      const answerStyle = answerEl?.style || null;
+      const flowWashName = String(
+        answerEl?.getAttribute?.('data-h2o-wash-name')
+          || Array.from(answerEl?.classList || []).find((name) => String(name).startsWith('cgxui-mnmp-wash-'))?.slice('cgxui-mnmp-wash-'.length)
+          || ''
+      ).trim().toLowerCase();
+      const flowWashColor = String(answerStyle?.getPropertyValue?.('--h2o-at-wash-color') || answerStyle?.getPropertyValue?.('--h2o-band-color') || '').trim();
+      const miniMapButtons = miniMapWasherAudit.filter((entry) => entry.canonicalId === expected.canonicalId);
+      const miniMapProjected = miniMapButtons.some((entry) => (
+        entry.shouldWash
+        && entry.actualWashed
+        && entry.matchedWashId === expected.matchedId
+        && entry.resolvedWash === expected.colorName
+      ));
+      const miniMapWashed = miniMapButtons.some((entry) => (
+        entry.shouldWash
+        && entry.actualWashed
+        && entry.computedVisualWash
+        && entry.matchesExpected
+        && entry.matchedWashId === expected.matchedId
+        && entry.resolvedWash === expected.colorName
+      ));
+      return {
+        ...expected,
+        rowWash: String(row?.getAttribute?.('data-h2o-title-wash') || '').trim().toLowerCase(),
+        rowWashId: String(row?.getAttribute?.('data-h2o-title-wash-id') || '').trim(),
+        miniMapButtonCount: miniMapButtons.length,
+        miniMapProjected,
+        miniMapWashed,
+        flowAnswerHydrated: !!answerEl,
+        flowWashName,
+        flowWashColor,
+        flowWashed: !!(answerEl && (flowWashName === expected.colorName || flowWashColor)),
+      };
+    });
+    // The canonical visual audit inserts an explicit missing-button row, so
+    // its mismatch list is the complete MiniMap projection verdict. Keeping a
+    // second page-member identity comparison here caused false failures after
+    // expected rows were deduplicated onto the real button identity.
+    const washerMiniMapProjectionReasons = miniMapWasherMismatches.map((entry) => String(entry.mismatchReason || 'minimap-wash-mismatch'));
+    const washerMiniMapProjectionComplete = washerMiniMapProjectionReasons.length === 0;
+    const washerFlowProjectionComplete = washerFidelityRows.every((entry) => !entry.flowAnswerHydrated || entry.flowWashed);
     const openedMember = openedStackRows.length === 1
       ? memberDetailsAll.find((member) => stackRowMatchesMember(openedStackRows[0], member)) || null
       : null;
@@ -4648,6 +5472,15 @@
       duplicateTitleBarsVisible,
       inFlowTitleBarsVisibleWhileStackActive,
       inFlowTitleBarsVisibleWhileTitleListActive: inFlowTitleBarsVisibleWhileStackActive,
+      residualHiddenFlowMembers,
+      residualHiddenFlowMemberCount: residualHiddenFlowMembers.length,
+      residualCollapsedFlowMembers: expandedPageFlowAudit.residualCollapsedFlowMembers,
+      residualCollapsedFlowMemberCount: expandedPageFlowAudit.residualCollapsedFlowMemberCount,
+      pageMemberExpandedStates: expandedPageFlowAudit.members,
+      pageMemberExpandedStateFailures: expandedPageFlowAudit.pageMemberExpandedStateFailures,
+      pageFlowRestored: expandedPageFlowAudit.pageFlowRestored,
+      allPageMembersExpandedAfterDotExpand: expandedPageFlowAudit.allPageMembersExpandedAfterDotExpand,
+      dotExpandConvergence,
       titleNumbersInStack,
       missingTitleNumbers,
       dividerBeforeTitleStack: dividerBeforeSyntheticList,
@@ -4682,6 +5515,15 @@
       })),
       expectedWasherMemberIds,
       expectedWasherStates,
+      canonicalExpectedMiniMapWashes,
+      washerFidelityRows,
+      miniMapWasherAudit,
+      miniMapWasherMismatches,
+      washerMiniMapProjectionReasons,
+      washerMiniMapProjectionComplete,
+      washerFlowProjectionComplete,
+      titleFidelityRows,
+      titleFidelityMismatches,
       goldActiveTitleBarsInStack: goldTitleBarsInStack.length,
       goldActiveTitleBarsInFlowDuplicates: goldTitleBarsInFlowDuplicates.length,
       activeFlashState: activeFlashRowsInStack.length
@@ -4730,6 +5572,9 @@
         (titleListActive && dividerBeforeSyntheticList !== true) ? 'stack-above-divider' : null,
         openedTurnInsideListContext === false ? 'opened-turn-outside-list-context' : null,
         stackLayoutStable === false ? 'stack-horizontal-layout-shifted-after-open' : null,
+        titleFidelityMismatches.length ? `title-fidelity-mismatches:${titleFidelityMismatches.length}` : null,
+        (titleListActive && !washerProjectionComplete) ? 'washer-title-stack-projection-incomplete' : null,
+        (expectedWasherStates.length && !washerMiniMapProjectionComplete) ? 'washer-minimap-projection-incomplete' : null,
       ].filter(Boolean),
       openedTitleNumber: manualOpenRows[0]?.turnNo || null,
       openedTurnsInlineInStack,
@@ -4847,6 +5692,19 @@
         openedTurnInsideListContext,
         stackLayoutStable,
         noDuplicateTitleBarsVisible: !pageExists ? 'notApplicable' : duplicateTitleBarsVisible === false,
+        // After circle/dot expand (title-list inactive, page not lightening-
+        // collapsed) every current-page member must be fully released — no
+        // lingering answer-collapse / title-list hide marker. Guards the
+        // reported failure where semantic state read clean but question turns
+        // stayed hidden via a stranded data-cgxui-at-hidden stamp.
+        noResidualHiddenFlowMembers: (titleListActive || pageLightenCollapsed)
+          ? 'notApplicable'
+          : residualHiddenFlowMembers.length === 0,
+        noResidualCollapsedFlowMembers: (titleListActive || pageLightenCollapsed)
+          ? 'notApplicable'
+          : expandedPageFlowAudit.residualCollapsedFlowMemberCount === 0,
+        pageFlowRestored: expandedPageFlowAudit.pageFlowRestored,
+        allPageMembersExpandedAfterDotExpand: expandedPageFlowAudit.allPageMembersExpandedAfterDotExpand,
         noInFlowTitleBarsWhileStackActive: !titleListActive ? 'notApplicable' : inFlowTitleBarsVisibleWhileStackActive === 0,
         noMissingTitleNumbers: !titleListActive ? 'notApplicable' : missingTitleNumbers.length === 0,
         listedTitleBarsAreRealTitleBars: !titleListActive
@@ -4863,6 +5721,15 @@
         washerStylePreserved: !titleListActive || !expectedWasherMemberIds.length
           ? 'notApplicable'
           : washerProjectionComplete,
+        titleFidelityPreserved: !titleListActive
+          ? 'notApplicable'
+          : titleFidelityMismatches.length === 0,
+        washerMiniMapProjectionPreserved: !expectedWasherMemberIds.length
+          ? 'notApplicable'
+          : washerMiniMapProjectionComplete,
+        washerFlowProjectionRestored: titleListActive || !expectedWasherMemberIds.length
+          ? 'notApplicable'
+          : washerFlowProjectionComplete,
         noMechanismConflicts: !titleListActive
           ? 'notApplicable'
           : (synthContainers.length === 1
@@ -5194,6 +6061,10 @@
     }
     S.titleListRepairPages.clear();
     S.titleListRepairAllPages = false;
+    for (const campaign of S.dotExpandCampaigns.values()) {
+      if (campaign?.timer) { try { W.clearTimeout(campaign.timer); } catch {} }
+    }
+    S.dotExpandCampaigns.clear();
     S.listenersBound = false;
     S.bound = false;
     return { ok: true, status: 'unbound', chatId: String(S.chatId || '').trim() };
