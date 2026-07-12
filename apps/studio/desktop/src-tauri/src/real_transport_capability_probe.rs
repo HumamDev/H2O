@@ -25,6 +25,7 @@ const WRITE_GRADE_RECEIPT_SCHEMA: &str = "h2o.sync.real-transport.write-grade-re
 const WRITE_GRADE_RECEIPT_CANONICALIZATION: &str = "json-sorted-keys-v1";
 const FIRST_WRITE_OPERATION_KIND: &str = "first-sacrificial-probe-write";
 const FIRST_WRITE_PAYLOAD_KIND: &str = "capability-probe-object";
+const FIRST_WRITE_DETERMINISTIC_SENTINEL_PAYLOAD: &str = "h2o-w3-first-write-loopback-sentinel";
 const FIRST_WRITE_GATE: &str = "real-transport-w3-4a-refused-first-write-loopback";
 const FIRST_WRITE_LIVE_GATE: &str = "real-transport-w3-4b-live-sacrificial-webdav-invocation";
 const W31_CLOSEOUT_COMMIT: &str = "7862270237955b86d48d943263fd53947cc71f72";
@@ -38,6 +39,8 @@ const W34B0_APPROVAL_PACKAGE_COMMIT: &str = "d196f4b26d904394c435c15dd14d12cd18f
 const W34B1_OPERATOR_APPROVAL_COMMIT: &str = "db4cdc5ccbd436913f05aa7b526fc14fec03e5ea";
 const W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT: &str = "714f80a458808550dc8fd59ee937837349f416da";
 const W34B3B_MISSING_TOKEN_COMMIT: &str = "d4171915b30cef69ef53234ef12a533e8ed6e846";
+const W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT: &str =
+    "d57fefebe66537ecbeac9ecf9ba56cf02f1b21dd";
 const WRITE_GRADE_MAX_RECEIPT_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const FIRST_WRITE_RECOMMENDED_AGE_SECONDS: i64 = 72 * 60 * 60;
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -715,6 +718,8 @@ pub struct WriteGradeReceiptBindings {
     pub w34b1_r2_renewed_operator_approval_commit: Option<String>,
     #[serde(default)]
     pub w34b3_blocked_missing_token_commit: Option<String>,
+    #[serde(default)]
+    pub w34b3_r3_binding_mismatch_diagnostic_commit: Option<String>,
     #[serde(default)]
     pub operator_approval_artifact_hash: Option<String>,
     #[serde(default)]
@@ -2576,7 +2581,9 @@ impl FirstWriteLoopbackClient for DefaultFirstWriteLoopbackClient {
     fn get_readback(&self) -> FirstWriteLoopbackResponse {
         FirstWriteLoopbackResponse {
             status: 200,
-            body: b"h2o-w3-first-write-loopback-sentinel".to_vec(),
+            body: FIRST_WRITE_DETERMINISTIC_SENTINEL_PAYLOAD
+                .as_bytes()
+                .to_vec(),
             ..Default::default()
         }
     }
@@ -2761,6 +2768,10 @@ fn validate_write_grade_receipt(
         .and_then(|value| value.w34b3_blocked_missing_token_commit.as_deref())
         .map(|value| value == W34B3B_MISSING_TOKEN_COMMIT)
         .unwrap_or(true);
+    let optional_r3a_diagnostic_binding_ok = bindings
+        .and_then(|value| value.w34b3_r3_binding_mismatch_diagnostic_commit.as_deref())
+        .map(|value| value == W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT)
+        .unwrap_or(true);
     if bindings.and_then(|value| value.w31_closeout_commit.as_deref()) != Some(W31_CLOSEOUT_COMMIT)
         || bindings.and_then(|value| value.w31_alignment_commit.as_deref())
             != Some(W31_ALIGNMENT_COMMIT)
@@ -2778,6 +2789,7 @@ fn validate_write_grade_receipt(
             != Some(W34B0_APPROVAL_PACKAGE_COMMIT)
         || !(legacy_approval_binding_ok || renewed_approval_binding_ok)
         || !optional_missing_token_binding_ok
+        || !optional_r3a_diagnostic_binding_ok
     {
         blockers.push("real-transport-w3-first-write-commit-binding-mismatch");
     }
@@ -3579,7 +3591,9 @@ mod tests {
                 },
                 readback: FirstWriteLoopbackResponse {
                     status: 200,
-                    body: b"h2o-w3-first-write-loopback-sentinel".to_vec(),
+                    body: FIRST_WRITE_DETERMINISTIC_SENTINEL_PAYLOAD
+                        .as_bytes()
+                        .to_vec(),
                     ..Default::default()
                 },
             }
@@ -3634,7 +3648,7 @@ mod tests {
     }
 
     fn first_write_request() -> RtFirstWriteRequest {
-        let payload = "h2o-w3-first-write-loopback-sentinel".to_string();
+        let payload = FIRST_WRITE_DETERMINISTIC_SENTINEL_PAYLOAD.to_string();
         let payload_hash = sha256_ref(payload.as_bytes());
         let approval_hash = h('d');
         let one_shot_token = "loopback-one-shot-token".to_string();
@@ -3708,6 +3722,7 @@ mod tests {
                     w34b1_expired_operator_approval_commit: None,
                     w34b1_r2_renewed_operator_approval_commit: None,
                     w34b3_blocked_missing_token_commit: None,
+                    w34b3_r3_binding_mismatch_diagnostic_commit: None,
                     operator_approval_artifact_hash: Some(approval_hash),
                     one_shot_token_hash: Some(one_shot_token_hash),
                     kill_switch_token_hash: Some(kill_switch_token_hash),
@@ -4366,6 +4381,8 @@ mod tests {
         bindings.w34b1_r2_renewed_operator_approval_commit =
             Some(W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT.to_string());
         bindings.w34b3_blocked_missing_token_commit = Some(W34B3B_MISSING_TOKEN_COMMIT.to_string());
+        bindings.w34b3_r3_binding_mismatch_diagnostic_commit =
+            Some(W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT.to_string());
 
         let mut blockers = Vec::new();
         let mode = validate_write_grade_receipt(&request, &mut blockers);
@@ -4385,6 +4402,18 @@ mod tests {
         assert_eq!(
             write_grade_receipt_core_hash(&receipt).as_deref(),
             Some("sha256:b34cd56a9d5a16fe3dc5319b174522f2c7634ad17717405310c18cec0188e1cd")
+        );
+    }
+
+    #[test]
+    fn first_write_r4_receipt_core_hash_matches_committed_core() {
+        let receipt: WriteGradeReceipt = serde_json::from_str(include_str!(
+            "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r4-write-grade-receipt-core.json"
+        ))
+        .expect("R4 receipt core parses");
+        assert_eq!(
+            write_grade_receipt_core_hash(&receipt).as_deref(),
+            Some("sha256:b18da77e97eb2ab339ea974db93b5fb51bd1a5b4a478d69fa2bc5d18084fd183")
         );
     }
 
