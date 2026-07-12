@@ -17,6 +17,7 @@
 import fs from "fs";
 import path from "path";
 import process from "process";
+import vm from "node:vm";
 
 import {
   REPO_ROOT,
@@ -25,6 +26,8 @@ import {
   PROXY_PACK_FILE as PROXY_PACK_FILE_DEFAULT,
   LOADER_TIERS_JSON,
 } from "../paths.mjs";
+import { createChromeLiveSourceSnapshots } from "../product/extensions/chatgpt/chrome/chrome-live-source-snapshots.mjs";
+import { makeChromeLiveLoaderJs } from "../product/extensions/chatgpt/chrome/chrome-live-loader.mjs";
 
 const PHASE_RANK = Object.freeze({
   "document-start": 0,
@@ -56,6 +59,17 @@ const PROXY_PACK_FILE =
   process.env.H2O_PROXY_PACK_FILE ||
   PROXY_PACK_FILE_DEFAULT;
 const STRICT_WARN = hasFlag("--strict-warn");
+const REPORT_RUNTIME = hasFlag("--report-runtime");
+const THEME_CORE_FILE = path.join(SRC_DIR, "src-runtime-base", "8A1a.🟪🎨 Theme Core 🎨.js");
+const CHROME_LIVE_LOADER_FILE = path.join(
+  SRC_DIR,
+  "tools",
+  "product",
+  "extensions",
+  "chatgpt",
+  "chrome",
+  "chrome-live-loader.mjs"
+);
 
 function readTextIfExists(fp) {
   try {
@@ -285,6 +299,590 @@ function checkCriticalGroupOrder(orderName, sequence, groups, manifestScripts, e
   }
 }
 
+function checkGeneratedCatalogRuntimeOrder(groups, manifestScripts, errors) {
+  let catalog = null;
+  try {
+    catalog = createChromeLiveSourceSnapshots({ srcRoot: SRC_DIR, orderFile: ORDER_FILE }).DEV_SCRIPT_CATALOG;
+  } catch (err) {
+    errors.push(`generated catalog snapshot failed: ${String((err && err.message) || err)}`);
+    return;
+  }
+
+  for (const [groupName, groupMeta] of Object.entries(groups || {})) {
+    if (!Array.isArray(groupMeta?.runtimeOrder) || !groupMeta.runtimeOrder.length) continue;
+    const expected = groupMemberOrder(groupMeta, "runtime");
+    if (!expected.length) continue;
+
+    const actual = Object.entries(catalog || {})
+      .filter(([, meta]) => String(meta?.runtimeGroup || "") === groupName)
+      .sort((a, b) => Number(a[1]?.runtimeOrder) - Number(b[1]?.runtimeOrder))
+      .map(([aliasId]) => aliasId);
+
+    if (actual.length !== expected.length || actual.some((aliasId, idx) => aliasId !== expected[idx])) {
+      errors.push(
+        `generated catalog: runtime group ${groupName} order mismatch.\n` +
+          `Expected:\n${formatList(expected)}\n` +
+          `Actual:\n${formatList(actual)}`
+      );
+      continue;
+    }
+
+    const position = new Map(actual.map((aliasId, idx) => [aliasId, idx]));
+    for (const aliasId of actual) {
+      const meta = manifestScripts[aliasId];
+      if (!meta) continue;
+      for (const dep of meta.dependsOn) {
+        if (position.has(dep) && position.get(dep) >= position.get(aliasId)) {
+          errors.push(`generated catalog: ${aliasId} appears before hard dependency ${dep} in ${groupName}.`);
+        }
+      }
+      for (const target of meta.after) {
+        if (position.has(target) && position.get(target) >= position.get(aliasId)) {
+          errors.push(`generated catalog: ${aliasId} violates declared after-order for ${target} in ${groupName}.`);
+        }
+      }
+    }
+  }
+}
+
+function readGeneratedRuntimeOrder(proxyPackText, errors) {
+  let snapshots;
+  try {
+    snapshots = createChromeLiveSourceSnapshots({ srcRoot: SRC_DIR, orderFile: ORDER_FILE });
+  } catch (err) {
+    errors.push(`generated runtime snapshot failed: ${String((err && err.message) || err)}`);
+    return null;
+  }
+
+  const loaderJs = makeChromeLiveLoaderJs({
+    DEV_TAG: "[validate-loader-order]",
+    DEV_TITLE: "Loader order validator",
+    DEV_HAS_CONTROLS: false,
+    PROXY_PACK_URL: "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt",
+    ...snapshots,
+    STORAGE_KEY: "h2oLoaderOrderValidator",
+    STORAGE_ORDER_OVERRIDES_KEY: "h2oLoaderOrderValidatorOverrides",
+    PAGE_FOLDER_BRIDGE_FILE: "",
+    PAGE_PILOT_OBSERVER_FILE: "",
+  });
+  const bootNeedle = "  boot().catch((e) => {";
+  const orderNeedle = "    return applyRuntimeOrderFix(out);";
+  if (!loaderJs.includes(bootNeedle) || !loaderJs.includes(orderNeedle)) {
+    errors.push("generated runtime probe failed: loader merge/order boundary not found.");
+    return null;
+  }
+
+  const probeJs = loaderJs.replace(
+    orderNeedle,
+    `    globalThis.__H2O_VALIDATOR_PRE_ORDER__ = out.map((item) => String(item && item.aliasId || ""));
+${orderNeedle}`
+  ).replace(
+    bootNeedle,
+    `  const __validatorPack = parseProxyPack(globalThis.__H2O_VALIDATOR_PROXY_PACK__ || "");
+  const __validatorMerged = mergeScriptsWithCatalog(__validatorPack, DEV_SCRIPT_CATALOG);
+  globalThis.__H2O_VALIDATOR_RESULT__ = {
+    raw: globalThis.__H2O_VALIDATOR_PRE_ORDER__ || [],
+    merged: __validatorMerged.map((item) => ({
+      aliasId: String(item && item.aliasId || ""),
+      runtimeGroup: item && item.runtimeGroup,
+      runtimeOrder: item && item.runtimeOrder,
+    })),
+  };
+  return;
+${bootNeedle}`
+  );
+
+  const noop = () => {};
+  const context = {
+    __H2O_VALIDATOR_PROXY_PACK__: String(proxyPackText || ""),
+    location: { href: "https://chatgpt.com/" },
+    localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    performance: { now: () => 0, mark: noop, measure: noop },
+    console: { debug: noop, info: noop, log: noop, warn: noop, error: noop },
+    URL,
+    decodeURIComponent,
+    encodeURIComponent,
+    setTimeout: noop,
+    clearTimeout: noop,
+    setInterval: noop,
+    clearInterval: noop,
+    requestAnimationFrame: noop,
+    cancelAnimationFrame: noop,
+    addEventListener: noop,
+    removeEventListener: noop,
+    postMessage: noop,
+    CustomEvent: class CustomEvent {},
+    Event: class Event {},
+    navigator: {},
+    fetch: async () => ({ ok: false, text: async () => "" }),
+  };
+  context.window = context;
+  context.self = context;
+  context.document = {
+    readyState: "complete",
+    documentElement: { setAttribute: noop, appendChild: noop },
+    addEventListener: noop,
+    removeEventListener: noop,
+    querySelector: () => null,
+    createElement: () => ({ style: {}, setAttribute: noop, addEventListener: noop, remove: noop }),
+  };
+  context.chrome = {
+    runtime: {
+      getURL: (value) => value,
+      onMessage: { addListener: noop },
+      sendMessage: noop,
+    },
+    storage: {
+      local: { get: async () => ({}), set: async () => {} },
+      onChanged: { addListener: noop },
+    },
+  };
+
+  try {
+    vm.runInNewContext(probeJs, context, { timeout: 5000 });
+    return JSON.parse(JSON.stringify(context.__H2O_VALIDATOR_RESULT__ || null));
+  } catch (err) {
+    errors.push(`generated runtime probe failed: ${String((err && err.message) || err)}`);
+    return null;
+  }
+}
+
+function checkGeneratedRuntimeOrderResult(sourceName, result, groups, manifestScripts, errors) {
+  const raw = Array.isArray(result.raw) ? result.raw : [];
+  const mergedEntries = Array.isArray(result.merged) ? result.merged : [];
+  const merged = mergedEntries.map((entry) => normalizeAliasId(entry?.aliasId)).filter(Boolean);
+  const declaredMembers = new Set();
+
+  for (const [groupName, groupMeta] of Object.entries(groups || {})) {
+    if (!Array.isArray(groupMeta?.runtimeOrder) || !groupMeta.runtimeOrder.length) continue;
+    const declaredRaw = groupMeta.runtimeOrder.map(normalizeAliasId).filter(Boolean);
+    const expected = uniqAliasIds(groupMeta.runtimeOrder);
+    if (declaredRaw.length !== expected.length) {
+      errors.push(`generated runtime: group ${groupName} contains duplicate runtimeOrder members.`);
+    }
+    for (const aliasId of expected) declaredMembers.add(aliasId);
+
+    const entries = mergedEntries.filter((entry) => String(entry?.runtimeGroup || "") === groupName);
+    const actual = entries.map((entry) => normalizeAliasId(entry?.aliasId)).filter(Boolean);
+    const positions = entries.map((entry) => Number(entry?.runtimeOrder));
+    if (positions.some((value) => !Number.isFinite(value)) || new Set(positions).size !== positions.length) {
+      errors.push(`generated runtime: group ${groupName} has missing or duplicate runtime positions.`);
+    }
+    if (actual.length !== expected.length || actual.some((aliasId, idx) => aliasId !== expected[idx])) {
+      errors.push(
+        `generated runtime: group ${groupName} final order mismatch.\n` +
+          `Expected:\n${formatList(expected)}\n` +
+          `Actual:\n${formatList(actual)}`
+      );
+    }
+    if (REPORT_RUNTIME) {
+      const memberSet = new Set(expected);
+      const before = raw.map(normalizeAliasId).filter((aliasId) => memberSet.has(aliasId));
+      console.log(`[validate-loader-order] runtime ${sourceName} ${groupName} before: ${before.join(" -> ")}`);
+      console.log(`[validate-loader-order] runtime ${sourceName} ${groupName} final:  ${actual.join(" -> ")}`);
+    }
+  }
+
+  if (merged.length !== new Set(merged).size) {
+    errors.push("generated runtime: final merged script order contains duplicate aliases.");
+  }
+
+  const rawPosition = new Map(raw.map((aliasId, idx) => [normalizeAliasId(aliasId), idx]));
+  const finalPosition = new Map(merged.map((aliasId, idx) => [aliasId, idx]));
+  const priorViolations = new Set();
+  const finalViolations = new Set();
+  for (const [aliasId, meta] of Object.entries(manifestScripts)) {
+    if (!finalPosition.has(aliasId)) continue;
+    for (const dep of meta.dependsOn) {
+      const key = `${aliasId}|hard|${dep}`;
+      if (rawPosition.has(dep) && rawPosition.get(dep) >= rawPosition.get(aliasId)) priorViolations.add(key);
+      if (finalPosition.has(dep) && finalPosition.get(dep) >= finalPosition.get(aliasId)) {
+        finalViolations.add(key);
+      }
+    }
+    for (const target of meta.after) {
+      const key = `${aliasId}|after|${target}`;
+      if (rawPosition.has(target) && rawPosition.get(target) >= rawPosition.get(aliasId)) priorViolations.add(key);
+      if (finalPosition.has(target) && finalPosition.get(target) >= finalPosition.get(aliasId)) {
+        finalViolations.add(key);
+      }
+    }
+  }
+  for (const violation of finalViolations) {
+    if (!priorViolations.has(violation)) {
+      const [aliasId, kind, target] = violation.split("|");
+      errors.push(
+        kind === "hard"
+          ? `generated runtime: runtime ordering moved ${aliasId} before hard dependency ${target}.`
+          : `generated runtime: runtime ordering made ${aliasId} violate declared after-order for ${target}.`
+      );
+    }
+  }
+
+  const rawUnrelated = raw.map(normalizeAliasId).filter((aliasId) => aliasId && !declaredMembers.has(aliasId));
+  const mergedUnrelated = merged.filter((aliasId) => !declaredMembers.has(aliasId));
+  if (
+    rawUnrelated.length !== mergedUnrelated.length ||
+    rawUnrelated.some((aliasId, idx) => aliasId !== mergedUnrelated[idx])
+  ) {
+    errors.push("generated runtime: explicit runtime ordering changed unrelated script relative order.");
+  }
+}
+
+function checkGeneratedRuntimeOrder(groups, manifestScripts, errors) {
+  const cases = [
+    ["proxy-pack", readTextIfExists(PROXY_PACK_FILE) || ""],
+    ["catalog-fallback", ""],
+  ];
+  for (const [sourceName, proxyPackText] of cases) {
+    const result = readGeneratedRuntimeOrder(proxyPackText, errors);
+    if (!result) continue;
+    checkGeneratedRuntimeOrderResult(sourceName, result, groups, manifestScripts, errors);
+  }
+}
+
+function createThemeFixtureDom({ withHead = true } = {}) {
+  const nodes = [];
+  const attributes = new Map();
+
+  function removeNode(node) {
+    const idx = nodes.indexOf(node);
+    if (idx >= 0) nodes.splice(idx, 1);
+    node.isConnected = false;
+  }
+  function createElement(tagName) {
+    const node = {
+      tagName: String(tagName || "").toUpperCase(),
+      id: "",
+      textContent: "",
+      style: {},
+      isConnected: false,
+      setAttribute(name, value) { this[String(name)] = String(value); },
+      getAttribute(name) { return this[String(name)] ?? null; },
+      addEventListener() {},
+      removeEventListener() {},
+      remove() { removeNode(this); },
+    };
+    return node;
+  }
+  function appendChild(node) {
+    if (!nodes.includes(node)) nodes.push(node);
+    node.isConnected = true;
+    return node;
+  }
+
+  const html = {
+    appendChild,
+    setAttribute(name, value) { attributes.set(String(name), String(value)); },
+    getAttribute(name) { return attributes.has(String(name)) ? attributes.get(String(name)) : null; },
+  };
+  const head = withHead ? { appendChild } : null;
+  const document = {
+    readyState: "loading",
+    documentElement: html,
+    head,
+    body: {},
+    createElement,
+    getElementById(id) { return nodes.find((node) => node.id === String(id) && node.isConnected) || null; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  return {
+    document,
+    html,
+    nodes,
+    appendStyle(id, textContent = "") {
+      const style = createElement("style");
+      style.id = id;
+      style.textContent = textContent;
+      appendChild(style);
+      return style;
+    },
+    countId(id) { return nodes.filter((node) => node.id === id && node.isConnected).length; },
+  };
+}
+
+function makeThemePrepaintFixtureLoader(errors) {
+  let snapshots;
+  try {
+    snapshots = createChromeLiveSourceSnapshots({ srcRoot: SRC_DIR, orderFile: ORDER_FILE });
+  } catch (err) {
+    errors.push(`theme prepaint fixture snapshot failed: ${String((err && err.message) || err)}`);
+    return null;
+  }
+  const loaderJs = makeChromeLiveLoaderJs({
+    DEV_TAG: "[validate-theme-prepaint]",
+    DEV_TITLE: "Theme prepaint validator",
+    DEV_HAS_CONTROLS: false,
+    PROXY_PACK_URL: "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt",
+    ...snapshots,
+    STORAGE_KEY: "h2oThemePrepaintValidator",
+    STORAGE_ORDER_OVERRIDES_KEY: "h2oThemePrepaintValidatorOverrides",
+    PAGE_FOLDER_BRIDGE_FILE: "",
+    PAGE_PILOT_OBSERVER_FILE: "",
+  });
+  const bootNeedle = "  boot().catch((e) => {";
+  if (!loaderJs.includes(bootNeedle)) {
+    errors.push("theme prepaint fixture failed: loader boot boundary not found.");
+    return null;
+  }
+  return loaderJs.replace(bootNeedle, `  return;\n${bootNeedle}`);
+}
+
+function runThemePrepaintLoaderFixture(loaderJs, { rawState, systemLight = false, evaluations = 1 } = {}) {
+  const dom = createThemeFixtureDom();
+  const marks = [];
+  const listeners = new Map();
+  const noop = () => {};
+  const addEventListener = (type, fn) => {
+    if (typeof fn !== "function") return;
+    const key = String(type || "");
+    if (!listeners.has(key)) listeners.set(key, []);
+    listeners.get(key).push(fn);
+  };
+  class FixtureEvent {
+    constructor(type, init = {}) {
+      this.type = String(type || "");
+      this.detail = init.detail;
+      this.data = init.data;
+    }
+  }
+  const context = {
+    location: { href: "https://chatgpt.com/" },
+    localStorage: {
+      getItem(key) {
+        return key === "h2o:prm:cgx:theme:state:v1" ? (rawState ?? null) : null;
+      },
+      setItem: noop,
+      removeItem: noop,
+    },
+    matchMedia: () => ({ matches: !!systemLight }),
+    performance: { now: () => 0, mark: (name) => marks.push(String(name)), measure: noop },
+    console: { debug: noop, info: noop, log: noop, warn: noop, error: noop },
+    URL,
+    decodeURIComponent,
+    encodeURIComponent,
+    setTimeout: noop,
+    clearTimeout: noop,
+    setInterval: noop,
+    clearInterval: noop,
+    requestAnimationFrame: noop,
+    cancelAnimationFrame: noop,
+    addEventListener,
+    removeEventListener: noop,
+    postMessage: noop,
+    dispatchEvent(event) {
+      for (const fn of listeners.get(String(event?.type || "")) || []) fn.call(context, event);
+      return true;
+    },
+    CustomEvent: FixtureEvent,
+    Event: FixtureEvent,
+    navigator: {},
+    fetch: async () => ({ ok: false, text: async () => "" }),
+    document: dom.document,
+  };
+  context.window = context;
+  context.self = context;
+  context.chrome = {
+    runtime: { getURL: (value) => value, onMessage: { addListener: noop }, sendMessage: noop },
+    storage: { local: { get: async () => ({}), set: async () => {} }, onChanged: { addListener: noop } },
+  };
+
+  const vmContext = vm.createContext(context);
+  for (let i = 0; i < evaluations; i += 1) vm.runInContext(loaderJs, vmContext, { timeout: 5000 });
+  return { context, dom, marks, listeners };
+}
+
+function runThemeCoreReconciliationFixture(themeCoreSource, { withHead = true } = {}) {
+  const dom = createThemeFixtureDom({ withHead });
+  dom.appendStyle("h2o-theme-prepaint", "temporary");
+  const requestedKeys = [];
+  const noop = () => {};
+  class FixtureEvent {
+    constructor(type, init = {}) { this.type = String(type || ""); this.detail = init.detail; }
+  }
+  const context = {
+    document: dom.document,
+    localStorage: {
+      getItem(key) {
+        requestedKeys.push(String(key));
+        return key === "h2o:prm:cgx:theme:state:v1"
+          ? JSON.stringify({ mode: "dark", palette: "soft-charcoal", accent: "gold" })
+          : null;
+      },
+      setItem: noop,
+    },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: noop,
+    removeEventListener: noop,
+    dispatchEvent: noop,
+    CustomEvent: FixtureEvent,
+    console: { debug: noop, info: noop, log: noop, warn: noop, error: noop },
+    setTimeout: noop,
+    clearTimeout: noop,
+  };
+  context.window = context;
+  context.self = context;
+  vm.runInNewContext(themeCoreSource, context, { timeout: 5000 });
+  return { context, dom, requestedKeys };
+}
+
+function checkThemePrepaintContract(errors) {
+  const initialErrorCount = errors.length;
+  const loaderSource = readTextIfExists(CHROME_LIVE_LOADER_FILE);
+  const themeCoreSource = readTextIfExists(THEME_CORE_FILE);
+  if (!loaderSource || !themeCoreSource) {
+    errors.push("theme prepaint contract: loader or Theme Core source is missing.");
+    return;
+  }
+
+  const sharedLiterals = [
+    "data-h2o-mode",
+    "data-h2o-effective-mode",
+    "h2o-theme-prepaint",
+    "#fbf7ee",
+    "#3a3429",
+    "#1a1a1c",
+    "rgba(231, 226, 217, 0.92)",
+    "#000000",
+    "rgba(231, 226, 217, 0.84)",
+  ];
+  for (const literal of sharedLiterals) {
+    if (!loaderSource.includes(literal)) errors.push(`theme prepaint loader missing canonical literal: ${literal}`);
+    if (!themeCoreSource.includes(literal)) errors.push(`Theme Core missing canonical prepaint literal: ${literal}`);
+  }
+  for (const mode of ["system", "light", "dark", "oled"]) {
+    if (!loaderSource.includes(`"${mode}"`)) errors.push(`theme prepaint loader missing supported mode: ${mode}`);
+    if (!themeCoreSource.includes(`'${mode}'`)) errors.push(`Theme Core missing supported mode: ${mode}`);
+  }
+  if (!loaderSource.includes('"h2o:prm:cgx:theme:state:v1"')) {
+    errors.push("theme prepaint loader missing canonical storage key.");
+  }
+  if (!themeCoreSource.includes("const STYLE_SURFACE_ID = 'h2o-theme-surface';")) {
+    errors.push("Theme Core missing canonical full surface style ID.");
+  }
+  if (!themeCoreSource.includes("D.getElementById(STYLE_PREPAINT_ID)?.remove?.();")) {
+    errors.push("Theme Core missing loader prepaint removal contract.");
+  }
+  const prepaintCall = loaderSource.indexOf("try { applyThemePrepaint(); } catch {}");
+  const pageStart = loaderSource.indexOf("const PAGE_STARTED_AT = Date.now();");
+  const bootStart = loaderSource.indexOf("async function boot()");
+  if (prepaintCall < 0 || pageStart < 0 || bootStart < 0 || prepaintCall > pageStart || prepaintCall > bootStart) {
+    errors.push("theme prepaint loader invocation is not before loader boot setup.");
+  }
+  if ((loaderSource.match(/applyThemePrepaint\(\);/g) || []).length !== 1) {
+    errors.push("theme prepaint loader must invoke the bootstrap exactly once per loader evaluation.");
+  }
+
+  const fixtureLoader = makeThemePrepaintFixtureLoader(errors);
+  if (!fixtureLoader) return;
+  const appliedCases = [
+    ["stored light", { mode: "light" }, false, "light", "light"],
+    ["stored dark", { mode: "dark" }, false, "dark", "dark"],
+    ["stored OLED", { mode: "oled" }, false, "oled", "dark"],
+    ["stored system with light OS", { mode: "system" }, true, "system", "light"],
+    ["stored system with dark OS", { mode: "system" }, false, "system", "dark"],
+  ];
+  for (const [name, state, systemLight, expectedMode, expectedEffective] of appliedCases) {
+    try {
+      const result = runThemePrepaintLoaderFixture(fixtureLoader, {
+        rawState: JSON.stringify(state),
+        systemLight,
+      });
+      if (result.dom.html.getAttribute("data-h2o-mode") !== expectedMode) {
+        errors.push(`theme prepaint fixture ${name}: canonical mode mismatch.`);
+      }
+      if (result.dom.html.getAttribute("data-h2o-effective-mode") !== expectedEffective) {
+        errors.push(`theme prepaint fixture ${name}: effective mode mismatch.`);
+      }
+      if (result.dom.countId("h2o-theme-prepaint") !== 1) {
+        errors.push(`theme prepaint fixture ${name}: expected exactly one prepaint style.`);
+      }
+      if (result.marks.filter((mark) => mark === "h2o:theme:prepaint:applied").length !== 1) {
+        errors.push(`theme prepaint fixture ${name}: successful application mark mismatch.`);
+      }
+    } catch (err) {
+      errors.push(`theme prepaint fixture ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  const rejectedCases = [
+    ["missing state", null],
+    ["corrupt JSON", "{"],
+    ["unsupported mode", JSON.stringify({ mode: "sepia" })],
+  ];
+  for (const [name, rawState] of rejectedCases) {
+    try {
+      const result = runThemePrepaintLoaderFixture(fixtureLoader, { rawState });
+      if (
+        result.dom.countId("h2o-theme-prepaint") !== 0 ||
+        result.dom.html.getAttribute("data-h2o-mode") !== null ||
+        result.marks.includes("h2o:theme:prepaint:applied")
+      ) {
+        errors.push(`theme prepaint fixture ${name}: invalid state was not ignored.`);
+      }
+    } catch (err) {
+      errors.push(`theme prepaint fixture ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  try {
+    const duplicate = runThemePrepaintLoaderFixture(fixtureLoader, {
+      rawState: JSON.stringify({ mode: "dark" }),
+      evaluations: 2,
+    });
+    if (
+      duplicate.dom.countId("h2o-theme-prepaint") !== 1 ||
+      duplicate.marks.filter((mark) => mark === "h2o:theme:prepaint:applied").length !== 1
+    ) {
+      errors.push("theme prepaint fixture duplicate bootstrap evaluation was not idempotent.");
+    }
+  } catch (err) {
+    errors.push(`theme prepaint fixture duplicate evaluation threw: ${String((err && err.message) || err)}`);
+  }
+
+  try {
+    const spa = runThemePrepaintLoaderFixture(fixtureLoader, { rawState: JSON.stringify({ mode: "dark" }) });
+    spa.dom.document.getElementById("h2o-theme-prepaint")?.remove?.();
+    const markCount = spa.marks.length;
+    spa.context.dispatchEvent(new spa.context.Event("popstate"));
+    if (spa.dom.countId("h2o-theme-prepaint") !== 0 || spa.marks.length !== markCount) {
+      errors.push("theme prepaint fixture SPA navigation recreated the bootstrap.");
+    }
+  } catch (err) {
+    errors.push(`theme prepaint fixture SPA navigation threw: ${String((err && err.message) || err)}`);
+  }
+
+  try {
+    const reconciled = runThemeCoreReconciliationFixture(themeCoreSource);
+    if (!reconciled.requestedKeys.includes("h2o:prm:cgx:theme:state:v1")) {
+      errors.push("Theme Core reconciliation did not read the canonical storage key.");
+    }
+    if (
+      reconciled.dom.countId("h2o-theme-surface") !== 1 ||
+      reconciled.dom.countId("h2o-theme-prepaint") !== 0
+    ) {
+      errors.push("Theme Core successful reconciliation did not replace the prepaint style.");
+    }
+  } catch (err) {
+    errors.push(`Theme Core successful reconciliation fixture threw: ${String((err && err.message) || err)}`);
+  }
+
+  try {
+    const blocked = runThemeCoreReconciliationFixture(themeCoreSource, { withHead: false });
+    if (blocked.dom.countId("h2o-theme-prepaint") !== 1 || blocked.dom.countId("h2o-theme-surface") !== 0) {
+      errors.push("Theme Core removed prepaint before full style installation succeeded.");
+    }
+  } catch (err) {
+    errors.push(`Theme Core failed-install reconciliation fixture threw: ${String((err && err.message) || err)}`);
+  }
+  if (errors.length === initialErrorCount) {
+    console.log("[validate-loader-order] theme prepaint: parity + 12 fixtures OK");
+  }
+}
+
 function main() {
   const depsText = readTextIfExists(DEPS_FILE);
   if (!depsText) {
@@ -386,6 +984,9 @@ function main() {
   } else {
     warnings.push(`No proxy-pack data found at ${rel(PROXY_PACK_FILE)}.`);
   }
+  checkGeneratedCatalogRuntimeOrder(groups, manifestScripts, errors);
+  checkGeneratedRuntimeOrder(groups, manifestScripts, errors);
+  checkThemePrepaintContract(errors);
 
   // Phase 4 Step 5a: tier-coverage report. Info + warnings only — never errors.
   // Reads config/loader-tiers.json if present; otherwise prints a soft note.

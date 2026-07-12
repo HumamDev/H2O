@@ -339,6 +339,7 @@
    * ──────────────────────────────────────────────────────────────────────────── */
 
   const STYLE_SURFACE_ID = 'h2o-theme-surface';
+  const STYLE_PREPAINT_ID = 'h2o-theme-prepaint';
 
   // Token + body-rule CSS. NO layout properties. NO !important. Specificity
   // wins over Themes Panel's `body[data-ho-theme-enabled="true"]` (1 attribute)
@@ -394,7 +395,7 @@ html[data-h2o-mode="oled"] body {
   function ensureSurfaceStyle() {
     try {
       const D = W.document;
-      if (!D || !D.head) return;
+      if (!D || !D.head) return null;
       let el = D.getElementById(STYLE_SURFACE_ID);
       if (!el) {
         el = D.createElement('style');
@@ -405,13 +406,16 @@ html[data-h2o-mode="oled"] body {
       } else if (el.textContent !== SURFACE_CSS) {
         el.textContent = SURFACE_CSS;
       }
-    } catch (_) {}
+      return el;
+    } catch (_) {
+      return null;
+    }
   }
 
   function applyMode(mode) {
     try {
       const D = W.document;
-      if (!D || !D.documentElement) return;
+      if (!D || !D.documentElement) return false;
       const html = D.documentElement;
       const eff  = resolveEffectiveMode(mode);
       if (html.getAttribute('data-h2o-mode') !== mode) {
@@ -420,7 +424,10 @@ html[data-h2o-mode="oled"] body {
       if (html.getAttribute('data-h2o-effective-mode') !== eff) {
         html.setAttribute('data-h2o-effective-mode', eff);
       }
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function applyThemeState(state) {
@@ -428,8 +435,16 @@ html[data-h2o-mode="oled"] body {
     //   2B will applyPalette; 2C will applyAccent. Order matters: ensure the
     //   style block exists BEFORE writing the attribute, so the first paint
     //   already has both inputs available.
-    ensureSurfaceStyle();
-    applyMode(state.mode);
+    const surfaceStyle = ensureSurfaceStyle();
+    if (!surfaceStyle || !applyMode(state.mode)) return false;
+    try {
+      const D = W.document;
+      if (D?.getElementById?.(STYLE_SURFACE_ID) !== surfaceStyle) return false;
+      D.getElementById(STYLE_PREPAINT_ID)?.remove?.();
+    } catch (_) {
+      return false;
+    }
+    return true;
   }
 
   /* ───────────────────────────── 🚦 RUNTIME ───────────────────────────── */

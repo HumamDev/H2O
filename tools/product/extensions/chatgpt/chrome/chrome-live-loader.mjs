@@ -40,6 +40,54 @@ export function makeChromeLiveLoaderJs({
     try { console.info(TAG, "duplicate loader ignored", location.href); } catch {}
     return;
   }
+
+  // Slice A: apply only the persisted canonical page canvas before any async
+  // loader work. Theme Core remains the full authority and removes this
+  // temporary style after h2o-theme-surface is installed successfully.
+  const THEME_PREPAINT_STORAGE_KEY = "h2o:prm:cgx:theme:state:v1";
+  const THEME_PREPAINT_STYLE_ID = "h2o-theme-prepaint";
+  const THEME_PREPAINT_MODES = Object.freeze(["system", "light", "dark", "oled"]);
+  const THEME_PREPAINT_CSS = [
+    'html[data-h2o-effective-mode="light"] body{background:#fbf7ee;color:#3a3429;}',
+    'html[data-h2o-effective-mode="dark"] body{background:#1a1a1c;color:rgba(231, 226, 217, 0.92);}',
+    'html[data-h2o-mode="oled"] body{background:#000000;color:rgba(231, 226, 217, 0.84);}',
+  ].join("");
+
+  function applyThemePrepaint() {
+    try {
+      const raw = localStorage.getItem(THEME_PREPAINT_STORAGE_KEY);
+      if (!raw) return false;
+      const state = JSON.parse(raw);
+      if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+      const mode = state.mode;
+      if (!THEME_PREPAINT_MODES.includes(mode)) return false;
+
+      const effectiveMode = mode === "system"
+        ? (globalThis.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark")
+        : (mode === "oled" ? "dark" : mode);
+      const doc = globalThis.document;
+      const html = doc && doc.documentElement;
+      if (!doc || !html) return false;
+
+      let style = doc.getElementById(THEME_PREPAINT_STYLE_ID);
+      if (!style) {
+        style = doc.createElement("style");
+        style.id = THEME_PREPAINT_STYLE_ID;
+        style.textContent = THEME_PREPAINT_CSS;
+        const host = doc.head || html;
+        if (!host || typeof host.appendChild !== "function") return false;
+        host.appendChild(style);
+      }
+      html.setAttribute("data-h2o-mode", mode);
+      html.setAttribute("data-h2o-effective-mode", effectiveMode);
+      try { performance.mark("h2o:theme:prepaint:applied"); } catch {}
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  try { applyThemePrepaint(); } catch {}
   const PAGE_STARTED_AT = Date.now();
   const loaderDiagState = {
     pageStartedAt: PAGE_STARTED_AT,
