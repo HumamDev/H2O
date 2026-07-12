@@ -2408,12 +2408,18 @@ impl FirstWriteLiveOperation {
 struct ReqwestFirstWriteLiveClient;
 
 impl ReqwestFirstWriteLiveClient {
-    fn build_target_url(target: &FirstWriteLiveTarget) -> Result<reqwest::Url, ResolverFailure> {
-        let mut url = ReqwestReadOnlyProbeClient::build_target_url(
+    fn build_parent_collection_url(
+        target: &FirstWriteLiveTarget,
+    ) -> Result<reqwest::Url, ResolverFailure> {
+        ReqwestReadOnlyProbeClient::build_target_url(
             &target.endpoint_url_private,
             &target.remote_root_path_private,
             false,
-        )?;
+        )
+    }
+
+    fn build_target_url(target: &FirstWriteLiveTarget) -> Result<reqwest::Url, ResolverFailure> {
+        let mut url = Self::build_parent_collection_url(target)?;
         let hash_suffix = target
             .path_class_ref_hash
             .strip_prefix("sha256:")
@@ -2442,7 +2448,13 @@ impl ReqwestFirstWriteLiveClient {
         operation: FirstWriteLiveOperation,
         payload: Option<&[u8]>,
     ) -> FirstWriteLoopbackResponse {
-        let Ok(url) = Self::build_target_url(target) else {
+        let url = match operation {
+            FirstWriteLiveOperation::PropfindAbsence => Self::build_parent_collection_url(target),
+            FirstWriteLiveOperation::PutCreateFirst
+            | FirstWriteLiveOperation::PutCreateSecond
+            | FirstWriteLiveOperation::GetReadback => Self::build_target_url(target),
+        };
+        let Ok(url) = url else {
             return FirstWriteLoopbackResponse {
                 network_failed: true,
                 ..Default::default()
@@ -3231,7 +3243,7 @@ fn evaluate_first_write_live_with_client<C: FirstWriteLiveClient>(
     let propfind = client.propfind_absence(&target);
     push_status(
         &mut method_statuses,
-        "PROPFIND pre-write absence check",
+        "PROPFIND pre-write parent readiness check",
         &propfind,
         false,
     );
@@ -3246,8 +3258,8 @@ fn evaluate_first_write_live_with_client<C: FirstWriteLiveClient>(
             "not-attempted",
         );
     }
-    if propfind.status != 404 {
-        let blocker = "real-transport-w3-first-write-target-exists";
+    if !(200..300).contains(&propfind.status) {
+        let blocker = "real-transport-w3-first-write-parent-not-ready";
         return first_write_live_blocked(
             blocker,
             vec![blocker],
@@ -4472,6 +4484,27 @@ mod tests {
             assert!(!result.product_sync_ready);
             assert!(!result.transport_ready);
         }
+    }
+
+    #[test]
+    fn first_write_live_propfind_uses_parent_collection_not_object_path() {
+        let target = FirstWriteLiveTarget {
+            endpoint_url_private: format!("{}://example.invalid/webdav", "https"),
+            remote_root_path_private: "/redacted-root/".to_string(),
+            auth_header_private: "Basic redacted".to_string(),
+            path_class_ref_hash: h('a'),
+        };
+
+        let parent = ReqwestFirstWriteLiveClient::build_parent_collection_url(&target)
+            .expect("parent collection url");
+        let object =
+            ReqwestFirstWriteLiveClient::build_target_url(&target).expect("object target url");
+
+        assert!(parent.path().ends_with('/'));
+        assert!(!parent.path().contains(".h2o-w3-sacrificial-probe"));
+        assert!(object.path().contains(".h2o-w3-sacrificial-probe"));
+        assert!(object.path().ends_with(".sentinel"));
+        assert_ne!(parent.path(), object.path());
     }
 
     #[test]
