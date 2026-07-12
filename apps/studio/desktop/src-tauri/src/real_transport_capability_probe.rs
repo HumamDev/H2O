@@ -41,6 +41,8 @@ const W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT: &str = "714f80a458808550dc8fd59
 const W34B3B_MISSING_TOKEN_COMMIT: &str = "d4171915b30cef69ef53234ef12a533e8ed6e846";
 const W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT: &str =
     "d57fefebe66537ecbeac9ecf9ba56cf02f1b21dd";
+const W34B3_R4_NO_WRITE_CLOSEOUT_COMMIT: &str = "f08f9b0f750e6d863a32c5de8f1edbe97955d0c1";
+const W35B_PARENT_PROPFIND_FIX_COMMIT: &str = "305ff023ad12f14b6a9b505dab4123cf44c7cfba";
 const WRITE_GRADE_MAX_RECEIPT_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const FIRST_WRITE_RECOMMENDED_AGE_SECONDS: i64 = 72 * 60 * 60;
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -720,6 +722,10 @@ pub struct WriteGradeReceiptBindings {
     pub w34b3_blocked_missing_token_commit: Option<String>,
     #[serde(default)]
     pub w34b3_r3_binding_mismatch_diagnostic_commit: Option<String>,
+    #[serde(default)]
+    pub w34b3_r4_no_write_closeout_commit: Option<String>,
+    #[serde(default)]
+    pub w35b_parent_propfind_fix_commit: Option<String>,
     #[serde(default)]
     pub operator_approval_artifact_hash: Option<String>,
     #[serde(default)]
@@ -2772,10 +2778,12 @@ fn validate_write_grade_receipt(
         .and_then(|value| value.w34b1_operator_approval_commit.as_deref())
         == Some(W34B1_OPERATOR_APPROVAL_COMMIT);
     let renewed_approval_binding_ok = bindings
-        .and_then(|value| value.w34b1_expired_operator_approval_commit.as_deref())
-        == Some(W34B1_OPERATOR_APPROVAL_COMMIT)
-        && bindings.and_then(|value| value.w34b1_r2_renewed_operator_approval_commit.as_deref())
-            == Some(W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT);
+        .and_then(|value| value.w34b1_r2_renewed_operator_approval_commit.as_deref())
+        == Some(W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT)
+        && bindings
+            .and_then(|value| value.w34b1_expired_operator_approval_commit.as_deref())
+            .map(|value| value == W34B1_OPERATOR_APPROVAL_COMMIT)
+            .unwrap_or(true);
     let optional_missing_token_binding_ok = bindings
         .and_then(|value| value.w34b3_blocked_missing_token_commit.as_deref())
         .map(|value| value == W34B3B_MISSING_TOKEN_COMMIT)
@@ -2783,6 +2791,14 @@ fn validate_write_grade_receipt(
     let optional_r3a_diagnostic_binding_ok = bindings
         .and_then(|value| value.w34b3_r3_binding_mismatch_diagnostic_commit.as_deref())
         .map(|value| value == W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT)
+        .unwrap_or(true);
+    let optional_r4_closeout_binding_ok = bindings
+        .and_then(|value| value.w34b3_r4_no_write_closeout_commit.as_deref())
+        .map(|value| value == W34B3_R4_NO_WRITE_CLOSEOUT_COMMIT)
+        .unwrap_or(true);
+    let optional_w35b_parent_propfind_binding_ok = bindings
+        .and_then(|value| value.w35b_parent_propfind_fix_commit.as_deref())
+        .map(|value| value == W35B_PARENT_PROPFIND_FIX_COMMIT)
         .unwrap_or(true);
     if bindings.and_then(|value| value.w31_closeout_commit.as_deref()) != Some(W31_CLOSEOUT_COMMIT)
         || bindings.and_then(|value| value.w31_alignment_commit.as_deref())
@@ -2802,6 +2818,8 @@ fn validate_write_grade_receipt(
         || !(legacy_approval_binding_ok || renewed_approval_binding_ok)
         || !optional_missing_token_binding_ok
         || !optional_r3a_diagnostic_binding_ok
+        || !optional_r4_closeout_binding_ok
+        || !optional_w35b_parent_propfind_binding_ok
     {
         blockers.push("real-transport-w3-first-write-commit-binding-mismatch");
     }
@@ -3735,6 +3753,8 @@ mod tests {
                     w34b1_r2_renewed_operator_approval_commit: None,
                     w34b3_blocked_missing_token_commit: None,
                     w34b3_r3_binding_mismatch_diagnostic_commit: None,
+                    w34b3_r4_no_write_closeout_commit: None,
+                    w35b_parent_propfind_fix_commit: None,
                     operator_approval_artifact_hash: Some(approval_hash),
                     one_shot_token_hash: Some(one_shot_token_hash),
                     kill_switch_token_hash: Some(kill_switch_token_hash),
@@ -4426,6 +4446,34 @@ mod tests {
         assert_eq!(
             write_grade_receipt_core_hash(&receipt).as_deref(),
             Some("sha256:b18da77e97eb2ab339ea974db93b5fb51bd1a5b4a478d69fa2bc5d18084fd183")
+        );
+    }
+
+    #[test]
+    fn first_write_r5_receipt_core_and_commit_bindings_match_committed_core() {
+        let receipt: WriteGradeReceipt = serde_json::from_str(include_str!(
+            "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r5-write-grade-receipt-core.json"
+        ))
+        .expect("R5 receipt core parses");
+        assert_eq!(
+            write_grade_receipt_core_hash(&receipt).as_deref(),
+            Some("sha256:b27b6eb6ed238c15d9b687a85d2d8b98e9db4434a7c6b1d30df26e96aaddca57")
+        );
+
+        let mut request = first_write_request();
+        request.write_grade_receipt = Some(receipt);
+        request.receipt_core_hash = Some(
+            "sha256:b27b6eb6ed238c15d9b687a85d2d8b98e9db4434a7c6b1d30df26e96aaddca57".to_string(),
+        );
+        let mut blockers = Vec::new();
+        validate_write_grade_receipt(&request, &mut blockers);
+        assert!(
+            !blockers.contains(&"real-transport-w3-first-write-commit-binding-mismatch"),
+            "{blockers:?}"
+        );
+        assert!(
+            !blockers.contains(&"real-transport-w3-write-grade-receipt-core-hash-mismatch"),
+            "{blockers:?}"
         );
     }
 
