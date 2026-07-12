@@ -40,6 +40,7 @@
       "members": [
         "1A1a._MiniMap_Kernel_.js",
         "1A1b._MiniMap_Core_.js",
+        "1A1g._Native_Prompt_TOC_Rail_.js",
         "1A1c._MiniMap_Engine_.js",
         "1A1d._MiniMap_Shell_.js",
         "1A1e._MiniMap_Skin_.js",
@@ -49,6 +50,7 @@
         "1A1a._MiniMap_Kernel_.js",
         "1A1e._MiniMap_Skin_.js",
         "1A1b._MiniMap_Core_.js",
+        "1A1g._Native_Prompt_TOC_Rail_.js",
         "1A1d._MiniMap_Shell_.js",
         "1A1c._MiniMap_Engine_.js",
         "1A1f._MiniMap_Views_.js"
@@ -1004,6 +1006,21 @@
       "critical": true,
       "optionalDependsOn": []
     },
+    "1A1g._Native_Prompt_TOC_Rail_.js": {
+      "phase": "document-idle",
+      "dependsOn": [],
+      "after": [
+        "1A1b._MiniMap_Core_.js"
+      ],
+      "group": "MINIMAP_BASE",
+      "provides": [
+        "h2o.nativePromptTocRail"
+      ],
+      "critical": true,
+      "optionalDependsOn": [
+        "1A1b._MiniMap_Core_.js"
+      ]
+    },
     "1A1d._MiniMap_Shell_.js": {
       "phase": "document-idle",
       "dependsOn": [
@@ -1011,7 +1028,9 @@
         "1A1e._MiniMap_Skin_.js",
         "1A1b._MiniMap_Core_.js"
       ],
-      "after": [],
+      "after": [
+        "1A1g._Native_Prompt_TOC_Rail_.js"
+      ],
       "group": "MINIMAP_BASE",
       "provides": [
         "minimap.shell"
