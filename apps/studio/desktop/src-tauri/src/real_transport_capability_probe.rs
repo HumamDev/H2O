@@ -36,6 +36,8 @@ const W33C_HASH_BOUNDARY_COMMIT: &str = "aba4c70068d95ee373d157fddea06bfb31b505b
 const W34A_REFUSED_COMMAND_COMMIT: &str = "a830ccb6b633a9d6cee35e6db92464e870d5693d";
 const W34B0_APPROVAL_PACKAGE_COMMIT: &str = "d196f4b26d904394c435c15dd14d12cd18f03190";
 const W34B1_OPERATOR_APPROVAL_COMMIT: &str = "db4cdc5ccbd436913f05aa7b526fc14fec03e5ea";
+const W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT: &str = "714f80a458808550dc8fd59ee937837349f416da";
+const W34B3B_MISSING_TOKEN_COMMIT: &str = "d4171915b30cef69ef53234ef12a533e8ed6e846";
 const WRITE_GRADE_MAX_RECEIPT_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const FIRST_WRITE_RECOMMENDED_AGE_SECONDS: i64 = 72 * 60 * 60;
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -695,11 +697,11 @@ pub struct WriteGradeReceiptBindings {
     pub w31_alignment_commit: Option<String>,
     #[serde(default)]
     pub w32_mock_proof_commit: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "w33DesignCommit")]
     pub w33a_design_commit: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "w33RegistryHardeningCommit")]
     pub w33b_registry_hardening_commit: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "w33HashBoundaryCommit")]
     pub w33c_hash_boundary_commit: Option<String>,
     #[serde(default)]
     pub w34a_refused_command_commit: Option<String>,
@@ -707,6 +709,12 @@ pub struct WriteGradeReceiptBindings {
     pub w34b0_approval_package_commit: Option<String>,
     #[serde(default)]
     pub w34b1_operator_approval_commit: Option<String>,
+    #[serde(default)]
+    pub w34b1_expired_operator_approval_commit: Option<String>,
+    #[serde(default)]
+    pub w34b1_r2_renewed_operator_approval_commit: Option<String>,
+    #[serde(default)]
+    pub w34b3_blocked_missing_token_commit: Option<String>,
     #[serde(default)]
     pub operator_approval_artifact_hash: Option<String>,
     #[serde(default)]
@@ -2265,9 +2273,27 @@ fn sorted_json_value(value: JsonValue) -> JsonValue {
     }
 }
 
+fn without_null_json_values(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(values) => {
+            JsonValue::Array(values.into_iter().map(without_null_json_values).collect())
+        }
+        JsonValue::Object(map) => {
+            let mut without_nulls = serde_json::Map::new();
+            for (key, value) in map {
+                if !value.is_null() {
+                    without_nulls.insert(key, without_null_json_values(value));
+                }
+            }
+            JsonValue::Object(without_nulls)
+        }
+        value => value,
+    }
+}
+
 fn write_grade_receipt_core_hash(receipt: &WriteGradeReceipt) -> Option<String> {
     let value = serde_json::to_value(receipt).ok()?;
-    let sorted = sorted_json_value(value);
+    let sorted = sorted_json_value(without_null_json_values(value));
     serde_json::to_vec(&sorted)
         .ok()
         .map(|bytes| sha256_ref(&bytes))
@@ -2723,6 +2749,18 @@ fn validate_write_grade_receipt(
     {
         blockers.push("real-transport-w3-write-grade-registry-owner-permission-refused");
     }
+    let legacy_approval_binding_ok = bindings
+        .and_then(|value| value.w34b1_operator_approval_commit.as_deref())
+        == Some(W34B1_OPERATOR_APPROVAL_COMMIT);
+    let renewed_approval_binding_ok = bindings
+        .and_then(|value| value.w34b1_expired_operator_approval_commit.as_deref())
+        == Some(W34B1_OPERATOR_APPROVAL_COMMIT)
+        && bindings.and_then(|value| value.w34b1_r2_renewed_operator_approval_commit.as_deref())
+            == Some(W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT);
+    let optional_missing_token_binding_ok = bindings
+        .and_then(|value| value.w34b3_blocked_missing_token_commit.as_deref())
+        .map(|value| value == W34B3B_MISSING_TOKEN_COMMIT)
+        .unwrap_or(true);
     if bindings.and_then(|value| value.w31_closeout_commit.as_deref()) != Some(W31_CLOSEOUT_COMMIT)
         || bindings.and_then(|value| value.w31_alignment_commit.as_deref())
             != Some(W31_ALIGNMENT_COMMIT)
@@ -2738,8 +2776,8 @@ fn validate_write_grade_receipt(
             != Some(W34A_REFUSED_COMMAND_COMMIT)
         || bindings.and_then(|value| value.w34b0_approval_package_commit.as_deref())
             != Some(W34B0_APPROVAL_PACKAGE_COMMIT)
-        || bindings.and_then(|value| value.w34b1_operator_approval_commit.as_deref())
-            != Some(W34B1_OPERATOR_APPROVAL_COMMIT)
+        || !(legacy_approval_binding_ok || renewed_approval_binding_ok)
+        || !optional_missing_token_binding_ok
     {
         blockers.push("real-transport-w3-first-write-commit-binding-mismatch");
     }
@@ -3667,6 +3705,9 @@ mod tests {
                     w34b1_operator_approval_commit: Some(
                         W34B1_OPERATOR_APPROVAL_COMMIT.to_string(),
                     ),
+                    w34b1_expired_operator_approval_commit: None,
+                    w34b1_r2_renewed_operator_approval_commit: None,
+                    w34b3_blocked_missing_token_commit: None,
                     operator_approval_artifact_hash: Some(approval_hash),
                     one_shot_token_hash: Some(one_shot_token_hash),
                     kill_switch_token_hash: Some(kill_switch_token_hash),
@@ -4307,6 +4348,44 @@ mod tests {
             .contains(&"real-transport-w3-first-write-payload-too-large"));
         assert!(!result.network_attempted);
         assert!(!result.writes_webdav);
+    }
+
+    #[test]
+    fn first_write_accepts_renewed_approval_commit_binding() {
+        let mut request = first_write_request();
+        let bindings = &mut request
+            .write_grade_receipt
+            .as_mut()
+            .expect("receipt")
+            .bindings
+            .as_mut()
+            .expect("bindings");
+        bindings.w34b1_operator_approval_commit = None;
+        bindings.w34b1_expired_operator_approval_commit =
+            Some(W34B1_OPERATOR_APPROVAL_COMMIT.to_string());
+        bindings.w34b1_r2_renewed_operator_approval_commit =
+            Some(W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT.to_string());
+        bindings.w34b3_blocked_missing_token_commit = Some(W34B3B_MISSING_TOKEN_COMMIT.to_string());
+
+        let mut blockers = Vec::new();
+        let mode = validate_write_grade_receipt(&request, &mut blockers);
+        assert_eq!(mode, Some(FirstWriteMode::LoopbackMock));
+        assert!(
+            !blockers.contains(&"real-transport-w3-first-write-commit-binding-mismatch"),
+            "{blockers:?}"
+        );
+    }
+
+    #[test]
+    fn first_write_r3_receipt_core_hash_matches_committed_core() {
+        let receipt: WriteGradeReceipt = serde_json::from_str(include_str!(
+            "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r3-write-grade-receipt-core.json"
+        ))
+        .expect("R3 receipt core parses");
+        assert_eq!(
+            write_grade_receipt_core_hash(&receipt).as_deref(),
+            Some("sha256:b34cd56a9d5a16fe3dc5319b174522f2c7634ad17717405310c18cec0188e1cd")
+        );
     }
 
     #[test]
