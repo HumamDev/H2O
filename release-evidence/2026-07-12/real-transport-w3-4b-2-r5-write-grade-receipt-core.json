@@ -1,0 +1,42 @@
+{
+  "bindings": {
+    "credentialRefHash": "sha256:328562af62cffd7ebedbec742d727e386db3b173e1715750b4a26166f8d385b8",
+    "endpointRefHash": "sha256:42bc195455b03a0171597f8b0758c4a450390c829e9c1f653a069db135784100",
+    "killSwitchTokenHash": "sha256:0ee62ecc6a594c752942702197d79fe49fa35ec5b3363551d7648f0c15aae02e",
+    "oneShotTokenHash": "sha256:4e6056552d5d6afc7ac1bc89624957ef324eb64b353bae6b64942174d74785d4",
+    "operatorApprovalArtifactHash": "sha256:e6c7df7a015f06807cb2dba7ae89f6dd085f33843a40a01c53ff2885b214b48b",
+    "remoteRootRefHash": "sha256:10dea62063f3d07519c48924f6e1d295464839010618361368b47519695a8fca",
+    "w31AlignmentCommit": "70e7fcc9669b939b505de96a7bb0ec61509c3370",
+    "w31CloseoutCommit": "7862270237955b86d48d943263fd53947cc71f72",
+    "w32MockProofCommit": "649849e7e48c7e5bc5924bc811d857f2435866ae",
+    "w33DesignCommit": "671fdc1c855b345185e5ea257b206c0a07cdab36",
+    "w33HashBoundaryCommit": "aba4c70068d95ee373d157fddea06bfb31b505b0",
+    "w33RegistryHardeningCommit": "388a952745ab7a21ba9556531eccf5c7e0ffe1ce",
+    "w34aRefusedCommandCommit": "a830ccb6b633a9d6cee35e6db92464e870d5693d",
+    "w34b0ApprovalPackageCommit": "d196f4b26d904394c435c15dd14d12cd18f03190",
+    "w34b1R2RenewedOperatorApprovalCommit": "714f80a458808550dc8fd59ee937837349f416da",
+    "w34b3R4NoWriteCloseoutCommit": "f08f9b0f750e6d863a32c5de8f1edbe97955d0c1",
+    "w35bParentPropfindFixCommit": "305ff023ad12f14b6a9b505dab4123cf44c7cfba",
+    "writeGradeRegistryHashBoundary": "descriptor-refs-only-excludes-private-material",
+    "writeGradeRegistryRefHash": "sha256:3222f11719c7bb17047cc3c6b6b01145d0748921792fb84fb5064c19541ee0ff"
+  },
+  "canonicalization": "json-sorted-keys-v1",
+  "expiryUtc": "2026-07-15T20:00:00Z",
+  "maxInvocations": 1,
+  "mintUtc": "2026-07-12T23:10:27Z",
+  "operationKind": "first-sacrificial-probe-write",
+  "payloadCount": 1,
+  "payloadKind": "capability-probe-object",
+  "receiptGrade": "write-grade",
+  "requestBudget": {
+    "createOnlyPutMax": 2,
+    "otherMethods": 0,
+    "readbackGetMax": 1
+  },
+  "sacrificialObject": {
+    "pathClassRefHash": "sha256:8aedee795f789ede1887eb8e7f9ca909fc7aea6939aa0348313c56777218fc61",
+    "payloadByteMax": 256,
+    "payloadHash": "sha256:67b110e21148b315e5fef1acfb1c2ff39d9acc204ce47578b138a7df33af6829"
+  },
+  "schema": "h2o.sync.real-transport.write-grade-receipt.v1"
+}
