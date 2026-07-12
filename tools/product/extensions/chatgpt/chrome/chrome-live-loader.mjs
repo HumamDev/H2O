@@ -2989,6 +2989,8 @@ export function makeChromeLiveLoaderJs({
         runAt: normalizeRunAt(meta.runAt || "document-idle"),
         requireUrl: aliasRequireUrl(aliasId),
         aliasId,
+        runtimeGroup: meta.runtimeGroup,
+        runtimeOrder: meta.runtimeOrder,
         tier: String(meta.tier || "L4") || "L4",
         openEvent: String(meta.openEvent || ""),
       };
