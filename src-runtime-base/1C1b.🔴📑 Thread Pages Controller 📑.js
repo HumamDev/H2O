@@ -4666,8 +4666,388 @@
       .map((member) => member.answerId);
   }
 
+  const LP_DIAG_UNKNOWN = 'unknown';
+
+  function unknownLogicalPaginationDiagnostics(reason = 'diagnostic-unavailable') {
+    const why = String(reason || 'diagnostic-unavailable');
+    return {
+      stableShellCount: LP_DIAG_UNKNOWN,
+      hydratedRoleNodeCount: LP_DIAG_UNKNOWN,
+      turnRuntimeRecordCount: LP_DIAG_UNKNOWN,
+      paginationCanonicalCount: LP_DIAG_UNKNOWN,
+      logicalPageMemberCount: LP_DIAG_UNKNOWN,
+      logicalPageCount: LP_DIAG_UNKNOWN,
+      logicalCanonicalReady: false,
+      shellCoverageRatio: LP_DIAG_UNKNOWN,
+      hydrationCoverageRatio: LP_DIAG_UNKNOWN,
+      missingLogicalMembers: [],
+      unknownOrUnpairedShells: [],
+      pageMembershipGaps: [],
+      duplicateLogicalMembers: [],
+      paginationEnabled: LP_DIAG_UNKNOWN,
+      unmountEnabled: LP_DIAG_UNKNOWN,
+      physicalOptimizersInert: LP_DIAG_UNKNOWN,
+      detachedHostCount: LP_DIAG_UNKNOWN,
+      paginationPlaceholderCount: LP_DIAG_UNKNOWN,
+      unmountPlaceholderCount: LP_DIAG_UNKNOWN,
+      fragmentCacheCount: LP_DIAG_UNKNOWN,
+      detachCommentCount: LP_DIAG_UNKNOWN,
+      stalePhysicalResiduePresent: LP_DIAG_UNKNOWN,
+      titleListActive: LP_DIAG_UNKNOWN,
+      duplicateTitleBarsVisible: LP_DIAG_UNKNOWN,
+      titleMismatches: [],
+      noAnswerRowsStable: LP_DIAG_UNKNOWN,
+      pageFlowRestored: LP_DIAG_UNKNOWN,
+      logicalPaginationReadiness: {
+        ready: false,
+        blockers: ['diagnostic-unavailable'],
+        warnings: [why],
+        notes: ['Chat Atlas LP0.1 diagnostics are read-only and failed closed.'],
+      },
+    };
+  }
+
+  // Chat Atlas LP0.1 readiness is observation only. This helper must never
+  // call materialize, ensureVisible, restore, remount, replay, or persistence
+  // APIs. It reads stable shells, public config snapshots, exposed state, and
+  // the safety results already computed by titleIntentDebugSnapshot().
+  function inspectLogicalPaginationReadiness(context = {}) {
+    const blockers = [];
+    const warnings = [];
+    const notes = [
+      'read-only: no DOM, storage, ledger, washer, MiniMap, Pagination, or Unmount mutation',
+      'hydrationCoverageRatio is observational; partial native hydration is expected',
+      'paginationPlaceholderCount counts Pagination window scaffold nodes (sentinel/view)',
+    ];
+    const normalizeId = (value) => String(value || '').replace(/^conversation-turn-/, '').trim();
+    const ratio = (part, total) => total > 0
+      ? Math.round((Math.min(total, Math.max(0, Number(part || 0))) / total) * 10000) / 10000
+      : LP_DIAG_UNKNOWN;
+
+    let stableShells = [];
+    let hydratedRoleNodes = [];
+    try {
+      stableShells = Array.from(document.querySelectorAll('section[data-testid^="conversation-turn"]'));
+      hydratedRoleNodes = Array.from(document.querySelectorAll(
+        'section[data-testid^="conversation-turn"][data-message-author-role], '
+        + 'section[data-testid^="conversation-turn"] [data-message-author-role]',
+      ));
+    } catch {
+      warnings.push('stable-shell-dom-scan-failed');
+    }
+
+    const runtime = TURN_RUNTIME();
+    let runtimeRecords = null;
+    try {
+      const value = runtime?.listTurnRecords?.();
+      if (Array.isArray(value)) runtimeRecords = value;
+    } catch {
+      warnings.push('turn-runtime-read-failed');
+    }
+    const turnRuntimeRecordCount = Array.isArray(runtimeRecords)
+      ? runtimeRecords.length
+      : LP_DIAG_UNKNOWN;
+
+    const logicalMembers = [];
+    const turnNos = new Map();
+    const turnIds = new Map();
+    const answerIds = new Map();
+    const canonicalIds = new Set();
+    const matchedShellsFromLiveRecords = new Set();
+    const duplicateLogicalMembers = [];
+    for (const record of Array.isArray(runtimeRecords) ? runtimeRecords : []) {
+      const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+      const turnId = normalizeId(record?.turnId || record?.id);
+      const primaryAId = normalizeId(
+        record?.primaryAId
+        || record?.answerId
+        || record?.aId
+        || (Array.isArray(record?.answerIds) ? record.answerIds[0] : ''),
+      );
+      const qId = normalizeId(record?.qId || record?.questionId);
+      if (turnNo) logicalMembers.push({ turnNo, turnId, primaryAId, qId });
+
+      const registerDuplicate = (map, kind, value) => {
+        if (!value) return;
+        if (map.has(value)) {
+          duplicateLogicalMembers.push({ kind, value, turnNos: [map.get(value), turnNo].filter(Boolean) });
+        } else {
+          map.set(value, turnNo);
+        }
+      };
+      registerDuplicate(turnNos, 'turnNo', turnNo ? String(turnNo) : '');
+      registerDuplicate(turnIds, 'turnId', turnId);
+      registerDuplicate(answerIds, 'primaryAnswerId', primaryAId);
+
+      for (const value of [
+        turnId,
+        qId,
+        primaryAId,
+        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+        ...(Array.isArray(record?._aliasIds) ? record._aliasIds : []),
+      ]) {
+        const id = normalizeId(value);
+        if (id) canonicalIds.add(id);
+      }
+      for (const liveEl of [
+        record?.live?.qEl,
+        record?.live?.primaryAEl,
+        ...(Array.isArray(record?.live?.answerEls) ? record.live.answerEls : []),
+      ]) {
+        try {
+          const shell = liveEl?.closest?.('section[data-testid^="conversation-turn"]') || null;
+          if (shell) matchedShellsFromLiveRecords.add(shell);
+        } catch {}
+      }
+    }
+
+    const seenTurnNos = new Set(logicalMembers.map((member) => member.turnNo).filter(Boolean));
+    const maxTurnNo = seenTurnNos.size ? Math.max(...seenTurnNos) : 0;
+    const missingLogicalMembers = [];
+    for (let turnNo = 1; turnNo <= maxTurnNo; turnNo += 1) {
+      if (!seenTurnNos.has(turnNo)) missingLogicalMembers.push(turnNo);
+    }
+    const pageGapMap = new Map();
+    for (const turnNo of missingLogicalMembers) {
+      const page = Math.ceil(turnNo / 25);
+      const list = pageGapMap.get(page) || [];
+      list.push(turnNo);
+      pageGapMap.set(page, list);
+    }
+    const pageMembershipGaps = Array.from(pageGapMap.entries())
+      .map(([page, missingTurnNos]) => ({ page, missingTurnNos }));
+
+    const shellIds = (shell) => {
+      const ids = new Set();
+      const add = (value) => {
+        const id = normalizeId(value);
+        if (id) ids.add(id);
+      };
+      try {
+        add(shell?.getAttribute?.('data-turn-id'));
+        add(shell?.getAttribute?.('data-message-id'));
+        add(shell?.getAttribute?.('data-testid'));
+        for (const roleNode of shell?.querySelectorAll?.('[data-message-author-role]') || []) {
+          add(roleNode.getAttribute?.('data-turn-id'));
+          add(roleNode.getAttribute?.('data-message-id'));
+          add(roleNode.getAttribute?.('data-testid'));
+          add(roleNode.id);
+        }
+      } catch {}
+      return Array.from(ids);
+    };
+    const unknownOrUnpairedShells = [];
+    let matchedStableShellCount = 0;
+    for (const shell of stableShells) {
+      const ids = shellIds(shell);
+      const matched = matchedShellsFromLiveRecords.has(shell) || ids.some((id) => canonicalIds.has(id));
+      if (matched) {
+        matchedStableShellCount += 1;
+        continue;
+      }
+      unknownOrUnpairedShells.push({
+        testid: String(shell?.getAttribute?.('data-testid') || ''),
+        turn: String(shell?.getAttribute?.('data-turn') || ''),
+        ids,
+        hydratedRoleNodes: Number(shell?.querySelectorAll?.('[data-message-author-role]')?.length || 0),
+      });
+    }
+
+    let paginationState = null;
+    try {
+      paginationState = TOPW.H2O?.PW?.pgnwndw?.state || TOPW.H2O_Pagination?.state || null;
+    } catch {}
+    let paginationCanonicalCount = LP_DIAG_UNKNOWN;
+    let paginationCanonicalSource = '';
+    for (const key of ['masterTurnUnits', 'canonicalTurns', 'turnUnits']) {
+      const value = paginationState?.[key];
+      if (!Array.isArray(value)) continue;
+      paginationCanonicalCount = value.length;
+      paginationCanonicalSource = key;
+      break;
+    }
+    if (paginationCanonicalCount === LP_DIAG_UNKNOWN) warnings.push('pagination-canonical-count-unknown');
+    else notes.push(`paginationCanonicalCount source: ${paginationCanonicalSource}`);
+
+    let paginationEnabled = LP_DIAG_UNKNOWN;
+    try {
+      const cfg = TOPW.H2O_Pagination?.getConfig?.() || paginationState?.config || null;
+      if (typeof cfg?.enabled === 'boolean') paginationEnabled = cfg.enabled;
+    } catch {
+      warnings.push('pagination-config-read-failed');
+    }
+    if (paginationEnabled === LP_DIAG_UNKNOWN) warnings.push('pagination-enabled-unknown');
+
+    let unmountEnabled = LP_DIAG_UNKNOWN;
+    try {
+      const cfg = UM_PUBLIC()?.getConfig?.() || null;
+      if (typeof cfg?.enabled === 'boolean') unmountEnabled = cfg.enabled;
+    } catch {
+      warnings.push('unmount-config-read-failed');
+    }
+    if (unmountEnabled === LP_DIAG_UNKNOWN) warnings.push('unmount-enabled-unknown');
+
+    let detachedHostCount = 0;
+    try {
+      const detachedByPage = S.detachedPageHostsByChat.get(String(context?.chatId || '').trim()) || null;
+      for (const record of detachedByPage?.values?.() || []) {
+        detachedHostCount += Array.isArray(record?.items) ? record.items.length : 0;
+      }
+    } catch {
+      detachedHostCount = LP_DIAG_UNKNOWN;
+      warnings.push('detached-host-count-unknown');
+    }
+
+    let paginationPlaceholderCount = LP_DIAG_UNKNOWN;
+    let unmountPlaceholderCount = LP_DIAG_UNKNOWN;
+    try {
+      paginationPlaceholderCount = new Set(document.querySelectorAll(
+        '.cgxui-pgnw-sentinel, .cgxui-pgnw-view, [data-cgxui-owner="pgnw"][data-cgxui-id^="pagination-"]',
+      )).size;
+      unmountPlaceholderCount = new Set(document.querySelectorAll(
+        '.cgxui-unmounted-placeholder, .cgxui-nmms-ph[data-cgxui-owner="nmms"]',
+      )).size;
+    } catch {
+      warnings.push('physical-placeholder-dom-scan-failed');
+    }
+
+    let fragmentCacheCount = LP_DIAG_UNKNOWN;
+    try {
+      const umState = TOPW.H2O?.UM?.nmntmssgs?.state || null;
+      if (umState?.unmountMap instanceof Map || umState?.manualCollapseById instanceof Map) {
+        const fragments = new Set();
+        for (const record of umState?.unmountMap?.values?.() || []) {
+          if (record?.frag) fragments.add(record.frag);
+          if (record?.bodyFrag) fragments.add(record.bodyFrag);
+        }
+        for (const record of umState?.manualCollapseById?.values?.() || []) {
+          if (record?.frag) fragments.add(record.frag);
+          if (record?.bodyFrag) fragments.add(record.bodyFrag);
+        }
+        fragmentCacheCount = fragments.size;
+      }
+    } catch {
+      warnings.push('fragment-cache-read-failed');
+    }
+    if (fragmentCacheCount === LP_DIAG_UNKNOWN) warnings.push('fragment-cache-count-unknown');
+
+    let detachCommentCount = LP_DIAG_UNKNOWN;
+    try {
+      detachCommentCount = 0;
+      const walker = document.createTreeWalker(
+        document.body || document.documentElement,
+        W.NodeFilter?.SHOW_COMMENT || 128,
+      );
+      let comment = walker.nextNode();
+      while (comment) {
+        if (String(comment.nodeValue || '').startsWith('cgxui-chat-page-detached:')) detachCommentCount += 1;
+        comment = walker.nextNode();
+      }
+    } catch {
+      warnings.push('detach-comment-count-unknown');
+    }
+
+    const physicalCounts = [
+      detachedHostCount,
+      paginationPlaceholderCount,
+      unmountPlaceholderCount,
+      fragmentCacheCount,
+      detachCommentCount,
+    ];
+    const hasKnownPhysicalResidue = physicalCounts.some((value) => typeof value === 'number' && value > 0);
+    const hasUnknownPhysicalResidue = physicalCounts.some((value) => value === LP_DIAG_UNKNOWN);
+    let stalePhysicalResiduePresent = false;
+    if ((paginationEnabled === false && Number(paginationPlaceholderCount || 0) > 0)
+      || (unmountEnabled === false && (Number(unmountPlaceholderCount || 0) > 0 || Number(fragmentCacheCount || 0) > 0))
+      || (context?.pageFlowRestored === true && (Number(detachedHostCount || 0) > 0 || Number(detachCommentCount || 0) > 0))) {
+      stalePhysicalResiduePresent = true;
+    } else if (hasUnknownPhysicalResidue && hasKnownPhysicalResidue) {
+      stalePhysicalResiduePresent = LP_DIAG_UNKNOWN;
+    }
+
+    let physicalOptimizersInert = LP_DIAG_UNKNOWN;
+    if (typeof paginationEnabled === 'boolean' && typeof unmountEnabled === 'boolean' && !hasUnknownPhysicalResidue) {
+      physicalOptimizersInert = paginationEnabled === false
+        && unmountEnabled === false
+        && hasKnownPhysicalResidue === false;
+    }
+
+    const logicalPageMemberCount = new Set(logicalMembers.map((member) => member.turnNo)).size;
+    const logicalPageCount = maxTurnNo ? Math.ceil(maxTurnNo / 25) : 0;
+    const shellCoverageRatio = ratio(matchedStableShellCount, stableShells.length);
+    const hydrationCoverageRatio = ratio(hydratedRoleNodes.length, stableShells.length);
+    const paginationCoverageShortfall = typeof paginationCanonicalCount === 'number'
+      && logicalPageMemberCount < paginationCanonicalCount;
+    const logicalCanonicalReady = stableShells.length > 0
+      && Array.isArray(runtimeRecords)
+      && logicalPageMemberCount > 0
+      && missingLogicalMembers.length === 0
+      && duplicateLogicalMembers.length === 0
+      && unknownOrUnpairedShells.length === 0
+      && !paginationCoverageShortfall;
+
+    if (!stableShells.length) blockers.push('stable-shells-not-detected');
+    if (!Array.isArray(runtimeRecords)) blockers.push('turn-runtime-unavailable');
+    else if (!runtimeRecords.length) blockers.push('turn-runtime-empty');
+    if (missingLogicalMembers.length) blockers.push('missing-logical-members');
+    if (unknownOrUnpairedShells.length) blockers.push('unknown-or-unpaired-shells');
+    if (duplicateLogicalMembers.length) blockers.push('duplicate-logical-members');
+    if (paginationCoverageShortfall) blockers.push('pagination-canonical-exceeds-logical-membership');
+    if (paginationEnabled === true) blockers.push('pagination-enabled');
+    if (unmountEnabled === true) blockers.push('unmount-enabled');
+    if (paginationEnabled === LP_DIAG_UNKNOWN || unmountEnabled === LP_DIAG_UNKNOWN) blockers.push('physical-optimizer-state-unknown');
+    if (stalePhysicalResiduePresent === true) blockers.push('stale-physical-residue');
+    if (context?.duplicateTitleBarsVisible === true) blockers.push('duplicate-title-bars-visible');
+    if (Array.isArray(context?.titleMismatches) && context.titleMismatches.length) blockers.push('title-mismatches');
+    if (context?.noAnswerRowsStable === false) blockers.push('no-answer-rows-unstable');
+    if (context?.pageFlowRestored === false) blockers.push('page-flow-not-restored');
+    if (hydrationCoverageRatio !== LP_DIAG_UNKNOWN && hydrationCoverageRatio < 1) {
+      notes.push('partial native hydration observed; this is expected and is not a readiness blocker by itself');
+    }
+    if (detachedHostCount > 0) warnings.push('detached-page-hosts-present');
+    if (fragmentCacheCount > 0) warnings.push('unmount-fragment-caches-present');
+
+    return {
+      stableShellCount: stableShells.length,
+      hydratedRoleNodeCount: hydratedRoleNodes.length,
+      turnRuntimeRecordCount,
+      paginationCanonicalCount,
+      logicalPageMemberCount,
+      logicalPageCount,
+      logicalCanonicalReady,
+      shellCoverageRatio,
+      hydrationCoverageRatio,
+      missingLogicalMembers,
+      unknownOrUnpairedShells,
+      pageMembershipGaps,
+      duplicateLogicalMembers,
+      paginationEnabled,
+      unmountEnabled,
+      physicalOptimizersInert,
+      detachedHostCount,
+      paginationPlaceholderCount,
+      unmountPlaceholderCount,
+      fragmentCacheCount,
+      detachCommentCount,
+      stalePhysicalResiduePresent,
+      titleListActive: context?.titleListActive === true,
+      duplicateTitleBarsVisible: context?.duplicateTitleBarsVisible === true,
+      titleMismatches: Array.isArray(context?.titleMismatches) ? context.titleMismatches : [],
+      noAnswerRowsStable: context?.noAnswerRowsStable ?? LP_DIAG_UNKNOWN,
+      pageFlowRestored: context?.pageFlowRestored ?? LP_DIAG_UNKNOWN,
+      logicalPaginationReadiness: {
+        ready: logicalCanonicalReady === true
+          && physicalOptimizersInert === true
+          && stalePhysicalResiduePresent === false
+          && blockers.length === 0,
+        blockers: Array.from(new Set(blockers)),
+        warnings: Array.from(new Set(warnings)),
+        notes: Array.from(new Set(notes)),
+      },
+    };
+  }
+
   function titleIntentDebugSnapshot(opts = {}) {
-    incTitleIntentStat('debugSnapshotCalls');
     const chatId = String(opts?.chatId || resolveChatId()).trim();
     const pageNum = Math.max(1, Number(opts?.page || opts?.pageNum || 1) || 1);
     const ledger = readTitleIntentLedger(chatId);
@@ -5424,8 +5804,34 @@
         && Math.abs(Number(stackRectBeforeOpen.left) - Number(stackRectAfterOpen.left)) <= 2
         && Math.abs(Number(stackRectBeforeOpen.width) - Number(stackRectAfterOpen.width)) <= 2);
 
+    const noAnswerRowsStable = !titleListActive
+      ? 'notApplicable'
+      : expectedNoAnswerMemberCount === listedNoAnswerRows
+        && noAnswerInFlowVisible === 0
+        && orphanQuestionFlowVisible === 0
+        && orphanQuestionVisibleUnderList === false
+        && noAnswerAutoOpened === false;
+    let logicalPaginationDiagnostics = null;
+    try {
+      logicalPaginationDiagnostics = inspectLogicalPaginationReadiness({
+        chatId,
+        pageNum,
+        titleListActive,
+        duplicateTitleBarsVisible,
+        titleMismatches: titleFidelityMismatches,
+        noAnswerRowsStable,
+        pageFlowRestored: expandedPageFlowAudit.pageFlowRestored,
+      });
+    } catch (error) {
+      logicalPaginationDiagnostics = unknownLogicalPaginationDiagnostics(
+        `diagnostic-exception:${String(error?.message || error || 'unknown')}`,
+      );
+    }
+
     return {
       mechanismRoutes,
+      logicalPaginationDiagnostics,
+      logicalPaginationReadiness: logicalPaginationDiagnostics.logicalPaginationReadiness,
       visitState: {
         preference: getVisitStateMode(),
         chatId,
