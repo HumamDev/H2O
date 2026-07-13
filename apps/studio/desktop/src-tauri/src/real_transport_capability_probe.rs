@@ -43,6 +43,11 @@ const W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT: &str =
     "d57fefebe66537ecbeac9ecf9ba56cf02f1b21dd";
 const W34B3_R4_NO_WRITE_CLOSEOUT_COMMIT: &str = "f08f9b0f750e6d863a32c5de8f1edbe97955d0c1";
 const W35B_PARENT_PROPFIND_FIX_COMMIT: &str = "305ff023ad12f14b6a9b505dab4123cf44c7cfba";
+const BUILD_GIT_SHA: &str = env!("H2O_BUILD_GIT_SHA");
+const BUILD_PROFILE: &str = env!("H2O_BUILD_PROFILE");
+const BUILD_DIRTY: &str = env!("H2O_BUILD_DIRTY");
+const PARENT_PROPFIND_FIX_PRESENT: &str = env!("H2O_PARENT_PROPFIND_FIX_PRESENT");
+const R5A_BINDING_FIX_PRESENT: &str = env!("H2O_R5A_BINDING_FIX_PRESENT");
 const WRITE_GRADE_MAX_RECEIPT_AGE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const FIRST_WRITE_RECOMMENDED_AGE_SECONDS: i64 = 72 * 60 * 60;
 const MAX_READONLY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -803,6 +808,84 @@ impl RtFirstWriteResult {
             raw_private_fields_logged: false,
             blockers,
             warnings: vec!["w3-4a-refused-by-default-no-live-write"],
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RtWriteGradeReadOnlyProbeResult {
+    pub schema: &'static str,
+    pub ok: bool,
+    pub status: &'static str,
+    pub reason: &'static str,
+    pub command: &'static str,
+    pub build_git_sha: &'static str,
+    pub build_profile: &'static str,
+    pub build_dirty: bool,
+    pub parent_propfind_fix_present: bool,
+    pub r5a_binding_fix_present: bool,
+    pub normal_probe_registry_path_source: &'static str,
+    pub write_grade_registry_path_source: &'static str,
+    pub registry_selection_equivalent: bool,
+    pub endpoint_material_equivalent: bool,
+    pub remote_root_material_equivalent: bool,
+    pub credential_material_equivalent: bool,
+    pub write_grade_registry_eligible: bool,
+    pub credential_material_present: bool,
+    pub method_statuses: Vec<RtFirstWriteMethodStatus>,
+    pub network_attempted: bool,
+    pub write_grade_read_only_probe_passed: bool,
+    pub likely_cause: &'static str,
+    pub receipt_consumed: bool,
+    pub consumed_marker_created: bool,
+    pub writes_webdav: bool,
+    pub writes_cloud: bool,
+    pub writes_relay: bool,
+    pub writes_cas: bool,
+    pub writes_files: bool,
+    pub product_sync_ready: bool,
+    pub transport_ready: bool,
+    pub raw_private_fields_logged: bool,
+    pub blockers: Vec<&'static str>,
+}
+
+impl RtWriteGradeReadOnlyProbeResult {
+    fn base(reason: &'static str, blockers: Vec<&'static str>) -> Self {
+        Self {
+            schema: "h2o.studio.transport.write-grade-read-only-probe-result.v1",
+            ok: false,
+            status: "real-transport-w3-write-grade-read-only-probe-blocked",
+            reason,
+            command: "h2o_rt_write_grade_read_only_probe",
+            build_git_sha: BUILD_GIT_SHA,
+            build_profile: BUILD_PROFILE,
+            build_dirty: BUILD_DIRTY == "true",
+            parent_propfind_fix_present: PARENT_PROPFIND_FIX_PRESENT == "true",
+            r5a_binding_fix_present: R5A_BINDING_FIX_PRESENT == "true",
+            normal_probe_registry_path_source: "invalid",
+            write_grade_registry_path_source: "invalid",
+            registry_selection_equivalent: false,
+            endpoint_material_equivalent: false,
+            remote_root_material_equivalent: false,
+            credential_material_equivalent: false,
+            write_grade_registry_eligible: false,
+            credential_material_present: false,
+            method_statuses: vec![],
+            network_attempted: false,
+            write_grade_read_only_probe_passed: false,
+            likely_cause: "pre-network-registry-resolution-blocked",
+            receipt_consumed: false,
+            consumed_marker_created: false,
+            writes_webdav: false,
+            writes_cloud: false,
+            writes_relay: false,
+            writes_cas: false,
+            writes_files: false,
+            product_sync_ready: false,
+            transport_ready: false,
+            raw_private_fields_logged: false,
+            blockers,
         }
     }
 }
@@ -2386,6 +2469,13 @@ trait FirstWriteLiveClient {
     fn get_readback(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse;
 }
 
+trait WriteGradeReadOnlyPropfindClient {
+    fn propfind_parent_readiness(
+        &self,
+        target: &FirstWriteLiveTarget,
+    ) -> FirstWriteLoopbackResponse;
+}
+
 enum FirstWriteLiveOperation {
     PropfindAbsence,
     PutCreateFirst,
@@ -2537,9 +2627,18 @@ impl ReqwestFirstWriteLiveClient {
     }
 }
 
+impl WriteGradeReadOnlyPropfindClient for ReqwestFirstWriteLiveClient {
+    fn propfind_parent_readiness(
+        &self,
+        target: &FirstWriteLiveTarget,
+    ) -> FirstWriteLoopbackResponse {
+        self.send(target, FirstWriteLiveOperation::PropfindAbsence, None)
+    }
+}
+
 impl FirstWriteLiveClient for ReqwestFirstWriteLiveClient {
     fn propfind_absence(&self, target: &FirstWriteLiveTarget) -> FirstWriteLoopbackResponse {
-        self.send(target, FirstWriteLiveOperation::PropfindAbsence, None)
+        self.propfind_parent_readiness(target)
     }
 
     fn put_create_first(
@@ -2893,16 +2992,19 @@ fn validate_write_grade_receipt(
     mode
 }
 
-fn resolve_first_write_live_registry(
-    request: &RtFirstWriteRequest,
-) -> Result<DescriptorRegistry, &'static str> {
+struct ResolvedWriteGradeLiveRegistry {
+    path_info: DescriptorRegistryPathInfo,
+    status: RtWebDavSetupStatusResult,
+    registry: DescriptorRegistry,
+}
+
+fn resolve_write_grade_live_registry(
+    command: &'static str,
+) -> Result<ResolvedWriteGradeLiveRegistry, &'static str> {
     let path_info = descriptor_registry_path_for_setup_status();
     let bytes =
         fs::read(&path_info.path).map_err(|_| "real-transport-w3-write-grade-registry-missing")?;
-    let status = status_from_registry_bytes("h2o_rt_first_write", &bytes, &path_info);
-    if status.registry_path_source != request.registry_path_source.as_deref().unwrap_or("") {
-        return Err("real-transport-w3-write-grade-registry-source-refused");
-    }
+    let status = status_from_registry_bytes(command, &bytes, &path_info);
     if !write_grade_registry_source_candidate(status.registry_path_source) {
         return Err("real-transport-w3-write-grade-registry-source-refused");
     }
@@ -2912,27 +3014,11 @@ fn resolve_first_write_live_registry(
     {
         return Err("real-transport-w3-write-grade-registry-owner-permission-refused");
     }
-    if status.write_grade_registry_ref_hash != request.write_grade_registry_ref_hash {
-        return Err("real-transport-w3-write-grade-registry-ref-hash-mismatch");
-    }
     if !status.credential_material_present {
         return Err("real-transport-w3-first-write-credential-material-missing");
     }
     let registry = serde_json::from_slice::<DescriptorRegistry>(&bytes)
         .map_err(|_| "real-transport-w3-write-grade-registry-invalid")?;
-    let Some(bindings) = request
-        .write_grade_receipt
-        .as_ref()
-        .and_then(|receipt| receipt.bindings.as_ref())
-    else {
-        return Err("real-transport-w3-write-grade-receipt-missing");
-    };
-    if Some(registry.endpoint_ref_hash.clone()) != bindings.endpoint_ref_hash
-        || Some(registry.remote_root_ref_hash.clone()) != bindings.remote_root_ref_hash
-        || Some(registry.credential_ref_hash.clone()) != bindings.credential_ref_hash
-    {
-        return Err("real-transport-w3-first-write-descriptor-bindings-required");
-    }
     if registry
         .endpoint_url_private
         .as_deref()
@@ -2954,7 +3040,166 @@ fn resolve_first_write_live_registry(
     {
         return Err("real-transport-w3-first-write-private-registry-fields-missing");
     }
+    Ok(ResolvedWriteGradeLiveRegistry {
+        path_info,
+        status,
+        registry,
+    })
+}
+
+fn resolve_first_write_live_registry(
+    request: &RtFirstWriteRequest,
+) -> Result<DescriptorRegistry, &'static str> {
+    let resolved = resolve_write_grade_live_registry("h2o_rt_first_write")?;
+    if resolved.status.registry_path_source != request.registry_path_source.as_deref().unwrap_or("")
+    {
+        return Err("real-transport-w3-write-grade-registry-source-refused");
+    }
+    if resolved.status.write_grade_registry_ref_hash != request.write_grade_registry_ref_hash {
+        return Err("real-transport-w3-write-grade-registry-ref-hash-mismatch");
+    }
+    let registry = resolved.registry;
+    let Some(bindings) = request
+        .write_grade_receipt
+        .as_ref()
+        .and_then(|receipt| receipt.bindings.as_ref())
+    else {
+        return Err("real-transport-w3-write-grade-receipt-missing");
+    };
+    if Some(registry.endpoint_ref_hash.clone()) != bindings.endpoint_ref_hash
+        || Some(registry.remote_root_ref_hash.clone()) != bindings.remote_root_ref_hash
+        || Some(registry.credential_ref_hash.clone()) != bindings.credential_ref_hash
+    {
+        return Err("real-transport-w3-first-write-descriptor-bindings-required");
+    }
     Ok(registry)
+}
+
+struct WriteGradeReadOnlyRegistryParity {
+    normal_probe_registry_path_source: &'static str,
+    write_grade_registry_path_source: &'static str,
+    registry_selection_equivalent: bool,
+    endpoint_material_equivalent: bool,
+    remote_root_material_equivalent: bool,
+    credential_material_equivalent: bool,
+    write_grade_registry_eligible: bool,
+    credential_material_present: bool,
+    target: FirstWriteLiveTarget,
+}
+
+fn resolve_write_grade_read_only_registry_parity(
+) -> Result<WriteGradeReadOnlyRegistryParity, &'static str> {
+    let normal_path_info = descriptor_registry_path_for_probe(&RtCapabilityProbeRequest {
+        descriptor_registry_ref_hash: Some(sha256_ref(b"registry-selection-only")),
+        ..Default::default()
+    });
+    let normal_registry = normal_path_info.as_ref().and_then(|path_info| {
+        fs::read(&path_info.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<DescriptorRegistry>(&bytes).ok())
+    });
+    let resolved = resolve_write_grade_live_registry("h2o_rt_write_grade_read_only_probe")?;
+    let registry_selection_equivalent = normal_path_info
+        .as_ref()
+        .map(|normal| normal.path == resolved.path_info.path)
+        .unwrap_or(false);
+    let endpoint_material_equivalent = normal_registry
+        .as_ref()
+        .map(|normal| normal.endpoint_url_private == resolved.registry.endpoint_url_private)
+        .unwrap_or(false);
+    let remote_root_material_equivalent = normal_registry
+        .as_ref()
+        .map(|normal| normal.remote_root_path_private == resolved.registry.remote_root_path_private)
+        .unwrap_or(false);
+    let credential_material_equivalent = normal_registry
+        .as_ref()
+        .map(|normal| normal.auth_header_private == resolved.registry.auth_header_private)
+        .unwrap_or(false);
+
+    Ok(WriteGradeReadOnlyRegistryParity {
+        normal_probe_registry_path_source: normal_path_info
+            .as_ref()
+            .map(|info| info.source)
+            .unwrap_or("invalid"),
+        write_grade_registry_path_source: resolved.path_info.source,
+        registry_selection_equivalent,
+        endpoint_material_equivalent,
+        remote_root_material_equivalent,
+        credential_material_equivalent,
+        write_grade_registry_eligible: resolved.status.write_grade_registry_eligible,
+        credential_material_present: resolved.status.credential_material_present,
+        target: FirstWriteLiveTarget {
+            endpoint_url_private: resolved.registry.endpoint_url_private.unwrap_or_default(),
+            remote_root_path_private: resolved
+                .registry
+                .remote_root_path_private
+                .unwrap_or_default(),
+            auth_header_private: resolved.registry.auth_header_private.unwrap_or_default(),
+            path_class_ref_hash: String::new(),
+        },
+    })
+}
+
+fn evaluate_write_grade_read_only_probe_with_client<C: WriteGradeReadOnlyPropfindClient>(
+    parity: Result<WriteGradeReadOnlyRegistryParity, &'static str>,
+    client: &C,
+) -> RtWriteGradeReadOnlyProbeResult {
+    let parity = match parity {
+        Ok(parity) => parity,
+        Err(blocker) => return RtWriteGradeReadOnlyProbeResult::base(blocker, vec![blocker]),
+    };
+    let mut result = RtWriteGradeReadOnlyProbeResult::base(
+        "real-transport-w3-write-grade-read-only-probe-not-run",
+        vec![],
+    );
+    result.normal_probe_registry_path_source = parity.normal_probe_registry_path_source;
+    result.write_grade_registry_path_source = parity.write_grade_registry_path_source;
+    result.registry_selection_equivalent = parity.registry_selection_equivalent;
+    result.endpoint_material_equivalent = parity.endpoint_material_equivalent;
+    result.remote_root_material_equivalent = parity.remote_root_material_equivalent;
+    result.credential_material_equivalent = parity.credential_material_equivalent;
+    result.write_grade_registry_eligible = parity.write_grade_registry_eligible;
+    result.credential_material_present = parity.credential_material_present;
+
+    let response = client.propfind_parent_readiness(&parity.target);
+    result.network_attempted = true;
+    push_status(
+        &mut result.method_statuses,
+        "PROPFIND write-grade parent readiness diagnostic",
+        &response,
+        false,
+    );
+    if response.redirected {
+        result.reason = "real-transport-w3-write-grade-read-only-probe-redirect-refused";
+        result.likely_cause = "redirect-or-target-normalization";
+        result.blockers.push(result.reason);
+    } else if response.network_failed {
+        result.reason = "real-transport-w3-write-grade-read-only-probe-network-failed";
+        result.likely_cause = "network-failure-no-status";
+        result.blockers.push(result.reason);
+    } else if response.status == 207 {
+        result.ok = true;
+        result.status = "real-transport-w3-write-grade-read-only-probe-passed";
+        result.reason = "real-transport-w3-write-grade-read-only-propfind-207";
+        result.write_grade_read_only_probe_passed = true;
+        result.likely_cause = "runtime-provenance-or-prior-stale-binary";
+    } else if response.status == 401 {
+        result.reason = "real-transport-w3-write-grade-read-only-probe-auth-refused";
+        result.likely_cause = "app-local-credential-or-registry-material";
+        result.blockers.push(result.reason);
+    } else {
+        result.reason = "real-transport-w3-write-grade-read-only-probe-unexpected-status";
+        result.likely_cause = "unsupported-status-no-further-interpretation";
+        result.blockers.push(result.reason);
+    }
+    result
+}
+
+pub fn evaluate_write_grade_read_only_probe() -> RtWriteGradeReadOnlyProbeResult {
+    evaluate_write_grade_read_only_probe_with_client(
+        resolve_write_grade_read_only_registry_parity(),
+        &ReqwestFirstWriteLiveClient,
+    )
 }
 
 fn first_write_consumed_marker_path(receipt_hash: &str) -> Option<PathBuf> {
@@ -3460,6 +3705,11 @@ pub fn h2o_rt_webdav_setup_hydrate_form(
 }
 
 #[tauri::command]
+pub fn h2o_rt_write_grade_read_only_probe() -> Result<RtWriteGradeReadOnlyProbeResult, String> {
+    Ok(evaluate_write_grade_read_only_probe())
+}
+
+#[tauri::command]
 pub fn h2o_rt_first_write(
     request: Option<RtFirstWriteRequest>,
 ) -> Result<RtFirstWriteResult, String> {
@@ -3470,6 +3720,7 @@ pub fn h2o_rt_first_write(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -3645,6 +3896,47 @@ mod tests {
 
         fn get_readback(&self) -> FirstWriteLoopbackResponse {
             self.readback.clone()
+        }
+    }
+
+    struct MockWriteGradeReadOnlyPropfindClient {
+        calls: Cell<usize>,
+        response: FirstWriteLoopbackResponse,
+    }
+
+    impl WriteGradeReadOnlyPropfindClient for MockWriteGradeReadOnlyPropfindClient {
+        fn propfind_parent_readiness(
+            &self,
+            target: &FirstWriteLiveTarget,
+        ) -> FirstWriteLoopbackResponse {
+            self.calls.set(self.calls.get() + 1);
+            assert_eq!(
+                target.endpoint_url_private,
+                "https://private.invalid/webdav"
+            );
+            assert_eq!(target.remote_root_path_private, "/redacted-root/");
+            assert_eq!(target.auth_header_private, "Basic private-test-material");
+            assert!(target.path_class_ref_hash.is_empty());
+            self.response.clone()
+        }
+    }
+
+    fn write_grade_read_only_test_parity() -> WriteGradeReadOnlyRegistryParity {
+        WriteGradeReadOnlyRegistryParity {
+            normal_probe_registry_path_source: "app-local",
+            write_grade_registry_path_source: "app-local",
+            registry_selection_equivalent: true,
+            endpoint_material_equivalent: true,
+            remote_root_material_equivalent: true,
+            credential_material_equivalent: true,
+            write_grade_registry_eligible: true,
+            credential_material_present: true,
+            target: FirstWriteLiveTarget {
+                endpoint_url_private: "https://private.invalid/webdav".to_string(),
+                remote_root_path_private: "/redacted-root/".to_string(),
+                auth_header_private: "Basic private-test-material".to_string(),
+                path_class_ref_hash: String::new(),
+            },
         }
     }
 
@@ -4553,6 +4845,88 @@ mod tests {
         assert!(object.path().contains(".h2o-w3-sacrificial-probe"));
         assert!(object.path().ends_with(".sentinel"));
         assert_ne!(parent.path(), object.path());
+    }
+
+    #[test]
+    fn write_grade_read_only_probe_uses_one_parent_propfind_and_redacts_private_material() {
+        let client = MockWriteGradeReadOnlyPropfindClient {
+            calls: Cell::new(0),
+            response: FirstWriteLoopbackResponse {
+                status: 207,
+                ..Default::default()
+            },
+        };
+        let result = evaluate_write_grade_read_only_probe_with_client(
+            Ok(write_grade_read_only_test_parity()),
+            &client,
+        );
+
+        assert_eq!(client.calls.get(), 1);
+        assert!(result.ok);
+        assert!(result.write_grade_read_only_probe_passed);
+        assert_eq!(result.method_statuses.len(), 1);
+        assert_eq!(
+            result.method_statuses[0].operation,
+            "PROPFIND write-grade parent readiness diagnostic"
+        );
+        assert_eq!(result.method_statuses[0].status_code, 207);
+        assert_eq!(result.normal_probe_registry_path_source, "app-local");
+        assert_eq!(result.write_grade_registry_path_source, "app-local");
+        assert!(result.registry_selection_equivalent);
+        assert!(result.endpoint_material_equivalent);
+        assert!(result.remote_root_material_equivalent);
+        assert!(result.credential_material_equivalent);
+        assert!(!result.receipt_consumed);
+        assert!(!result.consumed_marker_created);
+        assert!(!result.writes_webdav);
+        assert!(!result.product_sync_ready);
+        assert!(!result.transport_ready);
+        assert!(!result.build_git_sha.is_empty());
+        assert!(!result.build_profile.is_empty());
+        assert!(result.parent_propfind_fix_present);
+        assert!(result.r5a_binding_fix_present);
+
+        let serialized = serde_json::to_string(&result).expect("serialize diagnostic result");
+        for private_value in [
+            "https://private.invalid/webdav",
+            "/redacted-root/",
+            "Basic private-test-material",
+        ] {
+            assert!(!serialized.contains(private_value));
+        }
+        for forbidden_field in [
+            "endpointUrlPrivate",
+            "remoteRootPathPrivate",
+            "authHeaderPrivate",
+            "receiptCoreHash",
+            "oneShotToken",
+            "killSwitchToken",
+        ] {
+            assert!(!serialized.contains(forbidden_field));
+        }
+    }
+
+    #[test]
+    fn write_grade_read_only_probe_refuses_legacy_registry_before_network() {
+        assert!(!write_grade_registry_source_candidate(
+            "default-private-legacy"
+        ));
+        let client = MockWriteGradeReadOnlyPropfindClient {
+            calls: Cell::new(0),
+            response: FirstWriteLoopbackResponse {
+                status: 207,
+                ..Default::default()
+            },
+        };
+        let result = evaluate_write_grade_read_only_probe_with_client(
+            Err("real-transport-w3-write-grade-registry-source-refused"),
+            &client,
+        );
+        assert_eq!(client.calls.get(), 0);
+        assert!(!result.network_attempted);
+        assert!(!result.receipt_consumed);
+        assert!(!result.consumed_marker_created);
+        assert!(!result.writes_webdav);
     }
 
     #[test]
