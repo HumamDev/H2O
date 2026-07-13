@@ -180,6 +180,70 @@
     return next;
   }
 
+  // ── Native Prompt Rail + MiniMap horizontal position (Chat Navigation) ──────
+  // Keys are namespaced under the MiniMap disk namespace to match MiniMap Core
+  // (1A1b) exactly; setLive writes the key then calls the core apply hook for a
+  // live, no-reload update.
+  const RAIL_POS_DEFAULT = 'auto';
+  const RAIL_GAP_DEFAULT = 4;
+  const MM_HMODE_DEFAULT = 'auto-rail';
+  const MM_XOFFSET_DEFAULT = 5;
+
+  function keyRailPos() { return `${nsDisk()}:nativePromptRail:position`; }
+  function keyRailGap() { return `${nsDisk()}:nativePromptRail:gapPx`; }
+  function keyMMHmode() { return `${nsDisk()}:miniMap:horizontalMode`; }
+  function keyMMXOffset() { return `${nsDisk()}:miniMap:xOffsetPx`; }
+
+  function railClampInt(v, lo, hi, dflt) {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+  }
+
+  function applyNativeRailLive() {
+    try { TOPW.H2O_MM_NativeRail?.apply?.(); } catch {}
+  }
+
+  function getRailPosSetting() {
+    const raw = String(readStoredRaw(keyRailPos()) || RAIL_POS_DEFAULT).trim().toLowerCase();
+    return ['auto', 'right', 'left', 'hidden', 'off'].includes(raw) ? raw : RAIL_POS_DEFAULT;
+  }
+  function setRailPosSetting(v) {
+    const raw = String(v || RAIL_POS_DEFAULT).trim().toLowerCase();
+    const next = ['auto', 'right', 'left', 'hidden', 'off'].includes(raw) ? raw : RAIL_POS_DEFAULT;
+    writeStoredRaw(keyRailPos(), next);
+    applyNativeRailLive();
+    return next;
+  }
+  function getRailGapSetting() {
+    return railClampInt(readStoredRaw(keyRailGap()), 0, 24, RAIL_GAP_DEFAULT);
+  }
+  function setRailGapSetting(v) {
+    const next = railClampInt(v, 0, 24, RAIL_GAP_DEFAULT);
+    writeStoredRaw(keyRailGap(), String(next));
+    applyNativeRailLive();
+    return next;
+  }
+  function getMMHmodeSetting() {
+    const raw = String(readStoredRaw(keyMMHmode()) || MM_HMODE_DEFAULT).trim().toLowerCase();
+    return ['auto-rail', 'right', 'left'].includes(raw) ? raw : MM_HMODE_DEFAULT;
+  }
+  function setMMHmodeSetting(v) {
+    const raw = String(v || MM_HMODE_DEFAULT).trim().toLowerCase();
+    const next = ['auto-rail', 'right', 'left'].includes(raw) ? raw : MM_HMODE_DEFAULT;
+    writeStoredRaw(keyMMHmode(), next);
+    applyNativeRailLive();
+    return next;
+  }
+  function getMMXOffsetSetting() {
+    return railClampInt(readStoredRaw(keyMMXOffset()), 0, 240, MM_XOFFSET_DEFAULT);
+  }
+  function setMMXOffsetSetting(v) {
+    const next = railClampInt(v, 0, 240, MM_XOFFSET_DEFAULT);
+    writeStoredRaw(keyMMXOffset(), String(next));
+    applyNativeRailLive();
+    return next;
+  }
+
   function normalizeViewRegistryEntry(entry) {
     const id = String(entry?.id || '').trim().toLowerCase();
     if (!id) return null;
@@ -337,6 +401,65 @@
         label: 'Show Legend button',
         def: true,
         group: 'Navigation',
+      },
+      {
+        type: 'select',
+        key: 'nativePromptRailPosition',
+        label: 'Native TOC Rail Position',
+        help: 'Controls ChatGPT’s native prompt table-of-contents rail and H2O MiniMap spacing.',
+        group: 'Native TOC Rail & MiniMap',
+        def: RAIL_POS_DEFAULT,
+        opts: [
+          ['auto', 'Auto / Default (Right)'],
+          ['right', 'Right'],
+          ['left', 'Left'],
+          ['hidden', 'Hide / Off'],
+          ['off', 'Don’t modify'],
+        ],
+        getLive() { return getRailPosSetting(); },
+        setLive(v) { setRailPosSetting(v); CH_api()?.invalidate?.(); },
+      },
+      {
+        type: 'range',
+        key: 'nativePromptRailGap',
+        label: 'MiniMap ↔ TOC Rail Gap',
+        help: 'Space between the MiniMap and ChatGPT’s TOC rail markers.',
+        group: 'Native TOC Rail & MiniMap',
+        def: RAIL_GAP_DEFAULT,
+        min: 0,
+        max: 24,
+        step: 1,
+        unit: 'px',
+        getLive() { return getRailGapSetting(); },
+        setLive(v) { setRailGapSetting(v); },
+      },
+      {
+        type: 'select',
+        key: 'miniMapHorizontalPosition',
+        label: 'MiniMap Horizontal Position',
+        group: 'Native TOC Rail & MiniMap',
+        def: MM_HMODE_DEFAULT,
+        opts: [
+          ['auto-rail', 'Auto (beside TOC Rail)'],
+          ['right', 'Right (custom offset)'],
+          ['left', 'Left (custom offset)'],
+        ],
+        getLive() { return getMMHmodeSetting(); },
+        setLive(v) { setMMHmodeSetting(v); CH_api()?.invalidate?.(); },
+      },
+      {
+        type: 'range',
+        key: 'miniMapXOffset',
+        label: 'MiniMap X Offset',
+        help: 'Distance from the screen edge when MiniMap position is set to Right or Left.',
+        group: 'Native TOC Rail & MiniMap',
+        def: MM_XOFFSET_DEFAULT,
+        min: 0,
+        max: 240,
+        step: 1,
+        unit: 'px',
+        getLive() { return getMMXOffsetSetting(); },
+        setLive(v) { setMMXOffsetSetting(v); },
       },
       {
         type: 'select',
