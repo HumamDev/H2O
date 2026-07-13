@@ -5434,22 +5434,24 @@ mod tests {
     }
 
     #[test]
-    fn r6_s1_unsealed_gate_rejects_before_any_post_preflight_callback() {
+    fn r6_synthetic_unsealed_gate_rejects_before_any_callback() {
         let receipt = r6_fixture();
         let raw = serde_json::to_string(&receipt).expect("serialize receipt");
         let hash = r6_receipt_core_hash(&receipt).expect("receipt hash");
         let calls = Cell::new(0);
-        let result = dispatch_r6_execution_preflight(
+        let result = dispatch_r6_execution_preflight_with_gate(
             &raw,
             &hash,
             r6_context(&receipt),
+            R6ApprovalGateConfig {
+                sealed: false,
+                approval_commit: "",
+                approval_artifact_hash: "",
+            },
             |_receipt, _hash| calls.set(calls.get() + 1),
         );
         assert_eq!(result, Err("real-transport-r6-approval-gate-unsealed"));
         assert_eq!(calls.get(), 0);
-        assert!(!R6_APPROVAL_GATE_SEALED);
-        assert!(R6_APPROVAL_COMMIT.is_empty());
-        assert!(R6_APPROVAL_ARTIFACT_HASH.is_empty());
     }
 
     #[test]
