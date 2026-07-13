@@ -2050,6 +2050,17 @@ ${S_BAR}:active{
             const bodyUnfolded = DOM_getAnswerBody(msgEl)
               .some((el) => String(el?.style?.maxHeight || '') !== '0px');
             if (!barCollapsed || bodyUnfolded) DOM_applyCollapseState(msgEl, bar, true, false);
+          } else if (engineMode && !STATE_.visitResetPending && DOM_hasCollapsedDomResidue(msgEl, bar)) {
+            // Symmetric convergence: the ledger says this answer is EXPANDED
+            // (neither answer-title nor title-list-row) yet collapse residue
+            // lingers — data-at-collapsed, a collapsed bar token, a managed
+            // data-cgxui-at-hidden, or a data-at-question-hidden question host.
+            // A circle/dot page expand drains the ledger but the engine/1C1b
+            // release paths do not own 1C1a's own projection markers, so this
+            // reconciles them to the ledger. It fires only when residue exists
+            // (rare), never fights an active collapse (that id is in the set
+            // above), and clears exactly what DOM_applyCollapseState stamped.
+            DOM_applyCollapseState(msgEl, bar, false, false);
           }
 
           const fullTextNow = DOM_getAnswerText(msgEl);
@@ -2370,6 +2381,126 @@ function API_AT_sync(answerId, opts = {}) {
   return { ok: true, status: 'ok', answerId: id, titleApplied, collapseApplied };
 }
 
+function API_AT_projectionNodeDetail(el = null) {
+  if (!el) return null;
+  let cs = null;
+  let rectHeight = 0;
+  try { cs = W.getComputedStyle?.(el) || null; } catch {}
+  try { rectHeight = Number(el.getBoundingClientRect?.().height || 0); } catch {}
+  const inline = el.style || {};
+  const markers = [
+    'data-cgxui-at-hidden',
+    'data-at-question-hidden',
+    'data-cgxui-chat-page-question-hidden',
+    'data-cgxui-chat-page-no-answer-question-hidden',
+  ].filter((attr) => String(el.getAttribute?.(attr) || '').trim() === '1');
+  const styleCollapsed = String(inline.maxHeight || '') === '0px'
+    || (String(inline.height || '') === '0px' && String(inline.overflow || '') === 'hidden')
+    || (String(inline.opacity || '') === '0' && String(inline.pointerEvents || '') === 'none');
+  const visible = !!(rectHeight > 0
+    && String(cs?.display || '') !== 'none'
+    && String(cs?.visibility || '') !== 'hidden'
+    && Number.parseFloat(String(cs?.opacity || '1')) > 0);
+  return {
+    tag: String(el.tagName || ''),
+    testid: String(el.getAttribute?.('data-testid') || el.closest?.('[data-testid^="conversation-turn"]')?.getAttribute?.('data-testid') || ''),
+    markers,
+    inlineDisplay: String(inline.display || ''),
+    display: String(cs?.display || ''),
+    maxHeight: String(inline.maxHeight || ''),
+    height: String(inline.height || ''),
+    minHeight: String(inline.minHeight || ''),
+    overflow: String(inline.overflow || ''),
+    opacity: String(inline.opacity || ''),
+    pointerEvents: String(inline.pointerEvents || ''),
+    rectHeight: Number(rectHeight.toFixed(2)),
+    styleCollapsed,
+    visible,
+  };
+}
+
+// Read-only acceptance probe for the exact projection owned by this module.
+// It deliberately reports inline fold styles as well as marker attrs: another
+// owner may remove a marker before clearing max-height/overflow, which still
+// leaves a visually collapsed turn and made the old page-level proof vacuous.
+function API_AT_inspectCollapseProjection(answerId) {
+  const id = API_AT_normalizeAnswerId(answerId);
+  if (!id) return { ok: false, status: 'invalid-id', answerId: id, hydrated: false };
+  const msgEl = API_AT_getMessageEl(id);
+  const bar = API_AT_getBar(id);
+  const questionHost = msgEl ? DOM_getQuestionTurnHost(msgEl) : null;
+  const bodyEls = msgEl ? DOM_getAnswerBody(msgEl) : [];
+  const siblingEls = msgEl ? DOM_getAnswerTurnSiblings(msgEl) : [];
+  const toolbarEls = msgEl
+    ? DOM_getAnswerToolbars(msgEl).filter((el) => !bodyEls.includes(el) && !siblingEls.includes(el))
+    : [];
+  const managed = Array.from(new Set(bodyEls.concat(siblingEls).concat(toolbarEls)));
+  const managedDetails = managed.map(API_AT_projectionNodeDetail).filter(Boolean);
+  const questionDetail = API_AT_projectionNodeDetail(questionHost);
+  const barState = String(UTIL_getAttr(bar, ATTR_.CGXUI_STATE) || '').trim();
+  const msgCollapsed = UTIL_getAttr(msgEl, ATTR_.COLLAPSED) === '1';
+  const barCollapsed = barState.split(/\s+/).includes('collapsed');
+  const styleOrMarkerCollapsed = managedDetails.some((entry) => entry.styleCollapsed || entry.markers.length)
+    || !!(questionDetail && (questionDetail.styleCollapsed || questionDetail.markers.length));
+  const activeSources = { answerTitle: false, titleListRow: false, pageCollapse: false, allManual: false };
+  try {
+    const um = ENGINE_getUnmountApi();
+    activeSources.answerTitle = !!um?.isCollapsedById?.(id, { source: 'answer-title' });
+    activeSources.titleListRow = !!um?.isCollapsedById?.(id, { source: 'title-list-row' });
+    activeSources.pageCollapse = !!um?.isCollapsedById?.(id, { source: 'page-collapse' });
+    activeSources.allManual = !!um?.isCollapsedById?.(id);
+  } catch {}
+  return {
+    ok: true,
+    status: msgEl && bar ? 'ok' : 'deferred-unhydrated',
+    answerId: id,
+    hydrated: !!(msgEl && bar),
+    activeSources,
+    titleBarCount: bar ? 1 : 0,
+    titleBarState: barState,
+    titleBarText: String(bar?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    messageCollapsed: msgCollapsed,
+    questionHostExists: !!questionHost,
+    questionHostVisible: questionDetail?.visible ?? false,
+    questionHost: questionDetail,
+    answerHostExists: !!msgEl,
+    answerHostVisible: API_AT_projectionNodeDetail(msgEl)?.visible ?? false,
+    bodyTargetExists: bodyEls.length > 0,
+    bodyTargets: managedDetails,
+    collapsedResidue: msgCollapsed || barCollapsed || styleOrMarkerCollapsed,
+    actuallyExpanded: !!(msgEl && bar && !msgCollapsed && !barCollapsed && !styleOrMarkerCollapsed),
+  };
+}
+
+// Explicit page-circle convergence entry point. Source ownership remains with
+// Unmount; this executor only unfolds when that ledger reports NO active
+// source. Unlike setCollapsed(false), it does not derive an early-return from
+// the already-updated desired-state ledger — it reconciles the live DOM
+// unconditionally through the one title-bar projection executor.
+function API_AT_convergeExpandedProjection(answerId, opts = {}) {
+  const before = API_AT_inspectCollapseProjection(answerId);
+  const id = before.answerId || API_AT_normalizeAnswerId(answerId);
+  if (!id) return before;
+  if (before.activeSources?.allManual) {
+    return { ...before, status: 'active-collapse-source', converged: false };
+  }
+  const msgEl = API_AT_getMessageEl(id);
+  if (!msgEl) return { ...before, status: 'deferred-unhydrated', converged: false };
+  const ensured = API_AT_ensureBar(id);
+  const bar = ensured?.bar || API_AT_getBar(id);
+  if (!bar) return { ...before, status: 'bar-missing', converged: false };
+  STATE_.collapsed.delete(id);
+  ENGINE_saveCollapsed();
+  DOM_applyCollapseState(msgEl, bar, false, opts?.animate === true);
+  TITLE_INTENT_applyProjection(id, msgEl, bar, { animate: false });
+  const after = API_AT_inspectCollapseProjection(id);
+  return {
+    ...after,
+    status: after.actuallyExpanded ? 'expanded-converged' : 'expanded-residue',
+    converged: after.actuallyExpanded === true,
+  };
+}
+
 function API_AT_getConfig() {
   return UI_AT_readCfg();
 }
@@ -2399,6 +2530,8 @@ MOD_OBJ.api.public = Object.freeze({
   ensureBar: API_AT_ensureBar,
   buildDetachedBar: API_AT_buildDetachedBar,
   sync: API_AT_sync,
+  inspectCollapseProjection: API_AT_inspectCollapseProjection,
+  convergeExpandedProjection: API_AT_convergeExpandedProjection,
   getConfig: API_AT_getConfig,
   applySetting: API_AT_applySetting,
 });

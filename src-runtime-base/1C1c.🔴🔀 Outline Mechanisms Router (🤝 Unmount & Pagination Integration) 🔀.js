@@ -136,6 +136,11 @@
     return DIVIDER_DBLCLICK_MODES.has(raw) ? raw : 'pagination-focus-page';
   }
 
+  function normalizeOnOff(value, fallback = 'on') {
+    const raw = String(value || fallback || 'on').trim().toLowerCase();
+    return raw === 'off' ? 'off' : 'on';
+  }
+
   function normalizeCoordination(value) {
     const src = (value && typeof value === 'object') ? value : {};
     return {
@@ -154,6 +159,7 @@
       answerTitleDblClickMode: normalizeAnswerTitleMode(src.answerTitleDblClickMode, gestureBackend),
       dividerDotClickMode: normalizeDividerDotMode(src.dividerDotClickMode, gestureBackend),
       dividerDblClickMode: normalizeDividerMode(src.dividerDblClickMode),
+      chatPageDividerHoverInfoBox: normalizeOnOff(src.chatPageDividerHoverInfoBox, 'on'),
       coordination: normalizeCoordination(src.coordination),
     };
   }
@@ -409,19 +415,32 @@
     const owner = ctx.owner || {};
 
     if (cfg.dividerDblClickMode === 'pagination-focus-page') {
+      // Pagination-backed page collapse: double-click collapses/expands the
+      // CLICKED page to reduce chat weight. The page hosts stay in the
+      // document (hidden, not detached), so the shared turn runtime and the
+      // MiniMap keep representing the full chat, the divider stays visible as
+      // the restore handle, and the persisted collapsed-pages state is the
+      // single toggle truth (survives refresh with identical semantics).
+      // The Pagination Engine has no per-page collapse primitive today —
+      // windowing manages one active window, not arbitrary collapsed pages —
+      // so the Thread Pages Controller's page-collapse contract is the
+      // governing mechanism. An engine-owned per-page detach that reclaims
+      // memory without losing runtime/MiniMap records is a Phase 2 item.
+      // NOTE: this must never route into focusPage()/windowing (Phase 1F
+      // regression) and must never detach the clicked page's hosts
+      // (Phase 1E-and-earlier regression: divider and MiniMap boxes vanish).
       const nextCollapsed = !!ctx.nextCollapsed;
       try {
         const ownerResult = owner.setPageCollapsed?.(pageNum, nextCollapsed, {
           chatId,
           source: 'chat-page-divider:dblclick',
-          driver: 'engine',
-          mode: 'pagination',
+          driver: 'legacy',
         });
         if (ownerResult?.ok === false) {
           return {
             handled: false,
             backend: 'engine',
-            action: nextCollapsed ? 'collapse-page-pagination-owner-commit-failed' : 'expand-page-pagination-owner-commit-failed',
+            action: nextCollapsed ? 'collapse-page-lighten-owner-commit-failed' : 'expand-page-lighten-owner-commit-failed',
             reason: String(ownerResult?.status || 'owner-commit-failed'),
           };
         }
@@ -429,14 +448,14 @@
         return {
           handled: false,
           backend: 'engine',
-          action: nextCollapsed ? 'collapse-page-pagination-owner-commit-failed' : 'expand-page-pagination-owner-commit-failed',
+          action: nextCollapsed ? 'collapse-page-lighten-owner-commit-failed' : 'expand-page-lighten-owner-commit-failed',
           reason: 'owner-commit-threw',
         };
       }
       return {
         handled: true,
         backend: 'engine',
-        action: nextCollapsed ? 'collapse-page-pagination' : 'expand-page-pagination',
+        action: nextCollapsed ? 'collapse-page-lighten' : 'expand-page-lighten',
         reason: '',
       };
     }

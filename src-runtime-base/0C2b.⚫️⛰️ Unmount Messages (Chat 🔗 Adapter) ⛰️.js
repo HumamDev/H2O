@@ -1783,8 +1783,20 @@
     // Page/title-list visibility is owned by 1C1b. An engine/background
     // restore must not expose that wrapper; the explicit stacked-row open
     // path removes the ownership stamp before asking Unmount to restore.
+    // BUT we still drop OUR OWN hide marker (data-cgxui-at-hidden): the engine
+    // is expanding, so its marker must not linger. 1C1b never clears foreign
+    // markers, and the [data-cgxui-at-hidden] CSS force-collapses the node
+    // (height/opacity 0) even after 1C1b later releases its display:none — so
+    // leaving it set here stranded question turns invisible after circle/dot
+    // expand. Keep display:none to honor 1C1b's live page ownership; restore
+    // the marker only to whatever it was before THIS record hid it.
     if (CORE_UM_isExternallyPageHidden(el)) {
       try { el.style.setProperty('display', 'none', 'important'); } catch (_) { el.style.display = 'none'; }
+      if (snapshot?.atHiddenBefore) {
+        try { el.setAttribute('data-cgxui-at-hidden', '1'); } catch (_) {}
+      } else {
+        try { el.removeAttribute('data-cgxui-at-hidden'); } catch (_) {}
+      }
       return true;
     }
     const prev = String(snapshot?.displayBefore || '');
