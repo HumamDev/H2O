@@ -1087,10 +1087,68 @@
     },
   ]);
 
+  /* ── Native ChatGPT middle-page timestamp visibility (control only) ────────
+     The ENGINE (detector + hider + boot re-apply + observer) lives in the
+     always-on 1Z1a Answer Timestamp module, because THIS module (0Z1p) is
+     loader tier L5 — deferred until the Control Hub first opens — so an
+     engine here would never apply on plain reload (observed: rootHideAttr
+     null while the UI showed Hide). Here we keep only the control: it writes
+     the shared persisted key (source of truth, independent of load order)
+     and pokes the engine if it is already present. On reload the always-on
+     engine reads the same key and applies without needing this module. */
+  const KEY_NATIVE_TS_MODE_V1 = 'h2o:prm:cgx:cntrlhb:state:native-timestamps:v1';
+
+  function nativeTsEngine() {
+    try { return TOPW.H2O?.NativeTimestamps || W.H2O?.NativeTimestamps || null; } catch { return null; }
+  }
+
+  function getNativeTsMode() {
+    const eng = nativeTsEngine();
+    if (eng && typeof eng.getMode === 'function') {
+      try { return eng.getMode(); } catch {}
+    }
+    try {
+      const v = W.localStorage?.getItem(KEY_NATIVE_TS_MODE_V1);
+      return v === 'hide' ? 'hide' : 'show';
+    } catch { return 'show'; }
+  }
+
+  function setNativeTsMode(v) {
+    const mode = v === 'hide' ? 'hide' : 'show';
+    // Always persist here so the choice survives even if the engine module
+    // has not been injected yet; then let the engine apply if it exists.
+    try { W.localStorage?.setItem(KEY_NATIVE_TS_MODE_V1, mode); } catch {}
+    const eng = nativeTsEngine();
+    if (eng && typeof eng.setMode === 'function') {
+      try { eng.setMode(mode); } catch {}
+    } else if (eng && typeof eng.apply === 'function') {
+      try { eng.apply(); } catch {}
+    }
+    return mode;
+  }
+
+  const TIMESTAMPS_CONTROLS = Object.freeze([
+    {
+      type: 'select',
+      key: 'ifNativeTimestamps',
+      label: 'Show ChatGPT native middle timestamps',
+      group: 'Native ChatGPT',
+      help: 'Show or hide the timestamp markers the ChatGPT website renders inside the conversation. Cockpit Pro’s own answer timestamps are never affected.',
+      def: 'show',
+      opts: [
+        ['show', 'Show'],
+        ['hide', 'Hide'],
+      ],
+      getLive() { return getNativeTsMode(); },
+      setLive(v) { setNativeTsMode(v); },
+    },
+  ]);
+
   const CONTROLS_BY_KEY = Object.freeze({
     [FEATURE_KEY_CHAT_LIST]: CHAT_LIST_CONTROLS,
     [FEATURE_KEY_CHAT_META]: CHAT_META_CONTROLS,
     [FEATURE_KEY_CHAT_TITLE]: CHAT_TITLE_CONTROLS,
+    interfaceTimestamps: TIMESTAMPS_CONTROLS,
     titles: TITLES_CONTROLS,
     numbers: NUMBERS_CONTROLS,
   });
@@ -1103,6 +1161,10 @@
 
   const __doInit = () => {
     ensureDelayedAvailabilityTimer();
+
+    // Native-timestamp engine lives in always-on 1Z1a; poke it on hub-open so
+    // a mode chosen while the engine was mid-boot re-applies immediately.
+    try { nativeTsEngine()?.apply?.(); } catch {}
 
     H2O.Surface = H2O.Surface || {};
     H2O.Surface.InterfaceControls = Object.freeze({

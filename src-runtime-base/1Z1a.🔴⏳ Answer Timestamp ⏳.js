@@ -903,6 +903,227 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
     st.booted = false;
   }
 
+  /* ───────────────────────────── 8A) NATIVE CHATGPT TIMESTAMP HIDER ───────────────
+     Always-on engine (this module is @run-at document-idle, NOT loader-tier
+     deferred — unlike the L5 Control Hub plugin 0Z1p that only loads on hub
+     open). It hides the date/time SEPARATORS the ChatGPT website renders
+     between turns — e.g. "Thu, Nov 27 at 9:23 PM". Fully separate from the
+     H2O answer timestamps above; it NEVER hides them.
+
+     TOP-FRAME ONLY. The prior version registered the engine on the TOP
+     window's H2O but applied to the CURRENT frame's document. A child frame
+     that ran first claimed the registration and set the attribute on its own
+     (useless) <html>, so the top frame hit the idempotency return and never
+     marked the real top document — observed as { rootHideAttr: null,
+     nativeMarkedCount: 0 } with storage already 'hide'. The native separators
+     live in the top document's main#main, so we run only in the top frame and
+     operate on `document` directly.
+
+     Detection: the exact native shape — main div[role="separator"][aria-label]
+     — validated by the timestamp regex on aria-label/text, excluding H2O-owned
+     nodes, message bodies, and the composer. Hiding = one root attribute + one
+     static CSS rule against per-node marks (no inline style churn). The
+     observer is childList/subtree on <main>, debounced; attribute marks are
+     invisible to it, so it cannot self-feed.
+     Evidence + fallback: references/chatgpt-native-dom/local-captures/
+     2026-07-10-timestamp-topbar-inputbar-note.md */
+  (() => {
+    const NW = W;
+    if (NW !== (NW.top || NW)) return; // top frame only — kills the cross-frame race
+    const ND = document;
+    const NH2O = (NW.H2O = NW.H2O || {});
+    if (NH2O.NativeTimestamps) return; // idempotent within the top frame
+
+    const KEY = 'h2o:prm:cgx:cntrlhb:state:native-timestamps:v1';
+    const ROOT_ATTR = 'data-h2o-hide-native-ts';
+    const MARK_ATTR = 'data-h2o-native-ts';
+    const STYLE_ID = 'cgxui-native-ts-style';
+
+    // Weekday? + Month + Day (+ Year?) + [at] H:MM [AM/PM], or Today/Yesterday.
+    const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*';
+    const WD = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*';
+    const TIME = '\\d{1,2}:\\d{2}(?:\\s*[AP]M)?';
+    const RE_DATE = new RegExp(`^(?:${WD},?\\s+)?${MONTH}\\s+\\d{1,2}(?:,?\\s+\\d{4})?\\s+(?:at\\s+)?${TIME}$`, 'i');
+    const RE_REL = new RegExp(`^(?:Today|Yesterday)\\s+(?:at\\s+)?${TIME}$`, 'i');
+    const isTimestampText = (t) => {
+      const s = String(t || '').trim();
+      if (!s || s.length > 48) return false;
+      return RE_DATE.test(s) || RE_REL.test(s);
+    };
+
+    // H2O-owned timestamp / any cgxui-owned node → never touch.
+    const EXCL_OWNED = '[data-cgxui-owner], [data-cgxui], .cgxui-ats-ts, [data-cgxui="ats-stamp"], .chatgpt-timestamp';
+    // Real message content — dates inside answers must stay visible.
+    const EXCL_MSG = '[data-message-author-role], [data-message-id], [data-message-content], .markdown, article';
+    // Composer / input surfaces.
+    const EXCL_COMPOSER = 'form, #prompt-textarea, [data-type="unified-composer"]';
+
+    const excludeReason = (el) => {
+      try {
+        if (el.closest(EXCL_OWNED)) return 'h2o-owned';
+        if (el.closest(EXCL_MSG)) return 'message-body';
+        if (el.closest(EXCL_COMPOSER)) return 'composer';
+      } catch {}
+      return '';
+    };
+
+    // A native separator wrapper: role="separator" with an aria-label (or
+    // inner text) that reads as a timestamp. This is ChatGPT's exact shape
+    // (class "my-4 flex h-5 justify-center"). We validate the LABEL/TEXT so a
+    // non-timestamp separator (e.g. a rule) is never hidden.
+    const separatorTimestampText = (el) => {
+      const label = String(el.getAttribute('aria-label') || '').trim();
+      if (label && isTimestampText(label)) return label;
+      const txt = String(el.textContent || '').trim();
+      if (txt && isTimestampText(txt)) return txt;
+      return '';
+    };
+
+    let mo = null;
+    let scanTimer = 0;
+
+    const getMode = () => {
+      try { return NW.localStorage?.getItem(KEY) === 'hide' ? 'hide' : 'show'; } catch { return 'show'; }
+    };
+
+    const ensureStyle = () => {
+      if (ND.getElementById(STYLE_ID)) return;
+      try {
+        const style = ND.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `html[${ROOT_ATTR}="1"] [${MARK_ATTR}="1"]{ display:none !important; }`;
+        (ND.head || ND.documentElement).appendChild(style);
+      } catch {}
+    };
+
+    const scan = () => {
+      const mainEl = ND.querySelector('main') || ND.body;
+      if (!mainEl) return 0;
+      let marked = 0;
+      // Primary: the exact native separator shape.
+      let candidates = [];
+      try { candidates = Array.from(mainEl.querySelectorAll('div[role="separator"][aria-label]')); } catch {}
+      // Fallback: any role="separator" (aria-label may be dropped by ChatGPT).
+      if (!candidates.length) {
+        try { candidates = Array.from(mainEl.querySelectorAll('[role="separator"]')); } catch {}
+      }
+      for (const el of candidates) {
+        if (!el || el.getAttribute(MARK_ATTR) === '1') continue;
+        if (!separatorTimestampText(el)) continue;
+        if (excludeReason(el)) continue;
+        try { el.setAttribute(MARK_ATTR, '1'); marked += 1; } catch {}
+      }
+      return marked;
+    };
+
+    const unbindObserver = () => {
+      try { mo?.disconnect?.(); } catch {}
+      mo = null;
+      if (scanTimer) { try { NW.clearTimeout(scanTimer); } catch {} scanTimer = 0; }
+    };
+
+    const bindObserver = () => {
+      if (mo || typeof MutationObserver !== 'function') return;
+      const mainEl = ND.querySelector('main') || ND.body;
+      if (!mainEl) return;
+      mo = new MutationObserver(() => {
+        if (scanTimer) return;
+        scanTimer = NW.setTimeout(() => {
+          scanTimer = 0;
+          if (getMode() === 'hide') scan();
+        }, 400);
+      });
+      try { mo.observe(mainEl, { childList: true, subtree: true }); } catch {}
+    };
+
+    const apply = () => {
+      const hide = getMode() === 'hide';
+      if (hide) {
+        ensureStyle();
+        try { ND.documentElement.setAttribute(ROOT_ATTR, '1'); } catch {}
+        scan();
+        bindObserver();
+      } else {
+        try { ND.documentElement.removeAttribute(ROOT_ATTR); } catch {}
+        unbindObserver();
+      }
+      return hide ? 'hide' : 'show';
+    };
+
+    const setMode = (v) => {
+      const mode = v === 'hide' ? 'hide' : 'show';
+      try { NW.localStorage?.setItem(KEY, mode); } catch {}
+      return apply();
+    };
+
+    const snapshot = () => {
+      const marked = Array.from(ND.querySelectorAll(`[${MARK_ATTR}="1"]`));
+      let visible = 0;
+      let hidden = 0;
+      const samples = [];
+      for (const el of marked) {
+        let disp = '';
+        let vis = '';
+        let opacity = '';
+        let rect = null;
+        try {
+          const cs = NW.getComputedStyle(el);
+          disp = cs.display; vis = cs.visibility; opacity = cs.opacity;
+          const r = el.getBoundingClientRect();
+          rect = { top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width), height: Math.round(r.height) };
+        } catch {}
+        const isHidden = disp === 'none' || vis === 'hidden' || opacity === '0' || !rect || (rect.width === 0 && rect.height === 0);
+        if (isHidden) hidden += 1; else visible += 1;
+        if (samples.length < 8) {
+          samples.push({
+            text: String(el.textContent || '').trim().slice(0, 40),
+            ariaLabel: String(el.getAttribute('aria-label') || '').slice(0, 40),
+            tag: el.tagName,
+            role: el.getAttribute('role') || '',
+            className: String(el.className || '').slice(0, 60),
+            rect,
+            display: disp,
+            visibility: vis,
+            opacity,
+            closestTurnNull: !el.closest('[data-testid="conversation-turn"]'),
+            closestArticleNull: !el.closest('article'),
+            isH2oOwned: !!excludeReason(el),
+          });
+        }
+      }
+      let owned = 0;
+      try { owned = ND.querySelectorAll('.cgxui-ats-ts, [data-cgxui="ats-stamp"], [data-cgxui-owner="ats"]').length; } catch {}
+      let storage = null;
+      try { storage = NW.localStorage?.getItem(KEY) || null; } catch {}
+      return {
+        preference: getMode(),
+        storageNativeTimestamps: storage,
+        rootHideAttr: ND.documentElement.getAttribute(ROOT_ATTR),
+        nativeMarkedCount: marked.length,
+        nativeVisibleCount: visible,
+        nativeHiddenCount: hidden,
+        h2oOwnedTimestampCount: owned,
+        nativeSamples: samples,
+      };
+    };
+
+    NH2O.NativeTimestamps = Object.freeze({ getMode, setMode, apply, scan, snapshot });
+    try { NW.H2O_NATIVE_TS_DEBUG = NH2O.NativeTimestamps; } catch {}
+
+    // Boot: apply the persisted mode now (fully inert when 'show'), and
+    // re-apply on SPA navigation + settle passes (native separators mount
+    // after idle and after each conversation switch).
+    apply();
+    const reapply = () => { try { if (getMode() === 'hide') apply(); } catch {} };
+    try {
+      NW.addEventListener('popstate', reapply, { passive: true });
+      NW.addEventListener('hashchange', reapply, { passive: true });
+      NW.addEventListener('pageshow', reapply, { passive: true });
+    } catch {}
+    NW.setTimeout(reapply, 800);
+    NW.setTimeout(reapply, 2500);
+  })();
+
   /* ───────────────────────────── 9) MINIMAL BOOTSTRAP ───────────────────────────── */
 
   CORE_AT_boot();

@@ -36,6 +36,7 @@
   const FEATURE_KEY_CHAT_LIST = 'interfaceEnhancer';
   const FEATURE_KEY_CHAT_META = 'chatMeta';
   const FEATURE_KEY_CHAT_TITLE = 'chatTitle';
+  const FEATURE_KEY_TIMESTAMPS = 'interfaceTimestamps';
   const KEY_CHUB_INTERFACE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:interface:subtab:v1';
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
   const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
@@ -121,6 +122,18 @@
         focus: 'Check the current chat title, emoji, and storage backend.',
         review: 'Keep page title state separate from sidebar metadata and list decoration.',
         performance: 'Refresh title state without rebuilding unrelated interface helpers.',
+      }),
+    }),
+    Object.freeze({
+      key: FEATURE_KEY_TIMESTAMPS,
+      label: 'Timestamps',
+      icon: '⏳',
+      subtitle: 'Native ChatGPT conversation timestamps.',
+      description: Object.freeze({
+        default: 'Show or hide the timestamp markers the ChatGPT website renders inside conversations.',
+        focus: 'Hide native middle-page timestamps without touching Cockpit Pro answer timestamps.',
+        review: 'Native ChatGPT timestamps are controlled separately from H2O-owned answer timestamps.',
+        performance: 'Hiding uses one root attribute and a bounded scanner — no per-node style churn.',
       }),
     }),
   ]);
@@ -306,6 +319,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       [FEATURE_KEY_CHAT_LIST]: Object.freeze([]),
       [FEATURE_KEY_CHAT_META]: Object.freeze([]),
       [FEATURE_KEY_CHAT_TITLE]: Object.freeze([]),
+      [FEATURE_KEY_TIMESTAMPS]: Object.freeze([]),
       titles: Object.freeze([]),
       numbers: Object.freeze([]),
     }),
@@ -394,6 +408,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       key: FEATURE_KEY_CHAT_TITLE,
       getControls() {
         return getInterfaceControlsBundle().controlsByKey[FEATURE_KEY_CHAT_TITLE] || [];
+      },
+    });
+    api.registerPlugin({
+      key: FEATURE_KEY_TIMESTAMPS,
+      getControls() {
+        return getInterfaceControlsBundle().controlsByKey[FEATURE_KEY_TIMESTAMPS] || [];
       },
     });
     const bundle = getInterfaceControlsBundle();
