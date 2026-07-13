@@ -114,6 +114,7 @@
   const EVT_MSG_REMOUNTED_ALIAS = 'h2o:message:remounted';
   const EVT_MSG_MOUNT_REQUEST = 'h2o:message:mount:request';
   const EVT_ARCHIVE_SCROLL_TO_COLD = 'evt:h2o:archive:scroll-to-cold';
+  const EVT_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
 
   const BOOT_MAX_TRIES = 80;
   const BOOT_GAP_MS = 120;
@@ -144,6 +145,11 @@
     failsafeTimer: null,
     paginationCheckFastTimer: null,
     paginationCheckSlowTimer: null,
+    moCooldownDeferredTimer: null,
+    identityDriftTrailingTimer: null,
+    identityDriftRecoveryVersion: 0,
+    identityDriftRecoverySignature: '',
+    identityDriftTrailingRetriedSignature: '',
 
     offScroll: null,
     offResize: null,
@@ -157,6 +163,7 @@
     offIndexHydrated: null,
     offViewChanged: null,
     offShellNoButtons: null,
+    offCoreTurnUpdated: null,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -298,6 +305,31 @@
     });
   }
 
+  function createAutomaticRefreshPerfState() {
+    return {
+      coreTurnUpdatedTriggerCount: 0,
+      coreTurnUpdatedRebuildCount: 0,
+      coreTurnUpdatedDedupedCount: 0,
+      cooldownDeferredCount: 0,
+      cooldownDeferredRebuildCount: 0,
+      identityDriftDetectedCount: 0,
+      identityDriftRebuildCount: 0,
+      identityDriftTrailingCheckCount: 0,
+      identityDriftPersistentCount: 0,
+      lastCoreTurnUpdatedVersion: 0,
+      lastCoreTurnUpdatedTotal: 0,
+      lastCoreTurnListTotal: 0,
+      lastRenderedMiniMapTotal: 0,
+      lastCoreTurnUpdatedAt: 0,
+      lastCooldownDeferredReason: '',
+      lastCooldownDeferredAt: 0,
+      lastIdentityDriftAt: 0,
+      lastIdentityDriftVersion: 0,
+      lastIdentityDriftTurnNos: [],
+      lastIdentityDriftSignature: '',
+    };
+  }
+
   function createMiniMapEnginePerfState() {
     return {
       bootCompletedAt: 0,
@@ -354,6 +386,7 @@
         successCount: 0,
         duration: createDurationBucket(),
       },
+      automaticRefresh: createAutomaticRefreshPerfState(),
       pointerDown: createPointerDownPerfState(),
     };
   }
@@ -364,6 +397,9 @@
     if (!target.pointerDown.targetType || typeof target.pointerDown.targetType !== 'object') target.pointerDown.targetType = Object.create(null);
     if (!target.pointerDown.actionType || typeof target.pointerDown.actionType !== 'object') target.pointerDown.actionType = Object.create(null);
     if (!target.pointerDown.branches || typeof target.pointerDown.branches !== 'object') target.pointerDown.branches = Object.create(null);
+    if (!target.automaticRefresh || typeof target.automaticRefresh !== 'object') {
+      target.automaticRefresh = createAutomaticRefreshPerfState();
+    }
     return target;
   }
 
@@ -528,6 +564,7 @@
       successCount: 0,
       duration: createDurationBucket(),
     };
+    target.automaticRefresh = createAutomaticRefreshPerfState();
     target.pointerDown = createPointerDownPerfState();
     return target;
   }
@@ -540,6 +577,7 @@
     const rebuildBucket = PERF.rebuild || {};
     const recoveryBucket = PERF.structureRecovery || {};
     const refreshBucket = PERF.refreshFromIndexedState || {};
+    const automaticRefresh = PERF.automaticRefresh || {};
     const pointerDownBucket = PERF.pointerDown || {};
     return {
       bootCompletedAt: Number(PERF.bootCompletedAt || 0),
@@ -594,6 +632,30 @@
         callCount: Number(refreshBucket.callCount || 0),
         successCount: Number(refreshBucket.successCount || 0),
       }, readDurationBucket(refreshBucket.duration)),
+      automaticRefresh: {
+        coreTurnUpdatedTriggerCount: Number(automaticRefresh.coreTurnUpdatedTriggerCount || 0),
+        coreTurnUpdatedRebuildCount: Number(automaticRefresh.coreTurnUpdatedRebuildCount || 0),
+        coreTurnUpdatedDedupedCount: Number(automaticRefresh.coreTurnUpdatedDedupedCount || 0),
+        cooldownDeferredCount: Number(automaticRefresh.cooldownDeferredCount || 0),
+        cooldownDeferredRebuildCount: Number(automaticRefresh.cooldownDeferredRebuildCount || 0),
+        identityDriftDetectedCount: Number(automaticRefresh.identityDriftDetectedCount || 0),
+        identityDriftRebuildCount: Number(automaticRefresh.identityDriftRebuildCount || 0),
+        identityDriftTrailingCheckCount: Number(automaticRefresh.identityDriftTrailingCheckCount || 0),
+        identityDriftPersistentCount: Number(automaticRefresh.identityDriftPersistentCount || 0),
+        lastCoreTurnUpdatedVersion: Number(automaticRefresh.lastCoreTurnUpdatedVersion || 0),
+        lastCoreTurnUpdatedTotal: Number(automaticRefresh.lastCoreTurnUpdatedTotal || 0),
+        lastCoreTurnListTotal: Number(automaticRefresh.lastCoreTurnListTotal || 0),
+        lastRenderedMiniMapTotal: Number(automaticRefresh.lastRenderedMiniMapTotal || 0),
+        lastCoreTurnUpdatedAt: Number(automaticRefresh.lastCoreTurnUpdatedAt || 0),
+        lastCooldownDeferredReason: String(automaticRefresh.lastCooldownDeferredReason || ''),
+        lastCooldownDeferredAt: Number(automaticRefresh.lastCooldownDeferredAt || 0),
+        lastIdentityDriftAt: Number(automaticRefresh.lastIdentityDriftAt || 0),
+        lastIdentityDriftVersion: Number(automaticRefresh.lastIdentityDriftVersion || 0),
+        lastIdentityDriftTurnNos: Array.isArray(automaticRefresh.lastIdentityDriftTurnNos)
+          ? automaticRefresh.lastIdentityDriftTurnNos.slice(0, 12)
+          : [],
+        lastIdentityDriftSignature: String(automaticRefresh.lastIdentityDriftSignature || ''),
+      },
       pointerDown: Object.assign(readDurationBucket(pointerDownBucket), {
         beforeBootCount: Number(pointerDownBucket.beforeBootCount || 0),
         afterBootCount: Number(pointerDownBucket.afterBootCount || 0),
@@ -1427,6 +1489,13 @@
       }
     }
 
+    // ChatGPT-native virtualization: no H2O engine owns the absence, so jump
+    // the scroller near the turn's stable position to force hydration, then
+    // let the wait loop resolve the real element.
+    if (!MINI_resolveTargetElement(next, surface) && MINI_estimateScrollToTurn(next)) {
+      next.estimatedScroll = true;
+    }
+
     return next;
   }
 
@@ -1503,14 +1572,97 @@
     return true;
   }
 
+  // A target that lives inside an H2O-collapsed (page-hidden) page resolves
+  // to a display:none element; navigation then goes to that page's divider —
+  // the visible restore handle — instead of scrolling to a zero-rect node or
+  // failing silently. Navigation only: this never changes chat collapse state.
+  function MINI_hiddenPageHandleForElement(el) {
+    if (!el?.closest) return null;
+    const hiddenHost = el.closest('[data-cgxui-chat-page-hidden="1"]');
+    if (!hiddenHost) return null;
+    const pageNum = Math.max(0, Number(hiddenHost.getAttribute?.('data-cgxui-chat-page-num') || 0) || 0);
+    if (!pageNum) return null;
+    const esc = (window.CSS?.escape) ? CSS.escape(String(pageNum)) : String(pageNum);
+    return q(`.cgxui-chat-page-divider[data-page-num="${esc}"]`)
+      || q(`.cgxui-pgnw-page-divider[data-page-num="${esc}"]`)
+      || null;
+  }
+
+  function MINI_resolveCollapsedPageHandle(ctx, surface = 'answer') {
+    const target = MINI_getCanonicalTargetCtx(ctx, surface);
+    const raw = findAnswerById(target.answerId || target.canonicalId || '')
+      || findTurnHostById(target.turnId || target.canonicalId || '');
+    return raw ? MINI_hiddenPageHandleForElement(raw) : null;
+  }
+
+  // ChatGPT virtualizes far-away turn sections out of the document, so an
+  // absent target may simply not be rendered yet. Jump the conversation
+  // scroller near the turn's proportional position (stable durable index /
+  // total) to make the host hydrate that region; the caller then re-resolves.
+  function MINI_estimateScrollToTurn(ctx) {
+    const turn = ctx?.turn || null;
+    const index = Math.max(0, Number(turn?.index || ctx?.btnEl?.dataset?.turnIdx || 0) || 0);
+    let total = 0;
+    try { total = Number(getCoreSurface()?.getTurnList?.()?.length || 0) || 0; } catch {}
+    if (!index || !total || total < 2) return false;
+
+    const anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    if (!anyTurn) return false;
+    let scroller = null;
+    let cur = anyTurn.parentElement;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      try {
+        const cs = getComputedStyle(cur);
+        const oy = String(cs?.overflowY || '');
+        if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && cur.scrollHeight > cur.clientHeight + 4) {
+          scroller = cur;
+          break;
+        }
+      } catch {}
+      cur = cur.parentElement;
+    }
+
+    const fraction = Math.min(1, Math.max(0, (index - 0.5) / total));
+    try {
+      if (scroller) {
+        scroller.scrollTo({ top: Math.floor(fraction * Math.max(0, scroller.scrollHeight - scroller.clientHeight)), behavior: 'auto' });
+        return true;
+      }
+      window.scrollTo({ top: Math.floor(fraction * Math.max(0, document.documentElement.scrollHeight - window.innerHeight)), behavior: 'auto' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function MINI_navigateTurnTarget(ctx, surface = 'answer') {
     const immediateCtx = MINI_getCanonicalTargetCtx(ctx, surface);
     const immediate = MINI_resolveTargetElement(immediateCtx, surface);
-    if (immediate) return Promise.resolve({ ctx: immediateCtx, target: immediate, materialized: false });
+    if (immediate) {
+      const immediateHandle = MINI_hiddenPageHandleForElement(immediate);
+      if (immediateHandle) {
+        return Promise.resolve({ ctx: immediateCtx, target: immediateHandle, materialized: false, handle: true });
+      }
+      return Promise.resolve({ ctx: immediateCtx, target: immediate, materialized: false });
+    }
+
+    const collapsedHandle = MINI_resolveCollapsedPageHandle(immediateCtx, surface);
+    if (collapsedHandle) {
+      return Promise.resolve({ ctx: immediateCtx, target: collapsedHandle, materialized: false, handle: true });
+    }
 
     return MINI_materializeTarget(immediateCtx, surface).then(async (materializedCtx) => {
-      const waitMs = isVirtualizedConversation() ? 1600 : 480;
+      const waitMs = (isVirtualizedConversation() || materializedCtx?.estimatedScroll) ? 1600 : 480;
       const target = await MINI_waitForResolvedTarget(materializedCtx, surface, waitMs);
+      if (!target) {
+        const handle = MINI_resolveCollapsedPageHandle(materializedCtx, surface);
+        if (handle) return { ctx: materializedCtx, target: handle, materialized: true, handle: true };
+        derr('turn:navigate:unresolved', {
+          surface,
+          id: String(materializedCtx?.canonicalId || materializedCtx?.answerId || materializedCtx?.turnId || ''),
+          estimatedScroll: !!materializedCtx?.estimatedScroll,
+        });
+      }
       return { ctx: materializedCtx, target, materialized: true };
     });
   }
@@ -1977,8 +2129,17 @@
       answer: (ctx) => {
         if (!ctx?.id) return false;
         MM.program = true;
-        MINI_navigateTurnTarget(ctx, 'answer').then(({ ctx: nextCtx, target }) => {
-          if (!target) return;
+        MINI_navigateTurnTarget(ctx, 'answer').then(({ ctx: nextCtx, target, handle }) => {
+          if (!target) {
+            derr('turn:answer:navigate:no-target', { id: String(ctx?.id || '') });
+            return;
+          }
+          if (handle) {
+            // Target page is collapsed: bring its divider (restore handle)
+            // into view. Navigation only — chat collapse state is untouched.
+            scrollPageToTarget(target, true, 'center');
+            return;
+          }
           MINI_scrollToResolvedTarget(target, nextCtx, 'answer');
         }).catch((e) => {
           derr('turn:answer:navigate', e);
@@ -1990,8 +2151,15 @@
       question: (ctx) => {
         if (!ctx?.id) return false;
         MM.program = true;
-        MINI_navigateTurnTarget(ctx, 'question').then(({ ctx: nextCtx, target }) => {
-          if (!target) return;
+        MINI_navigateTurnTarget(ctx, 'question').then(({ ctx: nextCtx, target, handle }) => {
+          if (!target) {
+            derr('turn:question:navigate:no-target', { id: String(ctx?.id || '') });
+            return;
+          }
+          if (handle) {
+            scrollPageToTarget(target, true, 'center');
+            return;
+          }
           MINI_scrollToResolvedTarget(target, nextCtx, 'question');
         }).catch((e) => {
           derr('turn:question:navigate', e);
@@ -2712,6 +2880,334 @@
     try { return !!core.scheduleRebuild?.(S.rebuildReason); } catch { return false; }
   }
 
+  function readMiniMapStructureCounts() {
+    let turnList = [];
+    let turnListTotal = 0;
+    try {
+      turnList = MM_core()?.getTurnList?.() || [];
+      turnListTotal = Array.isArray(turnList) ? turnList.length : 0;
+    } catch {}
+
+    let renderedTotal = 0;
+    const scope = minimapCol() || minimapPanel() || null;
+    try {
+      renderedTotal = Number((scope || document).querySelectorAll(mmBtnSelector()).length || 0);
+    } catch {}
+    let hydratedAnswerTotal = 0;
+    let firstVisibleIdentityMatches = true;
+    try {
+      const hydratedAnswers = Array.from(document.querySelectorAll(answersSelector()));
+      hydratedAnswerTotal = hydratedAnswers.length;
+      const firstId = String(
+        hydratedAnswers[0]?.getAttribute?.('data-message-id')
+        || hydratedAnswers[0]?.dataset?.messageId
+        || '',
+      ).trim();
+      if (firstId) {
+        firstVisibleIdentityMatches = turnList.some((turn) => {
+          const id = String(turn?.answerId || turn?.primaryAId || turn?.aId || turn?.id || '')
+            .replace(/^turn:/, '');
+          return id === firstId;
+        });
+      }
+    } catch {}
+    return {
+      turnListTotal,
+      renderedTotal,
+      hydratedAnswerTotal,
+      firstVisibleIdentityMatches,
+    };
+  }
+
+  function readMiniMapIdentityAlignment() {
+    let records = [];
+    try {
+      const list = W?.H2O?.turnRuntime?.listTurnRecords;
+      if (typeof list !== 'function') {
+        return { available: false, missing: false, reason: 'canonical-records-unavailable', drifts: [] };
+      }
+      records = list().slice().sort((a, b) => {
+        return Number(a?.turnNo || a?.idx || 0) - Number(b?.turnNo || b?.idx || 0);
+      });
+    } catch {
+      return { available: false, missing: false, reason: 'canonical-records-read-failed', drifts: [] };
+    }
+
+    const scope = minimapCol() || minimapPanel() || null;
+    if (!scope?.querySelectorAll) {
+      return { available: false, missing: false, reason: 'minimap-root-unavailable', drifts: [] };
+    }
+
+    let buttons = [];
+    try {
+      buttons = Array.from(scope.querySelectorAll('[data-cgxui="mnmp-btn"], [data-cgxui="mm-btn"]'));
+    } catch {
+      return { available: false, missing: false, reason: 'minimap-buttons-read-failed', drifts: [] };
+    }
+
+    const buttonsByTurnNo = new Map();
+    for (const btn of buttons) {
+      const turnNo = Math.max(0, Number(btn?.dataset?.turnIdx || 0) || 0);
+      if (!turnNo) continue;
+      const bucket = buttonsByTurnNo.get(turnNo) || [];
+      bucket.push(btn);
+      buttonsByTurnNo.set(turnNo, bucket);
+    }
+
+    const core = MM_core();
+    const drifts = [];
+    for (const record of records) {
+      const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+      if (!turnNo) continue;
+      const candidates = buttonsByTurnNo.get(turnNo) || [];
+      let btn = null;
+      try {
+        btn = core?.getBtnById?.(record?.turnId || record?.qId || '') || null;
+      } catch {}
+      if (!btn?.isConnected || !scope.contains(btn)) btn = candidates.length === 1 ? candidates[0] : null;
+
+      const expectedTurnId = normalizeNavId(record?.turnId || '');
+      const expectedQuestionId = normalizeNavId(record?.qId || '');
+      const expectedPrimaryAId = normalizeNavId(record?.primaryAId || '');
+      const answerIds = Array.isArray(record?.answerIds) ? record.answerIds : [];
+      const noAnswer = record?.noAnswer === true
+        || (!expectedPrimaryAId && answerIds.length === 0);
+      const reasons = [];
+      let actualTurnId = '';
+      let actualQuestionId = '';
+      let actualPrimaryAId = '';
+
+      if (!btn) {
+        reasons.push(candidates.length > 1 ? 'duplicate-turn-buttons' : 'button-missing');
+      } else {
+        const wrap = btn.closest?.('[data-cgxui="mnmp-wrap"], [data-cgxui="mm-wrap"], .cgxui-mm-wrap') || null;
+        const qBtn = wrap?.querySelector?.('[data-cgxui="mnmp-qbtn"], [data-cgxui="mm-qbtn"]') || null;
+        const actualTurnNo = Math.max(0, Number(btn.dataset?.turnIdx || wrap?.dataset?.turnIdx || 0) || 0);
+        actualTurnId = normalizeNavId(btn.dataset?.turnId || wrap?.dataset?.turnId || '');
+        actualQuestionId = normalizeNavId(
+          btn.dataset?.questionId || wrap?.dataset?.questionId || qBtn?.dataset?.questionId || '',
+        );
+        actualPrimaryAId = normalizeNavId(btn.dataset?.primaryAId || '');
+
+        if (actualTurnNo !== turnNo) reasons.push('turn-no-mismatch');
+        if (expectedTurnId && actualTurnId !== expectedTurnId) reasons.push('turn-key-mismatch');
+        if (expectedQuestionId && actualQuestionId !== expectedQuestionId) reasons.push('question-id-mismatch');
+        if (expectedPrimaryAId) {
+          if (actualPrimaryAId !== expectedPrimaryAId) reasons.push('primary-id-mismatch');
+        } else if (noAnswer && actualPrimaryAId) {
+          reasons.push('no-answer-primary-present');
+        }
+      }
+
+      if (reasons.length) {
+        drifts.push({
+          turnNo,
+          expectedTurnId,
+          actualTurnId,
+          expectedQuestionId,
+          actualQuestionId,
+          expectedPrimaryAId,
+          actualPrimaryAId,
+          reasons,
+        });
+      }
+    }
+
+    return {
+      available: true,
+      missing: drifts.length > 0,
+      reason: drifts.length ? 'identity-drift' : '',
+      canonicalCount: records.length,
+      renderedCount: buttons.length,
+      drifts,
+    };
+  }
+
+  function buildMiniMapIdentityDriftSignature(version, alignment) {
+    const rows = Array.isArray(alignment?.drifts) ? alignment.drifts.slice(0, 12) : [];
+    const body = rows.map((row) => {
+      return [
+        Number(row?.turnNo || 0),
+        String(row?.expectedPrimaryAId || ''),
+        String(row?.actualPrimaryAId || ''),
+        Array.isArray(row?.reasons) ? row.reasons.join('.') : '',
+      ].join(':');
+    }).join('|');
+    return `${Math.max(0, Number(version || 0) || 0)}:${Number(alignment?.drifts?.length || 0)}:${body}`
+      .slice(0, 640);
+  }
+
+  function noteMiniMapIdentityDrift(version, alignment) {
+    const perfBucket = PERF.automaticRefresh;
+    const signature = buildMiniMapIdentityDriftSignature(version, alignment);
+    perfBucket.lastIdentityDriftAt = Date.now();
+    perfBucket.lastIdentityDriftVersion = Math.max(0, Number(version || 0) || 0);
+    perfBucket.lastIdentityDriftTurnNos = Array.from(new Set(
+      (alignment?.drifts || []).map((row) => Number(row?.turnNo || 0)).filter(Boolean),
+    )).slice(0, 12);
+    perfBucket.lastIdentityDriftSignature = signature;
+    return signature;
+  }
+
+  function scheduleIdentityDriftTrailingCheck(version, signature) {
+    const nextVersion = Math.max(0, Number(version || 0) || 0);
+    const nextSignature = String(signature || '');
+    if (nextSignature !== S.identityDriftRecoverySignature) {
+      S.identityDriftTrailingRetriedSignature = '';
+    }
+    S.identityDriftRecoveryVersion = nextVersion;
+    S.identityDriftRecoverySignature = nextSignature;
+
+    const run = () => {
+      S.identityDriftTrailingTimer = null;
+      if (!S.running) return;
+      const perfBucket = PERF.automaticRefresh;
+      perfBucket.identityDriftTrailingCheckCount = Number(perfBucket.identityDriftTrailingCheckCount || 0) + 1;
+      let alignment = null;
+      try { alignment = readMiniMapIdentityAlignment(); } catch {}
+      if (!alignment?.available || !alignment.missing) {
+        S.identityDriftRecoverySignature = '';
+        S.identityDriftTrailingRetriedSignature = '';
+        return;
+      }
+
+      const currentVersion = Math.max(0, Number(
+        W?.H2O?.turn?.version?.()
+        || perfBucket.lastCoreTurnUpdatedVersion
+        || S.identityDriftRecoveryVersion
+        || 0,
+      ) || 0);
+      const currentSignature = noteMiniMapIdentityDrift(currentVersion, alignment);
+      perfBucket.identityDriftPersistentCount = Number(perfBucket.identityDriftPersistentCount || 0) + 1;
+      if (currentSignature === S.identityDriftTrailingRetriedSignature) return;
+      S.identityDriftTrailingRetriedSignature = currentSignature;
+      const scheduled = scheduleRebuild('core:turn-updated:identity-drift:trailing');
+      if (scheduled) {
+        perfBucket.identityDriftRebuildCount = Number(perfBucket.identityDriftRebuildCount || 0) + 1;
+      }
+    };
+
+    const delay = MO_REBUILD_COOLDOWN_MS + 40;
+    const schedule = MM_schedule();
+    if (schedule && typeof schedule.timeoutOnce === 'function') {
+      S.identityDriftTrailingTimer = schedule.timeoutOnce('minimap:identity-drift-trailing', delay, run);
+      return true;
+    }
+    if (S.identityDriftTrailingTimer) return true;
+    S.identityDriftTrailingTimer = setTimeout(run, delay);
+    return true;
+  }
+
+  function onCoreTurnUpdated(detail = {}) {
+    if (!S.running) return false;
+    const perfBucket = PERF.automaticRefresh;
+    const version = Math.max(0, Number(detail?.version || 0) || 0);
+    const turnTotal = Math.max(0, Number(detail?.turnTotal || 0) || 0);
+    if (version > 0
+      && version === Number(perfBucket.lastCoreTurnUpdatedVersion || 0)
+      && turnTotal === Number(perfBucket.lastCoreTurnUpdatedTotal || 0)) {
+      perfBucket.coreTurnUpdatedDedupedCount = Number(perfBucket.coreTurnUpdatedDedupedCount || 0) + 1;
+      return false;
+    }
+
+    perfBucket.coreTurnUpdatedTriggerCount = Number(perfBucket.coreTurnUpdatedTriggerCount || 0) + 1;
+    perfBucket.lastCoreTurnUpdatedVersion = version;
+    perfBucket.lastCoreTurnUpdatedTotal = turnTotal;
+    perfBucket.lastCoreTurnUpdatedAt = Date.now();
+
+    const {
+      turnListTotal,
+      renderedTotal,
+      hydratedAnswerTotal,
+      firstVisibleIdentityMatches,
+    } = readMiniMapStructureCounts();
+    perfBucket.lastCoreTurnListTotal = turnListTotal;
+    perfBucket.lastRenderedMiniMapTotal = renderedTotal;
+
+    let identityAlignment = null;
+    try { identityAlignment = readMiniMapIdentityAlignment(); } catch {}
+    if (identityAlignment?.available && identityAlignment.missing) {
+      perfBucket.identityDriftDetectedCount = Number(perfBucket.identityDriftDetectedCount || 0) + 1;
+      const signature = noteMiniMapIdentityDrift(version, identityAlignment);
+      const scheduled = scheduleRebuild('core:turn-updated:identity-drift');
+      if (scheduled) {
+        perfBucket.identityDriftRebuildCount = Number(perfBucket.identityDriftRebuildCount || 0) + 1;
+      }
+      scheduleIdentityDriftTrailingCheck(version, signature);
+      return scheduled;
+    }
+
+    let missing = false;
+    try { missing = buildMissing(); } catch {}
+    const settledCountsAgree = turnTotal === turnListTotal
+      && turnListTotal === renderedTotal;
+    const hydrationOnlyCountDifference = settledCountsAgree
+      && firstVisibleIdentityMatches
+      && hydratedAnswerTotal > 0
+      && hydratedAnswerTotal !== turnListTotal;
+    if (!settledCountsAgree || (missing && !hydrationOnlyCountDifference)) {
+      const scheduled = scheduleRebuild('core:turn-updated');
+      if (scheduled) {
+        perfBucket.coreTurnUpdatedRebuildCount = Number(perfBucket.coreTurnUpdatedRebuildCount || 0) + 1;
+      }
+      return scheduled;
+    }
+    return false;
+  }
+
+  function scheduleMoCooldownTrailingCheck(reason = 'mo:answers') {
+    const perfBucket = PERF.automaticRefresh;
+    const why = String(reason || 'mo:answers');
+    perfBucket.cooldownDeferredCount = Number(perfBucket.cooldownDeferredCount || 0) + 1;
+    perfBucket.lastCooldownDeferredReason = why;
+    perfBucket.lastCooldownDeferredAt = Date.now();
+
+    const run = () => {
+      S.moCooldownDeferredTimer = null;
+      if (!S.running) return;
+      const remaining = Number(S.moRebuildCooldownUntil || 0) - Date.now();
+      if (remaining > 0) {
+        arm(remaining + 8);
+        return;
+      }
+      let needsRebuild = false;
+      try {
+        const counts = readMiniMapStructureCounts();
+        const publishedTotal = Number(perfBucket.lastCoreTurnUpdatedTotal || 0);
+        const publishedCountMismatch = publishedTotal > 0
+          && (publishedTotal !== counts.turnListTotal || publishedTotal !== counts.renderedTotal);
+        const hydrationOnlyCountDifference = counts.turnListTotal > 0
+          && counts.turnListTotal === counts.renderedTotal
+          && (!publishedTotal || publishedTotal === counts.turnListTotal)
+          && counts.firstVisibleIdentityMatches
+          && counts.hydratedAnswerTotal > 0
+          && counts.hydratedAnswerTotal !== counts.turnListTotal;
+        needsRebuild = publishedCountMismatch
+          || (buildMissing() && !hydrationOnlyCountDifference)
+          || paginationCoverageNeedsRebuild(`${why}:cooldown-trailing`);
+      } catch {}
+      if (!needsRebuild) return;
+      S.moRebuildCooldownUntil = Date.now() + MO_REBUILD_COOLDOWN_MS;
+      const scheduled = scheduleRebuild(`${why}:cooldown-trailing`);
+      if (scheduled) {
+        perfBucket.cooldownDeferredRebuildCount = Number(perfBucket.cooldownDeferredRebuildCount || 0) + 1;
+      }
+    };
+    const arm = (delayMs) => {
+      const delay = Math.max(0, Number(delayMs || 0) || 0);
+      const schedule = MM_schedule();
+      if (schedule && typeof schedule.timeoutOnce === 'function') {
+        S.moCooldownDeferredTimer = schedule.timeoutOnce('minimap:mo-cooldown-trailing', delay, run);
+        return true;
+      }
+      if (S.moCooldownDeferredTimer) return true;
+      S.moCooldownDeferredTimer = setTimeout(run, delay);
+      return true;
+    };
+
+    return arm(Math.max(0, Number(S.moRebuildCooldownUntil || 0) - Date.now()) + 8);
+  }
+
   function onTurnChange(cb) {
     if (typeof cb !== 'function') return () => {};
     S.turnListeners.add(cb);
@@ -2811,6 +3307,8 @@
     clearTimer('pageJumpTimer');
     cancelScheduledTask('minimap:pagination-check:fast', 'paginationCheckFastTimer');
     cancelScheduledTask('minimap:pagination-check:slow', 'paginationCheckSlowTimer');
+    cancelScheduledTask('minimap:mo-cooldown-trailing', 'moCooldownDeferredTimer');
+    cancelScheduledTask('minimap:identity-drift-trailing', 'identityDriftTrailingTimer');
     cancelScheduledTask('minimap:sync-active', 'syncRAF', 'raf');
     try { MM_schedule()?.cancel?.('minimap:structure-recovery'); } catch {}
     S.syncQueued = false;
@@ -2841,6 +3339,7 @@
     try { S.offIndexHydrated?.(); } catch {}
     try { S.offViewChanged?.(); } catch {}
     try { S.offShellNoButtons?.(); } catch {}
+    try { S.offCoreTurnUpdated?.(); } catch {}
     S.offScroll = null;
     S.offResize = null;
     S.offShellReady = null;
@@ -2853,6 +3352,7 @@
     S.offIndexHydrated = null;
     S.offViewChanged = null;
     S.offShellNoButtons = null;
+    S.offCoreTurnUpdated = null;
 
     S.running = false;
     S.scrollSyncDisabled = false;
@@ -2862,6 +3362,9 @@
     S.lastActiveBtnEl = null;
     S.lastActiveBtnId = '';
     S.moRebuildCooldownUntil = 0;
+    S.identityDriftRecoveryVersion = 0;
+    S.identityDriftRecoverySignature = '';
+    S.identityDriftTrailingRetriedSignature = '';
     markReady(false);
     dlog('engine:stop', { reason });
     return true;
@@ -3083,6 +3586,8 @@
           if (now >= Number(S.moRebuildCooldownUntil || 0)) {
             S.moRebuildCooldownUntil = now + MO_REBUILD_COOLDOWN_MS;
             scheduleRebuild('mo:answers');
+          } else {
+            scheduleMoCooldownTrailingCheck('mo:answers');
           }
         }
       });
@@ -3112,6 +3617,11 @@
         if (!buildMissing()) return;
         const why = String(e?.detail?.reason || 'shell:no-buttons').trim() || 'shell:no-buttons';
         scheduleStructureRecoveryCheck(`shell:no-buttons:${why}`);
+      }, { passive: true });
+    }
+    if (!S.offCoreTurnUpdated) {
+      S.offCoreTurnUpdated = on(window, EVT_CORE_TURN_UPDATED, (event) => {
+        onCoreTurnUpdated(event?.detail || {});
       }, { passive: true });
     }
     bindMiniMapScrollGuards();
