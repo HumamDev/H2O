@@ -1,7 +1,9 @@
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -43,6 +45,37 @@ const W34B3_R3A_BINDING_MISMATCH_DIAGNOSTIC_COMMIT: &str =
     "d57fefebe66537ecbeac9ecf9ba56cf02f1b21dd";
 const W34B3_R4_NO_WRITE_CLOSEOUT_COMMIT: &str = "f08f9b0f750e6d863a32c5de8f1edbe97955d0c1";
 const W35B_PARENT_PROPFIND_FIX_COMMIT: &str = "305ff023ad12f14b6a9b505dab4123cf44c7cfba";
+const R6_RECEIPT_SCHEMA_VERSION: &str = "h2o.r6.write-grade-receipt.v1";
+const R6_APPROVAL_SCHEMA_VERSION: &str = "h2o.r6.approval.v1";
+const R6_RECEIPT_HASH_DOMAIN: &[u8] = b"h2o.r6.write-grade-receipt-core.v1\n";
+const R6_APPROVAL_HASH_DOMAIN: &[u8] = b"h2o.r6.approval-core.v1\n";
+const R6_CEREMONY_POLICY_IDENTIFIER: &str = "h2o.r6.sacrificial-webdav-four-step.v1";
+const R6_DESCENDANT_AUTHORIZATION_DESCRIPTOR: &str =
+    "h2o.r6.constrained-descendant-authorization.v1";
+const R6_CONSUMED_MARKER_SCHEMA_VERSION: &str = "h2o.sync.real-transport.r6-consumed-marker.v1";
+const R6_E6_COMMIT: &str = "6cb091c75c49191f2e8e751847c347d11b3fa0a6";
+const R6_E6_PARENT_COMMIT: &str = "cab9bbecaf9612208af6ab33afe446407b7b58d3";
+const R6_E6_EVIDENCE_SHA256: &str =
+    "sha256:049f19915ea16c6bee606813de59cfc14ee6396f6ade4c35d802be52ae44a134";
+const R6_E6_RUNTIME_STDOUT_SHA256: &str =
+    "sha256:181e81594a1f31e27c413a17d40ae1475f648f2b18d68516ad4ccfbc6fbca4d6";
+const R6_GATED_EXECUTOR_COMMIT: &str = "3048ab2dba3f4cbff4ec199dbb36093975659b52";
+const R6_CANONICAL_BINDING_FIX_COMMIT: &str = "d57fefebe66537ecbeac9ecf9ba56cf02f1b21dd";
+const R5A_BINDING_FIX_PRESENT_COMMIT: &str = "a0695eac1b3f11d7617a4a080c54d0b82663d478";
+const R6_W35D_IMPLEMENTATION_COMMIT: &str = "f8905a754d1ac6f3cfc8903b138aa3277706419d";
+const R6_APPROVAL_GATE_SEALED: bool = false;
+const R6_APPROVAL_COMMIT: &str = "";
+const R6_APPROVAL_ARTIFACT_HASH: &str = "";
+const R6_R4_BURNED_RECEIPT_CORE_HASH: &str =
+    "sha256:b18da77e97eb2ab339ea974db93b5fb51bd1a5b4a478d69fa2bc5d18084fd183";
+const R6_R5_BURNED_RECEIPT_CORE_HASH: &str =
+    "sha256:b27b6eb6ed238c15d9b687a85d2d8b98e9db4434a7c6b1d30df26e96aaddca57";
+const R6_BURNED_RECEIPT_CORE_HASHES: [&str; 2] = [
+    R6_R4_BURNED_RECEIPT_CORE_HASH,
+    R6_R5_BURNED_RECEIPT_CORE_HASH,
+];
+const R6_MAX_VALIDITY_SECONDS: i64 = 12 * 60 * 60;
+const R6_CLOCK_SKEW_SECONDS: i64 = 120;
 const BUILD_GIT_SHA: &str = env!("H2O_BUILD_GIT_SHA");
 const BUILD_PROFILE: &str = env!("H2O_BUILD_PROFILE");
 const BUILD_DIRTY: &str = env!("H2O_BUILD_DIRTY");
@@ -737,6 +770,239 @@ pub struct WriteGradeReceiptBindings {
     pub one_shot_token_hash: Option<String>,
     #[serde(default)]
     pub kill_switch_token_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6WriteGradeReceipt {
+    pub schema_version: String,
+    pub receipt_identifier: String,
+    pub runtime: R6RuntimeBinding,
+    pub lineage: R6LineageCommitments,
+    pub approval: R6ApprovalBinding,
+    pub private_material_commitments: R6PrivateMaterialCommitments,
+    pub ceremony_policy: R6CeremonyPolicy,
+    pub lifecycle_policy: R6LifecyclePolicy,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6RuntimeBinding {
+    pub approved_final_runtime_commit: String,
+    pub required_embedded_build_git_sha: String,
+    pub build_dirty_must_be_false: bool,
+    pub build_profile: R6BuildProfile,
+    pub e6_commit: String,
+    pub e6_parent: String,
+    pub e6_evidence_sha256: String,
+    pub e6_runtime_stdout_sha256: String,
+    pub implementation_commitments: R6ImplementationCommitments,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ImplementationCommitments {
+    pub gated_executor_commit: String,
+    pub canonical_binding_fix_commit: String,
+    pub parent_propfind_fix_commit: String,
+    pub r5a_binding_fix_commit: String,
+    pub w35d_implementation_commit: String,
+    pub parent_propfind_fix_must_be_present: bool,
+    pub r5a_binding_fix_must_be_present: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6LineageCommitments {
+    pub w31_request_shape_commit: String,
+    pub w31_closeout_commit: String,
+    pub w32_mock_executor_commit: String,
+    pub w33a_commit: String,
+    pub w33b_commit: String,
+    pub w33c_commit: String,
+    pub w34a_commit: String,
+    pub w34b_commit: String,
+    pub gated_executor_commit: String,
+    pub canonical_binding_fix_commit: String,
+    pub parent_propfind_fix_commit: String,
+    pub r5a_binding_fix_commit: String,
+    pub w35d_implementation_commit: String,
+    pub e6_commit: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ApprovalBinding {
+    pub approval_artifact_identifier: String,
+    pub approval_artifact_commit: String,
+    pub approval_schema_version: String,
+    pub approval_core_hash: String,
+    pub approval_mint_utc: String,
+    pub approval_expiry_utc: String,
+    pub constrained_descendant_authorization_descriptor: String,
+    pub ceremony_policy_identifier: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ApprovalCore {
+    pub schema_version: String,
+    pub approval_artifact_identifier: String,
+    pub mint_utc: String,
+    pub expiry_utc: String,
+    pub constrained_descendant_authorization_descriptor: String,
+    pub ceremony_policy_identifier: String,
+    pub e6_commit: String,
+    pub approved_final_runtime_commit: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6PrivateMaterialCommitments {
+    pub one_shot_token_sha256: String,
+    pub kill_switch_token_sha256: String,
+    pub endpoint_ref_hash: String,
+    pub remote_root_ref_hash: String,
+    pub credential_ref_hash: String,
+    pub deterministic_object_path_commitment: String,
+    pub deterministic_payload_hash: String,
+    pub maximum_payload_bytes: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6CeremonyPolicy {
+    pub policy_identifier: String,
+    pub ordered_sequence: [R6CeremonyMethod; 4],
+    pub attempt_ceilings: R6AttemptCeilings,
+    pub total_request_ceiling: u32,
+    pub expected_results: R6ExpectedResults,
+    pub redirects_prohibited: bool,
+    pub authority_changes_prohibited: bool,
+    pub automatic_retries_prohibited: bool,
+    pub cleanup_prohibited: bool,
+    pub readiness_changes_prohibited: bool,
+    pub forbidden_methods: Vec<R6ForbiddenMethod>,
+    pub forbidden_write_classes: Vec<R6ForbiddenWriteClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6AttemptCeilings {
+    pub parent_propfind: u32,
+    pub first_create_only_put: u32,
+    pub second_create_only_put: u32,
+    pub readback_get: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ExpectedResults {
+    pub parent_propfind: R6ExactStatusExpectation,
+    pub first_create_only_put: R6ExactStatusExpectation,
+    pub second_create_only_put: R6ExactStatusExpectation,
+    pub readback_get: R6ReadbackExpectation,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ExactStatusExpectation {
+    pub status_code: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ReadbackExpectation {
+    pub accepted_status_family: R6StatusFamily,
+    pub exact_payload_hash_match_required: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6LifecyclePolicy {
+    pub receipt_mint_utc: String,
+    pub receipt_expiry_utc: String,
+    pub maximum_validity_seconds: u32,
+    pub clock_skew_seconds: u32,
+    pub must_be_unconsumed: bool,
+    pub must_be_uninvoked: bool,
+    pub consumed_marker_schema_version: String,
+    pub consumed_marker_binding: R6ConsumedMarkerBinding,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct R6ConsumedMarkerBinding {
+    pub receipt_identifier: String,
+    pub receipt_core_hash: R6ReceiptCoreHashBinding,
+    pub approved_runtime_commit: String,
+    pub product_sync_ready_must_remain_false: bool,
+    pub transport_ready_must_remain_false: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum R6BuildProfile {
+    Debug,
+    Release,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum R6CeremonyMethod {
+    #[serde(rename = "PROPFIND")]
+    Propfind,
+    #[serde(rename = "PUT")]
+    Put,
+    #[serde(rename = "GET")]
+    Get,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum R6ForbiddenMethod {
+    #[serde(rename = "OPTIONS")]
+    Options,
+    #[serde(rename = "DELETE")]
+    Delete,
+    #[serde(rename = "MKCOL")]
+    Mkcol,
+    #[serde(rename = "PROPPATCH")]
+    Proppatch,
+    #[serde(rename = "MOVE")]
+    Move,
+    #[serde(rename = "COPY")]
+    Copy,
+    #[serde(rename = "LOCK")]
+    Lock,
+    #[serde(rename = "UNLOCK")]
+    Unlock,
+    #[serde(rename = "POST")]
+    Post,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum R6ForbiddenWriteClass {
+    Archive,
+    Chat,
+    FullBundle,
+    FullBundleV3,
+    Relay,
+    Cas,
+    Outbox,
+    Ledger,
+    UserData,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum R6StatusFamily {
+    #[serde(rename = "2xx")]
+    TwoXx,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub enum R6ReceiptCoreHashBinding {
+    #[serde(rename = "canonicalR6ReceiptCoreHash")]
+    CanonicalR6ReceiptCoreHash,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -2391,6 +2657,539 @@ fn write_grade_receipt_core_hash(receipt: &WriteGradeReceipt) -> Option<String> 
     serde_json::to_vec(&sorted)
         .ok()
         .map(|bytes| sha256_ref(&bytes))
+}
+
+#[derive(Debug, Clone)]
+struct DuplicateRejectingJson(JsonValue);
+
+impl<'de> Deserialize<'de> for DuplicateRejectingJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DuplicateRejectingVisitor;
+
+        impl<'de> Visitor<'de> for DuplicateRejectingVisitor {
+            type Value = DuplicateRejectingJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("strict JSON without duplicate keys or floating-point values")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::Bool(value)))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::Number(value.into())))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::Number(value.into())))
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Err(E::custom("floating-point JSON values are refused"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(DuplicateRejectingJson(JsonValue::String(value.to_string())))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::String(value)))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::Null))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(DuplicateRejectingJson(JsonValue::Null))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<DuplicateRejectingJson>()? {
+                    values.push(value.0);
+                }
+                Ok(DuplicateRejectingJson(JsonValue::Array(values)))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut values = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(de::Error::custom("duplicate JSON object key refused"));
+                    }
+                    let value = map.next_value::<DuplicateRejectingJson>()?;
+                    values.insert(key, value.0);
+                }
+                Ok(DuplicateRejectingJson(JsonValue::Object(values)))
+            }
+        }
+
+        deserializer.deserialize_any(DuplicateRejectingVisitor)
+    }
+}
+
+fn parse_duplicate_safe_json(raw_json: &str) -> Result<JsonValue, &'static str> {
+    let mut deserializer = serde_json::Deserializer::from_str(raw_json);
+    let parsed = DuplicateRejectingJson::deserialize(&mut deserializer)
+        .map_err(|_| "real-transport-r6-json-invalid-or-duplicate-key")?;
+    deserializer
+        .end()
+        .map_err(|_| "real-transport-r6-json-invalid-or-duplicate-key")?;
+    Ok(parsed.0)
+}
+
+fn parse_r6_receipt_for_execution(
+    raw_json: &str,
+    claimed_receipt_core_hash: &str,
+) -> Result<R6WriteGradeReceipt, &'static str> {
+    if R6_BURNED_RECEIPT_CORE_HASHES.contains(&claimed_receipt_core_hash) {
+        return Err("real-transport-r6-burned-receipt-denied");
+    }
+    let value = parse_duplicate_safe_json(raw_json)?;
+    let Some(object) = value.as_object() else {
+        return Err("real-transport-r6-receipt-object-required");
+    };
+    let schema = object.get("schemaVersion").and_then(JsonValue::as_str);
+    if schema.is_none() && object.contains_key("schema") {
+        return Err("real-transport-r6-historical-receipt-refused");
+    }
+    if schema != Some(R6_RECEIPT_SCHEMA_VERSION) {
+        return Err("real-transport-r6-schema-version-refused");
+    }
+    serde_json::from_value::<R6WriteGradeReceipt>(value)
+        .map_err(|_| "real-transport-r6-strict-receipt-invalid")
+}
+
+fn contains_json_null(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => true,
+        JsonValue::Array(values) => values.iter().any(contains_json_null),
+        JsonValue::Object(values) => values.values().any(contains_json_null),
+        _ => false,
+    }
+}
+
+fn canonical_typed_json_bytes<T: Serialize>(value: &T) -> Option<Vec<u8>> {
+    let value = serde_json::to_value(value).ok()?;
+    if contains_json_null(&value) {
+        return None;
+    }
+    serde_json::to_vec(&sorted_json_value(value)).ok()
+}
+
+fn domain_separated_hash(domain: &[u8], canonical_json: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(canonical_json);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn r6_receipt_core_hash(receipt: &R6WriteGradeReceipt) -> Option<String> {
+    canonical_typed_json_bytes(receipt)
+        .map(|bytes| domain_separated_hash(R6_RECEIPT_HASH_DOMAIN, &bytes))
+}
+
+fn r6_approval_core_hash(approval: &R6ApprovalCore) -> Option<String> {
+    canonical_typed_json_bytes(approval)
+        .map(|bytes| domain_separated_hash(R6_APPROVAL_HASH_DOMAIN, &bytes))
+}
+
+fn r6_approval_core_from_receipt(receipt: &R6WriteGradeReceipt) -> R6ApprovalCore {
+    R6ApprovalCore {
+        schema_version: receipt.approval.approval_schema_version.clone(),
+        approval_artifact_identifier: receipt.approval.approval_artifact_identifier.clone(),
+        mint_utc: receipt.approval.approval_mint_utc.clone(),
+        expiry_utc: receipt.approval.approval_expiry_utc.clone(),
+        constrained_descendant_authorization_descriptor: receipt
+            .approval
+            .constrained_descendant_authorization_descriptor
+            .clone(),
+        ceremony_policy_identifier: receipt.approval.ceremony_policy_identifier.clone(),
+        e6_commit: receipt.runtime.e6_commit.clone(),
+        approved_final_runtime_commit: receipt.runtime.approved_final_runtime_commit.clone(),
+    }
+}
+
+fn is_sha256_ref_str(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .map(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .unwrap_or(false)
+}
+
+fn is_commit_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn parse_r6_utc_seconds(value: &str) -> Option<i64> {
+    let parsed = parse_utc_seconds(value)?;
+    let year = value[0..4].parse::<i32>().ok()?;
+    let month = value[5..7].parse::<usize>().ok()?;
+    let day = value[8..10].parse::<u32>().ok()?;
+    let month_lengths = [
+        31,
+        if is_leap_year(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if month == 0 || month > month_lengths.len() || day == 0 || day > month_lengths[month - 1] {
+        return None;
+    }
+    Some(parsed)
+}
+
+#[derive(Clone, Copy)]
+struct R6ApprovalGateConfig<'a> {
+    sealed: bool,
+    approval_commit: &'a str,
+    approval_artifact_hash: &'a str,
+}
+
+impl R6ApprovalGateConfig<'static> {
+    fn production() -> Self {
+        Self {
+            sealed: R6_APPROVAL_GATE_SEALED,
+            approval_commit: R6_APPROVAL_COMMIT,
+            approval_artifact_hash: R6_APPROVAL_ARTIFACT_HASH,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct R6DispatchContext<'a> {
+    now_utc: &'a str,
+    approved_runtime_commit: &'a str,
+    embedded_build_git_sha: &'a str,
+    build_dirty: bool,
+    build_profile: R6BuildProfile,
+    computed_one_shot_token_hash: &'a str,
+    computed_kill_switch_token_hash: &'a str,
+    receipt_consumed: bool,
+    receipt_invoked: bool,
+    consumed_marker_exists: bool,
+}
+
+fn validate_r6_approval_gate(
+    receipt: &R6WriteGradeReceipt,
+    gate: R6ApprovalGateConfig<'_>,
+) -> Result<(), &'static str> {
+    if !gate.sealed || gate.approval_commit.is_empty() || gate.approval_artifact_hash.is_empty() {
+        return Err("real-transport-r6-approval-gate-unsealed");
+    }
+    if matches!(
+        receipt.approval.approval_artifact_commit.as_str(),
+        W34B1_OPERATOR_APPROVAL_COMMIT | W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT
+    ) {
+        return Err("real-transport-r6-historical-approval-refused");
+    }
+    if receipt.approval.approval_artifact_commit != gate.approval_commit {
+        return Err("real-transport-r6-approval-commit-mismatch");
+    }
+    if receipt.approval.approval_core_hash != gate.approval_artifact_hash {
+        return Err("real-transport-r6-approval-hash-mismatch");
+    }
+    if receipt.approval.approval_schema_version != R6_APPROVAL_SCHEMA_VERSION
+        || receipt
+            .approval
+            .constrained_descendant_authorization_descriptor
+            != R6_DESCENDANT_AUTHORIZATION_DESCRIPTOR
+        || receipt.approval.ceremony_policy_identifier != R6_CEREMONY_POLICY_IDENTIFIER
+    {
+        return Err("real-transport-r6-approval-binding-invalid");
+    }
+    let approval_core = r6_approval_core_from_receipt(receipt);
+    if r6_approval_core_hash(&approval_core).as_deref()
+        != Some(receipt.approval.approval_core_hash.as_str())
+    {
+        return Err("real-transport-r6-approval-core-hash-mismatch");
+    }
+    Ok(())
+}
+
+fn validate_r6_runtime_and_lineage(
+    receipt: &R6WriteGradeReceipt,
+    context: R6DispatchContext<'_>,
+) -> Result<(), &'static str> {
+    let runtime = &receipt.runtime;
+    if !is_commit_sha(&runtime.approved_final_runtime_commit)
+        || runtime.approved_final_runtime_commit != context.approved_runtime_commit
+        || runtime.required_embedded_build_git_sha != context.embedded_build_git_sha
+        || runtime.required_embedded_build_git_sha != runtime.approved_final_runtime_commit
+    {
+        return Err("real-transport-r6-runtime-binding-mismatch");
+    }
+    if !runtime.build_dirty_must_be_false || context.build_dirty {
+        return Err("real-transport-r6-dirty-build-refused");
+    }
+    if runtime.build_profile != context.build_profile
+        || runtime.e6_commit != R6_E6_COMMIT
+        || runtime.e6_parent != R6_E6_PARENT_COMMIT
+        || runtime.e6_evidence_sha256 != R6_E6_EVIDENCE_SHA256
+        || runtime.e6_runtime_stdout_sha256 != R6_E6_RUNTIME_STDOUT_SHA256
+    {
+        return Err("real-transport-r6-e6-binding-mismatch");
+    }
+    let implementation = &runtime.implementation_commitments;
+    if implementation.gated_executor_commit != R6_GATED_EXECUTOR_COMMIT
+        || implementation.canonical_binding_fix_commit != R6_CANONICAL_BINDING_FIX_COMMIT
+        || implementation.parent_propfind_fix_commit != W35B_PARENT_PROPFIND_FIX_COMMIT
+        || implementation.r5a_binding_fix_commit != R5A_BINDING_FIX_PRESENT_COMMIT
+        || implementation.w35d_implementation_commit != R6_W35D_IMPLEMENTATION_COMMIT
+        || !implementation.parent_propfind_fix_must_be_present
+        || !implementation.r5a_binding_fix_must_be_present
+    {
+        return Err("real-transport-r6-implementation-binding-mismatch");
+    }
+    let lineage = &receipt.lineage;
+    let lineage_ok = lineage.w31_request_shape_commit == W31_ALIGNMENT_COMMIT
+        && lineage.w31_closeout_commit == W31_CLOSEOUT_COMMIT
+        && lineage.w32_mock_executor_commit == W32_MOCK_PROOF_COMMIT
+        && lineage.w33a_commit == W33A_DESIGN_COMMIT
+        && lineage.w33b_commit == W33B_STORAGE_COMMIT
+        && lineage.w33c_commit == W33C_HASH_BOUNDARY_COMMIT
+        && lineage.w34a_commit == W34A_REFUSED_COMMAND_COMMIT
+        && lineage.w34b_commit == W34B0_APPROVAL_PACKAGE_COMMIT
+        && lineage.gated_executor_commit == R6_GATED_EXECUTOR_COMMIT
+        && lineage.canonical_binding_fix_commit == R6_CANONICAL_BINDING_FIX_COMMIT
+        && lineage.parent_propfind_fix_commit == W35B_PARENT_PROPFIND_FIX_COMMIT
+        && lineage.r5a_binding_fix_commit == R5A_BINDING_FIX_PRESENT_COMMIT
+        && lineage.w35d_implementation_commit == R6_W35D_IMPLEMENTATION_COMMIT
+        && lineage.e6_commit == R6_E6_COMMIT;
+    if !lineage_ok {
+        return Err("real-transport-r6-lineage-binding-mismatch");
+    }
+    Ok(())
+}
+
+fn validate_r6_private_commitments(
+    receipt: &R6WriteGradeReceipt,
+    context: R6DispatchContext<'_>,
+) -> Result<(), &'static str> {
+    let commitments = &receipt.private_material_commitments;
+    for commitment in [
+        &commitments.one_shot_token_sha256,
+        &commitments.kill_switch_token_sha256,
+        &commitments.endpoint_ref_hash,
+        &commitments.remote_root_ref_hash,
+        &commitments.credential_ref_hash,
+        &commitments.deterministic_object_path_commitment,
+        &commitments.deterministic_payload_hash,
+    ] {
+        if !is_sha256_ref_str(commitment) {
+            return Err("real-transport-r6-private-commitment-invalid");
+        }
+    }
+    if commitments.one_shot_token_sha256 != context.computed_one_shot_token_hash
+        || commitments.kill_switch_token_sha256 != context.computed_kill_switch_token_hash
+        || commitments.one_shot_token_sha256 == commitments.kill_switch_token_sha256
+    {
+        return Err("real-transport-r6-token-commitment-mismatch");
+    }
+    if commitments.maximum_payload_bytes != 256 {
+        return Err("real-transport-r6-payload-ceiling-invalid");
+    }
+    Ok(())
+}
+
+fn validate_r6_ceremony_policy(receipt: &R6WriteGradeReceipt) -> Result<(), &'static str> {
+    let policy = &receipt.ceremony_policy;
+    if policy.policy_identifier != R6_CEREMONY_POLICY_IDENTIFIER
+        || policy.ordered_sequence
+            != [
+                R6CeremonyMethod::Propfind,
+                R6CeremonyMethod::Put,
+                R6CeremonyMethod::Put,
+                R6CeremonyMethod::Get,
+            ]
+        || policy.attempt_ceilings.parent_propfind != 1
+        || policy.attempt_ceilings.first_create_only_put != 1
+        || policy.attempt_ceilings.second_create_only_put != 1
+        || policy.attempt_ceilings.readback_get != 1
+        || policy.total_request_ceiling != 4
+    {
+        return Err("real-transport-r6-method-policy-invalid");
+    }
+    if policy.expected_results.parent_propfind.status_code != 207
+        || policy.expected_results.first_create_only_put.status_code != 201
+        || policy.expected_results.second_create_only_put.status_code != 412
+        || policy.expected_results.readback_get.accepted_status_family != R6StatusFamily::TwoXx
+        || !policy
+            .expected_results
+            .readback_get
+            .exact_payload_hash_match_required
+    {
+        return Err("real-transport-r6-result-policy-invalid");
+    }
+    if !policy.redirects_prohibited
+        || !policy.authority_changes_prohibited
+        || !policy.automatic_retries_prohibited
+        || !policy.cleanup_prohibited
+        || !policy.readiness_changes_prohibited
+    {
+        return Err("real-transport-r6-fail-closed-policy-invalid");
+    }
+    if policy.forbidden_methods
+        != [
+            R6ForbiddenMethod::Options,
+            R6ForbiddenMethod::Delete,
+            R6ForbiddenMethod::Mkcol,
+            R6ForbiddenMethod::Proppatch,
+            R6ForbiddenMethod::Move,
+            R6ForbiddenMethod::Copy,
+            R6ForbiddenMethod::Lock,
+            R6ForbiddenMethod::Unlock,
+            R6ForbiddenMethod::Post,
+        ]
+        || policy.forbidden_write_classes
+            != [
+                R6ForbiddenWriteClass::Archive,
+                R6ForbiddenWriteClass::Chat,
+                R6ForbiddenWriteClass::FullBundle,
+                R6ForbiddenWriteClass::FullBundleV3,
+                R6ForbiddenWriteClass::Relay,
+                R6ForbiddenWriteClass::Cas,
+                R6ForbiddenWriteClass::Outbox,
+                R6ForbiddenWriteClass::Ledger,
+                R6ForbiddenWriteClass::UserData,
+            ]
+    {
+        return Err("real-transport-r6-forbidden-policy-invalid");
+    }
+    Ok(())
+}
+
+fn validate_r6_lifecycle(
+    receipt: &R6WriteGradeReceipt,
+    receipt_core_hash: &str,
+    context: R6DispatchContext<'_>,
+) -> Result<(), &'static str> {
+    let lifecycle = &receipt.lifecycle_policy;
+    let now =
+        parse_r6_utc_seconds(context.now_utc).ok_or("real-transport-r6-validation-time-invalid")?;
+    let receipt_mint = parse_r6_utc_seconds(&lifecycle.receipt_mint_utc)
+        .ok_or("real-transport-r6-receipt-time-invalid")?;
+    let receipt_expiry = parse_r6_utc_seconds(&lifecycle.receipt_expiry_utc)
+        .ok_or("real-transport-r6-receipt-time-invalid")?;
+    let approval_mint = parse_r6_utc_seconds(&receipt.approval.approval_mint_utc)
+        .ok_or("real-transport-r6-approval-time-invalid")?;
+    let approval_expiry = parse_r6_utc_seconds(&receipt.approval.approval_expiry_utc)
+        .ok_or("real-transport-r6-approval-time-invalid")?;
+    if lifecycle.maximum_validity_seconds as i64 != R6_MAX_VALIDITY_SECONDS
+        || lifecycle.clock_skew_seconds as i64 != R6_CLOCK_SKEW_SECONDS
+        || receipt_expiry <= receipt_mint
+        || receipt_expiry - receipt_mint > lifecycle.maximum_validity_seconds as i64
+        || receipt_mint < approval_mint
+        || receipt_expiry > approval_expiry
+    {
+        return Err("real-transport-r6-validity-window-invalid");
+    }
+    let skew = lifecycle.clock_skew_seconds as i64;
+    if receipt_mint > now + skew || approval_mint > now + skew {
+        return Err("real-transport-r6-future-mint-refused");
+    }
+    if now > receipt_expiry + skew || now > approval_expiry + skew {
+        return Err("real-transport-r6-receipt-or-approval-expired");
+    }
+    if !lifecycle.must_be_unconsumed
+        || !lifecycle.must_be_uninvoked
+        || context.receipt_consumed
+        || context.receipt_invoked
+        || context.consumed_marker_exists
+    {
+        return Err("real-transport-r6-receipt-already-consumed-or-invoked");
+    }
+    let marker = &lifecycle.consumed_marker_binding;
+    if lifecycle.consumed_marker_schema_version != R6_CONSUMED_MARKER_SCHEMA_VERSION
+        || marker.receipt_identifier != receipt.receipt_identifier
+        || marker.receipt_core_hash != R6ReceiptCoreHashBinding::CanonicalR6ReceiptCoreHash
+        || marker.approved_runtime_commit != receipt.runtime.approved_final_runtime_commit
+        || !marker.product_sync_ready_must_remain_false
+        || !marker.transport_ready_must_remain_false
+        || !is_sha256_ref_str(receipt_core_hash)
+    {
+        return Err("real-transport-r6-consumed-marker-policy-invalid");
+    }
+    Ok(())
+}
+
+fn dispatch_r6_execution_preflight_with_gate<T, F>(
+    raw_receipt_json: &str,
+    claimed_receipt_core_hash: &str,
+    context: R6DispatchContext<'_>,
+    gate: R6ApprovalGateConfig<'_>,
+    after_all_preflight: F,
+) -> Result<T, &'static str>
+where
+    F: FnOnce(&R6WriteGradeReceipt, &str) -> T,
+{
+    let receipt = parse_r6_receipt_for_execution(raw_receipt_json, claimed_receipt_core_hash)?;
+    let computed_receipt_core_hash =
+        r6_receipt_core_hash(&receipt).ok_or("real-transport-r6-receipt-core-hash-failed")?;
+    if computed_receipt_core_hash != claimed_receipt_core_hash {
+        return Err("real-transport-r6-receipt-core-hash-mismatch");
+    }
+    validate_r6_approval_gate(&receipt, gate)?;
+    validate_r6_runtime_and_lineage(&receipt, context)?;
+    validate_r6_private_commitments(&receipt, context)?;
+    validate_r6_ceremony_policy(&receipt)?;
+    validate_r6_lifecycle(&receipt, &computed_receipt_core_hash, context)?;
+    Ok(after_all_preflight(&receipt, &computed_receipt_core_hash))
+}
+
+#[allow(dead_code)]
+fn dispatch_r6_execution_preflight<T, F>(
+    raw_receipt_json: &str,
+    claimed_receipt_core_hash: &str,
+    context: R6DispatchContext<'_>,
+    after_all_preflight: F,
+) -> Result<T, &'static str>
+where
+    F: FnOnce(&R6WriteGradeReceipt, &str) -> T,
+{
+    dispatch_r6_execution_preflight_with_gate(
+        raw_receipt_json,
+        claimed_receipt_core_hash,
+        context,
+        R6ApprovalGateConfig::production(),
+        after_all_preflight,
+    )
 }
 
 fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
@@ -4068,6 +4867,762 @@ mod tests {
             .as_ref()
             .and_then(write_grade_receipt_core_hash);
         request
+    }
+
+    fn r6_fixture() -> R6WriteGradeReceipt {
+        let approved_runtime_commit = h('9').replace("sha256:", "")[..40].to_string();
+        let approval_commit = h('8').replace("sha256:", "")[..40].to_string();
+        let receipt_identifier = "r6-s1-test-receipt".to_string();
+        let mut receipt = R6WriteGradeReceipt {
+            schema_version: R6_RECEIPT_SCHEMA_VERSION.to_string(),
+            receipt_identifier: receipt_identifier.clone(),
+            runtime: R6RuntimeBinding {
+                approved_final_runtime_commit: approved_runtime_commit.clone(),
+                required_embedded_build_git_sha: approved_runtime_commit.clone(),
+                build_dirty_must_be_false: true,
+                build_profile: R6BuildProfile::Debug,
+                e6_commit: R6_E6_COMMIT.to_string(),
+                e6_parent: R6_E6_PARENT_COMMIT.to_string(),
+                e6_evidence_sha256: R6_E6_EVIDENCE_SHA256.to_string(),
+                e6_runtime_stdout_sha256: R6_E6_RUNTIME_STDOUT_SHA256.to_string(),
+                implementation_commitments: R6ImplementationCommitments {
+                    gated_executor_commit: R6_GATED_EXECUTOR_COMMIT.to_string(),
+                    canonical_binding_fix_commit: R6_CANONICAL_BINDING_FIX_COMMIT.to_string(),
+                    parent_propfind_fix_commit: W35B_PARENT_PROPFIND_FIX_COMMIT.to_string(),
+                    r5a_binding_fix_commit: R5A_BINDING_FIX_PRESENT_COMMIT.to_string(),
+                    w35d_implementation_commit: R6_W35D_IMPLEMENTATION_COMMIT.to_string(),
+                    parent_propfind_fix_must_be_present: true,
+                    r5a_binding_fix_must_be_present: true,
+                },
+            },
+            lineage: R6LineageCommitments {
+                w31_request_shape_commit: W31_ALIGNMENT_COMMIT.to_string(),
+                w31_closeout_commit: W31_CLOSEOUT_COMMIT.to_string(),
+                w32_mock_executor_commit: W32_MOCK_PROOF_COMMIT.to_string(),
+                w33a_commit: W33A_DESIGN_COMMIT.to_string(),
+                w33b_commit: W33B_STORAGE_COMMIT.to_string(),
+                w33c_commit: W33C_HASH_BOUNDARY_COMMIT.to_string(),
+                w34a_commit: W34A_REFUSED_COMMAND_COMMIT.to_string(),
+                w34b_commit: W34B0_APPROVAL_PACKAGE_COMMIT.to_string(),
+                gated_executor_commit: R6_GATED_EXECUTOR_COMMIT.to_string(),
+                canonical_binding_fix_commit: R6_CANONICAL_BINDING_FIX_COMMIT.to_string(),
+                parent_propfind_fix_commit: W35B_PARENT_PROPFIND_FIX_COMMIT.to_string(),
+                r5a_binding_fix_commit: R5A_BINDING_FIX_PRESENT_COMMIT.to_string(),
+                w35d_implementation_commit: R6_W35D_IMPLEMENTATION_COMMIT.to_string(),
+                e6_commit: R6_E6_COMMIT.to_string(),
+            },
+            approval: R6ApprovalBinding {
+                approval_artifact_identifier: "r6-s1-test-approval".to_string(),
+                approval_artifact_commit: approval_commit,
+                approval_schema_version: R6_APPROVAL_SCHEMA_VERSION.to_string(),
+                approval_core_hash: h('0'),
+                approval_mint_utc: "2026-07-13T11:00:00Z".to_string(),
+                approval_expiry_utc: "2026-07-13T23:00:00Z".to_string(),
+                constrained_descendant_authorization_descriptor:
+                    R6_DESCENDANT_AUTHORIZATION_DESCRIPTOR.to_string(),
+                ceremony_policy_identifier: R6_CEREMONY_POLICY_IDENTIFIER.to_string(),
+            },
+            private_material_commitments: R6PrivateMaterialCommitments {
+                one_shot_token_sha256: h('1'),
+                kill_switch_token_sha256: h('2'),
+                endpoint_ref_hash: h('3'),
+                remote_root_ref_hash: h('4'),
+                credential_ref_hash: h('5'),
+                deterministic_object_path_commitment: h('6'),
+                deterministic_payload_hash: h('7'),
+                maximum_payload_bytes: 256,
+            },
+            ceremony_policy: R6CeremonyPolicy {
+                policy_identifier: R6_CEREMONY_POLICY_IDENTIFIER.to_string(),
+                ordered_sequence: [
+                    R6CeremonyMethod::Propfind,
+                    R6CeremonyMethod::Put,
+                    R6CeremonyMethod::Put,
+                    R6CeremonyMethod::Get,
+                ],
+                attempt_ceilings: R6AttemptCeilings {
+                    parent_propfind: 1,
+                    first_create_only_put: 1,
+                    second_create_only_put: 1,
+                    readback_get: 1,
+                },
+                total_request_ceiling: 4,
+                expected_results: R6ExpectedResults {
+                    parent_propfind: R6ExactStatusExpectation { status_code: 207 },
+                    first_create_only_put: R6ExactStatusExpectation { status_code: 201 },
+                    second_create_only_put: R6ExactStatusExpectation { status_code: 412 },
+                    readback_get: R6ReadbackExpectation {
+                        accepted_status_family: R6StatusFamily::TwoXx,
+                        exact_payload_hash_match_required: true,
+                    },
+                },
+                redirects_prohibited: true,
+                authority_changes_prohibited: true,
+                automatic_retries_prohibited: true,
+                cleanup_prohibited: true,
+                readiness_changes_prohibited: true,
+                forbidden_methods: vec![
+                    R6ForbiddenMethod::Options,
+                    R6ForbiddenMethod::Delete,
+                    R6ForbiddenMethod::Mkcol,
+                    R6ForbiddenMethod::Proppatch,
+                    R6ForbiddenMethod::Move,
+                    R6ForbiddenMethod::Copy,
+                    R6ForbiddenMethod::Lock,
+                    R6ForbiddenMethod::Unlock,
+                    R6ForbiddenMethod::Post,
+                ],
+                forbidden_write_classes: vec![
+                    R6ForbiddenWriteClass::Archive,
+                    R6ForbiddenWriteClass::Chat,
+                    R6ForbiddenWriteClass::FullBundle,
+                    R6ForbiddenWriteClass::FullBundleV3,
+                    R6ForbiddenWriteClass::Relay,
+                    R6ForbiddenWriteClass::Cas,
+                    R6ForbiddenWriteClass::Outbox,
+                    R6ForbiddenWriteClass::Ledger,
+                    R6ForbiddenWriteClass::UserData,
+                ],
+            },
+            lifecycle_policy: R6LifecyclePolicy {
+                receipt_mint_utc: "2026-07-13T12:00:00Z".to_string(),
+                receipt_expiry_utc: "2026-07-13T20:00:00Z".to_string(),
+                maximum_validity_seconds: R6_MAX_VALIDITY_SECONDS as u32,
+                clock_skew_seconds: R6_CLOCK_SKEW_SECONDS as u32,
+                must_be_unconsumed: true,
+                must_be_uninvoked: true,
+                consumed_marker_schema_version: R6_CONSUMED_MARKER_SCHEMA_VERSION.to_string(),
+                consumed_marker_binding: R6ConsumedMarkerBinding {
+                    receipt_identifier,
+                    receipt_core_hash: R6ReceiptCoreHashBinding::CanonicalR6ReceiptCoreHash,
+                    approved_runtime_commit,
+                    product_sync_ready_must_remain_false: true,
+                    transport_ready_must_remain_false: true,
+                },
+            },
+        };
+        refresh_r6_approval_hash(&mut receipt);
+        receipt
+    }
+
+    fn refresh_r6_approval_hash(receipt: &mut R6WriteGradeReceipt) {
+        receipt.approval.approval_core_hash =
+            r6_approval_core_hash(&r6_approval_core_from_receipt(receipt))
+                .expect("R6 approval core hash");
+    }
+
+    fn r6_gate(receipt: &R6WriteGradeReceipt) -> R6ApprovalGateConfig<'_> {
+        R6ApprovalGateConfig {
+            sealed: true,
+            approval_commit: &receipt.approval.approval_artifact_commit,
+            approval_artifact_hash: &receipt.approval.approval_core_hash,
+        }
+    }
+
+    fn r6_context(receipt: &R6WriteGradeReceipt) -> R6DispatchContext<'_> {
+        R6DispatchContext {
+            now_utc: "2026-07-13T13:00:00Z",
+            approved_runtime_commit: &receipt.runtime.approved_final_runtime_commit,
+            embedded_build_git_sha: &receipt.runtime.required_embedded_build_git_sha,
+            build_dirty: false,
+            build_profile: receipt.runtime.build_profile,
+            computed_one_shot_token_hash: &receipt
+                .private_material_commitments
+                .one_shot_token_sha256,
+            computed_kill_switch_token_hash: &receipt
+                .private_material_commitments
+                .kill_switch_token_sha256,
+            receipt_consumed: false,
+            receipt_invoked: false,
+            consumed_marker_exists: false,
+        }
+    }
+
+    fn dispatch_r6_fixture(receipt: &R6WriteGradeReceipt) -> Result<(), &'static str> {
+        let raw = serde_json::to_string(receipt).expect("serialize R6 fixture");
+        let hash = r6_receipt_core_hash(receipt).expect("hash R6 fixture");
+        dispatch_r6_execution_preflight_with_gate(
+            &raw,
+            &hash,
+            r6_context(receipt),
+            r6_gate(receipt),
+            |_receipt, _hash| (),
+        )
+    }
+
+    fn reversed_json(value: &JsonValue) -> String {
+        match value {
+            JsonValue::Object(map) => {
+                let members = map
+                    .iter()
+                    .rev()
+                    .map(|(key, value)| {
+                        format!(
+                            "{}:{}",
+                            serde_json::to_string(key).expect("serialize key"),
+                            reversed_json(value)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{{members}}}")
+            }
+            JsonValue::Array(values) => format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(reversed_json)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            value => serde_json::to_string(value).expect("serialize scalar"),
+        }
+    }
+
+    fn variants_with_one_object_field_removed(value: &JsonValue) -> Vec<JsonValue> {
+        let mut variants = Vec::new();
+        match value {
+            JsonValue::Object(map) => {
+                for key in map.keys() {
+                    let mut changed = map.clone();
+                    changed.remove(key);
+                    variants.push(JsonValue::Object(changed));
+                }
+                for (key, child) in map {
+                    for changed_child in variants_with_one_object_field_removed(child) {
+                        let mut changed = map.clone();
+                        changed.insert(key.clone(), changed_child);
+                        variants.push(JsonValue::Object(changed));
+                    }
+                }
+            }
+            JsonValue::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    for changed_child in variants_with_one_object_field_removed(child) {
+                        let mut changed = values.clone();
+                        changed[index] = changed_child;
+                        variants.push(JsonValue::Array(changed));
+                    }
+                }
+            }
+            _ => {}
+        }
+        variants
+    }
+
+    fn variants_with_one_leaf_changed(value: &JsonValue) -> Vec<JsonValue> {
+        let mut variants = Vec::new();
+        match value {
+            JsonValue::Object(map) => {
+                for (key, child) in map {
+                    for changed_child in variants_with_one_leaf_changed(child) {
+                        let mut changed = map.clone();
+                        changed.insert(key.clone(), changed_child);
+                        variants.push(JsonValue::Object(changed));
+                    }
+                }
+            }
+            JsonValue::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    for changed_child in variants_with_one_leaf_changed(child) {
+                        let mut changed = values.clone();
+                        changed[index] = changed_child;
+                        variants.push(JsonValue::Array(changed));
+                    }
+                }
+            }
+            JsonValue::String(value) => {
+                variants.push(JsonValue::String(format!("{value}-changed")))
+            }
+            JsonValue::Bool(value) => variants.push(JsonValue::Bool(!value)),
+            JsonValue::Number(value) => {
+                if let Some(value) = value.as_u64() {
+                    variants.push(JsonValue::Number((value + 1).into()));
+                }
+            }
+            JsonValue::Null => {}
+        }
+        variants
+    }
+
+    #[test]
+    fn r6_strict_schema_parses_valid_fixture_and_rejects_unknown_missing_null_and_float() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize R6 fixture");
+        let hash = r6_receipt_core_hash(&receipt).expect("R6 hash");
+        assert_eq!(
+            parse_r6_receipt_for_execution(&raw, &hash),
+            Ok(receipt.clone())
+        );
+
+        let mut unknown_schema = serde_json::to_value(&receipt).expect("fixture value");
+        unknown_schema["schemaVersion"] = json!("h2o.r6.write-grade-receipt.v2");
+        assert_eq!(
+            parse_r6_receipt_for_execution(&unknown_schema.to_string(), &h('a')),
+            Err("real-transport-r6-schema-version-refused")
+        );
+
+        let mut unknown_top = serde_json::to_value(&receipt).expect("fixture value");
+        unknown_top["unexpected"] = json!(true);
+        assert_eq!(
+            parse_r6_receipt_for_execution(&unknown_top.to_string(), &h('a')),
+            Err("real-transport-r6-strict-receipt-invalid")
+        );
+
+        let mut unknown_nested = serde_json::to_value(&receipt).expect("fixture value");
+        unknown_nested["runtime"]["unexpected"] = json!(true);
+        assert_eq!(
+            parse_r6_receipt_for_execution(&unknown_nested.to_string(), &h('a')),
+            Err("real-transport-r6-strict-receipt-invalid")
+        );
+
+        let mut missing = serde_json::to_value(&receipt).expect("fixture value");
+        missing.as_object_mut().expect("object").remove("approval");
+        assert_eq!(
+            parse_r6_receipt_for_execution(&missing.to_string(), &h('a')),
+            Err("real-transport-r6-strict-receipt-invalid")
+        );
+
+        let mut null_required = serde_json::to_value(&receipt).expect("fixture value");
+        null_required["receiptIdentifier"] = JsonValue::Null;
+        assert_eq!(
+            parse_r6_receipt_for_execution(&null_required.to_string(), &h('a')),
+            Err("real-transport-r6-strict-receipt-invalid")
+        );
+
+        let floating = raw.replacen(
+            "\"totalRequestCeiling\":4",
+            "\"totalRequestCeiling\":4.0",
+            1,
+        );
+        assert_eq!(
+            parse_r6_receipt_for_execution(&floating, &h('a')),
+            Err("real-transport-r6-json-invalid-or-duplicate-key")
+        );
+    }
+
+    #[test]
+    fn r6_duplicate_keys_are_rejected_at_top_level_and_nested_even_when_identical() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize R6 fixture");
+        let duplicate_top = raw.replacen(
+            "{",
+            "{\"schemaVersion\":\"h2o.r6.write-grade-receipt.v1\",",
+            1,
+        );
+        assert_eq!(
+            parse_r6_receipt_for_execution(&duplicate_top, &h('a')),
+            Err("real-transport-r6-json-invalid-or-duplicate-key")
+        );
+        let duplicate_nested = raw.replacen(
+            "\"buildProfile\":\"debug\"",
+            "\"buildProfile\":\"debug\",\"buildProfile\":\"debug\"",
+            1,
+        );
+        assert_eq!(
+            parse_r6_receipt_for_execution(&duplicate_nested, &h('a')),
+            Err("real-transport-r6-json-invalid-or-duplicate-key")
+        );
+    }
+
+    #[test]
+    fn r6_canonical_hash_is_typed_order_independent_and_domain_separated() {
+        let receipt = r6_fixture();
+        let compact = serde_json::to_string(&receipt).expect("compact receipt");
+        let value = serde_json::to_value(&receipt).expect("receipt value");
+        let reversed = reversed_json(&value);
+        let compact_typed =
+            parse_r6_receipt_for_execution(&compact, &h('a')).expect("compact receipt parses");
+        let reversed_typed =
+            parse_r6_receipt_for_execution(&reversed, &h('a')).expect("reversed receipt parses");
+        let first = r6_receipt_core_hash(&compact_typed).expect("first hash");
+        assert_eq!(first, r6_receipt_core_hash(&receipt).expect("repeat hash"));
+        assert_eq!(
+            first,
+            r6_receipt_core_hash(&reversed_typed).expect("reversed hash")
+        );
+
+        let canonical = canonical_typed_json_bytes(&receipt).expect("canonical receipt");
+        assert_ne!(
+            first,
+            domain_separated_hash(b"historical-receipt-domain\n", &canonical)
+        );
+        assert_ne!(
+            first,
+            domain_separated_hash(R6_APPROVAL_HASH_DOMAIN, &canonical)
+        );
+        assert_eq!(
+            R6_RECEIPT_HASH_DOMAIN,
+            b"h2o.r6.write-grade-receipt-core.v1\n"
+        );
+        assert_eq!(R6_APPROVAL_HASH_DOMAIN, b"h2o.r6.approval-core.v1\n");
+
+        let approval = r6_approval_core_from_receipt(&receipt);
+        let approval_hash = r6_approval_core_hash(&approval).expect("approval hash");
+        assert_eq!(
+            approval_hash,
+            r6_approval_core_hash(&approval).expect("repeat approval hash")
+        );
+        let mut changed_approval = approval.clone();
+        changed_approval.expiry_utc = "2026-07-13T22:59:59Z".to_string();
+        assert_ne!(
+            approval_hash,
+            r6_approval_core_hash(&changed_approval).expect("changed approval hash")
+        );
+    }
+
+    #[test]
+    fn every_r6_required_field_is_strict_and_every_leaf_affects_hash_or_validity() {
+        let receipt = r6_fixture();
+        let value = serde_json::to_value(&receipt).expect("receipt value");
+        let removed = variants_with_one_object_field_removed(&value);
+        assert!(
+            removed.len() > 60,
+            "required-field coverage unexpectedly small"
+        );
+        for variant in removed {
+            assert!(
+                serde_json::from_value::<R6WriteGradeReceipt>(variant).is_err(),
+                "removing any required object field must fail"
+            );
+        }
+
+        let baseline_hash = r6_receipt_core_hash(&receipt).expect("baseline hash");
+        let changed = variants_with_one_leaf_changed(&value);
+        assert!(changed.len() > 80, "leaf coverage unexpectedly small");
+        for variant in changed {
+            if let Ok(changed_receipt) = serde_json::from_value::<R6WriteGradeReceipt>(variant) {
+                assert_ne!(
+                    r6_receipt_core_hash(&changed_receipt).expect("changed hash"),
+                    baseline_hash,
+                    "every accepted leaf change must affect the receipt hash"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn r6_historical_and_downgrade_receipts_are_refused() {
+        let historical = include_str!(
+            "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r5-write-grade-receipt-core.json"
+        );
+        assert_eq!(
+            parse_r6_receipt_for_execution(historical, &h('a')),
+            Err("real-transport-r6-historical-receipt-refused")
+        );
+        let receipt = r6_fixture();
+        let mut value = serde_json::to_value(&receipt).expect("receipt value");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("schemaVersion");
+        value["schema"] = json!(WRITE_GRADE_RECEIPT_SCHEMA);
+        assert_eq!(
+            parse_r6_receipt_for_execution(&value.to_string(), &h('a')),
+            Err("real-transport-r6-historical-receipt-refused")
+        );
+    }
+
+    #[test]
+    fn r6_s1_unsealed_gate_rejects_before_any_post_preflight_callback() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize receipt");
+        let hash = r6_receipt_core_hash(&receipt).expect("receipt hash");
+        let calls = Cell::new(0);
+        let result = dispatch_r6_execution_preflight(
+            &raw,
+            &hash,
+            r6_context(&receipt),
+            |_receipt, _hash| calls.set(calls.get() + 1),
+        );
+        assert_eq!(result, Err("real-transport-r6-approval-gate-unsealed"));
+        assert_eq!(calls.get(), 0);
+        assert!(!R6_APPROVAL_GATE_SEALED);
+        assert!(R6_APPROVAL_COMMIT.is_empty());
+        assert!(R6_APPROVAL_ARTIFACT_HASH.is_empty());
+    }
+
+    #[test]
+    fn r6_historical_and_arbitrary_approvals_cannot_satisfy_gate() {
+        for historical in [
+            W34B1_OPERATOR_APPROVAL_COMMIT,
+            W34B1_R2_RENEWED_OPERATOR_APPROVAL_COMMIT,
+        ] {
+            let mut receipt = r6_fixture();
+            receipt.approval.approval_artifact_commit = historical.to_string();
+            refresh_r6_approval_hash(&mut receipt);
+            let gate = R6ApprovalGateConfig {
+                sealed: true,
+                approval_commit: historical,
+                approval_artifact_hash: &receipt.approval.approval_core_hash,
+            };
+            assert_eq!(
+                validate_r6_approval_gate(&receipt, gate),
+                Err("real-transport-r6-historical-approval-refused")
+            );
+        }
+
+        let receipt = r6_fixture();
+        let gate = R6ApprovalGateConfig {
+            sealed: true,
+            approval_commit: "7777777777777777777777777777777777777777",
+            approval_artifact_hash: &receipt.approval.approval_core_hash,
+        };
+        assert_eq!(
+            validate_r6_approval_gate(&receipt, gate),
+            Err("real-transport-r6-approval-commit-mismatch")
+        );
+        let wrong_approval_hash = h('f');
+        let gate = R6ApprovalGateConfig {
+            sealed: true,
+            approval_commit: &receipt.approval.approval_artifact_commit,
+            approval_artifact_hash: &wrong_approval_hash,
+        };
+        assert_eq!(
+            validate_r6_approval_gate(&receipt, gate),
+            Err("real-transport-r6-approval-hash-mismatch")
+        );
+    }
+
+    #[test]
+    fn r6_burned_r4_and_r5_hashes_are_denied_before_schema_or_callback() {
+        let receipt = r6_fixture();
+        let context = r6_context(&receipt);
+        let gate = r6_gate(&receipt);
+        let calls = Cell::new(0);
+        for (raw, hash) in [
+            (
+                include_str!(
+                    "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r4-write-grade-receipt-core.json"
+                ),
+                R6_R4_BURNED_RECEIPT_CORE_HASH,
+            ),
+            (
+                include_str!(
+                    "../../../../../release-evidence/2026-07-12/real-transport-w3-4b-2-r5-write-grade-receipt-core.json"
+                ),
+                R6_R5_BURNED_RECEIPT_CORE_HASH,
+            ),
+        ] {
+            assert_eq!(
+                dispatch_r6_execution_preflight_with_gate(raw, hash, context, gate, |_, _| {
+                    calls.set(calls.get() + 1)
+                }),
+                Err("real-transport-r6-burned-receipt-denied")
+            );
+        }
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn r6_runtime_e6_build_token_and_policy_mismatches_fail_closed() {
+        let mut receipt = r6_fixture();
+        assert_eq!(dispatch_r6_fixture(&receipt), Ok(()));
+
+        receipt.runtime.e6_commit = "0000000000000000000000000000000000000000".to_string();
+        refresh_r6_approval_hash(&mut receipt);
+        assert_eq!(
+            dispatch_r6_fixture(&receipt),
+            Err("real-transport-r6-e6-binding-mismatch")
+        );
+
+        let receipt = r6_fixture();
+        let mut context = r6_context(&receipt);
+        context.approved_runtime_commit = "0000000000000000000000000000000000000000";
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(
+                &serde_json::to_string(&receipt).expect("serialize"),
+                &r6_receipt_core_hash(&receipt).expect("hash"),
+                context,
+                r6_gate(&receipt),
+                |_, _| (),
+            ),
+            Err("real-transport-r6-runtime-binding-mismatch")
+        );
+
+        let mut context = r6_context(&receipt);
+        context.embedded_build_git_sha = "1111111111111111111111111111111111111111";
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(
+                &serde_json::to_string(&receipt).expect("serialize"),
+                &r6_receipt_core_hash(&receipt).expect("hash"),
+                context,
+                r6_gate(&receipt),
+                |_, _| (),
+            ),
+            Err("real-transport-r6-runtime-binding-mismatch")
+        );
+
+        let mut context = r6_context(&receipt);
+        context.build_dirty = true;
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(
+                &serde_json::to_string(&receipt).expect("serialize"),
+                &r6_receipt_core_hash(&receipt).expect("hash"),
+                context,
+                r6_gate(&receipt),
+                |_, _| (),
+            ),
+            Err("real-transport-r6-dirty-build-refused")
+        );
+
+        let mut context = r6_context(&receipt);
+        context.build_profile = R6BuildProfile::Release;
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(
+                &serde_json::to_string(&receipt).expect("serialize"),
+                &r6_receipt_core_hash(&receipt).expect("hash"),
+                context,
+                r6_gate(&receipt),
+                |_, _| (),
+            ),
+            Err("real-transport-r6-e6-binding-mismatch")
+        );
+
+        let wrong_token_hash = h('f');
+        let mut context = r6_context(&receipt);
+        context.computed_one_shot_token_hash = &wrong_token_hash;
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(
+                &serde_json::to_string(&receipt).expect("serialize"),
+                &r6_receipt_core_hash(&receipt).expect("hash"),
+                context,
+                r6_gate(&receipt),
+                |_, _| (),
+            ),
+            Err("real-transport-r6-token-commitment-mismatch")
+        );
+
+        let mut receipt = r6_fixture();
+        receipt.ceremony_policy.ordered_sequence.swap(0, 1);
+        assert_eq!(
+            dispatch_r6_fixture(&receipt),
+            Err("real-transport-r6-method-policy-invalid")
+        );
+        let mut receipt = r6_fixture();
+        receipt.ceremony_policy.attempt_ceilings.readback_get = 2;
+        assert_eq!(
+            dispatch_r6_fixture(&receipt),
+            Err("real-transport-r6-method-policy-invalid")
+        );
+        let mut receipt = r6_fixture();
+        receipt.ceremony_policy.readiness_changes_prohibited = false;
+        assert_eq!(
+            dispatch_r6_fixture(&receipt),
+            Err("real-transport-r6-fail-closed-policy-invalid")
+        );
+
+        let mut receipt = r6_fixture();
+        receipt.runtime.approved_final_runtime_commit =
+            "1111111111111111111111111111111111111111".to_string();
+        receipt.runtime.required_embedded_build_git_sha =
+            receipt.runtime.approved_final_runtime_commit.clone();
+        receipt
+            .lifecycle_policy
+            .consumed_marker_binding
+            .approved_runtime_commit = receipt.runtime.approved_final_runtime_commit.clone();
+        assert_eq!(
+            dispatch_r6_fixture(&receipt),
+            Err("real-transport-r6-approval-core-hash-mismatch")
+        );
+    }
+
+    #[test]
+    fn r6_forbidden_method_injection_is_rejected_by_typed_parser() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize receipt");
+        let injected = raw.replacen("\"PROPFIND\"", "\"OPTIONS\"", 1);
+        assert_eq!(
+            parse_r6_receipt_for_execution(&injected, &h('a')),
+            Err("real-transport-r6-strict-receipt-invalid")
+        );
+    }
+
+    #[test]
+    fn r6_expiry_clock_skew_and_duplicate_invocation_are_fail_closed() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize receipt");
+        let hash = r6_receipt_core_hash(&receipt).expect("hash receipt");
+        let gate = r6_gate(&receipt);
+
+        let mut context = r6_context(&receipt);
+        context.now_utc = "2026-07-13T20:02:00Z";
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(&raw, &hash, context, gate, |_, _| ()),
+            Ok(())
+        );
+        context.now_utc = "2026-07-13T20:02:01Z";
+        assert_eq!(
+            dispatch_r6_execution_preflight_with_gate(&raw, &hash, context, gate, |_, _| ()),
+            Err("real-transport-r6-receipt-or-approval-expired")
+        );
+
+        for state in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let mut context = r6_context(&receipt);
+            context.receipt_consumed = state.0;
+            context.receipt_invoked = state.1;
+            context.consumed_marker_exists = state.2;
+            assert_eq!(
+                dispatch_r6_execution_preflight_with_gate(&raw, &hash, context, gate, |_, _| ()),
+                Err("real-transport-r6-receipt-already-consumed-or-invoked")
+            );
+        }
+
+        let mut expired = r6_fixture();
+        expired.approval.approval_expiry_utc = "2026-07-13T12:00:00Z".to_string();
+        expired.lifecycle_policy.receipt_expiry_utc = "2026-07-13T12:00:00Z".to_string();
+        expired.lifecycle_policy.receipt_mint_utc = "2026-07-13T11:30:00Z".to_string();
+        refresh_r6_approval_hash(&mut expired);
+        assert_eq!(
+            dispatch_r6_fixture(&expired),
+            Err("real-transport-r6-receipt-or-approval-expired")
+        );
+    }
+
+    #[test]
+    fn r6_all_pre_dispatch_failures_have_zero_after_preflight_calls() {
+        let receipt = r6_fixture();
+        let raw = serde_json::to_string(&receipt).expect("serialize receipt");
+        let hash = r6_receipt_core_hash(&receipt).expect("receipt hash");
+        let calls = Cell::new(0);
+        let failures = [
+            dispatch_r6_execution_preflight_with_gate(
+                &raw,
+                &h('f'),
+                r6_context(&receipt),
+                r6_gate(&receipt),
+                |_, _| calls.set(calls.get() + 1),
+            ),
+            dispatch_r6_execution_preflight_with_gate(
+                &raw,
+                &hash,
+                r6_context(&receipt),
+                R6ApprovalGateConfig::production(),
+                |_, _| calls.set(calls.get() + 1),
+            ),
+        ];
+        assert!(failures.iter().all(Result::is_err));
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn existing_consumed_marker_remains_before_first_live_network_call() {
+        let source = include_str!("real_transport_capability_probe.rs");
+        let live_start = source
+            .find("fn evaluate_first_write_live_with_client")
+            .expect("live evaluator");
+        let live = &source[live_start..];
+        let marker = live
+            .find("write_first_write_apply_intent_marker")
+            .expect("marker call");
+        let first_network = live
+            .find("client.propfind_absence")
+            .expect("first network client call");
+        assert!(marker < first_network);
     }
 
     #[test]
