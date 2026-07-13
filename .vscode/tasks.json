@@ -2,6 +2,19 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "H2O: 0) ⬜ META / A) Generate File Lists (workspace + git + parent workspace)",
+      "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces. Writes to outer cockpit-pro/meta/reports/ post-8J-2.",
+      "type": "shell",
+      "command": "mkdir -p \"${workspaceFolder}/../meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder; post-5B contains only h2o-source/; dev-server absorbed into apps/dev-server/) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/../meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/../meta/reports/file-list.txt'",
+      "options": {
+        "env": {
+          "H2O_META_DIR": "${workspaceFolder}/../meta",
+          "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "H2O: 1) 🟦 Common / A) Sync dev-order (folder -> TSV + views)",
       "detail": "EXT workspace prerequisite: sync config/dev-order.tsv and views from current folder/script order.",
       "type": "shell",
@@ -20,6 +33,24 @@
       "detail": "Checks dependency manifest, critical group order, cycles, phase violations, and proxy-pack drift before extension build.",
       "type": "shell",
       "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_ORDER_FILE=\"${workspaceFolder}/config/dev-order.tsv\" && export H2O_DEPS_FILE=\"${workspaceFolder}/config/loader-deps.json\" && export H2O_PROXY_PACK_FILE=\"${workspaceFolder}/apps/dev-server/dev_output/proxy/_paste-pack.ext.txt\" && node \"${workspaceFolder}/tools/loader/validate-loader-order.mjs\" && echo \"\" && echo \"✅ H2O Loader Order Validation Done\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
+      "detail": "⚡ Quick prerequisite: runs the direct dev-rebuild entrypoint (sync + aliases + proxy + validation).",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/dev/dev-rebuild.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "H2O_SRC_DIR": "${workspaceFolder}",
+          "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
+          "H2O_SERVER_DIR": "${workspaceFolder}/apps/dev-server"
+        }
+      },
       "problemMatcher": []
     },
     {
@@ -63,54 +94,6 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)",
-      "detail": "Ops Panel preview step: builds apps/extensions/chatgpt/chrome/ops-panel (separate extension icon scaffold).",
-      "type": "shell",
-      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_PANEL_OUT_DIR=\"${workspaceFolder}/apps/extensions/chatgpt/chrome/ops-panel\" && node \"${workspaceFolder}/tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs\" && echo \"\" && echo \"✅ H2O Ops Panel Preview Extension Built\" && echo \"   Folder: ${workspaceFolder}/apps/extensions/chatgpt/chrome/ops-panel\"",
-      "problemMatcher": []
-    },
-    {
-      "label": "H2O: 3) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)",
-      "detail": "Desk extension step: builds apps/extensions/chatgpt/chrome/desk (MV3 side panel helper extension).",
-      "type": "process",
-      "command": "node",
-      "args": [
-        "${workspaceFolder}/tools/product/extensions/chatgpt/chrome/pack-desk.mjs"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
-      "detail": "⚡ Quick prerequisite: runs the direct dev-rebuild entrypoint (sync + aliases + proxy + validation).",
-      "type": "process",
-      "command": "node",
-      "args": [
-        "${workspaceFolder}/tools/dev/dev-rebuild.mjs"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "H2O_SRC_DIR": "${workspaceFolder}",
-          "H2O_ORDER_FILE": "${workspaceFolder}/config/dev-order.tsv",
-          "H2O_SERVER_DIR": "${workspaceFolder}/apps/dev-server"
-        }
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "H2O: 3) 🟫 DESK / B) ⚡ QUICK: Workflow for Desk Extension",
-      "detail": "⚡ Quick Desk workflow: runs the direct prerequisite rebuild, then DESK A.",
-      "dependsOrder": "sequence",
-      "dependsOn": [
-        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
-        "H2O: 3) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)"
-      ],
-      "problemMatcher": []
-    },
-    {
       "label": "H2O: 2) 🟩 DEV / C) ⚡ 🟢 QUICK ✅ RECOMMENDED: Workflow for V3 / armed / oauth-google",
       "detail": "⚡ Quick recommended dev workflow: runs the direct prerequisite rebuild, then DEV A (V3 armed oauth-google active path).",
       "dependsOrder": "sequence",
@@ -131,7 +114,37 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 4) 🟨 BOTH / A) ⚡ 🟢 QUICK Combined: Build V3 / armed / oauth-google + Ops Panel",
+      "label": "H2O: 3) 🟧 OPS PANEL / A) Build Ops Panel Extension (preview, unpacked)",
+      "detail": "Ops Panel preview step: builds apps/extensions/chatgpt/chrome/ops-panel (separate extension icon scaffold).",
+      "type": "shell",
+      "command": "export H2O_SRC_DIR=\"${workspaceFolder}\" && export H2O_PANEL_OUT_DIR=\"${workspaceFolder}/apps/extensions/chatgpt/chrome/ops-panel\" && node \"${workspaceFolder}/tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs\" && echo \"\" && echo \"✅ H2O Ops Panel Preview Extension Built\" && echo \"   Folder: ${workspaceFolder}/apps/extensions/chatgpt/chrome/ops-panel\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 4) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)",
+      "detail": "Desk extension step: builds apps/extensions/chatgpt/chrome/desk (MV3 side panel helper extension).",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/tools/product/extensions/chatgpt/chrome/pack-desk.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 4) 🟫 DESK / B) ⚡ QUICK: Workflow for Desk Extension",
+      "detail": "⚡ Quick Desk workflow: runs the direct prerequisite rebuild, then DESK A.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "H2O: 1) 🟦 Common / D) ⚡ QUICK Combined: Sync + Build + Validate (one click prerequisite)",
+        "H2O: 4) 🟫 DESK / A) Build Desk Extension (side panel, unpacked)"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 5) 🟨 BOTH / A) ⚡ 🟢 QUICK Combined: Build V3 / armed / oauth-google + Ops Panel",
       "detail": "⚡ Quick combined outputs: runs Common C, then DEV A (V3 armed oauth-google active path) + OPS PANEL A.",
       "dependsOrder": "sequence",
       "dependsOn": [
@@ -142,7 +155,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 4) 🟨 BOTH / B) ⚡ 🔵 QUICK FAST: Build Lean Dev Loader + Ops Panel",
+      "label": "H2O: 5) 🟨 BOTH / B) ⚡ 🔵 QUICK FAST: Build Lean Dev Loader + Ops Panel",
       "detail": "⚡ Quick faster combined outputs: runs Common C, then DEV B (🔵 Lean) + OPS PANEL A.",
       "dependsOrder": "sequence",
       "dependsOn": [
@@ -153,7 +166,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: #) 🟥 DEV / Z) ONE-BUTTON Rebuild V3 / armed / oauth-google (scripts + aliases + proxy + extension)",
+      "label": "H2O: 6) 🟥 REBUILD / A) ONE-BUTTON Rebuild V3 / armed / oauth-google (scripts + aliases + proxy + extension)",
       "detail": "One-button daily rebuild: common prereqs + V3 armed oauth-google extension (apps/extensions/chatgpt/chrome/dev-controls-oauth-google) + Prod Cockpit Pro (apps/extensions/chatgpt/chrome/prod) + Studio Launcher (apps/extensions/chatgpt/chrome/studio-launcher).",
       "type": "process",
       "command": "node",
@@ -171,7 +184,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 5) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
+      "label": "H2O: 7) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
       "detail": "⚡ Quick local archive: saves version/hash-changed files, including the full tools tree, into the outer cockpit-pro/archive/ folder (Phase 8I-2 path hardening — in-repo archive paths are refused).",
       "type": "shell",
       "command": "node \"${workspaceFolder}/tools/archive/archive-snapshot.mjs\" \"${workspaceFolder}\" && echo \"\" && echo \"✅ H2O Local Archive Snapshot Done\" && echo \"   Folder: ${workspaceFolder}/../archive\"",
@@ -183,7 +196,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: 5) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
+      "label": "H2O: 7) 🟪 ARCHIVE / B) Local Full Archive Snapshot (--all)",
       "detail": "Local archive utility: full snapshot of scripts, UI targets, and the entire current tools tree into today's archive folder under the outer cockpit-pro/archive/ root (Phase 8I-2).",
       "type": "process",
       "command": "node",
@@ -201,7 +214,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: ARCHIVE / One (Pick)",
+      "label": "H2O: 7) 🟪 ARCHIVE / C) One (Pick)",
       "type": "shell",
       "command": "npm run archive:pick",
       "options": {
@@ -212,7 +225,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: ARCHIVE / One (Recent)",
+      "label": "H2O: 7) 🟪 ARCHIVE / D) One (Recent)",
       "type": "shell",
       "command": "npm run archive:recent",
       "options": {
@@ -223,7 +236,7 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: ARCHIVE / One (By path prompt)",
+      "label": "H2O: 7) 🟪 ARCHIVE / E) One (By path prompt)",
       "type": "shell",
       "command": "npm run archive:one -- --file \"${input:archiveFile}\"",
       "options": {
@@ -234,91 +247,91 @@
       "problemMatcher": []
     },
     {
-      "label": "H2O: GIT / A) Auto Commit (stage + message + commit)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / A) GIT / Auto Commit (stage + message + commit)",
       "type": "shell",
       "command": "npm run commit:auto",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: GIT / B) Auto Commit (DRY RUN)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / B) GIT / Auto Commit (DRY RUN)",
       "type": "shell",
       "command": "npm run commit:auto:dry",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: GIT / C) Auto Commit (USE CODEX/GITLENS MESSAGE FILE)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / C) GIT / Auto Commit (USE CODEX/GITLENS MESSAGE FILE)",
       "type": "shell",
       "command": "npm run commit:auto:msg",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: GIT / D) Auto Commit (DRY RUN + FORCE)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / D) GIT / Auto Commit (DRY RUN + FORCE)",
       "type": "shell",
       "command": "npm run commit:auto:msg:dry -- --force",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: GIT / E) Release Commit Helper (pick script + size -> commit)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / E) GIT / Release Commit Helper (pick script + size -> commit)",
       "type": "shell",
       "command": "npm run commit:release",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: REV / Stamp @revision+@build (changed scripts)",
+      "label": "H2O: 8) ⬛ RELEASE OPS / F) REV / Stamp @revision+@build (changed scripts)",
       "type": "shell",
       "command": "npm run rev:stamp",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: RELEASE / A) Dry Run",
+      "label": "H2O: 8) ⬛ RELEASE OPS / G) RELEASE / Dry Run",
       "type": "shell",
       "command": "npm run release:dry",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: SHIP / A) Release + Archive Snapshot",
-      "type": "shell",
-      "command": "npm run ship",
-      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
-      "problemMatcher": []
-    },
-    {
-      "label": "H2O: SHIP / B) Dry",
+      "label": "H2O: 8) ⬛ RELEASE OPS / H) SHIP / Dry",
       "type": "shell",
       "command": "npm run ship:dry",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: SHIP / Commit+Bump+Changelog+Archive+Dashboard",
+      "label": "H2O: 8) ⬛ RELEASE OPS / I) SHIP / Release + Archive Snapshot",
+      "type": "shell",
+      "command": "npm run ship",
+      "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "H2O: 8) ⬛ RELEASE OPS / J) SHIP / Commit+Bump+Changelog+Archive+Dashboard",
       "type": "shell",
       "command": "npm run ship:commit",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs", "H2O_ARCHIVE_DIR": "${workspaceFolder}/../archive" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: DASHBOARD / Build (Manual)",
+      "label": "H2O: 9) 🔷 DASHBOARD / A) Build (Manual)",
       "type": "shell",
       "command": "npm run dashboard:build",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: DASHBOARD / Watch (Auto, 15s debounce)",
+      "label": "H2O: 9) 🔷 DASHBOARD / B) Watch (Auto, 15s debounce)",
       "type": "shell",
       "command": "npm run dashboard:watch",
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
       "problemMatcher": []
     },
     {
-      "label": "H2O: DASHBOARD / Watch (Auto, 5s debounce)",
+      "label": "H2O: 9) 🔷 DASHBOARD / C) Watch (Auto, 5s debounce)",
       "type": "shell",
       "command": "npm run dashboard:watch:fast",
       "isBackground": true,
@@ -326,19 +339,6 @@
         "runOn": "folderOpen"
       },
       "options": { "env": { "H2O_META_DIR": "${workspaceFolder}/../meta", "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs" } },
-      "problemMatcher": []
-    },
-    {
-      "label": "H2O: 0) ⬜ META / A) Generate File Lists (workspace + git + parent workspace)",
-      "detail": "Generates a file inventory report for the current workspace, tracked git files, and the parent folder including sibling workspaces. Writes to outer cockpit-pro/meta/reports/ post-8J-2.",
-      "type": "shell",
-      "command": "mkdir -p \"${workspaceFolder}/../meta/reports\" && { echo '### Workspace Files (${workspaceFolder}) ###'; find \"${workspaceFolder}\" -type f | sort; echo ''; echo '### Git Repo Files (tracked only) ###'; git -C \"${workspaceFolder}\" ls-files | sort; echo ''; echo '### Parent Workspace Files (parent folder; post-5B contains only h2o-source/; dev-server absorbed into apps/dev-server/) ###'; find \"${workspaceFolder}/..\" \\( -path '*/.git/*' -o -path '*/node_modules/*' -o -name '.DS_Store' \\) -prune -o -type f -print | sort; } > \"${workspaceFolder}/../meta/reports/file-list.txt\" && echo '' && echo '✅ File list generated:' && echo '   ${workspaceFolder}/../meta/reports/file-list.txt'",
-      "options": {
-        "env": {
-          "H2O_META_DIR": "${workspaceFolder}/../meta",
-          "H2O_CHANGELOGS_DIR": "${workspaceFolder}/../changelogs"
-        }
-      },
       "problemMatcher": []
     }
   ],
