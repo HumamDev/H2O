@@ -93,6 +93,7 @@
   const EV_DOM_H2O_HL_CHANGED = 'h2o:highlightsChanged';
 
   const EV_DOM_CGXUI_MSG_REMOUNTED = 'h2o:message-remounted';
+  const EV_DOM_STUDIO_READER_REFRESH_REQUESTED = 'evt:h2o:studio:reader-refresh-requested';
   const MSG_EXT_HIGHLIGHT_REQ = 'h2o-ext-live:highlight:req';
 
   /* ───────────────────────────── SEL_ ───────────────────────────── */
@@ -203,7 +204,13 @@
 
   const UTIL_getChatId = () => {
     const m = location.pathname.match(/\/c\/([a-z0-9-]+)/i);
-    return m ? m[1] : '';
+    if (m) return m[1];
+    try {
+      const frame = document.querySelector('#viewReader .cgFrame[data-chat-id], .cgFrame[data-chat-id]');
+      const id = String(frame?.getAttribute?.('data-chat-id') || frame?.dataset?.chatId || '').trim();
+      if (id) return id;
+    } catch {}
+    return '';
   };
 
   const UTIL_getConvoKey = () => {
@@ -2268,6 +2275,35 @@ mark.${CSS_CLS_HL}:hover{
     };
   };
 
+  const REST_mountedHighlightsAvailable = () => {
+    try {
+      const store = STORE_read() || {};
+      const byAnswer = store.itemsByAnswer || {};
+      const nodes = Array.from(document.querySelectorAll(SEL_MSG));
+      for (const node of nodes) {
+        const answerId = String(MSG_getAnswerId(node) || '').trim();
+        if (!answerId) continue;
+        const list = byAnswer[answerId];
+        if (Array.isArray(list) && list.length) return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  const REST_reloadStoreThenAllStable = (reason = 'studio-reader-loaded') => {
+    const finish = () => REST_allStable(reason);
+    try {
+      const store = W.H2O?.Studio?.store?.highlights;
+      if (REST_mountedHighlightsAvailable() || !store || typeof store.reload !== 'function') {
+        finish();
+        return;
+      }
+      Promise.resolve(store.reload()).then(finish, finish);
+    } catch {
+      finish();
+    }
+  };
+
   const REST_handleTargetedSignal = (payload, kind = 'restore') => {
     const detail = payload?.detail && typeof payload.detail === 'object' ? payload.detail : payload;
     const resolved = MSG_resolveTurnPair(detail);
@@ -2965,6 +3001,11 @@ mark.${CSS_CLS_HL}:hover{
     const onPaginationChanged = (payload) => {
       REST_handlePaginationSignal(payload);
     };
+    const onStudioReaderRefreshRequested = (payload) => {
+      const detail = payload?.detail && typeof payload.detail === 'object' ? payload.detail : {};
+      if (detail.source && detail.source !== 'reader-loaded') return;
+      REST_reloadStoreThenAllStable('studio-reader-loaded');
+    };
 
     for (const evtName of [
       EV_DOM_H2O_MSG_REMOUNTED_EVT,
@@ -2991,6 +3032,9 @@ mark.${CSS_CLS_HL}:hover{
       UTIL_on(W, evtName, onPaginationChanged, true);
       UTIL_onBus(evtName, onPaginationChanged);
     }
+
+    UTIL_on(W, EV_DOM_STUDIO_READER_REFRESH_REQUESTED, onStudioReaderRefreshRequested, true);
+    UTIL_onBus(EV_DOM_STUDIO_READER_REFRESH_REQUESTED, onStudioReaderRefreshRequested);
 
     UTIL_whenReady(SEL_MAIN, () => {
       REST_allStable('boot');

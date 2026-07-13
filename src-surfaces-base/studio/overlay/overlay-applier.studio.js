@@ -782,6 +782,129 @@
     return k === 'red' || k === 'green' || k === 'blue' || k === 'orange' || k === 'gray';
   }
 
+  function normalizeInlineQuoteText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getInlineReplayReaderRootForTarget(target, turnIdx) {
+    try {
+      var doc = global.document;
+      if (!doc || typeof doc.getElementById !== 'function') return null;
+      var reader = doc.getElementById('viewReader');
+      if (!reader || typeof reader.querySelectorAll !== 'function') return null;
+      var frame = (typeof reader.querySelector === 'function' && reader.querySelector('.cgFrame')) || reader;
+      var messageId = String(target && target.messageId || '').trim();
+      if (messageId) {
+        var nodes = frame.querySelectorAll('[data-message-id]');
+        for (var i = 0; i < nodes.length; i += 1) {
+          var node = nodes[i];
+          if (node && typeof node.getAttribute === 'function' && node.getAttribute('data-message-id') === messageId) {
+            return node;
+          }
+        }
+      }
+      var idx = Math.max(1, Math.floor(Number(turnIdx) || 0));
+      if (idx <= 0) return null;
+      var turns = frame.querySelectorAll('[data-turn]');
+      var turn = turns[idx - 1] || null;
+      if (!turn) return null;
+      if (typeof turn.querySelector === 'function') {
+        return turn.querySelector('[data-message-author-role], [data-message-id]') || turn;
+      }
+      return turn;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function flattenInlineReplayText(root) {
+    var out = { plain: '', map: [], length: 0 };
+    try {
+      var doc = global.document;
+      if (!root || !doc || typeof doc.createTreeWalker !== 'function') return out;
+      var NF = global.NodeFilter || { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 };
+      var walker = doc.createTreeWalker(root, NF.SHOW_TEXT, {
+        acceptNode: function (node) {
+          return node && node.nodeValue && node.nodeValue.length ? NF.FILTER_ACCEPT : NF.FILTER_REJECT;
+        },
+      });
+      var node = null;
+      while ((node = walker.nextNode())) {
+        var text = String(node.nodeValue || '');
+        var start = out.length;
+        var end = start + text.length;
+        out.map.push({ node: node, start: start, end: end });
+        out.plain += text;
+        out.length = end;
+      }
+    } catch (_) {
+      return { plain: '', map: [], length: 0 };
+    }
+    return out;
+  }
+
+  function normalizeInlineTextPos(pos) {
+    if (!isObject(pos)) return null;
+    var start = Number(pos.start);
+    var end = Number(pos.end);
+    if (!isFinite(start) || !isFinite(end) || end <= start) return null;
+    return { start: Math.floor(start), end: Math.floor(end) };
+  }
+
+  function inlineTextPosMatchesQuote(flat, pos, quote) {
+    try {
+      if (!flat || !pos || !quote || typeof quote.exact !== 'string') return false;
+      if (pos.start < 0 || pos.end > flat.length || pos.end <= pos.start) return false;
+      var actual = flat.plain.slice(pos.start, pos.end);
+      if (actual === quote.exact) return true;
+      return normalizeInlineQuoteText(actual) === normalizeInlineQuoteText(quote.exact);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function findInlineTextQuotePos(root, quote) {
+    try {
+      if (!root || !quote || typeof quote.exact !== 'string' || quote.exact === '') return null;
+      var flat = flattenInlineReplayText(root);
+      var exact = String(quote.exact || '');
+      var prefix = String(quote.prefix || '');
+      var suffix = String(quote.suffix || '');
+      var approx = isFinite(Number(quote.approx)) ? Math.max(0, Math.floor(Number(quote.approx))) : null;
+      var matches = [];
+      for (var idx = flat.plain.indexOf(exact); idx !== -1; idx = flat.plain.indexOf(exact, idx + 1)) {
+        var end = idx + exact.length;
+        if (prefix && !flat.plain.slice(Math.max(0, idx - prefix.length), idx).endsWith(prefix)) continue;
+        if (suffix && !flat.plain.slice(end, end + suffix.length).startsWith(suffix)) continue;
+        matches.push({ start: idx, dist: approx == null ? 0 : Math.abs(idx - approx) });
+      }
+      if (!matches.length) return null;
+      matches.sort(function (a, b) {
+        if (a.dist !== b.dist) return a.dist - b.dist;
+        return a.start - b.start;
+      });
+      return { start: matches[0].start, end: matches[0].start + exact.length };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resolveInlineReplayTextPos(anchor, target, turnIdx) {
+    var fallbackPos = normalizeInlineTextPos(anchor && anchor.textPos);
+    var quote = isObject(anchor && anchor.textQuote) ? anchor.textQuote : null;
+    if (!quote || typeof quote.exact !== 'string' || quote.exact === '') return fallbackPos;
+
+    var root = getInlineReplayReaderRootForTarget(target, turnIdx);
+    if (!root) return fallbackPos;
+
+    var quotePos = findInlineTextQuotePos(root, quote);
+    if (quotePos) return quotePos;
+
+    var flat = flattenInlineReplayText(root);
+    if (fallbackPos && inlineTextPosMatchesQuote(flat, fallbackPos, quote)) return fallbackPos;
+    return null;
+  }
+
   /* ── Phase 5d-1 — pure inline-run segmenter (export foundation) ────────
    *
    * buildInlineRuns(bodyText, messageState, inlineState, opts) ->
@@ -977,7 +1100,7 @@
       if (Number(op.target.turnIdx) !== idx) continue;
 
       var anchor = isObject(op.target.anchor) ? op.target.anchor : {};
-      var pos = isObject(anchor.textPos) ? anchor.textPos : null;
+      var pos = resolveInlineReplayTextPos(anchor, op.target, idx);
       if (!pos) continue;
       var s = Number(pos.start);
       var e = Number(pos.end);
