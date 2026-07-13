@@ -184,6 +184,18 @@
       "problemMatcher": []
     },
     {
+      "label": "H2O: 6) 🟥 REBUILD / B) Desktop / Rebuild + Open Desktop Studio",
+      "type": "shell",
+      "command": "cd \"${workspaceFolder}\" && H2O_SRC_DIR=\"$PWD\" H2O_ORDER_FILE=\"$PWD/config/dev-order.tsv\" H2O_SERVER_DIR=\"$PWD/apps/dev-server\" node tools/dev/dev-all.mjs && cd apps/studio/desktop && npm run tauri:dev",
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
       "label": "H2O: 7) 🟪 ARCHIVE / A) ⚡ QUICK Local Archive Snapshot (version changes only)",
       "detail": "⚡ Quick local archive: saves version/hash-changed files, including the full tools tree, into the outer cockpit-pro/archive/ folder (Phase 8I-2 path hardening — in-repo archive paths are refused).",
       "type": "shell",
