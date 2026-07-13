@@ -853,7 +853,6 @@ pub struct R6ApprovalCore {
     pub constrained_descendant_authorization_descriptor: String,
     pub ceremony_policy_identifier: String,
     pub e6_commit: String,
-    pub approved_final_runtime_commit: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -2777,6 +2776,13 @@ fn parse_r6_receipt_for_execution(
         .map_err(|_| "real-transport-r6-strict-receipt-invalid")
 }
 
+#[allow(dead_code)]
+fn parse_r6_approval_core(raw_json: &str) -> Result<R6ApprovalCore, &'static str> {
+    let value = parse_duplicate_safe_json(raw_json)?;
+    serde_json::from_value::<R6ApprovalCore>(value)
+        .map_err(|_| "real-transport-r6-strict-approval-core-invalid")
+}
+
 fn contains_json_null(value: &JsonValue) -> bool {
     match value {
         JsonValue::Null => true,
@@ -2823,7 +2829,6 @@ fn r6_approval_core_from_receipt(receipt: &R6WriteGradeReceipt) -> R6ApprovalCor
             .clone(),
         ceremony_policy_identifier: receipt.approval.ceremony_policy_identifier.clone(),
         e6_commit: receipt.runtime.e6_commit.clone(),
-        approved_final_runtime_commit: receipt.runtime.approved_final_runtime_commit.clone(),
     }
 }
 
@@ -5272,6 +5277,111 @@ mod tests {
     }
 
     #[test]
+    fn r6_s1_2_approval_core_is_seven_field_strict_order_independent_and_hash_sensitive() {
+        let receipt = r6_fixture();
+        let approval = r6_approval_core_from_receipt(&receipt);
+        let value = serde_json::to_value(&approval).expect("approval core value");
+        let object = value.as_object().expect("approval core object");
+        let mut field_names = object.keys().map(String::as_str).collect::<Vec<_>>();
+        field_names.sort_unstable();
+        assert_eq!(
+            field_names,
+            [
+                "approvalArtifactIdentifier",
+                "ceremonyPolicyIdentifier",
+                "constrainedDescendantAuthorizationDescriptor",
+                "e6Commit",
+                "expiryUtc",
+                "mintUtc",
+                "schemaVersion",
+            ]
+        );
+        assert!(!object.contains_key("approvedFinalRuntimeCommit"));
+
+        let baseline_hash = r6_approval_core_hash(&approval).expect("approval core hash");
+        let reversed = reversed_json(&value);
+        let reversed_approval =
+            parse_r6_approval_core(&reversed).expect("reversed approval core parses");
+        assert_eq!(
+            r6_approval_core_hash(&reversed_approval).expect("reversed approval hash"),
+            baseline_hash
+        );
+
+        let removed = variants_with_one_object_field_removed(&value);
+        assert_eq!(removed.len(), 7);
+        for variant in removed {
+            assert_eq!(
+                parse_r6_approval_core(&variant.to_string()),
+                Err("real-transport-r6-strict-approval-core-invalid")
+            );
+        }
+
+        let changed = variants_with_one_leaf_changed(&value);
+        assert_eq!(changed.len(), 7);
+        for variant in changed {
+            let changed_approval =
+                parse_r6_approval_core(&variant.to_string()).expect("changed approval core parses");
+            assert_ne!(
+                r6_approval_core_hash(&changed_approval).expect("changed approval hash"),
+                baseline_hash,
+                "every approval-core field must affect the canonical hash"
+            );
+        }
+
+        let mut unknown = value.clone();
+        unknown["approvedFinalRuntimeCommit"] =
+            json!(receipt.runtime.approved_final_runtime_commit);
+        assert_eq!(
+            parse_r6_approval_core(&unknown.to_string()),
+            Err("real-transport-r6-strict-approval-core-invalid")
+        );
+        let mut null_required = value.clone();
+        null_required["e6Commit"] = JsonValue::Null;
+        assert_eq!(
+            parse_r6_approval_core(&null_required.to_string()),
+            Err("real-transport-r6-strict-approval-core-invalid")
+        );
+        let raw = serde_json::to_string(&approval).expect("approval core JSON");
+        let duplicate = raw.replacen("{", "{\"schemaVersion\":\"h2o.r6.approval.v1\",", 1);
+        assert_eq!(
+            parse_r6_approval_core(&duplicate),
+            Err("real-transport-r6-json-invalid-or-duplicate-key")
+        );
+    }
+
+    #[test]
+    fn r6_s1_2_runtime_commit_is_decoupled_from_approval_hash_but_bound_by_receipt_and_runtime() {
+        let receipt = r6_fixture();
+        let approval_hash =
+            r6_approval_core_hash(&r6_approval_core_from_receipt(&receipt)).expect("approval hash");
+        let receipt_hash = r6_receipt_core_hash(&receipt).expect("receipt hash");
+
+        let mut changed = receipt.clone();
+        changed.runtime.approved_final_runtime_commit =
+            "1111111111111111111111111111111111111111".to_string();
+        assert_eq!(
+            r6_approval_core_hash(&r6_approval_core_from_receipt(&changed))
+                .expect("changed approval hash"),
+            approval_hash
+        );
+        assert_ne!(
+            r6_receipt_core_hash(&changed).expect("changed receipt hash"),
+            receipt_hash
+        );
+        assert_eq!(
+            validate_r6_runtime_and_lineage(&changed, r6_context(&receipt)),
+            Err("real-transport-r6-runtime-binding-mismatch")
+        );
+
+        let mut value = serde_json::to_value(&receipt).expect("receipt value");
+        value["runtime"]
+            .as_object_mut()
+            .expect("runtime object")
+            .remove("approvedFinalRuntimeCommit");
+        assert!(serde_json::from_value::<R6WriteGradeReceipt>(value).is_err());
+    }
+
+    #[test]
     fn every_r6_required_field_is_strict_and_every_leaf_affects_hash_or_validity() {
         let receipt = r6_fixture();
         let value = serde_json::to_value(&receipt).expect("receipt value");
@@ -5515,15 +5625,9 @@ mod tests {
         let mut receipt = r6_fixture();
         receipt.runtime.approved_final_runtime_commit =
             "1111111111111111111111111111111111111111".to_string();
-        receipt.runtime.required_embedded_build_git_sha =
-            receipt.runtime.approved_final_runtime_commit.clone();
-        receipt
-            .lifecycle_policy
-            .consumed_marker_binding
-            .approved_runtime_commit = receipt.runtime.approved_final_runtime_commit.clone();
         assert_eq!(
             dispatch_r6_fixture(&receipt),
-            Err("real-transport-r6-approval-core-hash-mismatch")
+            Err("real-transport-r6-runtime-binding-mismatch")
         );
     }
 
