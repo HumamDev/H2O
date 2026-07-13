@@ -640,7 +640,8 @@
    *
    * Native ChatGPT owns physical hydration. This private ledger observes its
    * persistent turn shells and groups them into logical Q+A members, but it
-   * does not feed commitTurnDrafts(), existing getters, or any UI consumer.
+   * does not feed commitTurnDrafts(), existing getters, or any UI consumer
+   * unless an operator explicitly selects the in-memory CV-2 alternate source.
    */
   const CHAT_ATLAS_SHELL_SEL = 'section[data-testid^="conversation-turn-"]';
   const CHAT_ATLAS_PAGE_SIZE = 25;
@@ -666,6 +667,19 @@
     lastDirtyShellCount: 0,
     aliasAbsorbCount: 0,
     duplicateAliasCount: 0,
+    currentCrossMemberDuplicateCount: 0,
+    crossMemberAliasConflictCount: 0,
+    crossMemberAliasRepairCount: 0,
+    currentAliasConflictCount: 0,
+    historicalAliasConflictCount: 0,
+    pairingAdjacencyRejectCount: 0,
+    quarantinedAliases: new Set(),
+    quarantinedAliasResolutionCount: 0,
+    lastAliasConflict: null,
+    recentAliasConflicts: [],
+    lastPairingRejection: null,
+    recentPairingRejections: [],
+    completeShellMap: false,
     duplicateMemberCandidates: [],
     unboundShells: [],
     parityWithCurrentTurnRuntime: false,
@@ -679,8 +693,103 @@
     answerShellCount: 0,
   };
 
+  const CHAT_ATLAS_CANONICAL_SOURCE_LEGACY = 'legacy-durable-cache';
+  const CHAT_ATLAS_CANONICAL_SOURCE_LEDGER = 'chat-atlas-ledger';
+  const CHAT_ATLAS_CANONICAL_SOURCES = Object.freeze([
+    CHAT_ATLAS_CANONICAL_SOURCE_LEGACY,
+    CHAT_ATLAS_CANONICAL_SOURCE_LEDGER,
+  ]);
+  const CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT = 12;
+  const CHAT_ATLAS_DUAL_RUN_FIELDS = Object.freeze([
+    'count',
+    'order',
+    'stableIdentity',
+    'qId',
+    'primaryAId',
+    'answerIds',
+    '_aliasIds',
+    'turnNo',
+    'idx',
+    'noAnswer',
+    'fieldShape',
+    'missingInLegacy',
+    'missingInAdapter',
+    'duplicateIdentity',
+    'duplicateAlias',
+    'primaryRekey',
+  ]);
+
+  function createChatAtlasMismatchCounters() {
+    return Object.fromEntries(CHAT_ATLAS_DUAL_RUN_FIELDS.map((field) => [field, 0]));
+  }
+
+  const chatAtlasCanonicalSourceState = {
+    defaultSource: CHAT_ATLAS_CANONICAL_SOURCE_LEGACY,
+    activeSource: CHAT_ATLAS_CANONICAL_SOURCE_LEGACY,
+    effectiveSource: CHAT_ATLAS_CANONICAL_SOURCE_LEGACY,
+    switchCount: 0,
+    invalidSwitchCount: 0,
+    rejectedSwitchCount: 0,
+    canonicalMutationAttemptCount: 0,
+    lastSwitch: null,
+    lastInvalidSwitch: null,
+    lastRejectedSwitch: null,
+    latestLegacyRecords: [],
+    latestLegacyVersion: 0,
+    latestLegacyCapture: null,
+    legacyCaptureCount: 0,
+    lastSelection: null,
+  };
+
+  const chatAtlasDualRunState = {
+    ready: false,
+    comparisonCount: 0,
+    sequence: 0,
+    lastComparisonTimestamp: null,
+    lastReason: null,
+    legacyCount: 0,
+    adapterCount: 0,
+    countParity: false,
+    orderParity: false,
+    fieldShapeParity: false,
+    exactParity: false,
+    totalMismatchCount: 0,
+    currentMismatchCount: 0,
+    cleanComparisonStreak: 0,
+    mismatchCountersByField: createChatAtlasMismatchCounters(),
+    cumulativeMismatchCountersByField: createChatAtlasMismatchCounters(),
+    missingInLegacyCount: 0,
+    missingInAdapterCount: 0,
+    duplicateIdentityCount: 0,
+    duplicateAliasCount: 0,
+    primaryRekeyCount: 0,
+    recentMismatchSamples: [],
+    recentSkipSamples: [],
+    evidenceChatKey: '',
+    comparisonEligible: false,
+    comparisonActive: false,
+    lastSkipReason: null,
+    skippedComparisonCount: 0,
+    staleCaptureSkipCount: 0,
+    chatKeyMismatchSkipCount: 0,
+    generationMismatchSkipCount: 0,
+    reentrantSkipCount: 0,
+    rebaseCount: 0,
+    lastRebaseTimestamp: null,
+    lastRebaseReason: null,
+    comparedLedgerVersion: null,
+    comparedCaptureSequence: null,
+    instrumentationErrorCount: 0,
+    lastInstrumentationError: null,
+    warnings: [],
+  };
+
   function chatAtlasNow() {
     try { return performance.now(); } catch { return Date.now(); }
+  }
+
+  function chatAtlasCurrentChatKey() {
+    return String(H2O.util?.getChatId?.() || D.location?.pathname || '');
   }
 
   function chatAtlasNormalizeId(value) {
@@ -731,6 +840,17 @@
       }
     } catch { roleNode = null; }
 
+    const shellTurnId = chatAtlasNormalizeId(shell.getAttribute?.('data-turn-id')) || null;
+    const testId = String(shell.getAttribute?.(ATTR_TESTID) || '');
+    const shellOrdinal = Math.max(0, Number(testId.match(/conversation-turn-(\d+)/)?.[1] || 0) || 0);
+    const flowRef = shell.closest?.('main') || shell.ownerDocument?.body || null;
+    const messageId = roleNode?.isConnected
+      ? (chatAtlasNormalizeId(
+        roleNode.getAttribute?.(ATTR_MESSAGE_ID)
+        || roleNode.dataset?.messageId
+        || '',
+      ) || null)
+      : null;
     const aliases = new Set();
     const add = (value) => {
       const id = chatAtlasNormalizeId(value);
@@ -747,11 +867,16 @@
     return {
       shell,
       shellIndex: index,
+      testId,
+      shellOrdinal,
+      flowRef,
       role,
       roleNode: roleNode?.isConnected ? roleNode : null,
       hydrated: !!(roleNode && roleNode.isConnected),
       aliases,
-      preferredId: Array.from(aliases)[0] || null,
+      shellTurnId,
+      messageId,
+      currentId: messageId || shellTurnId || null,
     };
   }
 
@@ -818,12 +943,16 @@
       canonicalRecords,
       canonicalShellBindings,
       canonicalVersion: turnState.version,
+      completeShellMap: shells.length > 0
+        && unbound.length === 0
+        && evidence.length === shells.length,
       readMs: Math.max(0, chatAtlasNow() - started),
     };
   }
 
   function chatAtlasPairEvidence(evidence) {
     const pairs = [];
+    const rejectedAssistants = [];
     let current = null;
     for (const shellEvidence of Array.isArray(evidence) ? evidence : []) {
       if (shellEvidence.role === 'user') {
@@ -831,13 +960,33 @@
         pairs.push(current);
         continue;
       }
-      if (!current) {
-        current = { question: null, answers: [] };
-        pairs.push(current);
+      const previousShell = current
+        ? (current.answers[current.answers.length - 1] || current.question)
+        : null;
+      const sameFlow = !!previousShell?.flowRef && previousShell.flowRef === shellEvidence.flowRef;
+      const adjacentShell = Number(shellEvidence.shellIndex) === Number(previousShell?.shellIndex) + 1;
+      const adjacentOrdinal = !previousShell?.shellOrdinal
+        || !shellEvidence.shellOrdinal
+        || shellEvidence.shellOrdinal === previousShell.shellOrdinal + 1;
+      if (!current || !previousShell || !sameFlow || !adjacentShell || !adjacentOrdinal) {
+        rejectedAssistants.push({
+          shellIndex: shellEvidence.shellIndex,
+          shellOrdinal: shellEvidence.shellOrdinal || null,
+          testId: shellEvidence.testId || '',
+          previousShellIndex: previousShell?.shellIndex ?? null,
+          previousShellOrdinal: previousShell?.shellOrdinal || null,
+          reason: !current || !previousShell
+            ? 'assistant-without-question'
+            : (!sameFlow
+              ? 'assistant-flow-mismatch'
+              : (!adjacentShell ? 'assistant-shell-not-adjacent' : 'assistant-ordinal-not-adjacent')),
+        });
+        current = null;
+        continue;
       }
       current.answers.push(shellEvidence);
     }
-    return pairs;
+    return { pairs, rejectedAssistants };
   }
 
   function chatAtlasBuildOwnerMap(records, aliasFn) {
@@ -851,56 +1000,319 @@
     return owners;
   }
 
-  function chatAtlasPairAliases(pair) {
-    const aliases = new Set();
-    for (const value of pair?.question?.aliases || []) aliases.add(value);
-    for (const answer of pair?.answers || []) {
-      for (const value of answer?.aliases || []) aliases.add(value);
-    }
-    return aliases;
+  function chatAtlasQuestionEvidenceAliases(pair) {
+    return chatAtlasCv2CurrentIds([
+      pair?.question?.messageId,
+      pair?.question?.shellTurnId,
+      ...(pair?.question?.aliases || []),
+    ]);
   }
 
-  function chatAtlasUniqueCandidates(pair, shellOwners, aliasOwners) {
+  function chatAtlasMatchPreviousRecord(
+    pair,
+    previousByQuestionShell,
+    previousQuestionOwners,
+    usedPrevious,
+    quarantinedAliases,
+  ) {
     const candidates = new Set();
-    if (pair?.question?.shell && shellOwners.has(pair.question.shell)) {
-      candidates.add(shellOwners.get(pair.question.shell));
+    const shellCandidate = pair?.question?.shell
+      ? previousByQuestionShell.get(pair.question.shell)
+      : null;
+    if (shellCandidate) {
+      return usedPrevious.has(shellCandidate)
+        ? { record: null, basis: 'question-shell-already-used', candidates: [shellCandidate] }
+        : { record: shellCandidate, basis: 'question-shell', candidates: [shellCandidate] };
     }
-    for (const answer of pair?.answers || []) {
-      if (answer?.shell && shellOwners.has(answer.shell)) candidates.add(shellOwners.get(answer.shell));
+    for (const alias of chatAtlasQuestionEvidenceAliases(pair)) {
+      if (quarantinedAliases.has(alias)) continue;
+      for (const owner of previousQuestionOwners.get(alias) || []) candidates.add(owner);
     }
-    for (const alias of chatAtlasPairAliases(pair)) {
-      const owners = aliasOwners.get(alias);
-      if (owners?.size === 1) candidates.add(Array.from(owners)[0]);
+    if (candidates.size !== 1) {
+      return { record: null, basis: candidates.size ? 'ambiguous-question-alias' : 'no-positive-question-match', candidates: Array.from(candidates) };
     }
-    return candidates;
+    const record = Array.from(candidates)[0];
+    return usedPrevious.has(record)
+      ? { record: null, basis: 'question-alias-already-used', candidates: [record] }
+      : { record, basis: 'question-alias', candidates: [record] };
   }
 
-  function chatAtlasAbsorbAliases(target, values) {
+  function chatAtlasCanonicalQuestionAliases(record) {
+    return chatAtlasCv2CurrentIds([record?.qId]);
+  }
+
+  function chatAtlasMatchCanonicalRecord(
+    member,
+    canonicalQuestionOwners,
+    canonicalShellBindings,
+    usedCanonical,
+    quarantinedAliases,
+  ) {
+    const shellCandidates = [];
+    for (const [canonical, bindings] of canonicalShellBindings) {
+      if (bindings?.qShell && bindings.qShell === member.question.shellRef) shellCandidates.push(canonical);
+    }
+    if (shellCandidates.length === 1) {
+      const record = shellCandidates[0];
+      return usedCanonical.has(record) ? null : record;
+    }
+    if (shellCandidates.length > 1) return null;
+
+    const candidates = new Set();
+    for (const alias of chatAtlasCv2CurrentIds([
+      member?.question?.qId,
+      ...(member?.question?.currentAliases || []),
+    ])) {
+      if (quarantinedAliases.has(alias)) continue;
+      for (const owner of canonicalQuestionOwners.get(alias) || []) candidates.add(owner);
+    }
+    if (candidates.size !== 1) return null;
+    const record = Array.from(candidates)[0];
+    return usedCanonical.has(record) ? null : record;
+  }
+
+  function chatAtlasMemberDiagnosticRef(member) {
+    return {
+      logicalMemberKey: String(member?.logicalMemberKey || ''),
+      turnNo: Number(member?.turnNo || 0) || null,
+    };
+  }
+
+  function chatAtlasRecordAliasConflict(sample, kind = 'historical') {
+    const event = {
+      timestamp: new Date().toISOString(),
+      flushSequence: Number(chatAtlasLedgerState.version || 0) + 1,
+      ...sample,
+    };
+    chatAtlasLedgerState.crossMemberAliasConflictCount += 1;
+    if (kind === 'current') chatAtlasLedgerState.currentAliasConflictCount += 1;
+    if (kind === 'historical') chatAtlasLedgerState.historicalAliasConflictCount += 1;
+    if (kind === 'repair') chatAtlasLedgerState.crossMemberAliasRepairCount += 1;
+    chatAtlasLedgerState.lastAliasConflict = event;
+    chatAtlasLedgerState.recentAliasConflicts.push(event);
+    if (chatAtlasLedgerState.recentAliasConflicts.length > CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+      chatAtlasLedgerState.recentAliasConflicts.splice(
+        0,
+        chatAtlasLedgerState.recentAliasConflicts.length - CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+      );
+    }
+  }
+
+  function chatAtlasRecordPairingRejection(rejection) {
+    const event = {
+      timestamp: new Date().toISOString(),
+      flushSequence: Number(chatAtlasLedgerState.version || 0) + 1,
+      ...rejection,
+    };
+    chatAtlasLedgerState.pairingAdjacencyRejectCount += 1;
+    chatAtlasLedgerState.lastPairingRejection = event;
+    chatAtlasLedgerState.recentPairingRejections.push(event);
+    if (chatAtlasLedgerState.recentPairingRejections.length > CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+      chatAtlasLedgerState.recentPairingRejections.splice(
+        0,
+        chatAtlasLedgerState.recentPairingRejections.length - CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+      );
+    }
+  }
+
+  function chatAtlasBuildCurrentAliasOwners(members) {
+    const owners = new Map();
+    const add = (member, side, path, values) => {
+      for (const alias of chatAtlasCv2CurrentIds(values)) {
+        if (!owners.has(alias)) owners.set(alias, new Map());
+        const memberKey = String(member.logicalMemberKey || '');
+        if (!owners.get(alias).has(memberKey)) {
+          owners.get(alias).set(memberKey, { member, sides: new Set(), paths: new Set() });
+        }
+        const evidence = owners.get(alias).get(memberKey);
+        evidence.sides.add(side);
+        evidence.paths.add(path);
+      }
+    };
+    for (const member of Array.isArray(members) ? members : []) {
+      add(member, 'question', 'question-current-alias', member.question.currentAliases);
+      add(member, 'question', 'question-shell-evidence', member.question.evidenceAliases);
+      add(member, 'question', 'current-qid', [member.question.currentQId]);
+      if (member.answer.currentProjectionSource === 'native-evidence') {
+        add(member, 'answer', 'answer-current-alias', member.answer.currentAliases);
+        add(member, 'answer', 'answer-shell-evidence', member.answer.evidenceAliases);
+        add(member, 'answer', 'answer-current-id', member.answer.currentAnswerIds);
+        add(member, 'answer', 'projected-primary', [member.answer.primaryAId]);
+      }
+    }
+    return owners;
+  }
+
+  function chatAtlasPrepareAliasQuarantine(currentOwners, priorQuarantine) {
+    const quarantine = new Set();
+    for (const alias of priorQuarantine || []) {
+      if ((currentOwners.get(alias)?.size || 0) !== 1) quarantine.add(alias);
+    }
+    let currentConflicts = 0;
+    for (const [alias, owners] of currentOwners) {
+      if (owners.size <= 1) continue;
+      currentConflicts += 1;
+      quarantine.add(alias);
+      const entries = Array.from(owners.values());
+      chatAtlasRecordAliasConflict({
+        alias,
+        winningMemberKey: null,
+        winningTurnNo: null,
+        losingMembers: entries.map((entry) => chatAtlasMemberDiagnosticRef(entry.member)),
+        evidenceClass: 'current',
+        evidencePaths: entries.flatMap((entry) => Array.from(entry.paths)),
+        action: 'quarantined',
+      }, 'current');
+    }
+    chatAtlasLedgerState.currentCrossMemberDuplicateCount = currentConflicts;
+    return quarantine;
+  }
+
+  function chatAtlasRecordAliasRepairOnce(
+    alias,
+    winner,
+    loser,
+    evidenceClass,
+    source,
+    repairEventKeys,
+  ) {
+    const winnerRef = chatAtlasMemberDiagnosticRef(winner);
+    const loserRef = chatAtlasMemberDiagnosticRef(loser);
+    const key = `${alias}|${winnerRef.logicalMemberKey}|${loserRef.logicalMemberKey}`;
+    if (repairEventKeys.has(key)) return;
+    repairEventKeys.add(key);
+    chatAtlasRecordAliasConflict({
+      alias,
+      winningMemberKey: winnerRef.logicalMemberKey,
+      winningTurnNo: winnerRef.turnNo,
+      losingMembers: [loserRef],
+      evidenceClass,
+      source,
+      action: 'removed-from-historical-owner',
+    }, 'repair');
+  }
+
+  function chatAtlasAbsorbHistoricalAliases(target, values, context) {
     let absorbed = 0;
-    for (const value of values || []) {
-      const id = chatAtlasNormalizeId(value);
-      if (!id || target.has(id)) continue;
-      target.add(id);
+    for (const alias of chatAtlasCv2CurrentIds(values)) {
+      const currentOwners = context.currentOwners.get(alias);
+      if (currentOwners?.size > 1) continue;
+      if (currentOwners?.size === 1) {
+        const winner = Array.from(currentOwners.values())[0].member;
+        if (winner !== context.member) {
+          chatAtlasRecordAliasRepairOnce(
+            alias,
+            winner,
+            context.member,
+            'current-wins-historical',
+            context.source,
+            context.repairEventKeys,
+          );
+          continue;
+        }
+      } else if (context.quarantine.has(alias)) {
+        continue;
+      }
+      if (target.has(alias)) continue;
+      target.add(alias);
       absorbed += 1;
     }
     return absorbed;
   }
 
-  function chatAtlasMatchCanonicalRecord(member, canonicalOwners, canonicalShellBindings, usedCanonical) {
-    const candidates = new Set();
-    for (const alias of member.aliases) {
-      const owners = canonicalOwners.get(alias);
-      if (owners?.size === 1) candidates.add(Array.from(owners)[0]);
-    }
-    for (const [canonical, bindings] of canonicalShellBindings) {
-      const qShell = bindings?.qShell || null;
-      if (qShell && qShell === member.question.shellRef) candidates.add(canonical);
-      for (const aShell of bindings?.answerShells || []) {
-        if (aShell && aShell === member.answer.shellRef) candidates.add(canonical);
+  function chatAtlasRebuildResolverAliases(member) {
+    member.aliases = new Set([
+      ...(member.question.aliases || []),
+      ...(member.answer.aliases || []),
+      ...(member.resolverHistoryAliases || []),
+    ]);
+  }
+
+  function chatAtlasRemoveResolverAlias(member, alias) {
+    member.question.aliases.delete(alias);
+    member.answer.aliases.delete(alias);
+    member.resolverHistoryAliases.delete(alias);
+    member.aliases.delete(alias);
+  }
+
+  function chatAtlasRepairResolverOwnership(
+    members,
+    currentOwners,
+    quarantine,
+    repairEventKeys,
+  ) {
+    for (const member of members) chatAtlasRebuildResolverAliases(member);
+    const resolverOwners = chatAtlasBuildOwnerMap(members, (member) => member.aliases);
+    for (const [alias, owners] of resolverOwners) {
+      if (owners.size <= 1) continue;
+      const current = currentOwners.get(alias);
+      if (current?.size === 1) {
+        const winner = Array.from(current.values())[0].member;
+        for (const loser of owners) {
+          if (loser === winner) continue;
+          chatAtlasRemoveResolverAlias(loser, alias);
+          chatAtlasRecordAliasRepairOnce(
+            alias,
+            winner,
+            loser,
+            'current-wins-historical',
+            'final-resolver-repair',
+            repairEventKeys,
+          );
+        }
+        continue;
+      }
+      quarantine.add(alias);
+      const ownerList = Array.from(owners);
+      for (const member of ownerList) chatAtlasRemoveResolverAlias(member, alias);
+      if (!current || current.size <= 1) {
+        chatAtlasRecordAliasConflict({
+          alias,
+          winningMemberKey: null,
+          winningTurnNo: null,
+          losingMembers: ownerList.map(chatAtlasMemberDiagnosticRef),
+          evidenceClass: 'historical',
+          action: 'quarantined',
+        }, 'historical');
       }
     }
-    const available = Array.from(candidates).filter((record) => !usedCanonical.has(record));
-    return available.length === 1 ? available[0] : null;
+    for (const alias of quarantine) {
+      for (const member of members) chatAtlasRemoveResolverAlias(member, alias);
+    }
+    for (const member of members) chatAtlasRebuildResolverAliases(member);
+    const finalOwners = chatAtlasBuildOwnerMap(members, (member) => member.aliases);
+    chatAtlasLedgerState.quarantinedAliasResolutionCount = Array.from(quarantine)
+      .filter((alias) => (finalOwners.get(alias)?.size || 0) > 0)
+      .length;
+    return finalOwners;
+  }
+
+  function chatAtlasRecordNoAnswerHistoryRepairs(
+    previousRecord,
+    member,
+    currentOwners,
+    repairEventKeys,
+  ) {
+    if (!previousRecord) return;
+    const questionAliases = new Set(previousRecord.question.aliases || []);
+    const dropped = chatAtlasCv2CurrentIds([
+      ...(previousRecord.answer.aliases || []),
+      ...Array.from(previousRecord.aliases || []).filter((alias) => !questionAliases.has(alias)),
+    ]);
+    for (const alias of dropped) {
+      const owners = currentOwners.get(alias);
+      if (owners?.size !== 1) continue;
+      const winner = Array.from(owners.values())[0].member;
+      if (winner === member) continue;
+      chatAtlasRecordAliasRepairOnce(
+        alias,
+        winner,
+        member,
+        'current-wins-no-answer-history',
+        'no-answer-history-drop',
+        repairEventKeys,
+      );
+    }
   }
 
   function chatAtlasMemberSignature(member) {
@@ -908,8 +1320,18 @@
       key: member.logicalMemberKey,
       turnNo: member.turnNo,
       qId: member.question.qId || '',
+      currentQId: member.question.currentQId || '',
       primaryAId: member.answer.primaryAId || '',
       aliases: Array.from(member.aliases).sort(),
+      questionShellTurnId: member.question.shellTurnId || '',
+      questionMessageId: member.question.messageId || '',
+      questionCurrentAliases: member.question.currentAliases || [],
+      questionEvidenceAliases: member.question.evidenceAliases || [],
+      answerCurrentIds: member.answer.currentAnswerIds || [],
+      answerCurrentAliases: member.answer.currentAliases || [],
+      answerEvidenceAliases: member.answer.evidenceAliases || [],
+      answerCurrentShells: member.answer.currentShells || [],
+      answerCurrentProjectionSource: member.answer.currentProjectionSource || 'none',
       qHydrated: member.question.hydrated,
       aHydrated: member.answer.hydrated,
       noAnswer: member.noAnswer,
@@ -922,21 +1344,721 @@
       turnNo: member.turnNo,
       question: {
         shellBinding: chatAtlasShellDescriptor(member.question.shellRef),
+        shellTurnId: member.question.shellTurnId || null,
+        messageId: member.question.messageId || null,
         qId: member.question.qId || null,
+        currentQId: member.question.currentQId || null,
+        projectedQId: member.question.qId || null,
+        currentAliases: (member.question.currentAliases || []).slice(),
+        evidenceAliases: (member.question.evidenceAliases || []).slice(),
         aliases: Array.from(member.question.aliases),
         hydrated: !!member.question.hydrated,
       },
       answer: {
         shellBinding: chatAtlasShellDescriptor(member.answer.shellRef),
+        shellTurnId: member.answer.shellTurnId || null,
+        messageId: member.answer.messageId || null,
         primaryAId: member.answer.primaryAId || null,
+        projectedPrimaryAId: member.answer.primaryAId || null,
+        currentAnswerIds: (member.answer.currentAnswerIds || []).slice(),
+        currentAliases: (member.answer.currentAliases || []).slice(),
+        evidenceAliases: (member.answer.evidenceAliases || []).slice(),
+        currentShells: (member.answer.currentShells || []).map((item) => ({ ...item })),
+        currentProjectionSource: member.answer.currentProjectionSource || 'none',
         aliases: Array.from(member.answer.aliases),
         hydrated: !!member.answer.hydrated,
       },
+      resolverAliases: Array.from(member.aliases),
       noAnswer: !!member.noAnswer,
       hydration: member.hydration,
       pageNo: member.pageNo,
       pageIndex: member.pageIndex,
     };
+  }
+
+  function chatAtlasCv2UniqueIds(values, opts = {}) {
+    const primary = chatAtlasNormalizeId(opts.primaryId) || null;
+    const ids = new Set();
+    for (const value of values || []) {
+      const id = chatAtlasNormalizeId(value);
+      if (id && id !== primary) ids.add(id);
+    }
+    const ordered = Array.from(ids).sort();
+    if (primary) ordered.push(primary);
+    return ordered;
+  }
+
+  function chatAtlasCv2CurrentIds(values) {
+    const ids = new Set();
+    for (const value of values || []) {
+      const id = chatAtlasNormalizeId(value);
+      if (id) ids.add(id);
+    }
+    return Array.from(ids);
+  }
+
+  function chatAtlasCv2RecordFromDraft(draft, index, logicalMemberKey = '', opts = {}) {
+    const turnNo = index + 1;
+    const qId = chatAtlasNormalizeId(draft?.qId) || null;
+    const rawAnswerIds = Array.isArray(draft?.answerIds) ? draft.answerIds : [];
+    const draftPrimary = chatAtlasNormalizeId(draft?.primaryAId)
+      || chatAtlasNormalizeId(rawAnswerIds[rawAnswerIds.length - 1])
+      || null;
+    const preserveProjectionOrder = !!opts.preserveProjectionOrder;
+    const answerIds = preserveProjectionOrder
+      ? chatAtlasCv2CurrentIds(rawAnswerIds)
+      : chatAtlasCv2UniqueIds(rawAnswerIds, { primaryId: draftPrimary });
+    const primaryAId = preserveProjectionOrder
+      ? (answerIds[answerIds.length - 1] || null)
+      : (draftPrimary && answerIds.includes(draftPrimary) ? draftPrimary : null);
+    const aliasIds = preserveProjectionOrder
+      ? chatAtlasCv2CurrentIds(draft?.aliasIds || draft?._aliasIds || [])
+      : chatAtlasCv2UniqueIds(draft?.aliasIds || draft?._aliasIds || []);
+    const noAnswer = typeof draft?.noAnswer === 'boolean'
+      ? draft.noAnswer
+      : !primaryAId && answerIds.length === 0;
+    return {
+      logicalMemberKey: String(logicalMemberKey || ''),
+      turnId: buildCanonicalTurnId({ turnNo, qId, primaryAId }),
+      turnNo,
+      idx: turnNo,
+      index: turnNo,
+      qId,
+      primaryAId,
+      answerIds,
+      _aliasIds: aliasIds,
+      aliasIds: aliasIds.slice(),
+      hasQuestion: !!qId,
+      hasAssistant: !noAnswer && answerIds.length > 0,
+      noAnswer,
+      live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
+    };
+  }
+
+  // Pure view adapter. Resolver aliases stay broad in the ledger; canonical
+  // fields project only the current native shell/message evidence.
+  function buildChatAtlasLedgerCanonicalRecords(members = chatAtlasLedgerState.members) {
+    const orderedMembers = Array.isArray(members)
+      ? members.slice().sort((a, b) => Number(a?.turnNo || 0) - Number(b?.turnNo || 0))
+      : [];
+    return orderedMembers.map((member, index) => {
+      const qId = chatAtlasNormalizeId(member?.question?.qId) || null;
+      const answerIds = member?.noAnswer
+        ? []
+        : chatAtlasCv2CurrentIds(member?.answer?.currentAnswerIds || []);
+      const primaryAId = member?.noAnswer
+        ? null
+        : (answerIds[answerIds.length - 1] || null);
+      const aliasIds = chatAtlasCv2CurrentIds([
+        ...(member?.question?.currentAliases || []),
+        ...(member?.answer?.currentAliases || []),
+      ]);
+      return chatAtlasCv2RecordFromDraft({
+        qId,
+        primaryAId,
+        answerIds,
+        aliasIds,
+        noAnswer: !!member?.noAnswer,
+      }, index, member?.logicalMemberKey || '', { preserveProjectionOrder: true });
+    });
+  }
+
+  function chatAtlasCv2RecordsToDrafts(records) {
+    return (Array.isArray(records) ? records : []).map((record, index) => ({
+      turnNo: index + 1,
+      qId: record?.qId || null,
+      primaryAId: record?.primaryAId || null,
+      answerIds: Array.isArray(record?.answerIds) ? record.answerIds.slice() : [],
+      aliasIds: Array.isArray(record?._aliasIds) ? record._aliasIds.slice() : [],
+      noAnswer: !!record?.noAnswer,
+      hasQuestion: !!record?.qId,
+      hasAssistant: !record?.noAnswer && !!record?.primaryAId,
+      live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
+    }));
+  }
+
+  function chatAtlasCv2RecordInstrumentationError(error, operation = 'instrumentation') {
+    try {
+      const timestamp = new Date().toISOString();
+      chatAtlasDualRunState.instrumentationErrorCount += 1;
+      chatAtlasDualRunState.lastInstrumentationError = {
+        operation: String(operation || 'instrumentation'),
+        timestamp,
+        message: String(error?.message || error || 'unknown'),
+      };
+    } catch {}
+  }
+
+  function chatAtlasCv2ResetBindingEvidence(chatKey, reason = 'chat-key-change') {
+    const key = String(chatKey || '');
+    if (chatAtlasDualRunState.evidenceChatKey === key) return;
+    chatAtlasDualRunState.evidenceChatKey = key;
+    chatAtlasDualRunState.ready = false;
+    chatAtlasDualRunState.sequence = 0;
+    chatAtlasDualRunState.lastComparisonTimestamp = null;
+    chatAtlasDualRunState.lastReason = null;
+    chatAtlasDualRunState.legacyCount = 0;
+    chatAtlasDualRunState.adapterCount = 0;
+    chatAtlasDualRunState.countParity = false;
+    chatAtlasDualRunState.orderParity = false;
+    chatAtlasDualRunState.fieldShapeParity = false;
+    chatAtlasDualRunState.exactParity = false;
+    chatAtlasDualRunState.totalMismatchCount = 0;
+    chatAtlasDualRunState.currentMismatchCount = 0;
+    chatAtlasDualRunState.cleanComparisonStreak = 0;
+    chatAtlasDualRunState.mismatchCountersByField = createChatAtlasMismatchCounters();
+    chatAtlasDualRunState.cumulativeMismatchCountersByField = createChatAtlasMismatchCounters();
+    chatAtlasDualRunState.missingInLegacyCount = 0;
+    chatAtlasDualRunState.missingInAdapterCount = 0;
+    chatAtlasDualRunState.duplicateIdentityCount = 0;
+    chatAtlasDualRunState.duplicateAliasCount = 0;
+    chatAtlasDualRunState.primaryRekeyCount = 0;
+    chatAtlasDualRunState.recentMismatchSamples = [];
+    chatAtlasDualRunState.recentSkipSamples = [];
+    chatAtlasDualRunState.comparisonEligible = false;
+    chatAtlasDualRunState.lastSkipReason = null;
+    chatAtlasDualRunState.comparedLedgerVersion = null;
+    chatAtlasDualRunState.comparedCaptureSequence = null;
+    chatAtlasDualRunState.warnings = [];
+    chatAtlasDualRunState.rebaseCount += 1;
+    chatAtlasDualRunState.lastRebaseTimestamp = new Date().toISOString();
+    chatAtlasDualRunState.lastRebaseReason = String(reason || 'chat-key-change');
+  }
+
+  function chatAtlasCv2RecordComparisonSkip(reason, detail = {}) {
+    const skipReason = String(reason || 'comparison-ineligible');
+    chatAtlasDualRunState.comparisonEligible = false;
+    chatAtlasDualRunState.lastSkipReason = skipReason;
+    chatAtlasDualRunState.skippedComparisonCount += 1;
+    if (skipReason === 'capture-generation-stale') {
+      chatAtlasDualRunState.staleCaptureSkipCount += 1;
+      chatAtlasDualRunState.generationMismatchSkipCount += 1;
+    } else if (skipReason === 'chat-key-mismatch') {
+      chatAtlasDualRunState.chatKeyMismatchSkipCount += 1;
+    } else if (skipReason === 'comparison-reentrant') {
+      chatAtlasDualRunState.reentrantSkipCount += 1;
+    }
+    const sample = {
+      reason: skipReason,
+      timestamp: new Date().toISOString(),
+      ...detail,
+    };
+    chatAtlasDualRunState.recentSkipSamples.push(sample);
+    if (chatAtlasDualRunState.recentSkipSamples.length > CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+      chatAtlasDualRunState.recentSkipSamples.splice(
+        0,
+        chatAtlasDualRunState.recentSkipSamples.length - CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+      );
+    }
+    return { eligible: false, reason: skipReason };
+  }
+
+  function chatAtlasCv2CaptureLegacyDrafts(drafts) {
+    const records = (Array.isArray(drafts) ? drafts : [])
+      .map((draft, index) => chatAtlasCv2RecordFromDraft(draft, index));
+    const sequence = chatAtlasCanonicalSourceState.legacyCaptureCount + 1;
+    const chatKey = chatAtlasCurrentChatKey();
+    const capture = {
+      records,
+      chatKey,
+      sequence,
+      timestamp: new Date().toISOString(),
+      ledgerChatKey: String(chatAtlasLedgerState.chatKey || ''),
+      ledgerVersion: Number(chatAtlasLedgerState.version || 0),
+      ledgerFlushCount: Number(chatAtlasLedgerState.flushCount || 0),
+      canonicalTurnVersion: Number(turnState.version || 0),
+      ledgerPending: !!(
+        chatAtlasLedgerState.raf
+        || chatAtlasLedgerState.fullRebuildPending
+        || chatAtlasLedgerState.dirtyShells.size
+      ),
+    };
+    chatAtlasCanonicalSourceState.latestLegacyRecords = records;
+    chatAtlasCanonicalSourceState.latestLegacyVersion += 1;
+    chatAtlasCanonicalSourceState.legacyCaptureCount = sequence;
+    chatAtlasCanonicalSourceState.latestLegacyCapture = capture;
+    return capture;
+  }
+
+  function chatAtlasCv2ComparableIds(record) {
+    return new Set(chatAtlasCv2UniqueIds([
+      record?.turnId,
+      record?.qId,
+      record?.primaryAId,
+      ...(record?.answerIds || []),
+      ...(record?._aliasIds || []),
+    ]));
+  }
+
+  function chatAtlasCv2IdentityKey(record) {
+    const qId = chatAtlasNormalizeId(record?.qId);
+    if (qId) return `q:${qId}`;
+    const primaryAId = chatAtlasNormalizeId(record?.primaryAId);
+    if (primaryAId) return `a:${primaryAId}`;
+    const logicalMemberKey = String(record?.logicalMemberKey || '').trim();
+    if (logicalMemberKey) return `logical:${logicalMemberKey}`;
+    return `turn:${Math.max(0, Number(record?.turnNo || 0) || 0)}`;
+  }
+
+  function chatAtlasCv2OwnerMap(records, valueFn) {
+    const owners = new Map();
+    for (let index = 0; index < records.length; index += 1) {
+      for (const value of valueFn(records[index])) {
+        if (!owners.has(value)) owners.set(value, new Set());
+        owners.get(value).add(index);
+      }
+    }
+    return owners;
+  }
+
+  function chatAtlasCv2SortedIds(values) {
+    return chatAtlasCv2UniqueIds(values).sort();
+  }
+
+  function chatAtlasCv2ArraysEqual(left, right) {
+    const a = chatAtlasCv2SortedIds(left);
+    const b = chatAtlasCv2SortedIds(right);
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+  }
+
+  function chatAtlasCv2PushMismatch(counters, samples, field, detail) {
+    counters[field] = (counters[field] || 0) + 1;
+    if (samples.length < CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+      samples.push({ field, ...detail });
+    }
+  }
+
+  function chatAtlasCv2CompareCanonicalViews(legacyRecords, adapterRecords) {
+    const legacy = Array.isArray(legacyRecords) ? legacyRecords : [];
+    const adapter = Array.isArray(adapterRecords) ? adapterRecords : [];
+    const counters = createChatAtlasMismatchCounters();
+    const samples = [];
+    const legacyAliasOwners = chatAtlasCv2OwnerMap(legacy, chatAtlasCv2ComparableIds);
+    const legacyIdentityOwners = chatAtlasCv2OwnerMap(legacy, (record) => [chatAtlasCv2IdentityKey(record)]);
+    const adapterIdentityOwners = chatAtlasCv2OwnerMap(adapter, (record) => [chatAtlasCv2IdentityKey(record)]);
+    const legacyAllAliasOwners = chatAtlasCv2OwnerMap(legacy, chatAtlasCv2ComparableIds);
+    const adapterAllAliasOwners = chatAtlasCv2OwnerMap(adapter, chatAtlasCv2ComparableIds);
+    const usedLegacy = new Set();
+
+    if (legacy.length !== adapter.length) {
+      chatAtlasCv2PushMismatch(counters, samples, 'count', {
+        reason: 'record-count-mismatch',
+        legacyCount: legacy.length,
+        adapterCount: adapter.length,
+      });
+    }
+
+    for (const [identity, owners] of legacyIdentityOwners) {
+      if (owners.size > 1) chatAtlasCv2PushMismatch(counters, samples, 'duplicateIdentity', { source: 'legacy', identity, indexes: Array.from(owners) });
+    }
+    for (const [identity, owners] of adapterIdentityOwners) {
+      if (owners.size > 1) chatAtlasCv2PushMismatch(counters, samples, 'duplicateIdentity', { source: 'adapter', identity, indexes: Array.from(owners) });
+    }
+    for (const [alias, owners] of legacyAllAliasOwners) {
+      if (owners.size > 1) chatAtlasCv2PushMismatch(counters, samples, 'duplicateAlias', { source: 'legacy', alias, indexes: Array.from(owners) });
+    }
+    for (const [alias, owners] of adapterAllAliasOwners) {
+      if (owners.size > 1) chatAtlasCv2PushMismatch(counters, samples, 'duplicateAlias', { source: 'adapter', alias, indexes: Array.from(owners) });
+    }
+
+    for (let adapterIndex = 0; adapterIndex < adapter.length; adapterIndex += 1) {
+      const adapted = adapter[adapterIndex];
+      const candidates = new Set();
+      for (const id of chatAtlasCv2ComparableIds(adapted)) {
+        for (const legacyIndex of legacyAliasOwners.get(id) || []) {
+          if (!usedLegacy.has(legacyIndex)) candidates.add(legacyIndex);
+        }
+      }
+      let legacyIndex = candidates.size === 1 ? Array.from(candidates)[0] : -1;
+      if (legacyIndex < 0 && candidates.size === 0 && legacy[adapterIndex] && !usedLegacy.has(adapterIndex)) {
+        const fallback = legacy[adapterIndex];
+        if (!chatAtlasCv2ComparableIds(adapted).size && !chatAtlasCv2ComparableIds(fallback).size) {
+          legacyIndex = adapterIndex;
+        }
+      }
+      if (legacyIndex < 0) {
+        chatAtlasCv2PushMismatch(counters, samples, 'stableIdentity', {
+          adapterIndex,
+          logicalMemberKey: adapted?.logicalMemberKey || '',
+          turnNo: adapted?.turnNo || adapterIndex + 1,
+          reason: candidates.size > 1 ? 'ambiguous-legacy-identity' : 'no-record-local-identity-match',
+        });
+        chatAtlasCv2PushMismatch(counters, samples, 'missingInLegacy', {
+          adapterIndex,
+          logicalMemberKey: adapted?.logicalMemberKey || '',
+          turnNo: adapted?.turnNo || adapterIndex + 1,
+          reason: candidates.size > 1 ? 'ambiguous-legacy-identity' : 'legacy-record-not-found',
+          candidateIndexes: Array.from(candidates),
+        });
+        continue;
+      }
+      usedLegacy.add(legacyIndex);
+      const current = legacy[legacyIndex];
+      const context = {
+        logicalMemberKey: adapted?.logicalMemberKey || '',
+        adapterIndex,
+        legacyIndex,
+        turnNo: adapted?.turnNo || adapterIndex + 1,
+      };
+      if (legacyIndex !== adapterIndex) {
+        chatAtlasCv2PushMismatch(counters, samples, 'order', { ...context, reason: 'logical-order-mismatch' });
+      }
+      if (!current || typeof current !== 'object'
+        || !Array.isArray(current.answerIds)
+        || !Array.isArray(current._aliasIds)
+        || !adapted || typeof adapted !== 'object'
+        || !Array.isArray(adapted.answerIds)
+        || !Array.isArray(adapted._aliasIds)) {
+        chatAtlasCv2PushMismatch(counters, samples, 'fieldShape', { ...context, reason: 'required-field-shape-mismatch' });
+      }
+      for (const field of ['qId', 'primaryAId', 'turnNo', 'idx', 'noAnswer']) {
+        const left = field === 'qId' || field === 'primaryAId'
+          ? (chatAtlasNormalizeId(current?.[field]) || null)
+          : current?.[field];
+        const right = field === 'qId' || field === 'primaryAId'
+          ? (chatAtlasNormalizeId(adapted?.[field]) || null)
+          : adapted?.[field];
+        if (left !== right) {
+          chatAtlasCv2PushMismatch(counters, samples, field, { ...context, legacyValue: left, adapterValue: right });
+          if (field === 'primaryAId' && left && right) {
+            chatAtlasCv2PushMismatch(counters, samples, 'primaryRekey', {
+              ...context,
+              legacyPrimaryAId: left,
+              adapterPrimaryAId: right,
+            });
+          }
+        }
+      }
+      if (!chatAtlasCv2ArraysEqual(current?.answerIds, adapted?.answerIds)) {
+        chatAtlasCv2PushMismatch(counters, samples, 'answerIds', {
+          ...context,
+          legacyValue: chatAtlasCv2SortedIds(current?.answerIds),
+          adapterValue: chatAtlasCv2SortedIds(adapted?.answerIds),
+        });
+      }
+      if (!chatAtlasCv2ArraysEqual(current?._aliasIds, adapted?._aliasIds)) {
+        chatAtlasCv2PushMismatch(counters, samples, '_aliasIds', {
+          ...context,
+          legacyValue: chatAtlasCv2SortedIds(current?._aliasIds),
+          adapterValue: chatAtlasCv2SortedIds(adapted?._aliasIds),
+        });
+      }
+    }
+
+    for (let legacyIndex = 0; legacyIndex < legacy.length; legacyIndex += 1) {
+      if (usedLegacy.has(legacyIndex)) continue;
+      chatAtlasCv2PushMismatch(counters, samples, 'missingInAdapter', {
+        legacyIndex,
+        turnNo: legacy[legacyIndex]?.turnNo || legacyIndex + 1,
+        reason: 'adapter-record-not-found',
+      });
+    }
+
+    const currentMismatchCount = Object.values(counters).reduce((sum, value) => sum + value, 0);
+    return {
+      counters,
+      samples,
+      currentMismatchCount,
+      countParity: counters.count === 0,
+      orderParity: counters.order === 0 && counters.missingInLegacy === 0 && counters.missingInAdapter === 0,
+      fieldShapeParity: counters.fieldShape === 0,
+      exactParity: currentMismatchCount === 0,
+    };
+  }
+
+  function chatAtlasCv2ComparisonEligibility() {
+    if (chatAtlasDualRunState.comparisonActive) {
+      return chatAtlasCv2RecordComparisonSkip('comparison-reentrant');
+    }
+    const capture = chatAtlasCanonicalSourceState.latestLegacyCapture;
+    if (!capture || !Array.isArray(capture.records)) {
+      return chatAtlasCv2RecordComparisonSkip('missing-legacy-capture');
+    }
+    if (!chatAtlasLedgerState.ready || !chatAtlasLedgerState.members.length) {
+      return chatAtlasCv2RecordComparisonSkip('ledger-not-ready', {
+        captureSequence: capture.sequence,
+      });
+    }
+    const currentChatKey = chatAtlasCurrentChatKey();
+    const ledgerChatKey = String(chatAtlasLedgerState.chatKey || '');
+    if (!currentChatKey
+      || capture.chatKey !== currentChatKey
+      || ledgerChatKey !== currentChatKey
+      || capture.ledgerChatKey !== ledgerChatKey) {
+      return chatAtlasCv2RecordComparisonSkip('chat-key-mismatch', {
+        captureChatKey: capture.chatKey,
+        captureLedgerChatKey: capture.ledgerChatKey,
+        ledgerChatKey,
+        currentChatKey,
+        captureSequence: capture.sequence,
+      });
+    }
+    const currentLedgerVersion = Number(chatAtlasLedgerState.version || 0);
+    const currentLedgerFlushCount = Number(chatAtlasLedgerState.flushCount || 0);
+    const ledgerPending = !!(
+      chatAtlasLedgerState.raf
+      || chatAtlasLedgerState.fullRebuildPending
+      || chatAtlasLedgerState.dirtyShells.size
+    );
+    if (capture.ledgerPending
+      || ledgerPending
+      || Number(capture.ledgerVersion) !== currentLedgerVersion
+      || Number(capture.ledgerFlushCount) !== currentLedgerFlushCount) {
+      return chatAtlasCv2RecordComparisonSkip('capture-generation-stale', {
+        captureSequence: capture.sequence,
+        captureLedgerVersion: capture.ledgerVersion,
+        ledgerVersion: currentLedgerVersion,
+        captureLedgerFlushCount: capture.ledgerFlushCount,
+        ledgerFlushCount: currentLedgerFlushCount,
+        captureLedgerPending: !!capture.ledgerPending,
+        ledgerPending,
+      });
+    }
+    return {
+      eligible: true,
+      capture,
+      ledgerVersion: currentLedgerVersion,
+      ledgerFlushCount: currentLedgerFlushCount,
+      ledgerChatKey,
+    };
+  }
+
+  function chatAtlasRunCanonicalDualComparison(reason = 'ledger-update') {
+    let eligibility = null;
+    try {
+      eligibility = chatAtlasCv2ComparisonEligibility();
+    } catch (error) {
+      chatAtlasCv2RecordInstrumentationError(error, 'comparison-eligibility');
+      return { eligible: false, ok: false, reason: 'instrumentation-failed' };
+    }
+    if (!eligibility.eligible) return eligibility;
+    chatAtlasDualRunState.comparisonActive = true;
+    try {
+      const capture = eligibility.capture;
+      const legacy = capture.records;
+      const adapter = buildChatAtlasLedgerCanonicalRecords();
+      const result = chatAtlasCv2CompareCanonicalViews(legacy, adapter);
+      chatAtlasDualRunState.ready = true;
+      chatAtlasDualRunState.comparisonEligible = true;
+      chatAtlasDualRunState.comparisonCount += 1;
+      chatAtlasDualRunState.sequence = chatAtlasLedgerState.version;
+      chatAtlasDualRunState.lastComparisonTimestamp = new Date().toISOString();
+      chatAtlasDualRunState.lastReason = String(reason || 'ledger-update');
+      chatAtlasDualRunState.legacyCount = legacy.length;
+      chatAtlasDualRunState.adapterCount = adapter.length;
+      chatAtlasDualRunState.countParity = result.countParity;
+      chatAtlasDualRunState.orderParity = result.orderParity;
+      chatAtlasDualRunState.fieldShapeParity = result.fieldShapeParity;
+      chatAtlasDualRunState.exactParity = result.exactParity;
+      chatAtlasDualRunState.currentMismatchCount = result.currentMismatchCount;
+      chatAtlasDualRunState.totalMismatchCount += result.currentMismatchCount;
+      chatAtlasDualRunState.cleanComparisonStreak = result.exactParity
+        ? chatAtlasDualRunState.cleanComparisonStreak + 1
+        : 0;
+      chatAtlasDualRunState.mismatchCountersByField = { ...result.counters };
+      for (const field of CHAT_ATLAS_DUAL_RUN_FIELDS) {
+        chatAtlasDualRunState.cumulativeMismatchCountersByField[field] += result.counters[field] || 0;
+      }
+      chatAtlasDualRunState.missingInLegacyCount = result.counters.missingInLegacy;
+      chatAtlasDualRunState.missingInAdapterCount = result.counters.missingInAdapter;
+      chatAtlasDualRunState.duplicateIdentityCount = result.counters.duplicateIdentity;
+      chatAtlasDualRunState.duplicateAliasCount = result.counters.duplicateAlias;
+      chatAtlasDualRunState.primaryRekeyCount = result.counters.primaryRekey;
+      chatAtlasDualRunState.recentMismatchSamples = result.samples.slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT);
+      chatAtlasDualRunState.comparedLedgerVersion = eligibility.ledgerVersion;
+      chatAtlasDualRunState.comparedCaptureSequence = capture.sequence;
+      chatAtlasDualRunState.warnings = [];
+      return { eligible: true, exact: result.exactParity };
+    } catch (error) {
+      chatAtlasCv2RecordInstrumentationError(error, 'dual-run-comparison');
+      return { eligible: true, ok: false, reason: 'instrumentation-failed' };
+    } finally {
+      chatAtlasDualRunState.comparisonActive = false;
+    }
+  }
+
+  function chatAtlasCanonicalSourceDiagnostics() {
+    return {
+      defaultSource: chatAtlasCanonicalSourceState.defaultSource,
+      activeSource: chatAtlasCanonicalSourceState.activeSource,
+      effectiveSource: chatAtlasCanonicalSourceState.effectiveSource,
+      supportedSources: CHAT_ATLAS_CANONICAL_SOURCES.slice(),
+      switchCount: chatAtlasCanonicalSourceState.switchCount,
+      invalidSwitchCount: chatAtlasCanonicalSourceState.invalidSwitchCount,
+      rejectedSwitchCount: chatAtlasCanonicalSourceState.rejectedSwitchCount,
+      lastSourceSwitch: chatAtlasCanonicalSourceState.lastSwitch ? { ...chatAtlasCanonicalSourceState.lastSwitch } : null,
+      lastInvalidSwitch: chatAtlasCanonicalSourceState.lastInvalidSwitch ? { ...chatAtlasCanonicalSourceState.lastInvalidSwitch } : null,
+      lastRejectedSwitch: chatAtlasCanonicalSourceState.lastRejectedSwitch ? { ...chatAtlasCanonicalSourceState.lastRejectedSwitch } : null,
+      lastSelection: chatAtlasCanonicalSourceState.lastSelection ? { ...chatAtlasCanonicalSourceState.lastSelection } : null,
+      persisted: false,
+    };
+  }
+
+  function chatAtlasDualRunDiagnostics() {
+    const capture = chatAtlasCanonicalSourceState.latestLegacyCapture;
+    return {
+      ready: chatAtlasDualRunState.ready,
+      status: chatAtlasDualRunState.ready
+        ? (chatAtlasDualRunState.exactParity ? 'exact' : 'mismatch')
+        : 'not-ready',
+      comparisonCount: chatAtlasDualRunState.comparisonCount,
+      flushComparisonSequence: chatAtlasDualRunState.sequence,
+      lastComparisonTimestamp: chatAtlasDualRunState.lastComparisonTimestamp,
+      lastReason: chatAtlasDualRunState.lastReason,
+      legacyCount: chatAtlasDualRunState.legacyCount,
+      adapterCount: chatAtlasDualRunState.adapterCount,
+      countParity: chatAtlasDualRunState.countParity,
+      orderParity: chatAtlasDualRunState.orderParity,
+      fieldShapeParity: chatAtlasDualRunState.fieldShapeParity,
+      exactParity: chatAtlasDualRunState.exactParity,
+      totalMismatchCount: chatAtlasDualRunState.totalMismatchCount,
+      currentMismatchCount: chatAtlasDualRunState.currentMismatchCount,
+      cleanComparisonStreak: chatAtlasDualRunState.cleanComparisonStreak,
+      mismatchCountersByField: { ...chatAtlasDualRunState.mismatchCountersByField },
+      cumulativeMismatchCountersByField: { ...chatAtlasDualRunState.cumulativeMismatchCountersByField },
+      missingInLegacyCount: chatAtlasDualRunState.missingInLegacyCount,
+      missingInAdapterCount: chatAtlasDualRunState.missingInAdapterCount,
+      duplicateIdentityCount: chatAtlasDualRunState.duplicateIdentityCount,
+      duplicateAliasCount: chatAtlasDualRunState.duplicateAliasCount,
+      primaryRekeyCount: chatAtlasDualRunState.primaryRekeyCount,
+      recentMismatchSamples: chatAtlasDualRunState.recentMismatchSamples.map((sample) => ({ ...sample })),
+      recentSkipSamples: chatAtlasDualRunState.recentSkipSamples.map((sample) => ({ ...sample })),
+      mismatchSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+      evidenceChatKey: chatAtlasDualRunState.evidenceChatKey,
+      legacyCaptureChatKey: capture?.chatKey || '',
+      ledgerChatKey: String(chatAtlasLedgerState.chatKey || ''),
+      legacyCaptureSequence: capture?.sequence ?? null,
+      legacyCaptureCount: chatAtlasCanonicalSourceState.legacyCaptureCount,
+      legacyCaptureTimestamp: capture?.timestamp || null,
+      captureLedgerVersion: capture?.ledgerVersion ?? null,
+      captureLedgerFlushCount: capture?.ledgerFlushCount ?? null,
+      captureCanonicalTurnVersion: capture?.canonicalTurnVersion ?? null,
+      captureLedgerPending: capture?.ledgerPending ?? null,
+      comparedLedgerVersion: chatAtlasDualRunState.comparedLedgerVersion,
+      comparedCaptureSequence: chatAtlasDualRunState.comparedCaptureSequence,
+      comparisonEligible: chatAtlasDualRunState.comparisonEligible,
+      lastSkipReason: chatAtlasDualRunState.lastSkipReason,
+      skippedComparisonCount: chatAtlasDualRunState.skippedComparisonCount,
+      staleCaptureSkipCount: chatAtlasDualRunState.staleCaptureSkipCount,
+      chatKeyMismatchSkipCount: chatAtlasDualRunState.chatKeyMismatchSkipCount,
+      generationMismatchSkipCount: chatAtlasDualRunState.generationMismatchSkipCount,
+      reentrantSkipCount: chatAtlasDualRunState.reentrantSkipCount,
+      rebaseCount: chatAtlasDualRunState.rebaseCount,
+      lastRebaseTimestamp: chatAtlasDualRunState.lastRebaseTimestamp,
+      lastRebaseReason: chatAtlasDualRunState.lastRebaseReason,
+      instrumentationErrorCount: chatAtlasDualRunState.instrumentationErrorCount,
+      lastInstrumentationError: chatAtlasDualRunState.lastInstrumentationError
+        ? { ...chatAtlasDualRunState.lastInstrumentationError }
+        : null,
+      warnings: chatAtlasDualRunState.warnings.slice(),
+      domWriteCount: 0,
+      storageWriteCount: 0,
+      physicalExecutorCallCount: 0,
+      paginationExecutorCallCount: 0,
+      unmountExecutorCallCount: 0,
+    };
+  }
+
+  function getChatAtlasCanonicalSource() {
+    return chatAtlasCanonicalSourceState.activeSource;
+  }
+
+  function chatAtlasLedgerCanonicalSourceReady() {
+    const currentChatKey = chatAtlasCurrentChatKey();
+    return !!chatAtlasLedgerState.ready
+      && !!chatAtlasLedgerState.members.length
+      && chatAtlasLedgerState.chatKey === currentChatKey;
+  }
+
+  function setChatAtlasCanonicalSource(value) {
+    const requested = String(value || '').trim();
+    if (!CHAT_ATLAS_CANONICAL_SOURCES.includes(requested)) {
+      chatAtlasCanonicalSourceState.invalidSwitchCount += 1;
+      chatAtlasCanonicalSourceState.lastInvalidSwitch = {
+        requested,
+        activeSource: chatAtlasCanonicalSourceState.activeSource,
+        timestamp: new Date().toISOString(),
+        reason: 'unsupported-source',
+      };
+      return chatAtlasFreeze({ ok: false, reason: 'unsupported-source', ...chatAtlasCanonicalSourceDiagnostics() });
+    }
+    if (requested === chatAtlasCanonicalSourceState.activeSource) {
+      return chatAtlasFreeze({ ok: true, changed: false, ...chatAtlasCanonicalSourceDiagnostics() });
+    }
+    if (requested === CHAT_ATLAS_CANONICAL_SOURCE_LEDGER
+      && !chatAtlasLedgerCanonicalSourceReady()) {
+      chatAtlasCanonicalSourceState.rejectedSwitchCount += 1;
+      chatAtlasCanonicalSourceState.lastRejectedSwitch = {
+        requested,
+        activeSource: chatAtlasCanonicalSourceState.activeSource,
+        timestamp: new Date().toISOString(),
+        reason: 'ledger-not-ready',
+      };
+      return chatAtlasFreeze({ ok: false, reason: 'ledger-not-ready', ...chatAtlasCanonicalSourceDiagnostics() });
+    }
+
+    const previous = chatAtlasCanonicalSourceState.activeSource;
+    const switchedAt = new Date().toISOString();
+    chatAtlasCanonicalSourceState.activeSource = requested;
+    chatAtlasCanonicalSourceState.canonicalMutationAttemptCount += 1;
+    try {
+      buildTurns();
+      chatAtlasCanonicalSourceState.switchCount += 1;
+      chatAtlasCanonicalSourceState.lastSwitch = {
+        from: previous,
+        to: requested,
+        timestamp: switchedAt,
+        reason: 'operator',
+      };
+      return chatAtlasFreeze({ ok: true, changed: true, ...chatAtlasCanonicalSourceDiagnostics() });
+    } catch (error) {
+      const fallbackSource = requested === CHAT_ATLAS_CANONICAL_SOURCE_LEGACY
+        ? CHAT_ATLAS_CANONICAL_SOURCE_LEGACY
+        : previous;
+      chatAtlasCanonicalSourceState.activeSource = fallbackSource;
+      if (fallbackSource === CHAT_ATLAS_CANONICAL_SOURCE_LEGACY) {
+        chatAtlasCanonicalSourceState.effectiveSource = CHAT_ATLAS_CANONICAL_SOURCE_LEGACY;
+      }
+      chatAtlasCanonicalSourceState.rejectedSwitchCount += 1;
+      chatAtlasCanonicalSourceState.lastRejectedSwitch = {
+        requested,
+        activeSource: fallbackSource,
+        timestamp: switchedAt,
+        reason: `canonical-rebuild-failed:${String(error?.message || error || 'unknown')}`,
+      };
+      if (requested !== CHAT_ATLAS_CANONICAL_SOURCE_LEGACY) {
+        try { buildTurns(); } catch {}
+      }
+      return chatAtlasFreeze({ ok: false, reason: 'canonical-rebuild-failed', ...chatAtlasCanonicalSourceDiagnostics() });
+    }
+  }
+
+  function selectChatAtlasCanonicalDrafts(legacyDrafts) {
+    const legacyCanonicalDrafts = Array.isArray(legacyDrafts) ? legacyDrafts : [];
+    try {
+      chatAtlasCv2CaptureLegacyDrafts(legacyCanonicalDrafts);
+      chatAtlasRunCanonicalDualComparison('legacy-capture');
+    } catch (error) {
+      chatAtlasCv2RecordInstrumentationError(error, 'legacy-capture');
+    }
+    let selectedDrafts = legacyCanonicalDrafts;
+    let effectiveSource = CHAT_ATLAS_CANONICAL_SOURCE_LEGACY;
+    if (chatAtlasCanonicalSourceState.activeSource === CHAT_ATLAS_CANONICAL_SOURCE_LEDGER
+      && chatAtlasLedgerCanonicalSourceReady()) {
+      selectedDrafts = chatAtlasCv2RecordsToDrafts(buildChatAtlasLedgerCanonicalRecords());
+      effectiveSource = CHAT_ATLAS_CANONICAL_SOURCE_LEDGER;
+    }
+    chatAtlasCanonicalSourceState.effectiveSource = effectiveSource;
+    chatAtlasCanonicalSourceState.lastSelection = {
+      activeSource: chatAtlasCanonicalSourceState.activeSource,
+      effectiveSource,
+      legacyCount: legacyCanonicalDrafts.length,
+      selectedCount: selectedDrafts.length,
+      ledgerReady: !!chatAtlasLedgerState.ready,
+      ledgerSourceReady: chatAtlasLedgerCanonicalSourceReady(),
+      timestamp: new Date().toISOString(),
+    };
+    return selectedDrafts;
   }
 
   function chatAtlasComputeParity(members, canonicalRecords) {
@@ -975,55 +2097,131 @@
 
   function chatAtlasApplyEvidence(read, reason, isFlush) {
     const started = chatAtlasNow();
+    const nextChatKey = chatAtlasCurrentChatKey();
+    const previousLedgerChatKey = String(chatAtlasLedgerState.chatKey || '');
     const previous = chatAtlasLedgerState.members;
-    const previousByShell = new Map();
+    const previousByQuestionShell = new Map();
     for (const record of previous) {
-      if (record.question.shellRef) previousByShell.set(record.question.shellRef, record);
-      if (record.answer.shellRef) previousByShell.set(record.answer.shellRef, record);
+      if (record.question.shellRef) previousByQuestionShell.set(record.question.shellRef, record);
     }
-    const previousAliasOwners = chatAtlasBuildOwnerMap(previous, (record) => record.aliases);
-    const canonicalOwners = chatAtlasBuildOwnerMap(read.canonicalRecords, chatAtlasRecordAliases);
-    const pairs = chatAtlasPairEvidence(read.evidence);
+    const previousQuestionOwners = chatAtlasBuildOwnerMap(previous, (record) => chatAtlasCv2CurrentIds([
+      record?.question?.qId,
+      ...(record?.question?.currentAliases || []),
+    ]));
+    const canonicalQuestionOwners = chatAtlasBuildOwnerMap(read.canonicalRecords, chatAtlasCanonicalQuestionAliases);
+    const pairing = chatAtlasPairEvidence(read.evidence);
+    for (const rejection of pairing.rejectedAssistants) chatAtlasRecordPairingRejection(rejection);
+    const completeShellMap = !!read.completeShellMap && pairing.rejectedAssistants.length === 0;
+    if (!completeShellMap && previous.length) {
+      chatAtlasLedgerState.completeShellMap = false;
+      chatAtlasLedgerState.unboundShells = [
+        ...read.unbound,
+        ...pairing.rejectedAssistants.map((item) => ({ ...item, reason: `pairing-rejected:${item.reason}` })),
+      ];
+      chatAtlasLedgerState.warnings = ['incomplete-stable-shell-map-retained-prior-ledger'];
+      return chatAtlasFreeze({
+        reason: String(reason || 'unknown'),
+        version: chatAtlasLedgerState.version,
+        added: [],
+        removed: [],
+        updated: [],
+        memberCount: previous.length,
+        shellCount: read.shells.length,
+        skipped: true,
+        skipReason: 'incomplete-stable-shell-map',
+      });
+    }
+    const pairs = pairing.pairs;
     const next = [];
+    const buildContexts = [];
     const candidateConflicts = [];
     const usedPrevious = new Set();
     const usedCanonical = new Set();
+    const priorQuarantine = previousLedgerChatKey === nextChatKey
+      ? new Set(chatAtlasLedgerState.quarantinedAliases)
+      : new Set();
+    const repairEventKeys = new Set();
     let absorbed = 0;
 
     for (let index = 0; index < pairs.length; index += 1) {
       const pair = pairs[index];
-      const candidates = chatAtlasUniqueCandidates(pair, previousByShell, previousAliasOwners);
-      const availablePrevious = Array.from(candidates).filter((record) => !usedPrevious.has(record));
-      if (candidates.size > 1 || availablePrevious.length !== candidates.size) {
-        candidateConflicts.push({ turnNo: index + 1, candidateKeys: Array.from(candidates).map((item) => item.logicalMemberKey) });
+      const previousMatch = chatAtlasMatchPreviousRecord(
+        pair,
+        previousByQuestionShell,
+        previousQuestionOwners,
+        usedPrevious,
+        priorQuarantine,
+      );
+      if (!previousMatch.record && previousMatch.candidates.length) {
+        candidateConflicts.push({
+          turnNo: index + 1,
+          reason: previousMatch.basis,
+          candidateKeys: previousMatch.candidates.map((item) => item.logicalMemberKey),
+        });
       }
-      const previousRecord = availablePrevious.length === 1 ? availablePrevious[0] : null;
+      const previousRecord = previousMatch.record;
       if (previousRecord) usedPrevious.add(previousRecord);
-      const questionAliases = new Set(pair.question?.aliases || []);
-      const answerAliases = new Set();
-      for (const answer of pair.answers) chatAtlasAbsorbAliases(answerAliases, answer.aliases);
-      if (previousRecord) {
-        absorbed += chatAtlasAbsorbAliases(questionAliases, previousRecord.question.aliases);
-        absorbed += chatAtlasAbsorbAliases(answerAliases, previousRecord.answer.aliases);
-      }
-      const aliases = new Set([...questionAliases, ...answerAliases]);
-      if (previousRecord) absorbed += chatAtlasAbsorbAliases(aliases, previousRecord.aliases);
 
       const lastAnswer = pair.answers[pair.answers.length - 1] || null;
+      const questionCurrentAliases = chatAtlasCv2CurrentIds([
+        pair.question?.messageId,
+        pair.question?.shellTurnId,
+      ]);
+      const currentQId = questionCurrentAliases[0] || null;
+      const projectedQId = currentQId || previousRecord?.question?.qId || null;
+      const questionEvidenceAliases = chatAtlasCv2CurrentIds([
+        ...(pair.question?.aliases || []),
+        ...questionCurrentAliases,
+      ]);
+      const currentAnswerShells = pair.answers.map((answer) => ({
+        shellTurnId: answer?.shellTurnId || null,
+        messageId: answer?.messageId || null,
+        currentAnswerId: answer?.messageId || answer?.shellTurnId || null,
+      }));
+      const answerCurrentAliases = chatAtlasCv2CurrentIds(
+        currentAnswerShells.flatMap((answer) => [answer.shellTurnId, answer.messageId]),
+      );
+      const currentAnswerIds = chatAtlasCv2CurrentIds(
+        currentAnswerShells.map((answer) => answer.currentAnswerId),
+      );
+      const answerEvidenceAliases = chatAtlasCv2CurrentIds([
+        ...pair.answers.flatMap((answer) => Array.from(answer?.aliases || [])),
+        ...answerCurrentAliases,
+        ...currentAnswerIds,
+      ]);
+      let currentProjectionSource = currentAnswerIds.length ? 'native-evidence' : 'none';
+      if (pair.answers.length && !currentAnswerIds.length && previousRecord?.answer?.primaryAId) {
+        currentAnswerIds.push(previousRecord.answer.primaryAId);
+        currentProjectionSource = 'previous-primary-fallback';
+      }
+      const projectedPrimaryAId = currentAnswerIds[currentAnswerIds.length - 1] || null;
       const member = {
         logicalMemberKey: previousRecord?.logicalMemberKey || `atlas:${chatAtlasLedgerState.nextMemberId++}`,
         turnNo: index + 1,
-        aliases,
+        aliases: new Set(),
+        resolverHistoryAliases: new Set(),
         question: {
           shellRef: pair.question?.shell?.isConnected ? pair.question.shell : null,
-          qId: pair.question?.preferredId || previousRecord?.question?.qId || null,
-          aliases: questionAliases,
+          shellTurnId: pair.question?.shellTurnId || null,
+          messageId: pair.question?.messageId || null,
+          qId: projectedQId,
+          currentQId,
+          currentAliases: questionCurrentAliases,
+          evidenceAliases: questionEvidenceAliases,
+          aliases: new Set(),
           hydrated: !!pair.question?.hydrated,
         },
         answer: {
           shellRef: lastAnswer?.shell?.isConnected ? lastAnswer.shell : null,
-          primaryAId: lastAnswer?.preferredId || previousRecord?.answer?.primaryAId || null,
-          aliases: answerAliases,
+          shellTurnId: lastAnswer?.shellTurnId || null,
+          messageId: lastAnswer?.messageId || null,
+          primaryAId: projectedPrimaryAId,
+          currentAnswerIds,
+          currentAliases: answerCurrentAliases,
+          currentShells: currentAnswerShells,
+          currentProjectionSource,
+          evidenceAliases: answerEvidenceAliases,
+          aliases: new Set(),
           hydrated: pair.answers.some((answer) => !!answer.hydrated),
         },
         noAnswer: pair.answers.length === 0,
@@ -1031,25 +2229,96 @@
         pageNo: Math.floor(index / CHAT_ATLAS_PAGE_SIZE) + 1,
         pageIndex: Math.floor(index / CHAT_ATLAS_PAGE_SIZE),
       };
+      next.push(member);
+      buildContexts.push({ member, previousRecord, pair });
+    }
 
-      const canonical = chatAtlasMatchCanonicalRecord(member, canonicalOwners, read.canonicalShellBindings, usedCanonical);
-      if (canonical) {
-        usedCanonical.add(canonical);
-        const canonicalAliases = chatAtlasRecordAliases(canonical);
-        absorbed += chatAtlasAbsorbAliases(member.aliases, canonicalAliases);
-        absorbed += chatAtlasAbsorbAliases(member.question.aliases, [canonical.qId]);
-        absorbed += chatAtlasAbsorbAliases(member.answer.aliases, [canonical.primaryAId, ...(canonical.answerIds || [])]);
-        member.question.qId = member.question.qId || canonical.qId || null;
-        member.answer.primaryAId = member.answer.primaryAId || canonical.primaryAId || null;
+    const currentOwners = chatAtlasBuildCurrentAliasOwners(next);
+    const quarantine = chatAtlasPrepareAliasQuarantine(currentOwners, priorQuarantine);
+    for (const member of next) {
+      member.question.aliases = new Set(member.question.evidenceAliases.filter((alias) => !quarantine.has(alias)));
+      member.answer.aliases = new Set(member.answer.evidenceAliases.filter((alias) => !quarantine.has(alias)));
+    }
+
+    for (const context of buildContexts) {
+      const { member, previousRecord, pair } = context;
+      const absorbContext = (source) => ({
+        member,
+        currentOwners,
+        quarantine,
+        repairEventKeys,
+        source,
+      });
+      const trueNoAnswer = completeShellMap && pair.answers.length === 0 && member.noAnswer;
+      if (previousRecord) {
+        absorbed += chatAtlasAbsorbHistoricalAliases(
+          member.question.aliases,
+          previousRecord.question.aliases,
+          absorbContext('previous-question-history'),
+        );
+        if (member.noAnswer) {
+          if (trueNoAnswer) {
+            chatAtlasRecordNoAnswerHistoryRepairs(
+              previousRecord,
+              member,
+              currentOwners,
+              repairEventKeys,
+            );
+          }
+        } else {
+          absorbed += chatAtlasAbsorbHistoricalAliases(
+            member.answer.aliases,
+            previousRecord.answer.aliases,
+            absorbContext('previous-answer-history'),
+          );
+          absorbed += chatAtlasAbsorbHistoricalAliases(
+            member.resolverHistoryAliases,
+            previousRecord.aliases,
+            absorbContext('previous-resolver-history'),
+          );
+        }
       }
 
+      const canonical = chatAtlasMatchCanonicalRecord(
+        member,
+        canonicalQuestionOwners,
+        read.canonicalShellBindings,
+        usedCanonical,
+        quarantine,
+      );
+      if (canonical) {
+        usedCanonical.add(canonical);
+        absorbed += chatAtlasAbsorbHistoricalAliases(
+          member.question.aliases,
+          [canonical.qId],
+          absorbContext('canonical-question-enrichment'),
+        );
+        if (!member.noAnswer) {
+          absorbed += chatAtlasAbsorbHistoricalAliases(
+            member.answer.aliases,
+            [canonical.primaryAId, ...(canonical.answerIds || [])],
+            absorbContext('canonical-answer-enrichment'),
+          );
+          absorbed += chatAtlasAbsorbHistoricalAliases(
+            member.resolverHistoryAliases,
+            chatAtlasRecordAliases(canonical),
+            absorbContext('canonical-resolver-enrichment'),
+          );
+        }
+      }
+
+      chatAtlasRebuildResolverAliases(member);
       member.hydration = member.question.hydrated && member.answer.hydrated
         ? 'both'
         : (member.question.hydrated ? 'question' : (member.answer.hydrated ? 'answer' : 'none'));
-      next.push(member);
     }
 
-    const aliasOwners = chatAtlasBuildOwnerMap(next, (record) => record.aliases);
+    const aliasOwners = chatAtlasRepairResolverOwnership(
+      next,
+      currentOwners,
+      quarantine,
+      repairEventKeys,
+    );
     const duplicateAliases = Array.from(aliasOwners.entries())
       .filter(([, owners]) => owners.size > 1)
       .map(([alias, owners]) => ({ alias, memberKeys: Array.from(owners).map((record) => record.logicalMemberKey) }));
@@ -1066,12 +2335,27 @@
     chatAtlasLedgerState.members = next;
     chatAtlasLedgerState.ready = true;
     chatAtlasLedgerState.version += 1;
-    chatAtlasLedgerState.chatKey = String(H2O.util?.getChatId?.() || D.location?.pathname || '');
+    chatAtlasLedgerState.chatKey = nextChatKey;
+    try {
+      if (previousLedgerChatKey !== nextChatKey) {
+        chatAtlasCv2ResetBindingEvidence(
+          nextChatKey,
+          previousLedgerChatKey ? 'ledger-chat-key-change' : 'ledger-initial-binding',
+        );
+      }
+    } catch (error) {
+      chatAtlasCv2RecordInstrumentationError(error, 'ledger-binding-evidence');
+    }
     chatAtlasLedgerState.buildCount += 1;
     chatAtlasLedgerState.aliasAbsorbCount += absorbed;
     chatAtlasLedgerState.duplicateAliasCount = duplicateAliases.length;
+    chatAtlasLedgerState.quarantinedAliases = quarantine;
+    chatAtlasLedgerState.completeShellMap = completeShellMap;
     chatAtlasLedgerState.duplicateMemberCandidates = candidateConflicts;
-    chatAtlasLedgerState.unboundShells = read.unbound;
+    chatAtlasLedgerState.unboundShells = [
+      ...read.unbound,
+      ...pairing.rejectedAssistants.map((item) => ({ ...item, reason: `pairing-rejected:${item.reason}` })),
+    ];
     chatAtlasLedgerState.parityWithCurrentTurnRuntime = parity.exact;
     chatAtlasLedgerState.parityStatus = parity.status;
     chatAtlasLedgerState.parityDisagreements = parity.disagreements;
@@ -1080,7 +2364,9 @@
     chatAtlasLedgerState.shellCount = read.shells.length;
     chatAtlasLedgerState.questionShellCount = read.questionShellCount;
     chatAtlasLedgerState.answerShellCount = read.answerShellCount;
-    chatAtlasLedgerState.warnings = [];
+    chatAtlasLedgerState.warnings = completeShellMap
+      ? []
+      : ['incomplete-stable-shell-map'];
     const elapsed = Math.max(0, chatAtlasNow() - started) + Math.max(0, Number(read.readMs) || 0);
     chatAtlasLedgerState.lastBuildMs = elapsed;
     if (isFlush) {
@@ -1088,6 +2374,7 @@
       chatAtlasLedgerState.lastFlushMs = elapsed;
       chatAtlasLedgerState.maxFlushMs = Math.max(chatAtlasLedgerState.maxFlushMs, elapsed);
     }
+    chatAtlasRunCanonicalDualComparison(reason);
 
     const delta = chatAtlasFreeze({
       reason: String(reason || 'unknown'),
@@ -1192,6 +2479,11 @@
         version: chatAtlasLedgerState.version,
         chatKey: chatAtlasLedgerState.chatKey,
         memberCount: chatAtlasLedgerState.members.length,
+        completeShellMap: chatAtlasLedgerState.completeShellMap,
+        quarantinedAliasCount: chatAtlasLedgerState.quarantinedAliases.size,
+        quarantinedAliases: Array.from(chatAtlasLedgerState.quarantinedAliases)
+          .slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT),
+        quarantinedAliasResolutionCount: chatAtlasLedgerState.quarantinedAliasResolutionCount,
         members: chatAtlasLedgerState.members.map(chatAtlasPublicMember),
       });
     } catch (error) {
@@ -1934,6 +3226,30 @@
         lastDirtyShellCount: chatAtlasLedgerState.lastDirtyShellCount,
         aliasAbsorbCount: chatAtlasLedgerState.aliasAbsorbCount,
         duplicateAliasCount: chatAtlasLedgerState.duplicateAliasCount,
+        currentCrossMemberDuplicateCount: chatAtlasLedgerState.currentCrossMemberDuplicateCount,
+        crossMemberAliasConflictCount: chatAtlasLedgerState.crossMemberAliasConflictCount,
+        crossMemberAliasRepairCount: chatAtlasLedgerState.crossMemberAliasRepairCount,
+        currentAliasConflictCount: chatAtlasLedgerState.currentAliasConflictCount,
+        historicalAliasConflictCount: chatAtlasLedgerState.historicalAliasConflictCount,
+        pairingAdjacencyRejectCount: chatAtlasLedgerState.pairingAdjacencyRejectCount,
+        quarantinedAliasCount: chatAtlasLedgerState.quarantinedAliases.size,
+        quarantinedAliases: Array.from(chatAtlasLedgerState.quarantinedAliases)
+          .slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT),
+        quarantinedAliasResolutionCount: chatAtlasLedgerState.quarantinedAliasResolutionCount,
+        lastAliasConflict: chatAtlasLedgerState.lastAliasConflict
+          ? { ...chatAtlasLedgerState.lastAliasConflict }
+          : null,
+        recentAliasConflicts: chatAtlasLedgerState.recentAliasConflicts
+          .slice(-CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT)
+          .map((item) => ({ ...item })),
+        lastPairingRejection: chatAtlasLedgerState.lastPairingRejection
+          ? { ...chatAtlasLedgerState.lastPairingRejection }
+          : null,
+        recentPairingRejections: chatAtlasLedgerState.recentPairingRejections
+          .slice(-CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT)
+          .map((item) => ({ ...item })),
+        aliasConflictSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+        completeShellMap: chatAtlasLedgerState.completeShellMap,
         duplicateMemberCandidates: chatAtlasLedgerState.duplicateMemberCandidates.length,
         duplicateMemberCandidateDetails: chatAtlasLedgerState.duplicateMemberCandidates.slice(),
         unboundShells: chatAtlasLedgerState.unboundShells.slice(),
@@ -1944,10 +3260,14 @@
         canonicalTurnVersion: chatAtlasLedgerState.canonicalTurnVersion,
         observerActive: chatAtlasLedgerState.observerActive,
         warnings: chatAtlasLedgerState.warnings.slice(),
-        ledgerMode: 'shadow',
-        zeroConsumerSwitches: true,
-        consumerSwitchCount: 0,
-        canonicalMutationAttemptCount: 0,
+        ledgerMode: chatAtlasCanonicalSourceState.activeSource === CHAT_ATLAS_CANONICAL_SOURCE_LEGACY
+          ? 'shadow'
+          : 'canonical-source',
+        canonicalSource: chatAtlasCanonicalSourceDiagnostics(),
+        dualRun: chatAtlasDualRunDiagnostics(),
+        zeroConsumerSwitches: chatAtlasCanonicalSourceState.switchCount === 0,
+        consumerSwitchCount: chatAtlasCanonicalSourceState.switchCount,
+        canonicalMutationAttemptCount: chatAtlasCanonicalSourceState.canonicalMutationAttemptCount,
         domWriteCount: 0,
         storageWriteCount: 0,
         physicalExecutorCallCount: 0,
@@ -1958,8 +3278,11 @@
       return chatAtlasFreeze({
         ledgerReady: false,
         warning: String(error?.message || error || 'diagnostics-failed'),
-        zeroConsumerSwitches: true,
-        canonicalMutationAttemptCount: 0,
+        canonicalSource: chatAtlasCanonicalSourceDiagnostics(),
+        dualRun: chatAtlasDualRunDiagnostics(),
+        zeroConsumerSwitches: chatAtlasCanonicalSourceState.switchCount === 0,
+        consumerSwitchCount: chatAtlasCanonicalSourceState.switchCount,
+        canonicalMutationAttemptCount: chatAtlasCanonicalSourceState.canonicalMutationAttemptCount,
         domWriteCount: 0,
         storageWriteCount: 0,
         physicalExecutorCallCount: 0,
@@ -2406,22 +3729,198 @@
     });
   }
 
+  // ── Durable turn-draft retention ──────────────────────────────────────────
+  // The live DOM is only a window of the conversation: ChatGPT virtualizes
+  // far-away turns out of the document, and chat optimizers hide/collapse
+  // pages. A canonical turn set rebuilt from a narrower scan would drop the
+  // missing turns and reindex the remaining subset from turn 1 ("16/16 /
+  // Page 1" MiniMap bug). The durable cache therefore RETAINS every turn seen
+  // for the current conversation and merges each fresh live scan into it:
+  // known turns keep their position (stable turn numbers and page membership),
+  // unknown turns are inserted after their nearest known live neighbor, and
+  // turns missing from the scan survive as element-free drafts. The cache
+  // resets when the conversation changes and is capped defensively. This is a
+  // chat-side data layer only — it must never write MiniMap state.
+  const DURABLE_TURN_CACHE_MAX = 5000;
+
+  function durableDraftKey(draft) {
+    const qId = String(draft?.qId || '').trim();
+    if (qId) return `q:${qId}`;
+    const aId = String(draft?.primaryAId || (draft?.answerIds || [])[0] || '').trim();
+    if (aId) return `a:${aId}`;
+    const alias = (Array.isArray(draft?.aliasIds) ? draft.aliasIds : [])
+      .map((value) => String(value || '').trim())
+      .find(Boolean);
+    return alias ? `x:${alias}` : '';
+  }
+
+  // Element-free clone kept in the cache so retained drafts never pin
+  // detached DOM subtrees in memory.
+  function slimTurnDraft(draft) {
+    return {
+      turnNo: 0,
+      qId: draft?.qId || null,
+      answerIds: Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [],
+      aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
+      hasQuestion: !!draft?.qId,
+      hasAssistant: !!(Array.isArray(draft?.answerIds) && draft.answerIds.length),
+      live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
+    };
+  }
+
+  function ensureDurableTurnCache() {
+    if (!(turnState.durableByKey instanceof Map)) {
+      turnState.durableByKey = new Map();
+      turnState.durableOrder = [];
+      turnState.durableChatKey = '';
+    }
+    const chatKey = String(D?.location?.pathname || '/');
+    if (turnState.durableChatKey !== chatKey) {
+      turnState.durableChatKey = chatKey;
+      turnState.durableOrder = [];
+      turnState.durableByKey.clear();
+    }
+  }
+
+  function seedDurableTurnDrafts(drafts) {
+    ensureDurableTurnCache();
+    turnState.durableOrder = [];
+    turnState.durableByKey.clear();
+    for (const draft of Array.isArray(drafts) ? drafts : []) {
+      const key = durableDraftKey(draft);
+      if (!key || turnState.durableByKey.has(key)) continue;
+      turnState.durableByKey.set(key, slimTurnDraft(draft));
+      turnState.durableOrder.push(key);
+    }
+  }
+
+  function mergeDurableTurnDrafts(liveDrafts) {
+    ensureDurableTurnCache();
+    const live = Array.isArray(liveDrafts) ? liveDrafts : [];
+    // Authoritative-size draft sets win outright: when the fresh set is at
+    // least as large as the retained cache, adopt its order wholesale so a
+    // stale or corrupted cache can never re-order or dilute it.
+    if (live.length >= turnState.durableOrder.length) {
+      seedDurableTurnDrafts(live);
+      return live.slice();
+    }
+    const order = turnState.durableOrder;
+    const byKey = turnState.durableByKey;
+    const freshByKey = new Map();
+
+    // ChatGPT renders a contiguous window, so each unknown draft is inserted
+    // right after the durable position of the previous live draft. A window
+    // that starts mid-conversation prepends at the head; later scans that
+    // reveal earlier turns self-correct the ordering.
+    let anchorIdx = -1;
+    for (const draft of live) {
+      const key = durableDraftKey(draft);
+      if (!key) continue;
+      freshByKey.set(key, draft);
+      byKey.set(key, slimTurnDraft(draft));
+      const existingIdx = order.indexOf(key);
+      if (existingIdx >= 0) {
+        anchorIdx = existingIdx;
+        continue;
+      }
+      order.splice(anchorIdx + 1, 0, key);
+      anchorIdx += 1;
+    }
+
+    if (order.length > DURABLE_TURN_CACHE_MAX) {
+      const removed = order.splice(0, order.length - DURABLE_TURN_CACHE_MAX);
+      for (const key of removed) byKey.delete(key);
+    }
+
+    const out = [];
+    for (const key of order) {
+      const draft = freshByKey.get(key) || byKey.get(key);
+      if (draft) out.push(draft);
+    }
+    return out;
+  }
+
+  // ChatGPT keeps EVERY conversation turn in the document as
+  // <section data-testid="conversation-turn-N" data-turn="user|assistant"
+  // data-turn-id="<message-id>"> and only virtualizes the message CONTENT out
+  // of far-away sections. The section attributes are therefore the
+  // authoritative full-chat map — order, roles, stable message ids, and the
+  // true total — available synchronously at any moment. The
+  // [data-message-author-role] scan below only sees hydrated content, so on
+  // its own it would shrink the canonical set to the rendered window and
+  // renumber it from 1 (the "16/16 / Page 1" MiniMap failure).
+  const SEL_CORE_TURN_SECTION = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
+
+  function buildSectionTurnDrafts() {
+    let sections = [];
+    try { sections = Array.from(D.querySelectorAll(SEL_CORE_TURN_SECTION)); } catch { sections = []; }
+    if (!sections.length) return null;
+
+    const entries = [];
+    for (const section of sections) {
+      const role = String(section.getAttribute?.('data-turn') || '').trim().toLowerCase();
+      if (role !== 'user' && role !== 'assistant') continue;
+      const turnAttrId = String(section.getAttribute?.('data-turn-id') || '').trim();
+      let msgEl = null;
+      try { msgEl = section.querySelector(`[${ATTR_MESSAGE_AUTHOR_ROLE}="${role}"]`) || null; } catch {}
+      if (role === 'user') {
+        entries.push({
+          role,
+          qEl: msgEl,
+          qId: (msgEl ? getQId(msgEl) : '') || turnAttrId,
+          aliasIds: [turnAttrId, msgEl ? getMsgIdAttr(msgEl) : ''],
+        });
+      } else {
+        entries.push({
+          role,
+          aEl: msgEl,
+          aId: (msgEl ? getAId(msgEl) : '') || turnAttrId,
+          aliasIds: [turnAttrId, msgEl ? getMsgIdAttr(msgEl) : ''],
+        });
+      }
+    }
+    if (!entries.length) return null;
+    return buildTurnDraftsFromEntries(entries);
+  }
+
   // Phase 4 Step 2.2: forwards the optional `preScanned` node list to
   // buildLiveTurnDrafts() so refresh() can avoid a redundant scan. Other
   // callers (e.g. boot retry paths) pass nothing and behave identically
   // to the prior implementation.
   function buildTurns(preScanned) {
     const liveDrafts = buildLiveTurnDrafts(preScanned);
-    const canonicalDrafts = Array.isArray(turnState.paginationDrafts) && turnState.paginationDrafts.length
-      ? turnState.paginationDrafts
+    const sectionDrafts = buildSectionTurnDrafts();
+    const sectionDraftsAreAuthoritative = Array.isArray(sectionDrafts)
+      && sectionDrafts.length >= liveDrafts.length;
+    const baseDrafts = sectionDraftsAreAuthoritative
+      ? sectionDrafts
       : liveDrafts;
+    let legacyCanonicalDrafts = null;
+    if (Array.isArray(turnState.paginationDrafts) && turnState.paginationDrafts.length) {
+      legacyCanonicalDrafts = turnState.paginationDrafts;
+    } else if (sectionDraftsAreAuthoritative) {
+      // Every turn section remains mounted even when its message content is
+      // virtualized. Once that complete map wins the existing source-choice
+      // rule, replace the same-route durable cache so a shorter branch can
+      // retire records that no longer exist. Hydrated live drafts are still
+      // applied by commitTurnDrafts() below to upgrade the retained records.
+      seedDurableTurnDrafts(sectionDrafts);
+      legacyCanonicalDrafts = sectionDrafts.slice();
+    } else {
+      legacyCanonicalDrafts = mergeDurableTurnDrafts(baseDrafts);
+    }
+    const canonicalDrafts = selectChatAtlasCanonicalDrafts(legacyCanonicalDrafts);
     commitTurnDrafts(canonicalDrafts, liveDrafts);
   }
 
   function reconcileTurnRecordsFromPaginationSnapshot(rows = []) {
     const drafts = buildPaginationTurnDrafts(rows);
     turnState.paginationDrafts = drafts.length ? drafts : null;
-    commitTurnDrafts(turnState.paginationDrafts || buildLiveTurnDrafts(), buildLiveTurnDrafts());
+    // The pagination master index is full-chat authoritative: refresh the
+    // durable cache from it so retention stays correct after teardown.
+    if (drafts.length) seedDurableTurnDrafts(drafts);
+    const legacyCanonicalDrafts = turnState.paginationDrafts || buildLiveTurnDrafts();
+    commitTurnDrafts(selectChatAtlasCanonicalDrafts(legacyCanonicalDrafts), buildLiveTurnDrafts());
     return listTurnRecords();
   }
 
@@ -2571,6 +4070,8 @@
     getChatAtlasLedgerDiagnostics,
     getChatAtlasConvergenceParity,
     subscribeChatAtlasLedger,
+    getChatAtlasCanonicalSource,
+    setChatAtlasCanonicalSource,
     _reconcilePaginationSnapshot: (rows = []) => reconcileTurnRecordsFromPaginationSnapshot(rows),
     _clearPaginationSnapshot: () => clearPaginationTurnSnapshot(),
   };
