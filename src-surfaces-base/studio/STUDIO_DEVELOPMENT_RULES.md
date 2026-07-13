@@ -94,6 +94,28 @@ Forbidden in feature files (anything under `src-surfaces-base/studio/` outside t
 - Event names follow `evt:h2o:<domain>:<action>`; Studio-scoped events use `evt:h2o:studio:<domain>:<action>`.
 - Storage keys: do not invent new top-level prefixes. New persistence goes through `H2O.Studio.store`; only the adapter chooses the underlying key shape.
 
+## Desktop Chrome and Sidebar Layout Invariants
+
+These rules are mandatory for Studio Desktop/Tauri titlebar, ribbon, sidebar, and topbar work. They encode the current macOS overlay-titlebar design and must be preserved across Library, Settings, saved-chat lists, and reader/chat transcript routes.
+
+1. The sidebar logo/title row has a fixed viewport position. It must not move when changing route, opening a chat, leaving a chat, showing a ribbon menu, hiding a ribbon menu, collapsing the sidebar, scrolling the sidebar, changing zoom, or opening Settings.
+2. The top empty macOS traffic-light area is not a floating overlay attached to the sidebar. When a page has no visible app ribbon/menu strip, the empty space must be structurally owned by the sidebar/right pane surfaces below it, so their backgrounds and divider lines continue naturally from the top of the window.
+3. Hidden Library ribbon and hidden reader/chat ribbon must use the same layout model: the Tauri chrome strip is out of normal flow, while the sidebar and right pane reserve their own top-safe space. Do not replace this with a full-width transparent or glass strip above `.wbShell`.
+4. The reader/chat title topbar also owns top-safe empty space when the reader ribbon menu is hidden. Hiding the ribbon menu must not pull the titlebar up to the traffic-light row.
+5. Visible ribbon menu strips may occupy the top desktop chrome row. Hidden ribbon menu strips must hide the controls without shifting `.wbShell`, `.wbStage`, `.wbRail`, `.wbSide--sidebar`, or the reader title topbar.
+6. The vertical divider between sidebar and right pane must be one continuous line from the top of the window through the sidebar. Do not draw a second top-only divider, patch panel, glass layer, or separate block that makes the top segment look different from the rest.
+7. The macOS traffic-light buttons stay visible and usable. The top empty/menu area remains draggable with `-webkit-app-region: drag`, and all real controls in that area use `-webkit-app-region: no-drag`.
+8. The reader/chat title topbar appears only on reader/chat transcript routes. Library, Settings, migration, and other non-reader pages must not show the reader title topbar.
+9. Library and reader/chat ribbon toggle buttons show or hide the ribbon menu strip. They must not resize the title topbar, change sidebar header position, or switch to the unrelated ribbon collapse behavior.
+
+Before changing any of these CSS selectors or route-state attributes, test at least these transitions in Desktop Studio:
+
+- Library with ribbon menu hidden -> Library with ribbon menu shown -> hidden again.
+- Library with ribbon menu hidden -> Settings -> Library.
+- Library -> reader/chat transcript -> hide reader ribbon menu -> show reader ribbon menu.
+- Reader/chat transcript with hidden ribbon menu -> Library -> reader/chat transcript.
+- Sidebar expanded and collapsed states for all of the above.
+
 ## Pre-Merge Checklist
 
 Run through this before opening a PR or marking a Studio change complete. "Must" items block merge.
@@ -143,6 +165,7 @@ Ask each of these about the change. If the honest answer to any is "would need r
 - [ ] Is this UI Studio-owned or host-page-owned? (must be Studio-owned)
 - [ ] Would this still work in a Tauri WebView with `chrome.*` unavailable? (must be yes)
 - [ ] If the answer to the previous is "with a small adapter change," is the change inside `src-surfaces-base/studio/platform/`? (must be yes)
+- [ ] If the change touches Desktop titlebar/ribbon/sidebar/topbar CSS, does it preserve the Desktop Chrome and Sidebar Layout Invariants above? (must be yes)
 
 ## Examples
 

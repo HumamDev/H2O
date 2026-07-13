@@ -19,8 +19,8 @@
  *     notes / navigator / capture)
  *   - reach into any feature engine, native runtime, or studio reader
  *   - write any non-Studio key
- *   - own route detection (route gating is purely CSS via the
- *     existing `body[data-route="reader"]` attribute set by studio.js)
+ *   - own route detection (eligibility is exposed read-only by studio.js
+ *     through H2O.Studio.getDockContext())
  *
  * Persistence rules (unchanged from Phase 1b):
  *   - open: persisted under H2O.Studio.store.prefs.keys.dockOpen
