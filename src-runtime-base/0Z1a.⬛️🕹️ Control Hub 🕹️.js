@@ -1097,6 +1097,21 @@ __ROOT__ .cgxui-qbig-number{
     controlHub: [
       {
         type: 'select',
+        key: 'hubTopBtnPlacement',
+        label: 'Control Hub button position',
+        group: 'Launcher / Gestures',
+        help: 'Content center aligns the Cockpit Pro button with the conversation column. Right/Left topbar dock it beside the native ChatGPT topbar buttons.',
+        def: 'content-center',
+        opts: [
+          ['content-center', 'Content center'],
+          ['right-topbar', 'Right topbar'],
+          ['left-topbar', 'Left topbar'],
+        ],
+        getLive() { return CHUB_getTopBtnPlacement(); },
+        setLive(v) { CHUB_setTopBtnPlacement(v); },
+      },
+      {
+        type: 'select',
         key: 'hubOpenTrigger',
         label: 'Open Control Hub',
         group: 'Launcher / Gestures',
@@ -2999,9 +3014,555 @@ __ROOT__ .cgxui-qbig-number{
     if (!dock) return false;
 
     const btn = DOM_createTopButton();
-    if (btn.parentElement === dock) return true;
+    if (btn.parentElement === dock) { CHUB_scheduleTopBtnLayout(); return true; }
     dock.appendChild(btn);
+    CHUB_bindTopBtnLayoutOnce();
+    CHUB_scheduleTopBtnLayout();
     return true;
+  }
+
+  /* ── Topbar button placement engine (single owner) ─────────────────────────
+     The old CSS placement (left:calc(50% + 25px)) centered against the whole
+     viewport with a guessed sidebar offset — with a wide sidebar or collapsed
+     rail the button lands off the chat content center (probe 2026-07-10:
+     button center 1126px vs true content center ≈1231px at 2202px viewport).
+     This engine computes placement from live conversation geometry and owns
+     the inline position; the CSS rule remains only as a pre-boot fallback. */
+  const KEY_CHUB_TOPBTN_PLACEMENT_V1 = 'h2o:prm:cgx:cntrlhb:state:topbtn-placement:v1';
+  const CHUB_TOPBTN_PLACEMENT_MODES = ['content-center', 'right-topbar', 'left-topbar'];
+  let CHUB_topBtnLayoutRaf = 0;
+  let CHUB_topBtnListenersBound = false;
+  let CHUB_topBtnSidebarRo = null;
+  let CHUB_topBtnSidebarRoTargets = [];
+  let CHUB_topBtnLastLayout = null;
+
+  const CHUB_TOPBTN_SIDEBAR_SELECTORS = [
+    '#stage-sidebar-tiny-bar',
+    '#stage-slideover-sidebar',
+    'nav[aria-label="Sidebar"]',
+    'nav[aria-label="Chat history"]',
+    '[data-testid*="sidebar" i]',
+    '[id*="sidebar" i]',
+    '[class*="sidebar" i]',
+    '[id*="slideover" i]',
+    '[class*="slideover" i]',
+  ];
+
+  function CHUB_getTopBtnPlacement(){
+    try {
+      const v = W.localStorage?.getItem(KEY_CHUB_TOPBTN_PLACEMENT_V1);
+      return CHUB_TOPBTN_PLACEMENT_MODES.includes(v) ? v : 'content-center';
+    } catch { return 'content-center'; }
+  }
+
+  function CHUB_setTopBtnPlacement(v){
+    const mode = CHUB_TOPBTN_PLACEMENT_MODES.includes(v) ? v : 'content-center';
+    try { W.localStorage?.setItem(KEY_CHUB_TOPBTN_PLACEMENT_V1, mode); } catch {}
+    CHUB_scheduleTopBtnLayout();
+    return mode;
+  }
+
+  function CHUB_rectSnapshot(rect){
+    if (!rect) return null;
+    return {
+      left: Math.round(rect.left * 100) / 100,
+      right: Math.round(rect.right * 100) / 100,
+      top: Math.round(rect.top * 100) / 100,
+      bottom: Math.round(rect.bottom * 100) / 100,
+      width: Math.round(rect.width * 100) / 100,
+      height: Math.round(rect.height * 100) / 100,
+    };
+  }
+
+  function CHUB_sidebarElementLabel(el){
+    if (!el) return 'missing';
+    const tag = String(el.tagName || '').toLowerCase() || 'element';
+    const id = String(el.id || '').trim();
+    if (id) return `${tag}#${id}`;
+    const aria = String(el.getAttribute?.('aria-label') || '').trim();
+    if (aria) return `${tag}[aria-label="${aria}"]`;
+    const cls = String(el.className?.baseVal || el.className || '').trim().split(/\s+/).filter(Boolean).slice(0, 3);
+    return cls.length ? `${tag}.${cls.join('.')}` : tag;
+  }
+
+  function CHUB_hitBelongsToCandidate(el, x, y){
+    try {
+      const hit = D.elementFromPoint(x, y);
+      return !!hit && (hit === el || el.contains?.(hit));
+    } catch { return false; }
+  }
+
+  // Resolve the rightmost screen pixel actually occupied by this sidebar
+  // candidate. Raw shell rects are insufficient: ChatGPT keeps a ~260px stage
+  // shell mounted while its visible collapsed rail is only ~50px wide.
+  function CHUB_getHitTestedSidebarEdge(el, rect){
+    const vw = W.innerWidth || D.documentElement.clientWidth || 0;
+    const vh = W.innerHeight || D.documentElement.clientHeight || 0;
+    if (!vw || !vh || !rect) return 0;
+    const left = Math.max(0, Math.floor(rect.left));
+    const right = Math.min(vw, Math.ceil(rect.right));
+    const top = Math.max(0, rect.top);
+    const bottom = Math.min(vh, rect.bottom);
+    const ys = [0.18, 0.36, 0.55, 0.74, 0.90]
+      .map((ratio) => Math.round(top + ((bottom - top) * ratio)))
+      .filter((y) => y >= 0 && y < vh);
+    for (let x = right - 1; x >= left; x -= 2) {
+      let hits = 0;
+      for (const y of ys) {
+        if (CHUB_hitBelongsToCandidate(el, x, y)) hits += 1;
+      }
+      if (hits >= Math.min(2, ys.length)) return Math.min(vw, x + 1);
+    }
+    return 0;
+  }
+
+  function CHUB_evaluateSidebarCandidate(el, selector){
+    const reasons = [];
+    let rect = null;
+    let style = null;
+    try { rect = el?.getBoundingClientRect?.() || null; } catch {}
+    try { style = el ? W.getComputedStyle(el) : null; } catch {}
+    const vw = W.innerWidth || D.documentElement.clientWidth || 0;
+    const vh = W.innerHeight || D.documentElement.clientHeight || 0;
+    const display = String(style?.display || '');
+    const visibility = String(style?.visibility || '');
+    const opacity = String(style?.opacity ?? '');
+    const pointerEvents = String(style?.pointerEvents || '');
+    if (!el) reasons.push('missing-element');
+    if (!rect || rect.width <= 0 || rect.height <= 0) reasons.push('zero-size');
+    if (display === 'none') reasons.push('display-none');
+    if (visibility === 'hidden' || visibility === 'collapse') reasons.push('visibility-hidden');
+    if (Number.parseFloat(opacity || '1') <= 0.001) reasons.push('opacity-zero');
+    if (rect && (rect.right <= 0 || rect.left >= vw || rect.bottom <= 0 || rect.top >= vh)) reasons.push('outside-viewport');
+    if (rect && rect.left > 16) reasons.push('not-left-anchored');
+    if (rect && rect.width > Math.min(460, vw * 0.45)) reasons.push('too-wide-for-sidebar');
+    if (rect && rect.height < Math.max(180, vh * 0.35)) reasons.push('too-short-for-sidebar');
+    const visibleRightEdge = reasons.length ? 0 : CHUB_getHitTestedSidebarEdge(el, rect);
+    if (!visibleRightEdge) reasons.push('no-visible-hit-tested-occupancy');
+    return {
+      element: el || null,
+      selector: String(selector || CHUB_sidebarElementLabel(el)),
+      accepted: reasons.length === 0,
+      reason: reasons.length ? reasons.join(',') : 'accepted',
+      rect: CHUB_rectSnapshot(rect),
+      display,
+      visibility,
+      opacity,
+      pointerEvents,
+      visibleRightEdge,
+    };
+  }
+
+  function CHUB_collectSidebarCandidates(){
+    const found = new Map();
+    const add = (el, source) => {
+      if (!el) return;
+      if (!found.has(el)) found.set(el, source || CHUB_sidebarElementLabel(el));
+    };
+    for (const selector of CHUB_TOPBTN_SIDEBAR_SELECTORS) {
+      try { for (const el of D.querySelectorAll(selector)) add(el, selector); } catch {}
+    }
+    // Hit-test discovery catches ChatGPT's icon rail wrappers even when their
+    // generated class/id no longer contains "sidebar".
+    try {
+      const vw = W.innerWidth || 0;
+      const vh = W.innerHeight || 0;
+      const xs = [8, 24, 40, 52, 64, 96, 160, 260].filter((x) => x < vw);
+      const ys = [0.25, 0.5, 0.75].map((ratio) => Math.round(vh * ratio));
+      for (const x of xs) {
+        for (const y of ys) {
+          let el = D.elementFromPoint(x, y);
+          for (let depth = 0; el && el !== D.body && el !== D.documentElement && depth < 10; depth += 1) {
+            const r = el.getBoundingClientRect?.();
+            if (r && r.left <= 16 && r.width > 0 && r.width <= 460 && r.height >= Math.max(180, vh * 0.35)) {
+              add(el, `hit-test:${x}x${y}`);
+            }
+            el = el.parentElement;
+          }
+        }
+      }
+    } catch {}
+    return Array.from(found.entries()).map(([el, source]) => CHUB_evaluateSidebarCandidate(el, source));
+  }
+
+  // Right edge of the actually visible sidebar panel or tiny collapsed rail.
+  // Selection uses hit-tested occupancy rather than a stale stage-shell rect.
+  function CHUB_resolveVisibleSidebarEdge(){
+    const candidates = CHUB_collectSidebarCandidates();
+    const accepted = candidates.filter((candidate) => candidate.accepted && candidate.visibleRightEdge > 0);
+    // The stage slideover is a layout shell, not necessarily visible content.
+    // If any concrete rail/nav/panel candidate is visible, use those and keep
+    // the stage shell only as a last-resort fallback.
+    const concrete = accepted.filter((candidate) => candidate.element?.id !== 'stage-slideover-sidebar');
+    const pool = concrete.length ? concrete : accepted;
+    const selected = pool.reduce((best, candidate) => {
+      if (!best || candidate.visibleRightEdge > best.visibleRightEdge) return candidate;
+      return best;
+    }, null);
+    return {
+      selectedSidebarEdge: selected ? selected.visibleRightEdge : 0,
+      selectedSidebarSource: selected?.selector || 'none',
+      selected,
+      candidates,
+    };
+  }
+
+  function CHUB_getSidebarRightEdge(){
+    return CHUB_resolveVisibleSidebarEdge().selectedSidebarEdge;
+  }
+
+  function CHUB_getVisibleAnchorRect(el){
+    if (!el?.isConnected) return null;
+    let rect = null;
+    let style = null;
+    try { rect = el.getBoundingClientRect(); } catch {}
+    try { style = W.getComputedStyle(el); } catch {}
+    const vw = W.innerWidth || D.documentElement.clientWidth || 0;
+    const vh = W.innerHeight || D.documentElement.clientHeight || 0;
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    if (rect.right <= 0 || rect.left >= vw || rect.bottom <= 0 || rect.top >= vh) return null;
+    if (style?.display === 'none' || style?.visibility === 'hidden' || style?.visibility === 'collapse') return null;
+    if (Number.parseFloat(style?.opacity || '1') <= 0.001) return null;
+    return rect;
+  }
+
+  function CHUB_pickVisibleAnchor(selector, scoreFn = null){
+    const matches = [];
+    try {
+      for (const el of D.querySelectorAll(selector)) {
+        const rect = CHUB_getVisibleAnchorRect(el);
+        if (!rect) continue;
+        const score = typeof scoreFn === 'function' ? Number(scoreFn(el, rect) || 0) : 0;
+        matches.push({ el, rect, score });
+      }
+    } catch {}
+    matches.sort((a, b) => (b.score - a.score) || (a.rect.top - b.rect.top));
+    return matches[0] || null;
+  }
+
+  function CHUB_getPageDividerAnchor(){
+    return CHUB_pickVisibleAnchor('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
+  }
+
+  function CHUB_getTitleListAnchor(){
+    return CHUB_pickVisibleAnchor('.cgxui-chat-page-title-list-synth, [data-cgxui="chat-page-title-list-synth"]');
+  }
+
+  function CHUB_getComposerAnchor(){
+    const found = new Map();
+    const add = (el, priority) => {
+      if (!el) return;
+      found.set(el, Math.max(Number(found.get(el) || 0), Number(priority || 0)));
+    };
+    try {
+      const prompt = D.querySelector('#prompt-textarea, [data-testid="prompt-textarea"]');
+      add(prompt?.closest?.('form'), 100);
+      add(prompt?.closest?.('[data-composer-surface="true"]'), 90);
+      for (const form of D.querySelectorAll('form[data-type="unified-composer"], form.group\\/composer, form[data-testid="composer"], form[action*="conversation"]')) add(form, 80);
+      for (const surface of D.querySelectorAll('[data-composer-surface="true"]')) add(surface, 70);
+    } catch {}
+    const matches = [];
+    for (const [el, priority] of found.entries()) {
+      const rect = CHUB_getVisibleAnchorRect(el);
+      if (!rect || rect.width < 180) continue;
+      matches.push({ el, rect, score: priority + Math.min(rect.width, 1200) / 1000 });
+    }
+    matches.sort((a, b) => (b.score - a.score) || (a.rect.top - b.rect.top));
+    return matches[0] || null;
+  }
+
+  function CHUB_getMainColumnAnchor(){
+    const found = new Map();
+    const add = (el, score) => {
+      if (!el) return;
+      found.set(el, Math.max(Number(found.get(el) || 0), Number(score || 0)));
+    };
+    try {
+      const turns = Array.from(D.querySelectorAll('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]'));
+      for (const turn of turns) {
+        const turnRect = CHUB_getVisibleAnchorRect(turn);
+        if (!turnRect) continue;
+        add(turn.querySelector?.('[data-message-author-role]'), 100);
+        add(turn.querySelector?.('[class*="max-w-"]'), 80);
+        add(turn, 40);
+      }
+      add(D.querySelector('[data-testid="conversation-turns"]'), 20);
+    } catch {}
+    const matches = [];
+    const vw = W.innerWidth || 0;
+    for (const [el, baseScore] of found.entries()) {
+      const rect = CHUB_getVisibleAnchorRect(el);
+      if (!rect || rect.width < 240 || rect.width > Math.min(1400, vw * 0.92)) continue;
+      const usefulWidthScore = rect.width <= 900 ? 30 : 0;
+      matches.push({ el, rect, score: baseScore + usefulWidthScore });
+    }
+    matches.sort((a, b) => (b.score - a.score) || (a.rect.top - b.rect.top));
+    return matches[0] || null;
+  }
+
+  // Content center means the actual conversation column, not the viewport
+  // area left after the sidebar. H2O's visible page divider is the strongest
+  // geometric contract because it is rendered on that same content column.
+  function CHUB_resolveChatColumnAnchor(sidebarResult = null){
+    const sidebar = sidebarResult || CHUB_resolveVisibleSidebarEdge();
+    const vw = W.innerWidth || D.documentElement.clientWidth || 0;
+    const oldViewportContentCenter = sidebar.selectedSidebarEdge + ((vw - sidebar.selectedSidebarEdge) / 2);
+    const pageDivider = CHUB_getPageDividerAnchor();
+    const titleList = CHUB_getTitleListAnchor();
+    const composer = CHUB_getComposerAnchor();
+    const mainColumn = CHUB_getMainColumnAnchor();
+    const chosen = pageDivider || titleList || composer || mainColumn || null;
+    const anchorSource = pageDivider
+      ? 'page-divider'
+      : titleList
+        ? 'title-list'
+        : composer
+          ? 'composer'
+          : mainColumn
+            ? 'main-column'
+            : 'viewport-content-fallback';
+    const chosenRect = chosen?.rect || null;
+    const centerOf = (entry) => entry?.rect ? entry.rect.left + (entry.rect.width / 2) : null;
+    return {
+      anchorSource,
+      element: chosen?.el || null,
+      chosenAnchorRect: chosenRect ? CHUB_rectSnapshot(chosenRect) : CHUB_rectSnapshot({
+        left: sidebar.selectedSidebarEdge,
+        right: vw,
+        top: 0,
+        bottom: 0,
+        width: Math.max(0, vw - sidebar.selectedSidebarEdge),
+        height: 0,
+      }),
+      chatColumnCenter: chosenRect ? chosenRect.left + (chosenRect.width / 2) : oldViewportContentCenter,
+      pageDividerCenter: centerOf(pageDivider),
+      titleListCenter: centerOf(titleList),
+      composerCenter: centerOf(composer),
+      mainColumnCenter: centerOf(mainColumn),
+      oldViewportContentCenter,
+    };
+  }
+
+  function CHUB_getNativeRightClusterRect(){
+    const vw = W.innerWidth || 0;
+    const rects = [];
+    const selectors = [
+      '[data-testid="share-chat-button"]',
+      'button[aria-label*="Share" i]',
+      'button[aria-label*="More" i]',
+      'button[aria-label*="menu" i]',
+      '#page-header button',
+      'header[data-testid="page-header"] button',
+    ];
+    try {
+      for (const el of D.querySelectorAll(selectors.join(','))) {
+        const r = el.getBoundingClientRect?.();
+        if (!r || r.width <= 0 || r.height <= 0 || r.top >= 80 || r.right <= vw * 0.6) continue;
+        const cs = W.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number.parseFloat(cs.opacity || '1') <= 0.001) continue;
+        rects.push(r);
+      }
+    } catch {}
+    if (!rects.length) return null;
+    return CHUB_rectSnapshot({
+      left: Math.min(...rects.map((r) => r.left)),
+      right: Math.max(...rects.map((r) => r.right)),
+      top: Math.min(...rects.map((r) => r.top)),
+      bottom: Math.max(...rects.map((r) => r.bottom)),
+      width: Math.max(...rects.map((r) => r.right)) - Math.min(...rects.map((r) => r.left)),
+      height: Math.max(...rects.map((r) => r.bottom)) - Math.min(...rects.map((r) => r.top)),
+    });
+  }
+
+  function CHUB_rectsOverlap(a, b){
+    return !!a && !!b && !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  }
+
+  function CHUB_layoutTopButton(){
+    const btn = UTIL_q(SEL_CHUB_TOPBTN);
+    if (!btn || !btn.isConnected) return false;
+    const mode = CHUB_getTopBtnPlacement();
+    const vw = W.innerWidth || D.documentElement.clientWidth || 0;
+    if (!vw) return false;
+    const bw = Math.max(60, Math.round(btn.getBoundingClientRect().width || 95));
+    const sidebar = CHUB_resolveVisibleSidebarEdge();
+    const contentLeft = sidebar.selectedSidebarEdge;
+    const contentRight = vw;
+    const anchor = CHUB_resolveChatColumnAnchor(sidebar);
+    const contentCenter = anchor.chatColumnCenter;
+    let left;
+    if (mode === 'right-topbar') {
+      // Beside the native right cluster (Share, menu). Anchor on the Share
+      // button when present; safe fixed fallback clears Share + overflow menu.
+      let anchorLeft = NaN;
+      try {
+        const share = D.querySelector('[data-testid="share-chat-button"], button[aria-label*="Share" i]');
+        const r = share?.getBoundingClientRect?.();
+        if (r && r.width > 0 && r.top < 64) anchorLeft = r.left;
+      } catch {}
+      left = Number.isFinite(anchorLeft) && anchorLeft > bw
+        ? Math.round(anchorLeft - bw - 10)
+        : Math.round(vw - bw - 230);
+    } else if (mode === 'left-topbar') {
+      // After the native left cluster (title/breadcrumb block). Anchor on the
+      // page header's first child cluster; fallback stays clear of the
+      // breadcrumb by offsetting into the content region.
+      let clusterRight = 0;
+      try {
+        const header = D.querySelector('#page-header, header[data-testid="page-header"]');
+        const first = header?.firstElementChild || null;
+        const r = first?.getBoundingClientRect?.();
+        if (r && r.width > 0 && r.top < 64) clusterRight = r.right;
+      } catch {}
+      left = Math.round(Math.max(clusterRight + 12, contentLeft + 260));
+    } else {
+      // Content center: exact center of the strongest live chat-column anchor.
+      left = Math.round(contentCenter - (bw / 2));
+    }
+    left = Math.max(4, Math.min(left, vw - bw - 4));
+    try {
+      btn.style.setProperty('left', `${left}px`, 'important');
+      btn.style.setProperty('transform', 'none', 'important');
+      btn.style.setProperty('top', '10px', 'important');
+      btn.setAttribute('data-h2o-topbtn-mode', mode);
+    } catch {}
+    const finalRect = btn.getBoundingClientRect?.() || null;
+    const buttonCenter = finalRect ? finalRect.left + (finalRect.width / 2) : NaN;
+    CHUB_topBtnLastLayout = {
+      placementMode: mode,
+      viewportWidth: vw,
+      selectedSidebarEdge: sidebar.selectedSidebarEdge,
+      selectedSidebarSource: sidebar.selectedSidebarSource,
+      anchorSource: anchor.anchorSource,
+      chosenAnchorRect: anchor.chosenAnchorRect,
+      contentLeft,
+      contentRight,
+      contentCenter,
+      chatColumnCenter: anchor.chatColumnCenter,
+      pageDividerCenter: anchor.pageDividerCenter,
+      titleListCenter: anchor.titleListCenter,
+      composerCenter: anchor.composerCenter,
+      mainColumnCenter: anchor.mainColumnCenter,
+      oldViewportContentCenter: anchor.oldViewportContentCenter,
+      buttonCenter: Number.isFinite(buttonCenter) ? buttonCenter : null,
+      buttonLeft: left,
+      at: Date.now(),
+    };
+    return true;
+  }
+
+  function CHUB_scheduleTopBtnLayout(){
+    if (CHUB_topBtnLayoutRaf) return;
+    CHUB_topBtnLayoutRaf = W.requestAnimationFrame(() => {
+      CHUB_topBtnLayoutRaf = 0;
+      CHUB_layoutTopButton();
+      CHUB_ensureTopBtnSidebarObserver();
+    });
+  }
+
+  // Sidebar open/collapse animates child rails/panels without necessarily
+  // changing the stage shell's stale width. Observe every discovered sidebar
+  // candidate, including hidden tiny/full variants, and re-target on repair.
+  function CHUB_ensureTopBtnSidebarObserver(){
+    if (typeof ResizeObserver !== 'function') return;
+    const nextTargets = CHUB_collectSidebarCandidates()
+      .map((candidate) => candidate.element)
+      .filter((el, index, list) => !!el && list.indexOf(el) === index);
+    const sameTargets = nextTargets.length === CHUB_topBtnSidebarRoTargets.length
+      && nextTargets.every((el, index) => el === CHUB_topBtnSidebarRoTargets[index]);
+    if (sameTargets) return;
+    try { CHUB_topBtnSidebarRo?.disconnect?.(); } catch {}
+    CHUB_topBtnSidebarRoTargets = nextTargets;
+    CHUB_topBtnSidebarRo = null;
+    if (!nextTargets.length) return;
+    CHUB_topBtnSidebarRo = new ResizeObserver(() => CHUB_scheduleTopBtnLayout());
+    for (const el of nextTargets) {
+      try { CHUB_topBtnSidebarRo.observe(el); } catch {}
+    }
+  }
+
+  function CHUB_bindTopBtnLayoutOnce(){
+    if (CHUB_topBtnListenersBound) return;
+    CHUB_topBtnListenersBound = true;
+    try { W.addEventListener('resize', CHUB_scheduleTopBtnLayout, { passive: true }); } catch {}
+    try {
+      D.addEventListener('transitionend', (event) => {
+        const el = event?.target instanceof Element ? event.target : null;
+        if (!el) return;
+        const label = `${el.id || ''} ${String(el.className?.baseVal || el.className || '')}`;
+        let sidebarRelated = /sidebar|slideover|tiny-bar/i.test(label);
+        if (!sidebarRelated) {
+          try { sidebarRelated = !!el.closest?.(CHUB_TOPBTN_SIDEBAR_SELECTORS.join(',')); } catch {}
+        }
+        if (sidebarRelated) CHUB_scheduleTopBtnLayout();
+      }, true);
+    } catch {}
+    // Settle passes: native topbar buttons (Share etc.) mount after load/SPA
+    // navigation without any window-level event.
+    W.setTimeout(CHUB_scheduleTopBtnLayout, 400);
+    W.setTimeout(CHUB_scheduleTopBtnLayout, 1500);
+    W.setTimeout(CHUB_scheduleTopBtnLayout, 4000);
+    // Read-only proof hook for placement verification.
+    try {
+      H2O.CHUB_TOPBTN_DEBUG = {
+        snapshot(){
+          const btn = UTIL_q(SEL_CHUB_TOPBTN);
+          const r = btn?.getBoundingClientRect?.() || null;
+          const vw = W.innerWidth || 0;
+          const sidebar = CHUB_resolveVisibleSidebarEdge();
+          const contentLeft = sidebar.selectedSidebarEdge;
+          const contentRight = vw;
+          const anchor = CHUB_resolveChatColumnAnchor(sidebar);
+          const contentCenter = anchor.chatColumnCenter;
+          const btnCenter = r ? r.left + (r.width / 2) : NaN;
+          const buttonRect = CHUB_rectSnapshot(r);
+          const nativeRightClusterRect = CHUB_getNativeRightClusterRect();
+          const overlapsNativeButtons = CHUB_rectsOverlap(buttonRect, nativeRightClusterRect);
+          const round = (value) => Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+          return {
+            placementMode: CHUB_getTopBtnPlacement(),
+            viewportWidth: vw,
+            anchorSource: anchor.anchorSource,
+            selectedSidebarEdge: sidebar.selectedSidebarEdge,
+            selectedSidebarSource: sidebar.selectedSidebarSource,
+            sidebarRightEdge: sidebar.selectedSidebarEdge,
+            sidebarCandidates: sidebar.candidates.map((candidate) => ({
+              selector: candidate.selector,
+              accepted: candidate.accepted,
+              reason: candidate.reason,
+              rect: candidate.rect,
+              display: candidate.display,
+              visibility: candidate.visibility,
+              opacity: candidate.opacity,
+              pointerEvents: candidate.pointerEvents,
+              visibleRightEdge: candidate.visibleRightEdge,
+            })),
+            contentLeft,
+            contentRight,
+            contentCenter: round(contentCenter),
+            chatColumnCenter: round(anchor.chatColumnCenter),
+            pageDividerCenter: round(anchor.pageDividerCenter),
+            titleListCenter: round(anchor.titleListCenter),
+            composerCenter: round(anchor.composerCenter),
+            mainColumnCenter: round(anchor.mainColumnCenter),
+            oldViewportContentCenter: round(anchor.oldViewportContentCenter),
+            buttonCenter: round(btnCenter),
+            deltaPx: Number.isFinite(btnCenter) ? round(btnCenter - contentCenter) : null,
+            deltaToChosenAnchor: Number.isFinite(btnCenter) ? round(btnCenter - anchor.chatColumnCenter) : null,
+            deltaToPageDivider: Number.isFinite(btnCenter) && Number.isFinite(anchor.pageDividerCenter)
+              ? round(btnCenter - anchor.pageDividerCenter)
+              : null,
+            buttonRect,
+            chosenAnchorRect: anchor.chosenAnchorRect,
+            nativeRightClusterRect,
+            overlapsNativeButtons,
+            overlapsNativeShare: overlapsNativeButtons,
+            lastLayout: CHUB_topBtnLastLayout ? { ...CHUB_topBtnLastLayout } : null,
+          };
+        },
+      };
+      W.H2O_CHUB_TOPBTN_DEBUG = H2O.CHUB_TOPBTN_DEBUG;
+    } catch {}
   }
 
   function DOM_ensureDock(){
@@ -4105,9 +4666,9 @@ ${P} .${CLS}-detailInner > .${CLS}-hub-subtabs{
   background-clip:padding-box;
   transition: all 0.15s ease, transform 0.15s ease;
 
-  /* placement — shifted right ~40px to align with the chat content center.
-     The sidebar (~60px) on the left means 50vw is the viewport center but the
-     chat area center sits further right; this offset corrects for that. */
+  /* placement — PRE-BOOT FALLBACK ONLY. The real placement is computed by
+     CHUB_layoutTopButton (content-center / right-topbar / left-topbar modes,
+     live sidebar geometry) which overrides these with inline !important. */
   position:fixed;
   top:10px;
   left:calc(50% + 25px);
