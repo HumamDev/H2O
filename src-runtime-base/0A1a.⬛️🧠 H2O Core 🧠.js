@@ -1199,6 +1199,720 @@
     }
   }
 
+  /* Chat Atlas convergence parity (CV-1, explicit read-only probe).
+   *
+   * This operator-called API compares the private Chat Atlas ledger, current
+   * canonical turnRuntime records, and rendered MiniMap boxes. It does not
+   * participate in normal diagnostics, publish rows, or invoke repair paths.
+   */
+  const CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL = [
+    '[data-cgxui="mnmp-root"][data-cgxui-owner="mnmp"]',
+    '[data-h2o-owner="minimap-v10"]',
+  ].join(', ');
+  const CHAT_ATLAS_CONVERGENCE_MINIMAP_BOX_SEL = [
+    '[data-cgxui="mnmp-btn"]',
+    '[data-cgxui="mm-btn"]',
+    '.cgxui-mm-btn',
+  ].join(', ');
+  const CHAT_ATLAS_CONVERGENCE_MINIMAP_WRAP_SEL = [
+    '[data-cgxui="mnmp-wrap"]',
+    '[data-cgxui="mm-wrap"]',
+    '.cgxui-mm-wrap',
+  ].join(', ');
+  const CHAT_ATLAS_CONVERGENCE_SAFETY_KEYS = [
+    'domWriteCount',
+    'storageWriteCount',
+    'physicalExecutorCallCount',
+    'paginationExecutorCallCount',
+    'unmountExecutorCallCount',
+    'consumerSwitchCount',
+    'canonicalMutationAttemptCount',
+  ];
+
+  function chatAtlasConvergenceAttr(el, name) {
+    try { return String(el?.getAttribute?.(name) || '').trim(); } catch { return ''; }
+  }
+
+  function chatAtlasConvergenceText(el) {
+    try { return String(el?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120); } catch { return ''; }
+  }
+
+  function chatAtlasConvergencePositiveInt(value) {
+    const number = Number.parseInt(String(value || ''), 10);
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  }
+
+  function chatAtlasConvergenceIds(values) {
+    const ids = new Set();
+    for (const value of values || []) {
+      const id = chatAtlasNormalizeId(value);
+      if (id) ids.add(id);
+    }
+    return ids;
+  }
+
+  function chatAtlasConvergenceSafetyCounters() {
+    let diagnostics = {};
+    try { diagnostics = getChatAtlasLedgerDiagnostics() || {}; } catch {}
+    const counters = {};
+    for (const key of CHAT_ATLAS_CONVERGENCE_SAFETY_KEYS) {
+      const value = Number(diagnostics?.[key]);
+      counters[key] = Number.isFinite(value) ? value : 'unknown';
+    }
+    return counters;
+  }
+
+  function chatAtlasConvergenceSafetyResult(before, after) {
+    const changes = [];
+    for (const key of CHAT_ATLAS_CONVERGENCE_SAFETY_KEYS) {
+      if (before?.[key] !== after?.[key]) {
+        changes.push({ key, before: before?.[key] ?? 'unknown', after: after?.[key] ?? 'unknown' });
+      }
+    }
+    return {
+      safetyCountersBefore: before,
+      safetyCountersAfter: after,
+      safetyCountersUnchanged: changes.length === 0,
+      safetyCounterChanges: changes,
+    };
+  }
+
+  function chatAtlasConvergenceLedgerRow(member) {
+    const answerAliases = Array.from(member?.answer?.aliases || []).map(chatAtlasNormalizeId).filter(Boolean);
+    const questionAliases = Array.from(member?.question?.aliases || []).map(chatAtlasNormalizeId).filter(Boolean);
+    const qId = chatAtlasNormalizeId(member?.question?.qId) || null;
+    const primaryAId = chatAtlasNormalizeId(member?.answer?.primaryAId) || null;
+    const allIds = chatAtlasConvergenceIds([qId, primaryAId, ...answerAliases, ...questionAliases]);
+    const answerIds = chatAtlasConvergenceIds([primaryAId, ...answerAliases]);
+    const questionIds = chatAtlasConvergenceIds([qId, ...questionAliases]);
+    return {
+      row: {
+        logicalMemberKey: String(member?.logicalMemberKey || ''),
+        turnNo: Math.max(0, Number(member?.turnNo || 0) || 0),
+        pageNo: Math.max(0, Number(member?.pageNo || 0) || 0),
+        pageIndex: Math.max(0, Number(member?.pageIndex || 0) || 0),
+        noAnswer: !!member?.noAnswer,
+        qId,
+        primaryAId,
+        answerAliases,
+        questionAliases,
+        hydration: String(member?.hydration || 'none'),
+      },
+      allIds,
+      answerIds,
+      questionIds,
+    };
+  }
+
+  function chatAtlasConvergenceCanonicalRow(record, index, fieldShapeMismatches) {
+    const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || record?.index || index + 1) || 0);
+    const rawAnswerIds = Array.isArray(record?.answerIds) ? record.answerIds : [];
+    const rawAliasIds = Array.isArray(record?._aliasIds) ? record._aliasIds : [];
+    if (!record || typeof record !== 'object') {
+      fieldShapeMismatches.push({ source: 'canonical', index, reason: 'record-not-object' });
+    } else {
+      if (!Array.isArray(record.answerIds)) fieldShapeMismatches.push({ source: 'canonical', turnNo, field: 'answerIds', reason: 'expected-array' });
+      if (!Array.isArray(record._aliasIds)) fieldShapeMismatches.push({ source: 'canonical', turnNo, field: '_aliasIds', reason: 'expected-array' });
+    }
+    const answerIds = rawAnswerIds.map(chatAtlasNormalizeId).filter(Boolean);
+    const aliasIds = rawAliasIds.map(chatAtlasNormalizeId).filter(Boolean);
+    const qId = chatAtlasNormalizeId(record?.qId) || null;
+    const primaryAId = chatAtlasNormalizeId(record?.primaryAId) || null;
+    const allIds = chatAtlasConvergenceIds([
+      record?.turnId,
+      qId,
+      primaryAId,
+      ...answerIds,
+      ...aliasIds,
+    ]);
+    return {
+      row: {
+        turnNo,
+        idx: Number.isFinite(Number(record?.idx)) ? Number(record.idx) : null,
+        qId,
+        primaryAId,
+        answerIds,
+        _aliasIds: aliasIds,
+        noAnswer: record?.noAnswer === true || record?.hasAssistant === false || (!primaryAId && answerIds.length === 0),
+        pageNo: turnNo > 0 ? Math.floor((turnNo - 1) / CHAT_ATLAS_PAGE_SIZE) + 1 : 0,
+      },
+      allIds,
+      answerIds: chatAtlasConvergenceIds([primaryAId, ...answerIds]),
+      questionIds: chatAtlasConvergenceIds([qId]),
+    };
+  }
+
+  function chatAtlasConvergenceWashMarker(btn) {
+    try {
+      if (btn?.getAttribute?.('data-cgxui-wash') === '1' || btn?.dataset?.wash === 'true') return true;
+      if (btn?.getAttribute?.('data-h2o-wash-name') || btn?.getAttribute?.('data-h2o-wash-id')) return true;
+      return Array.from(btn?.classList || []).some((name) => name.startsWith('cgxui-mnmp-wash-') || name.startsWith('cgxui-wash-'));
+    } catch {
+      return false;
+    }
+  }
+
+  function chatAtlasConvergenceNoAnswerMarker(btn, wrap = null) {
+    const sources = [];
+    const read = (name) => chatAtlasConvergenceAttr(btn, name) || chatAtlasConvergenceAttr(wrap, name);
+    let value = false;
+    for (const name of ['data-no-answer', 'data-at-no-answer', 'data-cgxui-no-answer']) {
+      const attrValue = read(name);
+      const present = !!(btn?.hasAttribute?.(name) || wrap?.hasAttribute?.(name));
+      if (!present) continue;
+      sources.push(name);
+      if (attrValue === '1' || attrValue === 'true') value = true;
+    }
+    const primaryAId = read('data-primary-a-id');
+    if (/^no-answer:/i.test(primaryAId)) {
+      sources.push('data-primary-a-id:no-answer-prefix');
+      value = true;
+    }
+    const classNames = Array.from(btn?.classList || []);
+    if (classNames.some((name) => /(^|-)no-answer($|-)/i.test(String(name)))) {
+      sources.push('class:no-answer');
+      value = true;
+    }
+    return {
+      available: sources.length > 0,
+      value,
+      source: sources.length ? sources.join('+') : 'unavailable',
+    };
+  }
+
+  function chatAtlasConvergenceMiniMapBox(btn, domIndex) {
+    const wrap = btn?.closest?.(CHAT_ATLAS_CONVERGENCE_MINIMAP_WRAP_SEL) || null;
+    const read = (name) => chatAtlasConvergenceAttr(btn, name) || chatAtlasConvergenceAttr(wrap, name);
+    const dataPrimaryAId = read('data-primary-a-id');
+    const dataTurn = read('data-turn');
+    const dataTurnId = read('data-turn-id');
+    const dataId = read('data-id');
+    const dataQuestionId = read('data-question-id');
+    const dataPage = read('data-page');
+    const inferredTurnNo = chatAtlasConvergencePositiveInt(read('data-turn-idx'))
+      || chatAtlasConvergencePositiveInt(btn?.querySelector?.('.cgxui-mm-num')?.textContent)
+      || chatAtlasConvergencePositiveInt(chatAtlasConvergenceText(btn));
+    const inferredPageNo = chatAtlasConvergencePositiveInt(read('data-page-num'))
+      || chatAtlasConvergencePositiveInt(dataPage)
+      || (inferredTurnNo ? Math.floor((inferredTurnNo - 1) / CHAT_ATLAS_PAGE_SIZE) + 1 : 0);
+    const noAnswerMarker = chatAtlasConvergenceNoAnswerMarker(btn, wrap);
+    return {
+      row: {
+        domIndex,
+        label: chatAtlasConvergenceAttr(btn, 'aria-label') || chatAtlasConvergenceAttr(btn, 'title'),
+        text: chatAtlasConvergenceText(btn),
+        dataPrimaryAId,
+        dataTurn,
+        dataTurnId,
+        dataPage,
+        inferredTurnNo,
+        inferredPageNo,
+        noAnswer: noAnswerMarker.available ? noAnswerMarker.value : 'unknown',
+        noAnswerSemanticAvailable: noAnswerMarker.available,
+        noAnswerMarkerSource: noAnswerMarker.source,
+        washMarker: chatAtlasConvergenceWashMarker(btn),
+        resolvedTurnNo: null,
+        resolvedLogicalMemberKey: null,
+        mismatchReason: '',
+      },
+      btn,
+      allIds: chatAtlasConvergenceIds([dataPrimaryAId, dataTurnId, dataId, dataQuestionId]),
+    };
+  }
+
+  function chatAtlasConvergenceAliasOwners(entries) {
+    const owners = new Map();
+    for (let index = 0; index < entries.length; index += 1) {
+      for (const id of entries[index].allIds) {
+        if (!owners.has(id)) owners.set(id, new Set());
+        owners.get(id).add(index);
+      }
+    }
+    return owners;
+  }
+
+  function chatAtlasConvergenceMatch(entry, owners, fallbackIndex, used = null) {
+    const candidates = new Set();
+    for (const id of entry?.allIds || []) {
+      for (const index of owners.get(id) || []) candidates.add(index);
+    }
+    const available = Array.from(candidates).filter((index) => !used?.has(index));
+    if (available.length === 1) return { index: available[0], basis: 'record-local-alias', candidates: available };
+    if (!available.length && Number.isInteger(fallbackIndex) && fallbackIndex >= 0 && !used?.has(fallbackIndex)) {
+      return { index: fallbackIndex, basis: 'turn-order-fallback', candidates: [] };
+    }
+    return { index: -1, basis: available.length ? 'ambiguous-alias' : 'unmatched', candidates: available };
+  }
+
+  function chatAtlasConvergenceWasherState(entry, btn, warnings) {
+    let washApi = null;
+    try { washApi = W?.H2O?.MM?.wash || W?.top?.H2O?.MM?.wash || null; } catch {}
+    if (!washApi || typeof washApi.inspectMiniBtn !== 'function') {
+      warnings.push('washer-read-api-unavailable');
+      return {
+        available: false,
+        expectedAvailable: false,
+        expectedWashed: 'unknown',
+        actualWashed: 'unknown',
+        computedVisualWash: 'unknown',
+        washerExpectedSource: 'unavailable',
+        washerActualSource: 'unavailable',
+        selectedOrCurrent: 'unknown',
+        actualWashAttrs: {},
+        actualWashClasses: [],
+      };
+    }
+    const buttonId = chatAtlasConvergenceAttr(btn, 'data-primary-a-id') || entry?.row?.primaryAId || '';
+    let inspected = null;
+    try { inspected = washApi.inspectMiniBtn(buttonId, btn) || null; } catch {}
+    if (!inspected || typeof inspected.shouldWash !== 'boolean') {
+      warnings.push('washer-expected-state-unavailable');
+      return {
+        available: false,
+        expectedAvailable: false,
+        expectedWashed: 'unknown',
+        actualWashed: 'unknown',
+        computedVisualWash: 'unknown',
+        washerExpectedSource: 'unavailable',
+        washerActualSource: 'unavailable',
+        selectedOrCurrent: 'unknown',
+        actualWashAttrs: {},
+        actualWashClasses: [],
+      };
+    }
+    const actualWashAttrs = {
+      dataCgxuiWash: chatAtlasConvergenceAttr(btn, 'data-cgxui-wash'),
+      dataWash: chatAtlasConvergenceAttr(btn, 'data-wash'),
+      dataH2oWashId: chatAtlasConvergenceAttr(btn, 'data-h2o-wash-id'),
+      dataH2oWashName: chatAtlasConvergenceAttr(btn, 'data-h2o-wash-name'),
+    };
+    const actualWashClasses = Array.from(btn?.classList || [])
+      .filter((name) => /^cgxui-(?:mnmp-)?wash-/i.test(String(name)));
+    const actualWashed = actualWashAttrs.dataCgxuiWash === '1'
+      || actualWashAttrs.dataWash === 'true'
+      || !!actualWashAttrs.dataH2oWashId
+      || !!actualWashAttrs.dataH2oWashName
+      || actualWashClasses.length > 0;
+    const selectedOrCurrent = !!inspected.selectedOrCurrent;
+    const washerActualSource = actualWashed
+      ? (actualWashClasses.length ? 'minimap-wash-attrs+classes' : 'minimap-wash-attrs')
+      : (selectedOrCurrent ? 'selected-or-current-style-only' : 'no-wash-projection');
+    return {
+      available: true,
+      expectedAvailable: true,
+      expectedWashed: !!inspected.shouldWash,
+      expectedColorName: String(inspected.colorName || '') || null,
+      washerExpectedSource: `washer-owner:inspectMiniBtn${inspected.expectedSource ? `:${inspected.expectedSource}` : ''}`,
+      actualWashed,
+      washerActualSource,
+      computedVisualWash: inspected?.computedVisualWash ?? 'unknown',
+      actualColorName: actualWashAttrs.dataH2oWashName || null,
+      selectedOrCurrent,
+      selectedStateTokens: String(inspected.selectedStateTokens || ''),
+      actualWashAttrs,
+      actualWashClasses,
+      projectedWashId: actualWashAttrs.dataH2oWashId || null,
+    };
+  }
+
+  function getChatAtlasConvergenceParity() {
+    const safetyBefore = chatAtlasConvergenceSafetyCounters();
+    try {
+      const blockers = [];
+      const warnings = [];
+      const notes = [
+        'operator-called-read-only-probe',
+        'does-not-drive-canonical-records-or-minimap-rendering',
+      ];
+      const countMismatches = [];
+      const orderMismatches = [];
+      const fieldShapeMismatches = [];
+      const qIdMismatches = [];
+      const primaryAIdMismatches = [];
+      const aliasMismatches = [];
+      const noAnswerMismatches = [];
+      const pageNoMismatches = [];
+      const miniMapMissingBoxes = [];
+      const miniMapUnexpectedBoxes = [];
+      const miniMapOrderMismatches = [];
+      const washerMismatches = [];
+      const washerAudit = [];
+
+      const ledgerEntries = chatAtlasLedgerState.members.map(chatAtlasConvergenceLedgerRow);
+      const canonicalEntries = turnState.turns.map((record, index) => chatAtlasConvergenceCanonicalRow(record, index, fieldShapeMismatches));
+      const ledgerRows = ledgerEntries.map((entry) => entry.row);
+      const canonicalRows = canonicalEntries.map((entry) => entry.row);
+      const canonicalOwners = chatAtlasConvergenceAliasOwners(canonicalEntries);
+      const usedCanonical = new Set();
+      const ledgerReady = !!chatAtlasLedgerState.ready;
+      const canonicalReady = canonicalRows.length > 0;
+
+      if (ledgerReady && canonicalReady) {
+      for (let index = 0; index < ledgerEntries.length; index += 1) {
+        const ledger = ledgerEntries[index];
+        const match = chatAtlasConvergenceMatch(ledger, canonicalOwners, index, usedCanonical);
+        if (match.index < 0) {
+          aliasMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            reason: match.basis === 'ambiguous-alias' ? 'ambiguous-canonical-alias-match' : 'canonical-record-not-matched',
+            candidateIndexes: match.candidates,
+          });
+          continue;
+        }
+        usedCanonical.add(match.index);
+        const canonical = canonicalEntries[match.index];
+        if (match.basis === 'turn-order-fallback' && ledger.allIds.size && canonical.allIds.size) {
+          aliasMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            canonicalTurnNo: canonical.row.turnNo,
+            reason: 'turn-order-matched-without-record-local-alias',
+          });
+        }
+        if (match.index !== index || canonical.row.turnNo !== ledger.row.turnNo) {
+          orderMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            expectedIndex: index,
+            canonicalIndex: match.index,
+            ledgerTurnNo: ledger.row.turnNo,
+            canonicalTurnNo: canonical.row.turnNo,
+          });
+        }
+        if (ledger.row.qId && canonical.row.qId
+          && !ledger.questionIds.has(canonical.row.qId)
+          && !canonical.questionIds.has(ledger.row.qId)) {
+          qIdMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerQId: ledger.row.qId,
+            canonicalQId: canonical.row.qId,
+          });
+        }
+        if (ledger.row.primaryAId && canonical.row.primaryAId
+          && !ledger.answerIds.has(canonical.row.primaryAId)
+          && !canonical.answerIds.has(ledger.row.primaryAId)) {
+          primaryAIdMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerPrimaryAId: ledger.row.primaryAId,
+            canonicalPrimaryAId: canonical.row.primaryAId,
+          });
+        }
+        if (ledger.row.noAnswer !== canonical.row.noAnswer) {
+          noAnswerMismatches.push({
+            source: 'ledger-vs-canonical',
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerNoAnswer: ledger.row.noAnswer,
+            canonicalNoAnswer: canonical.row.noAnswer,
+            classification: 'blocker',
+            rationale: 'authoritative-ledger-canonical-disagreement',
+          });
+        }
+        if (ledger.row.pageNo !== canonical.row.pageNo) {
+          pageNoMismatches.push({
+            source: 'ledger-vs-canonical',
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerPageNo: ledger.row.pageNo,
+            canonicalPageNo: canonical.row.pageNo,
+          });
+        }
+      }
+
+      for (let index = 0; index < canonicalEntries.length; index += 1) {
+        if (!usedCanonical.has(index)) {
+          aliasMismatches.push({ source: 'canonical', canonicalIndex: index, turnNo: canonicalEntries[index].row.turnNo, reason: 'canonical-record-not-matched-to-ledger' });
+        }
+      }
+      }
+
+      let miniMapRoot = null;
+      try { miniMapRoot = D.querySelector(CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL); } catch {}
+      let miniMapEntries = [];
+      if (miniMapRoot) {
+        try {
+          miniMapEntries = Array.from(miniMapRoot.querySelectorAll(CHAT_ATLAS_CONVERGENCE_MINIMAP_BOX_SEL))
+            .map(chatAtlasConvergenceMiniMapBox);
+        } catch { miniMapEntries = []; }
+      }
+      const renderedMiniMapBoxes = miniMapEntries.map((entry) => entry.row);
+      const ledgerOwners = chatAtlasConvergenceAliasOwners(ledgerEntries);
+      const boxesByLedgerIndex = new Map();
+      if (ledgerReady) {
+      for (let index = 0; index < miniMapEntries.length; index += 1) {
+        const box = miniMapEntries[index];
+        const fallbackIndex = box.row.inferredTurnNo > 0 ? box.row.inferredTurnNo - 1 : index;
+        const match = chatAtlasConvergenceMatch(box, ledgerOwners, fallbackIndex);
+        if (match.index < 0) {
+          box.row.mismatchReason = match.basis === 'ambiguous-alias' ? 'ambiguous-ledger-alias-match' : 'no-ledger-member-match';
+          miniMapUnexpectedBoxes.push({ ...box.row });
+          continue;
+        }
+        const ledger = ledgerEntries[match.index];
+        box.row.resolvedTurnNo = ledger.row.turnNo;
+        box.row.resolvedLogicalMemberKey = ledger.row.logicalMemberKey;
+        if (!boxesByLedgerIndex.has(match.index)) boxesByLedgerIndex.set(match.index, []);
+        boxesByLedgerIndex.get(match.index).push(box);
+        if (match.index !== index) {
+          miniMapOrderMismatches.push({
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            expectedDomIndex: match.index,
+            actualDomIndex: index,
+            turnNo: ledger.row.turnNo,
+          });
+        }
+        if (box.row.inferredPageNo && box.row.inferredPageNo !== ledger.row.pageNo) {
+          pageNoMismatches.push({
+            source: 'ledger-vs-minimap',
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerPageNo: ledger.row.pageNo,
+            miniMapPageNo: box.row.inferredPageNo,
+          });
+        }
+        if (box.row.noAnswerSemanticAvailable && box.row.noAnswer !== ledger.row.noAnswer) {
+          noAnswerMismatches.push({
+            source: 'ledger-vs-minimap',
+            logicalMemberKey: ledger.row.logicalMemberKey,
+            turnNo: ledger.row.turnNo,
+            ledgerNoAnswer: ledger.row.noAnswer,
+            miniMapNoAnswer: box.row.noAnswer,
+            miniMapNoAnswerMarkerSource: box.row.noAnswerMarkerSource,
+            classification: 'blocker',
+            rationale: 'reliable-minimap-no-answer-marker-disagrees',
+          });
+        }
+        const wash = chatAtlasConvergenceWasherState(ledger, box.btn, warnings);
+        let washerMismatchReason = '';
+        if (wash.expectedAvailable) {
+          if (wash.actualWashed !== wash.expectedWashed) {
+            washerMismatchReason = 'washer-owner-vs-explicit-projection-mismatch';
+          } else if (wash.expectedWashed && wash.actualWashed
+            && wash.expectedColorName && wash.actualColorName
+            && wash.expectedColorName !== wash.actualColorName) {
+            washerMismatchReason = 'washer-color-attribute-mismatch';
+          } else if (wash.expectedWashed && wash.actualWashed && wash.computedVisualWash === false) {
+            washerMismatchReason = 'wash-visual-missing';
+          }
+        }
+        const washerRow = {
+          logicalMemberKey: ledger.row.logicalMemberKey,
+          turnNo: ledger.row.turnNo,
+          ...wash,
+          mismatchReason: washerMismatchReason,
+          classification: washerMismatchReason ? 'blocker' : (wash.expectedAvailable ? 'pass' : 'warning'),
+          rationale: washerMismatchReason
+            ? 'washer-owner-state-disagrees-with-explicit-minimap-wash-projection'
+            : (wash.expectedAvailable
+              ? (wash.selectedOrCurrent && !wash.actualWashed
+                ? 'selected-or-current-style-is-not-washer-evidence'
+                : 'washer-owner-and-explicit-projection-agree')
+              : 'washer-owner-state-unavailable'),
+        };
+        washerAudit.push(washerRow);
+        if (washerMismatchReason) washerMismatches.push({ ...washerRow, reason: washerMismatchReason });
+      }
+      }
+
+      if (ledgerReady && miniMapRoot && miniMapEntries.length) {
+        for (let index = 0; index < ledgerEntries.length; index += 1) {
+          const boxes = boxesByLedgerIndex.get(index) || [];
+          if (!boxes.length) miniMapMissingBoxes.push({ ...ledgerEntries[index].row });
+          if (boxes.length > 1) {
+            miniMapUnexpectedBoxes.push({
+              logicalMemberKey: ledgerEntries[index].row.logicalMemberKey,
+              turnNo: ledgerEntries[index].row.turnNo,
+              domIndexes: boxes.map((box) => box.row.domIndex),
+              reason: 'duplicate-minimap-boxes-for-ledger-member',
+            });
+          }
+        }
+      }
+
+      const ledgerMemberCount = ledgerRows.length;
+      const canonicalRecordCount = canonicalRows.length;
+      const renderedMiniMapBoxCount = renderedMiniMapBoxes.length;
+      const expectedPageCount = ledgerMemberCount ? Math.ceil(ledgerMemberCount / CHAT_ATLAS_PAGE_SIZE) : 0;
+      const noAnswerCountLedger = ledgerRows.filter((row) => row.noAnswer).length;
+      const noAnswerCountCanonical = canonicalRows.filter((row) => row.noAnswer).length;
+      const miniMapRendered = !!miniMapRoot && renderedMiniMapBoxCount > 0;
+      const noAnswerLedgerIndexes = ledgerEntries
+        .map((entry, index) => entry.row.noAnswer ? index : -1)
+        .filter((index) => index >= 0);
+      const noAnswerMarkerRows = noAnswerLedgerIndexes.flatMap((index) => boxesByLedgerIndex.get(index) || []);
+      const noAnswerSemanticAvailable = noAnswerLedgerIndexes.length === 0
+        ? true
+        : noAnswerMarkerRows.length === noAnswerLedgerIndexes.length
+          && noAnswerMarkerRows.every((entry) => entry.row.noAnswerSemanticAvailable);
+      const miniMapNoAnswerMarkerSources = Array.from(new Set(
+        noAnswerMarkerRows
+          .filter((entry) => entry.row.noAnswerSemanticAvailable)
+          .map((entry) => entry.row.noAnswerMarkerSource)
+          .filter(Boolean)
+      ));
+      const miniMapNoAnswerMarkerSource = noAnswerLedgerIndexes.length === 0
+        ? 'not-applicable'
+        : (noAnswerSemanticAvailable ? miniMapNoAnswerMarkerSources.join('+') : 'unavailable');
+      const noAnswerCountMiniMap = noAnswerSemanticAvailable
+        ? noAnswerMarkerRows.filter((entry) => entry.row.noAnswer === true).length
+        : 'unknown';
+      const noAnswerMatches = noAnswerMismatches.length === 0;
+      if (miniMapRendered && noAnswerLedgerIndexes.length && !noAnswerSemanticAvailable) {
+        warnings.push('minimap-no-answer-marker-unavailable');
+        notes.push('no-answer-parity-uses-ledger-vs-canonical-only');
+      }
+      const washerExpectedSources = Array.from(new Set(washerAudit.map((row) => row.washerExpectedSource).filter(Boolean)));
+      const washerActualSources = Array.from(new Set(washerAudit.map((row) => row.washerActualSource).filter(Boolean)));
+      const washerExpectedSource = washerExpectedSources.length === 1 ? washerExpectedSources[0] : washerExpectedSources;
+      const washerActualSource = washerActualSources.length === 1 ? washerActualSources[0] : washerActualSources;
+      const washerMatches = washerAudit.some((row) => !row.expectedAvailable)
+        ? (washerMismatches.length ? false : 'unknown')
+        : washerMismatches.length === 0;
+      const countParity = ledgerReady && canonicalReady && miniMapRendered
+        ? ledgerMemberCount === canonicalRecordCount && canonicalRecordCount === renderedMiniMapBoxCount
+        : 'unknown';
+
+      if (ledgerReady && canonicalReady && ledgerMemberCount !== canonicalRecordCount) {
+        countMismatches.push({ source: 'ledger-vs-canonical', ledgerMemberCount, canonicalRecordCount });
+      }
+      if (ledgerReady && miniMapRendered && ledgerMemberCount !== renderedMiniMapBoxCount) {
+        countMismatches.push({ source: 'ledger-vs-minimap', ledgerMemberCount, renderedMiniMapBoxCount });
+      }
+      if (!ledgerReady) warnings.push('chat-atlas-ledger-not-ready');
+      if (!canonicalReady) warnings.push('canonical-turn-runtime-not-ready');
+      if (!miniMapRoot) warnings.push('minimap-root-not-rendered');
+      else if (!miniMapRendered) warnings.push('minimap-boxes-not-rendered');
+
+      const mismatchGroups = [
+        countMismatches,
+        orderMismatches,
+        fieldShapeMismatches,
+        qIdMismatches,
+        primaryAIdMismatches,
+        aliasMismatches,
+        noAnswerMismatches,
+        pageNoMismatches,
+        miniMapMissingBoxes,
+        miniMapUnexpectedBoxes,
+        miniMapOrderMismatches,
+        washerMismatches,
+      ];
+      if (countMismatches.length) blockers.push('count-mismatch');
+      if (orderMismatches.length) blockers.push('ledger-canonical-order-mismatch');
+      if (fieldShapeMismatches.length) blockers.push('canonical-field-shape-mismatch');
+      if (qIdMismatches.length) blockers.push('question-id-mismatch');
+      if (primaryAIdMismatches.length) blockers.push('primary-answer-id-mismatch');
+      if (aliasMismatches.length) blockers.push('record-local-alias-mismatch');
+      if (noAnswerMismatches.length) blockers.push('no-answer-mismatch');
+      if (pageNoMismatches.length) blockers.push('page-membership-mismatch');
+      if (miniMapMissingBoxes.length) blockers.push('minimap-missing-boxes');
+      if (miniMapUnexpectedBoxes.length) blockers.push('minimap-unexpected-boxes');
+      if (miniMapOrderMismatches.length) blockers.push('minimap-order-mismatch');
+      if (washerMismatches.length) blockers.push('washer-mismatch');
+
+      const unknown = !ledgerReady || !canonicalReady || !miniMapRendered;
+      const mismatch = mismatchGroups.some((group) => group.length > 0);
+      const parityStatus = unknown ? 'unknown' : (mismatch ? 'mismatch' : (warnings.length ? 'warn' : 'exact'));
+      const safetyAfter = chatAtlasConvergenceSafetyCounters();
+      const safety = chatAtlasConvergenceSafetyResult(safetyBefore, safetyAfter);
+      if (!safety.safetyCountersUnchanged) blockers.push('safety-counter-changed-during-probe');
+
+      return chatAtlasFreeze({
+        readOnly: true,
+        authority: 'chat-atlas-convergence-parity',
+        parityStatus: !safety.safetyCountersUnchanged ? 'mismatch' : parityStatus,
+        blockers: Array.from(new Set(blockers)),
+        warnings: Array.from(new Set(warnings)),
+        notes,
+        chatKey: chatAtlasLedgerState.chatKey,
+        ledgerReady,
+        canonicalReady,
+        miniMapRendered,
+        ledgerMemberCount,
+        canonicalRecordCount,
+        renderedMiniMapBoxCount,
+        countParity,
+        expectedPageCount,
+        noAnswerCountLedger,
+        noAnswerCountCanonical,
+        noAnswerCountMiniMap,
+        noAnswerSemanticAvailable,
+        miniMapNoAnswerMarkerSource,
+        noAnswerMatches,
+        washerExpectedSource,
+        washerActualSource,
+        washerMatches,
+        ledgerRows,
+        canonicalRows,
+        renderedMiniMapBoxes,
+        countMismatches,
+        orderMismatches,
+        fieldShapeMismatches,
+        qIdMismatches,
+        primaryAIdMismatches,
+        aliasMismatches,
+        noAnswerMismatches,
+        pageNoMismatches,
+        miniMapMissingBoxes,
+        miniMapUnexpectedBoxes,
+        miniMapOrderMismatches,
+        washerAudit,
+        washerMismatches,
+        miniMapRootSelector: miniMapRoot ? CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL : null,
+        miniMapBoxSelector: miniMapRoot ? CHAT_ATLAS_CONVERGENCE_MINIMAP_BOX_SEL : null,
+        ...safety,
+      });
+    } catch (error) {
+      const safetyAfter = chatAtlasConvergenceSafetyCounters();
+      const safety = chatAtlasConvergenceSafetyResult(safetyBefore, safetyAfter);
+      return chatAtlasFreeze({
+        readOnly: true,
+        authority: 'chat-atlas-convergence-parity',
+        parityStatus: 'unknown',
+        blockers: [],
+        warnings: [`convergence-parity-probe-failed:${String(error?.message || error || 'unknown')}`],
+        notes: ['operator-called-read-only-probe'],
+        chatKey: chatAtlasLedgerState.chatKey,
+        ledgerReady: !!chatAtlasLedgerState.ready,
+        canonicalReady: 'unknown',
+        miniMapRendered: 'unknown',
+        ledgerMemberCount: chatAtlasLedgerState.members.length,
+        canonicalRecordCount: 'unknown',
+        renderedMiniMapBoxCount: 'unknown',
+        countParity: 'unknown',
+        expectedPageCount: 'unknown',
+        noAnswerCountLedger: 'unknown',
+        noAnswerCountCanonical: 'unknown',
+        noAnswerCountMiniMap: 'unknown',
+        noAnswerSemanticAvailable: 'unknown',
+        miniMapNoAnswerMarkerSource: 'unknown',
+        noAnswerMatches: 'unknown',
+        washerExpectedSource: 'unknown',
+        washerActualSource: 'unknown',
+        washerMatches: 'unknown',
+        ledgerRows: [],
+        canonicalRows: [],
+        renderedMiniMapBoxes: [],
+        countMismatches: [],
+        orderMismatches: [],
+        fieldShapeMismatches: [],
+        qIdMismatches: [],
+        primaryAIdMismatches: [],
+        aliasMismatches: [],
+        noAnswerMismatches: [],
+        pageNoMismatches: [],
+        miniMapMissingBoxes: [],
+        miniMapUnexpectedBoxes: [],
+        miniMapOrderMismatches: [],
+        washerAudit: [],
+        washerMismatches: [],
+        ...safety,
+      });
+    }
+  }
+
   function getChatAtlasLedgerDiagnostics() {
     try {
       const members = chatAtlasLedgerState.members;
@@ -1855,6 +2569,7 @@
     patchTurnMountState: (turnId, partialMountState, opts = {}) => patchTurnMountState(turnId, partialMountState, opts),
     getChatAtlasLedgerSnapshot,
     getChatAtlasLedgerDiagnostics,
+    getChatAtlasConvergenceParity,
     subscribeChatAtlasLedger,
     _reconcilePaginationSnapshot: (rows = []) => reconcileTurnRecordsFromPaginationSnapshot(rows),
     _clearPaginationSnapshot: () => clearPaginationTurnSnapshot(),
