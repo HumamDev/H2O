@@ -2578,6 +2578,37 @@ ${PANEL} ${SORT_GHOST}{
         CLEAN_addFn(() => W.visualViewport?.removeEventListener?.('scroll', onLayout));
         CLEAN_addFn(() => W.visualViewport?.removeEventListener?.('resize', onResizeBurst));
       }
+
+      // Composer geometry follow (single bounded owner): the composer form
+      // resizes when text wraps or when ChatGPT swaps its DOM — no window
+      // resize fires for that, which left these fixed-position buttons at
+      // stale coordinates (visible shake/drift on refresh/reflow). One
+      // ResizeObserver, re-targeted whenever the form identity changes,
+      // funnels into the same rAF-debounced layout. When ChatGPT replaces
+      // the form, the dying observer fires a final time (size → 0), which
+      // re-runs layout → re-acquires the new form → re-targets the RO.
+      let composerRo = null;
+      let composerRoTarget = null;
+      const ensureComposerRo = () => {
+        if (typeof ResizeObserver !== 'function') return;
+        const form = SAFE_try('UI_PM.composerRoForm', () => DOM_getForm(), null);
+        if (form === composerRoTarget) return;
+        try { composerRo?.disconnect?.(); } catch {}
+        composerRo = null;
+        composerRoTarget = form || null;
+        if (!form) return;
+        composerRo = new ResizeObserver(() => {
+          onLayout();
+          W.requestAnimationFrame(ensureComposerRo);
+        });
+        try { composerRo.observe(form); } catch {}
+      };
+      const onLayoutWithRo = () => { ensureComposerRo(); onLayout(); };
+      W.addEventListener('resize', onLayoutWithRo, { passive: true });
+      CLEAN_addFn(() => W.removeEventListener('resize', onLayoutWithRo));
+      CLEAN_addFn(() => { try { composerRo?.disconnect?.(); } catch {} composerRo = null; composerRoTarget = null; });
+      ensureComposerRo();
+
       UI_PM_scheduleFloatingLayout(root);
 
       const getPanelOpen = () => !!panel?.classList.contains(UI_PM_CLS_OPEN);
