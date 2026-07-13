@@ -61,6 +61,11 @@
     SIG_REGEN: `data-cgxui-${SkID}-regen`,
     SIG_FAST: 'data-h2o-x1n-sig',
     CONTENT_SIG: 'data-h2o-x1n-csig',
+    BIG_NUM: 'data-h2o-big-answer-num',
+    BIG_NUM_SOURCE: 'data-h2o-big-answer-num-source',
+    BIG_NUM_STABLE: 'data-h2o-big-answer-num-stable',
+    BIG_TURN_ID: 'data-h2o-big-answer-turn-id',
+    BIG_ANSWER_ID: 'data-h2o-big-answer-id',
   });
 
   const CSS = Object.freeze({
@@ -115,6 +120,13 @@
     deltaUpdates: 0,
     skippedBySig: 0,
     ticker: 0,
+  };
+
+  // Stable answer identity survives hydration churn; DOM position does not.
+  // Route-scoped keys prevent a prior chat from supplying another chat's value.
+  const STABLE_NUMBERS = {
+    byAnswerId: new Map(),
+    byTurnId: new Map(),
   };
 
   function PERF_init() {
@@ -439,42 +451,165 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     return null;
   }
 
-  function UTIL_getCanonicalTurnNum(el) {
-    const rt = W.H2O?.turnRuntime || null;
-    if (!rt) return 0;
+  function UTIL_positiveInt(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  }
 
-    const aId = String(
+  function UTIL_getAnswerId(el) {
+    return String(
       W.H2O?.msg?.getIdFromEl?.(el)
       || el?.getAttribute?.('data-message-id')
       || el?.dataset?.messageId
       || ''
     ).trim();
-    if (!aId) return 0;
+  }
+
+  function UTIL_routeKey() {
+    return String(W.location?.pathname || '/');
+  }
+
+  function UTIL_cacheKey(kind, id) {
+    const value = String(id || '').trim();
+    return value ? `${UTIL_routeKey()}|${kind}:${value}` : '';
+  }
+
+  function UTIL_getRuntimeIdentity(el, answerId) {
+    const rt = W.H2O?.turnRuntime || null;
+    let record = null;
 
     try {
-      const record = rt.getTurnRecordByAId?.(aId) || null;
-      const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
-      return (Number.isFinite(turnNo) && turnNo > 0) ? turnNo : 0;
+      if (answerId && rt) {
+        record = rt.getTurnRecordByAId?.(answerId)
+          || rt.getTurnRecordByTurnId?.(answerId)
+          || rt.getTurnRecordByTurnId?.(`turn:a:${answerId}`)
+          || null;
+      }
+    } catch {}
+
+    const turnHost = el?.closest?.(SEL.TURN) || null;
+    const turnId = String(
+      record?.turnId
+      || turnHost?.getAttribute?.('data-turn-id')
+      || turnHost?.dataset?.turnId
+      || turnHost?.getAttribute?.('data-testid')
+      || ''
+    ).trim();
+
+    return {
+      answerId,
+      turnId,
+      record,
+      runtimeNumber: UTIL_positiveInt(record?.turnNo || record?.idx || record?.index),
+    };
+  }
+
+  function UTIL_getTitleTurnNum(el, answerId) {
+    const local = el?.querySelector?.('[data-h2o-turn-num]') || null;
+    const localNum = UTIL_positiveInt(local?.getAttribute?.('data-h2o-turn-num'));
+    if (localNum) return localNum;
+
+    if (!answerId) return 0;
+    try {
+      const escaped = W.CSS?.escape ? W.CSS.escape(answerId) : '';
+      if (!escaped) return 0;
+      const title = D.querySelector(`[data-answer-id="${escaped}"][data-h2o-turn-num]`);
+      return UTIL_positiveInt(title?.getAttribute?.('data-h2o-turn-num'));
     } catch {
       return 0;
     }
   }
 
-  function UTIL_computeNum(el, domIndex1) {
-    const canonicalTurnNum = UTIL_getCanonicalTurnNum(el);
-    if (canonicalTurnNum > 0) return canonicalTurnNum;
+  function UTIL_getTimestampTurnNum(el) {
+    const stamp = el?.querySelector?.(
+      ':scope > .cgxui-ats-ts, :scope > .chatgpt-timestamp, :scope > [data-cgxui="ats-stamp"]'
+    ) || null;
+    const label = String(stamp?.dataset?.fullLabel || stamp?.textContent || '').trim();
+    const match = label.match(/\|\s*(\d+)\s*$/);
+    return UTIL_positiveInt(match?.[1]);
+  }
 
-    const tRaw = W.H2O?.turn?.getTurnIndexByAEl?.(el);
+  function UTIL_getCachedStableNumber(identity) {
+    const aKey = UTIL_cacheKey('a', identity?.answerId);
+    const tKey = UTIL_cacheKey('t', identity?.turnId);
+    return UTIL_positiveInt(
+      (aKey && STABLE_NUMBERS.byAnswerId.get(aKey))
+      || (tKey && STABLE_NUMBERS.byTurnId.get(tKey))
+      || 0
+    );
+  }
 
-    let turnNum = 0;
-    if (Number.isFinite(tRaw)) {
-      turnNum = (tRaw === 0) ? 1 : (tRaw > 0 ? tRaw : 0);
+  function UTIL_rememberStableNumber(identity, number) {
+    const stableNumber = UTIL_positiveInt(number);
+    if (!stableNumber) return;
+    const aKey = UTIL_cacheKey('a', identity?.answerId);
+    const tKey = UTIL_cacheKey('t', identity?.turnId);
+    if (aKey) STABLE_NUMBERS.byAnswerId.set(aKey, stableNumber);
+    if (tKey) STABLE_NUMBERS.byTurnId.set(tKey, stableNumber);
+  }
+
+  function UTIL_getStampedStableNumber(el, identity) {
+    const big = el?.querySelector?.(`:scope > .${CLS.BIG}`) || null;
+    if (!big || big.getAttribute(ATTR.BIG_NUM_STABLE) !== '1') return 0;
+    const stampedAnswerId = String(big.getAttribute(ATTR.BIG_ANSWER_ID) || '').trim();
+    const stampedTurnId = String(big.getAttribute(ATTR.BIG_TURN_ID) || '').trim();
+    const sameIdentity = (identity.answerId && stampedAnswerId === identity.answerId)
+      || (identity.turnId && stampedTurnId === identity.turnId);
+    return sameIdentity ? UTIL_positiveInt(big.getAttribute(ATTR.BIG_NUM)) : 0;
+  }
+
+  function resolveStableBigAnswerNumber(answerHostOrMessage) {
+    const el = answerHostOrMessage;
+    const answerId = UTIL_getAnswerId(el);
+    const identity = UTIL_getRuntimeIdentity(el, answerId);
+    const timestampNumber = UTIL_getTimestampTurnNum(el);
+    const titleNumber = UTIL_getTitleTurnNum(el, answerId);
+    const stampedNumber = UTIL_getStampedStableNumber(el, identity);
+    const cachedNumber = UTIL_getCachedStableNumber(identity);
+
+    let number = 0;
+    let source = 'unresolved';
+
+    // Timestamp and title metadata are the existing stable display contract.
+    if (timestampNumber) {
+      number = timestampNumber;
+      source = 'timestamp-metadata';
+    } else if (titleNumber) {
+      number = titleNumber;
+      source = 'title-metadata';
+    } else if (stampedNumber) {
+      number = stampedNumber;
+      source = 'last-rendered-stable';
+    } else if (cachedNumber) {
+      number = cachedNumber;
+      source = 'stable-cache';
+    } else if (identity.runtimeNumber > 1) {
+      number = identity.runtimeNumber;
+      source = 'turn-runtime';
+    } else {
+      // A transient visible-subset rebuild commonly reports 1. Runtime-only 1
+      // is therefore not proof of answer 1; wait for metadata or prior state.
+      return { number: null, source, stable: false, ...identity };
     }
 
-    const a0 = W.H2O?.index?.getAIndex?.(el);
-    const aNum = (Number.isFinite(a0) && a0 > 0) ? a0 : domIndex1;
+    UTIL_rememberStableNumber(identity, number);
+    return { number, source, stable: true, ...identity };
+  }
 
-    return (turnNum || aNum);
+  function CORE_suppressUnstableBigNumber(el, resolution) {
+    const big = el?.querySelector?.(`:scope > .${CLS.BIG}`) || null;
+    if (big) {
+      big.hidden = true;
+      big.style.setProperty('display', 'none', 'important');
+      big.setAttribute('aria-hidden', 'true');
+      big.setAttribute(ATTR.BIG_NUM_STABLE, '0');
+      big.setAttribute(ATTR.BIG_NUM_SOURCE, String(resolution?.source || 'unresolved'));
+      big.setAttribute(ATTR.BIG_ANSWER_ID, String(resolution?.answerId || ''));
+      big.setAttribute(ATTR.BIG_TURN_ID, String(resolution?.turnId || ''));
+    }
+    const legacyBig = el?.querySelector?.(':scope > .ho-big-number') || null;
+    if (legacyBig && legacyBig !== big) legacyBig.style.setProperty('display', 'none', 'important');
+    el.removeAttribute(ATTR.SIG_FAST);
   }
 
   function UTIL_unclipAncestorsOnce(el) {
@@ -527,10 +662,16 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     return (el.scrollHeight || 0) < CFG.SHORT_SCROLLH_PX;
   }
 
-  function CORE_readPatch(el, domIndex1) {
+  function CORE_readPatch(el) {
     if (!el || !(el instanceof HTMLElement)) return null;
 
-    const num = UTIL_computeNum(el, domIndex1);
+    const resolution = resolveStableBigAnswerNumber(el);
+    if (!resolution.stable || !resolution.number) {
+      CORE_suppressUnstableBigNumber(el, resolution);
+      return null;
+    }
+
+    const num = resolution.number;
     const regen = UTIL_getRegenInfoForAnswer(el);
     const regenStr = (regen && regen.total > 1) ? `(${regen.cur}/${regen.total})` : '';
 
@@ -544,9 +685,16 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     const prevSig = el.getAttribute(ATTR.SIG_FAST) || '';
     const hasWrap = el.classList.contains(CLS.WRAP);
-    const hasBig = !!el.querySelector(`:scope > .${CLS.BIG}`);
+    const currentBig = el.querySelector(`:scope > .${CLS.BIG}`);
+    const hasBig = !!currentBig;
+    const projectionCurrent = !!currentBig
+      && !currentBig.hidden
+      && currentBig.getAttribute(ATTR.BIG_NUM_STABLE) === '1'
+      && currentBig.getAttribute(ATTR.BIG_NUM) === nextNum
+      && currentBig.getAttribute(ATTR.BIG_ANSWER_ID) === String(resolution.answerId || '')
+      && currentBig.getAttribute(ATTR.BIG_TURN_ID) === String(resolution.turnId || '');
 
-    if (hasWrap && hasBig && prevSig === nextSig) {
+    if (hasWrap && hasBig && projectionCurrent && prevSig === nextSig) {
       PERF.skippedBySig++;
       return null;
     }
@@ -563,6 +711,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
       nextSig,
       desiredHTML: UTIL_buildInnerHTML(num, regenStr),
       digitClass: UTIL_digitClass(num),
+      resolution,
     };
   }
 
@@ -591,6 +740,14 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     }
 
     big.className = `${CLS.BIG} ${patch.digitClass}`;
+    big.hidden = false;
+    big.style.removeProperty('display');
+    big.setAttribute('aria-hidden', 'true');
+    big.setAttribute(ATTR.BIG_NUM, patch.nextNum);
+    big.setAttribute(ATTR.BIG_NUM_SOURCE, patch.resolution.source);
+    big.setAttribute(ATTR.BIG_NUM_STABLE, '1');
+    big.setAttribute(ATTR.BIG_TURN_ID, String(patch.resolution.turnId || ''));
+    big.setAttribute(ATTR.BIG_ANSWER_ID, String(patch.resolution.answerId || ''));
     if (patch.isShort) big.classList.add(CLS.VFADE);
     else big.classList.remove(CLS.VFADE);
 
@@ -613,7 +770,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     const patches = [];
 
     for (let i = 0; i < answers.length; i++) {
-      const patch = CORE_readPatch(answers[i], i + 1);
+      const patch = CORE_readPatch(answers[i]);
       if (patch) patches.push(patch);
     }
 
@@ -652,7 +809,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     const patches = [];
     for (let j = 0; j < targets.length; j++) {
-      const patch = CORE_readPatch(targets[j], j + 1);
+      const patch = CORE_readPatch(targets[j]);
       if (patch) patches.push(patch);
     }
 
