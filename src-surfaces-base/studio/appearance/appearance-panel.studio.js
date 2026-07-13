@@ -85,10 +85,28 @@
     return slot;
   }
 
-  function getTriggerSlot() {
-    var desktopBar = document.querySelector('html[data-h2o-runtime="tauri"] .wbRibbonBar');
-    if (desktopBar) return makeRibbonTopSlot(desktopBar);
+  function getVisibleRibbonBar() {
+    var bars = document.querySelectorAll('.wbRibbon:not([hidden]) .wbRibbonBar');
+    for (var i = 0; i < bars.length; i += 1) {
+      if (bars[i] && bars[i].getClientRects && bars[i].getClientRects().length) {
+        return bars[i];
+      }
+    }
+    return bars[0] || null;
+  }
 
+  function isTauriReaderRoute() {
+    return !!(
+      document.documentElement &&
+      document.documentElement.dataset &&
+      document.documentElement.dataset.h2oRuntime === 'tauri' &&
+      document.body &&
+      document.body.dataset &&
+      document.body.dataset.route === 'reader'
+    );
+  }
+
+  function getTopbarTriggerSlot() {
     var topbar = document.querySelector('.wbTop');
     if (!topbar) return null;
     var slot = topbar.querySelector('.wbTopGroup--actions');
@@ -97,6 +115,24 @@
       topbar.appendChild(slot);
     }
     return slot;
+  }
+
+  function getTriggerSlot() {
+    var librarySlot = document.querySelector('[data-role="library-ribbon-actions"]');
+    var isLibraryRoute = document.body && document.body.dataset && document.body.dataset.route === 'library';
+    if (librarySlot && isLibraryRoute) return librarySlot;
+
+    if (isTauriReaderRoute()) {
+      var readerTopbarSlot = getTopbarTriggerSlot();
+      if (readerTopbarSlot) return readerTopbarSlot;
+    }
+
+    var ribbonBar = getVisibleRibbonBar();
+    if (ribbonBar) return makeRibbonTopSlot(ribbonBar);
+
+    if (librarySlot) return librarySlot;
+
+    return getTopbarTriggerSlot();
   }
 
   function mountTrigger() {
@@ -144,19 +180,24 @@
     rehomeObserver = new MutationObserver(function (records) {
       for (var i = 0; i < records.length; i += 1) {
         var r = records[i];
+        if (r && r.type === 'attributes' && r.attributeName === 'data-route') {
+          scheduleTriggerRehome();
+          return;
+        }
         if (!r || !r.addedNodes || !r.addedNodes.length) continue;
         for (var j = 0; j < r.addedNodes.length; j += 1) {
           var node = r.addedNodes[j];
           if (!node || node.nodeType !== 1) continue;
           if ((node.classList && (node.classList.contains('wbRibbonBar') || node.classList.contains('wbRibbon'))) ||
-              (node.querySelector && node.querySelector('.wbRibbonBar'))) {
+              (node.matches && node.matches('[data-role="library-ribbon-actions"]')) ||
+              (node.querySelector && (node.querySelector('.wbRibbonBar') || node.querySelector('[data-role="library-ribbon-actions"]')))) {
             scheduleTriggerRehome();
             return;
           }
         }
       }
     });
-    rehomeObserver.observe(document.body, { childList: true, subtree: true });
+    rehomeObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-route'] });
   }
 
   /* ── Panel construction ────────────────────────────────────────────── */
@@ -333,8 +374,8 @@
     });
     var notesToggle = makeToggle({
       logicalKey: 'showNotes',
-      label: 'Show notes list',
-      hint: 'Recent chats section in the sidebar',
+      label: 'Show Recents',
+      hint: 'Recents section in the sidebar',
     });
     var plainToggle = makeToggle({
       logicalKey: 'plainText',
