@@ -155,7 +155,7 @@ Do not clean either evidence prefix until the scenario JSON has been downloaded 
 
 | ID | Scenario | Required chat/session shape | Result |
 | --- | --- | --- | --- |
-| CV3.3-S1 | Multi-page conversation | At least 60 turns and at least 3 pages | NOT_RUN |
+| CV3.3-S1 | Large Conversation Canonical Retention | At least 60 canonical turns; preferably 75 or more | NOT_RUN |
 | CV3.3-S2 | NO ANSWER and interrupted generation | Existing NO ANSWER plus one deliberate interruption | NOT_RUN |
 | CV3.3-S3 | Variants, regenerate, and edit | Existing variants plus disposable mutation branch | NOT_RUN |
 | CV3.3-S4 | Multi-conversation route rebind | A, B, C, A with `/c/` and `/g/.../c/` where available | NOT_RUN |
@@ -163,42 +163,122 @@ Do not clean either evidence prefix until the scenario JSON has been downloaded 
 | CV3.3-S6 | Second-tab isolation | Same conversation in two tabs | NOT_RUN |
 | CV3.3-S7 | Session soak | Minimum 30 minutes, preferred 60 | NOT_RUN |
 
-## CV3.3-S1 - Multi-Page Conversation
+## CV3.3-S1 - Large Conversation Canonical Retention
 
-### Required Shape
+### Required Candidate Shape And Entry Criteria
 
-- at least 60 logical turns
-- at least 3 pages under the product's current page size
-- page dividers and title-list available
-- MiniMap buttons spanning every page
+- at least 60 canonical turns; preferably 75 or more
+- an ordinary `/c/` or `/g/.../c/` route
+- MiniMap count aligned one-to-one with the canonical turn count
+- ledger ready with member count aligned to canonical membership
+- stable, contiguous canonical turn numbers covering the full observed range
+- clean identity, dual-run, convergence, alias, and MiniMap-alignment gates
+- `H2O_Pagination.getConfig().enabled === false`
 
-Record the observed page size, turn count, expected page count, divider count/order, title-list count/order per page, and MiniMap turn range before switching.
+Native ChatGPT virtualization may mount only part of the conversation DOM. S1 does not require every turn shell or message body to be mounted simultaneously. A mathematical grouping such as `83 turns / 25 = 4 groups` may be recorded as descriptive metadata only; it is not evidence of active pagination coverage.
 
-### Procedure
+### Pagination Exclusion And Safety Warning
 
-1. Complete the standard entry sequence with a unique S1 ID.
-2. Run `await H2O_CV3_CANARY.P2()` and require ledger active/effective, non-persisted source, aligned counts, exact dual-run, and clean convergence.
-3. Capture `S1-ledger-ready` with the spot-check helper and a rich `inspect()` state.
-4. Navigate page 1 -> page 2 -> page 3 -> page 1 using normal product controls.
-5. After each page settles, record page number, visible title-list rows, divider state, MiniMap count/order, and one spot-check snapshot.
-6. Exercise divider navigation explicitly.
-7. Collapse and expand each supported page/title-list control once.
-8. Scroll across the page 1/2 and page 2/3 boundaries in both directions.
-9. Wait ten seconds and capture `S1-settled` plus a rich inspection.
-10. Run `await H2O_CV3_CANARY.P8()` and require normal rollback success and exact legacy alignment.
-11. Capture `S1-legacy-restored`, export, download, hash, then clean up.
+- Keep `H2O_Pagination` disabled throughout CV3.3-S1.
+- Do not call `H2O_Pagination.applySetting("pwEnabled", true)`.
+- Do not call `H2O_Pagination.setEnabled(true)`.
+- Do not enable title-list mode.
+- Do not invoke Chat Page Divider, page-dot, page-collapse, or page expand controls.
+- Pagination Windowing, Chat Page Dividers, title-list mode, and H2O-managed page collapse are outside CV-3.3 scope.
+
+If pagination becomes enabled during S1, the scenario is invalid. Stop immediately, restore pagination to its prior disabled setting, verify the full legacy canonical and MiniMap counts return, and do not reuse the invalidated evidence as an S1 result.
+
+### Known Excluded Defect
+
+Pagination Windowing currently has a completeness precondition defect when ChatGPT mounts only a partial conversation DOM. In the confirmed observation, enabling pagination before harness installation or ledger activation caused an `83 -> 1` canonical and MiniMap shrink because a one-shell DOM discovery was published into Core without proving full-chat completeness. Disabling pagination restored both counts to 83. This was not a Chat Atlas ledger failure. The defect belongs to the separate, paused Pagination Windowing lane; CV-3.3 must neither fix nor depend on it.
+
+### Objective
+
+Prove that `chat-atlas-ledger` as the temporary canonical source retains complete, stable logical membership for a large conversation while native ChatGPT virtualization hydrates and unmounts DOM content. Canonical count and numbering must remain independent of visible DOM membership, MiniMap must remain one-to-one with canonical turns, and rollback must restore exact legacy alignment.
+
+### Operator Flow
+
+#### A. Legacy Baseline
+
+1. Confirm pagination is disabled and record its configuration.
+2. Require active, effective, and default canonical source to be `legacy-durable-cache`.
+3. Record canonical count, MiniMap count, ledger readiness/member count, and canonical turn-number range.
+4. Require identity alignment, dual-run, convergence, and alias gates to be clean.
+
+#### B. Install And Capture The Accepted Baseline
+
+1. Install the accepted CV-3.2 v4 harness and the CV-3.3 spot-check helper.
+2. Run `CLEANUP()` only when no prior evidence still needs preservation.
+3. Create a unique S1 scenario ID.
+4. Run P0 and P1, start the spot-check helper, and capture the large-chat legacy baseline.
+
+#### C. Activate Ledger Canonical Source
+
+1. Run the accepted P2 harness procedure without introducing any pagination, title-list, divider, or page-collapse action.
+2. Require ledger active/effective, source non-persisted, and default source still legacy.
+3. Verify the canonical count did not shrink and MiniMap remains aligned to the original full count.
+4. Capture `S1-ledger-ready` with the spot-check helper and a rich `inspect()` state.
+
+#### D. Exercise Native Large-Chat Behavior
+
+1. Scroll toward the oldest content that native ChatGPT makes reachable.
+2. Pause after settling and capture diagnostics.
+3. Scroll through middle ranges, pausing and capturing diagnostics after settling in each sampled region.
+4. Return to the newest content and capture diagnostics after settling.
+5. Use existing MiniMap navigation where supported, without invoking page dividers or page controls.
+6. Allow normal native hydration and unmounting to occur. Do not require all turn shells to be mounted together.
+
+#### E. Verify After Every Movement
+
+Record and verify:
+
+- canonical turn count and contiguous turn-number range
+- ledger member count
+- MiniMap button count
+- duplicate, missing, or renumbered identities
+- dual-run and convergence results
+- alias conflict, duplicate-owner, and quarantine gauges
+- identity-drift and automatic-rebuild counters
+- whether rebuild activity settles after hydration
+- pagination remains disabled
+
+#### F. Rollback And Evidence
+
+1. Run the accepted P8 rollback procedure so the setter returns to `legacy-durable-cache`.
+2. Use reload only as the emergency fallback if normal rollback fails.
+3. Confirm exact canonical count, identities, ordering, turn numbering, and MiniMap alignment under legacy.
+4. Capture `S1-legacy-restored` and require final active/effective/default source to be legacy.
+5. Export and safely download evidence before cleanup; record filename, byte size, and SHA-256.
+
+### S1 Abort Criteria
+
+Abort immediately and restore the safe legacy baseline on any of these:
+
+- pagination becomes enabled
+- canonical count shrinks after native DOM hydration settles
+- MiniMap count shrinks with visible DOM membership
+- a canonical turn disappears, duplicates, or is unexpectedly renumbered
+- cross-chat identity leakage
+- dual-run mismatch or instrumentation error
+- convergence blocker
+- alias conflict, duplicate-owner, or quarantine growth
+- persistent MiniMap identity drift or uncontrolled rebuild activity
+- rollback failure
+- checkpoint, export, or other evidence failure
 
 ### Pass Criteria
 
-- page count and order match the current page-size contract
-- title-list count/order correct on every page
-- no page-number drift
-- no missing or duplicate MiniMap boxes
-- all six count surfaces aligned at entry, every settled checkpoint, and rollback
-- dual-run exact and convergence exact
-- zero alias conflicts/quarantines
-- no sustained rebuild-counter growth while idle
-- final source legacy
+- the original full canonical count is retained throughout the ledger-active period
+- no turn disappears merely because its DOM shell or message content is unmounted
+- no duplicate or renumbered turn appears
+- ledger member count and MiniMap count remain aligned one-to-one with canonical turns
+- dual-run and convergence remain exact
+- alias conflict, duplicate-owner, and quarantine gauges remain clean
+- identity-drift and rebuild activity settle after native hydration changes
+- rollback restores exact legacy count, ordering, identities, numbering, and MiniMap alignment
+- evidence export succeeds
+- final active/effective/default source is `legacy-durable-cache`
+- pagination remains disabled for the entire valid scenario
 
 ## CV3.3-S2 - NO ANSWER and Interrupted Generation
 
@@ -383,6 +463,6 @@ Do not use the CV-3.2 P0-P10 checkpoint lifecycle concurrently in both tabs. Use
 
 ## Final CV-3.3 Acceptance
 
-Create one summary document and one matrix table referencing exactly one JSON evidence artifact for each S1-S7 scenario. Every artifact must end with active/effective/default source `legacy-durable-cache` and include byte size plus SHA-256.
+Create one summary document and one matrix table referencing exactly one JSON evidence artifact for each S1-S7 scenario. Every artifact must end with active/effective/default source `legacy-durable-cache` and include byte size plus SHA-256. The S1 matrix row must report large-conversation canonical retention and confirm that Pagination Windowing remained disabled; it must not claim multi-page, title-list, divider, or page-collapse coverage.
 
 CV-3.3 may be declared PASS only when every required scenario passes. A partial matrix is not sufficient for default-flip review, a default flip, or unattended rollout. Any default change remains a separate future architecture decision even after a full CV-3.3 pass.
