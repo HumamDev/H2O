@@ -530,3 +530,15 @@ H2O_CV3_CANARY.EXPORT()
 ```
 
 Do not mutate returned snapshots or runtime records. Evidence arrays preserve meaningful source order, especially `answerIds`, current answer IDs, and current aliases.
+
+## Formal Result
+
+- Status: **COMPLETE - CANARY_PASS**
+- Run ID: `cv3-76083031-35bb-406c-bb10-0b635183dfe0`
+- Harness: `cv3.2-canary-harness-v4`
+- Final rollback status: active, effective, and default source restored to `legacy-durable-cache`
+- Emergency rollback used: No
+- Acceptance note: [chat-atlas-cv3-2-canary-pass.md](./chat-atlas-cv3-2-canary-pass.md)
+- Exported evidence: [cv3-2-canary-v4-CANARY_PASS-2026-07-14T13-21-10-348Z.json](./cv3-2-canary-v4-CANARY_PASS-2026-07-14T13-21-10-348Z.json)
+
+The production default flip remains a separate future decision and is not approved by this canary result.
