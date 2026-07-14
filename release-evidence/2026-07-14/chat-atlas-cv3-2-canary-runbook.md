@@ -22,7 +22,8 @@ It does not change the source default, persist a source choice, invoke `rebuildN
    ```
 
 7. Source selection is in memory only. A page reload is the emergency rollback and restores the legacy default.
-8. Stage evidence is written to bounded `sessionStorage` keys only. This evidence storage does not persist the canonical-source choice.
+8. Rich stage evidence is written to bounded `sessionStorage` keys. A compact emergency checkpoint is written to `localStorage`; neither mechanism persists the canonical-source choice.
+9. This checkpoint schema requires a fresh run. After exporting any evidence that must be retained, run `H2O_CV3_CANARY.CLEANUP()` and restart from P0. Do not resume a pre-v3 canary.
 
 ## Install the Harness
 
@@ -31,7 +32,7 @@ Open `tools/validation/chat-atlas/chat-atlas-cv3-2-canary-console.js`, copy the 
 Expected console message:
 
 ```text
-[CV-3.2] Installed cv3.2-canary-harness-v2. No stage or source switch has run.
+[CV-3.2] Installed cv3.2-canary-harness-v3. No stage or source switch has run.
 ```
 
 Installing the harness does not run a stage and does not call the source setter.
@@ -42,6 +43,28 @@ You can inspect the installed methods without changing runtime state:
 Object.keys(H2O_CV3_CANARY).sort()
 ```
 
+## Durable Emergency Checkpoint
+
+P0 creates one run ID and a compact checkpoint at:
+
+```text
+h2o:cv3:checkpoint:v1
+```
+
+The checkpoint has a 24-hour TTL and contains only schema/harness versions, the run ID and comparable chat key, creation/update/expiry metadata, and compact stage summaries. Stage summaries are limited to status, failures, gate booleans, source transitions, counts, alias gauges, dual-run gauges, convergence state, and emergency flags.
+
+The checkpoint never stores full runtime state, turn rows, ledger members, DOM evidence, or consumer arrays. Its serialized size is limited to 16 KiB; an oversized or unwritable checkpoint fails the stage explicitly.
+
+Read guards reject malformed JSON, unsupported schemas, missing required fields, expired checkpoints, foreign chats, and foreign runs without throwing.
+
+Export the compact checkpoint and available compact stage summaries with:
+
+```js
+H2O_CV3_CANARY.EXPORT()
+```
+
+Copy or otherwise retain the returned object when durable manual evidence is needed. Console output is not durable across reload unless DevTools **Preserve Log** is enabled; console scrollback is not the fallback contract.
+
 ## P0 — Preflight and Readiness
 
 Run:
@@ -49,6 +72,8 @@ Run:
 ```js
 await H2O_CV3_CANARY.P0()
 ```
+
+P0 establishes the one run ID used by every later stage. It refuses to attach a fresh run to an older checkpoint. If it reports a checkpoint/run conflict, export any needed evidence, run `CLEANUP()`, and restart at P0.
 
 Required result:
 
@@ -352,17 +377,37 @@ Required result:
 - all consumers settle against the current final conversation state
 - canonical, ledger, MiniMap, and compat-map counts agree
 - no mixed-source state remains
-- original baseline turns that were not changed by branch/streaming work retain exact qId/current-primary identity
+- the comparable conversation route remains unchanged
+- every baseline turn remains at the same turn number and stable order
+- each previous qId and primary answer identity resolves to exactly one current owner
+- the unique resolver owner is the same logical turn/member
+- qId and primary changes are accepted only when the previous identity remains in that member's question/answer resolver aliases or broad resolver aliases
+- cross-member ownership, quarantine, dirty alias diagnostics, duplicate turns, and missing baseline turns fail closed
+- connected/current assistant evidence must preserve the visible branch selection
+- when connected assistant evidence is unavailable after settling, visible-branch status is `not-evaluable`; resolver continuity may prove identity continuity but cannot authorize an observed visible variant flip
+- the final primary is real, non-placeholder, and published by MiniMap
 
 The rollback comparison intentionally uses the current post-stream conversation count. It does not require the pre-stream count.
 
-If normal rollback fails or throws, reload the page immediately. Do not retry the forward switch. After reload, reinstall the harness and run:
+Each baseline turn reports an auditable transition of `exact` or `alias-equivalent`, previous/current qId and primary IDs, witness aliases, owner count and owner identity, quarantine state, visible-branch evaluation, and explicit failure reasons.
+
+Rollback equivalence is resolver-owned continuity, not byte equality. A valid hydration/rekey transition may change qId or `primaryAId` while preserving the same logical member. This correction does not establish which exact P8 gate failed in the original incident; that historical gate result remains unknown.
+
+`logicalMemberKey` is session-allocation-scoped and may regenerate across branch shrink/regrowth. Equality is positive corroboration, but inequality alone never breaks continuity; resolver ownership, turn number, alias continuity, and branch safety remain dispositive.
+
+If normal rollback fails or throws, do not retry the forward switch. Run this before reloading whenever operationally possible:
+
+```js
+H2O_CV3_CANARY.EXPORT()
+```
+
+The local checkpoint contains compact write-through evidence; `EXPORT()` is the explicit durable/manual fallback. Then reload immediately, reinstall the harness, and run:
 
 ```js
 await H2O_CV3_CANARY.P8_RELOAD_VERIFY()
 ```
 
-Required reload result: active source, effective source, and default source are all `legacy-durable-cache`; counts align without a manual MiniMap rebuild.
+Required reload result: active source, effective source, and default source are all `legacy-durable-cache`; counts align without a manual MiniMap rebuild. `P8_RELOAD_VERIFY` must recover the checkpoint, report its run ID and stage names, preserve the pre-reload P8 summary, and add a separate P8 reload summary.
 
 Evidence keys: `h2o:cv3:p8`, and on emergency reload `h2o:cv3:p8-reload`
 
@@ -439,9 +484,20 @@ CANARY_ABORTED_PREFLIGHT
 
 Any failed or missing stage produces a failed/aborted verdict. P10 does not switch sources or repair failed stages.
 
+When rich session records are unavailable after an emergency reload, P10 consumes compact checkpoint summaries rather than silently reporting every prior stage as missing.
+
 Rollback rule remains: if active/effective source are not legacy, run `await H2O_CV3_CANARY.P8()`. If rollback fails or throws, reload immediately and verify legacy active/effective source.
 
 Evidence key: `h2o:cv3:p10`
+
+After reviewing P10, perform the required final export and cleanup:
+
+```js
+const finalCanaryEvidence = H2O_CV3_CANARY.EXPORT()
+H2O_CV3_CANARY.CLEANUP()
+```
+
+`CLEANUP()` removes every harness-owned `h2o:cv3:*` key from both `sessionStorage` and `localStorage`. It is mandatory after final export/P10 and after abandoning a run. Preserve `finalCanaryEvidence` outside harness storage if it must be retained.
 
 ## Evidence Retrieval
 
@@ -461,6 +517,12 @@ Retrieve the final summary:
 
 ```js
 JSON.parse(sessionStorage.getItem('h2o:cv3:p10'))
+```
+
+Retrieve the guarded compact checkpoint and stage summaries:
+
+```js
+H2O_CV3_CANARY.EXPORT()
 ```
 
 Do not mutate returned snapshots or runtime records. Evidence arrays preserve meaningful source order, especially `answerIds`, current answer IDs, and current aliases.

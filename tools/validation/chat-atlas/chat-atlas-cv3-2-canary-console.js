@@ -9,11 +9,16 @@
   'use strict';
 
   const G = globalThis;
-  const VERSION = 'cv3.2-canary-harness-v2';
+  const VERSION = 'cv3.2-canary-harness-v3';
   const SOURCE_LEGACY = 'legacy-durable-cache';
   const SOURCE_LEDGER = 'chat-atlas-ledger';
   const STAGE_PREFIX = 'h2o:cv3:';
   const BASELINE_KEY = 'h2o:cv3:legacy-baseline';
+  const RUN_ID_KEY = 'h2o:cv3:run-id';
+  const CHECKPOINT_KEY = 'h2o:cv3:checkpoint:v1';
+  const CHECKPOINT_SCHEMA_VERSION = 1;
+  const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
+  const CHECKPOINT_MAX_BYTES = 16 * 1024;
   const TURN_UPDATED_EVENT = 'evt:h2o:core:turn:updated';
   const ROLLBACK_INSTRUCTION = [
     'Run: await H2O_CV3_CANARY.P8()',
@@ -21,6 +26,7 @@
     'After reload, reinstall this harness and run: await H2O_CV3_CANARY.P8_RELOAD_VERIFY()',
   ];
   const OPTIONAL = 'optional';
+  let currentRunId = null;
 
   function nowIso() {
     return new Date().toISOString();
@@ -92,10 +98,50 @@
     return JSON.stringify(stableValue(value));
   }
 
-  function readStored(key) {
+  function utf8ByteLength(value) {
+    let bytes = 0;
+    for (const character of asString(value)) {
+      const codePoint = character.codePointAt(0);
+      bytes += codePoint <= 0x7f ? 1 : (codePoint <= 0x7ff ? 2 : (codePoint <= 0xffff ? 3 : 4));
+    }
+    return bytes;
+  }
+
+  function storageRead(storage, key) {
     try {
-      const raw = sessionStorage.getItem(key);
-      return raw ? JSON.parse(raw) : null;
+      return storage?.getItem?.(key) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function storageWrite(storage, key, value) {
+    try {
+      storage?.setItem?.(key, value);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: 'storage-write-failed', error: asString(error?.message || error) };
+    }
+  }
+
+  function storageKeys(storage) {
+    const keys = [];
+    try {
+      for (let index = 0; index < asNumber(storage?.length); index += 1) {
+        const key = storage?.key?.(index);
+        if (key != null) keys.push(asString(key));
+      }
+    } catch {
+      return [];
+    }
+    return keys;
+  }
+
+  function readStored(key) {
+    const raw = storageRead(G.sessionStorage, key);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
     } catch {
       return null;
     }
@@ -105,23 +151,288 @@
     const normalized = stableValue(value);
     const raw = JSON.stringify(normalized);
     if (raw.length > 900000) throw new Error(`bounded-evidence-limit-exceeded:${key}:${raw.length}`);
-    sessionStorage.setItem(key, raw);
+    const write = storageWrite(G.sessionStorage, key, raw);
+    if (!write.ok) throw new Error(`${write.reason}:${key}:${write.error || 'unknown'}`);
     return normalized;
+  }
+
+  function stageName(stage) {
+    return asString(stage).trim().toUpperCase().replace(/-/g, '_');
+  }
+
+  function stageStorageKey(stage) {
+    return `${STAGE_PREFIX}${stageName(stage).toLowerCase().replace(/_/g, '-')}`;
+  }
+
+  function getCurrentRunId() {
+    if (currentRunId) return currentRunId;
+    currentRunId = asString(storageRead(G.sessionStorage, RUN_ID_KEY)).trim() || null;
+    return currentRunId;
+  }
+
+  function generateRunId() {
+    const uuid = safeRead(() => G.crypto?.randomUUID?.(), '');
+    if (uuid) return `cv3-${uuid}`;
+    const bytes = new Uint32Array(4);
+    const generated = safeRead(() => {
+      G.crypto?.getRandomValues?.(bytes);
+      return Array.from(bytes).map((value) => value.toString(16).padStart(8, '0')).join('');
+    }, '');
+    if (generated) return `cv3-${generated}`;
+    return `cv3-${Date.now().toString(36)}-${asNumber(G.performance?.now?.()).toString(36)}`;
+  }
+
+  function compactSource(source) {
+    if (!source || typeof source !== 'object') return null;
+    return {
+      activeSource: source.activeSource || null,
+      effectiveSource: source.effectiveSource || null,
+      defaultSource: source.defaultSource || null,
+      persisted: source.persisted ?? null,
+      switchCount: asNumber(source.switchCount),
+    };
+  }
+
+  function compactCounts(counts) {
+    if (!counts || typeof counts !== 'object') return null;
+    return Object.fromEntries([
+      'canonical',
+      'ledger',
+      'miniMap',
+      'mapButtons',
+      'turnById',
+      'coreTurnList',
+    ].map((key) => [key, counts[key] ?? null]));
+  }
+
+  function compactAliasGauges(alias) {
+    if (!alias || typeof alias !== 'object') return null;
+    return Object.fromEntries([
+      'currentCrossMemberDuplicateCount',
+      'crossMemberAliasConflictCount',
+      'currentAliasConflictCount',
+      'historicalAliasConflictCount',
+      'duplicateAliasCount',
+      'quarantinedAliasCount',
+    ].map((key) => [key, asNumber(alias[key])]));
+  }
+
+  function compactDualRun(dualRun) {
+    if (!dualRun || typeof dualRun !== 'object') return null;
+    return {
+      ready: !!dualRun.ready,
+      exactParity: dualRun.exactParity === true,
+      currentMismatchCount: asNumber(dualRun.currentMismatchCount),
+      totalMismatchCount: asNumber(dualRun.totalMismatchCount),
+      instrumentationErrorCount: asNumber(dualRun.instrumentationErrorCount),
+    };
+  }
+
+  function compactConvergence(convergence) {
+    if (!convergence || typeof convergence !== 'object') return null;
+    return {
+      parityStatus: convergence.parityStatus || null,
+      blockers: asArray(convergence.blockers).slice(0, 12),
+      blockerCount: asArray(convergence.blockers).length,
+    };
+  }
+
+  function compactStageSummary(result) {
+    const state = result?.state || result?.after || result?.before || null;
+    const before = result?.before || null;
+    const after = result?.after || result?.state || null;
+    return stableValue({
+      stage: stageName(result?.stage),
+      capturedAt: result?.capturedAt || nowIso(),
+      ok: result?.ok === true,
+      failureReasons: uniqueOrdered(asArray(result?.failureReasons)).slice(0, 24),
+      gates: Object.fromEntries(Object.entries(result?.gates || {})
+        .filter(([, value]) => typeof value === 'boolean')
+        .slice(0, 40)),
+      sourceBefore: compactSource(before?.source),
+      sourceAfter: compactSource(after?.source || state?.source),
+      counts: compactCounts(state?.counts),
+      aliasGauges: compactAliasGauges(state?.aliasDiagnostics),
+      dualRun: compactDualRun(state?.dualRun),
+      convergence: compactConvergence(state?.convergence),
+      emergencyRollbackRequired: !!result?.emergencyRollbackRequired,
+      emergencyRollbackUsed: !!result?.emergencyRollbackUsed,
+      changed: result?.changed ?? null,
+      error: result?.error ? asString(result.error).slice(0, 500) : null,
+    });
+  }
+
+  function checkpointRequiredField(checkpoint) {
+    for (const field of [
+      'schemaVersion',
+      'harnessVersion',
+      'runId',
+      'chatKey',
+      'createdAt',
+      'updatedAt',
+      'expiresAt',
+      'ttlMs',
+      'stages',
+    ]) {
+      if (!(field in (checkpoint || {}))) return field;
+    }
+    return null;
+  }
+
+  function readCheckpoint(options = {}) {
+    const raw = storageRead(G.localStorage, CHECKPOINT_KEY);
+    if (!raw) return { ok: false, reason: 'checkpoint-missing' };
+    let checkpoint;
+    try {
+      checkpoint = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: 'checkpoint-malformed-json' };
+    }
+    if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) {
+      return { ok: false, reason: 'checkpoint-invalid-shape' };
+    }
+    const missing = checkpointRequiredField(checkpoint);
+    if (missing) return { ok: false, reason: `checkpoint-missing-required-field:${missing}` };
+    if (checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) {
+      return { ok: false, reason: 'checkpoint-unsupported-schema-version' };
+    }
+    if (checkpoint.harnessVersion !== VERSION) {
+      return { ok: false, reason: 'checkpoint-foreign-harness-version' };
+    }
+    if (!checkpoint.runId || !checkpoint.chatKey || !checkpoint.createdAt
+      || !checkpoint.updatedAt || !checkpoint.expiresAt
+      || checkpoint.ttlMs !== CHECKPOINT_TTL_MS
+      || !checkpoint.stages || typeof checkpoint.stages !== 'object'
+      || Array.isArray(checkpoint.stages)) {
+      return { ok: false, reason: 'checkpoint-invalid-required-field' };
+    }
+    const nowMs = asNumber(options.nowMs, Date.now());
+    const expiresMs = Date.parse(checkpoint.expiresAt);
+    if (!Number.isFinite(expiresMs) || nowMs > expiresMs) {
+      return { ok: false, reason: 'checkpoint-expired' };
+    }
+    const expectedChatKey = options.chatKey === undefined ? activeChatKey() : options.chatKey;
+    if (expectedChatKey && comparableChatKey(expectedChatKey) !== comparableChatKey(checkpoint.chatKey)) {
+      return { ok: false, reason: 'checkpoint-foreign-chat' };
+    }
+    const expectedRunId = options.runId === undefined ? getCurrentRunId() : options.runId;
+    if (expectedRunId && expectedRunId !== checkpoint.runId) {
+      return { ok: false, reason: 'checkpoint-foreign-run' };
+    }
+    return { ok: true, checkpoint: stableValue(checkpoint), bytes: utf8ByteLength(raw) };
+  }
+
+  function writeCheckpoint(checkpoint) {
+    const normalized = stableValue(checkpoint);
+    const raw = JSON.stringify(normalized);
+    const bytes = utf8ByteLength(raw);
+    if (bytes > CHECKPOINT_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: 'checkpoint-size-limit-exceeded',
+        bytes,
+        limitBytes: CHECKPOINT_MAX_BYTES,
+      };
+    }
+    const write = storageWrite(G.localStorage, CHECKPOINT_KEY, raw);
+    return write.ok
+      ? { ok: true, bytes, limitBytes: CHECKPOINT_MAX_BYTES }
+      : { ...write, bytes, limitBytes: CHECKPOINT_MAX_BYTES };
+  }
+
+  function beginFreshRun() {
+    const existingRunId = getCurrentRunId();
+    if (existingRunId) {
+      const existing = readCheckpoint({ runId: existingRunId });
+      return existing.ok
+        ? { ok: true, runId: existingRunId, resumed: true, checkpoint: existing.checkpoint }
+        : { ok: false, reason: existing.reason };
+    }
+    const existingRaw = storageRead(G.localStorage, CHECKPOINT_KEY);
+    if (existingRaw) {
+      const existing = readCheckpoint({ runId: null });
+      return {
+        ok: false,
+        reason: existing.ok
+          ? 'checkpoint-existing-run-requires-cleanup'
+          : `checkpoint-existing-invalid:${existing.reason}`,
+      };
+    }
+    const existingSessionKeys = storageKeys(G.sessionStorage).filter((key) => key.startsWith(STAGE_PREFIX));
+    if (existingSessionKeys.length) {
+      return { ok: false, reason: 'session-evidence-existing-cleanup-required' };
+    }
+    const chatKey = activeChatKey();
+    if (!chatKey) return { ok: false, reason: 'checkpoint-chat-key-missing' };
+    const runId = generateRunId();
+    const createdAt = nowIso();
+    const checkpoint = {
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+      harnessVersion: VERSION,
+      runId,
+      chatKey,
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + CHECKPOINT_TTL_MS).toISOString(),
+      ttlMs: CHECKPOINT_TTL_MS,
+      stages: {},
+    };
+    const write = writeCheckpoint(checkpoint);
+    if (!write.ok) return write;
+    currentRunId = runId;
+    const sessionWrite = storageWrite(G.sessionStorage, RUN_ID_KEY, runId);
+    if (!sessionWrite.ok) return sessionWrite;
+    return { ok: true, runId, resumed: false, checkpoint, checkpointWrite: write };
+  }
+
+  function adoptCheckpointRun(checkpoint) {
+    currentRunId = checkpoint?.runId || null;
+    if (!currentRunId) return { ok: false, reason: 'checkpoint-run-id-missing' };
+    const write = storageWrite(G.sessionStorage, RUN_ID_KEY, currentRunId);
+    return write.ok ? { ok: true, runId: currentRunId } : write;
+  }
+
+  function updateCheckpointStage(result) {
+    const runId = getCurrentRunId();
+    if (!runId) return { ok: false, reason: 'checkpoint-run-not-established' };
+    const read = readCheckpoint({ runId });
+    if (!read.ok) return read;
+    const updatedAt = nowIso();
+    const checkpoint = {
+      ...read.checkpoint,
+      updatedAt,
+      stages: {
+        ...read.checkpoint.stages,
+        [stageName(result.stage)]: compactStageSummary(result),
+      },
+    };
+    return writeCheckpoint(checkpoint);
   }
 
   function saveStage(stage, payload) {
     const result = {
-      stage,
+      stage: stageName(stage),
       capturedAt: nowIso(),
       ...payload,
     };
-    writeStored(`${STAGE_PREFIX}${stage.toLowerCase()}`, result);
-    console.log(`[CV-3.2 ${stage}]`, result);
+    const checkpointWrite = updateCheckpointStage(result);
+    if (!checkpointWrite.ok) {
+      result.ok = false;
+      result.failureReasons = uniqueOrdered([
+        ...asArray(result.failureReasons),
+        `checkpoint:${checkpointWrite.reason}`,
+      ]);
+      result.checkpointWrite = checkpointWrite;
+      console.error('[CV-3.2 CHECKPOINT FAILURE]', compactStageSummary(result));
+    }
+    writeStored(stageStorageKey(stage), result);
+    if (result.ok === false) console.error(`[CV-3.2 ${stageName(stage)} FAILURE]`, compactStageSummary(result));
+    else console.log(`[CV-3.2 ${stageName(stage)}]`, result);
     return result;
   }
 
   function getStage(stage) {
-    return readStored(`${STAGE_PREFIX}${stage.toLowerCase()}`);
+    return readStored(stageStorageKey(stage));
   }
 
   function safeRead(fn, fallback = null) {
@@ -265,6 +576,12 @@
       answerCurrentAliases: asArray(member?.answer?.currentAliases).slice(),
       questionResolverAliases: asArray(member?.question?.aliases).slice(),
       answerResolverAliases: asArray(member?.answer?.aliases).slice(),
+      answerCurrentShells: asArray(member?.answer?.currentShells).map((shell) => ({
+        shellTurnId: shell?.shellTurnId || null,
+        messageId: shell?.messageId || null,
+        currentAnswerId: shell?.currentAnswerId || null,
+      })),
+      currentProjectionSource: member?.answer?.currentProjectionSource || 'none',
       resolverAliases: asArray(member?.resolverAliases).slice(),
       noAnswer: !!member?.noAnswer,
       hydration: member?.hydration || 'none',
@@ -304,7 +621,13 @@
           ...(ledger?.questionCurrentAliases || []),
           ...(ledger?.answerCurrentAliases || []),
         ]),
+        questionCurrentAliases: asArray(ledger?.questionCurrentAliases).slice(),
+        answerCurrentAliases: asArray(ledger?.answerCurrentAliases).slice(),
+        questionResolverAliases: asArray(ledger?.questionResolverAliases).slice(),
         answerResolverAliases: asArray(ledger?.answerResolverAliases).slice(),
+        answerCurrentShells: asArray(ledger?.answerCurrentShells).map((shell) => ({ ...shell })),
+        currentProjectionSource: ledger?.currentProjectionSource || 'none',
+        hydration: ledger?.hydration || 'none',
         resolverAliases: asArray(ledger?.resolverAliases).slice(),
         answerIds: record.answerIds,
         noAnswer: record.noAnswer,
@@ -680,6 +1003,247 @@
     };
   }
 
+  function broadQuestionResolverAliases(row) {
+    return uniqueOrdered([
+      row?.qId,
+      ...asArray(row?.questionResolverAliases),
+      ...asArray(row?.resolverAliases),
+    ]);
+  }
+
+  function rollbackAnswerResolverAliases(row) {
+    return uniqueOrdered([
+      row?.primaryAId,
+      ...asArray(row?.currentAnswerIds),
+      ...asArray(row?.answerResolverAliases),
+      ...asArray(row?.resolverAliases),
+    ]);
+  }
+
+  function rollbackOwnerDescriptor(row) {
+    return {
+      turnNo: asNumber(row?.turnNo),
+      logicalMemberKey: row?.logicalMemberKey || null,
+      qId: row?.qId || null,
+      primaryAId: row?.primaryAId || null,
+    };
+  }
+
+  function sameRollbackMember(previous, current) {
+    const previousTurnNo = asNumber(previous?.turnNo);
+    const currentTurnNo = asNumber(current?.turnNo);
+    return !!previous
+      && !!current
+      && previousTurnNo > 0
+      && currentTurnNo > 0
+      && previousTurnNo === currentTurnNo;
+  }
+
+  function rollbackIdentityOwners(rows, identity, side) {
+    const id = asString(identity).trim();
+    if (!id) return [];
+    return asArray(rows).filter((row) => {
+      const aliases = side === 'question'
+        ? broadQuestionResolverAliases(row)
+        : rollbackAnswerResolverAliases(row);
+      return aliases.includes(id);
+    });
+  }
+
+  function quarantinedIdentitySet(aliasDiagnosticsValue) {
+    return new Set(asArray(aliasDiagnosticsValue?.quarantinedAliases).map((entry) => {
+      return asString(entry?.alias ?? entry).trim();
+    }).filter(Boolean));
+  }
+
+  function connectedAnswerIds(row) {
+    return uniqueOrdered(asArray(row?.answerCurrentShells).map((shell) => shell?.messageId));
+  }
+
+  function evaluateVisibleBranch(previous, current) {
+    const previousConnectedIds = connectedAnswerIds(previous);
+    const currentConnectedIds = connectedAnswerIds(current);
+    const previousSelectedId = previousConnectedIds[previousConnectedIds.length - 1] || null;
+    const currentSelectedId = currentConnectedIds[currentConnectedIds.length - 1] || null;
+    if (!previousSelectedId || !currentSelectedId) {
+      return {
+        ok: true,
+        status: 'not-evaluable',
+        reason: 'connected-assistant-evidence-unavailable',
+        previousConnectedIds,
+        currentConnectedIds,
+        previousSelectedId,
+        currentSelectedId,
+      };
+    }
+    const ok = previousSelectedId === currentSelectedId;
+    return {
+      ok,
+      status: ok ? 'exact' : 'changed',
+      reason: ok ? 'connected-current-projection-stable' : 'visible-branch-selection-changed',
+      previousConnectedIds,
+      currentConnectedIds,
+      previousSelectedId,
+      currentSelectedId,
+    };
+  }
+
+  function evaluateRollbackEquivalence(baselineState, currentState) {
+    const baselineRows = asArray(baselineState?.perTurn);
+    const currentRows = asArray(currentState?.perTurn);
+    const currentByTurn = new Map();
+    const duplicateCurrentTurnNos = [];
+    for (const row of currentRows) {
+      const turnNo = asNumber(row?.turnNo);
+      if (currentByTurn.has(turnNo)) duplicateCurrentTurnNos.push(turnNo);
+      else currentByTurn.set(turnNo, row);
+    }
+    const routeMatches = !!comparableChatKey(baselineState?.activeChatKey)
+      && comparableChatKey(baselineState?.activeChatKey) === comparableChatKey(currentState?.activeChatKey);
+    const stableOrder = baselineRows.every((row, index) => {
+      return asNumber(currentRows[index]?.turnNo) === asNumber(row?.turnNo);
+    });
+    const baselineCountPreserved = currentRows.length >= baselineRows.length;
+    const quarantine = quarantinedIdentitySet(currentState?.aliasDiagnostics);
+    const perTurnEvidence = [];
+
+    for (const previous of baselineRows) {
+      const current = currentByTurn.get(asNumber(previous?.turnNo)) || null;
+      const failureReasons = [];
+      if (!current) failureReasons.push('baseline-turn-missing');
+
+      const previousLogicalMemberKey = previous?.logicalMemberKey || null;
+      const currentLogicalMemberKey = current?.logicalMemberKey || null;
+      const memberKeyRelation = !previousLogicalMemberKey || !currentLogicalMemberKey
+        ? 'unavailable'
+        : previousLogicalMemberKey === currentLogicalMemberKey
+          ? 'equal'
+          : 'regenerated';
+      const memberKeyRegenerated = memberKeyRelation === 'regenerated';
+      const memberKeyCorroborates = memberKeyRelation === 'equal';
+
+      const previousQId = previous?.qId || null;
+      const currentQId = current?.qId || null;
+      const questionWitnessAliases = broadQuestionResolverAliases(current);
+      const questionOwners = rollbackIdentityOwners(currentRows, previousQId, 'question');
+      const questionExact = !!previousQId && previousQId === currentQId;
+      const questionAliasEquivalent = !!previousQId && questionWitnessAliases.includes(previousQId);
+      if (!previousQId) failureReasons.push('previous-question-id-missing');
+      else if (!questionExact && !questionAliasEquivalent) failureReasons.push('question-continuity-missing');
+      if (previousQId && questionOwners.length !== 1) failureReasons.push('question-owner-count-not-one');
+      if (questionOwners.some((owner) => !sameRollbackMember(previous, owner))) {
+        failureReasons.push('question-owned-by-another-member');
+      }
+
+      const previousPrimaryAId = previous?.primaryAId || null;
+      const currentPrimaryAId = current?.primaryAId || null;
+      const answerWitnessAliases = rollbackAnswerResolverAliases(current);
+      const answerOwners = rollbackIdentityOwners(currentRows, previousPrimaryAId, 'answer');
+      const answerExact = previousPrimaryAId === currentPrimaryAId;
+      const answerAliasEquivalent = !!previousPrimaryAId && answerWitnessAliases.includes(previousPrimaryAId);
+      if (previousPrimaryAId && !answerExact && !answerAliasEquivalent) {
+        failureReasons.push('answer-continuity-missing');
+      }
+      if (previousPrimaryAId && answerOwners.length !== 1) failureReasons.push('answer-owner-count-not-one');
+      if (answerOwners.some((owner) => !sameRollbackMember(previous, owner))) {
+        failureReasons.push('answer-owned-by-another-member');
+      }
+      if (currentPrimaryAId?.startsWith?.('request-placeholder-')) {
+        failureReasons.push('current-primary-is-placeholder');
+      }
+
+      const involvedIdentities = uniqueOrdered([
+        previousQId,
+        currentQId,
+        previousPrimaryAId,
+        currentPrimaryAId,
+      ]);
+      const quarantinedIdentities = involvedIdentities.filter((identity) => quarantine.has(identity));
+      if (quarantinedIdentities.length) failureReasons.push('involved-identity-quarantined');
+
+      const visibleBranch = evaluateVisibleBranch(previous, current);
+      if (!visibleBranch.ok) failureReasons.push('visible-branch-selection-changed');
+      if (!sameRollbackMember(previous, current)) failureReasons.push('logical-member-continuity-failed');
+
+      perTurnEvidence.push({
+        ok: failureReasons.length === 0,
+        transition: questionExact && answerExact ? 'exact' : 'alias-equivalent',
+        turnNo: asNumber(previous?.turnNo),
+        previousLogicalMemberKey,
+        currentLogicalMemberKey,
+        memberKeyRelation,
+        memberKeyRegenerated,
+        memberKeyCorroborates,
+        logicalMemberKey: {
+          previous: previousLogicalMemberKey,
+          current: currentLogicalMemberKey,
+          relation: memberKeyRelation,
+          regenerated: memberKeyRegenerated,
+          corroborates: memberKeyCorroborates,
+        },
+        previous: { qId: previousQId, primaryAId: previousPrimaryAId },
+        current: { qId: currentQId, primaryAId: currentPrimaryAId },
+        question: {
+          exact: questionExact,
+          aliasEquivalent: questionAliasEquivalent,
+          witnessAliases: questionWitnessAliases,
+          ownerCount: questionOwners.length,
+          owners: questionOwners.map(rollbackOwnerDescriptor),
+        },
+        answer: {
+          exact: answerExact,
+          aliasEquivalent: answerAliasEquivalent,
+          witnessAliases: answerWitnessAliases,
+          ownerCount: answerOwners.length,
+          owners: answerOwners.map(rollbackOwnerDescriptor),
+        },
+        quarantine: {
+          quarantined: quarantinedIdentities.length > 0,
+          identities: quarantinedIdentities,
+        },
+        visibleBranch,
+        failureReasons: uniqueOrdered(failureReasons),
+      });
+    }
+
+    const finalTurn = currentRows[currentRows.length - 1] || null;
+    const finalPrimaryAId = asString(finalTurn?.primaryAId).trim() || null;
+    const finalPrimaryValid = !!finalPrimaryAId && !finalPrimaryAId.startsWith('request-placeholder-');
+    const finalPrimaryPublishedByMiniMap = finalPrimaryValid && asArray(currentState?.miniMapBoxes).some((box) => {
+      return asNumber(box?.turnNo) === asNumber(finalTurn?.turnNo)
+        && box?.primaryAId === finalPrimaryAId;
+    });
+    const aliasDiagnosticsClean = aliasClean(currentState?.aliasDiagnostics);
+    const failureReasons = [];
+    if (!routeMatches) failureReasons.push('comparable-chat-route-mismatch');
+    if (!baselineCountPreserved) failureReasons.push('baseline-turn-count-shrank');
+    if (!stableOrder) failureReasons.push('baseline-turn-order-changed');
+    if (duplicateCurrentTurnNos.length) failureReasons.push('duplicate-current-turn-number');
+    if (!aliasDiagnosticsClean) failureReasons.push('alias-diagnostics-not-clean');
+    if (!finalPrimaryValid) failureReasons.push('final-primary-missing-or-placeholder');
+    if (!finalPrimaryPublishedByMiniMap) failureReasons.push('final-primary-not-published-by-minimap');
+    for (const row of perTurnEvidence) {
+      for (const reason of row.failureReasons) failureReasons.push(`turn-${row.turnNo}:${reason}`);
+    }
+
+    return {
+      ok: failureReasons.length === 0,
+      routeMatches,
+      baselineCount: baselineRows.length,
+      currentCount: currentRows.length,
+      baselineCountPreserved,
+      stableOrder,
+      duplicateCurrentTurnNos,
+      aliasDiagnosticsClean,
+      finalTurnNo: asNumber(finalTurn?.turnNo),
+      finalPrimaryAId,
+      finalPrimaryValid,
+      finalPrimaryPublishedByMiniMap,
+      perTurnEvidence,
+      failureReasons: uniqueOrdered(failureReasons),
+    };
+  }
+
   function sourceIs(state, source) {
     return state?.source?.activeSource === source && state?.source?.effectiveSource === source;
   }
@@ -706,7 +1270,7 @@
   }
 
   function sourceHistory() {
-    return ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9']
+    const rich = ['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9']
       .map((key) => readStored(`${STAGE_PREFIX}${key}`))
       .filter(Boolean)
       .map((stage) => ({
@@ -715,6 +1279,74 @@
         activeSource: stage.state?.source?.activeSource || stage.after?.source?.activeSource || stage.source?.activeSource || null,
         effectiveSource: stage.state?.source?.effectiveSource || stage.after?.source?.effectiveSource || stage.source?.effectiveSource || null,
       }));
+    if (rich.length) return rich;
+    const checkpoint = readCheckpoint();
+    if (!checkpoint.ok) return [];
+    return Object.values(checkpoint.checkpoint.stages).map((stage) => ({
+      stage: stage.stage,
+      capturedAt: stage.capturedAt,
+      activeSource: stage.sourceAfter?.activeSource || null,
+      effectiveSource: stage.sourceAfter?.effectiveSource || null,
+    }));
+  }
+
+  function sessionStageSummaries() {
+    const summaries = {};
+    for (const key of storageKeys(G.sessionStorage)) {
+      if (!key.startsWith(STAGE_PREFIX) || key === BASELINE_KEY || key === RUN_ID_KEY) continue;
+      const value = readStored(key);
+      if (!value?.stage) continue;
+      summaries[stageName(value.stage)] = compactStageSummary(value);
+    }
+    return summaries;
+  }
+
+  function EXPORT() {
+    const checkpoint = readCheckpoint({ runId: getCurrentRunId() || null });
+    const result = stableValue({
+      ok: checkpoint.ok,
+      exportedAt: nowIso(),
+      checkpointReason: checkpoint.ok ? null : checkpoint.reason,
+      checkpoint: checkpoint.ok ? checkpoint.checkpoint : null,
+      stageSummaries: {
+        ...(checkpoint.ok ? checkpoint.checkpoint.stages : {}),
+        ...sessionStageSummaries(),
+      },
+    });
+    if (result.ok) console.log('[CV-3.2 EXPORT]', result);
+    else console.error('[CV-3.2 EXPORT FAILURE]', result);
+    return result;
+  }
+
+  function CLEANUP() {
+    const removed = { sessionStorage: [], localStorage: [] };
+    for (const [name, storage] of [
+      ['sessionStorage', G.sessionStorage],
+      ['localStorage', G.localStorage],
+    ]) {
+      for (const key of storageKeys(storage)) {
+        if (!key.startsWith(STAGE_PREFIX)) continue;
+        try {
+          storage.removeItem(key);
+          removed[name].push(key);
+        } catch {
+          // The postcondition below fails closed if removal did not succeed.
+        }
+      }
+    }
+    currentRunId = null;
+    const remaining = {
+      sessionStorage: storageKeys(G.sessionStorage).filter((key) => key.startsWith(STAGE_PREFIX)),
+      localStorage: storageKeys(G.localStorage).filter((key) => key.startsWith(STAGE_PREFIX)),
+    };
+    const result = {
+      ok: remaining.sessionStorage.length === 0 && remaining.localStorage.length === 0,
+      removed,
+      remaining,
+    };
+    if (result.ok) console.log('[CV-3.2 CLEANUP]', result);
+    else console.error('[CV-3.2 CLEANUP FAILURE]', result);
+    return result;
   }
 
   async function captureTurnEvents(action, settleMs = 1200) {
@@ -743,6 +1375,20 @@
   }
 
   async function P0() {
+    const run = beginFreshRun();
+    if (!run.ok) {
+      const result = {
+        stage: 'P0',
+        capturedAt: nowIso(),
+        ok: false,
+        canSwitch: false,
+        run,
+        failureReasons: [run.reason || 'checkpoint-run-start-failed'],
+        instruction: 'Run CLEANUP(), then restart the canary from P0.',
+      };
+      console.error('[CV-3.2 P0 FAILURE]', compactStageSummary(result));
+      return result;
+    }
     const rt = runtime();
     const state = captureState({ includeRows: false });
     const api = {
@@ -773,6 +1419,7 @@
     return saveStage('P0', {
       ok,
       canSwitch: ok,
+      run: { runId: run.runId, resumed: run.resumed },
       api,
       gates,
       state,
@@ -888,9 +1535,7 @@
     const state = captureState({ includeRows: true });
     const ok = sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts);
     const payload = { ok, state, manualAction: 'Rapidly scroll top/bottom three times, pause mid-chat for two seconds, return to bottom, then wait ten seconds.' };
-    writeStored(`${STAGE_PREFIX}p4-arm`, payload);
-    console.log('[CV-3.2 P4 ARM]', payload);
-    return payload;
+    return saveStage('P4_ARM', payload);
   }
 
   async function P4() {
@@ -933,9 +1578,7 @@
       state,
       manualAction: 'In the disposable branch conversation, select the shorter branch so downstream turns disappear. Do not navigate to another conversation.',
     };
-    writeStored(`${STAGE_PREFIX}p5-arm`, payload);
-    console.log('[CV-3.2 P5 ARM]', payload);
-    return payload;
+    return saveStage('P5_ARM', payload);
   }
 
   async function P5() {
@@ -982,9 +1625,7 @@
       state: captureState({ includeRows: true }),
       manualAction: 'Switch back to the original longer branch under the same conversation route, then wait for automatic MiniMap regrowth.',
     };
-    writeStored(`${STAGE_PREFIX}p6-arm`, payload);
-    console.log('[CV-3.2 P6 ARM]', payload);
-    return payload;
+    return saveStage('P6_ARM', payload);
   }
 
   async function P6() {
@@ -1039,9 +1680,7 @@
       exactPrompt: 'CV-3 LEDGER CANARY STREAMING PASS',
       manualAction: 'Submit the exact prompt, then run P7_DURING while the answer is still streaming. Run P7 after completion.',
     };
-    writeStored(`${STAGE_PREFIX}p7-arm`, payload);
-    console.log('[CV-3.2 P7 ARM]', payload);
-    return payload;
+    return saveStage('P7_ARM', payload);
   }
 
   async function P7_DURING() {
@@ -1054,9 +1693,7 @@
       lastTurn,
       failureReasons: lastTurn?.primaryAId ? [] : ['missing-p7-during-primary'],
     };
-    writeStored(`${STAGE_PREFIX}p7-during`, payload);
-    console.log('[CV-3.2 P7 DURING]', payload);
-    return payload;
+    return saveStage('P7_DURING', payload);
   }
 
   async function P7() {
@@ -1128,14 +1765,7 @@
       });
     }
     const after = captureState({ includeRows: true });
-    const unchangedBaselineMismatches = [];
-    const currentByTurn = new Map(after.perTurn.map((row) => [row.turnNo, row]));
-    for (const row of asArray(baseline?.perTurn)) {
-      const current = currentByTurn.get(row.turnNo);
-      if (!current || row.qId !== current.qId || row.primaryAId !== current.primaryAId) {
-        unchangedBaselineMismatches.push({ turnNo: row.turnNo, baseline: row, current: current || null });
-      }
-    }
+    const rollbackEquivalence = evaluateRollbackEquivalence(baseline, after);
     const result = eventCapture.result || {};
     const gates = {
       setterOk: result.ok === true,
@@ -1149,7 +1779,9 @@
       dualRunExact: dualRunClean(after.dualRun),
       convergenceClean: asArray(after.convergence?.blockers).length === 0,
       aliasesClean: aliasClean(after.aliasDiagnostics),
-      originalUnchangedTurnsEquivalent: unchangedBaselineMismatches.length === 0,
+      rollbackEquivalent: rollbackEquivalence.ok,
+      finalPrimaryNonPlaceholder: rollbackEquivalence.finalPrimaryValid,
+      finalPrimaryPublishedByMiniMap: rollbackEquivalence.finalPrimaryPublishedByMiniMap,
     };
     const ok = Object.values(gates).every(Boolean);
     return saveStage('P8', {
@@ -1161,7 +1793,7 @@
       before,
       after,
       state: after,
-      unchangedBaselineMismatches,
+      rollbackEquivalence,
       emergencyRollbackRequired: !ok,
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
@@ -1170,6 +1802,33 @@
   }
 
   async function P8_RELOAD_VERIFY() {
+    const recovered = readCheckpoint({ runId: null });
+    if (!recovered.ok) {
+      const result = {
+        stage: 'P8_RELOAD',
+        capturedAt: nowIso(),
+        ok: false,
+        emergencyRollbackUsed: true,
+        checkpointRecovery: { ok: false, reason: recovered.reason },
+        failureReasons: [`checkpoint:${recovered.reason}`],
+      };
+      writeStored(stageStorageKey('P8_RELOAD'), result);
+      console.error('[CV-3.2 P8 RELOAD VERIFY FAILURE]', compactStageSummary(result));
+      return result;
+    }
+    const adopted = adoptCheckpointRun(recovered.checkpoint);
+    if (!adopted.ok) {
+      const result = {
+        stage: 'P8_RELOAD',
+        capturedAt: nowIso(),
+        ok: false,
+        emergencyRollbackUsed: true,
+        checkpointRecovery: { ok: false, reason: adopted.reason },
+        failureReasons: [`checkpoint:${adopted.reason}`],
+      };
+      console.error('[CV-3.2 P8 RELOAD VERIFY FAILURE]', compactStageSummary(result));
+      return result;
+    }
     const state = captureState({ includeRows: true });
     const gates = {
       legacyActive: sourceIs(state, SOURCE_LEGACY),
@@ -1178,16 +1837,19 @@
       countsAgree: countsEqual(state.counts),
       miniMapAligned: state.miniMapIdentityAlignment.ok === true,
     };
-    const result = {
+    return saveStage('P8_RELOAD', {
       ok: Object.values(gates).every(Boolean),
       emergencyRollbackUsed: true,
       gates,
       state,
-      capturedAt: nowIso(),
-    };
-    writeStored(`${STAGE_PREFIX}p8-reload`, result);
-    console.log('[CV-3.2 P8 RELOAD VERIFY]', result);
-    return result;
+      checkpointRecovery: {
+        ok: true,
+        runId: recovered.checkpoint.runId,
+        recoveredStageNames: Object.keys(recovered.checkpoint.stages),
+        previousP8Summary: recovered.checkpoint.stages.P8 || null,
+      },
+      failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
+    });
   }
 
   async function P9_ARM() {
@@ -1198,9 +1860,7 @@
       state,
       manualAction: 'Wait a full 60 seconds without interacting, then run P9.',
     };
-    writeStored(`${STAGE_PREFIX}p9-arm`, payload);
-    console.log('[CV-3.2 P9 ARM]', payload);
-    return payload;
+    return saveStage('P9_ARM', payload);
   }
 
   async function P9() {
@@ -1238,11 +1898,13 @@
   }
 
   async function P10() {
+    const checkpointRead = readCheckpoint();
+    const checkpointStages = checkpointRead.ok ? checkpointRead.checkpoint.stages : {};
     const stages = Object.fromEntries(Array.from({ length: 10 }, (_, index) => {
       const key = `P${index}`;
-      return [key, getStage(key)];
+      return [key, getStage(key) || checkpointStages[key] || null];
     }));
-    const emergency = readStored(`${STAGE_PREFIX}p8-reload`);
+    const emergency = getStage('P8_RELOAD') || checkpointStages.P8_RELOAD || null;
     const missingStages = Object.entries(stages).filter(([, result]) => !result).map(([name]) => name);
     const failedStages = Object.entries(stages).filter(([, result]) => result && result.ok !== true).map(([name]) => name);
     const p3 = stages.P3;
@@ -1259,9 +1921,15 @@
       emergencyRollbackUsed: !!emergency?.emergencyRollbackUsed,
       stageResults: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value ? { ok: value.ok, failureReasons: value.failureReasons || [] } : null])),
       sourceHistory: sourceHistory(),
-      baselineSummary: stages.P1?.state ? { counts: stages.P1.state.counts, source: stages.P1.state.source, turnVersion: stages.P1.state.turnVersion } : null,
-      ledgerSummary: stages.P7?.state ? { counts: stages.P7.state.counts, source: stages.P7.state.source, ledger: stages.P7.state.ledgerSummary } : null,
-      rollbackSummary: stages.P8?.state ? { counts: stages.P8.state.counts, source: stages.P8.state.source, turnVersion: stages.P8.state.turnVersion } : emergency || null,
+      baselineSummary: stages.P1?.state
+        ? { counts: stages.P1.state.counts, source: stages.P1.state.source, turnVersion: stages.P1.state.turnVersion }
+        : (checkpointStages.P1 || null),
+      ledgerSummary: stages.P7?.state
+        ? { counts: stages.P7.state.counts, source: stages.P7.state.source, ledger: stages.P7.state.ledgerSummary }
+        : (checkpointStages.P7 || null),
+      rollbackSummary: stages.P8?.state
+        ? { counts: stages.P8.state.counts, source: stages.P8.state.source, turnVersion: stages.P8.state.turnVersion }
+        : (checkpointStages.P8 || emergency || null),
       variantOrderFinding: {
         rawVariantOrderChanged: !!p3?.rawVariantOrderChanged,
         visibleVariantBehaviorChanged: !!p3?.visibleVariantBehaviorChanged,
@@ -1278,6 +1946,11 @@
         ...failedStages.flatMap((stage) => asArray(stages[stage]?.failureReasons).map((reason) => `${stage}:${reason}`)),
         ...missingStages.map((stage) => `${stage}:not-run`),
       ],
+      checkpointRecovery: {
+        ok: checkpointRead.ok,
+        reason: checkpointRead.ok ? null : checkpointRead.reason,
+        runId: checkpointRead.ok ? checkpointRead.checkpoint.runId : null,
+      },
     };
     return saveStage('P10', result);
   }
@@ -1305,6 +1978,9 @@
     P9,
     P10,
     evaluateStreamingIdentityContinuity,
+    evaluateRollbackEquivalence,
+    EXPORT,
+    CLEANUP,
     inspect: () => captureState({ includeRows: true }),
     readStage: (stage) => getStage(asString(stage).toUpperCase()),
   });
