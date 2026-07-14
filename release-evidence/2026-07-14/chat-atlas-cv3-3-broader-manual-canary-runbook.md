@@ -19,7 +19,7 @@ CV-3.2 was not variant-free. Its accepted baseline included turn 5 with two `ans
 
 ## Tooling and Reuse Boundary
 
-Install the accepted CV-3.2 v4 harness from:
+Install the capacity-safe CV-3.2 v5 harness from:
 
 ```text
 tools/validation/chat-atlas/chat-atlas-cv3-2-canary-console.js
@@ -33,7 +33,20 @@ tools/validation/chat-atlas/chat-atlas-cv3-3-navigation-spot-check-console.js
 
 Evaluation of either script only installs its API. It does not switch sources or begin a scenario.
 
-Safe v4 reuse:
+Before starting any scenario, require:
+
+```js
+if (H2O_CV3_CANARY.version !== "cv3.2-canary-harness-v5") {
+  throw new Error(`CV-3.3 requires v5; found ${H2O_CV3_CANARY.version}`)
+}
+if (H2O_CV3_CANARY.evidenceSchema !== 5) {
+  throw new Error(`CV-3.3 requires evidence schema 5; found ${H2O_CV3_CANARY.evidenceSchema}`)
+}
+```
+
+Schema 5 keeps full captures in memory while persisting compact stage projections and deterministic fingerprints. It retains the 900,000-character stage-record limit, checkpoint schema 2, and the 16 KiB durable checkpoint limit. A v5 run must not resume schema-less or v4 session evidence; run `CLEANUP()` only after any prior evidence has been safely exported.
+
+Safe v5 reuse:
 
 - P0: entry readiness
 - P1: legacy baseline
@@ -42,7 +55,7 @@ Safe v4 reuse:
 - P8: normal rollback and rollback equivalence for a same-route scenario
 - `EXPORT()` and `CLEANUP()`: evidence export and cleanup
 
-Do not force CV-3.3 through CV-3.2 P3-P7, P9, or P10. Those stages encode the exact CV-3.2 action sequence and final matrix. CV-3.3 uses the scenario procedures below. S6 uses direct, explicit operator setter calls because two tabs must not share the CV-3.2 local checkpoint lifecycle.
+S1 additionally uses P3, P4_ARM, and P4 because v5 gives those stages a capacity-safe large-conversation schema and verifies compact movement references. Outside S1, do not force CV-3.3 through CV-3.2 P3-P7, P9, or P10 unless a scenario procedure explicitly requires that stage. S6 uses direct, explicit operator setter calls because two tabs must not share the CV-3.2 local checkpoint lifecycle.
 
 The spot-check API is:
 
@@ -62,7 +75,7 @@ It records compact diagnostics only under `h2o:cv3-3:*`, with a 24-snapshot and 
 3. Give every scenario a unique ID in the form `CV3.3-SN-<unique-id>`.
 4. Never run two scenarios concurrently in the same tab.
 5. Stop on the first gate-class failure.
-6. Normal rollback is an explicit setter call to `legacy-durable-cache`; use v4 P8 when its same-route baseline exists.
+6. Normal rollback is an explicit setter call to `legacy-durable-cache`; use v5 P8 when its same-route baseline exists.
 7. Emergency rollback is an immediate page reload. Reinstall diagnostics after reload and verify active/effective/default source are legacy.
 8. Export evidence before cleanup. Cleanup is allowed only after the JSON is safely downloaded and its byte size and SHA-256 are recorded.
 9. Do not navigate away while a scenario requiring same-route branch, page, or variant evidence is active.
@@ -207,26 +220,88 @@ Prove that `chat-atlas-ledger` as the temporary canonical source retains complet
 
 #### B. Install And Capture The Accepted Baseline
 
-1. Install the accepted CV-3.2 v4 harness and the CV-3.3 spot-check helper.
+1. Install the CV-3.2 v5 harness and the CV-3.3 spot-check helper.
 2. Run `CLEANUP()` only when no prior evidence still needs preservation.
-3. Create a unique S1 scenario ID.
-4. Run P0 and P1, start the spot-check helper, and capture the large-chat legacy baseline.
+3. Create a unique S1 scenario ID and execute this entry wrapper:
+
+```js
+const S1_SCENARIO_ID = "CV3.3-S1-<unique-id>"
+if (H2O_CV3_CANARY.version !== "cv3.2-canary-harness-v5") throw new Error("v5 harness required")
+if (H2O_CV3_CANARY.evidenceSchema !== 5) throw new Error("evidence schema 5 required")
+const s1P0 = await H2O_CV3_CANARY.P0()
+if (!s1P0.ok) throw new Error(`P0 failed: ${JSON.stringify(s1P0.failureReasons)}`)
+const s1P1 = await H2O_CV3_CANARY.P1()
+if (!s1P1.ok) throw new Error(`P1 failed: ${JSON.stringify(s1P1.failureReasons)}`)
+const s1SpotStart = H2O_CV3_3_NAV_SPOT_CHECK.START({
+  scenarioId: S1_SCENARIO_ID,
+  scenario: "CV3.3-S1",
+})
+if (!s1SpotStart.ok) throw new Error(`spot-check START failed: ${JSON.stringify(s1SpotStart)}`)
+```
+
+P1 persists one trimmed schema-5 baseline at `h2o:cv3:legacy-baseline`; its stage record references that baseline rather than duplicating it.
 
 #### C. Activate Ledger Canonical Source
 
-1. Run the accepted P2 harness procedure without introducing any pagination, title-list, divider, or page-collapse action.
-2. Require ledger active/effective, source non-persisted, and default source still legacy.
-3. Verify the canonical count did not shrink and MiniMap remains aligned to the original full count.
-4. Capture `S1-ledger-ready` with the spot-check helper and a rich `inspect()` state.
+1. Run the v5 P2 and P3 procedures without introducing any pagination, title-list, divider, or page-collapse action:
+
+```js
+const s1P2 = await H2O_CV3_CANARY.P2()
+if (!s1P2.ok) throw new Error(`P2 refused or failed: ${JSON.stringify(s1P2.failureReasons)}`)
+const s1P3 = await H2O_CV3_CANARY.P3()
+if (!s1P3.ok) throw new Error(`P3 failed: ${JSON.stringify(s1P3.failureReasons)}`)
+const s1LedgerReady = H2O_CV3_3_NAV_SPOT_CHECK.SNAPSHOT("ledger-ready")
+if (!s1LedgerReady.ok) throw new Error(`ledger-ready snapshot failed: ${JSON.stringify(s1LedgerReady)}`)
+```
+
+2. P2 must pass its forward-switch and projected-P8 capacity preflight before it calls the setter.
+3. Require ledger active/effective, source non-persisted, and default source still legacy.
+4. Verify the canonical count did not shrink and MiniMap remains aligned to the original full count.
+5. Preserve a rich `H2O_CV3_CANARY.inspect()` result in memory only when detailed diagnosis is needed; ordinary persisted stages must use v5 compact evidence.
 
 #### D. Exercise Native Large-Chat Behavior
 
-1. Scroll toward the oldest content that native ChatGPT makes reachable.
-2. Pause after settling and capture diagnostics.
-3. Scroll through middle ranges, pausing and capturing diagnostics after settling in each sampled region.
-4. Return to the newest content and capture diagnostics after settling.
+1. Arm P4 before any movement. A failed arm does not authorize scrolling:
+
+```js
+const s1P4Arm = await H2O_CV3_CANARY.P4_ARM()
+if (!s1P4Arm.ok || !s1P4Arm.manualActionAuthorized) {
+  throw new Error(`P4_ARM refused: ${JSON.stringify(s1P4Arm.failureReasons)}`)
+}
+```
+
+2. Scroll toward the oldest content that native ChatGPT makes reachable, wait for settling, then run exactly:
+
+```js
+const s1Oldest = H2O_CV3_3_NAV_SPOT_CHECK.SNAPSHOT("oldest")
+if (!s1Oldest.ok) throw new Error(`oldest snapshot failed: ${JSON.stringify(s1Oldest)}`)
+```
+
+3. Scroll through the middle range, wait for settling, then run exactly:
+
+```js
+const s1Middle = H2O_CV3_3_NAV_SPOT_CHECK.SNAPSHOT("middle")
+if (!s1Middle.ok) throw new Error(`middle snapshot failed: ${JSON.stringify(s1Middle)}`)
+```
+
+4. Return to the newest content, wait for settling, then run exactly:
+
+```js
+const s1Newest = H2O_CV3_3_NAV_SPOT_CHECK.SNAPSHOT("newest")
+if (!s1Newest.ok) throw new Error(`newest snapshot failed: ${JSON.stringify(s1Newest)}`)
+```
+
 5. Use existing MiniMap navigation where supported, without invoking page dividers or page controls.
 6. Allow normal native hydration and unmounting to occur. Do not require all turn shells to be mounted together.
+7. After the final settle, run P4:
+
+```js
+const s1P4 = await H2O_CV3_CANARY.P4()
+if (!s1P4.ok) throw new Error(`P4 failed: ${JSON.stringify(s1P4.failureReasons)}`)
+if (!s1P4.movementEvidence?.movementCoverageComplete) throw new Error("P4 movement coverage incomplete")
+```
+
+P4 accepts only helper evidence for the same S1 scenario and chat with all three exact labels. Free-text movement claims, foreign scenario evidence, and foreign chat evidence fail closed.
 
 #### E. Verify After Every Movement
 
@@ -241,14 +316,44 @@ Record and verify:
 - identity-drift and automatic-rebuild counters
 - whether rebuild activity settles after hydration
 - pagination remains disabled
+- P4 direct in-memory membership/identity comparison result and true mismatch count
+- P4 oldest/middle/newest compact snapshot references and `movementCoverageComplete`
+- P4 fingerprint continuity as corroboration only; direct row comparison remains dispositive
 
 #### F. Rollback And Evidence
 
-1. Run the accepted P8 rollback procedure so the setter returns to `legacy-durable-cache`.
+1. Run the v5 P8 rollback procedure so the setter returns to `legacy-durable-cache`:
+
+```js
+const s1P8 = await H2O_CV3_CANARY.P8()
+if (!s1P8.ok || s1P8.evidenceDegraded) {
+  throw new Error(`P8 failed or evidence degraded: ${JSON.stringify(s1P8.failureReasons)}`)
+}
+```
+
 2. Use reload only as the emergency fallback if normal rollback fails.
 3. Confirm exact canonical count, identities, ordering, turn numbering, and MiniMap alignment under legacy.
-4. Capture `S1-legacy-restored` and require final active/effective/default source to be legacy.
-5. Export and safely download evidence before cleanup; record filename, byte size, and SHA-256.
+4. Capture the final legacy state and require active/effective/default source to be legacy:
+
+```js
+const s1LegacyRestored = H2O_CV3_3_NAV_SPOT_CHECK.SNAPSHOT("legacy-restored")
+if (!s1LegacyRestored.ok) throw new Error(`legacy-restored snapshot failed: ${JSON.stringify(s1LegacyRestored)}`)
+```
+
+5. Export both evidence sources and safely download them before cleanup:
+
+```js
+const s1CanaryExport = H2O_CV3_CANARY.EXPORT()
+const s1MovementExport = await H2O_CV3_3_NAV_SPOT_CHECK.EXPORT()
+if (!s1CanaryExport.ok || !s1MovementExport.ok) throw new Error("S1 export failed")
+```
+
+6. Record filename, byte size, and SHA-256. Only after both exports are safely preserved may the operator run:
+
+```js
+H2O_CV3_CANARY.CLEANUP()
+H2O_CV3_3_NAV_SPOT_CHECK.CLEANUP()
+```
 
 ### S1 Abort Criteria
 

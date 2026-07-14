@@ -24,8 +24,25 @@ const instrumentedSource = source.replace(testInternalsAnchor, `  Object.defineP
       compactCheckpointStageSummary,
       checkpointStagePolicy,
       stageStorageKey,
+      readStored,
+      writeStored,
+      compactEvidenceState,
+      compactBaselineState,
+      compactBaselineTurn,
+      compactConsumerResults,
+      fingerprintRows,
+      compareMembershipIdentityStates,
+      compactMovementEvidenceReferences,
+      projectedRollbackPayload,
+      summarizeRollbackEquivalence,
+      predictStageCapacity,
+      serializeStageRecord,
       checkpointKey: CHECKPOINT_KEY,
       checkpointMaxBytes: CHECKPOINT_MAX_BYTES,
+      stageRecordMaxChars: STAGE_RECORD_MAX_CHARS,
+      evidenceSchemaVersion: EVIDENCE_SCHEMA_VERSION,
+      baselineKey: BASELINE_KEY,
+      movementHelperKey: MOVEMENT_HELPER_KEY,
     }),
     configurable: true,
   });
@@ -62,28 +79,94 @@ function createStorage(initial = {}) {
 function createHarnessContext(options = {}) {
   contextSequence += 1;
   const chatKey = options.chatKey || 'fixture-chat-a';
-  const activeSource = options.activeSource || 'legacy-durable-cache';
+  let activeSource = options.activeSource || 'legacy-durable-cache';
+  let turnStateVersion = options.turnVersion || 1;
+  const runtimeRows = { rows: Array.isArray(options.rows) ? options.rows : [] };
+  const allowedSetter = { calls: 0, sources: [] };
+  const listeners = new Map();
   const sessionStorage = options.sessionStorage || createStorage();
   const localStorage = options.localStorage || createStorage();
+  const miniMapButtons = () => runtimeRows.rows.map((row) => ({
+    textContent: String(row.turnNo),
+    dataset: {
+      turnIdx: String(row.turnNo),
+      turnId: `turn:${row.qId}`,
+      questionId: row.qId,
+      primaryAId: row.primaryAId || '',
+      page: String(Math.floor((row.turnNo - 1) / 25) + 1),
+    },
+    closest() { return null; },
+    hasAttribute() { return false; },
+    getAttribute() { return null; },
+  }));
+  const miniMapRoot = Object.freeze({
+    querySelectorAll() { return miniMapButtons(); },
+    querySelector(selector) {
+      const match = String(selector).match(/data-turn-idx="(\d+)"/);
+      return match ? miniMapButtons().find((button) => button.dataset.turnIdx === match[1]) || null : null;
+    },
+  });
   const document = Object.freeze({
-    querySelector() { return null; },
+    querySelector(selector) { return String(selector).includes('mnmp') || String(selector).includes('minimap-v10') ? miniMapRoot : null; },
     querySelectorAll() { return []; },
   });
+  const ledgerMembers = () => runtimeRows.rows.map((row) => ({
+    logicalMemberKey: row.logicalMemberKey || `atlas:${row.turnNo}`,
+    turnNo: row.turnNo,
+    question: {
+      qId: row.qId,
+      currentAliases: row.questionCurrentAliases || [row.qId],
+      aliases: row.questionResolverAliases || [row.qId],
+    },
+    answer: {
+      primaryAId: row.primaryAId || null,
+      currentAnswerIds: row.currentAnswerIds || (row.primaryAId ? [row.primaryAId] : []),
+      currentAliases: row.answerCurrentAliases || (row.primaryAId ? [row.primaryAId] : []),
+      aliases: row.answerResolverAliases || (row.primaryAId ? [row.primaryAId] : []),
+      currentShells: row.answerCurrentShells || [],
+      currentProjectionSource: row.currentProjectionSource || 'native-evidence',
+    },
+    resolverAliases: row.resolverAliases || [row.qId, row.primaryAId].filter(Boolean),
+    noAnswer: row.noAnswer === true,
+    hydration: row.hydration || 'hydrated',
+    pageNo: row.pageNo || Math.floor((row.turnNo - 1) / 25) + 1,
+  }));
   const runtime = Object.freeze({
     getChatAtlasCanonicalSource() { return activeSource; },
-    setChatAtlasCanonicalSource() {
-      sourceSetterCalls += 1;
-      throw new Error('source setter must not run in validator execution');
+    setChatAtlasCanonicalSource(sourceName) {
+      if (!options.allowSourceSetter) {
+        sourceSetterCalls += 1;
+        throw new Error('source setter must not run in validator execution');
+      }
+      allowedSetter.calls += 1;
+      allowedSetter.sources.push(sourceName);
+      const changed = activeSource !== sourceName;
+      activeSource = sourceName;
+      if (changed) turnStateVersion += 1;
+      for (const listener of listeners.get('evt:h2o:core:turn:updated') || []) {
+        listener({ detail: { reason: 'fixture-source-switch', version: turnStateVersion, turnTotal: runtimeRows.rows.length } });
+      }
+      return { ok: true, changed, activeSource, effectiveSource: activeSource };
     },
-    listTurnRecords() { return []; },
+    listTurnRecords() {
+      return runtimeRows.rows.map((row) => ({
+        turnNo: row.turnNo,
+        idx: row.turnNo,
+        qId: row.qId,
+        primaryAId: row.primaryAId || null,
+        answerIds: row.answerIds || row.currentAnswerIds || (row.primaryAId ? [row.primaryAId] : []),
+        _aliasIds: row.currentAliases || [row.qId, row.primaryAId].filter(Boolean),
+        noAnswer: row.noAnswer === true,
+      }));
+    },
     getChatAtlasLedgerSnapshot() {
       return {
         ledgerReady: true,
         chatKey,
-        version: 1,
-        memberCount: 0,
+        version: turnStateVersion,
+        memberCount: runtimeRows.rows.length,
         completeShellMap: true,
-        members: [],
+        members: ledgerMembers(),
         quarantinedAliases: [],
       };
     },
@@ -95,7 +178,13 @@ function createHarnessContext(options = {}) {
           effectiveSource: activeSource,
           defaultSource: 'legacy-durable-cache',
           supportedSources: ['legacy-durable-cache', 'chat-atlas-ledger'],
-          switchCount: 0,
+          switchCount: allowedSetter.calls,
+          invalidSwitchCount: 0,
+          rejectedSwitchCount: 0,
+          lastSelection: {
+            legacyCount: runtimeRows.rows.length,
+            selectedCount: runtimeRows.rows.length,
+          },
           persisted: false,
         },
         dualRun: {
@@ -115,6 +204,7 @@ function createHarnessContext(options = {}) {
     getChatAtlasConvergenceParity() { return { parityStatus: 'exact', blockers: [] }; },
   });
   const context = vm.createContext({
+    Map,
     console: Object.freeze({ info() {}, log() {}, warn() {}, error() {} }),
     document,
     location: Object.freeze({ href: `https://chatgpt.com/c/${chatKey}`, pathname: `/c/${chatKey}` }),
@@ -128,11 +218,18 @@ function createHarnessContext(options = {}) {
     performance: Object.freeze({ now() { return contextSequence; } }),
     setTimeout,
     clearTimeout,
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, listener) {
+      const current = listeners.get(type) || new Set();
+      current.add(listener);
+      listeners.set(type, current);
+    },
+    removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+    H2O_MM_mapButtons: new Map(runtimeRows.rows.map((row) => [row.turnNo, true])),
+    H2O_MM_turnById: new Map(runtimeRows.rows.map((row) => [row.qId, row])),
+    H2O_MM_CORE_API: Object.freeze({ getTurnList() { return runtimeRows.rows; } }),
     H2O: Object.freeze({
       surface: Object.freeze({ chatId() { return chatKey; } }),
-      turn: Object.freeze({ version() { return 1; } }),
+      turn: Object.freeze({ version() { return turnStateVersion; } }),
       turnRuntime: runtime,
     }),
   });
@@ -143,6 +240,16 @@ function createHarnessContext(options = {}) {
     internals: context[testInternalsName],
     sessionStorage,
     localStorage,
+    runtimeControl: {
+      allowedSetter,
+      get activeSource() { return activeSource; },
+      get turnVersion() { return turnStateVersion; },
+      setRows(rows) {
+        runtimeRows.rows = rows;
+        context.H2O_MM_mapButtons = new Map(rows.map((row) => [row.turnNo, true]));
+        context.H2O_MM_turnById = new Map(rows.map((row) => [row.qId, row]));
+      },
+    },
   };
 }
 
@@ -232,12 +339,176 @@ function rollbackState(rows, overrides = {}) {
   };
 }
 
+function syntheticRows(count, options = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const turnNo = index + 1;
+    const row = rollbackRow(turnNo, {
+      hydration: turnNo % 3 === 0 ? 'shell' : 'hydrated',
+      pageNo: Math.floor(index / 25) + 1,
+    });
+    if (turnNo === 5 && options.includeVariant !== false) {
+      row.answerIds = [`fixture-answer-${turnNo}-variant-a`, row.primaryAId];
+    } else {
+      row.answerIds = [row.primaryAId];
+    }
+    return row;
+  });
+}
+
+function syntheticFullState(count, options = {}) {
+  const rows = options.rows || syntheticRows(count, options);
+  const sourceName = options.source || 'legacy-durable-cache';
+  const miniMapBoxes = rows.map((row) => ({
+    turnNo: row.turnNo,
+    qId: row.qId,
+    primaryAId: row.primaryAId,
+    noAnswer: row.noAnswer === true,
+  }));
+  return {
+    href: `https://chatgpt.com/c/${options.chatKey || 'fixture-chat-a'}`,
+    activeChatKey: options.chatKey || 'fixture-chat-a',
+    turnVersion: options.turnVersion || 7,
+    source: {
+      activeSource: sourceName,
+      effectiveSource: sourceName,
+      defaultSource: 'legacy-durable-cache',
+      supportedSources: ['legacy-durable-cache', 'chat-atlas-ledger'],
+      switchCount: sourceName === 'legacy-durable-cache' ? 2 : 1,
+      invalidSwitchCount: 0,
+      rejectedSwitchCount: 0,
+      persisted: false,
+      lastSelection: { legacyCount: count, selectedCount: count },
+    },
+    counts: {
+      canonical: count,
+      ledger: count,
+      miniMap: count,
+      mapButtons: count,
+      turnById: count,
+      coreTurnList: count,
+    },
+    ledgerSummary: {
+      ledgerReady: true,
+      chatKey: options.chatKey || 'fixture-chat-a',
+      version: options.turnVersion || 7,
+      memberCount: count,
+      completeShellMap: true,
+    },
+    dualRun: {
+      ready: true,
+      comparisonEligible: true,
+      exactParity: true,
+      countParity: true,
+      orderParity: true,
+      fieldShapeParity: true,
+      currentMismatchCount: 0,
+      totalMismatchCount: 0,
+      missingInLegacyCount: 0,
+      missingInAdapterCount: 0,
+      duplicateIdentityCount: 0,
+      duplicateAliasCount: 0,
+      primaryRekeyCount: 0,
+      instrumentationErrorCount: 0,
+      evidenceChatKey: options.chatKey || 'fixture-chat-a',
+      captureChatKey: options.chatKey || 'fixture-chat-a',
+      ledgerChatKey: options.chatKey || 'fixture-chat-a',
+    },
+    convergence: { parityStatus: 'exact', blockers: [] },
+    aliasDiagnostics: cleanAliasDiagnostics,
+    miniMapAutomaticRefresh: {
+      automaticRefresh: {
+        identityDriftDetectedCount: 0,
+        identityDriftPersistentCount: 0,
+        identityDriftRebuildCount: 0,
+        coreTurnUpdatedRebuildCount: 0,
+      },
+    },
+    miniMapIdentityAlignment: { ok: true, drifts: [], duplicateTurns: [] },
+    canonicalRecords: rows.map((row) => ({
+      turnNo: row.turnNo,
+      qId: row.qId,
+      primaryAId: row.primaryAId,
+      answerIds: row.answerIds,
+      aliases: row.currentAliases,
+      noAnswer: row.noAnswer === true,
+      pageNo: row.pageNo,
+    })),
+    ledgerSnapshot: { members: rows },
+    perTurn: rows,
+    miniMapBoxes,
+    visibleNumbers: { answer: [], question: [] },
+    pageDividers: [],
+    titleBars: [],
+    timestamps: [],
+    washerProjection: { rows: [], mismatches: [] },
+    consumers: {},
+  };
+}
+
+function movementEvidence(scenarioId = 'CV3.3-S1-fixture', chatKey = 'fixture-chat-a', labels = ['oldest', 'middle', 'newest']) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    helperVersion: 'cv3.3-navigation-spot-check-v1',
+    scenarioId,
+    scenario: 'CV3.3-S1',
+    createdAt: '2026-07-14T10:00:00.000Z',
+    updatedAt: '2026-07-14T10:03:00.000Z',
+    snapshots: labels.map((label, index) => ({
+      label,
+      capturedAt: `2026-07-14T10:0${index}:00.000Z`,
+      href: `https://chatgpt.com/c/${chatKey}`,
+      chatKey,
+      counts: { canonical: 83, ledger: 83, miniMap: 83, mapButtons: 83, turnById: 83, coreTurnList: 83 },
+      gates: { countsAligned: true, dualRunExact: true },
+    })),
+  });
+}
+
+function saturateCheckpoint(harness, targetBytes = 16300) {
+  const read = harness.internals.readCheckpoint();
+  assert.equal(read.ok, true);
+  const checkpoint = read.checkpoint;
+  let padding = 'x'.repeat(Math.max(0, targetBytes - Buffer.byteLength(JSON.stringify(checkpoint), 'utf8') - 80));
+  let raw;
+  do {
+    raw = JSON.stringify({ ...checkpoint, fixturePadding: padding });
+    if (Buffer.byteLength(raw, 'utf8') > targetBytes) padding = padding.slice(0, -1);
+    else break;
+  } while (padding.length);
+  harness.localStorage.setItem(checkpointKey, raw);
+  return Buffer.byteLength(raw, 'utf8');
+}
+
+async function prepareLedgerHarness(count = 83, options = {}) {
+  const rows = options.rows || syntheticRows(count);
+  const sessionStorage = options.sessionStorage || createStorage({
+    'h2o:cv3-3:navigation:v1': movementEvidence(options.scenarioId, options.chatKey),
+  });
+  const harness = createHarnessContext({
+    chatKey: options.chatKey || 'fixture-chat-a',
+    rows,
+    allowSourceSetter: true,
+    sessionStorage,
+    localStorage: options.localStorage || createStorage(),
+  });
+  const p0 = await harness.api.P0();
+  assert.equal(p0.ok, true, `fixture P0 failed: ${p0.failureReasons}`);
+  const p1 = await harness.api.P1();
+  assert.equal(p1.ok, true, `fixture P1 failed: ${p1.failureReasons}`);
+  const p2 = await harness.api.P2();
+  assert.equal(p2.ok, true, `fixture P2 failed: ${p2.failureReasons}`);
+  assert.equal(harness.runtimeControl.activeSource, 'chat-atlas-ledger');
+  return harness;
+}
+
 async function createValidCheckpoint(options = {}) {
   const localStorage = options.localStorage || createStorage();
   const sessionStorage = options.sessionStorage || createStorage();
   const harness = createHarnessContext({
     chatKey: options.chatKey || 'fixture-chat-a',
     activeSource: options.activeSource || 'legacy-durable-cache',
+    rows: options.rows || [],
+    allowSourceSetter: options.allowSourceSetter === true,
     localStorage,
     sessionStorage,
   });
@@ -361,6 +632,66 @@ async function buildCheckpointSequence(options = {}) {
 let realisticCapacitySequence = null;
 let maximalCapacitySequence = null;
 const capacityEvidence = {};
+const largeStageEvidence = {};
+const previousTestCount = 39;
+
+function largeStagePayloads(harness, fullState) {
+  const compact = harness.internals.compactEvidenceState(fullState);
+  const movement = {
+    ok: true,
+    helperVersion: 'cv3.3-navigation-spot-check-v1',
+    helperScenarioId: 'CV3.3-S1-fixture',
+    chatKey: fullState.activeChatKey,
+    snapshotLabels: ['oldest', 'middle', 'newest'],
+    snapshotReferences: ['oldest', 'middle', 'newest'].map((label, index) => ({
+      label,
+      snapshotId: `fixture-${label}`,
+      capturedAt: `2026-07-14T10:0${index}:00.000Z`,
+      chatKey: fullState.activeChatKey,
+    })),
+    regionCount: 3,
+    movementCoverageComplete: true,
+    missingLabels: [],
+  };
+  const membership = harness.internals.compareMembershipIdentityStates(fullState, fullState);
+  const rollback = evaluateRollback(
+    rollbackState(fullState.perTurn),
+    rollbackState(fullState.perTurn),
+  );
+  return {
+    baseline: harness.internals.compactBaselineState(fullState),
+    p4: {
+      ok: true,
+      gates: { countsAgree: true, logicalMembershipStable: true, movementCoverageComplete: true },
+      armSummary: compact,
+      firstSettledSummary: compact,
+      state: compact,
+      membershipIdentityComparison: membership,
+      fingerprintContinuity: {
+        before: membership.beforeFingerprint,
+        after: membership.afterFingerprint,
+        matching: true,
+      },
+      movementEvidence: movement,
+      automaticRefreshDelta: {},
+      idleThreeSecondAutomaticRefreshDelta: {},
+      failureReasons: [],
+    },
+    p8: {
+      ok: true,
+      changed: true,
+      evidenceDegraded: false,
+      gates: { setterOk: true, legacyActive: true, rollbackEquivalent: true },
+      setterResult: { ok: true, changed: true },
+      turnUpdateEvents: [{ reason: 'fixture', version: fullState.turnVersion + 1 }],
+      before: compact,
+      state: compact,
+      rollbackEquivalence: harness.internals.summarizeRollbackEquivalence(rollback),
+      emergencyRollbackRequired: false,
+      failureReasons: [],
+    },
+  };
+}
 
 const tests = [];
 function test(name, fn) {
@@ -746,14 +1077,14 @@ test('representative maximum gate and failure arrays retain at least 2 KiB headr
 test('P9 remains a successful durable checkpoint write', async () => {
   realisticCapacitySequence ||= await buildCheckpointSequence();
   assert.equal(realisticCapacitySequence.saved.P9.checkpointWrite.ok, true);
-  assert.equal(realisticCapacitySequence.saved.P9.checkpointWrite.skipped, undefined);
+  assert.equal(realisticCapacitySequence.saved.P9.checkpointWrite.skipped, false);
   assert.ok(realisticCapacitySequence.afterP9.checkpoint.stages.P9);
 });
 
 test('P10 remains a successful durable checkpoint write', async () => {
   realisticCapacitySequence ||= await buildCheckpointSequence();
   assert.equal(realisticCapacitySequence.p10.checkpointWrite.ok, true);
-  assert.equal(realisticCapacitySequence.p10.checkpointWrite.skipped, undefined);
+  assert.equal(realisticCapacitySequence.p10.checkpointWrite.skipped, false);
   assert.ok(realisticCapacitySequence.afterP10.checkpoint.stages.P10);
 });
 
@@ -802,7 +1133,7 @@ test('reload recovery retains critical P7, P7_DURING, and P8 summaries', async (
   assert.ok(checkpoint.checkpoint.stages.P8_RELOAD);
 });
 
-test('v4 refuses legacy v1 evidence until CLEANUP removes every v1 and v2 harness key', async () => {
+test('v5 refuses legacy v1 evidence until CLEANUP removes every v1 and v2 harness key', async () => {
   const localStorage = createStorage({ [legacyCheckpointKey]: '{"schemaVersion":1}' });
   const sessionStorage = createStorage();
   const harness = createHarnessContext({ localStorage, sessionStorage });
@@ -894,6 +1225,246 @@ test('CLEANUP removes every harness-owned key from both storage areas', async ()
   assert.equal(harness.localStorage.getItem('fixture-unrelated'), 'keep');
 });
 
+test('v5 schema and capacity limits are published without changing checkpoint schema v2', () => {
+  assert.equal(primaryHarness.api.version, 'cv3.2-canary-harness-v5');
+  assert.equal(primaryHarness.api.evidenceSchema, 5);
+  assert.equal(primaryHarness.internals.evidenceSchemaVersion, 5);
+  assert.equal(primaryHarness.internals.stageRecordMaxChars, 900000);
+  assert.equal(primaryHarness.internals.checkpointKey, 'h2o:cv3:checkpoint:v2');
+});
+
+test('83-turn compact baseline, P4, and P8 records remain comfortably writable', async () => {
+  const rows = syntheticRows(83);
+  const fullState = syntheticFullState(83, { rows });
+  const harness = await createValidCheckpoint({ rows });
+  const payloads = largeStagePayloads(harness, fullState);
+  harness.internals.writeStored(harness.internals.baselineKey, payloads.baseline);
+  const p4 = harness.internals.saveStage('P4', payloads.p4);
+  const p8 = harness.internals.saveStage('P8', payloads.p8);
+  const baselineChars = harness.sessionStorage.getItem(harness.internals.baselineKey).length;
+  const p4Chars = harness.sessionStorage.getItem(harness.internals.stageStorageKey('P4')).length;
+  const p8Chars = harness.sessionStorage.getItem(harness.internals.stageStorageKey('P8')).length;
+  Object.assign(largeStageEvidence, { baseline83Chars: baselineChars, p4_83Chars: p4Chars, p8_83Chars: p8Chars });
+  assert.equal(payloads.baseline.evidenceSchema, 5);
+  assert.equal(payloads.baseline.perTurn.length, 83);
+  assert.equal(p4.ok, true);
+  assert.equal(p8.ok, true);
+  assert.ok(Math.max(baselineChars, p4Chars, p8Chars) < 150000);
+  assert.doesNotMatch(harness.sessionStorage.getItem(harness.internals.stageStorageKey('P4')), /"ledgerSnapshot"|"consumerResults"/);
+});
+
+test('250-turn compact baseline, P4, and P8 records remain comfortably writable', async () => {
+  const rows = syntheticRows(250);
+  const fullState = syntheticFullState(250, { rows });
+  const harness = await createValidCheckpoint({ rows });
+  const payloads = largeStagePayloads(harness, fullState);
+  harness.internals.writeStored(harness.internals.baselineKey, payloads.baseline);
+  const p4 = harness.internals.saveStage('P4', payloads.p4);
+  const p8 = harness.internals.saveStage('P8', payloads.p8);
+  const baselineChars = harness.sessionStorage.getItem(harness.internals.baselineKey).length;
+  const p4Chars = harness.sessionStorage.getItem(harness.internals.stageStorageKey('P4')).length;
+  const p8Chars = harness.sessionStorage.getItem(harness.internals.stageStorageKey('P8')).length;
+  Object.assign(largeStageEvidence, { baseline250Chars: baselineChars, p4_250Chars: p4Chars, p8_250Chars: p8Chars });
+  assert.equal(payloads.baseline.perTurn.length, 250);
+  assert.equal(p4.ok, true);
+  assert.equal(p8.ok, true);
+  assert.ok(Math.max(baselineChars, p4Chars, p8Chars) < 300000);
+});
+
+test('failure-heavy 250-turn P8 retains totals and bounded row evidence', async () => {
+  const baselineRows = syntheticRows(250);
+  const currentRows = baselineRows.map((row) => rollbackRow(row.turnNo, {
+    qId: `${row.qId}-changed`,
+    primaryAId: `${row.primaryAId}-changed`,
+    currentAnswerIds: [`${row.primaryAId}-changed`],
+    questionResolverAliases: [`${row.qId}-changed`],
+    answerResolverAliases: [`${row.primaryAId}-changed`],
+    resolverAliases: [`${row.qId}-changed`, `${row.primaryAId}-changed`],
+    answerCurrentShells: [],
+  }));
+  const evaluation = evaluateRollback(rollbackState(baselineRows), rollbackState(currentRows));
+  const harness = await createValidCheckpoint({ rows: currentRows });
+  const stateValue = syntheticFullState(250, { rows: currentRows });
+  const payload = {
+    ...largeStagePayloads(harness, stateValue).p8,
+    ok: false,
+    rollbackEquivalence: harness.internals.summarizeRollbackEquivalence(evaluation),
+  };
+  const saved = harness.internals.saveStage('P8', payload);
+  const persisted = harness.internals.readStored(harness.internals.stageStorageKey('P8'));
+  assert.equal(saved.evidenceDegraded, false);
+  assert.equal(persisted.rollbackEquivalence.trueFailingRowCount, 250);
+  assert.equal(persisted.rollbackEquivalence.failingRows.length, 24);
+  assert.ok(persisted.rollbackEquivalence.passingSampleRows.length <= 3);
+  assert.ok(harness.sessionStorage.getItem(harness.internals.stageStorageKey('P8')).length < 900000);
+});
+
+test('oversized P2 preflight refuses before any source setter call', async () => {
+  const rows = syntheticRows(83);
+  const harness = createHarnessContext({ rows, allowSourceSetter: true });
+  assert.equal((await harness.api.P0()).ok, true);
+  assert.equal((await harness.api.P1()).ok, true);
+  saturateCheckpoint(harness);
+  const result = await harness.api.P2();
+  assert.equal(result.ok, false);
+  assert.equal(result.switched, false);
+  assert.equal(result.failureReasons.includes('evidence-capacity-preflight-failed'), true);
+  assert.equal(harness.runtimeControl.allowedSetter.calls, 0);
+  assert.equal(harness.runtimeControl.activeSource, 'legacy-durable-cache');
+});
+
+test('P4_ARM refuses oversized projection and does not authorize movement', async () => {
+  const harness = await prepareLedgerHarness(83);
+  const setterCallsBefore = harness.runtimeControl.allowedSetter.calls;
+  saturateCheckpoint(harness);
+  const result = await harness.api.P4_ARM();
+  assert.equal(result.ok, false);
+  assert.equal(result.manualActionAuthorized, false);
+  assert.equal(result.failureReasons.includes('evidence-capacity-preflight-failed'), true);
+  assert.equal(harness.runtimeControl.allowedSetter.calls, setterCallsBefore);
+});
+
+test('P5_ARM, P6_ARM, and P7_ARM refuse oversized projections without authorizing mutations', async () => {
+  for (const stage of ['P5_ARM', 'P6_ARM', 'P7_ARM']) {
+    const harness = await prepareLedgerHarness(83);
+    if (stage === 'P6_ARM') {
+      harness.internals.writeStored(harness.internals.stageStorageKey('P5'), {
+        stage: 'P5', evidenceSchema: 5, ok: true,
+      });
+    }
+    const setterCallsBefore = harness.runtimeControl.allowedSetter.calls;
+    saturateCheckpoint(harness);
+    const result = await harness.api[stage]();
+    assert.equal(result.ok, false, `${stage} unexpectedly passed`);
+    assert.equal(result.manualActionAuthorized, false, `${stage} authorized manual work`);
+    assert.equal(result.failureReasons.includes('evidence-capacity-preflight-failed'), true);
+    assert.equal(harness.runtimeControl.allowedSetter.calls, setterCallsBefore);
+    assert.equal(harness.runtimeControl.activeSource, 'chat-atlas-ledger');
+  }
+});
+
+test('P8 forced degradation rolls back once, persists only degraded evidence, and makes P10 incomplete', async () => {
+  const harness = await prepareLedgerHarness(30);
+  const hugeAlias = `fixture-huge-alias-${'x'.repeat(210000)}`;
+  const hugeRows = syntheticRows(30).map((row, index) => index < 3 ? {
+    ...row,
+    questionResolverAliases: [row.qId, hugeAlias],
+    answerResolverAliases: [row.primaryAId, hugeAlias],
+    resolverAliases: [row.qId, row.primaryAId, hugeAlias],
+  } : row);
+  harness.runtimeControl.setRows(hugeRows);
+  const setterCallsBefore = harness.runtimeControl.allowedSetter.calls;
+  const sessionWritesBefore = harness.sessionStorage.stats().setItem;
+  const result = await harness.api.P8();
+  assert.equal(harness.runtimeControl.allowedSetter.calls - setterCallsBefore, 1);
+  assert.equal(harness.runtimeControl.activeSource, 'legacy-durable-cache');
+  assert.equal(result.evidenceDegraded, true);
+  assert.equal(result.degradationReason, 'stage-record-size-limit-exceeded');
+  assert.equal(harness.sessionStorage.stats().setItem - sessionWritesBefore, 1);
+  const persisted = harness.internals.readStored(harness.internals.stageStorageKey('P8'));
+  assert.equal(persisted.evidenceDegraded, true);
+  assert.equal(persisted.rollbackOutcome.legacyActive, true);
+  assert.equal('rollbackEquivalence' in persisted, false);
+  const p10 = await harness.api.P10();
+  assert.equal(p10.ok, false);
+  assert.equal(p10.canaryVerdict, 'CANARY_INCOMPLETE_EVIDENCE');
+  assert.deepEqual(Array.from(p10.evidenceDegradedStages), ['P8']);
+  const reloaded = createHarnessContext({
+    rows: hugeRows,
+    localStorage: harness.localStorage,
+    sessionStorage: createStorage(),
+  });
+  const reloadVerify = await reloaded.api.P8_RELOAD_VERIFY();
+  assert.equal(reloadVerify.checkpointRecovery.previousP8Summary.evidenceDegraded, true);
+  const reloadP10 = await reloaded.api.P10();
+  assert.equal(reloadP10.canaryVerdict, 'CANARY_INCOMPLETE_EVIDENCE');
+  assert.equal(reloadP10.evidenceDegradedStages.includes('P8'), true);
+});
+
+test('fresh v5 run rejects schema-less and v4 session evidence until CLEANUP', async () => {
+  for (const evidence of [{ stage: 'P4', ok: true }, { stage: 'P4', ok: true, evidenceSchema: 4 }]) {
+    const sessionStorage = createStorage({ 'h2o:cv3:p4': JSON.stringify(evidence) });
+    const harness = createHarnessContext({ rows: syntheticRows(3), sessionStorage });
+    const result = await harness.api.P0();
+    assert.equal(result.ok, false);
+    assert.equal(result.run.reason, 'session-evidence-foreign-schema-cleanup-required');
+    assert.equal(harness.api.CLEANUP().ok, true);
+  }
+});
+
+test('fingerprints are deterministic and change with row content', () => {
+  const rows = syntheticRows(3);
+  const first = primaryHarness.internals.fingerprintRows(rows);
+  const second = primaryHarness.internals.fingerprintRows(rows.map((row) => ({ ...row })));
+  const changed = primaryHarness.internals.fingerprintRows(rows.map((row, index) => index === 1 ? { ...row, primaryAId: 'changed' } : row));
+  assert.deepEqual(first, second);
+  assert.notEqual(first.hash, changed.hash);
+  assert.equal(first.count, 3);
+  assert.ok(first.serializedChars > 0);
+});
+
+test('trimmed baseline preserves alias-equivalent rollback semantics', () => {
+  const previous = rollbackRow(1);
+  const fullBaseline = syntheticFullState(1, { rows: [previous] });
+  const trimmed = primaryHarness.internals.compactBaselineState(fullBaseline);
+  const current = rollbackRow(1, {
+    qId: 'fixture-question-1-rekeyed',
+    primaryAId: 'fixture-answer-1-rekeyed',
+    questionResolverAliases: ['fixture-question-1', 'fixture-question-1-rekeyed'],
+    answerResolverAliases: ['fixture-answer-1', 'fixture-answer-1-rekeyed'],
+    resolverAliases: ['fixture-question-1', 'fixture-question-1-rekeyed', 'fixture-answer-1', 'fixture-answer-1-rekeyed'],
+    answerCurrentShells: [],
+  });
+  const result = evaluateRollback(trimmed, rollbackState([current]));
+  assert.equal(result.ok, true);
+  assert.equal(result.perTurnEvidence[0].transition, 'alias-equivalent');
+});
+
+test('P3 variant-order comparison remains visible-behavior aware with trimmed baseline', async () => {
+  const rows = syntheticRows(8);
+  const harness = await prepareLedgerHarness(8, { rows });
+  const changed = rows.map((row) => row.turnNo === 5 ? { ...row, answerIds: row.answerIds.slice().reverse() } : row);
+  harness.runtimeControl.setRows(changed);
+  const result = await harness.api.P3();
+  assert.equal(result.ok, true);
+  assert.equal(result.rawVariantOrderChanged, true);
+  assert.equal(result.rawVariantOrderChangeCount, 1);
+  assert.equal(result.visibleVariantBehaviorChanged, false);
+});
+
+test('same-chat oldest, middle, and newest movement references pass', () => {
+  const sessionStorage = createStorage({ 'h2o:cv3-3:navigation:v1': movementEvidence() });
+  const harness = createHarnessContext({ sessionStorage });
+  const result = harness.internals.compactMovementEvidenceReferences({ scenarioId: 'CV3.3-S1-fixture' });
+  assert.equal(result.ok, true);
+  assert.equal(result.movementCoverageComplete, true);
+  assert.deepEqual(Array.from(result.snapshotLabels), ['oldest', 'middle', 'newest']);
+  assert.equal(result.snapshotReferences.every((row) => row.snapshotId && row.capturedAt), true);
+});
+
+test('missing movement region fails closed', () => {
+  const sessionStorage = createStorage({ 'h2o:cv3-3:navigation:v1': movementEvidence('CV3.3-S1-fixture', 'fixture-chat-a', ['oldest', 'newest']) });
+  const harness = createHarnessContext({ sessionStorage });
+  const result = harness.internals.compactMovementEvidenceReferences({ scenarioId: 'CV3.3-S1-fixture' });
+  assert.equal(result.ok, false);
+  assert.equal(result.missingLabels.includes('middle'), true);
+});
+
+test('foreign movement chat and scenario fail closed', () => {
+  const foreignChat = createHarnessContext({
+    chatKey: 'fixture-chat-b',
+    sessionStorage: createStorage({ 'h2o:cv3-3:navigation:v1': movementEvidence('CV3.3-S1-fixture', 'fixture-chat-a') }),
+  });
+  assert.equal(foreignChat.internals.compactMovementEvidenceReferences().reason, 'movement-helper-foreign-chat');
+  const foreignScenario = createHarnessContext({
+    sessionStorage: createStorage({ 'h2o:cv3-3:navigation:v1': movementEvidence('CV3.3-S1-other') }),
+  });
+  assert.equal(
+    foreignScenario.internals.compactMovementEvidenceReferences({ scenarioId: 'CV3.3-S1-fixture' }).reason,
+    'movement-helper-foreign-scenario',
+  );
+});
+
 let failures = 0;
 for (const { name, fn } of tests) {
   try {
@@ -908,10 +1479,13 @@ for (const { name, fn } of tests) {
 console.log(JSON.stringify({
   ok: failures === 0,
   harnessPath,
+  previousTestCount,
   testCount: tests.length,
+  addedTestCount: tests.length - previousTestCount,
   failures,
   sourceSetterCalls,
   capacityEvidence,
+  largeStageEvidence,
 }));
 
 process.exitCode = failures === 0 ? 0 : 1;

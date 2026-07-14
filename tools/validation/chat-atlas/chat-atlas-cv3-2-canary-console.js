@@ -9,7 +9,8 @@
   'use strict';
 
   const G = globalThis;
-  const VERSION = 'cv3.2-canary-harness-v4';
+  const VERSION = 'cv3.2-canary-harness-v5';
+  const EVIDENCE_SCHEMA_VERSION = 5;
   const SOURCE_LEGACY = 'legacy-durable-cache';
   const SOURCE_LEDGER = 'chat-atlas-ledger';
   const STAGE_PREFIX = 'h2o:cv3:';
@@ -20,6 +21,10 @@
   const CHECKPOINT_SCHEMA_VERSION = 2;
   const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
   const CHECKPOINT_MAX_BYTES = 16 * 1024;
+  const STAGE_RECORD_MAX_CHARS = 900000;
+  const MOVEMENT_HELPER_KEY = 'h2o:cv3-3:navigation:v1';
+  const MOVEMENT_HELPER_VERSION = 'cv3.3-navigation-spot-check-v1';
+  const MOVEMENT_HELPER_SCHEMA_VERSION = 1;
   const SESSION_ONLY_STAGES = new Set(['P4_ARM', 'P5_ARM', 'P6_ARM', 'P7_ARM', 'P9_ARM']);
   const DURABLE_STAGES = new Set([
     'P0',
@@ -44,6 +49,7 @@
   ];
   const OPTIONAL = 'optional';
   let currentRunId = null;
+  const volatileStageStates = new Map();
 
   function nowIso() {
     return new Date().toISOString();
@@ -115,6 +121,28 @@
     return JSON.stringify(stableValue(value));
   }
 
+  function hash64(value) {
+    const text = asString(value);
+    let hash = 0xcbf29ce484222325n;
+    for (const character of text) {
+      const codePoint = BigInt(character.codePointAt(0));
+      hash ^= codePoint;
+      hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    }
+    return hash.toString(16).padStart(16, '0');
+  }
+
+  function fingerprintRows(value) {
+    const rows = Array.isArray(value) ? value : (value == null ? [] : [value]);
+    const serialized = stableJson(rows);
+    return {
+      algorithm: 'fnv1a64-codepoint-v1',
+      count: rows.length,
+      serializedChars: serialized.length,
+      hash: hash64(serialized),
+    };
+  }
+
   function utf8ByteLength(value) {
     let bytes = 0;
     for (const character of asString(value)) {
@@ -167,7 +195,7 @@
   function writeStored(key, value) {
     const normalized = stableValue(value);
     const raw = JSON.stringify(normalized);
-    if (raw.length > 900000) throw new Error(`bounded-evidence-limit-exceeded:${key}:${raw.length}`);
+    if (raw.length > STAGE_RECORD_MAX_CHARS) throw new Error(`bounded-evidence-limit-exceeded:${key}:${raw.length}`);
     const write = storageWrite(G.sessionStorage, key, raw);
     if (!write.ok) throw new Error(`${write.reason}:${key}:${write.error || 'unknown'}`);
     return normalized;
@@ -205,8 +233,13 @@
       activeSource: source.activeSource || null,
       effectiveSource: source.effectiveSource || null,
       defaultSource: source.defaultSource || null,
+      supportedSources: asArray(source.supportedSources).slice(0, 8),
       persisted: source.persisted ?? null,
       switchCount: asNumber(source.switchCount),
+      invalidSwitchCount: asNumber(source.invalidSwitchCount),
+      rejectedSwitchCount: asNumber(source.rejectedSwitchCount),
+      lastSourceSwitch: stableValue(source.lastSourceSwitch || null),
+      lastSelection: stableValue(source.lastSelection || null),
     };
   }
 
@@ -224,25 +257,63 @@
 
   function compactAliasGauges(alias) {
     if (!alias || typeof alias !== 'object') return null;
-    return Object.fromEntries([
+    const gauges = Object.fromEntries([
       'currentCrossMemberDuplicateCount',
       'crossMemberAliasConflictCount',
+      'crossMemberAliasRepairCount',
       'currentAliasConflictCount',
       'historicalAliasConflictCount',
       'duplicateAliasCount',
       'quarantinedAliasCount',
+      'quarantinedAliasResolutionCount',
     ].map((key) => [key, asNumber(alias[key])]));
+    return {
+      ...gauges,
+      recentAliasConflicts: asArray(alias.recentAliasConflicts).slice(-12).map((row) => stableValue(row)),
+      quarantinedAliases: asArray(alias.quarantinedAliases).slice(0, 12).map((row) => stableValue(row)),
+    };
   }
 
   function compactDualRun(dualRun) {
     if (!dualRun || typeof dualRun !== 'object') return null;
-    return {
-      ready: !!dualRun.ready,
-      exactParity: dualRun.exactParity === true,
-      currentMismatchCount: asNumber(dualRun.currentMismatchCount),
-      totalMismatchCount: asNumber(dualRun.totalMismatchCount),
-      instrumentationErrorCount: asNumber(dualRun.instrumentationErrorCount),
-    };
+    const scalarKeys = [
+      'ready',
+      'comparisonEligible',
+      'exactParity',
+      'countParity',
+      'orderParity',
+      'fieldShapeParity',
+      'comparisonCount',
+      'skippedComparisonCount',
+      'cleanComparisonStreak',
+      'legacyCount',
+      'adapterCount',
+      'currentMismatchCount',
+      'totalMismatchCount',
+      'missingInLegacyCount',
+      'missingInAdapterCount',
+      'duplicateIdentityCount',
+      'duplicateAliasCount',
+      'primaryRekeyCount',
+      'instrumentationErrorCount',
+      'captureSequence',
+      'captureGeneration',
+      'comparedLedgerGeneration',
+      'flushSequence',
+      'rebaseCount',
+      'evidenceChatKey',
+      'captureChatKey',
+      'ledgerChatKey',
+      'lastSkipReason',
+      'lastComparisonTimestamp',
+      'lastInstrumentationError',
+    ];
+    return Object.fromEntries(scalarKeys.map((key) => {
+      const value = dualRun[key];
+      if (typeof value === 'number') return [key, asNumber(value)];
+      if (typeof value === 'boolean') return [key, value];
+      return [key, value ?? null];
+    }));
   }
 
   function compactConvergence(convergence) {
@@ -252,6 +323,125 @@
       blockers: asArray(convergence.blockers).slice(0, 12),
       blockerCount: asArray(convergence.blockers).length,
     };
+  }
+
+  function compactScalarTree(value, depth = 0) {
+    if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (depth >= 5 || typeof value !== 'object' || Array.isArray(value)) return null;
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      compactScalarTree(item, depth + 1),
+    ]).filter(([, item]) => item !== null));
+  }
+
+  function compactIdentityDriftRow(row) {
+    return {
+      turnNo: asNumber(row?.turnNo),
+      reasons: uniqueOrdered(asArray(row?.reasons)).slice(0, 12),
+      expected: row?.expected ? {
+        qId: row.expected.qId || null,
+        primaryAId: row.expected.primaryAId || null,
+        noAnswer: row.expected.noAnswer === true,
+      } : null,
+      actual: row?.actual ? {
+        qId: row.actual.qId || null,
+        primaryAId: row.actual.primaryAId || null,
+        noAnswer: row.actual.noAnswer === true,
+      } : null,
+    };
+  }
+
+  function compactEvidenceState(fullState) {
+    if (!fullState || typeof fullState !== 'object') return null;
+    const alignment = fullState.miniMapIdentityAlignment || {};
+    const fingerprints = {};
+    for (const [name, rows] of [
+      ['canonicalRecords', fullState.canonicalRecords],
+      ['ledgerMembers', fullState.ledgerSnapshot?.members],
+      ['perTurn', fullState.perTurn],
+      ['miniMapBoxes', fullState.miniMapBoxes],
+      ['visibleAnswerNumbers', fullState.visibleNumbers?.answer],
+      ['visibleQuestionNumbers', fullState.visibleNumbers?.question],
+      ['pageDividers', fullState.pageDividers],
+      ['titleBars', fullState.titleBars],
+      ['timestamps', fullState.timestamps],
+      ['washerRows', fullState.washerProjection?.rows],
+    ]) {
+      if (rows !== undefined) fingerprints[name] = fingerprintRows(rows);
+    }
+    return stableValue({
+      evidenceSchema: EVIDENCE_SCHEMA_VERSION,
+      href: fullState.href || null,
+      activeChatKey: fullState.activeChatKey || null,
+      turnVersion: asNumber(fullState.turnVersion),
+      source: compactSource(fullState.source),
+      counts: compactCounts(fullState.counts),
+      ledgerSummary: fullState.ledgerSummary ? {
+        ledgerReady: fullState.ledgerSummary.ledgerReady === true,
+        chatKey: fullState.ledgerSummary.chatKey || null,
+        version: asNumber(fullState.ledgerSummary.version),
+        memberCount: asNumber(fullState.ledgerSummary.memberCount),
+        completeShellMap: fullState.ledgerSummary.completeShellMap ?? null,
+      } : null,
+      dualRun: compactDualRun(fullState.dualRun),
+      convergence: compactConvergence(fullState.convergence),
+      aliasDiagnostics: compactAliasGauges(fullState.aliasDiagnostics),
+      miniMapAutomaticRefresh: compactScalarTree(fullState.miniMapAutomaticRefresh),
+      miniMapIdentityAlignment: {
+        ok: alignment.ok === true,
+        duplicateTurnNos: asArray(alignment.duplicateTurns).slice(0, 24),
+        duplicateTurnCount: asArray(alignment.duplicateTurns).length,
+        driftCount: asArray(alignment.drifts).length,
+        driftRows: asArray(alignment.drifts).slice(0, 12).map(compactIdentityDriftRow),
+      },
+      fingerprints,
+    });
+  }
+
+  function compactBaselineTurn(row) {
+    return stableValue({
+      turnNo: asNumber(row?.turnNo),
+      logicalMemberKey: row?.logicalMemberKey || null,
+      qId: row?.qId || null,
+      primaryAId: row?.primaryAId || null,
+      answerIds: asArray(row?.answerIds).slice(),
+      currentAnswerIds: asArray(row?.currentAnswerIds).slice(),
+      currentAliases: asArray(row?.currentAliases).slice(),
+      questionCurrentAliases: asArray(row?.questionCurrentAliases).slice(),
+      answerCurrentAliases: asArray(row?.answerCurrentAliases).slice(),
+      questionResolverAliases: asArray(row?.questionResolverAliases).slice(),
+      answerResolverAliases: asArray(row?.answerResolverAliases).slice(),
+      resolverAliases: asArray(row?.resolverAliases).slice(),
+      answerCurrentShells: asArray(row?.answerCurrentShells).map((shell) => ({
+        shellTurnId: shell?.shellTurnId || null,
+        messageId: shell?.messageId || null,
+        currentAnswerId: shell?.currentAnswerId || null,
+      })),
+      noAnswer: row?.noAnswer === true,
+      hydration: row?.hydration || 'none',
+      pageNo: asNumber(row?.pageNo),
+    });
+  }
+
+  function compactBaselineState(fullState) {
+    const compact = compactEvidenceState(fullState);
+    const perTurn = asArray(fullState?.perTurn).map(compactBaselineTurn);
+    return stableValue({
+      evidenceSchema: EVIDENCE_SCHEMA_VERSION,
+      capturedAt: nowIso(),
+      href: compact?.href || null,
+      activeChatKey: compact?.activeChatKey || null,
+      turnVersion: compact?.turnVersion || 0,
+      source: compact?.source || null,
+      counts: compact?.counts || null,
+      ledgerSummary: compact?.ledgerSummary || null,
+      perTurn,
+      fingerprints: {
+        ...compact?.fingerprints,
+        baselinePerTurn: fingerprintRows(perTurn),
+      },
+    });
   }
 
   function compactStageSummary(result) {
@@ -274,6 +464,7 @@
       convergence: compactConvergence(state?.convergence),
       emergencyRollbackRequired: !!result?.emergencyRollbackRequired,
       emergencyRollbackUsed: !!result?.emergencyRollbackUsed,
+      evidenceDegraded: result?.evidenceDegraded === true,
       changed: result?.changed ?? null,
       error: result?.error ? asString(result.error).slice(0, 500) : null,
     });
@@ -281,6 +472,28 @@
 
   function compactCheckpointStageSummary(result) {
     const summary = compactStageSummary(result);
+    const checkpointSource = (source) => source ? {
+      activeSource: source.activeSource || null,
+      effectiveSource: source.effectiveSource || null,
+      defaultSource: source.defaultSource || null,
+      persisted: source.persisted ?? null,
+      switchCount: asNumber(source.switchCount),
+    } : null;
+    const checkpointAliases = (alias) => alias ? Object.fromEntries([
+      'currentCrossMemberDuplicateCount',
+      'crossMemberAliasConflictCount',
+      'currentAliasConflictCount',
+      'historicalAliasConflictCount',
+      'duplicateAliasCount',
+      'quarantinedAliasCount',
+    ].map((key) => [key, asNumber(alias[key])])) : null;
+    const checkpointDualRun = (dualRun) => dualRun ? {
+      ready: dualRun.ready === true,
+      exactParity: dualRun.exactParity === true,
+      currentMismatchCount: asNumber(dualRun.currentMismatchCount),
+      totalMismatchCount: asNumber(dualRun.totalMismatchCount),
+      instrumentationErrorCount: asNumber(dualRun.instrumentationErrorCount),
+    } : null;
     const compact = {
       stage: summary.stage,
       capturedAt: summary.capturedAt,
@@ -288,14 +501,15 @@
     };
     if (summary.failureReasons.length) compact.failureReasons = summary.failureReasons;
     if (Object.keys(summary.gates).length) compact.gates = summary.gates;
-    if (summary.sourceBefore) compact.sourceBefore = summary.sourceBefore;
-    if (summary.sourceAfter) compact.sourceAfter = summary.sourceAfter;
+    if (summary.sourceBefore) compact.sourceBefore = checkpointSource(summary.sourceBefore);
+    if (summary.sourceAfter) compact.sourceAfter = checkpointSource(summary.sourceAfter);
     if (summary.counts) compact.counts = summary.counts;
-    if (summary.aliasGauges) compact.aliasGauges = summary.aliasGauges;
-    if (summary.dualRun) compact.dualRun = summary.dualRun;
+    if (summary.aliasGauges) compact.aliasGauges = checkpointAliases(summary.aliasGauges);
+    if (summary.dualRun) compact.dualRun = checkpointDualRun(summary.dualRun);
     if (summary.convergence) compact.convergence = summary.convergence;
     if (summary.emergencyRollbackRequired) compact.emergencyRollbackRequired = true;
     if (summary.emergencyRollbackUsed) compact.emergencyRollbackUsed = true;
+    if (summary.evidenceDegraded) compact.evidenceDegraded = true;
     if (summary.changed != null) compact.changed = summary.changed;
     if (summary.error) compact.error = summary.error;
     return stableValue(compact);
@@ -386,7 +600,27 @@
       : { ...write, bytes, limitBytes: CHECKPOINT_MAX_BYTES };
   }
 
+  function foreignSessionEvidenceReason() {
+    for (const key of storageKeys(G.sessionStorage)) {
+      if (!key.startsWith(STAGE_PREFIX) || key === RUN_ID_KEY) continue;
+      const raw = storageRead(G.sessionStorage, key);
+      if (!raw) continue;
+      let value;
+      try {
+        value = JSON.parse(raw);
+      } catch {
+        return 'session-evidence-malformed-cleanup-required';
+      }
+      if (value?.evidenceSchema !== EVIDENCE_SCHEMA_VERSION) {
+        return 'session-evidence-foreign-schema-cleanup-required';
+      }
+    }
+    return null;
+  }
+
   function beginFreshRun() {
+    const foreignSessionEvidence = foreignSessionEvidenceReason();
+    if (foreignSessionEvidence) return { ok: false, reason: foreignSessionEvidence };
     const existingRunId = getCurrentRunId();
     if (existingRunId) {
       const existing = readCheckpoint({ runId: existingRunId });
@@ -446,11 +680,55 @@
     return write.ok ? { ok: true, runId: currentRunId } : write;
   }
 
-  function updateCheckpointStage(result) {
+  function checkpointWriteResult(value = {}) {
+    return {
+      ok: value.ok === true,
+      skipped: value.skipped === true,
+      reason: value.reason || null,
+      bytes: value.bytes == null ? null : asNumber(value.bytes),
+      limitBytes: value.limitBytes == null ? CHECKPOINT_MAX_BYTES : asNumber(value.limitBytes),
+    };
+  }
+
+  function previewCheckpointStage(result) {
+    const policy = checkpointStagePolicy(result?.stage);
+    if (policy === 'session-only') {
+      return {
+        ok: true,
+        checkpoint: null,
+        checkpointWrite: checkpointWriteResult({
+          ok: true,
+          skipped: true,
+          reason: 'session-only-stage',
+        }),
+      };
+    }
+    if (policy !== 'durable') {
+      return {
+        ok: false,
+        checkpoint: null,
+        checkpointWrite: checkpointWriteResult({
+          ok: false,
+          reason: 'checkpoint-stage-policy-unsupported',
+        }),
+      };
+    }
     const runId = getCurrentRunId();
-    if (!runId) return { ok: false, reason: 'checkpoint-run-not-established' };
+    if (!runId) {
+      return {
+        ok: false,
+        checkpoint: null,
+        checkpointWrite: checkpointWriteResult({ ok: false, reason: 'checkpoint-run-not-established' }),
+      };
+    }
     const read = readCheckpoint({ runId });
-    if (!read.ok) return read;
+    if (!read.ok) {
+      return {
+        ok: false,
+        checkpoint: null,
+        checkpointWrite: checkpointWriteResult({ ok: false, reason: read.reason }),
+      };
+    }
     const updatedAt = nowIso();
     const checkpoint = {
       ...read.checkpoint,
@@ -460,29 +738,100 @@
         [stageName(result.stage)]: compactCheckpointStageSummary(result),
       },
     };
-    return writeCheckpoint(checkpoint);
+    const raw = stableJson(checkpoint);
+    const bytes = utf8ByteLength(raw);
+    const checkpointWrite = checkpointWriteResult(bytes > CHECKPOINT_MAX_BYTES
+      ? {
+        ok: false,
+        reason: 'checkpoint-size-limit-exceeded',
+        bytes,
+      }
+      : {
+        ok: true,
+        bytes,
+      });
+    return { ok: checkpointWrite.ok, checkpoint, checkpointWrite };
+  }
+
+  function buildStageRecord(stage, payload, capturedAt, checkpointWrite) {
+    return stableValue({
+      ...payload,
+      stage: stageName(stage),
+      capturedAt,
+      evidenceSchema: EVIDENCE_SCHEMA_VERSION,
+      checkpointWrite: checkpointWriteResult(checkpointWrite),
+    });
+  }
+
+  function serializeStageRecord(record) {
+    const normalized = stableValue(record);
+    const raw = JSON.stringify(normalized);
+    return {
+      normalized,
+      raw,
+      chars: raw.length,
+      bytes: utf8ByteLength(raw),
+      limitChars: STAGE_RECORD_MAX_CHARS,
+    };
+  }
+
+  function predictStageCapacity(stage, payload, options = {}) {
+    const capturedAt = options.capturedAt || nowIso();
+    const base = buildStageRecord(stage, payload, capturedAt, { ok: true });
+    const preview = previewCheckpointStage(base);
+    const candidate = buildStageRecord(stage, payload, capturedAt, preview.checkpointWrite);
+    const measurement = serializeStageRecord(candidate);
+    const reasons = [];
+    if (!preview.ok) reasons.push(`checkpoint:${preview.checkpointWrite.reason}`);
+    if (measurement.chars > STAGE_RECORD_MAX_CHARS) reasons.push('stage-record-size-limit-exceeded');
+    return {
+      ok: reasons.length === 0,
+      reasons,
+      measurement,
+      checkpointPreview: preview,
+      record: candidate,
+    };
   }
 
   function saveStage(stage, payload) {
-    const result = {
-      stage: stageName(stage),
-      capturedAt: nowIso(),
-      ...payload,
-    };
+    const capturedAt = nowIso();
+    const prediction = predictStageCapacity(stage, payload, { capturedAt });
+    let result = prediction.record;
+    if (!prediction.ok) {
+      result = buildStageRecord(stage, {
+        ...payload,
+        ok: false,
+        failureReasons: uniqueOrdered([
+          ...asArray(payload?.failureReasons),
+          ...prediction.reasons.map((reason) => `evidence:${reason}`),
+        ]),
+        capacity: {
+          ok: false,
+          chars: prediction.measurement.chars,
+          bytes: prediction.measurement.bytes,
+          limitChars: STAGE_RECORD_MAX_CHARS,
+        },
+      }, capturedAt, prediction.checkpointPreview.checkpointWrite);
+      const failedMeasurement = serializeStageRecord(result);
+      if (failedMeasurement.chars <= STAGE_RECORD_MAX_CHARS) {
+        writeStored(stageStorageKey(stage), result);
+      }
+      console.error(`[CV-3.2 ${stageName(stage)} EVIDENCE REFUSAL]`, compactStageSummary(result));
+      return result;
+    }
+
     const policy = checkpointStagePolicy(stage);
-    const checkpointWrite = policy === 'durable'
-      ? updateCheckpointStage(result)
-      : policy === 'session-only'
-        ? { ok: true, skipped: true, reason: 'session-only-stage' }
-        : { ok: false, reason: 'checkpoint-stage-policy-unsupported' };
-    result.checkpointWrite = checkpointWrite;
-    if (!checkpointWrite.ok) {
-      result.ok = false;
-      result.failureReasons = uniqueOrdered([
-        ...asArray(result.failureReasons),
-        `checkpoint:${checkpointWrite.reason}`,
-      ]);
-      console.error('[CV-3.2 CHECKPOINT FAILURE]', compactStageSummary(result));
+    if (policy === 'durable') {
+      const actualWrite = writeCheckpoint(prediction.checkpointPreview.checkpoint);
+      result = buildStageRecord(stage, payload, capturedAt, actualWrite);
+      if (!actualWrite.ok) {
+        result.ok = false;
+        result.failureReasons = uniqueOrdered([
+          ...asArray(result.failureReasons),
+          `checkpoint:${actualWrite.reason}`,
+        ]);
+        console.error('[CV-3.2 CHECKPOINT FAILURE]', compactStageSummary(result));
+      }
     }
     writeStored(stageStorageKey(stage), result);
     if (result.ok === false) console.error(`[CV-3.2 ${stageName(stage)} FAILURE]`, compactStageSummary(result));
@@ -946,6 +1295,216 @@
     return state;
   }
 
+  function rememberFullState(stage, state) {
+    volatileStageStates.set(stageName(stage), state);
+    return state;
+  }
+
+  function recalledFullState(stage) {
+    return volatileStageStates.get(stageName(stage)) || null;
+  }
+
+  function compactConsumerResults(consumers) {
+    const status = {};
+    const failures = [];
+    for (const [key, consumer] of Object.entries(consumers || {})) {
+      status[key] = consumer?.status || 'absent';
+      for (const failure of asArray(consumer?.failures)) {
+        failures.push({ consumer: key, failure: stableValue(failure) });
+      }
+    }
+    return {
+      status,
+      trueFailureCount: failures.length,
+      failureEvidence: failures.slice(0, 24),
+      failureEvidenceTruncated: failures.length > 24,
+      fingerprint: fingerprintRows(Object.entries(status)),
+    };
+  }
+
+  function compareMembershipIdentityStates(before, after) {
+    const beforeRows = asArray(before?.perTurn);
+    const afterRows = asArray(after?.perTurn);
+    const afterByTurn = new Map(afterRows.map((row) => [asNumber(row?.turnNo), row]));
+    const mismatches = [];
+    const beforeOrder = beforeRows.map((row) => asNumber(row?.turnNo));
+    const afterOrder = afterRows.map((row) => asNumber(row?.turnNo));
+    for (const previous of beforeRows) {
+      const turnNo = asNumber(previous?.turnNo);
+      const current = afterByTurn.get(turnNo) || null;
+      const reasons = [];
+      if (!current) reasons.push('turn-missing');
+      else {
+        if (previous.qId !== current.qId) reasons.push('q-id-changed');
+        if (previous.primaryAId !== current.primaryAId) reasons.push('primary-a-id-changed');
+        if (previous.noAnswer !== current.noAnswer) reasons.push('no-answer-changed');
+        if (stableJson(previous.answerIds) !== stableJson(current.answerIds)) reasons.push('answer-ids-changed');
+        if (stableJson(previous.currentAnswerIds) !== stableJson(current.currentAnswerIds)) reasons.push('current-answer-ids-changed');
+      }
+      if (reasons.length) {
+        mismatches.push({
+          turnNo,
+          reasons,
+          previous: previous ? compactBaselineTurn(previous) : null,
+          current: current ? compactBaselineTurn(current) : null,
+        });
+      }
+    }
+    for (const current of afterRows) {
+      if (!beforeRows.some((previous) => asNumber(previous?.turnNo) === asNumber(current?.turnNo))) {
+        mismatches.push({ turnNo: asNumber(current?.turnNo), reasons: ['unexpected-turn'], previous: null, current: compactBaselineTurn(current) });
+      }
+    }
+    const orderStable = stableJson(beforeOrder) === stableJson(afterOrder);
+    return {
+      comparedTurnCount: Math.max(beforeRows.length, afterRows.length),
+      stable: mismatches.length === 0 && orderStable,
+      trueMismatchCount: mismatches.length + (orderStable ? 0 : 1),
+      mismatchRows: mismatches.slice(0, 24),
+      mismatchRowsTruncated: mismatches.length > 24,
+      orderStable,
+      beforeFingerprint: fingerprintRows(beforeRows.map(compactBaselineTurn)),
+      afterFingerprint: fingerprintRows(afterRows.map(compactBaselineTurn)),
+    };
+  }
+
+  function readMovementEvidence() {
+    const raw = storageRead(G.sessionStorage, MOVEMENT_HELPER_KEY);
+    if (!raw) return { ok: false, reason: 'movement-helper-evidence-missing' };
+    let evidence;
+    try {
+      evidence = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: 'movement-helper-evidence-malformed' };
+    }
+    if (evidence?.schemaVersion !== MOVEMENT_HELPER_SCHEMA_VERSION
+      || evidence?.helperVersion !== MOVEMENT_HELPER_VERSION
+      || !evidence?.scenarioId
+      || !Array.isArray(evidence?.snapshots)) {
+      return { ok: false, reason: 'movement-helper-evidence-incompatible' };
+    }
+    if (!/^CV3\.3-S1-/.test(evidence.scenarioId)) {
+      return { ok: false, reason: 'movement-helper-scenario-not-s1' };
+    }
+    const currentChatKey = comparableChatKey(activeChatKey());
+    const foreignSnapshot = evidence.snapshots.find((snapshot) => {
+      return comparableChatKey(snapshot?.chatKey) !== currentChatKey;
+    });
+    if (!currentChatKey || foreignSnapshot) {
+      return { ok: false, reason: 'movement-helper-foreign-chat' };
+    }
+    return { ok: true, evidence };
+  }
+
+  function compactMovementEvidenceReferences(options = {}) {
+    const read = readMovementEvidence();
+    if (!read.ok) return { ok: false, reason: read.reason, movementCoverageComplete: false };
+    const expectedScenarioId = options.scenarioId || null;
+    if (expectedScenarioId && read.evidence.scenarioId !== expectedScenarioId) {
+      return { ok: false, reason: 'movement-helper-foreign-scenario', movementCoverageComplete: false };
+    }
+    const requiredLabels = ['oldest', 'middle', 'newest'];
+    const references = [];
+    for (const label of requiredLabels) {
+      const matching = read.evidence.snapshots.filter((snapshot) => {
+        return asString(snapshot?.label).trim().toLowerCase() === label;
+      });
+      const snapshot = matching.at(-1) || null;
+      if (!snapshot) continue;
+      references.push({
+        label,
+        snapshotId: hash64(stableJson([
+          read.evidence.scenarioId,
+          snapshot.chatKey,
+          snapshot.capturedAt,
+          snapshot.label,
+        ])),
+        capturedAt: snapshot.capturedAt || null,
+        chatKey: snapshot.chatKey || null,
+        href: snapshot.href || null,
+        counts: compactCounts(snapshot.counts),
+        gates: Object.fromEntries(Object.entries(snapshot.gates || {}).filter(([, value]) => typeof value === 'boolean')),
+      });
+    }
+    const missingLabels = requiredLabels.filter((label) => !references.some((reference) => reference.label === label));
+    return {
+      ok: missingLabels.length === 0,
+      reason: missingLabels.length ? `movement-helper-regions-missing:${missingLabels.join(',')}` : null,
+      helperVersion: read.evidence.helperVersion,
+      helperScenarioId: read.evidence.scenarioId,
+      chatKey: activeChatKey(),
+      snapshotLabels: references.map((reference) => reference.label),
+      snapshotReferences: references,
+      regionCount: references.length,
+      movementCoverageComplete: missingLabels.length === 0,
+      missingLabels,
+    };
+  }
+
+  function projectedRollbackPayload(state) {
+    const compact = compactEvidenceState(state);
+    const projectedRows = asArray(state?.perTurn).slice(0, 24).map((row) => ({
+      ok: false,
+      transition: 'alias-equivalent',
+      turnNo: asNumber(row?.turnNo),
+      previous: { qId: row?.qId || null, primaryAId: row?.primaryAId || null },
+      current: { qId: row?.qId || null, primaryAId: row?.primaryAId || null },
+      failureReasons: ['projected-capacity-row'],
+    }));
+    return {
+      ok: true,
+      changed: true,
+      gates: Object.fromEntries(Array.from({ length: 14 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      setterResult: { ok: true, changed: true, activeSource: SOURCE_LEGACY },
+      turnUpdateEvents: [{ reason: 'projected-capacity', version: asNumber(state?.turnVersion) + 1 }],
+      before: compact,
+      state: compact,
+      rollbackEquivalence: {
+        ok: true,
+        routeMatches: true,
+        baselineCount: asNumber(state?.counts?.canonical),
+        currentCount: asNumber(state?.counts?.canonical),
+        baselineCountPreserved: true,
+        stableOrder: true,
+        duplicateCurrentTurnNos: [],
+        exactTransitionCount: 0,
+        aliasEquivalentTransitionCount: projectedRows.length,
+        memberKeyRelationCounts: { equal: 0, regenerated: 0, unavailable: projectedRows.length },
+        aliasDiagnosticsClean: true,
+        finalTurnNo: asNumber(state?.counts?.canonical),
+        finalPrimaryAId: 'projected-final-primary',
+        finalPrimaryValid: true,
+        finalPrimaryPublishedByMiniMap: true,
+        evaluatedTurnCount: asNumber(state?.counts?.canonical),
+        trueFailingRowCount: projectedRows.length,
+        failingRows: projectedRows,
+        passingSampleRows: projectedRows.slice(0, 3),
+        failureReasons: projectedRows.map((row) => `turn-${row.turnNo}:projected-capacity-row`),
+      },
+      evidenceDegraded: false,
+      emergencyRollbackRequired: false,
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+  }
+
+  function capacityPreflight(checks) {
+    const results = checks.map(({ stage, payload }) => {
+      const prediction = predictStageCapacity(stage, payload);
+      return {
+        stage: stageName(stage),
+        ok: prediction.ok,
+        reasons: prediction.reasons,
+        chars: prediction.measurement.chars,
+        bytes: prediction.measurement.bytes,
+        limitChars: STAGE_RECORD_MAX_CHARS,
+        checkpointBytes: prediction.checkpointPreview.checkpointWrite.bytes,
+        checkpointLimitBytes: CHECKPOINT_MAX_BYTES,
+      };
+    });
+    return { ok: results.every((result) => result.ok), results };
+  }
+
   function countsEqual(counts) {
     const required = [counts?.canonical, counts?.ledger, counts?.miniMap, counts?.mapButtons, counts?.turnById];
     return required.every((value) => Number.isInteger(value) && value > 0) && new Set(required).size === 1;
@@ -1303,6 +1862,82 @@
     };
   }
 
+  function compactRollbackOwner(owner) {
+    return {
+      turnNo: asNumber(owner?.turnNo),
+      logicalMemberKey: owner?.logicalMemberKey || null,
+      qId: owner?.qId || null,
+      primaryAId: owner?.primaryAId || null,
+    };
+  }
+
+  function compactRollbackEvidenceRow(row) {
+    const compactSide = (side) => ({
+      exact: side?.exact === true,
+      aliasEquivalent: side?.aliasEquivalent === true,
+      witnessAliasCount: asArray(side?.witnessAliases).length,
+      witnessAliases: asArray(side?.witnessAliases).slice(0, 64),
+      ownerCount: asNumber(side?.ownerCount),
+      owners: asArray(side?.owners).slice(0, 16).map(compactRollbackOwner),
+    });
+    return stableValue({
+      ok: row?.ok === true,
+      transition: row?.transition || null,
+      turnNo: asNumber(row?.turnNo),
+      previousLogicalMemberKey: row?.previousLogicalMemberKey || null,
+      currentLogicalMemberKey: row?.currentLogicalMemberKey || null,
+      memberKeyRelation: row?.memberKeyRelation || 'unavailable',
+      memberKeyRegenerated: row?.memberKeyRegenerated === true,
+      memberKeyCorroborates: row?.memberKeyCorroborates === true,
+      previous: stableValue(row?.previous || null),
+      current: stableValue(row?.current || null),
+      question: compactSide(row?.question),
+      answer: compactSide(row?.answer),
+      quarantine: stableValue(row?.quarantine || null),
+      visibleBranch: stableValue(row?.visibleBranch || null),
+      failureReasons: uniqueOrdered(asArray(row?.failureReasons)).slice(0, 32),
+    });
+  }
+
+  function summarizeRollbackEquivalence(evaluation) {
+    const rows = asArray(evaluation?.perTurnEvidence);
+    const failingRows = rows.filter((row) => row?.ok !== true);
+    const passingRows = rows.filter((row) => row?.ok === true);
+    const transitionCounts = { exact: 0, 'alias-equivalent': 0 };
+    const memberKeyRelationCounts = { equal: 0, regenerated: 0, unavailable: 0 };
+    for (const row of rows) {
+      if (row?.transition in transitionCounts) transitionCounts[row.transition] += 1;
+      if (row?.memberKeyRelation in memberKeyRelationCounts) memberKeyRelationCounts[row.memberKeyRelation] += 1;
+    }
+    const allFailureReasons = asArray(evaluation?.failureReasons).map((reason) => asString(reason).slice(0, 300));
+    const boundedFailureReasons = allFailureReasons.slice(0, 2048);
+    return stableValue({
+      ok: evaluation?.ok === true,
+      routeMatches: evaluation?.routeMatches === true,
+      baselineCount: asNumber(evaluation?.baselineCount),
+      currentCount: asNumber(evaluation?.currentCount),
+      baselineCountPreserved: evaluation?.baselineCountPreserved === true,
+      stableOrder: evaluation?.stableOrder === true,
+      duplicateCurrentTurnNos: asArray(evaluation?.duplicateCurrentTurnNos).slice(0, 250),
+      exactTransitionCount: transitionCounts.exact,
+      aliasEquivalentTransitionCount: transitionCounts['alias-equivalent'],
+      memberKeyRelationCounts,
+      aliasDiagnosticsClean: evaluation?.aliasDiagnosticsClean === true,
+      finalTurnNo: asNumber(evaluation?.finalTurnNo),
+      finalPrimaryAId: evaluation?.finalPrimaryAId || null,
+      finalPrimaryValid: evaluation?.finalPrimaryValid === true,
+      finalPrimaryPublishedByMiniMap: evaluation?.finalPrimaryPublishedByMiniMap === true,
+      evaluatedTurnCount: rows.length,
+      trueFailingRowCount: failingRows.length,
+      failingRows: failingRows.slice(0, 24).map(compactRollbackEvidenceRow),
+      failingRowsTruncated: failingRows.length > 24,
+      passingSampleRows: passingRows.slice(0, 3).map(compactRollbackEvidenceRow),
+      failureReasonCount: allFailureReasons.length,
+      failureReasons: boundedFailureReasons,
+      failureReasonsTruncated: boundedFailureReasons.length < allFailureReasons.length,
+    });
+  }
+
   function sourceIs(state, source) {
     return state?.source?.activeSource === source && state?.source?.effectiveSource === source;
   }
@@ -1394,6 +2029,7 @@
       }
     }
     currentRunId = null;
+    volatileStageStates.clear();
     const remaining = {
       sessionStorage: storageKeys(G.sessionStorage).filter((key) => key.startsWith(STAGE_PREFIX)),
       localStorage: storageKeys(G.localStorage).filter((key) => key.startsWith(STAGE_PREFIX)),
@@ -1481,7 +2117,7 @@
       run: { runId: run.runId, resumed: run.resumed },
       api,
       gates,
-      state,
+      state: compactEvidenceState(state),
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       instruction: ok ? 'Run P1 next.' : 'ABORT. Do not run P2.',
     });
@@ -1491,17 +2127,21 @@
     const preflight = getStage('P0');
     if (!preflight?.ok) return saveStage('P1', { ok: false, failureReasons: ['p0-not-passed'], instruction: 'Run P0 and resolve every gate.' });
     const state = captureState({ includeRows: true });
-    const baseline = {
-      capturedAt: nowIso(),
-      ...state,
-    };
+    const baseline = compactBaselineState(state);
     writeStored(BASELINE_KEY, baseline);
     const ok = sourceIs(state, SOURCE_LEGACY) && countsEqual(state.counts) && dualRunClean(state.dualRun);
     return saveStage('P1', {
       ok,
       baselineKey: BASELINE_KEY,
-      state: baseline,
-      multiVariantTurnFound: !!baseline.knownMultiVariantTurn,
+      baselineReference: {
+        key: BASELINE_KEY,
+        evidenceSchema: EVIDENCE_SCHEMA_VERSION,
+        turnCount: baseline.perTurn.length,
+        serializedChars: stableJson(baseline).length,
+        perTurnFingerprint: baseline.fingerprints.baselinePerTurn,
+      },
+      state: compactEvidenceState(state),
+      multiVariantTurnFound: !!state.knownMultiVariantTurn,
       instruction: ok ? 'Review the baseline, then run P2.' : 'ABORT. Do not run P2.',
     });
   }
@@ -1516,6 +2156,34 @@
         switched: false,
         failureReasons: ['preflight-or-baseline-invalid-or-source-not-legacy'],
         rollbackInstruction: ROLLBACK_INSTRUCTION,
+      });
+    }
+    const compactBefore = compactEvidenceState(before);
+    const projectedP2Payload = {
+      ok: true,
+      switched: true,
+      gates: Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      setterResult: { ok: true, changed: true, activeSource: SOURCE_LEDGER },
+      turnUpdateEvents: [{ reason: 'projected-capacity', version: before.turnVersion + 1 }],
+      before: compactBefore,
+      state: compactBefore,
+      aliasGaugeDelta: {},
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+    const evidenceCapacity = capacityPreflight([
+      { stage: 'P2', payload: projectedP2Payload },
+      { stage: 'P8', payload: projectedRollbackPayload(captureState({ includeRows: true })) },
+    ]);
+    if (!evidenceCapacity.ok) {
+      return saveStage('P2', {
+        ok: false,
+        switched: false,
+        evidenceCapacity,
+        before: compactBefore,
+        failureReasons: ['evidence-capacity-preflight-failed'],
+        rollbackInstruction: ROLLBACK_INSTRUCTION,
+        instruction: 'ABORT. The ledger setter was not called.',
       });
     }
     const eventCapture = await captureTurnEvents(() => {
@@ -1541,10 +2209,11 @@
       switched: sourceIs(after, SOURCE_LEDGER),
       gates,
       setterResult: result,
-      turnUpdateEvents: eventCapture.events,
-      before,
-      after,
+      turnUpdateEvents: eventCapture.events.slice(0, 8),
+      before: compactBefore,
+      state: compactEvidenceState(after),
       aliasGaugeDelta: aliasDelta,
+      evidenceCapacity,
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
       instruction: ok ? 'Wait for a stable UI, then run P3.' : 'STOP. Run P8 now; reload immediately if rollback fails.',
@@ -1566,6 +2235,7 @@
       return before?.primaryAId !== after?.primaryAId;
     });
     const consumerFailures = Object.values(state.consumers || {}).filter((consumer) => consumer.status === 'present-failing');
+    const compactConsumers = compactConsumerResults(state.consumers);
     const gates = {
       ledgerSource: sourceIs(state, SOURCE_LEDGER),
       countsAgree: countsEqual(state.counts),
@@ -1579,12 +2249,14 @@
     return saveStage('P3', {
       ok: Object.values(gates).every(Boolean),
       gates,
-      state,
+      state: compactEvidenceState(state),
       rawVariantOrderChanged: rawOrderChanges.length > 0,
-      rawVariantOrderChanges: rawOrderChanges,
+      rawVariantOrderChangeCount: rawOrderChanges.length,
+      rawVariantOrderChanges: rawOrderChanges.slice(0, 24),
       visibleVariantBehaviorChanged: visibleVariantChanges.length > 0,
-      visibleVariantBehaviorChanges: visibleVariantChanges,
-      consumerResults: state.consumers,
+      visibleVariantBehaviorChangeCount: visibleVariantChanges.length,
+      visibleVariantBehaviorChanges: visibleVariantChanges.slice(0, 24),
+      consumerResults: compactConsumers,
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
     });
@@ -1592,37 +2264,114 @@
 
   async function P4_ARM() {
     const state = captureState({ includeRows: true });
-    const ok = sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts);
-    const payload = { ok, state, manualAction: 'Rapidly scroll top/bottom three times, pause mid-chat for two seconds, return to bottom, then wait ten seconds.' };
+    rememberFullState('P4_ARM', state);
+    const movementInfrastructure = readMovementEvidence();
+    const projectedMovement = movementInfrastructure.ok ? {
+      ok: true,
+      helperVersion: movementInfrastructure.evidence.helperVersion,
+      helperScenarioId: movementInfrastructure.evidence.scenarioId,
+      chatKey: activeChatKey(),
+      snapshotLabels: ['oldest', 'middle', 'newest'],
+      snapshotReferences: ['oldest', 'middle', 'newest'].map((label) => ({
+        label,
+        snapshotId: 'projected-movement-reference',
+        capturedAt: nowIso(),
+        chatKey: activeChatKey(),
+      })),
+      regionCount: 3,
+      movementCoverageComplete: true,
+      missingLabels: [],
+    } : { ok: false, reason: movementInfrastructure.reason, movementCoverageComplete: false };
+    const compactState = compactEvidenceState(state);
+    const projectedP4 = {
+      ok: true,
+      gates: Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      armSummary: compactState,
+      firstSettledSummary: compactState,
+      state: compactState,
+      membershipIdentityComparison: compareMembershipIdentityStates(state, state),
+      fingerprintContinuity: {
+        before: fingerprintRows(state.perTurn),
+        after: fingerprintRows(state.perTurn),
+        matching: true,
+      },
+      movementEvidence: projectedMovement,
+      automaticRefreshDelta: {},
+      idleThreeSecondAutomaticRefreshDelta: {},
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+    const evidenceCapacity = capacityPreflight([
+      { stage: 'P4_ARM', payload: { ok: true, state: compactState } },
+      { stage: 'P4', payload: projectedP4 },
+      { stage: 'P8', payload: projectedRollbackPayload(state) },
+    ]);
+    const ok = sourceIs(state, SOURCE_LEDGER)
+      && countsEqual(state.counts)
+      && movementInfrastructure.ok
+      && evidenceCapacity.ok;
+    const payload = {
+      ok,
+      manualActionAuthorized: ok,
+      state: compactState,
+      movementInfrastructure: movementInfrastructure.ok ? {
+        ok: true,
+        helperVersion: movementInfrastructure.evidence.helperVersion,
+        helperScenarioId: movementInfrastructure.evidence.scenarioId,
+        chatKey: activeChatKey(),
+      } : movementInfrastructure,
+      evidenceCapacity,
+      failureReasons: [
+        ...(!movementInfrastructure.ok ? [movementInfrastructure.reason] : []),
+        ...(!evidenceCapacity.ok ? ['evidence-capacity-preflight-failed'] : []),
+      ],
+      manualAction: ok
+        ? 'Capture helper snapshots labeled oldest, middle, and newest while moving through the chat, then wait ten seconds and run P4.'
+        : 'Do not perform the manual movement. Resolve the failed evidence preflight first.',
+    };
     return saveStage('P4_ARM', payload);
   }
 
   async function P4() {
     const arm = readStored(`${STAGE_PREFIX}p4-arm`);
     if (!arm?.ok) return saveStage('P4', { ok: false, failureReasons: ['p4-arm-missing-or-failed'], rollbackInstruction: ROLLBACK_INSTRUCTION });
+    const armFullState = recalledFullState('P4_ARM');
+    if (!armFullState) return saveStage('P4', { ok: false, failureReasons: ['p4-arm-volatile-state-missing'], rollbackInstruction: ROLLBACK_INSTRUCTION });
     const first = captureState({ includeRows: true });
     await wait(3000);
     const second = captureState({ includeRows: true });
-    const beforeAuto = arm.state?.miniMapAutomaticRefresh?.automaticRefresh || {};
+    const beforeAuto = armFullState.miniMapAutomaticRefresh?.automaticRefresh || {};
     const afterAuto = second.miniMapAutomaticRefresh?.automaticRefresh || {};
     const idleAutoDelta = counterDelta(first.miniMapAutomaticRefresh?.automaticRefresh || {}, afterAuto);
+    const membershipIdentityComparison = compareMembershipIdentityStates(armFullState, second);
+    const movementEvidence = compactMovementEvidenceReferences({
+      scenarioId: arm.movementInfrastructure?.helperScenarioId,
+    });
     const gates = {
       ledgerSource: sourceIs(second, SOURCE_LEDGER),
       countsAgree: countsEqual(second.counts),
-      logicalMembershipStable: arm.state.counts.canonical === second.counts.canonical,
+      logicalMembershipStable: membershipIdentityComparison.stable,
       miniMapAligned: second.miniMapIdentityAlignment.ok === true,
       dualRunExact: dualRunClean(second.dualRun),
       convergenceClean: asArray(second.convergence?.blockers).length === 0,
       aliasesClean: aliasClean(second.aliasDiagnostics),
       noInstrumentationError: asNumber(second.dualRun?.instrumentationErrorCount) === 0,
       noIdleRebuildLoop: asNumber(idleAutoDelta.identityDriftRebuildCount) === 0 && asNumber(idleAutoDelta.coreTurnUpdatedRebuildCount) === 0,
+      movementCoverageComplete: movementEvidence.ok && movementEvidence.movementCoverageComplete,
     };
     return saveStage('P4', {
       ok: Object.values(gates).every(Boolean),
       gates,
-      before: arm.state,
-      firstSettledRead: first,
-      state: second,
+      armSummary: compactEvidenceState(armFullState),
+      firstSettledSummary: compactEvidenceState(first),
+      state: compactEvidenceState(second),
+      membershipIdentityComparison,
+      fingerprintContinuity: {
+        before: membershipIdentityComparison.beforeFingerprint,
+        after: membershipIdentityComparison.afterFingerprint,
+        matching: membershipIdentityComparison.beforeFingerprint.hash === membershipIdentityComparison.afterFingerprint.hash,
+      },
+      movementEvidence,
       automaticRefreshDelta: counterDelta(beforeAuto, afterAuto),
       idleThreeSecondAutomaticRefreshDelta: idleAutoDelta,
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
@@ -1632,10 +2381,34 @@
 
   async function P5_ARM() {
     const state = captureState({ includeRows: true });
+    rememberFullState('P5_ARM', state);
+    const compactState = compactEvidenceState(state);
+    const projectedP5 = {
+      ok: true,
+      gates: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      expectedReducedCount: Math.max(1, asNumber(state.counts?.canonical) - 1),
+      removedTurnCount: Math.min(24, asArray(state.perTurn).length),
+      removedTurns: asArray(state.perTurn).slice(-24).map(compactBaselineTurn),
+      leakedRemovedIds: [],
+      state: compactState,
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+    const evidenceCapacity = capacityPreflight([
+      { stage: 'P5_ARM', payload: { ok: true, state: compactState } },
+      { stage: 'P5', payload: projectedP5 },
+      { stage: 'P8', payload: projectedRollbackPayload(state) },
+    ]);
+    const ok = sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts) && evidenceCapacity.ok;
     const payload = {
-      ok: sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts),
-      state,
-      manualAction: 'In the disposable branch conversation, select the shorter branch so downstream turns disappear. Do not navigate to another conversation.',
+      ok,
+      manualActionAuthorized: ok,
+      state: compactState,
+      evidenceCapacity,
+      failureReasons: evidenceCapacity.ok ? [] : ['evidence-capacity-preflight-failed'],
+      manualAction: ok
+        ? 'In the disposable branch conversation, select the shorter branch so downstream turns disappear. Do not navigate to another conversation.'
+        : 'Do not select the shorter branch. Resolve the failed evidence preflight first.',
     };
     return saveStage('P5_ARM', payload);
   }
@@ -1643,8 +2416,9 @@
   async function P5() {
     await wait(1500);
     const arm = readStored(`${STAGE_PREFIX}p5-arm`);
+    const armFullState = recalledFullState('P5_ARM');
     const state = captureState({ includeRows: true });
-    const beforeTurns = new Map(asArray(arm?.state?.perTurn).map((row) => [row.turnNo, row]));
+    const beforeTurns = new Map(asArray(armFullState?.perTurn).map((row) => [row.turnNo, row]));
     const afterTurns = new Map(state.perTurn.map((row) => [row.turnNo, row]));
     const removedTurns = Array.from(beforeTurns.values()).filter((row) => !afterTurns.has(row.turnNo));
     const currentIds = currentProjectionIds(state);
@@ -1654,8 +2428,9 @@
     }
     const gates = {
       armPassed: !!arm?.ok,
-      sameChatRoute: comparableChatKey(arm?.state?.activeChatKey) === comparableChatKey(state.activeChatKey),
-      countReduced: state.counts.canonical < asNumber(arm?.state?.counts?.canonical),
+      armVolatileStatePresent: !!armFullState,
+      sameChatRoute: comparableChatKey(armFullState?.activeChatKey) === comparableChatKey(state.activeChatKey),
+      countReduced: state.counts.canonical < asNumber(armFullState?.counts?.canonical),
       countsAgree: countsEqual(state.counts),
       removedTurnsExist: removedTurns.length > 0,
       removedIdentitiesAbsent: leakedRemovedIds.length === 0,
@@ -1669,9 +2444,11 @@
       ok: Object.values(gates).every(Boolean),
       gates,
       expectedReducedCount: state.counts.canonical,
-      removedTurns,
+      removedTurnCount: removedTurns.length,
+      removedTurns: removedTurns.slice(0, 24).map(compactBaselineTurn),
+      removedTurnsTruncated: removedTurns.length > 24,
       leakedRemovedIds: uniqueOrdered(leakedRemovedIds),
-      state,
+      state: compactEvidenceState(state),
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
     });
@@ -1679,10 +2456,36 @@
 
   async function P6_ARM() {
     const p5 = getStage('P5');
+    const state = captureState({ includeRows: true });
+    rememberFullState('P6_ARM', state);
+    const compactState = compactEvidenceState(state);
+    const projectedP6 = {
+      ok: true,
+      gates: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      restoredIdentityMismatchCount: 0,
+      restoredIdentityMismatches: [],
+      shortOnlyIdCount: 0,
+      shortOnlyIds: [],
+      leakedShortOnlyIds: [],
+      state: compactState,
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+    const evidenceCapacity = capacityPreflight([
+      { stage: 'P6_ARM', payload: { ok: true, state: compactState } },
+      { stage: 'P6', payload: projectedP6 },
+      { stage: 'P8', payload: projectedRollbackPayload(state) },
+    ]);
+    const ok = !!p5?.ok && evidenceCapacity.ok;
     const payload = {
-      ok: !!p5?.ok,
-      state: captureState({ includeRows: true }),
-      manualAction: 'Switch back to the original longer branch under the same conversation route, then wait for automatic MiniMap regrowth.',
+      ok,
+      manualActionAuthorized: ok,
+      state: compactState,
+      evidenceCapacity,
+      failureReasons: evidenceCapacity.ok ? [] : ['evidence-capacity-preflight-failed'],
+      manualAction: ok
+        ? 'Switch back to the original longer branch under the same conversation route, then wait for automatic MiniMap regrowth.'
+        : 'Do not restore the longer branch. Resolve the failed evidence preflight first.',
     };
     return saveStage('P6_ARM', payload);
   }
@@ -1690,6 +2493,7 @@
   async function P6() {
     await wait(1500);
     const arm = readStored(`${STAGE_PREFIX}p6-arm`);
+    const armFullState = recalledFullState('P6_ARM');
     const baseline = readStored(BASELINE_KEY);
     const state = captureState({ includeRows: true });
     const baselineByTurn = new Map(asArray(baseline?.perTurn).map((row) => [row.turnNo, row]));
@@ -1701,14 +2505,15 @@
         restoredIdentityMismatches.push({ turnNo, expected: before, actual: after || null });
       }
     }
-    const shortIds = currentProjectionIds(arm?.state || {});
+    const shortIds = currentProjectionIds(armFullState || {});
     const baselineIds = currentProjectionIds(baseline || {});
     const currentIds = currentProjectionIds(state);
     const shortOnlyIds = Array.from(shortIds).filter((id) => !baselineIds.has(id));
     const leakedShortOnlyIds = shortOnlyIds.filter((id) => currentIds.has(id));
     const gates = {
       armPassed: !!arm?.ok,
-      sameChatRoute: comparableChatKey(arm?.state?.activeChatKey) === comparableChatKey(state.activeChatKey),
+      armVolatileStatePresent: !!armFullState,
+      sameChatRoute: comparableChatKey(armFullState?.activeChatKey) === comparableChatKey(state.activeChatKey),
       originalCountRestored: state.counts.canonical === asNumber(baseline?.counts?.canonical),
       countsAgree: countsEqual(state.counts),
       originalIdentitiesRestored: restoredIdentityMismatches.length === 0,
@@ -1722,10 +2527,12 @@
     return saveStage('P6', {
       ok: Object.values(gates).every(Boolean),
       gates,
-      restoredIdentityMismatches,
-      shortOnlyIds,
-      leakedShortOnlyIds,
-      state,
+      restoredIdentityMismatchCount: restoredIdentityMismatches.length,
+      restoredIdentityMismatches: restoredIdentityMismatches.slice(0, 24),
+      shortOnlyIdCount: shortOnlyIds.length,
+      shortOnlyIds: shortOnlyIds.slice(0, 48),
+      leakedShortOnlyIds: leakedShortOnlyIds.slice(0, 48),
+      state: compactEvidenceState(state),
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
     });
@@ -1733,11 +2540,43 @@
 
   async function P7_ARM() {
     const state = captureState({ includeRows: true });
-    const payload = {
-      ok: sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts),
-      state,
+    rememberFullState('P7_ARM', state);
+    const compactState = compactEvidenceState(state);
+    const projectedP7During = {
+      ok: true,
+      state: compactState,
+      lastTurn: compactBaselineTurn(state.perTurn.at(-1) || {}),
+      failureReasons: [],
+    };
+    const projectedP7 = {
+      ok: true,
+      gates: Object.fromEntries(Array.from({ length: 13 }, (_, index) => [`projectedGate${index + 1}`, true])),
       exactPrompt: 'CV-3 LEDGER CANARY STREAMING PASS',
-      manualAction: 'Submit the exact prompt, then run P7_DURING while the answer is still streaming. Run P7 after completion.',
+      before: compactState,
+      during: projectedP7During,
+      finalTurn: compactBaselineTurn(state.perTurn.at(-1) || {}),
+      streamingIdentityContinuity: { ok: true, reasons: [] },
+      state: compactState,
+      failureReasons: [],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+    };
+    const evidenceCapacity = capacityPreflight([
+      { stage: 'P7_ARM', payload: { ok: true, state: compactState } },
+      { stage: 'P7_DURING', payload: projectedP7During },
+      { stage: 'P7', payload: projectedP7 },
+      { stage: 'P8', payload: projectedRollbackPayload(state) },
+    ]);
+    const ok = sourceIs(state, SOURCE_LEDGER) && countsEqual(state.counts) && evidenceCapacity.ok;
+    const payload = {
+      ok,
+      manualActionAuthorized: ok,
+      state: compactState,
+      evidenceCapacity,
+      exactPrompt: 'CV-3 LEDGER CANARY STREAMING PASS',
+      failureReasons: evidenceCapacity.ok ? [] : ['evidence-capacity-preflight-failed'],
+      manualAction: ok
+        ? 'Submit the exact prompt, then run P7_DURING while the answer is still streaming. Run P7 after completion.'
+        : 'Do not submit the prompt. Resolve the failed evidence preflight first.',
     };
     return saveStage('P7_ARM', payload);
   }
@@ -1747,9 +2586,8 @@
     const lastTurn = state.perTurn.at(-1) || null;
     const payload = {
       ok: !!lastTurn?.primaryAId,
-      capturedAt: nowIso(),
-      state,
-      lastTurn,
+      state: compactEvidenceState(state),
+      lastTurn: lastTurn ? compactBaselineTurn(lastTurn) : null,
       failureReasons: lastTurn?.primaryAId ? [] : ['missing-p7-during-primary'],
     };
     return saveStage('P7_DURING', payload);
@@ -1758,6 +2596,7 @@
   async function P7() {
     await wait(1500);
     const arm = readStored(`${STAGE_PREFIX}p7-arm`);
+    const armFullState = recalledFullState('P7_ARM');
     const during = readStored(`${STAGE_PREFIX}p7-during`);
     const state = captureState({ includeRows: true });
     const finalTurn = state.perTurn.at(-1) || null;
@@ -1771,7 +2610,8 @@
     const gates = {
       armPassed: !!arm?.ok,
       duringCapturePresent: !!during,
-      canonicalIncreasedOne: state.counts.canonical === asNumber(arm?.state?.counts?.canonical) + 1,
+      armVolatileStatePresent: !!armFullState,
+      canonicalIncreasedOne: state.counts.canonical === asNumber(armFullState?.counts?.canonical) + 1,
       countsAgree: countsEqual(state.counts),
       finalAnswerPresent: !!finalTurn?.primaryAId && finalTurn.noAnswer === false,
       finalPrimaryPublishedByMiniMap: state.miniMapBoxes.some((box) => box.turnNo === finalTurn.turnNo && box.primaryAId === finalTurn.primaryAId),
@@ -1786,12 +2626,12 @@
       ok: Object.values(gates).every(Boolean),
       gates,
       exactPrompt: arm?.exactPrompt,
-      before: arm?.state,
+      before: compactEvidenceState(armFullState),
       during,
-      finalTurn,
+      finalTurn: finalTurn ? compactBaselineTurn(finalTurn) : null,
       requestPlaceholderCandidate: placeholder,
       streamingIdentityContinuity,
-      state,
+      state: compactEvidenceState(state),
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
     });
@@ -1804,7 +2644,8 @@
       return saveStage('P8', {
         ok: sourceIs(before, SOURCE_LEGACY),
         changed: false,
-        state: before,
+        evidenceDegraded: false,
+        state: compactEvidenceState(before),
         failureReasons: sourceIs(before, SOURCE_LEGACY) ? [] : ['unexpected-source-before-rollback'],
         rollbackInstruction: ROLLBACK_INSTRUCTION,
       });
@@ -1815,16 +2656,20 @@
         return runtime().setChatAtlasCanonicalSource(SOURCE_LEGACY);
       });
     } catch (error) {
+      const afterError = captureState({ includeRows: false });
       return saveStage('P8', {
         ok: false,
         changed: false,
+        evidenceDegraded: false,
         error: asString(error?.message || error),
+        state: compactEvidenceState(afterError),
         emergencyRollbackRequired: true,
         rollbackInstruction: ROLLBACK_INSTRUCTION,
       });
     }
     const after = captureState({ includeRows: true });
     const rollbackEquivalence = evaluateRollbackEquivalence(baseline, after);
+    const rollbackEquivalenceSummary = summarizeRollbackEquivalence(rollbackEquivalence);
     const result = eventCapture.result || {};
     const gates = {
       setterOk: result.ok === true,
@@ -1843,21 +2688,54 @@
       finalPrimaryPublishedByMiniMap: rollbackEquivalence.finalPrimaryPublishedByMiniMap,
     };
     const ok = Object.values(gates).every(Boolean);
-    return saveStage('P8', {
+    const normalPayload = {
       ok,
       changed: result.changed === true,
+      evidenceDegraded: false,
       gates,
       setterResult: result,
-      turnUpdateEvents: eventCapture.events,
-      before,
-      after,
-      state: after,
-      rollbackEquivalence,
+      turnUpdateEvents: eventCapture.events.slice(0, 8),
+      before: compactEvidenceState(before),
+      state: compactEvidenceState(after),
+      rollbackEquivalence: rollbackEquivalenceSummary,
       emergencyRollbackRequired: !ok,
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
       instruction: ok ? 'Run P9_ARM, wait 60 seconds, then run P9.' : 'Reload immediately, reinstall this harness, then run P8_RELOAD_VERIFY.',
-    });
+    };
+    const normalCapacity = predictStageCapacity('P8', normalPayload);
+    if (normalCapacity.ok) return saveStage('P8', normalPayload);
+
+    const degradedPayload = {
+      ok: false,
+      changed: result.changed === true,
+      evidenceDegraded: true,
+      degradationReason: normalCapacity.reasons.includes('stage-record-size-limit-exceeded')
+        ? 'stage-record-size-limit-exceeded'
+        : 'persisted-evidence-capacity-unavailable',
+      normalEvidenceCapacity: {
+        chars: normalCapacity.measurement.chars,
+        bytes: normalCapacity.measurement.bytes,
+        limitChars: STAGE_RECORD_MAX_CHARS,
+        reasons: normalCapacity.reasons,
+      },
+      setterResult: stableValue(result),
+      turnUpdateEvents: eventCapture.events.slice(0, 8),
+      rollbackOutcome: {
+        legacyActive: sourceIs(after, SOURCE_LEGACY),
+        source: compactSource(after.source),
+        counts: compactCounts(after.counts),
+        miniMapAligned: after.miniMapIdentityAlignment.ok === true,
+        dualRun: compactDualRun(after.dualRun),
+        convergence: compactConvergence(after.convergence),
+        aliasDiagnostics: compactAliasGauges(after.aliasDiagnostics),
+      },
+      emergencyRollbackRequired: !sourceIs(after, SOURCE_LEGACY),
+      failureReasons: [`evidence-degraded:${normalCapacity.reasons.join(',') || 'persisted-evidence-capacity-unavailable'}`],
+      rollbackInstruction: ROLLBACK_INSTRUCTION,
+      instruction: 'Rollback completed, but required evidence degraded. P10 must return CANARY_INCOMPLETE_EVIDENCE.',
+    };
+    return saveStage('P8', degradedPayload);
   }
 
   async function P8_RELOAD_VERIFY() {
@@ -1866,6 +2744,7 @@
       const result = {
         stage: 'P8_RELOAD',
         capturedAt: nowIso(),
+        evidenceSchema: EVIDENCE_SCHEMA_VERSION,
         ok: false,
         emergencyRollbackUsed: true,
         checkpointRecovery: { ok: false, reason: recovered.reason },
@@ -1880,6 +2759,7 @@
       const result = {
         stage: 'P8_RELOAD',
         capturedAt: nowIso(),
+        evidenceSchema: EVIDENCE_SCHEMA_VERSION,
         ok: false,
         emergencyRollbackUsed: true,
         checkpointRecovery: { ok: false, reason: adopted.reason },
@@ -1900,7 +2780,8 @@
       ok: Object.values(gates).every(Boolean),
       emergencyRollbackUsed: true,
       gates,
-      state,
+      evidenceDegraded: false,
+      state: compactEvidenceState(state),
       checkpointRecovery: {
         ok: true,
         runId: recovered.checkpoint.runId,
@@ -1913,10 +2794,11 @@
 
   async function P9_ARM() {
     const state = captureState({ includeRows: true });
+    rememberFullState('P9_ARM', state);
     const payload = {
       ok: sourceIs(state, SOURCE_LEGACY),
       armedAt: nowIso(),
-      state,
+      state: compactEvidenceState(state),
       manualAction: 'Wait a full 60 seconds without interacting, then run P9.',
     };
     return saveStage('P9_ARM', payload);
@@ -1924,22 +2806,24 @@
 
   async function P9() {
     const arm = readStored(`${STAGE_PREFIX}p9-arm`);
+    const armFullState = recalledFullState('P9_ARM');
     const elapsedMs = Date.now() - Date.parse(arm?.armedAt || 0);
     const state = captureState({ includeRows: true });
-    const beforeAuto = arm?.state?.miniMapAutomaticRefresh?.automaticRefresh || {};
+    const beforeAuto = armFullState?.miniMapAutomaticRefresh?.automaticRefresh || {};
     const afterAuto = state.miniMapAutomaticRefresh?.automaticRefresh || {};
     const autoDelta = counterDelta(beforeAuto, afterAuto);
-    const aliasDelta = compareAliasGauges(arm?.state?.aliasDiagnostics || {}, state.aliasDiagnostics);
+    const aliasDelta = compareAliasGauges(armFullState?.aliasDiagnostics || {}, state.aliasDiagnostics);
     const gates = {
       armPassed: !!arm?.ok,
+      armVolatileStatePresent: !!armFullState,
       waitedAtLeast60Seconds: elapsedMs >= 60000,
       legacyActive: sourceIs(state, SOURCE_LEGACY),
-      sourceSwitchCountStable: state.source.switchCount === arm?.state?.source?.switchCount,
+      sourceSwitchCountStable: state.source.switchCount === armFullState?.source?.switchCount,
       countsAgree: countsEqual(state.counts),
       miniMapAligned: state.miniMapIdentityAlignment.ok === true,
       noIdentityDriftRebuildGrowth: asNumber(autoDelta.identityDriftRebuildCount) === 0,
       noCoreRebuildGrowth: asNumber(autoDelta.coreTurnUpdatedRebuildCount) === 0,
-      noMismatchGrowth: asNumber(state.dualRun?.totalMismatchCount) === asNumber(arm?.state?.dualRun?.totalMismatchCount),
+      noMismatchGrowth: asNumber(state.dualRun?.totalMismatchCount) === asNumber(armFullState?.dualRun?.totalMismatchCount),
       noConflictOrQuarantineGrowth: Object.values(aliasDelta).every((value) => value === 0),
       dualRunExact: dualRunClean(state.dualRun),
       convergenceClean: asArray(state.convergence?.blockers).length === 0,
@@ -1950,7 +2834,7 @@
       elapsedMs,
       automaticRefreshDelta: autoDelta,
       aliasGaugeDelta: aliasDelta,
-      state,
+      state: compactEvidenceState(state),
       failureReasons: Object.entries(gates).filter(([, pass]) => !pass).map(([name]) => name),
       rollbackInstruction: ROLLBACK_INSTRUCTION,
     });
@@ -1966,9 +2850,11 @@
     const emergency = getStage('P8_RELOAD') || checkpointStages.P8_RELOAD || null;
     const missingStages = Object.entries(stages).filter(([, result]) => !result).map(([name]) => name);
     const failedStages = Object.entries(stages).filter(([, result]) => result && result.ok !== true).map(([name]) => name);
+    const degradedStages = Object.entries(stages).filter(([, result]) => result?.evidenceDegraded === true).map(([name]) => name);
     const p3 = stages.P3;
     let canaryVerdict;
     if (!stages.P0?.ok) canaryVerdict = 'CANARY_ABORTED_PREFLIGHT';
+    else if (degradedStages.length) canaryVerdict = 'CANARY_INCOMPLETE_EVIDENCE';
     else if (emergency?.emergencyRollbackUsed) canaryVerdict = emergency.ok ? 'CANARY_FAILED_RELOAD_RECOVERED' : 'CANARY_FAILED_ROLLED_BACK';
     else if (failedStages.length || missingStages.length) canaryVerdict = 'CANARY_FAILED_ROLLED_BACK';
     else if (p3?.rawVariantOrderChanged && !p3?.visibleVariantBehaviorChanged) canaryVerdict = 'CANARY_PASS_WITH_VARIANT_ORDER_WATCH';
@@ -1979,6 +2865,7 @@
       canaryVerdict,
       emergencyRollbackUsed: !!emergency?.emergencyRollbackUsed,
       stageResults: Object.fromEntries(Object.entries(stages).map(([key, value]) => [key, value ? { ok: value.ok, failureReasons: value.failureReasons || [] } : null])),
+      evidenceDegradedStages: degradedStages,
       sourceHistory: sourceHistory(),
       baselineSummary: stages.P1?.state
         ? { counts: stages.P1.state.counts, source: stages.P1.state.source, turnVersion: stages.P1.state.turnVersion }
@@ -1988,7 +2875,7 @@
         : (checkpointStages.P7 || null),
       rollbackSummary: stages.P8?.state
         ? { counts: stages.P8.state.counts, source: stages.P8.state.source, turnVersion: stages.P8.state.turnVersion }
-        : (checkpointStages.P8 || emergency || null),
+        : (stages.P8?.rollbackOutcome || checkpointStages.P8 || emergency || null),
       variantOrderFinding: {
         rawVariantOrderChanged: !!p3?.rawVariantOrderChanged,
         visibleVariantBehaviorChanged: !!p3?.visibleVariantBehaviorChanged,
@@ -2016,6 +2903,11 @@
 
   const API = Object.freeze({
     version: VERSION,
+    evidenceSchema: EVIDENCE_SCHEMA_VERSION,
+    limits: Object.freeze({
+      stageRecordMaxChars: STAGE_RECORD_MAX_CHARS,
+      checkpointMaxBytes: CHECKPOINT_MAX_BYTES,
+    }),
     sourceValues: Object.freeze({ legacy: SOURCE_LEGACY, ledger: SOURCE_LEDGER }),
     rollbackInstruction: Object.freeze(ROLLBACK_INSTRUCTION.slice()),
     P0,
