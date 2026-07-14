@@ -9,16 +9,33 @@
   'use strict';
 
   const G = globalThis;
-  const VERSION = 'cv3.2-canary-harness-v3';
+  const VERSION = 'cv3.2-canary-harness-v4';
   const SOURCE_LEGACY = 'legacy-durable-cache';
   const SOURCE_LEDGER = 'chat-atlas-ledger';
   const STAGE_PREFIX = 'h2o:cv3:';
   const BASELINE_KEY = 'h2o:cv3:legacy-baseline';
   const RUN_ID_KEY = 'h2o:cv3:run-id';
-  const CHECKPOINT_KEY = 'h2o:cv3:checkpoint:v1';
-  const CHECKPOINT_SCHEMA_VERSION = 1;
+  const CHECKPOINT_KEY = 'h2o:cv3:checkpoint:v2';
+  const LEGACY_CHECKPOINT_KEYS = Object.freeze(['h2o:cv3:checkpoint:v1']);
+  const CHECKPOINT_SCHEMA_VERSION = 2;
   const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
   const CHECKPOINT_MAX_BYTES = 16 * 1024;
+  const SESSION_ONLY_STAGES = new Set(['P4_ARM', 'P5_ARM', 'P6_ARM', 'P7_ARM', 'P9_ARM']);
+  const DURABLE_STAGES = new Set([
+    'P0',
+    'P1',
+    'P2',
+    'P3',
+    'P4',
+    'P5',
+    'P6',
+    'P7',
+    'P7_DURING',
+    'P8',
+    'P8_RELOAD',
+    'P9',
+    'P10',
+  ]);
   const TURN_UPDATED_EVENT = 'evt:h2o:core:turn:updated';
   const ROLLBACK_INSTRUCTION = [
     'Run: await H2O_CV3_CANARY.P8()',
@@ -262,6 +279,35 @@
     });
   }
 
+  function compactCheckpointStageSummary(result) {
+    const summary = compactStageSummary(result);
+    const compact = {
+      stage: summary.stage,
+      capturedAt: summary.capturedAt,
+      ok: summary.ok,
+    };
+    if (summary.failureReasons.length) compact.failureReasons = summary.failureReasons;
+    if (Object.keys(summary.gates).length) compact.gates = summary.gates;
+    if (summary.sourceBefore) compact.sourceBefore = summary.sourceBefore;
+    if (summary.sourceAfter) compact.sourceAfter = summary.sourceAfter;
+    if (summary.counts) compact.counts = summary.counts;
+    if (summary.aliasGauges) compact.aliasGauges = summary.aliasGauges;
+    if (summary.dualRun) compact.dualRun = summary.dualRun;
+    if (summary.convergence) compact.convergence = summary.convergence;
+    if (summary.emergencyRollbackRequired) compact.emergencyRollbackRequired = true;
+    if (summary.emergencyRollbackUsed) compact.emergencyRollbackUsed = true;
+    if (summary.changed != null) compact.changed = summary.changed;
+    if (summary.error) compact.error = summary.error;
+    return stableValue(compact);
+  }
+
+  function checkpointStagePolicy(stage) {
+    const name = stageName(stage);
+    if (SESSION_ONLY_STAGES.has(name)) return 'session-only';
+    if (DURABLE_STAGES.has(name)) return 'durable';
+    return 'unsupported';
+  }
+
   function checkpointRequiredField(checkpoint) {
     for (const field of [
       'schemaVersion',
@@ -358,6 +404,14 @@
           : `checkpoint-existing-invalid:${existing.reason}`,
       };
     }
+    const legacyCheckpointKey = LEGACY_CHECKPOINT_KEYS.find((key) => storageRead(G.localStorage, key));
+    if (legacyCheckpointKey) {
+      return {
+        ok: false,
+        reason: 'checkpoint-legacy-evidence-requires-cleanup',
+        legacyCheckpointKey,
+      };
+    }
     const existingSessionKeys = storageKeys(G.sessionStorage).filter((key) => key.startsWith(STAGE_PREFIX));
     if (existingSessionKeys.length) {
       return { ok: false, reason: 'session-evidence-existing-cleanup-required' };
@@ -403,7 +457,7 @@
       updatedAt,
       stages: {
         ...read.checkpoint.stages,
-        [stageName(result.stage)]: compactStageSummary(result),
+        [stageName(result.stage)]: compactCheckpointStageSummary(result),
       },
     };
     return writeCheckpoint(checkpoint);
@@ -415,14 +469,19 @@
       capturedAt: nowIso(),
       ...payload,
     };
-    const checkpointWrite = updateCheckpointStage(result);
+    const policy = checkpointStagePolicy(stage);
+    const checkpointWrite = policy === 'durable'
+      ? updateCheckpointStage(result)
+      : policy === 'session-only'
+        ? { ok: true, skipped: true, reason: 'session-only-stage' }
+        : { ok: false, reason: 'checkpoint-stage-policy-unsupported' };
+    result.checkpointWrite = checkpointWrite;
     if (!checkpointWrite.ok) {
       result.ok = false;
       result.failureReasons = uniqueOrdered([
         ...asArray(result.failureReasons),
         `checkpoint:${checkpointWrite.reason}`,
       ]);
-      result.checkpointWrite = checkpointWrite;
       console.error('[CV-3.2 CHECKPOINT FAILURE]', compactStageSummary(result));
     }
     writeStored(stageStorageKey(stage), result);

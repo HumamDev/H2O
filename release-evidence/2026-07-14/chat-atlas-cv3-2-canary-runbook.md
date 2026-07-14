@@ -23,7 +23,7 @@ It does not change the source default, persist a source choice, invoke `rebuildN
 
 7. Source selection is in memory only. A page reload is the emergency rollback and restores the legacy default.
 8. Rich stage evidence is written to bounded `sessionStorage` keys. A compact emergency checkpoint is written to `localStorage`; neither mechanism persists the canonical-source choice.
-9. This checkpoint schema requires a fresh run. After exporting any evidence that must be retained, run `H2O_CV3_CANARY.CLEANUP()` and restart from P0. Do not resume a pre-v3 canary.
+9. Checkpoint schema v2 requires a fresh v4 run. After exporting any evidence that must be retained, run `H2O_CV3_CANARY.CLEANUP()` and restart from P0. Do not resume a v3/schema-v1 canary.
 
 ## Install the Harness
 
@@ -32,7 +32,7 @@ Open `tools/validation/chat-atlas/chat-atlas-cv3-2-canary-console.js`, copy the 
 Expected console message:
 
 ```text
-[CV-3.2] Installed cv3.2-canary-harness-v3. No stage or source switch has run.
+[CV-3.2] Installed cv3.2-canary-harness-v4. No stage or source switch has run.
 ```
 
 Installing the harness does not run a stage and does not call the source setter.
@@ -48,14 +48,18 @@ Object.keys(H2O_CV3_CANARY).sort()
 P0 creates one run ID and a compact checkpoint at:
 
 ```text
-h2o:cv3:checkpoint:v1
+h2o:cv3:checkpoint:v2
 ```
 
-The checkpoint has a 24-hour TTL and contains only schema/harness versions, the run ID and comparable chat key, creation/update/expiry metadata, and compact stage summaries. Stage summaries are limited to status, failures, gate booleans, source transitions, counts, alias gauges, dual-run gauges, convergence state, and emergency flags.
+The schema-v2 checkpoint has a 24-hour TTL and contains only schema/harness versions, the run ID and comparable chat key, creation/update/expiry metadata, and compact stage summaries. Stage summaries are limited to status, failures, gate booleans, source transitions, counts, alias gauges, dual-run gauges, convergence state, and emergency flags.
 
-The checkpoint never stores full runtime state, turn rows, ledger members, DOM evidence, or consumer arrays. Its serialized size is limited to 16 KiB; an oversized or unwritable checkpoint fails the stage explicitly.
+Durable stages are P0 through P10, P7_DURING, and P8_RELOAD when used. P4_ARM, P5_ARM, P6_ARM, P7_ARM, and P9_ARM remain rich `sessionStorage` evidence only; saving them does not write `localStorage` or change a passing ARM result to failure. `EXPORT()` merges their compact session summaries with the durable checkpoint while the session remains available.
 
-Read guards reject malformed JSON, unsupported schemas, missing required fields, expired checkpoints, foreign chats, and foreign runs without throwing.
+The checkpoint never stores full runtime state, turn rows, ledger members, DOM evidence, or consumer arrays. Its serialized size remains hard-limited to 16 KiB; an oversized or unwritable durable checkpoint fails the stage explicitly. Validator capacity coverage requires representative P10 evidence to remain at or below 14 KiB, preserving at least 2 KiB of headroom.
+
+The July 14 v3 browser run proved every P9 runtime gate with aligned 12/12/12 counts, but P9 was formally false because five ARM summaries had already pushed the attempted checkpoint to 17,066 bytes. That run is not a formal canary pass. After installing v4, run `CLEANUP()` and restart the final canary from P0.
+
+Read guards reject malformed JSON, unsupported schemas, missing required fields, expired checkpoints, foreign chats, and foreign runs without throwing. A v4 run never resumes a v3/schema-v1 checkpoint; old evidence requires explicit export and cleanup first.
 
 Export the compact checkpoint and available compact stage summaries with:
 
@@ -438,7 +442,7 @@ Required result:
 
 Rollback rule remains: if the runtime is unexpectedly not legacy, run `await H2O_CV3_CANARY.P8()`. If that fails or throws, reload immediately and verify legacy active/effective source.
 
-Evidence keys: `h2o:cv3:p9-arm`, `h2o:cv3:p9`
+Evidence keys: rich session-only `h2o:cv3:p9-arm`, and durable `h2o:cv3:p9`
 
 ## P10 — Final Evidence Summary
 
@@ -484,7 +488,7 @@ CANARY_ABORTED_PREFLIGHT
 
 Any failed or missing stage produces a failed/aborted verdict. P10 does not switch sources or repair failed stages.
 
-When rich session records are unavailable after an emergency reload, P10 consumes compact checkpoint summaries rather than silently reporting every prior stage as missing.
+When rich session records are unavailable after an emergency reload, P10 consumes compact durable checkpoint summaries rather than silently reporting every prior verdict stage as missing. ARM stages are not required for the final verdict because their corresponding completed stages retain the needed recovery evidence.
 
 Rollback rule remains: if active/effective source are not legacy, run `await H2O_CV3_CANARY.P8()`. If rollback fails or throws, reload immediately and verify legacy active/effective source.
 
@@ -497,7 +501,7 @@ const finalCanaryEvidence = H2O_CV3_CANARY.EXPORT()
 H2O_CV3_CANARY.CLEANUP()
 ```
 
-`CLEANUP()` removes every harness-owned `h2o:cv3:*` key from both `sessionStorage` and `localStorage`. It is mandatory after final export/P10 and after abandoning a run. Preserve `finalCanaryEvidence` outside harness storage if it must be retained.
+`CLEANUP()` removes every harness-owned `h2o:cv3:*` key from both `sessionStorage` and `localStorage`, including old v1 and current v2 checkpoints. It is mandatory before the first v4 P0, after final export/P10, and after abandoning a run. Preserve `finalCanaryEvidence` outside harness storage if it must be retained.
 
 ## Evidence Retrieval
 

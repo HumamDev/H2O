@@ -9,20 +9,53 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const harnessPath = path.join(here, 'chat-atlas-cv3-2-canary-console.js');
 const source = fs.readFileSync(harnessPath, 'utf8');
+const checkpointKey = 'h2o:cv3:checkpoint:v2';
+const legacyCheckpointKey = 'h2o:cv3:checkpoint:v1';
+const testInternalsName = '__H2O_CV3_CANARY_TEST_INTERNALS__';
+const testInternalsAnchor = '  const API = Object.freeze({';
+const anchorCount = source.split(testInternalsAnchor).length - 1;
+assert.equal(anchorCount, 1, 'unable to expose checkpoint internals from a unique harness anchor');
+const instrumentedSource = source.replace(testInternalsAnchor, `  Object.defineProperty(G, '${testInternalsName}', {
+    value: Object.freeze({
+      saveStage,
+      readCheckpoint,
+      writeCheckpoint,
+      compactStageSummary,
+      compactCheckpointStageSummary,
+      checkpointStagePolicy,
+      stageStorageKey,
+      checkpointKey: CHECKPOINT_KEY,
+      checkpointMaxBytes: CHECKPOINT_MAX_BYTES,
+    }),
+    configurable: true,
+  });
+
+${testInternalsAnchor}`);
 
 let sourceSetterCalls = 0;
 let contextSequence = 0;
 
 function createStorage(initial = {}) {
   const values = new Map(Object.entries(initial).map(([key, value]) => [key, String(value)]));
+  const mutations = { setItem: 0, removeItem: 0, clear: 0 };
   return {
     get length() { return values.size; },
     key(index) { return Array.from(values.keys())[index] ?? null; },
     getItem(key) { return values.has(String(key)) ? values.get(String(key)) : null; },
-    setItem(key, value) { values.set(String(key), String(value)); },
-    removeItem(key) { values.delete(String(key)); },
-    clear() { values.clear(); },
+    setItem(key, value) {
+      mutations.setItem += 1;
+      values.set(String(key), String(value));
+    },
+    removeItem(key) {
+      mutations.removeItem += 1;
+      values.delete(String(key));
+    },
+    clear() {
+      mutations.clear += 1;
+      values.clear();
+    },
     dump() { return Object.fromEntries(values); },
+    stats() { return { ...mutations }; },
   };
 }
 
@@ -103,8 +136,14 @@ function createHarnessContext(options = {}) {
       turnRuntime: runtime,
     }),
   });
-  vm.runInContext(source, context, { filename: harnessPath });
-  return { context, api: context.H2O_CV3_CANARY, sessionStorage, localStorage };
+  vm.runInContext(instrumentedSource, context, { filename: harnessPath });
+  return {
+    context,
+    api: context.H2O_CV3_CANARY,
+    internals: context[testInternalsName],
+    sessionStorage,
+    localStorage,
+  };
 }
 
 const primaryHarness = createHarnessContext();
@@ -207,6 +246,121 @@ async function createValidCheckpoint(options = {}) {
   assert.equal(exported.ok, true, `unable to create checkpoint: ${exported.checkpointReason}`);
   return { ...harness, exported };
 }
+
+function representativeState(source = 'legacy-durable-cache') {
+  return {
+    source: {
+      activeSource: source,
+      effectiveSource: source,
+      defaultSource: 'legacy-durable-cache',
+      persisted: false,
+      switchCount: source === 'legacy-durable-cache' ? 2 : 1,
+    },
+    counts: {
+      canonical: 12,
+      ledger: 12,
+      miniMap: 12,
+      mapButtons: 12,
+      turnById: 12,
+      coreTurnList: 12,
+    },
+    aliasDiagnostics: cleanAliasDiagnostics,
+    dualRun: {
+      ready: true,
+      exactParity: true,
+      currentMismatchCount: 0,
+      totalMismatchCount: 0,
+      instrumentationErrorCount: 0,
+    },
+    convergence: { parityStatus: 'exact', blockers: [] },
+  };
+}
+
+const representativeGateCounts = Object.freeze({
+  P1: 4,
+  P2: 8,
+  P3: 12,
+  P4: 9,
+  P5: 9,
+  P6: 9,
+  P7: 12,
+  P7_DURING: 4,
+  P8: 14,
+  P9: 11,
+});
+
+function representativeStagePayload(stage, options = {}) {
+  const sourceName = ['P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P7_DURING'].includes(stage)
+    ? 'chat-atlas-ledger'
+    : 'legacy-durable-cache';
+  const gateCount = options.gateCount ?? representativeGateCounts[stage] ?? 5;
+  const failureCount = options.failureCount ?? 0;
+  const ok = options.ok ?? failureCount === 0;
+  const gates = Object.fromEntries(Array.from({ length: gateCount }, (_, index) => [
+    `${stage.toLowerCase()}RepresentativeGate${String(index + 1).padStart(2, '0')}`,
+    ok || index > 0,
+  ]));
+  const payload = {
+    ok,
+    gates,
+    failureReasons: Array.from({ length: failureCount }, (_, index) => {
+      return `${stage.toLowerCase()}-representative-failure-${String(index + 1).padStart(2, '0')}`;
+    }),
+    state: representativeState(sourceName),
+  };
+  if (stage === 'P2') {
+    payload.before = representativeState('legacy-durable-cache');
+    payload.after = payload.state;
+    payload.changed = true;
+  } else if (stage === 'P8') {
+    payload.before = representativeState('chat-atlas-ledger');
+    payload.after = payload.state;
+    payload.changed = true;
+  }
+  return payload;
+}
+
+async function buildCheckpointSequence(options = {}) {
+  const harness = createHarnessContext();
+  const p0Attempt = await harness.api.P0();
+  assert.equal(p0Attempt.checkpointWrite?.ok, true, 'representative sequence checkpoint was not established');
+  const p0 = harness.internals.saveStage('P0', representativeStagePayload('P0'));
+  assert.equal(p0.ok, true, 'representative P0 summary failed');
+  const stages = [
+    'P1',
+    'P2',
+    'P3',
+    'P4_ARM',
+    'P4',
+    'P5_ARM',
+    'P5',
+    'P6_ARM',
+    'P6',
+    'P7_ARM',
+    'P7_DURING',
+    'P7',
+    'P8',
+    'P9_ARM',
+    'P9',
+  ];
+  const saved = {};
+  for (const stage of stages) {
+    const maximal = options.maximal && stage === 'P9';
+    saved[stage] = harness.internals.saveStage(stage, representativeStagePayload(stage, maximal
+      ? { gateCount: 40, failureCount: 24, ok: false }
+      : {}));
+  }
+  const afterP9 = harness.internals.readCheckpoint();
+  assert.equal(afterP9.ok, true, `representative P9 checkpoint failed: ${afterP9.reason}`);
+  const p10 = await harness.api.P10();
+  const afterP10 = harness.internals.readCheckpoint();
+  assert.equal(afterP10.ok, true, `representative P10 checkpoint failed: ${afterP10.reason}`);
+  return { harness, saved, p0, p10, afterP9, afterP10 };
+}
+
+let realisticCapacitySequence = null;
+let maximalCapacitySequence = null;
+const capacityEvidence = {};
 
 const tests = [];
 function test(name, fn) {
@@ -544,6 +698,128 @@ test('visible branch variant change is rejected despite resolver continuity', ()
   assert.ok(result.perTurnEvidence[0].failureReasons.includes('visible-branch-selection-changed'));
 });
 
+test('ARM stages are session-only and absent from the durable checkpoint', async () => {
+  const harness = await createValidCheckpoint();
+  const beforeWrites = harness.localStorage.stats().setItem;
+  for (const stage of ['P4_ARM', 'P5_ARM', 'P6_ARM', 'P7_ARM', 'P9_ARM']) {
+    harness.internals.saveStage(stage, representativeStagePayload(stage));
+  }
+  const checkpoint = harness.internals.readCheckpoint();
+  assert.equal(checkpoint.ok, true);
+  assert.equal(harness.localStorage.stats().setItem, beforeWrites);
+  for (const stage of ['P4_ARM', 'P5_ARM', 'P6_ARM', 'P7_ARM', 'P9_ARM']) {
+    assert.equal(checkpoint.checkpoint.stages[stage], undefined);
+    assert.ok(harness.sessionStorage.getItem(harness.internals.stageStorageKey(stage)));
+  }
+});
+
+test('ARM stage success remains true when durable writing is intentionally skipped', async () => {
+  const harness = await createValidCheckpoint();
+  for (const stage of ['P4_ARM', 'P5_ARM', 'P6_ARM', 'P7_ARM', 'P9_ARM']) {
+    const result = harness.internals.saveStage(stage, representativeStagePayload(stage));
+    assert.equal(result.ok, true);
+    assert.equal(result.checkpointWrite.ok, true);
+    assert.equal(result.checkpointWrite.skipped, true);
+    assert.equal(result.checkpointWrite.reason, 'session-only-stage');
+  }
+});
+
+test('full realistic sequence through P9 fits under the 16 KiB checkpoint limit', async () => {
+  realisticCapacitySequence ||= await buildCheckpointSequence();
+  capacityEvidence.realisticP9Bytes = realisticCapacitySequence.afterP9.bytes;
+  assert.ok(realisticCapacitySequence.afterP9.bytes < 16 * 1024);
+});
+
+test('full realistic sequence through P10 fits under the 16 KiB checkpoint limit', async () => {
+  realisticCapacitySequence ||= await buildCheckpointSequence();
+  capacityEvidence.realisticP10Bytes = realisticCapacitySequence.afterP10.bytes;
+  assert.ok(realisticCapacitySequence.afterP10.bytes < 16 * 1024);
+});
+
+test('representative maximum gate and failure arrays retain at least 2 KiB headroom through P10', async () => {
+  maximalCapacitySequence ||= await buildCheckpointSequence({ maximal: true });
+  capacityEvidence.maximumP9Bytes = maximalCapacitySequence.afterP9.bytes;
+  capacityEvidence.maximumP10Bytes = maximalCapacitySequence.afterP10.bytes;
+  assert.ok(maximalCapacitySequence.afterP10.bytes <= 14 * 1024);
+});
+
+test('P9 remains a successful durable checkpoint write', async () => {
+  realisticCapacitySequence ||= await buildCheckpointSequence();
+  assert.equal(realisticCapacitySequence.saved.P9.checkpointWrite.ok, true);
+  assert.equal(realisticCapacitySequence.saved.P9.checkpointWrite.skipped, undefined);
+  assert.ok(realisticCapacitySequence.afterP9.checkpoint.stages.P9);
+});
+
+test('P10 remains a successful durable checkpoint write', async () => {
+  realisticCapacitySequence ||= await buildCheckpointSequence();
+  assert.equal(realisticCapacitySequence.p10.checkpointWrite.ok, true);
+  assert.equal(realisticCapacitySequence.p10.checkpointWrite.skipped, undefined);
+  assert.ok(realisticCapacitySequence.afterP10.checkpoint.stages.P10);
+});
+
+test('explicit oversized checkpoint is rejected without replacing durable evidence', async () => {
+  const harness = await createValidCheckpoint();
+  const current = harness.internals.readCheckpoint();
+  const before = harness.localStorage.getItem(checkpointKey);
+  const result = harness.internals.writeCheckpoint({
+    ...current.checkpoint,
+    stages: {
+      ...current.checkpoint.stages,
+      P10: { stage: 'P10', error: 'x'.repeat(20 * 1024) },
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'checkpoint-size-limit-exceeded');
+  assert.ok(result.bytes > result.limitBytes);
+  assert.equal(harness.localStorage.getItem(checkpointKey), before);
+});
+
+test('EXPORT merges session-only ARM summaries without adding them to the checkpoint', async () => {
+  const harness = await createValidCheckpoint();
+  harness.internals.saveStage('P4_ARM', representativeStagePayload('P4_ARM'));
+  harness.internals.saveStage('P9_ARM', representativeStagePayload('P9_ARM'));
+  const exported = harness.api.EXPORT();
+  assert.equal(exported.ok, true);
+  assert.ok(exported.stageSummaries.P4_ARM);
+  assert.ok(exported.stageSummaries.P9_ARM);
+  assert.equal(exported.checkpoint.stages.P4_ARM, undefined);
+  assert.equal(exported.checkpoint.stages.P9_ARM, undefined);
+});
+
+test('reload recovery retains critical P7, P7_DURING, and P8 summaries', async () => {
+  const first = await buildCheckpointSequence();
+  const second = createHarnessContext({
+    localStorage: first.harness.localStorage,
+    sessionStorage: createStorage(),
+  });
+  const reload = await second.api.P8_RELOAD_VERIFY();
+  assert.equal(reload.checkpointRecovery.ok, true);
+  assert.ok(reload.checkpointRecovery.recoveredStageNames.includes('P7'));
+  assert.ok(reload.checkpointRecovery.recoveredStageNames.includes('P7_DURING'));
+  assert.ok(reload.checkpointRecovery.recoveredStageNames.includes('P8'));
+  assert.equal(reload.checkpointRecovery.previousP8Summary.ok, true);
+  const checkpoint = second.internals.readCheckpoint();
+  assert.ok(checkpoint.checkpoint.stages.P8_RELOAD);
+});
+
+test('v4 refuses legacy v1 evidence until CLEANUP removes every v1 and v2 harness key', async () => {
+  const localStorage = createStorage({ [legacyCheckpointKey]: '{"schemaVersion":1}' });
+  const sessionStorage = createStorage();
+  const harness = createHarnessContext({ localStorage, sessionStorage });
+  const p0 = await harness.api.P0();
+  assert.equal(p0.ok, false);
+  assert.equal(p0.run.reason, 'checkpoint-legacy-evidence-requires-cleanup');
+  localStorage.setItem(checkpointKey, '{"schemaVersion":2}');
+  localStorage.setItem('h2o:cv3:test-local', 'local');
+  sessionStorage.setItem('h2o:cv3:test-session', 'session');
+  const cleanup = harness.api.CLEANUP();
+  assert.equal(cleanup.ok, true);
+  assert.equal(localStorage.getItem(legacyCheckpointKey), null);
+  assert.equal(localStorage.getItem(checkpointKey), null);
+  assert.equal(Object.keys(localStorage.dump()).some((key) => key.startsWith('h2o:cv3:')), false);
+  assert.equal(Object.keys(sessionStorage.dump()).some((key) => key.startsWith('h2o:cv3:')), false);
+});
+
 test('durable checkpoint survives reload and preserves the pre-reload P8 summary', async () => {
   const localStorage = createStorage();
   const first = await createValidCheckpoint({ localStorage, activeSource: 'unexpected-source' });
@@ -551,7 +827,7 @@ test('durable checkpoint survives reload and preserves the pre-reload P8 summary
   assert.equal(p8Failure.ok, false);
   const beforeReload = first.api.EXPORT();
   assert.equal(beforeReload.checkpoint.stages.P8.ok, false);
-  const checkpointRaw = first.localStorage.getItem('h2o:cv3:checkpoint:v1');
+  const checkpointRaw = first.localStorage.getItem(checkpointKey);
   assert.ok(Buffer.byteLength(checkpointRaw, 'utf8') <= 16 * 1024);
   assert.doesNotMatch(checkpointRaw, /ledgerSnapshot|perTurn|miniMapBoxes|consumerResults/);
 
@@ -569,7 +845,7 @@ test('durable checkpoint survives reload and preserves the pre-reload P8 summary
 });
 
 test('malformed checkpoint is rejected without throwing', () => {
-  const localStorage = createStorage({ 'h2o:cv3:checkpoint:v1': '{not-json' });
+  const localStorage = createStorage({ [checkpointKey]: '{not-json' });
   const harness = createHarnessContext({ localStorage });
   const exported = harness.api.EXPORT();
   assert.equal(exported.ok, false);
@@ -578,9 +854,9 @@ test('malformed checkpoint is rejected without throwing', () => {
 
 test('stale checkpoint is rejected with an explicit reason', async () => {
   const valid = await createValidCheckpoint();
-  const checkpoint = JSON.parse(valid.localStorage.getItem('h2o:cv3:checkpoint:v1'));
+  const checkpoint = JSON.parse(valid.localStorage.getItem(checkpointKey));
   checkpoint.expiresAt = '2000-01-01T00:00:00.000Z';
-  valid.localStorage.setItem('h2o:cv3:checkpoint:v1', JSON.stringify(checkpoint));
+  valid.localStorage.setItem(checkpointKey, JSON.stringify(checkpoint));
   const harness = createHarnessContext({ localStorage: valid.localStorage });
   const exported = harness.api.EXPORT();
   assert.equal(exported.ok, false);
@@ -635,6 +911,7 @@ console.log(JSON.stringify({
   testCount: tests.length,
   failures,
   sourceSetterCalls,
+  capacityEvidence,
 }));
 
 process.exitCode = failures === 0 ? 0 : 1;
