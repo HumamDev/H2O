@@ -9,7 +9,7 @@
   'use strict';
 
   const G = globalThis;
-  const VERSION = 'cv3.2-canary-harness-v5';
+  const VERSION = 'cv3.2-canary-harness-v5.1';
   const EVIDENCE_SCHEMA_VERSION = 5;
   const SOURCE_LEGACY = 'legacy-durable-cache';
   const SOURCE_LEDGER = 'chat-atlas-ledger';
@@ -1322,13 +1322,302 @@
     };
   }
 
+  function hydrationFlags(value) {
+    const hydration = asString(value).trim().toLowerCase();
+    return {
+      hydration: hydration || 'none',
+      question: hydration === 'question' || hydration === 'both',
+      answer: hydration === 'answer' || hydration === 'both',
+    };
+  }
+
+  function replaceIdentity(values, previousIdentity, currentIdentity) {
+    return asArray(values).map((value) => value === previousIdentity ? currentIdentity : value);
+  }
+
+  function sameHydrationOwner(owner, expected) {
+    return !!owner
+      && !!expected
+      && asNumber(owner.turnNo) > 0
+      && asNumber(owner.turnNo) === asNumber(expected.turnNo)
+      && !!owner.logicalMemberKey
+      && owner.logicalMemberKey === expected.logicalMemberKey
+      && !!owner.qId
+      && owner.qId === expected.qId;
+  }
+
+  function hydrationPromotionBranchContinuity(previous, current, shellTurnId) {
+    const previousShells = asArray(previous?.answerCurrentShells);
+    const currentShells = asArray(current?.answerCurrentShells);
+    const previousShellOrder = previousShells.map((shell) => shell?.shellTurnId || null);
+    const currentShellOrder = currentShells.map((shell) => shell?.shellTurnId || null);
+    const shellOrderStable = stableJson(previousShellOrder) === stableJson(currentShellOrder);
+    const previousSelectedIndex = previousShells.findIndex((shell) => shell?.currentAnswerId === previous?.primaryAId);
+    const currentSelectedIndex = currentShells.findIndex((shell) => shell?.currentAnswerId === current?.primaryAId);
+    const promotionShellIndex = previousShells.findIndex((shell) => shell?.shellTurnId === shellTurnId);
+
+    if (previousShells.length === 1 && currentShells.length === 1) {
+      const ok = shellOrderStable && previousShellOrder[0] === shellTurnId;
+      return {
+        ok,
+        status: ok ? 'single-shell-stable' : 'changed',
+        reason: ok ? 'single-shell-turn-id-stable' : 'single-shell-turn-id-changed',
+        shellOrderStable,
+        previousSelectedIndex,
+        currentSelectedIndex,
+        promotionShellIndex,
+      };
+    }
+
+    const nativeProjection = previous?.currentProjectionSource === 'native-evidence'
+      && current?.currentProjectionSource === 'native-evidence';
+    const selectedShellStable = promotionShellIndex >= 0
+      && previousSelectedIndex === promotionShellIndex
+      && currentSelectedIndex === promotionShellIndex;
+    const ok = previousShells.length > 1
+      && previousShells.length === currentShells.length
+      && shellOrderStable
+      && nativeProjection
+      && selectedShellStable;
+    return {
+      ok,
+      status: ok ? 'multi-shell-promotion-equivalent' : 'ambiguous',
+      reason: ok
+        ? 'multi-shell-current-projection-and-selection-stable'
+        : (!nativeProjection
+          ? 'multi-shell-native-projection-unavailable'
+          : (!shellOrderStable
+            ? 'multi-shell-order-changed'
+            : 'multi-shell-selection-not-proven')),
+      shellOrderStable,
+      nativeProjection,
+      selectedShellStable,
+      previousSelectedIndex,
+      currentSelectedIndex,
+      promotionShellIndex,
+    };
+  }
+
+  function evaluateHydrationPromotion(previous, current, currentRows, aliasDiagnosticsValue) {
+    const reasons = [];
+    const previousTurnNo = asNumber(previous?.turnNo);
+    const currentTurnNo = asNumber(current?.turnNo);
+    const previousLogicalMemberKey = asString(previous?.logicalMemberKey).trim();
+    const currentLogicalMemberKey = asString(current?.logicalMemberKey).trim();
+    const previousQId = asString(previous?.qId).trim();
+    const currentQId = asString(current?.qId).trim();
+    if (previousTurnNo <= 0 || currentTurnNo <= 0 || previousTurnNo !== currentTurnNo) {
+      reasons.push('hydration-turn-number-continuity-failed');
+    }
+    if (!previousLogicalMemberKey || !currentLogicalMemberKey) {
+      reasons.push('hydration-logical-member-key-missing');
+    } else if (previousLogicalMemberKey !== currentLogicalMemberKey) {
+      reasons.push('hydration-logical-member-key-changed');
+    }
+    if (!previousQId || !currentQId) reasons.push('hydration-question-id-missing');
+    else if (previousQId !== currentQId) reasons.push('hydration-question-id-changed');
+    if (previous?.noAnswer !== current?.noAnswer) reasons.push('hydration-no-answer-state-changed');
+
+    const previousShells = asArray(previous?.answerCurrentShells);
+    const currentShells = asArray(current?.answerCurrentShells);
+    const reverseTransition = previousShells.some((shell) => {
+      if (!shell?.shellTurnId || !shell?.messageId || shell.messageId !== previous?.primaryAId) return false;
+      return currentShells.some((candidate) => candidate?.shellTurnId === shell.shellTurnId
+        && !candidate?.messageId
+        && candidate?.currentAnswerId === candidate?.shellTurnId
+        && current?.primaryAId === candidate?.shellTurnId);
+    });
+    if (reverseTransition) reasons.push('hydration-direction-reversed');
+
+    const relevantPreviousShells = previousShells.filter((shell) => {
+      const shellTurnId = asString(shell?.shellTurnId).trim();
+      return !!shellTurnId
+        && !asString(shell?.messageId).trim()
+        && shell?.currentAnswerId === shellTurnId
+        && previous?.primaryAId === shellTurnId;
+    });
+    if (relevantPreviousShells.length !== 1) reasons.push('hydration-before-shell-candidate-not-unique');
+    const previousShell = relevantPreviousShells.length === 1 ? relevantPreviousShells[0] : null;
+    const shellTurnId = asString(previousShell?.shellTurnId).trim();
+    const matchingCurrentShells = shellTurnId
+      ? currentShells.filter((shell) => shell?.shellTurnId === shellTurnId)
+      : [];
+    if (previousShell && matchingCurrentShells.length !== 1) {
+      const apparentPromotedShell = currentShells.find((shell) => {
+        return !!asString(shell?.messageId).trim()
+          && shell?.currentAnswerId === shell?.messageId
+          && current?.primaryAId === shell?.messageId;
+      });
+      reasons.push(apparentPromotedShell?.shellTurnId && apparentPromotedShell.shellTurnId !== shellTurnId
+        ? 'hydration-shell-turn-id-changed'
+        : 'hydration-after-shell-match-not-unique');
+    }
+    const currentShell = matchingCurrentShells.length === 1 ? matchingCurrentShells[0] : null;
+    const previousPrimaryAId = asString(previous?.primaryAId).trim();
+    const finalPrimaryAId = asString(current?.primaryAId).trim();
+    const messageId = asString(currentShell?.messageId).trim();
+    if (currentShell) {
+      if (!messageId || messageId.startsWith('request-placeholder-') || messageId === shellTurnId) {
+        reasons.push('hydration-final-message-id-not-real');
+      }
+      if (currentShell.currentAnswerId !== messageId) reasons.push('hydration-current-answer-id-not-message-id');
+      if (finalPrimaryAId !== messageId) reasons.push('hydration-primary-not-promoted-message-id');
+      if (previousPrimaryAId !== shellTurnId) reasons.push('hydration-previous-primary-not-shell-id');
+    }
+
+    const previousHydration = hydrationFlags(previous?.hydration);
+    const currentHydration = hydrationFlags(current?.hydration);
+    if (previousHydration.answer || !currentHydration.answer || (previousHydration.question && !currentHydration.question)) {
+      reasons.push('hydration-direction-not-forward');
+    }
+
+    if (previousShell && currentShell && messageId) {
+      if (stableJson(replaceIdentity(previous?.currentAnswerIds, shellTurnId, messageId))
+        !== stableJson(current?.currentAnswerIds)) {
+        reasons.push('hydration-current-answer-set-unrelated-mutation');
+      }
+      if (stableJson(replaceIdentity(previous?.answerIds, shellTurnId, messageId))
+        !== stableJson(current?.answerIds)) {
+        reasons.push('hydration-answer-set-unrelated-mutation');
+      }
+      const normalizedCurrentShells = currentShells.map((shell) => ({
+        shellTurnId: shell?.shellTurnId || null,
+        messageId: shell?.shellTurnId === shellTurnId ? null : (shell?.messageId || null),
+        currentAnswerId: shell?.shellTurnId === shellTurnId ? shellTurnId : (shell?.currentAnswerId || null),
+      }));
+      const normalizedPreviousShells = previousShells.map((shell) => ({
+        shellTurnId: shell?.shellTurnId || null,
+        messageId: shell?.messageId || null,
+        currentAnswerId: shell?.currentAnswerId || null,
+      }));
+      if (stableJson(normalizedPreviousShells) !== stableJson(normalizedCurrentShells)) {
+        reasons.push('hydration-shell-set-unrelated-mutation');
+      }
+    }
+
+    const currentAnswerResolverAliases = uniqueOrdered(current?.answerResolverAliases);
+    if (previousPrimaryAId && !currentAnswerResolverAliases.includes(previousPrimaryAId)) {
+      reasons.push('hydration-previous-primary-resolver-alias-missing');
+    }
+    const previousOwners = rollbackIdentityOwners(currentRows, previousPrimaryAId, 'answer');
+    const finalOwners = rollbackIdentityOwners(currentRows, finalPrimaryAId, 'answer');
+    if (previousPrimaryAId && previousOwners.length !== 1) reasons.push('hydration-previous-owner-count-not-one');
+    if (finalPrimaryAId && finalOwners.length !== 1) reasons.push('hydration-final-owner-count-not-one');
+    if (previousOwners.some((owner) => !sameHydrationOwner(owner, current))) {
+      reasons.push('hydration-previous-id-owned-by-another-member');
+    }
+    if (finalOwners.some((owner) => !sameHydrationOwner(owner, current))) {
+      reasons.push('hydration-final-id-owned-by-another-member');
+    }
+    const quarantine = quarantinedIdentitySet(aliasDiagnosticsValue);
+    const quarantinedIdentities = uniqueOrdered([previousPrimaryAId, finalPrimaryAId])
+      .filter((identity) => quarantine.has(identity));
+    if (quarantinedIdentities.length) reasons.push('hydration-involved-identity-quarantined');
+    if (!aliasClean(aliasDiagnosticsValue)) reasons.push('hydration-alias-diagnostics-not-clean');
+
+    const branchContinuity = hydrationPromotionBranchContinuity(previous, current, shellTurnId);
+    if (!branchContinuity.ok) reasons.push(`hydration-visible-branch-${branchContinuity.reason}`);
+
+    const acceptedInvariants = [
+      'same-turn-number',
+      'stable-turn-order',
+      'stable-membership-count',
+      'same-logical-member-key',
+      'same-question-id',
+      'forward-answer-hydration',
+      'stable-shell-turn-id',
+      'shell-primary-promoted-to-message-id',
+      'answer-sets-change-only-by-promotion',
+      'unique-same-member-resolver-ownership',
+      'identities-not-quarantined',
+      'alias-gauges-clean',
+      'visible-branch-continuity-proven',
+    ];
+    return {
+      ok: reasons.length === 0,
+      reasons: uniqueOrdered(reasons),
+      evidence: {
+        turnNo: previousTurnNo,
+        logicalMemberKey: previousLogicalMemberKey || null,
+        qId: previousQId || null,
+        shellTurnId: shellTurnId || null,
+        previousPrimaryAId: previousPrimaryAId || null,
+        finalPrimaryAId: finalPrimaryAId || null,
+        hydrationBefore: previousHydration.hydration,
+        hydrationAfter: currentHydration.hydration,
+        previousOwnerCount: previousOwners.length,
+        finalOwnerCount: finalOwners.length,
+        branchContinuity,
+        quarantinedIdentities,
+        acceptedInvariants: reasons.length === 0 ? acceptedInvariants : [],
+      },
+    };
+  }
+
+  function semanticMembershipRows(rows, promotions, phase) {
+    const promotionByTurn = new Map(asArray(promotions).map((promotion) => [asNumber(promotion?.turnNo), promotion]));
+    return asArray(rows).map((row) => {
+      const promotion = promotionByTurn.get(asNumber(row?.turnNo));
+      const normalize = (value) => {
+        if (phase === 'after' && promotion && value === promotion.finalPrimaryAId) {
+          return promotion.previousPrimaryAId;
+        }
+        return value ?? null;
+      };
+      return {
+        turnNo: asNumber(row?.turnNo),
+        qId: row?.qId || null,
+        primaryAId: normalize(row?.primaryAId),
+        answerIds: asArray(row?.answerIds).map(normalize),
+        currentAnswerIds: asArray(row?.currentAnswerIds).map(normalize),
+        answerShells: asArray(row?.answerCurrentShells).map((shell) => ({
+          shellTurnId: shell?.shellTurnId || null,
+          currentAnswerId: normalize(shell?.currentAnswerId),
+        })),
+        noAnswer: row?.noAnswer === true,
+        pageNo: asNumber(row?.pageNo),
+      };
+    });
+  }
+
+  function currentPrimaryPublication(state) {
+    const boxesByTurn = new Map(asArray(state?.miniMapBoxes).map((box) => [asNumber(box?.turnNo), box]));
+    const mismatches = [];
+    for (const row of asArray(state?.perTurn)) {
+      const primaryAId = asString(row?.primaryAId).trim();
+      if (!primaryAId) continue;
+      const box = boxesByTurn.get(asNumber(row?.turnNo)) || null;
+      if (!box || box.primaryAId !== primaryAId) {
+        mismatches.push({
+          turnNo: asNumber(row?.turnNo),
+          expectedPrimaryAId: primaryAId,
+          publishedPrimaryAId: box?.primaryAId || null,
+        });
+      }
+    }
+    return {
+      ok: mismatches.length === 0,
+      mismatchCount: mismatches.length,
+      mismatchRows: mismatches.slice(0, 24),
+      mismatchRowsTruncated: mismatches.length > 24,
+    };
+  }
+
+  function idleAutomaticRefreshSettled(delta) {
+    return asNumber(delta?.identityDriftRebuildCount) === 0
+      && asNumber(delta?.coreTurnUpdatedRebuildCount) === 0;
+  }
+
   function compareMembershipIdentityStates(before, after) {
     const beforeRows = asArray(before?.perTurn);
     const afterRows = asArray(after?.perTurn);
     const afterByTurn = new Map(afterRows.map((row) => [asNumber(row?.turnNo), row]));
     const mismatches = [];
+    const acceptedHydrationPromotions = [];
     const beforeOrder = beforeRows.map((row) => asNumber(row?.turnNo));
     const afterOrder = afterRows.map((row) => asNumber(row?.turnNo));
+    const membershipCountStable = beforeRows.length === afterRows.length;
+    const orderStable = stableJson(beforeOrder) === stableJson(afterOrder);
     for (const previous of beforeRows) {
       const turnNo = asNumber(previous?.turnNo);
       const current = afterByTurn.get(turnNo) || null;
@@ -1340,11 +1629,22 @@
         if (previous.noAnswer !== current.noAnswer) reasons.push('no-answer-changed');
         if (stableJson(previous.answerIds) !== stableJson(current.answerIds)) reasons.push('answer-ids-changed');
         if (stableJson(previous.currentAnswerIds) !== stableJson(current.currentAnswerIds)) reasons.push('current-answer-ids-changed');
+        if (reasons.length) {
+          const promotion = evaluateHydrationPromotion(previous, current, afterRows, after?.aliasDiagnostics);
+          if (promotion.ok && membershipCountStable && orderStable) {
+            acceptedHydrationPromotions.push(promotion.evidence);
+            reasons.length = 0;
+          } else {
+            reasons.push(...promotion.reasons);
+            if (!membershipCountStable) reasons.push('hydration-membership-count-changed');
+            if (!orderStable) reasons.push('hydration-turn-order-changed');
+          }
+        }
       }
       if (reasons.length) {
         mismatches.push({
           turnNo,
-          reasons,
+          reasons: uniqueOrdered(reasons).slice(0, 24),
           previous: previous ? compactBaselineTurn(previous) : null,
           current: current ? compactBaselineTurn(current) : null,
         });
@@ -1355,16 +1655,31 @@
         mismatches.push({ turnNo: asNumber(current?.turnNo), reasons: ['unexpected-turn'], previous: null, current: compactBaselineTurn(current) });
       }
     }
-    const orderStable = stableJson(beforeOrder) === stableJson(afterOrder);
+    const structuralMismatchReasons = [];
+    if (!membershipCountStable) structuralMismatchReasons.push('membership-count-changed');
+    if (!orderStable) structuralMismatchReasons.push('turn-order-changed');
+    const rawBeforeFingerprint = fingerprintRows(beforeRows.map(compactBaselineTurn));
+    const rawAfterFingerprint = fingerprintRows(afterRows.map(compactBaselineTurn));
+    const semanticBeforeFingerprint = fingerprintRows(semanticMembershipRows(beforeRows, acceptedHydrationPromotions, 'before'));
+    const semanticAfterFingerprint = fingerprintRows(semanticMembershipRows(afterRows, acceptedHydrationPromotions, 'after'));
+    const trueMismatchCount = mismatches.length + structuralMismatchReasons.length;
     return {
       comparedTurnCount: Math.max(beforeRows.length, afterRows.length),
-      stable: mismatches.length === 0 && orderStable,
-      trueMismatchCount: mismatches.length + (orderStable ? 0 : 1),
+      stable: trueMismatchCount === 0,
+      trueMismatchCount,
       mismatchRows: mismatches.slice(0, 24),
       mismatchRowsTruncated: mismatches.length > 24,
       orderStable,
-      beforeFingerprint: fingerprintRows(beforeRows.map(compactBaselineTurn)),
-      afterFingerprint: fingerprintRows(afterRows.map(compactBaselineTurn)),
+      structuralMismatchReasons,
+      acceptedHydrationPromotionCount: acceptedHydrationPromotions.length,
+      acceptedHydrationPromotions: acceptedHydrationPromotions.slice(0, 24),
+      acceptedHydrationPromotionsTruncated: acceptedHydrationPromotions.length > 24,
+      beforeFingerprint: rawBeforeFingerprint,
+      afterFingerprint: rawAfterFingerprint,
+      rawFingerprintMatching: rawBeforeFingerprint.hash === rawAfterFingerprint.hash,
+      semanticBeforeFingerprint,
+      semanticAfterFingerprint,
+      semanticFingerprintMatching: semanticBeforeFingerprint.hash === semanticAfterFingerprint.hash,
     };
   }
 
@@ -2283,17 +2598,27 @@
       missingLabels: [],
     } : { ok: false, reason: movementInfrastructure.reason, movementCoverageComplete: false };
     const compactState = compactEvidenceState(state);
+    const projectedMembership = compareMembershipIdentityStates(state, state);
+    const projectedPrimaryPublication = currentPrimaryPublication(state);
     const projectedP4 = {
       ok: true,
-      gates: Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`projectedGate${index + 1}`, true])),
+      gates: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`projectedGate${index + 1}`, true])),
       armSummary: compactState,
       firstSettledSummary: compactState,
       state: compactState,
-      membershipIdentityComparison: compareMembershipIdentityStates(state, state),
+      membershipIdentityComparison: projectedMembership,
+      currentPrimaryPublication: projectedPrimaryPublication,
       fingerprintContinuity: {
-        before: fingerprintRows(state.perTurn),
-        after: fingerprintRows(state.perTurn),
-        matching: true,
+        before: projectedMembership.beforeFingerprint,
+        after: projectedMembership.afterFingerprint,
+        matching: projectedMembership.rawFingerprintMatching,
+        rawBefore: projectedMembership.beforeFingerprint,
+        rawAfter: projectedMembership.afterFingerprint,
+        rawMatching: projectedMembership.rawFingerprintMatching,
+        semanticBefore: projectedMembership.semanticBeforeFingerprint,
+        semanticAfter: projectedMembership.semanticAfterFingerprint,
+        semanticMatching: projectedMembership.semanticFingerprintMatching,
+        acceptedHydrationPromotionCount: projectedMembership.acceptedHydrationPromotionCount,
       },
       movementEvidence: projectedMovement,
       automaticRefreshDelta: {},
@@ -2344,6 +2669,7 @@
     const afterAuto = second.miniMapAutomaticRefresh?.automaticRefresh || {};
     const idleAutoDelta = counterDelta(first.miniMapAutomaticRefresh?.automaticRefresh || {}, afterAuto);
     const membershipIdentityComparison = compareMembershipIdentityStates(armFullState, second);
+    const primaryPublication = currentPrimaryPublication(second);
     const movementEvidence = compactMovementEvidenceReferences({
       scenarioId: arm.movementInfrastructure?.helperScenarioId,
     });
@@ -2352,11 +2678,12 @@
       countsAgree: countsEqual(second.counts),
       logicalMembershipStable: membershipIdentityComparison.stable,
       miniMapAligned: second.miniMapIdentityAlignment.ok === true,
+      finalPrimaryPublishedByMiniMap: primaryPublication.ok,
       dualRunExact: dualRunClean(second.dualRun),
       convergenceClean: asArray(second.convergence?.blockers).length === 0,
       aliasesClean: aliasClean(second.aliasDiagnostics),
       noInstrumentationError: asNumber(second.dualRun?.instrumentationErrorCount) === 0,
-      noIdleRebuildLoop: asNumber(idleAutoDelta.identityDriftRebuildCount) === 0 && asNumber(idleAutoDelta.coreTurnUpdatedRebuildCount) === 0,
+      noIdleRebuildLoop: idleAutomaticRefreshSettled(idleAutoDelta),
       movementCoverageComplete: movementEvidence.ok && movementEvidence.movementCoverageComplete,
     };
     return saveStage('P4', {
@@ -2366,10 +2693,18 @@
       firstSettledSummary: compactEvidenceState(first),
       state: compactEvidenceState(second),
       membershipIdentityComparison,
+      currentPrimaryPublication: primaryPublication,
       fingerprintContinuity: {
         before: membershipIdentityComparison.beforeFingerprint,
         after: membershipIdentityComparison.afterFingerprint,
-        matching: membershipIdentityComparison.beforeFingerprint.hash === membershipIdentityComparison.afterFingerprint.hash,
+        matching: membershipIdentityComparison.rawFingerprintMatching,
+        rawBefore: membershipIdentityComparison.beforeFingerprint,
+        rawAfter: membershipIdentityComparison.afterFingerprint,
+        rawMatching: membershipIdentityComparison.rawFingerprintMatching,
+        semanticBefore: membershipIdentityComparison.semanticBeforeFingerprint,
+        semanticAfter: membershipIdentityComparison.semanticAfterFingerprint,
+        semanticMatching: membershipIdentityComparison.semanticFingerprintMatching,
+        acceptedHydrationPromotionCount: membershipIdentityComparison.acceptedHydrationPromotionCount,
       },
       movementEvidence,
       automaticRefreshDelta: counterDelta(beforeAuto, afterAuto),

@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const harnessPath = path.join(here, 'chat-atlas-cv3-2-canary-console.js');
 const source = fs.readFileSync(harnessPath, 'utf8');
+const validatorSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+const assertionSiteCount = (validatorSource.match(/\bassert(?:\.[A-Za-z]+)?\s*\(/g) || []).length;
+const sourceSetterCallSiteCount = (source.match(/setChatAtlasCanonicalSource\s*\(/g) || []).length;
 const checkpointKey = 'h2o:cv3:checkpoint:v2';
 const legacyCheckpointKey = 'h2o:cv3:checkpoint:v1';
 const testInternalsName = '__H2O_CV3_CANARY_TEST_INTERNALS__';
@@ -32,6 +35,9 @@ const instrumentedSource = source.replace(testInternalsAnchor, `  Object.defineP
       compactConsumerResults,
       fingerprintRows,
       compareMembershipIdentityStates,
+      evaluateHydrationPromotion,
+      currentPrimaryPublication,
+      idleAutomaticRefreshSettled,
       compactMovementEvidenceReferences,
       projectedRollbackPayload,
       summarizeRollbackEquivalence,
@@ -445,6 +451,86 @@ function syntheticFullState(count, options = {}) {
   };
 }
 
+const hydrationShellId = 'fixture-hydration-shell-2';
+const hydrationMessageId = 'fixture-hydration-message-2';
+
+function hydrationPromotionRows(options = {}) {
+  const before = rollbackRow(2, {
+    primaryAId: hydrationShellId,
+    answerIds: [hydrationShellId],
+    currentAnswerIds: [hydrationShellId],
+    answerCurrentAliases: [hydrationShellId],
+    answerResolverAliases: [hydrationShellId],
+    resolverAliases: ['fixture-question-2', hydrationShellId],
+    answerCurrentShells: [{
+      shellTurnId: hydrationShellId,
+      messageId: null,
+      currentAnswerId: hydrationShellId,
+    }],
+    currentProjectionSource: 'native-evidence',
+    hydration: 'question',
+    pageNo: 1,
+    ...options.before,
+  });
+  const after = rollbackRow(2, {
+    primaryAId: hydrationMessageId,
+    answerIds: [hydrationMessageId],
+    currentAnswerIds: [hydrationMessageId],
+    answerCurrentAliases: [hydrationMessageId],
+    answerResolverAliases: [hydrationShellId, hydrationMessageId],
+    resolverAliases: ['fixture-question-2', hydrationShellId, hydrationMessageId],
+    answerCurrentShells: [{
+      shellTurnId: hydrationShellId,
+      messageId: hydrationMessageId,
+      currentAnswerId: hydrationMessageId,
+    }],
+    currentProjectionSource: 'native-evidence',
+    hydration: 'both',
+    pageNo: 1,
+    ...options.after,
+  });
+  return { before, after };
+}
+
+function hydrationComparison(options = {}) {
+  const { before, after } = hydrationPromotionRows(options);
+  const beforeRows = options.beforeRows || [before, ...asArrayForFixture(options.extraBeforeRows)];
+  const afterRows = options.afterRows || [after, ...asArrayForFixture(options.extraAfterRows)];
+  const beforeState = syntheticFullState(beforeRows.length, {
+    rows: beforeRows,
+    turnVersion: 10,
+  });
+  const afterState = syntheticFullState(afterRows.length, {
+    rows: afterRows,
+    turnVersion: 11,
+  });
+  afterState.aliasDiagnostics = options.aliasDiagnostics || cleanAliasDiagnostics;
+  if (options.miniMapBoxes) afterState.miniMapBoxes = options.miniMapBoxes;
+  return {
+    before,
+    after,
+    beforeState,
+    afterState,
+    result: primaryHarness.internals.compareMembershipIdentityStates(beforeState, afterState),
+  };
+}
+
+function asArrayForFixture(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function mismatchReasons(result) {
+  return Array.from(result.mismatchRows || []).flatMap((row) => Array.from(row.reasons || []));
+}
+
+function expectMembershipReason(result, reason) {
+  assert.equal(result.stable, false);
+  assert.ok(
+    mismatchReasons(result).includes(reason) || Array.from(result.structuralMismatchReasons || []).includes(reason),
+    `missing membership failure reason: ${reason}`,
+  );
+}
+
 function movementEvidence(scenarioId = 'CV3.3-S1-fixture', chatKey = 'fixture-chat-a', labels = ['oldest', 'middle', 'newest']) {
   return JSON.stringify({
     schemaVersion: 1,
@@ -551,7 +637,7 @@ const representativeGateCounts = Object.freeze({
   P1: 4,
   P2: 8,
   P3: 12,
-  P4: 9,
+  P4: 11,
   P5: 9,
   P6: 9,
   P7: 12,
@@ -633,7 +719,7 @@ let realisticCapacitySequence = null;
 let maximalCapacitySequence = null;
 const capacityEvidence = {};
 const largeStageEvidence = {};
-const previousTestCount = 39;
+const previousTestCount = 54;
 
 function largeStagePayloads(harness, fullState) {
   const compact = harness.internals.compactEvidenceState(fullState);
@@ -667,10 +753,18 @@ function largeStagePayloads(harness, fullState) {
       firstSettledSummary: compact,
       state: compact,
       membershipIdentityComparison: membership,
+      currentPrimaryPublication: harness.internals.currentPrimaryPublication(fullState),
       fingerprintContinuity: {
         before: membership.beforeFingerprint,
         after: membership.afterFingerprint,
-        matching: true,
+        matching: membership.rawFingerprintMatching,
+        rawBefore: membership.beforeFingerprint,
+        rawAfter: membership.afterFingerprint,
+        rawMatching: membership.rawFingerprintMatching,
+        semanticBefore: membership.semanticBeforeFingerprint,
+        semanticAfter: membership.semanticAfterFingerprint,
+        semanticMatching: membership.semanticFingerprintMatching,
+        acceptedHydrationPromotionCount: membership.acceptedHydrationPromotionCount,
       },
       movementEvidence: movement,
       automaticRefreshDelta: {},
@@ -1225,12 +1319,256 @@ test('CLEANUP removes every harness-owned key from both storage areas', async ()
   assert.equal(harness.localStorage.getItem('fixture-unrelated'), 'keep');
 });
 
-test('v5 schema and capacity limits are published without changing checkpoint schema v2', () => {
-  assert.equal(primaryHarness.api.version, 'cv3.2-canary-harness-v5');
+test('v5.1 decision behavior remains additive within evidence schema 5 and checkpoint schema v2', () => {
+  assert.equal(primaryHarness.api.version, 'cv3.2-canary-harness-v5.1');
   assert.equal(primaryHarness.api.evidenceSchema, 5);
   assert.equal(primaryHarness.internals.evidenceSchemaVersion, 5);
   assert.equal(primaryHarness.internals.stageRecordMaxChars, 900000);
   assert.equal(primaryHarness.internals.checkpointKey, 'h2o:cv3:checkpoint:v2');
+});
+
+test('valid single-shell hydration promotion preserves semantic membership continuity', () => {
+  const fixture = hydrationComparison();
+  const promotion = fixture.result.acceptedHydrationPromotions[0];
+  assert.equal(fixture.result.stable, true);
+  assert.equal(fixture.result.trueMismatchCount, 0);
+  assert.equal(fixture.result.acceptedHydrationPromotionCount, 1);
+  assert.equal(fixture.result.rawFingerprintMatching, false);
+  assert.equal(fixture.result.semanticFingerprintMatching, true);
+  assert.equal(promotion.shellTurnId, hydrationShellId);
+  assert.equal(promotion.previousPrimaryAId, hydrationShellId);
+  assert.equal(promotion.finalPrimaryAId, hydrationMessageId);
+  assert.equal(promotion.previousOwnerCount, 1);
+  assert.equal(promotion.finalOwnerCount, 1);
+  assert.equal(promotion.branchContinuity.status, 'single-shell-stable');
+  assert.equal(primaryHarness.internals.currentPrimaryPublication(fixture.afterState).ok, true);
+});
+
+test('hydration promotion rejects a missing historical resolver alias', () => {
+  const fixture = hydrationComparison({
+    after: {
+      answerResolverAliases: [hydrationMessageId],
+      resolverAliases: ['fixture-question-2', hydrationShellId, hydrationMessageId],
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-previous-primary-resolver-alias-missing');
+});
+
+test('hydration promotion rejects a new identity owned only by another member', () => {
+  const { before, after } = hydrationPromotionRows();
+  const other = rollbackRow(3, {
+    answerResolverAliases: ['fixture-answer-3', hydrationMessageId],
+    resolverAliases: ['fixture-question-3', 'fixture-answer-3', hydrationMessageId],
+  });
+  const result = primaryHarness.internals.evaluateHydrationPromotion(
+    before,
+    after,
+    [other],
+    cleanAliasDiagnostics,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.includes('hydration-final-id-owned-by-another-member'));
+});
+
+test('hydration promotion rejects ambiguous previous-identity ownership', () => {
+  const otherBefore = rollbackRow(3);
+  const otherAfter = rollbackRow(3, {
+    answerResolverAliases: ['fixture-answer-3', hydrationShellId],
+    resolverAliases: ['fixture-question-3', 'fixture-answer-3', hydrationShellId],
+  });
+  const fixture = hydrationComparison({
+    extraBeforeRows: [otherBefore],
+    extraAfterRows: [otherAfter],
+  });
+  expectMembershipReason(fixture.result, 'hydration-previous-owner-count-not-one');
+});
+
+test('hydration promotion rejects ambiguous final-identity ownership', () => {
+  const otherBefore = rollbackRow(3);
+  const otherAfter = rollbackRow(3, {
+    answerResolverAliases: ['fixture-answer-3', hydrationMessageId],
+    resolverAliases: ['fixture-question-3', 'fixture-answer-3', hydrationMessageId],
+  });
+  const fixture = hydrationComparison({
+    extraBeforeRows: [otherBefore],
+    extraAfterRows: [otherAfter],
+  });
+  expectMembershipReason(fixture.result, 'hydration-final-owner-count-not-one');
+});
+
+test('hydration promotion rejects involved quarantined identities', () => {
+  const fixture = hydrationComparison({
+    aliasDiagnostics: {
+      ...cleanAliasDiagnostics,
+      quarantinedAliasCount: 1,
+      quarantinedAliases: [hydrationShellId],
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-involved-identity-quarantined');
+});
+
+test('hydration promotion rejects nonzero alias conflict gauges', () => {
+  const fixture = hydrationComparison({
+    aliasDiagnostics: {
+      ...cleanAliasDiagnostics,
+      currentAliasConflictCount: 1,
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-alias-diagnostics-not-clean');
+});
+
+test('hydration promotion rejects logical member key drift', () => {
+  const fixture = hydrationComparison({ after: { logicalMemberKey: 'atlas:regenerated-2' } });
+  expectMembershipReason(fixture.result, 'hydration-logical-member-key-changed');
+});
+
+test('hydration promotion rejects question identity drift', () => {
+  const fixture = hydrationComparison({ after: { qId: 'fixture-question-2-changed' } });
+  expectMembershipReason(fixture.result, 'hydration-question-id-changed');
+});
+
+test('hydration promotion rejects turn-order drift', () => {
+  const other = rollbackRow(3, { answerIds: ['fixture-answer-3'], hydration: 'both', pageNo: 1 });
+  const fixture = hydrationComparison({ extraBeforeRows: [other], extraAfterRows: [other] });
+  fixture.afterState.perTurn = [fixture.afterState.perTurn[1], fixture.afterState.perTurn[0]];
+  const result = primaryHarness.internals.compareMembershipIdentityStates(fixture.beforeState, fixture.afterState);
+  expectMembershipReason(result, 'turn-order-changed');
+});
+
+test('hydration promotion rejects membership-count drift', () => {
+  const extra = rollbackRow(3, { answerIds: ['fixture-answer-3'], hydration: 'both', pageNo: 1 });
+  const fixture = hydrationComparison({ extraAfterRows: [extra] });
+  expectMembershipReason(fixture.result, 'membership-count-changed');
+});
+
+test('hydration promotion rejects a changed shell turn identity', () => {
+  const changedShell = 'fixture-hydration-shell-2-changed';
+  const fixture = hydrationComparison({
+    after: {
+      answerCurrentShells: [{
+        shellTurnId: changedShell,
+        messageId: hydrationMessageId,
+        currentAnswerId: hydrationMessageId,
+      }],
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-shell-turn-id-changed');
+});
+
+test('hydration promotion rejects reverse message-to-shell de-hydration', () => {
+  const forward = hydrationComparison();
+  const result = primaryHarness.internals.compareMembershipIdentityStates(forward.afterState, forward.beforeState);
+  expectMembershipReason(result, 'hydration-direction-reversed');
+});
+
+test('hydration promotion rejects arbitrary primary rekeying without shell evidence', () => {
+  const fixture = hydrationComparison({
+    before: {
+      primaryAId: 'fixture-real-before-2',
+      answerIds: ['fixture-real-before-2'],
+      currentAnswerIds: ['fixture-real-before-2'],
+      answerResolverAliases: ['fixture-real-before-2'],
+      resolverAliases: ['fixture-question-2', 'fixture-real-before-2'],
+      answerCurrentShells: [{
+        shellTurnId: hydrationShellId,
+        messageId: 'fixture-real-before-2',
+        currentAnswerId: 'fixture-real-before-2',
+      }],
+      hydration: 'both',
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-before-shell-candidate-not-unique');
+});
+
+test('hydration promotion rejects unrelated answer-set mutation', () => {
+  const fixture = hydrationComparison({
+    after: {
+      answerIds: ['fixture-unrelated-answer', hydrationMessageId],
+      currentAnswerIds: ['fixture-unrelated-answer', hydrationMessageId],
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-answer-set-unrelated-mutation');
+  expectMembershipReason(fixture.result, 'hydration-current-answer-set-unrelated-mutation');
+});
+
+test('hydration promotion rejects changed visible selection for a multi-shell member', () => {
+  const variantShell = 'fixture-variant-shell-a';
+  const fixture = hydrationComparison({
+    before: {
+      answerIds: [variantShell, hydrationShellId],
+      currentAnswerIds: [variantShell, hydrationShellId],
+      answerResolverAliases: [variantShell, hydrationShellId],
+      resolverAliases: ['fixture-question-2', variantShell, hydrationShellId],
+      answerCurrentShells: [
+        { shellTurnId: variantShell, messageId: null, currentAnswerId: variantShell },
+        { shellTurnId: hydrationShellId, messageId: null, currentAnswerId: hydrationShellId },
+      ],
+    },
+    after: {
+      primaryAId: variantShell,
+      answerIds: [variantShell, hydrationMessageId],
+      currentAnswerIds: [variantShell, hydrationMessageId],
+      answerResolverAliases: [variantShell, hydrationShellId, hydrationMessageId],
+      resolverAliases: ['fixture-question-2', variantShell, hydrationShellId, hydrationMessageId],
+      answerCurrentShells: [
+        { shellTurnId: variantShell, messageId: null, currentAnswerId: variantShell },
+        { shellTurnId: hydrationShellId, messageId: hydrationMessageId, currentAnswerId: hydrationMessageId },
+      ],
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-visible-branch-multi-shell-selection-not-proven');
+});
+
+test('hydration promotion rejects unprovable multi-shell branch continuity', () => {
+  const variantShell = 'fixture-variant-shell-a';
+  const fixture = hydrationComparison({
+    before: {
+      answerIds: [variantShell, hydrationShellId],
+      currentAnswerIds: [variantShell, hydrationShellId],
+      answerResolverAliases: [variantShell, hydrationShellId],
+      resolverAliases: ['fixture-question-2', variantShell, hydrationShellId],
+      answerCurrentShells: [
+        { shellTurnId: variantShell, messageId: null, currentAnswerId: variantShell },
+        { shellTurnId: hydrationShellId, messageId: null, currentAnswerId: hydrationShellId },
+      ],
+      currentProjectionSource: 'previous-primary-fallback',
+    },
+    after: {
+      answerIds: [variantShell, hydrationMessageId],
+      currentAnswerIds: [variantShell, hydrationMessageId],
+      answerResolverAliases: [variantShell, hydrationShellId, hydrationMessageId],
+      resolverAliases: ['fixture-question-2', variantShell, hydrationShellId, hydrationMessageId],
+      answerCurrentShells: [
+        { shellTurnId: variantShell, messageId: null, currentAnswerId: variantShell },
+        { shellTurnId: hydrationShellId, messageId: hydrationMessageId, currentAnswerId: hydrationMessageId },
+      ],
+      currentProjectionSource: 'previous-primary-fallback',
+    },
+  });
+  expectMembershipReason(fixture.result, 'hydration-visible-branch-multi-shell-native-projection-unavailable');
+});
+
+test('P4 keeps final primary MiniMap publication as an independent fail-closed gate', () => {
+  const fixture = hydrationComparison({
+    miniMapBoxes: [{ turnNo: 2, qId: 'fixture-question-2', primaryAId: hydrationShellId }],
+  });
+  const publication = primaryHarness.internals.currentPrimaryPublication(fixture.afterState);
+  assert.equal(fixture.result.stable, true);
+  assert.equal(publication.ok, false);
+  assert.equal(publication.mismatchCount, 1);
+  assert.match(source, /finalPrimaryPublishedByMiniMap:\s*primaryPublication\.ok/);
+});
+
+test('P4 rejects non-settling idle identity-drift rebuild activity independently', () => {
+  assert.equal(primaryHarness.internals.idleAutomaticRefreshSettled({
+    identityDriftRebuildCount: 1,
+    coreTurnUpdatedRebuildCount: 0,
+  }), false);
+  assert.equal(primaryHarness.internals.idleAutomaticRefreshSettled({
+    identityDriftRebuildCount: 0,
+    coreTurnUpdatedRebuildCount: 1,
+  }), false);
+  assert.match(source, /noIdleRebuildLoop:\s*idleAutomaticRefreshSettled\(idleAutoDelta\)/);
 });
 
 test('83-turn compact baseline, P4, and P8 records remain comfortably writable', async () => {
@@ -1484,6 +1822,8 @@ console.log(JSON.stringify({
   addedTestCount: tests.length - previousTestCount,
   failures,
   sourceSetterCalls,
+  sourceSetterCallSiteCount,
+  assertionSiteCount,
   capacityEvidence,
   largeStageEvidence,
 }));
