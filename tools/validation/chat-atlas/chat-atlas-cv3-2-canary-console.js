@@ -9,7 +9,7 @@
   'use strict';
 
   const G = globalThis;
-  const VERSION = 'cv3.2-canary-harness-v5.1';
+  const VERSION = 'cv3.2-canary-harness-v5.2';
   const EVIDENCE_SCHEMA_VERSION = 5;
   const SOURCE_LEGACY = 'legacy-durable-cache';
   const SOURCE_LEDGER = 'chat-atlas-ledger';
@@ -1044,6 +1044,13 @@
     });
   }
 
+  function noAnswerMiniMapIdentityMatches(row, box) {
+    if (!row?.noAnswer || row?.primaryAId || !row?.qId || !box) return false;
+    if (box.qId !== row.qId || box.primaryAId !== `turn:${row.qId}`) return false;
+    const turnId = asString(box.turnId).replace(/^turn:/, '').trim();
+    return !turnId || turnId === row.qId;
+  }
+
   function identityAlignment(records = canonicalRecords(), boxes = miniMapBoxes()) {
     const boxByTurn = new Map();
     const duplicateTurns = [];
@@ -1060,7 +1067,9 @@
         if (row.qId && box.qId && row.qId !== box.qId) reasons.push('question-id-mismatch');
         if (row.primaryAId) {
           if (row.primaryAId !== box.primaryAId) reasons.push('primary-id-mismatch');
-        } else if (row.noAnswer && box.primaryAId) reasons.push('no-answer-primary-present');
+        } else if (row.noAnswer && box.primaryAId && !noAnswerMiniMapIdentityMatches(row, box)) {
+          reasons.push('no-answer-primary-invalid');
+        }
       }
       if (reasons.length) drifts.push({ turnNo: row.turnNo, expected: row, actual: box || null, reasons });
     }

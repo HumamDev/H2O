@@ -34,6 +34,7 @@ const instrumentedSource = source.replace(testInternalsAnchor, `  Object.defineP
       compactBaselineTurn,
       compactConsumerResults,
       fingerprintRows,
+      identityAlignment,
       compareMembershipIdentityStates,
       evaluateHydrationPromotion,
       currentPrimaryPublication,
@@ -56,6 +57,8 @@ const instrumentedSource = source.replace(testInternalsAnchor, `  Object.defineP
 ${testInternalsAnchor}`);
 
 let sourceSetterCalls = 0;
+let navigationMutationCalls = 0;
+let domMutationCalls = 0;
 let contextSequence = 0;
 
 function createStorage(initial = {}) {
@@ -96,9 +99,9 @@ function createHarnessContext(options = {}) {
     textContent: String(row.turnNo),
     dataset: {
       turnIdx: String(row.turnNo),
-      turnId: `turn:${row.qId}`,
-      questionId: row.qId,
-      primaryAId: row.primaryAId || '',
+      turnId: row.miniMapTurnId ?? `turn:${row.qId}`,
+      questionId: row.miniMapQId ?? row.qId,
+      primaryAId: row.miniMapPrimaryAId ?? row.primaryAId ?? '',
       page: String(Math.floor((row.turnNo - 1) / 25) + 1),
     },
     closest() { return null; },
@@ -115,6 +118,10 @@ function createHarnessContext(options = {}) {
   const document = Object.freeze({
     querySelector(selector) { return String(selector).includes('mnmp') || String(selector).includes('minimap-v10') ? miniMapRoot : null; },
     querySelectorAll() { return []; },
+    createElement() {
+      domMutationCalls += 1;
+      throw new Error('DOM mutation must not run in validator execution');
+    },
   });
   const ledgerMembers = () => runtimeRows.rows.map((row) => ({
     logicalMemberKey: row.logicalMemberKey || `atlas:${row.turnNo}`,
@@ -213,9 +220,33 @@ function createHarnessContext(options = {}) {
     Map,
     console: Object.freeze({ info() {}, log() {}, warn() {}, error() {} }),
     document,
-    location: Object.freeze({ href: `https://chatgpt.com/c/${chatKey}`, pathname: `/c/${chatKey}` }),
+    location: Object.freeze({
+      href: `https://chatgpt.com/c/${chatKey}`,
+      pathname: `/c/${chatKey}`,
+      assign() {
+        navigationMutationCalls += 1;
+        throw new Error('navigation mutation must not run in validator execution');
+      },
+      replace() {
+        navigationMutationCalls += 1;
+        throw new Error('navigation mutation must not run in validator execution');
+      },
+      reload() {
+        navigationMutationCalls += 1;
+        throw new Error('navigation mutation must not run in validator execution');
+      },
+    }),
     navigator: Object.freeze({}),
-    history: Object.freeze({}),
+    history: Object.freeze({
+      pushState() {
+        navigationMutationCalls += 1;
+        throw new Error('navigation mutation must not run in validator execution');
+      },
+      replaceState() {
+        navigationMutationCalls += 1;
+        throw new Error('navigation mutation must not run in validator execution');
+      },
+    }),
     sessionStorage,
     localStorage,
     crypto: Object.freeze({
@@ -719,7 +750,7 @@ let realisticCapacitySequence = null;
 let maximalCapacitySequence = null;
 const capacityEvidence = {};
 const largeStageEvidence = {};
-const previousTestCount = 54;
+const previousTestCount = 73;
 
 function largeStagePayloads(harness, fullState) {
   const compact = harness.internals.compactEvidenceState(fullState);
@@ -795,6 +826,34 @@ function test(name, fn) {
 function expectFailure(result, reason) {
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes(reason), `missing failure reason: ${reason}`);
+}
+
+const noAnswerQuestionId = 'fixture-no-answer-question';
+
+function noAnswerAlignmentRecord(overrides = {}) {
+  return {
+    turnNo: 1,
+    qId: noAnswerQuestionId,
+    primaryAId: null,
+    answerIds: [],
+    _aliasIds: [noAnswerQuestionId],
+    noAnswer: true,
+    ...overrides,
+  };
+}
+
+function noAnswerAlignmentBox(overrides = {}) {
+  return {
+    turnNo: 1,
+    turnId: null,
+    qId: noAnswerQuestionId,
+    primaryAId: '',
+    ...overrides,
+  };
+}
+
+function alignmentReasons(result) {
+  return Array.from(result.drifts || []).flatMap((row) => Array.from(row.reasons || []));
 }
 
 test('request placeholder promotes to a real primary with same-member resolver continuity', () => {
@@ -1319,12 +1378,147 @@ test('CLEANUP removes every harness-owned key from both storage areas', async ()
   assert.equal(harness.localStorage.getItem('fixture-unrelated'), 'keep');
 });
 
-test('v5.1 decision behavior remains additive within evidence schema 5 and checkpoint schema v2', () => {
-  assert.equal(primaryHarness.api.version, 'cv3.2-canary-harness-v5.1');
+test('v5.2 decision behavior remains additive within evidence schema 5 and checkpoint schema v2', () => {
+  assert.equal(primaryHarness.api.version, 'cv3.2-canary-harness-v5.2');
   assert.equal(primaryHarness.api.evidenceSchema, 5);
   assert.equal(primaryHarness.internals.evidenceSchemaVersion, 5);
   assert.equal(primaryHarness.internals.stageRecordMaxChars, 900000);
   assert.equal(primaryHarness.internals.checkpointKey, 'h2o:cv3:checkpoint:v2');
+});
+
+test('NO ANSWER with an empty MiniMap primary remains aligned', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox()],
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.drifts.length, 0);
+});
+
+test('NO ANSWER accepts its exact synthetic MiniMap navigation primary', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox({ primaryAId: `turn:${noAnswerQuestionId}` })],
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.drifts.length, 0);
+});
+
+test('NO ANSWER accepts an exact synthetic primary with normalized same-question turn identity', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox({
+      primaryAId: `turn:${noAnswerQuestionId}`,
+      turnId: `turn:${noAnswerQuestionId}`,
+    })],
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.drifts.length, 0);
+});
+
+test('NO ANSWER rejects a synthetic MiniMap primary for another question', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox({ primaryAId: 'turn:fixture-other-question' })],
+  );
+  assert.equal(result.ok, false);
+  assert.ok(alignmentReasons(result).includes('no-answer-primary-invalid'));
+});
+
+test('NO ANSWER rejects a matching synthetic primary when the MiniMap question differs', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox({
+      qId: 'fixture-other-question',
+      primaryAId: `turn:${noAnswerQuestionId}`,
+    })],
+  );
+  assert.equal(result.ok, false);
+  assert.ok(alignmentReasons(result).includes('question-id-mismatch'));
+  assert.ok(alignmentReasons(result).includes('no-answer-primary-invalid'));
+});
+
+test('NO ANSWER rejects an arbitrary nonempty MiniMap primary', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox({ primaryAId: 'fixture-arbitrary-answer' })],
+  );
+  assert.equal(result.ok, false);
+  assert.ok(alignmentReasons(result).includes('no-answer-primary-invalid'));
+});
+
+test('answer-bearing turns still reject a MiniMap primary mismatch', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord({ primaryAId: 'fixture-answer-1', answerIds: ['fixture-answer-1'], noAnswer: false })],
+    [noAnswerAlignmentBox({ primaryAId: 'fixture-answer-other' })],
+  );
+  assert.equal(result.ok, false);
+  assert.ok(alignmentReasons(result).includes('primary-id-mismatch'));
+});
+
+test('identity alignment still rejects a missing MiniMap box', () => {
+  const result = primaryHarness.internals.identityAlignment([noAnswerAlignmentRecord()], []);
+  assert.equal(result.ok, false);
+  assert.ok(alignmentReasons(result).includes('box-missing'));
+});
+
+test('identity alignment still rejects duplicate MiniMap turn boxes', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox(), noAnswerAlignmentBox()],
+  );
+  assert.equal(result.ok, false);
+  assert.deepEqual(Array.from(result.duplicateTurns), [1]);
+});
+
+test('identity alignment still rejects canonical and MiniMap count divergence', () => {
+  const result = primaryHarness.internals.identityAlignment(
+    [noAnswerAlignmentRecord()],
+    [noAnswerAlignmentBox(), noAnswerAlignmentBox({ turnNo: 2, qId: 'fixture-question-2' })],
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.drifts.length, 0);
+});
+
+test('P0, P3, and P8 use the corrected NO ANSWER MiniMap alignment', async () => {
+  const noAnswerRow = rollbackRow(1, {
+    primaryAId: null,
+    answerIds: [],
+    currentAnswerIds: [],
+    currentAliases: ['fixture-question-1'],
+    answerCurrentAliases: [],
+    answerResolverAliases: [],
+    resolverAliases: ['fixture-question-1'],
+    answerCurrentShells: [],
+    noAnswer: true,
+    hydration: 'question',
+    miniMapPrimaryAId: 'turn:fixture-question-1',
+  });
+  const harness = createHarnessContext({
+    rows: [noAnswerRow, rollbackRow(2)],
+    allowSourceSetter: true,
+  });
+  const p0 = await harness.api.P0();
+  assert.equal(p0.ok, true);
+  assert.equal(p0.gates.miniMapAligned, true);
+  assert.equal((await harness.api.P1()).ok, true);
+  assert.equal((await harness.api.P2()).ok, true);
+  const p3 = await harness.api.P3();
+  assert.equal(p3.ok, true);
+  assert.equal(p3.gates.identityAligned, true);
+  const p8 = await harness.api.P8();
+  assert.equal(p8.ok, true);
+  assert.equal(p8.gates.miniMapAligned, true);
+});
+
+test('fresh harness evaluation invokes no setter, navigation mutation, or DOM mutation', () => {
+  const before = { sourceSetterCalls, navigationMutationCalls, domMutationCalls };
+  const harness = createHarnessContext();
+  assert.equal(harness.api.version, 'cv3.2-canary-harness-v5.2');
+  assert.deepEqual(
+    { sourceSetterCalls, navigationMutationCalls, domMutationCalls },
+    before,
+  );
 });
 
 test('valid single-shell hydration promotion preserves semantic membership continuity', () => {
@@ -1823,6 +2017,8 @@ console.log(JSON.stringify({
   failures,
   sourceSetterCalls,
   sourceSetterCallSiteCount,
+  navigationMutationCalls,
+  domMutationCalls,
   assertionSiteCount,
   capacityEvidence,
   largeStageEvidence,
