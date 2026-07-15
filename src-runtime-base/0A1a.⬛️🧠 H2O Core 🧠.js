@@ -2845,6 +2845,217 @@
     };
   }
 
+  function chatAtlasNormalizeChatKey(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const routeMatch = raw.match(/\/c\/([a-z0-9-]+)/i);
+    return routeMatch ? routeMatch[1] : raw;
+  }
+
+  function chatAtlasNullableCount(value) {
+    if (value == null || value === '') return null;
+    const count = Number(value);
+    return Number.isFinite(count) && count >= 0 ? count : null;
+  }
+
+  function chatAtlasReadMiniMapCompletenessDiagnostics() {
+    let api = null;
+    try {
+      api = TOPW?.H2O_MM_CORE_API
+        || W?.H2O_MM_CORE_API
+        || TOPW?.H2O_MM_SHARED?.get?.()?.api?.core
+        || W?.H2O_MM_SHARED?.get?.()?.api?.core
+        || null;
+    } catch { api = null; }
+    if (!api || typeof api.getCacheCompletenessDiagnostics !== 'function') return null;
+    try {
+      const result = api.getCacheCompletenessDiagnostics();
+      return result && typeof result === 'object' ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function chatAtlasValidCompletenessProof(proof, chatKey) {
+    if (!proof || typeof proof !== 'object') return false;
+    return proof.status === 'complete'
+      && proof.kind === 'independent-end-to-end-coverage'
+      && proof.independent === true
+      && proof.endToEndCoverage === true
+      && proof.current === true
+      && !!String(proof.basis || '').trim()
+      && chatAtlasNormalizeChatKey(proof.chatKey) === chatKey;
+  }
+
+  function chatAtlasEvaluateHistoricalCompleteness(miniMapDiagnostics = undefined, completenessProof = null) {
+    const currentChatKey = chatAtlasNormalizeChatKey(chatAtlasCurrentChatKey()) || null;
+    const diagnostics = miniMapDiagnostics === undefined
+      ? chatAtlasReadMiniMapCompletenessDiagnostics()
+      : miniMapDiagnostics;
+    const diagnosticsChatKey = chatAtlasNormalizeChatKey(diagnostics?.chatKey) || null;
+    const sameChat = !!currentChatKey && diagnosticsChatKey === currentChatKey;
+    const observedTurnCount = sameChat ? chatAtlasNullableCount(diagnostics?.observedTurnCount) : null;
+    const publishedTurnCount = sameChat ? chatAtlasNullableCount(diagnostics?.publishedTurnCount) : null;
+    const cachedTurnCount = sameChat ? chatAtlasNullableCount(diagnostics?.cachedTurnCount) : null;
+    const offDomRetainedCount = sameChat ? chatAtlasNullableCount(diagnostics?.offDomRetainedCount) : null;
+    const merge = sameChat && diagnostics?.lastMergeDecision && typeof diagnostics.lastMergeDecision === 'object'
+      ? {
+        accepted: diagnostics.lastMergeDecision.accepted === true,
+        mode: String(diagnostics.lastMergeDecision.mode || 'unknown'),
+        cachedCount: chatAtlasNullableCount(diagnostics.lastMergeDecision.cachedCount),
+        liveCount: chatAtlasNullableCount(diagnostics.lastMergeDecision.liveCount),
+        outputCount: chatAtlasNullableCount(diagnostics.lastMergeDecision.outputCount),
+        overlapCount: chatAtlasNullableCount(diagnostics.lastMergeDecision.overlapCount),
+        sanitizedRows: chatAtlasNullableCount(diagnostics.lastMergeDecision.sanitizedRows),
+        reason: String(diagnostics.lastMergeDecision.reason || ''),
+        completeness: String(diagnostics.lastMergeDecision.completeness || 'unknown'),
+      }
+      : null;
+    const persistence = sameChat && diagnostics?.lastPersistenceDecision
+      && typeof diagnostics.lastPersistenceDecision === 'object'
+      ? {
+        ok: diagnostics.lastPersistenceDecision.ok === true,
+        status: String(diagnostics.lastPersistenceDecision.status || 'unknown'),
+        previousCount: chatAtlasNullableCount(diagnostics.lastPersistenceDecision.previousCount),
+        incomingCount: chatAtlasNullableCount(diagnostics.lastPersistenceDecision.incomingCount),
+        proofAccepted: diagnostics.lastPersistenceDecision.proofAccepted === true,
+        reason: String(diagnostics.lastPersistenceDecision.reason || ''),
+      }
+      : null;
+    const proofAvailable = !!currentChatKey && chatAtlasValidCompletenessProof(completenessProof, currentChatKey);
+    const smallerPersistence = persistence?.previousCount != null
+      && persistence?.incomingCount != null
+      && persistence.incomingCount < persistence.previousCount;
+    const destructiveShrink = !!(smallerPersistence && persistence.ok && !persistence.proofAccepted);
+    const protectiveRefusal = !!(smallerPersistence && !persistence.ok
+      && persistence.status === 'shrink-not-proven');
+    const unionRetained = !!(merge?.mode === 'union'
+      && merge.liveCount != null
+      && merge.outputCount != null
+      && merge.outputCount > merge.liveCount);
+    const retainedOffDom = Number(offDomRetainedCount || 0) > 0;
+    const cacheLargerThanObserved = cachedTurnCount != null && observedTurnCount != null
+      && cachedTurnCount > observedTurnCount;
+    const publishedLargerThanObserved = publishedTurnCount != null && observedTurnCount != null
+      && publishedTurnCount > observedTurnCount;
+    const positivePartialEvidence = retainedOffDom
+      || unionRetained
+      || cacheLargerThanObserved
+      || publishedLargerThanObserved
+      || protectiveRefusal
+      || destructiveShrink;
+    let partialBasis = null;
+    if (retainedOffDom) partialBasis = 'off-dom-cache-rows-retained';
+    else if (unionRetained) partialBasis = 'partial-hydration-union';
+    else if (destructiveShrink) partialBasis = 'unproven-cache-shrink-persisted';
+    else if (protectiveRefusal) partialBasis = 'unproven-shrink-refused';
+    else if (cacheLargerThanObserved || publishedLargerThanObserved) {
+      partialBasis = 'cache-larger-than-observed-projection';
+    }
+
+    let status = 'unknown';
+    let basis = 'no-independent-completeness-proof';
+    if (proofAvailable) {
+      status = 'complete';
+      basis = String(completenessProof.basis || 'independent-end-to-end-coverage');
+    } else if (partialBasis) {
+      status = 'incomplete';
+      basis = partialBasis;
+    }
+
+    const historicalCompleteness = {
+      status,
+      basis,
+      chatKey: currentChatKey,
+      observedTurnCount,
+      publishedTurnCount,
+      cachedTurnCount,
+      offDomRetainedCount,
+      completenessProofAvailable: proofAvailable,
+      latestMergeMode: merge?.mode || null,
+      persistenceProtection: persistence ? {
+        status: persistence.status,
+        previousCount: persistence.previousCount,
+        incomingCount: persistence.incomingCount,
+        proofAccepted: persistence.proofAccepted,
+        reason: persistence.reason,
+      } : null,
+    };
+    const warningEvidence = positivePartialEvidence ? {
+      warning: 'incomplete-projection-coverage',
+      basis: partialBasis || basis,
+      observedTurnCount,
+      publishedTurnCount,
+      cachedTurnCount,
+      offDomRetainedCount,
+      latestMergeMode: merge?.mode || null,
+    } : null;
+    const destructiveShrinkEvidence = destructiveShrink ? {
+      blocker: 'unproven-cache-shrink-persisted',
+      previousCount: persistence.previousCount,
+      incomingCount: persistence.incomingCount,
+      status: persistence.status,
+      reason: persistence.reason,
+    } : null;
+    return chatAtlasFreeze({
+      historicalCompleteness,
+      warningEvidence,
+      destructiveShrinkEvidence,
+    });
+  }
+
+  function chatAtlasInternalExactness(parityStatus, blockers, mismatchCount) {
+    const status = String(parityStatus || 'unknown');
+    return chatAtlasFreeze({
+      status,
+      exact: status === 'exact',
+      blockerCount: Array.isArray(blockers) ? blockers.length : 0,
+      mismatchCount: Math.max(0, Number(mismatchCount || 0) || 0),
+    });
+  }
+
+  function chatAtlasBuildProjectionConvergenceDiagnostics(
+    parityStatus,
+    blockers = [],
+    mismatchCount = 0,
+    miniMapDiagnostics = undefined,
+    completenessProof = null,
+  ) {
+    const completenessEvaluation = chatAtlasEvaluateHistoricalCompleteness(
+      miniMapDiagnostics,
+      completenessProof,
+    );
+    const nextBlockers = Array.from(new Set(Array.isArray(blockers) ? blockers : []));
+    let nextMismatchCount = Math.max(0, Number(mismatchCount || 0) || 0);
+    if (completenessEvaluation.destructiveShrinkEvidence) {
+      nextBlockers.push('unproven-cache-shrink-persisted');
+      nextMismatchCount += 1;
+    }
+    const deduplicatedBlockers = Array.from(new Set(nextBlockers));
+    const nextParityStatus = completenessEvaluation.destructiveShrinkEvidence
+      ? 'mismatch'
+      : String(parityStatus || 'unknown');
+    return chatAtlasFreeze({
+      parityStatus: nextParityStatus,
+      blockers: deduplicatedBlockers,
+      warning: completenessEvaluation.warningEvidence
+        ? 'incomplete-projection-coverage'
+        : null,
+      internalExactness: chatAtlasInternalExactness(
+        nextParityStatus,
+        deduplicatedBlockers,
+        nextMismatchCount,
+      ),
+      historicalCompleteness: completenessEvaluation.historicalCompleteness,
+      historicalCompletenessWarningEvidence: completenessEvaluation.warningEvidence,
+      unprovenCacheShrinkEvidence: completenessEvaluation.destructiveShrinkEvidence,
+    });
+  }
+
+  function getChatAtlasHistoricalCompleteness() {
+    return chatAtlasEvaluateHistoricalCompleteness().historicalCompleteness;
+  }
+
   function getChatAtlasConvergenceParity() {
     const safetyBefore = chatAtlasConvergenceSafetyCounters();
     try {
@@ -3172,15 +3383,27 @@
       const safetyAfter = chatAtlasConvergenceSafetyCounters();
       const safety = chatAtlasConvergenceSafetyResult(safetyBefore, safetyAfter);
       if (!safety.safetyCountersUnchanged) blockers.push('safety-counter-changed-during-probe');
+      const mismatchCount = mismatchGroups.reduce((total, group) => total + group.length, 0)
+        + (safety.safetyCountersUnchanged ? 0 : 1);
+      const projectionDiagnostics = chatAtlasBuildProjectionConvergenceDiagnostics(
+        safety.safetyCountersUnchanged ? parityStatus : 'mismatch',
+        blockers,
+        mismatchCount,
+      );
+      if (projectionDiagnostics.warning) warnings.push(projectionDiagnostics.warning);
 
       return chatAtlasFreeze({
         readOnly: true,
         authority: 'chat-atlas-convergence-parity',
-        parityStatus: !safety.safetyCountersUnchanged ? 'mismatch' : parityStatus,
-        blockers: Array.from(new Set(blockers)),
+        parityStatus: projectionDiagnostics.parityStatus,
+        blockers: projectionDiagnostics.blockers,
         warnings: Array.from(new Set(warnings)),
         notes,
         chatKey: chatAtlasLedgerState.chatKey,
+        internalExactness: projectionDiagnostics.internalExactness,
+        historicalCompleteness: projectionDiagnostics.historicalCompleteness,
+        historicalCompletenessWarningEvidence: projectionDiagnostics.historicalCompletenessWarningEvidence,
+        unprovenCacheShrinkEvidence: projectionDiagnostics.unprovenCacheShrinkEvidence,
         ledgerReady,
         canonicalReady,
         miniMapRendered,
@@ -3225,14 +3448,23 @@
     } catch (error) {
       const safetyAfter = chatAtlasConvergenceSafetyCounters();
       const safety = chatAtlasConvergenceSafetyResult(safetyBefore, safetyAfter);
+      const projectionDiagnostics = chatAtlasBuildProjectionConvergenceDiagnostics('unknown', [], 0);
+      const catchWarnings = [
+        `convergence-parity-probe-failed:${String(error?.message || error || 'unknown')}`,
+      ];
+      if (projectionDiagnostics.warning) catchWarnings.push(projectionDiagnostics.warning);
       return chatAtlasFreeze({
         readOnly: true,
         authority: 'chat-atlas-convergence-parity',
-        parityStatus: 'unknown',
-        blockers: [],
-        warnings: [`convergence-parity-probe-failed:${String(error?.message || error || 'unknown')}`],
+        parityStatus: projectionDiagnostics.parityStatus,
+        blockers: projectionDiagnostics.blockers,
+        warnings: Array.from(new Set(catchWarnings)),
         notes: ['operator-called-read-only-probe'],
         chatKey: chatAtlasLedgerState.chatKey,
+        internalExactness: projectionDiagnostics.internalExactness,
+        historicalCompleteness: projectionDiagnostics.historicalCompleteness,
+        historicalCompletenessWarningEvidence: projectionDiagnostics.historicalCompletenessWarningEvidence,
+        unprovenCacheShrinkEvidence: projectionDiagnostics.unprovenCacheShrinkEvidence,
         ledgerReady: !!chatAtlasLedgerState.ready,
         canonicalReady: 'unknown',
         miniMapRendered: 'unknown',
@@ -4138,6 +4370,7 @@
     patchTurnMountState: (turnId, partialMountState, opts = {}) => patchTurnMountState(turnId, partialMountState, opts),
     getChatAtlasLedgerSnapshot,
     getChatAtlasLedgerDiagnostics,
+    getChatAtlasHistoricalCompleteness,
     getChatAtlasConvergenceParity,
     subscribeChatAtlasLedger,
     getChatAtlasCanonicalSource,

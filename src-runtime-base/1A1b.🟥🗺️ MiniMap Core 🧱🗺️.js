@@ -123,6 +123,12 @@ function UM_PUBLIC() {
     rebuildInFlight: false,
     rebuildQueuedReason: '',
     lastRebuildResult: null,
+    lastCoreProjectionChatKey: '',
+    lastCacheMergeChatKey: '',
+    lastCachePersistenceChatKey: '',
+    lastCoreProjectedTotal: null,
+    lastCacheMergeDecision: null,
+    lastCachePersistenceDecision: null,
     lastActiveIndex: 0,
     gutterSyncQueue: new Map(),
     gutterSyncRaf: 0,
@@ -2956,19 +2962,125 @@ function UM_PUBLIC() {
     return { qIds, unresolvedCount };
   }
 
+  function boundedCacheMergeDecision(decision = null) {
+    if (!decision || typeof decision !== 'object') return null;
+    const cachedCount = Math.max(0, Number(decision.cachedCount || 0) || 0);
+    const liveCount = Math.max(0, Number(decision.liveCount || 0) || 0);
+    const outputCount = Math.max(0, Number(decision.outputCount || 0) || 0);
+    return Object.freeze({
+      accepted: decision.accepted === true,
+      mode: String(decision.mode || 'unknown'),
+      cachedCount,
+      liveCount,
+      outputCount,
+      overlapCount: Math.max(0, Number(decision.overlapCount || 0) || 0),
+      sanitizedRows: Math.max(0, Number(decision.sanitizedRows || 0) || 0),
+      reason: String(decision.reason || ''),
+      completeness: decision.mode === 'union' && outputCount > liveCount
+        ? 'incomplete'
+        : 'unknown',
+    });
+  }
+
+  function rememberCacheMergeDecision(chatId = '', decision = null) {
+    const chatKey = String(chatId || resolveChatId() || '').trim();
+    S.lastCacheMergeChatKey = chatKey;
+    S.lastCacheMergeDecision = boundedCacheMergeDecision(decision);
+    if (S.lastCacheMergeDecision) {
+      S.lastCoreProjectionChatKey = chatKey;
+      S.lastCoreProjectedTotal = S.lastCacheMergeDecision.liveCount;
+    }
+    return decision;
+  }
+
+  function boundedCachePersistenceDecision(result = null) {
+    if (!result || typeof result !== 'object') return null;
+    const previousRaw = result.previousTurnsCount ?? result.existingCount;
+    const incomingRaw = result.turnsCount ?? result.incomingCount;
+    const previousCount = Number.isFinite(Number(previousRaw))
+      ? Math.max(0, Number(previousRaw))
+      : null;
+    const incomingCount = Number.isFinite(Number(incomingRaw))
+      ? Math.max(0, Number(incomingRaw))
+      : null;
+    const proofAccepted = !!result.shrinkProof;
+    return Object.freeze({
+      ok: result.ok === true,
+      status: String(result.status || 'unknown'),
+      previousCount,
+      incomingCount,
+      proofAccepted,
+      reason: String(
+        result.proofReason
+        || result.shrinkProof?.cause
+        || result.reason
+        || result.status
+        || ''
+      ),
+    });
+  }
+
+  function rememberCachePersistenceDecision(chatId = '', result = null) {
+    const chatKey = String(chatId || resolveChatId() || '').trim();
+    S.lastCachePersistenceChatKey = chatKey;
+    S.lastCachePersistenceDecision = boundedCachePersistenceDecision(result);
+    return result;
+  }
+
+  function getCacheCompletenessDiagnostics() {
+    const chatKey = String(resolveChatId() || '').trim() || null;
+    const mergeSameChat = !!chatKey && chatKey === S.lastCacheMergeChatKey;
+    const persistenceSameChat = !!chatKey && chatKey === S.lastCachePersistenceChatKey;
+    const projectionSameChat = !!chatKey && chatKey === S.lastCoreProjectionChatKey;
+    const lastMergeDecision = mergeSameChat
+      ? boundedCacheMergeDecision(S.lastCacheMergeDecision)
+      : null;
+    const lastPersistenceDecision = persistenceSameChat
+      ? boundedCachePersistenceDecision(S.lastCachePersistenceDecision)
+      : null;
+    const publishedTurnCount = Math.max(0, Number(S.turnList.length || 0) || 0);
+    const observedTurnCount = projectionSameChat && Number.isFinite(Number(S.lastCoreProjectedTotal))
+      ? Math.max(0, Number(S.lastCoreProjectedTotal))
+      : null;
+    let cachedTurnCount = null;
+    if (lastPersistenceDecision) {
+      cachedTurnCount = lastPersistenceDecision.ok
+        ? lastPersistenceDecision.incomingCount
+        : lastPersistenceDecision.previousCount;
+    }
+    if (cachedTurnCount == null) cachedTurnCount = lastMergeDecision?.cachedCount ?? null;
+    const retainedBase = Math.max(
+      publishedTurnCount,
+      Number.isFinite(Number(cachedTurnCount)) ? Number(cachedTurnCount) : 0,
+    );
+    const offDomRetainedCount = observedTurnCount == null
+      ? null
+      : Math.max(0, retainedBase - observedTurnCount);
+    return Object.freeze({
+      chatKey,
+      cachedTurnCount,
+      publishedTurnCount,
+      observedTurnCount,
+      offDomRetainedCount,
+      lastMergeDecision,
+      lastPersistenceDecision,
+    });
+  }
+
   function saveTurnCache(chatId = '', turns = [], opts = {}) {
     const id = String(chatId || resolveChatId()).trim();
-    if (!id) return { ok: false, status: 'chat-id-missing' };
+    const finish = (result) => rememberCachePersistenceDecision(id, result);
+    if (!id) return finish({ ok: false, status: 'chat-id-missing' });
 
     const turnsKey = keyTurnCacheTurns(id);
     const metaKey = keyTurnCacheMeta(id);
-    if (!turnsKey || !metaKey) return { ok: false, status: 'key-missing' };
+    if (!turnsKey || !metaKey) return finish({ ok: false, status: 'key-missing' });
 
     const existingRawTurns = storageGetJSON(turnsKey, null);
     const existingRawMeta = storageGetJSON(metaKey, null);
     const existingRows = enrichCacheTurnRowsFromPagination(existingRawTurns);
     const rows = enrichCacheTurnRowsFromPagination(turns);
-    if (!rows.length) return { ok: false, status: 'turns-empty', turnsCount: 0 };
+    if (!rows.length) return finish({ ok: false, status: 'turns-empty', turnsCount: 0 });
 
     const proof = validateAuthoritativeShrinkProof(opts?.shrinkProof, {
       chatId: id,
@@ -2983,7 +3095,7 @@ function UM_PUBLIC() {
         && missingQIds.length > 0
         && missingQIds.every((qId) => removals.has(qId));
       if (!proofCoversMissing) {
-        return {
+        return finish({
           ok: false,
           status: 'shrink-not-proven',
           chatId: id,
@@ -2993,7 +3105,7 @@ function UM_PUBLIC() {
           unresolvedMissingCount: Number(missingMembership.unresolvedCount || 0),
           proofReason: String(proof.reason || 'shrink-proof-missing'),
           writesAttempted: 0,
-        };
+        });
       }
     }
 
@@ -3013,7 +3125,7 @@ function UM_PUBLIC() {
     const okTurns = storageSetJSON(turnsKey, rows);
     const okMeta = storageSetJSON(metaKey, meta);
     const ok = !!(okTurns && okMeta);
-    return {
+    return finish({
       ok,
       status: ok ? 'ok' : 'storage-failed',
       meta,
@@ -3024,7 +3136,7 @@ function UM_PUBLIC() {
         removedQIds: proof.removedQIds.slice(),
         freshness: proof.freshness,
       } : null,
-    };
+    });
   }
 
   // Durable MiniMap turn ledger: merge the freshly indexed turn list with the
@@ -3092,7 +3204,10 @@ function UM_PUBLIC() {
       sanitizedRows: Number(cached?.normalization?.sanitizedRows || 0),
       reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
-    if (!cachedRows.length) return { list: liveList, decision };
+    if (!cachedRows.length) {
+      rememberCacheMergeDecision(chatId, decision);
+      return { list: liveList, decision };
+    }
 
     const proof = validateAuthoritativeShrinkProof(evidence?.shrinkProof, {
       chatId: String(chatId || '').trim(),
@@ -3139,6 +3254,7 @@ function UM_PUBLIC() {
       decision.mode = 'live-wins';
       decision.reason = 'complete-overlap-refresh';
     }
+    rememberCacheMergeDecision(chatId, decision);
     return { list: out, decision };
   }
 
@@ -4195,6 +4311,8 @@ function UM_PUBLIC() {
       records = [];
     }
     if (!Array.isArray(records) || !records.length) return null;
+    S.lastCoreProjectionChatKey = String(resolveChatId() || '').trim();
+    S.lastCoreProjectedTotal = records.length;
 
     const list = [];
     const byId = new Map();
@@ -8898,6 +9016,7 @@ function unbindChatPageDividerBridge() {
     loadTurnCache,
     clearTurnCache,
     saveTurnCache,
+    getCacheCompletenessDiagnostics,
     getManualDividers: getMiniDividers,
     getManualDividerById: getMiniDividerById,
     getManualDividerByAfterTurn: getMiniDividerByAfterTurn,
