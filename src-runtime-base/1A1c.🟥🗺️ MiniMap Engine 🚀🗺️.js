@@ -2976,6 +2976,8 @@
       let actualTurnId = '';
       let actualQuestionId = '';
       let actualPrimaryAId = '';
+      let actualWrapperPrimaryAId = '';
+      let actualQuestionPrimaryAId = '';
 
       if (!btn) {
         reasons.push(candidates.length > 1 ? 'duplicate-turn-buttons' : 'button-missing');
@@ -2988,13 +2990,17 @@
           btn.dataset?.questionId || wrap?.dataset?.questionId || qBtn?.dataset?.questionId || '',
         );
         actualPrimaryAId = normalizeNavId(btn.dataset?.primaryAId || '');
+        actualWrapperPrimaryAId = normalizeNavId(wrap?.dataset?.primaryAId || '');
+        actualQuestionPrimaryAId = normalizeNavId(qBtn?.dataset?.primaryAId || '');
 
         if (actualTurnNo !== turnNo) reasons.push('turn-no-mismatch');
         if (expectedTurnId && actualTurnId !== expectedTurnId) reasons.push('turn-key-mismatch');
         if (expectedQuestionId && actualQuestionId !== expectedQuestionId) reasons.push('question-id-mismatch');
         if (expectedPrimaryAId) {
           if (actualPrimaryAId !== expectedPrimaryAId) reasons.push('primary-id-mismatch');
-        } else if (noAnswer && actualPrimaryAId) {
+        } else if (noAnswer && (
+          actualPrimaryAId || actualWrapperPrimaryAId || actualQuestionPrimaryAId
+        )) {
           reasons.push('no-answer-primary-present');
         }
       }
@@ -3008,6 +3014,8 @@
           actualQuestionId,
           expectedPrimaryAId,
           actualPrimaryAId,
+          actualWrapperPrimaryAId,
+          actualQuestionPrimaryAId,
           reasons,
         });
       }
@@ -3812,6 +3820,8 @@
     if (probeId && !findAnswerById(probeId)) return true;
     const paginationCoverage = cacheResult?.paginationCoverage || getPaginationCoverageDetail();
     if (paginationCoverage?.applicable && !paginationCoverage?.ok) return true;
+    const identityAlignment = readMiniMapIdentityAlignment();
+    if (identityAlignment?.available && identityAlignment?.missing) return true;
     return false;
   }
 

@@ -684,6 +684,56 @@ function UM_PUBLIC() {
     );
   }
 
+  const MINI_MAP_NO_ANSWER_ATTR = 'data-cgxui-no-answer';
+
+  function isCanonicalNoAnswerRecord(record = null) {
+    if (!record || typeof record !== 'object') return false;
+    if (record.noAnswer === true || record.hasAssistant === false) return true;
+    const answerIds = Array.isArray(record.answerIds) ? record.answerIds : null;
+    const primaryAId = String(record.primaryAId || record.answerId || '').trim();
+    return !!answerIds && answerIds.length === 0 && !primaryAId;
+  }
+
+  function bareMiniMapTurnIdentity(turnId = '') {
+    const value = String(turnId || '').trim();
+    if (value.startsWith('turn:a:')) return value.slice(7).trim();
+    if (value.startsWith('turn:')) return value.slice(5).trim();
+    return value;
+  }
+
+  function isValidMiniMapAnswerCandidate(candidate, { turnId = '', questionId = '' } = {}) {
+    const value = String(candidate || '').trim();
+    if (!value || value.startsWith('turn:')) return false;
+
+    const turnKey = String(turnId || '').trim();
+    const questionKey = String(questionId || '').trim();
+    const forbidden = new Set([
+      turnKey,
+      bareMiniMapTurnIdentity(turnKey),
+      questionKey,
+    ].filter(Boolean));
+    if (forbidden.has(value)) return false;
+
+    const api = getTurnRuntimeApi();
+    try {
+      if (api?.getTurnRecordByTurnId?.(value)) return false;
+      if (api?.getTurnRecordByQId?.(value)) return false;
+    } catch {}
+    return true;
+  }
+
+  function getSharedTurnRecordByIdentity(kind, anyId) {
+    const api = getTurnRuntimeApi();
+    const key = String(anyId || '').trim();
+    if (!api || !key) return null;
+    try {
+      if (kind === 'turn') return api.getTurnRecordByTurnId?.(key) || null;
+      if (kind === 'question') return api.getTurnRecordByQId?.(key) || null;
+      if (kind === 'answer') return api.getTurnRecordByAId?.(key) || null;
+    } catch {}
+    return null;
+  }
+
   function resolveQaRowCanonicalMeta(turn = null, { btn = null, wrap = null, qBtn = null, primaryAId = '' } = {}) {
     const directTurnId = String(
       turn?.turnId ||
@@ -699,7 +749,6 @@ function UM_PUBLIC() {
       qBtn?.dataset?.primaryAId ||
       wrap?.dataset?.primaryAId ||
       btn?.dataset?.primaryAId ||
-      btn?.dataset?.id ||
       ''
     ).trim();
     const cachedQuestionId = String(
@@ -719,16 +768,31 @@ function UM_PUBLIC() {
       0
     ) || 0);
 
-    let record = null;
-    for (const key of [directAnswerId, directTurnId, cachedQuestionId]) {
-      if (!key) continue;
-      record = getSharedTurnRecordByAnyId(key);
-      if (record) break;
+    let record = getSharedTurnRecordByIdentity('turn', directTurnId);
+    if (!record) record = getSharedTurnRecordByIdentity('question', cachedQuestionId);
+    const directAnswerCandidate = isValidMiniMapAnswerCandidate(directAnswerId, {
+      turnId: directTurnId,
+      questionId: cachedQuestionId,
+    }) ? directAnswerId : '';
+    if (!record && directAnswerCandidate) {
+      record = getSharedTurnRecordByIdentity('answer', directAnswerCandidate);
     }
 
     const canonicalQuestionId = String(record?.qId || record?.questionId || '').trim();
-    const turnId = String(record?.turnId || directTurnId).trim();
-    const answerId = String(record?.primaryAId || record?.answerId || directAnswerId).trim();
+    const questionId = String(canonicalQuestionId || cachedQuestionId).trim();
+    const noAnswer = isCanonicalNoAnswerRecord(record || turn);
+    const turnId = String(
+      record?.turnId ||
+      directTurnId ||
+      (noAnswer && questionId ? `turn:${questionId}` : '')
+    ).trim();
+    const answerId = noAnswer
+      ? ''
+      : String(record?.primaryAId || record?.answerId || (
+          isValidMiniMapAnswerCandidate(directAnswerCandidate, { turnId, questionId })
+            ? directAnswerCandidate
+            : ''
+        )).trim();
     if (!turnIdx) {
       turnIdx = Math.max(0, Number(record?.turnNo || record?.idx || record?.index || 0) || 0);
     }
@@ -737,9 +801,11 @@ function UM_PUBLIC() {
       record,
       turnId,
       answerId,
-      questionId: String(canonicalQuestionId || cachedQuestionId).trim(),
+      questionId,
       canonicalQuestionId,
       cachedQuestionId,
+      noAnswer,
+      hasAssistant: noAnswer ? false : record?.hasAssistant,
       turnIdx,
       questionEl: record?.questionEl || record?.qEl || record?.live?.qEl || turn?.questionEl || turn?.qEl || turn?.live?.qEl || null,
     };
@@ -782,7 +848,7 @@ function UM_PUBLIC() {
     const turnIdx = Math.max(0, Number(meta?.turnIdx || turn?.index || 0) || 0);
     const questionId = String(meta?.questionId || '').trim();
     const turnId = String(meta?.turnId || turn?.turnId || '').trim();
-    const answerId = String(meta?.answerId || turn?.answerId || turn?.primaryAId || '').trim();
+    const answerId = String(meta?.answerId || '').trim();
     const pageNum = Math.max(1, Math.ceil(Math.max(1, turnIdx || 1) / 25));
     wrap.dataset.turnIdx = String(turnIdx);
     wrap.dataset.pageNum = String(pageNum);
@@ -795,17 +861,26 @@ function UM_PUBLIC() {
     return wrap;
   }
 
-  function syncAnswerBtnMeta(btn, turn, band) {
+  function syncAnswerBtnMeta(btn, turn, band, qaMeta = null) {
     if (!btn) return null;
-    const turnId = String(turn?.turnId || '').trim();
-    const answerId = String(turn?.answerId || '').trim();
-    const idx = String(turn?.index || 0);
-    const pageNum = String(Math.max(1, Math.ceil(Math.max(1, Number(turn?.index || 0) || 1) / 25)));
-    const pageBand = String(band || getTurnPageBand(turn?.index || 0));
+    const meta = qaMeta || resolveQaRowCanonicalMeta(turn, {
+      btn,
+      wrap: getWrapForMiniBtn(btn),
+      primaryAId: turn?.answerId || turn?.primaryAId || '',
+    });
+    const turnId = String(meta?.turnId || turn?.turnId || '').trim();
+    const answerId = String(meta?.answerId || '').trim();
+    const idxNum = Math.max(0, Number(meta?.turnIdx || turn?.index || 0) || 0);
+    const idx = String(idxNum);
+    const pageNum = String(Math.max(1, Math.ceil(Math.max(1, idxNum || 1) / 25)));
+    const pageBand = String(band || getTurnPageBand(idxNum));
 
     btn.dataset.id = turnId;
     btn.dataset.turnId = turnId;
-    btn.dataset.primaryAId = answerId;
+    if (answerId) btn.dataset.primaryAId = answerId;
+    else delete btn.dataset.primaryAId;
+    if (meta?.noAnswer) btn.setAttribute(MINI_MAP_NO_ANSWER_ATTR, '1');
+    else btn.removeAttribute(MINI_MAP_NO_ANSWER_ATTR);
     btn.dataset.turnIdx = idx;
     btn.dataset.pageNum = pageNum;
     btn.dataset.pageBand = pageBand;
@@ -813,7 +888,7 @@ function UM_PUBLIC() {
     btn.setAttribute('aria-label', `Go to answer ${idx || ''}`);
 
     const num = btn.querySelector('.cgxui-mm-num');
-    if (num) num.textContent = String(turn?.index || '');
+    if (num) num.textContent = String(idxNum || '');
     return btn;
   }
 
@@ -821,7 +896,7 @@ function UM_PUBLIC() {
     if (!qBtn) return null;
     const meta = qaMeta || resolveQaRowCanonicalMeta(turn, { wrap: getWrapForMiniBtn(qBtn), qBtn });
     const turnId = String(meta?.turnId || turn?.turnId || '').trim();
-    const answerId = String(meta?.answerId || turn?.answerId || turn?.primaryAId || '').trim();
+    const answerId = String(meta?.answerId || '').trim();
     const questionId = String(meta?.questionId || '').trim();
     const idxNum = Math.max(0, Number(meta?.turnIdx || turn?.index || 0) || 0);
     const idx = String(idxNum);
@@ -902,7 +977,7 @@ function UM_PUBLIC() {
       const qaMeta = resolveQaRowCanonicalMeta(turn, { btn, wrap, primaryAId: turn?.answerId || turn?.primaryAId || '' });
       const band = getTurnPageBand(qaMeta?.turnIdx || turn.index);
 
-      syncAnswerBtnMeta(btn, turn, band);
+      syncAnswerBtnMeta(btn, turn, band, qaMeta);
       syncWrapMeta(wrap, turn, band, qaMeta);
 
       const qBtn = ensureQuestionBtnForWrap(wrap, turn, band, qaEnabled, qaMeta);
@@ -1198,7 +1273,7 @@ function UM_PUBLIC() {
     const bg = colorName ? (COLOR_BY_NAME[colorName] || null) : (liveBg || null);
     return {
       matchedKey,
-      answerId: String(meta?.answerId || primaryAId || '').trim(),
+      answerId: String(meta?.answerId || '').trim(),
       questionId,
       stableQuestionId,
       turnId,
@@ -2365,14 +2440,48 @@ function UM_PUBLIC() {
 
   function normalizeCacheTurnRow(raw, fallbackIdx = 0) {
     const i = Math.max(1, Number(raw?.idx || raw?.index || fallbackIdx || 1) || 1);
-    const answerId = String(raw?.answerId || raw?.primaryAId || raw?.aId || '').trim();
-    const turnId = String(raw?.turnId || raw?.id || (answerId ? `turn:a:${answerId}` : `turn:${i}`)).trim();
+    let questionId = String(raw?.questionId || raw?.qId || '').trim();
+    let turnId = String(raw?.turnId || raw?.id || '').trim();
+    let answerId = String(raw?.answerId || raw?.primaryAId || raw?.aId || '').trim();
+
+    let record = getSharedTurnRecordByIdentity('turn', turnId);
+    if (!record) record = getSharedTurnRecordByIdentity('question', questionId);
+    if (!record && isValidMiniMapAnswerCandidate(answerId, { turnId, questionId })) {
+      record = getSharedTurnRecordByIdentity('answer', answerId);
+    }
+
+    questionId = String(record?.qId || record?.questionId || questionId).trim();
+    const noAnswer = isCanonicalNoAnswerRecord(record)
+      || raw?.noAnswer === true
+      || raw?.hasAssistant === false;
+    turnId = String(
+      record?.turnId ||
+      turnId ||
+      (noAnswer && questionId ? `turn:${questionId}` : '')
+    ).trim();
+
+    if (noAnswer) {
+      answerId = '';
+      if (questionId) turnId = `turn:${questionId}`;
+    } else {
+      const canonicalAnswerId = String(record?.primaryAId || record?.answerId || '').trim();
+      answerId = canonicalAnswerId || (
+        isValidMiniMapAnswerCandidate(answerId, { turnId, questionId }) ? answerId : ''
+      );
+    }
+    if (!turnId) {
+      turnId = answerId ? `turn:a:${answerId}` : (questionId ? `turn:${questionId}` : `turn:${i}`);
+    }
     if (!turnId) return null;
     return {
       idx: i,
       turnId,
       answerId,
       primaryAId: answerId,
+      questionId,
+      qId: questionId,
+      noAnswer,
+      hasAssistant: noAnswer ? false : (raw?.hasAssistant ?? record?.hasAssistant),
     };
   }
 
@@ -2410,6 +2519,7 @@ function UM_PUBLIC() {
     }
 
     return base.map((row, idx) => {
+      if (row?.noAnswer === true) return row;
       const answerId = normalizePaginationAnswerId(row?.answerId || row?.primaryAId || row?.aId || '');
       const turnId = String(row?.turnId || row?.id || '').trim();
       const canonicalTurn =
@@ -2422,13 +2532,13 @@ function UM_PUBLIC() {
       const nextAnswerId = normalizePaginationAnswerId(canonicalTurn?.answerId || canonicalTurn?.primaryAId || answerId);
       const nextTurnId = String(canonicalTurn?.turnId || turnId || '').trim();
 
-      return {
+      return normalizeCacheTurnRow({
         ...row,
         idx: Math.max(1, Number(row?.idx || row?.index || idx + 1) || idx + 1),
         turnId: nextTurnId || turnId,
         answerId: nextAnswerId || answerId,
         primaryAId: nextAnswerId || answerId,
-      };
+      }, idx + 1);
     });
   }
 
@@ -2715,6 +2825,11 @@ function UM_PUBLIC() {
       byKey.set(key, {
         turnId: String(row?.turnId || '').trim(),
         answerId: String(row?.primaryAId || row?.answerId || '').trim(),
+        primaryAId: String(row?.primaryAId || row?.answerId || '').trim(),
+        questionId: String(row?.questionId || row?.qId || '').trim(),
+        qId: String(row?.questionId || row?.qId || '').trim(),
+        noAnswer: row?.noAnswer === true || row?.hasAssistant === false,
+        hasAssistant: row?.noAnswer === true || row?.hasAssistant === false ? false : row?.hasAssistant,
         index: 0,
         el: null,
       });
@@ -2776,10 +2891,22 @@ function UM_PUBLIC() {
         if (!turnId) continue;
         const answerId = String(row?.primaryAId || row?.answerId || '').trim();
         const idx = Math.max(1, Number(row?.idx || 0) || (list.length + 1));
-        const turn = { turnId, answerId, index: idx, el: null };
+        const questionId = String(row?.questionId || row?.qId || '').trim();
+        const noAnswer = row?.noAnswer === true || row?.hasAssistant === false;
+        const turn = {
+          turnId,
+          answerId: noAnswer ? '' : answerId,
+          primaryAId: noAnswer ? '' : answerId,
+          questionId,
+          qId: questionId,
+          noAnswer,
+          hasAssistant: noAnswer ? false : row?.hasAssistant,
+          index: idx,
+          el: null,
+        };
         list.push(turn);
         byId.set(turnId, turn);
-        if (answerId) byAId.set(answerId, turnId);
+        if (turn.answerId) byAId.set(turn.answerId, turnId);
       }
 
       if (!list.length) {
@@ -3444,25 +3571,49 @@ function UM_PUBLIC() {
   }
 
   function projectSharedTurnRecord(record, fallbackIndex = 0) {
-    const turnId = String(record?.turnId || '').trim();
-    if (!turnId) return null;
-    const answerId = String(record?.primaryAId || record?.answerId || '').trim();
+    const noAnswer = isCanonicalNoAnswerRecord(record);
     const questionId = String(record?.qId || record?.questionId || '').trim();
+    const turnId = String(record?.turnId || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
+    if (!turnId) return null;
+    const answerId = noAnswer ? '' : String(record?.primaryAId || record?.answerId || '').trim();
     const index = Math.max(1, Number(record?.turnNo || record?.idx || fallbackIndex || 1) || 1);
     const el = record?.live?.primaryAEl || record?.primaryAEl || null;
     const questionEl = record?.live?.qEl || record?.qEl || null;
-    return { turnId, answerId, questionId, index, el: el || null, questionEl: questionEl || null };
+    return {
+      turnId,
+      answerId,
+      primaryAId: answerId,
+      questionId,
+      qId: questionId,
+      noAnswer,
+      hasAssistant: noAnswer ? false : record?.hasAssistant,
+      index,
+      el: el || null,
+      questionEl: questionEl || null,
+    };
   }
 
   function projectCanonicalTurnRecord(record, fallbackIndex = 0) {
-    const turnId = String(record?.turnId || record?.id || '').trim();
-    if (!turnId) return null;
-    const answerId = String(record?.answerId || record?.primaryAId || record?.aId || '').trim();
+    const noAnswer = isCanonicalNoAnswerRecord(record);
     const questionId = String(record?.questionId || record?.qId || '').trim();
+    const turnId = String(record?.turnId || record?.id || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
+    if (!turnId) return null;
+    const answerId = noAnswer ? '' : String(record?.answerId || record?.primaryAId || record?.aId || '').trim();
     const index = Math.max(1, Number(record?.index || record?.idx || record?.turnNo || fallbackIndex || 1) || 1);
     const el = record?.el || record?.primaryAEl || record?.answerEl || record?.live?.primaryAEl || null;
     const questionEl = record?.questionEl || record?.qEl || record?.live?.qEl || null;
-    return { turnId, answerId, questionId, index, el: el || null, questionEl: questionEl || null };
+    return {
+      turnId,
+      answerId,
+      primaryAId: answerId,
+      questionId,
+      qId: questionId,
+      noAnswer,
+      hasAssistant: noAnswer ? false : record?.hasAssistant,
+      index,
+      el: el || null,
+      questionEl: questionEl || null,
+    };
   }
 
   function getPublishedTurnByIdMap() {

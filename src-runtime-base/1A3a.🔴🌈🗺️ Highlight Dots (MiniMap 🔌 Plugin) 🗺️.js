@@ -650,6 +650,7 @@
     if (!next) return Object.keys(out).length ? out : null;
 
     for (const [key, value] of Object.entries(next)) {
+      if (key === 'answerId' || key === 'primaryAId') continue;
       if (value == null) continue;
       if (typeof value === 'string') {
         if (!String(value || '').trim()) continue;
@@ -666,8 +667,15 @@
     const answerId = String(next?.answerId || next?.primaryAId || '').trim();
     const questionId = String(next?.questionId || next?.qId || '').trim();
     const turnId = String(next?.turnId || next?.id || '').trim();
+    const isTurnOrQuestionIdentity = (value) => {
+      const id = String(value || '').trim();
+      if (!id || id.startsWith('turn:')) return true;
+      const qId = String(questionId || out?.questionId || out?.qId || '').trim();
+      const tId = String(turnId || out?.turnId || out?.id || '').trim();
+      return id === qId || id === tId || (tId.startsWith('turn:') && id === tId.slice(5));
+    };
 
-    if (answerId) {
+    if (answerId && !isTurnOrQuestionIdentity(answerId)) {
       if (!String(out?.answerId || '').trim()) out.answerId = answerId;
       if (!String(out?.primaryAId || '').trim()) out.primaryAId = answerId;
     }
@@ -678,6 +686,12 @@
     if (turnId) {
       if (!String(out?.turnId || '').trim()) out.turnId = turnId;
       if (!String(out?.id || '').trim()) out.id = turnId;
+    }
+
+    const mergedAnswerId = String(out?.answerId || out?.primaryAId || '').trim();
+    if (mergedAnswerId && isTurnOrQuestionIdentity(mergedAnswerId)) {
+      delete out.answerId;
+      delete out.primaryAId;
     }
 
     return Object.keys(out).length ? out : null;
@@ -691,7 +705,6 @@
     let merged = mergeDotTurnRecord(null, direct);
     const hasRichIdentity = (record) => (
       !!String(record?.turnId || record?.id || '').trim()
-      && !!String(record?.answerId || record?.primaryAId || '').trim()
       && !!String(record?.questionId || record?.qId || '').trim()
     );
     const accept = (candidate) => {
@@ -748,23 +761,45 @@
   }
 
   function resolveDotPrimaryId(anyId = '', btn = null) {
+    const wrap = btn?.closest?.(SEL_.MM_WRAP) || null;
+    const qBtn = getQuestionBtnForWrap(wrap);
+    const isAnswerIdentity = (candidate, record = null) => {
+      const value = String(candidate || '').trim();
+      if (!value || value.startsWith('turn:')) return false;
+      const meta = record || resolveDotCanonicalMeta(value) || null;
+      const questionId = String(
+        meta?.questionId || meta?.qId ||
+        qBtn?.dataset?.questionId || wrap?.dataset?.questionId || btn?.dataset?.questionId || ''
+      ).trim();
+      const turnId = String(
+        meta?.turnId || meta?.id ||
+        qBtn?.dataset?.turnId || btn?.dataset?.turnId || btn?.dataset?.id || wrap?.dataset?.turnId || ''
+      ).trim();
+      if (value === questionId || value === turnId) return false;
+      if (turnId.startsWith('turn:') && value === turnId.slice(5)) return false;
+      return true;
+    };
+
     const fromBtn = String(
       btn?.dataset?.primaryAId ||
       btn?.getAttribute?.(ATTR_.PRIMARY_A_ID) ||
       btn?.getAttribute?.('data-primary-a-id') ||
       ''
     ).trim();
-    if (fromBtn) return canonicalizeDotAnswerId(fromBtn) || normalizeDotId(fromBtn) || fromBtn;
+    if (isAnswerIdentity(fromBtn)) {
+      return canonicalizeDotAnswerId(fromBtn) || normalizeDotId(fromBtn) || fromBtn;
+    }
 
     const row = resolveDotTurnRecord(anyId);
     const fromRow = String(row?.answerId || row?.primaryAId || '').trim();
-    if (fromRow) return canonicalizeDotAnswerId(fromRow) || normalizeDotId(fromRow) || fromRow;
+    if (isAnswerIdentity(fromRow, row)) {
+      return canonicalizeDotAnswerId(fromRow) || normalizeDotId(fromRow) || fromRow;
+    }
 
     const raw = String(anyId || '').replace(/^conversation-turn-/, '').trim();
-    if (!raw) return '';
+    if (!isAnswerIdentity(raw, row)) return '';
     const canonical = canonicalizeDotAnswerId(raw);
-    if (canonical) return canonical;
-    if (raw.startsWith('turn:a:')) return normalizeDotId(raw);
+    if (canonical && isAnswerIdentity(canonical, row)) return canonical;
     return normalizeDotId(raw) || raw;
   }
 
@@ -1594,10 +1629,6 @@ ${dotSel}{
         host.setAttribute(ATTR_.TURN_ID, turnId);
         host.dataset.turnId = turnId;
       }
-      if (primaryId) {
-        host.setAttribute(ATTR_.PRIMARY_A_ID, primaryId);
-        host.dataset.primaryAId = primaryId;
-      }
       if (questionId) {
         host.setAttribute(ATTR_.QUESTION_ID, questionId);
         host.dataset.questionId = questionId;
@@ -1605,11 +1636,9 @@ ${dotSel}{
     }
     if (btn) {
       if (turnId) btn.dataset.turnId = turnId;
-      if (primaryId) btn.dataset.primaryAId = primaryId;
     }
     if (qBtn) {
       if (turnId) qBtn.dataset.turnId = turnId;
-      if (primaryId) qBtn.dataset.primaryAId = primaryId;
       if (questionId) qBtn.dataset.questionId = questionId;
     }
 
@@ -1966,7 +1995,16 @@ ${dotSel}{
   let STATE_DOTS_REPAINT_RAF = 0;
   function repaintDotsForBtn(btn) {
     if (!btn) return false;
-    const id = resolveDotPrimaryId('', btn);
+    const wrap = btn?._h2oHost || btn.closest?.(SEL_.MM_WRAP) || null;
+    const qBtn = getQuestionBtnForWrap(wrap);
+    const id = String(
+      resolveDotPrimaryId('', btn) ||
+      btn?.dataset?.turnId ||
+      btn?.dataset?.id ||
+      qBtn?.dataset?.questionId ||
+      wrap?.dataset?.questionId ||
+      ''
+    ).trim();
     if (!id) return false;
     syncMiniMapDot(id);
     return true;
