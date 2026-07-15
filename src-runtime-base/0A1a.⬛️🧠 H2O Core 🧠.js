@@ -2572,6 +2572,7 @@
   function chatAtlasConvergenceLedgerRow(member) {
     const answerAliases = Array.from(member?.answer?.aliases || []).map(chatAtlasNormalizeId).filter(Boolean);
     const questionAliases = Array.from(member?.question?.aliases || []).map(chatAtlasNormalizeId).filter(Boolean);
+    const currentAnswerIds = Array.from(member?.answer?.currentAnswerIds || []).map(chatAtlasNormalizeId).filter(Boolean);
     const qId = chatAtlasNormalizeId(member?.question?.qId) || null;
     const primaryAId = chatAtlasNormalizeId(member?.answer?.primaryAId) || null;
     const allIds = chatAtlasConvergenceIds([qId, primaryAId, ...answerAliases, ...questionAliases]);
@@ -2586,6 +2587,8 @@
         noAnswer: !!member?.noAnswer,
         qId,
         primaryAId,
+        currentAnswerIds,
+        currentProjectionSource: String(member?.answer?.currentProjectionSource || ''),
         answerAliases,
         questionAliases,
         hydration: String(member?.hydration || 'none'),
@@ -2696,6 +2699,8 @@
         dataPrimaryAId,
         dataTurn,
         dataTurnId,
+        dataId,
+        dataQuestionId,
         dataPage,
         inferredTurnNo,
         inferredPageNo,
@@ -2706,6 +2711,7 @@
         resolvedTurnNo: null,
         resolvedLogicalMemberKey: null,
         mismatchReason: '',
+        primaryMismatchReason: '',
       },
       btn,
       allIds: chatAtlasConvergenceIds([dataPrimaryAId, dataTurnId, dataId, dataQuestionId]),
@@ -2734,6 +2740,38 @@
       return { index: fallbackIndex, basis: 'turn-order-fallback', candidates: [] };
     }
     return { index: -1, basis: available.length ? 'ambiguous-alias' : 'unmatched', candidates: available };
+  }
+
+  function chatAtlasConvergenceMiniMapPrimaryMismatch(ledger, canonical, box) {
+    const actualPrimaryAId = chatAtlasNormalizeId(box?.row?.dataPrimaryAId) || null;
+    const currentAnswerIds = Array.from(ledger?.row?.currentAnswerIds || []).map(chatAtlasNormalizeId).filter(Boolean);
+    const selectedCurrentAId = currentAnswerIds[currentAnswerIds.length - 1] || null;
+    const expectedPrimaryIds = Array.from(chatAtlasConvergenceIds([
+      canonical?.row?.primaryAId,
+      ledger?.row?.primaryAId,
+      selectedCurrentAId,
+    ]));
+    const noAnswer = canonical?.row?.noAnswer === true || ledger?.row?.noAnswer === true;
+    let reason = '';
+    if (noAnswer) {
+      if (actualPrimaryAId) reason = 'no-answer-minimap-primary-present';
+    } else if (!actualPrimaryAId || !expectedPrimaryIds.includes(actualPrimaryAId)) {
+      reason = 'minimap-primary-not-member-answer';
+    }
+    if (!reason) return null;
+    return {
+      turnNo: ledger?.row?.turnNo || canonical?.row?.turnNo || 0,
+      logicalMemberKey: ledger?.row?.logicalMemberKey || null,
+      qId: canonical?.row?.qId || ledger?.row?.qId || null,
+      canonicalPrimaryAId: canonical?.row?.primaryAId || null,
+      ledgerPrimaryAId: ledger?.row?.primaryAId || null,
+      currentAnswerIds,
+      expectedPrimaryIds,
+      actualMiniMapPrimaryAId: actualPrimaryAId,
+      miniMapTurnId: box?.row?.dataTurnId || null,
+      miniMapQuestionId: box?.row?.dataQuestionId || null,
+      reason,
+    };
   }
 
   function chatAtlasConvergenceWasherState(entry, btn, warnings) {
@@ -2827,6 +2865,9 @@
       const miniMapMissingBoxes = [];
       const miniMapUnexpectedBoxes = [];
       const miniMapOrderMismatches = [];
+      const miniMapPrimaryMismatches = [];
+      let noAnswerMiniMapPrimaryMismatchCount = 0;
+      let miniMapPrimaryNotMemberAnswerCount = 0;
       const washerMismatches = [];
       const washerAudit = [];
 
@@ -2836,6 +2877,7 @@
       const canonicalRows = canonicalEntries.map((entry) => entry.row);
       const canonicalOwners = chatAtlasConvergenceAliasOwners(canonicalEntries);
       const usedCanonical = new Set();
+      const canonicalByLedgerIndex = new Map();
       const ledgerReady = !!chatAtlasLedgerState.ready;
       const canonicalReady = canonicalRows.length > 0;
 
@@ -2854,6 +2896,7 @@
         }
         usedCanonical.add(match.index);
         const canonical = canonicalEntries[match.index];
+        canonicalByLedgerIndex.set(index, canonical);
         if (match.basis === 'turn-order-fallback' && ledger.allIds.size && canonical.allIds.size) {
           aliasMismatches.push({
             logicalMemberKey: ledger.row.logicalMemberKey,
@@ -2945,6 +2988,22 @@
         const ledger = ledgerEntries[match.index];
         box.row.resolvedTurnNo = ledger.row.turnNo;
         box.row.resolvedLogicalMemberKey = ledger.row.logicalMemberKey;
+        const primaryMismatch = chatAtlasConvergenceMiniMapPrimaryMismatch(
+          ledger,
+          canonicalByLedgerIndex.get(match.index) || null,
+          box,
+        );
+        if (primaryMismatch) {
+          box.row.primaryMismatchReason = primaryMismatch.reason;
+          if (primaryMismatch.reason === 'no-answer-minimap-primary-present') {
+            noAnswerMiniMapPrimaryMismatchCount += 1;
+          } else if (primaryMismatch.reason === 'minimap-primary-not-member-answer') {
+            miniMapPrimaryNotMemberAnswerCount += 1;
+          }
+          if (miniMapPrimaryMismatches.length < CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+            miniMapPrimaryMismatches.push(primaryMismatch);
+          }
+        }
         if (!boxesByLedgerIndex.has(match.index)) boxesByLedgerIndex.set(match.index, []);
         boxesByLedgerIndex.get(match.index).push(box);
         if (match.index !== index) {
@@ -3089,6 +3148,7 @@
         miniMapMissingBoxes,
         miniMapUnexpectedBoxes,
         miniMapOrderMismatches,
+        miniMapPrimaryMismatches,
         washerMismatches,
       ];
       if (countMismatches.length) blockers.push('count-mismatch');
@@ -3102,6 +3162,8 @@
       if (miniMapMissingBoxes.length) blockers.push('minimap-missing-boxes');
       if (miniMapUnexpectedBoxes.length) blockers.push('minimap-unexpected-boxes');
       if (miniMapOrderMismatches.length) blockers.push('minimap-order-mismatch');
+      if (noAnswerMiniMapPrimaryMismatchCount) blockers.push('no-answer-minimap-primary-present');
+      if (miniMapPrimaryNotMemberAnswerCount) blockers.push('minimap-primary-not-member-answer');
       if (washerMismatches.length) blockers.push('washer-mismatch');
 
       const unknown = !ledgerReady || !canonicalReady || !miniMapRendered;
@@ -3150,6 +3212,10 @@
         miniMapMissingBoxes,
         miniMapUnexpectedBoxes,
         miniMapOrderMismatches,
+        noAnswerMiniMapPrimaryMismatchCount,
+        miniMapPrimaryNotMemberAnswerCount,
+        miniMapPrimaryMismatchSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+        miniMapPrimaryMismatches,
         washerAudit,
         washerMismatches,
         miniMapRootSelector: miniMapRoot ? CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL : null,
@@ -3198,6 +3264,10 @@
         miniMapMissingBoxes: [],
         miniMapUnexpectedBoxes: [],
         miniMapOrderMismatches: [],
+        noAnswerMiniMapPrimaryMismatchCount: 'unknown',
+        miniMapPrimaryNotMemberAnswerCount: 'unknown',
+        miniMapPrimaryMismatchSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+        miniMapPrimaryMismatches: [],
         washerAudit: [],
         washerMismatches: [],
         ...safety,
