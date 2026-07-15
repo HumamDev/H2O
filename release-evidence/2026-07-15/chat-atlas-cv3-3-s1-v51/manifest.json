@@ -1,0 +1,107 @@
+{
+  "evidenceType": "cv3.3-s1-v5.1-final-manifest",
+  "status": "S1_EXECUTION_PASS_ROLLED_BACK_PENDING_ACCEPTANCE_REVIEW",
+  "exportedAt": "2026-07-15T12:40:43.880Z",
+  "runId": "cv3-cb41972e-79e8-43a0-b9cf-d8b178f6122a",
+  "scenarioId": "CV3.3-S1-v51-cb41972e",
+  "route": "/g/g-p-677c1e3e52ec81918b7ca055bf38d591/c/69190448-17a4-8330-8e9f-113bf8830167",
+  "commit": "d8db1b35a62c43c57e1f905f6d9686349af20ef0",
+  "harness": {
+    "version": "cv3.2-canary-harness-v5.1",
+    "evidenceSchema": 5
+  },
+  "helper": {
+    "version": "cv3.3-navigation-spot-check-v1",
+    "labels": [
+      "START",
+      "ledger-ready",
+      "oldest",
+      "middle",
+      "newest"
+    ],
+    "snapshotCount": 5
+  },
+  "stageResults": {
+    "P0": true,
+    "P1": true,
+    "P2": true,
+    "P3": true,
+    "P4": true,
+    "P8": true
+  },
+  "p4": {
+    "gates": {
+      "aliasesClean": true,
+      "convergenceClean": true,
+      "countsAgree": true,
+      "dualRunExact": true,
+      "finalPrimaryPublishedByMiniMap": true,
+      "ledgerSource": true,
+      "logicalMembershipStable": true,
+      "miniMapAligned": true,
+      "movementCoverageComplete": true,
+      "noIdleRebuildLoop": true,
+      "noInstrumentationError": true
+    },
+    "stable": true,
+    "trueMismatchCount": 0,
+    "acceptedHydrationPromotionCount": 0,
+    "rawFingerprintMatching": true,
+    "semanticFingerprintMatching": true,
+    "finalPrimaryPublished": true
+  },
+  "p8": {
+    "changed": true,
+    "evidenceDegraded": false,
+    "emergencyRollbackRequired": false,
+    "rollbackEquivalent": true,
+    "exactTransitionCount": 83,
+    "trueFailingRowCount": 0
+  },
+  "finalRuntime": {
+    "source": {
+      "active": "legacy-durable-cache",
+      "effective": "legacy-durable-cache",
+      "default": "legacy-durable-cache",
+      "persisted": false,
+      "switchCount": 2,
+      "lastSourceSwitch": {
+        "from": "chat-atlas-ledger",
+        "to": "legacy-durable-cache",
+        "timestamp": "2026-07-15T12:31:54.645Z",
+        "reason": "operator"
+      }
+    },
+    "counts": {
+      "canonical": 83,
+      "ledger": 83,
+      "miniMap": 83,
+      "mapButtons": 83,
+      "turnById": 83,
+      "coreTurnList": 83
+    },
+    "paginationEnabled": false
+  },
+  "authorization": {
+    "p5ThroughP10": false,
+    "broaderCV33Progression": false,
+    "productionDefaultFlip": false
+  },
+  "entries": [
+    {
+      "name": "cv3-3-s1-v51-harness-export.json",
+      "bytes": 37369,
+      "sha256": "1e9a783f306301ad515edf9f5adedd538e125b229a9ba67cfc8d29e78e13d1e8"
+    },
+    {
+      "name": "cv3-3-s1-v51-helper-export.json",
+      "bytes": 8248,
+      "sha256": "fbb12e637dcb3306d0719fbace997ec9d1f513ba76263a2929d709d7db6e3d27"
+    },
+    {
+      "name": "cv3-3-s1-v51-storage-evidence.json",
+      "bytes": 178679,
+      "sha256": "bcbd86f677a9f8862c2b0353c554c19bf0aef016b2a4cea119e84bfbd0810bb5"
+    }
+  ]
+}
