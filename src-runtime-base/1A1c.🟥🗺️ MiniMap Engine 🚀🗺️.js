@@ -2904,11 +2904,17 @@
         || '',
       ).trim();
       if (firstId) {
-        firstVisibleIdentityMatches = turnList.some((turn) => {
-          const id = String(turn?.answerId || turn?.primaryAId || turn?.aId || turn?.id || '')
-            .replace(/^turn:/, '');
-          return id === firstId;
-        });
+        firstVisibleIdentityMatches = !!MM_core()?.getTurnById?.(firstId)
+          || turnList.some((turn) => {
+            const ids = [
+              ...(Array.isArray(turn?.answerIds) ? turn.answerIds : []),
+              turn?.answerId,
+              turn?.primaryAId,
+              turn?.aId,
+              turn?.id,
+            ].map((value) => String(value || '').replace(/^turn:/, ''));
+            return ids.includes(firstId);
+          });
       }
     } catch {}
     return {
@@ -2919,7 +2925,7 @@
     };
   }
 
-  function readMiniMapIdentityAlignment() {
+  function readMiniMapIdentityAlignment(opts = {}) {
     let records = [];
     try {
       const list = W?.H2O?.turnRuntime?.listTurnRecords;
@@ -2956,15 +2962,22 @@
 
     const core = MM_core();
     const drifts = [];
+    const retainedProjection = opts?.allowRetainedProjection === true
+      && buttons.length > records.length;
     for (const record of records) {
       const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
       if (!turnNo) continue;
       const candidates = buttonsByTurnNo.get(turnNo) || [];
       let btn = null;
+      let matchedByIdentity = false;
       try {
         btn = core?.getBtnById?.(record?.turnId || record?.qId || '') || null;
+        matchedByIdentity = !!btn;
       } catch {}
-      if (!btn?.isConnected || !scope.contains(btn)) btn = candidates.length === 1 ? candidates[0] : null;
+      if (!btn?.isConnected || !scope.contains(btn)) {
+        matchedByIdentity = false;
+        btn = candidates.length === 1 ? candidates[0] : null;
+      }
 
       const expectedTurnId = normalizeNavId(record?.turnId || '');
       const expectedQuestionId = normalizeNavId(record?.qId || '');
@@ -2993,7 +3006,9 @@
         actualWrapperPrimaryAId = normalizeNavId(wrap?.dataset?.primaryAId || '');
         actualQuestionPrimaryAId = normalizeNavId(qBtn?.dataset?.primaryAId || '');
 
-        if (actualTurnNo !== turnNo) reasons.push('turn-no-mismatch');
+        if (actualTurnNo !== turnNo && !(retainedProjection && matchedByIdentity)) {
+          reasons.push('turn-no-mismatch');
+        }
         if (expectedTurnId && actualTurnId !== expectedTurnId) reasons.push('turn-key-mismatch');
         if (expectedQuestionId && actualQuestionId !== expectedQuestionId) reasons.push('question-id-mismatch');
         if (expectedPrimaryAId) {
@@ -3027,6 +3042,7 @@
       reason: drifts.length ? 'identity-drift' : '',
       canonicalCount: records.length,
       renderedCount: buttons.length,
+      retainedProjection,
       drifts,
     };
   }
@@ -3072,7 +3088,7 @@
       const perfBucket = PERF.automaticRefresh;
       perfBucket.identityDriftTrailingCheckCount = Number(perfBucket.identityDriftTrailingCheckCount || 0) + 1;
       let alignment = null;
-      try { alignment = readMiniMapIdentityAlignment(); } catch {}
+      try { alignment = readMiniMapIdentityAlignment({ allowRetainedProjection: true }); } catch {}
       if (!alignment?.available || !alignment.missing) {
         S.identityDriftRecoverySignature = '';
         S.identityDriftTrailingRetriedSignature = '';
@@ -3133,7 +3149,7 @@
     perfBucket.lastRenderedMiniMapTotal = renderedTotal;
 
     let identityAlignment = null;
-    try { identityAlignment = readMiniMapIdentityAlignment(); } catch {}
+    try { identityAlignment = readMiniMapIdentityAlignment({ allowRetainedProjection: true }); } catch {}
     if (identityAlignment?.available && identityAlignment.missing) {
       perfBucket.identityDriftDetectedCount = Number(perfBucket.identityDriftDetectedCount || 0) + 1;
       const signature = noteMiniMapIdentityDrift(version, identityAlignment);
@@ -3147,8 +3163,13 @@
 
     let missing = false;
     try { missing = buildMissing(); } catch {}
-    const settledCountsAgree = turnTotal === turnListTotal
-      && turnListTotal === renderedTotal;
+    const retainedCacheProjection = turnTotal > 0
+      && turnListTotal > turnTotal
+      && turnListTotal === renderedTotal
+      && firstVisibleIdentityMatches;
+    const settledCountsAgree = (turnTotal === turnListTotal
+      && turnListTotal === renderedTotal)
+      || retainedCacheProjection;
     const hydrationOnlyCountDifference = settledCountsAgree
       && firstVisibleIdentityMatches
       && hydratedAnswerTotal > 0
@@ -3182,7 +3203,12 @@
       try {
         const counts = readMiniMapStructureCounts();
         const publishedTotal = Number(perfBucket.lastCoreTurnUpdatedTotal || 0);
+        const retainedCacheProjection = publishedTotal > 0
+          && counts.turnListTotal > publishedTotal
+          && counts.turnListTotal === counts.renderedTotal
+          && counts.firstVisibleIdentityMatches;
         const publishedCountMismatch = publishedTotal > 0
+          && !retainedCacheProjection
           && (publishedTotal !== counts.turnListTotal || publishedTotal !== counts.renderedTotal);
         const hydrationOnlyCountDifference = counts.turnListTotal > 0
           && counts.turnListTotal === counts.renderedTotal
@@ -3814,13 +3840,9 @@
     const renderedCount = Number(cacheResult?.renderedCount || 0);
     const answersExist = hasAnswersInDomCheap();
     if (renderedCount === 0 && answersExist) return true;
-    const lastAnswerId = String(cacheResult?.lastAnswerId || '').trim();
-    const lastTurnId = String(cacheResult?.lastTurnId || '').trim();
-    const probeId = lastAnswerId || lastTurnId;
-    if (probeId && !findAnswerById(probeId)) return true;
     const paginationCoverage = cacheResult?.paginationCoverage || getPaginationCoverageDetail();
     if (paginationCoverage?.applicable && !paginationCoverage?.ok) return true;
-    const identityAlignment = readMiniMapIdentityAlignment();
+    const identityAlignment = readMiniMapIdentityAlignment({ allowRetainedProjection: true });
     if (identityAlignment?.available && identityAlignment?.missing) return true;
     return false;
   }
@@ -3831,14 +3853,20 @@
     const turns = Number(turnList.length || 0);
     const domEls = (() => { try { return Array.from(document.querySelectorAll(answersSelector())); } catch { return []; } })();
     const domAnswers = domEls.length;
-    if (domAnswers > 0 && domAnswers !== turns) return true;
+    if (domAnswers > turns) return true;
     if (domAnswers > 0 && turns > 0) {
       try {
         const firstId = String(domEls[0]?.getAttribute?.('data-message-id') || domEls[0]?.dataset?.messageId || '').trim();
         if (firstId) {
-          const found = turnList.some((t) => {
-            const tid = String(t?.answerId || t?.primaryAId || t?.aId || t?.id || '').replace(/^turn:/, '');
-            return tid === firstId;
+          const found = !!core?.getTurnById?.(firstId) || turnList.some((t) => {
+            const ids = [
+              ...(Array.isArray(t?.answerIds) ? t.answerIds : []),
+              t?.answerId,
+              t?.primaryAId,
+              t?.aId,
+              t?.id,
+            ].map((value) => String(value || '').replace(/^turn:/, ''));
+            return ids.includes(firstId);
           });
           if (!found) return true;
         }
@@ -3853,7 +3881,7 @@
       markPerfFullScan();
       btns = Number(qq(mmBtnSelector()).length || 0);
     }
-    return turns <= 0 || btns <= 0;
+    return turns <= 0 || btns < turns;
   }
 
   function scheduleFirstPaintRebuild(reason = 'boot') {
@@ -3929,10 +3957,6 @@
       }
       const mismatch = (!cacheResult || !cacheResult.ok) || cacheBootNeedsRebuild(cacheResult);
       if (mismatch) {
-        try {
-          const coverage = cacheResult?.paginationCoverage || getPaginationCoverageDetail();
-          if (coverage?.applicable && !coverage?.ok) core.clearTurnCache?.(chatId);
-        } catch (e) { derr('start:clearTurnCache', e); }
         if (PERF_ASSERT_ON) {
           try { console.warn('[MiniMap] cache mismatch → rebuild fallback'); } catch {}
         }

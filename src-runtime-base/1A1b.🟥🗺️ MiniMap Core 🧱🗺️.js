@@ -2438,6 +2438,89 @@ function UM_PUBLIC() {
     return removeMiniDividerById(match.id, id);
   }
 
+  const CACHE_SHRINK_CAUSES = new Set([
+    'branch-deleted',
+    'conversation-edited',
+    'variant-switched',
+    'server-history-changed',
+  ]);
+  const CACHE_SHRINK_REMOVAL_LIMIT = 256;
+
+  function cacheRowQuestionId(row) {
+    return String(row?.questionId || row?.qId || '').trim();
+  }
+
+  function cacheRowTurnId(row) {
+    return String(row?.turnId || row?.id || '').trim();
+  }
+
+  function cacheRowAnswerIds(row) {
+    const source = [
+      ...(Array.isArray(row?.answerIds) ? row.answerIds : []),
+      row?.primaryAId,
+      row?.answerId,
+      row?.aId,
+    ];
+    const out = [];
+    const seen = new Set();
+    for (const value of source) {
+      const id = String(value || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+
+  function cacheRowsShareIdentity(left, right) {
+    if (!left || !right) return false;
+    const leftQId = cacheRowQuestionId(left);
+    const rightQId = cacheRowQuestionId(right);
+    if (leftQId && rightQId) return leftQId === rightQId;
+
+    const leftTurnId = cacheRowTurnId(left);
+    const rightTurnId = cacheRowTurnId(right);
+    if (leftTurnId && rightTurnId) return leftTurnId === rightTurnId;
+
+    const leftAnswers = new Set(cacheRowAnswerIds(left));
+    return cacheRowAnswerIds(right).some((id) => leftAnswers.has(id));
+  }
+
+  function findCacheRowIndex(rows, target) {
+    const list = Array.isArray(rows) ? rows : [];
+    const qId = cacheRowQuestionId(target);
+    if (qId) {
+      const index = list.findIndex((row) => cacheRowQuestionId(row) === qId);
+      if (index >= 0) return index;
+    }
+
+    const turnId = cacheRowTurnId(target);
+    if (turnId) {
+      const index = list.findIndex((row) => {
+        const rowQId = cacheRowQuestionId(row);
+        if (qId && rowQId && rowQId !== qId) return false;
+        return cacheRowTurnId(row) === turnId;
+      });
+      if (index >= 0) return index;
+    }
+
+    const answerIds = new Set(cacheRowAnswerIds(target));
+    if (!answerIds.size) return -1;
+    return list.findIndex((row) => cacheRowsShareIdentity(row, target));
+  }
+
+  function isValidCacheAnswerCandidate(candidate, context = {}, raw = null) {
+    if (isValidMiniMapAnswerCandidate(candidate, context)) return true;
+    const value = String(candidate || '').trim();
+    const turnId = String(context?.turnId || '').trim();
+    const questionId = String(context?.questionId || '').trim();
+    const explicitlyAnswered = raw?.noAnswer !== true && raw?.hasAssistant !== false;
+    return !!value
+      && explicitlyAnswered
+      && value !== questionId
+      && turnId === `turn:a:${value}`;
+  }
+
   function normalizeCacheTurnRow(raw, fallbackIdx = 0) {
     const i = Math.max(1, Number(raw?.idx || raw?.index || fallbackIdx || 1) || 1);
     let questionId = String(raw?.questionId || raw?.qId || '').trim();
@@ -2460,14 +2543,36 @@ function UM_PUBLIC() {
       (noAnswer && questionId ? `turn:${questionId}` : '')
     ).trim();
 
+    let answerIds = [];
     if (noAnswer) {
       answerId = '';
       if (questionId) turnId = `turn:${questionId}`;
     } else {
       const canonicalAnswerId = String(record?.primaryAId || record?.answerId || '').trim();
       answerId = canonicalAnswerId || (
-        isValidMiniMapAnswerCandidate(answerId, { turnId, questionId }) ? answerId : ''
+        isValidCacheAnswerCandidate(answerId, { turnId, questionId }, raw) ? answerId : ''
       );
+      const answerSource = [
+        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+        ...(Array.isArray(raw?.answerIds) ? raw.answerIds : []),
+        answerId,
+      ];
+      const seenAnswerIds = new Set();
+      answerIds = answerSource.reduce((out, value) => {
+        const candidate = String(value || '').trim();
+        if (
+          !candidate
+          || seenAnswerIds.has(candidate)
+          || !isValidCacheAnswerCandidate(candidate, { turnId, questionId }, raw)
+        ) return out;
+        seenAnswerIds.add(candidate);
+        out.push(candidate);
+        return out;
+      }, []);
+      if (answerId && answerIds[answerIds.length - 1] !== answerId) {
+        answerIds = answerIds.filter((id) => id !== answerId);
+        answerIds.push(answerId);
+      }
     }
     if (!turnId) {
       turnId = answerId ? `turn:a:${answerId}` : (questionId ? `turn:${questionId}` : `turn:${i}`);
@@ -2478,6 +2583,7 @@ function UM_PUBLIC() {
       turnId,
       answerId,
       primaryAId: answerId,
+      answerIds,
       questionId,
       qId: questionId,
       noAnswer,
@@ -2485,20 +2591,40 @@ function UM_PUBLIC() {
     };
   }
 
-  function normalizeCacheTurnRows(rows) {
+  function cacheTurnRowWasSanitized(raw, normalized) {
+    if (!raw || !normalized) return true;
+    const rawQId = cacheRowQuestionId(raw);
+    const rawTurnId = cacheRowTurnId(raw);
+    const rawPrimary = String(raw?.primaryAId || raw?.answerId || raw?.aId || '').trim();
+    const normalizedPrimary = String(normalized?.primaryAId || normalized?.answerId || '').trim();
+    return rawQId !== cacheRowQuestionId(normalized)
+      || rawTurnId !== cacheRowTurnId(normalized)
+      || rawPrimary !== normalizedPrimary
+      || ((raw?.noAnswer === true || raw?.hasAssistant === false) !== normalized.noAnswer);
+  }
+
+  function normalizeCacheTurnRowsDetailed(rows) {
     const src = Array.isArray(rows) ? rows : [];
     const out = [];
-    const seen = new Set();
+    let sanitizedRows = 0;
     for (let i = 0; i < src.length; i += 1) {
       const row = normalizeCacheTurnRow(src[i], i + 1);
       if (!row) continue;
-      const key = String(row.answerId || row.turnId || '').trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      row.idx = out.length + 1;
-      out.push(row);
+      if (cacheTurnRowWasSanitized(src[i], row)) sanitizedRows += 1;
+      const existingIndex = findCacheRowIndex(out, row);
+      if (existingIndex >= 0) {
+        sanitizedRows += 1;
+        out[existingIndex] = row;
+      } else {
+        out.push(row);
+      }
     }
-    return out;
+    out.forEach((row, index) => { row.idx = index + 1; });
+    return { rows: out, sanitizedRows };
+  }
+
+  function normalizeCacheTurnRows(rows) {
+    return normalizeCacheTurnRowsDetailed(rows).rows;
   }
 
   function enrichCacheTurnRowsFromPagination(rows) {
@@ -2708,7 +2834,9 @@ function UM_PUBLIC() {
     const metaKey = keyTurnCacheMeta(id);
     if (!turnsKey || !metaKey) return null;
 
-    const turns = enrichCacheTurnRowsFromPagination(storageGetJSON(turnsKey, null));
+    const rawTurns = storageGetJSON(turnsKey, null);
+    const normalization = normalizeCacheTurnRowsDetailed(rawTurns);
+    const turns = enrichCacheTurnRowsFromPagination(normalization.rows);
     if (!turns.length) return null;
 
     const last = turns[turns.length - 1] || null;
@@ -2724,7 +2852,13 @@ function UM_PUBLIC() {
     if (lastActiveTurnId) meta.lastActiveTurnId = lastActiveTurnId;
     if (lastActiveAnswerId) meta.lastActiveAnswerId = lastActiveAnswerId;
 
-    return { meta, turns };
+    return {
+      meta,
+      turns,
+      normalization: {
+        sanitizedRows: Number(normalization.sanitizedRows || 0),
+      },
+    };
   }
 
   function clearTurnCache(chatId = '') {
@@ -2744,7 +2878,85 @@ function UM_PUBLIC() {
     };
   }
 
-  function saveTurnCache(chatId = '', turns = []) {
+  function validateAuthoritativeShrinkProof(proof, context = {}) {
+    const chatId = String(context?.chatId || '').trim();
+    const cachedMeta = context?.cachedMeta && typeof context.cachedMeta === 'object'
+      ? context.cachedMeta
+      : {};
+    const input = proof && typeof proof === 'object' ? proof : null;
+    const result = {
+      ok: false,
+      reason: 'shrink-proof-missing',
+      chatId,
+      cause: '',
+      removedQIds: [],
+      freshness: 0,
+    };
+    if (!input) return result;
+
+    const proofChatId = String(input.chatId || input.chatKey || '').trim();
+    if (!chatId || proofChatId !== chatId) {
+      result.reason = 'shrink-proof-chat-mismatch';
+      return result;
+    }
+    const complete = input.complete === true || String(input.completeness || '').trim() === 'complete';
+    if (!complete) {
+      result.reason = 'shrink-proof-incomplete';
+      return result;
+    }
+    const cause = String(input.cause || '').trim();
+    if (!CACHE_SHRINK_CAUSES.has(cause)) {
+      result.reason = 'shrink-proof-cause-invalid';
+      return result;
+    }
+    const removedQIds = [];
+    const seen = new Set();
+    for (const value of (Array.isArray(input.removedQIds) ? input.removedQIds : [])) {
+      const qId = String(value || '').trim();
+      if (!qId || seen.has(qId)) continue;
+      seen.add(qId);
+      removedQIds.push(qId);
+      if (removedQIds.length > CACHE_SHRINK_REMOVAL_LIMIT) {
+        result.reason = 'shrink-proof-removals-unbounded';
+        return result;
+      }
+    }
+    if (!removedQIds.length) {
+      result.reason = 'shrink-proof-removals-missing';
+      return result;
+    }
+    const freshness = Number(input.freshness || input.updatedAt || input.observedAt || 0);
+    if (!Number.isFinite(freshness) || freshness <= Number(cachedMeta?.updatedAt || 0)) {
+      result.reason = 'shrink-proof-not-fresh';
+      return result;
+    }
+    return {
+      ok: true,
+      reason: 'authoritative-shrink-proven',
+      chatId,
+      cause,
+      removedQIds,
+      freshness,
+    };
+  }
+
+  function missingCachedMembership(existingRows, incomingRows) {
+    const incoming = Array.isArray(incomingRows) ? incomingRows : [];
+    const qIds = [];
+    let unresolvedCount = 0;
+    for (const row of (Array.isArray(existingRows) ? existingRows : [])) {
+      if (findCacheRowIndex(incoming, row) >= 0) continue;
+      const qId = cacheRowQuestionId(row);
+      if (!qId) {
+        unresolvedCount += 1;
+        continue;
+      }
+      if (!qIds.includes(qId)) qIds.push(qId);
+    }
+    return { qIds, unresolvedCount };
+  }
+
+  function saveTurnCache(chatId = '', turns = [], opts = {}) {
     const id = String(chatId || resolveChatId()).trim();
     if (!id) return { ok: false, status: 'chat-id-missing' };
 
@@ -2752,8 +2964,38 @@ function UM_PUBLIC() {
     const metaKey = keyTurnCacheMeta(id);
     if (!turnsKey || !metaKey) return { ok: false, status: 'key-missing' };
 
+    const existingRawTurns = storageGetJSON(turnsKey, null);
+    const existingRawMeta = storageGetJSON(metaKey, null);
+    const existingRows = enrichCacheTurnRowsFromPagination(existingRawTurns);
     const rows = enrichCacheTurnRowsFromPagination(turns);
     if (!rows.length) return { ok: false, status: 'turns-empty', turnsCount: 0 };
+
+    const proof = validateAuthoritativeShrinkProof(opts?.shrinkProof, {
+      chatId: id,
+      cachedMeta: existingRawMeta,
+    });
+    const missingMembership = missingCachedMembership(existingRows, rows);
+    const missingQIds = missingMembership.qIds;
+    if (existingRows.length > rows.length) {
+      const removals = new Set(proof.removedQIds || []);
+      const proofCoversMissing = proof.ok
+        && missingMembership.unresolvedCount === 0
+        && missingQIds.length > 0
+        && missingQIds.every((qId) => removals.has(qId));
+      if (!proofCoversMissing) {
+        return {
+          ok: false,
+          status: 'shrink-not-proven',
+          chatId: id,
+          existingCount: existingRows.length,
+          incomingCount: rows.length,
+          missingQIds: missingQIds.slice(0, CACHE_SHRINK_REMOVAL_LIMIT),
+          unresolvedMissingCount: Number(missingMembership.unresolvedCount || 0),
+          proofReason: String(proof.reason || 'shrink-proof-missing'),
+          writesAttempted: 0,
+        };
+      }
+    }
 
     const last = rows[rows.length - 1] || null;
     const activeTurnId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
@@ -2776,6 +3018,12 @@ function UM_PUBLIC() {
       status: ok ? 'ok' : 'storage-failed',
       meta,
       turnsCount: rows.length,
+      previousTurnsCount: existingRows.length,
+      shrinkProof: proof.ok ? {
+        cause: proof.cause,
+        removedQIds: proof.removedQIds.slice(),
+        freshness: proof.freshness,
+      } : null,
     };
   }
 
@@ -2789,75 +3037,109 @@ function UM_PUBLIC() {
   // entries (live elements win), and unknown turns are inserted after their
   // nearest known live neighbor. Cache identity is per chatId, so it resets
   // only when the conversation changes.
+  function cacheRowToTurn(row) {
+    const normalized = normalizeCacheTurnRow(row, Number(row?.idx || row?.index || 1));
+    if (!normalized) return null;
+    return {
+      ...row,
+      turnId: normalized.turnId,
+      answerId: normalized.answerId,
+      primaryAId: normalized.primaryAId,
+      answerIds: normalized.answerIds.slice(),
+      questionId: normalized.questionId,
+      qId: normalized.qId,
+      noAnswer: normalized.noAnswer,
+      hasAssistant: normalized.hasAssistant,
+      index: Number(row?.index || row?.idx || 0),
+      el: row?.el || null,
+    };
+  }
+
+  function mergeLiveTurnOverCache(cachedRow, liveTurn) {
+    const cached = cacheRowToTurn(cachedRow) || {};
+    const live = cacheRowToTurn(liveTurn) || {};
+    const merged = {
+      ...cached,
+      ...liveTurn,
+      ...live,
+      qId: cacheRowQuestionId(live) || cacheRowQuestionId(cached),
+      questionId: cacheRowQuestionId(live) || cacheRowQuestionId(cached),
+      turnId: cacheRowTurnId(live) || cacheRowTurnId(cached),
+      el: liveTurn?.el || null,
+    };
+    if (live.noAnswer === true || live.hasAssistant === false) {
+      merged.answerId = '';
+      merged.primaryAId = '';
+      merged.answerIds = [];
+      merged.noAnswer = true;
+      merged.hasAssistant = false;
+    }
+    return merged;
+  }
+
   function mergeTurnListWithCache(chatId, list, evidence = null) {
     const liveList = Array.isArray(list) ? list.filter(Boolean) : [];
-    let cachedRows = [];
-    try { cachedRows = loadTurnCache(chatId)?.turns || []; } catch { cachedRows = []; }
-    if (!Array.isArray(cachedRows) || !cachedRows.length) return liveList;
-    const currentChatId = String(resolveChatId() || '').trim();
-    const evidenceChatId = String(evidence?.chatId || '').trim();
-    const authoritativeCoreShrink = liveList.length < cachedRows.length
-      && evidence?.source === 'core-runtime'
-      && !!currentChatId
-      && String(chatId || '').trim() === currentChatId
-      && evidenceChatId === currentChatId
-      && Number(evidence?.coreTotal) === liveList.length;
-    // Authoritative-size live lists win outright: when the fresh canonical
-    // list is at least as large as the cache, adopt its order wholesale so a
-    // stale or corrupted cache can never re-order or dilute it (the
-    // subsequent saveTurnCache overwrites the cache with this list). A shorter
-    // list wins only when it is the current route's complete Core projection
-    // and Core's canonical total independently agrees with its size.
-    if (liveList.length >= cachedRows.length || authoritativeCoreShrink) return liveList;
-
-    const keyOf = (row) => {
-      const aId = String(row?.answerId || row?.primaryAId || '').trim();
-      if (aId) return `a:${aId}`;
-      const tId = String(row?.turnId || '').trim();
-      return tId ? `t:${tId}` : '';
+    let cached = null;
+    try { cached = loadTurnCache(chatId); } catch { cached = null; }
+    const cachedRows = Array.isArray(cached?.turns) ? cached.turns : [];
+    const decision = {
+      accepted: true,
+      mode: cachedRows.length ? 'union' : 'live-wins',
+      cachedCount: cachedRows.length,
+      liveCount: liveList.length,
+      outputCount: liveList.length,
+      overlapCount: 0,
+      sanitizedRows: Number(cached?.normalization?.sanitizedRows || 0),
+      reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
+    if (!cachedRows.length) return { list: liveList, decision };
 
-    const order = [];
-    const byKey = new Map();
-    for (const row of cachedRows) {
-      const key = keyOf(row);
-      if (!key || byKey.has(key)) continue;
-      byKey.set(key, {
-        turnId: String(row?.turnId || '').trim(),
-        answerId: String(row?.primaryAId || row?.answerId || '').trim(),
-        primaryAId: String(row?.primaryAId || row?.answerId || '').trim(),
-        questionId: String(row?.questionId || row?.qId || '').trim(),
-        qId: String(row?.questionId || row?.qId || '').trim(),
-        noAnswer: row?.noAnswer === true || row?.hasAssistant === false,
-        hasAssistant: row?.noAnswer === true || row?.hasAssistant === false ? false : row?.hasAssistant,
-        index: 0,
-        el: null,
-      });
-      order.push(key);
+    const proof = validateAuthoritativeShrinkProof(evidence?.shrinkProof, {
+      chatId: String(chatId || '').trim(),
+      cachedMeta: cached?.meta,
+    });
+    const removedQIds = proof.ok ? new Set(proof.removedQIds) : new Set();
+    const out = cachedRows
+      .filter((row) => !removedQIds.has(cacheRowQuestionId(row)))
+      .map(cacheRowToTurn)
+      .filter(Boolean);
+    if (proof.ok && out.length < cachedRows.length) {
+      decision.mode = 'proven-shrink';
+      decision.reason = proof.reason;
+      decision.shrinkProof = {
+        chatId: proof.chatId,
+        completeness: 'complete',
+        cause: proof.cause,
+        removedQIds: proof.removedQIds.slice(),
+        freshness: proof.freshness,
+      };
     }
 
     let anchorIdx = -1;
     for (const turn of liveList) {
-      const key = keyOf(turn);
-      if (!key) continue;
-      const existingIdx = order.indexOf(key);
-      byKey.set(key, turn);
-      if (existingIdx >= 0) {
-        anchorIdx = existingIdx;
+      const existingIndex = findCacheRowIndex(out, turn);
+      if (existingIndex >= 0) {
+        out[existingIndex] = mergeLiveTurnOverCache(out[existingIndex], turn);
+        anchorIdx = existingIndex;
+        decision.overlapCount += 1;
         continue;
       }
-      order.splice(anchorIdx + 1, 0, key);
+      const next = cacheRowToTurn(turn);
+      if (!next) continue;
+      out.splice(anchorIdx + 1, 0, next);
       anchorIdx += 1;
     }
 
-    const out = [];
-    for (const key of order) {
-      const turn = byKey.get(key);
-      if (!turn || !String(turn.turnId || '').trim()) continue;
-      turn.index = out.length + 1;
-      out.push(turn);
+    out.forEach((turn, index) => {
+      turn.index = index + 1;
+      turn.idx = index + 1;
+    });
+    decision.outputCount = out.length;
+    if (decision.mode !== 'proven-shrink' && decision.overlapCount === cachedRows.length && out.length === liveList.length) {
+      decision.mode = 'live-wins';
+      decision.reason = 'complete-overlap-refresh';
     }
-    return out.length >= liveList.length ? out : liveList;
+    return { list: out, decision };
   }
 
   function renderFromCache(chatId = '') {
@@ -2897,6 +3179,7 @@ function UM_PUBLIC() {
           turnId,
           answerId: noAnswer ? '' : answerId,
           primaryAId: noAnswer ? '' : answerId,
+          answerIds: noAnswer ? [] : cacheRowAnswerIds(row),
           questionId,
           qId: questionId,
           noAnswer,
@@ -2949,6 +3232,14 @@ function UM_PUBLIC() {
         turnCount: renderedCount,
         renderedCount,
       });
+      let cacheSanitizationPersistence = null;
+      if (Number(cached?.normalization?.sanitizedRows || 0) > 0) {
+        try {
+          cacheSanitizationPersistence = saveTurnCache(id, cached.turns, {
+            reason: 'cache-read-sanitization',
+          });
+        } catch {}
+      }
       return {
         ok: !!(map instanceof Map) && renderedCount > 0,
         renderedCount,
@@ -2957,6 +3248,7 @@ function UM_PUBLIC() {
         lastTurnId,
         lastAnswerId,
         paginationCoverage,
+        cacheSanitizationPersistence,
       };
     } finally {
       recordDuration(PERF.paths.renderFromCache, perfNow() - perfT0);
@@ -2998,21 +3290,36 @@ function UM_PUBLIC() {
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'noop');
         return { ok: false, status: 'noop' };
       }
-      let turnId = String(S.turnIdByAId.get(answerId) || '').trim();
+      const sharedRecord = getSharedTurnRecordByIdentity('answer', answerId);
+      const projectedRecord = sharedRecord ? projectSharedTurnRecord(sharedRecord, S.turnList.length + 1) : null;
+      const projectedQId = cacheRowQuestionId(projectedRecord);
+      let turnId = String(projectedRecord?.turnId || S.turnIdByAId.get(answerId) || '').trim();
       if (!turnId) turnId = String(parseTurnId(answerEl, S.turnList.length + 1, answerId) || `turn:a:${answerId}`).trim();
       if (!turnId) {
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'noop');
         return { ok: false, status: 'noop' };
       }
 
-      const existing = findTurnByAnyId(turnId) || findTurnByAnyId(answerId);
+      const existing = findTurnByAnyId(turnId)
+        || (projectedQId ? S.turnList.find((turn) => cacheRowQuestionId(turn) === projectedQId) : null)
+        || findTurnByAnyId(answerId);
       if (existing) {
         const existingTurnId = String(existing.turnId || turnId).trim();
         if (!existingTurnId) {
           bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'error');
           return { ok: false, status: 'error' };
         }
-        if (!existing.answerId) existing.answerId = answerId;
+        existing.answerId = answerId;
+        existing.primaryAId = answerId;
+        existing.answerIds = Array.isArray(projectedRecord?.answerIds)
+          ? projectedRecord.answerIds.slice()
+          : cacheRowAnswerIds({ ...existing, answerId });
+        existing.noAnswer = false;
+        existing.hasAssistant = true;
+        if (projectedQId) {
+          existing.qId = projectedQId;
+          existing.questionId = projectedQId;
+        }
         existing.el = answerEl;
         S.turnById.set(existingTurnId, existing);
         if (answerId) S.turnIdByAId.set(answerId, existingTurnId);
@@ -3049,6 +3356,12 @@ function UM_PUBLIC() {
           noteRenderUnit('gutterSymbols');
         }
         try { renderChatPageDividers(chatId); } catch {}
+        let cachePersistence = null;
+        try {
+          if (chatId) cachePersistence = saveTurnCache(chatId, S.turnList, {
+            reason: 'append-existing-refresh',
+          });
+        } catch {}
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'exists');
         return {
           ok: true,
@@ -3058,6 +3371,7 @@ function UM_PUBLIC() {
           turnId: existingTurnId,
           answerId,
           idx: Number(existing.index || 0),
+          cachePersistence,
         };
       }
 
@@ -3074,7 +3388,17 @@ function UM_PUBLIC() {
       }
 
       const nextIdx = Math.max(1, Number(S.turnList.length || 0) + 1);
-      const nextTurn = { turnId, answerId, index: nextIdx, el: answerEl };
+      const nextTurn = {
+        ...(projectedRecord || {}),
+        turnId,
+        answerId,
+        primaryAId: answerId,
+        answerIds: Array.isArray(projectedRecord?.answerIds)
+          ? projectedRecord.answerIds.slice()
+          : [answerId],
+        index: nextIdx,
+        el: answerEl,
+      };
       S.turnList.push(nextTurn);
       S.turnById.set(turnId, nextTurn);
       if (answerId) S.turnIdByAId.set(answerId, turnId);
@@ -3105,8 +3429,11 @@ function UM_PUBLIC() {
       noteRenderUnit('gutterSymbols');
       try { W.syncMiniMapDot?.(answerId); } catch {}
       try { W.H2O_MM_syncQuoteBadgesForIdx?.(btn, nextIdx); } catch {}
+      let cachePersistence = null;
       try {
-        if (chatId) saveTurnCache(chatId, S.turnList);
+        if (chatId) cachePersistence = saveTurnCache(chatId, S.turnList, {
+          reason: 'append-new-turn',
+        });
       } catch {}
       try {
         window.dispatchEvent(new CustomEvent(EV_MM_INDEX_APPENDED, {
@@ -3131,6 +3458,7 @@ function UM_PUBLIC() {
         turnId,
         answerId,
         idx: nextIdx,
+        cachePersistence,
       };
     } finally {
       const ms = perfNow() - perfT0;
@@ -3576,6 +3904,10 @@ function UM_PUBLIC() {
     const turnId = String(record?.turnId || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
     if (!turnId) return null;
     const answerId = noAnswer ? '' : String(record?.primaryAId || record?.answerId || '').trim();
+    const answerIds = noAnswer ? [] : cacheRowAnswerIds({
+      answerIds: record?.answerIds,
+      primaryAId: answerId,
+    });
     const index = Math.max(1, Number(record?.turnNo || record?.idx || fallbackIndex || 1) || 1);
     const el = record?.live?.primaryAEl || record?.primaryAEl || null;
     const questionEl = record?.live?.qEl || record?.qEl || null;
@@ -3583,6 +3915,7 @@ function UM_PUBLIC() {
       turnId,
       answerId,
       primaryAId: answerId,
+      answerIds,
       questionId,
       qId: questionId,
       noAnswer,
@@ -3599,6 +3932,10 @@ function UM_PUBLIC() {
     const turnId = String(record?.turnId || record?.id || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
     if (!turnId) return null;
     const answerId = noAnswer ? '' : String(record?.answerId || record?.primaryAId || record?.aId || '').trim();
+    const answerIds = noAnswer ? [] : cacheRowAnswerIds({
+      answerIds: record?.answerIds,
+      primaryAId: answerId,
+    });
     const index = Math.max(1, Number(record?.index || record?.idx || record?.turnNo || fallbackIndex || 1) || 1);
     const el = record?.el || record?.primaryAEl || record?.answerEl || record?.live?.primaryAEl || null;
     const questionEl = record?.questionEl || record?.qEl || record?.live?.qEl || null;
@@ -3606,6 +3943,7 @@ function UM_PUBLIC() {
       turnId,
       answerId,
       primaryAId: answerId,
+      answerIds,
       questionId,
       qId: questionId,
       noAnswer,
@@ -3883,7 +4221,8 @@ function UM_PUBLIC() {
       answerByTurn,
       answers,
       source: 'core-runtime',
-      coreTotal: records.length,
+      coreProjectedTotal: records.length,
+      completeness: 'unproven',
     } : null;
   }
 
@@ -3998,7 +4337,8 @@ function UM_PUBLIC() {
       canonicalEvidence: {
         source: String(authoritative?.source || ''),
         chatId,
-        coreTotal: Number(authoritative?.coreTotal || 0),
+        coreProjectedTotal: Number(authoritative?.coreProjectedTotal || authoritative?.coreTotal || 0),
+        completeness: String(authoritative?.completeness || 'unproven'),
       },
     };
     if (opts?.commit === false) return snapshot;
@@ -8323,12 +8663,13 @@ function unbindChatPageDividerBridge() {
       // per-chat turn cache before building buttons/publishing/saving.
       try {
         const merged = mergeTurnListWithCache(resolveChatId(), list, snapshot.canonicalEvidence);
-        if (merged.length > list.length) {
-          list = merged;
-          snapshot.list = merged;
+        out.cacheMerge = merged?.decision || null;
+        if (Array.isArray(merged?.list)) {
+          list = merged.list;
+          snapshot.list = list;
           const byId = new Map();
           const byAId = new Map();
-          for (const turn of merged) {
+          for (const turn of list) {
             byId.set(turn.turnId, turn);
             if (turn.answerId) byAId.set(turn.answerId, turn.turnId);
           }
@@ -8389,7 +8730,14 @@ function unbindChatPageDividerBridge() {
       try { finalizeRebuildUi(why); } catch {}
       try {
         const chatId = resolveChatId();
-        if (chatId) saveTurnCache(chatId, S.turnList);
+        if (chatId) {
+          out.cachePersistence = saveTurnCache(chatId, S.turnList, {
+            reason: 'rebuild',
+            shrinkProof: out.cacheMerge?.mode === 'proven-shrink'
+              ? out.cacheMerge?.shrinkProof
+              : null,
+          });
+        }
       } catch {}
       clearRetry();
       try {
