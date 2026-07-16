@@ -776,6 +776,16 @@ function UM_PUBLIC() {
     return { proven: false, basis: 'alias-only' };
   }
 
+  function shouldSuppressUnprovenCachedQuestion(row, turnId = '', questionId = '', identityProof = null) {
+    const qId = String(questionId || '').trim();
+    const id = String(turnId || '').trim();
+    if (!qId || !id || identityProof?.proven) return false;
+    if (cacheRowLayer(row) === 'history') return false;
+    const proof = cacheRowCurrentProof(row);
+    const suspect = row?.suspectQuestionIdentity === true || proof === CURRENT_PROOF_TRANSIENT;
+    return suspect && id !== `turn:${qId}`;
+  }
+
   function resolveQaRowCanonicalMeta(turn = null, { btn = null, wrap = null, qBtn = null, primaryAId = '' } = {}) {
     const directTurnId = String(
       turn?.turnId ||
@@ -827,10 +837,15 @@ function UM_PUBLIC() {
       answerId: directAnswerCandidate,
     });
     const resolvedRecord = identityProof.proven ? record : null;
+    const suppressCachedQuestion = shouldSuppressUnprovenCachedQuestion(
+      turn,
+      directTurnId,
+      cachedQuestionId,
+      identityProof,
+    );
     const questionId = String(
       (identityProof.proven ? canonicalQuestionId : '')
-      || cachedQuestionId
-      || canonicalQuestionId
+      || (suppressCachedQuestion ? '' : cachedQuestionId)
     ).trim();
     const noAnswer = isCanonicalNoAnswerRecord(resolvedRecord || turn);
     const turnId = String(
@@ -858,6 +873,7 @@ function UM_PUBLIC() {
       cachedQuestionId,
       canonicalMatchProven: identityProof.proven,
       canonicalMatchBasis: identityProof.basis,
+      cachedQuestionSuppressed: suppressCachedQuestion,
       noAnswer,
       hasAssistant: noAnswer ? false : resolvedRecord?.hasAssistant,
       turnIdx,
@@ -869,7 +885,11 @@ function UM_PUBLIC() {
     if (!meta) return false;
     const turnId = String(meta?.turnId || '').trim();
     const answerId = String(meta?.answerId || meta?.primaryAId || '').trim();
-    const questionId = String(meta?.questionId || meta?.canonicalQuestionId || meta?.cachedQuestionId || '').trim();
+    const questionId = String(
+      meta?.questionId
+      || (meta?.cachedQuestionSuppressed ? '' : (meta?.canonicalQuestionId || meta?.cachedQuestionId))
+      || ''
+    ).trim();
     const turnIdx = Math.max(0, Number(meta?.turnIdx || meta?.index || 0) || 0);
     const idx = turnIdx > 0 ? String(turnIdx) : '';
 
@@ -2544,6 +2564,120 @@ function UM_PUBLIC() {
     return row?.layer === 'history' ? 'history' : 'current';
   }
 
+  const CURRENT_PROOF_PROVEN = 'proven-current';
+  const CURRENT_PROOF_RETAINED = 'retained-proven-current';
+  const CURRENT_PROOF_TRANSIENT = 'transient-unverified';
+  const CURRENT_PROOF_LEGACY = 'legacy-unverified';
+
+  function cacheRowCurrentProof(row) {
+    if (cacheRowLayer(row) === 'history') return 'history';
+    const value = String(row?.currentProof || '').trim();
+    if (
+      value === CURRENT_PROOF_PROVEN
+      || value === CURRENT_PROOF_RETAINED
+      || value === CURRENT_PROOF_TRANSIENT
+      || value === CURRENT_PROOF_LEGACY
+    ) return value;
+    return CURRENT_PROOF_LEGACY;
+  }
+
+  function currentLedgerMembers() {
+    const api = getTurnRuntimeApi();
+    try {
+      const snapshot = api?.getChatAtlasLedgerSnapshot?.() || null;
+      const currentChatKey = String(resolveChatId() || '').trim();
+      const ledgerChatKey = String(snapshot?.chatKey || '').trim();
+      if (snapshot?.ledgerReady !== true) return [];
+      if (currentChatKey && ledgerChatKey && currentChatKey !== ledgerChatKey) return [];
+      return Array.isArray(snapshot?.members) ? snapshot.members : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function ledgerMemberQuestionIds(member) {
+    return new Set([
+      member?.question?.currentQId,
+      member?.question?.qId,
+      ...(Array.isArray(member?.question?.currentAliases) ? member.question.currentAliases : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+  }
+
+  function ledgerMemberAnswerIds(member) {
+    return new Set([
+      member?.answer?.primaryAId,
+      ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
+      ...(Array.isArray(member?.answer?.currentAliases) ? member.answer.currentAliases : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+  }
+
+  function resolveMiniMapCurrentMemberByAnswer(answerId = '') {
+    const id = String(answerId || '').trim();
+    if (!id) return null;
+    const candidates = currentLedgerMembers().filter((member) => ledgerMemberAnswerIds(member).has(id));
+    if (candidates.length !== 1) return null;
+    const member = candidates[0];
+    const qId = String(member?.question?.currentQId || member?.question?.qId || '').trim();
+    if (!qId) return null;
+    return {
+      member,
+      qId,
+      logicalMemberKey: String(member?.logicalMemberKey || '').trim(),
+      answerIds: Array.from(new Set([
+        ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
+        member?.answer?.primaryAId,
+      ].map((value) => String(value || '').trim()).filter(Boolean))),
+    };
+  }
+
+  function resolveMiniMapCurrentMemberByQuestion(questionId = '') {
+    const id = String(questionId || '').trim();
+    if (!id) return null;
+    const candidates = currentLedgerMembers().filter((member) => ledgerMemberQuestionIds(member).has(id));
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function deriveLiveCurrentProof(row) {
+    const existing = cacheRowCurrentProof(row);
+    if (existing === CURRENT_PROOF_PROVEN || existing === CURRENT_PROOF_RETAINED) return existing;
+    const qId = cacheRowQuestionId(row);
+    const answerIds = cacheRowAnswerIds(row);
+    if (qId && answerIds.length) return CURRENT_PROOF_PROVEN;
+    if (qId && (row?.noAnswer === true || row?.hasAssistant === false)) {
+      const member = resolveMiniMapCurrentMemberByQuestion(qId);
+      if (member?.noAnswer === true && ledgerMemberAnswerIds(member).size === 0) {
+        return CURRENT_PROOF_PROVEN;
+      }
+    }
+    return CURRENT_PROOF_TRANSIENT;
+  }
+
+  function cacheSplitRoleOwnership(questionRow, answerRow) {
+    const qId = cacheRowQuestionId(questionRow);
+    const answerIds = cacheRowAnswerIds(answerRow);
+    if (!qId || !answerIds.length) return null;
+
+    const questionMemberKey = cacheRowLogicalMemberKey(questionRow);
+    const answerMemberKey = cacheRowLogicalMemberKey(answerRow);
+    if (questionMemberKey && answerMemberKey && questionMemberKey === answerMemberKey) {
+      return { basis: 'logical-member-key', logicalMemberKey: questionMemberKey, member: null };
+    }
+
+    const members = currentLedgerMembers();
+    const questionOwners = members.filter((member) => ledgerMemberQuestionIds(member).has(qId));
+    const answerOwners = members.filter((member) => (
+      answerIds.some((answerId) => ledgerMemberAnswerIds(member).has(answerId))
+    ));
+    if (questionOwners.length !== 1 || answerOwners.length !== 1 || questionOwners[0] !== answerOwners[0]) {
+      return null;
+    }
+    return {
+      basis: 'ledger-current-ownership',
+      logicalMemberKey: String(questionOwners[0]?.logicalMemberKey || '').trim(),
+      member: questionOwners[0],
+    };
+  }
+
   function cacheRowLogicalMemberKey(row) {
     return String(row?.logicalMemberKey || row?.memberKey || '').trim();
   }
@@ -2676,10 +2810,15 @@ function UM_PUBLIC() {
     const canonicalQuestionId = String(record?.qId || record?.questionId || '').trim();
     const identityProof = canonicalTurnIdentityProof(record, { turnId, questionId, answerId });
     const resolvedRecord = identityProof.proven && !historicalInput ? record : null;
+    const suppressCachedQuestion = shouldSuppressUnprovenCachedQuestion(
+      raw,
+      turnId,
+      questionId,
+      identityProof,
+    );
     questionId = String(
       (resolvedRecord ? canonicalQuestionId : '')
-      || questionId
-      || canonicalQuestionId
+      || (suppressCachedQuestion ? '' : questionId)
     ).trim();
     const noAnswer = isCanonicalNoAnswerRecord(resolvedRecord)
       || raw?.noAnswer === true
@@ -2726,6 +2865,7 @@ function UM_PUBLIC() {
     }
     if (!turnId) return null;
     const layer = historicalInput ? 'history' : 'current';
+    const currentProof = layer === 'history' ? 'history' : cacheRowCurrentProof(raw);
     const normalized = {
       idx: i,
       turnId,
@@ -2740,6 +2880,7 @@ function UM_PUBLIC() {
       selectedPath: layer === 'history'
         ? false
         : (raw?.selectedPath === true ? true : 'unverified'),
+      currentProof,
     };
     const logicalMemberKey = cacheRowLogicalMemberKey(raw);
     const lineageKey = cacheRowLineageKey(raw);
@@ -2765,7 +2906,8 @@ function UM_PUBLIC() {
       || rawPrimary !== normalizedPrimary
       || ((raw?.noAnswer === true || raw?.hasAssistant === false) !== normalized.noAnswer)
       || cacheRowLayer(raw) !== cacheRowLayer(normalized)
-      || raw?.selectedPath !== normalized.selectedPath;
+      || raw?.selectedPath !== normalized.selectedPath
+      || String(raw?.currentProof || '').trim() !== normalized.currentProof;
   }
 
   function mergeCacheVariantEvidence(baseRow, extraRow, primaryPreference = '') {
@@ -2849,14 +2991,105 @@ function UM_PUBLIC() {
     return score;
   }
 
+  function findCacheSplitRoleProposals(rows = []) {
+    const list = Array.isArray(rows) ? rows : [];
+    const questionIndexes = [];
+    const answerIndexes = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const row = list[index];
+      if (cacheRowLayer(row) !== 'current') continue;
+      const qId = cacheRowQuestionId(row);
+      const answerIds = cacheRowAnswerIds(row);
+      if (qId && answerIds.length === 0) questionIndexes.push(index);
+      if (!qId && answerIds.length > 0) answerIndexes.push(index);
+    }
+
+    const proposals = [];
+    for (const questionIndex of questionIndexes) {
+      for (const answerIndex of answerIndexes) {
+        const ownership = cacheSplitRoleOwnership(list[questionIndex], list[answerIndex]);
+        if (ownership) proposals.push({ questionIndex, answerIndex, ownership });
+      }
+    }
+    const questionUses = new Map();
+    const answerUses = new Map();
+    for (const proposal of proposals) {
+      questionUses.set(proposal.questionIndex, (questionUses.get(proposal.questionIndex) || 0) + 1);
+      answerUses.set(proposal.answerIndex, (answerUses.get(proposal.answerIndex) || 0) + 1);
+    }
+    return {
+      proposals,
+      accepted: proposals.filter((proposal) => (
+        questionUses.get(proposal.questionIndex) === 1
+        && answerUses.get(proposal.answerIndex) === 1
+      )),
+      ambiguousCount: proposals.filter((proposal) => (
+        questionUses.get(proposal.questionIndex) !== 1
+        || answerUses.get(proposal.answerIndex) !== 1
+      )).length,
+    };
+  }
+
+  function reconcileCacheSplitRoleRows(rows = []) {
+    const source = (Array.isArray(rows) ? rows : []).map((row) => ({ ...row }));
+    const relationships = findCacheSplitRoleProposals(source);
+    const mergedAt = new Map();
+    const removed = new Set();
+    let reconciledCount = 0;
+    for (const proposal of relationships.accepted) {
+      if (removed.has(proposal.questionIndex) || removed.has(proposal.answerIndex)) continue;
+      const questionRow = source[proposal.questionIndex];
+      const answerRow = source[proposal.answerIndex];
+      const primaryAId = String(answerRow?.primaryAId || answerRow?.answerId || '').trim();
+      const answerIds = cacheRowAnswerIds(answerRow);
+      const merged = {
+        ...questionRow,
+        answerId: primaryAId,
+        primaryAId,
+        answerIds,
+        noAnswer: false,
+        hasAssistant: true,
+        layer: 'current',
+        selectedPath: true,
+        currentProof: CURRENT_PROOF_PROVEN,
+      };
+      if (proposal.ownership.logicalMemberKey) {
+        merged.logicalMemberKey = proposal.ownership.logicalMemberKey;
+      }
+      const targetIndex = Math.min(proposal.questionIndex, proposal.answerIndex);
+      const removedIndex = Math.max(proposal.questionIndex, proposal.answerIndex);
+      mergedAt.set(targetIndex, merged);
+      removed.add(removedIndex);
+      reconciledCount += 1;
+    }
+    const out = [];
+    for (let index = 0; index < source.length; index += 1) {
+      if (removed.has(index)) continue;
+      out.push(mergedAt.get(index) || source[index]);
+    }
+    return {
+      rows: out,
+      reconciledCount,
+      ambiguousCount: relationships.ambiguousCount,
+      relationshipCount: relationships.proposals.length,
+    };
+  }
+
   function repairCacheCurrentMembership(rows, opts = {}) {
-    const next = (Array.isArray(rows) ? rows : []).map((row) => ({ ...row }));
+    const splitRepair = reconcileCacheSplitRoleRows(rows);
+    const next = splitRepair.rows;
     const liveRows = (Array.isArray(opts?.liveRows) ? opts.liveRows : [])
-      .map((row, index) => normalizeCacheTurnRow({ ...row, layer: 'current', selectedPath: true }, index + 1))
+      .map((row, index) => normalizeCacheTurnRow({
+        ...row,
+        layer: 'current',
+        selectedPath: true,
+        currentProof: deriveLiveCurrentProof(row),
+      }, index + 1))
       .filter(Boolean);
-    let repairedRows = 0;
+    let repairedRows = splitRepair.reconciledCount;
     let demotedRows = 0;
     let duplicateCurrentQIdCount = 0;
+    let transientRowsExcluded = 0;
 
     const demote = (index, reason) => {
       const row = next[index];
@@ -2865,6 +3098,7 @@ function UM_PUBLIC() {
         ...row,
         layer: 'history',
         selectedPath: false,
+        currentProof: 'history',
         suspectQuestionIdentity: true,
         repairReason: String(reason || 'branch-membership-repair'),
       };
@@ -2960,6 +3194,20 @@ function UM_PUBLIC() {
       if (conflictIndex >= 0) demote(conflictIndex, 'selected-path-position-replaced');
     }
 
+    for (let index = 0; index < next.length; index += 1) {
+      const row = next[index];
+      if (cacheRowLayer(row) !== 'current' || cacheRowCurrentProof(row) !== CURRENT_PROOF_TRANSIENT) continue;
+      const liveIndex = findCacheRowIndex(liveRows, row, { layer: 'current' });
+      if (liveIndex >= 0) continue;
+      const splitLiveMatches = liveRows.filter((liveRow) => (
+        !cacheRowQuestionId(liveRow)
+        && cacheRowAnswerIds(liveRow).length > 0
+        && !!cacheSplitRoleOwnership(row, liveRow)
+      ));
+      if (splitLiveMatches.length === 1) continue;
+      if (demote(index, 'transient-unverified-off-dom')) transientRowsExcluded += 1;
+    }
+
     if (opts?.reindexCurrent !== false) {
       let currentIndex = 0;
       for (let index = 0; index < next.length; index += 1) {
@@ -2978,6 +3226,9 @@ function UM_PUBLIC() {
       repairedRows,
       demotedRows,
       duplicateCurrentQIdCount,
+      splitRoleReconciledCount: splitRepair.reconciledCount,
+      splitRoleAmbiguousCount: splitRepair.ambiguousCount,
+      transientRowsExcluded,
     };
   }
 
@@ -3010,6 +3261,9 @@ function UM_PUBLIC() {
         repairedRows: 0,
         demotedRows: 0,
         duplicateCurrentQIdCount: 0,
+        splitRoleReconciledCount: 0,
+        splitRoleAmbiguousCount: 0,
+        transientRowsExcluded: 0,
       };
     }
     const repaired = repairCacheCurrentMembership(out, opts);
@@ -3274,6 +3528,9 @@ function UM_PUBLIC() {
         repairedRows: Number(normalization.repairedRows || 0),
         demotedRows: Number(normalization.demotedRows || 0),
         duplicateCurrentQIdCount: Number(normalization.duplicateCurrentQIdCount || 0),
+        splitRoleReconciledCount: Number(normalization.splitRoleReconciledCount || 0),
+        splitRoleAmbiguousCount: Number(normalization.splitRoleAmbiguousCount || 0),
+        transientRowsExcluded: Number(normalization.transientRowsExcluded || 0),
       },
     };
   }
@@ -3407,10 +3664,13 @@ function UM_PUBLIC() {
       }
     }
     const reasons = [];
+    const splitRelationships = findCacheSplitRoleProposals(currentRows);
+    const splitRoleDuplicateCount = splitRelationships.accepted.length;
     if (duplicateQuestionCount) reasons.push('duplicate-current-qid');
     if (duplicateTurnCount) reasons.push('duplicate-current-turn-id');
     if (duplicatePrimaryCount) reasons.push('duplicate-current-primary-id');
     if (duplicateTurnIndexCount) reasons.push('duplicate-current-turn-index');
+    if (splitRoleDuplicateCount) reasons.push('split-role-duplicate');
     return {
       ok: reasons.length === 0,
       currentCount: currentRows.length,
@@ -3418,6 +3678,7 @@ function UM_PUBLIC() {
       duplicateTurnCount,
       duplicatePrimaryCount,
       duplicateTurnIndexCount,
+      splitRoleDuplicateCount,
       reasons,
     };
   }
@@ -3445,6 +3706,9 @@ function UM_PUBLIC() {
       repairedRows: Math.max(0, Number(decision.repairedRows || 0) || 0),
       demotedRows: Math.max(0, Number(decision.demotedRows || 0) || 0),
       duplicateCurrentQIdCount: Math.max(0, Number(decision.duplicateCurrentQIdCount || 0) || 0),
+      splitRoleReconciledCount: Math.max(0, Number(decision.splitRoleReconciledCount || 0) || 0),
+      splitRoleAmbiguousCount: Math.max(0, Number(decision.splitRoleAmbiguousCount || 0) || 0),
+      transientRowsExcluded: Math.max(0, Number(decision.transientRowsExcluded || 0) || 0),
       bijectionProven: decision.bijectionProven === true,
       reason: String(decision.reason || ''),
       completeness: outputCount > Number(decision.liveCurrentCount ?? liveCount)
@@ -3590,6 +3854,7 @@ function UM_PUBLIC() {
         duplicateTurnCount: membership.duplicateTurnCount,
         duplicatePrimaryCount: membership.duplicatePrimaryCount,
         duplicateTurnIndexCount: membership.duplicateTurnIndexCount,
+        splitRoleDuplicateCount: membership.splitRoleDuplicateCount,
         reasons: membership.reasons.slice(0, 8),
         writesAttempted: 0,
       });
@@ -3684,6 +3949,7 @@ function UM_PUBLIC() {
       hasAssistant: normalized.hasAssistant,
       layer: normalized.layer,
       selectedPath: normalized.selectedPath,
+      currentProof: normalized.currentProof,
       index: Number(row?.index || row?.idx || 0),
       el: row?.el || null,
     };
@@ -3692,6 +3958,17 @@ function UM_PUBLIC() {
   function mergeLiveTurnOverCache(cachedRow, liveTurn) {
     const cached = cacheRowToTurn(cachedRow) || {};
     const live = cacheRowToTurn(liveTurn) || {};
+    const liveProof = deriveLiveCurrentProof(liveTurn);
+    const cachedProof = cacheRowCurrentProof(cached);
+    const currentProof = liveProof === CURRENT_PROOF_PROVEN
+      ? CURRENT_PROOF_PROVEN
+      : (
+        cachedProof === CURRENT_PROOF_PROVEN
+        || cachedProof === CURRENT_PROOF_RETAINED
+        || cachedProof === CURRENT_PROOF_LEGACY
+          ? CURRENT_PROOF_RETAINED
+          : CURRENT_PROOF_TRANSIENT
+      );
     const merged = {
       ...cached,
       ...liveTurn,
@@ -3701,6 +3978,7 @@ function UM_PUBLIC() {
       turnId: cacheRowTurnId(live) || cacheRowTurnId(cached),
       layer: 'current',
       selectedPath: true,
+      currentProof,
       el: liveTurn?.el || null,
     };
     if (live.noAnswer === true || live.hasAssistant === false) {
@@ -3731,6 +4009,7 @@ function UM_PUBLIC() {
       ...row,
       layer: 'current',
       selectedPath: true,
+      currentProof: deriveLiveCurrentProof(row),
     }));
     const normalized = normalizeCacheTurnRowsDetailed(rawRows, { liveRows: rawRows });
     return {
@@ -3740,6 +4019,9 @@ function UM_PUBLIC() {
       repairedRows: normalized.repairedRows,
       demotedRows: normalized.demotedRows,
       duplicateCurrentQIdCount: normalized.duplicateCurrentQIdCount,
+      splitRoleReconciledCount: normalized.splitRoleReconciledCount,
+      splitRoleAmbiguousCount: normalized.splitRoleAmbiguousCount,
+      transientRowsExcluded: normalized.transientRowsExcluded,
       rawCount: rawRows.length,
     };
   }
@@ -3776,6 +4058,12 @@ function UM_PUBLIC() {
       demotedRows: Number(cached?.normalization?.demotedRows || 0) + preparedLive.demotedRows,
       duplicateCurrentQIdCount: Number(cached?.normalization?.duplicateCurrentQIdCount || 0)
         + preparedLive.duplicateCurrentQIdCount,
+      splitRoleReconciledCount: Number(cached?.normalization?.splitRoleReconciledCount || 0)
+        + Number(preparedLive.splitRoleReconciledCount || 0),
+      splitRoleAmbiguousCount: Number(cached?.normalization?.splitRoleAmbiguousCount || 0)
+        + Number(preparedLive.splitRoleAmbiguousCount || 0),
+      transientRowsExcluded: Number(cached?.normalization?.transientRowsExcluded || 0)
+        + Number(preparedLive.transientRowsExcluded || 0),
       bijectionProven: false,
       reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
@@ -3794,6 +4082,9 @@ function UM_PUBLIC() {
       decision.historicalRetainedCount = repaired.historyRows.length;
       decision.repairedRows += repaired.repairedRows;
       decision.demotedRows += repaired.demotedRows;
+      decision.splitRoleReconciledCount += Number(repaired.splitRoleReconciledCount || 0);
+      decision.splitRoleAmbiguousCount += Number(repaired.splitRoleAmbiguousCount || 0);
+      decision.transientRowsExcluded += Number(repaired.transientRowsExcluded || 0);
       if (repaired.historyRows.length) {
         decision.mode = 'union';
         decision.reason = 'duplicate-current-qid-repaired';
@@ -3843,6 +4134,23 @@ function UM_PUBLIC() {
         });
         matchedLayer = 'history';
       }
+      let splitOwnership = null;
+      if (index < 0 && !cacheRowQuestionId(turn) && cacheRowAnswerIds(turn).length) {
+        const splitCandidates = [];
+        for (let candidateIndex = 0; candidateIndex < retained.length; candidateIndex += 1) {
+          if (usedCachedIndexes.has(candidateIndex)) continue;
+          const candidate = retained[candidateIndex];
+          if (cacheRowLayer(candidate) !== 'current') continue;
+          if (!cacheRowQuestionId(candidate) || cacheRowAnswerIds(candidate).length) continue;
+          const ownership = cacheSplitRoleOwnership(candidate, turn);
+          if (ownership) splitCandidates.push({ index: candidateIndex, ownership });
+        }
+        if (splitCandidates.length === 1) {
+          index = splitCandidates[0].index;
+          splitOwnership = splitCandidates[0].ownership;
+          matchedLayer = 'current';
+        }
+      }
       if (index >= 0) usedCachedIndexes.add(index);
       return {
         turn,
@@ -3850,6 +4158,7 @@ function UM_PUBLIC() {
         matchedLayer,
         cachedRow: index >= 0 ? retained[index] : null,
         mergedRow: null,
+        splitOwnership,
       };
     });
 
@@ -3860,6 +4169,7 @@ function UM_PUBLIC() {
         ...row,
         layer: 'history',
         selectedPath: false,
+        currentProof: 'history',
         suspectQuestionIdentity: true,
         repairReason: String(reason || 'branch-history-retained'),
       };
@@ -3872,6 +4182,14 @@ function UM_PUBLIC() {
       if (match.index < 0) continue;
       const previous = retained[match.index];
       match.mergedRow = mergeLiveTurnOverCache(previous, match.turn);
+      if (match.splitOwnership) {
+        match.mergedRow.currentProof = CURRENT_PROOF_PROVEN;
+        if (match.splitOwnership.logicalMemberKey) {
+          match.mergedRow.logicalMemberKey = match.splitOwnership.logicalMemberKey;
+        }
+        decision.repairedRows += 1;
+        decision.splitRoleReconciledCount += 1;
+      }
       retained[match.index] = match.mergedRow;
       decision.overlapCount += 1;
       if (match.matchedLayer === 'history') {
@@ -3938,6 +4256,7 @@ function UM_PUBLIC() {
         ...cacheRowToTurn(historyRow),
         layer: 'history',
         selectedPath: false,
+        currentProof: 'history',
         suspectQuestionIdentity: true,
         repairReason: String(historyRow?.repairReason || 'duplicate-live-question-identity'),
       });
@@ -3946,6 +4265,9 @@ function UM_PUBLIC() {
     const repaired = repairCacheCurrentMembership(retained, { liveRows: liveCurrentRows });
     decision.repairedRows += repaired.repairedRows;
     decision.demotedRows += repaired.demotedRows;
+    decision.splitRoleReconciledCount += Number(repaired.splitRoleReconciledCount || 0);
+    decision.splitRoleAmbiguousCount += Number(repaired.splitRoleAmbiguousCount || 0);
+    decision.transientRowsExcluded += Number(repaired.transientRowsExcluded || 0);
     const out = repaired.currentRows.map(cacheRowToTurn).filter(Boolean);
     out.forEach((turn, index) => {
       turn.index = index + 1;
@@ -4181,8 +4503,15 @@ function UM_PUBLIC() {
       }
       const sharedRecord = getSharedTurnRecordByIdentity('answer', answerId);
       const projectedRecord = sharedRecord ? projectSharedTurnRecord(sharedRecord, S.turnList.length + 1) : null;
-      const projectedQId = cacheRowQuestionId(projectedRecord);
+      const currentOwner = resolveMiniMapCurrentMemberByAnswer(answerId);
+      const projectedQId = String(currentOwner?.qId || '').trim() || cacheRowQuestionId(projectedRecord);
+      const projectedAnswerIds = Array.from(new Set([
+        ...(Array.isArray(projectedRecord?.answerIds) ? projectedRecord.answerIds : []),
+        ...(Array.isArray(currentOwner?.answerIds) ? currentOwner.answerIds : []),
+        answerId,
+      ].map((value) => String(value || '').trim()).filter(Boolean)));
       let turnId = String(projectedRecord?.turnId || S.turnIdByAId.get(answerId) || '').trim();
+      if (currentOwner?.qId) turnId = `turn:${currentOwner.qId}`;
       if (!turnId) turnId = String(parseTurnId(answerEl, S.turnList.length + 1, answerId) || `turn:a:${answerId}`).trim();
       if (!turnId) {
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'noop');
@@ -4200,11 +4529,18 @@ function UM_PUBLIC() {
         }
         existing.answerId = answerId;
         existing.primaryAId = answerId;
-        existing.answerIds = Array.isArray(projectedRecord?.answerIds)
-          ? projectedRecord.answerIds.slice()
-          : cacheRowAnswerIds({ ...existing, answerId });
+        existing.answerIds = Array.from(new Set([
+          ...cacheRowAnswerIds(existing),
+          ...projectedAnswerIds,
+        ])).filter(Boolean);
+        if (existing.answerIds[existing.answerIds.length - 1] !== answerId) {
+          existing.answerIds = existing.answerIds.filter((id) => id !== answerId);
+          existing.answerIds.push(answerId);
+        }
         existing.noAnswer = false;
         existing.hasAssistant = true;
+        existing.currentProof = projectedQId ? CURRENT_PROOF_PROVEN : CURRENT_PROOF_TRANSIENT;
+        if (currentOwner?.logicalMemberKey) existing.logicalMemberKey = currentOwner.logicalMemberKey;
         if (projectedQId) {
           existing.qId = projectedQId;
           existing.questionId = projectedQId;
@@ -4280,14 +4616,16 @@ function UM_PUBLIC() {
       const nextTurn = {
         ...(projectedRecord || {}),
         turnId,
+        qId: projectedQId,
+        questionId: projectedQId,
         answerId,
         primaryAId: answerId,
-        answerIds: Array.isArray(projectedRecord?.answerIds)
-          ? projectedRecord.answerIds.slice()
-          : [answerId],
+        answerIds: projectedAnswerIds,
+        currentProof: projectedQId ? CURRENT_PROOF_PROVEN : CURRENT_PROOF_TRANSIENT,
         index: nextIdx,
         el: answerEl,
       };
+      if (currentOwner?.logicalMemberKey) nextTurn.logicalMemberKey = currentOwner.logicalMemberKey;
       S.turnList.push(nextTurn);
       S.turnById.set(turnId, nextTurn);
       if (answerId) S.turnIdByAId.set(answerId, turnId);
@@ -4800,7 +5138,7 @@ function UM_PUBLIC() {
     const index = Math.max(1, Number(record?.turnNo || record?.idx || fallbackIndex || 1) || 1);
     const el = record?.live?.primaryAEl || record?.primaryAEl || null;
     const questionEl = record?.live?.qEl || record?.qEl || null;
-    return {
+    const projected = {
       turnId,
       answerId,
       primaryAId: answerId,
@@ -4813,6 +5151,10 @@ function UM_PUBLIC() {
       el: el || null,
       questionEl: questionEl || null,
     };
+    projected.currentProof = questionId && (noAnswer || answerIds.length)
+      ? CURRENT_PROOF_PROVEN
+      : deriveLiveCurrentProof(projected);
+    return projected;
   }
 
   function projectCanonicalTurnRecord(record, fallbackIndex = 0) {
@@ -4828,7 +5170,7 @@ function UM_PUBLIC() {
     const index = Math.max(1, Number(record?.index || record?.idx || record?.turnNo || fallbackIndex || 1) || 1);
     const el = record?.el || record?.primaryAEl || record?.answerEl || record?.live?.primaryAEl || null;
     const questionEl = record?.questionEl || record?.qEl || record?.live?.qEl || null;
-    return {
+    const projected = {
       turnId,
       answerId,
       primaryAId: answerId,
@@ -4841,6 +5183,10 @@ function UM_PUBLIC() {
       el: el || null,
       questionEl: questionEl || null,
     };
+    projected.currentProof = questionId && (noAnswer || answerIds.length)
+      ? CURRENT_PROOF_PROVEN
+      : deriveLiveCurrentProof(projected);
+    return projected;
   }
 
   function getPublishedTurnByIdMap() {

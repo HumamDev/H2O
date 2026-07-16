@@ -69,6 +69,9 @@ function instrumentSource() {
     'applyCanonicalDraft',
     'applyLiveDraft',
     'commitTurnDrafts',
+    'buildTurnDraftsFromEntries',
+    'reconcileBootSplitTurnDrafts',
+    'chatAtlasPairEvidence',
     'seedDurableTurnDrafts',
     'mergeDurableTurnDrafts',
     'chatAtlasApplyEvidence',
@@ -110,6 +113,9 @@ function instrumentSource() {
     '    applyCanonicalDraft,',
     '    applyLiveDraft,',
     '    commitTurnDrafts,',
+    '    buildTurnDraftsFromEntries,',
+    '    reconcileBootSplitTurnDrafts,',
+    '    chatAtlasPairEvidence,',
     '    createTurnRecord,',
     '    seedDurableTurnDrafts,',
     '    mergeDurableTurnDrafts,',
@@ -348,6 +354,31 @@ function read(evidenceRows, canonicalRecords = [], bindings = new Map()) {
     completeShellMap: true,
     readMs: 0,
   };
+}
+
+function structuralPairing(runtime, qId, answerIds, prefix = 'fixture-boot-split') {
+  const flow = { id: `${prefix}-flow` };
+  const rows = [
+    evidence({
+      role: 'user',
+      shellRef: shell(`${prefix}-q-shell`, 'user'),
+      shellIndex: 0,
+      shellOrdinal: 1,
+      flowRef: flow,
+      shellTurnId: `${prefix}-q-shell`,
+      messageId: qId,
+    }),
+    ...answerIds.map((answerId, index) => evidence({
+      role: 'assistant',
+      shellRef: shell(`${prefix}-a-shell-${index + 1}`, 'assistant'),
+      shellIndex: index + 1,
+      shellOrdinal: index + 2,
+      flowRef: flow,
+      shellTurnId: `${prefix}-a-shell-${index + 1}`,
+      messageId: answerId,
+    })),
+  ];
+  return runtime.internals.chatAtlasPairEvidence(rows);
 }
 
 function assertSafety(runtime) {
@@ -708,6 +739,121 @@ function partialHydrationFixture(runtime) {
   ], 'off-DOM answer identities remain unchanged');
 }
 
+function bootSplitIncidentFixture(runtime) {
+  const variants = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    OBSERVED.answerId,
+  ];
+  const pairing = structuralPairing(runtime, OBSERVED.mountedQId, variants, 'incident-boot-split');
+  const questionOnly = draft({
+    qId: OBSERVED.mountedQId,
+    aliases: [OBSERVED.mountedQId, 'incident-question-shell'],
+  });
+  const answerOnly = draft({
+    qId: null,
+    answers: variants,
+    aliases: [...variants, 'incident-answer-shell'],
+  });
+  const reconciled = runtime.internals.reconcileBootSplitTurnDrafts(
+    [questionOnly, answerOnly],
+    pairing,
+  );
+  equal(reconciled.reconciledCount, 1, 'exact incident halves reconcile once');
+  equal(reconciled.drafts.length, 1, 'exact incident produces one canonical draft');
+  equal(reconciled.drafts[0].qId, OBSERVED.mountedQId, 'mounted selected-path qId wins');
+  equal(reconciled.drafts[0].answerIds, variants, 'all incident answer variants remain ordered');
+  equal(reconciled.drafts[0].primaryAId, OBSERVED.answerId, 'incident selected primary remains unchanged');
+  includes(reconciled.drafts[0].aliasIds, OBSERVED.mountedQId, 'question identity remains an alias');
+  includes(reconciled.drafts[0].aliasIds, variants[0], 'earlier answer variant remains an alias');
+  includes(reconciled.drafts[0].aliasIds, OBSERVED.answerId, 'selected answer remains an alias');
+
+  runtime.internals.seedDurableTurnDrafts(reconciled.drafts);
+  runtime.internals.commitTurnDrafts(reconciled.drafts, reconciled.drafts);
+  equal(runtime.internals.getRecords().length, 1, 'canonical publication emits one record');
+  equal(runtime.internals.getRecords()[0].turnId, `turn:${OBSERVED.mountedQId}`, 'turn identity becomes question-derived');
+  equal(runtime.internals.getDurableSnapshot().order, [`q:${OBSERVED.mountedQId}`], 'durable cache emits only the question key');
+}
+
+function bootSplitReverseArrivalFixture(runtime) {
+  const qId = 'fixture-reverse-boot-question';
+  const answerId = 'fixture-reverse-boot-answer';
+  const pairing = structuralPairing(runtime, qId, [answerId], 'reverse-boot-split');
+  const answerOnly = draft({ qId: null, answers: [answerId], aliases: [answerId] });
+  const questionOnly = draft({ qId, aliases: [qId] });
+  const reconciled = runtime.internals.reconcileBootSplitTurnDrafts(
+    [answerOnly, questionOnly],
+    pairing,
+  );
+  equal(reconciled.drafts.length, 1, 'answer-first split reconciles to one turn');
+  equal(reconciled.drafts[0].qId, qId);
+  equal(reconciled.drafts[0].primaryAId, answerId);
+  equal(reconciled.drafts[0].turnNo, 1, 'reverse arrival is deterministically reindexed');
+}
+
+function bootSplitSelectedPrimaryFixture(runtime) {
+  const qId = 'fixture-selected-primary-question';
+  const answerIds = ['fixture-selected-primary-answer', 'fixture-later-variant-answer'];
+  const pairing = structuralPairing(runtime, qId, answerIds, 'selected-primary-boot-split');
+  const answerOnly = draft({ qId: null, answers: answerIds, aliases: answerIds });
+  answerOnly.primaryAId = answerIds[0];
+  const reconciled = runtime.internals.reconcileBootSplitTurnDrafts([
+    draft({ qId, aliases: [qId] }),
+    answerOnly,
+  ], pairing);
+  equal(reconciled.drafts.length, 1);
+  equal(reconciled.drafts[0].answerIds, answerIds, 'variant ordering remains unchanged');
+  equal(reconciled.drafts[0].primaryAId, answerIds[0], 'selected primary is not inferred from variant order');
+  runtime.internals.seedDurableTurnDrafts(reconciled.drafts);
+  runtime.internals.commitTurnDrafts(reconciled.drafts, reconciled.drafts);
+  equal(runtime.internals.getRecords()[0].primaryAId, answerIds[0], 'canonical commit retains explicit selection');
+  equal(runtime.internals.getDurableSnapshot().rows[0].primaryAId, answerIds[0], 'durable draft retains explicit selection');
+}
+
+function bootSplitAmbiguousOwnershipFixture(runtime) {
+  const qId = 'fixture-ambiguous-boot-question';
+  const answerId = 'fixture-ambiguous-boot-answer';
+  const pairing = structuralPairing(runtime, qId, [answerId], 'ambiguous-boot-split');
+  const reconciled = runtime.internals.reconcileBootSplitTurnDrafts([
+    draft({ qId, aliases: [qId, 'question-candidate-a'] }),
+    draft({ qId, aliases: [qId, 'question-candidate-b'] }),
+    draft({ qId: null, answers: [answerId], aliases: [answerId] }),
+  ], pairing);
+  equal(reconciled.reconciledCount, 0, 'multiple question owners fail closed');
+  equal(reconciled.drafts.length, 3, 'ambiguous halves remain separate');
+  equal(reconciled.ambiguousCount > 0, true, 'ambiguity is explicit');
+}
+
+function bootSplitUnrelatedRowsFixture(runtime) {
+  const pairing = structuralPairing(
+    runtime,
+    'fixture-paired-question',
+    ['fixture-paired-answer'],
+    'unrelated-boot-split',
+  );
+  const source = [
+    draft({ qId: 'fixture-unrelated-question', aliases: ['fixture-unrelated-question'] }),
+    draft({ qId: null, answers: ['fixture-unrelated-answer'], aliases: ['fixture-unrelated-answer'] }),
+  ];
+  const reconciled = runtime.internals.reconcileBootSplitTurnDrafts(source, pairing);
+  equal(reconciled.reconciledCount, 0, 'unrelated rows are never merged by position');
+  equal(reconciled.drafts.length, 2);
+  equal(reconciled.drafts[0].qId, 'fixture-unrelated-question');
+  equal(reconciled.drafts[1].primaryAId, 'fixture-unrelated-answer');
+}
+
+function bootSplitReconciliationIdempotentFixture(runtime) {
+  const qId = 'fixture-idempotent-boot-question';
+  const answerId = 'fixture-idempotent-boot-answer';
+  const pairing = structuralPairing(runtime, qId, [answerId], 'idempotent-boot-split');
+  const first = runtime.internals.reconcileBootSplitTurnDrafts([
+    draft({ qId, aliases: [qId] }),
+    draft({ qId: null, answers: [answerId], aliases: [answerId] }),
+  ], pairing);
+  const second = runtime.internals.reconcileBootSplitTurnDrafts(first.drafts, pairing);
+  equal(second.reconciledCount, 0, 'already reconciled turn is not merged again');
+  equal(JSON.stringify(second.drafts), JSON.stringify(first.drafts), 'reconciliation is byte-stable on repeat');
+}
+
 const FIXTURES = [
   ['observed-canonical-ledger-qid-split', canonicalPromotionFixture],
   ['unique-answer-proves-current-question', answerProofFixture],
@@ -729,6 +875,12 @@ const FIXTURES = [
   ['positive-branch-switch-retains-old-qid', branchSwitchFixture],
   ['durable-current-qid-rekey-is-idempotent', durableIdempotenceFixture],
   ['partial-hydration-preserves-membership', partialHydrationFixture],
+  ['boot-split-exact-incident-reconciles-before-commit', bootSplitIncidentFixture],
+  ['boot-split-reverse-arrival-reconciles', bootSplitReverseArrivalFixture],
+  ['boot-split-selected-primary-remains-stable', bootSplitSelectedPrimaryFixture],
+  ['boot-split-ambiguous-ownership-fails-closed', bootSplitAmbiguousOwnershipFixture],
+  ['boot-split-unrelated-rows-remain-separate', bootSplitUnrelatedRowsFixture],
+  ['boot-split-reconciliation-is-idempotent', bootSplitReconciliationIdempotentFixture],
 ];
 
 const results = [];

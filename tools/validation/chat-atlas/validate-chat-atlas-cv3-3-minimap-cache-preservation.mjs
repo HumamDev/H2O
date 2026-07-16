@@ -34,19 +34,29 @@ const coreSource = replaceUnique(
     normalizeCacheTurnRows,
     normalizeCacheTurnRowsDetailed,
     repairCacheCurrentMembership,
+    cacheRowCurrentProof,
+    deriveLiveCurrentProof,
+    findCacheSplitRoleProposals,
+    reconcileCacheSplitRoleRows,
+    resolveMiniMapCurrentMemberByAnswer,
     cacheRowsShareIdentity,
     cacheRowsHaveVariantRelationship,
     findCacheRowIndex,
     validateCurrentLayerMembership,
     validateAuthoritativeShrinkProof,
     mergeTurnListWithCache,
+    persistPublishedTurnList,
+    appendTurnFromAnswerEl,
     loadTurnCache,
     saveTurnCache,
     getCacheCompletenessDiagnostics,
+    projectSharedTurnRecord,
+    projectCanonicalTurnRecord,
     buildCanonicalSnapshotFromTurns,
     publishTurnSnapshot,
     getTurnList,
     getCanonicalTurnsFromSharedRuntime,
+    syncTurnRowDom,
     state: S,
   });`,
   'core-bootstrap',
@@ -207,11 +217,15 @@ function makeStorage(seed = null) {
 function makeEnvironment(records = [], opts = {}) {
   const document = new FakeDocument();
   const storage = makeStorage(opts.storage);
+  const pathname = String(opts.pathname || '/c/fixture-chat');
+  const routeChatMatch = pathname.match(/\/c\/([^/?#]+)/i) || pathname.match(/\/g\/([^/?#]+)/i);
+  const currentChatKey = String(opts.currentChatKey || routeChatMatch?.[1] || 'fixture-chat');
   const counters = {
     sourceSetterCalls: 0,
     navigationCalls: 0,
     domMutationCalls: 0,
     userActionCalls: 0,
+    networkCalls: 0,
     rebuildCalls: 0,
     automaticCanaryStages: 0,
   };
@@ -227,12 +241,17 @@ function makeEnvironment(records = [], opts = {}) {
       ...(row.answerIds || []),
     ].includes(id)) || null,
     getTurnRecordByQId: (id) => holder.records.find((row) => String(row.qId || row.questionId || '') === String(id || '')) || null,
+    getChatAtlasLedgerSnapshot: () => ({
+      ready: opts.ledgerReady !== false,
+      ledgerReady: opts.ledgerReady !== false,
+      chatKey: String(opts.ledgerChatKey || currentChatKey),
+      members: Array.isArray(opts.ledgerMembers) ? opts.ledgerMembers : [],
+    }),
     setChatAtlasCanonicalSource: () => {
       counters.sourceSetterCalls += 1;
       throw new Error('source-setter-forbidden');
     },
   };
-  const pathname = String(opts.pathname || '/c/fixture-chat');
   const context = {
     console: { log() {}, warn() {}, error() {}, assert() {} },
     document,
@@ -291,10 +310,30 @@ function makeEnvironment(records = [], opts = {}) {
     setInterval: (fn) => { context.__intervals.push(fn); return context.__intervals.length; },
     clearInterval() {},
     queueMicrotask() {},
+    fetch() {
+      counters.networkCalls += 1;
+      throw new Error('network-forbidden');
+    },
+    XMLHttpRequest: class XMLHttpRequest {
+      constructor() {
+        counters.networkCalls += 1;
+        throw new Error('network-forbidden');
+      }
+    },
+    WebSocket: class WebSocket {
+      constructor() {
+        counters.networkCalls += 1;
+        throw new Error('network-forbidden');
+      }
+    },
     getComputedStyle: () => ({ getPropertyValue: () => '', display: 'block', visibility: 'visible' }),
     localStorage: storage.api,
     sessionStorage: makeStorage().api,
-    H2O: { turnRuntime: runtime, SEL: {} },
+    H2O: {
+      turnRuntime: runtime,
+      SEL: {},
+      util: { getChatId: () => currentChatKey },
+    },
     H2O_Pagination: { getPageInfo: () => ({ enabled: false }) },
     __intervals: [],
   };
@@ -396,6 +435,29 @@ function historyRow(row, reason = 'fixture-history') {
     selectedPath: false,
     repairReason: reason,
   };
+}
+
+function ledgerMember(qId, answerIds = [], logicalMemberKey = `member:${qId}`, noAnswer = false) {
+  const ids = answerIds.slice();
+  return {
+    logicalMemberKey,
+    turnNo: 1,
+    question: {
+      qId,
+      currentQId: qId,
+      currentAliases: [qId],
+    },
+    answer: {
+      primaryAId: ids[ids.length - 1] || null,
+      currentAnswerIds: ids,
+      currentAliases: ids.slice(),
+    },
+    noAnswer,
+  };
+}
+
+function withCurrentProof(row, currentProof) {
+  return { ...row, layer: 'current', selectedPath: true, currentProof };
 }
 
 function variantRow(turnNo, qId, primaryAId, answerIds, logicalMemberKey = '') {
@@ -699,6 +761,7 @@ await fixture('validator evaluation performs no forbidden runtime actions', () =
   check(env.counters.navigationCalls, 0);
   check(env.counters.domMutationCalls, 0);
   check(env.counters.userActionCalls, 0);
+  check(env.counters.networkCalls, 0);
   check(env.counters.automaticCanaryStages, 0);
 });
 
@@ -1062,6 +1125,260 @@ await fixture('history repair preserves original identities and variants', () =>
   check(normalized.historyRows[0].answerIds, historical.answerIds);
 });
 
+await fixture('boot split question and answer halves reconcile through unique ledger ownership', () => {
+  const qId = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const variants = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+  ];
+  const env = loadCore([], { ledgerMembers: [ledgerMember(qId, variants, 'incident-member')] });
+  const questionOnly = withCurrentProof(noAnswerRow(1, qId), 'transient-unverified');
+  const answerOnly = withCurrentProof({
+    ...answeredRow(2, variants[1], ''),
+    qId: '',
+    questionId: '',
+    turnId: `turn:a:${variants[1]}`,
+    answerIds: variants,
+  }, 'transient-unverified');
+  const repaired = env.api.reconcileCacheSplitRoleRows([questionOnly, answerOnly]);
+  check(repaired.reconciledCount, 1);
+  check(repaired.rows.length, 1);
+  check(repaired.rows[0].qId, qId);
+  check(repaired.rows[0].turnId, `turn:${qId}`);
+  check(repaired.rows[0].answerIds, variants);
+  check(repaired.rows[0].primaryAId, variants[1]);
+  check(repaired.rows[0].currentProof, 'proven-current');
+});
+
+await fixture('cache-only transient boot fragment is excluded from current publication', () => {
+  const transientQId = 'fixture-transient-boot-question';
+  const live = rows(3);
+  const env = loadCore(live);
+  const transient = withCurrentProof(noAnswerRow(4, transientQId), 'transient-unverified');
+  stageCache(env, 'fixture-chat', [...live, transient]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', live);
+  check(merged.list.length, 3);
+  check(merged.list.some((row) => row.qId === transientQId), false);
+  check(merged.historyList.some((row) => row.qId === transientQId), true);
+  check(merged.decision.transientRowsExcluded > 0, true);
+});
+
+await fixture('proven current rows remain protected through 38-to-3 hydration', () => {
+  const all = rows(38).map((row) => withCurrentProof(row, 'proven-current'));
+  const env = loadCore(all.slice(0, 3));
+  stageCache(env, 'fixture-chat', all);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', all.slice(0, 3));
+  check(merged.list.length, 38);
+  check(merged.historyList.length, 0);
+  check(merged.list.slice(3).every((row) => ['proven-current', 'retained-proven-current'].includes(row.currentProof)), true);
+});
+
+await fixture('split-role malformed payload is refused byte-identically', () => {
+  const qId = 'fixture-barrier-split-question';
+  const answerId = 'fixture-barrier-split-answer';
+  const env = loadCore([], { ledgerMembers: [ledgerMember(qId, [answerId], 'barrier-member')] });
+  stageCache(env, 'fixture-chat', [answeredRow(1, 'fixture-existing-answer', 'fixture-existing-question')]);
+  const before = storedStrings(env);
+  const result = env.api.saveTurnCache('fixture-chat', [
+    withCurrentProof(noAnswerRow(1, qId), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, answerId, ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]);
+  check(result.status, 'malformed-membership');
+  check(result.reasons.includes('split-role-duplicate'), true);
+  check(result.splitRoleDuplicateCount, 1);
+  check(result.writesAttempted, 0);
+  check(storedStrings(env), before);
+  check(env.storage.writes.length, 0);
+});
+
+await fixture('reconciled split-role payload persists successfully', () => {
+  const qId = 'fixture-reconciled-persist-question';
+  const answerId = 'fixture-reconciled-persist-answer';
+  const env = loadCore([], { ledgerMembers: [ledgerMember(qId, [answerId], 'persist-member')] });
+  const repaired = env.api.reconcileCacheSplitRoleRows([
+    withCurrentProof(noAnswerRow(1, qId), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, answerId, ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]);
+  const saved = env.api.saveTurnCache('fixture-chat', repaired.rows);
+  check(saved.ok, true);
+  check(saved.publishedTurnCount, 1);
+  const loaded = env.api.loadTurnCache('fixture-chat');
+  check(loaded.currentTurns.length, 1);
+  check(loaded.currentTurns[0].qId, qId);
+  check(loaded.currentTurns[0].primaryAId, answerId);
+});
+
+await fixture('render backfill suppresses stale qId on incompatible transient answer turn', () => {
+  const qId = 'fixture-render-split-question';
+  const answerId = 'fixture-render-split-answer';
+  const canonical = {
+    turnNo: 1,
+    qId: null,
+    turnId: `turn:a:${answerId}`,
+    primaryAId: answerId,
+    answerIds: [answerId],
+    hasAssistant: true,
+  };
+  const env = loadCore([canonical]);
+  const wrap = env.document.createElement('div');
+  const qBtn = env.document.createElement('button');
+  wrap.appendChild(qBtn);
+  wrap.dataset.turnId = canonical.turnId;
+  wrap.dataset.questionId = qId;
+  qBtn.dataset.turnId = canonical.turnId;
+  qBtn.dataset.questionId = qId;
+  const turn = withCurrentProof({
+    ...answeredRow(1, answerId, ''),
+    qId: '',
+    questionId: '',
+    turnId: canonical.turnId,
+    suspectQuestionIdentity: true,
+  }, 'transient-unverified');
+  const meta = env.api.resolveQaRowCanonicalMeta(turn, { wrap, qBtn, primaryAId: answerId });
+  check(meta.questionId, '');
+  check(meta.cachedQuestionSuppressed, true);
+  env.api.backfillQaRowMeta(wrap, qBtn, meta);
+  check(wrap.dataset.questionId, undefined);
+  check(qBtn.dataset.questionId, undefined);
+  check(meta.turnId, canonical.turnId);
+});
+
+await fixture('ambiguous and unrelated split rows are never guessed', () => {
+  const qId = 'fixture-ambiguous-split-question';
+  const answerId = 'fixture-ambiguous-split-answer';
+  const env = loadCore([], {
+    ledgerMembers: [
+      ledgerMember(qId, [answerId], 'ambiguous-member-a'),
+      ledgerMember(qId, [answerId], 'ambiguous-member-b'),
+    ],
+  });
+  const ambiguous = env.api.reconcileCacheSplitRoleRows([
+    withCurrentProof(noAnswerRow(1, qId), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, answerId, ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]);
+  check(ambiguous.reconciledCount, 0);
+  check(ambiguous.rows.length, 2);
+
+  const unrelatedEnv = loadCore([], {
+    ledgerMembers: [ledgerMember('fixture-owner-question', ['fixture-owner-answer'])],
+  });
+  const unrelated = unrelatedEnv.api.reconcileCacheSplitRoleRows([
+    withCurrentProof(noAnswerRow(1, 'fixture-other-question'), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, 'fixture-other-answer', ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]);
+  check(unrelated.reconciledCount, 0);
+  check(unrelated.rows.length, 2);
+});
+
+await fixture('repeated malformed-cache recovery remains one logical row', () => {
+  const qId = 'fixture-repeat-split-question';
+  const answerId = 'fixture-repeat-split-answer';
+  const live = [withCurrentProof(answeredRow(1, answerId, qId), 'proven-current')];
+  const env = loadCore(live, { ledgerMembers: [ledgerMember(qId, [answerId], 'repeat-member')] });
+  stageCache(env, 'fixture-chat', live);
+  replaceStoredTurns(env, [
+    withCurrentProof(noAnswerRow(1, qId), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, answerId, ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]);
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    const merged = env.api.mergeTurnListWithCache('fixture-chat', live);
+    check(merged.list.length, 1);
+    check(merged.list[0].qId, qId);
+    check(merged.list[0].primaryAId, answerId);
+    check(env.api.saveTurnCache('fixture-chat', merged.retainedList).ok, true);
+  }
+});
+
+await fixture('foreign or unready ledger ownership cannot prove a split pair', () => {
+  const qId = 'fixture-ledger-scope-question';
+  const answerId = 'fixture-ledger-scope-answer';
+  const member = ledgerMember(qId, [answerId], 'ledger-scope-member');
+  const foreign = loadCore([], { ledgerMembers: [member], ledgerChatKey: 'foreign-chat' });
+  const unready = loadCore([], { ledgerMembers: [member], ledgerReady: false });
+  check(foreign.api.resolveMiniMapCurrentMemberByAnswer(answerId), null);
+  check(unready.api.resolveMiniMapCurrentMemberByAnswer(answerId), null);
+  check(foreign.api.reconcileCacheSplitRoleRows([
+    withCurrentProof(noAnswerRow(1, qId), 'transient-unverified'),
+    withCurrentProof({ ...answeredRow(2, answerId, ''), qId: '', questionId: '' }, 'transient-unverified'),
+  ]).reconciledCount, 0);
+});
+
+await fixture('canonical NO ANSWER projection is proven without ledger readiness', () => {
+  const qId = 'fixture-canonical-no-answer-proof';
+  const env = loadCore([], { ledgerReady: false });
+  const projected = env.api.projectSharedTurnRecord({
+    turnNo: 1,
+    qId,
+    turnId: `turn:${qId}`,
+    primaryAId: null,
+    answerIds: [],
+    noAnswer: true,
+    hasAssistant: false,
+  }, 1);
+  check(projected.currentProof, 'proven-current');
+  check(projected.qId, qId);
+  check(projected.primaryAId, '');
+});
+
+await fixture('incremental append attaches answer to uniquely owned question row', () => {
+  const qId = 'fixture-append-split-question';
+  const staleQId = 'fixture-append-stale-projected-question';
+  const answerId = 'fixture-append-split-answer';
+  const earlierAnswer = 'fixture-append-split-answer-earlier';
+  const canonical = {
+    turnNo: 1,
+    qId: staleQId,
+    turnId: `turn:${staleQId}`,
+    primaryAId: answerId,
+    answerIds: [earlierAnswer, answerId],
+    hasAssistant: true,
+  };
+  const owner = ledgerMember(qId, [earlierAnswer, answerId], 'append-member');
+  owner.answer.currentAliases.push('fixture-append-shell-alias');
+  const env = loadCore([canonical], { ledgerMembers: [owner] });
+  const panel = env.document.createElement('div');
+  const root = env.document.createElement('div');
+  const col = env.document.createElement('div');
+  col.className = 'cgxui-mm-col';
+  panel.appendChild(col);
+  root.appendChild(panel);
+  env.document.body.appendChild(root);
+  env.context.H2O_MM_SHARED = {
+    get: () => ({
+      SEL_: { MM_COL: '.cgxui-mm-col' },
+      util: {
+        mm: {
+          ui: () => ({ ensureUI: () => ({ root, panel }) }),
+          uiRefs: () => ({ root, panel }),
+          rt: () => null,
+          core: () => env.api,
+        },
+      },
+    }),
+  };
+  const questionOnly = withCurrentProof(noAnswerRow(1, qId), 'transient-unverified');
+  env.api.state.turnList.splice(0, env.api.state.turnList.length, questionOnly);
+  env.api.state.turnById.clear();
+  env.api.state.turnById.set(questionOnly.turnId, questionOnly);
+  const answerEl = env.document.createElement('div');
+  answerEl.setAttribute('data-message-author-role', 'assistant');
+  answerEl.setAttribute('data-message-id', answerId);
+  env.document.body.appendChild(answerEl);
+  const result = env.api.appendTurnFromAnswerEl('fixture-chat', answerEl, { source: 'fixture' });
+  check(result.ok, true);
+  check(result.status, 'exists');
+  check(env.api.state.turnList.length, 1);
+  check(env.api.state.turnList[0].qId, qId);
+  check(env.api.state.turnList[0].answerIds, [earlierAnswer, answerId]);
+  check(env.api.state.turnList[0].answerIds.includes('fixture-append-shell-alias'), false);
+  check(env.api.state.turnList[0].primaryAId, answerId);
+  check(env.api.state.turnList[0].currentProof, 'proven-current');
+  check(result.cachePersistence?.ok, true, JSON.stringify(result.cachePersistence || null));
+  env.holder.records = [{ ...canonical, qId, turnId: `turn:${qId}` }];
+  const loaded = env.api.loadTurnCache('fixture-chat');
+  check(loaded.currentTurns.length, 1, JSON.stringify(loaded));
+});
+
 await fixture('target NO ANSWER remains clean in either cache layer', () => {
   const current = noAnswerRow(1, 'fixture-no-answer-current');
   const historical = historyRow(noAnswerRow(2, 'fixture-no-answer-history'));
@@ -1079,6 +1396,7 @@ const sideEffects = {
   navigationCalls: observedCounters.reduce((sum, row) => sum + row.navigationCalls, 0),
   domMutationCalls: observedCounters.reduce((sum, row) => sum + row.domMutationCalls, 0),
   userActionCalls: observedCounters.reduce((sum, row) => sum + row.userActionCalls, 0),
+  networkCalls: observedCounters.reduce((sum, row) => sum + row.networkCalls, 0),
   browserStorageOutsideStubs: 0,
   automaticCanaryStages: observedCounters.reduce((sum, row) => sum + row.automaticCanaryStages, 0),
 };

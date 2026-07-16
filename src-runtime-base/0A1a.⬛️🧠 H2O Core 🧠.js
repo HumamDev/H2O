@@ -4027,6 +4027,176 @@
     return drafts.map(finalize).filter(Boolean);
   }
 
+  function readBootSplitPairEvidence() {
+    try {
+      const read = chatAtlasReadEvidence();
+      return chatAtlasPairEvidence(read?.evidence || []);
+    } catch {
+      return { pairs: [], rejectedAssistants: [] };
+    }
+  }
+
+  function mergeBootSplitDrafts(questionDraft, answerDraft, pair) {
+    const qId = normalizeTurnAlias(pair?.question?.messageId || '');
+    const answerIds = Array.from(new Set([
+      ...(questionDraft?.answerIds || []),
+      ...(answerDraft?.answerIds || []),
+    ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    const answerEls = Array.from(new Set([
+      ...(questionDraft?.live?.answerEls || []),
+      ...(answerDraft?.live?.answerEls || []),
+      ...(pair?.answers || []).map((answer) => answer?.roleNode).filter((node) => node?.isConnected),
+    ].filter(Boolean)));
+    const qEl = questionDraft?.live?.qEl?.isConnected
+      ? questionDraft.live.qEl
+      : (pair?.question?.roleNode?.isConnected ? pair.question.roleNode : null);
+    const aliasIds = Array.from(new Set([
+      ...(questionDraft?.aliasIds || []),
+      ...(answerDraft?.aliasIds || []),
+      questionDraft?.qId,
+      answerDraft?.qId,
+      pair?.question?.messageId,
+      pair?.question?.shellTurnId,
+      ...(pair?.answers || []).flatMap((answer) => [
+        answer?.messageId,
+        answer?.shellTurnId,
+      ]),
+      ...answerIds,
+    ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    const preferredPrimaryAId = normalizeTurnAlias(
+      answerDraft?.primaryAId || questionDraft?.primaryAId || '',
+    );
+    const primaryAId = answerIds.includes(preferredPrimaryAId)
+      ? preferredPrimaryAId
+      : (answerIds[answerIds.length - 1] || null);
+    const pairedPrimaryAEl = (pair?.answers || []).find((answer) => (
+      normalizeTurnAlias(answer?.messageId || '') === primaryAId
+      || normalizeTurnAlias(answer?.shellTurnId || '') === primaryAId
+    ))?.roleNode;
+    const primaryAEl = (pairedPrimaryAEl?.isConnected ? pairedPrimaryAEl : null)
+      || answerDraft?.live?.primaryAEl
+      || questionDraft?.live?.primaryAEl
+      || answerEls[answerEls.length - 1]
+      || null;
+    return {
+      ...questionDraft,
+      qId: qId || normalizeTurnAlias(questionDraft?.qId || '') || null,
+      answerIds,
+      primaryAId,
+      aliasIds,
+      hasQuestion: !!(qId || questionDraft?.qId),
+      hasAssistant: answerIds.length > 0,
+      live: {
+        qEl,
+        primaryAEl,
+        answerEls,
+        connected: !!(
+          qEl?.isConnected
+          || primaryAEl?.isConnected
+          || answerEls.some((el) => !!el?.isConnected)
+        ),
+      },
+    };
+  }
+
+  function reconcileBootSplitTurnDrafts(drafts = [], pairing = null) {
+    const source = (Array.isArray(drafts) ? drafts : []).map((draft) => ({
+      ...draft,
+      answerIds: Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [],
+      aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
+      live: {
+        qEl: draft?.live?.qEl || null,
+        primaryAEl: draft?.live?.primaryAEl || null,
+        answerEls: Array.isArray(draft?.live?.answerEls) ? draft.live.answerEls.slice() : [],
+        connected: !!draft?.live?.connected,
+      },
+    }));
+    const pairs = Array.isArray(pairing?.pairs) ? pairing.pairs : [];
+    const proposals = [];
+    let ambiguousCount = 0;
+
+    for (const pair of pairs) {
+      const currentQId = normalizeTurnAlias(pair?.question?.messageId || '');
+      if (!currentQId || !pair?.question?.hydrated) continue;
+      const pairAnswerIds = new Set((pair?.answers || []).flatMap((answer) => [
+        answer?.messageId,
+        answer?.shellTurnId,
+      ]).map((value) => normalizeTurnAlias(value)).filter(Boolean));
+      if (!pairAnswerIds.size) continue;
+
+      const questionCandidates = [];
+      const answerCandidates = [];
+      for (let index = 0; index < source.length; index += 1) {
+        const draft = source[index];
+        const draftQId = normalizeTurnAlias(draft?.qId || '');
+        const draftAnswerIds = (draft?.answerIds || [])
+          .map((value) => normalizeTurnAlias(value))
+          .filter(Boolean);
+        const questionOnly = !!draftQId && draftAnswerIds.length === 0;
+        const answerOnly = !draftQId && draftAnswerIds.length > 0;
+        const sameQuestionNode = !!draft?.live?.qEl
+          && !!pair?.question?.roleNode
+          && draft.live.qEl === pair.question.roleNode;
+        if (questionOnly && (draftQId === currentQId || sameQuestionNode)) {
+          questionCandidates.push(index);
+        }
+        if (answerOnly && draftAnswerIds.some((answerId) => pairAnswerIds.has(answerId))) {
+          answerCandidates.push(index);
+        }
+      }
+
+      if (questionCandidates.length !== 1 || answerCandidates.length !== 1) {
+        if (questionCandidates.length || answerCandidates.length) ambiguousCount += 1;
+        continue;
+      }
+      if (questionCandidates[0] === answerCandidates[0]) continue;
+      proposals.push({
+        pair,
+        questionIndex: questionCandidates[0],
+        answerIndex: answerCandidates[0],
+      });
+    }
+
+    const questionUses = new Map();
+    const answerUses = new Map();
+    for (const proposal of proposals) {
+      questionUses.set(proposal.questionIndex, (questionUses.get(proposal.questionIndex) || 0) + 1);
+      answerUses.set(proposal.answerIndex, (answerUses.get(proposal.answerIndex) || 0) + 1);
+    }
+
+    const mergedAt = new Map();
+    const removed = new Set();
+    let reconciledCount = 0;
+    for (const proposal of proposals) {
+      if (questionUses.get(proposal.questionIndex) !== 1 || answerUses.get(proposal.answerIndex) !== 1) {
+        ambiguousCount += 1;
+        continue;
+      }
+      if (removed.has(proposal.questionIndex) || removed.has(proposal.answerIndex)) {
+        ambiguousCount += 1;
+        continue;
+      }
+      const targetIndex = Math.min(proposal.questionIndex, proposal.answerIndex);
+      const removedIndex = Math.max(proposal.questionIndex, proposal.answerIndex);
+      mergedAt.set(targetIndex, mergeBootSplitDrafts(
+        source[proposal.questionIndex],
+        source[proposal.answerIndex],
+        proposal.pair,
+      ));
+      removed.add(removedIndex);
+      reconciledCount += 1;
+    }
+
+    const out = [];
+    for (let index = 0; index < source.length; index += 1) {
+      if (removed.has(index)) continue;
+      const draft = mergedAt.get(index) || source[index];
+      draft.turnNo = out.length + 1;
+      out.push(draft);
+    }
+    return { drafts: out, reconciledCount, ambiguousCount };
+  }
+
   // Phase 4 Step 2.2: optional `preScanned` parameter avoids a redundant DOM
   // scan when refresh() has already collected the same node set. When omitted
   // (e.g. called from reconcileTurnRecordsFromPaginationSnapshot), the function
@@ -4277,7 +4447,10 @@
   function applyCanonicalDraft(record, draft) {
     const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
     const answerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
-    const primaryAId = answerIds.length ? answerIds[answerIds.length - 1] : null;
+    const explicitPrimaryAId = normalizeTurnAlias(draft?.primaryAId || '');
+    const primaryAId = answerIds.includes(explicitPrimaryAId)
+      ? explicitPrimaryAId
+      : (answerIds[answerIds.length - 1] || null);
     const previousQId = normalizeTurnAlias(record?.qId || '');
     const currentQId = normalizeTurnAlias(draft?.qId || '');
     record.turnNo = turnNo;
@@ -4325,7 +4498,10 @@
     }
     if ((!record.answerIds || !record.answerIds.length) && Array.isArray(draft?.answerIds) && draft.answerIds.length) {
       record.answerIds = draft.answerIds.slice();
-      record.primaryAId = draft.answerIds[draft.answerIds.length - 1] || null;
+      const explicitPrimaryAId = normalizeTurnAlias(draft?.primaryAId || '');
+      record.primaryAId = record.answerIds.includes(explicitPrimaryAId)
+        ? explicitPrimaryAId
+        : (record.answerIds[record.answerIds.length - 1] || null);
       record.hasAssistant = !!record.answerIds.length;
       shouldRebuildTurnId = true;
     }
@@ -4449,6 +4625,7 @@
     return {
       turnNo: 0,
       qId: draft?.qId || null,
+      primaryAId: draft?.primaryAId || null,
       answerIds: Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [],
       aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
       hasQuestion: !!draft?.qId,
@@ -4577,8 +4754,13 @@
   // callers (e.g. boot retry paths) pass nothing and behave identically
   // to the prior implementation.
   function buildTurns(preScanned) {
-    const liveDrafts = buildLiveTurnDrafts(preScanned);
-    const sectionDrafts = buildSectionTurnDrafts();
+    const pairing = readBootSplitPairEvidence();
+    const liveReconciliation = reconcileBootSplitTurnDrafts(buildLiveTurnDrafts(preScanned), pairing);
+    const liveDrafts = liveReconciliation.drafts;
+    const rawSectionDrafts = buildSectionTurnDrafts();
+    const sectionDrafts = Array.isArray(rawSectionDrafts)
+      ? reconcileBootSplitTurnDrafts(rawSectionDrafts, pairing).drafts
+      : rawSectionDrafts;
     const sectionDraftsAreAuthoritative = Array.isArray(sectionDrafts)
       && sectionDrafts.length >= liveDrafts.length;
     const baseDrafts = sectionDraftsAreAuthoritative
@@ -4598,6 +4780,9 @@
     } else {
       legacyCanonicalDrafts = mergeDurableTurnDrafts(baseDrafts);
     }
+    const legacyReconciliation = reconcileBootSplitTurnDrafts(legacyCanonicalDrafts, pairing);
+    legacyCanonicalDrafts = legacyReconciliation.drafts;
+    if (legacyReconciliation.reconciledCount > 0) seedDurableTurnDrafts(legacyCanonicalDrafts);
     const canonicalDrafts = selectChatAtlasCanonicalDrafts(legacyCanonicalDrafts);
     commitTurnDrafts(canonicalDrafts, liveDrafts);
   }
