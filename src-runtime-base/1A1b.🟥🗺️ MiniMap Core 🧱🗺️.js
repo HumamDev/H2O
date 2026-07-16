@@ -109,6 +109,8 @@ function UM_PUBLIC() {
     rebuildToken: 0,
     rebuildReason: '',
     turnList: [],
+    retainedTurnList: [],
+    retainedTurnChatKey: '',
     turnById: new Map(),
     turnIdByAId: new Map(),
     answerByTurnId: new Map(),
@@ -740,6 +742,40 @@ function UM_PUBLIC() {
     return null;
   }
 
+  function canonicalTurnIdentityProof(record = null, context = {}) {
+    const canonicalQuestionId = String(record?.qId || record?.questionId || '').trim();
+    const canonicalTurnId = String(record?.turnId || '').trim();
+    const currentAnswerIds = new Set([
+      record?.primaryAId,
+      record?.answerId,
+      ...(Array.isArray(record?.currentAnswerIds) ? record.currentAnswerIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    const questionId = String(context?.questionId || '').trim();
+    const turnId = String(context?.turnId || '').trim();
+    const answerId = String(context?.answerId || '').trim();
+
+    if (!record || !canonicalQuestionId) return { proven: false, basis: 'canonical-record-missing' };
+    if (canonicalTurnId && turnId && canonicalTurnId === turnId) {
+      return { proven: true, basis: 'turn-id-exact' };
+    }
+    if (turnId && turnId === `turn:${canonicalQuestionId}`) {
+      return { proven: true, basis: 'question-turn-id-exact' };
+    }
+    if (canonicalTurnId && turnId && canonicalTurnId !== turnId) {
+      return { proven: false, basis: 'turn-id-conflict' };
+    }
+    if (questionId && questionId === canonicalQuestionId) {
+      return { proven: true, basis: 'question-id-exact' };
+    }
+    if (questionId && questionId !== canonicalQuestionId) {
+      return { proven: false, basis: 'question-id-conflict' };
+    }
+    if (!questionId && answerId && currentAnswerIds.has(answerId)) {
+      return { proven: true, basis: 'current-answer-id-exact' };
+    }
+    return { proven: false, basis: 'alias-only' };
+  }
+
   function resolveQaRowCanonicalMeta(turn = null, { btn = null, wrap = null, qBtn = null, primaryAId = '' } = {}) {
     const directTurnId = String(
       turn?.turnId ||
@@ -785,22 +821,32 @@ function UM_PUBLIC() {
     }
 
     const canonicalQuestionId = String(record?.qId || record?.questionId || '').trim();
-    const questionId = String(canonicalQuestionId || cachedQuestionId).trim();
-    const noAnswer = isCanonicalNoAnswerRecord(record || turn);
+    const identityProof = canonicalTurnIdentityProof(record, {
+      turnId: directTurnId,
+      questionId: cachedQuestionId,
+      answerId: directAnswerCandidate,
+    });
+    const resolvedRecord = identityProof.proven ? record : null;
+    const questionId = String(
+      (identityProof.proven ? canonicalQuestionId : '')
+      || cachedQuestionId
+      || canonicalQuestionId
+    ).trim();
+    const noAnswer = isCanonicalNoAnswerRecord(resolvedRecord || turn);
     const turnId = String(
-      record?.turnId ||
+      resolvedRecord?.turnId ||
       directTurnId ||
       (noAnswer && questionId ? `turn:${questionId}` : '')
     ).trim();
     const answerId = noAnswer
       ? ''
-      : String(record?.primaryAId || record?.answerId || (
+      : String(resolvedRecord?.primaryAId || resolvedRecord?.answerId || (
           isValidMiniMapAnswerCandidate(directAnswerCandidate, { turnId, questionId })
             ? directAnswerCandidate
             : ''
         )).trim();
     if (!turnIdx) {
-      turnIdx = Math.max(0, Number(record?.turnNo || record?.idx || record?.index || 0) || 0);
+      turnIdx = Math.max(0, Number(resolvedRecord?.turnNo || resolvedRecord?.idx || resolvedRecord?.index || 0) || 0);
     }
 
     return {
@@ -810,10 +856,12 @@ function UM_PUBLIC() {
       questionId,
       canonicalQuestionId,
       cachedQuestionId,
+      canonicalMatchProven: identityProof.proven,
+      canonicalMatchBasis: identityProof.basis,
       noAnswer,
-      hasAssistant: noAnswer ? false : record?.hasAssistant,
+      hasAssistant: noAnswer ? false : resolvedRecord?.hasAssistant,
       turnIdx,
-      questionEl: record?.questionEl || record?.qEl || record?.live?.qEl || turn?.questionEl || turn?.qEl || turn?.live?.qEl || null,
+      questionEl: resolvedRecord?.questionEl || resolvedRecord?.qEl || resolvedRecord?.live?.qEl || turn?.questionEl || turn?.qEl || turn?.live?.qEl || null,
     };
   }
 
@@ -2492,27 +2540,112 @@ function UM_PUBLIC() {
     return cacheRowAnswerIds(right).some((id) => leftAnswers.has(id));
   }
 
-  function findCacheRowIndex(rows, target) {
+  function cacheRowLayer(row) {
+    return row?.layer === 'history' ? 'history' : 'current';
+  }
+
+  function cacheRowLogicalMemberKey(row) {
+    return String(row?.logicalMemberKey || row?.memberKey || '').trim();
+  }
+
+  function cacheRowLineageKey(row) {
+    return String(row?.lineageKey || row?.branchKey || row?.parentQuestionId || '').trim();
+  }
+
+  function cacheRowsHaveVariantRelationship(left, right) {
+    if (!left || !right) return false;
+    const leftQId = cacheRowQuestionId(left);
+    const rightQId = cacheRowQuestionId(right);
+    if (!leftQId || leftQId !== rightQId) return false;
+
+    const leftMember = cacheRowLogicalMemberKey(left);
+    const rightMember = cacheRowLogicalMemberKey(right);
+    if (leftMember && rightMember) return leftMember === rightMember;
+
+    const leftLineage = cacheRowLineageKey(left);
+    const rightLineage = cacheRowLineageKey(right);
+    if (leftLineage && rightLineage) return leftLineage === rightLineage;
+
+    const leftTurnId = cacheRowTurnId(left);
+    const rightTurnId = cacheRowTurnId(right);
+    if (leftTurnId && rightTurnId && leftTurnId === rightTurnId) return true;
+
+    const leftAnswers = new Set(cacheRowAnswerIds(left));
+    return cacheRowAnswerIds(right).some((id) => leftAnswers.has(id));
+  }
+
+  function cacheRowsHaveCompatibleBranchContext(left, right) {
+    if (!left || !right) return false;
+    const leftQId = cacheRowQuestionId(left);
+    const rightQId = cacheRowQuestionId(right);
+    if (leftQId && rightQId && leftQId !== rightQId) return false;
+    const leftMember = cacheRowLogicalMemberKey(left);
+    const rightMember = cacheRowLogicalMemberKey(right);
+    if (leftMember && rightMember && leftMember !== rightMember) return false;
+    const leftLineage = cacheRowLineageKey(left);
+    const rightLineage = cacheRowLineageKey(right);
+    if (leftLineage && rightLineage && leftLineage !== rightLineage) return false;
+    return true;
+  }
+
+  function findCacheRowIndex(rows, target, opts = {}) {
     const list = Array.isArray(rows) ? rows : [];
+    const usedIndexes = opts?.usedIndexes instanceof Set ? opts.usedIndexes : null;
+    const requiredLayer = opts?.layer === 'history' || opts?.layer === 'current'
+      ? opts.layer
+      : '';
+    const candidateIndexes = [];
+    for (let index = 0; index < list.length; index += 1) {
+      if (usedIndexes?.has(index)) continue;
+      if (requiredLayer && cacheRowLayer(list[index]) !== requiredLayer) continue;
+      candidateIndexes.push(index);
+    }
+
     const qId = cacheRowQuestionId(target);
     if (qId) {
-      const index = list.findIndex((row) => cacheRowQuestionId(row) === qId);
-      if (index >= 0) return index;
+      const qMatches = candidateIndexes.filter((index) => (
+        cacheRowQuestionId(list[index]) === qId
+        && cacheRowsHaveCompatibleBranchContext(list[index], target)
+      ));
+      if (qMatches.length === 1) return qMatches[0];
+      if (qMatches.length > 1) {
+        const turnId = cacheRowTurnId(target);
+        if (turnId) {
+          const turnMatches = qMatches.filter((index) => cacheRowTurnId(list[index]) === turnId);
+          if (turnMatches.length === 1) return turnMatches[0];
+        }
+        const targetAnswers = new Set(cacheRowAnswerIds(target));
+        const answerMatches = qMatches.filter((index) => (
+          cacheRowAnswerIds(list[index]).some((id) => targetAnswers.has(id))
+        ));
+        if (answerMatches.length === 1) return answerMatches[0];
+        return -1;
+      }
     }
 
     const turnId = cacheRowTurnId(target);
     if (turnId) {
-      const index = list.findIndex((row) => {
+      const turnMatches = candidateIndexes.filter((index) => {
+        const row = list[index];
         const rowQId = cacheRowQuestionId(row);
         if (qId && rowQId && rowQId !== qId) return false;
         return cacheRowTurnId(row) === turnId;
       });
-      if (index >= 0) return index;
+      if (turnMatches.length === 1) return turnMatches[0];
+      if (turnMatches.length > 1) return -1;
     }
 
     const answerIds = new Set(cacheRowAnswerIds(target));
     if (!answerIds.size) return -1;
-    return list.findIndex((row) => cacheRowsShareIdentity(row, target));
+    const answerMatches = candidateIndexes.filter((index) => {
+      const row = list[index];
+      const rowQId = cacheRowQuestionId(row);
+      const rowTurnId = cacheRowTurnId(row);
+      if (qId && rowQId && qId !== rowQId) return false;
+      if (turnId && rowTurnId && turnId !== rowTurnId) return false;
+      return cacheRowAnswerIds(row).some((id) => answerIds.has(id));
+    });
+    return answerMatches.length === 1 ? answerMatches[0] : -1;
   }
 
   function isValidCacheAnswerCandidate(candidate, context = {}, raw = null) {
@@ -2529,6 +2662,7 @@ function UM_PUBLIC() {
 
   function normalizeCacheTurnRow(raw, fallbackIdx = 0) {
     const i = Math.max(1, Number(raw?.idx || raw?.index || fallbackIdx || 1) || 1);
+    const historicalInput = raw?.layer === 'history' || raw?.selectedPath === false;
     let questionId = String(raw?.questionId || raw?.qId || '').trim();
     let turnId = String(raw?.turnId || raw?.id || '').trim();
     let answerId = String(raw?.answerId || raw?.primaryAId || raw?.aId || '').trim();
@@ -2539,12 +2673,19 @@ function UM_PUBLIC() {
       record = getSharedTurnRecordByIdentity('answer', answerId);
     }
 
-    questionId = String(record?.qId || record?.questionId || questionId).trim();
-    const noAnswer = isCanonicalNoAnswerRecord(record)
+    const canonicalQuestionId = String(record?.qId || record?.questionId || '').trim();
+    const identityProof = canonicalTurnIdentityProof(record, { turnId, questionId, answerId });
+    const resolvedRecord = identityProof.proven && !historicalInput ? record : null;
+    questionId = String(
+      (resolvedRecord ? canonicalQuestionId : '')
+      || questionId
+      || canonicalQuestionId
+    ).trim();
+    const noAnswer = isCanonicalNoAnswerRecord(resolvedRecord)
       || raw?.noAnswer === true
       || raw?.hasAssistant === false;
     turnId = String(
-      record?.turnId ||
+      resolvedRecord?.turnId ||
       turnId ||
       (noAnswer && questionId ? `turn:${questionId}` : '')
     ).trim();
@@ -2554,12 +2695,12 @@ function UM_PUBLIC() {
       answerId = '';
       if (questionId) turnId = `turn:${questionId}`;
     } else {
-      const canonicalAnswerId = String(record?.primaryAId || record?.answerId || '').trim();
+      const canonicalAnswerId = String(resolvedRecord?.primaryAId || resolvedRecord?.answerId || '').trim();
       answerId = canonicalAnswerId || (
         isValidCacheAnswerCandidate(answerId, { turnId, questionId }, raw) ? answerId : ''
       );
       const answerSource = [
-        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+        ...(Array.isArray(resolvedRecord?.answerIds) ? resolvedRecord.answerIds : []),
         ...(Array.isArray(raw?.answerIds) ? raw.answerIds : []),
         answerId,
       ];
@@ -2584,7 +2725,8 @@ function UM_PUBLIC() {
       turnId = answerId ? `turn:a:${answerId}` : (questionId ? `turn:${questionId}` : `turn:${i}`);
     }
     if (!turnId) return null;
-    return {
+    const layer = historicalInput ? 'history' : 'current';
+    const normalized = {
       idx: i,
       turnId,
       answerId,
@@ -2593,8 +2735,23 @@ function UM_PUBLIC() {
       questionId,
       qId: questionId,
       noAnswer,
-      hasAssistant: noAnswer ? false : (raw?.hasAssistant ?? record?.hasAssistant),
+      hasAssistant: noAnswer ? false : (raw?.hasAssistant ?? resolvedRecord?.hasAssistant),
+      layer,
+      selectedPath: layer === 'history'
+        ? false
+        : (raw?.selectedPath === true ? true : 'unverified'),
     };
+    const logicalMemberKey = cacheRowLogicalMemberKey(raw);
+    const lineageKey = cacheRowLineageKey(raw);
+    if (logicalMemberKey) normalized.logicalMemberKey = logicalMemberKey;
+    if (lineageKey) normalized.lineageKey = lineageKey;
+    if (
+      raw?.suspectQuestionIdentity === true
+      || (!!record && !identityProof.proven && !!canonicalQuestionId && canonicalQuestionId !== questionId)
+    ) normalized.suspectQuestionIdentity = true;
+    const repairReason = String(raw?.repairReason || '').trim();
+    if (repairReason) normalized.repairReason = repairReason;
+    return normalized;
   }
 
   function cacheTurnRowWasSanitized(raw, normalized) {
@@ -2606,10 +2763,225 @@ function UM_PUBLIC() {
     return rawQId !== cacheRowQuestionId(normalized)
       || rawTurnId !== cacheRowTurnId(normalized)
       || rawPrimary !== normalizedPrimary
-      || ((raw?.noAnswer === true || raw?.hasAssistant === false) !== normalized.noAnswer);
+      || ((raw?.noAnswer === true || raw?.hasAssistant === false) !== normalized.noAnswer)
+      || cacheRowLayer(raw) !== cacheRowLayer(normalized)
+      || raw?.selectedPath !== normalized.selectedPath;
   }
 
-  function normalizeCacheTurnRowsDetailed(rows) {
+  function mergeCacheVariantEvidence(baseRow, extraRow, primaryPreference = '') {
+    const base = { ...(baseRow || {}) };
+    if (base?.noAnswer === true || base?.hasAssistant === false) {
+      base.answerId = '';
+      base.primaryAId = '';
+      base.answerIds = [];
+      return base;
+    }
+    const primaryAId = String(primaryPreference || base?.primaryAId || base?.answerId || '').trim();
+    const answerIds = [];
+    const seen = new Set();
+    for (const value of [...cacheRowAnswerIds(base), ...cacheRowAnswerIds(extraRow), primaryAId]) {
+      const answerId = String(value || '').trim();
+      if (!answerId || seen.has(answerId)) continue;
+      seen.add(answerId);
+      answerIds.push(answerId);
+    }
+    if (primaryAId) {
+      const withoutPrimary = answerIds.filter((value) => value !== primaryAId);
+      withoutPrimary.push(primaryAId);
+      base.answerIds = withoutPrimary;
+      base.answerId = primaryAId;
+      base.primaryAId = primaryAId;
+    } else {
+      base.answerIds = answerIds;
+    }
+    return base;
+  }
+
+  function cacheRowCanonicalCorroboration(row) {
+    const turnId = cacheRowTurnId(row);
+    const questionId = cacheRowQuestionId(row);
+    const answerId = String(row?.primaryAId || row?.answerId || '').trim();
+    let record = getSharedTurnRecordByIdentity('turn', turnId);
+    if (!record) record = getSharedTurnRecordByIdentity('question', questionId);
+    if (!record && answerId) record = getSharedTurnRecordByIdentity('answer', answerId);
+    const proof = canonicalTurnIdentityProof(record, { turnId, questionId, answerId });
+    return {
+      record,
+      proof,
+      canonicalQuestionId: String(record?.qId || record?.questionId || '').trim(),
+      canonicalTurnId: String(record?.turnId || '').trim(),
+      canonicalPrimaryAId: String(record?.primaryAId || record?.answerId || '').trim(),
+    };
+  }
+
+  function cacheRowHasAuthoritativeCurrentPosition(row) {
+    const corroboration = cacheRowCanonicalCorroboration(row);
+    const rowIndex = Math.max(0, Number(row?.idx || row?.index || 0) || 0);
+    const recordIndex = Math.max(0, Number(
+      corroboration.record?.turnNo
+      || corroboration.record?.idx
+      || corroboration.record?.index
+      || 0
+    ) || 0);
+    return corroboration.proof.proven && rowIndex > 0 && recordIndex === rowIndex;
+  }
+
+  function cacheCurrentCandidateScore(row, liveRows = [], canonicalQuestionId = '') {
+    let score = row?.selectedPath === true ? 8 : 0;
+    const qId = cacheRowQuestionId(row);
+    const turnId = cacheRowTurnId(row);
+    const answers = new Set(cacheRowAnswerIds(row));
+    const canonical = cacheRowCanonicalCorroboration(row);
+    if (canonicalQuestionId && qId === canonicalQuestionId) score += 80;
+    if (canonical.proof.proven) score += 40;
+    if (canonical.canonicalTurnId && canonical.canonicalTurnId === turnId) score += 40;
+    if (canonical.canonicalPrimaryAId && answers.has(canonical.canonicalPrimaryAId)) score += 20;
+    for (const live of (Array.isArray(liveRows) ? liveRows : [])) {
+      if (qId && qId === cacheRowQuestionId(live)) score += 16;
+      if (turnId && turnId === cacheRowTurnId(live)) score += 32;
+      const liveAnswers = cacheRowAnswerIds(live);
+      if (liveAnswers.some((id) => answers.has(id))) score += 12;
+      if (
+        Math.max(0, Number(row?.idx || row?.index || 0) || 0)
+        === Math.max(0, Number(live?.idx || live?.index || 0) || 0)
+      ) score += 4;
+    }
+    return score;
+  }
+
+  function repairCacheCurrentMembership(rows, opts = {}) {
+    const next = (Array.isArray(rows) ? rows : []).map((row) => ({ ...row }));
+    const liveRows = (Array.isArray(opts?.liveRows) ? opts.liveRows : [])
+      .map((row, index) => normalizeCacheTurnRow({ ...row, layer: 'current', selectedPath: true }, index + 1))
+      .filter(Boolean);
+    let repairedRows = 0;
+    let demotedRows = 0;
+    let duplicateCurrentQIdCount = 0;
+
+    const demote = (index, reason) => {
+      const row = next[index];
+      if (!row || cacheRowLayer(row) === 'history') return false;
+      next[index] = {
+        ...row,
+        layer: 'history',
+        selectedPath: false,
+        suspectQuestionIdentity: true,
+        repairReason: String(reason || 'branch-membership-repair'),
+      };
+      repairedRows += 1;
+      demotedRows += 1;
+      return true;
+    };
+
+    const selectWinner = (indexes, canonicalQuestionId = '') => indexes
+      .slice()
+      .sort((left, right) => {
+        const scoreDiff = cacheCurrentCandidateScore(next[right], liveRows, canonicalQuestionId)
+          - cacheCurrentCandidateScore(next[left], liveRows, canonicalQuestionId);
+        return scoreDiff || left - right;
+      })[0];
+
+    const qGroups = new Map();
+    next.forEach((row, index) => {
+      if (cacheRowLayer(row) !== 'current') return;
+      const qId = cacheRowQuestionId(row);
+      if (!qId) return;
+      if (!qGroups.has(qId)) qGroups.set(qId, []);
+      qGroups.get(qId).push(index);
+    });
+    for (const [qId, indexes] of qGroups.entries()) {
+      if (indexes.length < 2) continue;
+      duplicateCurrentQIdCount += 1;
+      const winner = selectWinner(indexes, qId);
+      for (const index of indexes) {
+        if (index === winner) continue;
+        if (cacheRowsHaveVariantRelationship(next[winner], next[index])) {
+          next[winner] = mergeCacheVariantEvidence(next[winner], next[index], next[winner]?.primaryAId);
+        }
+        demote(index, 'duplicate-current-qid');
+      }
+      next[winner] = { ...next[winner], layer: 'current', selectedPath: true };
+    }
+
+    const canonicalGroups = new Map();
+    next.forEach((row, index) => {
+      if (cacheRowLayer(row) !== 'current') return;
+      const corroboration = cacheRowCanonicalCorroboration(row);
+      const canonicalQuestionId = corroboration.canonicalQuestionId;
+      if (!canonicalQuestionId) return;
+      if (!canonicalGroups.has(canonicalQuestionId)) canonicalGroups.set(canonicalQuestionId, []);
+      canonicalGroups.get(canonicalQuestionId).push(index);
+    });
+    for (const [canonicalQuestionId, indexes] of canonicalGroups.entries()) {
+      if (indexes.length < 2) continue;
+      const winner = selectWinner(indexes, canonicalQuestionId);
+      for (const index of indexes) {
+        if (index === winner) continue;
+        demote(index, 'alias-resolved-branch-conflict');
+      }
+      next[winner] = { ...next[winner], layer: 'current', selectedPath: true };
+    }
+
+    const positionGroups = new Map();
+    next.forEach((row, index) => {
+      if (cacheRowLayer(row) !== 'current') return;
+      const turnIndex = Math.max(0, Number(row?.idx || row?.index || 0) || 0);
+      if (!turnIndex) return;
+      if (!positionGroups.has(turnIndex)) positionGroups.set(turnIndex, []);
+      positionGroups.get(turnIndex).push(index);
+    });
+    for (const indexes of positionGroups.values()) {
+      if (indexes.length < 2) continue;
+      const distinctQIds = new Set(indexes.map((index) => cacheRowQuestionId(next[index])).filter(Boolean));
+      if (distinctQIds.size < 2) continue;
+      const authoritative = indexes.filter((index) => cacheRowHasAuthoritativeCurrentPosition(next[index]));
+      if (!authoritative.length) continue;
+      const winner = selectWinner(authoritative);
+      for (const index of indexes) {
+        if (index === winner) continue;
+        demote(index, 'duplicate-current-turn-position');
+      }
+      next[winner] = { ...next[winner], layer: 'current', selectedPath: true };
+    }
+
+    for (const live of liveRows) {
+      const exact = findCacheRowIndex(next, live, { layer: 'current' });
+      if (exact >= 0) continue;
+      if (!cacheRowHasAuthoritativeCurrentPosition(live)) continue;
+      const liveIndex = Math.max(0, Number(live?.idx || live?.index || 0) || 0);
+      if (!liveIndex) continue;
+      const conflictIndex = next.findIndex((row) => (
+        cacheRowLayer(row) === 'current'
+        && Math.max(0, Number(row?.idx || row?.index || 0) || 0) === liveIndex
+        && cacheRowQuestionId(row)
+        && cacheRowQuestionId(live)
+        && cacheRowQuestionId(row) !== cacheRowQuestionId(live)
+      ));
+      if (conflictIndex >= 0) demote(conflictIndex, 'selected-path-position-replaced');
+    }
+
+    if (opts?.reindexCurrent !== false) {
+      let currentIndex = 0;
+      for (let index = 0; index < next.length; index += 1) {
+        if (cacheRowLayer(next[index]) === 'current') {
+          currentIndex += 1;
+          next[index] = { ...next[index], idx: currentIndex };
+        }
+      }
+    }
+    const currentRows = next.filter((row) => cacheRowLayer(row) === 'current');
+    const historyRows = next.filter((row) => cacheRowLayer(row) === 'history');
+    return {
+      rows: next,
+      currentRows,
+      historyRows,
+      repairedRows,
+      demotedRows,
+      duplicateCurrentQIdCount,
+    };
+  }
+
+  function normalizeCacheTurnRowsDetailed(rows, opts = {}) {
     const src = Array.isArray(rows) ? rows : [];
     const out = [];
     let sanitizedRows = 0;
@@ -2617,24 +2989,42 @@ function UM_PUBLIC() {
       const row = normalizeCacheTurnRow(src[i], i + 1);
       if (!row) continue;
       if (cacheTurnRowWasSanitized(src[i], row)) sanitizedRows += 1;
-      const existingIndex = findCacheRowIndex(out, row);
+      const existingIndex = out.findIndex((existing) => (
+        cacheRowLayer(existing) === cacheRowLayer(row)
+        && cacheRowQuestionId(existing) === cacheRowQuestionId(row)
+        && cacheRowTurnId(existing) === cacheRowTurnId(row)
+      ));
       if (existingIndex >= 0) {
         sanitizedRows += 1;
-        out[existingIndex] = row;
+        out[existingIndex] = mergeCacheVariantEvidence(row, out[existingIndex], row.primaryAId);
       } else {
         out.push(row);
       }
     }
-    out.forEach((row, index) => { row.idx = index + 1; });
-    return { rows: out, sanitizedRows };
+    if (opts?.repairMembership === false) {
+      return {
+        rows: out,
+        currentRows: out.filter((row) => cacheRowLayer(row) === 'current'),
+        historyRows: out.filter((row) => cacheRowLayer(row) === 'history'),
+        sanitizedRows,
+        repairedRows: 0,
+        demotedRows: 0,
+        duplicateCurrentQIdCount: 0,
+      };
+    }
+    const repaired = repairCacheCurrentMembership(out, opts);
+    return {
+      ...repaired,
+      sanitizedRows: sanitizedRows + repaired.repairedRows,
+    };
   }
 
-  function normalizeCacheTurnRows(rows) {
-    return normalizeCacheTurnRowsDetailed(rows).rows;
+  function normalizeCacheTurnRows(rows, opts = {}) {
+    return normalizeCacheTurnRowsDetailed(rows, opts).rows;
   }
 
-  function enrichCacheTurnRowsFromPagination(rows) {
-    const base = normalizeCacheTurnRows(rows);
+  function enrichCacheTurnRowsFromPagination(rows, opts = {}) {
+    const base = normalizeCacheTurnRows(rows, { ...opts, repairMembership: false });
     if (!base.length) return base;
 
     const canonical = getCanonicalTurnsFromPagination();
@@ -2651,13 +3041,13 @@ function UM_PUBLIC() {
     }
 
     return base.map((row, idx) => {
+      if (cacheRowLayer(row) === 'history') return row;
       if (row?.noAnswer === true) return row;
       const answerId = normalizePaginationAnswerId(row?.answerId || row?.primaryAId || row?.aId || '');
       const turnId = String(row?.turnId || row?.id || '').trim();
       const canonicalTurn =
         canonicalByTurnId.get(turnId)
         || (answerId ? canonicalByAnswerId.get(answerId) : null)
-        || canonicalList[idx]
         || null;
       if (!canonicalTurn) return row;
 
@@ -2833,7 +3223,7 @@ function UM_PUBLIC() {
     return hydrateIndexFromDisk(chatId, opts);
   }
 
-  function loadTurnCache(chatId = '') {
+  function loadTurnCache(chatId = '', opts = {}) {
     const id = String(chatId || resolveChatId()).trim();
     if (!id) return null;
     const turnsKey = keyTurnCacheTurns(id);
@@ -2841,15 +3231,31 @@ function UM_PUBLIC() {
     if (!turnsKey || !metaKey) return null;
 
     const rawTurns = storageGetJSON(turnsKey, null);
-    const normalization = normalizeCacheTurnRowsDetailed(rawTurns);
-    const turns = enrichCacheTurnRowsFromPagination(normalization.rows);
+    const preNormalization = normalizeCacheTurnRowsDetailed(rawTurns, { repairMembership: false });
+    const enrichedRows = enrichCacheTurnRowsFromPagination(preNormalization.rows, { repairMembership: false });
+    let liveRows = Array.isArray(opts?.liveRows) ? opts.liveRows : [];
+    if (!liveRows.length) {
+      try { liveRows = getCanonicalTurnsFromSharedRuntime()?.list || []; } catch { liveRows = []; }
+    }
+    const normalization = normalizeCacheTurnRowsDetailed(enrichedRows, {
+      liveRows,
+      reindexCurrent: opts?.reindexCurrent !== false,
+    });
+    normalization.sanitizedRows += Number(preNormalization.sanitizedRows || 0);
+    const turns = normalization.rows;
     if (!turns.length) return null;
 
-    const last = turns[turns.length - 1] || null;
+    const currentTurns = normalization.currentRows;
+    const historyTurns = normalization.historyRows;
+
+    const last = currentTurns[currentTurns.length - 1] || turns[turns.length - 1] || null;
     const rawMeta = storageGetJSON(metaKey, null);
     const meta = {
       chatId: id,
       turnCount: turns.length,
+      publishedTurnCount: currentTurns.length,
+      historicalTurnCount: historyTurns.length,
+      cacheLayout: Math.max(1, Number(rawMeta?.cacheLayout || 1) || 1),
       lastTurnId: String(rawMeta?.lastTurnId || last?.turnId || '').trim(),
       updatedAt: Number(rawMeta?.updatedAt || 0) || mmIdxNow(),
     };
@@ -2861,8 +3267,13 @@ function UM_PUBLIC() {
     return {
       meta,
       turns,
+      currentTurns,
+      historyTurns,
       normalization: {
         sanitizedRows: Number(normalization.sanitizedRows || 0),
+        repairedRows: Number(normalization.repairedRows || 0),
+        demotedRows: Number(normalization.demotedRows || 0),
+        duplicateCurrentQIdCount: Number(normalization.duplicateCurrentQIdCount || 0),
       },
     };
   }
@@ -2962,6 +3373,55 @@ function UM_PUBLIC() {
     return { qIds, unresolvedCount };
   }
 
+  function validateCurrentLayerMembership(rows = []) {
+    const currentRows = (Array.isArray(rows) ? rows : [])
+      .filter((row) => cacheRowLayer(row) === 'current');
+    const qIds = new Set();
+    const turnIds = new Set();
+    const primaryIds = new Set();
+    const turnIndexes = new Set();
+    let duplicateQuestionCount = 0;
+    let duplicateTurnCount = 0;
+    let duplicatePrimaryCount = 0;
+    let duplicateTurnIndexCount = 0;
+    for (const row of currentRows) {
+      const qId = cacheRowQuestionId(row);
+      const turnId = cacheRowTurnId(row);
+      const primaryAId = String(row?.primaryAId || row?.answerId || '').trim();
+      const turnIndex = Math.max(0, Number(row?.idx || row?.index || 0) || 0);
+      if (qId) {
+        if (qIds.has(qId)) duplicateQuestionCount += 1;
+        qIds.add(qId);
+      }
+      if (turnId) {
+        if (turnIds.has(turnId)) duplicateTurnCount += 1;
+        turnIds.add(turnId);
+      }
+      if (primaryAId) {
+        if (primaryIds.has(primaryAId)) duplicatePrimaryCount += 1;
+        primaryIds.add(primaryAId);
+      }
+      if (turnIndex > 0) {
+        if (turnIndexes.has(turnIndex)) duplicateTurnIndexCount += 1;
+        turnIndexes.add(turnIndex);
+      }
+    }
+    const reasons = [];
+    if (duplicateQuestionCount) reasons.push('duplicate-current-qid');
+    if (duplicateTurnCount) reasons.push('duplicate-current-turn-id');
+    if (duplicatePrimaryCount) reasons.push('duplicate-current-primary-id');
+    if (duplicateTurnIndexCount) reasons.push('duplicate-current-turn-index');
+    return {
+      ok: reasons.length === 0,
+      currentCount: currentRows.length,
+      duplicateQuestionCount,
+      duplicateTurnCount,
+      duplicatePrimaryCount,
+      duplicateTurnIndexCount,
+      reasons,
+    };
+  }
+
   function boundedCacheMergeDecision(decision = null) {
     if (!decision || typeof decision !== 'object') return null;
     const cachedCount = Math.max(0, Number(decision.cachedCount || 0) || 0);
@@ -2975,8 +3435,19 @@ function UM_PUBLIC() {
       outputCount,
       overlapCount: Math.max(0, Number(decision.overlapCount || 0) || 0),
       sanitizedRows: Math.max(0, Number(decision.sanitizedRows || 0) || 0),
+      retainedCount: Math.max(0, Number(decision.retainedCount ?? decision.totalRetainedCount ?? outputCount) || 0),
+      publishedCurrentCount: Math.max(0, Number(decision.publishedCurrentCount ?? outputCount) || 0),
+      historicalRetainedCount: Math.max(0, Number(decision.historicalRetainedCount || 0) || 0),
+      cachedCurrentCount: Math.max(0, Number(decision.cachedCurrentCount ?? cachedCount) || 0),
+      cachedHistoricalCount: Math.max(0, Number(decision.cachedHistoricalCount || 0) || 0),
+      liveCurrentCount: Math.max(0, Number(decision.liveCurrentCount ?? liveCount) || 0),
+      offDomCurrentRetainedCount: Math.max(0, Number(decision.offDomCurrentRetainedCount || 0) || 0),
+      repairedRows: Math.max(0, Number(decision.repairedRows || 0) || 0),
+      demotedRows: Math.max(0, Number(decision.demotedRows || 0) || 0),
+      duplicateCurrentQIdCount: Math.max(0, Number(decision.duplicateCurrentQIdCount || 0) || 0),
+      bijectionProven: decision.bijectionProven === true,
       reason: String(decision.reason || ''),
-      completeness: decision.mode === 'union' && outputCount > liveCount
+      completeness: outputCount > Number(decision.liveCurrentCount ?? liveCount)
         ? 'incomplete'
         : 'unknown',
     });
@@ -2988,7 +3459,7 @@ function UM_PUBLIC() {
     S.lastCacheMergeDecision = boundedCacheMergeDecision(decision);
     if (S.lastCacheMergeDecision) {
       S.lastCoreProjectionChatKey = chatKey;
-      S.lastCoreProjectedTotal = S.lastCacheMergeDecision.liveCount;
+      S.lastCoreProjectedTotal = S.lastCacheMergeDecision.liveCurrentCount;
     }
     return decision;
   }
@@ -3009,6 +3480,12 @@ function UM_PUBLIC() {
       status: String(result.status || 'unknown'),
       previousCount,
       incomingCount,
+      publishedCurrentCount: Number.isFinite(Number(result.publishedTurnCount))
+        ? Math.max(0, Number(result.publishedTurnCount))
+        : null,
+      historicalRetainedCount: Number.isFinite(Number(result.historicalTurnCount))
+        ? Math.max(0, Number(result.historicalTurnCount))
+        : null,
       proofAccepted,
       reason: String(
         result.proofReason
@@ -3049,19 +3526,31 @@ function UM_PUBLIC() {
         : lastPersistenceDecision.previousCount;
     }
     if (cachedTurnCount == null) cachedTurnCount = lastMergeDecision?.cachedCount ?? null;
+    const retainedStateCount = S.retainedTurnChatKey === chatKey
+      ? Math.max(0, Number(S.retainedTurnList.length || 0) || 0)
+      : 0;
     const retainedBase = Math.max(
+      retainedStateCount,
       publishedTurnCount,
       Number.isFinite(Number(cachedTurnCount)) ? Number(cachedTurnCount) : 0,
     );
+    const historicalRetainedCount = lastMergeDecision?.historicalRetainedCount
+      ?? (S.retainedTurnChatKey === chatKey
+        ? S.retainedTurnList.filter((row) => cacheRowLayer(row) === 'history').length
+        : 0);
     const offDomRetainedCount = observedTurnCount == null
       ? null
-      : Math.max(0, retainedBase - observedTurnCount);
+      : Math.max(0, publishedTurnCount - observedTurnCount);
     return Object.freeze({
       chatKey,
       cachedTurnCount,
       publishedTurnCount,
       observedTurnCount,
       offDomRetainedCount,
+      totalRetainedCount: retainedBase,
+      historicalRetainedCount,
+      offDomCurrentRetainedCount: offDomRetainedCount,
+      repairedOrDemotedRowCount: Math.max(0, Number(lastMergeDecision?.repairedRows || 0) || 0),
       lastMergeDecision,
       lastPersistenceDecision,
     });
@@ -3078,9 +3567,33 @@ function UM_PUBLIC() {
 
     const existingRawTurns = storageGetJSON(turnsKey, null);
     const existingRawMeta = storageGetJSON(metaKey, null);
-    const existingRows = enrichCacheTurnRowsFromPagination(existingRawTurns);
-    const rows = enrichCacheTurnRowsFromPagination(turns);
+    const existingPre = normalizeCacheTurnRowsDetailed(existingRawTurns, { repairMembership: false });
+    const existingEnriched = enrichCacheTurnRowsFromPagination(existingPre.rows, { repairMembership: false });
+    const existingRows = normalizeCacheTurnRowsDetailed(existingEnriched, {
+      liveRows: Array.isArray(opts?.liveRows) ? opts.liveRows : [],
+    }).rows;
+    const incomingPre = normalizeCacheTurnRowsDetailed(turns, { repairMembership: false });
+    const incomingEnriched = enrichCacheTurnRowsFromPagination(incomingPre.rows, { repairMembership: false });
+    const rows = normalizeCacheTurnRowsDetailed(incomingEnriched, { repairMembership: false }).rows;
     if (!rows.length) return finish({ ok: false, status: 'turns-empty', turnsCount: 0 });
+
+    const membership = validateCurrentLayerMembership(rows);
+    if (!membership.ok) {
+      return finish({
+        ok: false,
+        status: 'malformed-membership',
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        currentCount: membership.currentCount,
+        duplicateQuestionCount: membership.duplicateQuestionCount,
+        duplicateTurnCount: membership.duplicateTurnCount,
+        duplicatePrimaryCount: membership.duplicatePrimaryCount,
+        duplicateTurnIndexCount: membership.duplicateTurnIndexCount,
+        reasons: membership.reasons.slice(0, 8),
+        writesAttempted: 0,
+      });
+    }
 
     const proof = validateAuthoritativeShrinkProof(opts?.shrinkProof, {
       chatId: id,
@@ -3109,13 +3622,18 @@ function UM_PUBLIC() {
       }
     }
 
-    const last = rows[rows.length - 1] || null;
+    const currentRows = rows.filter((row) => cacheRowLayer(row) === 'current');
+    const historyRows = rows.filter((row) => cacheRowLayer(row) === 'history');
+    const last = currentRows[currentRows.length - 1] || rows[rows.length - 1] || null;
     const activeTurnId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
     const activeTurn = activeTurnId ? findTurnByAnyId(activeTurnId) : null;
     const activeAnswerId = String(activeTurn?.answerId || '').trim();
     const meta = {
       chatId: id,
       turnCount: rows.length,
+      publishedTurnCount: currentRows.length,
+      historicalTurnCount: historyRows.length,
+      cacheLayout: 2,
       lastTurnId: String(last?.turnId || '').trim(),
       updatedAt: mmIdxNow(),
     };
@@ -3130,6 +3648,8 @@ function UM_PUBLIC() {
       status: ok ? 'ok' : 'storage-failed',
       meta,
       turnsCount: rows.length,
+      publishedTurnCount: currentRows.length,
+      historicalTurnCount: historyRows.length,
       previousTurnsCount: existingRows.length,
       shrinkProof: proof.ok ? {
         cause: proof.cause,
@@ -3162,6 +3682,8 @@ function UM_PUBLIC() {
       qId: normalized.qId,
       noAnswer: normalized.noAnswer,
       hasAssistant: normalized.hasAssistant,
+      layer: normalized.layer,
+      selectedPath: normalized.selectedPath,
       index: Number(row?.index || row?.idx || 0),
       el: row?.el || null,
     };
@@ -3177,6 +3699,8 @@ function UM_PUBLIC() {
       qId: cacheRowQuestionId(live) || cacheRowQuestionId(cached),
       questionId: cacheRowQuestionId(live) || cacheRowQuestionId(cached),
       turnId: cacheRowTurnId(live) || cacheRowTurnId(cached),
+      layer: 'current',
+      selectedPath: true,
       el: liveTurn?.el || null,
     };
     if (live.noAnswer === true || live.hasAssistant === false) {
@@ -3185,28 +3709,103 @@ function UM_PUBLIC() {
       merged.answerIds = [];
       merged.noAnswer = true;
       merged.hasAssistant = false;
+    } else {
+      const primaryAId = String(live?.primaryAId || live?.answerId || '').trim();
+      const withVariants = mergeCacheVariantEvidence(merged, cached, primaryAId);
+      merged.answerId = withVariants.answerId;
+      merged.primaryAId = withVariants.primaryAId;
+      merged.answerIds = withVariants.answerIds;
     }
     return merged;
   }
 
+  function rememberRetainedTurnList(chatId = '', rows = []) {
+    const id = String(chatId || resolveChatId() || '').trim();
+    S.retainedTurnChatKey = id;
+    S.retainedTurnList = replaceArrayContents(S.retainedTurnList, Array.isArray(rows) ? rows : []);
+    return S.retainedTurnList;
+  }
+
+  function prepareLiveCurrentRows(list = []) {
+    const rawRows = (Array.isArray(list) ? list : []).map((row) => ({
+      ...row,
+      layer: 'current',
+      selectedPath: true,
+    }));
+    const normalized = normalizeCacheTurnRowsDetailed(rawRows, { liveRows: rawRows });
+    return {
+      rows: normalized.rows,
+      currentRows: normalized.currentRows,
+      historyRows: normalized.historyRows,
+      repairedRows: normalized.repairedRows,
+      demotedRows: normalized.demotedRows,
+      duplicateCurrentQIdCount: normalized.duplicateCurrentQIdCount,
+      rawCount: rawRows.length,
+    };
+  }
+
   function mergeTurnListWithCache(chatId, list, evidence = null) {
     const liveList = Array.isArray(list) ? list.filter(Boolean) : [];
+    const preparedLive = prepareLiveCurrentRows(liveList);
+    const liveCurrentRows = preparedLive.currentRows;
     let cached = null;
-    try { cached = loadTurnCache(chatId); } catch { cached = null; }
+    try {
+      cached = loadTurnCache(chatId, { liveRows: liveCurrentRows, reindexCurrent: false });
+    } catch {
+      cached = null;
+    }
     const cachedRows = Array.isArray(cached?.turns) ? cached.turns : [];
+    const cachedCurrentRows = Array.isArray(cached?.currentTurns) ? cached.currentTurns : [];
+    const cachedHistoryRows = Array.isArray(cached?.historyTurns) ? cached.historyTurns : [];
     const decision = {
       accepted: true,
       mode: cachedRows.length ? 'union' : 'live-wins',
       cachedCount: cachedRows.length,
+      cachedCurrentCount: cachedCurrentRows.length,
+      cachedHistoricalCount: cachedHistoryRows.length,
       liveCount: liveList.length,
-      outputCount: liveList.length,
+      liveCurrentCount: liveCurrentRows.length,
+      outputCount: liveCurrentRows.length,
+      retainedCount: preparedLive.rows.length,
+      publishedCurrentCount: liveCurrentRows.length,
+      historicalRetainedCount: preparedLive.historyRows.length,
+      offDomCurrentRetainedCount: 0,
       overlapCount: 0,
       sanitizedRows: Number(cached?.normalization?.sanitizedRows || 0),
+      repairedRows: Number(cached?.normalization?.repairedRows || 0) + preparedLive.repairedRows,
+      demotedRows: Number(cached?.normalization?.demotedRows || 0) + preparedLive.demotedRows,
+      duplicateCurrentQIdCount: Number(cached?.normalization?.duplicateCurrentQIdCount || 0)
+        + preparedLive.duplicateCurrentQIdCount,
+      bijectionProven: false,
       reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
     if (!cachedRows.length) {
+      const retained = preparedLive.rows.map(cacheRowToTurn).filter(Boolean);
+      const repaired = repairCacheCurrentMembership(retained, { liveRows: liveCurrentRows });
+      const published = repaired.currentRows.map(cacheRowToTurn).filter(Boolean);
+      published.forEach((turn, index) => {
+        turn.index = index + 1;
+        turn.idx = index + 1;
+      });
+      rememberRetainedTurnList(chatId, repaired.rows);
+      decision.outputCount = published.length;
+      decision.retainedCount = repaired.rows.length;
+      decision.publishedCurrentCount = published.length;
+      decision.historicalRetainedCount = repaired.historyRows.length;
+      decision.repairedRows += repaired.repairedRows;
+      decision.demotedRows += repaired.demotedRows;
+      if (repaired.historyRows.length) {
+        decision.mode = 'union';
+        decision.reason = 'duplicate-current-qid-repaired';
+      }
       rememberCacheMergeDecision(chatId, decision);
-      return { list: liveList, decision };
+      return {
+        list: published,
+        currentList: published,
+        retainedList: repaired.rows,
+        historyList: repaired.historyRows,
+        decision,
+      };
     }
 
     const proof = validateAuthoritativeShrinkProof(evidence?.shrinkProof, {
@@ -3214,11 +3813,11 @@ function UM_PUBLIC() {
       cachedMeta: cached?.meta,
     });
     const removedQIds = proof.ok ? new Set(proof.removedQIds) : new Set();
-    const out = cachedRows
+    const retained = cachedRows
       .filter((row) => !removedQIds.has(cacheRowQuestionId(row)))
       .map(cacheRowToTurn)
       .filter(Boolean);
-    if (proof.ok && out.length < cachedRows.length) {
+    if (proof.ok && retained.length < cachedRows.length) {
       decision.mode = 'proven-shrink';
       decision.reason = proof.reason;
       decision.shrinkProof = {
@@ -3230,32 +3829,203 @@ function UM_PUBLIC() {
       };
     }
 
-    let anchorIdx = -1;
-    for (const turn of liveList) {
-      const existingIndex = findCacheRowIndex(out, turn);
-      if (existingIndex >= 0) {
-        out[existingIndex] = mergeLiveTurnOverCache(out[existingIndex], turn);
-        anchorIdx = existingIndex;
-        decision.overlapCount += 1;
-        continue;
+    const usedCachedIndexes = new Set();
+    const matches = liveCurrentRows.map((turn) => {
+      let index = findCacheRowIndex(retained, turn, {
+        layer: 'current',
+        usedIndexes: usedCachedIndexes,
+      });
+      let matchedLayer = 'current';
+      if (index < 0) {
+        index = findCacheRowIndex(retained, turn, {
+          layer: 'history',
+          usedIndexes: usedCachedIndexes,
+        });
+        matchedLayer = 'history';
       }
-      const next = cacheRowToTurn(turn);
-      if (!next) continue;
-      out.splice(anchorIdx + 1, 0, next);
-      anchorIdx += 1;
+      if (index >= 0) usedCachedIndexes.add(index);
+      return {
+        turn,
+        index,
+        matchedLayer,
+        cachedRow: index >= 0 ? retained[index] : null,
+        mergedRow: null,
+      };
+    });
+
+    const demoteRetainedIndex = (index, reason) => {
+      const row = retained[index];
+      if (!row || cacheRowLayer(row) === 'history') return false;
+      retained[index] = {
+        ...row,
+        layer: 'history',
+        selectedPath: false,
+        suspectQuestionIdentity: true,
+        repairReason: String(reason || 'branch-history-retained'),
+      };
+      decision.repairedRows += 1;
+      decision.demotedRows += 1;
+      return true;
+    };
+
+    for (const match of matches) {
+      if (match.index < 0) continue;
+      const previous = retained[match.index];
+      match.mergedRow = mergeLiveTurnOverCache(previous, match.turn);
+      retained[match.index] = match.mergedRow;
+      decision.overlapCount += 1;
+      if (match.matchedLayer === 'history') {
+        decision.repairedRows += 1;
+        const selectedIndex = Math.max(0, Number(match.turn?.idx || match.turn?.index || 0) || 0);
+        const competingIndex = cacheRowHasAuthoritativeCurrentPosition(match.turn)
+          ? retained.findIndex((row) => (
+          row !== match.mergedRow
+          && cacheRowLayer(row) === 'current'
+          && selectedIndex > 0
+          && Math.max(0, Number(row?.idx || row?.index || 0) || 0) === selectedIndex
+          && cacheRowQuestionId(row) !== cacheRowQuestionId(match.turn)
+          ))
+          : -1;
+        if (competingIndex >= 0) demoteRetainedIndex(competingIndex, 'selected-history-branch-promoted');
+      }
     }
 
+    let anchorRow = null;
+    for (let liveIndex = 0; liveIndex < matches.length; liveIndex += 1) {
+      const match = matches[liveIndex];
+      if (match.mergedRow) {
+        anchorRow = match.mergedRow;
+        continue;
+      }
+
+      const turn = cacheRowToTurn(match.turn);
+      if (!turn) continue;
+      turn.layer = 'current';
+      turn.selectedPath = true;
+      const turnIndex = Math.max(0, Number(turn?.idx || turn?.index || liveIndex + 1) || 0);
+      const conflictIndex = cacheRowHasAuthoritativeCurrentPosition(turn)
+        ? retained.findIndex((row) => (
+        !matches.some((candidate) => candidate.mergedRow === row)
+        && cacheRowLayer(row) === 'current'
+        && turnIndex > 0
+        && Math.max(0, Number(row?.idx || row?.index || 0) || 0) === turnIndex
+        && cacheRowQuestionId(row)
+        && cacheRowQuestionId(turn)
+        && cacheRowQuestionId(row) !== cacheRowQuestionId(turn)
+        ))
+        : -1;
+      if (conflictIndex >= 0) demoteRetainedIndex(conflictIndex, 'selected-path-position-replaced');
+
+      let insertAt = anchorRow ? retained.indexOf(anchorRow) + 1 : -1;
+      if (insertAt <= 0) {
+        const nextMatch = matches.slice(liveIndex + 1).find((candidate) => candidate.mergedRow);
+        insertAt = nextMatch?.mergedRow ? retained.indexOf(nextMatch.mergedRow) : retained.length;
+      }
+      retained.splice(Math.max(0, insertAt), 0, turn);
+      anchorRow = turn;
+    }
+
+    for (const historyRow of preparedLive.historyRows) {
+      const exactIndex = retained.findIndex((row) => (
+        cacheRowLayer(row) === 'history'
+        && cacheRowQuestionId(row) === cacheRowQuestionId(historyRow)
+        && cacheRowTurnId(row) === cacheRowTurnId(historyRow)
+        && String(row?.primaryAId || row?.answerId || '').trim()
+          === String(historyRow?.primaryAId || historyRow?.answerId || '').trim()
+      ));
+      if (exactIndex >= 0) continue;
+      retained.push({
+        ...cacheRowToTurn(historyRow),
+        layer: 'history',
+        selectedPath: false,
+        suspectQuestionIdentity: true,
+        repairReason: String(historyRow?.repairReason || 'duplicate-live-question-identity'),
+      });
+    }
+
+    const repaired = repairCacheCurrentMembership(retained, { liveRows: liveCurrentRows });
+    decision.repairedRows += repaired.repairedRows;
+    decision.demotedRows += repaired.demotedRows;
+    const out = repaired.currentRows.map(cacheRowToTurn).filter(Boolean);
     out.forEach((turn, index) => {
       turn.index = index + 1;
       turn.idx = index + 1;
+      turn.layer = 'current';
+      turn.selectedPath = true;
     });
+
+    const completePairs = matches.length === liveCurrentRows.length
+      && matches.every((match) => {
+        if (match.index < 0 || match.matchedLayer !== 'current') return false;
+        const cachedRow = match.cachedRow;
+        if (!cachedRow) return false;
+        if (cacheRowQuestionId(cachedRow) !== cacheRowQuestionId(match.turn)) return false;
+        if ((cachedRow?.noAnswer === true) !== (match.turn?.noAnswer === true)) return false;
+        const cachedTurnId = cacheRowTurnId(cachedRow);
+        const liveTurnId = cacheRowTurnId(match.turn);
+        return cachedTurnId === liveTurnId || cacheRowsHaveVariantRelationship(cachedRow, match.turn);
+      });
+    const publishedQIds = out.map(cacheRowQuestionId).filter(Boolean);
+    const uniquePublishedQIds = new Set(publishedQIds).size === publishedQIds.length;
+    const bijectionProven = decision.mode !== 'proven-shrink'
+      && preparedLive.rawCount === liveCurrentRows.length
+      && cachedHistoryRows.length === 0
+      && cachedCurrentRows.length === liveCurrentRows.length
+      && liveCurrentRows.length === out.length
+      && decision.overlapCount === liveCurrentRows.length
+      && completePairs
+      && uniquePublishedQIds
+      && decision.demotedRows === 0;
+
     decision.outputCount = out.length;
-    if (decision.mode !== 'proven-shrink' && decision.overlapCount === cachedRows.length && out.length === liveList.length) {
+    decision.retainedCount = repaired.rows.length;
+    decision.publishedCurrentCount = out.length;
+    decision.historicalRetainedCount = repaired.historyRows.length;
+    decision.offDomCurrentRetainedCount = Math.max(0, out.length - liveCurrentRows.length);
+    decision.bijectionProven = bijectionProven;
+    if (bijectionProven) {
       decision.mode = 'live-wins';
       decision.reason = 'complete-overlap-refresh';
+    } else if (decision.mode !== 'proven-shrink') {
+      decision.mode = 'union';
+      if (decision.duplicateCurrentQIdCount || repaired.duplicateCurrentQIdCount) {
+        decision.reason = 'duplicate-current-qid-repaired';
+      } else if (preparedLive.historyRows.length) {
+        decision.reason = 'overlap-ambiguous';
+      } else if (repaired.historyRows.length) {
+        decision.reason = 'branch-history-retained';
+      } else {
+        decision.reason = 'partial-overlap-union';
+      }
     }
+    rememberRetainedTurnList(chatId, repaired.rows);
     rememberCacheMergeDecision(chatId, decision);
-    return { list: out, decision };
+    return {
+      list: out,
+      currentList: out,
+      retainedList: repaired.rows,
+      historyList: repaired.historyRows,
+      decision,
+    };
+  }
+
+  function persistPublishedTurnList(chatId = '', currentRows = [], opts = {}) {
+    const id = String(chatId || resolveChatId() || '').trim();
+    if (!id) return rememberCachePersistenceDecision('', { ok: false, status: 'chat-id-missing' });
+    const merged = mergeTurnListWithCache(id, currentRows, {
+      source: String(opts?.reason || 'current-publication'),
+      completeness: 'unproven',
+      shrinkProof: opts?.shrinkProof || null,
+    });
+    const persisted = saveTurnCache(id, merged.retainedList, {
+      ...opts,
+      liveRows: merged.currentList,
+    });
+    if (!persisted || typeof persisted !== 'object') return persisted;
+    return {
+      ...persisted,
+      mergeDecision: boundedCacheMergeDecision(merged.decision),
+    };
   }
 
   function renderFromCache(chatId = '') {
@@ -3265,7 +4035,8 @@ function UM_PUBLIC() {
       if (!id) return { ok: false, renderedCount: 0, status: 'chat-id-missing' };
 
       const cached = loadTurnCache(id);
-      if (!cached || !Array.isArray(cached.turns) || !cached.turns.length) {
+      const cachedCurrentTurns = Array.isArray(cached?.currentTurns) ? cached.currentTurns : [];
+      if (!cached || !cachedCurrentTurns.length) {
         mmIdxEmitHydrated({
           chatId: id,
           source: 'cache',
@@ -3284,7 +4055,7 @@ function UM_PUBLIC() {
       const list = [];
       const byId = new Map();
       const byAId = new Map();
-      for (const row of cached.turns) {
+      for (const row of cachedCurrentTurns) {
         const turnId = String(row?.turnId || '').trim();
         if (!turnId) continue;
         const answerId = String(row?.primaryAId || row?.answerId || '').trim();
@@ -3320,9 +4091,11 @@ function UM_PUBLIC() {
         answers: [],
       };
 
+      rememberRetainedTurnList(id, cached.turns);
+
       const map = ensureTurnButtons(snapshot.list, { skipActiveSync: true });
       const renderedCount = Number(list.length || 0);
-      const last = cached.turns[cached.turns.length - 1] || null;
+      const last = cachedCurrentTurns[cachedCurrentTurns.length - 1] || null;
       const lastTurnId = String(last?.turnId || '').trim();
       const lastAnswerId = String(last?.primaryAId || last?.answerId || '').trim();
       const paginationCoverage = validateTurnsAgainstPagination(list, { source: 'cache-render' });
@@ -3474,7 +4247,7 @@ function UM_PUBLIC() {
         try { renderChatPageDividers(chatId); } catch {}
         let cachePersistence = null;
         try {
-          if (chatId) cachePersistence = saveTurnCache(chatId, S.turnList, {
+          if (chatId) cachePersistence = persistPublishedTurnList(chatId, S.turnList, {
             reason: 'append-existing-refresh',
           });
         } catch {}
@@ -3547,7 +4320,7 @@ function UM_PUBLIC() {
       try { W.H2O_MM_syncQuoteBadgesForIdx?.(btn, nextIdx); } catch {}
       let cachePersistence = null;
       try {
-        if (chatId) cachePersistence = saveTurnCache(chatId, S.turnList, {
+        if (chatId) cachePersistence = persistPublishedTurnList(chatId, S.turnList, {
           reason: 'append-new-turn',
         });
       } catch {}
@@ -8777,6 +9550,7 @@ function unbindChatPageDividerBridge() {
 
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
+      let retainedListForPersistence = list;
       // Never let a subset re-index shrink the MiniMap: merge with the
       // per-chat turn cache before building buttons/publishing/saving.
       try {
@@ -8784,6 +9558,9 @@ function unbindChatPageDividerBridge() {
         out.cacheMerge = merged?.decision || null;
         if (Array.isArray(merged?.list)) {
           list = merged.list;
+          retainedListForPersistence = Array.isArray(merged?.retainedList)
+            ? merged.retainedList
+            : list;
           snapshot.list = list;
           const byId = new Map();
           const byAId = new Map();
@@ -8849,8 +9626,9 @@ function unbindChatPageDividerBridge() {
       try {
         const chatId = resolveChatId();
         if (chatId) {
-          out.cachePersistence = saveTurnCache(chatId, S.turnList, {
+          out.cachePersistence = saveTurnCache(chatId, retainedListForPersistence, {
             reason: 'rebuild',
+            liveRows: S.turnList,
             shrinkProof: out.cacheMerge?.mode === 'proven-shrink'
               ? out.cacheMerge?.shrinkProof
               : null,

@@ -27,16 +27,27 @@ const coreSource = replaceUnique(
   sources.core,
   "  installGlobalApi();\n  initCore();\n  if (!installIntoKernelShared()) scheduleInstallRetry();",
   `  globalThis.__CV33_CACHE_CORE__ = Object.freeze({
+    canonicalTurnIdentityProof,
+    resolveQaRowCanonicalMeta,
+    backfillQaRowMeta,
     normalizeCacheTurnRow,
     normalizeCacheTurnRows,
     normalizeCacheTurnRowsDetailed,
+    repairCacheCurrentMembership,
     cacheRowsShareIdentity,
+    cacheRowsHaveVariantRelationship,
     findCacheRowIndex,
+    validateCurrentLayerMembership,
     validateAuthoritativeShrinkProof,
     mergeTurnListWithCache,
     loadTurnCache,
     saveTurnCache,
+    getCacheCompletenessDiagnostics,
+    buildCanonicalSnapshotFromTurns,
+    publishTurnSnapshot,
+    getTurnList,
     getCanonicalTurnsFromSharedRuntime,
+    state: S,
   });`,
   'core-bootstrap',
 );
@@ -202,6 +213,7 @@ function makeEnvironment(records = [], opts = {}) {
     domMutationCalls: 0,
     userActionCalls: 0,
     rebuildCalls: 0,
+    automaticCanaryStages: 0,
   };
   observedCounters.push(counters);
   const holder = { records: records.slice() };
@@ -377,6 +389,23 @@ function rows(count = 38) {
   return Array.from({ length: count }, (_unused, index) => answeredRow(index + 1));
 }
 
+function historyRow(row, reason = 'fixture-history') {
+  return {
+    ...row,
+    layer: 'history',
+    selectedPath: false,
+    repairReason: reason,
+  };
+}
+
+function variantRow(turnNo, qId, primaryAId, answerIds, logicalMemberKey = '') {
+  return {
+    ...answeredRow(turnNo, primaryAId, qId),
+    answerIds: answerIds.slice(),
+    logicalMemberKey,
+  };
+}
+
 function stageCache(env, chatId, inputRows) {
   const saved = env.api.saveTurnCache(chatId, inputRows);
   assert.equal(saved.ok, true, `seed cache failed: ${saved.status}`);
@@ -398,6 +427,15 @@ function storageKeys(env) {
     else if (parsed && typeof parsed === 'object' && parsed.chatId) metaKey = key;
   }
   return { turnsKey, metaKey };
+}
+
+function replaceStoredTurns(env, inputRows) {
+  const { turnsKey, metaKey } = storageKeys(env);
+  assert.ok(turnsKey && metaKey, 'cache keys missing');
+  env.storage.map.set(turnsKey, JSON.stringify(inputRows));
+  const meta = JSON.parse(env.storage.map.get(metaKey));
+  env.storage.map.set(metaKey, JSON.stringify({ ...meta, turnCount: inputRows.length }));
+  env.storage.writes.length = 0;
 }
 
 const results = [];
@@ -569,9 +607,11 @@ await fixture('branch switch preserves unrelated cached history', () => {
   const env = loadCore(live);
   stageCache(env, 'fixture-chat', all);
   const merged = env.api.mergeTurnListWithCache('fixture-chat', live);
-  check(merged.list.some((row) => row.qId === all[1].qId), true);
+  check(merged.list.some((row) => row.qId === all[1].qId), false);
   check(merged.list.some((row) => row.qId === 'branch-question'), true);
-  check(merged.list.length, 9);
+  check(merged.list.length, 8);
+  check(merged.historyList.some((row) => row.qId === all[1].qId), true);
+  check(merged.retainedList.length, 9);
 });
 
 await fixture('shrink and regrowth create no duplicate qId rows', () => {
@@ -649,7 +689,7 @@ await fixture('internal projected exactness does not prove historical completene
   check(projected.completeness, 'unproven');
   check(Object.hasOwn(projected, 'coreTotal'), false);
   check(merged.list.length, 38);
-  check(merged.decision.reason, 'cache-preserving-union');
+  check(merged.decision.reason, 'partial-overlap-union');
 });
 
 await fixture('validator evaluation performs no forbidden runtime actions', () => {
@@ -659,6 +699,7 @@ await fixture('validator evaluation performs no forbidden runtime actions', () =
   check(env.counters.navigationCalls, 0);
   check(env.counters.domMutationCalls, 0);
   check(env.counters.userActionCalls, 0);
+  check(env.counters.automaticCanaryStages, 0);
 });
 
 await fixture('coreProjectedTotal equality alone never authorizes shrink', () => {
@@ -754,6 +795,284 @@ await fixture('equal-size overlapping refresh safely persists corrected content'
   check(env.api.loadTurnCache('fixture-chat').turns[2].primaryAId, 'fixture-answer-3-refreshed');
 });
 
+await fixture('one question publishes one row with three answer variants', () => {
+  const qId = 'fixture-variant-question';
+  const row = variantRow(1, qId, 'fixture-answer-c', [
+    'fixture-answer-a',
+    'fixture-answer-b',
+    'fixture-answer-c',
+  ], 'fixture-member-variant');
+  const env = loadCore([row]);
+  stageCache(env, 'fixture-chat', [row]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [row]);
+  check(merged.list.length, 1);
+  check(merged.list[0].answerIds, ['fixture-answer-a', 'fixture-answer-b', 'fixture-answer-c']);
+  check(merged.historyList.length, 0);
+});
+
+await fixture('inactive question branches remain retained history only', () => {
+  const current = rows(3);
+  const inactive = historyRow(answeredRow(2, 'fixture-inactive-answer', 'fixture-inactive-question'));
+  const retained = [current[0], inactive, current[1], current[2]];
+  const env = loadCore(current);
+  stageCache(env, 'fixture-chat', retained);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', current);
+  check(merged.list.map((row) => row.qId), current.map((row) => row.qId));
+  check(merged.historyList.length, 1);
+  check(merged.historyList[0].qId, inactive.qId);
+  check(merged.retainedList.length, 4);
+});
+
+await fixture('partial hydration retains 38 current rows and excludes history', () => {
+  const current = rows(38);
+  const history = [
+    historyRow(answeredRow(7, 'fixture-history-answer-a', 'fixture-history-question-a')),
+    historyRow(answeredRow(8, 'fixture-history-answer-b', 'fixture-history-question-b')),
+  ];
+  const env = loadCore(current.slice(0, 3));
+  stageCache(env, 'fixture-chat', [...current, ...history]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', current.slice(0, 3));
+  check(merged.list.length, 38);
+  check(merged.historyList.length, 2);
+  check(merged.retainedList.length, 40);
+  check(merged.decision.offDomCurrentRetainedCount, 35);
+});
+
+await fixture('cache-only history never becomes a current turn', () => {
+  const current = rows(3);
+  const inactive = historyRow(answeredRow(2, 'fixture-history-answer', 'fixture-history-question'));
+  const env = loadCore(current);
+  stageCache(env, 'fixture-chat', [...current, inactive]);
+  const loaded = env.api.loadTurnCache('fixture-chat', { liveRows: current });
+  check(loaded.currentTurns.some((row) => row.qId === inactive.qId), false);
+  check(loaded.historyTurns.some((row) => row.qId === inactive.qId), true);
+});
+
+await fixture('repeated qId with distinct turn identities demotes competitors', () => {
+  const qId = 'fixture-shared-question';
+  const selected = variantRow(1, qId, 'fixture-selected-answer', ['fixture-selected-answer'], 'fixture-member-selected');
+  const candidateA = variantRow(1, qId, 'fixture-history-answer-a', ['fixture-history-answer-a'], 'fixture-member-a');
+  const candidateB = variantRow(1, qId, 'fixture-history-answer-b', ['fixture-history-answer-b'], 'fixture-member-b');
+  const env = loadCore([selected]);
+  const repaired = env.api.normalizeCacheTurnRowsDetailed([candidateA, selected, candidateB], {
+    liveRows: [selected],
+  });
+  check(repaired.currentRows.length, 1);
+  check(repaired.currentRows[0].primaryAId, selected.primaryAId);
+  check(repaired.historyRows.length, 2);
+  check(repaired.historyRows.every((row) => row.suspectQuestionIdentity === true), true);
+});
+
+await fixture('alias-resolved historical row keeps its own question identity', () => {
+  const current = answeredRow(1, 'fixture-current-answer', 'fixture-current-question');
+  const historical = {
+    ...answeredRow(2, current.primaryAId, 'fixture-historical-question'),
+    turnId: 'turn:fixture-historical-question',
+  };
+  const env = loadCore([current]);
+  const normalized = env.api.normalizeCacheTurnRow(historical, 2);
+  const meta = env.api.resolveQaRowCanonicalMeta(historical);
+  const wrap = env.document.createElement('div');
+  const qBtn = env.document.createElement('button');
+  env.api.backfillQaRowMeta(wrap, qBtn, meta);
+  check(normalized.qId, 'fixture-historical-question');
+  check(normalized.turnId, 'turn:fixture-historical-question');
+  check(normalized.suspectQuestionIdentity, true);
+  check(meta.questionId, 'fixture-historical-question');
+  check(meta.canonicalMatchProven, false);
+  check(wrap.dataset.questionId, 'fixture-historical-question');
+  check(qBtn.dataset.questionId, 'fixture-historical-question');
+});
+
+await fixture('exact turn identity still permits canonical question adoption', () => {
+  const current = answeredRow(1, 'fixture-current-answer', 'fixture-current-question');
+  const staleQuestion = { ...current, qId: 'fixture-stale-question', questionId: 'fixture-stale-question' };
+  const env = loadCore([current]);
+  const normalized = env.api.normalizeCacheTurnRow(staleQuestion, 1);
+  const meta = env.api.resolveQaRowCanonicalMeta(staleQuestion);
+  check(normalized.qId, current.qId);
+  check(meta.questionId, current.qId);
+  check(meta.canonicalMatchProven, true);
+  check(meta.canonicalMatchBasis, 'turn-id-exact');
+});
+
+await fixture('cache index matching consumes each matched row once', () => {
+  const cache = [answeredRow(1)];
+  const target = { ...cache[0] };
+  const env = loadCore(cache);
+  const used = new env.context.Set();
+  const first = env.api.findCacheRowIndex(cache, target, { usedIndexes: used, layer: 'current' });
+  used.add(first);
+  const second = env.api.findCacheRowIndex(cache, target, { usedIndexes: used, layer: 'current' });
+  check(first, 0);
+  check(second, -1);
+});
+
+await fixture('qId matching respects explicit branch member context', () => {
+  const qId = 'fixture-context-question';
+  const cached = variantRow(1, qId, 'fixture-context-answer-a', ['fixture-context-answer-a'], 'fixture-member-a');
+  const live = variantRow(1, qId, 'fixture-context-answer-b', ['fixture-context-answer-b'], 'fixture-member-b');
+  const env = loadCore([live]);
+  check(env.api.findCacheRowIndex([cached], live), -1);
+});
+
+await fixture('false four-to-six overlap cannot claim complete refresh', () => {
+  const cached = rows(4);
+  const sharedQId = cached[1].qId;
+  const branchA = variantRow(2, sharedQId, 'fixture-branch-answer-a', ['fixture-branch-answer-a'], 'fixture-branch-a');
+  const branchB = variantRow(2, sharedQId, 'fixture-branch-answer-b', ['fixture-branch-answer-b'], 'fixture-branch-b');
+  const live = [cached[0], branchA, branchB, cached[1], cached[2], cached[3]];
+  const env = loadCore(cached);
+  stageCache(env, 'fixture-chat', cached);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', live);
+  check(merged.decision.reason === 'complete-overlap-refresh', false);
+  check(merged.decision.bijectionProven, false);
+  check(merged.list.length, 4);
+  check(new Set(merged.list.map((row) => row.qId)).size, 4);
+  check(merged.historyList.length, 2);
+});
+
+await fixture('valid branch-aware bijection permits complete overlap refresh', () => {
+  const all = rows(6);
+  const env = loadCore(all);
+  stageCache(env, 'fixture-chat', all);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', all);
+  check(merged.decision.reason, 'complete-overlap-refresh');
+  check(merged.decision.bijectionProven, true);
+  check(merged.decision.overlapCount, 6);
+});
+
+await fixture('duplicate current qId persistence fails byte-identically', () => {
+  const env = loadCore(rows(2));
+  stageCache(env, 'fixture-chat', rows(2));
+  const before = storedStrings(env);
+  const qId = 'fixture-malformed-question';
+  const malformed = [
+    variantRow(1, qId, 'fixture-malformed-answer-a', ['fixture-malformed-answer-a'], 'fixture-malformed-a'),
+    variantRow(1, qId, 'fixture-malformed-answer-b', ['fixture-malformed-answer-b'], 'fixture-malformed-b'),
+  ];
+  const result = env.api.saveTurnCache('fixture-chat', malformed);
+  check(result.status, 'malformed-membership');
+  check(result.writesAttempted, 0);
+  check(storedStrings(env), before);
+});
+
+await fixture('repaired current and history payload persists successfully', () => {
+  const qId = 'fixture-repaired-question';
+  const selected = variantRow(1, qId, 'fixture-repaired-answer', ['fixture-repaired-answer'], 'fixture-repaired-current');
+  const malformed = [
+    variantRow(1, qId, 'fixture-repaired-history-a', ['fixture-repaired-history-a'], 'fixture-repaired-a'),
+    selected,
+    variantRow(1, qId, 'fixture-repaired-history-b', ['fixture-repaired-history-b'], 'fixture-repaired-b'),
+  ];
+  const env = loadCore([selected]);
+  stageCache(env, 'fixture-chat', [selected]);
+  const repaired = env.api.normalizeCacheTurnRowsDetailed(malformed, { liveRows: [selected] });
+  const result = env.api.saveTurnCache('fixture-chat', repaired.rows);
+  check(repaired.currentRows.length, 1);
+  check(repaired.historyRows.length, 2);
+  check(result.ok, true);
+  check(env.api.loadTurnCache('fixture-chat', { liveRows: [selected] }).turns.length, 3);
+});
+
+await fixture('regenerate retains variants beneath one current turn', () => {
+  const qId = 'fixture-regenerate-question';
+  const cached = variantRow(1, qId, 'fixture-answer-old', ['fixture-answer-old'], 'fixture-regenerate-member');
+  const live = variantRow(1, qId, 'fixture-answer-new', ['fixture-answer-old', 'fixture-answer-new'], 'fixture-regenerate-member');
+  const env = loadCore([live]);
+  stageCache(env, 'fixture-chat', [cached]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [live]);
+  check(merged.list.length, 1);
+  check(merged.list[0].primaryAId, 'fixture-answer-new');
+  check(merged.list[0].answerIds, ['fixture-answer-old', 'fixture-answer-new']);
+  check(merged.historyList.length, 0);
+});
+
+await fixture('history is excluded from published maps and current turn list', () => {
+  const current = rows(3);
+  const inactive = historyRow(answeredRow(2, 'fixture-map-history-answer', 'fixture-map-history-question'));
+  const env = loadCore(current);
+  stageCache(env, 'fixture-chat', [...current, inactive]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', current);
+  const snapshot = env.api.buildCanonicalSnapshotFromTurns(merged.list);
+  env.api.publishTurnSnapshot(snapshot);
+  check(env.api.getTurnList().length, 3);
+  check(env.api.state.turnById.size, 3);
+  check(env.api.state.turnIdByAId.size, 3);
+  check(env.api.state.turnById.has(inactive.turnId), false);
+  check(merged.retainedList.length, 4);
+});
+
+await fixture('diagnostics distinguish retained current and history counts', () => {
+  const current = rows(3);
+  const history = [
+    historyRow(answeredRow(2, 'fixture-diag-history-a', 'fixture-diag-question-a')),
+    historyRow(answeredRow(3, 'fixture-diag-history-b', 'fixture-diag-question-b')),
+  ];
+  const env = loadCore(current);
+  stageCache(env, 'fixture-chat', [...current, ...history]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', current);
+  env.api.publishTurnSnapshot(env.api.buildCanonicalSnapshotFromTurns(merged.list));
+  const diagnostics = env.api.getCacheCompletenessDiagnostics();
+  check(diagnostics.totalRetainedCount, 5);
+  check(diagnostics.publishedTurnCount, 3);
+  check(diagnostics.historicalRetainedCount, 2);
+  check(diagnostics.lastMergeDecision.publishedCurrentCount, 3);
+  check(diagnostics.lastMergeDecision.retainedCount, 5);
+});
+
+await fixture('membership repair is deterministic and idempotent', () => {
+  const qId = 'fixture-idempotent-question';
+  const selected = variantRow(1, qId, 'fixture-idempotent-selected', ['fixture-idempotent-selected'], 'fixture-idempotent-current');
+  const malformed = [
+    selected,
+    variantRow(1, qId, 'fixture-idempotent-history', ['fixture-idempotent-history'], 'fixture-idempotent-history'),
+  ];
+  const env = loadCore([selected]);
+  const first = env.api.normalizeCacheTurnRowsDetailed(malformed, { liveRows: [selected] });
+  const second = env.api.normalizeCacheTurnRowsDetailed(first.rows, { liveRows: [selected] });
+  check(second.rows, first.rows);
+  check(second.currentRows.length, 1);
+  check(second.historyRows.length, 1);
+});
+
+await fixture('legacy rows without a layer load current and unverified', () => {
+  const legacy = rows(3).map(({ layer: _layer, selectedPath: _selectedPath, ...row }) => row);
+  const env = loadCore(legacy);
+  const normalized = env.api.normalizeCacheTurnRowsDetailed(legacy);
+  check(normalized.currentRows.length, 3);
+  check(normalized.historyRows.length, 0);
+  check(normalized.currentRows.every((row) => row.layer === 'current'), true);
+  check(normalized.currentRows.every((row) => row.selectedPath === 'unverified'), true);
+});
+
+await fixture('history repair preserves original identities and variants', () => {
+  const historical = historyRow(variantRow(
+    4,
+    'fixture-original-history-question',
+    'fixture-original-history-answer-b',
+    ['fixture-original-history-answer-a', 'fixture-original-history-answer-b'],
+    'fixture-history-member',
+  ));
+  const env = loadCore([]);
+  const normalized = env.api.normalizeCacheTurnRowsDetailed([historical]);
+  check(normalized.historyRows[0].qId, historical.qId);
+  check(normalized.historyRows[0].turnId, historical.turnId);
+  check(normalized.historyRows[0].primaryAId, historical.primaryAId);
+  check(normalized.historyRows[0].answerIds, historical.answerIds);
+});
+
+await fixture('target NO ANSWER remains clean in either cache layer', () => {
+  const current = noAnswerRow(1, 'fixture-no-answer-current');
+  const historical = historyRow(noAnswerRow(2, 'fixture-no-answer-history'));
+  const env = loadCore([current]);
+  const normalized = env.api.normalizeCacheTurnRowsDetailed([current, historical], { liveRows: [current] });
+  check(normalized.currentRows[0].primaryAId, '');
+  check(normalized.currentRows[0].answerIds, []);
+  check(normalized.historyRows[0].primaryAId, '');
+  check(normalized.historyRows[0].answerIds, []);
+});
+
 const failures = results.filter((result) => !result.ok);
 const sideEffects = {
   sourceSetterCalls: observedCounters.reduce((sum, row) => sum + row.sourceSetterCalls, 0),
@@ -761,6 +1080,7 @@ const sideEffects = {
   domMutationCalls: observedCounters.reduce((sum, row) => sum + row.domMutationCalls, 0),
   userActionCalls: observedCounters.reduce((sum, row) => sum + row.userActionCalls, 0),
   browserStorageOutsideStubs: 0,
+  automaticCanaryStages: observedCounters.reduce((sum, row) => sum + row.automaticCanaryStages, 0),
 };
 const summary = {
   ok: failures.length === 0,
