@@ -36,6 +36,7 @@ const coreSource = replaceUnique(
     repairCacheCurrentMembership,
     cacheRowCurrentProof,
     deriveLiveCurrentProof,
+    evaluateTransientCurrentOwnership,
     findCacheSplitRoleProposals,
     reconcileCacheSplitRoleRows,
     resolveMiniMapCurrentMemberByAnswer,
@@ -70,6 +71,10 @@ const engineSource = replaceUnique(
     cacheBootNeedsRebuild,
     buildMissing,
     startStaleStateWatchdog,
+    isEligibleHostAssistantNode,
+    pickAddedAnswerNode,
+    collectMutationSignals,
+    onCoreTurnUpdated,
     state: S,
   });`,
   'engine-bootstrap',
@@ -122,6 +127,8 @@ class FakeElement {
     };
   }
   get isConnected() { return !!this.parentElement || this.tagName === 'BODY'; }
+  get firstElementChild() { return this.children[0] || null; }
+  get childElementCount() { return this.children.length; }
   setAttribute(name, value) {
     this.attributes.set(String(name), String(value));
     if (String(name) === 'class') this.className = String(value);
@@ -142,6 +149,7 @@ class FakeElement {
   contains(candidate) {
     return candidate === this || this.children.some((child) => child.contains(candidate));
   }
+  matches(selector) { return selectorMatches(this, selector); }
   closest(selector) {
     let current = this;
     while (current) {
@@ -466,6 +474,20 @@ function variantRow(turnNo, qId, primaryAId, answerIds, logicalMemberKey = '') {
     answerIds: answerIds.slice(),
     logicalMemberKey,
   };
+}
+
+function appendHostAssistant(env, answerId, opts = {}) {
+  const turn = env.document.createElement('section');
+  turn.setAttribute('data-testid', 'conversation-turn');
+  if (opts.hidden) turn.setAttribute('aria-hidden', 'true');
+  if (opts.owner) turn.setAttribute('data-cgxui-owner', String(opts.owner));
+  const answer = env.document.createElement('article');
+  answer.setAttribute('data-message-author-role', 'assistant');
+  answer.setAttribute('data-message-id', String(answerId));
+  turn.appendChild(answer);
+  env.document.body.appendChild(turn);
+  if (opts.detached) turn.remove();
+  return { turn, answer };
 }
 
 function stageCache(env, chatId, inputRows) {
@@ -999,7 +1021,7 @@ await fixture('valid branch-aware bijection permits complete overlap refresh', (
   const all = rows(6);
   const env = loadCore(all);
   stageCache(env, 'fixture-chat', all);
-  const merged = env.api.mergeTurnListWithCache('fixture-chat', all);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', all, { coreProjectedTotal: all.length });
   check(merged.decision.reason, 'complete-overlap-refresh');
   check(merged.decision.bijectionProven, true);
   check(merged.decision.overlapCount, 6);
@@ -1155,7 +1177,8 @@ await fixture('cache-only transient boot fragment is excluded from current publi
   const live = rows(3);
   const env = loadCore(live);
   const transient = withCurrentProof(noAnswerRow(4, transientQId), 'transient-unverified');
-  stageCache(env, 'fixture-chat', [...live, transient]);
+  stageCache(env, 'fixture-chat', live);
+  replaceStoredTurns(env, [...live, transient]);
   const merged = env.api.mergeTurnListWithCache('fixture-chat', live);
   check(merged.list.length, 3);
   check(merged.list.some((row) => row.qId === transientQId), false);
@@ -1377,6 +1400,190 @@ await fixture('incremental append attaches answer to uniquely owned question row
   env.holder.records = [{ ...canonical, qId, turnId: `turn:${qId}` }];
   const loaded = env.api.loadTurnCache('fixture-chat');
   check(loaded.currentTurns.length, 1, JSON.stringify(loaded));
+});
+
+await fixture('transient ownership requires canonical ledger or selected host evidence', () => {
+  const answerId = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+  const orphan = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const none = loadCore([]);
+  check(none.api.evaluateTransientCurrentOwnership(orphan), {
+    owned: false,
+    basis: 'none',
+    qId: null,
+    answerId,
+    hostConnected: false,
+  });
+
+  const canonical = loadCore([answeredRow(1, answerId, 'fixture-owned-question')]);
+  check(canonical.api.evaluateTransientCurrentOwnership(orphan).basis, 'canonical-current-member');
+
+  const ledger = loadCore([], {
+    ledgerMembers: [ledgerMember('fixture-ledger-question', [answerId], 'fixture-ledger-member')],
+  });
+  check(ledger.api.evaluateTransientCurrentOwnership(orphan).basis, 'ledger-current-member');
+
+  const host = loadCore([]);
+  appendHostAssistant(host, answerId);
+  check(host.api.evaluateTransientCurrentOwnership(orphan), {
+    owned: true,
+    basis: 'connected-selected-host-answer',
+    qId: null,
+    answerId,
+    hostConnected: true,
+  });
+});
+
+await fixture('hidden detached and H2O-owned assistants are not live owners', () => {
+  const answerId = 'fixture-ineligible-transient-answer';
+  const row = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const hidden = loadCore([]);
+  appendHostAssistant(hidden, answerId, { hidden: true });
+  check(hidden.api.evaluateTransientCurrentOwnership(row).owned, false);
+  const detached = loadCore([]);
+  appendHostAssistant(detached, answerId, { detached: true });
+  check(detached.api.evaluateTransientCurrentOwnership(row).owned, false);
+  const owned = loadCore([]);
+  appendHostAssistant(owned, answerId, { owner: 'mnmp' });
+  check(owned.api.evaluateTransientCurrentOwnership(row).owned, false);
+});
+
+await fixture('Engine observer admits only connected selected host assistants', () => {
+  const core = loadCore([]);
+  const engine = loadEngine(core.api, []);
+  const valid = appendHostAssistant(engine, 'fixture-engine-valid');
+  check(engine.api.isEligibleHostAssistantNode(valid.answer), true);
+  check(engine.api.pickAddedAnswerNode(valid.turn, '[data-message-author-role="assistant"]') === valid.answer, true);
+
+  const hidden = appendHostAssistant(engine, 'fixture-engine-hidden', { hidden: true });
+  check(engine.api.isEligibleHostAssistantNode(hidden.answer), false);
+  const detached = appendHostAssistant(engine, 'fixture-engine-detached', { detached: true });
+  check(engine.api.isEligibleHostAssistantNode(detached.answer), false);
+  const control = appendHostAssistant(engine, 'fixture-engine-control', { owner: 'mnmp' });
+  check(engine.api.pickAddedAnswerNode(control.turn, '[data-message-author-role="assistant"]'), null);
+});
+
+await fixture('removed admitted assistant schedules reconciliation signal', () => {
+  const core = loadCore([]);
+  const engine = loadEngine(core.api, []);
+  const mounted = appendHostAssistant(engine, 'fixture-engine-removed');
+  mounted.turn.remove();
+  const signals = engine.api.collectMutationSignals([{
+    type: 'childList',
+    addedNodes: [],
+    removedNodes: [mounted.turn],
+  }]);
+  check(signals.rebuildHit, true);
+  check(signals.addedAnswers.length, 0);
+});
+
+await fixture('exact orphan is excluded from authoritative current publication', () => {
+  const live = rows(3);
+  const answerId = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+  const orphan = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, orphan], { coreProjectedTotal: 3 });
+  check(merged.list.length, 3);
+  check(merged.list.some((row) => row.primaryAId === answerId), false);
+  check(merged.decision.ownerlessTransientExcludedCount > 0, true);
+  check(merged.decision.reason, 'ownerless-transient-excluded');
+  check(merged.decision.bijectionProven, false);
+});
+
+await fixture('internal turn-list persistence cannot establish live ownership or counts', () => {
+  const live = rows(3);
+  const orphan = withCurrentProof(answeredRow(4, 'fixture-internal-orphan', ''), 'transient-unverified');
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  env.api.mergeTurnListWithCache('fixture-chat', live, { coreProjectedTotal: 3 });
+  const internal = env.api.mergeTurnListWithCache('fixture-chat', [...live, orphan], {
+    inputKind: 'internal-state',
+    source: 'fixture-internal',
+  });
+  const diagnostics = env.api.getCacheCompletenessDiagnostics();
+  check(internal.list.length, 3);
+  check(internal.decision.reason, 'internal-state-refresh');
+  check(internal.decision.bijectionProven, false);
+  check(diagnostics.observedTurnCount, 3);
+  check(diagnostics.internalMergeInputCount, 4);
+  check(diagnostics.ownerlessTransientExcludedCount > 0, true);
+});
+
+await fixture('connected transient stays pending and cannot prove complete overlap', () => {
+  const live = rows(3);
+  const answerId = 'fixture-connected-pending-answer';
+  const transient = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const env = loadCore(live);
+  appendHostAssistant(env, answerId);
+  stageCache(env, 'fixture-chat', live);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, transient], { coreProjectedTotal: 4 });
+  check(merged.list.length, 4);
+  check(merged.decision.reason, 'transient-current-pending-ownership');
+  check(merged.decision.unresolvedTransientCount > 0, true);
+  check(merged.decision.bijectionProven, false);
+  const before = storedStrings(env);
+  const persisted = env.api.saveTurnCache('fixture-chat', merged.retainedList);
+  check(persisted.status, 'transient-pending-ownership');
+  check(persisted.writesAttempted, 0);
+  check(storedStrings(env), before);
+});
+
+await fixture('ownerless transient persistence is refused byte-identically', () => {
+  const live = rows(3);
+  const orphan = withCurrentProof(answeredRow(4, 'fixture-ownerless-write', ''), 'transient-unverified');
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  const before = storedStrings(env);
+  const persisted = env.api.saveTurnCache('fixture-chat', [...live, orphan]);
+  check(persisted.status, 'malformed-membership');
+  check(persisted.reason, 'ownerless-transient-current');
+  check(persisted.writesAttempted, 0);
+  check(storedStrings(env), before);
+});
+
+await fixture('two transient rows cannot claim one current member', () => {
+  const qId = 'fixture-one-owner-question';
+  const answerA = 'fixture-one-owner-answer-a';
+  const answerB = 'fixture-one-owner-answer-b';
+  const canonical = variantRow(1, qId, answerB, [answerA, answerB]);
+  const first = withCurrentProof(answeredRow(1, answerA, ''), 'transient-unverified');
+  const second = withCurrentProof(answeredRow(2, answerB, ''), 'transient-unverified');
+  const env = loadCore([canonical]);
+  stageCache(env, 'fixture-chat', [canonical]);
+  const before = storedStrings(env);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [first, second], { coreProjectedTotal: 1 });
+  check(merged.list.some((row) => row.qId === ''), false);
+  check(merged.decision.ownerlessTransientExcludedCount, 2);
+  const persisted = env.api.saveTurnCache('fixture-chat', [first, second]);
+  check(persisted.status, 'malformed-membership');
+  check(persisted.reason, 'transient-owner-ambiguous');
+  check(storedStrings(env), before);
+});
+
+await fixture('repaired three-row payload persists after transient exclusion', () => {
+  const live = rows(3);
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  const persisted = env.api.saveTurnCache('fixture-chat', live);
+  check(persisted.ok, true);
+  check(persisted.status, 'ok');
+  check(persisted.publishedTurnCount, 3);
+});
+
+await fixture('repeated reload never resurrects an ownerless transient', () => {
+  const live = rows(3);
+  const orphan = withCurrentProof(answeredRow(4, 'fixture-reload-orphan', ''), 'transient-unverified');
+  const shared = new Map();
+  let env = loadCore(live, { storage: shared });
+  stageCache(env, 'fixture-chat', live);
+  replaceStoredTurns(env, [...live, orphan]);
+  for (let pass = 0; pass < 3; pass += 1) {
+    env = loadCore(live, { storage: shared });
+    const merged = env.api.mergeTurnListWithCache('fixture-chat', live, { coreProjectedTotal: 3 });
+    check(merged.list.length, 3);
+    check(merged.list.some((row) => row.primaryAId === 'fixture-reload-orphan'), false);
+    check(env.api.saveTurnCache('fixture-chat', merged.retainedList).ok, true);
+  }
 });
 
 await fixture('target NO ANSWER remains clean in either cache layer', () => {

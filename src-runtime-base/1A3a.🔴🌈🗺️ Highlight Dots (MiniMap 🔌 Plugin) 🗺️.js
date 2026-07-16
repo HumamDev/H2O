@@ -1580,6 +1580,53 @@ ${dotSel}{
     return liveResult?.hasMessage ? [] : stored;
   }
 
+  function dotSurfaceQuestionWriteAllowed(turnId = '', questionId = '', primaryId = '') {
+    const tId = String(turnId || '').trim();
+    const qId = String(questionId || '').trim();
+    if (!tId || !qId) return false;
+    const row = resolveTurnObj(tId || primaryId || qId);
+    const rowQId = String(row?.questionId || row?.qId || '').trim();
+    const proof = String(row?.currentProof || '').trim();
+    if (row?.suspectQuestionIdentity === true || proof === 'transient-unverified' || proof === 'history') {
+      return false;
+    }
+    if (rowQId && rowQId !== qId) return false;
+    if (!tId.startsWith('turn:a:')) return tId === `turn:${qId}` || rowQId === qId;
+
+    const answerId = String(primaryId || tId.slice(7) || '').trim();
+    const runtime = TOPW?.H2O?.turnRuntime || W?.H2O?.turnRuntime || null;
+    let record = null;
+    try {
+      record = runtime?.getTurnRecordByAId?.(answerId)
+        || runtime?.getTurnRecordByTurnId?.(tId)
+        || null;
+    } catch {}
+    const recordQId = String(record?.qId || record?.questionId || '').trim();
+    if (recordQId === qId) return true;
+
+    try {
+      const snapshot = runtime?.getChatAtlasLedgerSnapshot?.() || null;
+      const matches = (Array.isArray(snapshot?.members) ? snapshot.members : []).filter((member) => {
+        const memberQId = String(member?.question?.currentQId || member?.question?.qId || '').trim();
+        const answerIds = new Set([
+          member?.answer?.primaryAId,
+          ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
+        ].map((value) => String(value || '').trim()).filter(Boolean));
+        return memberQId === qId && answerIds.has(answerId);
+      });
+      return matches.length === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  function clearQaSurfaceQuestionId(host, qBtn) {
+    try { host?.removeAttribute?.(ATTR_.QUESTION_ID); } catch {}
+    try { delete host?.dataset?.questionId; } catch {}
+    try { qBtn?.removeAttribute?.(ATTR_.QUESTION_ID); } catch {}
+    try { delete qBtn?.dataset?.questionId; } catch {}
+  }
+
   function resolveQaMiniMapSurfaceContext(host, btn) {
     const qBtn = getQuestionBtnForWrap(host);
     let turnId = String(
@@ -1624,12 +1671,18 @@ ${dotSel}{
       if (!turnId) turnId = String(turnRecord?.turnId || '').trim();
     }
 
+    const allowQuestionWrite = dotSurfaceQuestionWriteAllowed(turnId, questionId, primaryId);
+    if (!allowQuestionWrite) {
+      clearQaSurfaceQuestionId(host, qBtn);
+      questionId = '';
+    }
+
     if (host) {
       if (turnId) {
         host.setAttribute(ATTR_.TURN_ID, turnId);
         host.dataset.turnId = turnId;
       }
-      if (questionId) {
+      if (allowQuestionWrite && questionId) {
         host.setAttribute(ATTR_.QUESTION_ID, questionId);
         host.dataset.questionId = questionId;
       }
@@ -1639,7 +1692,7 @@ ${dotSel}{
     }
     if (qBtn) {
       if (turnId) qBtn.dataset.turnId = turnId;
-      if (questionId) qBtn.dataset.questionId = questionId;
+      if (allowQuestionWrite && questionId) qBtn.dataset.questionId = questionId;
     }
 
     return { qBtn, turnId, primaryId, questionId };

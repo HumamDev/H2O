@@ -3161,12 +3161,45 @@
       return scheduled;
     }
 
+    let cacheDiagnostics = null;
+    try { cacheDiagnostics = MM_core()?.getCacheCompletenessDiagnostics?.() || null; } catch {}
+    const unresolvedTransientCount = Math.max(0, Number(
+      cacheDiagnostics?.unresolvedTransientCount
+      ?? cacheDiagnostics?.lastMergeDecision?.unresolvedTransientCount
+      ?? 0
+    ) || 0);
+    const ownerlessTransientCount = Math.max(0, Number(
+      cacheDiagnostics?.ownerlessTransientExcludedCount
+      ?? cacheDiagnostics?.lastMergeDecision?.ownerlessTransientExcludedCount
+      ?? 0
+    ) || 0);
+    let publishedTransientCount = 0;
+    try {
+      publishedTransientCount = (MM_core()?.getTurnList?.() || []).filter((row) => (
+        String(row?.layer || 'current') !== 'history'
+        && String(row?.currentProof || '') === 'transient-unverified'
+      )).length;
+    } catch {}
+    if (
+      turnListTotal > turnTotal
+      && (unresolvedTransientCount || ownerlessTransientCount || publishedTransientCount)
+    ) {
+      const scheduled = scheduleRebuild('core:turn-updated:transient-reconcile');
+      if (scheduled) {
+        perfBucket.coreTurnUpdatedRebuildCount = Number(perfBucket.coreTurnUpdatedRebuildCount || 0) + 1;
+      }
+      return scheduled;
+    }
+
     let missing = false;
     try { missing = buildMissing(); } catch {}
     const retainedCacheProjection = turnTotal > 0
       && turnListTotal > turnTotal
       && turnListTotal === renderedTotal
-      && firstVisibleIdentityMatches;
+      && firstVisibleIdentityMatches
+      && unresolvedTransientCount === 0
+      && ownerlessTransientCount === 0
+      && publishedTransientCount === 0;
     const settledCountsAgree = (turnTotal === turnListTotal
       && turnListTotal === renderedTotal)
       || retainedCacheProjection;
@@ -3407,17 +3440,39 @@
   function pickAddedAnswerNode(node, answerSel) {
     if (!node || node.nodeType !== 1) return null;
     const el = node;
-    if (el.matches?.(answerSel)) return el;
+    if (el.matches?.(answerSel) && isEligibleHostAssistantNode(el)) return el;
     const role = String(el.getAttribute?.('data-message-author-role') || '').toLowerCase();
-    if (role === 'assistant') return el;
+    if (role === 'assistant' && isEligibleHostAssistantNode(el)) return el;
     const c1 = el.firstElementChild || null;
-    if (c1?.matches?.(answerSel)) return c1;
+    if (c1?.matches?.(answerSel) && isEligibleHostAssistantNode(c1)) return c1;
     const c2 = c1?.firstElementChild || null;
-    if (c2?.matches?.(answerSel)) return c2;
+    if (c2?.matches?.(answerSel) && isEligibleHostAssistantNode(c2)) return c2;
     const shouldScanDeep = (el.childElementCount || 0) <= 12
       || el.matches?.('[data-testid^="conversation-turn"], [data-testid="conversation-turns"], main');
     if (!shouldScanDeep || !el.querySelector) return null;
-    return el.querySelector(answerSel);
+    const candidates = Array.from(el.querySelectorAll?.(answerSel) || []);
+    return candidates.find((candidate) => isEligibleHostAssistantNode(candidate)) || null;
+  }
+
+  function isEligibleHostAssistantNode(node) {
+    if (!node || node.nodeType !== 1 || node.isConnected !== true) return false;
+    const role = String(node.getAttribute?.('data-message-author-role') || '').toLowerCase();
+    if (role !== 'assistant') return false;
+    try {
+      if (node.closest?.('[data-cgxui-owner], [data-h2o-owner]')) return false;
+      if (node.closest?.('[data-cgxui*="divider"], [data-cgxui*="title"], [data-cgxui*="mnmp"]')) return false;
+    } catch {}
+    const turnHost = node.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || null;
+    if (!turnHost || turnHost.isConnected !== true) return false;
+    try {
+      const root = convContainer();
+      if (root?.contains && !root.contains(turnHost)) return false;
+      if (node.hidden || turnHost.hidden || node.inert || turnHost.inert) return false;
+      if (node.closest?.('[hidden], [inert], [aria-hidden="true"], [data-selected="false"], [data-is-current="false"]')) return false;
+      const style = window.getComputedStyle?.(turnHost);
+      if (style?.display === 'none' || style?.visibility === 'hidden') return false;
+    } catch {}
+    return true;
   }
 
   function nodeContainsRealMessageOrTurn(node, answerSel = answersSelector()) {

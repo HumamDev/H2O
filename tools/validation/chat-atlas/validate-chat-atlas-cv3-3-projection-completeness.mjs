@@ -326,6 +326,8 @@ function partialDiagnostics(overrides = {}) {
       cachedCount: 38,
       liveCount: 3,
       outputCount: 38,
+      authoritativeLiveInput: true,
+      authoritativeLiveProjectedCount: 3,
       overlapCount: 3,
       sanitizedRows: 1,
       reason: 'cache-preserving-union',

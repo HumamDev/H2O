@@ -49,6 +49,7 @@ const dotsSource = `${sources.dots.slice(0, sources.dots.indexOf(dotsCut))}
   globalThis.__CV33_NO_ANSWER_DOTS__ = Object.freeze({
     mergeDotTurnRecord,
     resolveDotTurnRecord,
+    dotSurfaceQuestionWriteAllowed,
     resolveQaMiniMapSurfaceContext,
     repaintDotsForBtn,
     repaintDotsForAllMiniBtns,
@@ -103,6 +104,7 @@ class FakeElement {
     this.innerHTML = '';
     this.nodeType = 1;
     this.type = '';
+    this.metadataMutationCount = 0;
     this._listeners = new Map();
     this.dataset = new Proxy({}, {
       get: (_target, key) => this.getAttribute(dataAttrName(key)) ?? undefined,
@@ -129,11 +131,15 @@ class FakeElement {
     const key = String(name);
     const text = String(value);
     this.attributes.set(key, text);
+    this.metadataMutationCount += 1;
     if (key === 'class') this.className = text;
   }
   getAttribute(name) { return this.attributes.has(String(name)) ? this.attributes.get(String(name)) : null; }
   hasAttribute(name) { return this.attributes.has(String(name)); }
-  removeAttribute(name) { this.attributes.delete(String(name)); }
+  removeAttribute(name) {
+    this.metadataMutationCount += 1;
+    this.attributes.delete(String(name));
+  }
   appendChild(child) {
     if (!child) return child;
     child.remove?.();
@@ -417,6 +423,7 @@ function assertCleanNoAnswerRow(row, qId, turnNo = 1) {
 
 const results = [];
 let assertionCount = 0;
+let expectedH2OMetadataWrites = 0;
 async function fixture(name, fn) {
   try {
     const before = assertionCount;
@@ -549,6 +556,7 @@ await fixture('Highlight Dots repeated repaint never creates a NO ANSWER primary
   const qBtn = env.document.createElement('button');
   qBtn.setAttribute('data-cgxui', 'mnmp-qbtn');
   qBtn.setAttribute('data-cgxui-owner', 'mnmp');
+  qBtn.setAttribute('data-cgxui-owner', 'mnmp');
   qBtn.dataset.turnId = record.turnId;
   qBtn.dataset.questionId = record.qId;
   row.wrap.insertBefore(qBtn, row.btn);
@@ -567,6 +575,85 @@ await fixture('Highlight Dots repeated repaint never creates a NO ANSWER primary
   }
   const merged = env.api.mergeDotTurnRecord(null, { ...record, answerId: record.qId, primaryAId: record.turnId });
   check(String(merged?.answerId || merged?.primaryAId || ''), '');
+});
+
+await fixture('Highlight Dots clears qId from incompatible transient answer turn', () => {
+  const legitimateQId = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const orphanAnswerId = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+  const env = loadDots([answeredRecord(1, legitimateQId, '733fa31a-7d11-4ce5-b570-8ffa474670d4')]);
+  const row = makeMiniRow(env.document, {
+    wrap: {
+      turnId: `turn:a:${orphanAnswerId}`,
+      questionId: legitimateQId,
+      primaryAId: orphanAnswerId,
+    },
+    btn: {
+      id: `turn:a:${orphanAnswerId}`,
+      turnId: `turn:a:${orphanAnswerId}`,
+      primaryAId: orphanAnswerId,
+    },
+  });
+  const qBtn = env.document.createElement('button');
+  qBtn.setAttribute('data-cgxui', 'mnmp-qbtn');
+  qBtn.setAttribute('data-cgxui-owner', 'mnmp');
+  qBtn.dataset.turnId = `turn:a:${orphanAnswerId}`;
+  qBtn.dataset.questionId = legitimateQId;
+  row.wrap.insertBefore(qBtn, row.btn);
+  env.document.body.appendChild(row.wrap);
+  env.context.H2O_MM_turnById = new Map([[`turn:a:${orphanAnswerId}`, {
+    turnId: `turn:a:${orphanAnswerId}`,
+    qId: '',
+    questionId: '',
+    primaryAId: orphanAnswerId,
+    answerId: orphanAnswerId,
+    answerIds: [orphanAnswerId],
+    layer: 'current',
+    currentProof: 'transient-unverified',
+  }]]);
+  const beforeWrites = row.wrap.metadataMutationCount
+    + row.btn.metadataMutationCount
+    + qBtn.metadataMutationCount;
+  const resolved = env.api.resolveQaMiniMapSurfaceContext(row.wrap, row.btn);
+  const metadataWrites = row.wrap.metadataMutationCount
+    + row.btn.metadataMutationCount
+    + qBtn.metadataMutationCount
+    - beforeWrites;
+  expectedH2OMetadataWrites += metadataWrites;
+  check(resolved.questionId, '');
+  check(row.wrap.hasAttribute('data-question-id'), false);
+  check(qBtn.hasAttribute('data-question-id'), false);
+  check(env.api.dotSurfaceQuestionWriteAllowed(`turn:a:${orphanAnswerId}`, legitimateQId, orphanAnswerId), false);
+  check(metadataWrites, 8);
+});
+
+await fixture('Highlight Dots preserves qId for a proven compatible current turn', () => {
+  const qId = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const answerId = '733fa31a-7d11-4ce5-b570-8ffa474670d4';
+  const env = loadDots([answeredRecord(1, qId, answerId)]);
+  const row = makeMiniRow(env.document, {
+    wrap: { turnId: `turn:${qId}`, questionId: qId, primaryAId: answerId },
+    btn: { id: `turn:${qId}`, turnId: `turn:${qId}`, primaryAId: answerId },
+  });
+  const qBtn = env.document.createElement('button');
+  qBtn.setAttribute('data-cgxui', 'mnmp-qbtn');
+  qBtn.setAttribute('data-cgxui-owner', 'mnmp');
+  qBtn.dataset.turnId = `turn:${qId}`;
+  row.wrap.insertBefore(qBtn, row.btn);
+  env.document.body.appendChild(row.wrap);
+  env.context.H2O_MM_turnById = new Map([[`turn:${qId}`, {
+    turnId: `turn:${qId}`,
+    qId,
+    questionId: qId,
+    primaryAId: answerId,
+    answerId,
+    answerIds: [answerId],
+    layer: 'current',
+    currentProof: 'proven-current',
+  }]]);
+  const resolved = env.api.resolveQaMiniMapSurfaceContext(row.wrap, row.btn);
+  check(resolved.questionId, qId);
+  check(row.wrap.dataset.questionId, qId);
+  check(qBtn.dataset.questionId, qId);
 });
 
 async function engineContaminationFixture(name, surface) {
@@ -672,6 +759,8 @@ const report = {
     sourceSetterCalls: 0,
     navigationCalls: 0,
     userInteractionCalls: 0,
+    expectedH2OMetadataWrites,
+    forbiddenDomMutations: 0,
   },
   results,
 };
