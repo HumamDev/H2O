@@ -2954,6 +2954,37 @@
     };
   }
 
+  function readAuthoritativeCoreUniverse(detail = {}) {
+    let records = [];
+    try {
+      const list = W?.H2O?.turnRuntime?.listTurnRecords;
+      if (typeof list === 'function') records = list() || [];
+    } catch {
+      records = [];
+    }
+    const source = Array.isArray(records) ? records.filter(Boolean) : [];
+    let hash = 2166136261;
+    const sampled = source.slice(0, 512);
+    for (const row of sampled) {
+      const token = [
+        row?.turnNo || row?.idx || '',
+        row?.qId || row?.questionId || '',
+        row?.turnId || '',
+        row?.primaryAId || row?.answerId || '',
+      ].map((value) => String(value || '').trim()).join('|');
+      for (let index = 0; index < token.length; index += 1) {
+        hash ^= token.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+      }
+    }
+    const detailTotal = Math.max(0, Number(detail?.turnTotal || 0) || 0);
+    const count = source.length || detailTotal;
+    return {
+      count,
+      fingerprint: `${count}:${sampled.length}:${hash.toString(16).padStart(8, '0')}`,
+    };
+  }
+
   function readMiniMapIdentityAlignment(opts = {}) {
     let records = [];
     try {
@@ -3158,8 +3189,16 @@
     const turnTotal = Math.max(0, Number(detail?.turnTotal || 0) || 0);
     const syntheticCurrent = readPublishedSyntheticAnswerRows();
     if (syntheticCurrent.count > 0) {
-      if (syntheticCurrent.signature === S.syntheticCurrentReconcileSignature) return false;
-      S.syntheticCurrentReconcileSignature = syntheticCurrent.signature;
+      const universe = readAuthoritativeCoreUniverse(detail);
+      const reconciliationKey = [
+        syntheticCurrent.signature,
+        `version:${version}`,
+        `turns:${turnTotal}`,
+        `core:${universe.count}`,
+        `fingerprint:${universe.fingerprint}`,
+      ].join('|').slice(0, 960);
+      if (reconciliationKey === S.syntheticCurrentReconcileSignature) return false;
+      S.syntheticCurrentReconcileSignature = reconciliationKey;
       const scheduled = scheduleRebuild('core:turn-updated:synthetic-current-reconcile');
       if (scheduled) {
         perfBucket.coreTurnUpdatedRebuildCount = Number(perfBucket.coreTurnUpdatedRebuildCount || 0) + 1;

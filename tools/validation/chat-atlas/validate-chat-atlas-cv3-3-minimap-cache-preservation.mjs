@@ -77,6 +77,7 @@ const engineSource = replaceUnique(
     pickAddedAnswerNode,
     collectMutationSignals,
     readPublishedSyntheticAnswerRows,
+    readAuthoritativeCoreUniverse,
     onCoreTurnUpdated,
     state: S,
   });`,
@@ -1527,9 +1528,47 @@ await fixture('exact orphan is excluded from authoritative current publication',
   const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, orphan], { coreProjectedTotal: 3 });
   check(merged.list.length, 3);
   check(merged.list.some((row) => row.primaryAId === answerId), false);
-  check(merged.decision.ownerlessTransientExcludedCount > 0, true);
+  check(merged.decision.liveCount, 4);
+  check(merged.decision.authoritativeLiveProjectedCount, 3);
+  check(merged.decision.ownerlessTransientExcludedCount, 1);
+  check(merged.decision.syntheticRowsExcludedCount, 1);
+  check(merged.decision.syntheticRowsPendingCount, 0);
+  check(merged.decision.syntheticPublishedCurrentCount, 0);
   check(merged.decision.reason, 'ownerless-synthetic-excluded');
   check(merged.decision.bijectionProven, false);
+  const snapshot = env.api.buildCanonicalSnapshotFromTurns(merged.list);
+  check(snapshot.list.length, 3);
+  check(snapshot.byId.size, 3);
+  check(snapshot.byAId.size, 3);
+  const { col } = installCoreUi(env);
+  env.api.ensureTurnButtons(merged.list);
+  check(col.querySelectorAll('[data-cgxui="mnmp-btn"]').length, 3);
+});
+
+await fixture('exact incident qId-less Core self-row cannot establish ownership', () => {
+  const live = rows(3);
+  const answerId = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+  const synthetic = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const env = loadCore([...live, synthetic]);
+  check(env.api.evaluateTransientCurrentOwnership(synthetic), {
+    owned: false,
+    basis: 'none',
+    qId: null,
+    answerId,
+    hostConnected: false,
+  });
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, synthetic], {
+    source: 'core-runtime',
+    coreProjectedTotal: 3,
+  });
+  check(merged.list.length, 3);
+  check(merged.decision.liveCount, 4);
+  check(merged.decision.authoritativeLiveProjectedCount, 3);
+  check(merged.decision.independentlyOwnedTransientCount, 0);
+  check(merged.decision.syntheticRowsPendingCount, 0);
+  check(merged.decision.ownerlessTransientExcludedCount, 1);
+  check(merged.decision.syntheticRowsExcludedCount, 1);
+  check(merged.decision.syntheticPublishedCurrentCount, 0);
 });
 
 await fixture('internal turn-list persistence cannot establish live ownership or counts', () => {
@@ -1562,7 +1601,10 @@ await fixture('connected transient stays pending and cannot prove complete overl
   const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, transient], { coreProjectedTotal: 4 });
   check(merged.list.length, 4);
   check(merged.decision.reason, 'synthetic-boundary-pending');
-  check(merged.decision.unresolvedTransientCount > 0, true);
+  check(merged.decision.independentlyOwnedTransientCount, 1);
+  check(merged.decision.unresolvedTransientCount, 1);
+  check(merged.decision.syntheticRowsPendingCount, 1);
+  check(merged.decision.ownerlessTransientExcludedCount, 0);
   check(merged.decision.authoritativeLiveProjectedCount, 3);
   check(merged.decision.syntheticPublishedCurrentCount, 1);
   check(merged.decision.bijectionProven, false);
@@ -1571,6 +1613,22 @@ await fixture('connected transient stays pending and cannot prove complete overl
   check(persisted.status, 'transient-pending-ownership');
   check(persisted.writesAttempted, 0);
   check(storedStrings(env), before);
+
+  env.document.body.children.find((node) => (
+    node.getAttribute?.('data-testid') === 'conversation-turn'
+  ))?.remove();
+  const ownerless = env.api.mergeTurnListWithCache('fixture-chat', [...live, transient], { coreProjectedTotal: 3 });
+  check(ownerless.list.length, 3);
+  check(ownerless.decision.independentlyOwnedTransientCount, 0);
+  check(ownerless.decision.syntheticRowsPendingCount, 0);
+  check(ownerless.decision.ownerlessTransientExcludedCount, 1);
+  check(ownerless.decision.syntheticRowsExcludedCount, 1);
+  const ownerlessBefore = storedStrings(env);
+  const ownerlessPersisted = env.api.saveTurnCache('fixture-chat', [...live, transient]);
+  check(ownerlessPersisted.status, 'malformed-membership');
+  check(ownerlessPersisted.reason, 'ownerless-synthetic-current');
+  check(ownerlessPersisted.writesAttempted, 0);
+  check(storedStrings(env), ownerlessBefore);
 });
 
 await fixture('ownerless transient persistence is refused byte-identically', () => {
@@ -1639,16 +1697,47 @@ await fixture('temporary qId-less Core answer cannot self-promote by turn or ans
   check(byTurn.api.isSyntheticAnswerOnlyCurrentRow(projected), true);
   check(projected.currentProof, 'transient-unverified');
   check(byTurn.api.deriveLiveCurrentProof(synthetic), 'transient-unverified');
-  check(byTurn.api.evaluateTransientCurrentOwnership(synthetic).qId, null);
+  check(byTurn.api.evaluateTransientCurrentOwnership(synthetic), {
+    owned: false,
+    basis: 'none',
+    qId: null,
+    answerId,
+    hostConnected: false,
+  });
 
   const byAnswer = loadCore([{
     ...synthetic,
     currentProof: undefined,
     turnId: 'turn:a:temporary-other-shell',
   }]);
-  check(byAnswer.api.evaluateTransientCurrentOwnership(synthetic).basis, 'canonical-current-member');
+  check(byAnswer.api.evaluateTransientCurrentOwnership(synthetic).owned, false);
   check(byAnswer.api.deriveLiveCurrentProof({ ...synthetic, currentProof: 'retained-proven-current' }), 'transient-unverified');
   check(byAnswer.api.deriveLiveCurrentProof({ ...synthetic, currentProof: 'legacy-unverified' }), 'transient-unverified');
+});
+
+await fixture('qId-less ledger and historical aliases cannot own a synthetic answer row', () => {
+  const answerId = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+  const synthetic = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
+  const qIdLessLedger = ledgerMember('', [answerId], 'fixture-qidless-ledger');
+  qIdLessLedger.question = { qId: null, currentQId: null, currentAliases: [] };
+  const ledger = loadCore([], { ledgerMembers: [qIdLessLedger] });
+  check(ledger.api.evaluateTransientCurrentOwnership(synthetic).owned, false);
+
+  const aliasOnlyCanonical = answeredRow(1, 'fixture-current-answer', 'fixture-current-question');
+  aliasOnlyCanonical.answerIds = ['fixture-current-answer'];
+  aliasOnlyCanonical.currentAnswerIds = ['fixture-current-answer'];
+  aliasOnlyCanonical.answerAliases = [answerId];
+  const canonical = loadCore([aliasOnlyCanonical]);
+  check(canonical.api.evaluateTransientCurrentOwnership(synthetic).owned, false);
+
+  const aliasOnlyLedger = ledgerMember(
+    'fixture-ledger-question',
+    ['fixture-ledger-current-answer'],
+    'fixture-ledger-current',
+  );
+  aliasOnlyLedger.answer.currentAliases.push(answerId);
+  const ledgerAlias = loadCore([], { ledgerMembers: [aliasOnlyLedger] });
+  check(ledgerAlias.api.evaluateTransientCurrentOwnership(synthetic).owned, false);
 });
 
 await fixture('cached synthetic rows are revalidated for every stored current-proof label', () => {
@@ -1739,7 +1828,8 @@ await fixture('unique qId-bearing owner reconciles exact boundary identities and
 await fixture('synthetic proof is revoked when its temporary owner disappears', () => {
   const answerId = 'fixture-temporary-owner-answer';
   const synthetic = withCurrentProof(answeredRow(4, answerId, ''), 'proven-current');
-  const env = loadCore([{ ...synthetic, currentProof: undefined }]);
+  const owner = answeredRow(4, answerId, 'fixture-temporary-owner-question');
+  const env = loadCore([owner]);
   check(env.api.evaluateTransientCurrentOwnership(synthetic).owned, true);
   env.holder.records = [];
   const repaired = env.api.repairCacheCurrentMembership([synthetic], { liveRows: [] });
@@ -1799,7 +1889,7 @@ await fixture('repeated reload cannot resurrect a previously proven synthetic ro
   }
 });
 
-await fixture('Engine reconciles any published synthetic proof once per unresolved identity set', () => {
+await fixture('Engine reconciliation key tracks synthetic identity and authoritative Core universe', () => {
   const live = rows(3);
   const synthetic = withCurrentProof(answeredRow(4, 'fixture-engine-proven-synthetic', ''), 'proven-current');
   let published = [...live, synthetic];
@@ -1815,7 +1905,7 @@ await fixture('Engine reconciles any published synthetic proof once per unresolv
     }),
     scheduleRebuild: () => { scheduleCalls += 1; return true; },
   };
-  const engine = loadEngine(coreApi, live);
+  const engine = loadEngine(coreApi, [...live, synthetic]);
   const addButton = (row) => {
     const btn = engine.document.createElement('button');
     btn.setAttribute('data-cgxui', 'mnmp-btn');
@@ -1832,12 +1922,32 @@ await fixture('Engine reconciles any published synthetic proof once per unresolv
   let syntheticBtn = addButton(synthetic);
   engine.api.state.running = true;
   check(engine.api.readPublishedSyntheticAnswerRows().count, 1);
-  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 3 }), true);
+  check(engine.api.readAuthoritativeCoreUniverse({ turnTotal: 4 }).count, 4);
+  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 4 }), true);
   check(scheduleCalls, 1);
-  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 3 }), false);
+  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 4 }), false);
   check(scheduleCalls, 1);
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 4 }), true);
+  check(scheduleCalls, 2);
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 4 }), false);
+  check(scheduleCalls, 2);
+
+  engine.holder.records = [
+    live[0],
+    { ...live[1], qId: 'fixture-authoritative-fingerprint-change' },
+    live[2],
+    synthetic,
+  ];
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 4 }), true);
+  check(scheduleCalls, 3);
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 4 }), false);
+  check(scheduleCalls, 3);
+
+  engine.holder.records = live.slice();
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 3 }), true);
+  check(scheduleCalls, 4);
   check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 3 }), false);
-  check(scheduleCalls, 1);
+  check(scheduleCalls, 4);
   published = live.slice();
   syntheticBtn.remove();
   btnByIdentity.delete(synthetic.turnId);
@@ -1846,7 +1956,7 @@ await fixture('Engine reconciles any published synthetic proof once per unresolv
   published = [...live, synthetic];
   syntheticBtn = addButton(synthetic);
   check(engine.api.onCoreTurnUpdated({ version: 4, turnTotal: 3 }), true);
-  check(scheduleCalls, 2);
+  check(scheduleCalls, 5);
 });
 
 await fixture('target NO ANSWER remains clean in either cache layer', () => {

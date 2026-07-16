@@ -2595,6 +2595,72 @@ function UM_PUBLIC() {
     return !!syntheticAnswerOnlyCurrentId(row);
   }
 
+  const TRANSIENT_DIAGNOSTIC_COUNT_FIELDS = Object.freeze([
+    'transientRowsExcluded',
+    'independentlyOwnedTransientCount',
+    'ownerlessTransientExcludedCount',
+    'unresolvedTransientCount',
+    'syntheticProofRevocationCount',
+    'syntheticRowsReconciledCount',
+    'syntheticRowsExcludedCount',
+    'syntheticRowsPendingCount',
+    'syntheticOwnerAmbiguousCount',
+  ]);
+
+  function transientDiagnosticRowIdentity(row) {
+    const syntheticId = syntheticAnswerOnlyCurrentId(row);
+    if (syntheticId) return `synthetic:${syntheticId}`;
+    const qId = cacheRowQuestionId(row);
+    if (qId) return `question:${qId}`;
+    const turnId = cacheRowTurnId(row);
+    if (turnId) return `turn:${turnId}`;
+    const answerId = String(row?.primaryAId || row?.answerId || '').trim();
+    return answerId ? `answer:${answerId}` : '';
+  }
+
+  function createTransientDiagnosticClaims() {
+    return Object.fromEntries(
+      TRANSIENT_DIAGNOSTIC_COUNT_FIELDS.map((field) => [field, new Set()]),
+    );
+  }
+
+  function noteTransientDiagnosticClaim(claims, field, row) {
+    const key = transientDiagnosticRowIdentity(row);
+    if (!key || !claims?.[field]) return false;
+    claims[field].add(key);
+    return true;
+  }
+
+  function mergeTransientDiagnosticClaims(target, ...sources) {
+    for (const source of sources) {
+      const claims = source?._transientDiagnosticClaims || source;
+      if (!claims) continue;
+      for (const field of TRANSIENT_DIAGNOSTIC_COUNT_FIELDS) {
+        const values = claims[field];
+        if (!values || !target?.[field]) continue;
+        for (const value of values) target[field].add(value);
+      }
+    }
+    return target;
+  }
+
+  function applyTransientDiagnosticCounts(target, claims) {
+    for (const field of TRANSIENT_DIAGNOSTIC_COUNT_FIELDS) {
+      target[field] = claims?.[field]?.size || 0;
+    }
+    return target;
+  }
+
+  function attachTransientDiagnosticClaims(target, claims) {
+    try {
+      Object.defineProperty(target, '_transientDiagnosticClaims', {
+        value: claims,
+        configurable: true,
+      });
+    } catch {}
+    return target;
+  }
+
   function currentLedgerMembers() {
     const api = getTurnRuntimeApi();
     try {
@@ -2697,6 +2763,32 @@ function UM_PUBLIC() {
     return !!answerIds.size && Array.from(answerIds).some((id) => memberAnswerIds.has(id));
   }
 
+  function exactSyntheticCurrentRecordOwner(record, row) {
+    const syntheticId = syntheticAnswerOnlyCurrentId(row);
+    const qId = String(record?.qId || record?.questionId || '').trim();
+    if (!syntheticId || !qId) return false;
+    const currentAnswerIds = new Set([
+      record?.primaryAId,
+      record?.answerId,
+      ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ...(Array.isArray(record?.currentAnswerIds) ? record.currentAnswerIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    return currentAnswerIds.has(syntheticId);
+  }
+
+  function exactSyntheticCurrentLedgerOwner(member, row) {
+    const syntheticId = syntheticAnswerOnlyCurrentId(row);
+    const qId = String(
+      member?.question?.currentQId || member?.question?.qId || ''
+    ).trim();
+    if (!syntheticId || !qId) return false;
+    const currentAnswerIds = new Set([
+      member?.answer?.primaryAId,
+      ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    return currentAnswerIds.has(syntheticId);
+  }
+
   function isHostOwnedControl(el) {
     if (!el) return true;
     try {
@@ -2724,7 +2816,8 @@ function UM_PUBLIC() {
   }
 
   function connectedSelectedHostOwners(row) {
-    const answerIds = cacheRowAnswerIds(row);
+    const syntheticId = syntheticAnswerOnlyCurrentId(row);
+    const answerIds = syntheticId ? [syntheticId] : cacheRowAnswerIds(row);
     if (!answerIds.length) return [];
     const owners = [];
     const seen = new Set();
@@ -2750,7 +2843,12 @@ function UM_PUBLIC() {
   function evaluateTransientCurrentOwnership(row) {
     const rowQId = cacheRowQuestionId(row) || null;
     const answerId = String(row?.primaryAId || row?.answerId || cacheRowAnswerIds(row)[0] || '').trim() || null;
-    const canonicalOwners = currentCanonicalRecords().filter((record) => exactCurrentRecordIdentity(record, row));
+    const syntheticId = syntheticAnswerOnlyCurrentId(row);
+    const canonicalOwners = currentCanonicalRecords().filter((record) => (
+      syntheticId
+        ? exactSyntheticCurrentRecordOwner(record, row)
+        : exactCurrentRecordIdentity(record, row)
+    ));
     if (canonicalOwners.length > 1) {
       return {
         owned: false,
@@ -2761,7 +2859,11 @@ function UM_PUBLIC() {
         ambiguity: 'canonical-owner-ambiguous',
       };
     }
-    const ledgerOwners = currentLedgerMembers().filter((member) => exactCurrentLedgerIdentity(member, row));
+    const ledgerOwners = currentLedgerMembers().filter((member) => (
+      syntheticId
+        ? exactSyntheticCurrentLedgerOwner(member, row)
+        : exactCurrentLedgerIdentity(member, row)
+    ));
     if (ledgerOwners.length > 1) {
       return {
         owned: false,
@@ -2800,15 +2902,6 @@ function UM_PUBLIC() {
         owned: true,
         basis: 'ledger-current-member',
         qId: ledgerQId,
-        answerId,
-        hostConnected: false,
-      };
-    }
-    if (canonicalOwners.length === 1) {
-      return {
-        owned: true,
-        basis: 'canonical-current-member',
-        qId: rowQId,
         answerId,
         hostConnected: false,
       };
@@ -3305,15 +3398,7 @@ function UM_PUBLIC() {
     let repairedRows = splitRepair.reconciledCount;
     let demotedRows = 0;
     let duplicateCurrentQIdCount = 0;
-    let transientRowsExcluded = 0;
-    let independentlyOwnedTransientCount = 0;
-    let ownerlessTransientExcludedCount = 0;
-    let unresolvedTransientCount = 0;
-    let syntheticProofRevocationCount = 0;
-    let syntheticRowsReconciledCount = 0;
-    let syntheticRowsExcludedCount = 0;
-    let syntheticRowsPendingCount = 0;
-    let syntheticOwnerAmbiguousCount = 0;
+    const diagnosticClaims = createTransientDiagnosticClaims();
 
     const demote = (index, reason) => {
       const row = next[index];
@@ -3339,12 +3424,12 @@ function UM_PUBLIC() {
       if (reconciled) {
         next[index] = reconciled;
         repairedRows += 1;
-        syntheticRowsReconciledCount += 1;
+        noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsReconciledCount', row);
         continue;
       }
       const priorProof = cacheRowCurrentProof(row);
       if (priorProof === CURRENT_PROOF_PROVEN || priorProof === CURRENT_PROOF_RETAINED) {
-        syntheticProofRevocationCount += 1;
+        noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticProofRevocationCount', row);
       }
       if (priorProof !== CURRENT_PROOF_TRANSIENT) repairedRows += 1;
       next[index] = {
@@ -3450,21 +3535,25 @@ function UM_PUBLIC() {
       const synthetic = isSyntheticAnswerOnlyCurrentRow(row);
       const ownership = evaluateTransientCurrentOwnership(row);
       if (!ownership.owned || ownership.ambiguity) {
-        if (ownership.ambiguity) syntheticOwnerAmbiguousCount += synthetic ? 1 : 0;
+        if (ownership.ambiguity && synthetic) {
+          noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticOwnerAmbiguousCount', row);
+        }
         if (demote(index, synthetic
           ? (ownership.ambiguity ? 'synthetic-owner-ambiguous' : 'ownerless-synthetic-excluded')
           : 'ownerless-transient-current')) {
-          transientRowsExcluded += 1;
-          ownerlessTransientExcludedCount += 1;
-          if (synthetic) syntheticRowsExcludedCount += 1;
+          noteTransientDiagnosticClaim(diagnosticClaims, 'transientRowsExcluded', row);
+          noteTransientDiagnosticClaim(diagnosticClaims, 'ownerlessTransientExcludedCount', row);
+          if (synthetic) {
+            noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsExcludedCount', row);
+          }
         }
         continue;
       }
-      independentlyOwnedTransientCount += 1;
-      unresolvedTransientCount += 1;
+      noteTransientDiagnosticClaim(diagnosticClaims, 'independentlyOwnedTransientCount', row);
+      noteTransientDiagnosticClaim(diagnosticClaims, 'unresolvedTransientCount', row);
       const liveIndex = findCacheRowIndex(liveRows, row, { layer: 'current' });
       if (liveIndex >= 0) {
-        if (synthetic) syntheticRowsPendingCount += 1;
+        if (synthetic) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsPendingCount', row);
         continue;
       }
       const splitLiveMatches = liveRows.filter((liveRow) => (
@@ -3473,12 +3562,12 @@ function UM_PUBLIC() {
         && !!cacheSplitRoleOwnership(row, liveRow)
       ));
       if (splitLiveMatches.length === 1) {
-        if (synthetic) syntheticRowsPendingCount += 1;
+        if (synthetic) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsPendingCount', row);
         continue;
       }
       if (demote(index, synthetic ? 'synthetic-boundary-off-dom' : 'transient-unverified-off-dom')) {
-        transientRowsExcluded += 1;
-        if (synthetic) syntheticRowsExcludedCount += 1;
+        noteTransientDiagnosticClaim(diagnosticClaims, 'transientRowsExcluded', row);
+        if (synthetic) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsExcludedCount', row);
       }
     }
 
@@ -3493,7 +3582,7 @@ function UM_PUBLIC() {
     }
     const currentRows = next.filter((row) => cacheRowLayer(row) === 'current');
     const historyRows = next.filter((row) => cacheRowLayer(row) === 'history');
-    return {
+    const result = {
       rows: next,
       currentRows,
       historyRows,
@@ -3502,16 +3591,9 @@ function UM_PUBLIC() {
       duplicateCurrentQIdCount,
       splitRoleReconciledCount: splitRepair.reconciledCount,
       splitRoleAmbiguousCount: splitRepair.ambiguousCount,
-      transientRowsExcluded,
-      independentlyOwnedTransientCount,
-      ownerlessTransientExcludedCount,
-      unresolvedTransientCount,
-      syntheticProofRevocationCount,
-      syntheticRowsReconciledCount,
-      syntheticRowsExcludedCount,
-      syntheticRowsPendingCount,
-      syntheticOwnerAmbiguousCount,
     };
+    applyTransientDiagnosticCounts(result, diagnosticClaims);
+    return attachTransientDiagnosticClaims(result, diagnosticClaims);
   }
 
   function normalizeCacheTurnRowsDetailed(rows, opts = {}) {
@@ -3535,7 +3617,7 @@ function UM_PUBLIC() {
       }
     }
     if (opts?.repairMembership === false) {
-      return {
+      const result = {
         rows: out,
         currentRows: out.filter((row) => cacheRowLayer(row) === 'current'),
         historyRows: out.filter((row) => cacheRowLayer(row) === 'history'),
@@ -3555,12 +3637,17 @@ function UM_PUBLIC() {
         syntheticRowsPendingCount: 0,
         syntheticOwnerAmbiguousCount: 0,
       };
+      return attachTransientDiagnosticClaims(result, createTransientDiagnosticClaims());
     }
     const repaired = repairCacheCurrentMembership(out, opts);
-    return {
+    const result = {
       ...repaired,
       sanitizedRows: sanitizedRows + repaired.repairedRows,
     };
+    return attachTransientDiagnosticClaims(
+      result,
+      repaired._transientDiagnosticClaims || createTransientDiagnosticClaims(),
+    );
   }
 
   function normalizeCacheTurnRows(rows, opts = {}) {
@@ -3808,25 +3895,34 @@ function UM_PUBLIC() {
     if (lastActiveTurnId) meta.lastActiveTurnId = lastActiveTurnId;
     if (lastActiveAnswerId) meta.lastActiveAnswerId = lastActiveAnswerId;
 
+    const normalizationSummary = {
+      sanitizedRows: Number(normalization.sanitizedRows || 0),
+      repairedRows: Number(normalization.repairedRows || 0),
+      demotedRows: Number(normalization.demotedRows || 0),
+      duplicateCurrentQIdCount: Number(normalization.duplicateCurrentQIdCount || 0),
+      splitRoleReconciledCount: Number(normalization.splitRoleReconciledCount || 0),
+      splitRoleAmbiguousCount: Number(normalization.splitRoleAmbiguousCount || 0),
+      transientRowsExcluded: Number(normalization.transientRowsExcluded || 0),
+      independentlyOwnedTransientCount: Number(normalization.independentlyOwnedTransientCount || 0),
+      ownerlessTransientExcludedCount: Number(normalization.ownerlessTransientExcludedCount || 0),
+      unresolvedTransientCount: Number(normalization.unresolvedTransientCount || 0),
+      syntheticProofRevocationCount: Number(normalization.syntheticProofRevocationCount || 0),
+      syntheticRowsReconciledCount: Number(normalization.syntheticRowsReconciledCount || 0),
+      syntheticRowsExcludedCount: Number(normalization.syntheticRowsExcludedCount || 0),
+      syntheticRowsPendingCount: Number(normalization.syntheticRowsPendingCount || 0),
+      syntheticOwnerAmbiguousCount: Number(normalization.syntheticOwnerAmbiguousCount || 0),
+    };
+    attachTransientDiagnosticClaims(
+      normalizationSummary,
+      normalization._transientDiagnosticClaims || createTransientDiagnosticClaims(),
+    );
+
     return {
       meta,
       turns,
       currentTurns,
       historyTurns,
-      normalization: {
-        sanitizedRows: Number(normalization.sanitizedRows || 0),
-        repairedRows: Number(normalization.repairedRows || 0),
-        demotedRows: Number(normalization.demotedRows || 0),
-        duplicateCurrentQIdCount: Number(normalization.duplicateCurrentQIdCount || 0),
-        splitRoleReconciledCount: Number(normalization.splitRoleReconciledCount || 0),
-        splitRoleAmbiguousCount: Number(normalization.splitRoleAmbiguousCount || 0),
-        transientRowsExcluded: Number(normalization.transientRowsExcluded || 0),
-        syntheticProofRevocationCount: Number(normalization.syntheticProofRevocationCount || 0),
-        syntheticRowsReconciledCount: Number(normalization.syntheticRowsReconciledCount || 0),
-        syntheticRowsExcludedCount: Number(normalization.syntheticRowsExcludedCount || 0),
-        syntheticRowsPendingCount: Number(normalization.syntheticRowsPendingCount || 0),
-        syntheticOwnerAmbiguousCount: Number(normalization.syntheticOwnerAmbiguousCount || 0),
-      },
+      normalization: normalizationSummary,
     };
   }
 
@@ -4562,11 +4658,7 @@ function UM_PUBLIC() {
   }
 
   function prepareLiveCurrentRows(list = []) {
-    let ownerlessTransientExcludedCount = 0;
-    let syntheticProofRevocationCount = 0;
-    let syntheticRowsReconciledCount = 0;
-    let syntheticRowsExcludedCount = 0;
-    let syntheticOwnerAmbiguousCount = 0;
+    const diagnosticClaims = createTransientDiagnosticClaims();
     const candidates = (Array.isArray(list) ? list : []).map((row) => {
       const synthetic = isSyntheticAnswerOnlyCurrentRow(row);
       const priorProof = cacheRowCurrentProof(row);
@@ -4613,17 +4705,18 @@ function UM_PUBLIC() {
           || claimCounts.get(candidate.claim) !== 1
         )
       ) {
-        ownerlessTransientExcludedCount += 1;
+        noteTransientDiagnosticClaim(diagnosticClaims, 'transientRowsExcluded', candidate.row);
+        noteTransientDiagnosticClaim(diagnosticClaims, 'ownerlessTransientExcludedCount', candidate.row);
         if (candidate.synthetic) {
-          syntheticRowsExcludedCount += 1;
+          noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsExcludedCount', candidate.row);
           if (
             candidate.ownership?.ambiguity
             || (candidate.claim && claimCounts.get(candidate.claim) !== 1)
-          ) syntheticOwnerAmbiguousCount += 1;
+          ) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticOwnerAmbiguousCount', candidate.row);
           if (
             candidate.priorProof === CURRENT_PROOF_PROVEN
             || candidate.priorProof === CURRENT_PROOF_RETAINED
-          ) syntheticProofRevocationCount += 1;
+          ) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticProofRevocationCount', candidate.row);
         }
         return null;
       }
@@ -4631,7 +4724,9 @@ function UM_PUBLIC() {
       const currentProof = candidate.reconciled
         ? CURRENT_PROOF_PROVEN
         : candidate.currentProof;
-      if (candidate.reconciled) syntheticRowsReconciledCount += 1;
+      if (candidate.reconciled) {
+        noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsReconciledCount', candidate.row);
+      }
       if (
         candidate.synthetic
         && !candidate.reconciled
@@ -4639,7 +4734,7 @@ function UM_PUBLIC() {
           candidate.priorProof === CURRENT_PROOF_PROVEN
           || candidate.priorProof === CURRENT_PROOF_RETAINED
         )
-      ) syntheticProofRevocationCount += 1;
+      ) noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticProofRevocationCount', candidate.row);
       return {
         ...row,
         layer: 'current',
@@ -4648,7 +4743,8 @@ function UM_PUBLIC() {
       };
     }).filter(Boolean);
     const normalized = normalizeCacheTurnRowsDetailed(rawRows, { liveRows: rawRows });
-    return {
+    mergeTransientDiagnosticClaims(diagnosticClaims, normalized);
+    const result = {
       rows: normalized.rows,
       currentRows: normalized.currentRows,
       historyRows: normalized.historyRows,
@@ -4657,17 +4753,10 @@ function UM_PUBLIC() {
       duplicateCurrentQIdCount: normalized.duplicateCurrentQIdCount,
       splitRoleReconciledCount: normalized.splitRoleReconciledCount,
       splitRoleAmbiguousCount: normalized.splitRoleAmbiguousCount,
-      transientRowsExcluded: normalized.transientRowsExcluded + ownerlessTransientExcludedCount,
-      independentlyOwnedTransientCount: normalized.independentlyOwnedTransientCount,
-      ownerlessTransientExcludedCount: normalized.ownerlessTransientExcludedCount + ownerlessTransientExcludedCount,
-      unresolvedTransientCount: normalized.unresolvedTransientCount,
-      syntheticProofRevocationCount: normalized.syntheticProofRevocationCount + syntheticProofRevocationCount,
-      syntheticRowsReconciledCount: normalized.syntheticRowsReconciledCount + syntheticRowsReconciledCount,
-      syntheticRowsExcludedCount: normalized.syntheticRowsExcludedCount + syntheticRowsExcludedCount,
-      syntheticRowsPendingCount: normalized.syntheticRowsPendingCount,
-      syntheticOwnerAmbiguousCount: normalized.syntheticOwnerAmbiguousCount + syntheticOwnerAmbiguousCount,
       rawCount: Array.isArray(list) ? list.filter(Boolean).length : 0,
     };
+    applyTransientDiagnosticCounts(result, diagnosticClaims);
+    return attachTransientDiagnosticClaims(result, diagnosticClaims);
   }
 
   function mergeTurnListWithCache(chatId, list, evidence = null) {
@@ -4694,6 +4783,8 @@ function UM_PUBLIC() {
     const cachedRows = Array.isArray(cached?.turns) ? cached.turns : [];
     const cachedCurrentRows = Array.isArray(cached?.currentTurns) ? cached.currentTurns : [];
     const cachedHistoryRows = Array.isArray(cached?.historyTurns) ? cached.historyTurns : [];
+    const diagnosticClaims = createTransientDiagnosticClaims();
+    mergeTransientDiagnosticClaims(diagnosticClaims, cached?.normalization, preparedLive);
     const decision = {
       accepted: true,
       mode: cachedRows.length ? 'union' : 'live-wins',
@@ -4722,25 +4813,20 @@ function UM_PUBLIC() {
         + Number(preparedLive.splitRoleReconciledCount || 0),
       splitRoleAmbiguousCount: Number(cached?.normalization?.splitRoleAmbiguousCount || 0)
         + Number(preparedLive.splitRoleAmbiguousCount || 0),
-      transientRowsExcluded: Number(cached?.normalization?.transientRowsExcluded || 0)
-        + Number(preparedLive.transientRowsExcluded || 0),
-      independentlyOwnedTransientCount: Number(preparedLive.independentlyOwnedTransientCount || 0),
-      ownerlessTransientExcludedCount: Number(preparedLive.ownerlessTransientExcludedCount || 0),
-      unresolvedTransientCount: Number(preparedLive.unresolvedTransientCount || 0),
-      syntheticProofRevocationCount: Number(cached?.normalization?.syntheticProofRevocationCount || 0)
-        + Number(preparedLive.syntheticProofRevocationCount || 0),
-      syntheticRowsReconciledCount: Number(cached?.normalization?.syntheticRowsReconciledCount || 0)
-        + Number(preparedLive.syntheticRowsReconciledCount || 0),
-      syntheticRowsExcludedCount: Number(cached?.normalization?.syntheticRowsExcludedCount || 0)
-        + Number(preparedLive.syntheticRowsExcludedCount || 0),
-      syntheticRowsPendingCount: Number(cached?.normalization?.syntheticRowsPendingCount || 0)
-        + Number(preparedLive.syntheticRowsPendingCount || 0),
-      syntheticOwnerAmbiguousCount: Number(cached?.normalization?.syntheticOwnerAmbiguousCount || 0)
-        + Number(preparedLive.syntheticOwnerAmbiguousCount || 0),
+      transientRowsExcluded: 0,
+      independentlyOwnedTransientCount: 0,
+      ownerlessTransientExcludedCount: 0,
+      unresolvedTransientCount: 0,
+      syntheticProofRevocationCount: 0,
+      syntheticRowsReconciledCount: 0,
+      syntheticRowsExcludedCount: 0,
+      syntheticRowsPendingCount: 0,
+      syntheticOwnerAmbiguousCount: 0,
       syntheticPublishedCurrentCount: liveCurrentRows.length - authoritativeLogicalLiveCount,
       bijectionProven: false,
       reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
+    applyTransientDiagnosticCounts(decision, diagnosticClaims);
     if (!cachedRows.length) {
       const retained = preparedLive.rows.map(cacheRowToTurn).filter(Boolean);
       const repaired = repairCacheCurrentMembership(retained, { liveRows: liveCurrentRows });
@@ -4758,15 +4844,8 @@ function UM_PUBLIC() {
       decision.demotedRows += repaired.demotedRows;
       decision.splitRoleReconciledCount += Number(repaired.splitRoleReconciledCount || 0);
       decision.splitRoleAmbiguousCount += Number(repaired.splitRoleAmbiguousCount || 0);
-      decision.transientRowsExcluded += Number(repaired.transientRowsExcluded || 0);
-      decision.independentlyOwnedTransientCount += Number(repaired.independentlyOwnedTransientCount || 0);
-      decision.ownerlessTransientExcludedCount += Number(repaired.ownerlessTransientExcludedCount || 0);
-      decision.unresolvedTransientCount += Number(repaired.unresolvedTransientCount || 0);
-      decision.syntheticProofRevocationCount += Number(repaired.syntheticProofRevocationCount || 0);
-      decision.syntheticRowsReconciledCount += Number(repaired.syntheticRowsReconciledCount || 0);
-      decision.syntheticRowsExcludedCount += Number(repaired.syntheticRowsExcludedCount || 0);
-      decision.syntheticRowsPendingCount += Number(repaired.syntheticRowsPendingCount || 0);
-      decision.syntheticOwnerAmbiguousCount += Number(repaired.syntheticOwnerAmbiguousCount || 0);
+      mergeTransientDiagnosticClaims(diagnosticClaims, repaired);
+      applyTransientDiagnosticCounts(decision, diagnosticClaims);
       decision.syntheticPublishedCurrentCount = published
         .filter((row) => isSyntheticAnswerOnlyCurrentRow(row)).length;
       if (repaired.historyRows.length) {
@@ -4964,15 +5043,8 @@ function UM_PUBLIC() {
     decision.demotedRows += repaired.demotedRows;
     decision.splitRoleReconciledCount += Number(repaired.splitRoleReconciledCount || 0);
     decision.splitRoleAmbiguousCount += Number(repaired.splitRoleAmbiguousCount || 0);
-    decision.transientRowsExcluded += Number(repaired.transientRowsExcluded || 0);
-    decision.independentlyOwnedTransientCount += Number(repaired.independentlyOwnedTransientCount || 0);
-    decision.ownerlessTransientExcludedCount += Number(repaired.ownerlessTransientExcludedCount || 0);
-    decision.unresolvedTransientCount += Number(repaired.unresolvedTransientCount || 0);
-    decision.syntheticProofRevocationCount += Number(repaired.syntheticProofRevocationCount || 0);
-    decision.syntheticRowsReconciledCount += Number(repaired.syntheticRowsReconciledCount || 0);
-    decision.syntheticRowsExcludedCount += Number(repaired.syntheticRowsExcludedCount || 0);
-    decision.syntheticRowsPendingCount += Number(repaired.syntheticRowsPendingCount || 0);
-    decision.syntheticOwnerAmbiguousCount += Number(repaired.syntheticOwnerAmbiguousCount || 0);
+    mergeTransientDiagnosticClaims(diagnosticClaims, repaired);
+    applyTransientDiagnosticCounts(decision, diagnosticClaims);
     const out = repaired.currentRows.map(cacheRowToTurn).filter(Boolean);
     out.forEach((turn, index) => {
       turn.index = index + 1;
