@@ -2520,6 +2520,13 @@
     'consumerSwitchCount',
     'canonicalMutationAttemptCount',
   ];
+  const CHAT_ATLAS_CONVERGENCE_UNMATCHED_CLASSIFICATIONS = Object.freeze([
+    'cache-only-historical-row',
+    'canonical-only-current-row',
+    'ledger-only-live-row',
+    'branch-inactive-row',
+    'unresolved-identity-mismatch',
+  ]);
 
   function chatAtlasConvergenceAttr(el, name) {
     try { return String(el?.getAttribute?.(name) || '').trim(); } catch { return ''; }
@@ -2729,17 +2736,120 @@
     return owners;
   }
 
-  function chatAtlasConvergenceMatch(entry, owners, fallbackIndex, used = null) {
+  function chatAtlasConvergenceMatch(entry, owners, fallbackIndex, used = null, targetLength = null) {
     const candidates = new Set();
     for (const id of entry?.allIds || []) {
-      for (const index of owners.get(id) || []) candidates.add(index);
+      for (const index of owners?.get?.(id) || []) candidates.add(index);
     }
-    const available = Array.from(candidates).filter((index) => !used?.has(index));
-    if (available.length === 1) return { index: available[0], basis: 'record-local-alias', candidates: available };
-    if (!available.length && Number.isInteger(fallbackIndex) && fallbackIndex >= 0 && !used?.has(fallbackIndex)) {
-      return { index: fallbackIndex, basis: 'turn-order-fallback', candidates: [] };
+    const boundedLength = Number.isInteger(targetLength) && targetLength >= 0 ? targetLength : null;
+    const boundedCandidates = Array.from(candidates)
+      .filter((index) => Number.isInteger(index) && index >= 0 && (boundedLength == null || index < boundedLength));
+    const rejectedCandidateIndexes = Array.from(candidates)
+      .filter((index) => !boundedCandidates.includes(index))
+      .slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT);
+    const available = boundedCandidates.filter((index) => !used?.has(index));
+    const claimed = boundedCandidates.filter((index) => used?.has(index));
+    if (boundedCandidates.length === 1 && available.length === 1) {
+      return {
+        index: available[0],
+        basis: 'record-local-alias',
+        candidates: available,
+        claimedCandidates: claimed,
+        rejectedCandidateIndexes,
+        rejectedFallbackIndex: Number.isInteger(fallbackIndex) ? fallbackIndex : null,
+      };
     }
-    return { index: -1, basis: available.length ? 'ambiguous-alias' : 'unmatched', candidates: available };
+    let basis = 'unmatched';
+    if (boundedCandidates.length > 1) basis = 'ambiguous-alias';
+    else if (boundedCandidates.length && !available.length) basis = 'already-claimed-alias';
+    else if (rejectedCandidateIndexes.length) basis = 'out-of-bounds-alias';
+    // Ordinal position is diagnostic context only; it never establishes identity.
+    return {
+      index: -1,
+      basis,
+      candidates: available,
+      claimedCandidates: claimed,
+      rejectedCandidateIndexes,
+      rejectedFallbackIndex: Number.isInteger(fallbackIndex) ? fallbackIndex : null,
+    };
+  }
+
+  function chatAtlasConvergenceUnmatchedTracker() {
+    const counts = {};
+    for (const classification of CHAT_ATLAS_CONVERGENCE_UNMATCHED_CLASSIFICATIONS) counts[classification] = 0;
+    return { counts, evidence: [], total: 0, truncated: false, keys: new Set() };
+  }
+
+  function chatAtlasConvergenceRecordUnmatched(tracker, classification, evidence, dedupeKey = '') {
+    if (!tracker) return;
+    const normalized = CHAT_ATLAS_CONVERGENCE_UNMATCHED_CLASSIFICATIONS.includes(classification)
+      ? classification
+      : 'unresolved-identity-mismatch';
+    const key = String(dedupeKey || `${normalized}:${evidence?.source || 'unknown'}:${evidence?.turnNo || evidence?.domIndex || tracker.total}`);
+    if (tracker.keys.has(key)) return;
+    tracker.keys.add(key);
+    tracker.counts[normalized] += 1;
+    tracker.total += 1;
+    if (tracker.evidence.length < CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT) {
+      tracker.evidence.push({ classification: normalized, ...evidence });
+    } else {
+      tracker.truncated = true;
+    }
+  }
+
+  function chatAtlasConvergenceHasPartialCacheEvidence(diagnostics) {
+    const currentChatKey = chatAtlasNormalizeChatKey(chatAtlasCurrentChatKey());
+    if (!currentChatKey || chatAtlasNormalizeChatKey(diagnostics?.chatKey) !== currentChatKey) return false;
+    const cached = chatAtlasNullableCount(diagnostics?.cachedTurnCount);
+    const published = chatAtlasNullableCount(diagnostics?.publishedTurnCount);
+    const observed = chatAtlasNullableCount(diagnostics?.observedTurnCount);
+    const retained = chatAtlasNullableCount(diagnostics?.offDomRetainedCount);
+    const merge = diagnostics?.lastMergeDecision;
+    const mergeOutputCount = chatAtlasNullableCount(merge?.outputCount);
+    const mergeLiveCount = chatAtlasNullableCount(merge?.liveCount);
+    return Number(retained || 0) > 0
+      || (cached != null && observed != null && cached > observed)
+      || (published != null && observed != null && published > observed)
+      || (merge?.mode === 'union'
+        && mergeOutputCount != null
+        && mergeLiveCount != null
+        && mergeOutputCount > mergeLiveCount);
+  }
+
+  function chatAtlasConvergenceClassifyMiniMapUnmatched(
+    box,
+    match,
+    canonicalOwners,
+    canonicalEntries,
+    usedCanonical,
+    miniMapDiagnostics,
+  ) {
+    if (match?.basis === 'ambiguous-alias') {
+      return { classification: 'unresolved-identity-mismatch', severity: 'blocker', reason: 'ambiguous-ledger-alias-match' };
+    }
+    if (match?.basis === 'already-claimed-alias') {
+      return { classification: 'unresolved-identity-mismatch', severity: 'blocker', reason: 'duplicate-ledger-member-claim' };
+    }
+    if (match?.basis === 'out-of-bounds-alias') {
+      return { classification: 'unresolved-identity-mismatch', severity: 'blocker', reason: 'out-of-bounds-ledger-alias-match' };
+    }
+    const canonicalMatch = chatAtlasConvergenceMatch(
+      box,
+      canonicalOwners,
+      box?.row?.inferredTurnNo > 0 ? box.row.inferredTurnNo - 1 : box?.row?.domIndex,
+      null,
+      canonicalEntries.length,
+    );
+    const canonical = canonicalMatch.index >= 0 && canonicalMatch.index < canonicalEntries.length
+      ? canonicalEntries[canonicalMatch.index]
+      : null;
+    if (canonical?.row && !usedCanonical.has(canonicalMatch.index)) {
+      return { classification: 'canonical-only-current-row', severity: 'mismatch', reason: 'canonical-row-has-no-ledger-member' };
+    }
+    if (!canonical?.row && chatAtlasConvergenceHasPartialCacheEvidence(miniMapDiagnostics)) {
+      return { classification: 'cache-only-historical-row', severity: 'warning', reason: 'partial-cache-row-not-in-current-universe' };
+    }
+    return { classification: 'unresolved-identity-mismatch', severity: 'mismatch', reason: 'no-ledger-member-match' };
   }
 
   function chatAtlasConvergenceMiniMapPrimaryMismatch(ledger, canonical, box) {
@@ -2859,14 +2969,22 @@
   }
 
   function chatAtlasReadMiniMapCompletenessDiagnostics() {
-    let api = null;
-    try {
-      api = TOPW?.H2O_MM_CORE_API
-        || W?.H2O_MM_CORE_API
-        || TOPW?.H2O_MM_SHARED?.get?.()?.api?.core
-        || W?.H2O_MM_SHARED?.get?.()?.api?.core
-        || null;
-    } catch { api = null; }
+    const readApi = (target) => {
+      if (!target) return null;
+      try {
+        const candidate = target.H2O_MM_CORE_API
+          || target.H2O_MM_SHARED?.get?.()?.api?.core
+          || null;
+        return typeof candidate?.getCacheCompletenessDiagnostics === 'function'
+          ? candidate
+          : null;
+      } catch {
+        return null;
+      }
+    };
+    let topWindow = null;
+    try { topWindow = W?.top || null; } catch { topWindow = null; }
+    const api = readApi(topWindow) || readApi(W);
     if (!api || typeof api.getCacheCompletenessDiagnostics !== 'function') return null;
     try {
       const result = api.getCacheCompletenessDiagnostics();
@@ -3077,6 +3195,10 @@
       const miniMapUnexpectedBoxes = [];
       const miniMapOrderMismatches = [];
       const miniMapPrimaryMismatches = [];
+      const blockingAliasMismatches = [];
+      const blockingMiniMapUnexpectedBoxes = [];
+      const unmatchedRows = chatAtlasConvergenceUnmatchedTracker();
+      const miniMapCompletenessDiagnostics = chatAtlasReadMiniMapCompletenessDiagnostics();
       let noAnswerMiniMapPrimaryMismatchCount = 0;
       let miniMapPrimaryNotMemberAnswerCount = 0;
       const washerMismatches = [];
@@ -3092,30 +3214,57 @@
       const ledgerReady = !!chatAtlasLedgerState.ready;
       const canonicalReady = canonicalRows.length > 0;
 
-      if (ledgerReady && canonicalReady) {
+      if (ledgerReady) {
       for (let index = 0; index < ledgerEntries.length; index += 1) {
         const ledger = ledgerEntries[index];
-        const match = chatAtlasConvergenceMatch(ledger, canonicalOwners, index, usedCanonical);
-        if (match.index < 0) {
-          aliasMismatches.push({
+        const match = chatAtlasConvergenceMatch(
+          ledger,
+          canonicalOwners,
+          index,
+          usedCanonical,
+          canonicalEntries.length,
+        );
+        const canonical = match.index >= 0 && match.index < canonicalEntries.length
+          ? canonicalEntries[match.index]
+          : null;
+        if (!canonical?.row) {
+          const classification = match.basis === 'unmatched'
+            ? 'ledger-only-live-row'
+            : 'unresolved-identity-mismatch';
+          const severity = ['ambiguous-alias', 'already-claimed-alias', 'out-of-bounds-alias'].includes(match.basis)
+            ? 'blocker'
+            : 'mismatch';
+          const reason = match.basis === 'ambiguous-alias'
+            ? 'ambiguous-canonical-alias-match'
+            : match.basis === 'already-claimed-alias'
+              ? 'duplicate-canonical-member-claim'
+              : match.basis === 'out-of-bounds-alias'
+                ? 'out-of-bounds-canonical-alias-match'
+                : 'canonical-record-not-matched';
+          const mismatch = {
             logicalMemberKey: ledger.row.logicalMemberKey,
             turnNo: ledger.row.turnNo,
-            reason: match.basis === 'ambiguous-alias' ? 'ambiguous-canonical-alias-match' : 'canonical-record-not-matched',
-            candidateIndexes: match.candidates,
-          });
+            classification,
+            severity,
+            reason,
+            candidateIndexes: Array.from(new Set([
+              ...(match.candidates || []),
+              ...(match.claimedCandidates || []),
+              ...(match.rejectedCandidateIndexes || []),
+            ])).slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT),
+          };
+          aliasMismatches.push(mismatch);
+          if (severity === 'blocker') blockingAliasMismatches.push(mismatch);
+          chatAtlasConvergenceRecordUnmatched(
+            unmatchedRows,
+            classification,
+            { source: 'ledger', severity, reason, logicalMemberKey: ledger.row.logicalMemberKey, turnNo: ledger.row.turnNo },
+            `ledger:${index}`,
+          );
           continue;
         }
         usedCanonical.add(match.index);
-        const canonical = canonicalEntries[match.index];
         canonicalByLedgerIndex.set(index, canonical);
-        if (match.basis === 'turn-order-fallback' && ledger.allIds.size && canonical.allIds.size) {
-          aliasMismatches.push({
-            logicalMemberKey: ledger.row.logicalMemberKey,
-            turnNo: ledger.row.turnNo,
-            canonicalTurnNo: canonical.row.turnNo,
-            reason: 'turn-order-matched-without-record-local-alias',
-          });
-        }
         if (match.index !== index || canonical.row.turnNo !== ledger.row.turnNo) {
           orderMismatches.push({
             logicalMemberKey: ledger.row.logicalMemberKey,
@@ -3167,9 +3316,26 @@
         }
       }
 
+      }
+      if (ledgerReady && canonicalReady) {
+
       for (let index = 0; index < canonicalEntries.length; index += 1) {
         if (!usedCanonical.has(index)) {
-          aliasMismatches.push({ source: 'canonical', canonicalIndex: index, turnNo: canonicalEntries[index].row.turnNo, reason: 'canonical-record-not-matched-to-ledger' });
+          const mismatch = {
+            source: 'canonical',
+            canonicalIndex: index,
+            turnNo: canonicalEntries[index].row.turnNo,
+            classification: 'canonical-only-current-row',
+            severity: 'mismatch',
+            reason: 'canonical-record-not-matched-to-ledger',
+          };
+          aliasMismatches.push(mismatch);
+          chatAtlasConvergenceRecordUnmatched(
+            unmatchedRows,
+            'canonical-only-current-row',
+            { source: 'canonical', severity: 'mismatch', reason: mismatch.reason, turnNo: mismatch.turnNo },
+            `canonical:${index}`,
+          );
         }
       }
       }
@@ -3186,17 +3352,58 @@
       const renderedMiniMapBoxes = miniMapEntries.map((entry) => entry.row);
       const ledgerOwners = chatAtlasConvergenceAliasOwners(ledgerEntries);
       const boxesByLedgerIndex = new Map();
+      const usedLedger = new Set();
       if (ledgerReady) {
       for (let index = 0; index < miniMapEntries.length; index += 1) {
         const box = miniMapEntries[index];
         const fallbackIndex = box.row.inferredTurnNo > 0 ? box.row.inferredTurnNo - 1 : index;
-        const match = chatAtlasConvergenceMatch(box, ledgerOwners, fallbackIndex);
-        if (match.index < 0) {
-          box.row.mismatchReason = match.basis === 'ambiguous-alias' ? 'ambiguous-ledger-alias-match' : 'no-ledger-member-match';
-          miniMapUnexpectedBoxes.push({ ...box.row });
+        const match = chatAtlasConvergenceMatch(
+          box,
+          ledgerOwners,
+          fallbackIndex,
+          usedLedger,
+          ledgerEntries.length,
+        );
+        const ledger = match.index >= 0 && match.index < ledgerEntries.length
+          ? ledgerEntries[match.index]
+          : null;
+        if (!ledger?.row) {
+          const unmatched = chatAtlasConvergenceClassifyMiniMapUnmatched(
+            box,
+            match,
+            canonicalOwners,
+            canonicalEntries,
+            usedCanonical,
+            miniMapCompletenessDiagnostics,
+          );
+          box.row.mismatchReason = unmatched.reason;
+          const evidence = {
+            ...box.row,
+            classification: unmatched.classification,
+            severity: unmatched.severity,
+            candidateIndexes: Array.from(new Set([
+              ...(match.candidates || []),
+              ...(match.claimedCandidates || []),
+              ...(match.rejectedCandidateIndexes || []),
+            ])).slice(0, CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT),
+          };
+          miniMapUnexpectedBoxes.push(evidence);
+          if (unmatched.severity === 'blocker') blockingMiniMapUnexpectedBoxes.push(evidence);
+          chatAtlasConvergenceRecordUnmatched(
+            unmatchedRows,
+            unmatched.classification,
+            {
+              source: 'minimap',
+              severity: unmatched.severity,
+              reason: unmatched.reason,
+              domIndex: box.row.domIndex,
+              turnNo: box.row.inferredTurnNo,
+            },
+            `minimap:${index}`,
+          );
           continue;
         }
-        const ledger = ledgerEntries[match.index];
+        usedLedger.add(match.index);
         box.row.resolvedTurnNo = ledger.row.turnNo;
         box.row.resolvedLogicalMemberKey = ledger.row.logicalMemberKey;
         const primaryMismatch = chatAtlasConvergenceMiniMapPrimaryMismatch(
@@ -3346,6 +3553,9 @@
       if (!canonicalReady) warnings.push('canonical-turn-runtime-not-ready');
       if (!miniMapRoot) warnings.push('minimap-root-not-rendered');
       else if (!miniMapRendered) warnings.push('minimap-boxes-not-rendered');
+      if (unmatchedRows.evidence.some((entry) => entry.severity !== 'blocker')) {
+        warnings.push('convergence-unmatched-rows');
+      }
 
       const mismatchGroups = [
         countMismatches,
@@ -3367,11 +3577,11 @@
       if (fieldShapeMismatches.length) blockers.push('canonical-field-shape-mismatch');
       if (qIdMismatches.length) blockers.push('question-id-mismatch');
       if (primaryAIdMismatches.length) blockers.push('primary-answer-id-mismatch');
-      if (aliasMismatches.length) blockers.push('record-local-alias-mismatch');
+      if (blockingAliasMismatches.length) blockers.push('record-local-alias-mismatch');
       if (noAnswerMismatches.length) blockers.push('no-answer-mismatch');
       if (pageNoMismatches.length) blockers.push('page-membership-mismatch');
       if (miniMapMissingBoxes.length) blockers.push('minimap-missing-boxes');
-      if (miniMapUnexpectedBoxes.length) blockers.push('minimap-unexpected-boxes');
+      if (blockingMiniMapUnexpectedBoxes.length) blockers.push('minimap-unexpected-boxes');
       if (miniMapOrderMismatches.length) blockers.push('minimap-order-mismatch');
       if (noAnswerMiniMapPrimaryMismatchCount) blockers.push('no-answer-minimap-primary-present');
       if (miniMapPrimaryNotMemberAnswerCount) blockers.push('minimap-primary-not-member-answer');
@@ -3389,6 +3599,7 @@
         safety.safetyCountersUnchanged ? parityStatus : 'mismatch',
         blockers,
         mismatchCount,
+        miniMapCompletenessDiagnostics,
       );
       if (projectionDiagnostics.warning) warnings.push(projectionDiagnostics.warning);
 
@@ -3439,6 +3650,11 @@
         miniMapPrimaryNotMemberAnswerCount,
         miniMapPrimaryMismatchSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
         miniMapPrimaryMismatches,
+        unmatchedRowCounts: { ...unmatchedRows.counts },
+        unmatchedRowTotal: unmatchedRows.total,
+        unmatchedRowEvidenceSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+        unmatchedRowEvidenceTruncated: unmatchedRows.truncated,
+        unmatchedRowEvidence: unmatchedRows.evidence,
         washerAudit,
         washerMismatches,
         miniMapRootSelector: miniMapRoot ? CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL : null,
@@ -3449,6 +3665,7 @@
       const safetyAfter = chatAtlasConvergenceSafetyCounters();
       const safety = chatAtlasConvergenceSafetyResult(safetyBefore, safetyAfter);
       const projectionDiagnostics = chatAtlasBuildProjectionConvergenceDiagnostics('unknown', [], 0);
+      const unmatchedRows = chatAtlasConvergenceUnmatchedTracker();
       const catchWarnings = [
         `convergence-parity-probe-failed:${String(error?.message || error || 'unknown')}`,
       ];
@@ -3500,6 +3717,11 @@
         miniMapPrimaryNotMemberAnswerCount: 'unknown',
         miniMapPrimaryMismatchSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
         miniMapPrimaryMismatches: [],
+        unmatchedRowCounts: { ...unmatchedRows.counts },
+        unmatchedRowTotal: 0,
+        unmatchedRowEvidenceSampleLimit: CHAT_ATLAS_DUAL_RUN_SAMPLE_LIMIT,
+        unmatchedRowEvidenceTruncated: false,
+        unmatchedRowEvidence: [],
         washerAudit: [],
         washerMismatches: [],
         ...safety,

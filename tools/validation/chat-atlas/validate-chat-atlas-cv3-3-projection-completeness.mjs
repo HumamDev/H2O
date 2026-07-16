@@ -163,12 +163,14 @@ if (countOccurrences(coreSource, 'getChatAtlasHistoricalCompleteness,') !== 1) {
 if (countOccurrences(miniMapSource, 'getCacheCompletenessDiagnostics,') !== 1) {
   throw new Error('minimap-diagnostic-export-anchor-invalid');
 }
+if (countOccurrences(coreSource, 'TOPW') !== 0) {
+  throw new Error('production-completeness-lookup-must-not-reference-TOPW');
+}
 
 const coreProgram = `
 'use strict';
 const D = { location };
 const W = globalThis;
-const TOPW = globalThis;
 const H2O = {
   util: {
     getChatId() {
@@ -209,13 +211,21 @@ globalThis.__MINIMAP_DIAGNOSTIC_INTERNALS__ = Object.freeze({
 });
 `;
 
-function createCoreHarness({ pathname = `/c/${CHAT_KEY}`, miniMapDiagnostics = null } = {}) {
+function createCoreHarness({
+  pathname = `/c/${CHAT_KEY}`,
+  miniMapDiagnostics = null,
+  topMiniMapDiagnostics = null,
+  throwingTop = false,
+} = {}) {
   const counters = makeCounters();
   const location = {
     pathname,
     href: `https://chatgpt.com${pathname}`,
     reload() { return forbidden(counters, 'navigationMutations', 'location.reload'); },
   };
+  const miniMapApi = (diagnostics) => diagnostics ? Object.freeze({
+    getCacheCompletenessDiagnostics() { return diagnostics; },
+  }) : null;
   const sandbox = {
     console: Object.freeze({ log() {}, warn() {}, error() {} }),
     location,
@@ -229,9 +239,7 @@ function createCoreHarness({ pathname = `/c/${CHAT_KEY}`, miniMapDiagnostics = n
     }),
     localStorage: guardedStorage(counters, 'localStorage'),
     sessionStorage: guardedStorage(counters, 'sessionStorage'),
-    H2O_MM_CORE_API: miniMapDiagnostics ? Object.freeze({
-      getCacheCompletenessDiagnostics() { return miniMapDiagnostics; },
-    }) : null,
+    H2O_MM_CORE_API: miniMapApi(miniMapDiagnostics),
     H2O_Pagination: Object.freeze({
       applySetting() { return forbidden(counters, 'userActions', 'Pagination.applySetting'); },
     }),
@@ -241,7 +249,16 @@ function createCoreHarness({ pathname = `/c/${CHAT_KEY}`, miniMapDiagnostics = n
   };
   sandbox.window = sandbox;
   sandbox.self = sandbox;
-  sandbox.top = sandbox;
+  if (throwingTop) {
+    Object.defineProperty(sandbox, 'top', {
+      configurable: true,
+      get() { throw new Error('fixture-cross-origin-top'); },
+    });
+  } else if (topMiniMapDiagnostics) {
+    sandbox.top = Object.freeze({ H2O_MM_CORE_API: miniMapApi(topMiniMapDiagnostics) });
+  } else {
+    sandbox.top = sandbox;
+  }
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, {
     codeGeneration: { strings: false, wasm: false },
@@ -332,7 +349,12 @@ function completeProof(overrides = {}) {
 }
 
 function runCore(diag, callback, options = {}) {
-  const harness = createCoreHarness({ pathname: options.pathname, miniMapDiagnostics: diag });
+  const harness = createCoreHarness({
+    pathname: options.pathname,
+    miniMapDiagnostics: diag,
+    topMiniMapDiagnostics: options.topMiniMapDiagnostics,
+    throwingTop: options.throwingTop === true,
+  });
   try {
     callback(harness.internals, harness.counters);
   } finally {
@@ -388,6 +410,34 @@ fixture('ordinary and project routes normalize to one chat key', () => {
   runCore(null, (api) => equal(api.chatAtlasNormalizeChatKey(`/c/${CHAT_KEY}`), CHAT_KEY), { pathname: `/c/${CHAT_KEY}` });
   runCore(null, (api) => equal(api.chatAtlasNormalizeChatKey(`/g/fixture-project/c/${CHAT_KEY}`), CHAT_KEY), { pathname: `/g/fixture-project/c/${CHAT_KEY}` });
 });
+
+fixture('production completeness lookup has no TOPW binding', () => {
+  equal(countOccurrences(coreSource, 'TOPW'), 0);
+  check(!coreProgram.includes('TOPW'));
+});
+
+fixture('same-window MiniMap diagnostics reach historical completeness', () => runCore(partialDiagnostics(), (api) => {
+  const result = plain(api.getChatAtlasHistoricalCompleteness());
+  equal(result.status, 'incomplete');
+  equal(result.cachedTurnCount, 38);
+  equal(result.publishedTurnCount, 38);
+  equal(result.observedTurnCount, 3);
+  equal(result.offDomRetainedCount, 35);
+}));
+
+fixture('accessible top-window MiniMap diagnostics are read', () => runCore(null, (api) => {
+  const result = plain(api.getChatAtlasHistoricalCompleteness());
+  equal(result.status, 'incomplete');
+  equal(result.cachedTurnCount, 38);
+  equal(result.observedTurnCount, 3);
+}, { topMiniMapDiagnostics: partialDiagnostics() }));
+
+fixture('throwing top access safely falls back to same window', () => runCore(partialDiagnostics(), (api) => {
+  const result = plain(api.getChatAtlasHistoricalCompleteness());
+  equal(result.status, 'incomplete');
+  equal(result.cachedTurnCount, 38);
+  equal(result.offDomRetainedCount, 35);
+}, { throwingTop: true }));
 
 fixture('MiniMap diagnostics absence is safe and unknown', () => runCore(null, (api) => {
   const result = plain(api.getChatAtlasHistoricalCompleteness());
