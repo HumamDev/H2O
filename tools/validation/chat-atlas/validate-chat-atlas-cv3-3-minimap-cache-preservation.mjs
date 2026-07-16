@@ -45,6 +45,7 @@ const coreSource = replaceUnique(
     cacheRowsHaveVariantRelationship,
     findCacheRowIndex,
     validateCurrentLayerMembership,
+    inspectCrossQIdAnswerOwnership,
     validateAuthoritativeShrinkProof,
     mergeTurnListWithCache,
     persistPublishedTurnList,
@@ -940,7 +941,7 @@ await fixture('one question publishes one row with three answer variants', () =>
 
 await fixture('inactive question branches remain retained history only', () => {
   const current = rows(3);
-  const inactive = historyRow(answeredRow(2, 'fixture-inactive-answer', 'fixture-inactive-question'));
+  const inactive = historyRow(variantRow(2, 'fixture-inactive-question', 'fixture-inactive-answer', ['fixture-inactive-answer']));
   const retained = [current[0], inactive, current[1], current[2]];
   const env = loadCore(current);
   stageCache(env, 'fixture-chat', retained);
@@ -954,8 +955,8 @@ await fixture('inactive question branches remain retained history only', () => {
 await fixture('partial hydration retains 38 current rows and excludes history', () => {
   const current = rows(38);
   const history = [
-    historyRow(answeredRow(7, 'fixture-history-answer-a', 'fixture-history-question-a')),
-    historyRow(answeredRow(8, 'fixture-history-answer-b', 'fixture-history-question-b')),
+    historyRow(variantRow(7, 'fixture-history-question-a', 'fixture-history-answer-a', ['fixture-history-answer-a'])),
+    historyRow(variantRow(8, 'fixture-history-question-b', 'fixture-history-answer-b', ['fixture-history-answer-b'])),
   ];
   const env = loadCore(current.slice(0, 3));
   stageCache(env, 'fixture-chat', [...current, ...history]);
@@ -968,7 +969,7 @@ await fixture('partial hydration retains 38 current rows and excludes history', 
 
 await fixture('cache-only history never becomes a current turn', () => {
   const current = rows(3);
-  const inactive = historyRow(answeredRow(2, 'fixture-history-answer', 'fixture-history-question'));
+  const inactive = historyRow(variantRow(2, 'fixture-history-question', 'fixture-history-answer', ['fixture-history-answer']));
   const env = loadCore(current);
   stageCache(env, 'fixture-chat', [...current, inactive]);
   const loaded = env.api.loadTurnCache('fixture-chat', { liveRows: current });
@@ -1118,7 +1119,7 @@ await fixture('regenerate retains variants beneath one current turn', () => {
 
 await fixture('history is excluded from published maps and current turn list', () => {
   const current = rows(3);
-  const inactive = historyRow(answeredRow(2, 'fixture-map-history-answer', 'fixture-map-history-question'));
+  const inactive = historyRow(variantRow(2, 'fixture-map-history-question', 'fixture-map-history-answer', ['fixture-map-history-answer']));
   const env = loadCore(current);
   stageCache(env, 'fixture-chat', [...current, inactive]);
   const merged = env.api.mergeTurnListWithCache('fixture-chat', current);
@@ -1134,8 +1135,8 @@ await fixture('history is excluded from published maps and current turn list', (
 await fixture('diagnostics distinguish retained current and history counts', () => {
   const current = rows(3);
   const history = [
-    historyRow(answeredRow(2, 'fixture-diag-history-a', 'fixture-diag-question-a')),
-    historyRow(answeredRow(3, 'fixture-diag-history-b', 'fixture-diag-question-b')),
+    historyRow(variantRow(2, 'fixture-diag-question-a', 'fixture-diag-history-a', ['fixture-diag-history-a'])),
+    historyRow(variantRow(3, 'fixture-diag-question-b', 'fixture-diag-history-b', ['fixture-diag-history-b'])),
   ];
   const env = loadCore(current);
   stageCache(env, 'fixture-chat', [...current, ...history]);
@@ -1592,7 +1593,7 @@ await fixture('internal turn-list persistence cannot establish live ownership or
 
 await fixture('connected transient stays pending and cannot prove complete overlap', () => {
   const live = rows(3);
-  const answerId = 'fixture-connected-pending-answer';
+  const answerId = '6370daf4-c5db-40d7-a377-b124a1067485';
   const transient = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
   const env = loadCore(live);
   appendHostAssistant(env, answerId);
@@ -1629,6 +1630,95 @@ await fixture('connected transient stays pending and cannot prove complete overl
   check(ownerlessPersisted.reason, 'ownerless-synthetic-current');
   check(ownerlessPersisted.writesAttempted, 0);
   check(storedStrings(env), ownerlessBefore);
+});
+
+await fixture('cross-qId answer ownership is detected across current and history layers', () => {
+  const shared = '733fa31a-7d11-4ce5-b570-8ffa474670d4';
+  const current = variantRow(
+    1,
+    '29a40c98-0bd8-48cd-be80-0273311a4977',
+    shared,
+    ['54520999-dedf-4f01-8c60-ac8adcc2c066', shared],
+  );
+  const historical = historyRow(variantRow(
+    2,
+    'd82467fb-21a4-41a4-b46d-446bf54a47ec',
+    shared,
+    ['84c7e73c-5fb7-44f6-a930-72e92d369c5a', shared],
+  ));
+  const env = loadCore([]);
+  const inspection = env.api.inspectCrossQIdAnswerOwnership([current, historical]);
+  check(inspection.ok, false);
+  check(inspection.conflictCount, 1);
+  check(inspection.conflicts[0].answerId, shared);
+  check(inspection.conflicts[0].qIds, [current.qId, historical.qId]);
+  check(inspection.conflicts[0].owners.map((owner) => owner.layers[0]), ['current', 'history']);
+});
+
+await fixture('cross-qId persistence conflict refuses both cache writes byte-identically', () => {
+  const q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
+  const d824 = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const shared = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
+  const baseline = rows(3);
+  const env = loadCore([]);
+  stageCache(env, 'fixture-chat', baseline);
+  const before = storedStrings(env);
+  const result = env.api.saveTurnCache('fixture-chat', [
+    variantRow(1, q29, '54520999-dedf-4f01-8c60-ac8adcc2c066', [
+      '54520999-dedf-4f01-8c60-ac8adcc2c066',
+      shared,
+    ]),
+    historyRow(variantRow(2, d824, '733fa31a-7d11-4ce5-b570-8ffa474670d4', [
+      shared,
+      '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+    ])),
+  ]);
+  check(result.ok, false);
+  check(result.status, 'cross-qid-answer-ownership-conflict');
+  check(result.reason, 'cross-qid-answer-ownership-conflict');
+  check(result.crossQIdAnswerConflictCount, 1);
+  check(result.writesAttempted, 0);
+  check(storedStrings(env), before);
+  const diagnostics = env.api.getCacheCompletenessDiagnostics();
+  check(diagnostics.lastPersistenceDecision.crossQIdAnswerConflictCount, 1);
+  check(diagnostics.lastPersistenceDecision.crossQIdAnswerConflicts[0].answerId, shared);
+});
+
+await fixture('answer resolver aliases cannot hide cross-qId ownership', () => {
+  const shared = 'fixture-resolver-hidden-answer';
+  const env = loadCore([]);
+  const left = variantRow(1, 'fixture-resolver-q-left', shared, [shared]);
+  const right = {
+    ...variantRow(2, 'fixture-resolver-q-right', 'fixture-resolver-answer-right', ['fixture-resolver-answer-right']),
+    answerResolverAliases: [shared],
+  };
+  const inspection = env.api.inspectCrossQIdAnswerOwnership([left, right]);
+  check(inspection.ok, false);
+  check(inspection.conflictCount, 1);
+  check(inspection.conflicts[0].qIds, [left.qId, right.qId]);
+});
+
+await fixture('uniquely reconciled q29 and d824 payload persists without conflict', () => {
+  const q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
+  const d824 = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const a545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
+  const retainedAnswers = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+  ];
+  const payload = [
+    variantRow(1, q29, a545, [a545]),
+    variantRow(2, d824, retainedAnswers[1], retainedAnswers),
+  ];
+  const env = loadCore(payload);
+  check(env.api.inspectCrossQIdAnswerOwnership(payload).ok, true);
+  const result = env.api.saveTurnCache('fixture-chat', payload);
+  check(result.ok, true);
+  check(result.status, 'ok');
+  const loaded = env.api.loadTurnCache('fixture-chat').currentTurns;
+  check(loaded.length, 2);
+  check(loaded.find((row) => row.qId === q29).answerIds, [a545]);
+  check(loaded.find((row) => row.qId === d824).answerIds, retainedAnswers);
 });
 
 await fixture('ownerless transient persistence is refused byte-identically', () => {

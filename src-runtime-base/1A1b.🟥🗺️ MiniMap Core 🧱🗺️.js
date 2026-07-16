@@ -4074,6 +4074,79 @@ function UM_PUBLIC() {
     };
   }
 
+  function cacheRowOwnedAnswerIds(row) {
+    const candidates = [
+      ...cacheRowAnswerIds(row),
+      ...(Array.isArray(row?.currentAnswerIds) ? row.currentAnswerIds : []),
+      ...(Array.isArray(row?.answerAliases) ? row.answerAliases : []),
+      ...(Array.isArray(row?.answerResolverAliases) ? row.answerResolverAliases : []),
+      ...(Array.isArray(row?.variants) ? row.variants.map((variant) => (
+        typeof variant === 'string'
+          ? variant
+          : (variant?.answerId || variant?.primaryAId || variant?.id || '')
+      )) : []),
+    ];
+    const qId = cacheRowQuestionId(row);
+    const turnId = cacheRowTurnId(row);
+    const out = [];
+    const seen = new Set();
+    for (const value of candidates) {
+      const answerId = String(value || '').trim();
+      if (
+        !answerId
+        || answerId === qId
+        || answerId === turnId
+        || answerId.startsWith('turn:')
+        || seen.has(answerId)
+      ) continue;
+      seen.add(answerId);
+      out.push(answerId);
+    }
+    return out;
+  }
+
+  function inspectCrossQIdAnswerOwnership(rows = [], limit = 12) {
+    const ownersByAnswer = new Map();
+    const source = Array.isArray(rows) ? rows : [];
+    for (let index = 0; index < source.length; index += 1) {
+      const row = source[index];
+      const qId = cacheRowQuestionId(row);
+      if (!qId || row?.noAnswer === true || row?.hasAssistant === false) continue;
+      for (const answerId of cacheRowOwnedAnswerIds(row)) {
+        if (!ownersByAnswer.has(answerId)) ownersByAnswer.set(answerId, new Map());
+        const qOwners = ownersByAnswer.get(answerId);
+        if (!qOwners.has(qId)) qOwners.set(qId, { layers: new Set(), indexes: [] });
+        const owner = qOwners.get(qId);
+        owner.layers.add(cacheRowLayer(row));
+        if (owner.indexes.length < 8) owner.indexes.push(index);
+      }
+    }
+
+    const evidenceLimit = Math.max(1, Math.min(24, Number(limit || 12) || 12));
+    const conflicts = [];
+    let conflictCount = 0;
+    for (const [answerId, qOwners] of ownersByAnswer) {
+      if (qOwners.size < 2) continue;
+      conflictCount += 1;
+      if (conflicts.length >= evidenceLimit) continue;
+      conflicts.push(Object.freeze({
+        answerId,
+        qIds: Array.from(qOwners.keys()).slice(0, 8),
+        owners: Array.from(qOwners.entries()).slice(0, 8).map(([qId, owner]) => Object.freeze({
+          qId,
+          layers: Array.from(owner.layers).slice(0, 2),
+          indexes: owner.indexes.slice(0, 8),
+        })),
+      }));
+    }
+    return Object.freeze({
+      ok: conflictCount === 0,
+      conflictCount,
+      conflicts: Object.freeze(conflicts),
+      truncated: conflictCount > conflicts.length,
+    });
+  }
+
   function boundedCacheMergeDecision(decision = null) {
     if (!decision || typeof decision !== 'object') return null;
     const cachedCount = Math.max(0, Number(decision.cachedCount || 0) || 0);
@@ -4165,6 +4238,13 @@ function UM_PUBLIC() {
         ? Math.max(0, Number(result.historicalTurnCount))
         : null,
       proofAccepted,
+      crossQIdAnswerConflictCount: Math.max(0, Number(result.crossQIdAnswerConflictCount || 0) || 0),
+      crossQIdAnswerConflicts: Object.freeze((Array.isArray(result.crossQIdAnswerConflicts)
+        ? result.crossQIdAnswerConflicts
+        : []).slice(0, 12).map((conflict) => Object.freeze({
+        answerId: String(conflict?.answerId || ''),
+        qIds: Object.freeze((Array.isArray(conflict?.qIds) ? conflict.qIds : []).slice(0, 8)),
+      }))),
       reason: String(
         result.proofReason
         || result.shrinkProof?.cause
@@ -4268,6 +4348,22 @@ function UM_PUBLIC() {
         duplicateTurnIndexCount: suppliedMembership.duplicateTurnIndexCount,
         splitRoleDuplicateCount: suppliedMembership.splitRoleDuplicateCount,
         reasons: suppliedMembership.reasons.slice(0, 8),
+        writesAttempted: 0,
+      });
+    }
+
+    const suppliedCrossQIdOwnership = inspectCrossQIdAnswerOwnership(turns);
+    if (!suppliedCrossQIdOwnership.ok) {
+      return finish({
+        ok: false,
+        status: 'cross-qid-answer-ownership-conflict',
+        reason: 'cross-qid-answer-ownership-conflict',
+        reasons: ['cross-qid-answer-ownership-conflict'],
+        chatId: id,
+        incomingCount: Array.isArray(turns) ? turns.length : 0,
+        crossQIdAnswerConflictCount: suppliedCrossQIdOwnership.conflictCount,
+        crossQIdAnswerConflicts: suppliedCrossQIdOwnership.conflicts,
+        crossQIdAnswerConflictsTruncated: suppliedCrossQIdOwnership.truncated,
         writesAttempted: 0,
       });
     }
@@ -4445,6 +4541,23 @@ function UM_PUBLIC() {
       });
     }
 
+    const normalizedCrossQIdOwnership = inspectCrossQIdAnswerOwnership(rows);
+    if (!normalizedCrossQIdOwnership.ok) {
+      return finish({
+        ok: false,
+        status: 'cross-qid-answer-ownership-conflict',
+        reason: 'cross-qid-answer-ownership-conflict',
+        reasons: ['cross-qid-answer-ownership-conflict'],
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        crossQIdAnswerConflictCount: normalizedCrossQIdOwnership.conflictCount,
+        crossQIdAnswerConflicts: normalizedCrossQIdOwnership.conflicts,
+        crossQIdAnswerConflictsTruncated: normalizedCrossQIdOwnership.truncated,
+        writesAttempted: 0,
+      });
+    }
+
     const transientOwnership = rows
       .filter((row) => (
         cacheRowLayer(row) === 'current'
@@ -4533,6 +4646,23 @@ function UM_PUBLIC() {
           writesAttempted: 0,
         });
       }
+    }
+
+    const finalCrossQIdOwnership = inspectCrossQIdAnswerOwnership(rows);
+    if (!finalCrossQIdOwnership.ok) {
+      return finish({
+        ok: false,
+        status: 'cross-qid-answer-ownership-conflict',
+        reason: 'cross-qid-answer-ownership-conflict',
+        reasons: ['cross-qid-answer-ownership-conflict'],
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        crossQIdAnswerConflictCount: finalCrossQIdOwnership.conflictCount,
+        crossQIdAnswerConflicts: finalCrossQIdOwnership.conflicts,
+        crossQIdAnswerConflictsTruncated: finalCrossQIdOwnership.truncated,
+        writesAttempted: 0,
+      });
     }
 
     const currentRows = rows.filter((row) => cacheRowLayer(row) === 'current');

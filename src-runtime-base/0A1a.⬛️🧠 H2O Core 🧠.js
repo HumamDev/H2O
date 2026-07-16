@@ -634,6 +634,10 @@
     aToPrimaryAId: new Map(),
     aliasToTurnId: new Map(),
     paginationDrafts: null,
+    crossQIdAnswerConflictCount: 0,
+    recentCrossQIdAnswerConflicts: [],
+    lastCrossQIdAnswerConflict: null,
+    lastStructureDecision: null,
   };
 
   /* ── Chat Atlas logical ledger (LP1.1 shadow mode) ────────────────────────
@@ -3952,10 +3956,150 @@
     return `turn:${turnNo}`;
   }
 
+  function parseConversationTurnOrdinal(section) {
+    const testId = String(section?.getAttribute?.(ATTR_TESTID) || '');
+    const match = testId.match(/conversation-turn-(\d+)/);
+    if (!match) return null;
+    const ordinal = Number(match[1]);
+    return Number.isInteger(ordinal) && ordinal >= 0 ? ordinal : null;
+  }
+
+  function isSelectedConversationSection(section) {
+    if (!section?.isConnected) return false;
+    let node = section;
+    while (node) {
+      if (
+        node.hidden === true
+        || node.inert === true
+        || String(node.getAttribute?.('aria-hidden') || '').toLowerCase() === 'true'
+        || node.hasAttribute?.('hidden')
+        || node.hasAttribute?.('inert')
+      ) return false;
+      if (node !== section && node.matches?.('main, #thread, [data-ho-chat-root="true"]')) break;
+      node = node.parentElement || null;
+    }
+    return true;
+  }
+
+  function readTurnEntryStructure(node, explicitSection = null, sourceIndex = 0) {
+    let section = explicitSection;
+    if (!section && node) {
+      try { section = node.closest?.(SEL_CORE_TURN_SECTION) || null; } catch { section = null; }
+    }
+    const ordinal = parseConversationTurnOrdinal(section);
+    let flowRef = null;
+    try {
+      flowRef = section?.closest?.('main#main, #thread, [data-ho-chat-root="true"], [class*="group/scroll-root"], main')
+        || section?.ownerDocument?.body
+        || null;
+    } catch { flowRef = section?.ownerDocument?.body || null; }
+    return {
+      known: !!section && ordinal != null,
+      ordinal,
+      sectionRef: section || null,
+      sectionIdentity: String(
+        section?.getAttribute?.(ATTR_TESTID)
+        || section?.getAttribute?.('data-turn-id')
+        || '',
+      ).trim() || null,
+      flowRef,
+      selectedPathEligible: section ? isSelectedConversationSection(section) : null,
+      sourceIndex: Math.max(0, Number(sourceIndex || 0) || 0),
+    };
+  }
+
+  function turnEntryBoundary(previous, current) {
+    const left = previous?.structure || null;
+    const right = current?.structure || null;
+    if (!left && !right) return null;
+    if (left?.known !== true && right?.known !== true) return null;
+    if (!left?.known || !right?.known) return 'structure-unproven';
+    if (!left.flowRef || !right.flowRef || left.flowRef !== right.flowRef) return 'flow-changed';
+    if (left.selectedPathEligible !== right.selectedPathEligible) return 'selected-path-changed';
+    if (right.selectedPathEligible !== true) return 'selected-path-ineligible';
+    if (Number(right.ordinal) !== Number(left.ordinal) + 1) return 'ordinal-discontinuity';
+    return null;
+  }
+
+  function boundedTurnDraftStructure(structure = null) {
+    if (!structure || typeof structure !== 'object') return null;
+    return {
+      segmentId: Math.max(0, Number(structure.segmentId || 0) || 0),
+      structureKnown: structure.structureKnown === true,
+      selectedPathEligible: structure.selectedPathEligible === true,
+      pairingContiguous: structure.pairingContiguous === true,
+      currentQuestionProof: structure.currentQuestionProof === true,
+      unpairedAssistant: structure.unpairedAssistant === true,
+      questionOrdinal: structure.questionOrdinal != null && Number.isFinite(Number(structure.questionOrdinal))
+        ? Math.max(0, Number(structure.questionOrdinal))
+        : null,
+      answerOrdinals: (Array.isArray(structure.answerOrdinals) ? structure.answerOrdinals : [])
+        .filter((value) => value != null && Number.isFinite(Number(value)))
+        .map((value) => Math.max(0, Number(value)))
+        .slice(0, 64),
+    };
+  }
+
+  function attachTurnDraftStructureEvidence(drafts, evidence = null) {
+    if (!Array.isArray(drafts)) return drafts;
+    const bounded = evidence && typeof evidence === 'object'
+      ? Object.freeze({
+        structureKnown: evidence.structureKnown === true,
+        safeForDurableReplacement: evidence.safeForDurableReplacement === true,
+        entryCount: Math.max(0, Number(evidence.entryCount || 0) || 0),
+        segmentCount: Math.max(0, Number(evidence.segmentCount || 0) || 0),
+        boundaryCount: Math.max(0, Number(evidence.boundaryCount || 0) || 0),
+        gapCount: Math.max(0, Number(evidence.gapCount || 0) || 0),
+        unpairedAssistantCount: Math.max(0, Number(evidence.unpairedAssistantCount || 0) || 0),
+        ineligibleCount: Math.max(0, Number(evidence.ineligibleCount || 0) || 0),
+        firstOrdinal: evidence.firstOrdinal != null && Number.isFinite(Number(evidence.firstOrdinal))
+          ? Number(evidence.firstOrdinal)
+          : null,
+        lastOrdinal: evidence.lastOrdinal != null && Number.isFinite(Number(evidence.lastOrdinal))
+          ? Number(evidence.lastOrdinal)
+          : null,
+        reasons: (Array.isArray(evidence.reasons) ? evidence.reasons : [])
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+          .slice(0, 12),
+      })
+      : null;
+    try {
+      Object.defineProperty(drafts, '_structureEvidence', {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value: bounded,
+      });
+    } catch {}
+    return drafts;
+  }
+
+  function getTurnDraftStructureEvidence(drafts) {
+    return Array.isArray(drafts) && drafts._structureEvidence
+      ? { ...drafts._structureEvidence, reasons: [...(drafts._structureEvidence.reasons || [])] }
+      : null;
+  }
+
   function buildTurnDraftsFromEntries(entries = []) {
     const drafts = [];
     let current = null;
     let idx = 0;
+    let previousEntry = null;
+    let segmentId = 0;
+    let boundaryCount = 0;
+    let gapCount = 0;
+    let unpairedAssistantCount = 0;
+    let ineligibleCount = 0;
+    const reasons = [];
+    const structuredEntries = (Array.isArray(entries) ? entries : []).map((entry, sourceIndex) => ({
+      ...entry,
+      structure: entry?.structure || readTurnEntryStructure(
+        entry?.qEl || entry?.aEl || null,
+        entry?.sectionRef || null,
+        sourceIndex,
+      ),
+    }));
 
     const finalize = (draft) => {
       if (!draft) return null;
@@ -3974,10 +4118,22 @@
         || draft.live.answerEls.some((el) => !!(el && el.isConnected))
       );
       draft.aliasIds = Array.from(new Set((draft.aliasIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+      draft.structure = boundedTurnDraftStructure(draft.structure);
       return draft;
     };
 
-    for (const entry of Array.isArray(entries) ? entries : []) {
+    for (const entry of structuredEntries) {
+      const boundaryReason = previousEntry ? turnEntryBoundary(previousEntry, entry) : null;
+      if (!previousEntry || boundaryReason) {
+        segmentId += 1;
+        current = null;
+        if (boundaryReason) {
+          boundaryCount += 1;
+          if (boundaryReason === 'ordinal-discontinuity') gapCount += 1;
+          if (!reasons.includes(boundaryReason)) reasons.push(boundaryReason);
+        }
+      }
+      if (entry?.structure?.selectedPathEligible === false) ineligibleCount += 1;
       const role = String(entry?.role || '').trim();
       if (role === 'user') {
         idx += 1;
@@ -3986,6 +4142,18 @@
           qId: entry?.qId || null,
           answerIds: [],
           aliasIds: Array.isArray(entry?.aliasIds) ? entry.aliasIds.slice() : [],
+          structure: {
+            segmentId,
+            structureKnown: entry?.structure?.known === true,
+            selectedPathEligible: entry?.structure?.selectedPathEligible === true,
+            pairingContiguous: entry?.structure?.known === true
+              && entry?.structure?.selectedPathEligible === true,
+            currentQuestionProof: entry?.structure?.known === true
+              && entry?.structure?.selectedPathEligible === true,
+            unpairedAssistant: false,
+            questionOrdinal: entry?.structure?.ordinal ?? null,
+            answerOrdinals: [],
+          },
           live: {
             qEl: entry?.qEl?.isConnected ? entry.qEl : null,
             primaryAEl: null,
@@ -3994,17 +4162,32 @@
           },
         };
         drafts.push(current);
+        previousEntry = entry;
         continue;
       }
 
-      if (role !== 'assistant') continue;
+      if (role !== 'assistant') {
+        previousEntry = entry;
+        continue;
+      }
       if (!current) {
         idx += 1;
+        unpairedAssistantCount += 1;
         current = {
           turnNo: idx,
           qId: null,
           answerIds: [],
           aliasIds: [],
+          structure: {
+            segmentId,
+            structureKnown: entry?.structure?.known === true,
+            selectedPathEligible: entry?.structure?.selectedPathEligible === true,
+            pairingContiguous: false,
+            currentQuestionProof: false,
+            unpairedAssistant: true,
+            questionOrdinal: null,
+            answerOrdinals: [],
+          },
           live: {
             qEl: null,
             primaryAEl: null,
@@ -4022,9 +4205,40 @@
         current.live.primaryAEl = entry.aEl;
         current.live.connected = true;
       }
+      if (entry?.structure?.ordinal != null) current.structure.answerOrdinals.push(entry.structure.ordinal);
+      if (entry?.structure?.known !== true || entry?.structure?.selectedPathEligible !== true) {
+        current.structure.pairingContiguous = false;
+        current.structure.currentQuestionProof = false;
+      }
+      previousEntry = entry;
     }
 
-    return drafts.map(finalize).filter(Boolean);
+    const out = drafts.map(finalize).filter(Boolean);
+    const ordinals = structuredEntries
+      .map((entry) => entry?.structure?.ordinal)
+      .filter((value) => value != null && Number.isFinite(Number(value)))
+      .map(Number);
+    const structureKnown = structuredEntries.length > 0
+      && structuredEntries.every((entry) => entry?.structure?.known === true);
+    const safeForDurableReplacement = structureKnown
+      && segmentId === 1
+      && boundaryCount === 0
+      && unpairedAssistantCount === 0
+      && ineligibleCount === 0
+      && (ordinals[0] === 0 || ordinals[0] === 1);
+    return attachTurnDraftStructureEvidence(out, {
+      structureKnown,
+      safeForDurableReplacement,
+      entryCount: structuredEntries.length,
+      segmentCount: structuredEntries.length ? segmentId : 0,
+      boundaryCount,
+      gapCount,
+      unpairedAssistantCount,
+      ineligibleCount,
+      firstOrdinal: ordinals[0] ?? null,
+      lastOrdinal: ordinals[ordinals.length - 1] ?? null,
+      reasons,
+    });
   }
 
   function readBootSplitPairEvidence() {
@@ -4078,6 +4292,18 @@
       || questionDraft?.live?.primaryAEl
       || answerEls[answerEls.length - 1]
       || null;
+    const rawQuestionOrdinal = pair?.question?.shellOrdinal;
+    const questionOrdinal = rawQuestionOrdinal != null && Number.isFinite(Number(rawQuestionOrdinal))
+      ? Math.max(0, Number(rawQuestionOrdinal))
+      : null;
+    const answerOrdinals = (pair?.answers || [])
+      .map((answer) => answer?.shellOrdinal)
+      .filter((value) => value != null && Number.isFinite(Number(value)))
+      .map((value) => Math.max(0, Number(value)));
+    const structuralPairingProven = questionOrdinal != null
+      && answerOrdinals.length > 0
+      && answerOrdinals.every((ordinal, index) => ordinal === questionOrdinal + index + 1)
+      && (pair?.answers || []).every((answer) => answer?.flowRef === pair?.question?.flowRef);
     return {
       ...questionDraft,
       qId: qId || normalizeTurnAlias(questionDraft?.qId || '') || null,
@@ -4086,6 +4312,19 @@
       aliasIds,
       hasQuestion: !!(qId || questionDraft?.qId),
       hasAssistant: answerIds.length > 0,
+      structure: {
+        segmentId: Math.max(
+          1,
+          Number(questionDraft?.structure?.segmentId || answerDraft?.structure?.segmentId || 1) || 1,
+        ),
+        structureKnown: structuralPairingProven,
+        selectedPathEligible: structuralPairingProven,
+        pairingContiguous: structuralPairingProven,
+        currentQuestionProof: structuralPairingProven,
+        unpairedAssistant: false,
+        questionOrdinal,
+        answerOrdinals,
+      },
       live: {
         qEl,
         primaryAEl,
@@ -4194,6 +4433,7 @@
       draft.turnNo = out.length + 1;
       out.push(draft);
     }
+    attachTurnDraftStructureEvidence(out, getTurnDraftStructureEvidence(drafts));
     return { drafts: out, reconciledCount, ambiguousCount };
   }
 
@@ -4206,8 +4446,10 @@
       ? preScanned
       : Array.from(D.querySelectorAll(SEL_CORE_WITH_ROLE));
     const entries = [];
-    for (const el of nodes) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const el = nodes[index];
       const role = el.getAttribute(ATTR_MESSAGE_AUTHOR_ROLE);
+      const structure = readTurnEntryStructure(el, null, index);
       if (role === 'user') {
         entries.push({
           role,
@@ -4217,6 +4459,7 @@
             getMsgIdAttr(el),
             String(el?.dataset?.turnId || '').trim(),
           ],
+          structure,
         });
       } else if (role === 'assistant') {
         entries.push({
@@ -4227,6 +4470,7 @@
             getMsgIdAttr(el),
             String(el?.dataset?.turnId || '').trim(),
           ],
+          structure,
         });
       }
     }
@@ -4235,10 +4479,13 @@
 
   function buildPaginationTurnDrafts(rows = []) {
     const entries = [];
-    for (const row of Array.isArray(rows) ? rows : []) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    for (let index = 0; index < sourceRows.length; index += 1) {
+      const row = sourceRows[index];
       const role = String(row?.role || '').trim();
       const node = row?.node || null;
       const answerEl = row?.answerEl || row?.primaryAEl || null;
+      const structure = readTurnEntryStructure(node || answerEl, null, index);
       if (role === 'user') {
         entries.push({
           role,
@@ -4250,6 +4497,7 @@
             node ? getMsgIdAttr(node) : '',
             String(node?.dataset?.turnId || '').trim(),
           ],
+          structure,
         });
       } else if (role === 'assistant') {
         const aEl = answerEl || node || null;
@@ -4264,28 +4512,96 @@
             String(aEl?.dataset?.turnId || '').trim(),
             aEl ? getMsgIdAttr(aEl) : '',
           ],
+          structure,
         });
       }
     }
     return buildTurnDraftsFromEntries(entries);
   }
 
-  function findPreviousTurnRecord(draft, used = new Set()) {
+  function canonicalDraftHasStructuralQuestionProof(draft) {
+    const structure = draft?.structure || null;
+    return structure?.structureKnown === true
+      && structure?.selectedPathEligible === true
+      && structure?.pairingContiguous === true
+      && structure?.currentQuestionProof === true
+      && structure?.questionOrdinal != null
+      && Number(structure.questionOrdinal) >= 0;
+  }
+
+  function canonicalQIdsConflict(record, draft) {
+    const recordQId = normalizeTurnAlias(record?.qId || '');
+    const draftQId = normalizeTurnAlias(draft?.qId || '');
+    return !!recordQId && !!draftQId && recordQId !== draftQId;
+  }
+
+  function canonicalRecordMatchesMountedQuestionShell(record, draft) {
+    const mounted = canonicalMountedQuestionIdentity(draft);
+    if (!mounted.qId || !mounted.shellTurnId) return false;
+    const identities = canonicalRecordIdentityValues(record);
+    return identities.has(mounted.shellTurnId) || identities.has(`turn:${mounted.shellTurnId}`);
+  }
+
+  function recordCanonicalCrossQIdConflict(record, draft, basis = 'unproven-cross-qid-match') {
+    const existingQId = normalizeTurnAlias(record?.qId || '') || null;
+    const incomingQId = normalizeTurnAlias(draft?.qId || '') || null;
+    if (!existingQId || !incomingQId || existingQId === incomingQId) return null;
+    const existingAnswers = canonicalRecordAnswerIds(record);
+    const incomingAnswers = canonicalDraftAnswerIds(draft);
+    const sharedAnswerIds = Array.from(incomingAnswers).filter((answerId) => existingAnswers.has(answerId)).slice(0, 12);
+    const conflict = Object.freeze({
+      existingQId,
+      incomingQId,
+      basis: String(basis || 'unproven-cross-qid-match'),
+      sharedAnswerIds,
+    });
+    turnState.crossQIdAnswerConflictCount += 1;
+    turnState.lastCrossQIdAnswerConflict = conflict;
+    turnState.recentCrossQIdAnswerConflicts.push(conflict);
+    if (turnState.recentCrossQIdAnswerConflicts.length > 12) {
+      turnState.recentCrossQIdAnswerConflicts.splice(0, turnState.recentCrossQIdAnswerConflicts.length - 12);
+    }
+    return conflict;
+  }
+
+  function findPreviousTurnRecordMatch(draft, used = new Set()) {
     const candidates = [];
-    const pushRecord = (record) => {
-      if (!record || used.has(record)) return;
-      candidates.push(record);
+    const seen = new Set();
+    const pushRecord = (record, basis) => {
+      if (!record || used.has(record) || seen.has(record)) return;
+      seen.add(record);
+      candidates.push({ record, basis });
     };
 
-    pushRecord(getRecordByTurnIdInternal(buildCanonicalTurnId(draft)));
-    if (draft?.qId) pushRecord(getRecordByQIdInternal(draft.qId));
-    if (draft?.primaryAId) pushRecord(getRecordByAIdInternal(draft.primaryAId));
-    for (const answerId of draft?.answerIds || []) pushRecord(getRecordByAIdInternal(answerId));
-    for (const aliasId of draft?.aliasIds || []) pushRecord(getRecordByTurnIdInternal(aliasId));
-    if (!candidates.length && !(turnState.paginationDrafts && turnState.paginationDrafts.length)) {
-      pushRecord(getRecordByTurnNoInternal(draft?.turnNo || 0));
+    pushRecord(getRecordByTurnIdInternal(buildCanonicalTurnId(draft)), 'canonical-turn-id');
+    if (draft?.qId) pushRecord(getRecordByQIdInternal(draft.qId), 'current-question-id');
+    if (draft?.primaryAId) pushRecord(getRecordByAIdInternal(draft.primaryAId), 'current-answer-identity');
+    for (const answerId of draft?.answerIds || []) {
+      pushRecord(getRecordByAIdInternal(answerId), 'current-answer-identity');
     }
-    return candidates[0] || null;
+    for (const aliasId of draft?.aliasIds || []) {
+      pushRecord(getRecordByTurnIdInternal(aliasId), 'historical-alias-only');
+    }
+    if (!candidates.length && !(turnState.paginationDrafts && turnState.paginationDrafts.length)) {
+      pushRecord(getRecordByTurnNoInternal(draft?.turnNo || 0), 'ordinal-fallback');
+    }
+
+    for (const candidate of candidates) {
+      if (
+        normalizeTurnAlias(candidate.record?.qId || '')
+        && !normalizeTurnAlias(draft?.qId || '')
+      ) continue;
+      if (!canonicalQIdsConflict(candidate.record, draft)) return candidate;
+      if (canonicalRecordMatchesMountedQuestionShell(candidate.record, draft)) {
+        return { record: candidate.record, basis: 'mounted-question-shell' };
+      }
+      recordCanonicalCrossQIdConflict(candidate.record, draft, candidate.basis);
+    }
+    return { record: null, basis: 'unmatched' };
+  }
+
+  function findPreviousTurnRecord(draft, used = new Set()) {
+    return findPreviousTurnRecordMatch(draft, used).record;
   }
 
   function canonicalMountedQuestionIdentity(draft) {
@@ -4353,6 +4669,7 @@
 
     if (draftAnswers.size) {
       const answers = unique(available.filter((record) => {
+        if (canonicalQIdsConflict(record, draft)) return false;
         const recordAnswers = canonicalRecordAnswerIds(record);
         return Array.from(draftAnswers).some((value) => recordAnswers.has(value));
       }), 'current-answer-identity');
@@ -4361,6 +4678,7 @@
 
     if (draftAliases.size) {
       const aliases = unique(available.filter((record) => {
+        if (canonicalQIdsConflict(record, draft)) return false;
         const identities = canonicalRecordIdentityValues(record);
         return Array.from(draftAliases).some((value) => identities.has(value));
       }), 'historical-alias-only');
@@ -4378,17 +4696,6 @@
     const byKey = turnState.durableByKey;
     const previousKey = `q:${previous}`;
     let sourceKey = byKey.has(previousKey) ? previousKey : '';
-    if (!sourceKey) {
-      const answerIds = canonicalDraftAnswerIds(draft);
-      const matches = order.filter((key) => {
-        const retained = byKey.get(key);
-        if (!retained) return false;
-        if (normalizeTurnAlias(retained.qId) === previous) return true;
-        const retainedAnswers = canonicalDraftAnswerIds(retained);
-        return Array.from(answerIds).some((value) => retainedAnswers.has(value));
-      });
-      if (matches.length === 1) sourceKey = matches[0];
-    }
     if (!sourceKey) return false;
 
     const retained = byKey.get(sourceKey);
@@ -4424,8 +4731,7 @@
     const previousQId = normalizeTurnAlias(record?.qId || '');
     if (!record || !currentQId) return { changed: false, reason: 'mounted-question-id-unavailable' };
     if (currentQId === previousQId) return { changed: false, reason: 'already-current' };
-    const positiveBasis = match?.basis === 'mounted-question-shell'
-      || match?.basis === 'current-answer-identity';
+    const positiveBasis = match?.basis === 'mounted-question-shell';
     if (!positiveBasis) return { changed: false, reason: 'selected-path-proof-missing' };
 
     record._aliasIds = Array.from(new Set([
@@ -4444,7 +4750,7 @@
     };
   }
 
-  function applyCanonicalDraft(record, draft) {
+  function applyCanonicalDraft(record, draft, opts = {}) {
     const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
     const answerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
     const explicitPrimaryAId = normalizeTurnAlias(draft?.primaryAId || '');
@@ -4453,6 +4759,16 @@
       : (answerIds[answerIds.length - 1] || null);
     const previousQId = normalizeTurnAlias(record?.qId || '');
     const currentQId = normalizeTurnAlias(draft?.qId || '');
+    if (previousQId && !currentQId) return refreshLegacyTurnCompat(record);
+    if (
+      previousQId
+      && currentQId
+      && previousQId !== currentQId
+      && opts?.allowQIdTransition !== true
+    ) {
+      recordCanonicalCrossQIdConflict(record, draft, opts?.basis || 'apply-canonical-draft');
+      return refreshLegacyTurnCompat(record);
+    }
     record.turnNo = turnNo;
     record.qId = currentQId || null;
     record.answerIds = answerIds;
@@ -4491,7 +4807,11 @@
     const questionPromotion = promoteCanonicalCurrentQuestionIdentity(record, draft, match);
     if (questionPromotion.changed) {
       shouldRebuildTurnId = true;
-    } else if (!record.qId && canonicalMountedQuestionIdentity(draft).qId) {
+    } else if (
+      !record.qId
+      && canonicalMountedQuestionIdentity(draft).qId
+      && canonicalDraftHasStructuralQuestionProof(draft)
+    ) {
       record.qId = canonicalMountedQuestionIdentity(draft).qId;
       record.hasQuestion = true;
       shouldRebuildTurnId = true;
@@ -4550,9 +4870,13 @@
     for (let i = 0; i < sourceDrafts.length; i += 1) {
       const draft = sourceDrafts[i] || {};
       draft.turnNo = i + 1;
-      const existing = findPreviousTurnRecord(draft, used);
+      const previousMatch = findPreviousTurnRecordMatch(draft, used);
+      const existing = previousMatch.record;
       const record = existing || createTurnRecord('', draft.turnNo);
-      applyCanonicalDraft(record, draft);
+      applyCanonicalDraft(record, draft, {
+        basis: previousMatch.basis,
+        allowQIdTransition: previousMatch.basis === 'mounted-question-shell',
+      });
       used.add(record);
       nextRecords.push(record);
     }
@@ -4630,6 +4954,7 @@
       aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
       hasQuestion: !!draft?.qId,
       hasAssistant: !!(Array.isArray(draft?.answerIds) && draft.answerIds.length),
+      structure: boundedTurnDraftStructure(draft?.structure),
       live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
     };
   }
@@ -4653,6 +4978,7 @@
     turnState.durableOrder = [];
     turnState.durableByKey.clear();
     for (const draft of Array.isArray(drafts) ? drafts : []) {
+      if (draft?.structure?.unpairedAssistant === true) continue;
       const key = durableDraftKey(draft);
       if (!key || turnState.durableByKey.has(key)) continue;
       turnState.durableByKey.set(key, slimTurnDraft(draft));
@@ -4660,26 +4986,36 @@
     }
   }
 
-  function mergeDurableTurnDrafts(liveDrafts) {
+  function mergeDurableTurnDrafts(liveDrafts, opts = {}) {
     ensureDurableTurnCache();
     const live = Array.isArray(liveDrafts) ? liveDrafts : [];
-    // Authoritative-size draft sets win outright: when the fresh set is at
-    // least as large as the retained cache, adopt its order wholesale so a
-    // stale or corrupted cache can never re-order or dilute it.
-    if (live.length >= turnState.durableOrder.length) {
+    if (opts?.authoritativeReplacement === true) {
+      seedDurableTurnDrafts(live);
+      return live.slice();
+    }
+    if (!turnState.durableOrder.length) {
       seedDurableTurnDrafts(live);
       return live.slice();
     }
     const order = turnState.durableOrder;
     const byKey = turnState.durableByKey;
     const freshByKey = new Map();
+    const ephemeral = [];
 
-    // ChatGPT renders a contiguous window, so each unknown draft is inserted
-    // right after the durable position of the previous live draft. A window
-    // that starts mid-conversation prepends at the head; later scans that
-    // reveal earlier turns self-correct the ordering.
+    // Each contiguous host segment carries its own anchor. An unpaired answer
+    // remains visible for the current frame but never enters durable retention.
     let anchorIdx = -1;
+    let previousSegmentId = null;
     for (const draft of live) {
+      const segmentId = Number(draft?.structure?.segmentId || 0) || null;
+      if (previousSegmentId != null && segmentId != null && segmentId !== previousSegmentId) {
+        anchorIdx = order.length - 1;
+      }
+      previousSegmentId = segmentId;
+      if (draft?.structure?.unpairedAssistant === true) {
+        ephemeral.push(draft);
+        continue;
+      }
       const key = durableDraftKey(draft);
       if (!key) continue;
       freshByKey.set(key, draft);
@@ -4703,18 +5039,63 @@
       const draft = freshByKey.get(key) || byKey.get(key);
       if (draft) out.push(draft);
     }
+    for (const draft of ephemeral) out.push(draft);
     return out;
   }
 
-  // ChatGPT keeps EVERY conversation turn in the document as
-  // <section data-testid="conversation-turn-N" data-turn="user|assistant"
-  // data-turn-id="<message-id>"> and only virtualizes the message CONTENT out
-  // of far-away sections. The section attributes are therefore the
-  // authoritative full-chat map — order, roles, stable message ids, and the
-  // true total — available synchronously at any moment. The
-  // [data-message-author-role] scan below only sees hydrated content, so on
-  // its own it would shrink the canonical set to the rendered window and
-  // renumber it from 1 (the "16/16 / Page 1" MiniMap failure).
+  function sectionDraftAuthorityDecision(sectionDrafts, liveDrafts) {
+    ensureDurableTurnCache();
+    const evidence = getTurnDraftStructureEvidence(sectionDrafts);
+    const reasons = [];
+    if (!Array.isArray(sectionDrafts) || !sectionDrafts.length) reasons.push('section-drafts-unavailable');
+    if (!evidence?.structureKnown) reasons.push('section-structure-unproven');
+    if (!evidence?.safeForDurableReplacement) reasons.push('section-coverage-not-proven');
+    if (Number(evidence?.gapCount || 0) > 0) reasons.push('section-ordinal-gap');
+    if (Number(evidence?.segmentCount || 0) !== 1) reasons.push('section-segments-not-bijective');
+    if (Number(evidence?.unpairedAssistantCount || 0) > 0) reasons.push('section-unpaired-assistant');
+    if (Number(evidence?.ineligibleCount || 0) > 0) reasons.push('section-selected-path-ineligible');
+    if (Array.isArray(sectionDrafts) && sectionDrafts.length < turnState.durableOrder.length) {
+      reasons.push('section-membership-smaller-than-retained');
+    }
+    const accepted = reasons.length === 0;
+    return Object.freeze({
+      accepted,
+      basis: accepted ? 'contiguous-selected-path-coverage' : 'section-authority-unproven',
+      sectionDraftCount: Array.isArray(sectionDrafts) ? sectionDrafts.length : 0,
+      liveDraftCount: Array.isArray(liveDrafts) ? liveDrafts.length : 0,
+      retainedDraftCount: turnState.durableOrder.length,
+      structure: evidence,
+      reasons: reasons.slice(0, 12),
+    });
+  }
+
+  function getCanonicalTurnStructureDiagnostics() {
+    const decision = turnState.lastStructureDecision;
+    return Object.freeze({
+      crossQIdAnswerConflictCount: Math.max(0, Number(turnState.crossQIdAnswerConflictCount || 0) || 0),
+      lastCrossQIdAnswerConflict: turnState.lastCrossQIdAnswerConflict
+        ? { ...turnState.lastCrossQIdAnswerConflict, sharedAnswerIds: [...turnState.lastCrossQIdAnswerConflict.sharedAnswerIds] }
+        : null,
+      recentCrossQIdAnswerConflicts: turnState.recentCrossQIdAnswerConflicts.map((row) => ({
+        ...row,
+        sharedAnswerIds: [...row.sharedAnswerIds],
+      })),
+      lastStructureDecision: decision
+        ? {
+          ...decision,
+          reasons: [...(decision.reasons || [])],
+          structure: decision.structure
+            ? { ...decision.structure, reasons: [...(decision.structure.reasons || [])] }
+            : null,
+        }
+        : null,
+    });
+  }
+
+  // ChatGPT exposes conversation-turn sections, but virtualization can leave
+  // multiple disconnected ordinal segments mounted at once. Section metadata
+  // is authoritative only when the scan proves one complete contiguous path;
+  // otherwise the hydrated rows are merged into durable state without shrink.
   const SEL_CORE_TURN_SECTION = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
 
   function buildSectionTurnDrafts() {
@@ -4723,18 +5104,21 @@
     if (!sections.length) return null;
 
     const entries = [];
-    for (const section of sections) {
+    for (let index = 0; index < sections.length; index += 1) {
+      const section = sections[index];
       const role = String(section.getAttribute?.('data-turn') || '').trim().toLowerCase();
       if (role !== 'user' && role !== 'assistant') continue;
       const turnAttrId = String(section.getAttribute?.('data-turn-id') || '').trim();
       let msgEl = null;
       try { msgEl = section.querySelector(`[${ATTR_MESSAGE_AUTHOR_ROLE}="${role}"]`) || null; } catch {}
+      const structure = readTurnEntryStructure(msgEl, section, index);
       if (role === 'user') {
         entries.push({
           role,
           qEl: msgEl,
           qId: (msgEl ? getQId(msgEl) : '') || turnAttrId,
           aliasIds: [turnAttrId, msgEl ? getMsgIdAttr(msgEl) : ''],
+          structure,
         });
       } else {
         entries.push({
@@ -4742,6 +5126,7 @@
           aEl: msgEl,
           aId: (msgEl ? getAId(msgEl) : '') || turnAttrId,
           aliasIds: [turnAttrId, msgEl ? getMsgIdAttr(msgEl) : ''],
+          structure,
         });
       }
     }
@@ -4761,8 +5146,9 @@
     const sectionDrafts = Array.isArray(rawSectionDrafts)
       ? reconcileBootSplitTurnDrafts(rawSectionDrafts, pairing).drafts
       : rawSectionDrafts;
-    const sectionDraftsAreAuthoritative = Array.isArray(sectionDrafts)
-      && sectionDrafts.length >= liveDrafts.length;
+    const sectionAuthority = sectionDraftAuthorityDecision(sectionDrafts, liveDrafts);
+    turnState.lastStructureDecision = sectionAuthority;
+    const sectionDraftsAreAuthoritative = sectionAuthority.accepted;
     const baseDrafts = sectionDraftsAreAuthoritative
       ? sectionDrafts
       : liveDrafts;
@@ -4778,7 +5164,9 @@
       seedDurableTurnDrafts(sectionDrafts);
       legacyCanonicalDrafts = sectionDrafts.slice();
     } else {
-      legacyCanonicalDrafts = mergeDurableTurnDrafts(baseDrafts);
+      legacyCanonicalDrafts = mergeDurableTurnDrafts(baseDrafts, {
+        authoritativeReplacement: false,
+      });
     }
     const legacyReconciliation = reconcileBootSplitTurnDrafts(legacyCanonicalDrafts, pairing);
     legacyCanonicalDrafts = legacyReconciliation.drafts;
@@ -4944,6 +5332,7 @@
     getChatAtlasLedgerDiagnostics,
     getChatAtlasHistoricalCompleteness,
     getChatAtlasConvergenceParity,
+    getChatAtlasTurnStructureDiagnostics: getCanonicalTurnStructureDiagnostics,
     subscribeChatAtlasLedger,
     getChatAtlasCanonicalSource,
     setChatAtlasCanonicalSource,

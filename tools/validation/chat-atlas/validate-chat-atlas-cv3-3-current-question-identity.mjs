@@ -70,6 +70,11 @@ function instrumentSource() {
     'applyLiveDraft',
     'commitTurnDrafts',
     'buildTurnDraftsFromEntries',
+    'buildLiveTurnDrafts',
+    'getTurnDraftStructureEvidence',
+    'sectionDraftAuthorityDecision',
+    'findPreviousTurnRecord',
+    'getCanonicalTurnStructureDiagnostics',
     'reconcileBootSplitTurnDrafts',
     'chatAtlasPairEvidence',
     'seedDurableTurnDrafts',
@@ -114,6 +119,11 @@ function instrumentSource() {
     '    applyLiveDraft,',
     '    commitTurnDrafts,',
     '    buildTurnDraftsFromEntries,',
+    '    buildLiveTurnDrafts,',
+    '    getTurnDraftStructureEvidence,',
+    '    sectionDraftAuthorityDecision,',
+    '    findPreviousTurnRecord,',
+    '    getCanonicalTurnStructureDiagnostics,',
     '    reconcileBootSplitTurnDrafts,',
     '    chatAtlasPairEvidence,',
     '    createTurnRecord,',
@@ -303,19 +313,61 @@ function questionElement(messageId, shellTurnId, { connected = true } = {}) {
   };
 }
 
-function draft({ qId, answers = [], aliases = [], qEl = null, turnNo = 1 }) {
+function draft({ qId, answers = [], aliases = [], qEl = null, turnNo = 1, structure = null }) {
   return {
     turnNo,
     qId,
     primaryAId: answers[answers.length - 1] || null,
     answerIds: answers.slice(),
     aliasIds: aliases.slice(),
+    ...(structure ? { structure: { ...structure } } : {}),
     live: {
       qEl,
       primaryAEl: null,
       answerEls: [],
       connected: !!qEl?.isConnected,
     },
+  };
+}
+
+function entryStructure(ordinal, flowRef, sourceIndex = 0, selectedPathEligible = true) {
+  return {
+    known: true,
+    ordinal,
+    sectionRef: { ordinal },
+    sectionIdentity: `conversation-turn-${ordinal}`,
+    flowRef,
+    selectedPathEligible,
+    sourceIndex,
+  };
+}
+
+function roleElement(role, messageId, ordinal, flowRef) {
+  const section = {
+    isConnected: true,
+    ownerDocument: { body: flowRef },
+    parentElement: null,
+    hidden: false,
+    inert: false,
+    hasAttribute() { return false; },
+    matches() { return false; },
+    getAttribute(name) {
+      if (name === 'data-testid') return `conversation-turn-${ordinal}`;
+      if (name === 'data-turn-id') return messageId;
+      if (name === 'data-turn') return role;
+      return null;
+    },
+    closest(selector) { return String(selector).includes('main') ? flowRef : null; },
+  };
+  return {
+    isConnected: true,
+    dataset: { messageId },
+    getAttribute(name) {
+      if (name === 'data-message-author-role') return role;
+      if (name === 'data-message-id') return messageId;
+      return null;
+    },
+    closest(selector) { return String(selector).includes('conversation-turn') ? section : null; },
   };
 }
 
@@ -415,7 +467,7 @@ function canonicalPromotionFixture(runtime) {
   includes(durable.rows[0].aliasIds, OBSERVED.durableQId, 'durable row retains displaced qId');
 }
 
-function answerProofFixture(runtime) {
+function answerOverlapCannotRekeyFixture(runtime) {
   const oldQId = 'fixture-durable-question-answer-proof';
   const newQId = 'fixture-mounted-question-answer-proof';
   const answerId = 'fixture-answer-proof';
@@ -428,8 +480,9 @@ function answerProofFixture(runtime) {
   });
   runtime.internals.seedDurableTurnDrafts([canonical]);
   runtime.internals.commitTurnDrafts([canonical], [live]);
-  equal(runtime.internals.getRecords()[0].qId, newQId, 'unique current answer proves the mounted pair');
-  includes(runtime.internals.getRecords()[0]._aliasIds, oldQId, 'answer-proven promotion retains old qId');
+  equal(runtime.internals.getRecords()[0].qId, oldQId, 'answer overlap alone cannot rekey a nonempty qId');
+  equal(runtime.internals.getRecords().length, 2, 'locally mounted question remains a distinct current turn');
+  equal(runtime.internals.getRecords()[1].qId, newQId, 'new qId is preserved rather than absorbed');
 }
 
 function historicalAliasCannotPromoteFixture(runtime) {
@@ -457,9 +510,9 @@ function canonicalDraftAliasFixture(runtime) {
   const row = runtime.internals.createTurnRecord('', 1);
   runtime.internals.applyCanonicalDraft(row, draft({ qId: 'fixture-q-before', aliases: ['fixture-q-before'] }));
   runtime.internals.applyCanonicalDraft(row, draft({ qId: 'fixture-q-after', aliases: ['fixture-q-after'] }));
-  equal(row.qId, 'fixture-q-after');
-  includes(row._aliasIds, 'fixture-q-before', 'canonical draft displacement is retained');
-  includes(row._aliasIds, 'fixture-q-after', 'current alias shape remains compatible');
+  equal(row.qId, 'fixture-q-before', 'direct canonical apply cannot overwrite a different nonempty qId');
+  excludes(row._aliasIds, 'fixture-q-after', 'rejected qId is not absorbed as a historical alias');
+  equal(runtime.internals.getCanonicalTurnStructureDiagnostics().crossQIdAnswerConflictCount, 1);
 }
 
 function variantsFixture(runtime) {
@@ -504,12 +557,12 @@ function oneToOneFixture(runtime) {
   const record = runtime.internals.getRecords()[0];
   const used = new Set();
   const first = runtime.internals.canonicalLiveDraftMatch([record], draft({
-    qId: 'fixture-one-owner-live-1', answers: [answerId], qEl: questionElement('fixture-one-owner-live-1', 'shell-a'),
+    qId: 'fixture-one-owner-q', answers: [answerId], qEl: questionElement('fixture-one-owner-q', 'shell-a'),
   }), used);
   equal(first.record, record, 'first live row claims the unique answer owner');
   used.add(record);
   const second = runtime.internals.canonicalLiveDraftMatch([record], draft({
-    qId: 'fixture-one-owner-live-2', answers: [answerId], qEl: questionElement('fixture-one-owner-live-2', 'shell-b'),
+    qId: 'fixture-one-owner-q', answers: [answerId], qEl: questionElement('fixture-one-owner-q', 'shell-b'),
   }), used);
   equal(second.record, null, 'used canonical row cannot satisfy a second live row');
 }
@@ -854,9 +907,189 @@ function bootSplitReconciliationIdempotentFixture(runtime) {
   equal(JSON.stringify(second.drafts), JSON.stringify(first.drafts), 'reconciliation is byte-stable on repeat');
 }
 
+function crossGapPairingFixture(runtime) {
+  const flow = { id: 'fixture-cross-gap-flow' };
+  const q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
+  const a545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
+  const tailAnswers = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    OBSERVED.answerId,
+  ];
+  const rows = [
+    { role: 'assistant', aId: '6370daf4-c5db-40d7-a377-b124a1067485', ordinal: 10 },
+    { role: 'user', qId: 'fixture-window-q11', ordinal: 11 },
+    { role: 'assistant', aId: 'fixture-window-a12', ordinal: 12 },
+    { role: 'user', qId: 'fixture-window-q13', ordinal: 13 },
+    { role: 'assistant', aId: 'fixture-window-a14', ordinal: 14 },
+    { role: 'user', qId: 'fixture-window-q15', ordinal: 15 },
+    { role: 'assistant', aId: 'fixture-window-a16', ordinal: 16 },
+    { role: 'user', qId: 'fixture-window-q17', ordinal: 17 },
+    { role: 'assistant', aId: 'fixture-window-a18', ordinal: 18 },
+    { role: 'user', qId: q29, ordinal: 19 },
+    { role: 'assistant', aId: a545, ordinal: 20 },
+    { role: 'assistant', aId: tailAnswers[0], ordinal: 72 },
+    { role: 'assistant', aId: tailAnswers[1], ordinal: 73 },
+    { role: 'user', qId: 'fixture-window-q74', ordinal: 74 },
+    { role: 'assistant', aId: 'fixture-window-a75', ordinal: 75 },
+    { role: 'assistant', aId: 'fixture-window-a76', ordinal: 76 },
+  ];
+  const entries = rows.map((row, index) => ({
+    ...row,
+    aliasIds: [row.qId || row.aId],
+    structure: entryStructure(row.ordinal, flow, index),
+  }));
+  const drafts = runtime.internals.buildTurnDraftsFromEntries(entries);
+  const structureEvidence = runtime.internals.getTurnDraftStructureEvidence(drafts);
+  equal(structureEvidence.segmentCount, 2, '20 to 72 starts a second structural segment');
+  equal(structureEvidence.gapCount, 1, 'ordinal gap is recorded once');
+  equal(structureEvidence.safeForDurableReplacement, false, 'discontinuous scan is not replacement-authoritative');
+  const local = drafts.find((row) => row.qId === q29);
+  const tail = drafts.find((row) => !row.qId && row.answerIds.includes(tailAnswers[0]));
+  const section10 = drafts.find((row) => row.answerIds.includes('6370daf4-c5db-40d7-a377-b124a1067485'));
+  ok(local, 'local q29 draft exists');
+  equal(local.answerIds, [a545], 'q29 owns only its contiguous section-20 answer');
+  equal(local.primaryAId, a545, 'local contiguous answer remains selected');
+  ok(tail, 'tail assistant-only draft remains bounded');
+  equal(tail.answerIds, tailAnswers, 'tail variants remain in their own segment');
+  equal(tail.structure.unpairedAssistant, true, 'tail assistants remain unpaired transient evidence');
+  equal(section10.structure.unpairedAssistant, true, 'section-10 host boundary remains a valid transient draft');
+  equal(section10.primaryAId, '6370daf4-c5db-40d7-a377-b124a1067485');
+  equal(drafts.some((row) => row.answerIds.includes(a545) && row.answerIds.includes(tailAnswers[0])), false,
+    'no draft crosses the virtualization gap');
+  const authority = runtime.internals.sectionDraftAuthorityDecision(drafts, [local]);
+  equal(authority.accepted, false, 'count advantage cannot make a discontinuous section scan authoritative');
+  includes(authority.reasons, 'section-coverage-not-proven');
+  includes(authority.reasons, 'section-ordinal-gap');
+
+  const ledgerPairs = runtime.internals.chatAtlasPairEvidence([
+    evidence({ role: 'user', shellRef: shell('fixture-gap-q-shell', 'user'), shellIndex: 0, shellOrdinal: 19, flowRef: flow, shellTurnId: 'fixture-gap-q-shell', messageId: q29 }),
+    evidence({ role: 'assistant', shellRef: shell('fixture-gap-local-shell', 'assistant'), shellIndex: 1, shellOrdinal: 20, flowRef: flow, shellTurnId: 'fixture-gap-local-shell', messageId: a545 }),
+    evidence({ role: 'assistant', shellRef: shell('fixture-gap-tail-shell', 'assistant'), shellIndex: 2, shellOrdinal: 72, flowRef: flow, shellTurnId: 'fixture-gap-tail-shell', messageId: tailAnswers[0] }),
+  ]);
+  equal(ledgerPairs.pairs[0].answers.map((answer) => answer.messageId), [a545],
+    'ledger keeps only the contiguous local answer');
+  equal(ledgerPairs.rejectedAssistants.length, 1, 'ledger retains its existing hard-gap rejection');
+  equal(ledgerPairs.rejectedAssistants[0].reason, 'assistant-ordinal-not-adjacent');
+}
+
+function crossGapRetainedOwnershipFixture(runtime) {
+  const q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
+  const a545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
+  const retainedQId = OBSERVED.mountedQId;
+  const retainedAnswers = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    OBSERVED.answerId,
+  ];
+  const retained = draft({ qId: retainedQId, answers: retainedAnswers, aliases: [retainedQId, ...retainedAnswers] });
+  runtime.internals.seedDurableTurnDrafts([retained]);
+  runtime.internals.commitTurnDrafts([retained], []);
+
+  const crossQIdDraft = draft({ qId: q29, answers: [a545, ...retainedAnswers], aliases: [q29] });
+  equal(runtime.internals.findPreviousTurnRecord(crossQIdDraft, new Set()), null,
+    'answer overlap cannot select a retained record with another nonempty qId');
+  const retainedRecord = runtime.internals.getRecords()[0];
+  runtime.internals.applyCanonicalDraft(retainedRecord, crossQIdDraft);
+  equal(retainedRecord.qId, retainedQId, 'applyCanonicalDraft cannot overwrite retained qId');
+  equal(retainedRecord.answerIds, retainedAnswers, 'rejected draft cannot absorb the local answer');
+
+  const flow = { id: 'fixture-retained-cross-gap-flow' };
+  const live = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'user', qId: q29, structure: entryStructure(19, flow, 0) },
+    { role: 'assistant', aId: a545, structure: entryStructure(20, flow, 1) },
+    { role: 'assistant', aId: retainedAnswers[0], structure: entryStructure(72, flow, 2) },
+    { role: 'assistant', aId: retainedAnswers[1], structure: entryStructure(73, flow, 3) },
+  ]);
+  const merged = runtime.internals.mergeDurableTurnDrafts(live);
+  runtime.internals.commitTurnDrafts(merged, live);
+  const records = runtime.internals.getRecords();
+  const q29Record = records.find((row) => row.qId === q29);
+  const retainedAfter = records.find((row) => row.qId === retainedQId);
+  ok(q29Record, 'local q29 record is published');
+  ok(retainedAfter, 'retained tail owner remains published');
+  equal(q29Record.answerIds, [a545], 'q29 remains exactly paired to a545');
+  equal(q29Record.primaryAId, a545);
+  equal(retainedAfter.answerIds, retainedAnswers, 'retained tail variants remain with d824');
+  equal(retainedAfter.primaryAId, OBSERVED.answerId);
+  equal(records.some((row) => row.qId && row.answerIds.length === 3), false, 'no qId-bearing row owns all three answers');
+  const durable = runtime.internals.getDurableSnapshot();
+  includes(durable.order, `q:${q29}`);
+  includes(durable.order, `q:${retainedQId}`);
+  equal(durable.order.some((key) => key.startsWith('a:')), false, 'unpaired tail evidence is not durable');
+  ok(runtime.internals.getCanonicalTurnStructureDiagnostics().crossQIdAnswerConflictCount > 0,
+    'cross-qId attempts remain bounded diagnostic evidence');
+}
+
+function contiguousSectionAuthorityFixture(runtime) {
+  const flow = { id: 'fixture-contiguous-authority-flow' };
+  const drafts = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'user', qId: 'fixture-authority-q', structure: entryStructure(0, flow, 0) },
+    { role: 'assistant', aId: 'fixture-authority-a', structure: entryStructure(1, flow, 1) },
+  ]);
+  const evidence = runtime.internals.getTurnDraftStructureEvidence(drafts);
+  equal(evidence.safeForDurableReplacement, true, 'complete contiguous selected-path structure is safe');
+  const decision = runtime.internals.sectionDraftAuthorityDecision(drafts, drafts);
+  equal(decision.accepted, true, 'structural coverage may establish section authority');
+  equal(decision.basis, 'contiguous-selected-path-coverage');
+}
+
+function laterTailQuestionReconcilesIdempotentlyFixture(runtime) {
+  const qId = OBSERVED.mountedQId;
+  const answers = ['84c7e73c-5fb7-44f6-a930-72e92d369c5a', OBSERVED.answerId];
+  const retained = draft({ qId, answers, aliases: [qId, ...answers] });
+  runtime.internals.seedDurableTurnDrafts([retained]);
+  const flow = { id: 'fixture-tail-remount-flow' };
+  const remounted = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'user', qId, structure: entryStructure(71, flow, 0) },
+    { role: 'assistant', aId: answers[0], structure: entryStructure(72, flow, 1) },
+    { role: 'assistant', aId: answers[1], structure: entryStructure(73, flow, 2) },
+  ]);
+  const first = runtime.internals.mergeDurableTurnDrafts(remounted);
+  const second = runtime.internals.mergeDurableTurnDrafts(remounted);
+  equal(first.filter((row) => row.qId === qId).length, 1, 'tail question remount reconciles to one durable row');
+  equal(second.filter((row) => row.qId === qId).length, 1, 'tail reconciliation remains idempotent');
+  equal(second.find((row) => row.qId === qId).answerIds, answers);
+}
+
+function flatRoleScanHonorsGapFixture(runtime) {
+  const flow = { id: 'fixture-flat-gap-flow' };
+  const qId = '29a40c98-0bd8-48cd-be80-0273311a4977';
+  const localAnswer = '54520999-dedf-4f01-8c60-ac8adcc2c066';
+  const tailAnswers = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    OBSERVED.answerId,
+  ];
+  const drafts = runtime.internals.buildLiveTurnDrafts([
+    roleElement('user', qId, 19, flow),
+    roleElement('assistant', localAnswer, 20, flow),
+    roleElement('assistant', tailAnswers[0], 72, flow),
+    roleElement('assistant', tailAnswers[1], 73, flow),
+  ]);
+  equal(drafts.length, 2, 'flat role-node scan produces one local and one unpaired segment draft');
+  equal(drafts[0].qId, qId);
+  equal(drafts[0].answerIds, [localAnswer]);
+  equal(drafts[1].qId, null);
+  equal(drafts[1].answerIds, tailAnswers);
+  equal(drafts[1].structure.unpairedAssistant, true);
+  equal(runtime.internals.getTurnDraftStructureEvidence(drafts).gapCount, 1);
+}
+
+function durableThirtyEightToThreeFixture(runtime) {
+  const retained = Array.from({ length: 38 }, (_, index) => draft({
+    qId: `fixture-38-q-${index + 1}`,
+    answers: [`fixture-38-a-${index + 1}`],
+    aliases: [`fixture-38-q-${index + 1}`],
+    turnNo: index + 1,
+  }));
+  runtime.internals.seedDurableTurnDrafts(retained);
+  const merged = runtime.internals.mergeDurableTurnDrafts(retained.slice(0, 3));
+  equal(merged.length, 38, 'three mounted rows cannot shrink 38 retained qId-bearing turns');
+  equal(merged.map((row) => row.qId), retained.map((row) => row.qId));
+  equal(runtime.internals.getDurableSnapshot().order.length, 38);
+}
+
 const FIXTURES = [
   ['observed-canonical-ledger-qid-split', canonicalPromotionFixture],
-  ['unique-answer-proves-current-question', answerProofFixture],
+  ['answer-overlap-cannot-rekey-current-question', answerOverlapCannotRekeyFixture],
   ['historical-alias-alone-cannot-promote', historicalAliasCannotPromoteFixture],
   ['unmounted-evidence-retains-durable-qid', noMountedIdentityFixture],
   ['canonical-draft-retains-displaced-qid', canonicalDraftAliasFixture],
@@ -881,6 +1114,12 @@ const FIXTURES = [
   ['boot-split-ambiguous-ownership-fails-closed', bootSplitAmbiguousOwnershipFixture],
   ['boot-split-unrelated-rows-remain-separate', bootSplitUnrelatedRowsFixture],
   ['boot-split-reconciliation-is-idempotent', bootSplitReconciliationIdempotentFixture],
+  ['virtualization-gap-creates-hard-pairing-segment', crossGapPairingFixture],
+  ['cross-gap-tail-answers-do-not-rekey-retained-question', crossGapRetainedOwnershipFixture],
+  ['contiguous-section-coverage-may-be-authoritative', contiguousSectionAuthorityFixture],
+  ['later-tail-question-reconciles-idempotently', laterTailQuestionReconcilesIdempotentlyFixture],
+  ['flat-role-scan-honors-virtualization-gap', flatRoleScanHonorsGapFixture],
+  ['durable-38-to-3-membership-remains-protected', durableThirtyEightToThreeFixture],
 ];
 
 const results = [];
