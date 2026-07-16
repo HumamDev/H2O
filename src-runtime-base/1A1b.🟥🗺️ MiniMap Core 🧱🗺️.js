@@ -2582,6 +2582,19 @@ function UM_PUBLIC() {
     return CURRENT_PROOF_LEGACY;
   }
 
+  function syntheticAnswerOnlyCurrentId(row) {
+    if (cacheRowLayer(row) !== 'current' || cacheRowQuestionId(row)) return '';
+    const turnId = cacheRowTurnId(row);
+    if (!turnId.startsWith('turn:a:')) return '';
+    const answerId = turnId.slice(7).trim();
+    if (!answerId || !cacheRowAnswerIds(row).includes(answerId)) return '';
+    return answerId;
+  }
+
+  function isSyntheticAnswerOnlyCurrentRow(row) {
+    return !!syntheticAnswerOnlyCurrentId(row);
+  }
+
   function currentLedgerMembers() {
     const api = getTurnRuntimeApi();
     try {
@@ -2739,33 +2752,63 @@ function UM_PUBLIC() {
     const answerId = String(row?.primaryAId || row?.answerId || cacheRowAnswerIds(row)[0] || '').trim() || null;
     const canonicalOwners = currentCanonicalRecords().filter((record) => exactCurrentRecordIdentity(record, row));
     if (canonicalOwners.length > 1) {
-      return { owned: false, basis: 'none', qId: rowQId, answerId, hostConnected: false };
+      return {
+        owned: false,
+        basis: 'none',
+        qId: rowQId,
+        answerId,
+        hostConnected: false,
+        ambiguity: 'canonical-owner-ambiguous',
+      };
     }
     const ledgerOwners = currentLedgerMembers().filter((member) => exactCurrentLedgerIdentity(member, row));
     if (ledgerOwners.length > 1) {
-      return { owned: false, basis: 'none', qId: rowQId, answerId, hostConnected: false };
+      return {
+        owned: false,
+        basis: 'none',
+        qId: rowQId,
+        answerId,
+        hostConnected: false,
+        ambiguity: 'ledger-owner-ambiguous',
+      };
     }
     const canonicalQId = String(canonicalOwners[0]?.qId || canonicalOwners[0]?.questionId || '').trim();
     const ledgerQId = String(
       ledgerOwners[0]?.question?.currentQId || ledgerOwners[0]?.question?.qId || ''
     ).trim();
     if (canonicalQId && ledgerQId && canonicalQId !== ledgerQId) {
-      return { owned: false, basis: 'none', qId: rowQId, answerId, hostConnected: false };
+      return {
+        owned: false,
+        basis: 'none',
+        qId: rowQId,
+        answerId,
+        hostConnected: false,
+        ambiguity: 'current-owner-qid-conflict',
+      };
+    }
+    if (canonicalOwners.length === 1 && canonicalQId) {
+      return {
+        owned: true,
+        basis: 'canonical-current-member',
+        qId: canonicalQId,
+        answerId,
+        hostConnected: false,
+      };
+    }
+    if (ledgerOwners.length === 1 && ledgerQId) {
+      return {
+        owned: true,
+        basis: 'ledger-current-member',
+        qId: ledgerQId,
+        answerId,
+        hostConnected: false,
+      };
     }
     if (canonicalOwners.length === 1) {
       return {
         owned: true,
         basis: 'canonical-current-member',
-        qId: canonicalQId || rowQId,
-        answerId,
-        hostConnected: false,
-      };
-    }
-    if (ledgerOwners.length === 1) {
-      return {
-        owned: true,
-        basis: 'ledger-current-member',
-        qId: ledgerQId || rowQId,
+        qId: rowQId,
         answerId,
         hostConnected: false,
       };
@@ -2773,6 +2816,16 @@ function UM_PUBLIC() {
     const hostOwners = connectedSelectedHostOwners(row);
     if (hostOwners.length === 1) {
       return { owned: true, basis: 'connected-selected-host-answer', qId: rowQId, answerId, hostConnected: true };
+    }
+    if (hostOwners.length > 1) {
+      return {
+        owned: false,
+        basis: 'none',
+        qId: rowQId,
+        answerId,
+        hostConnected: false,
+        ambiguity: 'host-owner-ambiguous',
+      };
     }
     return { owned: false, basis: 'none', qId: rowQId, answerId, hostConnected: false };
   }
@@ -2785,11 +2838,34 @@ function UM_PUBLIC() {
   }
 
   function deriveLiveCurrentProof(row) {
+    if (isSyntheticAnswerOnlyCurrentRow(row)) return CURRENT_PROOF_TRANSIENT;
     const existing = cacheRowCurrentProof(row);
     if (existing === CURRENT_PROOF_PROVEN || existing === CURRENT_PROOF_RETAINED) return existing;
     const ownership = evaluateTransientCurrentOwnership(row);
-    if (ownership.owned && ownership.basis !== 'connected-selected-host-answer') return CURRENT_PROOF_PROVEN;
+    if (
+      ownership.owned
+      && ownership.qId
+      && ownership.basis !== 'connected-selected-host-answer'
+    ) return CURRENT_PROOF_PROVEN;
     return CURRENT_PROOF_TRANSIENT;
+  }
+
+  function reconcileSyntheticCurrentRow(row, ownership = null) {
+    if (!isSyntheticAnswerOnlyCurrentRow(row)) return null;
+    const resolved = ownership || evaluateTransientCurrentOwnership(row);
+    const qId = String(resolved?.qId || '').trim();
+    if (!resolved?.owned || !qId || resolved?.ambiguity) return null;
+    return {
+      ...row,
+      qId,
+      questionId: qId,
+      turnId: `turn:${qId}`,
+      layer: 'current',
+      selectedPath: true,
+      currentProof: CURRENT_PROOF_PROVEN,
+      suspectQuestionIdentity: false,
+      repairReason: 'synthetic-owner-reconciled',
+    };
   }
 
   function cacheSplitRoleOwnership(questionRow, answerRow) {
@@ -3233,6 +3309,11 @@ function UM_PUBLIC() {
     let independentlyOwnedTransientCount = 0;
     let ownerlessTransientExcludedCount = 0;
     let unresolvedTransientCount = 0;
+    let syntheticProofRevocationCount = 0;
+    let syntheticRowsReconciledCount = 0;
+    let syntheticRowsExcludedCount = 0;
+    let syntheticRowsPendingCount = 0;
+    let syntheticOwnerAmbiguousCount = 0;
 
     const demote = (index, reason) => {
       const row = next[index];
@@ -3249,6 +3330,32 @@ function UM_PUBLIC() {
       demotedRows += 1;
       return true;
     };
+
+    for (let index = 0; index < next.length; index += 1) {
+      const row = next[index];
+      if (!isSyntheticAnswerOnlyCurrentRow(row)) continue;
+      const ownership = evaluateTransientCurrentOwnership(row);
+      const reconciled = reconcileSyntheticCurrentRow(row, ownership);
+      if (reconciled) {
+        next[index] = reconciled;
+        repairedRows += 1;
+        syntheticRowsReconciledCount += 1;
+        continue;
+      }
+      const priorProof = cacheRowCurrentProof(row);
+      if (priorProof === CURRENT_PROOF_PROVEN || priorProof === CURRENT_PROOF_RETAINED) {
+        syntheticProofRevocationCount += 1;
+      }
+      if (priorProof !== CURRENT_PROOF_TRANSIENT) repairedRows += 1;
+      next[index] = {
+        ...row,
+        currentProof: CURRENT_PROOF_TRANSIENT,
+        suspectQuestionIdentity: true,
+        repairReason: priorProof === CURRENT_PROOF_PROVEN || priorProof === CURRENT_PROOF_RETAINED
+          ? 'synthetic-proof-revoked'
+          : 'synthetic-boundary-pending',
+      };
+    }
 
     const selectWinner = (indexes, canonicalQuestionId = '') => indexes
       .slice()
@@ -3340,25 +3447,39 @@ function UM_PUBLIC() {
     for (let index = 0; index < next.length; index += 1) {
       const row = next[index];
       if (cacheRowLayer(row) !== 'current' || cacheRowCurrentProof(row) !== CURRENT_PROOF_TRANSIENT) continue;
+      const synthetic = isSyntheticAnswerOnlyCurrentRow(row);
       const ownership = evaluateTransientCurrentOwnership(row);
-      if (!ownership.owned) {
-        if (demote(index, 'ownerless-transient-current')) {
+      if (!ownership.owned || ownership.ambiguity) {
+        if (ownership.ambiguity) syntheticOwnerAmbiguousCount += synthetic ? 1 : 0;
+        if (demote(index, synthetic
+          ? (ownership.ambiguity ? 'synthetic-owner-ambiguous' : 'ownerless-synthetic-excluded')
+          : 'ownerless-transient-current')) {
           transientRowsExcluded += 1;
           ownerlessTransientExcludedCount += 1;
+          if (synthetic) syntheticRowsExcludedCount += 1;
         }
         continue;
       }
       independentlyOwnedTransientCount += 1;
       unresolvedTransientCount += 1;
       const liveIndex = findCacheRowIndex(liveRows, row, { layer: 'current' });
-      if (liveIndex >= 0) continue;
+      if (liveIndex >= 0) {
+        if (synthetic) syntheticRowsPendingCount += 1;
+        continue;
+      }
       const splitLiveMatches = liveRows.filter((liveRow) => (
         !cacheRowQuestionId(liveRow)
         && cacheRowAnswerIds(liveRow).length > 0
         && !!cacheSplitRoleOwnership(row, liveRow)
       ));
-      if (splitLiveMatches.length === 1) continue;
-      if (demote(index, 'transient-unverified-off-dom')) transientRowsExcluded += 1;
+      if (splitLiveMatches.length === 1) {
+        if (synthetic) syntheticRowsPendingCount += 1;
+        continue;
+      }
+      if (demote(index, synthetic ? 'synthetic-boundary-off-dom' : 'transient-unverified-off-dom')) {
+        transientRowsExcluded += 1;
+        if (synthetic) syntheticRowsExcludedCount += 1;
+      }
     }
 
     if (opts?.reindexCurrent !== false) {
@@ -3385,6 +3506,11 @@ function UM_PUBLIC() {
       independentlyOwnedTransientCount,
       ownerlessTransientExcludedCount,
       unresolvedTransientCount,
+      syntheticProofRevocationCount,
+      syntheticRowsReconciledCount,
+      syntheticRowsExcludedCount,
+      syntheticRowsPendingCount,
+      syntheticOwnerAmbiguousCount,
     };
   }
 
@@ -3423,6 +3549,11 @@ function UM_PUBLIC() {
         independentlyOwnedTransientCount: 0,
         ownerlessTransientExcludedCount: 0,
         unresolvedTransientCount: 0,
+        syntheticProofRevocationCount: 0,
+        syntheticRowsReconciledCount: 0,
+        syntheticRowsExcludedCount: 0,
+        syntheticRowsPendingCount: 0,
+        syntheticOwnerAmbiguousCount: 0,
       };
     }
     const repaired = repairCacheCurrentMembership(out, opts);
@@ -3690,6 +3821,11 @@ function UM_PUBLIC() {
         splitRoleReconciledCount: Number(normalization.splitRoleReconciledCount || 0),
         splitRoleAmbiguousCount: Number(normalization.splitRoleAmbiguousCount || 0),
         transientRowsExcluded: Number(normalization.transientRowsExcluded || 0),
+        syntheticProofRevocationCount: Number(normalization.syntheticProofRevocationCount || 0),
+        syntheticRowsReconciledCount: Number(normalization.syntheticRowsReconciledCount || 0),
+        syntheticRowsExcludedCount: Number(normalization.syntheticRowsExcludedCount || 0),
+        syntheticRowsPendingCount: Number(normalization.syntheticRowsPendingCount || 0),
+        syntheticOwnerAmbiguousCount: Number(normalization.syntheticOwnerAmbiguousCount || 0),
       },
     };
   }
@@ -3874,6 +4010,12 @@ function UM_PUBLIC() {
       independentlyOwnedTransientCount: Math.max(0, Number(decision.independentlyOwnedTransientCount || 0) || 0),
       ownerlessTransientExcludedCount: Math.max(0, Number(decision.ownerlessTransientExcludedCount || 0) || 0),
       unresolvedTransientCount: Math.max(0, Number(decision.unresolvedTransientCount || 0) || 0),
+      syntheticProofRevocationCount: Math.max(0, Number(decision.syntheticProofRevocationCount || 0) || 0),
+      syntheticRowsReconciledCount: Math.max(0, Number(decision.syntheticRowsReconciledCount || 0) || 0),
+      syntheticRowsExcludedCount: Math.max(0, Number(decision.syntheticRowsExcludedCount || 0) || 0),
+      syntheticRowsPendingCount: Math.max(0, Number(decision.syntheticRowsPendingCount || 0) || 0),
+      syntheticOwnerAmbiguousCount: Math.max(0, Number(decision.syntheticOwnerAmbiguousCount || 0) || 0),
+      syntheticPublishedCurrentCount: Math.max(0, Number(decision.syntheticPublishedCurrentCount || 0) || 0),
       authoritativeLiveInput: decision.authoritativeLiveInput === true,
       authoritativeLiveProjectedCount: decision.authoritativeLiveProjectedCount != null
         && Number.isFinite(Number(decision.authoritativeLiveProjectedCount))
@@ -3996,6 +4138,12 @@ function UM_PUBLIC() {
       independentlyOwnedTransientCount: Math.max(0, Number(lastMergeDecision?.independentlyOwnedTransientCount || 0) || 0),
       ownerlessTransientExcludedCount: Math.max(0, Number(lastMergeDecision?.ownerlessTransientExcludedCount || 0) || 0),
       unresolvedTransientCount: Math.max(0, Number(lastMergeDecision?.unresolvedTransientCount || 0) || 0),
+      syntheticProofRevocationCount: Math.max(0, Number(lastMergeDecision?.syntheticProofRevocationCount || 0) || 0),
+      syntheticRowsReconciledCount: Math.max(0, Number(lastMergeDecision?.syntheticRowsReconciledCount || 0) || 0),
+      syntheticRowsExcludedCount: Math.max(0, Number(lastMergeDecision?.syntheticRowsExcludedCount || 0) || 0),
+      syntheticRowsPendingCount: Math.max(0, Number(lastMergeDecision?.syntheticRowsPendingCount || 0) || 0),
+      syntheticOwnerAmbiguousCount: Math.max(0, Number(lastMergeDecision?.syntheticOwnerAmbiguousCount || 0) || 0),
+      syntheticPublishedCurrentCount: Math.max(0, Number(lastMergeDecision?.syntheticPublishedCurrentCount || 0) || 0),
       lastMergeDecision,
       lastPersistenceDecision,
     });
@@ -4010,6 +4158,50 @@ function UM_PUBLIC() {
     const metaKey = keyTurnCacheMeta(id);
     if (!turnsKey || !metaKey) return finish({ ok: false, status: 'key-missing' });
 
+    const suppliedMembership = validateCurrentLayerMembership(turns);
+    if (!suppliedMembership.ok) {
+      return finish({
+        ok: false,
+        status: 'malformed-membership',
+        chatId: id,
+        incomingCount: Array.isArray(turns) ? turns.length : 0,
+        currentCount: suppliedMembership.currentCount,
+        duplicateQuestionCount: suppliedMembership.duplicateQuestionCount,
+        duplicateTurnCount: suppliedMembership.duplicateTurnCount,
+        duplicatePrimaryCount: suppliedMembership.duplicatePrimaryCount,
+        duplicateTurnIndexCount: suppliedMembership.duplicateTurnIndexCount,
+        splitRoleDuplicateCount: suppliedMembership.splitRoleDuplicateCount,
+        reasons: suppliedMembership.reasons.slice(0, 8),
+        writesAttempted: 0,
+      });
+    }
+
+    const suppliedSyntheticOwnership = (Array.isArray(turns) ? turns : [])
+      .filter((row) => isSyntheticAnswerOnlyCurrentRow(row))
+      .map((row) => ({ row, ownership: evaluateTransientCurrentOwnership(row) }));
+    const suppliedSyntheticClaims = new Map();
+    for (const entry of suppliedSyntheticOwnership) {
+      const claim = transientOwnershipClaim(entry.ownership);
+      if (!claim) continue;
+      suppliedSyntheticClaims.set(claim, (suppliedSyntheticClaims.get(claim) || 0) + 1);
+    }
+    const suppliedSyntheticAmbiguity = suppliedSyntheticOwnership.filter((entry) => {
+      const claim = transientOwnershipClaim(entry.ownership);
+      return !!entry.ownership?.ambiguity || (!!claim && suppliedSyntheticClaims.get(claim) !== 1);
+    });
+    if (suppliedSyntheticAmbiguity.length) {
+      return finish({
+        ok: false,
+        status: 'malformed-membership',
+        reason: 'synthetic-owner-ambiguous',
+        reasons: ['synthetic-owner-ambiguous'],
+        chatId: id,
+        incomingCount: Array.isArray(turns) ? turns.length : 0,
+        ambiguousSyntheticOwnerCount: suppliedSyntheticAmbiguity.length,
+        writesAttempted: 0,
+      });
+    }
+
     const existingRawTurns = storageGetJSON(turnsKey, null);
     const existingRawMeta = storageGetJSON(metaKey, null);
     const existingPre = normalizeCacheTurnRowsDetailed(existingRawTurns, { repairMembership: false });
@@ -4021,6 +4213,122 @@ function UM_PUBLIC() {
     const incomingEnriched = enrichCacheTurnRowsFromPagination(incomingPre.rows, { repairMembership: false });
     let rows = normalizeCacheTurnRowsDetailed(incomingEnriched, { repairMembership: false }).rows;
     if (!rows.length) return finish({ ok: false, status: 'turns-empty', turnsCount: 0 });
+
+    const syntheticEntries = rows
+      .map((row, index) => ({
+        row,
+        index,
+        ownership: isSyntheticAnswerOnlyCurrentRow(row)
+          ? evaluateTransientCurrentOwnership(row)
+          : null,
+      }))
+      .filter((entry) => !!entry.ownership);
+    const syntheticClaimCounts = new Map();
+    for (const entry of syntheticEntries) {
+      const claim = transientOwnershipClaim(entry.ownership);
+      if (!claim) continue;
+      syntheticClaimCounts.set(claim, (syntheticClaimCounts.get(claim) || 0) + 1);
+    }
+    const ambiguousSyntheticOwnership = syntheticEntries.filter((entry) => {
+      const claim = transientOwnershipClaim(entry.ownership);
+      return !!entry.ownership?.ambiguity || (!!claim && syntheticClaimCounts.get(claim) !== 1);
+    });
+    if (ambiguousSyntheticOwnership.length) {
+      return finish({
+        ok: false,
+        status: 'malformed-membership',
+        reason: 'synthetic-owner-ambiguous',
+        reasons: ['synthetic-owner-ambiguous'],
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        ambiguousSyntheticOwnerCount: ambiguousSyntheticOwnership.length,
+        writesAttempted: 0,
+      });
+    }
+
+    const syntheticReplacements = new Map();
+    const syntheticRemovedIndexes = new Set();
+    for (const entry of syntheticEntries) {
+      const reconciled = reconcileSyntheticCurrentRow(entry.row, entry.ownership);
+      if (!reconciled) continue;
+      const qId = cacheRowQuestionId(reconciled);
+      const matchingIndexes = rows.reduce((out, candidate, index) => {
+        if (
+          index !== entry.index
+          && cacheRowLayer(candidate) === 'current'
+          && cacheRowQuestionId(candidate) === qId
+        ) out.push(index);
+        return out;
+      }, []);
+      if (matchingIndexes.length > 1) {
+        return finish({
+          ok: false,
+          status: 'malformed-membership',
+          reason: 'synthetic-owner-ambiguous',
+          reasons: ['synthetic-owner-ambiguous'],
+          chatId: id,
+          existingCount: existingRows.length,
+          incomingCount: rows.length,
+          ambiguousSyntheticOwnerCount: matchingIndexes.length,
+          writesAttempted: 0,
+        });
+      }
+      if (matchingIndexes.length === 1) {
+        const targetIndex = matchingIndexes[0];
+        const target = syntheticReplacements.get(targetIndex) || rows[targetIndex];
+        const primaryAId = String(reconciled?.primaryAId || reconciled?.answerId || '').trim();
+        const merged = mergeCacheVariantEvidence({
+          ...target,
+          ...reconciled,
+          qId,
+          questionId: qId,
+          turnId: `turn:${qId}`,
+          noAnswer: false,
+          hasAssistant: true,
+          layer: 'current',
+          selectedPath: true,
+          currentProof: CURRENT_PROOF_PROVEN,
+        }, target, primaryAId);
+        syntheticReplacements.set(targetIndex, merged);
+        syntheticRemovedIndexes.add(entry.index);
+      } else {
+        syntheticReplacements.set(entry.index, reconciled);
+      }
+    }
+    rows = rows
+      .map((row, index) => syntheticReplacements.get(index) || row)
+      .filter((_row, index) => !syntheticRemovedIndexes.has(index));
+
+    const unresolvedSynthetic = rows
+      .filter((row) => isSyntheticAnswerOnlyCurrentRow(row))
+      .map((row) => ({ row, ownership: evaluateTransientCurrentOwnership(row) }));
+    const ownerlessSynthetic = unresolvedSynthetic.filter((entry) => !entry.ownership.owned);
+    if (ownerlessSynthetic.length) {
+      return finish({
+        ok: false,
+        status: 'malformed-membership',
+        reason: 'ownerless-synthetic-current',
+        reasons: ['ownerless-synthetic-current'],
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        ownerlessSyntheticCount: ownerlessSynthetic.length,
+        writesAttempted: 0,
+      });
+    }
+    if (unresolvedSynthetic.length) {
+      return finish({
+        ok: false,
+        status: 'transient-pending-ownership',
+        reason: 'synthetic-boundary-pending',
+        chatId: id,
+        existingCount: existingRows.length,
+        incomingCount: rows.length,
+        syntheticPendingCount: unresolvedSynthetic.length,
+        writesAttempted: 0,
+      });
+    }
 
     const initialMembership = validateCurrentLayerMembership(rows);
     if (!initialMembership.ok) {
@@ -4042,7 +4350,11 @@ function UM_PUBLIC() {
     }
 
     const transientOwnership = rows
-      .filter((row) => cacheRowLayer(row) === 'current' && cacheRowCurrentProof(row) === CURRENT_PROOF_TRANSIENT)
+      .filter((row) => (
+        cacheRowLayer(row) === 'current'
+        && cacheRowCurrentProof(row) === CURRENT_PROOF_TRANSIENT
+        && !isSyntheticAnswerOnlyCurrentRow(row)
+      ))
       .map((row) => ({ row, ownership: evaluateTransientCurrentOwnership(row) }));
     const transientClaims = new Map();
     for (const entry of transientOwnership) {
@@ -4234,6 +4546,11 @@ function UM_PUBLIC() {
       merged.primaryAId = withVariants.primaryAId;
       merged.answerIds = withVariants.answerIds;
     }
+    if (isSyntheticAnswerOnlyCurrentRow(merged)) {
+      merged.currentProof = CURRENT_PROOF_TRANSIENT;
+      merged.suspectQuestionIdentity = true;
+      merged.repairReason = 'synthetic-boundary-pending';
+    }
     return merged;
   }
 
@@ -4246,11 +4563,28 @@ function UM_PUBLIC() {
 
   function prepareLiveCurrentRows(list = []) {
     let ownerlessTransientExcludedCount = 0;
+    let syntheticProofRevocationCount = 0;
+    let syntheticRowsReconciledCount = 0;
+    let syntheticRowsExcludedCount = 0;
+    let syntheticOwnerAmbiguousCount = 0;
     const candidates = (Array.isArray(list) ? list : []).map((row) => {
-      const requiresOwnership = cacheRowCurrentProof(row) === CURRENT_PROOF_TRANSIENT;
+      const synthetic = isSyntheticAnswerOnlyCurrentRow(row);
+      const priorProof = cacheRowCurrentProof(row);
       const currentProof = deriveLiveCurrentProof(row);
-      if (!requiresOwnership && currentProof !== CURRENT_PROOF_TRANSIENT) {
-        return { row, currentProof, ownership: null, claim: '', requiresOwnership: false };
+      const requiresOwnership = synthetic
+        || priorProof === CURRENT_PROOF_TRANSIENT
+        || currentProof === CURRENT_PROOF_TRANSIENT;
+      if (!requiresOwnership) {
+        return {
+          row,
+          currentProof,
+          ownership: null,
+          claim: '',
+          requiresOwnership: false,
+          synthetic: false,
+          priorProof,
+          reconciled: null,
+        };
       }
       const ownership = evaluateTransientCurrentOwnership(row);
       return {
@@ -4259,6 +4593,9 @@ function UM_PUBLIC() {
         ownership,
         claim: transientOwnershipClaim(ownership),
         requiresOwnership: true,
+        synthetic,
+        priorProof,
+        reconciled: synthetic ? reconcileSyntheticCurrentRow(row, ownership) : null,
       };
     });
     const claimCounts = new Map();
@@ -4269,16 +4606,45 @@ function UM_PUBLIC() {
     const rawRows = candidates.map((candidate) => {
       if (
         candidate.requiresOwnership
-        && (!candidate.ownership?.owned || !candidate.claim || claimCounts.get(candidate.claim) !== 1)
+        && (
+          !candidate.ownership?.owned
+          || candidate.ownership?.ambiguity
+          || !candidate.claim
+          || claimCounts.get(candidate.claim) !== 1
+        )
       ) {
         ownerlessTransientExcludedCount += 1;
+        if (candidate.synthetic) {
+          syntheticRowsExcludedCount += 1;
+          if (
+            candidate.ownership?.ambiguity
+            || (candidate.claim && claimCounts.get(candidate.claim) !== 1)
+          ) syntheticOwnerAmbiguousCount += 1;
+          if (
+            candidate.priorProof === CURRENT_PROOF_PROVEN
+            || candidate.priorProof === CURRENT_PROOF_RETAINED
+          ) syntheticProofRevocationCount += 1;
+        }
         return null;
       }
+      const row = candidate.reconciled || candidate.row;
+      const currentProof = candidate.reconciled
+        ? CURRENT_PROOF_PROVEN
+        : candidate.currentProof;
+      if (candidate.reconciled) syntheticRowsReconciledCount += 1;
+      if (
+        candidate.synthetic
+        && !candidate.reconciled
+        && (
+          candidate.priorProof === CURRENT_PROOF_PROVEN
+          || candidate.priorProof === CURRENT_PROOF_RETAINED
+        )
+      ) syntheticProofRevocationCount += 1;
       return {
-        ...candidate.row,
+        ...row,
         layer: 'current',
         selectedPath: true,
-        currentProof: candidate.currentProof,
+        currentProof,
       };
     }).filter(Boolean);
     const normalized = normalizeCacheTurnRowsDetailed(rawRows, { liveRows: rawRows });
@@ -4295,6 +4661,11 @@ function UM_PUBLIC() {
       independentlyOwnedTransientCount: normalized.independentlyOwnedTransientCount,
       ownerlessTransientExcludedCount: normalized.ownerlessTransientExcludedCount + ownerlessTransientExcludedCount,
       unresolvedTransientCount: normalized.unresolvedTransientCount,
+      syntheticProofRevocationCount: normalized.syntheticProofRevocationCount + syntheticProofRevocationCount,
+      syntheticRowsReconciledCount: normalized.syntheticRowsReconciledCount + syntheticRowsReconciledCount,
+      syntheticRowsExcludedCount: normalized.syntheticRowsExcludedCount + syntheticRowsExcludedCount,
+      syntheticRowsPendingCount: normalized.syntheticRowsPendingCount,
+      syntheticOwnerAmbiguousCount: normalized.syntheticOwnerAmbiguousCount + syntheticOwnerAmbiguousCount,
       rawCount: Array.isArray(list) ? list.filter(Boolean).length : 0,
     };
   }
@@ -4312,6 +4683,8 @@ function UM_PUBLIC() {
       : null;
     const preparedLive = prepareLiveCurrentRows(liveList);
     const liveCurrentRows = preparedLive.currentRows;
+    const authoritativeLogicalLiveCount = liveCurrentRows
+      .filter((row) => !isSyntheticAnswerOnlyCurrentRow(row)).length;
     let cached = null;
     try {
       cached = loadTurnCache(chatId, { liveRows: liveCurrentRows, reindexCurrent: false });
@@ -4328,10 +4701,10 @@ function UM_PUBLIC() {
       cachedCurrentCount: cachedCurrentRows.length,
       cachedHistoricalCount: cachedHistoryRows.length,
       liveCount: liveList.length,
-      liveCurrentCount: authoritativeLiveInput ? liveCurrentRows.length : priorAuthoritativeLiveCount,
+      liveCurrentCount: authoritativeLiveInput ? authoritativeLogicalLiveCount : priorAuthoritativeLiveCount,
       authoritativeLiveInput,
       authoritativeLiveProjectedCount: authoritativeLiveInput
-        ? Math.max(0, Number(evidence?.coreProjectedTotal ?? liveCurrentRows.length) || 0)
+        ? authoritativeLogicalLiveCount
         : null,
       internalMergeInputCount: authoritativeLiveInput ? null : liveList.length,
       outputCount: liveCurrentRows.length,
@@ -4354,6 +4727,17 @@ function UM_PUBLIC() {
       independentlyOwnedTransientCount: Number(preparedLive.independentlyOwnedTransientCount || 0),
       ownerlessTransientExcludedCount: Number(preparedLive.ownerlessTransientExcludedCount || 0),
       unresolvedTransientCount: Number(preparedLive.unresolvedTransientCount || 0),
+      syntheticProofRevocationCount: Number(cached?.normalization?.syntheticProofRevocationCount || 0)
+        + Number(preparedLive.syntheticProofRevocationCount || 0),
+      syntheticRowsReconciledCount: Number(cached?.normalization?.syntheticRowsReconciledCount || 0)
+        + Number(preparedLive.syntheticRowsReconciledCount || 0),
+      syntheticRowsExcludedCount: Number(cached?.normalization?.syntheticRowsExcludedCount || 0)
+        + Number(preparedLive.syntheticRowsExcludedCount || 0),
+      syntheticRowsPendingCount: Number(cached?.normalization?.syntheticRowsPendingCount || 0)
+        + Number(preparedLive.syntheticRowsPendingCount || 0),
+      syntheticOwnerAmbiguousCount: Number(cached?.normalization?.syntheticOwnerAmbiguousCount || 0)
+        + Number(preparedLive.syntheticOwnerAmbiguousCount || 0),
+      syntheticPublishedCurrentCount: liveCurrentRows.length - authoritativeLogicalLiveCount,
       bijectionProven: false,
       reason: cachedRows.length ? 'cache-preserving-union' : 'cache-empty',
     };
@@ -4378,9 +4762,29 @@ function UM_PUBLIC() {
       decision.independentlyOwnedTransientCount += Number(repaired.independentlyOwnedTransientCount || 0);
       decision.ownerlessTransientExcludedCount += Number(repaired.ownerlessTransientExcludedCount || 0);
       decision.unresolvedTransientCount += Number(repaired.unresolvedTransientCount || 0);
+      decision.syntheticProofRevocationCount += Number(repaired.syntheticProofRevocationCount || 0);
+      decision.syntheticRowsReconciledCount += Number(repaired.syntheticRowsReconciledCount || 0);
+      decision.syntheticRowsExcludedCount += Number(repaired.syntheticRowsExcludedCount || 0);
+      decision.syntheticRowsPendingCount += Number(repaired.syntheticRowsPendingCount || 0);
+      decision.syntheticOwnerAmbiguousCount += Number(repaired.syntheticOwnerAmbiguousCount || 0);
+      decision.syntheticPublishedCurrentCount = published
+        .filter((row) => isSyntheticAnswerOnlyCurrentRow(row)).length;
       if (repaired.historyRows.length) {
         decision.mode = 'union';
         decision.reason = 'duplicate-current-qid-repaired';
+      }
+      if (decision.syntheticOwnerAmbiguousCount) {
+        decision.mode = 'union';
+        decision.reason = 'synthetic-owner-ambiguous';
+      } else if (decision.syntheticRowsExcludedCount) {
+        decision.mode = 'union';
+        decision.reason = 'ownerless-synthetic-excluded';
+      } else if (decision.syntheticRowsPendingCount) {
+        decision.mode = 'union';
+        decision.reason = 'synthetic-boundary-pending';
+      } else if (decision.syntheticProofRevocationCount) {
+        decision.mode = 'union';
+        decision.reason = 'synthetic-proof-revoked';
       }
       rememberCacheMergeDecision(chatId, decision);
       return {
@@ -4564,6 +4968,11 @@ function UM_PUBLIC() {
     decision.independentlyOwnedTransientCount += Number(repaired.independentlyOwnedTransientCount || 0);
     decision.ownerlessTransientExcludedCount += Number(repaired.ownerlessTransientExcludedCount || 0);
     decision.unresolvedTransientCount += Number(repaired.unresolvedTransientCount || 0);
+    decision.syntheticProofRevocationCount += Number(repaired.syntheticProofRevocationCount || 0);
+    decision.syntheticRowsReconciledCount += Number(repaired.syntheticRowsReconciledCount || 0);
+    decision.syntheticRowsExcludedCount += Number(repaired.syntheticRowsExcludedCount || 0);
+    decision.syntheticRowsPendingCount += Number(repaired.syntheticRowsPendingCount || 0);
+    decision.syntheticOwnerAmbiguousCount += Number(repaired.syntheticOwnerAmbiguousCount || 0);
     const out = repaired.currentRows.map(cacheRowToTurn).filter(Boolean);
     out.forEach((turn, index) => {
       turn.index = index + 1;
@@ -4586,6 +4995,7 @@ function UM_PUBLIC() {
     const publishedQIds = out.map(cacheRowQuestionId).filter(Boolean);
     const uniquePublishedQIds = new Set(publishedQIds).size === publishedQIds.length;
     const currentProofsComplete = out.every((row) => {
+      if (isSyntheticAnswerOnlyCurrentRow(row)) return false;
       const currentProof = cacheRowCurrentProof(row);
       return currentProof === CURRENT_PROOF_PROVEN
         || currentProof === CURRENT_PROOF_RETAINED
@@ -4603,20 +5013,35 @@ function UM_PUBLIC() {
       && currentProofsComplete
       && decision.ownerlessTransientExcludedCount === 0
       && decision.unresolvedTransientCount === 0
+      && decision.syntheticRowsPendingCount === 0
+      && decision.syntheticOwnerAmbiguousCount === 0
       && decision.demotedRows === 0;
 
     decision.outputCount = out.length;
     decision.retainedCount = repaired.rows.length;
     decision.publishedCurrentCount = out.length;
     decision.historicalRetainedCount = repaired.historyRows.length;
-    decision.offDomCurrentRetainedCount = Math.max(0, out.length - liveCurrentRows.length);
+    decision.syntheticPublishedCurrentCount = out
+      .filter((row) => isSyntheticAnswerOnlyCurrentRow(row)).length;
+    decision.offDomCurrentRetainedCount = Math.max(
+      0,
+      out.length - decision.syntheticPublishedCurrentCount - authoritativeLogicalLiveCount,
+    );
     decision.bijectionProven = bijectionProven;
     if (bijectionProven) {
       decision.mode = 'live-wins';
       decision.reason = 'complete-overlap-refresh';
     } else if (decision.mode !== 'proven-shrink') {
       decision.mode = 'union';
-      if (!authoritativeLiveInput) {
+      if (decision.syntheticOwnerAmbiguousCount) {
+        decision.reason = 'synthetic-owner-ambiguous';
+      } else if (decision.syntheticRowsExcludedCount) {
+        decision.reason = 'ownerless-synthetic-excluded';
+      } else if (decision.syntheticRowsPendingCount) {
+        decision.reason = 'synthetic-boundary-pending';
+      } else if (decision.syntheticProofRevocationCount) {
+        decision.reason = 'synthetic-proof-revoked';
+      } else if (!authoritativeLiveInput) {
         decision.reason = 'internal-state-refresh';
       } else if (decision.ownerlessTransientExcludedCount) {
         decision.reason = 'ownerless-transient-excluded';

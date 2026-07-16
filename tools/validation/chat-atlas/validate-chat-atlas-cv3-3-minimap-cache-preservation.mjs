@@ -35,6 +35,7 @@ const coreSource = replaceUnique(
     normalizeCacheTurnRowsDetailed,
     repairCacheCurrentMembership,
     cacheRowCurrentProof,
+    isSyntheticAnswerOnlyCurrentRow,
     deriveLiveCurrentProof,
     evaluateTransientCurrentOwnership,
     findCacheSplitRoleProposals,
@@ -55,6 +56,7 @@ const coreSource = replaceUnique(
     projectCanonicalTurnRecord,
     buildCanonicalSnapshotFromTurns,
     publishTurnSnapshot,
+    ensureTurnButtons,
     getTurnList,
     getCanonicalTurnsFromSharedRuntime,
     syncTurnRowDom,
@@ -74,6 +76,7 @@ const engineSource = replaceUnique(
     isEligibleHostAssistantNode,
     pickAddedAnswerNode,
     collectMutationSignals,
+    readPublishedSyntheticAnswerRows,
     onCoreTurnUpdated,
     state: S,
   });`,
@@ -140,6 +143,17 @@ class FakeElement {
     child.parentElement = this;
     this.children.push(child);
     return child;
+  }
+  replaceChildren(...children) {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    for (const child of children) {
+      if (child?.tagName === 'FRAGMENT') {
+        for (const nested of child.children.slice()) this.appendChild(nested);
+      } else if (child) {
+        this.appendChild(child);
+      }
+    }
   }
   remove() {
     if (!this.parentElement) return;
@@ -488,6 +502,34 @@ function appendHostAssistant(env, answerId, opts = {}) {
   env.document.body.appendChild(turn);
   if (opts.detached) turn.remove();
   return { turn, answer };
+}
+
+function installCoreUi(env) {
+  const root = env.document.createElement('div');
+  root.setAttribute('data-cgxui', 'mnmp-root');
+  root.setAttribute('data-cgxui-owner', 'mnmp');
+  const panel = env.document.createElement('div');
+  const col = env.document.createElement('div');
+  col.className = 'cgxui-mm-col';
+  col.setAttribute('data-cgxui', 'mnmp-col');
+  col.setAttribute('data-cgxui-owner', 'mnmp');
+  panel.appendChild(col);
+  root.appendChild(panel);
+  env.document.body.appendChild(root);
+  env.context.H2O_MM_SHARED = {
+    get: () => ({
+      SEL_: { MM_COL: '.cgxui-mm-col' },
+      util: {
+        mm: {
+          ui: () => ({ ensureUI: () => ({ root, panel }) }),
+          uiRefs: () => ({ root, panel, col }),
+          rt: () => null,
+          core: () => env.api,
+        },
+      },
+    }),
+  };
+  return { root, panel, col };
 }
 
 function stageCache(env, chatId, inputRows) {
@@ -1486,7 +1528,7 @@ await fixture('exact orphan is excluded from authoritative current publication',
   check(merged.list.length, 3);
   check(merged.list.some((row) => row.primaryAId === answerId), false);
   check(merged.decision.ownerlessTransientExcludedCount > 0, true);
-  check(merged.decision.reason, 'ownerless-transient-excluded');
+  check(merged.decision.reason, 'ownerless-synthetic-excluded');
   check(merged.decision.bijectionProven, false);
 });
 
@@ -1502,7 +1544,7 @@ await fixture('internal turn-list persistence cannot establish live ownership or
   });
   const diagnostics = env.api.getCacheCompletenessDiagnostics();
   check(internal.list.length, 3);
-  check(internal.decision.reason, 'internal-state-refresh');
+  check(internal.decision.reason, 'ownerless-synthetic-excluded');
   check(internal.decision.bijectionProven, false);
   check(diagnostics.observedTurnCount, 3);
   check(diagnostics.internalMergeInputCount, 4);
@@ -1515,11 +1557,14 @@ await fixture('connected transient stays pending and cannot prove complete overl
   const transient = withCurrentProof(answeredRow(4, answerId, ''), 'transient-unverified');
   const env = loadCore(live);
   appendHostAssistant(env, answerId);
+  check(env.api.deriveLiveCurrentProof({ ...transient, currentProof: 'proven-current' }), 'transient-unverified');
   stageCache(env, 'fixture-chat', live);
   const merged = env.api.mergeTurnListWithCache('fixture-chat', [...live, transient], { coreProjectedTotal: 4 });
   check(merged.list.length, 4);
-  check(merged.decision.reason, 'transient-current-pending-ownership');
+  check(merged.decision.reason, 'synthetic-boundary-pending');
   check(merged.decision.unresolvedTransientCount > 0, true);
+  check(merged.decision.authoritativeLiveProjectedCount, 3);
+  check(merged.decision.syntheticPublishedCurrentCount, 1);
   check(merged.decision.bijectionProven, false);
   const before = storedStrings(env);
   const persisted = env.api.saveTurnCache('fixture-chat', merged.retainedList);
@@ -1536,7 +1581,7 @@ await fixture('ownerless transient persistence is refused byte-identically', () 
   const before = storedStrings(env);
   const persisted = env.api.saveTurnCache('fixture-chat', [...live, orphan]);
   check(persisted.status, 'malformed-membership');
-  check(persisted.reason, 'ownerless-transient-current');
+  check(persisted.reason, 'ownerless-synthetic-current');
   check(persisted.writesAttempted, 0);
   check(storedStrings(env), before);
 });
@@ -1556,7 +1601,7 @@ await fixture('two transient rows cannot claim one current member', () => {
   check(merged.decision.ownerlessTransientExcludedCount, 2);
   const persisted = env.api.saveTurnCache('fixture-chat', [first, second]);
   check(persisted.status, 'malformed-membership');
-  check(persisted.reason, 'transient-owner-ambiguous');
+  check(persisted.reason, 'synthetic-owner-ambiguous');
   check(storedStrings(env), before);
 });
 
@@ -1584,6 +1629,224 @@ await fixture('repeated reload never resurrects an ownerless transient', () => {
     check(merged.list.some((row) => row.primaryAId === 'fixture-reload-orphan'), false);
     check(env.api.saveTurnCache('fixture-chat', merged.retainedList).ok, true);
   }
+});
+
+await fixture('temporary qId-less Core answer cannot self-promote by turn or answer identity', () => {
+  const answerId = '2a4dd16a-2a7b-407e-8498-cd60b8be7414';
+  const synthetic = withCurrentProof(answeredRow(1, answerId, ''), 'proven-current');
+  const byTurn = loadCore([{ ...synthetic, currentProof: undefined }]);
+  const projected = byTurn.api.projectSharedTurnRecord(byTurn.holder.records[0], 1);
+  check(byTurn.api.isSyntheticAnswerOnlyCurrentRow(projected), true);
+  check(projected.currentProof, 'transient-unverified');
+  check(byTurn.api.deriveLiveCurrentProof(synthetic), 'transient-unverified');
+  check(byTurn.api.evaluateTransientCurrentOwnership(synthetic).qId, null);
+
+  const byAnswer = loadCore([{
+    ...synthetic,
+    currentProof: undefined,
+    turnId: 'turn:a:temporary-other-shell',
+  }]);
+  check(byAnswer.api.evaluateTransientCurrentOwnership(synthetic).basis, 'canonical-current-member');
+  check(byAnswer.api.deriveLiveCurrentProof({ ...synthetic, currentProof: 'retained-proven-current' }), 'transient-unverified');
+  check(byAnswer.api.deriveLiveCurrentProof({ ...synthetic, currentProof: 'legacy-unverified' }), 'transient-unverified');
+});
+
+await fixture('cached synthetic rows are revalidated for every stored current-proof label', () => {
+  const live = rows(3).map((row) => withCurrentProof(row, 'proven-current'));
+  for (const proof of [
+    'proven-current',
+    'retained-proven-current',
+    'legacy-unverified',
+    'transient-unverified',
+  ]) {
+    const answerId = `fixture-revoked-${proof}`;
+    const synthetic = withCurrentProof(answeredRow(4, answerId, ''), proof);
+    const env = loadCore(live);
+    stageCache(env, 'fixture-chat', live);
+    replaceStoredTurns(env, [...live, synthetic]);
+    const loaded = env.api.loadTurnCache('fixture-chat');
+    check(loaded.currentTurns.length, 3);
+    check(loaded.currentTurns.some((row) => row.primaryAId === answerId), false);
+    check(loaded.historyTurns.some((row) => row.primaryAId === answerId), true);
+    check(loaded.normalization.syntheticProofRevocationCount,
+      ['proven-current', 'retained-proven-current'].includes(proof) ? 1 : 0);
+    check(loaded.normalization.syntheticRowsExcludedCount, 1);
+  }
+});
+
+await fixture('authoritative nine excludes one cached synthetic from lists maps and boxes', () => {
+  const live = rows(9).map((row) => withCurrentProof(row, 'proven-current'));
+  const answerId = '2a4dd16a-2a7b-407e-8498-cd60b8be7414';
+  const synthetic = withCurrentProof(answeredRow(10, answerId, ''), 'proven-current');
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  replaceStoredTurns(env, [...live, synthetic]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', live, {
+    source: 'core-runtime',
+    coreProjectedTotal: 9,
+  });
+  check(merged.list.length, 9);
+  check(merged.list.some((row) => row.primaryAId === answerId), false);
+  check(merged.decision.bijectionProven, false);
+  check(merged.decision.syntheticProofRevocationCount > 0, true);
+  check(merged.decision.syntheticRowsExcludedCount > 0, true);
+  const snapshot = env.api.buildCanonicalSnapshotFromTurns(merged.list);
+  check(snapshot.list.length, 9);
+  check(snapshot.byId.size, 9);
+  check(snapshot.byAId.size, 9);
+  const { col } = installCoreUi(env);
+  env.api.ensureTurnButtons(merged.list);
+  check(col.querySelectorAll('[data-cgxui="mnmp-btn"]').length, 9);
+});
+
+await fixture('unique qId-bearing owner reconciles exact boundary identities and variants', () => {
+  const cases = [
+    {
+      qId: '6c60b4aa-08b3-418c-b4e5-89d43ffa6f74',
+      primaryAId: '82c1038f-6944-4e2a-aaff-5570a5098850',
+      answerIds: ['82c1038f-6944-4e2a-aaff-5570a5098850'],
+    },
+    {
+      qId: 'd82467fb-21a4-41a4-b46d-446bf54a47ec',
+      primaryAId: '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+      answerIds: [
+        '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+        '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+      ],
+    },
+  ];
+  for (const entry of cases) {
+    const canonical = variantRow(1, entry.qId, entry.primaryAId, entry.answerIds, `member:${entry.qId}`);
+    const synthetic = withCurrentProof({
+      ...answeredRow(1, entry.primaryAId, ''),
+      answerIds: entry.answerIds.slice(),
+    }, 'proven-current');
+    const env = loadCore([canonical]);
+    const repaired = env.api.repairCacheCurrentMembership([synthetic], { liveRows: [canonical] });
+    check(repaired.currentRows.length, 1);
+    check(repaired.currentRows[0].qId, entry.qId);
+    check(repaired.currentRows[0].turnId, `turn:${entry.qId}`);
+    check(repaired.currentRows[0].primaryAId, entry.primaryAId);
+    check(repaired.currentRows[0].answerIds, entry.answerIds);
+    check(repaired.currentRows[0].currentProof, 'proven-current');
+    check(repaired.syntheticRowsReconciledCount, 1);
+    const persisted = env.api.saveTurnCache('fixture-chat', repaired.currentRows);
+    check(persisted.ok, true);
+    check(env.api.loadTurnCache('fixture-chat').currentTurns.length, 1);
+  }
+});
+
+await fixture('synthetic proof is revoked when its temporary owner disappears', () => {
+  const answerId = 'fixture-temporary-owner-answer';
+  const synthetic = withCurrentProof(answeredRow(4, answerId, ''), 'proven-current');
+  const env = loadCore([{ ...synthetic, currentProof: undefined }]);
+  check(env.api.evaluateTransientCurrentOwnership(synthetic).owned, true);
+  env.holder.records = [];
+  const repaired = env.api.repairCacheCurrentMembership([synthetic], { liveRows: [] });
+  check(repaired.currentRows.length, 0);
+  check(repaired.historyRows.length, 1);
+  check(repaired.syntheticProofRevocationCount, 1);
+  check(repaired.syntheticRowsExcludedCount, 1);
+  check(repaired.historyRows[0].repairReason, 'ownerless-synthetic-excluded');
+});
+
+await fixture('ambiguous qId ownership never reconciles or persists synthetic current state', () => {
+  const answerId = 'fixture-ambiguous-synthetic-answer';
+  const synthetic = withCurrentProof(answeredRow(1, answerId, ''), 'proven-current');
+  const env = loadCore([
+    answeredRow(1, answerId, 'fixture-ambiguous-question-a'),
+    answeredRow(2, answerId, 'fixture-ambiguous-question-b'),
+  ]);
+  const ownership = env.api.evaluateTransientCurrentOwnership(synthetic);
+  check(ownership.owned, false);
+  check(ownership.ambiguity, 'canonical-owner-ambiguous');
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [synthetic], { coreProjectedTotal: 2 });
+  check(merged.list.length, 0);
+  check(merged.decision.syntheticOwnerAmbiguousCount > 0, true);
+  const persisted = env.api.saveTurnCache('fixture-chat', [synthetic]);
+  check(persisted.status, 'malformed-membership');
+  check(persisted.reason, 'synthetic-owner-ambiguous');
+  check(persisted.writesAttempted, 0);
+});
+
+await fixture('proven ownerless synthetic persistence is refused byte-identically', () => {
+  const live = rows(3);
+  const synthetic = withCurrentProof(answeredRow(4, 'fixture-proven-ownerless-write', ''), 'proven-current');
+  const env = loadCore(live);
+  stageCache(env, 'fixture-chat', live);
+  const before = storedStrings(env);
+  const persisted = env.api.saveTurnCache('fixture-chat', [...live, synthetic]);
+  check(persisted.status, 'malformed-membership');
+  check(persisted.reason, 'ownerless-synthetic-current');
+  check(persisted.writesAttempted, 0);
+  check(storedStrings(env), before);
+});
+
+await fixture('repeated reload cannot resurrect a previously proven synthetic row', () => {
+  const live = rows(3);
+  const answerId = 'fixture-proven-reload-orphan';
+  const synthetic = withCurrentProof(answeredRow(4, answerId, ''), 'proven-current');
+  const shared = new Map();
+  let env = loadCore(live, { storage: shared });
+  stageCache(env, 'fixture-chat', live);
+  replaceStoredTurns(env, [...live, synthetic]);
+  for (let pass = 0; pass < 3; pass += 1) {
+    env = loadCore(live, { storage: shared });
+    const merged = env.api.mergeTurnListWithCache('fixture-chat', live, { coreProjectedTotal: 3 });
+    check(merged.list.length, 3);
+    check(merged.list.some((row) => row.primaryAId === answerId), false);
+    check(env.api.saveTurnCache('fixture-chat', merged.retainedList).ok, true);
+  }
+});
+
+await fixture('Engine reconciles any published synthetic proof once per unresolved identity set', () => {
+  const live = rows(3);
+  const synthetic = withCurrentProof(answeredRow(4, 'fixture-engine-proven-synthetic', ''), 'proven-current');
+  let published = [...live, synthetic];
+  let scheduleCalls = 0;
+  const btnByIdentity = new Map();
+  const coreApi = {
+    getTurnList: () => published,
+    getTurnById: (id) => published.find((row) => row.turnId === id || row.qId === id) || null,
+    getBtnById: (id) => btnByIdentity.get(String(id || '')) || null,
+    getCacheCompletenessDiagnostics: () => ({
+      unresolvedTransientCount: 0,
+      ownerlessTransientExcludedCount: 0,
+    }),
+    scheduleRebuild: () => { scheduleCalls += 1; return true; },
+  };
+  const engine = loadEngine(coreApi, live);
+  const addButton = (row) => {
+    const btn = engine.document.createElement('button');
+    btn.setAttribute('data-cgxui', 'mnmp-btn');
+    btn.dataset.turnIdx = String(row.turnNo || row.idx || row.index || 1);
+    btn.dataset.turnId = row.turnId;
+    if (row.qId) btn.dataset.questionId = row.qId;
+    if (row.primaryAId) btn.dataset.primaryAId = row.primaryAId;
+    engine.col.appendChild(btn);
+    btnByIdentity.set(row.turnId, btn);
+    if (row.qId) btnByIdentity.set(row.qId, btn);
+    return btn;
+  };
+  live.forEach(addButton);
+  let syntheticBtn = addButton(synthetic);
+  engine.api.state.running = true;
+  check(engine.api.readPublishedSyntheticAnswerRows().count, 1);
+  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 3 }), true);
+  check(scheduleCalls, 1);
+  check(engine.api.onCoreTurnUpdated({ version: 1, turnTotal: 3 }), false);
+  check(scheduleCalls, 1);
+  check(engine.api.onCoreTurnUpdated({ version: 2, turnTotal: 3 }), false);
+  check(scheduleCalls, 1);
+  published = live.slice();
+  syntheticBtn.remove();
+  btnByIdentity.delete(synthetic.turnId);
+  check(engine.api.onCoreTurnUpdated({ version: 3, turnTotal: 3 }), false);
+  check(engine.api.readPublishedSyntheticAnswerRows().count, 0);
+  published = [...live, synthetic];
+  syntheticBtn = addButton(synthetic);
+  check(engine.api.onCoreTurnUpdated({ version: 4, turnTotal: 3 }), true);
+  check(scheduleCalls, 2);
 });
 
 await fixture('target NO ANSWER remains clean in either cache layer', () => {

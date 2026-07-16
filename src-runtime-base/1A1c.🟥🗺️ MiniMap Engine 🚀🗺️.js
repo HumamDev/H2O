@@ -150,6 +150,7 @@
     identityDriftRecoveryVersion: 0,
     identityDriftRecoverySignature: '',
     identityDriftTrailingRetriedSignature: '',
+    syntheticCurrentReconcileSignature: '',
 
     offScroll: null,
     offResize: null,
@@ -2925,6 +2926,34 @@
     };
   }
 
+  function readPublishedSyntheticAnswerRows() {
+    let rows = [];
+    try { rows = MM_core()?.getTurnList?.() || []; } catch { rows = []; }
+    const matches = (Array.isArray(rows) ? rows : []).filter((row) => {
+      if (String(row?.layer || 'current') === 'history') return false;
+      const qId = String(row?.qId || row?.questionId || '').trim();
+      const turnId = String(row?.turnId || '').trim();
+      if (qId || !turnId.startsWith('turn:a:')) return false;
+      const answerId = turnId.slice(7).trim();
+      if (!answerId) return false;
+      const answerIds = [
+        row?.primaryAId,
+        row?.answerId,
+        ...(Array.isArray(row?.answerIds) ? row.answerIds : []),
+      ].map((value) => String(value || '').trim()).filter(Boolean);
+      return answerIds.includes(answerId);
+    });
+    const identities = matches
+      .map((row) => String(row?.turnId || '').trim())
+      .filter(Boolean)
+      .sort()
+      .slice(0, 24);
+    return {
+      count: matches.length,
+      signature: matches.length ? `${matches.length}:${identities.join('|')}` : '',
+    };
+  }
+
   function readMiniMapIdentityAlignment(opts = {}) {
     let records = [];
     try {
@@ -3127,6 +3156,17 @@
     const perfBucket = PERF.automaticRefresh;
     const version = Math.max(0, Number(detail?.version || 0) || 0);
     const turnTotal = Math.max(0, Number(detail?.turnTotal || 0) || 0);
+    const syntheticCurrent = readPublishedSyntheticAnswerRows();
+    if (syntheticCurrent.count > 0) {
+      if (syntheticCurrent.signature === S.syntheticCurrentReconcileSignature) return false;
+      S.syntheticCurrentReconcileSignature = syntheticCurrent.signature;
+      const scheduled = scheduleRebuild('core:turn-updated:synthetic-current-reconcile');
+      if (scheduled) {
+        perfBucket.coreTurnUpdatedRebuildCount = Number(perfBucket.coreTurnUpdatedRebuildCount || 0) + 1;
+      }
+      return scheduled;
+    }
+    S.syntheticCurrentReconcileSignature = '';
     if (version > 0
       && version === Number(perfBucket.lastCoreTurnUpdatedVersion || 0)
       && turnTotal === Number(perfBucket.lastCoreTurnUpdatedTotal || 0)) {
@@ -3432,6 +3472,7 @@
     S.identityDriftRecoveryVersion = 0;
     S.identityDriftRecoverySignature = '';
     S.identityDriftTrailingRetriedSignature = '';
+    S.syntheticCurrentReconcileSignature = '';
     markReady(false);
     dlog('engine:stop', { reason });
     return true;
