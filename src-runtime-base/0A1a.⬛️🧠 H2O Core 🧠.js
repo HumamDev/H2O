@@ -2163,12 +2163,15 @@
       if (previousRecord) usedPrevious.add(previousRecord);
 
       const lastAnswer = pair.answers[pair.answers.length - 1] || null;
+      const currentQId = chatAtlasNormalizeId(pair.question?.messageId) || null;
       const questionCurrentAliases = chatAtlasCv2CurrentIds([
-        pair.question?.messageId,
+        currentQId,
         pair.question?.shellTurnId,
       ]);
-      const currentQId = questionCurrentAliases[0] || null;
-      const projectedQId = currentQId || previousRecord?.question?.qId || null;
+      const projectedQId = currentQId
+        || previousRecord?.question?.qId
+        || chatAtlasNormalizeId(pair.question?.shellTurnId)
+        || null;
       const questionEvidenceAliases = chatAtlasCv2CurrentIds([
         ...(pair.question?.aliases || []),
         ...questionCurrentAliases,
@@ -4115,12 +4118,170 @@
     return candidates[0] || null;
   }
 
+  function canonicalMountedQuestionIdentity(draft) {
+    const qEl = draft?.live?.qEl || null;
+    if (!qEl?.isConnected) return { qId: null, shellTurnId: null };
+    const qId = normalizeTurnAlias(
+      qEl.getAttribute?.(ATTR_MESSAGE_ID)
+      || qEl.dataset?.messageId
+      || '',
+    ) || null;
+    let shellTurnId = null;
+    try {
+      const shell = qEl.closest?.(CHAT_ATLAS_SHELL_SEL) || null;
+      shellTurnId = normalizeTurnAlias(shell?.getAttribute?.('data-turn-id') || '') || null;
+    } catch {}
+    return { qId, shellTurnId };
+  }
+
+  function canonicalRecordIdentityValues(record) {
+    return new Set([
+      normalizeTurnAlias(record?.qId || ''),
+      normalizeTurnAlias(record?.turnId || ''),
+      ...(record?._aliasIds || []).map((value) => normalizeTurnAlias(value)),
+    ].filter(Boolean));
+  }
+
+  function canonicalDraftAnswerIds(draft) {
+    return new Set([
+      normalizeTurnAlias(draft?.primaryAId || ''),
+      ...(draft?.answerIds || []).map((value) => normalizeTurnAlias(value)),
+    ].filter(Boolean));
+  }
+
+  function canonicalRecordAnswerIds(record) {
+    return new Set([
+      normalizeTurnAlias(record?.primaryAId || ''),
+      ...(record?.answerIds || []).map((value) => normalizeTurnAlias(value)),
+    ].filter(Boolean));
+  }
+
+  function canonicalLiveDraftMatch(records, draft, used = new Set()) {
+    const available = (Array.isArray(records) ? records : []).filter((record) => record && !used.has(record));
+    const draftQId = normalizeTurnAlias(draft?.qId || '');
+    const mounted = canonicalMountedQuestionIdentity(draft);
+    const draftAnswers = canonicalDraftAnswerIds(draft);
+    const draftAliases = new Set((draft?.aliasIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean));
+    const unique = (candidates, basis) => candidates.length === 1
+      ? { record: candidates[0], basis, candidateCount: 1 }
+      : null;
+
+    if (draftQId) {
+      const exact = unique(available.filter((record) => normalizeTurnAlias(record.qId) === draftQId), 'current-question-id');
+      if (exact) return exact;
+    }
+
+    if (mounted.shellTurnId) {
+      const shellTurnId = mounted.shellTurnId;
+      const shellTurnVariant = `turn:${shellTurnId}`;
+      const shell = unique(available.filter((record) => {
+        const identities = canonicalRecordIdentityValues(record);
+        return identities.has(shellTurnId) || identities.has(shellTurnVariant);
+      }), 'mounted-question-shell');
+      if (shell) return shell;
+    }
+
+    if (draftAnswers.size) {
+      const answers = unique(available.filter((record) => {
+        const recordAnswers = canonicalRecordAnswerIds(record);
+        return Array.from(draftAnswers).some((value) => recordAnswers.has(value));
+      }), 'current-answer-identity');
+      if (answers) return answers;
+    }
+
+    if (draftAliases.size) {
+      const aliases = unique(available.filter((record) => {
+        const identities = canonicalRecordIdentityValues(record);
+        return Array.from(draftAliases).some((value) => identities.has(value));
+      }), 'historical-alias-only');
+      if (aliases) return aliases;
+    }
+    return { record: null, basis: 'unmatched', candidateCount: 0 };
+  }
+
+  function syncDurableCurrentQuestionIdentity(previousQId, currentQId, draft) {
+    const previous = normalizeTurnAlias(previousQId || '');
+    const current = normalizeTurnAlias(currentQId || '');
+    if (!previous || !current || previous === current) return false;
+    ensureDurableTurnCache();
+    const order = turnState.durableOrder;
+    const byKey = turnState.durableByKey;
+    const previousKey = `q:${previous}`;
+    let sourceKey = byKey.has(previousKey) ? previousKey : '';
+    if (!sourceKey) {
+      const answerIds = canonicalDraftAnswerIds(draft);
+      const matches = order.filter((key) => {
+        const retained = byKey.get(key);
+        if (!retained) return false;
+        if (normalizeTurnAlias(retained.qId) === previous) return true;
+        const retainedAnswers = canonicalDraftAnswerIds(retained);
+        return Array.from(answerIds).some((value) => retainedAnswers.has(value));
+      });
+      if (matches.length === 1) sourceKey = matches[0];
+    }
+    if (!sourceKey) return false;
+
+    const retained = byKey.get(sourceKey);
+    if (!retained) return false;
+    const next = slimTurnDraft({
+      ...retained,
+      qId: current,
+      answerIds: Array.from(new Set([...(retained.answerIds || []), ...(draft?.answerIds || [])])),
+      aliasIds: Array.from(new Set([...(retained.aliasIds || []), ...(draft?.aliasIds || []), previous])),
+    });
+    const currentKey = `q:${current}`;
+    const sourceIndex = order.indexOf(sourceKey);
+    const existingCurrent = currentKey !== sourceKey ? byKey.get(currentKey) : null;
+    const existingIndex = existingCurrent ? order.indexOf(currentKey) : -1;
+    if (existingCurrent) {
+      next.answerIds = Array.from(new Set([...(existingCurrent.answerIds || []), ...next.answerIds]));
+      next.aliasIds = Array.from(new Set([...(existingCurrent.aliasIds || []), ...next.aliasIds, previous]));
+    }
+    byKey.delete(sourceKey);
+    byKey.set(currentKey, next);
+    const occupiedIndexes = [sourceIndex, existingIndex].filter((index) => index >= 0);
+    const replacementIndex = occupiedIndexes.length ? Math.min(...occupiedIndexes) : order.length;
+    for (const index of occupiedIndexes.sort((a, b) => b - a)) {
+      order.splice(index, 1);
+    }
+    order.splice(replacementIndex, 0, currentKey);
+    return true;
+  }
+
+  function promoteCanonicalCurrentQuestionIdentity(record, draft, match = {}) {
+    const mounted = canonicalMountedQuestionIdentity(draft);
+    const currentQId = mounted.qId;
+    const previousQId = normalizeTurnAlias(record?.qId || '');
+    if (!record || !currentQId) return { changed: false, reason: 'mounted-question-id-unavailable' };
+    if (currentQId === previousQId) return { changed: false, reason: 'already-current' };
+    const positiveBasis = match?.basis === 'mounted-question-shell'
+      || match?.basis === 'current-answer-identity';
+    if (!positiveBasis) return { changed: false, reason: 'selected-path-proof-missing' };
+
+    record._aliasIds = Array.from(new Set([
+      ...(record._aliasIds || []),
+      previousQId,
+    ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    record.qId = currentQId;
+    record.hasQuestion = true;
+    record.turnId = buildCanonicalTurnId(record);
+    syncDurableCurrentQuestionIdentity(previousQId, currentQId, draft);
+    return {
+      changed: true,
+      reason: match.basis,
+      previousQId: previousQId || null,
+      currentQId,
+    };
+  }
+
   function applyCanonicalDraft(record, draft) {
     const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
     const answerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
     const primaryAId = answerIds.length ? answerIds[answerIds.length - 1] : null;
+    const previousQId = normalizeTurnAlias(record?.qId || '');
+    const currentQId = normalizeTurnAlias(draft?.qId || '');
     record.turnNo = turnNo;
-    record.qId = draft?.qId || null;
+    record.qId = currentQId || null;
     record.answerIds = answerIds;
     record.primaryAId = primaryAId;
     record.turnId = buildCanonicalTurnId({
@@ -4130,7 +4291,10 @@
     });
     record.hasQuestion = !!record.qId;
     record.hasAssistant = !!record.answerIds.length;
-    record._aliasIds = Array.from(new Set((draft?.aliasIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    record._aliasIds = Array.from(new Set([
+      ...(draft?.aliasIds || []),
+      previousQId && previousQId !== currentQId ? previousQId : '',
+    ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
     if (!record.page || typeof record.page !== 'object') record.page = createEmptyPageState();
     if (!record.mount || typeof record.mount !== 'object') record.mount = createEmptyMountState();
     record.live = {
@@ -4142,7 +4306,7 @@
     return refreshLegacyTurnCompat(record);
   }
 
-  function applyLiveDraft(record, draft) {
+  function applyLiveDraft(record, draft, match = {}) {
     if (!record || !draft) return record;
     let shouldRebuildTurnId = false;
     record.live = {
@@ -4151,8 +4315,12 @@
       answerEls: Array.isArray(draft?.live?.answerEls) ? draft.live.answerEls.filter(Boolean) : [],
       connected: !!draft?.live?.connected,
     };
-    if (!record.qId && draft?.qId) {
-      record.qId = draft.qId;
+    const questionPromotion = promoteCanonicalCurrentQuestionIdentity(record, draft, match);
+    if (questionPromotion.changed) {
+      shouldRebuildTurnId = true;
+    } else if (!record.qId && canonicalMountedQuestionIdentity(draft).qId) {
+      record.qId = canonicalMountedQuestionIdentity(draft).qId;
+      record.hasQuestion = true;
       shouldRebuildTurnId = true;
     }
     if ((!record.answerIds || !record.answerIds.length) && Array.isArray(draft?.answerIds) && draft.answerIds.length) {
@@ -4216,27 +4384,24 @@
     rebuildTurnMaps(nextRecords);
 
     const unmatchedLiveDrafts = [];
+    const usedLiveRecords = new Set();
     for (const draft of Array.isArray(liveDrafts) ? liveDrafts : []) {
-      const record =
-        getRecordByTurnIdInternal(buildCanonicalTurnId(draft))
-        || (draft?.qId ? getRecordByQIdInternal(draft.qId) : null)
-        || (draft?.primaryAId ? getRecordByAIdInternal(draft.primaryAId) : null)
-        || (draft?.answerIds || []).map((id) => getRecordByAIdInternal(id)).find(Boolean)
-        || (draft?.aliasIds || []).map((id) => getRecordByTurnIdInternal(id)).find(Boolean)
-        || null;
+      const match = canonicalLiveDraftMatch(nextRecords, draft, usedLiveRecords);
+      const record = match.record;
 
       if (!record) {
         unmatchedLiveDrafts.push(draft);
         continue;
       }
-      applyLiveDraft(record, draft);
+      usedLiveRecords.add(record);
+      applyLiveDraft(record, draft, match);
     }
 
     for (const draft of unmatchedLiveDrafts) {
       const record = createTurnRecord('', nextRecords.length + 1);
       draft.turnNo = nextRecords.length + 1;
       applyCanonicalDraft(record, draft);
-      applyLiveDraft(record, draft);
+      applyLiveDraft(record, draft, { record, basis: 'new-live-turn', candidateCount: 1 });
       nextRecords.push(record);
     }
 
