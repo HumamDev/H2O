@@ -71,6 +71,7 @@ function instrumentSource() {
     'commitTurnDrafts',
     'buildTurnDraftsFromEntries',
     'buildLiveTurnDrafts',
+    'supplementSegmentShellVariants',
     'getTurnDraftStructureEvidence',
     'sectionDraftAuthorityDecision',
     'findPreviousTurnRecord',
@@ -120,6 +121,7 @@ function instrumentSource() {
     '    commitTurnDrafts,',
     '    buildTurnDraftsFromEntries,',
     '    buildLiveTurnDrafts,',
+    '    supplementSegmentShellVariants,',
     '    getTurnDraftStructureEvidence,',
     '    sectionDraftAuthorityDecision,',
     '    findPreviousTurnRecord,',
@@ -1050,6 +1052,64 @@ function laterTailQuestionReconcilesIdempotentlyFixture(runtime) {
   equal(second.find((row) => row.qId === qId).answerIds, answers);
 }
 
+function hiddenShellVariantSupplementFixture(runtime) {
+  const flow = { id: 'fixture-hidden-shell-flow' };
+  const hiddenVariant = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
+  const selectedVariant = OBSERVED.answerId;
+  const live = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'assistant', aId: selectedVariant, structure: entryStructure(73, flow, 0) },
+  ]);
+  const shellSections = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'assistant', aId: hiddenVariant, structure: entryStructure(72, flow, 0) },
+    { role: 'assistant', aId: selectedVariant, structure: entryStructure(73, flow, 1) },
+  ]);
+  const supplemented = runtime.internals.supplementSegmentShellVariants(live, shellSections);
+  equal(supplemented.length, 1, 'hidden shell variant supplements one selected logical row');
+  equal(supplemented[0].qId, null, 'shell supplement never invents a question identity');
+  equal(supplemented[0].answerIds, [hiddenVariant, selectedVariant]);
+  equal(supplemented[0].primaryAId, selectedVariant, 'visible selected answer remains primary');
+  equal(supplemented[0].structure.answerOrdinals, [72, 73]);
+  equal(runtime.internals.getTurnDraftStructureEvidence(supplemented).shellVariantSupplementCount, 1);
+
+  const otherFlow = { id: 'fixture-hidden-shell-other-flow' };
+  const crossBoundary = runtime.internals.buildTurnDraftsFromEntries([
+    { role: 'assistant', aId: hiddenVariant, structure: entryStructure(72, otherFlow, 0) },
+    { role: 'assistant', aId: selectedVariant, structure: entryStructure(73, otherFlow, 1) },
+  ]);
+  const unchanged = runtime.internals.supplementSegmentShellVariants(live, crossBoundary);
+  equal(unchanged[0].answerIds, [selectedVariant], 'shell variants cannot cross a flow or segment boundary');
+  equal(runtime.internals.getTurnDraftStructureEvidence(unchanged).shellVariantSupplementCount, 0);
+}
+
+function sameQuestionVariantSetIsAdditiveFixture(runtime) {
+  const qId = OBSERVED.mountedQId;
+  const hiddenVariant = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
+  const selectedVariant = OBSERVED.answerId;
+  const retained = draft({ qId, answers: [hiddenVariant, selectedVariant], aliases: [qId] });
+  runtime.internals.seedDurableTurnDrafts([retained]);
+
+  const selectedOnly = draft({ qId, answers: [selectedVariant], aliases: [qId] });
+  const first = runtime.internals.mergeDurableTurnDrafts([selectedOnly]);
+  const second = runtime.internals.mergeDurableTurnDrafts([selectedOnly]);
+  equal(first.find((row) => row.qId === qId).answerIds, [hiddenVariant, selectedVariant],
+    'partial same-qId durable merge preserves the hidden sibling variant');
+  equal(first.find((row) => row.qId === qId).primaryAId, selectedVariant);
+  equal(second.find((row) => row.qId === qId).answerIds, [hiddenVariant, selectedVariant],
+    'same-qId additive merge is idempotent');
+
+  runtime.internals.commitTurnDrafts([retained], []);
+  const record = runtime.internals.getRecords()[0];
+  runtime.internals.applyCanonicalDraft(record, selectedOnly);
+  equal(record.qId, qId);
+  equal(record.answerIds, [hiddenVariant, selectedVariant], 'applyCanonicalDraft cannot shrink proven variants');
+  equal(record.primaryAId, selectedVariant, 'incoming selected primary remains selected');
+
+  const explicitNoAnswer = { ...selectedOnly, answerIds: [], primaryAId: null, noAnswer: true };
+  runtime.internals.applyCanonicalDraft(record, explicitNoAnswer);
+  equal(record.answerIds, [], 'explicit NO ANSWER remains an authorized removal path');
+  equal(record.primaryAId, null);
+}
+
 function flatRoleScanHonorsGapFixture(runtime) {
   const flow = { id: 'fixture-flat-gap-flow' };
   const qId = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -1118,6 +1178,8 @@ const FIXTURES = [
   ['cross-gap-tail-answers-do-not-rekey-retained-question', crossGapRetainedOwnershipFixture],
   ['contiguous-section-coverage-may-be-authoritative', contiguousSectionAuthorityFixture],
   ['later-tail-question-reconciles-idempotently', laterTailQuestionReconcilesIdempotentlyFixture],
+  ['hidden-shell-variant-supplements-selected-tail-answer', hiddenShellVariantSupplementFixture],
+  ['same-question-variant-set-is-additive', sameQuestionVariantSetIsAdditiveFixture],
   ['flat-role-scan-honors-virtualization-gap', flatRoleScanHonorsGapFixture],
   ['durable-38-to-3-membership-remains-protected', durableThirtyEightToThreeFixture],
 ];

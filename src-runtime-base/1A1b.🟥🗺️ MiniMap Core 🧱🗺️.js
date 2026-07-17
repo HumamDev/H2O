@@ -2776,6 +2776,15 @@ function UM_PUBLIC() {
     return currentAnswerIds.has(syntheticId);
   }
 
+  function canonicalCurrentOwnerAnswerIds(record) {
+    return Array.from(new Set([
+      record?.primaryAId,
+      record?.answerId,
+      ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ...(Array.isArray(record?.currentAnswerIds) ? record.currentAnswerIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+  }
+
   function exactSyntheticCurrentLedgerOwner(member, row) {
     const syntheticId = syntheticAnswerOnlyCurrentId(row);
     const qId = String(
@@ -2787,6 +2796,13 @@ function UM_PUBLIC() {
       ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
     ].map((value) => String(value || '').trim()).filter(Boolean));
     return currentAnswerIds.has(syntheticId);
+  }
+
+  function ledgerCurrentOwnerAnswerIds(member) {
+    return Array.from(new Set([
+      member?.answer?.primaryAId,
+      ...(Array.isArray(member?.answer?.currentAnswerIds) ? member.answer.currentAnswerIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
   }
 
   function isHostOwnedControl(el) {
@@ -2889,21 +2905,29 @@ function UM_PUBLIC() {
       };
     }
     if (canonicalOwners.length === 1 && canonicalQId) {
+      const ownerAnswerIds = canonicalCurrentOwnerAnswerIds(canonicalOwners[0]);
       return {
         owned: true,
         basis: 'canonical-current-member',
         qId: canonicalQId,
         answerId,
         hostConnected: false,
+        ownerAnswerIds,
+        ownerPrimaryAId: String(canonicalOwners[0]?.primaryAId || canonicalOwners[0]?.answerId || '').trim(),
+        logicalMemberKey: String(canonicalOwners[0]?.logicalMemberKey || '').trim(),
       };
     }
     if (ledgerOwners.length === 1 && ledgerQId) {
+      const ownerAnswerIds = ledgerCurrentOwnerAnswerIds(ledgerOwners[0]);
       return {
         owned: true,
         basis: 'ledger-current-member',
         qId: ledgerQId,
         answerId,
         hostConnected: false,
+        ownerAnswerIds,
+        ownerPrimaryAId: String(ledgerOwners[0]?.answer?.primaryAId || '').trim(),
+        logicalMemberKey: String(ledgerOwners[0]?.logicalMemberKey || '').trim(),
       };
     }
     const hostOwners = connectedSelectedHostOwners(row);
@@ -4821,18 +4845,70 @@ function UM_PUBLIC() {
       };
     });
     const claimCounts = new Map();
+    const candidatesByClaim = new Map();
     for (const candidate of candidates) {
       if (!candidate.claim) continue;
       claimCounts.set(candidate.claim, (claimCounts.get(candidate.claim) || 0) + 1);
+      if (!candidatesByClaim.has(candidate.claim)) candidatesByClaim.set(candidate.claim, []);
+      candidatesByClaim.get(candidate.claim).push(candidate);
+    }
+    const sameOwnerVariantGroups = new Map();
+    for (const [claim, group] of candidatesByClaim.entries()) {
+      if (group.length < 2) continue;
+      const syntheticIds = group.map((candidate) => syntheticAnswerOnlyCurrentId(candidate.row)).filter(Boolean);
+      const qIds = new Set(group.map((candidate) => String(candidate.ownership?.qId || '').trim()).filter(Boolean));
+      const valid = syntheticIds.length === group.length
+        && new Set(syntheticIds).size === syntheticIds.length
+        && qIds.size === 1
+        && group.every((candidate) => (
+          candidate.synthetic
+          && candidate.reconciled
+          && candidate.ownership?.owned
+          && !candidate.ownership?.ambiguity
+          && candidate.ownership?.basis !== 'connected-selected-host-answer'
+          && syntheticIds.every((answerId) => (
+            Array.isArray(candidate.ownership?.ownerAnswerIds)
+            && candidate.ownership.ownerAnswerIds.includes(answerId)
+          ))
+        ));
+      if (!valid) continue;
+      const preferredPrimaries = Array.from(new Set(group
+        .map((candidate) => String(candidate.ownership?.ownerPrimaryAId || '').trim())
+        .filter(Boolean)));
+      if (preferredPrimaries.length > 1) continue;
+      const primaryAId = preferredPrimaries[0] || syntheticIds[syntheticIds.length - 1] || '';
+      let mergedRow = group[0].reconciled;
+      for (const candidate of group.slice(1)) {
+        mergedRow = mergeCacheVariantEvidence(mergedRow, candidate.reconciled, primaryAId);
+      }
+      mergedRow = mergeCacheVariantEvidence(mergedRow, {
+        answerIds: group[0].ownership.ownerAnswerIds,
+        primaryAId,
+      }, primaryAId);
+      sameOwnerVariantGroups.set(claim, {
+        leader: group[0],
+        row: {
+          ...mergedRow,
+          logicalMemberKey: String(group[0].ownership?.logicalMemberKey || mergedRow?.logicalMemberKey || '').trim(),
+          currentProof: CURRENT_PROOF_PROVEN,
+        },
+      });
     }
     const rawRows = candidates.map((candidate) => {
+      const sameOwnerVariantGroup = candidate.claim
+        ? sameOwnerVariantGroups.get(candidate.claim)
+        : null;
+      if (sameOwnerVariantGroup && sameOwnerVariantGroup.leader !== candidate) {
+        noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsReconciledCount', candidate.row);
+        return null;
+      }
       if (
         candidate.requiresOwnership
         && (
           !candidate.ownership?.owned
           || candidate.ownership?.ambiguity
           || !candidate.claim
-          || claimCounts.get(candidate.claim) !== 1
+          || (claimCounts.get(candidate.claim) !== 1 && !sameOwnerVariantGroup)
         )
       ) {
         noteTransientDiagnosticClaim(diagnosticClaims, 'transientRowsExcluded', candidate.row);
@@ -4850,11 +4926,11 @@ function UM_PUBLIC() {
         }
         return null;
       }
-      const row = candidate.reconciled || candidate.row;
-      const currentProof = candidate.reconciled
+      const row = sameOwnerVariantGroup?.row || candidate.reconciled || candidate.row;
+      const currentProof = sameOwnerVariantGroup || candidate.reconciled
         ? CURRENT_PROOF_PROVEN
         : candidate.currentProof;
-      if (candidate.reconciled) {
+      if (sameOwnerVariantGroup || candidate.reconciled) {
         noteTransientDiagnosticClaim(diagnosticClaims, 'syntheticRowsReconciledCount', candidate.row);
       }
       if (
@@ -10802,6 +10878,35 @@ function unbindChatPageDividerBridge() {
     return true;
   }
 
+  function mergeRebuildTurnCache(chatId, list, evidence, mergeFn = mergeTurnListWithCache) {
+    try {
+      const merged = mergeFn(chatId, list, evidence);
+      if (!merged || !Array.isArray(merged.list) || !Array.isArray(merged.retainedList)) {
+        throw new TypeError('invalid-cache-merge-result');
+      }
+      return { ok: true, merged, decision: merged.decision || null, persistence: null, error: null };
+    } catch (error) {
+      return {
+        ok: false,
+        merged: null,
+        decision: Object.freeze({
+          accepted: false,
+          mode: 'refused',
+          reason: 'cache-merge-failed',
+          incomingCount: Array.isArray(list) ? list.length : 0,
+          errorName: String(error?.name || 'Error').slice(0, 64),
+        }),
+        persistence: Object.freeze({
+          ok: false,
+          status: 'merge-failed',
+          reason: 'cache-merge-failed',
+          writesAttempted: 0,
+        }),
+        error,
+      };
+    }
+  }
+
   function rebuildNow(reason = 'core:rebuildNow') {
     const perfT0 = PERF_ASSERT_ON ? performance.now() : 0;
     const scanTick0 = Number(S.perfFullScanTick || 0);
@@ -10841,27 +10946,32 @@ function unbindChatPageDividerBridge() {
       let retainedListForPersistence = list;
       // Never let a subset re-index shrink the MiniMap: merge with the
       // per-chat turn cache before building buttons/publishing/saving.
-      try {
-        const merged = mergeTurnListWithCache(resolveChatId(), list, snapshot.canonicalEvidence);
-        out.cacheMerge = merged?.decision || null;
-        if (Array.isArray(merged?.list)) {
-          list = merged.list;
-          retainedListForPersistence = Array.isArray(merged?.retainedList)
-            ? merged.retainedList
-            : list;
-          snapshot.list = list;
-          const byId = new Map();
-          const byAId = new Map();
-          for (const turn of list) {
-            byId.set(turn.turnId, turn);
-            if (turn.answerId) byAId.set(turn.answerId, turn.turnId);
-          }
-          snapshot.byId = byId;
-          snapshot.byAId = byAId;
-        }
-      } catch (e) {
-        safeDiag('err', 'core.rebuildNow:mergeTurnCache', e);
+      const mergeOutcome = mergeRebuildTurnCache(resolveChatId(), list, snapshot.canonicalEvidence);
+      if (!mergeOutcome.ok) {
+        safeDiag('err', 'core.rebuildNow:mergeTurnCache', mergeOutcome.error);
+        out.status = 'partial';
+        out.reason = 'cache-merge-failed';
+        out.cacheMerge = mergeOutcome.decision;
+        out.cachePersistence = mergeOutcome.persistence;
+        out.retry.scheduled = scheduleRetry('cache-merge-failed', why);
+        out.retry.count = S.retryCount;
+        out.retry.kind = S.retryKind;
+        S.lastRebuildResult = out;
+        return out;
       }
+      const merged = mergeOutcome.merged;
+      out.cacheMerge = mergeOutcome.decision;
+      list = merged.list;
+      retainedListForPersistence = merged.retainedList;
+      snapshot.list = list;
+      const byId = new Map();
+      const byAId = new Map();
+      for (const turn of list) {
+        byId.set(turn.turnId, turn);
+        if (turn.answerId) byAId.set(turn.answerId, turn.turnId);
+      }
+      snapshot.byId = byId;
+      snapshot.byAId = byAId;
       out.built.turns = list.length;
       if (!out.built.turns) {
         out.reason = 'turns-empty';

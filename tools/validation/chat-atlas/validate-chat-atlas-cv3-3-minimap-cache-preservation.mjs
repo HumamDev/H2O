@@ -48,6 +48,7 @@ const coreSource = replaceUnique(
     inspectCrossQIdAnswerOwnership,
     validateAuthoritativeShrinkProof,
     mergeTurnListWithCache,
+    mergeRebuildTurnCache,
     persistPublishedTurnList,
     appendTurnFromAnswerEl,
     loadTurnCache,
@@ -1734,23 +1735,90 @@ await fixture('ownerless transient persistence is refused byte-identically', () 
   check(storedStrings(env), before);
 });
 
-await fixture('two transient rows cannot claim one current member', () => {
+await fixture('two synthetic variants reconcile through one current member', () => {
   const qId = 'fixture-one-owner-question';
   const answerA = 'fixture-one-owner-answer-a';
   const answerB = 'fixture-one-owner-answer-b';
   const canonical = variantRow(1, qId, answerB, [answerA, answerB]);
-  const first = withCurrentProof(answeredRow(1, answerA, ''), 'transient-unverified');
-  const second = withCurrentProof(answeredRow(2, answerB, ''), 'transient-unverified');
+  const first = withCurrentProof({
+    ...answeredRow(1, answerA, ''),
+    answerIds: [answerA],
+  }, 'transient-unverified');
+  const second = withCurrentProof({
+    ...answeredRow(2, answerB, ''),
+    answerIds: [answerB],
+  }, 'transient-unverified');
   const env = loadCore([canonical]);
   stageCache(env, 'fixture-chat', [canonical]);
-  const before = storedStrings(env);
   const merged = env.api.mergeTurnListWithCache('fixture-chat', [first, second], { coreProjectedTotal: 1 });
   check(merged.list.some((row) => row.qId === ''), false);
-  check(merged.decision.ownerlessTransientExcludedCount, 2);
-  const persisted = env.api.saveTurnCache('fixture-chat', [first, second]);
-  check(persisted.status, 'malformed-membership');
-  check(persisted.reason, 'synthetic-owner-ambiguous');
+  check(merged.list.length, 1);
+  check(merged.list[0].qId, qId);
+  check(merged.list[0].answerIds, [answerA, answerB]);
+  check(merged.list[0].primaryAId, answerB);
+  check(merged.decision.syntheticOwnerAmbiguousCount, 0);
+  check(merged.decision.syntheticRowsReconciledCount, 2);
+  const rawPersistence = env.api.saveTurnCache('fixture-chat', [first, second]);
+  check(rawPersistence.ok, false);
+  check(rawPersistence.status, 'malformed-membership');
+  check(rawPersistence.reason, 'synthetic-owner-ambiguous');
+  check(rawPersistence.writesAttempted, 0);
+  const persisted = env.api.saveTurnCache('fixture-chat', merged.retainedList, {
+    liveRows: merged.currentList,
+  });
+  check(persisted.ok, true);
+  check(env.api.loadTurnCache('fixture-chat').currentTurns.length, 1);
+  check(env.api.loadTurnCache('fixture-chat').currentTurns[0].answerIds, [answerA, answerB]);
+  check(env.storage.writes.length > 0, true);
+});
+
+await fixture('rebuild cache merge exception refuses raw-list persistence', () => {
+  const qId = 'fixture-merge-failure-question';
+  const answerA = 'fixture-merge-failure-answer-a';
+  const answerB = 'fixture-merge-failure-answer-b';
+  const retained = variantRow(1, qId, answerB, [answerA, answerB]);
+  const selectedOnly = variantRow(1, qId, answerB, [answerB]);
+  const env = loadCore([retained]);
+  stageCache(env, 'fixture-chat', [retained]);
+  const before = storedStrings(env);
+  const outcome = env.api.mergeRebuildTurnCache(
+    'fixture-chat',
+    [selectedOnly],
+    { source: 'core-runtime', coreProjectedTotal: 1 },
+    () => { throw new Error('fixture-cache-merge-failure'); },
+  );
+  check(outcome.ok, false);
+  check(outcome.decision.accepted, false);
+  check(outcome.decision.reason, 'cache-merge-failed');
+  check(outcome.persistence.status, 'merge-failed');
+  check(outcome.persistence.writesAttempted, 0);
   check(storedStrings(env), before);
+  check(env.api.loadTurnCache('fixture-chat').currentTurns[0].answerIds, [answerA, answerB]);
+});
+
+await fixture('same-qId partial refresh persists and reloads all variants', () => {
+  const qId = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+  const variants = [
+    '84c7e73c-5fb7-44f6-a930-72e92d369c5a',
+    '733fa31a-7d11-4ce5-b570-8ffa474670d4',
+  ];
+  const retained = variantRow(1, qId, variants[1], variants);
+  const selectedOnly = variantRow(1, qId, variants[1], [variants[1]]);
+  const env = loadCore([selectedOnly]);
+  stageCache(env, 'fixture-chat', [retained]);
+  const merged = env.api.mergeTurnListWithCache('fixture-chat', [selectedOnly], {
+    source: 'core-runtime',
+    coreProjectedTotal: 1,
+  });
+  check(merged.list.length, 1);
+  check(merged.list[0].answerIds, variants);
+  check(merged.list[0].primaryAId, variants[1]);
+  const persisted = env.api.saveTurnCache('fixture-chat', merged.retainedList, { liveRows: merged.currentList });
+  check(persisted.ok, true);
+  const reloaded = env.api.loadTurnCache('fixture-chat').currentTurns;
+  check(reloaded.length, 1);
+  check(reloaded[0].answerIds, variants);
+  check(reloaded[0].primaryAId, variants[1]);
 });
 
 await fixture('repaired three-row payload persists after transient exclusion', () => {

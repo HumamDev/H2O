@@ -3956,6 +3956,18 @@
     return `turn:${turnNo}`;
   }
 
+  const turnFlowIdentityByRef = new WeakMap();
+  let turnFlowIdentitySequence = 0;
+
+  function turnFlowIdentity(flowRef) {
+    if (!flowRef || (typeof flowRef !== 'object' && typeof flowRef !== 'function')) return '';
+    if (!turnFlowIdentityByRef.has(flowRef)) {
+      turnFlowIdentitySequence += 1;
+      turnFlowIdentityByRef.set(flowRef, `flow:${turnFlowIdentitySequence}`);
+    }
+    return turnFlowIdentityByRef.get(flowRef) || '';
+  }
+
   function parseConversationTurnOrdinal(section) {
     const testId = String(section?.getAttribute?.(ATTR_TESTID) || '');
     const match = testId.match(/conversation-turn-(\d+)/);
@@ -4003,6 +4015,7 @@
         || '',
       ).trim() || null,
       flowRef,
+      flowIdentity: turnFlowIdentity(flowRef),
       selectedPathEligible: section ? isSelectedConversationSection(section) : null,
       sourceIndex: Math.max(0, Number(sourceIndex || 0) || 0),
     };
@@ -4025,6 +4038,7 @@
     if (!structure || typeof structure !== 'object') return null;
     return {
       segmentId: Math.max(0, Number(structure.segmentId || 0) || 0),
+      flowIdentity: String(structure.flowIdentity || turnFlowIdentity(structure.flowRef) || '').trim(),
       structureKnown: structure.structureKnown === true,
       selectedPathEligible: structure.selectedPathEligible === true,
       pairingContiguous: structure.pairingContiguous === true,
@@ -4052,6 +4066,7 @@
         gapCount: Math.max(0, Number(evidence.gapCount || 0) || 0),
         unpairedAssistantCount: Math.max(0, Number(evidence.unpairedAssistantCount || 0) || 0),
         ineligibleCount: Math.max(0, Number(evidence.ineligibleCount || 0) || 0),
+        shellVariantSupplementCount: Math.max(0, Number(evidence.shellVariantSupplementCount || 0) || 0),
         firstOrdinal: evidence.firstOrdinal != null && Number.isFinite(Number(evidence.firstOrdinal))
           ? Number(evidence.firstOrdinal)
           : null,
@@ -4081,6 +4096,31 @@
       : null;
   }
 
+  function mergeCanonicalAnswerState(existingIds, incomingIds, preferredPrimary = '', existingPrimary = '', opts = {}) {
+    if (opts?.explicitRemoval === true) return { answerIds: [], primaryAId: null };
+    const answerIds = [];
+    const seen = new Set();
+    for (const value of [...(existingIds || []), ...(incomingIds || [])]) {
+      const answerId = normalizeTurnAlias(value);
+      if (!answerId || seen.has(answerId)) continue;
+      seen.add(answerId);
+      answerIds.push(answerId);
+    }
+    const incomingPrimary = normalizeTurnAlias(preferredPrimary || '');
+    const retainedPrimary = normalizeTurnAlias(existingPrimary || '');
+    const primaryAId = answerIds.includes(incomingPrimary)
+      ? incomingPrimary
+      : (answerIds.includes(retainedPrimary) ? retainedPrimary : (answerIds[answerIds.length - 1] || null));
+    if (primaryAId) {
+      const index = answerIds.indexOf(primaryAId);
+      if (index >= 0 && index !== answerIds.length - 1) {
+        answerIds.splice(index, 1);
+        answerIds.push(primaryAId);
+      }
+    }
+    return { answerIds, primaryAId };
+  }
+
   function buildTurnDraftsFromEntries(entries = []) {
     const drafts = [];
     let current = null;
@@ -4092,19 +4132,25 @@
     let unpairedAssistantCount = 0;
     let ineligibleCount = 0;
     const reasons = [];
-    const structuredEntries = (Array.isArray(entries) ? entries : []).map((entry, sourceIndex) => ({
-      ...entry,
-      structure: entry?.structure || readTurnEntryStructure(
+    const structuredEntries = (Array.isArray(entries) ? entries : []).map((entry, sourceIndex) => {
+      const structure = entry?.structure || readTurnEntryStructure(
         entry?.qEl || entry?.aEl || null,
         entry?.sectionRef || null,
         sourceIndex,
-      ),
-    }));
+      );
+      return {
+        ...entry,
+        structure: {
+          ...structure,
+          flowIdentity: String(structure?.flowIdentity || turnFlowIdentity(structure?.flowRef) || '').trim(),
+        },
+      };
+    });
 
     const finalize = (draft) => {
       if (!draft) return null;
       draft.qId = normalizeTurnAlias(draft.qId || '') || null;
-      draft.answerIds = draft.answerIds.map((id) => normalizeTurnAlias(id)).filter(Boolean);
+      draft.answerIds = Array.from(new Set(draft.answerIds.map((id) => normalizeTurnAlias(id)).filter(Boolean)));
       draft.primaryAId = draft.answerIds.length ? draft.answerIds[draft.answerIds.length - 1] : null;
       draft.hasQuestion = !!draft.qId;
       draft.hasAssistant = !!draft.answerIds.length;
@@ -4144,6 +4190,7 @@
           aliasIds: Array.isArray(entry?.aliasIds) ? entry.aliasIds.slice() : [],
           structure: {
             segmentId,
+            flowIdentity: entry?.structure?.flowIdentity || '',
             structureKnown: entry?.structure?.known === true,
             selectedPathEligible: entry?.structure?.selectedPathEligible === true,
             pairingContiguous: entry?.structure?.known === true
@@ -4180,6 +4227,7 @@
           aliasIds: [],
           structure: {
             segmentId,
+            flowIdentity: entry?.structure?.flowIdentity || '',
             structureKnown: entry?.structure?.known === true,
             selectedPathEligible: entry?.structure?.selectedPathEligible === true,
             pairingContiguous: false,
@@ -4235,6 +4283,7 @@
       gapCount,
       unpairedAssistantCount,
       ineligibleCount,
+      shellVariantSupplementCount: 0,
       firstOrdinal: ordinals[0] ?? null,
       lastOrdinal: ordinals[ordinals.length - 1] ?? null,
       reasons,
@@ -4317,6 +4366,12 @@
           1,
           Number(questionDraft?.structure?.segmentId || answerDraft?.structure?.segmentId || 1) || 1,
         ),
+        flowIdentity: String(
+          questionDraft?.structure?.flowIdentity
+          || answerDraft?.structure?.flowIdentity
+          || turnFlowIdentity(pair?.question?.flowRef)
+          || '',
+        ).trim(),
         structureKnown: structuralPairingProven,
         selectedPathEligible: structuralPairingProven,
         pairingContiguous: structuralPairingProven,
@@ -4752,11 +4807,8 @@
 
   function applyCanonicalDraft(record, draft, opts = {}) {
     const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
-    const answerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
+    const incomingAnswerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
     const explicitPrimaryAId = normalizeTurnAlias(draft?.primaryAId || '');
-    const primaryAId = answerIds.includes(explicitPrimaryAId)
-      ? explicitPrimaryAId
-      : (answerIds[answerIds.length - 1] || null);
     const previousQId = normalizeTurnAlias(record?.qId || '');
     const currentQId = normalizeTurnAlias(draft?.qId || '');
     if (previousQId && !currentQId) return refreshLegacyTurnCompat(record);
@@ -4769,10 +4821,18 @@
       recordCanonicalCrossQIdConflict(record, draft, opts?.basis || 'apply-canonical-draft');
       return refreshLegacyTurnCompat(record);
     }
+    const sameQuestion = !!previousQId && previousQId === currentQId;
+    const answerState = mergeCanonicalAnswerState(
+      sameQuestion ? record?.answerIds : [],
+      incomingAnswerIds,
+      explicitPrimaryAId,
+      sameQuestion ? record?.primaryAId : '',
+      { explicitRemoval: draft?.noAnswer === true },
+    );
     record.turnNo = turnNo;
     record.qId = currentQId || null;
-    record.answerIds = answerIds;
-    record.primaryAId = primaryAId;
+    record.answerIds = answerState.answerIds;
+    record.primaryAId = answerState.primaryAId;
     record.turnId = buildCanonicalTurnId({
       turnNo,
       qId: record.qId,
@@ -4780,7 +4840,9 @@
     });
     record.hasQuestion = !!record.qId;
     record.hasAssistant = !!record.answerIds.length;
+    record.noAnswer = draft?.noAnswer === true;
     record._aliasIds = Array.from(new Set([
+      ...(record?._aliasIds || []),
       ...(draft?.aliasIds || []),
       previousQId && previousQId !== currentQId ? previousQId : '',
     ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
@@ -4816,13 +4878,23 @@
       record.hasQuestion = true;
       shouldRebuildTurnId = true;
     }
-    if ((!record.answerIds || !record.answerIds.length) && Array.isArray(draft?.answerIds) && draft.answerIds.length) {
-      record.answerIds = draft.answerIds.slice();
-      const explicitPrimaryAId = normalizeTurnAlias(draft?.primaryAId || '');
-      record.primaryAId = record.answerIds.includes(explicitPrimaryAId)
-        ? explicitPrimaryAId
-        : (record.answerIds[record.answerIds.length - 1] || null);
+    if (draft?.noAnswer === true) {
+      record.answerIds = [];
+      record.primaryAId = null;
+      record.hasAssistant = false;
+      record.noAnswer = true;
+      shouldRebuildTurnId = true;
+    } else if (Array.isArray(draft?.answerIds) && draft.answerIds.length) {
+      const answerState = mergeCanonicalAnswerState(
+        record?.answerIds,
+        draft.answerIds,
+        draft?.primaryAId,
+        record?.primaryAId,
+      );
+      record.answerIds = answerState.answerIds;
+      record.primaryAId = answerState.primaryAId;
       record.hasAssistant = !!record.answerIds.length;
+      record.noAnswer = false;
       shouldRebuildTurnId = true;
     }
     if (shouldRebuildTurnId) record.turnId = buildCanonicalTurnId(record);
@@ -4954,9 +5026,37 @@
       aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
       hasQuestion: !!draft?.qId,
       hasAssistant: !!(Array.isArray(draft?.answerIds) && draft.answerIds.length),
+      noAnswer: draft?.noAnswer === true,
       structure: boundedTurnDraftStructure(draft?.structure),
       live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
     };
+  }
+
+  function mergeSameQuestionDraftEvidence(existing, incoming) {
+    const existingQId = normalizeTurnAlias(existing?.qId || '');
+    const incomingQId = normalizeTurnAlias(incoming?.qId || '');
+    if (!existingQId || existingQId !== incomingQId) return slimTurnDraft(incoming);
+    const answerState = mergeCanonicalAnswerState(
+      existing?.answerIds,
+      incoming?.answerIds,
+      incoming?.primaryAId,
+      existing?.primaryAId,
+      { explicitRemoval: incoming?.noAnswer === true },
+    );
+    return slimTurnDraft({
+      ...existing,
+      ...incoming,
+      qId: incomingQId,
+      answerIds: answerState.answerIds,
+      primaryAId: answerState.primaryAId,
+      aliasIds: Array.from(new Set([
+        ...(existing?.aliasIds || []),
+        ...(incoming?.aliasIds || []),
+      ].map((value) => normalizeTurnAlias(value)).filter(Boolean))),
+      hasQuestion: true,
+      hasAssistant: answerState.answerIds.length > 0,
+      noAnswer: incoming?.noAnswer === true,
+    });
   }
 
   function ensureDurableTurnCache() {
@@ -4980,7 +5080,13 @@
     for (const draft of Array.isArray(drafts) ? drafts : []) {
       if (draft?.structure?.unpairedAssistant === true) continue;
       const key = durableDraftKey(draft);
-      if (!key || turnState.durableByKey.has(key)) continue;
+      if (!key) continue;
+      if (turnState.durableByKey.has(key)) {
+        if (key.startsWith('q:')) {
+          turnState.durableByKey.set(key, mergeSameQuestionDraftEvidence(turnState.durableByKey.get(key), draft));
+        }
+        continue;
+      }
       turnState.durableByKey.set(key, slimTurnDraft(draft));
       turnState.durableOrder.push(key);
     }
@@ -5018,8 +5124,13 @@
       }
       const key = durableDraftKey(draft);
       if (!key) continue;
-      freshByKey.set(key, draft);
-      byKey.set(key, slimTurnDraft(draft));
+      const retainedDraft = byKey.get(key);
+      const freshDraft = freshByKey.get(key);
+      const mergedDraft = key.startsWith('q:') && (retainedDraft || freshDraft)
+        ? mergeSameQuestionDraftEvidence(freshDraft || retainedDraft, draft)
+        : slimTurnDraft(draft);
+      freshByKey.set(key, mergedDraft);
+      byKey.set(key, mergedDraft);
       const existingIdx = order.indexOf(key);
       if (existingIdx >= 0) {
         anchorIdx = existingIdx;
@@ -5134,6 +5245,79 @@
     return buildTurnDraftsFromEntries(entries);
   }
 
+  function supplementSegmentShellVariants(liveDrafts = [], sectionDrafts = []) {
+    const live = (Array.isArray(liveDrafts) ? liveDrafts : []).map((draft) => ({
+      ...draft,
+      answerIds: Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [],
+      aliasIds: Array.isArray(draft?.aliasIds) ? draft.aliasIds.slice() : [],
+      structure: draft?.structure ? { ...draft.structure } : null,
+      live: draft?.live ? {
+        ...draft.live,
+        answerEls: Array.isArray(draft.live.answerEls) ? draft.live.answerEls.slice() : [],
+      } : { qEl: null, primaryAEl: null, answerEls: [], connected: false },
+    }));
+    const shells = Array.isArray(sectionDrafts) ? sectionDrafts : [];
+    let supplementedRows = 0;
+
+    for (let liveIndex = 0; liveIndex < live.length; liveIndex += 1) {
+      const current = live[liveIndex];
+      const selectedPrimary = normalizeTurnAlias(current?.primaryAId || '');
+      const liveStructure = current?.structure || null;
+      if (!selectedPrimary || !liveStructure?.structureKnown || liveStructure?.selectedPathEligible !== true) continue;
+      const matches = shells.filter((shellDraft) => {
+        const shellStructure = shellDraft?.structure || null;
+        const shellAnswerIds = (shellDraft?.answerIds || []).map((value) => normalizeTurnAlias(value)).filter(Boolean);
+        const shellOrdinals = Array.isArray(shellStructure?.answerOrdinals)
+          ? shellStructure.answerOrdinals.map(Number)
+          : [];
+        if (shellAnswerIds.length < 2 || shellAnswerIds.length !== shellOrdinals.length) return false;
+        if (!shellAnswerIds.includes(selectedPrimary)) return false;
+        if (!shellStructure?.structureKnown || shellStructure?.selectedPathEligible !== true) return false;
+        if (!liveStructure.flowIdentity || liveStructure.flowIdentity !== shellStructure.flowIdentity) return false;
+        if (!liveStructure.segmentId || liveStructure.segmentId !== shellStructure.segmentId) return false;
+        if (shellOrdinals.some((ordinal, index) => index > 0 && ordinal !== shellOrdinals[index - 1] + 1)) return false;
+        const selectedOrdinal = shellOrdinals[shellAnswerIds.indexOf(selectedPrimary)];
+        if (!liveStructure.answerOrdinals?.map(Number).includes(selectedOrdinal)) return false;
+        const liveQId = normalizeTurnAlias(current?.qId || '');
+        const shellQId = normalizeTurnAlias(shellDraft?.qId || '');
+        return !liveQId || !shellQId || liveQId === shellQId;
+      });
+      if (matches.length !== 1) continue;
+
+      const shellDraft = matches[0];
+      const merged = mergeCanonicalAnswerState(
+        shellDraft.answerIds,
+        current.answerIds,
+        selectedPrimary,
+        shellDraft.primaryAId,
+      );
+      if (merged.answerIds.length <= current.answerIds.length) continue;
+      live[liveIndex] = {
+        ...current,
+        answerIds: merged.answerIds,
+        primaryAId: selectedPrimary,
+        aliasIds: Array.from(new Set([
+          ...(current.aliasIds || []),
+          ...(shellDraft.aliasIds || []),
+          ...merged.answerIds,
+        ].map((value) => normalizeTurnAlias(value)).filter(Boolean))),
+        structure: {
+          ...liveStructure,
+          answerOrdinals: shellDraft.structure.answerOrdinals.slice(),
+          shellVariantSupplemented: true,
+        },
+      };
+      supplementedRows += 1;
+    }
+
+    const evidence = getTurnDraftStructureEvidence(liveDrafts);
+    attachTurnDraftStructureEvidence(live, evidence ? {
+      ...evidence,
+      shellVariantSupplementCount: Number(evidence.shellVariantSupplementCount || 0) + supplementedRows,
+    } : null);
+    return live;
+  }
+
   // Phase 4 Step 2.2: forwards the optional `preScanned` node list to
   // buildLiveTurnDrafts() so refresh() can avoid a redundant scan. Other
   // callers (e.g. boot retry paths) pass nothing and behave identically
@@ -5141,11 +5325,11 @@
   function buildTurns(preScanned) {
     const pairing = readBootSplitPairEvidence();
     const liveReconciliation = reconcileBootSplitTurnDrafts(buildLiveTurnDrafts(preScanned), pairing);
-    const liveDrafts = liveReconciliation.drafts;
     const rawSectionDrafts = buildSectionTurnDrafts();
     const sectionDrafts = Array.isArray(rawSectionDrafts)
       ? reconcileBootSplitTurnDrafts(rawSectionDrafts, pairing).drafts
       : rawSectionDrafts;
+    const liveDrafts = supplementSegmentShellVariants(liveReconciliation.drafts, sectionDrafts);
     const sectionAuthority = sectionDraftAuthorityDecision(sectionDrafts, liveDrafts);
     turnState.lastStructureDecision = sectionAuthority;
     const sectionDraftsAreAuthoritative = sectionAuthority.accepted;
