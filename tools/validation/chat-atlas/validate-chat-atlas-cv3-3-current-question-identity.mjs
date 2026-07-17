@@ -69,6 +69,7 @@ function instrumentSource() {
     'applyCanonicalDraft',
     'applyLiveDraft',
     'commitTurnDrafts',
+    'mergeCanonicalAnswerState',
     'buildTurnDraftsFromEntries',
     'buildLiveTurnDrafts',
     'supplementSegmentShellVariants',
@@ -119,6 +120,7 @@ function instrumentSource() {
     '    applyCanonicalDraft,',
     '    applyLiveDraft,',
     '    commitTurnDrafts,',
+    '    mergeCanonicalAnswerState,',
     '    buildTurnDraftsFromEntries,',
     '    buildLiveTurnDrafts,',
     '    supplementSegmentShellVariants,',
@@ -1110,6 +1112,118 @@ function sameQuestionVariantSetIsAdditiveFixture(runtime) {
   equal(record.primaryAId, null);
 }
 
+function completedStreamingPlaceholderEvictionFixture(runtime) {
+  const qId = 'fixture-stream-completion-question';
+  const placeholder = 'request-placeholder-stream-1';
+  const secondPlaceholder = 'request-placeholder-stream-2';
+  const realAnswer = OBSERVED.answerId;
+  const siblingAnswer = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
+
+  const streaming = runtime.internals.mergeCanonicalAnswerState([], [placeholder], placeholder);
+  equal(streaming.answerIds, [placeholder], 'placeholder-only streaming state remains observable');
+  equal(streaming.primaryAId, placeholder, 'placeholder may remain primary before completion');
+
+  const completed = runtime.internals.mergeCanonicalAnswerState(
+    [placeholder],
+    [realAnswer],
+    realAnswer,
+    placeholder,
+  );
+  equal(completed.answerIds, [realAnswer], 'real completion evicts the retained streaming placeholder');
+  equal(completed.primaryAId, realAnswer, 'real selected answer becomes primary after completion');
+  const repeated = runtime.internals.mergeCanonicalAnswerState(
+    completed.answerIds,
+    [realAnswer],
+    realAnswer,
+    completed.primaryAId,
+  );
+  equal(repeated, completed, 'completed answer normalization is idempotent');
+
+  const multiple = runtime.internals.mergeCanonicalAnswerState(
+    [placeholder, secondPlaceholder],
+    [realAnswer],
+    placeholder,
+    secondPlaceholder,
+  );
+  equal(multiple.answerIds, [realAnswer], 'all request-placeholder prefixes are evicted once a real answer exists');
+  equal(multiple.primaryAId, realAnswer, 'evicted placeholder cannot remain primary');
+  const nonPrefix = 'fixture-answer-containing-placeholder-text';
+  equal(
+    runtime.internals.mergeCanonicalAnswerState([nonPrefix], [realAnswer], realAnswer).answerIds,
+    [nonPrefix, realAnswer],
+    'placeholder text outside the exact prefix remains a normal answer identity',
+  );
+  equal(
+    runtime.internals.mergeCanonicalAnswerState([siblingAnswer], [realAnswer], realAnswer).answerIds,
+    [siblingAnswer, realAnswer],
+    'real sibling variants remain additive',
+  );
+
+  runtime.internals.seedDurableTurnDrafts([
+    draft({ qId, answers: [placeholder], aliases: [qId, placeholder] }),
+  ]);
+  const durableCompletion = runtime.internals.mergeDurableTurnDrafts([
+    draft({ qId, answers: [realAnswer], aliases: [qId, realAnswer] }),
+  ]);
+  equal(durableCompletion.find((row) => row.qId === qId).answerIds, [realAnswer]);
+  equal(durableCompletion.find((row) => row.qId === qId).primaryAId, realAnswer);
+  equal(runtime.internals.getDurableSnapshot().rows[0].answerIds, [realAnswer], 'durable state drops the placeholder');
+
+  runtime.internals.resetFixtureState();
+  runtime.internals.commitTurnDrafts([
+    draft({ qId, answers: [placeholder], aliases: [qId, placeholder] }),
+  ], []);
+  const canonicalRecord = runtime.internals.getRecords()[0];
+  const completedDraft = draft({ qId, answers: [realAnswer], aliases: [qId, realAnswer] });
+  runtime.internals.applyCanonicalDraft(canonicalRecord, completedDraft);
+  equal(canonicalRecord.answerIds, [realAnswer], 'applyCanonicalDraft evicts the completed placeholder');
+  equal(canonicalRecord.primaryAId, realAnswer);
+  runtime.internals.applyCanonicalDraft(canonicalRecord, completedDraft);
+  equal(canonicalRecord.answerIds, [realAnswer], 'repeated canonical completion remains stable');
+
+  runtime.internals.resetFixtureState();
+  runtime.internals.commitTurnDrafts([
+    draft({ qId, answers: [placeholder], aliases: [qId, placeholder] }),
+  ], []);
+  const liveRecord = runtime.internals.getRecords()[0];
+  runtime.internals.applyLiveDraft(liveRecord, completedDraft, {
+    record: liveRecord,
+    basis: 'same-qid-stream-completion',
+    candidateCount: 1,
+  });
+  equal(liveRecord.answerIds, [realAnswer], 'applyLiveDraft uses the same completion normalization');
+  equal(liveRecord.primaryAId, realAnswer);
+
+  runtime.internals.resetFixtureState();
+  runtime.internals.commitTurnDrafts([
+    draft({ qId, answers: [placeholder], aliases: [qId, placeholder] }),
+  ], [completedDraft]);
+  const canonical = runtime.internals.getRecords()[0];
+  const flow = { id: 'fixture-stream-completion-flow' };
+  const qShell = shell(qId, 'user');
+  const aShell = shell(realAnswer, 'assistant');
+  runtime.internals.chatAtlasApplyEvidence(read([
+    evidence({ role: 'user', shellRef: qShell, shellIndex: 0, shellOrdinal: 1, flowRef: flow, shellTurnId: qId, messageId: qId }),
+    evidence({ role: 'assistant', shellRef: aShell, shellIndex: 1, shellOrdinal: 2, flowRef: flow, shellTurnId: realAnswer, messageId: realAnswer }),
+  ], [canonical], new Map([[canonical, { qShell, answerShells: [aShell] }]])), 'fixture-stream-completion-parity', true);
+  const ledger = runtime.internals.buildChatAtlasLedgerCanonicalRecords()[0];
+  equal(canonical.answerIds, [realAnswer]);
+  equal(ledger.answerIds, [realAnswer]);
+  equal(canonical.answerIds, ledger.answerIds, 'canonical and ledger answer arrays return to exact parity');
+  equal(canonical.primaryAId, ledger.primaryAId);
+  equal(runtime.internals.getChatAtlasLedgerDiagnostics().parityWithCurrentTurnRuntime, true,
+    'runtime dual-run parity returns exact after stream completion');
+
+  runtime.internals.applyCanonicalDraft(canonical, {
+    ...completedDraft,
+    answerIds: [],
+    primaryAId: null,
+    noAnswer: true,
+  });
+  equal(canonical.answerIds, [], 'NO ANSWER remains an explicit empty-answer state');
+  equal(canonical.primaryAId, null);
+}
+
 function flatRoleScanHonorsGapFixture(runtime) {
   const flow = { id: 'fixture-flat-gap-flow' };
   const qId = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -1180,6 +1294,7 @@ const FIXTURES = [
   ['later-tail-question-reconciles-idempotently', laterTailQuestionReconcilesIdempotentlyFixture],
   ['hidden-shell-variant-supplements-selected-tail-answer', hiddenShellVariantSupplementFixture],
   ['same-question-variant-set-is-additive', sameQuestionVariantSetIsAdditiveFixture],
+  ['completed-streaming-placeholder-is-evicted', completedStreamingPlaceholderEvictionFixture],
   ['flat-role-scan-honors-virtualization-gap', flatRoleScanHonorsGapFixture],
   ['durable-38-to-3-membership-remains-protected', durableThirtyEightToThreeFixture],
 ];

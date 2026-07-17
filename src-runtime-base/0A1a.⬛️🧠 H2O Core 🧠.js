@@ -4096,15 +4096,22 @@
       : null;
   }
 
+  function isStreamingAnswerPlaceholderId(value) {
+    return normalizeTurnAlias(value).startsWith('request-placeholder-');
+  }
+
   function mergeCanonicalAnswerState(existingIds, incomingIds, preferredPrimary = '', existingPrimary = '', opts = {}) {
     if (opts?.explicitRemoval === true) return { answerIds: [], primaryAId: null };
-    const answerIds = [];
+    let answerIds = [];
     const seen = new Set();
     for (const value of [...(existingIds || []), ...(incomingIds || [])]) {
       const answerId = normalizeTurnAlias(value);
       if (!answerId || seen.has(answerId)) continue;
       seen.add(answerId);
       answerIds.push(answerId);
+    }
+    if (answerIds.some((answerId) => !isStreamingAnswerPlaceholderId(answerId))) {
+      answerIds = answerIds.filter((answerId) => !isStreamingAnswerPlaceholderId(answerId));
     }
     const incomingPrimary = normalizeTurnAlias(preferredPrimary || '');
     const retainedPrimary = normalizeTurnAlias(existingPrimary || '');
