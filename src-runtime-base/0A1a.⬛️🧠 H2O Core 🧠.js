@@ -4115,9 +4115,11 @@
     }
     const incomingPrimary = normalizeTurnAlias(preferredPrimary || '');
     const retainedPrimary = normalizeTurnAlias(existingPrimary || '');
-    const primaryAId = answerIds.includes(incomingPrimary)
-      ? incomingPrimary
-      : (answerIds.includes(retainedPrimary) ? retainedPrimary : (answerIds[answerIds.length - 1] || null));
+    const primaryAId = opts?.suppressPrimary === true
+      ? null
+      : (answerIds.includes(incomingPrimary)
+        ? incomingPrimary
+        : (answerIds.includes(retainedPrimary) ? retainedPrimary : (answerIds[answerIds.length - 1] || null)));
     if (primaryAId) {
       const index = answerIds.indexOf(primaryAId);
       if (index >= 0 && index !== answerIds.length - 1) {
@@ -4834,7 +4836,10 @@
       incomingAnswerIds,
       explicitPrimaryAId,
       sameQuestion && opts?.completeIndexAuthority !== true ? record?.primaryAId : '',
-      { explicitRemoval: draft?.noAnswer === true },
+      {
+        explicitRemoval: draft?.noAnswer === true && incomingAnswerIds.length === 0,
+        suppressPrimary: draft?.noAnswer === true && incomingAnswerIds.length > 0,
+      },
     );
     record.turnNo = turnNo;
     record.qId = currentQId || null;
@@ -5857,7 +5862,9 @@
         return fail('complete-index-answer-state-invalid');
       }
       if (row.noAnswer) {
-        if (primaryAId || answerVariants.length) return fail('complete-index-no-answer-invalid');
+        if (primaryAId || (answerVariants.length && row.stopped !== true)) {
+          return fail('complete-index-no-answer-invalid');
+        }
       } else if (!primaryAId || !answerVariants.length || answerVariants[answerVariants.length - 1] !== primaryAId) {
         return fail('complete-index-primary-invalid');
       }

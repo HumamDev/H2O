@@ -938,6 +938,10 @@
         }
         answerOwners.set(answerId, qId);
       }
+      // Selected-branch state is independent from completed inactive sibling
+      // variants. A stopped selected branch therefore remains NO ANSWER with
+      // no invented primary even when the same qId owns usable siblings.
+      const selectedBranchNoAnswer = !primaryAId;
       const stopped = primaryAId
         ? conversationTurnIndexStopped(mapping[variantNodeById.get(primaryAId)]?.message)
         : selectedStopped;
@@ -948,7 +952,7 @@
         turnId: `turn:${qId}`,
         primaryAId: primaryAId || null,
         answerVariants: Object.freeze(answerVariants.slice()),
-        noAnswer: !primaryAId,
+        noAnswer: selectedBranchNoAnswer,
         stopped,
         branch: Object.freeze({
           selectedAssistantNodeId: conversationTurnIndexIdentity(primaryNodeKey) || null,

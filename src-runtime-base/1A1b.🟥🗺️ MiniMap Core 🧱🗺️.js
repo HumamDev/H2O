@@ -6268,7 +6268,7 @@ function UM_PUBLIC() {
     const turnId = String(record?.turnId || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
     if (!turnId) return null;
     const answerId = noAnswer ? '' : String(record?.primaryAId || record?.answerId || '').trim();
-    const answerIds = noAnswer ? [] : cacheRowAnswerIds({
+    const answerIds = cacheRowAnswerIds({
       answerIds: record?.answerIds,
       primaryAId: answerId,
     });
@@ -6303,7 +6303,7 @@ function UM_PUBLIC() {
     const turnId = String(record?.turnId || record?.id || (noAnswer && questionId ? `turn:${questionId}` : '')).trim();
     if (!turnId) return null;
     const answerId = noAnswer ? '' : String(record?.answerId || record?.primaryAId || record?.aId || '').trim();
-    const answerIds = noAnswer ? [] : cacheRowAnswerIds({
+    const answerIds = cacheRowAnswerIds({
       answerIds: record?.answerIds,
       primaryAId: answerId,
     });

@@ -10,9 +10,13 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const corePath = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const paginationPath = 'src-runtime-base/0C1b.⚫️🪟 Pagination Windowing (Chat 🔗 Adapter) 🪟.js';
+const archivePath = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
+const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const baselineSha = 'be9fcf7369ef66c8db6d2e9acde6b9357fbd58a7';
 const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
 const paginationSource = fs.readFileSync(path.join(root, paginationPath), 'utf8');
+const archiveSource = fs.readFileSync(path.join(root, archivePath), 'utf8');
+const miniMapSource = fs.readFileSync(path.join(root, miniMapPath), 'utf8');
 const baselineCoreSource = execFileSync('git', ['show', `${baselineSha}:${corePath}`], {
   cwd: root,
   encoding: 'utf8',
@@ -49,14 +53,75 @@ function extractFunction(source, name) {
   const brace = signatureEnd < 0 ? -1 : signatureEnd + 2;
   if (brace < 0) throw new Error(`production-function-signature-invalid:${name}`);
   let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
   for (let index = brace; index < source.length; index += 1) {
-    if (source[index] === '{') depth += 1;
-    else if (source[index] === '}') {
+    const ch = source[index];
+    const next = source[index + 1];
+    if (lineComment) { if (ch === '\n') lineComment = false; continue; }
+    if (blockComment) { if (ch === '*' && next === '/') { blockComment = false; index += 1; } continue; }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '/' && next === '/') { lineComment = true; index += 1; continue; }
+    if (ch === '/' && next === '*') { blockComment = true; index += 1; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
       depth -= 1;
       if (depth === 0) return source.slice(start, index + 1);
     }
   }
   throw new Error(`production-function-boundary-invalid:${name}`);
+}
+
+function createEnvelopeRuntime(source) {
+  const names = [
+    'chatAtlasCompleteIndexIdentity',
+    'chatAtlasCompleteIndexStableHash',
+    'chatAtlasCompleteIndexFingerprint',
+    'chatAtlasCompleteIndexExactKeys',
+    'chatAtlasNormalizeCompleteIndexEnvelope',
+  ];
+  const program = `(function () {
+    const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
+    const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = [];
+    const COMPLETE_TURN_INDEX_CACHE_KEYS = ['schema','chatId','payloadUpdateTime','sourceFingerprint','capturedAt','validatedAt','complete','proof','turns'];
+    const COMPLETE_TURN_INDEX_ROW_KEYS = ['order','qId','turnId','answerVariants','primaryAId','noAnswer','stopped'];
+    ${names.map((name) => extractFunction(source, name)).join('\n')}
+    return { normalize: chatAtlasNormalizeCompleteIndexEnvelope, fingerprint: chatAtlasCompleteIndexFingerprint };
+  })()`;
+  return vm.runInNewContext(program, { Date, Object, Array, Set, Map, String, Number, JSON });
+}
+
+function stoppedSiblingHostEnvelope(runtime) {
+  const turns = [{
+    order: 1,
+    qId: 'stopped-selected-q',
+    turnId: 'turn:stopped-selected-q',
+    answerVariants: ['completed-sibling-a'],
+    primaryAId: null,
+    noAnswer: true,
+    stopped: true,
+  }];
+  return {
+    schema: 1,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 40,
+    sourceFingerprint: runtime.fingerprint(turns),
+    capturedAt: '2026-07-18T00:00:00.000Z',
+    completeness: {
+      complete: true,
+      proof: 'host-payload-full-graph',
+      validatedAt: '2026-07-18T00:00:00.000Z',
+    },
+    turns,
+  };
 }
 
 function createPaginationReconciler(source, authorityActive) {
@@ -213,6 +278,50 @@ await fixture('B3 ordinary empty-child event is not guessed stopped', async () =
   const pending = runtime.state.pendingDrafts.get('pending-q');
   equal(pending.stopped, undefined);
   equal(runtime.scheduled, ['turn-settled']);
+});
+
+await fixture('B4 previous envelope contract rejects stopped selected branch with sibling', () => {
+  const runtime = createEnvelopeRuntime(baselineCoreSource);
+  const result = runtime.normalize(stoppedSiblingHostEnvelope(runtime), 'fixture-chat', { source: 'host' });
+  equal(result.ok, false);
+  equal(result.errorCode, 'complete-index-no-answer-invalid');
+});
+
+await fixture('B4 stopped selected branch accepts completed inactive sibling without primary', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const result = runtime.normalize(stoppedSiblingHostEnvelope(runtime), 'fixture-chat', { source: 'host' });
+  equal(result.ok, true);
+  equal(result.envelope.turns[0], {
+    order: 1,
+    qId: 'stopped-selected-q',
+    turnId: 'turn:stopped-selected-q',
+    answerVariants: ['completed-sibling-a'],
+    primaryAId: null,
+    noAnswer: true,
+    stopped: true,
+  });
+});
+
+await fixture('B4 clean NO ANSWER still forbids variants unless selected branch is stopped', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const raw = stoppedSiblingHostEnvelope(runtime);
+  raw.turns[0].stopped = false;
+  raw.sourceFingerprint = runtime.fingerprint(raw.turns);
+  const result = runtime.normalize(raw, 'fixture-chat', { source: 'host' });
+  equal(result.ok, false);
+  equal(result.errorCode, 'complete-index-no-answer-invalid');
+});
+
+await fixture('B4 parser explicitly separates selected NO ANSWER from inactive sibling variants', () => {
+  ok(archiveSource.includes('const selectedBranchNoAnswer = !primaryAId;'));
+  ok(archiveSource.includes('noAnswer: selectedBranchNoAnswer'));
+  ok(archiveSource.includes('inactiveVariantCount: Math.max(0, answerVariants.length - (primaryAId ? 1 : 0))'));
+});
+
+await fixture('B4 MiniMap preserves sibling ownership while rendering one NO ANSWER box', () => {
+  equal(miniMapSource.split('const answerIds = cacheRowAnswerIds({').length - 1 >= 2, true);
+  ok(miniMapSource.includes("const answerId = noAnswer ? ''"));
+  ok(miniMapSource.includes('hasAssistant: noAnswer ? false'));
 });
 
 await fixture('Gate 5 correctness validator remains production-backed and privacy bounded', () => {
