@@ -1141,6 +1141,29 @@ Self-check:
     const api = getTurnRuntimeApi();
     if (!api || typeof api._reconcilePaginationSnapshot !== 'function') return false;
 
+    // Complete-index authority owns historical membership. Pagination still
+    // publishes its bounded page state below, but it must not offer its legacy
+    // master rows as canonical membership while the proven route is active.
+    const authority = typeof api.getCompleteTurnIndexProjectionStatus === 'function'
+      ? api.getCompleteTurnIndexProjectionStatus()
+      : null;
+    const currentChatId = String(S.chatId || getChatId() || '').trim();
+    const authorityChatId = String(authority?.chatId || '').trim();
+    if (
+      authority?.enabled === true
+      && authority?.authoritative === true
+      && !!currentChatId
+      && authorityChatId === currentChatId
+    ) {
+      S.turnRuntimeCanonicalSig = [
+        'complete-index-authority',
+        authorityChatId,
+        Number(authority?.routeGeneration || 0) || 0,
+        Number(authority?.projectedCount || authority?.completeCount || 0) || 0,
+      ].join(':');
+      return false;
+    }
+
     const rows = Array.isArray(S.masterTurns) ? S.masterTurns.filter(Boolean) : [];
     const sig = rows.map((turn, idx) => {
       const gid = Math.max(1, Number(turn?.gid || idx + 1) || idx + 1);

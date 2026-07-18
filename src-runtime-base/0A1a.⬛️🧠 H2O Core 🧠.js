@@ -5411,6 +5411,13 @@
   }
 
   function reconcileTurnRecordsFromPaginationSnapshot(rows = []) {
+    // A proven complete index owns membership and identity. Pagination remains
+    // free to patch page/mount presentation through patchTurnPageState(), but
+    // its legacy master snapshot must never replace the proven row set.
+    if (chatAtlasCompleteIndexAuthorityActive()) {
+      turnState.paginationDrafts = null;
+      return listTurnRecords();
+    }
     const drafts = buildPaginationTurnDrafts(rows);
     turnState.paginationDrafts = drafts.length ? drafts : null;
     // The pagination master index is full-chat authoritative: refresh the
