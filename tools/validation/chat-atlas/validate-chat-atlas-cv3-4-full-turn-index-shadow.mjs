@@ -15,6 +15,8 @@ const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
 const A545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
+const Q29_DIRECT_HIDDEN_SYSTEM = '242630f1-0000-4000-8000-000000000029';
+const Q29_NONDIRECT_HIDDEN_SYSTEM = '433ab091-0000-4000-8000-000000000029';
 const D824 = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
 const A84 = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
 const A733 = '733fa31a-7d11-4ce5-b570-8ffa474670d4';
@@ -156,6 +158,7 @@ const archiveFunctions = [
   'conversationTurnIndexStopped',
   'conversationTurnIndexProductAnswer',
   'conversationTurnIndexPlaceholder',
+  'conversationTurnIndexBranchShellAlias',
   'conversationTurnIndexIdentityFingerprint',
   'normalizeBackendConversationTurnIndexUnsafe',
   'normalizeBackendConversationTurnIndex',
@@ -572,6 +575,24 @@ function node({
   };
 }
 
+function branchShellNode({ id, parent = null, children = [], metadata = {} }) {
+  return node({
+    id,
+    role: 'assistant',
+    parent,
+    children,
+    metadata: {
+      is_visually_hidden_from_conversation: true,
+      model_slug: 'gpt-fixture-branch-shell',
+      finish_details: { type: 'stop' },
+      ...metadata,
+    },
+    channel: 'final',
+    endTurn: true,
+    text: `private branch shell ${id}`,
+  });
+}
+
 function buildFullGraph() {
   const mapping = {};
   const root = 'root';
@@ -593,7 +614,7 @@ function buildFullGraph() {
     metadata: { is_visually_hidden_from_conversation: true },
     text: 'private initial context',
   });
-  for (let index = 1; index <= 57; index += 1) {
+  for (let index = 1; index <= 56; index += 1) {
     appendSelected(`prefix-system-${index}`, {
       id: `prefix-system-${index}`,
       role: 'system',
@@ -632,9 +653,26 @@ function buildFullGraph() {
 
     if (order === 5) {
       appendSelected('q29-hidden-system', {
-        id: 'q29-hidden-system',
+        id: Q29_DIRECT_HIDDEN_SYSTEM,
         role: 'system',
+        metadata: {
+          is_visually_hidden_from_conversation: true,
+          model_slug: 'gpt-fixture-system',
+          finish_details: { type: 'stop' },
+        },
+        endTurn: true,
         text: 'private q29 intermediary',
+      });
+      appendSelected('q29-nondirect-hidden-system', {
+        id: Q29_NONDIRECT_HIDDEN_SYSTEM,
+        role: 'system',
+        metadata: {
+          is_visually_hidden_from_conversation: true,
+          model_slug: 'gpt-fixture-system',
+          finish_details: { type: 'stop' },
+        },
+        endTurn: true,
+        text: 'private q29 nested intermediary',
       });
       appendSelected('q29-final', {
         id: A545,
@@ -725,9 +763,16 @@ function buildFullGraph() {
       const modelContextId = 'd824-model-editable-context';
       const reasoningId = 'd824-reasoning-recap';
       internalAssistantIds.push(modelContextId, reasoningId);
-      appendSelected('d824-branch-shell', {
+      appendSelected(A84, {
         id: A84,
         role: 'assistant',
+        metadata: {
+          is_visually_hidden_from_conversation: true,
+          model_slug: 'gpt-fixture-branch-shell',
+          finish_details: { type: 'stop' },
+        },
+        channel: 'final',
+        endTurn: true,
         text: 'private hidden branch shell',
       });
       appendSelected('d824-system-context', {
@@ -753,7 +798,7 @@ function buildFullGraph() {
         contentType: 'reasoning_recap',
         text: 'private d824 reasoning',
       });
-      appendSelected('d824-final', {
+      appendSelected(A733, {
         id: A733,
         role: 'assistant',
         metadata: { finish_details: { type: 'stop' } },
@@ -888,6 +933,207 @@ await fixture('d824 retains the accepted hidden branch-shell alias', () => {
   equal(turn.answerVariants[0], A84);
   equal(turn.answerVariants.includes('d824-model-editable-context'), false);
   equal(turn.answerVariants.includes('d824-reasoning-recap'), false);
+});
+
+await fixture('d824 shell alias order is exactly shell then completed final', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(turn.answerVariants, [A84, A733]);
+  equal(turn.answerVariants.at(-1), A733);
+});
+
+await fixture('d824 selected primary remains the completed 733f assistant', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(turn.primaryAId, A733);
+  equal(turn.noAnswer, false);
+  equal(turn.stopped, false);
+});
+
+await fixture('d824 branch diagnostics retain selected final and one inactive alias', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(turn.branch.selectedAssistantNodeId, A733);
+  equal(turn.branch.variantCount, 2);
+  equal(turn.branch.inactiveVariantCount, 1);
+});
+
+await fixture('non-direct hidden assistant intermediary cannot become a shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'nondirect-shell-question', role: 'user', parent: 'root', children: ['system'] }),
+    system: node({ id: 'direct-system-intermediary', role: 'system', parent: 'q', children: ['shell'] }),
+    shell: branchShellNode({ id: 'nondirect-hidden-assistant', parent: 'system', children: ['final'] }),
+    final: node({
+      id: 'nondirect-shell-final',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['nondirect-shell-final']);
+  equal(result.index.turns[0].primaryAId, 'nondirect-shell-final');
+});
+
+await fixture('direct model_editable_context assistant cannot become a shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'model-context-shell-question', role: 'user', parent: 'root', children: ['context'] }),
+    context: node({
+      id: 'model-context-shell',
+      role: 'assistant',
+      parent: 'q',
+      children: ['final'],
+      metadata: {
+        is_visually_hidden_from_conversation: true,
+        model_slug: 'gpt-fixture-branch-shell',
+        finish_details: { type: 'stop' },
+      },
+      contentType: 'model_editable_context',
+      channel: 'final',
+      endTurn: true,
+    }),
+    final: node({ id: 'model-context-final', role: 'assistant', parent: 'context' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['model-context-final']);
+  equal(result.index.turns[0].answerVariants.includes('model-context-shell'), false);
+});
+
+await fixture('direct reasoning_recap assistant cannot become a shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'reasoning-shell-question', role: 'user', parent: 'root', children: ['reasoning'] }),
+    reasoning: node({
+      id: 'reasoning-shell',
+      role: 'assistant',
+      parent: 'q',
+      children: ['final'],
+      metadata: {
+        is_visually_hidden_from_conversation: true,
+        model_slug: 'gpt-fixture-branch-shell',
+        finish_details: { type: 'stop' },
+      },
+      contentType: 'reasoning_recap',
+      channel: 'final',
+      endTurn: true,
+    }),
+    final: node({ id: 'reasoning-shell-final', role: 'assistant', parent: 'reasoning' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['reasoning-shell-final']);
+  equal(result.index.turns[0].answerVariants.includes('reasoning-shell'), false);
+});
+
+await fixture('interrupted branch retains neither hidden shell alias nor answer', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'hidden-shell-interrupted-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: branchShellNode({ id: 'hidden-shell-before-interruption', parent: 'q', children: ['interrupted'] }),
+    interrupted: node({
+      id: 'hidden-shell-interrupted-final',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'interrupted' } },
+      channel: 'final',
+      endTurn: false,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'interrupted' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[0].primaryAId, null);
+  equal(result.index.turns[0].stopped, true);
+});
+
+await fixture('branch with no valid final cannot retain a hidden shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'hidden-shell-no-final-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: branchShellNode({ id: 'hidden-shell-without-final', parent: 'q' }),
+  };
+  const result = parser({ mapping, current_node: 'shell' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[0].primaryAId, null);
+  equal(result.index.turns[0].noAnswer, true);
+});
+
+await fixture('hidden shell alias cannot cross the next product-user boundary', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q1'] }),
+    q1: node({ id: 'shell-boundary-question-1', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: branchShellNode({ id: 'shell-before-next-question', parent: 'q1', children: ['q2'] }),
+    q2: node({ id: 'shell-boundary-question-2', role: 'user', parent: 'shell', children: ['final'] }),
+    final: node({ id: 'shell-boundary-final-2', role: 'assistant', parent: 'q2' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[1].answerVariants, ['shell-boundary-final-2']);
+  equal(result.index.turns[1].answerVariants.includes('shell-before-next-question'), false);
+});
+
+await fixture('d824 shell alias cannot attach to the following product qId', () => {
+  const d824 = fullResult.index.turns.find((row) => row.qId === D824);
+  const following = fullResult.index.turns.find((row) => row.qId === NEXT_AFTER_D824_Q);
+  equal(d824.answerVariants.includes(A84), true);
+  equal(following.answerVariants.includes(A84), false);
+});
+
+await fixture('duplicate shell and final identities fail closed before projection', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'duplicate-shell-final-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: branchShellNode({ id: 'duplicate-shell-final-id', parent: 'q', children: ['final'] }),
+    final: node({ id: 'duplicate-shell-final-id', role: 'assistant', parent: 'shell' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'duplicate-answer-identity');
+  equal(result.completeness, undefined);
+});
+
+await fixture('shell alias insertion remains unique and selected primary remains last', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(new Set(turn.answerVariants).size, turn.answerVariants.length);
+  equal(turn.answerVariants.at(-1), turn.primaryAId);
+  equal(turn.primaryAId, A733);
+});
+
+await fixture('completed request placeholder cannot become a shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'placeholder-shell-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: branchShellNode({ id: 'request-placeholder-completed-shell', parent: 'q', children: ['final'] }),
+    final: node({ id: 'placeholder-shell-final', role: 'assistant', parent: 'shell' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['placeholder-shell-final']);
+  equal(result.index.turns[0].primaryAId, 'placeholder-shell-final');
+});
+
+await fixture('hidden direct assistant without model or completion proof is not a shell alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'unproven-shell-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: node({
+      id: 'unproven-hidden-shell',
+      role: 'assistant',
+      parent: 'q',
+      children: ['final'],
+      metadata: { is_visually_hidden_from_conversation: true },
+    }),
+    final: node({ id: 'unproven-shell-final', role: 'assistant', parent: 'shell' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['unproven-shell-final']);
+  equal(result.index.turns[0].answerVariants.includes('unproven-hidden-shell'), false);
 });
 
 await fixture('internal aabc user does not become a product qId or split d824 ownership', () => {
@@ -1064,6 +1310,18 @@ await fixture('q29 remains local to answer 545', () => {
   equal(turn.primaryAId, A545);
   equal(turn.noAnswer, false);
   equal(turn.stopped, false);
+});
+
+await fixture('q29 direct hidden 2426 system intermediary is not an alias', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === Q29);
+  equal(turn.answerVariants.includes(Q29_DIRECT_HIDDEN_SYSTEM), false);
+  equal(turn.answerVariants, [A545]);
+});
+
+await fixture('q29 non-direct hidden 433a system intermediary is not an alias', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === Q29);
+  equal(turn.answerVariants.includes(Q29_NONDIRECT_HIDDEN_SYSTEM), false);
+  equal(turn.answerVariants, [A545]);
 });
 
 await fixture('NO ANSWER remains one ID-bearing turn', () => {

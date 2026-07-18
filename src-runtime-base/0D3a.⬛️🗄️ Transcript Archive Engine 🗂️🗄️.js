@@ -652,6 +652,40 @@
     return String(answerId || "").trim().startsWith("request-placeholder-");
   }
 
+  function conversationTurnIndexBranchShellAlias(nodeKey, node) {
+    if (conversationTurnIndexRole(node) !== "assistant") return false;
+    const message = isObj(node?.message) ? node.message : {};
+    const metadata = isObj(message?.metadata) ? message.metadata : {};
+    const answerId = conversationTurnIndexMessageId(nodeKey, node);
+    const contentType = String(message?.content?.content_type || "").trim().toLowerCase();
+    const channel = String(message?.channel || metadata?.channel || "").trim().toLowerCase();
+    const finishType = String(metadata?.finish_details?.type || metadata?.finish_type || "").trim().toLowerCase();
+    const status = String(message?.status || metadata?.status || "").trim().toLowerCase();
+    const rawModelAssociation = metadata?.model_slug
+      || metadata?.default_model_slug
+      || metadata?.model
+      || message?.author?.name
+      || "";
+    const modelAssociation = ["string", "number"].includes(typeof rawModelAssociation)
+      ? String(rawModelAssociation).trim()
+      : "";
+    const completed = message?.end_turn === true
+      || metadata?.end_turn === true
+      || finishType === "stop"
+      || ["complete", "completed", "finished"].includes(status);
+    return !!answerId
+      && !conversationTurnIndexPlaceholder(answerId)
+      && metadata?.is_visually_hidden_from_conversation === true
+      && metadata?.is_user_system_message !== true
+      && metadata?.user_context_message_data == null
+      && !["model_editable_context", "reasoning_recap", "user_editable_context"].includes(contentType)
+      && (!channel || channel === "final")
+      && !!modelAssociation
+      && modelAssociation.length <= 256
+      && completed
+      && !conversationTurnIndexStopped(message);
+  }
+
   function conversationTurnIndexIdentityFingerprint(turns = []) {
     const identity = (Array.isArray(turns) ? turns : []).map((turn) => [
       String(turn?.qId || ""),
@@ -858,9 +892,19 @@
       };
       for (const childKey of orderedChildren(questionNodeKey)) {
         if (conversationTurnIndexProductUser(mapping[childKey])) continue;
+        const branchShellAlias = conversationTurnIndexBranchShellAlias(childKey, mapping[childKey])
+          ? conversationTurnIndexMessageId(childKey, mapping[childKey])
+          : "";
         const branchResult = resolveAnswerBranch(childKey);
         if (!branchResult.ok) {
           return conversationTurnIndexFailure("variant-graph-invalid", { chatId, nodeCount });
+        }
+        const branchHasProductFinal = branchResult.variants.some((answerId) => (
+          !conversationTurnIndexPlaceholder(answerId)
+        ));
+        if (branchShellAlias && branchHasProductFinal && !variantIds.includes(branchShellAlias)) {
+          variantNodeById.set(branchShellAlias, childKey);
+          variantIds.push(branchShellAlias);
         }
         for (const answerId of branchResult.variants) {
           if (!variantIds.includes(answerId)) variantIds.push(answerId);
