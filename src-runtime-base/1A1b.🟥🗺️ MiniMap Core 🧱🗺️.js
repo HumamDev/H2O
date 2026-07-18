@@ -125,6 +125,10 @@ function UM_PUBLIC() {
     rebuildInFlight: false,
     rebuildQueuedReason: '',
     lastRebuildResult: null,
+    completeIndexStateListenerBound: false,
+    completeIndexStateListener: null,
+    completeIndexBoundaryStatus: 'disabled',
+    completeIndexBoundaryRenderCount: 0,
     lastCoreProjectionChatKey: '',
     lastCacheMergeChatKey: '',
     lastCachePersistenceChatKey: '',
@@ -3763,6 +3767,49 @@ function UM_PUBLIC() {
     return col;
   }
 
+  function renderCompleteIndexBoundaryState(statusRaw = 'loading-full-index') {
+    const status = String(statusRaw || 'loading-full-index');
+    const col = ensureCol();
+    if (!col) return null;
+    const loading = status === 'loading-full-index';
+    const marker = document.createElement('div');
+    marker.className = 'cgxui-mm-complete-index-status';
+    marker.setAttribute('data-cgxui-owner', UI_TOK.OWNER);
+    marker.setAttribute('data-cgxui', 'mnmp-complete-index-status');
+    marker.setAttribute('data-complete-index-status', status);
+    marker.setAttribute('role', 'status');
+    marker.setAttribute('aria-live', 'polite');
+    marker.setAttribute('aria-busy', loading ? 'true' : 'false');
+    marker.textContent = loading
+      ? 'Loading full conversation index…'
+      : 'Full conversation index unavailable';
+    marker.style.cssText = [
+      'box-sizing:border-box',
+      'width:72px',
+      'min-height:36px',
+      'padding:7px 6px',
+      'border-radius:8px',
+      'font:600 10px/1.15 system-ui,sans-serif',
+      'text-align:center',
+      'color:currentColor',
+      'opacity:.78',
+      'contain:content',
+    ].join(';');
+    col.replaceChildren(marker);
+    setMapStore(new Map());
+    S.completeIndexBoundaryStatus = status;
+    S.completeIndexBoundaryRenderCount += 1;
+    return marker;
+  }
+
+  function clearCompleteIndexBoundaryState() {
+    const col = minimapCol(MM_uiRefs()?.panel || null) || minimapCol() || null;
+    const marker = col?.querySelector?.('[data-cgxui="mnmp-complete-index-status"]') || null;
+    try { marker?.remove?.(); } catch {}
+    S.completeIndexBoundaryStatus = 'complete';
+    return !!marker;
+  }
+
   function ensureMapStore() {
     if (S.mapButtons instanceof Map) return S.mapButtons;
     const m =
@@ -5371,6 +5418,18 @@ function UM_PUBLIC() {
     try {
       const id = String(chatId || resolveChatId()).trim();
       if (!id) return { ok: false, renderedCount: 0, status: 'chat-id-missing' };
+      const completeIndex = getCompleteIndexProjectionStatus();
+      if (completeIndex.enabled) {
+        scheduleRebuild(`complete-index:${completeIndex.status}:legacy-cache-bypassed`);
+        return {
+          ok: false,
+          renderedCount: 0,
+          status: 'complete-index-authority',
+          chatId: id,
+          lastTurnId: '',
+          lastAnswerId: '',
+        };
+      }
 
       const cached = loadTurnCache(id);
       const cachedCurrentTurns = Array.isArray(cached?.currentTurns) ? cached.currentTurns : [];
@@ -5488,6 +5547,12 @@ function UM_PUBLIC() {
     try {
       const chatId = String(_chatId || resolveChatId()).trim();
       const source = String(_opts?.source || 'core:append').trim();
+      const completeIndex = getCompleteIndexProjectionStatus();
+      if (completeIndex.enabled) {
+        scheduleRebuild(`complete-index:${completeIndex.status}:incremental-append-bypassed`);
+        bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'completeIndexAuthority');
+        return { ok: false, status: 'complete-index-authority', chatId, source };
+      }
       const rootEl = (_answerEl && _answerEl.nodeType === 1) ? _answerEl : null;
       if (!rootEl) {
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'noop');
@@ -6141,6 +6206,54 @@ function UM_PUBLIC() {
     return TOPW?.H2O?.turnRuntime || W?.H2O?.turnRuntime || null;
   }
 
+  function getCompleteIndexProjectionStatus() {
+    const api = getTurnRuntimeApi();
+    try {
+      const status = api?.getCompleteTurnIndexProjectionStatus?.();
+      if (status && typeof status === 'object') {
+        return {
+          enabled: status.enabled === true,
+          authoritative: status.authoritative === true,
+          status: String(status.status || 'disabled'),
+          diagnosticStatus: String(status.diagnosticStatus || '') || null,
+          chatId: String(status.chatId || '') || null,
+          count: Math.max(0, Number(status.count || 0) || 0),
+          source: String(status.source || '') || null,
+          fingerprint: String(status.fingerprint || '') || null,
+          completenessProof: String(status.completenessProof || '') || null,
+          routeGeneration: Math.max(0, Number(status.routeGeneration || 0) || 0),
+        };
+      }
+    } catch {}
+    return {
+      enabled: false,
+      authoritative: false,
+      status: 'disabled',
+      diagnosticStatus: null,
+      chatId: null,
+      count: 0,
+      source: null,
+      fingerprint: null,
+      completenessProof: null,
+      routeGeneration: 0,
+    };
+  }
+
+  function getCompleteIndexMiniMapDiagnostics() {
+    const status = getCompleteIndexProjectionStatus();
+    return Object.freeze({
+      enabled: status.enabled,
+      authoritative: status.authoritative,
+      status: status.status,
+      diagnosticStatus: status.diagnosticStatus,
+      expectedCount: status.count,
+      publishedCount: Array.isArray(S.turnList) ? S.turnList.length : 0,
+      boundaryStatus: String(S.completeIndexBoundaryStatus || 'disabled'),
+      boundaryRenderCount: Math.max(0, Number(S.completeIndexBoundaryRenderCount || 0) || 0),
+      legacyCacheAuthoritative: false,
+    });
+  }
+
   function projectSharedTurnRecord(record, fallbackIndex = 0) {
     const noAnswer = isCanonicalNoAnswerRecord(record);
     const questionId = String(record?.qId || record?.questionId || '').trim();
@@ -6480,6 +6593,33 @@ function UM_PUBLIC() {
   }
 
   function getAuthoritativeTurnSnapshot() {
+    const completeIndex = getCompleteIndexProjectionStatus();
+    if (completeIndex.enabled) {
+      const runtimeCanonical = getCanonicalTurnsFromSharedRuntime();
+      if (
+        completeIndex.authoritative
+        && completeIndex.completenessProof === 'host-payload-full-graph'
+        && runtimeCanonical?.list?.length === completeIndex.count
+      ) {
+        return {
+          ...runtimeCanonical,
+          source: 'complete-index-canonical',
+          completeness: 'host-payload-full-graph',
+          completeIndexStatus: completeIndex.status,
+          completeIndexFingerprint: completeIndex.fingerprint,
+        };
+      }
+      return {
+        list: [],
+        byId: new Map(),
+        byAId: new Map(),
+        answerByTurn: new Map(),
+        answers: [],
+        source: 'complete-index-boundary',
+        completeness: 'unavailable',
+        completeIndexStatus: completeIndex.status,
+      };
+    }
     const runtimeCanonical = getCanonicalTurnsFromSharedRuntime();
     const paginationCanonical = getCanonicalTurnsFromPagination();
     if (runtimeCanonical?.list?.length) {
@@ -10941,12 +11081,75 @@ function unbindChatPageDividerBridge() {
       }
       applyMiniMapPageUiPrefs();
 
+      const completeIndex = getCompleteIndexProjectionStatus();
+      if (completeIndex.enabled && !completeIndex.authoritative) {
+        publishTurnSnapshot({
+          list: [],
+          byId: new Map(),
+          byAId: new Map(),
+          answerByTurn: new Map(),
+          answers: [],
+        });
+        renderCompleteIndexBoundaryState(completeIndex.status);
+        clearRetry();
+        out.built.turns = 0;
+        out.built.buttons = true;
+        out.status = completeIndex.status;
+        out.ok = true;
+        out.reason = completeIndex.diagnosticStatus || completeIndex.status;
+        S.lastRebuildResult = out;
+        return out;
+      }
+      if (completeIndex.enabled) clearCompleteIndexBoundaryState();
+
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
       let retainedListForPersistence = list;
+      if (completeIndex.enabled && list.length !== completeIndex.count) {
+        publishTurnSnapshot({
+          list: [],
+          byId: new Map(),
+          byAId: new Map(),
+          answerByTurn: new Map(),
+          answers: [],
+        });
+        renderCompleteIndexBoundaryState('full-index-unavailable');
+        clearRetry();
+        out.built.turns = 0;
+        out.built.buttons = true;
+        out.status = 'full-index-unavailable';
+        out.ok = true;
+        out.reason = 'complete-index-canonical-count-mismatch';
+        S.lastRebuildResult = out;
+        return out;
+      }
       // Never let a subset re-index shrink the MiniMap: merge with the
       // per-chat turn cache before building buttons/publishing/saving.
-      const mergeOutcome = mergeRebuildTurnCache(resolveChatId(), list, snapshot.canonicalEvidence);
+      const mergeOutcome = completeIndex.enabled
+        ? {
+          ok: true,
+          merged: {
+            list: list.slice(),
+            retainedList: list.slice(),
+            decision: Object.freeze({
+              accepted: true,
+              mode: 'complete-index-authority',
+              reason: 'host-payload-full-graph',
+              incomingCount: list.length,
+              retainedCount: list.length,
+            }),
+          },
+          decision: Object.freeze({
+            accepted: true,
+            mode: 'complete-index-authority',
+            reason: 'host-payload-full-graph',
+            incomingCount: list.length,
+            retainedCount: list.length,
+          }),
+          persistence: null,
+          error: null,
+        }
+        : mergeRebuildTurnCache(resolveChatId(), list, snapshot.canonicalEvidence);
       if (!mergeOutcome.ok) {
         safeDiag('err', 'core.rebuildNow:mergeTurnCache', mergeOutcome.error);
         out.status = 'partial';
@@ -11108,6 +11311,25 @@ function unbindChatPageDividerBridge() {
     return rebuildNow(reason);
   }
 
+  function bindCompleteIndexStateListener() {
+    if (S.completeIndexStateListenerBound) return true;
+    S.completeIndexStateListener = (event) => {
+      const status = String(event?.detail?.status || getCompleteIndexProjectionStatus().status || 'state');
+      scheduleRebuild(`complete-index-state:${status}`);
+    };
+    try { W.addEventListener('evt:h2o:complete-turn-index:state', S.completeIndexStateListener); } catch {}
+    S.completeIndexStateListenerBound = true;
+    return true;
+  }
+
+  function unbindCompleteIndexStateListener() {
+    if (!S.completeIndexStateListenerBound) return true;
+    try { W.removeEventListener('evt:h2o:complete-turn-index:state', S.completeIndexStateListener); } catch {}
+    S.completeIndexStateListener = null;
+    S.completeIndexStateListenerBound = false;
+    return true;
+  }
+
   function initCore() {
     if (S.inited) return true;
     S.inited = true;
@@ -11118,6 +11340,7 @@ function unbindChatPageDividerBridge() {
     bindWashBridge();
     bindViewBridge();
     bindChatPageMechanismsSettingsListener();
+    bindCompleteIndexStateListener();
     return true;
   }
 
@@ -11150,6 +11373,7 @@ function unbindChatPageDividerBridge() {
     unbindWashBridge();
     unbindViewBridge();
     unbindChatPageMechanismsSettingsListener();
+    unbindCompleteIndexStateListener();
     syncChatPageStatusCardSetting();
     S.inited = false;
     return true;
@@ -11193,6 +11417,7 @@ function unbindChatPageDividerBridge() {
     clearTurnCache,
     saveTurnCache,
     getCacheCompletenessDiagnostics,
+    getCompleteIndexMiniMapDiagnostics,
     evaluateTransientCurrentOwnership,
     getManualDividers: getMiniDividers,
     getManualDividerById: getMiniDividerById,
