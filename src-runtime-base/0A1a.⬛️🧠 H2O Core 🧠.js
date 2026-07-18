@@ -5070,6 +5070,7 @@
       hasQuestion: !!draft?.qId,
       hasAssistant: !!(Array.isArray(draft?.answerIds) && draft.answerIds.length),
       noAnswer: draft?.noAnswer === true,
+      stopped: draft?.stopped === true,
       structure: boundedTurnDraftStructure(draft?.structure),
       live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
     };
@@ -6039,7 +6040,14 @@
         continue;
       }
       const indexed = indexedByQId.get(qId);
-      if (!indexed) continue;
+      if (!indexed) {
+        const selectedPrimary = chatAtlasCompleteIndexIdentity(draft?.primaryAId);
+        if (
+          canonicalDraftHasStructuralQuestionProof(draft)
+          && (realAnswers.length || (!!selectedPrimary && !isStreamingAnswerPlaceholderId(selectedPrimary)))
+        ) refreshCause = 'question-selected-path-changed';
+        continue;
+      }
       const selectedPrimary = chatAtlasCompleteIndexIdentity(draft?.primaryAId);
       const variantChanged = realAnswers.some((answerId) => !indexed.answerVariants.includes(answerId));
       const primaryChanged = !!selectedPrimary
@@ -6391,13 +6399,61 @@
     return chatAtlasScheduleCompleteIndexRefresh(String(cause || 'explicit-rebuild'), { immediate: true });
   }
 
-  function chatAtlasBindCompleteIndexRefreshListeners() {
-    if (completeTurnIndexAuthorityState.refreshListenerBound) return true;
-    const onCanonicalTurnUpdated = () => {
-      if (!completeTurnIndexAuthorityState.enabled) return;
+  const COMPLETE_TURN_INDEX_EVENT_CAUSES = Object.freeze({
+    'question-branch-selected': 'question-branch-changed',
+    'question-branch-switch': 'question-branch-changed',
+    'selected-path-changed': 'question-selected-path-changed',
+    'selected-path-switch': 'question-selected-path-changed',
+    'edited-question-selected-path': 'question-selected-path-changed',
+    'answer-branch-selected': 'answer-branch-changed',
+    'turn-stopped': 'turn-stopped',
+    'response-stopped': 'turn-stopped',
+    'turn-settled': 'turn-settled',
+    'stream-complete': 'turn-settled',
+    'assistant-stream-complete': 'turn-settled',
+  });
+
+  function chatAtlasCompleteIndexTurnEventCause(detail) {
+    const raw = String(
+      detail?.completeIndexCause
+      || detail?.cause
+      || detail?.reason
+      || detail?.kind
+      || '',
+    ).trim().toLowerCase();
+    return COMPLETE_TURN_INDEX_EVENT_CAUSES[raw] || '';
+  }
+
+  function chatAtlasHandleCompleteIndexTurnEvent(detail = {}) {
+    if (!completeTurnIndexAuthorityState.enabled) {
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    const cause = chatAtlasCompleteIndexTurnEventCause(detail);
+    if (!cause) {
       const pendingCount = completeTurnIndexAuthorityState.pendingDrafts.size;
       if (pendingCount) completeIndexRefreshCoordinator?.markPending?.(pendingCount);
-    };
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    if (cause === 'turn-stopped') {
+      const qId = chatAtlasCompleteIndexIdentity(detail?.qId || detail?.questionId || detail?.turn?.qId);
+      const pending = qId ? completeTurnIndexAuthorityState.pendingDrafts.get(qId) : null;
+      if (pending) {
+        completeTurnIndexAuthorityState.pendingDrafts.set(qId, {
+          ...pending,
+          stopped: true,
+          noAnswer: true,
+          completeIndexPending: true,
+          livePendingProvenance: 'live-pending-overlay',
+        });
+        completeIndexRefreshCoordinator?.markPending?.(completeTurnIndexAuthorityState.pendingDrafts.size);
+      }
+    }
+    return chatAtlasScheduleCompleteIndexRefresh(cause);
+  }
+
+  function chatAtlasBindCompleteIndexRefreshListeners() {
+    if (completeTurnIndexAuthorityState.refreshListenerBound) return true;
+    const onCanonicalTurnUpdated = (detail) => { void chatAtlasHandleCompleteIndexTurnEvent(detail || {}); };
     H2O.bus.on(EV_CORE_TURN_UPDATED, onCanonicalTurnUpdated);
     completeTurnIndexAuthorityState.refreshListenerBound = true;
     completeTurnIndexAuthorityState.refreshListenerRegistrationCount += 1;
