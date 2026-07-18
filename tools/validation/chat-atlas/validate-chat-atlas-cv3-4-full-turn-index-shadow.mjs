@@ -18,6 +18,19 @@ const A545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
 const D824 = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
 const A84 = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
 const A733 = '733fa31a-7d11-4ce5-b570-8ffa474670d4';
+const INTERNAL_INITIAL = '9111ad43-3734-4120-94fe-a34c9cd3a1cc';
+const INTERNAL_BRIDGE_ONE = '3bdfa68f-a197-422a-a3d4-29f028fc6564';
+const INTERNAL_BRIDGE_TWO = 'e1d4b63f-0be7-4a51-b074-e3372b71d790';
+const INTERNAL_D824 = 'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b';
+const BRIDGE_ONE_Q = '01e8bbdc-0000-4000-8000-000000000001';
+const BRIDGE_ONE_A = '377a87ec-0000-4000-8000-000000000001';
+const BRIDGE_TWO_Q = '5068a46e-0000-4000-8000-000000000002';
+const BRIDGE_TWO_A = 'c1a937a4-0000-4000-8000-000000000002';
+const HISTORICAL_Q = '7e60a524-96df-462c-a6c0-647ed1a9973c';
+const HISTORICAL_CONTEXT_A = '17d51c70-49a4-4ebb-a9dd-6177a003955f';
+const HISTORICAL_INTERRUPTED_A = '88a66be2-37de-4237-801b-daaae73cc817';
+const NEXT_AFTER_D824_Q = '82fb4d81-6f44-453c-8ccd-90582adf8c90';
+const LATEST_Q = 'c64afed8-cfde-4644-b0df-3407313c4c54';
 const SAMPLE_LIMIT = 12;
 
 let assertionCount = 0;
@@ -139,7 +152,9 @@ const archiveFunctions = [
   'conversationTurnIndexIdentity',
   'conversationTurnIndexMessageId',
   'conversationTurnIndexRole',
+  'conversationTurnIndexProductUser',
   'conversationTurnIndexStopped',
+  'conversationTurnIndexProductAnswer',
   'conversationTurnIndexPlaceholder',
   'conversationTurnIndexIdentityFingerprint',
   'normalizeBackendConversationTurnIndexUnsafe',
@@ -528,7 +543,18 @@ function createActivationRuntime(payload) {
   return { context, counters, listeners, networkCalls, dispatchEvent };
 }
 
-function node({ id, role = '', parent = null, children = [], metadata = {}, text = `secret:${id}` }) {
+function node({
+  id,
+  role = '',
+  parent = null,
+  children = [],
+  metadata = {},
+  contentType = 'text',
+  channel = '',
+  status = '',
+  endTurn = null,
+  text = `secret:${id}`,
+}) {
   return {
     id: `node:${id}`,
     parent,
@@ -536,8 +562,11 @@ function node({ id, role = '', parent = null, children = [], metadata = {}, text
     message: role ? {
       id,
       author: { role },
-      content: { content_type: 'text', parts: [text] },
+      content: { content_type: contentType, parts: [text] },
       metadata: { ...metadata },
+      ...(channel ? { channel } : {}),
+      ...(status ? { status } : {}),
+      ...(endTurn == null ? {} : { end_turn: endTurn }),
       create_time: 1,
     } : null,
   };
@@ -548,42 +577,203 @@ function buildFullGraph() {
   const root = 'root';
   mapping[root] = node({ id: root, role: 'system', parent: null, children: [], text: 'root-secret' });
   let selectedParent = root;
-  let noAnswerQId = '';
-  let stoppedQId = '';
+  const internalUserIds = [INTERNAL_INITIAL, INTERNAL_BRIDGE_ONE, INTERNAL_BRIDGE_TWO, INTERNAL_D824];
+  const internalAssistantIds = [];
+  const productQuestionIds = [];
+  const appendSelected = (key, options) => {
+    mapping[key] = node({ ...options, parent: selectedParent, children: [] });
+    mapping[selectedParent].children.push(key);
+    selectedParent = key;
+    return key;
+  };
+
+  appendSelected('initial-internal-user', {
+    id: INTERNAL_INITIAL,
+    role: 'user',
+    metadata: { is_visually_hidden_from_conversation: true },
+    text: 'private initial context',
+  });
+  for (let index = 1; index <= 57; index += 1) {
+    appendSelected(`prefix-system-${index}`, {
+      id: `prefix-system-${index}`,
+      role: 'system',
+      text: `private prefix context ${index}`,
+    });
+  }
+
   let placeholderQId = '';
+  let completedStopQId = '';
   for (let order = 1; order <= 38; order += 1) {
-    const qId = order === 5 ? Q29 : (order === 36 ? D824 : `question-${String(order).padStart(2, '0')}`);
+    const qId = order === 5
+      ? Q29
+      : order === 10
+        ? BRIDGE_ONE_Q
+        : order === 20
+          ? BRIDGE_TWO_Q
+          : order === 35
+            ? HISTORICAL_Q
+            : order === 36
+              ? D824
+              : order === 37
+                ? NEXT_AFTER_D824_Q
+                : order === 38
+                  ? LATEST_Q
+                  : `question-${String(order).padStart(2, '0')}`;
     const qKey = `q-node-${order}`;
-    const questionMetadata = order === 37 ? { stopped: true } : {};
-    mapping[qKey] = node({ id: qId, role: 'user', parent: selectedParent, children: [], metadata: questionMetadata, text: order === 38 ? '' : `private question ${order}` });
-    mapping[selectedParent].children.push(qKey);
+    productQuestionIds.push(qId);
+    appendSelected(qKey, {
+      id: qId,
+      role: 'user',
+      text: order === 38 ? '' : `private question ${order}`,
+    });
     if (order === 38) {
-      noAnswerQId = qId;
-      selectedParent = qKey;
       continue;
     }
-    if (order === 37) {
-      stoppedQId = qId;
-      selectedParent = qKey;
+
+    if (order === 5) {
+      appendSelected('q29-hidden-system', {
+        id: 'q29-hidden-system',
+        role: 'system',
+        text: 'private q29 intermediary',
+      });
+      appendSelected('q29-final', {
+        id: A545,
+        role: 'assistant',
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+        text: 'private q29 final',
+      });
       continue;
     }
-    const selectedAnswerId = order === 5 ? A545 : (order === 36 ? A733 : `answer-${String(order).padStart(2, '0')}`);
-    const selectedKey = `a-node-${order}-selected`;
-    const selectedMetadata = order === 35 ? { finish_details: { type: 'stopped' } } : {};
-    mapping[selectedKey] = node({ id: selectedAnswerId, role: 'assistant', parent: qKey, children: [], metadata: selectedMetadata, text: `private answer ${order}` });
-    if (order === 36) {
-      const siblingKey = `a-node-${order}-sibling`;
-      mapping[siblingKey] = node({ id: A84, role: 'assistant', parent: qKey, children: [], text: 'private hidden variant' });
-      mapping[qKey].children.push(siblingKey, selectedKey);
-    } else if (order === 34) {
+
+    if (order === 10 || order === 20) {
+      const firstBridge = order === 10;
+      const contextId = `bridge-${order}-context-assistant`;
+      const reasoningId = `bridge-${order}-reasoning-recap`;
+      internalAssistantIds.push(contextId, reasoningId);
+      appendSelected(`bridge-${order}-context`, {
+        id: contextId,
+        role: 'assistant',
+        contentType: firstBridge ? 'model_editable_context' : 'text',
+        metadata: firstBridge ? {} : { is_visually_hidden_from_conversation: true },
+        text: `private bridge ${order} context`,
+      });
+      appendSelected(`bridge-${order}-internal-user`, {
+        id: firstBridge ? INTERNAL_BRIDGE_ONE : INTERNAL_BRIDGE_TWO,
+        role: 'user',
+        metadata: firstBridge
+          ? { is_user_system_message: true }
+          : { user_context_message_data: { kind: 'fixture-context' } },
+        text: `private bridge ${order} internal user`,
+      });
+      appendSelected(`bridge-${order}-reasoning`, {
+        id: reasoningId,
+        role: 'assistant',
+        contentType: 'reasoning_recap',
+        text: `private bridge ${order} reasoning`,
+      });
+      appendSelected(`bridge-${order}-final`, {
+        id: firstBridge ? BRIDGE_ONE_A : BRIDGE_TWO_A,
+        role: 'assistant',
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+        text: `private bridge ${order} final`,
+      });
+      continue;
+    }
+
+    if (order === 32) {
       placeholderQId = qId;
-      const placeholderKey = `a-node-${order}-placeholder`;
-      mapping[placeholderKey] = node({ id: 'request-placeholder-stream-34', role: 'assistant', parent: qKey, children: [] });
-      mapping[qKey].children.push(placeholderKey, selectedKey);
-    } else {
-      mapping[qKey].children.push(selectedKey);
+      appendSelected('a-node-32-placeholder', {
+        id: 'request-placeholder-stream-32',
+        role: 'assistant',
+        text: 'private completed placeholder',
+      });
+      appendSelected('a-node-32-final', {
+        id: 'answer-32',
+        role: 'assistant',
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+        text: 'private answer 32',
+      });
+      continue;
     }
-    selectedParent = selectedKey;
+
+    if (order === 35) {
+      internalAssistantIds.push(HISTORICAL_CONTEXT_A, HISTORICAL_INTERRUPTED_A);
+      appendSelected('historical-model-context', {
+        id: HISTORICAL_CONTEXT_A,
+        role: 'assistant',
+        contentType: 'model_editable_context',
+        text: 'private historical model context',
+      });
+      appendSelected('historical-interrupted-final', {
+        id: HISTORICAL_INTERRUPTED_A,
+        role: 'assistant',
+        metadata: { finish_details: { type: 'interrupted' } },
+        channel: 'final',
+        endTurn: false,
+        text: 'private interrupted final',
+      });
+      continue;
+    }
+
+    if (order === 36) {
+      const modelContextId = 'd824-model-editable-context';
+      const reasoningId = 'd824-reasoning-recap';
+      internalAssistantIds.push(modelContextId, reasoningId);
+      appendSelected('d824-branch-shell', {
+        id: A84,
+        role: 'assistant',
+        text: 'private hidden branch shell',
+      });
+      appendSelected('d824-system-context', {
+        id: 'd824-system-context',
+        role: 'system',
+        text: 'private d824 system context',
+      });
+      appendSelected('d824-internal-user', {
+        id: INTERNAL_D824,
+        role: 'user',
+        contentType: 'user_editable_context',
+        text: 'private d824 internal user',
+      });
+      appendSelected('d824-model-context', {
+        id: modelContextId,
+        role: 'assistant',
+        contentType: 'model_editable_context',
+        text: 'private d824 model context',
+      });
+      appendSelected('d824-reasoning', {
+        id: reasoningId,
+        role: 'assistant',
+        contentType: 'reasoning_recap',
+        text: 'private d824 reasoning',
+      });
+      appendSelected('d824-final', {
+        id: A733,
+        role: 'assistant',
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+        text: 'private d824 final',
+      });
+      continue;
+    }
+
+    const selectedAnswerId = `answer-${String(order).padStart(2, '0')}`;
+    if (order === 33) completedStopQId = qId;
+    appendSelected(`a-node-${order}-selected`, {
+      id: selectedAnswerId,
+      role: 'assistant',
+      metadata: order === 33 ? { finish_details: { type: 'stop' } } : {},
+      channel: order === 33 ? 'final' : '',
+      endTurn: order === 33 ? true : null,
+      text: `private answer ${order}`,
+    });
   }
   const toolKey = 'hidden-tool';
   mapping[toolKey] = node({ id: 'tool-output-id', role: 'tool', parent: 'q-node-3', children: [], text: 'private tool output' });
@@ -595,11 +785,18 @@ function buildFullGraph() {
       current_node: selectedParent,
       update_time: 123456,
       title: 'PRIVATE TITLE',
+      access_token: 'PRIVATE PAYLOAD TOKEN',
+      attachments: [{ id: 'PRIVATE ATTACHMENT' }],
+      tool_output: 'PRIVATE RAW TOOL OUTPUT',
       mapping,
     },
-    noAnswerQId,
-    stoppedQId,
+    internalUserIds,
+    internalAssistantIds,
+    productQuestionIds,
+    historicalQId: HISTORICAL_Q,
+    latestQId: LATEST_Q,
     placeholderQId,
+    completedStopQId,
   };
 }
 
@@ -613,6 +810,16 @@ function projectionRows(turns, count) {
   }));
 }
 
+function selectedPathKeys(payload) {
+  const keys = [];
+  let cursor = payload.current_node;
+  while (cursor) {
+    keys.push(cursor);
+    cursor = String(payload.mapping[cursor]?.parent || '');
+  }
+  return keys.reverse();
+}
+
 const archiveRuntime = createArchiveRuntime();
 const parser = archiveRuntime.api.normalizeBackendConversationTurnIndex;
 const fullFixture = buildFullGraph();
@@ -624,10 +831,200 @@ await fixture('production schema is extracted from runtime source', () => {
   equal(turnIndexSchemaDeclaration, 'const TURN_INDEX_SCHEMA = 1;');
 });
 
-await fixture('38 selected-path users produce 38 turns', () => {
+await fixture('four internal user nodes collapse raw 42 to product 38', () => {
+  const selected = selectedPathKeys(fullFixture.payload);
+  const rawUsers = selected.filter((key) => fullFixture.payload.mapping[key]?.message?.author?.role === 'user');
   equal(fullResult.ok, true);
+  equal(selected.length, 148);
+  equal(rawUsers.length, 42);
+  equal(fullFixture.internalUserIds.length, 4);
   equal(fullResult.index.turns.length, 38);
   equal(fullResult.index.completeness.proof, 'host-payload-full-graph');
+});
+
+await fixture('initial internal context user is excluded before the first product question', () => {
+  equal(fullResult.index.turns[0].qId, 'question-01');
+  equal(fullResult.index.turns.some((turn) => turn.qId === INTERNAL_INITIAL), false);
+});
+
+await fixture('all internal user identities are absent from product qIds', () => {
+  const qIds = new Set(fullResult.index.turns.map((turn) => turn.qId));
+  equal(fullFixture.internalUserIds.every((id) => !qIds.has(id)), true);
+  equal(qIds.size, 38);
+});
+
+await fixture('internal user does not end the preceding product turn', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === BRIDGE_ONE_Q);
+  equal(turn.answerVariants, [BRIDGE_ONE_A]);
+  equal(turn.primaryAId, BRIDGE_ONE_A);
+  equal(fullResult.index.turns.some((row) => row.qId === INTERNAL_BRIDGE_ONE), false);
+});
+
+await fixture('3bdfa transparent bridge assigns 377a87ec final to the preceding product qId', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === BRIDGE_ONE_Q);
+  equal(turn.turnId, `turn:${BRIDGE_ONE_Q}`);
+  equal(turn.answerVariants, [BRIDGE_ONE_A]);
+  equal(turn.noAnswer, false);
+});
+
+await fixture('e1d4 transparent bridge assigns c1a937a4 final to the preceding product qId', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === BRIDGE_TWO_Q);
+  equal(turn.turnId, `turn:${BRIDGE_TWO_Q}`);
+  equal(turn.answerVariants, [BRIDGE_TWO_A]);
+  equal(turn.primaryAId, BRIDGE_TWO_A);
+});
+
+await fixture('d824 transparent bridge resolves exact final primary', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(turn.qId, D824);
+  equal(turn.turnId, `turn:${D824}`);
+  equal(turn.primaryAId, A733);
+  equal(turn.answerVariants, [A84, A733]);
+  equal(turn.answerVariants.includes('answer-37'), false);
+});
+
+await fixture('d824 retains the accepted hidden branch-shell alias', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(turn.answerVariants[0], A84);
+  equal(turn.answerVariants.includes('d824-model-editable-context'), false);
+  equal(turn.answerVariants.includes('d824-reasoning-recap'), false);
+});
+
+await fixture('internal aabc user does not become a product qId or split d824 ownership', () => {
+  const d824Turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(fullResult.index.turns.some((row) => row.qId === INTERNAL_D824), false);
+  equal(d824Turn.answerVariants, [A84, A733]);
+  equal(d824Turn.primaryAId, A733);
+});
+
+await fixture('model_editable_context assistant is not a product answer', () => {
+  const answerIds = fullResult.index.turns.flatMap((turn) => turn.answerVariants);
+  equal(answerIds.includes(HISTORICAL_CONTEXT_A), false);
+  equal(answerIds.includes('bridge-10-context-assistant'), false);
+  equal(answerIds.includes('d824-model-editable-context'), false);
+});
+
+await fixture('reasoning_recap assistant is not a product answer', () => {
+  const answerIds = fullResult.index.turns.flatMap((turn) => turn.answerVariants);
+  equal(answerIds.includes('bridge-10-reasoning-recap'), false);
+  equal(answerIds.includes('bridge-20-reasoning-recap'), false);
+  equal(answerIds.includes('d824-reasoning-recap'), false);
+});
+
+await fixture('hidden internal context assistant is not a product answer', () => {
+  const answerIds = fullResult.index.turns.flatMap((turn) => turn.answerVariants);
+  equal(answerIds.includes('bridge-20-context-assistant'), false);
+  equal(fullFixture.internalAssistantIds.some((id) => answerIds.includes(id)), false);
+});
+
+await fixture('interrupted final assistant becomes NO ANSWER', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === HISTORICAL_Q);
+  equal(turn.answerVariants.includes(HISTORICAL_INTERRUPTED_A), false);
+  equal(turn.noAnswer, true);
+  equal(turn.primaryAId, null);
+});
+
+await fixture('historical 7e60 is empty null NO ANSWER and stopped', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === HISTORICAL_Q);
+  equal({
+    qId: turn.qId,
+    turnId: turn.turnId,
+    primaryAId: turn.primaryAId,
+    answerVariants: turn.answerVariants,
+    noAnswer: turn.noAnswer,
+    stopped: turn.stopped,
+  }, {
+    qId: HISTORICAL_Q,
+    turnId: `turn:${HISTORICAL_Q}`,
+    primaryAId: null,
+    answerVariants: [],
+    noAnswer: true,
+    stopped: true,
+  });
+});
+
+await fixture('branch with only a shell and interrupted terminal contributes no answer variant', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'shell-interrupted-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: node({ id: 'shell-before-interruption', role: 'assistant', parent: 'q', children: ['interrupted'] }),
+    interrupted: node({
+      id: 'interrupted-terminal',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'interrupted' } },
+      channel: 'final',
+      endTurn: false,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'interrupted' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[0].primaryAId, null);
+  equal(result.index.turns[0].noAnswer, true);
+  equal(result.index.turns[0].stopped, true);
+});
+
+await fixture('latest c64 remains empty null NO ANSWER and not stopped', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === LATEST_Q);
+  equal(turn.turnId, `turn:${LATEST_Q}`);
+  equal(turn.primaryAId, null);
+  equal(turn.answerVariants, []);
+  equal(turn.noAnswer, true);
+  equal(turn.stopped, false);
+});
+
+await fixture('finish type stop remains a valid completed answer', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.completedStopQId);
+  equal(turn.answerVariants, ['answer-33']);
+  equal(turn.primaryAId, 'answer-33');
+  equal(turn.noAnswer, false);
+  equal(turn.stopped, false);
+});
+
+await fixture('complete internal nodes still participate in raw global validation', () => {
+  equal(fullResult.ok, true);
+  equal(fullResult.index.completeness.complete, true);
+  equal(fullResult.index.completeness.proof, 'host-payload-full-graph');
+  equal(selectedPathKeys(fullFixture.payload).some((key) => key === 'd824-internal-user'), true);
+});
+
+await fixture('malformed internal branch cannot receive completeness proof', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['internal'] }),
+    internal: node({
+      id: INTERNAL_INITIAL,
+      role: 'user',
+      parent: 'root',
+      children: [],
+      metadata: { is_visually_hidden_from_conversation: true },
+    }),
+    q: node({ id: 'product-question', role: 'user', parent: 'internal' }),
+  };
+  const result = parser({ mapping, current_node: 'q' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'parent-child-contradiction');
+  equal(result.completeness, undefined);
+});
+
+await fixture('internal filtering changes product fingerprint deterministically', () => {
+  const initial = fullFixture.payload.mapping['initial-internal-user'];
+  const promoted = {
+    ...fullFixture.payload,
+    mapping: {
+      ...fullFixture.payload.mapping,
+      'initial-internal-user': {
+        ...initial,
+        message: { ...initial.message, metadata: {} },
+      },
+    },
+  };
+  const first = parser(promoted, { chatId: CHAT_ID, capturedAt: '2026-07-18T00:00:00.000Z' });
+  const second = parser(promoted, { chatId: CHAT_ID, capturedAt: '2099-01-01T00:00:00.000Z' });
+  equal(first.ok, true);
+  equal(first.index.turns.length, 39);
+  equal(first.index.sourceFingerprint, second.index.sourceFingerprint);
+  ok(first.index.sourceFingerprint !== fullResult.index.sourceFingerprint);
 });
 
 await fixture('mapping insertion order does not change index identity', () => {
@@ -640,7 +1037,7 @@ await fixture('mapping insertion order does not change index identity', () => {
 
 await fixture('current_node parent traversal defines selected order', () => {
   equal(fullResult.index.turns[0].qId, 'question-01');
-  equal(fullResult.index.turns.at(-1).qId, fullFixture.noAnswerQId);
+  equal(fullResult.index.turns.at(-1).qId, fullFixture.latestQId);
   equal(fullResult.index.turns.every((turn, index) => turn.order === index + 1), true);
 });
 
@@ -665,36 +1062,38 @@ await fixture('q29 remains local to answer 545', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === Q29);
   equal(turn.answerVariants, [A545]);
   equal(turn.primaryAId, A545);
+  equal(turn.noAnswer, false);
+  equal(turn.stopped, false);
 });
 
 await fixture('NO ANSWER remains one ID-bearing turn', () => {
-  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.noAnswerQId);
+  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.latestQId);
   equal(turn.noAnswer, true);
   equal(turn.primaryAId, null);
   equal(turn.answerVariants, []);
 });
 
 await fixture('empty text does not drop NO ANSWER identity', () => {
-  ok(fullResult.index.turns.some((turn) => turn.qId === fullFixture.noAnswerQId));
+  ok(fullResult.index.turns.some((turn) => turn.qId === fullFixture.latestQId));
 });
 
 await fixture('stopped metadata is conservative and fabricates no answer', () => {
-  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.stoppedQId);
+  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.historicalQId);
   equal(turn.stopped, true);
   equal(turn.primaryAId, null);
 });
 
-await fixture('stopped assistant metadata retains only its real identity', () => {
-  const turn = fullResult.index.turns.find((row) => row.qId === 'question-35');
+await fixture('interrupted assistant metadata retains no current product identity', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.historicalQId);
   equal(turn.stopped, true);
-  equal(turn.primaryAId, 'answer-35');
-  equal(turn.answerVariants, ['answer-35']);
+  equal(turn.primaryAId, null);
+  equal(turn.answerVariants, []);
 });
 
 await fixture('completed request placeholders are evicted', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === fullFixture.placeholderQId);
-  equal(turn.answerVariants, ['answer-34']);
-  equal(turn.primaryAId, 'answer-34');
+  equal(turn.answerVariants, ['answer-32']);
+  equal(turn.primaryAId, 'answer-32');
 });
 
 await fixture('placeholder-only streaming state remains represented', () => {
@@ -869,8 +1268,12 @@ await fixture('unexpected parser exceptions become bounded failures', () => {
 await fixture('returned index respects the privacy boundary', () => {
   const serialized = JSON.stringify(fullResult.index);
   equal(serialized.includes('PRIVATE TITLE'), false);
+  equal(serialized.includes('PRIVATE PAYLOAD TOKEN'), false);
+  equal(serialized.includes('PRIVATE ATTACHMENT'), false);
+  equal(serialized.includes('PRIVATE RAW TOOL OUTPUT'), false);
   equal(serialized.includes('private question'), false);
   equal(serialized.includes('private answer'), false);
+  equal(serialized.includes('private tool output'), false);
   equal(serialized.includes('"mapping":'), false);
   equal(Object.hasOwn(fullResult.index.turns[0], 'text'), false);
 });

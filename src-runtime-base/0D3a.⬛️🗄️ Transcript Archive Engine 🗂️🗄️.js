@@ -612,6 +612,17 @@
     return String(node?.message?.author?.role || "").trim().toLowerCase();
   }
 
+  function conversationTurnIndexProductUser(node) {
+    if (conversationTurnIndexRole(node) !== "user") return false;
+    const message = isObj(node?.message) ? node.message : {};
+    const metadata = isObj(message?.metadata) ? message.metadata : {};
+    const contentType = String(message?.content?.content_type || "").trim().toLowerCase();
+    return metadata?.is_visually_hidden_from_conversation !== true
+      && metadata?.is_user_system_message !== true
+      && metadata?.user_context_message_data == null
+      && contentType !== "user_editable_context";
+  }
+
   function conversationTurnIndexStopped(message) {
     const metadata = isObj(message?.metadata) ? message.metadata : {};
     const finishType = String(metadata?.finish_details?.type || metadata?.finish_type || "").trim().toLowerCase();
@@ -621,6 +632,20 @@
       || metadata?.is_interrupted === true
       || ["stopped", "cancelled", "canceled", "interrupted"].includes(status)
       || ["stopped", "cancelled", "canceled", "interrupted"].includes(finishType);
+  }
+
+  function conversationTurnIndexProductAnswer(node) {
+    if (conversationTurnIndexRole(node) !== "assistant") return false;
+    const message = isObj(node?.message) ? node.message : {};
+    const metadata = isObj(message?.metadata) ? message.metadata : {};
+    const contentType = String(message?.content?.content_type || "").trim().toLowerCase();
+    if (
+      metadata?.is_visually_hidden_from_conversation === true
+      || metadata?.is_user_system_message === true
+      || metadata?.user_context_message_data != null
+      || ["model_editable_context", "reasoning_recap", "user_editable_context"].includes(contentType)
+    ) return false;
+    return !conversationTurnIndexStopped(message);
   }
 
   function conversationTurnIndexPlaceholder(answerId) {
@@ -762,7 +787,7 @@
     for (let selectedIndex = 0; selectedIndex < selectedKeys.length; selectedIndex += 1) {
       const questionNodeKey = selectedKeys[selectedIndex];
       const questionNode = mapping[questionNodeKey];
-      if (conversationTurnIndexRole(questionNode) !== "user") continue;
+      if (!conversationTurnIndexProductUser(questionNode)) continue;
       const qId = conversationTurnIndexMessageId(questionNodeKey, questionNode);
       if (!qId) return conversationTurnIndexFailure("question-identity-missing", { chatId, nodeCount });
       if (selectedQuestionIds.has(qId)) {
@@ -770,14 +795,18 @@
       }
       selectedQuestionIds.add(qId);
 
-      const selectedAssistantKeys = [];
+      const selectedProductAssistantKeys = [];
+      let selectedStopped = conversationTurnIndexStopped(questionNode?.message);
       for (let pathIndex = selectedIndex + 1; pathIndex < selectedKeys.length; pathIndex += 1) {
         const pathKey = selectedKeys[pathIndex];
-        const role = conversationTurnIndexRole(mapping[pathKey]);
-        if (role === "user") break;
-        if (role === "assistant") selectedAssistantKeys.push(pathKey);
+        const pathNode = mapping[pathKey];
+        if (conversationTurnIndexProductUser(pathNode)) break;
+        if (conversationTurnIndexRole(pathNode) === "assistant") {
+          if (conversationTurnIndexStopped(pathNode?.message)) selectedStopped = true;
+          if (conversationTurnIndexProductAnswer(pathNode)) selectedProductAssistantKeys.push(pathKey);
+        }
       }
-      const selectedAssistantKey = selectedAssistantKeys[selectedAssistantKeys.length - 1] || "";
+      const selectedAssistantKey = selectedProductAssistantKeys[selectedProductAssistantKeys.length - 1] || "";
       let primaryAId = selectedAssistantKey
         ? conversationTurnIndexMessageId(selectedAssistantKey, mapping[selectedAssistantKey])
         : null;
@@ -785,29 +814,57 @@
       const variantIds = [];
       const variantNodeById = new Map();
       const visitedDescendants = new Set();
-      const collectVariants = (parentKey) => {
-        const children = orderedChildren(parentKey);
-        if (!children) return false;
-        for (const childKey of children) {
-          if (visitedDescendants.has(childKey)) continue;
-          visitedDescendants.add(childKey);
-          const childNode = mapping[childKey];
-          const role = conversationTurnIndexRole(childNode);
-          if (role === "user") continue;
-          if (role === "assistant") {
-            const answerId = conversationTurnIndexMessageId(childKey, childNode);
-            if (!answerId) return false;
-            if (!variantNodeById.has(answerId)) {
-              variantNodeById.set(answerId, childKey);
-              variantIds.push(answerId);
-            }
-          }
-          if (!collectVariants(childKey)) return false;
+      const resolveAnswerBranch = (nodeKey) => {
+        if (visitedDescendants.has(nodeKey)) return { ok: true, variants: [], stopped: false };
+        visitedDescendants.add(nodeKey);
+        const branchNode = mapping[nodeKey];
+        if (conversationTurnIndexProductUser(branchNode)) {
+          return { ok: true, variants: [], stopped: false };
         }
-        return true;
+        const role = conversationTurnIndexRole(branchNode);
+        const stoppedHere = role === "assistant" && conversationTurnIndexStopped(branchNode?.message);
+        let answerId = null;
+        if (conversationTurnIndexProductAnswer(branchNode)) {
+          answerId = conversationTurnIndexMessageId(nodeKey, branchNode);
+          if (!answerId) return { ok: false, variants: [], stopped: stoppedHere };
+          variantNodeById.set(answerId, nodeKey);
+        }
+
+        const childResults = [];
+        for (const childKey of orderedChildren(nodeKey)) {
+          if (conversationTurnIndexProductUser(mapping[childKey])) continue;
+          const childResult = resolveAnswerBranch(childKey);
+          if (!childResult.ok) return childResult;
+          childResults.push(childResult);
+        }
+        const downstreamVariants = [];
+        for (const childResult of childResults) {
+          for (const downstreamId of childResult.variants) {
+            if (!downstreamVariants.includes(downstreamId)) downstreamVariants.push(downstreamId);
+          }
+        }
+        const downstreamStoppedWithoutAnswer = childResults.some((result) => (
+          result.stopped && result.variants.length === 0
+        ));
+        const variants = downstreamVariants.slice();
+        if (answerId && (downstreamVariants.length > 0 || !downstreamStoppedWithoutAnswer)) {
+          if (!variants.includes(answerId)) variants.unshift(answerId);
+        }
+        return {
+          ok: true,
+          variants,
+          stopped: stoppedHere || childResults.some((result) => result.stopped),
+        };
       };
-      if (!collectVariants(questionNodeKey)) {
-        return conversationTurnIndexFailure("variant-graph-invalid", { chatId, nodeCount });
+      for (const childKey of orderedChildren(questionNodeKey)) {
+        if (conversationTurnIndexProductUser(mapping[childKey])) continue;
+        const branchResult = resolveAnswerBranch(childKey);
+        if (!branchResult.ok) {
+          return conversationTurnIndexFailure("variant-graph-invalid", { chatId, nodeCount });
+        }
+        for (const answerId of branchResult.variants) {
+          if (!variantIds.includes(answerId)) variantIds.push(answerId);
+        }
       }
       if (primaryAId && !variantNodeById.has(primaryAId)) {
         return conversationTurnIndexFailure("selected-assistant-unowned", { chatId, nodeCount });
@@ -837,7 +894,8 @@
       }
       const stopped = primaryAId
         ? conversationTurnIndexStopped(mapping[variantNodeById.get(primaryAId)]?.message)
-        : conversationTurnIndexStopped(questionNode?.message);
+        : selectedStopped;
+      const primaryNodeKey = primaryAId ? variantNodeById.get(primaryAId) : "";
       turns.push(Object.freeze({
         order: turns.length + 1,
         qId,
@@ -847,7 +905,7 @@
         noAnswer: !primaryAId,
         stopped,
         branch: Object.freeze({
-          selectedAssistantNodeId: conversationTurnIndexIdentity(selectedAssistantKey) || null,
+          selectedAssistantNodeId: conversationTurnIndexIdentity(primaryNodeKey) || null,
           variantCount: answerVariants.length,
           inactiveVariantCount: Math.max(0, answerVariants.length - (primaryAId ? 1 : 0)),
         }),
