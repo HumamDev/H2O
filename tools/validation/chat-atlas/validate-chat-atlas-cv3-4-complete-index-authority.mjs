@@ -664,6 +664,9 @@ await fixture('complete authority evicts stale same-qId variants through merge m
   const normalized = runtime.api.normalize(host, CHAT_ID, { source: 'host' }).envelope;
   runtime.api.state.enabled = true;
   runtime.api.state.status = 'complete-from-host-payload';
+  runtime.api.state.chatId = CHAT_ID;
+  runtime.api.state.routeKey = `/c/${CHAT_ID}`;
+  runtime.api.state.generation = 1;
   runtime.api.state.index = normalized;
   runtime.api.state.indexSource = 'host-payload';
   runtime.api.buildTurns([]);

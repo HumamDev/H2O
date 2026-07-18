@@ -124,6 +124,93 @@ function stoppedSiblingHostEnvelope(runtime) {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+function createRefreshHarness({ writeOk = true } = {}) {
+  const codeFunction = extractFunction(coreSource, 'chatAtlasCompleteIndexCode');
+  const coordinatorFunction = extractFunction(coreSource, 'createCompleteIndexRefreshCoordinator');
+  const factory = vm.runInNewContext(`(function (adapters) {
+    const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({ debounceMs: 280, timeoutMs: 4500, diagnosticCauseLimit: 8, errorCodeLength: 96 });
+    ${codeFunction}
+    ${coordinatorFunction}
+    return createCompleteIndexRefreshCoordinator(adapters);
+  })`, { Object, Array, Set, Map, String, Number, Date, Math, Promise, AbortController });
+  const timers = new Map();
+  const providerQueue = [];
+  const published = [];
+  const writes = [];
+  const cache = { bytes: 'previous-cache-bytes' };
+  let timerId = 0;
+  let route = 'fixture-chat|/c/fixture-chat';
+  let enabled = true;
+  let currentIndex = { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 1 };
+  const adapters = {
+    now: (() => { let tick = 0; return () => ++tick; })(),
+    routeKey: () => route,
+    isEnabled: () => enabled,
+    chatId: () => 'fixture-chat',
+    currentIndex: () => currentIndex,
+    pendingCount: () => 0,
+    provider: () => (_chatId, _opts) => {
+      const next = providerQueue.shift();
+      return next ? next() : Promise.resolve({ ok: false, errorCode: 'fixture-provider-empty' });
+    },
+    normalize: (raw) => raw?.complete === true
+      ? { ok: true, envelope: raw }
+      : { ok: false, errorCode: 'complete-index-proof-invalid' },
+    compareRevision: (incoming, retained) => Number(incoming) - Number(retained),
+    writeCache: (incoming) => {
+      writes.push(incoming);
+      if (!writeOk) return { ok: false, status: 'cache-write-failed' };
+      cache.bytes = `cached:${incoming.payloadUpdateTime}`;
+      return { ok: true, status: 'cache-written' };
+    },
+    publish: (incoming, source) => { currentIndex = incoming; published.push({ incoming, source }); },
+    onState() {},
+    setTimeout(fn, ms) { timerId += 1; timers.set(timerId, { fn, ms }); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+    AbortController,
+  };
+  const coordinator = factory(adapters);
+  return {
+    coordinator,
+    timers,
+    providerQueue,
+    published,
+    writes,
+    cache,
+    setEnabled(value) { enabled = value === true; },
+    setRoute(value) { route = String(value); },
+    runTimer(ms) {
+      const entry = Array.from(timers.entries()).find(([, timer]) => timer.ms === ms);
+      if (!entry) return false;
+      timers.delete(entry[0]);
+      entry[1].fn();
+      return true;
+    },
+  };
+}
+
+function evaluateAuthorityGuard(routeChatId, stateChatId, routeGeneration = 1) {
+  const productionFunction = extractFunction(coreSource, 'chatAtlasCompleteIndexAuthorityActive');
+  return vm.runInNewContext(`(function () {
+    const COMPLETE_TURN_INDEX_COMPLETE_STATUSES = ['complete-validated'];
+    const chatAtlasFullIndexRoute = () => ({ chatId: ${JSON.stringify(routeChatId)}, routeKey: '/c/' + ${JSON.stringify(routeChatId)} });
+    const completeTurnIndexAuthorityState = {
+      enabled: true, status: 'complete-validated', chatId: ${JSON.stringify(stateChatId)},
+      routeKey: '/c/' + ${JSON.stringify(stateChatId)}, generation: ${Number(routeGeneration)},
+      index: { complete: true, proof: 'host-payload-full-graph', turns: [{ qId: 'q' }] },
+    };
+    ${productionFunction}
+    return chatAtlasCompleteIndexAuthorityActive();
+  })()`, Object.create(null));
+}
+
 function createPaginationReconciler(source, authorityActive) {
   const productionFunction = extractFunction(source, 'reconcileTurnRecordsFromPaginationSnapshot');
   const program = `(function () {
@@ -322,6 +409,85 @@ await fixture('B4 MiniMap preserves sibling ownership while rendering one NO ANS
   equal(miniMapSource.split('const answerIds = cacheRowAnswerIds({').length - 1 >= 2, true);
   ok(miniMapSource.includes("const answerId = noAnswer ? ''"));
   ok(miniMapSource.includes('hasAssistant: noAnswer ? false'));
+});
+
+await fixture('in-flight causes coalesce into exactly one trailing refresh', async () => {
+  const harness = createRefreshHarness();
+  const first = deferred();
+  harness.providerQueue.push(() => first.promise);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 3 } }));
+  const active = harness.coordinator.schedule('turn-settled', { immediate: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  for (let index = 0; index < 20; index += 1) void harness.coordinator.schedule(`answer-branch-${index}`);
+  first.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 2 } });
+  await active;
+  equal(harness.coordinator.getStatus().trailingRefreshCount, 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(harness.coordinator.getStatus().fetchCount, 2);
+  equal(harness.published.length, 2);
+});
+
+await fixture('route change cancels trailing refresh requirement', async () => {
+  const harness = createRefreshHarness();
+  const first = deferred();
+  harness.providerQueue.push(() => first.promise);
+  const active = harness.coordinator.schedule('turn-settled', { immediate: true });
+  await Promise.resolve();
+  void harness.coordinator.schedule('selected-path-changed');
+  harness.setRoute('other-chat|/c/other-chat');
+  harness.coordinator.cancel('route-changed', 'stale-route-discarded');
+  first.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 2 } });
+  await active;
+  equal(harness.coordinator.getStatus().trailingRequired, false);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('disable cancels trailing refresh requirement', async () => {
+  const harness = createRefreshHarness();
+  const first = deferred();
+  harness.providerQueue.push(() => first.promise);
+  const active = harness.coordinator.schedule('turn-settled', { immediate: true });
+  await Promise.resolve();
+  void harness.coordinator.schedule('question-branch-selected');
+  harness.setEnabled(false);
+  harness.coordinator.cancel('gate-disabled', 'idle');
+  first.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 2 } });
+  await active;
+  equal(harness.coordinator.getStatus().trailingRequired, false);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('refresh write failure publishes proven unpersisted authority and preserves bytes', async () => {
+  const harness = createRefreshHarness({ writeOk: false });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 2 } }));
+  const status = await harness.coordinator.schedule('turn-settled', { immediate: true });
+  equal(status.status, 'complete-refresh-validated');
+  equal(status.authorityUnpersisted, true);
+  equal(status.cacheWriteErrorCode, 'cache-write-failed');
+  equal(harness.cache.bytes, 'previous-cache-bytes');
+  equal(harness.published[0].source, 'host-refresh-unpersisted');
+});
+
+await fixture('boot and refresh expose the same unpersisted-authority policy', () => {
+  ok(coreSource.includes("completeTurnIndexAuthorityState.indexSource = write.ok ? 'host-payload' : 'host-payload-unpersisted';"));
+  ok(coreSource.includes("adapters?.publish?.(incoming, 'host-refresh-unpersisted');"));
+  ok(coreSource.includes('authorityUnpersisted: completeTurnIndexAuthorityState.authorityUnpersisted === true'));
+});
+
+await fixture('route guard rejects wrong chat and invalid generation', () => {
+  equal(evaluateAuthorityGuard('fixture-chat', 'fixture-chat', 1), true);
+  equal(evaluateAuthorityGuard('other-chat', 'fixture-chat', 1), false);
+  equal(evaluateAuthorityGuard('fixture-chat', 'fixture-chat', 0), false);
+});
+
+await fixture('diagnostic errors are bounded codes rather than arbitrary messages', async () => {
+  const harness = createRefreshHarness();
+  harness.providerQueue.push(() => Promise.reject(new Error('private arbitrary payload text')));
+  const status = await harness.coordinator.schedule('cause with private text', { immediate: true });
+  equal(status.errorCode, 'provider-failed');
+  equal(status.causeSample.includes('cause with private text'), false);
 });
 
 await fixture('Gate 5 correctness validator remains production-backed and privacy bounded', () => {

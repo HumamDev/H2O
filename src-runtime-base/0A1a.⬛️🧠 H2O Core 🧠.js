@@ -5525,6 +5525,13 @@
     'stopped',
   ]);
 
+  function chatAtlasCompleteIndexCode(value, fallback = 'complete-index-error', limit = 96) {
+    const raw = String(value || '').trim();
+    const boundedFallback = String(fallback || 'complete-index-error').slice(0, Math.max(16, Number(limit || 96)));
+    if (!/^[a-z0-9][a-z0-9._:-]*$/i.test(raw)) return boundedFallback;
+    return raw.slice(0, Math.max(16, Number(limit || 96)));
+  }
+
   // CV-3.4 Gate 4 refresh production seam:begin
   // One debounced coordinator owns all live completion/branch/edit refreshes.
   // It accepts only the already-proven host envelope and publishes only after
@@ -5551,12 +5558,20 @@
       completedAt: null,
       errorCode: null,
       pendingCount: 0,
+      trailingRequired: false,
+      trailingRefreshCount: 0,
+      authorityUnpersisted: false,
+      cacheWriteErrorCode: null,
     };
     const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
     const iso = (value) => {
       try { return new Date(value).toISOString(); } catch { return null; }
     };
-    const errorCode = (value) => String(value || '').slice(0, Math.max(16, Number(limits.errorCodeLength || 96)));
+    const errorCode = (value, fallback = 'complete-index-error') => chatAtlasCompleteIndexCode(
+      value,
+      fallback,
+      limits.errorCodeLength,
+    );
     const routeKey = () => String(adapters?.routeKey?.() || '');
     const enabled = () => adapters?.isEnabled?.() === true;
     const causeSample = () => Array.from(state.causes).slice(0, Math.max(1, Number(limits.diagnosticCauseLimit || 8)));
@@ -5572,6 +5587,10 @@
       startedAt: state.startedAt,
       completedAt: state.completedAt,
       errorCode: state.errorCode,
+      trailingRequired: state.trailingRequired,
+      trailingRefreshCount: state.trailingRefreshCount,
+      authorityUnpersisted: state.authorityUnpersisted,
+      cacheWriteErrorCode: state.cacheWriteErrorCode,
       timerPending: !!state.timer,
       requestActive: !!state.promise,
     });
@@ -5599,6 +5618,7 @@
       state.controller = null;
       state.promise = null;
       state.causes.clear();
+      state.trailingRequired = false;
       return notify(status, {
         completedAt: iso(now()),
         errorCode: errorCode(reason),
@@ -5664,7 +5684,7 @@
           }
           if (outcome?.error) {
             return notify('complete-refresh-failed-cache-preserved', {
-              errorCode: errorCode(outcome.error?.code || outcome.error?.message || 'provider-failed'),
+              errorCode: errorCode(outcome.error?.code, 'provider-failed'),
               completedAt: iso(now()),
             });
           }
@@ -5691,8 +5711,12 @@
           }
           const write = adapters?.writeCache?.(incoming) || { ok: false, status: 'cache-write-failed' };
           if (!write.ok) {
-            return notify('complete-refresh-failed-cache-preserved', {
-              errorCode: errorCode(write.status || 'cache-write-failed'),
+            adapters?.publish?.(incoming, 'host-refresh-unpersisted');
+            state.pendingCount = Math.max(0, Number(adapters?.pendingCount?.() || 0) || 0);
+            return notify('complete-refresh-validated', {
+              errorCode: errorCode(write.status, 'cache-write-failed'),
+              authorityUnpersisted: true,
+              cacheWriteErrorCode: errorCode(write.status, 'cache-write-failed'),
               completedAt: iso(now()),
             });
           }
@@ -5700,6 +5724,8 @@
           state.pendingCount = Math.max(0, Number(adapters?.pendingCount?.() || 0) || 0);
           return notify('complete-refresh-validated', {
             errorCode: null,
+            authorityUnpersisted: false,
+            cacheWriteErrorCode: null,
             completedAt: iso(now()),
           });
         })
@@ -5708,16 +5734,31 @@
           clearRequestTimeout();
           state.controller = null;
           state.promise = null;
+          const shouldTrail = state.trailingRequired
+            && state.causes.size > 0
+            && enabled()
+            && state.routeKey === routeKey();
+          state.trailingRequired = false;
+          if (shouldTrail && !state.timer) {
+            state.trailingRefreshCount += 1;
+            state.debounceCount += 1;
+            notify('complete-refresh-pending', { errorCode: null });
+            state.timer = (adapters?.setTimeout || setTimeout)(() => {
+              state.timer = null;
+              void refresh();
+            }, Math.max(0, Number(limits.debounceMs || 280)));
+          }
         });
       state.promise = operation;
       return operation;
     };
     const schedule = (cause = 'turn-settled', opts = {}) => {
       if (!enabled()) return Promise.resolve(snapshot());
-      const boundedCause = String(cause || 'turn-settled').slice(0, 64);
+      const boundedCause = chatAtlasCompleteIndexCode(cause, 'turn-settled', 64);
       if (state.causes.size < Number(limits.diagnosticCauseLimit || 8)) state.causes.add(boundedCause);
       if (state.promise) {
         state.coalescedCount += 1;
+        state.trailingRequired = true;
         return state.promise;
       }
       if (opts?.immediate === true) return refresh();
@@ -5749,6 +5790,8 @@
     cacheReadCount: 0,
     cacheWriteCount: 0,
     cacheWriteFailureCount: 0,
+    authorityUnpersisted: false,
+    cacheWriteErrorCode: null,
     setterCallCount: 0,
     automaticSetterCallCount: 0,
     staleDiscardCount: 0,
@@ -5964,7 +6007,13 @@
   }
 
   function chatAtlasCompleteIndexAuthorityActive() {
+    const route = chatAtlasFullIndexRoute();
     return completeTurnIndexAuthorityState.enabled === true
+      && !!route.chatId
+      && route.chatId === completeTurnIndexAuthorityState.chatId
+      && route.routeKey === completeTurnIndexAuthorityState.routeKey
+      && Number.isInteger(completeTurnIndexAuthorityState.generation)
+      && completeTurnIndexAuthorityState.generation > 0
       && COMPLETE_TURN_INDEX_COMPLETE_STATUSES.includes(completeTurnIndexAuthorityState.status)
       && completeTurnIndexAuthorityState.index?.complete === true
       && completeTurnIndexAuthorityState.index?.proof === 'host-payload-full-graph'
@@ -6148,6 +6197,8 @@
       refreshDebounceCount: Number(refresh?.debounceCount || 0),
       refreshCoalescedCount: Number(refresh?.coalescedCount || 0),
       refreshStaleDiscardCount: Number(refresh?.staleDiscardCount || 0),
+      refreshTrailingRequired: refresh?.trailingRequired === true,
+      refreshTrailingCount: Number(refresh?.trailingRefreshCount || 0),
       refreshCauseSample: Array.isArray(refresh?.causeSample) ? refresh.causeSample.slice(0, 8) : [],
       refreshTimerPending: refresh?.timerPending === true,
       refreshRequestActive: refresh?.requestActive === true,
@@ -6155,6 +6206,8 @@
       startedAt: completeTurnIndexAuthorityState.startedAt,
       completedAt: completeTurnIndexAuthorityState.completedAt,
       errorCode: completeTurnIndexAuthorityState.errorCode,
+      authorityUnpersisted: completeTurnIndexAuthorityState.authorityUnpersisted === true,
+      cacheWriteErrorCode: completeTurnIndexAuthorityState.cacheWriteErrorCode,
       diagnosticStatus: completeTurnIndexAuthorityState.diagnosticStatus,
       cache: {
         schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
@@ -6182,8 +6235,7 @@
   }
 
   completeIndexRefreshCoordinator = createCompleteIndexRefreshCoordinator({
-    isEnabled: () => completeTurnIndexAuthorityState.enabled === true
-      && completeTurnIndexAuthorityState.index?.complete === true,
+    isEnabled: () => chatAtlasCompleteIndexAuthorityActive(),
     routeKey: () => `${completeTurnIndexAuthorityState.chatId || ''}|${completeTurnIndexAuthorityState.routeKey || ''}`,
     chatId: () => completeTurnIndexAuthorityState.chatId,
     currentIndex: () => completeTurnIndexAuthorityState.index,
@@ -6209,6 +6261,8 @@
       completeTurnIndexAuthorityState.startedAt = detail?.startedAt || completeTurnIndexAuthorityState.startedAt;
       completeTurnIndexAuthorityState.completedAt = detail?.completedAt || null;
       completeTurnIndexAuthorityState.errorCode = detail?.errorCode || null;
+      completeTurnIndexAuthorityState.authorityUnpersisted = detail?.authorityUnpersisted === true;
+      completeTurnIndexAuthorityState.cacheWriteErrorCode = detail?.cacheWriteErrorCode || null;
       chatAtlasNotifyCompleteIndexState();
     },
     setTimeout: W.setTimeout.bind(W),
@@ -6232,6 +6286,8 @@
     completeTurnIndexAuthorityState.startedAt = null;
     completeTurnIndexAuthorityState.completedAt = staleStatus ? new Date().toISOString() : null;
     completeTurnIndexAuthorityState.errorCode = null;
+    completeTurnIndexAuthorityState.authorityUnpersisted = false;
+    completeTurnIndexAuthorityState.cacheWriteErrorCode = null;
     completeTurnIndexAuthorityState.diagnosticStatus = null;
     completeTurnIndexAuthorityState.index = null;
     completeTurnIndexAuthorityState.indexSource = null;
@@ -6312,7 +6368,7 @@
           completeTurnIndexAuthorityState.diagnosticStatus = !cachedIndex && turnState.turns.length
             ? 'partial-fallback-diagnostic-only'
             : null;
-          completeTurnIndexAuthorityState.errorCode = String(normalized.errorCode || 'full-index-unavailable').slice(0, 96);
+          completeTurnIndexAuthorityState.errorCode = chatAtlasCompleteIndexCode(normalized.errorCode, 'full-index-unavailable');
           chatAtlasNotifyCompleteIndexState();
           return getCompleteTurnIndexProjectionStatus();
         }
@@ -6326,9 +6382,13 @@
         if (sameFingerprint) {
           if (revisionOrder >= 0) {
             const write = chatAtlasWriteCompleteIndexCache(hostIndex);
-            if (!write.ok) completeTurnIndexAuthorityState.errorCode = write.status;
+            completeTurnIndexAuthorityState.authorityUnpersisted = !write.ok;
+            completeTurnIndexAuthorityState.cacheWriteErrorCode = write.ok
+              ? null
+              : chatAtlasCompleteIndexCode(write.status, 'cache-write-failed');
+            if (!write.ok) completeTurnIndexAuthorityState.errorCode = completeTurnIndexAuthorityState.cacheWriteErrorCode;
             completeTurnIndexAuthorityState.index = hostIndex;
-            completeTurnIndexAuthorityState.indexSource = 'host-payload';
+            completeTurnIndexAuthorityState.indexSource = write.ok ? 'host-payload' : 'host-payload-unpersisted';
           }
           completeTurnIndexAuthorityState.status = 'complete-validated';
           if (!completeTurnIndexAuthorityState.errorCode) completeTurnIndexAuthorityState.errorCode = null;
@@ -6345,8 +6405,14 @@
 
         const write = chatAtlasWriteCompleteIndexCache(hostIndex);
         completeTurnIndexAuthorityState.status = 'complete-from-host-payload';
-        completeTurnIndexAuthorityState.errorCode = write.ok ? null : write.status;
-        chatAtlasPublishCompleteIndex(hostIndex, 'host-payload');
+        completeTurnIndexAuthorityState.errorCode = write.ok
+          ? null
+          : chatAtlasCompleteIndexCode(write.status, 'cache-write-failed');
+        completeTurnIndexAuthorityState.authorityUnpersisted = !write.ok;
+        completeTurnIndexAuthorityState.cacheWriteErrorCode = write.ok
+          ? null
+          : completeTurnIndexAuthorityState.errorCode;
+        chatAtlasPublishCompleteIndex(hostIndex, write.ok ? 'host-payload' : 'host-payload-unpersisted');
         return getCompleteTurnIndexProjectionStatus();
       })
       .catch((error) => {
@@ -6358,7 +6424,7 @@
             ? 'partial-fallback-diagnostic-only'
             : null;
           completeTurnIndexAuthorityState.completedAt = new Date().toISOString();
-          completeTurnIndexAuthorityState.errorCode = String(error?.code || 'provider-failed').slice(0, 96);
+          completeTurnIndexAuthorityState.errorCode = chatAtlasCompleteIndexCode(error?.code, 'provider-failed');
           chatAtlasNotifyCompleteIndexState();
         }
         return getCompleteTurnIndexProjectionStatus();

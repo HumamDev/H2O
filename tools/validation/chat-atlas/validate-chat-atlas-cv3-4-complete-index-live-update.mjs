@@ -287,7 +287,8 @@ function seed(runtime, rows = buildRows(), revision = 200) {
   runtime.api.state.enabled = true;
   runtime.api.state.status = 'complete-validated';
   runtime.api.state.chatId = CHAT_ID;
-  runtime.api.state.routeKey = `chat:${CHAT_ID}`;
+  runtime.api.state.routeKey = `/c/${CHAT_ID}`;
+  runtime.api.state.generation = 1;
   runtime.api.state.index = normalized.envelope;
   runtime.api.state.indexSource = 'fixture-proven';
   const write = runtime.api.writeCache(normalized.envelope);
@@ -667,19 +668,20 @@ await fixture('timers and abort controllers clean up after completion', async ()
   equal(runtime.timers.size, 0);
 });
 
-await fixture('cache write failure preserves prior bytes and membership', async () => {
+await fixture('cache write failure preserves prior bytes and publishes unpersisted proven authority', async () => {
   const runtime = createRuntime();
   const rows = buildRows();
   seed(runtime, rows, 200);
   const beforeBytes = cacheBytes(runtime);
-  const beforeQIds = runtime.api.listTurns().map((row) => row.qId);
   const rows39 = appendRow(rows, { qId: NEW_Q, answerVariants: [NEW_A], primaryAId: NEW_A, noAnswer: false, stopped: false });
   runtime.storage.state.failNextWrite = true;
   runtime.setProvider(async () => ({ ok: true, index: hostIndex(runtime.api, rows39, 201) }));
   const status = await runtime.api.refresh('fixture-write-failure');
-  equal(status.status, 'complete-refresh-failed-cache-preserved');
+  equal(status.status, 'complete-refresh-validated');
   equal(cacheBytes(runtime), beforeBytes);
-  equal(runtime.api.listTurns().map((row) => row.qId), beforeQIds);
+  equal(runtime.api.listTurns().map((row) => row.qId), rows39.map((row) => row.qId));
+  equal(status.authorityUnpersisted, true);
+  equal(status.cacheWriteErrorCode, 'cache-write-failed');
 });
 
 await fixture('MiniMap projection uses complete plus pending count without changing proof', () => {
