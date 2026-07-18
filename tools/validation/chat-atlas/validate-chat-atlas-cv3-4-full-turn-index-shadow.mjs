@@ -103,6 +103,31 @@ function extractFunction(source, name) {
   throw new Error(`instrumentation-function-unclosed:${name}`);
 }
 
+function extractConstDeclaration(source, name) {
+  const prefix = `  const ${name} = `;
+  const matches = source.split('\n').filter((line) => line.startsWith(prefix) && line.endsWith(';'));
+  if (matches.length !== 1) throw new Error(`instrumentation-const-invalid:${name}:${matches.length}`);
+  return matches[0].trimStart();
+}
+
+function extractArchiveProviderWiring() {
+  const exports = [
+    '  archiveBoot.normalizeBackendConversationTurnIndex = (payload, opts = {}) => normalizeBackendConversationTurnIndex(payload, opts);',
+    '  archiveBoot.fetchConversationTurnIndex = (chatId, opts = {}) => fetchConversationTurnIndex(chatId, opts);',
+  ];
+  for (const line of exports) {
+    if (countOccurrences(archiveSource, line) !== 1) throw new Error('archive-provider-export-anchor-invalid');
+  }
+  const eventNeedle = 'W.dispatchEvent(new CustomEvent("evt:h2o:conversation-turn-index-provider:ready"';
+  if (countOccurrences(archiveSource, eventNeedle) !== 1) throw new Error('archive-provider-ready-anchor-invalid');
+  const eventIndex = archiveSource.indexOf(eventNeedle);
+  const blockStart = archiveSource.lastIndexOf('  try {', eventIndex);
+  const catchLine = '  } catch {}';
+  const catchIndex = archiveSource.indexOf(catchLine, eventIndex);
+  if (blockStart < 0 || catchIndex < eventIndex) throw new Error('archive-provider-ready-block-invalid');
+  return `${exports.join('\n')}\n${archiveSource.slice(blockStart, catchIndex + catchLine.length)}`;
+}
+
 const archiveFunctions = [
   'isObj',
   'nowIso',
@@ -122,15 +147,34 @@ const archiveFunctions = [
   'fetchConversationTurnIndex',
 ];
 
+const turnIndexSchemaDeclaration = extractConstDeclaration(archiveSource, 'TURN_INDEX_SCHEMA');
+const archiveProviderWiring = extractArchiveProviderWiring();
+
 const archiveProgram = `
 'use strict';
 const W = globalThis;
-const TURN_INDEX_SCHEMA = 1;
+${turnIndexSchemaDeclaration}
 const TURN_INDEX_FETCH_TIMEOUT_MS = 12000;
 ${archiveFunctions.map((name) => extractFunction(archiveSource, name)).join('\n')}
 globalThis.__TURN_INDEX_ARCHIVE__ = Object.freeze({
+  schema: TURN_INDEX_SCHEMA,
   normalizeBackendConversationTurnIndex,
   fetchConversationTurnIndex,
+});
+`;
+
+const archiveActivationProgram = `
+'use strict';
+const W = globalThis;
+const H2O = (W.H2O = W.H2O || {});
+const archiveBoot = (H2O.archiveBoot = H2O.archiveBoot || {});
+${turnIndexSchemaDeclaration}
+const TURN_INDEX_FETCH_TIMEOUT_MS = 12000;
+${archiveFunctions.map((name) => extractFunction(archiveSource, name)).join('\n')}
+${archiveProviderWiring}
+globalThis.__TURN_INDEX_ARCHIVE_ACTIVATED__ = Object.freeze({
+  schema: TURN_INDEX_SCHEMA,
+  providerRegistered: typeof archiveBoot.fetchConversationTurnIndex === 'function',
 });
 `;
 
@@ -192,6 +236,50 @@ function instrumentCore() {
 }
 
 const coreProgram = instrumentCore();
+
+function instrumentCoreActivation() {
+  const setter = '  function setChatAtlasCanonicalSource(value) {\n';
+  const marker = coreSource.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS')) || '';
+  const tailAnchor = '  H2O.bus.on(BUS_SCAN_QUESTIONS';
+  const close = '\n})();';
+  const requiredWiring = [
+    "  W.addEventListener('evt:h2o:route:changed', () => { chatAtlasTriggerFullConversationIndex(); });",
+    "  W.addEventListener('h2o:route:changed', () => { chatAtlasTriggerFullConversationIndex(); });",
+    "  W.addEventListener('popstate', () => { chatAtlasTriggerFullConversationIndex(); });",
+    '  W.addEventListener(CHAT_ATLAS_FULL_INDEX_PROVIDER_READY, () => { chatAtlasTriggerFullConversationIndex(); });',
+    '  chatAtlasTriggerFullConversationIndex();',
+  ];
+  if (
+    countOccurrences(coreSource, setter) !== 1
+    || countOccurrences(coreSource, marker) !== 1
+    || countOccurrences(coreSource, tailAnchor) !== 1
+  ) throw new Error('core-activation-anchor-invalid');
+  for (const line of requiredWiring) {
+    if (countOccurrences(coreSource, line) !== 1) throw new Error(`core-activation-wiring-invalid:${line}`);
+  }
+  let source = coreSource.replace(setter, `${setter}    globalThis.__FULL_INDEX_SETTER_GUARD__();\n`);
+  const markerIndex = source.indexOf(marker);
+  const tailIndex = source.indexOf(tailAnchor, markerIndex);
+  const closeIndex = source.lastIndexOf(close);
+  if (markerIndex < 0 || tailIndex <= markerIndex || closeIndex <= tailIndex) {
+    throw new Error('core-activation-boundary-invalid');
+  }
+  const exportBlock = [
+    '  globalThis.__TURN_INDEX_ACTIVATION__ = Object.freeze({',
+    '    state: chatAtlasFullIndexState,',
+    '    diagnostics: getConversationTurnIndexDiagnostics,',
+    '    canonicalCount: () => turnState.turns.length,',
+    '    ledgerCount: () => chatAtlasLedgerState.members.length,',
+    '  });',
+    '  globalThis.__TURN_INDEX_OBSERVER_SUPPRESSED__ = true;',
+  ].join('\n');
+  const tail = source.slice(tailIndex, closeIndex)
+    .replace("  refresh('boot');", '  globalThis.__TURN_INDEX_REFRESH_SUPPRESSED__ = true;')
+    .replace('  startChatAtlasLedger();', '  globalThis.__TURN_INDEX_LEDGER_SUPPRESSED__ = true;');
+  return `${source.slice(0, markerIndex)}${exportBlock}\n${tail}${close}\n`;
+}
+
+const coreActivationProgram = instrumentCoreActivation();
 
 function sideEffectCounters() {
   return {
@@ -328,6 +416,118 @@ function createCoreRuntime({ provider = null, miniMapRows = [] } = {}) {
   return { context, api, counters, location };
 }
 
+function createActivationRuntime(payload) {
+  const counters = sideEffectCounters();
+  const listeners = new Map();
+  const networkCalls = [];
+  const location = {
+    pathname: `/c/${CHAT_ID}`,
+    href: `https://chatgpt.com/c/${CHAT_ID}`,
+    origin: 'https://chatgpt.com',
+    reload() { return forbidden(counters, 'navigationMutations', 'location.reload'); },
+  };
+  const addEventListener = (type, listener, options = {}) => {
+    const key = String(type || '');
+    const rows = listeners.get(key) || [];
+    rows.push({ listener, once: options?.once === true });
+    listeners.set(key, rows);
+  };
+  const removeEventListener = (type, listener) => {
+    const key = String(type || '');
+    listeners.set(key, (listeners.get(key) || []).filter((row) => row.listener !== listener));
+  };
+  const dispatchEvent = (event) => {
+    const key = String(event?.type || '');
+    const rows = (listeners.get(key) || []).slice();
+    for (const row of rows) {
+      row.listener.call(sandbox, event);
+      if (row.once) removeEventListener(key, row.listener);
+    }
+    return true;
+  };
+  const body = {
+    isConnected: true,
+    contains() { return false; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+  const document = {
+    location,
+    body,
+    documentElement: body,
+    visibilityState: 'visible',
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    getElementById() { return null; },
+    addEventListener,
+    removeEventListener,
+    dispatchEvent,
+    createElement() { return forbidden(counters, 'domMutations', 'document.createElement'); },
+    createTextNode() { return forbidden(counters, 'domMutations', 'document.createTextNode'); },
+  };
+  class HarnessEvent {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
+  }
+  class GuardedObserver { constructor() { return forbidden(counters, 'domMutations', 'observer'); } }
+  let tick = 0;
+  const sandbox = {
+    __FULL_INDEX_SETTER_GUARD__() { return forbidden(counters, 'sourceSetterCalls', 'source-setter'); },
+    console: Object.freeze({ log() {}, warn() {}, error() {}, info() {}, debug() {} }),
+    document,
+    location,
+    history: {
+      pushState() { return forbidden(counters, 'navigationMutations', 'history.pushState'); },
+      replaceState() { return forbidden(counters, 'navigationMutations', 'history.replaceState'); },
+    },
+    navigator: Object.freeze({ userAgent: 'cv3.4-activation-validator' }),
+    performance: Object.freeze({ now() { tick += 0.25; return tick; } }),
+    Date,
+    URL,
+    Event: HarnessEvent,
+    CustomEvent: HarnessEvent,
+    MutationObserver: GuardedObserver,
+    ResizeObserver: GuardedObserver,
+    IntersectionObserver: GuardedObserver,
+    AbortController,
+    requestAnimationFrame() { return 1; },
+    cancelAnimationFrame() {},
+    setTimeout() { return 1; },
+    clearTimeout() {},
+    setInterval() { return 1; },
+    clearInterval() {},
+    queueMicrotask,
+    localStorage: storage(counters, 'localStorage'),
+    sessionStorage: storage(counters, 'sessionStorage'),
+    crypto: Object.freeze({ randomUUID() { return '00000000-0000-4000-8000-000000000001'; } }),
+    addEventListener,
+    removeEventListener,
+    dispatchEvent,
+    fetch: async (url, options = {}) => {
+      const method = String(options.method || 'GET').toUpperCase();
+      const call = { url: String(url), method, authorization: String(options.headers?.authorization || '') };
+      networkCalls.push(call);
+      if (method === 'GET') counters.networkReads += 1;
+      else counters.networkWrites += 1;
+      if (call.url === '/api/auth/session') {
+        return { ok: true, json: async () => ({ accessToken: 'ACTIVATION-SECRET-TOKEN' }) };
+      }
+      if (call.url === `/backend-api/conversation/${CHAT_ID}`) {
+        return { ok: true, json: async () => payload };
+      }
+      throw new Error(`unexpected-activation-fetch:${call.url}`);
+    },
+    XMLHttpRequest: class { constructor() { return forbidden(counters, 'networkReads', 'XMLHttpRequest'); } },
+    WebSocket: class { constructor() { return forbidden(counters, 'networkReads', 'WebSocket'); } },
+  };
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  sandbox.top = sandbox;
+  sandbox.globalThis = sandbox;
+  const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
+  vm.runInContext(coreActivationProgram, context, { filename: CORE_PATH, timeout: 3_000 });
+  return { context, counters, listeners, networkCalls, dispatchEvent };
+}
+
 function node({ id, role = '', parent = null, children = [], metadata = {}, text = `secret:${id}` }) {
   return {
     id: `node:${id}`,
@@ -418,6 +618,12 @@ const parser = archiveRuntime.api.normalizeBackendConversationTurnIndex;
 const fullFixture = buildFullGraph();
 const fullResult = parser(fullFixture.payload, { chatId: CHAT_ID, capturedAt: '2026-07-18T00:00:00.000Z' });
 
+await fixture('production schema is extracted from runtime source', () => {
+  equal(archiveRuntime.api.schema, 1);
+  equal(fullResult.index.schema, archiveRuntime.api.schema);
+  equal(turnIndexSchemaDeclaration, 'const TURN_INDEX_SCHEMA = 1;');
+});
+
 await fixture('38 selected-path users produce 38 turns', () => {
   equal(fullResult.ok, true);
   equal(fullResult.index.turns.length, 38);
@@ -491,6 +697,46 @@ await fixture('completed request placeholders are evicted', () => {
   equal(turn.primaryAId, 'answer-34');
 });
 
+await fixture('placeholder-only streaming state remains represented', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'stream-question', role: 'user', parent: 'root', children: ['a'] }),
+    a: node({ id: 'request-placeholder-stream-only', role: 'assistant', parent: 'q' }),
+  };
+  const result = parser({ mapping, current_node: 'a' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['request-placeholder-stream-only']);
+  equal(result.index.turns[0].primaryAId, 'request-placeholder-stream-only');
+});
+
+await fixture('message identity takes precedence over mapping node identity', () => {
+  const mapping = {
+    root: node({ id: 'root-message', role: 'system', children: ['question-node'] }),
+    'question-node': node({ id: 'question-message', role: 'user', parent: 'root', children: ['answer-node'] }),
+    'answer-node': node({ id: 'answer-message', role: 'assistant', parent: 'question-node' }),
+  };
+  const result = parser({ mapping, current_node: 'answer-node' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.identityPrecedence, 'message-id-then-mapping-node-id');
+  equal(result.index.turns[0].qId, 'question-message');
+  equal(result.index.turns[0].primaryAId, 'answer-message');
+});
+
+await fixture('intermediary tool nodes preserve selected assistant ownership', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'tool-path-question', role: 'user', parent: 'root', children: ['tool'] }),
+    tool: node({ id: 'tool-path-node', role: 'tool', parent: 'q', children: ['a'] }),
+    a: node({ id: 'tool-path-answer', role: 'assistant', parent: 'tool' }),
+  };
+  const result = parser({ mapping, current_node: 'a' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns.length, 1);
+  equal(result.index.turns[0].qId, 'tool-path-question');
+  equal(result.index.turns[0].answerVariants, ['tool-path-answer']);
+  equal(result.index.turns[0].primaryAId, 'tool-path-answer');
+});
+
 await fixture('system tool and developer nodes do not become turns', () => {
   equal(fullResult.index.turns.some((turn) => ['root', 'tool-output-id'].includes(turn.qId)), false);
 });
@@ -518,6 +764,54 @@ await fixture('malformed mapping fails closed', () => {
   equal(parser({ mapping: [] }, { chatId: CHAT_ID }).errorCode, 'mapping-invalid');
 });
 
+await fixture('invalid whitespace mapping key fails globally', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'question', role: 'user', parent: 'root' }),
+    '   ': node({ id: 'invalid-key-node', role: 'assistant', parent: 'missing', children: ['missing-child'] }),
+  };
+  const result = parser({ mapping, current_node: 'q' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'mapping-node-invalid');
+  equal(result.completeness, undefined);
+});
+
+await fixture('root child-list incompleteness fails globally', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: [] }),
+    q: node({ id: 'question', role: 'user', parent: 'root' }),
+  };
+  const result = parser({ mapping, current_node: 'q' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'parent-child-contradiction');
+  equal(result.completeness, undefined);
+});
+
+await fixture('unselected branch child-list incompleteness fails globally', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['selected-q', 'inactive-q'] }),
+    'selected-q': node({ id: 'selected-question', role: 'user', parent: 'root', children: ['selected-a'] }),
+    'selected-a': node({ id: 'selected-answer', role: 'assistant', parent: 'selected-q' }),
+    'inactive-q': node({ id: 'inactive-question', role: 'user', parent: 'root', children: [] }),
+    'inactive-a': node({ id: 'inactive-answer', role: 'assistant', parent: 'inactive-q' }),
+  };
+  const result = parser({ mapping, current_node: 'selected-a' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'parent-child-contradiction');
+  equal(result.completeness, undefined);
+});
+
+await fixture('duplicated declared child reference fails globally', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q', 'q'] }),
+    q: node({ id: 'question', role: 'user', parent: 'root' }),
+  };
+  const result = parser({ mapping, current_node: 'q' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'children-invalid');
+  equal(result.completeness, undefined);
+});
+
 await fixture('missing current_node fails closed', () => {
   equal(parser({ mapping: fullFixture.payload.mapping }, { chatId: CHAT_ID }).errorCode, 'current-node-missing');
 });
@@ -540,7 +834,7 @@ await fixture('duplicate selected question identities fail closed', () => {
   equal(parser({ mapping, current_node: 'q2' }, { chatId: CHAT_ID }).errorCode, 'duplicate-question-identity');
 });
 
-await fixture('cross-question answer identity conflicts fail closed', () => {
+await fixture('duplicate assistant identity fails globally', () => {
   const mapping = {
     root: node({ id: 'root', role: 'system', children: ['q1'] }),
     q1: node({ id: 'question-a', role: 'user', parent: 'root', children: ['a1'] }),
@@ -548,7 +842,11 @@ await fixture('cross-question answer identity conflicts fail closed', () => {
     q2: node({ id: 'question-b', role: 'user', parent: 'a1', children: ['a2'] }),
     a2: node({ id: 'shared-answer', role: 'assistant', parent: 'q2' }),
   };
-  equal(parser({ mapping, current_node: 'a2' }, { chatId: CHAT_ID }).errorCode, 'answer-ownership-conflict');
+  const result = parser({ mapping, current_node: 'a2' }, { chatId: CHAT_ID });
+  equal(result.ok, false);
+  equal(result.errorCode, 'duplicate-answer-identity');
+  equal(result.completeness, undefined);
+  equal(countOccurrences(archiveSource, 'conversationTurnIndexFailure("answer-ownership-conflict"'), 1);
 });
 
 await fixture('unresolvable partial graph cannot claim completeness', () => {
@@ -601,6 +899,39 @@ await fixture('provider never returns its access token', () => {
   equal(providerResult.ok, true);
   equal(JSON.stringify(providerResult).includes('TOP-SECRET-TOKEN'), false);
   accumulate(providerCounters);
+});
+
+await fixture('real activation wiring registers provider and dedupes acquisition', async () => {
+  const runtime = createActivationRuntime(fullFixture.payload);
+  const activation = runtime.context.__TURN_INDEX_ACTIVATION__;
+  equal(runtime.context.__TURN_INDEX_OBSERVER_SUPPRESSED__, true);
+  equal(runtime.context.__TURN_INDEX_REFRESH_SUPPRESSED__, true);
+  equal(runtime.context.__TURN_INDEX_LEDGER_SUPPRESSED__, true);
+  equal((runtime.listeners.get('evt:h2o:conversation-turn-index-provider:ready') || []).length, 1);
+  ok((runtime.listeners.get('evt:h2o:route:changed') || []).length >= 1);
+  equal(activation.state.attempted, false);
+  equal(activation.state.fetchCount, 0);
+  equal(runtime.networkCalls.length, 0);
+
+  vm.runInContext(archiveActivationProgram, runtime.context, { filename: ARCHIVE_PATH, timeout: 3_000 });
+  equal(runtime.context.__TURN_INDEX_ARCHIVE_ACTIVATED__.providerRegistered, true);
+  ok(activation.state.promise);
+  await activation.state.promise;
+  equal(activation.diagnostics().status, 'complete-from-host-payload');
+  equal(activation.diagnostics().index.count, 38);
+  equal(activation.state.fetchCount, 1);
+  equal(runtime.networkCalls.map((call) => call.method), ['GET', 'GET']);
+  equal(runtime.counters.networkWrites, 0);
+  equal(JSON.stringify(activation.diagnostics()).includes('ACTIVATION-SECRET-TOKEN'), false);
+
+  runtime.dispatchEvent(new runtime.context.CustomEvent('evt:h2o:conversation-turn-index-provider:ready'));
+  runtime.dispatchEvent(new runtime.context.CustomEvent('evt:h2o:route:changed'));
+  await Promise.resolve();
+  equal(activation.state.fetchCount, 1);
+  equal(runtime.networkCalls.length, 2);
+  equal(activation.canonicalCount(), 0);
+  equal(activation.ledgerCount(), 0);
+  accumulate(runtime.counters);
 });
 
 await fixture('ordinary and project chat routes resolve the same identity', () => {

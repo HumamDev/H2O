@@ -644,36 +644,76 @@
     if (!mapping || !Object.keys(mapping).length) {
       return conversationTurnIndexFailure("mapping-invalid", { chatId, nodeCount: 0 });
     }
-    const nodeKeys = Object.keys(mapping).map((key) => String(key || "").trim()).filter(Boolean);
-    const nodeCount = nodeKeys.length;
+    const rawNodeKeys = Object.keys(mapping);
+    const nodeCount = rawNodeKeys.length;
+    const nodeKeys = [];
+    for (const rawKey of rawNodeKeys) {
+      const key = conversationTurnIndexIdentity(rawKey);
+      if (!key || key !== rawKey) {
+        return conversationTurnIndexFailure("mapping-node-invalid", { chatId, nodeCount });
+      }
+      nodeKeys.push(key);
+    }
     const currentNode = String(payload?.current_node || "").trim();
     if (!currentNode) return conversationTurnIndexFailure("current-node-missing", { chatId, nodeCount });
-    if (!isObj(mapping[currentNode])) {
+    if (!Object.hasOwn(mapping, currentNode) || !isObj(mapping[currentNode])) {
       return conversationTurnIndexFailure("current-node-unresolvable", { chatId, nodeCount });
     }
 
     const derivedChildren = new Map(nodeKeys.map((key) => [key, []]));
+    const explicitChildrenByKey = new Map();
+    const assistantIdentityNodes = new Map();
     for (const key of nodeKeys) {
       const node = mapping[key];
       if (!isObj(node)) return conversationTurnIndexFailure("mapping-node-invalid", { chatId, nodeCount });
+      if (conversationTurnIndexRole(node) === "assistant") {
+        const answerId = conversationTurnIndexMessageId(key, node);
+        const previousNodeKey = assistantIdentityNodes.get(answerId);
+        if (previousNodeKey && previousNodeKey !== key) {
+          return conversationTurnIndexFailure("duplicate-answer-identity", { chatId, nodeCount });
+        }
+        assistantIdentityNodes.set(answerId, key);
+      }
       const parent = String(node?.parent || "").trim();
       if (parent) {
         if (parent === key) return conversationTurnIndexFailure("parent-cycle", { chatId, nodeCount });
-        if (!isObj(mapping[parent])) return conversationTurnIndexFailure("parent-unresolvable", { chatId, nodeCount });
+        if (!Object.hasOwn(mapping, parent) || !isObj(mapping[parent])) {
+          return conversationTurnIndexFailure("parent-unresolvable", { chatId, nodeCount });
+        }
         derivedChildren.get(parent)?.push(key);
       }
       const children = node?.children;
       if (children != null && !Array.isArray(children)) {
         return conversationTurnIndexFailure("children-invalid", { chatId, nodeCount });
       }
+      const explicitChildren = [];
+      const explicitChildrenSeen = new Set();
       for (const childRaw of Array.isArray(children) ? children : []) {
         const child = String(childRaw || "").trim();
-        if (!child || !isObj(mapping[child])) {
+        if (!child || !Object.hasOwn(mapping, child) || !isObj(mapping[child])) {
           return conversationTurnIndexFailure("child-unresolvable", { chatId, nodeCount });
         }
+        if (explicitChildrenSeen.has(child)) {
+          return conversationTurnIndexFailure("children-invalid", { chatId, nodeCount });
+        }
+        explicitChildrenSeen.add(child);
+        explicitChildren.push(child);
         if (String(mapping[child]?.parent || "").trim() !== key) {
           return conversationTurnIndexFailure("parent-child-contradiction", { chatId, nodeCount });
         }
+      }
+      explicitChildrenByKey.set(key, Array.isArray(children) ? explicitChildren : null);
+    }
+    for (const key of nodeKeys) {
+      const explicitChildren = explicitChildrenByKey.get(key);
+      if (!Array.isArray(explicitChildren)) continue;
+      const derived = derivedChildren.get(key) || [];
+      const explicitSet = new Set(explicitChildren);
+      if (
+        explicitChildren.length !== derived.length
+        || derived.some((child) => !explicitSet.has(child))
+      ) {
+        return conversationTurnIndexFailure("parent-child-contradiction", { chatId, nodeCount });
       }
     }
 
@@ -711,18 +751,9 @@
       return leftTime - rightTime || String(left).localeCompare(String(right));
     };
     const orderedChildren = (key) => {
-      const hasExplicitChildren = Array.isArray(mapping[key]?.children);
-      const explicit = hasExplicitChildren
-        ? mapping[key].children.map((value) => String(value || "").trim()).filter(Boolean)
-        : [];
+      const explicit = explicitChildrenByKey.get(key);
       const derived = (derivedChildren.get(key) || []).slice().sort(nodeOrder);
-      const explicitSet = new Set(explicit);
-      if (hasExplicitChildren && (
-        explicitSet.size !== explicit.length
-        || explicit.length !== derived.length
-        || derived.some((child) => !explicitSet.has(child))
-      )) return null;
-      return hasExplicitChildren ? explicit.slice() : derived;
+      return Array.isArray(explicit) ? explicit.slice() : derived;
     };
 
     const turns = [];
