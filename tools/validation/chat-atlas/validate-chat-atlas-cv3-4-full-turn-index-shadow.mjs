@@ -15,8 +15,8 @@ const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
 const A545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
-const Q29_DIRECT_HIDDEN_SYSTEM = '242630f1-0000-4000-8000-000000000029';
-const Q29_NONDIRECT_HIDDEN_SYSTEM = '433ab091-0000-4000-8000-000000000029';
+const Q29_DIRECT_HIDDEN_SYSTEM = '242630f1-a7bb-4b68-955c-72775387c242';
+const Q29_NONDIRECT_HIDDEN_SYSTEM = '433ab091-7538-46c9-8b3d-52d75561b0f8';
 const D824 = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
 const A84 = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
 const A733 = '733fa31a-7d11-4ce5-b570-8ffa474670d4';
@@ -554,6 +554,7 @@ function node({
   metadata = {},
   contentType = 'text',
   channel = '',
+  recipient = '',
   status = '',
   endTurn = null,
   text = `secret:${id}`,
@@ -568,6 +569,7 @@ function node({
       content: { content_type: contentType, parts: [text] },
       metadata: { ...metadata },
       ...(channel ? { channel } : {}),
+      ...(recipient ? { recipient } : {}),
       ...(status ? { status } : {}),
       ...(endTurn == null ? {} : { end_turn: endTurn }),
       create_time: 1,
@@ -590,6 +592,32 @@ function branchShellNode({ id, parent = null, children = [], metadata = {} }) {
     channel: 'final',
     endTurn: true,
     text: `private branch shell ${id}`,
+  });
+}
+
+function systemBranchShellNode({
+  id,
+  parent = null,
+  children = [],
+  modelSlug = 'gpt-5-5',
+  endTurn = true,
+  contentType = 'text',
+  metadata = {},
+}) {
+  return node({
+    id,
+    role: 'system',
+    parent,
+    children,
+    metadata: {
+      is_visually_hidden_from_conversation: true,
+      ...(modelSlug ? { model_slug: modelSlug } : {}),
+      ...metadata,
+    },
+    contentType,
+    recipient: 'all',
+    endTurn,
+    text: `private system branch shell ${id}`,
   });
 }
 
@@ -640,7 +668,7 @@ function buildFullGraph() {
                 : order === 38
                   ? LATEST_Q
                   : `question-${String(order).padStart(2, '0')}`;
-    const qKey = `q-node-${order}`;
+    const qKey = order === 36 ? D824 : `q-node-${order}`;
     productQuestionIds.push(qId);
     appendSelected(qKey, {
       id: qId,
@@ -655,23 +683,15 @@ function buildFullGraph() {
       appendSelected('q29-hidden-system', {
         id: Q29_DIRECT_HIDDEN_SYSTEM,
         role: 'system',
-        metadata: {
-          is_visually_hidden_from_conversation: true,
-          model_slug: 'gpt-fixture-system',
-          finish_details: { type: 'stop' },
-        },
-        endTurn: true,
+        metadata: { is_visually_hidden_from_conversation: true },
+        endTurn: false,
         text: 'private q29 intermediary',
       });
       appendSelected('q29-nondirect-hidden-system', {
         id: Q29_NONDIRECT_HIDDEN_SYSTEM,
         role: 'system',
-        metadata: {
-          is_visually_hidden_from_conversation: true,
-          model_slug: 'gpt-fixture-system',
-          finish_details: { type: 'stop' },
-        },
-        endTurn: true,
+        metadata: { is_visually_hidden_from_conversation: true },
+        endTurn: false,
         text: 'private q29 nested intermediary',
       });
       appendSelected('q29-final', {
@@ -765,13 +785,13 @@ function buildFullGraph() {
       internalAssistantIds.push(modelContextId, reasoningId);
       appendSelected(A84, {
         id: A84,
-        role: 'assistant',
+        role: 'system',
         metadata: {
           is_visually_hidden_from_conversation: true,
-          model_slug: 'gpt-fixture-branch-shell',
-          finish_details: { type: 'stop' },
+          model_slug: 'gpt-5-5',
         },
-        channel: 'final',
+        contentType: 'text',
+        recipient: 'all',
         endTurn: true,
         text: 'private hidden branch shell',
       });
@@ -953,6 +973,167 @@ await fixture('d824 branch diagnostics retain selected final and one inactive al
   equal(turn.branch.selectedAssistantNodeId, A733);
   equal(turn.branch.variantCount, 2);
   equal(turn.branch.inactiveVariantCount, 1);
+});
+
+await fixture('live-shaped system-role 84c7 direct shell is retained', () => {
+  const shell = fullFixture.payload.mapping[A84];
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(shell.parent, D824);
+  equal(shell.message.author.role, 'system');
+  equal(shell.message.content.content_type, 'text');
+  equal(shell.message.metadata.is_visually_hidden_from_conversation, true);
+  equal(shell.message.metadata.model_slug, 'gpt-5-5');
+  equal(shell.message.end_turn, true);
+  equal(shell.message.channel, undefined);
+  equal(shell.message.recipient, 'all');
+  equal(turn.answerVariants, [A84, A733]);
+});
+
+await fixture('assistant-only shell classification would reject the live system fixture', () => {
+  const shell = fullFixture.payload.mapping[A84];
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  equal(shell.message.author.role === 'assistant', false);
+  equal(turn.answerVariants.includes(A84), true);
+  equal(countOccurrences(archiveSource, '["assistant", "system"].includes(role)'), 1);
+});
+
+await fixture('system shell without modelSlug is excluded', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'system-shell-no-model-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({
+      id: 'system-shell-no-model',
+      parent: 'q',
+      children: ['final'],
+      modelSlug: '',
+    }),
+    final: node({
+      id: 'system-shell-no-model-final',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['system-shell-no-model-final']);
+  equal(result.index.turns[0].answerVariants.includes('system-shell-no-model'), false);
+});
+
+await fixture('system shell without completed or end-turn evidence is excluded', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'system-shell-not-complete-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({
+      id: 'system-shell-not-complete',
+      parent: 'q',
+      children: ['final'],
+      endTurn: false,
+    }),
+    final: node({
+      id: 'system-shell-not-complete-final',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['system-shell-not-complete-final']);
+  equal(result.index.turns[0].answerVariants.includes('system-shell-not-complete'), false);
+});
+
+await fixture('arbitrary hidden system intermediary with incompatible content is excluded', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'arbitrary-hidden-system-question', role: 'user', parent: 'root', children: ['system'] }),
+    system: systemBranchShellNode({
+      id: 'arbitrary-hidden-system',
+      parent: 'q',
+      children: ['final'],
+      contentType: 'computer_initialize_state',
+    }),
+    final: node({ id: 'arbitrary-hidden-system-final', role: 'assistant', parent: 'system' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, ['arbitrary-hidden-system-final']);
+  equal(result.index.turns[0].answerVariants.includes('arbitrary-hidden-system'), false);
+});
+
+await fixture('system shell cannot cross the next product-user boundary', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q1'] }),
+    q1: node({ id: 'system-shell-boundary-question-1', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({ id: 'system-shell-before-next-question', parent: 'q1', children: ['q2'] }),
+    q2: node({ id: 'system-shell-boundary-question-2', role: 'user', parent: 'shell', children: ['final'] }),
+    final: node({ id: 'system-shell-boundary-final-2', role: 'assistant', parent: 'q2' }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[1].answerVariants, ['system-shell-boundary-final-2']);
+  equal(result.index.turns[1].answerVariants.includes('system-shell-before-next-question'), false);
+});
+
+await fixture('system shell with interrupted terminal retains no alias or answer', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'system-shell-interrupted-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({ id: 'system-shell-before-interruption', parent: 'q', children: ['interrupted'] }),
+    interrupted: node({
+      id: 'system-shell-interrupted-final',
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'interrupted' } },
+      channel: 'final',
+      endTurn: false,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'interrupted' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[0].primaryAId, null);
+  equal(result.index.turns[0].stopped, true);
+});
+
+await fixture('system shell without a final retains no alias', () => {
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'system-shell-no-final-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({ id: 'system-shell-without-final', parent: 'q' }),
+  };
+  const result = parser({ mapping, current_node: 'shell' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, []);
+  equal(result.index.turns[0].primaryAId, null);
+  equal(result.index.turns[0].noAnswer, true);
+});
+
+await fixture('duplicate system-shell and final identity dedupes while final stays primary', () => {
+  const sharedId = 'system-shell-shared-final-id';
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['q'] }),
+    q: node({ id: 'system-shell-dedupe-question', role: 'user', parent: 'root', children: ['shell'] }),
+    shell: systemBranchShellNode({ id: sharedId, parent: 'q', children: ['final'] }),
+    final: node({
+      id: sharedId,
+      role: 'assistant',
+      parent: 'shell',
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  const result = parser({ mapping, current_node: 'final' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns[0].answerVariants, [sharedId]);
+  equal(result.index.turns[0].primaryAId, sharedId);
+  equal(result.index.turns[0].branch.selectedAssistantNodeId, 'final');
 });
 
 await fixture('non-direct hidden assistant intermediary cannot become a shell alias', () => {
@@ -1316,6 +1497,15 @@ await fixture('q29 direct hidden 2426 system intermediary is not an alias', () =
   const turn = fullResult.index.turns.find((row) => row.qId === Q29);
   equal(turn.answerVariants.includes(Q29_DIRECT_HIDDEN_SYSTEM), false);
   equal(turn.answerVariants, [A545]);
+});
+
+await fixture('q29 direct 2426 lacks model and completed shell proof', () => {
+  const intermediary = fullFixture.payload.mapping['q29-hidden-system'];
+  equal(intermediary.message.id, Q29_DIRECT_HIDDEN_SYSTEM);
+  equal(intermediary.message.author.role, 'system');
+  equal(intermediary.message.metadata.is_visually_hidden_from_conversation, true);
+  equal(intermediary.message.metadata.model_slug, undefined);
+  equal(intermediary.message.end_turn, false);
 });
 
 await fixture('q29 non-direct hidden 433a system intermediary is not an alias', () => {

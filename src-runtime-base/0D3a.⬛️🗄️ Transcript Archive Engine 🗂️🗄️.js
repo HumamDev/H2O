@@ -653,7 +653,8 @@
   }
 
   function conversationTurnIndexBranchShellAlias(nodeKey, node) {
-    if (conversationTurnIndexRole(node) !== "assistant") return false;
+    const role = conversationTurnIndexRole(node);
+    if (!["assistant", "system"].includes(role)) return false;
     const message = isObj(node?.message) ? node.message : {};
     const metadata = isObj(message?.metadata) ? message.metadata : {};
     const answerId = conversationTurnIndexMessageId(nodeKey, node);
@@ -679,6 +680,7 @@
       && metadata?.is_user_system_message !== true
       && metadata?.user_context_message_data == null
       && !["model_editable_context", "reasoning_recap", "user_editable_context"].includes(contentType)
+      && (role !== "system" || contentType === "text")
       && (!channel || channel === "final")
       && !!modelAssociation
       && modelAssociation.length <= 256
@@ -903,7 +905,7 @@
           !conversationTurnIndexPlaceholder(answerId)
         ));
         if (branchShellAlias && branchHasProductFinal && !variantIds.includes(branchShellAlias)) {
-          variantNodeById.set(branchShellAlias, childKey);
+          if (!variantNodeById.has(branchShellAlias)) variantNodeById.set(branchShellAlias, childKey);
           variantIds.push(branchShellAlias);
         }
         for (const answerId of branchResult.variants) {
