@@ -75,6 +75,8 @@
   ]);
   const BRIDGE_TIMEOUT_MS = 12000;
   const BRIDGE_IMPORT_BUNDLE_TIMEOUT_MS = 120000;
+  const TURN_INDEX_SCHEMA = 1;
+  const TURN_INDEX_FETCH_TIMEOUT_MS = 12000;
   const WORKBENCH_LOCAL_ONLY_WARNING = "Saved in local fallback mode — the extension workbench cannot see this until the archive bridge connects.";
   const FOLDER_FILTER_NONE = "__none__";
   const SAVE_MODE_SILENT = "silent";
@@ -453,7 +455,7 @@
     return "";
   }
 
-  async function readChatGptAccessToken() {
+  async function readChatGptAccessToken(opts = {}) {
     try {
       if (typeof W.fetch !== "function") return "";
       const res = await W.fetch("/api/auth/session", {
@@ -461,6 +463,7 @@
         credentials: "include",
         cache: "no-store",
         headers: { accept: "application/json" },
+        ...(opts?.signal ? { signal: opts.signal } : {}),
       });
       if (!res?.ok) return "";
       const json = await res.json();
@@ -580,6 +583,331 @@
       });
     }
     return normalizeMessages(rows);
+  }
+
+  function conversationTurnIndexFailure(errorCode, details = {}) {
+    return Object.freeze({
+      ok: false,
+      schema: TURN_INDEX_SCHEMA,
+      errorCode: String(errorCode || "turn-index-invalid").slice(0, 96),
+      chatId: conversationTurnIndexIdentity(details?.chatId) || null,
+      nodeCount: details?.nodeCount == null
+        ? null
+        : (Number.isFinite(Number(details.nodeCount)) ? Math.max(0, Number(details.nodeCount)) : null),
+    });
+  }
+
+  function conversationTurnIndexIdentity(value) {
+    const identity = String(value || "").trim();
+    return /^[a-z0-9._:-]{1,256}$/i.test(identity) ? identity : "";
+  }
+
+  function conversationTurnIndexMessageId(nodeKey, node) {
+    const messageId = conversationTurnIndexIdentity(node?.message?.id);
+    const nodeId = conversationTurnIndexIdentity(node?.id || nodeKey);
+    return messageId || nodeId;
+  }
+
+  function conversationTurnIndexRole(node) {
+    return String(node?.message?.author?.role || "").trim().toLowerCase();
+  }
+
+  function conversationTurnIndexStopped(message) {
+    const metadata = isObj(message?.metadata) ? message.metadata : {};
+    const finishType = String(metadata?.finish_details?.type || metadata?.finish_type || "").trim().toLowerCase();
+    const status = String(message?.status || metadata?.status || "").trim().toLowerCase();
+    return metadata?.is_stopped === true
+      || metadata?.stopped === true
+      || metadata?.is_interrupted === true
+      || ["stopped", "cancelled", "canceled", "interrupted"].includes(status)
+      || ["stopped", "cancelled", "canceled", "interrupted"].includes(finishType);
+  }
+
+  function conversationTurnIndexPlaceholder(answerId) {
+    return String(answerId || "").trim().startsWith("request-placeholder-");
+  }
+
+  function conversationTurnIndexIdentityFingerprint(turns = []) {
+    const identity = (Array.isArray(turns) ? turns : []).map((turn) => [
+      String(turn?.qId || ""),
+      String(turn?.primaryAId || ""),
+      ...(Array.isArray(turn?.answerVariants) ? turn.answerVariants.map((id) => String(id || "")) : []),
+      turn?.noAnswer === true ? "no-answer:1" : "no-answer:0",
+      turn?.stopped === true ? "stopped:1" : "stopped:0",
+    ]);
+    return `djb2:${stableHash(JSON.stringify(identity))}`;
+  }
+
+  function normalizeBackendConversationTurnIndexUnsafe(payload, options = {}) {
+    const mapping = isObj(payload?.mapping) ? payload.mapping : null;
+    const chatId = conversationTurnIndexIdentity(options?.chatId || payload?.conversation_id || payload?.id);
+    if (!mapping || !Object.keys(mapping).length) {
+      return conversationTurnIndexFailure("mapping-invalid", { chatId, nodeCount: 0 });
+    }
+    const nodeKeys = Object.keys(mapping).map((key) => String(key || "").trim()).filter(Boolean);
+    const nodeCount = nodeKeys.length;
+    const currentNode = String(payload?.current_node || "").trim();
+    if (!currentNode) return conversationTurnIndexFailure("current-node-missing", { chatId, nodeCount });
+    if (!isObj(mapping[currentNode])) {
+      return conversationTurnIndexFailure("current-node-unresolvable", { chatId, nodeCount });
+    }
+
+    const derivedChildren = new Map(nodeKeys.map((key) => [key, []]));
+    for (const key of nodeKeys) {
+      const node = mapping[key];
+      if (!isObj(node)) return conversationTurnIndexFailure("mapping-node-invalid", { chatId, nodeCount });
+      const parent = String(node?.parent || "").trim();
+      if (parent) {
+        if (parent === key) return conversationTurnIndexFailure("parent-cycle", { chatId, nodeCount });
+        if (!isObj(mapping[parent])) return conversationTurnIndexFailure("parent-unresolvable", { chatId, nodeCount });
+        derivedChildren.get(parent)?.push(key);
+      }
+      const children = node?.children;
+      if (children != null && !Array.isArray(children)) {
+        return conversationTurnIndexFailure("children-invalid", { chatId, nodeCount });
+      }
+      for (const childRaw of Array.isArray(children) ? children : []) {
+        const child = String(childRaw || "").trim();
+        if (!child || !isObj(mapping[child])) {
+          return conversationTurnIndexFailure("child-unresolvable", { chatId, nodeCount });
+        }
+        if (String(mapping[child]?.parent || "").trim() !== key) {
+          return conversationTurnIndexFailure("parent-child-contradiction", { chatId, nodeCount });
+        }
+      }
+    }
+
+    const visitState = new Map();
+    const visitParent = (key) => {
+      const stateValue = visitState.get(key) || 0;
+      if (stateValue === 1) return false;
+      if (stateValue === 2) return true;
+      visitState.set(key, 1);
+      const parent = String(mapping[key]?.parent || "").trim();
+      if (parent && !visitParent(parent)) return false;
+      visitState.set(key, 2);
+      return true;
+    };
+    for (const key of nodeKeys) {
+      if (!visitParent(key)) return conversationTurnIndexFailure("parent-cycle", { chatId, nodeCount });
+    }
+
+    const selectedKeys = [];
+    const selectedSeen = new Set();
+    let cursor = currentNode;
+    while (cursor) {
+      if (selectedSeen.has(cursor)) return conversationTurnIndexFailure("selected-path-cycle", { chatId, nodeCount });
+      const node = mapping[cursor];
+      if (!isObj(node)) return conversationTurnIndexFailure("selected-parent-unresolvable", { chatId, nodeCount });
+      selectedSeen.add(cursor);
+      selectedKeys.push(cursor);
+      cursor = String(node?.parent || "").trim();
+    }
+    selectedKeys.reverse();
+
+    const nodeOrder = (left, right) => {
+      const leftTime = Number(mapping[left]?.message?.create_time ?? mapping[left]?.create_time ?? 0) || 0;
+      const rightTime = Number(mapping[right]?.message?.create_time ?? mapping[right]?.create_time ?? 0) || 0;
+      return leftTime - rightTime || String(left).localeCompare(String(right));
+    };
+    const orderedChildren = (key) => {
+      const hasExplicitChildren = Array.isArray(mapping[key]?.children);
+      const explicit = hasExplicitChildren
+        ? mapping[key].children.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      const derived = (derivedChildren.get(key) || []).slice().sort(nodeOrder);
+      const explicitSet = new Set(explicit);
+      if (hasExplicitChildren && (
+        explicitSet.size !== explicit.length
+        || explicit.length !== derived.length
+        || derived.some((child) => !explicitSet.has(child))
+      )) return null;
+      return hasExplicitChildren ? explicit.slice() : derived;
+    };
+
+    const turns = [];
+    const selectedQuestionIds = new Set();
+    const answerOwners = new Map();
+    for (let selectedIndex = 0; selectedIndex < selectedKeys.length; selectedIndex += 1) {
+      const questionNodeKey = selectedKeys[selectedIndex];
+      const questionNode = mapping[questionNodeKey];
+      if (conversationTurnIndexRole(questionNode) !== "user") continue;
+      const qId = conversationTurnIndexMessageId(questionNodeKey, questionNode);
+      if (!qId) return conversationTurnIndexFailure("question-identity-missing", { chatId, nodeCount });
+      if (selectedQuestionIds.has(qId)) {
+        return conversationTurnIndexFailure("duplicate-question-identity", { chatId, nodeCount });
+      }
+      selectedQuestionIds.add(qId);
+
+      const selectedAssistantKeys = [];
+      for (let pathIndex = selectedIndex + 1; pathIndex < selectedKeys.length; pathIndex += 1) {
+        const pathKey = selectedKeys[pathIndex];
+        const role = conversationTurnIndexRole(mapping[pathKey]);
+        if (role === "user") break;
+        if (role === "assistant") selectedAssistantKeys.push(pathKey);
+      }
+      const selectedAssistantKey = selectedAssistantKeys[selectedAssistantKeys.length - 1] || "";
+      let primaryAId = selectedAssistantKey
+        ? conversationTurnIndexMessageId(selectedAssistantKey, mapping[selectedAssistantKey])
+        : null;
+
+      const variantIds = [];
+      const variantNodeById = new Map();
+      const visitedDescendants = new Set();
+      const collectVariants = (parentKey) => {
+        const children = orderedChildren(parentKey);
+        if (!children) return false;
+        for (const childKey of children) {
+          if (visitedDescendants.has(childKey)) continue;
+          visitedDescendants.add(childKey);
+          const childNode = mapping[childKey];
+          const role = conversationTurnIndexRole(childNode);
+          if (role === "user") continue;
+          if (role === "assistant") {
+            const answerId = conversationTurnIndexMessageId(childKey, childNode);
+            if (!answerId) return false;
+            if (!variantNodeById.has(answerId)) {
+              variantNodeById.set(answerId, childKey);
+              variantIds.push(answerId);
+            }
+          }
+          if (!collectVariants(childKey)) return false;
+        }
+        return true;
+      };
+      if (!collectVariants(questionNodeKey)) {
+        return conversationTurnIndexFailure("variant-graph-invalid", { chatId, nodeCount });
+      }
+      if (primaryAId && !variantNodeById.has(primaryAId)) {
+        return conversationTurnIndexFailure("selected-assistant-unowned", { chatId, nodeCount });
+      }
+
+      let answerVariants = variantIds;
+      if (answerVariants.some((answerId) => !conversationTurnIndexPlaceholder(answerId))) {
+        answerVariants = answerVariants.filter((answerId) => !conversationTurnIndexPlaceholder(answerId));
+      }
+      if (primaryAId && !answerVariants.includes(primaryAId)) {
+        primaryAId = answerVariants[answerVariants.length - 1] || null;
+      }
+      if (primaryAId) {
+        const primaryIndex = answerVariants.indexOf(primaryAId);
+        if (primaryIndex >= 0 && primaryIndex !== answerVariants.length - 1) {
+          answerVariants = answerVariants.slice();
+          answerVariants.splice(primaryIndex, 1);
+          answerVariants.push(primaryAId);
+        }
+      }
+      for (const answerId of answerVariants) {
+        const owner = answerOwners.get(answerId);
+        if (owner && owner !== qId) {
+          return conversationTurnIndexFailure("answer-ownership-conflict", { chatId, nodeCount });
+        }
+        answerOwners.set(answerId, qId);
+      }
+      const stopped = primaryAId
+        ? conversationTurnIndexStopped(mapping[variantNodeById.get(primaryAId)]?.message)
+        : conversationTurnIndexStopped(questionNode?.message);
+      turns.push(Object.freeze({
+        order: turns.length + 1,
+        qId,
+        turnId: `turn:${qId}`,
+        primaryAId: primaryAId || null,
+        answerVariants: Object.freeze(answerVariants.slice()),
+        noAnswer: !primaryAId,
+        stopped,
+        branch: Object.freeze({
+          selectedAssistantNodeId: conversationTurnIndexIdentity(selectedAssistantKey) || null,
+          variantCount: answerVariants.length,
+          inactiveVariantCount: Math.max(0, answerVariants.length - (primaryAId ? 1 : 0)),
+        }),
+      }));
+    }
+    if (!turns.length) return conversationTurnIndexFailure("selected-path-has-no-user-turns", { chatId, nodeCount });
+
+    const capturedAt = String(options?.capturedAt || nowIso()).slice(0, 64);
+    const rawPayloadUpdateTime = payload?.update_time ?? payload?.updateTime ?? null;
+    const payloadUpdateTime = typeof rawPayloadUpdateTime === "number" && Number.isFinite(rawPayloadUpdateTime)
+      ? rawPayloadUpdateTime
+      : (typeof rawPayloadUpdateTime === "string" ? rawPayloadUpdateTime.slice(0, 128) : null);
+    const index = Object.freeze({
+      schema: TURN_INDEX_SCHEMA,
+      chatId: chatId || null,
+      capturedAt,
+      payloadUpdateTime: payloadUpdateTime == null ? null : payloadUpdateTime,
+      sourceFingerprint: conversationTurnIndexIdentityFingerprint(turns),
+      identityPrecedence: "message-id-then-mapping-node-id",
+      completeness: Object.freeze({
+        complete: true,
+        proof: "host-payload-full-graph",
+        validatedAt: capturedAt,
+      }),
+      turns: Object.freeze(turns.slice()),
+    });
+    return Object.freeze({ ok: true, index });
+  }
+
+  function normalizeBackendConversationTurnIndex(payload, options = {}) {
+    try {
+      return normalizeBackendConversationTurnIndexUnsafe(payload, options);
+    } catch {
+      return conversationTurnIndexFailure("turn-index-parser-failed", {
+        chatId: options?.chatId || "",
+        nodeCount: null,
+      });
+    }
+  }
+
+  async function fetchConversationTurnIndex(chatIdRaw, opts = {}) {
+    const chatId = conversationTurnIndexIdentity(chatIdRaw);
+    if (!chatId) return conversationTurnIndexFailure("missing-chat-id", { chatId });
+    if (typeof W.fetch !== "function") return conversationTurnIndexFailure("fetch-unavailable", { chatId });
+    const Controller = W.AbortController || globalThis.AbortController;
+    const controller = typeof Controller === "function" ? new Controller() : null;
+    const signal = controller?.signal || opts?.signal || null;
+    let timedOut = false;
+    const timeoutMs = Math.max(250, Number(opts?.timeoutMs || TURN_INDEX_FETCH_TIMEOUT_MS) || TURN_INDEX_FETCH_TIMEOUT_MS);
+    const timeoutId = W.setTimeout?.(() => {
+      timedOut = true;
+      try { controller?.abort?.("turn-index-timeout"); } catch {}
+    }, timeoutMs);
+    const abortFromCaller = () => { try { controller?.abort?.("stale-route"); } catch {} };
+    try { opts?.signal?.addEventListener?.("abort", abortFromCaller, { once: true }); } catch {}
+    if (opts?.signal?.aborted) abortFromCaller();
+    const finish = () => {
+      try { if (timeoutId) W.clearTimeout?.(timeoutId); } catch {}
+      try { opts?.signal?.removeEventListener?.("abort", abortFromCaller); } catch {}
+    };
+
+    const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
+    try {
+      const accessToken = await readChatGptAccessToken({ signal });
+      if (signal?.aborted) {
+        finish();
+        return conversationTurnIndexFailure(timedOut ? "turn-index-timeout" : "turn-index-aborted", { chatId });
+      }
+      const response = await W.fetch(path, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: nativeConversationHeaders(path, accessToken),
+        ...(signal ? { signal } : {}),
+      });
+      if (!response?.ok) {
+        finish();
+        return conversationTurnIndexFailure(`backend-${response?.status || "unknown"}`, { chatId });
+      }
+      let payload = null;
+      try { payload = await response.json(); } catch {}
+      const parsed = normalizeBackendConversationTurnIndex(payload, {
+        chatId,
+        capturedAt: opts?.capturedAt || nowIso(),
+      });
+      finish();
+      return parsed;
+    } catch {
+      finish();
+      return conversationTurnIndexFailure(timedOut ? "turn-index-timeout" : (opts?.signal?.aborted ? "turn-index-aborted" : "backend-request-failed"), { chatId });
+    }
   }
 
   async function fetchConversationCapture(chatIdRaw, opts = {}) {
@@ -4554,6 +4882,8 @@
   archiveBoot.clearMiniMapColdMarkers = () => clearMiniMapColdMarkers();
   archiveBoot.resyncMiniMapColdMarkers = (chatId, reason) => resyncMiniMapColdMarkers(chatId, reason);
   archiveBoot.captureNow = (chatId, opts = {}) => captureNow(chatId, opts);
+  archiveBoot.normalizeBackendConversationTurnIndex = (payload, opts = {}) => normalizeBackendConversationTurnIndex(payload, opts);
+  archiveBoot.fetchConversationTurnIndex = (chatId, opts = {}) => fetchConversationTurnIndex(chatId, opts);
   archiveBoot.getCurrentChatId = () => getCurrentChatId();
   archiveBoot.inspectCurrentConversation = (opts = {}) => inspectCurrentConversation(opts);
   archiveBoot.captureWithOptions = (opts = {}) => captureWithOptions(opts);
@@ -4644,6 +4974,12 @@
   archiveBoot.getLatest = legacyGetLatest;
   archiveBoot.remove = legacyRemove;
   archiveBoot.list = legacyList;
+
+  try {
+    W.dispatchEvent(new CustomEvent("evt:h2o:conversation-turn-index-provider:ready", {
+      detail: { schema: TURN_INDEX_SCHEMA },
+    }));
+  } catch {}
 
   const archive = (H2O.archive = H2O.archive || {});
   archive.captureLive = (...args) => archiveBoot.captureLive(...args);

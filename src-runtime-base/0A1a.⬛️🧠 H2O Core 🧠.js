@@ -5415,6 +5415,321 @@
     return turnState.turns.slice();
   }
 
+  const CHAT_ATLAS_FULL_INDEX_SAMPLE_LIMIT = 12;
+  const CHAT_ATLAS_FULL_INDEX_PROVIDER_READY = 'evt:h2o:conversation-turn-index-provider:ready';
+  const chatAtlasFullIndexState = {
+    status: 'idle',
+    chatId: null,
+    routeKey: '',
+    generation: 0,
+    fetchCount: 0,
+    startedAt: null,
+    completedAt: null,
+    errorCode: null,
+    index: null,
+    promise: null,
+    controller: null,
+    attempted: false,
+  };
+
+  function chatAtlasFullIndexRoute() {
+    const pathname = String(W.location?.pathname || D.location?.pathname || '');
+    const match = pathname.match(/(?:^|\/)c\/([a-z0-9-]+)(?:\/|$)/i);
+    const chatId = match ? chatAtlasNormalizeId(match[1]) : '';
+    return {
+      chatId: chatId || null,
+      routeKey: chatId ? pathname : '',
+    };
+  }
+
+  function chatAtlasFullIndexReadMiniMapRows() {
+    const readApi = (target) => {
+      if (!target) return null;
+      try {
+        const candidate = target.H2O_MM_CORE_API
+          || target.H2O_MM_SHARED?.get?.()?.api?.core
+          || target.H2O_MM_SHARED?.api?.core
+          || null;
+        return typeof candidate?.getTurnList === 'function' ? candidate : null;
+      } catch {
+        return null;
+      }
+    };
+    let topWindow = null;
+    try { topWindow = W?.top || null; } catch { topWindow = null; }
+    const api = readApi(topWindow) || readApi(W);
+    if (!api) return [];
+    try {
+      const rows = api.getTurnList();
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function chatAtlasFullIndexProjectionRow(row, order) {
+    const qId = chatAtlasNormalizeId(row?.qId || row?.questionId || '') || null;
+    const primaryAId = chatAtlasNormalizeId(row?.primaryAId || row?.answerId || '') || null;
+    const rawVariants = Array.isArray(row?.answerVariants)
+      ? row.answerVariants
+      : (Array.isArray(row?.answerIds) ? row.answerIds : []);
+    const answerVariants = [];
+    for (const rawId of rawVariants) {
+      const answerId = chatAtlasNormalizeId(rawId?.id || rawId);
+      if (answerId && !answerVariants.includes(answerId)) answerVariants.push(answerId);
+    }
+    if (primaryAId && !answerVariants.includes(primaryAId)) answerVariants.push(primaryAId);
+    return {
+      order: Number(row?.order || row?.turnNo || row?.index || order) || order,
+      qId,
+      primaryAId,
+      answerVariants,
+      noAnswer: row?.noAnswer === true || (!primaryAId && answerVariants.length === 0),
+    };
+  }
+
+  function chatAtlasFullIndexCompareProjection(indexTurns, rows, source) {
+    const expected = (Array.isArray(indexTurns) ? indexTurns : [])
+      .map((row, index) => chatAtlasFullIndexProjectionRow(row, index + 1));
+    const actual = (Array.isArray(rows) ? rows : [])
+      .map((row, index) => chatAtlasFullIndexProjectionRow(row, index + 1));
+    const expectedByQId = new Map(expected.filter((row) => row.qId).map((row) => [row.qId, row]));
+    const actualByQId = new Map(actual.filter((row) => row.qId).map((row) => [row.qId, row]));
+    const samples = [];
+    const pushSample = (kind, evidence = {}) => {
+      if (samples.length >= CHAT_ATLAS_FULL_INDEX_SAMPLE_LIMIT) return;
+      samples.push({ source, kind, ...evidence });
+    };
+    let missingCount = 0;
+    let extraCount = 0;
+    let orderMismatchCount = 0;
+    let primaryMismatchCount = 0;
+    let variantMismatchCount = 0;
+    let noAnswerMismatchCount = 0;
+
+    for (const expectedRow of expected) {
+      if (!expectedRow.qId || actualByQId.has(expectedRow.qId)) continue;
+      missingCount += 1;
+      pushSample('missing-from-projection', { qId: expectedRow.qId });
+    }
+    for (const actualRow of actual) {
+      if (!actualRow.qId || expectedByQId.has(actualRow.qId)) continue;
+      extraCount += 1;
+      pushSample('projection-only', { qId: actualRow.qId });
+    }
+    for (const [qId, expectedRow] of expectedByQId) {
+      const actualRow = actualByQId.get(qId);
+      if (!actualRow) continue;
+      if (expectedRow.order !== actualRow.order) {
+        orderMismatchCount += 1;
+        pushSample('order-mismatch', { qId, expected: expectedRow.order, actual: actualRow.order });
+      }
+      if (expectedRow.primaryAId !== actualRow.primaryAId) {
+        primaryMismatchCount += 1;
+        pushSample('primary-mismatch', {
+          qId,
+          expected: expectedRow.primaryAId,
+          actual: actualRow.primaryAId,
+        });
+      }
+      if (JSON.stringify(expectedRow.answerVariants) !== JSON.stringify(actualRow.answerVariants)) {
+        variantMismatchCount += 1;
+        pushSample('variant-mismatch', {
+          qId,
+          expectedCount: expectedRow.answerVariants.length,
+          actualCount: actualRow.answerVariants.length,
+        });
+      }
+      if (expectedRow.noAnswer !== actualRow.noAnswer) {
+        noAnswerMismatchCount += 1;
+        pushSample('no-answer-mismatch', {
+          qId,
+          expected: expectedRow.noAnswer,
+          actual: actualRow.noAnswer,
+        });
+      }
+    }
+    return {
+      source,
+      count: actual.length,
+      missingCount,
+      extraCount,
+      orderMismatchCount,
+      primaryMismatchCount,
+      variantMismatchCount,
+      noAnswerMismatchCount,
+      samples,
+    };
+  }
+
+  function chatAtlasCompareFullConversationIndex(index = chatAtlasFullIndexState.index) {
+    const indexTurns = Array.isArray(index?.turns) ? index.turns : [];
+    const canonical = chatAtlasFullIndexCompareProjection(indexTurns, listTurnRecords(), 'canonical');
+    const ledger = chatAtlasFullIndexCompareProjection(
+      indexTurns,
+      buildChatAtlasLedgerCanonicalRecords(),
+      'ledger',
+    );
+    const minimap = chatAtlasFullIndexCompareProjection(indexTurns, chatAtlasFullIndexReadMiniMapRows(), 'minimap');
+    const sources = [canonical, ledger, minimap];
+    const boundedSamples = [];
+    for (const source of sources) {
+      for (const sample of source.samples) {
+        if (boundedSamples.length >= CHAT_ATLAS_FULL_INDEX_SAMPLE_LIMIT) break;
+        boundedSamples.push(sample);
+      }
+    }
+    const orderMismatchCount = sources.reduce((sum, item) => sum + item.orderMismatchCount, 0);
+    const primaryMismatchCount = sources.reduce((sum, item) => sum + item.primaryMismatchCount, 0);
+    const variantMismatchCount = sources.reduce((sum, item) => sum + item.variantMismatchCount, 0);
+    const noAnswerMismatchCount = sources.reduce((sum, item) => sum + item.noAnswerMismatchCount, 0);
+    const identityMismatch = sources.some((item) => (
+      item.extraCount > 0
+      || item.primaryMismatchCount > 0
+      || item.variantMismatchCount > 0
+      || item.noAnswerMismatchCount > 0
+    ));
+    const projectionIncomplete = sources.some((item) => item.missingCount > 0 && item.count < indexTurns.length);
+    return {
+      canonicalCount: canonical.count,
+      ledgerCount: ledger.count,
+      minimapCount: minimap.count,
+      missingFromCanonicalCount: canonical.missingCount,
+      extraInCanonicalCount: canonical.extraCount,
+      missingFromLedgerCount: ledger.missingCount,
+      extraInLedgerCount: ledger.extraCount,
+      missingFromMiniMapCount: minimap.missingCount,
+      extraInMiniMapCount: minimap.extraCount,
+      orderMismatchCount,
+      primaryMismatchCount,
+      variantMismatchCount,
+      noAnswerMismatchCount,
+      projectionIncomplete,
+      classification: projectionIncomplete
+        ? 'projection-incomplete'
+        : (identityMismatch ? 'identity-mismatch' : 'exact'),
+      boundedSamples,
+    };
+  }
+
+  function getConversationTurnIndexDiagnostics() {
+    const index = chatAtlasFullIndexState.index;
+    const comparisons = index ? chatAtlasCompareFullConversationIndex(index) : null;
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    return chatAtlasFreeze({
+      status: chatAtlasFullIndexState.status,
+      chatId: chatAtlasFullIndexState.chatId,
+      fetchCount: chatAtlasFullIndexState.fetchCount,
+      startedAt: chatAtlasFullIndexState.startedAt,
+      completedAt: chatAtlasFullIndexState.completedAt,
+      errorCode: chatAtlasFullIndexState.errorCode,
+      index: index ? {
+        schema: Number(index.schema || 0) || null,
+        count: turns.length,
+        fingerprint: String(index.sourceFingerprint || '') || null,
+        payloadUpdateTime: index.payloadUpdateTime ?? null,
+        completenessProof: String(index?.completeness?.proof || '') || null,
+        noAnswerCount: turns.filter((turn) => turn?.noAnswer === true).length,
+        variantTurnCount: turns.filter((turn) => Array.isArray(turn?.answerVariants) && turn.answerVariants.length > 1).length,
+      } : null,
+      comparisons,
+    });
+  }
+
+  function chatAtlasResetFullIndexRoute(nextRoute, staleStatus = false) {
+    try { chatAtlasFullIndexState.controller?.abort?.('route-changed'); } catch {}
+    chatAtlasFullIndexState.generation += 1;
+    chatAtlasFullIndexState.status = staleStatus ? 'stale-route-discarded' : 'idle';
+    chatAtlasFullIndexState.chatId = nextRoute?.chatId || null;
+    chatAtlasFullIndexState.routeKey = nextRoute?.routeKey || '';
+    chatAtlasFullIndexState.fetchCount = 0;
+    chatAtlasFullIndexState.startedAt = null;
+    chatAtlasFullIndexState.completedAt = staleStatus ? new Date().toISOString() : null;
+    chatAtlasFullIndexState.errorCode = null;
+    chatAtlasFullIndexState.index = null;
+    chatAtlasFullIndexState.promise = null;
+    chatAtlasFullIndexState.controller = null;
+    chatAtlasFullIndexState.attempted = false;
+  }
+
+  function chatAtlasTriggerFullConversationIndex() {
+    const route = chatAtlasFullIndexRoute();
+    const routeChanged = route.routeKey !== chatAtlasFullIndexState.routeKey
+      || route.chatId !== chatAtlasFullIndexState.chatId;
+    if (routeChanged) {
+      const stale = chatAtlasFullIndexState.status === 'loading-full-index';
+      chatAtlasResetFullIndexRoute(route, stale && !route.chatId);
+    }
+    if (!route.chatId) return Promise.resolve(getConversationTurnIndexDiagnostics());
+    if (chatAtlasFullIndexState.promise) return chatAtlasFullIndexState.promise;
+    if (chatAtlasFullIndexState.attempted) return Promise.resolve(getConversationTurnIndexDiagnostics());
+    const provider = H2O.archiveBoot?.fetchConversationTurnIndex;
+    if (typeof provider !== 'function') return Promise.resolve(getConversationTurnIndexDiagnostics());
+
+    const Controller = W.AbortController;
+    const controller = typeof Controller === 'function' ? new Controller() : null;
+    const generation = chatAtlasFullIndexState.generation;
+    const routeKey = route.routeKey;
+    chatAtlasFullIndexState.attempted = true;
+    chatAtlasFullIndexState.fetchCount += 1;
+    chatAtlasFullIndexState.status = 'loading-full-index';
+    chatAtlasFullIndexState.startedAt = new Date().toISOString();
+    chatAtlasFullIndexState.completedAt = null;
+    chatAtlasFullIndexState.errorCode = null;
+    chatAtlasFullIndexState.controller = controller;
+    const operation = Promise.resolve()
+      .then(() => provider(route.chatId, { signal: controller?.signal }))
+      .then((result) => {
+        const stillCurrent = generation === chatAtlasFullIndexState.generation
+          && routeKey === chatAtlasFullIndexState.routeKey
+          && route.chatId === chatAtlasFullIndexState.chatId;
+        if (!stillCurrent) {
+          if (!chatAtlasFullIndexState.chatId && chatAtlasFullIndexState.status === 'idle') {
+            chatAtlasFullIndexState.status = 'stale-route-discarded';
+            chatAtlasFullIndexState.completedAt = new Date().toISOString();
+          }
+          return getConversationTurnIndexDiagnostics();
+        }
+        chatAtlasFullIndexState.completedAt = new Date().toISOString();
+        const validIndex = result?.ok === true
+          && Number(result?.index?.schema) === 1
+          && chatAtlasNormalizeId(result?.index?.chatId) === route.chatId
+          && result?.index?.completeness?.complete === true
+          && result?.index?.completeness?.proof === 'host-payload-full-graph'
+          && Array.isArray(result?.index?.turns);
+        if (validIndex) {
+          chatAtlasFullIndexState.index = result.index;
+          chatAtlasFullIndexState.status = 'complete-from-host-payload';
+          chatAtlasFullIndexState.errorCode = null;
+        } else {
+          chatAtlasFullIndexState.index = null;
+          chatAtlasFullIndexState.status = 'full-index-unavailable';
+          chatAtlasFullIndexState.errorCode = String(
+            result?.errorCode
+            || (result?.ok === true ? 'full-index-envelope-invalid' : 'full-index-unavailable'),
+          ).slice(0, 96);
+        }
+        return getConversationTurnIndexDiagnostics();
+      })
+      .catch((error) => {
+        if (generation === chatAtlasFullIndexState.generation && routeKey === chatAtlasFullIndexState.routeKey) {
+          chatAtlasFullIndexState.index = null;
+          chatAtlasFullIndexState.status = 'full-index-unavailable';
+          chatAtlasFullIndexState.completedAt = new Date().toISOString();
+          chatAtlasFullIndexState.errorCode = String(error?.code || 'provider-failed').slice(0, 96);
+        }
+        return getConversationTurnIndexDiagnostics();
+      })
+      .finally(() => {
+        if (generation === chatAtlasFullIndexState.generation && routeKey === chatAtlasFullIndexState.routeKey) {
+          chatAtlasFullIndexState.promise = null;
+          chatAtlasFullIndexState.controller = null;
+        }
+      });
+    chatAtlasFullIndexState.promise = operation;
+    return operation;
+  }
+
   function refresh(reason = 'manual') {
     state.version++;
 
@@ -5523,6 +5838,7 @@
     getChatAtlasLedgerDiagnostics,
     getChatAtlasHistoricalCompleteness,
     getChatAtlasConvergenceParity,
+    getConversationTurnIndexDiagnostics,
     getChatAtlasTurnStructureDiagnostics: getCanonicalTurnStructureDiagnostics,
     subscribeChatAtlasLedger,
     getChatAtlasCanonicalSource,
@@ -5597,9 +5913,14 @@
 
   W.addEventListener(EV_H2O_MESSAGE_REMOUNTED, () => scheduleRefresh('evt:remounted:h2o'));
   W.addEventListener(EV_H2O_INLINE_CHANGED, () => scheduleRefresh('evt:inline:h2o'));
+  W.addEventListener('evt:h2o:route:changed', () => { chatAtlasTriggerFullConversationIndex(); });
+  W.addEventListener('h2o:route:changed', () => { chatAtlasTriggerFullConversationIndex(); });
+  W.addEventListener('popstate', () => { chatAtlasTriggerFullConversationIndex(); });
+  W.addEventListener(CHAT_ATLAS_FULL_INDEX_PROVIDER_READY, () => { chatAtlasTriggerFullConversationIndex(); });
 
   refresh('boot');
   startChatAtlasLedger();
+  chatAtlasTriggerFullConversationIndex();
 
   // P3a (Loader V3 readiness migration): write to bounded readyCache so late
   // subscribers attached AFTER this emission still receive the detail via
