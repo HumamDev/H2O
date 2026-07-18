@@ -6218,6 +6218,9 @@ function UM_PUBLIC() {
           diagnosticStatus: String(status.diagnosticStatus || '') || null,
           chatId: String(status.chatId || '') || null,
           count: Math.max(0, Number(status.count || 0) || 0),
+          completeCount: Math.max(0, Number(status.completeCount ?? status.count ?? 0) || 0),
+          pendingCount: Math.max(0, Number(status.pendingCount || 0) || 0),
+          projectedCount: Math.max(0, Number(status.projectedCount ?? status.count ?? 0) || 0),
           source: String(status.source || '') || null,
           fingerprint: String(status.fingerprint || '') || null,
           completenessProof: String(status.completenessProof || '') || null,
@@ -6232,6 +6235,9 @@ function UM_PUBLIC() {
       diagnosticStatus: null,
       chatId: null,
       count: 0,
+      completeCount: 0,
+      pendingCount: 0,
+      projectedCount: 0,
       source: null,
       fingerprint: null,
       completenessProof: null,
@@ -6246,7 +6252,9 @@ function UM_PUBLIC() {
       authoritative: status.authoritative,
       status: status.status,
       diagnosticStatus: status.diagnosticStatus,
-      expectedCount: status.count,
+      expectedCount: status.projectedCount,
+      completeCount: status.completeCount,
+      pendingCount: status.pendingCount,
       publishedCount: Array.isArray(S.turnList) ? S.turnList.length : 0,
       boundaryStatus: String(S.completeIndexBoundaryStatus || 'disabled'),
       boundaryRenderCount: Math.max(0, Number(S.completeIndexBoundaryRenderCount || 0) || 0),
@@ -6279,6 +6287,9 @@ function UM_PUBLIC() {
       index,
       el: el || null,
       questionEl: questionEl || null,
+      livePending: record?.completeIndexPending === true,
+      livePendingProvenance: record?.completeIndexPending === true ? 'live-pending-overlay' : null,
+      streaming: record?.completeIndexPending === true && record?.livePendingStreaming === true,
     };
     projected.currentProof = questionId && (noAnswer || answerIds.length)
       ? CURRENT_PROOF_PROVEN
@@ -6599,7 +6610,7 @@ function UM_PUBLIC() {
       if (
         completeIndex.authoritative
         && completeIndex.completenessProof === 'host-payload-full-graph'
-        && runtimeCanonical?.list?.length === completeIndex.count
+        && runtimeCanonical?.list?.length === completeIndex.projectedCount
       ) {
         return {
           ...runtimeCanonical,
@@ -11105,7 +11116,7 @@ function unbindChatPageDividerBridge() {
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
       let retainedListForPersistence = list;
-      if (completeIndex.enabled && list.length !== completeIndex.count) {
+      if (completeIndex.enabled && list.length !== completeIndex.projectedCount) {
         publishTurnSnapshot({
           list: [],
           byId: new Map(),

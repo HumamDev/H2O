@@ -4855,9 +4855,14 @@
       record.completeIndexPayloadUpdateTime = draft?.payloadUpdateTime ?? null;
       record.completeIndexFingerprint = String(draft?.sourceFingerprint || '');
       record.completeIndexPending = false;
+      delete record.livePendingProvenance;
+      delete record.livePendingStreaming;
     } else if (draft?.completeIndexPending === true) {
       record.completeIndexAuthority = false;
       record.completeIndexPending = true;
+      record.livePendingProvenance = 'live-pending-overlay';
+      record.livePendingStreaming = (Array.isArray(draft?.answerIds) ? draft.answerIds : [])
+        .some((answerId) => isStreamingAnswerPlaceholderId(answerId));
       delete record.completenessProvenance;
       delete record.completeIndexPayloadUpdateTime;
       delete record.completeIndexFingerprint;
@@ -4865,6 +4870,8 @@
       delete record.stopped;
       delete record.completeIndexAuthority;
       delete record.completeIndexPending;
+      delete record.livePendingProvenance;
+      delete record.livePendingStreaming;
       delete record.completenessProvenance;
       delete record.completeIndexPayloadUpdateTime;
       delete record.completeIndexFingerprint;
@@ -4874,6 +4881,9 @@
       ...(draft?.aliasIds || []),
       previousQId && previousQId !== currentQId ? previousQId : '',
     ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
+    if (draft?.completeIndexAuthority === true) {
+      record._aliasIds = record._aliasIds.filter((aliasId) => !isStreamingAnswerPlaceholderId(aliasId));
+    }
     if (!record.page || typeof record.page !== 'object') record.page = createEmptyPageState();
     if (!record.mount || typeof record.mount !== 'object') record.mount = createEmptyMountState();
     record.live = {
@@ -5463,7 +5473,18 @@
     'complete-from-host-payload',
     'complete-validated',
     'offline-complete-cache',
+    'complete-refresh-pending',
+    'complete-refreshing',
+    'complete-refresh-validated',
+    'complete-refresh-failed-cache-preserved',
+    'live-pending-overlay',
   ]);
+  const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({
+    debounceMs: 280,
+    timeoutMs: 4500,
+    diagnosticCauseLimit: 8,
+    errorCodeLength: 96,
+  });
   const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = Object.freeze([
     '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
     '3bdfa68f-a197-422a-a3d4-29f028fc6564',
@@ -5491,6 +5512,220 @@
     'stopped',
   ]);
 
+  // CV-3.4 Gate 4 refresh production seam:begin
+  // One debounced coordinator owns all live completion/branch/edit refreshes.
+  // It accepts only the already-proven host envelope and publishes only after
+  // the IDs-only cache replacement succeeds, keeping membership/cache atomic.
+  function createCompleteIndexRefreshCoordinator(adapters = {}, options = {}) {
+    const limits = Object.freeze({
+      ...COMPLETE_TURN_INDEX_REFRESH_LIMITS,
+      ...(options?.limits || {}),
+    });
+    const state = {
+      generation: 0,
+      status: 'idle',
+      causes: new Set(),
+      timer: null,
+      timeoutTimer: null,
+      promise: null,
+      controller: null,
+      routeKey: '',
+      fetchCount: 0,
+      debounceCount: 0,
+      coalescedCount: 0,
+      staleDiscardCount: 0,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      pendingCount: 0,
+    };
+    const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
+    const iso = (value) => {
+      try { return new Date(value).toISOString(); } catch { return null; }
+    };
+    const errorCode = (value) => String(value || '').slice(0, Math.max(16, Number(limits.errorCodeLength || 96)));
+    const routeKey = () => String(adapters?.routeKey?.() || '');
+    const enabled = () => adapters?.isEnabled?.() === true;
+    const causeSample = () => Array.from(state.causes).slice(0, Math.max(1, Number(limits.diagnosticCauseLimit || 8)));
+    const snapshot = () => Object.freeze({
+      status: state.status,
+      generation: state.generation,
+      fetchCount: state.fetchCount,
+      debounceCount: state.debounceCount,
+      coalescedCount: state.coalescedCount,
+      staleDiscardCount: state.staleDiscardCount,
+      pendingCount: state.pendingCount,
+      causeSample: Object.freeze(causeSample()),
+      startedAt: state.startedAt,
+      completedAt: state.completedAt,
+      errorCode: state.errorCode,
+      timerPending: !!state.timer,
+      requestActive: !!state.promise,
+    });
+    const notify = (status, partial = {}) => {
+      state.status = String(status || state.status || 'idle');
+      Object.assign(state, partial || {});
+      try { adapters?.onState?.(snapshot()); } catch {}
+      return snapshot();
+    };
+    const clearDebounce = () => {
+      if (!state.timer) return;
+      try { (adapters?.clearTimeout || clearTimeout)(state.timer); } catch {}
+      state.timer = null;
+    };
+    const clearRequestTimeout = () => {
+      if (!state.timeoutTimer) return;
+      try { (adapters?.clearTimeout || clearTimeout)(state.timeoutTimer); } catch {}
+      state.timeoutTimer = null;
+    };
+    const cancel = (reason = 'cancelled', status = 'stale-route-discarded') => {
+      clearDebounce();
+      clearRequestTimeout();
+      state.generation += 1;
+      try { state.controller?.abort?.(errorCode(reason)); } catch {}
+      state.controller = null;
+      state.promise = null;
+      state.causes.clear();
+      return notify(status, {
+        completedAt: iso(now()),
+        errorCode: errorCode(reason),
+      });
+    };
+    const markPending = (count = 0) => {
+      state.pendingCount = Math.max(0, Number(count || 0) || 0);
+      if (!enabled() || !state.pendingCount) return snapshot();
+      return notify('live-pending-overlay', { errorCode: null });
+    };
+    const refresh = () => {
+      clearDebounce();
+      if (!enabled()) return Promise.resolve(snapshot());
+      if (state.promise) {
+        state.coalescedCount += 1;
+        return state.promise;
+      }
+      const retained = adapters?.currentIndex?.() || null;
+      const chatId = String(retained?.chatId || adapters?.chatId?.() || '');
+      const provider = adapters?.provider?.();
+      if (!retained?.complete || !chatId || typeof provider !== 'function') {
+        return Promise.resolve(notify('complete-refresh-failed-cache-preserved', {
+          errorCode: 'refresh-prerequisite-missing',
+          completedAt: iso(now()),
+        }));
+      }
+      const Controller = adapters?.AbortController || globalThis.AbortController;
+      const controller = typeof Controller === 'function' ? new Controller() : null;
+      const generation = state.generation + 1;
+      state.generation = generation;
+      state.routeKey = routeKey();
+      state.fetchCount += 1;
+      state.controller = controller;
+      state.startedAt = iso(now());
+      state.completedAt = null;
+      state.errorCode = null;
+      const causes = causeSample();
+      state.causes.clear();
+      notify('complete-refreshing');
+
+      const timeoutPromise = new Promise((resolve) => {
+        state.timeoutTimer = (adapters?.setTimeout || setTimeout)(() => {
+          try { controller?.abort?.('refresh-timeout'); } catch {}
+          resolve({ timeout: true });
+        }, Math.max(100, Number(limits.timeoutMs || 4500)));
+      });
+      const providerPromise = Promise.resolve()
+        .then(() => provider(chatId, { signal: controller?.signal, causes }))
+        .then((value) => ({ value }), (error) => ({ error }));
+
+      const operation = Promise.race([providerPromise, timeoutPromise])
+        .then((outcome) => {
+          const current = generation === state.generation && state.routeKey === routeKey() && enabled();
+          if (!current) {
+            state.staleDiscardCount += 1;
+            return snapshot();
+          }
+          if (outcome?.timeout) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: 'refresh-timeout',
+              completedAt: iso(now()),
+            });
+          }
+          if (outcome?.error) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: errorCode(outcome.error?.code || outcome.error?.message || 'provider-failed'),
+              completedAt: iso(now()),
+            });
+          }
+          const result = outcome?.value;
+          const normalized = result?.ok === true
+            ? adapters?.normalize?.(result.index, chatId)
+            : { ok: false, errorCode: result?.errorCode || 'full-index-unavailable' };
+          if (!normalized?.ok || !normalized?.envelope) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: errorCode(normalized?.errorCode || 'complete-index-proof-invalid'),
+              completedAt: iso(now()),
+            });
+          }
+          const incoming = normalized.envelope;
+          const revisionOrder = Number(adapters?.compareRevision?.(
+            incoming.payloadUpdateTime,
+            retained.payloadUpdateTime,
+          ) || 0);
+          if (revisionOrder < 0) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: 'older-host-payload',
+              completedAt: iso(now()),
+            });
+          }
+          const write = adapters?.writeCache?.(incoming) || { ok: false, status: 'cache-write-failed' };
+          if (!write.ok) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: errorCode(write.status || 'cache-write-failed'),
+              completedAt: iso(now()),
+            });
+          }
+          adapters?.publish?.(incoming, 'host-refresh');
+          state.pendingCount = Math.max(0, Number(adapters?.pendingCount?.() || 0) || 0);
+          return notify('complete-refresh-validated', {
+            errorCode: null,
+            completedAt: iso(now()),
+          });
+        })
+        .finally(() => {
+          if (generation !== state.generation) return;
+          clearRequestTimeout();
+          state.controller = null;
+          state.promise = null;
+        });
+      state.promise = operation;
+      return operation;
+    };
+    const schedule = (cause = 'turn-settled', opts = {}) => {
+      if (!enabled()) return Promise.resolve(snapshot());
+      const boundedCause = String(cause || 'turn-settled').slice(0, 64);
+      if (state.causes.size < Number(limits.diagnosticCauseLimit || 8)) state.causes.add(boundedCause);
+      if (state.promise) {
+        state.coalescedCount += 1;
+        return state.promise;
+      }
+      if (opts?.immediate === true) return refresh();
+      if (state.timer) {
+        state.coalescedCount += 1;
+        return Promise.resolve(snapshot());
+      }
+      state.debounceCount += 1;
+      notify('complete-refresh-pending', { errorCode: null });
+      state.timer = (adapters?.setTimeout || setTimeout)(() => {
+        state.timer = null;
+        void refresh();
+      }, Math.max(0, Number(limits.debounceMs || 280)));
+      return Promise.resolve(snapshot());
+    };
+    return Object.freeze({ schedule, refresh, cancel, markPending, getStatus: snapshot, limits });
+  }
+  // CV-3.4 Gate 4 refresh production seam:end
+
+  let completeIndexRefreshCoordinator = null;
+
   const completeTurnIndexAuthorityState = {
     enabled: false,
     status: 'disabled',
@@ -5516,6 +5751,10 @@
     promise: null,
     controller: null,
     pendingDrafts: new Map(),
+    pendingObservedAt: new Map(),
+    pendingStateNotifyQueued: false,
+    refreshListenerBound: false,
+    refreshListenerRegistrationCount: 0,
   };
 
   function chatAtlasCompleteIndexIdentity(value) {
@@ -5752,6 +5991,7 @@
   function chatAtlasCompleteIndexPendingDraftEligible(draft, index) {
     const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
     if (!qId || !draft?.live?.connected || !canonicalDraftHasStructuralQuestionProof(draft)) return false;
+    if (COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS.includes(qId)) return false;
     if (index.turns.some((turn) => turn.qId === qId)) return false;
     const answers = (Array.isArray(draft?.answerIds) ? draft.answerIds : [])
       .map((value) => chatAtlasCompleteIndexIdentity(value))
@@ -5759,19 +5999,76 @@
     return answers.length === 0 || answers.every((answerId) => isStreamingAnswerPlaceholderId(answerId));
   }
 
+  function chatAtlasQueueCompleteIndexStateNotify() {
+    if (completeTurnIndexAuthorityState.pendingStateNotifyQueued) return;
+    completeTurnIndexAuthorityState.pendingStateNotifyQueued = true;
+    Promise.resolve().then(() => {
+      completeTurnIndexAuthorityState.pendingStateNotifyQueued = false;
+      if (completeTurnIndexAuthorityState.enabled) chatAtlasNotifyCompleteIndexState();
+    });
+  }
+
+  function chatAtlasScheduleCompleteIndexRefresh(cause = 'turn-settled', opts = {}) {
+    if (!completeTurnIndexAuthorityState.enabled || !completeIndexRefreshCoordinator) {
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    return completeIndexRefreshCoordinator.schedule(cause, opts);
+  }
+
+  function chatAtlasInspectCompleteIndexLiveChanges(source, index) {
+    if (!completeTurnIndexAuthorityState.enabled || !index?.turns?.length) return;
+    const indexedByQId = new Map(index.turns.map((turn) => [turn.qId, turn]));
+    const pendingQIds = new Set(completeTurnIndexAuthorityState.pendingDrafts.keys());
+    let refreshCause = '';
+    for (const draft of Array.isArray(source) ? source : []) {
+      const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
+      if (!qId || COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS.includes(qId)) continue;
+      const answers = (Array.isArray(draft?.answerIds) ? draft.answerIds : [])
+        .map((value) => chatAtlasCompleteIndexIdentity(value))
+        .filter(Boolean);
+      const realAnswers = answers.filter((answerId) => !isStreamingAnswerPlaceholderId(answerId));
+      if (pendingQIds.has(qId)) {
+        if (realAnswers.length || draft?.stopped === true) refreshCause = draft?.stopped === true ? 'turn-stopped' : 'turn-settled';
+        continue;
+      }
+      const indexed = indexedByQId.get(qId);
+      if (!indexed) continue;
+      const selectedPrimary = chatAtlasCompleteIndexIdentity(draft?.primaryAId);
+      const variantChanged = realAnswers.some((answerId) => !indexed.answerVariants.includes(answerId));
+      const primaryChanged = !!selectedPrimary
+        && !isStreamingAnswerPlaceholderId(selectedPrimary)
+        && selectedPrimary !== indexed.primaryAId;
+      const stoppedChanged = draft?.stopped === true && indexed.stopped !== true;
+      const noAnswerChanged = draft?.noAnswer === true && indexed.noAnswer !== true && draft?.stopped === true;
+      if (variantChanged || primaryChanged) refreshCause = 'answer-branch-changed';
+      else if (stoppedChanged || noAnswerChanged) refreshCause = 'turn-stopped';
+    }
+    if (refreshCause) void chatAtlasScheduleCompleteIndexRefresh(refreshCause);
+  }
+
   function chatAtlasCompleteIndexLiveDrafts(liveDrafts, index) {
     const source = Array.isArray(liveDrafts) ? liveDrafts : [];
     const qIds = new Set(index.turns.map((turn) => turn.qId));
     const answerIds = new Set(index.turns.flatMap((turn) => turn.answerVariants));
-    for (const qId of qIds) completeTurnIndexAuthorityState.pendingDrafts.delete(qId);
+    for (const qId of qIds) {
+      completeTurnIndexAuthorityState.pendingDrafts.delete(qId);
+      completeTurnIndexAuthorityState.pendingObservedAt.delete(qId);
+    }
     const eligiblePending = source.filter((draft) => chatAtlasCompleteIndexPendingDraftEligible(draft, index));
     const latestPending = eligiblePending[eligiblePending.length - 1] || null;
     if (latestPending) {
-      completeTurnIndexAuthorityState.pendingDrafts.set(latestPending.qId, slimTurnDraft({
-        ...latestPending,
+      const alreadyPending = completeTurnIndexAuthorityState.pendingDrafts.has(latestPending.qId);
+      const pendingDraft = slimTurnDraft(latestPending);
+      completeTurnIndexAuthorityState.pendingDrafts.set(latestPending.qId, {
+        ...pendingDraft,
         completeIndexPending: true,
-      }));
+        livePendingProvenance: 'live-pending-overlay',
+      });
+      if (!alreadyPending) completeTurnIndexAuthorityState.pendingObservedAt.set(latestPending.qId, Date.now());
+      completeIndexRefreshCoordinator?.markPending?.(completeTurnIndexAuthorityState.pendingDrafts.size);
+      chatAtlasQueueCompleteIndexStateNotify();
     }
+    chatAtlasInspectCompleteIndexLiveChanges(source, index);
     const matched = source.filter((draft) => {
       const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
       if (qId && qIds.has(qId)) return true;
@@ -5787,13 +6084,20 @@
     const out = [];
     for (const [qId, draft] of completeTurnIndexAuthorityState.pendingDrafts.entries()) {
       if (!qId || qIds.has(qId)) continue;
-      out.push({ ...draft, completeIndexPending: true });
+      out.push({
+        ...draft,
+        completeIndexPending: true,
+        livePendingProvenance: 'live-pending-overlay',
+      });
     }
     return out;
   }
 
   function getCompleteTurnIndexProjectionStatus() {
     const index = completeTurnIndexAuthorityState.index;
+    const refresh = completeIndexRefreshCoordinator?.getStatus?.() || null;
+    const pendingCount = completeTurnIndexAuthorityState.pendingDrafts.size;
+    const completeCount = Array.isArray(index?.turns) ? index.turns.length : 0;
     return chatAtlasFreeze({
       canary: COMPLETE_TURN_INDEX_CANARY,
       enabled: completeTurnIndexAuthorityState.enabled,
@@ -5803,7 +6107,10 @@
       authoritative: chatAtlasCompleteIndexAuthorityActive(),
       chatId: completeTurnIndexAuthorityState.chatId,
       routeGeneration: completeTurnIndexAuthorityState.generation,
-      count: Array.isArray(index?.turns) ? index.turns.length : 0,
+      count: completeCount,
+      completeCount,
+      pendingCount,
+      projectedCount: completeCount + pendingCount,
       source: completeTurnIndexAuthorityState.indexSource,
       fingerprint: String(index?.sourceFingerprint || '') || null,
       payloadUpdateTime: index?.payloadUpdateTime ?? null,
@@ -5815,6 +6122,14 @@
       setterCallCount: completeTurnIndexAuthorityState.setterCallCount,
       automaticSetterCallCount: completeTurnIndexAuthorityState.automaticSetterCallCount,
       staleDiscardCount: completeTurnIndexAuthorityState.staleDiscardCount,
+      refreshFetchCount: Number(refresh?.fetchCount || 0),
+      refreshDebounceCount: Number(refresh?.debounceCount || 0),
+      refreshCoalescedCount: Number(refresh?.coalescedCount || 0),
+      refreshStaleDiscardCount: Number(refresh?.staleDiscardCount || 0),
+      refreshCauseSample: Array.isArray(refresh?.causeSample) ? refresh.causeSample.slice(0, 8) : [],
+      refreshTimerPending: refresh?.timerPending === true,
+      refreshRequestActive: refresh?.requestActive === true,
+      refreshListenerRegistrationCount: completeTurnIndexAuthorityState.refreshListenerRegistrationCount,
       startedAt: completeTurnIndexAuthorityState.startedAt,
       completedAt: completeTurnIndexAuthorityState.completedAt,
       errorCode: completeTurnIndexAuthorityState.errorCode,
@@ -5844,7 +6159,46 @@
     return chatAtlasNotifyCompleteIndexState();
   }
 
+  completeIndexRefreshCoordinator = createCompleteIndexRefreshCoordinator({
+    isEnabled: () => completeTurnIndexAuthorityState.enabled === true
+      && completeTurnIndexAuthorityState.index?.complete === true,
+    routeKey: () => `${completeTurnIndexAuthorityState.chatId || ''}|${completeTurnIndexAuthorityState.routeKey || ''}`,
+    chatId: () => completeTurnIndexAuthorityState.chatId,
+    currentIndex: () => completeTurnIndexAuthorityState.index,
+    pendingCount: () => completeTurnIndexAuthorityState.pendingDrafts.size,
+    provider: () => {
+      const provider = H2O.archiveBoot?.fetchConversationTurnIndex;
+      if (typeof provider !== 'function') return null;
+      return (chatId, opts) => {
+        completeTurnIndexAuthorityState.fetchCount += 1;
+        return provider(chatId, opts);
+      };
+    },
+    normalize: (raw, chatId) => chatAtlasNormalizeCompleteIndexEnvelope(raw, chatId, { source: 'host' }),
+    compareRevision: chatAtlasCompareCompleteIndexRevision,
+    writeCache: (envelope) => {
+      const result = chatAtlasWriteCompleteIndexCache(envelope);
+      if (result.ok) completeTurnIndexAuthorityState.cacheRaw = result.bytes;
+      return result;
+    },
+    publish: chatAtlasPublishCompleteIndex,
+    onState: (detail) => {
+      completeTurnIndexAuthorityState.status = String(detail?.status || completeTurnIndexAuthorityState.status);
+      completeTurnIndexAuthorityState.startedAt = detail?.startedAt || completeTurnIndexAuthorityState.startedAt;
+      completeTurnIndexAuthorityState.completedAt = detail?.completedAt || null;
+      completeTurnIndexAuthorityState.errorCode = detail?.errorCode || null;
+      chatAtlasNotifyCompleteIndexState();
+    },
+    setTimeout: W.setTimeout.bind(W),
+    clearTimeout: W.clearTimeout.bind(W),
+    AbortController: W.AbortController,
+  });
+
   function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false) {
+    completeIndexRefreshCoordinator?.cancel?.(
+      staleStatus ? 'route-changed' : 'authority-reset',
+      staleStatus ? 'stale-route-discarded' : 'idle',
+    );
     try { completeTurnIndexAuthorityState.controller?.abort?.('route-changed'); } catch {}
     completeTurnIndexAuthorityState.generation += 1;
     completeTurnIndexAuthorityState.status = completeTurnIndexAuthorityState.enabled
@@ -5865,6 +6219,8 @@
     completeTurnIndexAuthorityState.promise = null;
     completeTurnIndexAuthorityState.controller = null;
     completeTurnIndexAuthorityState.pendingDrafts.clear();
+    completeTurnIndexAuthorityState.pendingObservedAt.clear();
+    completeTurnIndexAuthorityState.pendingStateNotifyQueued = false;
   }
 
   function chatAtlasTriggerCompleteIndexAuthority() {
@@ -6019,6 +6375,26 @@
     }
     chatAtlasResetCompleteIndexRoute(chatAtlasFullIndexRoute(), false);
     return chatAtlasTriggerCompleteIndexAuthority();
+  }
+
+  function refreshCompleteTurnIndexProjection(cause = 'explicit-rebuild') {
+    if (!completeTurnIndexAuthorityState.enabled) {
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    return chatAtlasScheduleCompleteIndexRefresh(String(cause || 'explicit-rebuild'), { immediate: true });
+  }
+
+  function chatAtlasBindCompleteIndexRefreshListeners() {
+    if (completeTurnIndexAuthorityState.refreshListenerBound) return true;
+    const onCanonicalTurnUpdated = () => {
+      if (!completeTurnIndexAuthorityState.enabled) return;
+      const pendingCount = completeTurnIndexAuthorityState.pendingDrafts.size;
+      if (pendingCount) completeIndexRefreshCoordinator?.markPending?.(pendingCount);
+    };
+    H2O.bus.on(EV_CORE_TURN_UPDATED, onCanonicalTurnUpdated);
+    completeTurnIndexAuthorityState.refreshListenerBound = true;
+    completeTurnIndexAuthorityState.refreshListenerRegistrationCount += 1;
+    return true;
   }
 
   const CHAT_ATLAS_FULL_INDEX_SAMPLE_LIMIT = 12;
@@ -6473,6 +6849,7 @@
     getCompleteTurnIndexProjectionStatus,
     setCompleteTurnIndexProjectionCanary,
     rebuildCompleteTurnIndexProjection,
+    refreshCompleteTurnIndexProjection,
     getChatAtlasTurnStructureDiagnostics: getCanonicalTurnStructureDiagnostics,
     subscribeChatAtlasLedger,
     getChatAtlasCanonicalSource,
@@ -6544,6 +6921,7 @@
 
   H2O.bus.on(BUS_SCAN_QUESTIONS, (detail) => scheduleRefresh(`bus:questions:${detail?.reason || ''}`));
   H2O.bus.on(BUS_SCAN_ANSWERS, (detail) => scheduleRefresh(`bus:answers:${detail?.reason || ''}`));
+  chatAtlasBindCompleteIndexRefreshListeners();
 
   W.addEventListener(EV_H2O_MESSAGE_REMOUNTED, () => scheduleRefresh('evt:remounted:h2o'));
   W.addEventListener(EV_H2O_INLINE_CHANGED, () => scheduleRefresh('evt:inline:h2o'));
