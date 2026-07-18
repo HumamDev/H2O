@@ -4830,10 +4830,10 @@
     }
     const sameQuestion = !!previousQId && previousQId === currentQId;
     const answerState = mergeCanonicalAnswerState(
-      sameQuestion ? record?.answerIds : [],
+      sameQuestion && opts?.completeIndexAuthority !== true ? record?.answerIds : [],
       incomingAnswerIds,
       explicitPrimaryAId,
-      sameQuestion ? record?.primaryAId : '',
+      sameQuestion && opts?.completeIndexAuthority !== true ? record?.primaryAId : '',
       { explicitRemoval: draft?.noAnswer === true },
     );
     record.turnNo = turnNo;
@@ -4848,6 +4848,27 @@
     record.hasQuestion = !!record.qId;
     record.hasAssistant = !!record.answerIds.length;
     record.noAnswer = draft?.noAnswer === true;
+    if (draft?.completeIndexAuthority === true) {
+      record.stopped = draft?.stopped === true;
+      record.completeIndexAuthority = true;
+      record.completenessProvenance = String(draft?.completenessProvenance || '');
+      record.completeIndexPayloadUpdateTime = draft?.payloadUpdateTime ?? null;
+      record.completeIndexFingerprint = String(draft?.sourceFingerprint || '');
+      record.completeIndexPending = false;
+    } else if (draft?.completeIndexPending === true) {
+      record.completeIndexAuthority = false;
+      record.completeIndexPending = true;
+      delete record.completenessProvenance;
+      delete record.completeIndexPayloadUpdateTime;
+      delete record.completeIndexFingerprint;
+    } else {
+      delete record.stopped;
+      delete record.completeIndexAuthority;
+      delete record.completeIndexPending;
+      delete record.completenessProvenance;
+      delete record.completeIndexPayloadUpdateTime;
+      delete record.completeIndexFingerprint;
+    }
     record._aliasIds = Array.from(new Set([
       ...(record?._aliasIds || []),
       ...(draft?.aliasIds || []),
@@ -4873,6 +4894,10 @@
       answerEls: Array.isArray(draft?.live?.answerEls) ? draft.live.answerEls.filter(Boolean) : [],
       connected: !!draft?.live?.connected,
     };
+    // Once a globally-proven index owns historical identity, mounted evidence
+    // may bind elements/geometry but may not remove variants, flip NO ANSWER,
+    // rekey the question, or replace the selected historical primary.
+    if (record.completeIndexAuthority === true) return refreshLegacyTurnCompat(record);
     const questionPromotion = promoteCanonicalCurrentQuestionIdentity(record, draft, match);
     if (questionPromotion.changed) {
       shouldRebuildTurnId = true;
@@ -4955,6 +4980,7 @@
       applyCanonicalDraft(record, draft, {
         basis: previousMatch.basis,
         allowQIdTransition: previousMatch.basis === 'mounted-question-shell',
+        completeIndexAuthority: draft?.completeIndexAuthority === true,
       });
       used.add(record);
       nextRecords.push(record);
@@ -5337,6 +5363,14 @@
       ? reconcileBootSplitTurnDrafts(rawSectionDrafts, pairing).drafts
       : rawSectionDrafts;
     const liveDrafts = supplementSegmentShellVariants(liveReconciliation.drafts, sectionDrafts);
+    if (chatAtlasCompleteIndexAuthorityActive()) {
+      const index = completeTurnIndexAuthorityState.index;
+      const authorityDrafts = chatAtlasCompleteIndexCanonicalDrafts(index);
+      const boundedLiveDrafts = chatAtlasCompleteIndexLiveDrafts(liveDrafts, index);
+      const pendingDrafts = chatAtlasCompleteIndexPendingCanonicalDrafts(index);
+      commitTurnDrafts([...authorityDrafts, ...pendingDrafts], boundedLiveDrafts);
+      return;
+    }
     const sectionAuthority = sectionDraftAuthorityDecision(sectionDrafts, liveDrafts);
     turnState.lastStructureDecision = sectionAuthority;
     const sectionDraftsAreAuthoritative = sectionAuthority.accepted;
@@ -5413,6 +5447,578 @@
 
   function listTurnRecords() {
     return turnState.turns.slice();
+  }
+
+  // ── CV-3.4 complete-turn-index authority (memory-gated) ─────────────────
+  // The host-payload parser lives in 0D3a. This layer accepts only its
+  // sanitized, globally-proven ID graph, persists that graph separately from
+  // MiniMap's legacy row cache, and projects it through the existing canonical
+  // merge machinery. The canary switch itself is deliberately memory-only.
+  const COMPLETE_TURN_INDEX_CANARY = 'complete-turn-index-projection';
+  const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
+  const COMPLETE_TURN_INDEX_CACHE_KEY_PREFIX = 'h2o:prm:cgx:chat-atlas:complete-turn-index:v1:chat:';
+  const COMPLETE_TURN_INDEX_STATE_EVENT = 'evt:h2o:complete-turn-index:state';
+  const COMPLETE_TURN_INDEX_COMPLETE_STATUSES = Object.freeze([
+    'complete-from-cache',
+    'complete-from-host-payload',
+    'complete-validated',
+    'offline-complete-cache',
+  ]);
+  const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = Object.freeze([
+    '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
+    '3bdfa68f-a197-422a-a3d4-29f028fc6564',
+    'e1d4b63f-0be7-4a51-b074-e3372b71d790',
+    'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
+  ]);
+  const COMPLETE_TURN_INDEX_CACHE_KEYS = Object.freeze([
+    'schema',
+    'chatId',
+    'payloadUpdateTime',
+    'sourceFingerprint',
+    'capturedAt',
+    'validatedAt',
+    'complete',
+    'proof',
+    'turns',
+  ]);
+  const COMPLETE_TURN_INDEX_ROW_KEYS = Object.freeze([
+    'order',
+    'qId',
+    'turnId',
+    'answerVariants',
+    'primaryAId',
+    'noAnswer',
+    'stopped',
+  ]);
+
+  const completeTurnIndexAuthorityState = {
+    enabled: false,
+    status: 'disabled',
+    chatId: null,
+    routeKey: '',
+    generation: 0,
+    fetchCount: 0,
+    cacheReadCount: 0,
+    cacheWriteCount: 0,
+    cacheWriteFailureCount: 0,
+    setterCallCount: 0,
+    automaticSetterCallCount: 0,
+    staleDiscardCount: 0,
+    startedAt: null,
+    completedAt: null,
+    errorCode: null,
+    diagnosticStatus: null,
+    index: null,
+    indexSource: null,
+    cacheChecked: false,
+    cacheRaw: null,
+    attempted: false,
+    promise: null,
+    controller: null,
+    pendingDrafts: new Map(),
+  };
+
+  function chatAtlasCompleteIndexIdentity(value) {
+    const id = String(value || '').trim();
+    return /^[a-z0-9._:-]{1,256}$/i.test(id) ? id : '';
+  }
+
+  function chatAtlasCompleteIndexStableHash(raw) {
+    const value = String(raw || '');
+    let hash = 5381;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+    }
+    return Math.abs(hash >>> 0).toString(36);
+  }
+
+  function chatAtlasCompleteIndexFingerprint(turns = []) {
+    const identity = (Array.isArray(turns) ? turns : []).map((turn) => [
+      String(turn?.qId || ''),
+      String(turn?.primaryAId || ''),
+      ...(Array.isArray(turn?.answerVariants) ? turn.answerVariants.map((id) => String(id || '')) : []),
+      turn?.noAnswer === true ? 'no-answer:1' : 'no-answer:0',
+      turn?.stopped === true ? 'stopped:1' : 'stopped:0',
+    ]);
+    return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`;
+  }
+
+  function chatAtlasCompleteIndexCacheKey(chatIdRaw) {
+    const chatId = chatAtlasCompleteIndexIdentity(chatIdRaw);
+    return chatId ? `${COMPLETE_TURN_INDEX_CACHE_KEY_PREFIX}${chatId}` : '';
+  }
+
+  function chatAtlasCompleteIndexExactKeys(value, expected) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const actual = Object.keys(value).slice().sort();
+    const wanted = expected.slice().sort();
+    return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+  }
+
+  function chatAtlasNormalizeCompleteIndexEnvelope(raw, chatIdRaw, opts = {}) {
+    const source = String(opts?.source || 'host').trim() === 'cache' ? 'cache' : 'host';
+    const chatId = chatAtlasCompleteIndexIdentity(chatIdRaw);
+    const fail = (errorCode) => ({ ok: false, errorCode, envelope: null });
+    if (!chatId || !raw || typeof raw !== 'object' || Array.isArray(raw)) return fail('complete-index-envelope-invalid');
+    if (source === 'cache' && !chatAtlasCompleteIndexExactKeys(raw, COMPLETE_TURN_INDEX_CACHE_KEYS)) {
+      return fail('complete-index-cache-fields-invalid');
+    }
+    if (Number(raw?.schema) !== COMPLETE_TURN_INDEX_CACHE_SCHEMA) return fail('complete-index-schema-unsupported');
+    if (chatAtlasCompleteIndexIdentity(raw?.chatId) !== chatId) return fail('complete-index-chat-mismatch');
+    const complete = source === 'cache' ? raw?.complete === true : raw?.completeness?.complete === true;
+    const proof = String(source === 'cache' ? raw?.proof : raw?.completeness?.proof || '').trim();
+    if (!complete || proof !== 'host-payload-full-graph') return fail('complete-index-proof-invalid');
+    if (!Array.isArray(raw?.turns) || raw.turns.length === 0 || raw.turns.length > 5000) {
+      return fail('complete-index-turns-invalid');
+    }
+
+    const internalQIds = new Set(COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS);
+    const seenQIds = new Set();
+    const answerOwners = new Map();
+    const turns = [];
+    for (let index = 0; index < raw.turns.length; index += 1) {
+      const row = raw.turns[index];
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return fail('complete-index-row-invalid');
+      if (source === 'cache' && !chatAtlasCompleteIndexExactKeys(row, COMPLETE_TURN_INDEX_ROW_KEYS)) {
+        return fail('complete-index-row-fields-invalid');
+      }
+      const order = Number(row?.order);
+      const qId = chatAtlasCompleteIndexIdentity(row?.qId);
+      const turnId = String(row?.turnId || '').trim();
+      if (!Number.isInteger(order) || order !== index + 1 || !qId || turnId !== `turn:${qId}`) {
+        return fail('complete-index-row-identity-invalid');
+      }
+      if (seenQIds.has(qId) || internalQIds.has(qId)) return fail('complete-index-question-identity-invalid');
+      seenQIds.add(qId);
+      if (!Array.isArray(row?.answerVariants)) return fail('complete-index-answer-variants-invalid');
+      const answerVariants = [];
+      for (const value of row.answerVariants) {
+        const answerId = chatAtlasCompleteIndexIdentity(value);
+        if (!answerId || answerVariants.includes(answerId)) return fail('complete-index-answer-identity-invalid');
+        const owner = answerOwners.get(answerId);
+        if (owner && owner !== qId) return fail('complete-index-answer-ownership-conflict');
+        answerOwners.set(answerId, qId);
+        answerVariants.push(answerId);
+      }
+      if (
+        answerVariants.some((answerId) => !answerId.startsWith('request-placeholder-'))
+        && answerVariants.some((answerId) => answerId.startsWith('request-placeholder-'))
+      ) return fail('complete-index-placeholder-invalid');
+      const primaryAId = row?.primaryAId == null ? null : chatAtlasCompleteIndexIdentity(row.primaryAId);
+      if (row?.primaryAId != null && !primaryAId) return fail('complete-index-primary-invalid');
+      if (typeof row?.noAnswer !== 'boolean' || typeof row?.stopped !== 'boolean') {
+        return fail('complete-index-answer-state-invalid');
+      }
+      if (row.noAnswer) {
+        if (primaryAId || answerVariants.length) return fail('complete-index-no-answer-invalid');
+      } else if (!primaryAId || !answerVariants.length || answerVariants[answerVariants.length - 1] !== primaryAId) {
+        return fail('complete-index-primary-invalid');
+      }
+      turns.push(Object.freeze({
+        order,
+        qId,
+        turnId,
+        answerVariants: Object.freeze(answerVariants),
+        primaryAId,
+        noAnswer: row.noAnswer,
+        stopped: row.stopped,
+      }));
+    }
+
+    const sourceFingerprint = String(raw?.sourceFingerprint || '').trim();
+    if (!sourceFingerprint || sourceFingerprint !== chatAtlasCompleteIndexFingerprint(turns)) {
+      return fail('complete-index-fingerprint-invalid');
+    }
+    const payloadUpdateTime = raw?.payloadUpdateTime;
+    if (payloadUpdateTime != null && typeof payloadUpdateTime !== 'string' && typeof payloadUpdateTime !== 'number') {
+      return fail('complete-index-payload-revision-invalid');
+    }
+    if (typeof payloadUpdateTime === 'number' && !Number.isFinite(payloadUpdateTime)) {
+      return fail('complete-index-payload-revision-invalid');
+    }
+    const capturedAt = String(raw?.capturedAt || '').slice(0, 64);
+    const validatedAt = String(
+      source === 'cache'
+        ? raw?.validatedAt
+        : (raw?.completeness?.validatedAt || raw?.capturedAt || new Date().toISOString()),
+    ).slice(0, 64);
+    if (!capturedAt || !validatedAt) return fail('complete-index-timestamp-invalid');
+    const envelope = Object.freeze({
+      schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
+      chatId,
+      payloadUpdateTime: payloadUpdateTime == null ? null : payloadUpdateTime,
+      sourceFingerprint,
+      capturedAt,
+      validatedAt,
+      complete: true,
+      proof: 'host-payload-full-graph',
+      turns: Object.freeze(turns),
+    });
+    return { ok: true, errorCode: null, envelope };
+  }
+
+  function chatAtlasCompareCompleteIndexRevision(incomingRaw, retainedRaw) {
+    const comparable = (raw) => {
+      if (raw == null || raw === '') return { rank: 0, value: 0 };
+      if (typeof raw === 'number' && Number.isFinite(raw)) return { rank: 2, value: raw };
+      const text = String(raw).trim();
+      const numeric = Number(text);
+      if (text && Number.isFinite(numeric)) return { rank: 2, value: numeric };
+      const timestamp = Date.parse(text);
+      if (Number.isFinite(timestamp)) return { rank: 2, value: timestamp };
+      return { rank: 1, value: text };
+    };
+    const incoming = comparable(incomingRaw);
+    const retained = comparable(retainedRaw);
+    if (incoming.rank !== retained.rank) return incoming.rank > retained.rank ? 1 : -1;
+    if (incoming.value === retained.value) return 0;
+    return incoming.value > retained.value ? 1 : -1;
+  }
+
+  function chatAtlasReadCompleteIndexCache(chatIdRaw) {
+    const key = chatAtlasCompleteIndexCacheKey(chatIdRaw);
+    if (!key) return { ok: false, status: 'cache-key-invalid', envelope: null, raw: null };
+    completeTurnIndexAuthorityState.cacheReadCount += 1;
+    let raw = null;
+    try { raw = W.localStorage?.getItem?.(key) ?? null; } catch {
+      return { ok: false, status: 'cache-read-failed', envelope: null, raw: null };
+    }
+    if (raw == null || raw === '') return { ok: false, status: 'cache-missing', envelope: null, raw };
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch {
+      return { ok: false, status: 'cache-json-invalid', envelope: null, raw };
+    }
+    const normalized = chatAtlasNormalizeCompleteIndexEnvelope(parsed, chatIdRaw, { source: 'cache' });
+    return normalized.ok
+      ? { ok: true, status: 'cache-valid', envelope: normalized.envelope, raw }
+      : { ok: false, status: normalized.errorCode, envelope: null, raw };
+  }
+
+  function chatAtlasWriteCompleteIndexCache(envelope) {
+    const normalized = chatAtlasNormalizeCompleteIndexEnvelope(envelope, envelope?.chatId, { source: 'cache' });
+    const key = chatAtlasCompleteIndexCacheKey(envelope?.chatId);
+    if (!key || !normalized.ok) return { ok: false, status: normalized.errorCode || 'cache-key-invalid', bytes: null };
+    const bytes = JSON.stringify(normalized.envelope);
+    try {
+      W.localStorage?.setItem?.(key, bytes);
+      completeTurnIndexAuthorityState.cacheWriteCount += 1;
+      return { ok: true, status: 'cache-written', bytes };
+    } catch {
+      completeTurnIndexAuthorityState.cacheWriteFailureCount += 1;
+      return { ok: false, status: 'cache-write-failed', bytes: null };
+    }
+  }
+
+  function chatAtlasCompleteIndexAuthorityActive() {
+    return completeTurnIndexAuthorityState.enabled === true
+      && COMPLETE_TURN_INDEX_COMPLETE_STATUSES.includes(completeTurnIndexAuthorityState.status)
+      && completeTurnIndexAuthorityState.index?.complete === true
+      && completeTurnIndexAuthorityState.index?.proof === 'host-payload-full-graph'
+      && Array.isArray(completeTurnIndexAuthorityState.index?.turns)
+      && completeTurnIndexAuthorityState.index.turns.length > 0;
+  }
+
+  function chatAtlasCompleteIndexCanonicalDrafts(index = completeTurnIndexAuthorityState.index) {
+    if (!index || !Array.isArray(index.turns)) return [];
+    return index.turns.map((turn, position) => ({
+      turnNo: position + 1,
+      qId: turn.qId,
+      primaryAId: turn.primaryAId,
+      answerIds: turn.answerVariants.slice(),
+      aliasIds: [turn.turnId, ...turn.answerVariants],
+      hasQuestion: true,
+      hasAssistant: !turn.noAnswer,
+      noAnswer: turn.noAnswer,
+      stopped: turn.stopped,
+      completeIndexAuthority: true,
+      completenessProvenance: index.proof,
+      payloadUpdateTime: index.payloadUpdateTime,
+      sourceFingerprint: index.sourceFingerprint,
+      structure: {
+        segmentId: 1,
+        flowIdentity: `complete-index:${index.chatId}`,
+        structureKnown: true,
+        selectedPathEligible: true,
+        pairingContiguous: true,
+        currentQuestionProof: true,
+        unpairedAssistant: false,
+        questionOrdinal: position,
+        answerOrdinals: turn.answerVariants.map((_id, answerIndex) => position + answerIndex + 1),
+      },
+      live: { qEl: null, primaryAEl: null, answerEls: [], connected: false },
+    }));
+  }
+
+  function chatAtlasCompleteIndexPendingDraftEligible(draft, index) {
+    const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
+    if (!qId || !draft?.live?.connected || !canonicalDraftHasStructuralQuestionProof(draft)) return false;
+    if (index.turns.some((turn) => turn.qId === qId)) return false;
+    const answers = (Array.isArray(draft?.answerIds) ? draft.answerIds : [])
+      .map((value) => chatAtlasCompleteIndexIdentity(value))
+      .filter(Boolean);
+    return answers.length === 0 || answers.every((answerId) => isStreamingAnswerPlaceholderId(answerId));
+  }
+
+  function chatAtlasCompleteIndexLiveDrafts(liveDrafts, index) {
+    const source = Array.isArray(liveDrafts) ? liveDrafts : [];
+    const qIds = new Set(index.turns.map((turn) => turn.qId));
+    const answerIds = new Set(index.turns.flatMap((turn) => turn.answerVariants));
+    for (const qId of qIds) completeTurnIndexAuthorityState.pendingDrafts.delete(qId);
+    const eligiblePending = source.filter((draft) => chatAtlasCompleteIndexPendingDraftEligible(draft, index));
+    const latestPending = eligiblePending[eligiblePending.length - 1] || null;
+    if (latestPending) {
+      completeTurnIndexAuthorityState.pendingDrafts.set(latestPending.qId, slimTurnDraft({
+        ...latestPending,
+        completeIndexPending: true,
+      }));
+    }
+    const matched = source.filter((draft) => {
+      const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
+      if (qId && qIds.has(qId)) return true;
+      return (Array.isArray(draft?.answerIds) ? draft.answerIds : [])
+        .some((answerId) => answerIds.has(chatAtlasCompleteIndexIdentity(answerId)));
+    });
+    if (latestPending) matched.push(latestPending);
+    return matched;
+  }
+
+  function chatAtlasCompleteIndexPendingCanonicalDrafts(index) {
+    const qIds = new Set(index.turns.map((turn) => turn.qId));
+    const out = [];
+    for (const [qId, draft] of completeTurnIndexAuthorityState.pendingDrafts.entries()) {
+      if (!qId || qIds.has(qId)) continue;
+      out.push({ ...draft, completeIndexPending: true });
+    }
+    return out;
+  }
+
+  function getCompleteTurnIndexProjectionStatus() {
+    const index = completeTurnIndexAuthorityState.index;
+    return chatAtlasFreeze({
+      canary: COMPLETE_TURN_INDEX_CANARY,
+      enabled: completeTurnIndexAuthorityState.enabled,
+      memoryOnly: true,
+      defaultEnabled: false,
+      status: completeTurnIndexAuthorityState.status,
+      authoritative: chatAtlasCompleteIndexAuthorityActive(),
+      chatId: completeTurnIndexAuthorityState.chatId,
+      routeGeneration: completeTurnIndexAuthorityState.generation,
+      count: Array.isArray(index?.turns) ? index.turns.length : 0,
+      source: completeTurnIndexAuthorityState.indexSource,
+      fingerprint: String(index?.sourceFingerprint || '') || null,
+      payloadUpdateTime: index?.payloadUpdateTime ?? null,
+      completenessProof: String(index?.proof || '') || null,
+      fetchCount: completeTurnIndexAuthorityState.fetchCount,
+      cacheReadCount: completeTurnIndexAuthorityState.cacheReadCount,
+      cacheWriteCount: completeTurnIndexAuthorityState.cacheWriteCount,
+      cacheWriteFailureCount: completeTurnIndexAuthorityState.cacheWriteFailureCount,
+      setterCallCount: completeTurnIndexAuthorityState.setterCallCount,
+      automaticSetterCallCount: completeTurnIndexAuthorityState.automaticSetterCallCount,
+      staleDiscardCount: completeTurnIndexAuthorityState.staleDiscardCount,
+      startedAt: completeTurnIndexAuthorityState.startedAt,
+      completedAt: completeTurnIndexAuthorityState.completedAt,
+      errorCode: completeTurnIndexAuthorityState.errorCode,
+      diagnosticStatus: completeTurnIndexAuthorityState.diagnosticStatus,
+      cache: {
+        schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
+        key: chatAtlasCompleteIndexCacheKey(completeTurnIndexAuthorityState.chatId),
+      },
+    });
+  }
+
+  function chatAtlasNotifyCompleteIndexState() {
+    const detail = getCompleteTurnIndexProjectionStatus();
+    try { W.dispatchEvent(new CustomEvent(COMPLETE_TURN_INDEX_STATE_EVENT, { detail })); } catch {}
+    try { H2O.events?.emit?.(COMPLETE_TURN_INDEX_STATE_EVENT, detail); } catch {}
+    try {
+      const api = W.H2O_MM_CORE_API || W.top?.H2O_MM_CORE_API || null;
+      api?.scheduleRebuild?.(`complete-index:${detail.status}`);
+    } catch {}
+    return detail;
+  }
+
+  function chatAtlasPublishCompleteIndex(envelope, source) {
+    completeTurnIndexAuthorityState.index = envelope;
+    completeTurnIndexAuthorityState.indexSource = source;
+    buildTurns();
+    return chatAtlasNotifyCompleteIndexState();
+  }
+
+  function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false) {
+    try { completeTurnIndexAuthorityState.controller?.abort?.('route-changed'); } catch {}
+    completeTurnIndexAuthorityState.generation += 1;
+    completeTurnIndexAuthorityState.status = completeTurnIndexAuthorityState.enabled
+      ? (staleStatus ? 'stale-route-discarded' : 'loading-full-index')
+      : 'disabled';
+    completeTurnIndexAuthorityState.chatId = nextRoute?.chatId || null;
+    completeTurnIndexAuthorityState.routeKey = nextRoute?.routeKey || '';
+    completeTurnIndexAuthorityState.fetchCount = 0;
+    completeTurnIndexAuthorityState.startedAt = null;
+    completeTurnIndexAuthorityState.completedAt = staleStatus ? new Date().toISOString() : null;
+    completeTurnIndexAuthorityState.errorCode = null;
+    completeTurnIndexAuthorityState.diagnosticStatus = null;
+    completeTurnIndexAuthorityState.index = null;
+    completeTurnIndexAuthorityState.indexSource = null;
+    completeTurnIndexAuthorityState.cacheChecked = false;
+    completeTurnIndexAuthorityState.cacheRaw = null;
+    completeTurnIndexAuthorityState.attempted = false;
+    completeTurnIndexAuthorityState.promise = null;
+    completeTurnIndexAuthorityState.controller = null;
+    completeTurnIndexAuthorityState.pendingDrafts.clear();
+  }
+
+  function chatAtlasTriggerCompleteIndexAuthority() {
+    const route = chatAtlasFullIndexRoute();
+    const routeChanged = route.routeKey !== completeTurnIndexAuthorityState.routeKey
+      || route.chatId !== completeTurnIndexAuthorityState.chatId;
+    if (routeChanged) {
+      const stale = completeTurnIndexAuthorityState.status === 'loading-full-index'
+        && !!completeTurnIndexAuthorityState.promise;
+      if (stale) completeTurnIndexAuthorityState.staleDiscardCount += 1;
+      chatAtlasResetCompleteIndexRoute(route, stale && !route.chatId);
+    }
+    if (!route.chatId) {
+      if (routeChanged) chatAtlasNotifyCompleteIndexState();
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+
+    if (!completeTurnIndexAuthorityState.cacheChecked) {
+      completeTurnIndexAuthorityState.cacheChecked = true;
+      const cached = chatAtlasReadCompleteIndexCache(route.chatId);
+      completeTurnIndexAuthorityState.cacheRaw = cached.raw;
+      if (cached.ok) {
+        completeTurnIndexAuthorityState.status = 'complete-from-cache';
+        completeTurnIndexAuthorityState.errorCode = null;
+        chatAtlasPublishCompleteIndex(cached.envelope, 'cache');
+      } else {
+        completeTurnIndexAuthorityState.status = 'loading-full-index';
+        completeTurnIndexAuthorityState.errorCode = cached.status === 'cache-missing' ? null : cached.status;
+        chatAtlasNotifyCompleteIndexState();
+      }
+    }
+    if (completeTurnIndexAuthorityState.promise) return completeTurnIndexAuthorityState.promise;
+    if (completeTurnIndexAuthorityState.attempted) {
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    const provider = H2O.archiveBoot?.fetchConversationTurnIndex;
+    if (typeof provider !== 'function') return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+
+    const Controller = W.AbortController;
+    const controller = typeof Controller === 'function' ? new Controller() : null;
+    const generation = completeTurnIndexAuthorityState.generation;
+    const routeKey = route.routeKey;
+    const cachedIndex = completeTurnIndexAuthorityState.index;
+    completeTurnIndexAuthorityState.attempted = true;
+    completeTurnIndexAuthorityState.fetchCount += 1;
+    completeTurnIndexAuthorityState.startedAt = new Date().toISOString();
+    completeTurnIndexAuthorityState.completedAt = null;
+    completeTurnIndexAuthorityState.controller = controller;
+    const operation = Promise.resolve()
+      .then(() => provider(route.chatId, { signal: controller?.signal }))
+      .then((result) => {
+        const stillCurrent = generation === completeTurnIndexAuthorityState.generation
+          && routeKey === completeTurnIndexAuthorityState.routeKey
+          && route.chatId === completeTurnIndexAuthorityState.chatId;
+        if (!stillCurrent) {
+          completeTurnIndexAuthorityState.staleDiscardCount += 1;
+          return getCompleteTurnIndexProjectionStatus();
+        }
+        completeTurnIndexAuthorityState.completedAt = new Date().toISOString();
+        const normalized = result?.ok === true
+          ? chatAtlasNormalizeCompleteIndexEnvelope(result.index, route.chatId, { source: 'host' })
+          : { ok: false, errorCode: String(result?.errorCode || 'full-index-unavailable') };
+        if (!normalized.ok) {
+          completeTurnIndexAuthorityState.status = cachedIndex
+            ? 'offline-complete-cache'
+            : 'full-index-unavailable';
+          completeTurnIndexAuthorityState.diagnosticStatus = !cachedIndex && turnState.turns.length
+            ? 'partial-fallback-diagnostic-only'
+            : null;
+          completeTurnIndexAuthorityState.errorCode = String(normalized.errorCode || 'full-index-unavailable').slice(0, 96);
+          chatAtlasNotifyCompleteIndexState();
+          return getCompleteTurnIndexProjectionStatus();
+        }
+
+        const hostIndex = normalized.envelope;
+        const sameFingerprint = !!cachedIndex
+          && cachedIndex.sourceFingerprint === hostIndex.sourceFingerprint;
+        const revisionOrder = cachedIndex
+          ? chatAtlasCompareCompleteIndexRevision(hostIndex.payloadUpdateTime, cachedIndex.payloadUpdateTime)
+          : 1;
+        if (sameFingerprint) {
+          if (revisionOrder >= 0) {
+            const write = chatAtlasWriteCompleteIndexCache(hostIndex);
+            if (!write.ok) completeTurnIndexAuthorityState.errorCode = write.status;
+            completeTurnIndexAuthorityState.index = hostIndex;
+            completeTurnIndexAuthorityState.indexSource = 'host-payload';
+          }
+          completeTurnIndexAuthorityState.status = 'complete-validated';
+          if (!completeTurnIndexAuthorityState.errorCode) completeTurnIndexAuthorityState.errorCode = null;
+          buildTurns();
+          chatAtlasNotifyCompleteIndexState();
+          return getCompleteTurnIndexProjectionStatus();
+        }
+        if (cachedIndex && revisionOrder < 0) {
+          completeTurnIndexAuthorityState.status = 'complete-from-cache';
+          completeTurnIndexAuthorityState.errorCode = 'older-host-payload';
+          chatAtlasNotifyCompleteIndexState();
+          return getCompleteTurnIndexProjectionStatus();
+        }
+
+        const write = chatAtlasWriteCompleteIndexCache(hostIndex);
+        completeTurnIndexAuthorityState.status = 'complete-from-host-payload';
+        completeTurnIndexAuthorityState.errorCode = write.ok ? null : write.status;
+        chatAtlasPublishCompleteIndex(hostIndex, 'host-payload');
+        return getCompleteTurnIndexProjectionStatus();
+      })
+      .catch((error) => {
+        if (generation === completeTurnIndexAuthorityState.generation && routeKey === completeTurnIndexAuthorityState.routeKey) {
+          completeTurnIndexAuthorityState.status = cachedIndex
+            ? 'offline-complete-cache'
+            : 'full-index-unavailable';
+          completeTurnIndexAuthorityState.diagnosticStatus = !cachedIndex && turnState.turns.length
+            ? 'partial-fallback-diagnostic-only'
+            : null;
+          completeTurnIndexAuthorityState.completedAt = new Date().toISOString();
+          completeTurnIndexAuthorityState.errorCode = String(error?.code || 'provider-failed').slice(0, 96);
+          chatAtlasNotifyCompleteIndexState();
+        }
+        return getCompleteTurnIndexProjectionStatus();
+      })
+      .finally(() => {
+        if (generation === completeTurnIndexAuthorityState.generation && routeKey === completeTurnIndexAuthorityState.routeKey) {
+          completeTurnIndexAuthorityState.promise = null;
+          completeTurnIndexAuthorityState.controller = null;
+        }
+      });
+    completeTurnIndexAuthorityState.promise = operation;
+    return operation;
+  }
+
+  function setCompleteTurnIndexProjectionCanary(value) {
+    completeTurnIndexAuthorityState.setterCallCount += 1;
+    const enabled = value === true;
+    if (enabled === completeTurnIndexAuthorityState.enabled) {
+      return chatAtlasFreeze({ ok: true, changed: false, ...getCompleteTurnIndexProjectionStatus() });
+    }
+    completeTurnIndexAuthorityState.enabled = enabled;
+    chatAtlasResetCompleteIndexRoute(chatAtlasFullIndexRoute(), false);
+    if (enabled) {
+      void chatAtlasTriggerCompleteIndexAuthority();
+    } else {
+      buildTurns();
+      chatAtlasNotifyCompleteIndexState();
+    }
+    return chatAtlasFreeze({ ok: true, changed: true, ...getCompleteTurnIndexProjectionStatus() });
+  }
+
+  function rebuildCompleteTurnIndexProjection() {
+    if (!completeTurnIndexAuthorityState.enabled) {
+      buildTurns();
+      return Promise.resolve(getCompleteTurnIndexProjectionStatus());
+    }
+    chatAtlasResetCompleteIndexRoute(chatAtlasFullIndexRoute(), false);
+    return chatAtlasTriggerCompleteIndexAuthority();
   }
 
   const CHAT_ATLAS_FULL_INDEX_SAMPLE_LIMIT = 12;
@@ -5613,6 +6219,30 @@
   }
 
   function getConversationTurnIndexDiagnostics() {
+    if (completeTurnIndexAuthorityState.enabled) {
+      const authority = getCompleteTurnIndexProjectionStatus();
+      const index = completeTurnIndexAuthorityState.index;
+      const comparisons = index ? chatAtlasCompareFullConversationIndex(index) : null;
+      return chatAtlasFreeze({
+        status: authority.status,
+        chatId: authority.chatId,
+        fetchCount: authority.fetchCount,
+        startedAt: authority.startedAt,
+        completedAt: authority.completedAt,
+        errorCode: authority.errorCode,
+        index: authority.authoritative ? {
+          schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
+          count: authority.count,
+          fingerprint: authority.fingerprint,
+          payloadUpdateTime: authority.payloadUpdateTime,
+          completenessProof: authority.completenessProof,
+          noAnswerCount: index.turns.filter((turn) => turn.noAnswer === true).length,
+          variantTurnCount: index.turns.filter((turn) => turn.answerVariants.length > 1).length,
+        } : null,
+        comparisons,
+        authority,
+      });
+    }
     const index = chatAtlasFullIndexState.index;
     const comparisons = index ? chatAtlasCompareFullConversationIndex(index) : null;
     const turns = Array.isArray(index?.turns) ? index.turns : [];
@@ -5653,6 +6283,7 @@
   }
 
   function chatAtlasTriggerFullConversationIndex() {
+    if (completeTurnIndexAuthorityState.enabled) return chatAtlasTriggerCompleteIndexAuthority();
     const route = chatAtlasFullIndexRoute();
     const routeChanged = route.routeKey !== chatAtlasFullIndexState.routeKey
       || route.chatId !== chatAtlasFullIndexState.chatId;
@@ -5839,6 +6470,9 @@
     getChatAtlasHistoricalCompleteness,
     getChatAtlasConvergenceParity,
     getConversationTurnIndexDiagnostics,
+    getCompleteTurnIndexProjectionStatus,
+    setCompleteTurnIndexProjectionCanary,
+    rebuildCompleteTurnIndexProjection,
     getChatAtlasTurnStructureDiagnostics: getCanonicalTurnStructureDiagnostics,
     subscribeChatAtlasLedger,
     getChatAtlasCanonicalSource,
