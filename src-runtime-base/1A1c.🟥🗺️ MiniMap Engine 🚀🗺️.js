@@ -115,10 +115,18 @@
   const EVT_MSG_MOUNT_REQUEST = 'h2o:message:mount:request';
   const EVT_ARCHIVE_SCROLL_TO_COLD = 'evt:h2o:archive:scroll-to-cold';
   const EVT_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
+  const EVT_COMPLETE_TURN_INDEX_STATE = 'evt:h2o:complete-turn-index:state';
 
   const BOOT_MAX_TRIES = 80;
   const BOOT_GAP_MS = 120;
   const MO_REBUILD_COOLDOWN_MS = 320;
+  const COMPLETE_INDEX_NAV_LIMITS = Object.freeze({
+    maxHops: 5,
+    totalDurationMs: 5000,
+    remountWaitMs: 720,
+    duplicateWindowMs: 320,
+    errorCodeLength: 96,
+  });
   const BOOT_MODE_CACHE_FIRST = 'cache_first';
   const BOOT_MODE_REBUILD_FIRST = 'rebuild_first';
   const PERF_ASSERT_ON = (() => {
@@ -165,6 +173,7 @@
     offViewChanged: null,
     offShellNoButtons: null,
     offCoreTurnUpdated: null,
+    offCompleteTurnIndexState: null,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -190,6 +199,192 @@
     structureRecoveryQueued: false,
     structureRecoveryReason: '',
   };
+
+  // CV-3.4 Gate 4 navigation production seam:begin
+  // This coordinator owns cancellation, route scoping, bounds, and state.
+  // Host DOM resolution and scrolling remain adapters so the same production
+  // algorithm can be exercised deterministically without fixture copies.
+  function createCompleteIndexNavigationCoordinator(adapters = {}, options = {}) {
+    const limits = Object.freeze({
+      ...COMPLETE_INDEX_NAV_LIMITS,
+      ...(options?.limits || {}),
+    });
+    const state = {
+      generation: 0,
+      status: 'idle',
+      targetQId: null,
+      targetOrder: 0,
+      hopCount: 0,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      routeKey: '',
+      active: null,
+      lastRequestKey: '',
+      lastCompletedAtMs: 0,
+      lastResult: null,
+    };
+    const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
+    const iso = (value) => {
+      try { return new Date(value).toISOString(); } catch { return null; }
+    };
+    const boundedError = (value) => String(value || '').slice(0, Math.max(16, Number(limits.errorCodeLength || 96)));
+    const snapshot = () => Object.freeze({
+      status: state.status,
+      targetQId: state.targetQId,
+      targetOrder: state.targetOrder,
+      generation: state.generation,
+      hopCount: state.hopCount,
+      startedAt: state.startedAt,
+      completedAt: state.completedAt,
+      errorCode: state.errorCode,
+    });
+    const setState = (status, partial = {}) => {
+      state.status = String(status || state.status || 'idle');
+      Object.assign(state, partial || {});
+      try { adapters?.onState?.(snapshot()); } catch {}
+      return snapshot();
+    };
+    const currentRouteKey = () => String(adapters?.routeKey?.() || '');
+    const enabled = () => adapters?.isEnabled?.() === true;
+    const cancel = (reason = 'cancelled', status = 'cancelled') => {
+      const active = state.active;
+      if (!active || active.done) return snapshot();
+      active.done = true;
+      try { active.controller?.abort?.(boundedError(reason)); } catch {}
+      state.active = null;
+      state.generation += 1;
+      return setState(status, {
+        completedAt: iso(now()),
+        errorCode: boundedError(reason),
+      });
+    };
+    const staleReason = (operation) => {
+      if (!operation || operation.done || operation.generation !== state.generation) return 'cancelled';
+      if (!enabled()) return 'gate-disabled';
+      if (operation.routeKey !== currentRouteKey()) return 'stale-route';
+      if ((now() - operation.startedAtMs) >= Number(limits.totalDurationMs || 5000)) return 'navigation-timeout';
+      return '';
+    };
+    const finish = (operation, status, partial = {}, result = {}) => {
+      if (operation?.generation !== state.generation || operation?.done) {
+        return Object.freeze({ handled: true, navigated: false, status: 'cancelled' });
+      }
+      operation.done = true;
+      state.active = null;
+      const completedAtMs = now();
+      setState(status, {
+        completedAt: iso(completedAtMs),
+        errorCode: partial?.errorCode ? boundedError(partial.errorCode) : null,
+        ...partial,
+      });
+      const out = Object.freeze({
+        handled: true,
+        navigated: status === 'navigated',
+        status,
+        qId: state.targetQId,
+        order: state.targetOrder,
+        hops: state.hopCount,
+        ...result,
+      });
+      state.lastRequestKey = operation.requestKey;
+      state.lastCompletedAtMs = completedAtMs;
+      state.lastResult = out;
+      return out;
+    };
+    const navigate = (request = {}) => {
+      if (!enabled()) return Promise.resolve(Object.freeze({ handled: false, navigated: false, status: 'disabled' }));
+      const descriptor = adapters?.describeTarget?.(request) || null;
+      if (!descriptor?.qId || !Number.isInteger(Number(descriptor?.order)) || Number(descriptor.order) < 1) {
+        return Promise.resolve(Object.freeze({ handled: true, navigated: false, status: 'unreachable', errorCode: 'target-not-owned' }));
+      }
+      const surface = String(request?.surface || 'answer') === 'question' ? 'question' : 'answer';
+      const requestKey = `${currentRouteKey()}|${descriptor.qId}|${surface}`;
+      if (state.active && !state.active.done && state.active.requestKey === requestKey) return state.active.promise;
+      if (
+        state.lastRequestKey === requestKey
+        && (now() - state.lastCompletedAtMs) <= Number(limits.duplicateWindowMs || 320)
+        && state.lastResult
+      ) return Promise.resolve(state.lastResult);
+      cancel('superseded', 'cancelled');
+
+      const Controller = adapters?.AbortController || globalThis.AbortController;
+      const controller = typeof Controller === 'function' ? new Controller() : null;
+      const generation = state.generation + 1;
+      state.generation = generation;
+      const operation = {
+        generation,
+        requestKey,
+        routeKey: currentRouteKey(),
+        startedAtMs: now(),
+        controller,
+        done: false,
+        promise: null,
+      };
+      state.active = operation;
+      setState('resolving', {
+        targetQId: descriptor.qId,
+        targetOrder: Number(descriptor.order),
+        hopCount: 0,
+        startedAt: iso(operation.startedAtMs),
+        completedAt: null,
+        errorCode: null,
+        routeKey: operation.routeKey,
+      });
+
+      const run = async () => {
+        let mounted = adapters?.resolveMounted?.(descriptor, surface) || null;
+        if (mounted) {
+          setState('target-mounted');
+          const navigated = adapters?.navigateMounted?.(mounted, descriptor, surface) !== false;
+          return finish(operation, navigated ? 'navigated' : 'unreachable', navigated ? {} : { errorCode: 'precise-navigation-failed' });
+        }
+        setState('mounting-target');
+        for (let hop = 1; hop <= Number(limits.maxHops || 5); hop += 1) {
+          const before = staleReason(operation);
+          if (before) {
+            const stale = before === 'stale-route';
+            return finish(operation, stale ? 'stale-route-discarded' : (before === 'navigation-timeout' ? 'unreachable' : 'cancelled'), {
+              errorCode: before,
+              hopCount: hop - 1,
+            });
+          }
+          state.hopCount = hop;
+          setState('mounting-target', { hopCount: hop });
+          adapters?.moveToward?.(descriptor, hop, Number(limits.maxHops || 5));
+          mounted = await adapters?.waitForMounted?.(
+            descriptor,
+            surface,
+            Number(limits.remountWaitMs || 720),
+            controller?.signal || null,
+          );
+          const after = staleReason(operation);
+          if (after) {
+            const stale = after === 'stale-route';
+            return finish(operation, stale ? 'stale-route-discarded' : (after === 'navigation-timeout' ? 'unreachable' : 'cancelled'), {
+              errorCode: after,
+              hopCount: hop,
+            });
+          }
+          mounted = mounted || adapters?.resolveMounted?.(descriptor, surface) || null;
+          if (!mounted) continue;
+          setState('target-mounted', { hopCount: hop });
+          const navigated = adapters?.navigateMounted?.(mounted, descriptor, surface) !== false;
+          return finish(operation, navigated ? 'navigated' : 'unreachable', navigated ? {} : { errorCode: 'precise-navigation-failed' });
+        }
+        return finish(operation, 'unreachable', { errorCode: 'maximum-hops-reached' });
+      };
+      operation.promise = Promise.resolve().then(run).catch((error) => {
+        const reason = staleReason(operation);
+        if (reason === 'stale-route') return finish(operation, 'stale-route-discarded', { errorCode: reason });
+        if (reason === 'gate-disabled' || reason === 'cancelled') return finish(operation, 'cancelled', { errorCode: reason });
+        return finish(operation, 'unreachable', { errorCode: error?.code || error?.message || 'navigation-failed' });
+      });
+      return operation.promise;
+    };
+    return Object.freeze({ navigate, cancel, getStatus: snapshot, limits });
+  }
+  // CV-3.4 Gate 4 navigation production seam:end
 
   function getCoreSurface() {
     return MM_core();
@@ -1363,6 +1558,273 @@
     return null;
   }
 
+  const COMPLETE_INDEX_INTERNAL_QIDS = new Set([
+    '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
+    '3bdfa68f-a197-422a-a3d4-29f028fc6564',
+    'e1d4b63f-0be7-4a51-b074-e3372b71d790',
+    'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
+  ]);
+  const completeIndexMountedAnchors = new Map();
+
+  function MINI_completeIndexStatus() {
+    try {
+      const status = W?.H2O?.turnRuntime?.getCompleteTurnIndexProjectionStatus?.();
+      return status && typeof status === 'object' ? status : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function MINI_completeIndexNavigationEnabled() {
+    const status = MINI_completeIndexStatus();
+    return status?.enabled === true
+      && status?.authoritative === true
+      && status?.completenessProof === 'host-payload-full-graph';
+  }
+
+  function MINI_completeIndexRouteKey() {
+    const status = MINI_completeIndexStatus();
+    return `${String(status?.chatId || resolveChatId() || '')}|${String(location.pathname || '')}`;
+  }
+
+  function MINI_completeIndexRecords() {
+    if (!MINI_completeIndexNavigationEnabled()) return [];
+    try {
+      const list = W?.H2O?.turnRuntime?.listTurnRecords?.()
+        || W?.H2O?.turnRuntime?.listTurns?.()
+        || [];
+      return Array.isArray(list) ? list.filter((row) => row?.completeIndexAuthority === true) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function MINI_completeIndexDescriptor(request = {}) {
+    const records = MINI_completeIndexRecords();
+    if (!records.length) return null;
+    const turn = request?.turn || null;
+    const normalizeQId = (value) => String(value || '').replace(/^conversation-turn-/, '').replace(/^turn:/, '').trim();
+    const qCandidates = Array.from(new Set([
+      turn?.qId,
+      turn?.questionId,
+      request?.questionId,
+      request?.qId,
+      String(request?.turnId || '').startsWith('turn:') ? request.turnId : '',
+    ].map(normalizeQId).filter(Boolean)));
+    let record = null;
+    for (const qId of qCandidates) {
+      record = records.find((row) => String(row?.qId || '') === qId || String(row?.turnId || '') === `turn:${qId}`) || null;
+      if (record) break;
+    }
+    // Once a caller supplies a nonempty product qId, aliases may confirm its
+    // anchor but may never rekey it to a different canonical record.
+    if (!record && qCandidates.length) return null;
+
+    if (!record) {
+      const aliasCandidates = Array.from(new Set([
+        turn?.primaryAId,
+        turn?.answerId,
+        request?.answerId,
+        request?.primaryAId,
+        request?.id,
+      ].map((value) => normalizeNavId(value)).filter(Boolean)));
+      const owners = records.filter((row) => {
+        const aliases = new Set([
+          row?.primaryAId,
+          row?.answerId,
+          ...(Array.isArray(row?.answerIds) ? row.answerIds : []),
+        ].map((value) => normalizeNavId(value)).filter(Boolean));
+        return aliasCandidates.some((alias) => aliases.has(alias));
+      });
+      if (owners.length !== 1) return null;
+      record = owners[0];
+    }
+
+    const qId = String(record?.qId || '').trim();
+    const order = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+    if (!qId || !order || COMPLETE_INDEX_INTERNAL_QIDS.has(qId)) return null;
+    const answerVariants = Array.from(new Set([
+      ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      record?.primaryAId,
+    ].map((value) => normalizeNavId(value)).filter(Boolean)));
+    return Object.freeze({
+      qId,
+      turnId: `turn:${qId}`,
+      order,
+      total: records.length,
+      primaryAId: normalizeNavId(record?.primaryAId || ''),
+      answerVariants: Object.freeze(answerVariants),
+      noAnswer: record?.noAnswer === true,
+      record,
+      request,
+    });
+  }
+
+  function MINI_connectedElement(value) {
+    return value?.isConnected ? value : null;
+  }
+
+  function MINI_resolveCompleteIndexMounted(descriptor, surface = 'answer') {
+    if (!descriptor?.qId || COMPLETE_INDEX_INTERNAL_QIDS.has(descriptor.qId)) return null;
+    const record = descriptor.record || null;
+    const liveQuestion = MINI_connectedElement(record?.live?.qEl || record?.qEl || null);
+    const exactQuestion = liveQuestion
+      || normalizeQuestionEl(findTurnHostById(descriptor.qId))
+      || normalizeQuestionEl(findTurnHostById(descriptor.turnId));
+    if (exactQuestion) {
+      const handle = MINI_hiddenPageHandleForElement(exactQuestion);
+      completeIndexMountedAnchors.set(descriptor.qId, exactQuestion);
+      return { element: handle || exactQuestion, handle: !!handle, basis: 'qId' };
+    }
+
+    // Answer identities are bounded fallback evidence owned by this qId only.
+    const aliases = [descriptor.primaryAId, ...descriptor.answerVariants]
+      .map((value) => normalizeNavId(value))
+      .filter(Boolean);
+    for (const alias of Array.from(new Set(aliases))) {
+      const answer = MINI_connectedElement(findAnswerById(alias));
+      if (!answer) continue;
+      const handle = MINI_hiddenPageHandleForElement(answer);
+      completeIndexMountedAnchors.set(descriptor.qId, answer);
+      return { element: handle || answer, handle: !!handle, basis: 'owned-answer-alias', alias };
+    }
+    completeIndexMountedAnchors.delete(descriptor.qId);
+    return null;
+  }
+
+  function MINI_bindCompleteIndexMountedAnchors() {
+    if (!MINI_completeIndexNavigationEnabled()) {
+      completeIndexMountedAnchors.clear();
+      return 0;
+    }
+    const records = MINI_completeIndexRecords();
+    const liveQIds = new Set(records.map((row) => String(row?.qId || '')).filter(Boolean));
+    for (const qId of completeIndexMountedAnchors.keys()) {
+      if (!liveQIds.has(qId) || !completeIndexMountedAnchors.get(qId)?.isConnected) completeIndexMountedAnchors.delete(qId);
+    }
+    for (const record of records) {
+      const descriptor = MINI_completeIndexDescriptor({
+        qId: record?.qId,
+        turnId: record?.turnId,
+        turn: record,
+      });
+      if (descriptor) MINI_resolveCompleteIndexMounted(descriptor, record?.noAnswer ? 'question' : 'answer');
+    }
+    return completeIndexMountedAnchors.size;
+  }
+
+  function MINI_completeIndexScrollRoot() {
+    const anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    let cur = anyTurn?.parentElement || convContainer()?.parentElement || null;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      try {
+        const overflowY = String(getComputedStyle(cur)?.overflowY || '');
+        if (/^(auto|scroll|overlay)$/.test(overflowY) && cur.scrollHeight > cur.clientHeight + 4) return cur;
+      } catch {}
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+
+  function MINI_moveTowardCompleteIndexTarget(descriptor, hop = 1) {
+    if (!descriptor?.order || !descriptor?.total) return false;
+    MINI_bindCompleteIndexMountedAnchors();
+    const records = MINI_completeIndexRecords();
+    const orderByQId = new Map(records.map((row) => [String(row?.qId || ''), Number(row?.turnNo || row?.idx || 0)]));
+    const mountedOrders = Array.from(completeIndexMountedAnchors.keys())
+      .map((qId) => Number(orderByQId.get(qId) || 0))
+      .filter((value) => value > 0);
+    const baseFraction = Math.min(1, Math.max(0, (descriptor.order - 0.5) / descriptor.total));
+    const root = MINI_completeIndexScrollRoot();
+    const maxScroll = root
+      ? Math.max(0, Number(root.scrollHeight || 0) - Number(root.clientHeight || 0))
+      : Math.max(0, Number(document.documentElement?.scrollHeight || 0) - Number(window.innerHeight || 0));
+    const currentTop = root ? Number(root.scrollTop || 0) : Number(window.scrollY || 0);
+    const currentFraction = maxScroll > 0 ? Math.min(1, Math.max(0, currentTop / maxScroll)) : baseFraction;
+    let fraction = baseFraction;
+    if (mountedOrders.length && hop > 1) {
+      const nearest = mountedOrders.reduce((best, value) => (
+        Math.abs(value - descriptor.order) < Math.abs(best - descriptor.order) ? value : best
+      ), mountedOrders[0]);
+      const evidenceFraction = Math.min(1, Math.max(0, currentFraction + ((descriptor.order - nearest) / descriptor.total)));
+      const evidenceWeight = Math.min(0.8, 0.45 + (hop * 0.08));
+      fraction = (baseFraction * (1 - evidenceWeight)) + (evidenceFraction * evidenceWeight);
+    }
+    try {
+      const top = Math.floor(fraction * maxScroll);
+      if (root) root.scrollTo({ top, behavior: 'auto' });
+      else window.scrollTo({ top, behavior: 'auto' });
+      const mountId = descriptor.primaryAId || descriptor.answerVariants[0] || descriptor.qId;
+      dispatchMountRequest(mountId, `mnmp-complete-index:hop-${hop}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function MINI_waitForCompleteIndexMounted(descriptor, surface, timeoutMs, signal) {
+    const maxWaitMs = Math.max(80, Number(timeoutMs || COMPLETE_INDEX_NAV_LIMITS.remountWaitMs) || COMPLETE_INDEX_NAV_LIMITS.remountWaitMs);
+    return new Promise((resolve) => {
+      let done = false;
+      let rafId = 0;
+      let timerId = 0;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        try { if (rafId) cancelAnimationFrame(rafId); } catch {}
+        try { if (timerId) clearTimeout(timerId); } catch {}
+        try { window.removeEventListener(EVT_MSG_REMOUNTED, check, true); } catch {}
+        try { window.removeEventListener(EVT_MSG_REMOUNTED_ALIAS, check, true); } catch {}
+        try { signal?.removeEventListener?.('abort', onAbort); } catch {}
+        resolve(value || null);
+      };
+      const check = () => {
+        const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface);
+        if (mounted) finish(mounted);
+      };
+      const onAbort = () => finish(null);
+      const poll = () => {
+        if (done) return;
+        const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface);
+        if (mounted) return finish(mounted);
+        rafId = requestAnimationFrame(poll);
+      };
+      if (signal?.aborted) return finish(null);
+      try { window.addEventListener(EVT_MSG_REMOUNTED, check, true); } catch {}
+      try { window.addEventListener(EVT_MSG_REMOUNTED_ALIAS, check, true); } catch {}
+      try { signal?.addEventListener?.('abort', onAbort, { once: true }); } catch {}
+      timerId = setTimeout(() => finish(MINI_resolveCompleteIndexMounted(descriptor, surface)), maxWaitMs);
+      rafId = requestAnimationFrame(poll);
+    });
+  }
+
+  const completeIndexNavigationCoordinator = createCompleteIndexNavigationCoordinator({
+    isEnabled: MINI_completeIndexNavigationEnabled,
+    routeKey: MINI_completeIndexRouteKey,
+    describeTarget: MINI_completeIndexDescriptor,
+    resolveMounted: MINI_resolveCompleteIndexMounted,
+    moveToward: MINI_moveTowardCompleteIndexTarget,
+    waitForMounted: MINI_waitForCompleteIndexMounted,
+    navigateMounted: (mounted, descriptor, surface) => {
+      const target = mounted?.element || null;
+      if (!target) return false;
+      if (mounted?.handle) return scrollPageToTarget(target, true, 'center');
+      return MINI_scrollToResolvedTarget(target, {
+        ...(descriptor?.request || {}),
+        qId: descriptor.qId,
+        questionId: descriptor.qId,
+        turnId: descriptor.turnId,
+        answerId: descriptor.primaryAId,
+        turn: descriptor.record,
+      }, surface);
+    },
+    AbortController: W.AbortController,
+  });
+
+  function getCompleteIndexNavigationStatus() {
+    return completeIndexNavigationCoordinator.getStatus();
+  }
+
   function dispatchMountRequest(msgId, source = 'mnmp-engine') {
     const id = normalizeNavId(msgId);
     if (!id) return false;
@@ -1637,6 +2099,16 @@
   }
 
   function MINI_navigateTurnTarget(ctx, surface = 'answer') {
+    if (MINI_completeIndexNavigationEnabled()) {
+      return completeIndexNavigationCoordinator.navigate({ ...(ctx || {}), surface })
+        .then((result) => ({
+          ctx: MINI_getCanonicalTargetCtx(ctx, surface),
+          target: null,
+          materialized: Number(result?.hops || 0) > 0,
+          completeIndexHandled: result?.handled === true,
+          navigationStatus: String(result?.status || ''),
+        }));
+    }
     const immediateCtx = MINI_getCanonicalTargetCtx(ctx, surface);
     const immediate = MINI_resolveTargetElement(immediateCtx, surface);
     if (immediate) {
@@ -2130,7 +2602,13 @@
       answer: (ctx) => {
         if (!ctx?.id) return false;
         MM.program = true;
-        MINI_navigateTurnTarget(ctx, 'answer').then(({ ctx: nextCtx, target, handle }) => {
+        MINI_navigateTurnTarget(ctx, 'answer').then(({ ctx: nextCtx, target, handle, completeIndexHandled, navigationStatus }) => {
+          if (completeIndexHandled) {
+            if (navigationStatus !== 'navigated') {
+              derr('turn:answer:navigate:complete-index', { id: String(ctx?.id || ''), status: navigationStatus });
+            }
+            return;
+          }
           if (!target) {
             derr('turn:answer:navigate:no-target', { id: String(ctx?.id || '') });
             return;
@@ -2152,7 +2630,13 @@
       question: (ctx) => {
         if (!ctx?.id) return false;
         MM.program = true;
-        MINI_navigateTurnTarget(ctx, 'question').then(({ ctx: nextCtx, target, handle }) => {
+        MINI_navigateTurnTarget(ctx, 'question').then(({ ctx: nextCtx, target, handle, completeIndexHandled, navigationStatus }) => {
+          if (completeIndexHandled) {
+            if (navigationStatus !== 'navigated') {
+              derr('turn:question:navigate:complete-index', { id: String(ctx?.id || ''), status: navigationStatus });
+            }
+            return;
+          }
           if (!target) {
             derr('turn:question:navigate:no-target', { id: String(ctx?.id || '') });
             return;
@@ -2642,6 +3126,7 @@
 
   function syncActive(reason = 'scroll') {
     if (!S.running) return;
+    try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
     if (S.scrollSyncDisabled) return;
     if (S.mmUser || S.mmProgram) return;
     const scanTick0 = Number(S.perfFullScanTick || 0);
@@ -3448,6 +3933,8 @@
   }
 
   function stop(reason = 'engine:stop') {
+    completeIndexNavigationCoordinator.cancel(String(reason || 'engine-stop'), 'cancelled');
+    completeIndexMountedAnchors.clear();
     cancelScheduledTask('minimap:first-paint', 'firstPaintRaf', 'raf');
     cancelScheduledTask('minimap:first-paint:failsafe', 'failsafeTimer');
     clearTimer('pageJumpTimer');
@@ -3486,6 +3973,7 @@
     try { S.offViewChanged?.(); } catch {}
     try { S.offShellNoButtons?.(); } catch {}
     try { S.offCoreTurnUpdated?.(); } catch {}
+    try { S.offCompleteTurnIndexState?.(); } catch {}
     S.offScroll = null;
     S.offResize = null;
     S.offShellReady = null;
@@ -3499,6 +3987,7 @@
     S.offViewChanged = null;
     S.offShellNoButtons = null;
     S.offCoreTurnUpdated = null;
+    S.offCompleteTurnIndexState = null;
 
     S.running = false;
     S.scrollSyncDisabled = false;
@@ -3793,10 +4282,23 @@
         onCoreTurnUpdated(event?.detail || {});
       }, { passive: true });
     }
+    if (!S.offCompleteTurnIndexState) {
+      S.offCompleteTurnIndexState = on(window, EVT_COMPLETE_TURN_INDEX_STATE, (event) => {
+        if (event?.detail?.enabled !== true) {
+          completeIndexNavigationCoordinator.cancel('gate-disabled', 'cancelled');
+          completeIndexMountedAnchors.clear();
+          return;
+        }
+        try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
+        scheduleSyncActive('complete-index-state');
+      }, { passive: true });
+    }
     bindMiniMapScrollGuards();
 
     const onRouteChanged = (tag = 'route') => {
       if (!S.running) return;
+      completeIndexNavigationCoordinator.cancel('route-changed', 'stale-route-discarded');
+      completeIndexMountedAnchors.clear();
       resetVisibleAnswersObserver();
       S.moRebuildCooldownUntil = 0;
       startStaleStateWatchdog(tag);
@@ -4131,6 +4633,7 @@
     setActiveTurnId,
     getTurnIndex,
     onTurnChange,
+    getCompleteIndexNavigationStatus,
   };
 
   function installRuntimeApi() {
