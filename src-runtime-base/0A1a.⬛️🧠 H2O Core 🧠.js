@@ -5478,6 +5478,8 @@
   // MiniMap's legacy row cache, and projects it through the existing canonical
   // merge machinery. The canary switch itself is deliberately memory-only.
   const COMPLETE_TURN_INDEX_CANARY = 'complete-turn-index-projection';
+  const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = false;
+  const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
   const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
   const COMPLETE_TURN_INDEX_CACHE_KEY_PREFIX = 'h2o:prm:cgx:chat-atlas:complete-turn-index:v1:chat:';
   const COMPLETE_TURN_INDEX_STATE_EVENT = 'evt:h2o:complete-turn-index:state';
@@ -5811,6 +5813,19 @@
     pendingStateNotifyQueued: false,
     refreshListenerBound: false,
     refreshListenerRegistrationCount: 0,
+    preferenceResolved: false,
+    preferenceStoredValue: null,
+    preferenceResolution: 'unresolved',
+    activationSource: 'compiled-default',
+    preferenceReadCount: 0,
+    preferenceWriteCount: 0,
+    preferenceClearCount: 0,
+    preferenceWriteFailureCount: 0,
+    preferenceReadErrorCode: null,
+    preferenceWriteErrorCode: null,
+    preferenceSetterCallCount: 0,
+    bootApplyCount: 0,
+    bootActivationCount: 0,
   };
 
   function chatAtlasCompleteIndexIdentity(value) {
@@ -6173,7 +6188,10 @@
       canary: COMPLETE_TURN_INDEX_CANARY,
       enabled: completeTurnIndexAuthorityState.enabled,
       memoryOnly: true,
-      defaultEnabled: false,
+      defaultEnabled: COMPLETE_TURN_INDEX_COMPILED_DEFAULT,
+      compiledDefault: COMPLETE_TURN_INDEX_COMPILED_DEFAULT,
+      persistedOptInSupported: true,
+      activationSource: completeTurnIndexAuthorityState.activationSource,
       status: completeTurnIndexAuthorityState.status,
       authoritative: chatAtlasCompleteIndexAuthorityActive(),
       chatId: completeTurnIndexAuthorityState.chatId,
@@ -6192,6 +6210,13 @@
       cacheWriteFailureCount: completeTurnIndexAuthorityState.cacheWriteFailureCount,
       setterCallCount: completeTurnIndexAuthorityState.setterCallCount,
       automaticSetterCallCount: completeTurnIndexAuthorityState.automaticSetterCallCount,
+      preferenceSetterCallCount: completeTurnIndexAuthorityState.preferenceSetterCallCount,
+      preferenceReadCount: completeTurnIndexAuthorityState.preferenceReadCount,
+      preferenceWriteCount: completeTurnIndexAuthorityState.preferenceWriteCount,
+      preferenceClearCount: completeTurnIndexAuthorityState.preferenceClearCount,
+      preferenceWriteFailureCount: completeTurnIndexAuthorityState.preferenceWriteFailureCount,
+      bootApplyCount: completeTurnIndexAuthorityState.bootApplyCount,
+      bootActivationCount: completeTurnIndexAuthorityState.bootActivationCount,
       staleDiscardCount: completeTurnIndexAuthorityState.staleDiscardCount,
       refreshFetchCount: Number(refresh?.fetchCount || 0),
       refreshDebounceCount: Number(refresh?.debounceCount || 0),
@@ -6212,6 +6237,14 @@
       cache: {
         schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
         key: chatAtlasCompleteIndexCacheKey(completeTurnIndexAuthorityState.chatId),
+      },
+      preference: {
+        key: COMPLETE_TURN_INDEX_PREFERENCE_KEY,
+        resolved: completeTurnIndexAuthorityState.preferenceResolved === true,
+        storedValue: completeTurnIndexAuthorityState.preferenceStoredValue,
+        resolution: completeTurnIndexAuthorityState.preferenceResolution,
+        readErrorCode: completeTurnIndexAuthorityState.preferenceReadErrorCode,
+        writeErrorCode: completeTurnIndexAuthorityState.preferenceWriteErrorCode,
       },
     });
   }
@@ -6439,9 +6472,9 @@
     return operation;
   }
 
-  function setCompleteTurnIndexProjectionCanary(value) {
-    completeTurnIndexAuthorityState.setterCallCount += 1;
+  function chatAtlasApplyCompleteIndexProjectionEnabled(value, source = 'memory-canary') {
     const enabled = value === true;
+    completeTurnIndexAuthorityState.activationSource = chatAtlasCompleteIndexCode(source, 'memory-canary', 48);
     if (enabled === completeTurnIndexAuthorityState.enabled) {
       return chatAtlasFreeze({ ok: true, changed: false, ...getCompleteTurnIndexProjectionStatus() });
     }
@@ -6454,6 +6487,119 @@
       chatAtlasNotifyCompleteIndexState();
     }
     return chatAtlasFreeze({ ok: true, changed: true, ...getCompleteTurnIndexProjectionStatus() });
+  }
+
+  function setCompleteTurnIndexProjectionCanary(value) {
+    completeTurnIndexAuthorityState.setterCallCount += 1;
+    return chatAtlasApplyCompleteIndexProjectionEnabled(value === true, 'memory-canary');
+  }
+
+  function chatAtlasResolveCompleteIndexProjectionPreference() {
+    if (completeTurnIndexAuthorityState.preferenceResolved) {
+      return {
+        enabled: completeTurnIndexAuthorityState.preferenceResolution === 'stored-enabled',
+        resolution: completeTurnIndexAuthorityState.preferenceResolution,
+      };
+    }
+    completeTurnIndexAuthorityState.preferenceResolved = true;
+    completeTurnIndexAuthorityState.preferenceReadCount += 1;
+    completeTurnIndexAuthorityState.preferenceReadErrorCode = null;
+    let raw = null;
+    try {
+      raw = W.localStorage?.getItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY) ?? null;
+    } catch {
+      completeTurnIndexAuthorityState.preferenceStoredValue = null;
+      completeTurnIndexAuthorityState.preferenceResolution = 'read-failed-disabled';
+      completeTurnIndexAuthorityState.preferenceReadErrorCode = 'preference-read-failed';
+      return { enabled: false, resolution: 'read-failed-disabled' };
+    }
+    if (raw === '1') {
+      completeTurnIndexAuthorityState.preferenceStoredValue = '1';
+      completeTurnIndexAuthorityState.preferenceResolution = 'stored-enabled';
+      return { enabled: true, resolution: 'stored-enabled' };
+    }
+    if (raw === '0') {
+      completeTurnIndexAuthorityState.preferenceStoredValue = '0';
+      completeTurnIndexAuthorityState.preferenceResolution = 'stored-disabled';
+      return { enabled: false, resolution: 'stored-disabled' };
+    }
+    completeTurnIndexAuthorityState.preferenceStoredValue = raw == null ? null : 'invalid';
+    completeTurnIndexAuthorityState.preferenceResolution = raw == null
+      ? 'compiled-default-disabled'
+      : 'malformed-disabled';
+    return { enabled: COMPLETE_TURN_INDEX_COMPILED_DEFAULT, resolution: completeTurnIndexAuthorityState.preferenceResolution };
+  }
+
+  function chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot() {
+    const resolved = chatAtlasResolveCompleteIndexProjectionPreference();
+    completeTurnIndexAuthorityState.bootApplyCount += 1;
+    if (resolved.enabled) completeTurnIndexAuthorityState.bootActivationCount += 1;
+    return chatAtlasApplyCompleteIndexProjectionEnabled(
+      resolved.enabled === true,
+      resolved.enabled
+        ? 'persisted-preference-boot'
+        : (resolved.resolution === 'stored-disabled' ? 'persisted-preference-boot-disabled' : 'compiled-default-boot'),
+    );
+  }
+
+  function getCompleteTurnIndexProjectionPreference() {
+    if (!completeTurnIndexAuthorityState.preferenceResolved) chatAtlasResolveCompleteIndexProjectionPreference();
+    return chatAtlasFreeze({
+      key: COMPLETE_TURN_INDEX_PREFERENCE_KEY,
+      compiledDefault: COMPLETE_TURN_INDEX_COMPILED_DEFAULT,
+      storedValue: completeTurnIndexAuthorityState.preferenceStoredValue,
+      resolution: completeTurnIndexAuthorityState.preferenceResolution,
+      activationSource: completeTurnIndexAuthorityState.activationSource,
+      readCount: completeTurnIndexAuthorityState.preferenceReadCount,
+      writeCount: completeTurnIndexAuthorityState.preferenceWriteCount,
+      clearCount: completeTurnIndexAuthorityState.preferenceClearCount,
+      bootApplyCount: completeTurnIndexAuthorityState.bootApplyCount,
+      bootActivationCount: completeTurnIndexAuthorityState.bootActivationCount,
+      readErrorCode: completeTurnIndexAuthorityState.preferenceReadErrorCode,
+      writeErrorCode: completeTurnIndexAuthorityState.preferenceWriteErrorCode,
+    });
+  }
+
+  function setCompleteTurnIndexProjectionPreference(value) {
+    completeTurnIndexAuthorityState.preferenceSetterCallCount += 1;
+    const enabled = value === true || value === '1';
+    const disabled = value === false || value === '0';
+    if (!enabled && !disabled) {
+      return chatAtlasFreeze({ ok: false, changed: false, errorCode: 'preference-value-invalid', ...getCompleteTurnIndexProjectionPreference() });
+    }
+    const storedValue = enabled ? '1' : '0';
+    try {
+      W.localStorage?.setItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY, storedValue);
+    } catch {
+      completeTurnIndexAuthorityState.preferenceWriteFailureCount += 1;
+      completeTurnIndexAuthorityState.preferenceWriteErrorCode = 'preference-write-failed';
+      return chatAtlasFreeze({ ...getCompleteTurnIndexProjectionStatus(), ok: false, changed: false, errorCode: 'preference-write-failed' });
+    }
+    completeTurnIndexAuthorityState.preferenceWriteCount += 1;
+    completeTurnIndexAuthorityState.preferenceWriteErrorCode = null;
+    completeTurnIndexAuthorityState.preferenceResolved = true;
+    completeTurnIndexAuthorityState.preferenceStoredValue = storedValue;
+    completeTurnIndexAuthorityState.preferenceResolution = enabled ? 'stored-enabled' : 'stored-disabled';
+    const applied = chatAtlasApplyCompleteIndexProjectionEnabled(enabled, 'persisted-preference-setter');
+    return chatAtlasFreeze({ ok: true, persisted: true, storedValue, ...applied });
+  }
+
+  function clearCompleteTurnIndexProjectionPreference() {
+    completeTurnIndexAuthorityState.preferenceSetterCallCount += 1;
+    try {
+      W.localStorage?.removeItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY);
+    } catch {
+      completeTurnIndexAuthorityState.preferenceWriteFailureCount += 1;
+      completeTurnIndexAuthorityState.preferenceWriteErrorCode = 'preference-clear-failed';
+      return chatAtlasFreeze({ ...getCompleteTurnIndexProjectionStatus(), ok: false, changed: false, errorCode: 'preference-clear-failed' });
+    }
+    completeTurnIndexAuthorityState.preferenceClearCount += 1;
+    completeTurnIndexAuthorityState.preferenceWriteErrorCode = null;
+    completeTurnIndexAuthorityState.preferenceResolved = true;
+    completeTurnIndexAuthorityState.preferenceStoredValue = null;
+    completeTurnIndexAuthorityState.preferenceResolution = 'compiled-default-disabled';
+    const applied = chatAtlasApplyCompleteIndexProjectionEnabled(COMPLETE_TURN_INDEX_COMPILED_DEFAULT, 'preference-cleared');
+    return chatAtlasFreeze({ ok: true, cleared: true, ...applied });
   }
 
   function rebuildCompleteTurnIndexProjection() {
@@ -6984,6 +7130,9 @@
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
     setCompleteTurnIndexProjectionCanary,
+    getCompleteTurnIndexProjectionPreference,
+    setCompleteTurnIndexProjectionPreference,
+    clearCompleteTurnIndexProjectionPreference,
     rebuildCompleteTurnIndexProjection,
     refreshCompleteTurnIndexProjection,
     getChatAtlasTurnStructureDiagnostics: getCanonicalTurnStructureDiagnostics,
@@ -7066,6 +7215,7 @@
   W.addEventListener('popstate', () => { chatAtlasTriggerFullConversationIndex(); });
   W.addEventListener(CHAT_ATLAS_FULL_INDEX_PROVIDER_READY, () => { chatAtlasTriggerFullConversationIndex(); });
 
+  chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot();
   refresh('boot');
   startChatAtlasLedger();
   chatAtlasTriggerFullConversationIndex();

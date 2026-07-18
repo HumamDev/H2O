@@ -90,7 +90,12 @@ function createEnvelopeRuntime(source) {
   ];
   const program = `(function () {
     const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
-    const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = [];
+    const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = [
+      '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
+      '3bdfa68f-a197-422a-a3d4-29f028fc6564',
+      'e1d4b63f-0be7-4a51-b074-e3372b71d790',
+      'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
+    ];
     const COMPLETE_TURN_INDEX_CACHE_KEYS = ['schema','chatId','payloadUpdateTime','sourceFingerprint','capturedAt','validatedAt','complete','proof','turns'];
     const COMPLETE_TURN_INDEX_ROW_KEYS = ['order','qId','turnId','answerVariants','primaryAId','noAnswer','stopped'];
     ${names.map((name) => extractFunction(source, name)).join('\n')}
@@ -121,6 +126,51 @@ function stoppedSiblingHostEnvelope(runtime) {
       validatedAt: '2026-07-18T00:00:00.000Z',
     },
     turns,
+  };
+}
+
+function acceptedIdentityEnvelope(runtime) {
+  const rows = Array.from({ length: 39 }, (_, index) => {
+    const order = index + 1;
+    let qId = `gate5-product-q-${String(order).padStart(2, '0')}`;
+    let answerVariants = [`gate5-product-a-${String(order).padStart(2, '0')}`];
+    let primaryAId = answerVariants[0];
+    let noAnswer = false;
+    let stopped = false;
+    if (order === 20) {
+      qId = '7e60a524-96df-462c-a6c0-647ed1a9973c';
+      answerVariants = [];
+      primaryAId = null;
+      noAnswer = true;
+      stopped = true;
+    } else if (order === 29) {
+      qId = '29a40c98-0bd8-48cd-be80-0273311a4977';
+      answerVariants = ['54520999-dedf-4f01-8c60-ac8adcc2c066'];
+      primaryAId = answerVariants[0];
+    } else if (order === 34) {
+      qId = 'd82467fb-21a4-41a4-b46d-446bf54a47ec';
+      answerVariants = ['84c7e73c-5fb7-44f6-a930-72e92d369c5a', '733fa31a-7d11-4ce5-b570-8ffa474670d4'];
+      primaryAId = answerVariants[1];
+    } else if (order === 38) {
+      qId = 'c64afed8-cfde-4644-b0df-3407313c4c54';
+      answerVariants = [];
+      primaryAId = null;
+      noAnswer = true;
+    } else if (order === 39) {
+      qId = 'gate5-order-39-question';
+      answerVariants = ['gate5-order-39-answer'];
+      primaryAId = answerVariants[0];
+    }
+    return { order, qId, turnId: `turn:${qId}`, answerVariants, primaryAId, noAnswer, stopped };
+  });
+  return {
+    schema: 1,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 500,
+    sourceFingerprint: runtime.fingerprint(rows),
+    capturedAt: '2026-07-18T00:00:00.000Z',
+    completeness: { complete: true, proof: 'host-payload-full-graph', validatedAt: '2026-07-18T00:00:00.000Z' },
+    turns: rows,
   };
 }
 
@@ -488,6 +538,70 @@ await fixture('diagnostic errors are bounded codes rather than arbitrary message
   const status = await harness.coordinator.schedule('cause with private text', { immediate: true });
   equal(status.errorCode, 'provider-failed');
   equal(status.causeSample.includes('cause with private text'), false);
+});
+
+await fixture('q29 accepted identity remains exact', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const result = runtime.normalize(acceptedIdentityEnvelope(runtime), 'fixture-chat', { source: 'host' });
+  const row = result.envelope.turns[28];
+  equal(row.qId, '29a40c98-0bd8-48cd-be80-0273311a4977');
+  equal(row.answerVariants, ['54520999-dedf-4f01-8c60-ac8adcc2c066']);
+  equal(row.primaryAId, '54520999-dedf-4f01-8c60-ac8adcc2c066');
+});
+
+await fixture('d824 accepted identity and ownership remain exact', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const result = runtime.normalize(acceptedIdentityEnvelope(runtime), 'fixture-chat', { source: 'host' });
+  const row = result.envelope.turns[33];
+  equal(row.answerVariants, ['84c7e73c-5fb7-44f6-a930-72e92d369c5a', '733fa31a-7d11-4ce5-b570-8ffa474670d4']);
+  equal(row.primaryAId, '733fa31a-7d11-4ce5-b570-8ffa474670d4');
+});
+
+await fixture('order 39 completed identity remains exact', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const result = runtime.normalize(acceptedIdentityEnvelope(runtime), 'fixture-chat', { source: 'host' });
+  const row = result.envelope.turns[38];
+  equal(row.order, 39);
+  equal(row.qId, 'gate5-order-39-question');
+  equal(row.primaryAId, 'gate5-order-39-answer');
+});
+
+await fixture('internal context qIds remain rejected from complete projection', () => {
+  const runtime = createEnvelopeRuntime(coreSource);
+  const raw = acceptedIdentityEnvelope(runtime);
+  raw.turns[0].qId = 'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b';
+  raw.turns[0].turnId = `turn:${raw.turns[0].qId}`;
+  raw.sourceFingerprint = runtime.fingerprint(raw.turns);
+  const result = runtime.normalize(raw, 'fixture-chat', { source: 'host' });
+  equal(result.ok, false);
+  equal(result.errorCode, 'complete-index-question-identity-invalid');
+});
+
+await fixture('Gate 5 activation has no automatic preference write path', () => {
+  ok(coreSource.includes('chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot();'));
+  equal(coreSource.includes("setItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY, '1')"), false);
+  equal(coreSource.includes('COMPLETE_TURN_INDEX_COMPILED_DEFAULT = true'), false);
+});
+
+await fixture('refresh coordinator leaves no timer after completed trailing work', async () => {
+  const harness = createRefreshHarness();
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 2 } }));
+  await harness.coordinator.schedule('turn-settled', { immediate: true });
+  equal(harness.coordinator.getStatus().timerPending, false);
+  equal(harness.coordinator.getStatus().requestActive, false);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('complete-index provider remains GET-only', () => {
+  ok(archiveSource.includes('method: "GET"'));
+  equal(archiveSource.includes('method: "POST"'), false);
+  equal(archiveSource.includes('method: "PUT"'), false);
+});
+
+await fixture('preference and complete cache remain IDs-only and content-free', () => {
+  const sensitive = ['authorization', 'rawMapping', 'rawPayload', 'toolOutput', 'messageText'];
+  for (const field of sensitive) equal(coreSource.includes(`'${field}'`), false);
+  equal(coreSource.includes("const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';"), true);
 });
 
 await fixture('Gate 5 correctness validator remains production-backed and privacy bounded', () => {
