@@ -90,6 +90,19 @@ function extractFunction(source, name) {
   throw new Error(`production-function-boundary-invalid:${name}`);
 }
 
+function lifecycleDiagnosticsDeclaration(source) {
+  if (!source.includes('  function chatAtlasTraceTrustedLifecycle(')) {
+    return '\n      const chatAtlasTraceTrustedLifecycle = () => {};';
+  }
+  const limitStart = source.indexOf('  const COMPLETE_TURN_INDEX_LIFECYCLE_TRACE_LIMIT');
+  const diagStart = source.indexOf('  const completeTurnIndexLifecycleDiagnostics = {', limitStart);
+  const diagEnd = source.indexOf('\n  };', diagStart);
+  if (limitStart < 0 || diagStart < limitStart || diagEnd < diagStart) {
+    throw new Error('lifecycle-diagnostics-anchor-invalid');
+  }
+  return `\n${source.slice(limitStart, diagEnd + '\n  };'.length)}\n${extractFunction(source, 'chatAtlasTraceTrustedLifecycle')}`;
+}
+
 function createEnvelopeRuntime(source) {
   const names = [
     'chatAtlasCompleteIndexIdentity',
@@ -274,8 +287,9 @@ function createRefreshHarness({
     onSelectedPathResolved: (evidence, result) => {
       resolvedSelections.push({ evidence, result });
       if (evidence?.selectionToken === trustedSelectionToken) trustedSelectionToken = '';
-      signalRuntime?.resolve?.(evidence);
+      signalRuntime?.resolve?.(evidence, result);
     },
+    trace: (event, detail) => signalRuntime?.trace?.(event, detail),
     writeCache: (incoming) => {
       if (!writeOk) return { ok: false, status: 'cache-write-failed' };
       const identity = JSON.stringify(incoming);
@@ -342,6 +356,7 @@ function createRefreshHarness({
       const chatAtlasScheduleCompleteIndexRefresh = (cause, opts) => coordinator.schedule(cause, opts);
       const isStreamingAnswerPlaceholderId = (value) => String(value || '').startsWith('request-placeholder-');
       const canonicalDraftHasStructuralQuestionProof = (draft) => draft?.structureKnown !== false;
+      ${lifecycleDiagnosticsDeclaration(source)}
       ${signalNames.map((name) => extractFunction(source, name)).join('\n')}
       return {
         handle(detail, index) {
@@ -357,7 +372,23 @@ function createRefreshHarness({
           return chatAtlasRecordTrustedNativeBranchSelection(event);
         },
         intent() { return completeTurnIndexAuthorityState.trustedSelectedPathIntent; },
-        resolve(evidence) { return chatAtlasResolveTrustedNativeBranchSelection(evidence); },
+        resolve(evidence, reason) { return chatAtlasResolveTrustedNativeBranchSelection(evidence, reason); },
+        lookup(qId) { return chatAtlasCurrentTrustedNativeBranchSelection(qId); },
+        trace(event, detail) { return chatAtlasTraceTrustedLifecycle(event, detail); },
+        diagnostics() {
+          return typeof completeTurnIndexLifecycleDiagnostics === 'object'
+            ? completeTurnIndexLifecycleDiagnostics
+            : null;
+        },
+        setAuthorityGeneration(value) { completeTurnIndexAuthorityState.generation = Number(value); },
+        setAuthorityRouteKey(value) { completeTurnIndexAuthorityState.routeKey = String(value); },
+        setAuthorityEnabled(value) { completeTurnIndexAuthorityState.enabled = value === true; },
+        ageIntent(observedAt) {
+          const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+          if (!intent) return false;
+          completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({ ...intent, observedAt: Number(observedAt) });
+          return true;
+        },
       };
     })`, { Object, Array, Set, Map, String, Number, Date, Math, JSON, Promise });
     signalRuntime = signalFactory(coordinator);
@@ -373,6 +404,15 @@ function createRefreshHarness({
     currentIndex: () => currentIndex,
     emitTurnEvent(detail) { return signalRuntime?.handle?.(detail, currentIndex); },
     inspectLive(drafts) { return signalRuntime?.inspect?.(drafts, currentIndex); },
+    diagnostics() { return signalRuntime?.diagnostics?.() || null; },
+    lifecycleTrace() { return (signalRuntime?.diagnostics?.()?.trace || []).slice(); },
+    emitTrace(event, detail) { return signalRuntime?.trace?.(event, detail); },
+    signalIntent() { return signalRuntime?.intent?.() || null; },
+    signalLookup(qId) { return signalRuntime?.lookup?.(qId); },
+    setAuthorityGeneration(value) { return signalRuntime?.setAuthorityGeneration?.(value); },
+    setAuthorityRouteKey(value) { return signalRuntime?.setAuthorityRouteKey?.(value); },
+    setAuthorityEnabled(value) { return signalRuntime?.setAuthorityEnabled?.(value); },
+    ageIntent(observedAt) { return signalRuntime?.ageIntent?.(observedAt); },
     recordTrustedNativeClick(direction = 'previous') {
       const label = direction === 'next' ? 'Next response' : 'Previous response';
       const button = { getAttribute: (name) => name === 'aria-label' ? label : null };
@@ -512,6 +552,7 @@ function createTurnEventRuntime(source, enabled = true) {
     const chatAtlasCurrentTrustedNativeBranchSelection = () => null;
     const getCompleteTurnIndexProjectionStatus = () => ({ enabled: completeTurnIndexAuthorityState.enabled });
     const chatAtlasScheduleCompleteIndexRefresh = (cause) => { scheduled.push(cause); return Promise.resolve({ cause }); };
+    ${lifecycleDiagnosticsDeclaration(source)}
     ${codeFunction}
     ${hashFunction}
     ${evidenceFunction}
@@ -1246,6 +1287,345 @@ await fixture('Gate 5 correctness validator remains production-backed and privac
   equal(coreSource.includes('conversation text'), false);
   equal(coreSource.includes('authorization header'), false);
   ok(coreSource.includes('host-payload-full-graph'));
+});
+
+await fixture('D1 trusted click records capture with hashed token and direction', () => {
+  const harness = createRefreshHarness();
+  equal(harness.recordTrustedNativeClick('next'), true);
+  const diag = harness.diagnostics();
+  const intent = harness.signalIntent();
+  ok(intent?.token?.startsWith('djb2:'));
+  equal(diag.trustedSelectionLastCaptureDirection, 'next');
+  ok(diag.trustedSelectionLastCaptureTokenHash.startsWith('djb2:'));
+  equal(diag.trustedSelectionLastCaptureTokenHash === intent.token, false);
+  const trace = harness.lifecycleTrace();
+  equal(trace[0].event, 'trusted-capture-created');
+  equal(trace[0].direction, 'next');
+  equal(trace[0].tokenHash, diag.trustedSelectionLastCaptureTokenHash);
+  const firstSeq = trace[0].seq;
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const nextTrace = harness.lifecycleTrace();
+  equal(nextTrace[0].event, 'trusted-capture-created');
+  equal(nextTrace[0].direction, 'previous');
+  ok(nextTrace[0].seq > firstSeq);
+});
+
+await fixture('D2 successful qId binding records bind attempt bind success and qId', () => {
+  const harness = createRefreshHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const bound = harness.signalLookup(LIVE_BRANCH_Q);
+  equal(bound?.qId, LIVE_BRANCH_Q);
+  const diag = harness.diagnostics();
+  equal(diag.trustedSelectionBindAttemptCount, 1);
+  equal(diag.trustedSelectionBindSuccessCount, 1);
+  equal(diag.trustedSelectionLastBoundQId, LIVE_BRANCH_Q);
+  const events = harness.lifecycleTrace().map((entry) => entry.event);
+  ok(events.indexOf('trusted-bind-attempt') >= 0);
+  ok(events.indexOf('trusted-bind-success') > events.indexOf('trusted-bind-attempt'));
+});
+
+await fixture('D3 qId mismatch records skipped bind without clearing the intent', () => {
+  const harness = createRefreshHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.signalLookup(LIVE_BRANCH_Q)?.qId, LIVE_BRANCH_Q);
+  equal(harness.signalLookup('gate5-product-q-21'), null);
+  const intent = harness.signalIntent();
+  equal(intent?.qId, LIVE_BRANCH_Q);
+  const skipped = harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-skipped');
+  equal(skipped?.reason, 'qid-mismatch');
+  equal(skipped?.qId, 'gate5-product-q-21');
+  equal(skipped?.boundQId, LIVE_BRANCH_Q);
+  equal(harness.diagnostics().trustedSelectionClearCount, 0);
+});
+
+await fixture('D4 every legitimate clear path records an exact reason', () => {
+  const resolveHarness = createRefreshHarness();
+  equal(resolveHarness.recordTrustedNativeClick('previous'), true);
+  const token = resolveHarness.signalIntent().token;
+  equal(resolveHarness.signalLookup(LIVE_BRANCH_Q)?.qId, LIVE_BRANCH_Q);
+  equal(resolveHarness.diagnostics().trustedSelectionClearCount, 0);
+  // A coordinator cancel with no pending confirmation evidence must not
+  // destroy the intent silently: it survives with zero clears recorded.
+  resolveHarness.coordinator.cancel('fixture-end', 'idle');
+  equal(resolveHarness.signalIntent()?.token, token);
+  equal(resolveHarness.diagnostics().trustedSelectionClearCount, 0);
+  const gateHarness = createRefreshHarness();
+  equal(gateHarness.recordTrustedNativeClick('previous'), true);
+  gateHarness.setAuthorityEnabled(false);
+  equal(gateHarness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(gateHarness.signalIntent(), null);
+  equal(gateHarness.diagnostics().trustedSelectionLastClearReason, 'authority-disabled');
+  equal(gateHarness.diagnostics().trustedSelectionClearCount, 1);
+  ok(coreSource.includes("reason: staleStatus ? 'route-reset-route-changed' : 'route-reset-authority-reset'"));
+  ok(coreSource.includes('reason: `resolved-${resolution}`'));
+});
+
+await fixture('D5 age expiry records trusted-intent-expired and preserves capture fields', () => {
+  const harness = createRefreshHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const captureHash = harness.diagnostics().trustedSelectionLastCaptureTokenHash;
+  equal(harness.ageIntent(Date.now() - 6000), true);
+  equal(harness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(harness.signalIntent(), null);
+  const diag = harness.diagnostics();
+  equal(diag.trustedSelectionClearCount, 1);
+  equal(diag.trustedSelectionLastClearReason, 'age-window-exceeded');
+  const expired = harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-intent-expired');
+  equal(expired?.reason, 'age-window-exceeded');
+  ok(Number(expired?.age) > 5000);
+  equal(diag.trustedSelectionLastCaptureTokenHash, captureHash);
+});
+
+await fixture('D6 trusted schedule attempt records trusted true qId and cause', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  harness.inspectLive([{
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  }]);
+  const diag = harness.diagnostics();
+  equal(diag.selectedPathTrustedScheduleAttemptCount, 1);
+  equal(diag.selectedPathTrustedScheduleAcceptedCount, 1);
+  equal(diag.selectedPathLastScheduleTrusted, true);
+  equal(diag.selectedPathLastScheduleQId, LIVE_BRANCH_Q);
+  equal(diag.selectedPathLastScheduleCause, 'answer-branch-changed');
+  const attempt = harness.lifecycleTrace().findLast((entry) => entry.event === 'selected-schedule-attempt');
+  equal(attempt?.trusted, true);
+  equal(attempt?.qId, LIVE_BRANCH_Q);
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('D7 missing-token confirmation skip records missing-selection-token', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:d7-fingerprint',
+    turns: [{ qId: 'd7-q', primaryAId: 'old-a' }],
+  };
+  const harness = createRefreshHarness({ initialIndex });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: {
+      signature: 'djb2:d7-signature',
+      qId: 'd7-q',
+      observedAnswerId: 'new-a',
+      trusted: true,
+    },
+  });
+  const diag = harness.diagnostics();
+  equal(diag.selectedPathConfirmationEligibilityCheckCount, 1);
+  equal(diag.selectedPathConfirmationSkipCount, 1);
+  equal(diag.selectedPathConfirmationLastSkipReason, 'missing-selection-token');
+  equal(harness.coordinator.getStatus().selectedPathConfirmationScheduledCount, 0);
+  equal(harness.coordinator.getStatus().selectedPathResultCode, 'selected-path-unconfirmed-unchanged');
+});
+
+await fixture('D8 gone-intent confirmation skip records evidence-not-current', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:d8-fingerprint',
+    turns: [{ qId: 'd8-q', primaryAId: 'old-a' }],
+  };
+  const harness = createRefreshHarness({ initialIndex });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: {
+      signature: 'djb2:d8-signature',
+      qId: 'd8-q',
+      observedAnswerId: 'new-a',
+      trusted: true,
+      selectionToken: 'djb2:d8-token',
+    },
+  });
+  const diag = harness.diagnostics();
+  equal(diag.selectedPathConfirmationSkipCount, 1);
+  equal(diag.selectedPathConfirmationLastSkipReason, 'evidence-not-current');
+  const skipped = harness.lifecycleTrace().findLast((entry) => entry.event === 'confirmation-skipped');
+  equal(skipped?.reason, 'evidence-not-current');
+  equal(harness.coordinator.getStatus().selectedPathConfirmationScheduledCount, 0);
+});
+
+await fixture('D9 route and generation mismatch record their own clear reasons', () => {
+  const generationHarness = createRefreshHarness();
+  equal(generationHarness.recordTrustedNativeClick('previous'), true);
+  generationHarness.setAuthorityGeneration(99);
+  equal(generationHarness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(generationHarness.diagnostics().trustedSelectionLastClearReason, 'generation-mismatch');
+  const generationCleared = generationHarness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-intent-cleared');
+  equal(generationCleared?.reason, 'generation-mismatch');
+
+  const routeHarness = createRefreshHarness();
+  equal(routeHarness.recordTrustedNativeClick('previous'), true);
+  routeHarness.setAuthorityRouteKey('/c/other-route');
+  equal(routeHarness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(routeHarness.diagnostics().trustedSelectionLastClearReason, 'route-mismatch');
+  const routeCleared = routeHarness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-intent-cleared');
+  equal(routeCleared?.reason, 'route-mismatch');
+});
+
+await fixture('D10 deduplication records the deduplicated signature and cause', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:d10-fingerprint',
+    turns: [{ qId: 'd10-q', primaryAId: 'old-a' }],
+  };
+  const evidence = {
+    signature: 'djb2:d10-signature',
+    qId: 'd10-q',
+    observedAnswerId: 'new-a',
+    trusted: true,
+    selectionToken: 'djb2:d10-token',
+  };
+  const harness = createRefreshHarness({ initialIndex });
+  harness.setTrustedSelectionToken(evidence.selectionToken);
+  void harness.coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: evidence });
+  void harness.coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: evidence });
+  equal(harness.coordinator.getStatus().selectedPathDeduplicatedCount, 1);
+  const diag = harness.diagnostics();
+  equal(diag.selectedPathTrustedScheduleAttemptCount, 2);
+  equal(diag.selectedPathTrustedScheduleAcceptedCount, 1);
+  const deduplicated = harness.lifecycleTrace().findLast((entry) => entry.event === 'selected-schedule-deduplicated');
+  equal(deduplicated?.signature, evidence.signature);
+  equal(deduplicated?.cause, 'question-selected-path-changed');
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('D11 lifecycle trace is capped at 32 entries preserving the earliest window', () => {
+  const harness = createRefreshHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  for (let index = 0; index < 40; index += 1) {
+    harness.emitTrace('selected-evidence-created', { qId: `cap-q-${index}` });
+  }
+  const diag = harness.diagnostics();
+  equal(diag.trace.length, 32);
+  equal(diag.traceDroppedCount, 9);
+  equal(diag.trace[0].event, 'trusted-capture-created');
+  equal(diag.trace[1].qId, 'cap-q-0');
+  const sequences = diag.trace.map((entry) => entry.seq);
+  ok(sequences.every((value, index) => index === 0 || value > sequences[index - 1]));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.diagnostics().trace.length, 1);
+  equal(harness.diagnostics().traceDroppedCount, 0);
+});
+
+await fixture('D12 lifecycle trace contains no raw token and only bounded ID fields', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const rawToken = harness.signalIntent().token;
+  harness.inspectLive([{
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  }]);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const serialized = JSON.stringify(harness.lifecycleTrace());
+  equal(serialized.includes(rawToken), false);
+  const allowedKeys = new Set([
+    'seq', 'event', 'at', 'gen', 'tokenHash', 'chatHash', 'qId', 'boundQId', 'direction',
+    'trusted', 'signature', 'reason', 'cause', 'resultCode', 'confirmationAttempt', 'age',
+  ]);
+  for (const entry of harness.lifecycleTrace()) {
+    for (const key of Object.keys(entry)) ok(allowedKeys.has(key), `unexpected trace key ${key}`);
+  }
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('D13 golden-path lifecycle trace covers the full confirmation ordering unchanged', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  harness.inspectLive([{
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  }]);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathResultCode, null);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  const events = harness.lifecycleTrace().map((entry) => entry.event);
+  const milestones = [
+    'trusted-capture-created',
+    'trusted-bind-attempt',
+    'trusted-bind-success',
+    'selected-evidence-created',
+    'selected-schedule-attempt',
+    'selected-refresh-started',
+    'selected-refresh-unchanged',
+    'confirmation-eligibility-checked',
+    'confirmation-scheduled',
+    'confirmation-started',
+    'confirmation-confirmed',
+    'trusted-intent-cleared',
+  ];
+  let cursor = -1;
+  for (const milestone of milestones) {
+    const position = events.indexOf(milestone, cursor + 1);
+    ok(position > cursor, `milestone out of order or missing: ${milestone}`);
+    cursor = position;
+  }
+  const cleared = harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-intent-cleared');
+  equal(cleared?.reason, 'resolved-confirmed');
+  equal(harness.timers.size, 0);
+});
+
+await fixture('D14 existing multi-turn confirmation fixture remained green', () => {
+  const row = fixtures.find((entry) => entry.name === 'trusted native mid-conversation switch confirms across downstream turn changes');
+  equal(row?.ok, true);
+  const single = fixtures.find((entry) => entry.name === 'trusted native previous response receives one delayed host confirmation');
+  equal(single?.ok, true);
+});
+
+await fixture('D15 existing selected-path storm fixtures remained green', () => {
+  const storm = fixtures.find((entry) => entry.name === 'selected-path publication feedback reproduces the pre-fix refresh storm');
+  equal(storm?.ok, true);
+  const parity = fixtures.find((entry) => entry.name === 'selected-path unchanged live-parity feedback becomes fully quiescent');
+  equal(parity?.ok, true);
 });
 
 const failed = fixtures.filter((row) => !row.ok);

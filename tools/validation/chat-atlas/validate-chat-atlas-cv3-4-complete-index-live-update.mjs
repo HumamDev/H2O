@@ -645,8 +645,19 @@ await fixture('authorized provider remains GET-only with no network write', () =
 await fixture('cache and diagnostics remain IDs-only and content-free', () => {
   const runtime = createRuntime();
   seed(runtime);
-  const combined = `${cacheBytes(runtime)}${JSON.stringify(runtime.api.status())}`;
+  const status = runtime.api.status();
+  // The Gate 5 lifecycle diagnostics expose hashed-token FIELD NAMES mandated
+  // by the diagnostic contract (trustedSelectionLastCaptureTokenHash, per-entry
+  // tokenHash). Redact those key names only, then hold the original content
+  // screen unchanged so raw token/authorization VALUES remain forbidden.
+  const combined = `${cacheBytes(runtime)}${JSON.stringify(status)}`
+    .replaceAll('trustedSelectionLastCaptureTokenHash', 'trustedSelectionLastCaptureHashedField')
+    .replaceAll('"tokenHash"', '"hashedField"');
   equal(/authorization|token|rawPayload|mapping|messageText|attachment|toolOutput/i.test(combined), false);
+  equal(status.trustedSelectionLastCaptureTokenHash === null
+    || /^djb2:[a-z0-9]+$/.test(status.trustedSelectionLastCaptureTokenHash), true);
+  equal((status.selectedPathLifecycleTrace || []).every((entry) => entry.tokenHash === undefined
+    || /^djb2:[a-z0-9]+$/.test(entry.tokenHash)), true);
   equal(Object.prototype.hasOwnProperty.call(runtime.api.status(), 'turns'), false);
 });
 
