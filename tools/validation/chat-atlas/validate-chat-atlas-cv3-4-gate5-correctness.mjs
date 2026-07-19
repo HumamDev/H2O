@@ -848,6 +848,75 @@ await fixture('trusted native previous response receives one delayed host confir
   });
 });
 
+await fixture('trusted native mid-conversation switch confirms across downstream turn changes', async () => {
+  // Reproduces the live GATE_5_BRANCH_CONFIRMATION_NOT_REFLECTED failure:
+  // LIVE_BRANCH_Q is order 18 (mid-conversation), so switching its branch also
+  // re-renders downstream turns. Before the fix, inspecting those downstream
+  // (untrusted) turns nulled the single shared trusted intent and scheduled
+  // untrusted evidence, so no confirmation ever ran. The switched turn's
+  // trusted evidence must survive the downstream turn changes.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  // The switched turn is processed first (document order), followed by two
+  // downstream turns whose selected answer also changed as a consequence.
+  const switchedDraft = {
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  };
+  const downstreamDrafts = [
+    { qId: 'gate5-product-q-19', primaryAId: 'gate5-downstream-a-19', answerIds: ['gate5-downstream-a-19'], structureKnown: true },
+    { qId: 'gate5-product-q-21', primaryAId: 'gate5-downstream-a-21', answerIds: ['gate5-downstream-a-21'], structureKnown: true },
+  ];
+  const cascade = [switchedDraft, ...downstreamDrafts];
+  harness.inspectLive(cascade);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  // The switched turn's evidence stayed trusted despite the downstream churn;
+  // the confirmation evidence now in flight is the trusted one.
+  equal(status.selectedPathActiveTrusted, true);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathResultCode, 'selected-path-confirmation-pending');
+  // Repeated cascades (progressive re-render) must not schedule more work.
+  for (let index = 0; index < 12; index += 1) harness.inspectLive(cascade);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(status.fetchCount, 2);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, false);
+  equal(status.selectedPathResultCode, null);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.writes.length, 1);
+  equal(harness.writes[0].sourceFingerprint, confirmedIndex.sourceFingerprint);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+});
+
 await fixture('pending native confirmation is cleared by route chat gate and runtime reset', async () => {
   const initialIndex = {
     complete: true,

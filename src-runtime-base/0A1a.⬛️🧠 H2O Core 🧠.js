@@ -5617,6 +5617,11 @@
         || state.selectedPathPendingEvidence?.signature
         || state.selectedPathConfirmationEvidence?.signature
         || null,
+      selectedPathActiveTrusted: (
+        state.selectedPathActiveEvidence
+        || state.selectedPathPendingEvidence
+        || state.selectedPathConfirmationEvidence
+      )?.trusted === true,
       selectedPathResultCode: state.selectedPathResultCode,
       selectedPathConfirmationPending: !!state.selectedPathConfirmationTimer,
       selectedPathConfirmationScheduledCount: state.selectedPathConfirmationScheduledCount,
@@ -6065,16 +6070,23 @@
     if (!intent) return null;
     const qId = chatAtlasCompleteIndexIdentity(qIdRaw);
     const age = Math.max(0, Date.now() - Number(intent.observedAt || 0));
-    const current = completeTurnIndexAuthorityState.enabled
+    // Route/generation/age carry the click's genuine authority; only those
+    // expire the shared trusted intent. A query for a DIFFERENT turn's qId
+    // must NOT destroy an intent already bound (or bindable) to the turn the
+    // user actually switched: a mid-conversation branch switch cascades
+    // downstream turn changes, and a per-downstream-qId lookup would otherwise
+    // null the intent the switched turn still needs before its refresh — the
+    // live GATE_5_BRANCH_CONFIRMATION_NOT_REFLECTED failure.
+    const authoritative = completeTurnIndexAuthorityState.enabled
       && intent.chatId === completeTurnIndexAuthorityState.chatId
       && intent.routeKey === completeTurnIndexAuthorityState.routeKey
       && intent.generation === Number(completeTurnIndexAuthorityState.generation || 0)
-      && age <= Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000)
-      && (!intent.qId || !qId || intent.qId === qId);
-    if (!current) {
+      && age <= Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000);
+    if (!authoritative) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
       return null;
     }
+    if (intent.qId && qId && intent.qId !== qId) return null;
     if (qId && !intent.qId) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({ ...intent, qId });
     }
@@ -6415,6 +6427,15 @@
     const pendingQIds = new Set(completeTurnIndexAuthorityState.pendingDrafts.keys());
     let refreshCause = '';
     let selectedPathEvidence = null;
+    // A single trusted native click yields one shared intent that binds to the
+    // turn the user switched (the upstream-most changed turn, processed first in
+    // document order). A mid-conversation switch also changes downstream turns
+    // whose evidence is untrusted; keep the trusted upstream evidence rather
+    // than letting a later untrusted (or stopped/null) turn overwrite it.
+    const keepSelectedPathEvidence = (evidence) => {
+      if (selectedPathEvidence?.trusted === true && evidence?.trusted !== true) return;
+      selectedPathEvidence = evidence;
+    };
     for (const draft of Array.isArray(source) ? source : []) {
       const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
       if (!qId || COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS.includes(qId)) continue;
@@ -6434,10 +6455,10 @@
           && (realAnswers.length || (!!selectedPrimary && !isStreamingAnswerPlaceholderId(selectedPrimary)))
         ) {
           refreshCause = 'question-selected-path-changed';
-          selectedPathEvidence = chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
+          keepSelectedPathEvidence(chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
             qId,
             observedAnswerId: selectedPrimary || realAnswers[realAnswers.length - 1] || '',
-          });
+          }));
         }
         continue;
       }
@@ -6451,13 +6472,13 @@
       if (variantChanged || primaryChanged) {
         refreshCause = 'answer-branch-changed';
         const changedVariant = realAnswers.find((answerId) => !indexed.answerVariants.includes(answerId)) || '';
-        selectedPathEvidence = chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
+        keepSelectedPathEvidence(chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
           qId,
           observedAnswerId: primaryChanged ? selectedPrimary : changedVariant,
-        });
+        }));
       } else if (stoppedChanged || noAnswerChanged) {
         refreshCause = 'turn-stopped';
-        selectedPathEvidence = null;
+        keepSelectedPathEvidence(null);
       }
     }
     if (refreshCause) {
@@ -6565,12 +6586,15 @@
       selectedPathUnconfirmedCount: Number(refresh?.selectedPathUnconfirmedCount || 0),
       selectedPathLastSignature: refresh?.selectedPathLastSignature || null,
       selectedPathActiveSignature: refresh?.selectedPathActiveSignature || null,
+      selectedPathActiveTrusted: refresh?.selectedPathActiveTrusted === true,
       selectedPathResultCode: refresh?.selectedPathResultCode || null,
       selectedPathConfirmationPending: refresh?.selectedPathConfirmationPending === true,
       selectedPathConfirmationScheduledCount: Number(refresh?.selectedPathConfirmationScheduledCount || 0),
       selectedPathConfirmationFetchCount: Number(refresh?.selectedPathConfirmationFetchCount || 0),
       selectedPathConfirmationCancelledCount: Number(refresh?.selectedPathConfirmationCancelledCount || 0),
       trustedSelectionCaptureCount: completeTurnIndexAuthorityState.trustedSelectionCaptureCount,
+      trustedSelectionIntentActive: !!completeTurnIndexAuthorityState.trustedSelectedPathIntent,
+      trustedSelectionIntentQId: completeTurnIndexAuthorityState.trustedSelectedPathIntent?.qId || null,
       refreshCauseSample: Array.isArray(refresh?.causeSample) ? refresh.causeSample.slice(0, 8) : [],
       refreshTimerPending: refresh?.timerPending === true,
       refreshRequestActive: refresh?.requestActive === true,
