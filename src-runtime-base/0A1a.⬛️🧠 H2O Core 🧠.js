@@ -5988,8 +5988,14 @@
           });
           return state.promise || Promise.resolve(snapshot());
         }
+        // Only a genuinely NEWER trusted selection (non-empty differing token)
+        // may supersede a pending trusted confirmation. Token-less untrusted
+        // evidence — e.g. a partial re-render pass where the switched turn is
+        // virtualized out while a downstream turn still differs — must not
+        // cancel the confirmation or consume the intent it belongs to.
         if (
           state.selectedPathConfirmationEvidence
+          && selectedPathEvidence.selectionToken
           && selectedPathEvidence.selectionToken !== state.selectedPathConfirmationEvidence.selectionToken
         ) clearSelectedPathConfirmation('superseded');
         state.selectedPathPendingEvidence = selectedPathEvidence;
@@ -6190,13 +6196,90 @@
     return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`;
   }
 
+  function chatAtlasCompleteIndexNativeBranchButton(event) {
+    const branchLabel = (node) => {
+      if (String(node?.tagName || '').toUpperCase() !== 'BUTTON') return '';
+      const label = String(node?.getAttribute?.('aria-label') || '').trim().toLowerCase();
+      return (label === 'previous response' || label === 'next response') ? label : '';
+    };
+    try {
+      const path = typeof event?.composedPath === 'function' ? event.composedPath() : [];
+      for (const node of Array.isArray(path) ? path : []) {
+        if (branchLabel(node)) return node;
+      }
+    } catch {}
+    let closest = null;
+    try { closest = event?.target?.closest?.('button') || null; } catch { closest = null; }
+    return closest && branchLabel(closest) ? closest : null;
+  }
+
   function chatAtlasCompleteIndexNativeBranchDirection(event) {
     if (event?.isTrusted !== true) return '';
-    const button = event?.target?.closest?.('button') || null;
+    const button = chatAtlasCompleteIndexNativeBranchButton(event);
     const label = String(button?.getAttribute?.('aria-label') || '').trim().toLowerCase();
     if (label === 'previous response') return 'previous';
     if (label === 'next response') return 'next';
     return '';
+  }
+
+  function chatAtlasTrustedNativeBranchOwnership(event) {
+    // DOM topology may only IDENTIFY the clicked branch control's candidate
+    // message IDs (nested SVG/span targets included). Durable authority comes
+    // exclusively from a UNIQUE match against the host-proven canonical index:
+    // a user message ID must equal exactly one canonical qId, or an assistant
+    // answer ID must belong to exactly one canonical turn (primary or same-qId
+    // variant). Zero matches, duplicate ownership, or candidates resolving to
+    // different turns all fail closed to an untrusted (token-free) capture.
+    const button = chatAtlasCompleteIndexNativeBranchButton(event);
+    if (!button) return { ok: false, qId: '', reason: 'capture-owner-unresolved' };
+    let scope = null;
+    try {
+      scope = button.closest?.('article') || button.closest?.('[data-message-id]') || null;
+    } catch { scope = null; }
+    const candidates = [];
+    try {
+      const nodes = scope?.querySelectorAll?.('[data-message-id]') || [];
+      for (const node of nodes) candidates.push(node);
+    } catch {}
+    if (!candidates.length && scope?.getAttribute?.('data-message-id')) candidates.push(scope);
+    const userIds = [];
+    const assistantIds = [];
+    for (const node of candidates) {
+      const id = chatAtlasCompleteIndexIdentity(node?.getAttribute?.('data-message-id'));
+      if (!id) continue;
+      const role = String(node?.getAttribute?.('data-message-author-role') || '').trim().toLowerCase();
+      if (role === 'user' && !userIds.includes(id)) userIds.push(id);
+      if (role === 'assistant' && !assistantIds.includes(id)) assistantIds.push(id);
+    }
+    if (!userIds.length && !assistantIds.length) {
+      return { ok: false, qId: '', reason: 'capture-owner-unresolved' };
+    }
+    const turns = Array.isArray(completeTurnIndexAuthorityState.index?.turns)
+      ? completeTurnIndexAuthorityState.index.turns
+      : [];
+    if (!turns.length) return { ok: false, qId: '', reason: 'capture-owner-not-canonical' };
+    const resolved = new Set();
+    let method = '';
+    for (const id of userIds) {
+      const owners = turns.filter((turn) => turn?.qId === id);
+      if (owners.length > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
+      if (owners.length === 1) {
+        resolved.add(owners[0].qId);
+        method = method || 'capture-owner-qid-resolved';
+      }
+    }
+    for (const id of assistantIds) {
+      const owners = turns.filter((turn) => turn?.primaryAId === id
+        || (Array.isArray(turn?.answerVariants) && turn.answerVariants.includes(id)));
+      if (owners.length > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
+      if (owners.length === 1) {
+        resolved.add(owners[0].qId);
+        method = method || 'capture-owner-answer-resolved';
+      }
+    }
+    if (!resolved.size) return { ok: false, qId: '', reason: 'capture-owner-not-canonical' };
+    if (resolved.size > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
+    return { ok: true, qId: resolved.values().next().value, reason: method };
   }
 
   function chatAtlasRecordTrustedNativeBranchSelection(event) {
@@ -6235,19 +6318,45 @@
       direction,
       observedAt,
     ];
+    const token = `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(tokenIdentity))}`;
+    const priorIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    chatAtlasTraceTrustedLifecycle('trusted-capture-created', {
+      direction,
+      chat: route.chatId,
+      token,
+    });
+    if (priorIntent) {
+      chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
+        reason: 'superseded-by-newer-capture',
+        qId: priorIntent.qId,
+        token: priorIntent.token,
+      });
+    }
+    // The clicked control's owning canonical qId resolves and freezes NOW, at
+    // capture, from DOM topology verified against the host-proven index. The
+    // intent never binds lazily to a first-observed changed turn: a capture
+    // whose ownership is unresolved, non-canonical, or ambiguous produces NO
+    // trusted intent and the click degrades to generic untrusted observation.
+    const ownership = chatAtlasTrustedNativeBranchOwnership(event);
+    chatAtlasTraceTrustedLifecycle('trusted-bind-attempt', { token, qId: ownership.qId });
+    if (ownership.ok !== true) {
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      chatAtlasTraceTrustedLifecycle('trusted-bind-skipped', { reason: ownership.reason, token });
+      return false;
+    }
     completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
-      token: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(tokenIdentity))}`,
+      token,
       chatId: route.chatId,
       routeKey: route.routeKey,
       generation: Number(completeTurnIndexAuthorityState.generation || 0),
       direction,
-      qId: '',
+      qId: ownership.qId,
       observedAt,
     });
-    chatAtlasTraceTrustedLifecycle('trusted-capture-created', {
-      direction,
-      chat: route.chatId,
-      token: completeTurnIndexAuthorityState.trustedSelectedPathIntent.token,
+    chatAtlasTraceTrustedLifecycle('trusted-bind-success', {
+      qId: ownership.qId,
+      token,
+      reason: ownership.reason,
     });
     return true;
   }
@@ -6258,12 +6367,13 @@
     const qId = chatAtlasCompleteIndexIdentity(qIdRaw);
     const age = Math.max(0, Date.now() - Number(intent.observedAt || 0));
     // Route/generation/age carry the click's genuine authority; only those
-    // expire the shared trusted intent. A query for a DIFFERENT turn's qId
-    // must NOT destroy an intent already bound (or bindable) to the turn the
-    // user actually switched: a mid-conversation branch switch cascades
-    // downstream turn changes, and a per-downstream-qId lookup would otherwise
-    // null the intent the switched turn still needs before its refresh — the
-    // live GATE_5_BRANCH_CONFIRMATION_NOT_REFLECTED failure.
+    // expire the shared trusted intent. The intent's qId is resolved and
+    // frozen AT CAPTURE from the clicked control's canonically verified owner
+    // (chatAtlasTrustedNativeBranchOwnership); a lookup can therefore only
+    // ever match that exact qId. There is no lazy binding, so a
+    // mid-conversation cascade's other changed turns can never adopt,
+    // consume, or destroy the trusted token — the live
+    // GATE_5_BRANCH_CONFIRMATION_NOT_REFLECTED wrong-first-turn binding.
     const ageExpired = age > Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000);
     const authoritative = completeTurnIndexAuthorityState.enabled
       && intent.chatId === completeTurnIndexAuthorityState.chatId
@@ -6288,21 +6398,18 @@
       });
       return null;
     }
-    if (intent.qId && qId && intent.qId !== qId) {
-      chatAtlasTraceTrustedLifecycle('trusted-bind-skipped', {
-        reason: 'qid-mismatch',
-        qId,
-        boundQId: intent.qId,
-        token: intent.token,
-      });
+    if (!qId || intent.qId !== qId) {
+      if (qId) {
+        chatAtlasTraceTrustedLifecycle('trusted-bind-skipped', {
+          reason: 'trusted-qid-mismatch',
+          qId,
+          boundQId: intent.qId,
+          token: intent.token,
+        });
+      }
       return null;
     }
-    if (qId && !intent.qId) {
-      chatAtlasTraceTrustedLifecycle('trusted-bind-attempt', { qId, token: intent.token, age });
-      completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({ ...intent, qId });
-      chatAtlasTraceTrustedLifecycle('trusted-bind-success', { qId, token: intent.token });
-    }
-    return completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    return intent;
   }
 
   function chatAtlasCompleteIndexSelectedPathEvidenceCurrent(evidence) {
