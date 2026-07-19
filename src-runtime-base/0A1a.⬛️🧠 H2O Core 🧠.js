@@ -5564,6 +5564,14 @@
       trailingRefreshCount: 0,
       authorityUnpersisted: false,
       cacheWriteErrorCode: null,
+      selectedPathSignalCount: 0,
+      selectedPathDeduplicatedCount: 0,
+      selectedPathUnconfirmedCount: 0,
+      selectedPathLastSignature: null,
+      selectedPathPendingEvidence: null,
+      selectedPathActiveEvidence: null,
+      selectedPathSuppressedSignatures: new Set(),
+      selectedPathResultCode: null,
     };
     const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
     const iso = (value) => {
@@ -5593,6 +5601,14 @@
       trailingRefreshCount: state.trailingRefreshCount,
       authorityUnpersisted: state.authorityUnpersisted,
       cacheWriteErrorCode: state.cacheWriteErrorCode,
+      selectedPathSignalCount: state.selectedPathSignalCount,
+      selectedPathDeduplicatedCount: state.selectedPathDeduplicatedCount,
+      selectedPathUnconfirmedCount: state.selectedPathUnconfirmedCount,
+      selectedPathLastSignature: state.selectedPathLastSignature,
+      selectedPathActiveSignature: state.selectedPathActiveEvidence?.signature
+        || state.selectedPathPendingEvidence?.signature
+        || null,
+      selectedPathResultCode: state.selectedPathResultCode,
       timerPending: !!state.timer,
       requestActive: !!state.promise,
     });
@@ -5621,6 +5637,11 @@
       state.promise = null;
       state.causes.clear();
       state.trailingRequired = false;
+      state.selectedPathLastSignature = null;
+      state.selectedPathPendingEvidence = null;
+      state.selectedPathActiveEvidence = null;
+      state.selectedPathSuppressedSignatures.clear();
+      state.selectedPathResultCode = null;
       return notify(status, {
         completedAt: iso(now()),
         errorCode: errorCode(reason),
@@ -5657,6 +5678,8 @@
       state.startedAt = iso(now());
       state.completedAt = null;
       state.errorCode = null;
+      state.selectedPathActiveEvidence = state.selectedPathPendingEvidence;
+      state.selectedPathPendingEvidence = null;
       const causes = causeSample();
       state.causes.clear();
       notify('complete-refreshing');
@@ -5711,6 +5734,23 @@
               completedAt: iso(now()),
             });
           }
+          const selectedPathConfirmed = !!state.selectedPathActiveEvidence
+            && adapters?.selectedPathConfirmed?.(incoming, state.selectedPathActiveEvidence) === true;
+          const selectedPathUnchanged = !!state.selectedPathActiveEvidence
+            && !selectedPathConfirmed
+            && revisionOrder === 0
+            && String(incoming?.sourceFingerprint || '') === String(retained?.sourceFingerprint || '');
+          if (selectedPathConfirmed) {
+            state.selectedPathSuppressedSignatures.delete(state.selectedPathActiveEvidence.signature);
+            state.selectedPathResultCode = null;
+          } else if (selectedPathUnchanged) {
+            state.selectedPathUnconfirmedCount += 1;
+            if (state.selectedPathSuppressedSignatures.size >= Number(limits.diagnosticCauseLimit || 8)) {
+              state.selectedPathSuppressedSignatures.delete(state.selectedPathSuppressedSignatures.values().next().value);
+            }
+            state.selectedPathSuppressedSignatures.add(state.selectedPathActiveEvidence.signature);
+            state.selectedPathResultCode = 'selected-path-unconfirmed-unchanged';
+          }
           const write = adapters?.writeCache?.(incoming) || { ok: false, status: 'cache-write-failed' };
           if (!write.ok) {
             adapters?.publish?.(incoming, 'host-refresh-unpersisted');
@@ -5736,6 +5776,7 @@
           clearRequestTimeout();
           state.controller = null;
           state.promise = null;
+          state.selectedPathActiveEvidence = null;
           const shouldTrail = state.trailingRequired
             && state.causes.size > 0
             && enabled()
@@ -5757,6 +5798,29 @@
     const schedule = (cause = 'turn-settled', opts = {}) => {
       if (!enabled()) return Promise.resolve(snapshot());
       const boundedCause = chatAtlasCompleteIndexCode(cause, 'turn-settled', 64);
+      const rawEvidence = opts?.selectedPathEvidence;
+      const rawSignature = String(rawEvidence?.signature || '').trim();
+      const selectedPathEvidence = /^[a-z0-9][a-z0-9._:-]{0,95}$/i.test(rawSignature)
+        ? Object.freeze({
+          signature: rawSignature,
+          cause: boundedCause,
+          qId: String(rawEvidence?.qId || '').slice(0, 256),
+          observedAnswerId: String(rawEvidence?.observedAnswerId || '').slice(0, 256),
+        })
+        : null;
+      if (selectedPathEvidence) {
+        state.selectedPathSignalCount += 1;
+        state.selectedPathLastSignature = selectedPathEvidence.signature;
+        const duplicate = state.selectedPathSuppressedSignatures.has(selectedPathEvidence.signature)
+          || selectedPathEvidence.signature === state.selectedPathActiveEvidence?.signature
+          || selectedPathEvidence.signature === state.selectedPathPendingEvidence?.signature;
+        if (duplicate) {
+          state.selectedPathDeduplicatedCount += 1;
+          return state.promise || Promise.resolve(snapshot());
+        }
+        state.selectedPathPendingEvidence = selectedPathEvidence;
+        state.selectedPathResultCode = null;
+      }
       if (state.causes.size < Number(limits.diagnosticCauseLimit || 8)) state.causes.add(boundedCause);
       if (state.promise) {
         state.coalescedCount += 1;
@@ -5791,6 +5855,7 @@
     fetchCount: 0,
     cacheReadCount: 0,
     cacheWriteCount: 0,
+    cacheWriteSkippedUnchangedCount: 0,
     cacheWriteFailureCount: 0,
     authorityUnpersisted: false,
     cacheWriteErrorCode: null,
@@ -5851,6 +5916,49 @@
       turn?.stopped === true ? 'stopped:1' : 'stopped:0',
     ]);
     return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`;
+  }
+
+  function chatAtlasCompleteIndexSelectedPathEvidence(causeRaw, detail = {}) {
+    const cause = chatAtlasCompleteIndexCode(causeRaw, 'selected-path-changed', 64);
+    if (![
+      'question-branch-changed',
+      'question-selected-path-changed',
+      'answer-branch-changed',
+    ].includes(cause)) return null;
+    const index = completeTurnIndexAuthorityState.index;
+    const qId = chatAtlasCompleteIndexIdentity(
+      detail?.qId || detail?.questionId || detail?.turn?.qId,
+    );
+    const observedAnswerId = chatAtlasCompleteIndexIdentity(
+      detail?.observedAnswerId
+      || detail?.selectedAnswerId
+      || detail?.primaryAId
+      || detail?.answerId
+      || detail?.turn?.primaryAId,
+    );
+    const identity = [
+      Number(completeTurnIndexAuthorityState.generation || 0),
+      String(completeTurnIndexAuthorityState.chatId || ''),
+      qId,
+      observedAnswerId,
+      String(index?.sourceFingerprint || ''),
+      String(index?.payloadUpdateTime ?? ''),
+      cause,
+    ];
+    return Object.freeze({
+      signature: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`,
+      cause,
+      qId,
+      observedAnswerId,
+    });
+  }
+
+  function chatAtlasCompleteIndexSelectedPathConfirmed(index, evidence) {
+    if (!index?.complete || !evidence?.qId || !Array.isArray(index?.turns)) return false;
+    const turn = index.turns.find((candidate) => candidate?.qId === evidence.qId);
+    if (!turn) return false;
+    if (!evidence.observedAnswerId) return true;
+    return turn.primaryAId === evidence.observedAnswerId;
   }
 
   function chatAtlasCompleteIndexCacheKey(chatIdRaw) {
@@ -6006,13 +6114,41 @@
       : { ok: false, status: normalized.errorCode, envelope: null, raw };
   }
 
+  function chatAtlasCompleteIndexCacheIdentityBytes(envelope) {
+    return JSON.stringify({
+      schema: envelope?.schema,
+      chatId: envelope?.chatId,
+      payloadUpdateTime: envelope?.payloadUpdateTime ?? null,
+      sourceFingerprint: envelope?.sourceFingerprint,
+      complete: envelope?.complete === true,
+      proof: envelope?.proof,
+      turns: envelope?.turns,
+    });
+  }
+
   function chatAtlasWriteCompleteIndexCache(envelope) {
     const normalized = chatAtlasNormalizeCompleteIndexEnvelope(envelope, envelope?.chatId, { source: 'cache' });
     const key = chatAtlasCompleteIndexCacheKey(envelope?.chatId);
     if (!key || !normalized.ok) return { ok: false, status: normalized.errorCode || 'cache-key-invalid', bytes: null };
     const bytes = JSON.stringify(normalized.envelope);
+    const retainedRaw = completeTurnIndexAuthorityState.cacheRaw;
+    if (typeof retainedRaw === 'string' && retainedRaw) {
+      try {
+        const retainedParsed = JSON.parse(retainedRaw);
+        const retained = chatAtlasNormalizeCompleteIndexEnvelope(retainedParsed, envelope?.chatId, { source: 'cache' });
+        if (
+          retained.ok
+          && chatAtlasCompleteIndexCacheIdentityBytes(retained.envelope)
+            === chatAtlasCompleteIndexCacheIdentityBytes(normalized.envelope)
+        ) {
+          completeTurnIndexAuthorityState.cacheWriteSkippedUnchangedCount += 1;
+          return { ok: true, status: 'cache-write-skipped-unchanged', bytes: retainedRaw, skipped: true };
+        }
+      } catch {}
+    }
     try {
       W.localStorage?.setItem?.(key, bytes);
+      completeTurnIndexAuthorityState.cacheRaw = bytes;
       completeTurnIndexAuthorityState.cacheWriteCount += 1;
       return { ok: true, status: 'cache-written', bytes };
     } catch {
@@ -6099,6 +6235,7 @@
     const indexedByQId = new Map(index.turns.map((turn) => [turn.qId, turn]));
     const pendingQIds = new Set(completeTurnIndexAuthorityState.pendingDrafts.keys());
     let refreshCause = '';
+    let selectedPathEvidence = null;
     for (const draft of Array.isArray(source) ? source : []) {
       const qId = chatAtlasCompleteIndexIdentity(draft?.qId);
       if (!qId || COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS.includes(qId)) continue;
@@ -6116,7 +6253,13 @@
         if (
           canonicalDraftHasStructuralQuestionProof(draft)
           && (realAnswers.length || (!!selectedPrimary && !isStreamingAnswerPlaceholderId(selectedPrimary)))
-        ) refreshCause = 'question-selected-path-changed';
+        ) {
+          refreshCause = 'question-selected-path-changed';
+          selectedPathEvidence = chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
+            qId,
+            observedAnswerId: selectedPrimary || realAnswers[realAnswers.length - 1] || '',
+          });
+        }
         continue;
       }
       const selectedPrimary = chatAtlasCompleteIndexIdentity(draft?.primaryAId);
@@ -6126,10 +6269,23 @@
         && selectedPrimary !== indexed.primaryAId;
       const stoppedChanged = draft?.stopped === true && indexed.stopped !== true;
       const noAnswerChanged = draft?.noAnswer === true && indexed.noAnswer !== true && draft?.stopped === true;
-      if (variantChanged || primaryChanged) refreshCause = 'answer-branch-changed';
-      else if (stoppedChanged || noAnswerChanged) refreshCause = 'turn-stopped';
+      if (variantChanged || primaryChanged) {
+        refreshCause = 'answer-branch-changed';
+        const changedVariant = realAnswers.find((answerId) => !indexed.answerVariants.includes(answerId)) || '';
+        selectedPathEvidence = chatAtlasCompleteIndexSelectedPathEvidence(refreshCause, {
+          qId,
+          observedAnswerId: primaryChanged ? selectedPrimary : changedVariant,
+        });
+      } else if (stoppedChanged || noAnswerChanged) {
+        refreshCause = 'turn-stopped';
+        selectedPathEvidence = null;
+      }
     }
-    if (refreshCause) void chatAtlasScheduleCompleteIndexRefresh(refreshCause);
+    if (refreshCause) {
+      void chatAtlasScheduleCompleteIndexRefresh(refreshCause, selectedPathEvidence
+        ? { selectedPathEvidence }
+        : {});
+    }
   }
 
   function chatAtlasCompleteIndexLiveDrafts(liveDrafts, index) {
@@ -6207,6 +6363,7 @@
       fetchCount: completeTurnIndexAuthorityState.fetchCount,
       cacheReadCount: completeTurnIndexAuthorityState.cacheReadCount,
       cacheWriteCount: completeTurnIndexAuthorityState.cacheWriteCount,
+      cacheWriteSkippedUnchangedCount: completeTurnIndexAuthorityState.cacheWriteSkippedUnchangedCount,
       cacheWriteFailureCount: completeTurnIndexAuthorityState.cacheWriteFailureCount,
       setterCallCount: completeTurnIndexAuthorityState.setterCallCount,
       automaticSetterCallCount: completeTurnIndexAuthorityState.automaticSetterCallCount,
@@ -6224,6 +6381,12 @@
       refreshStaleDiscardCount: Number(refresh?.staleDiscardCount || 0),
       refreshTrailingRequired: refresh?.trailingRequired === true,
       refreshTrailingCount: Number(refresh?.trailingRefreshCount || 0),
+      selectedPathSignalCount: Number(refresh?.selectedPathSignalCount || 0),
+      selectedPathDeduplicatedCount: Number(refresh?.selectedPathDeduplicatedCount || 0),
+      selectedPathUnconfirmedCount: Number(refresh?.selectedPathUnconfirmedCount || 0),
+      selectedPathLastSignature: refresh?.selectedPathLastSignature || null,
+      selectedPathActiveSignature: refresh?.selectedPathActiveSignature || null,
+      selectedPathResultCode: refresh?.selectedPathResultCode || null,
       refreshCauseSample: Array.isArray(refresh?.causeSample) ? refresh.causeSample.slice(0, 8) : [],
       refreshTimerPending: refresh?.timerPending === true,
       refreshRequestActive: refresh?.requestActive === true,
@@ -6283,6 +6446,7 @@
     },
     normalize: (raw, chatId) => chatAtlasNormalizeCompleteIndexEnvelope(raw, chatId, { source: 'host' }),
     compareRevision: chatAtlasCompareCompleteIndexRevision,
+    selectedPathConfirmed: chatAtlasCompleteIndexSelectedPathConfirmed,
     writeCache: (envelope) => {
       const result = chatAtlasWriteCompleteIndexCache(envelope);
       if (result.ok) completeTurnIndexAuthorityState.cacheRaw = result.bytes;
@@ -6667,7 +6831,10 @@
         completeIndexRefreshCoordinator?.markPending?.(completeTurnIndexAuthorityState.pendingDrafts.size);
       }
     }
-    return chatAtlasScheduleCompleteIndexRefresh(cause);
+    const selectedPathEvidence = chatAtlasCompleteIndexSelectedPathEvidence(cause, detail);
+    return chatAtlasScheduleCompleteIndexRefresh(cause, selectedPathEvidence
+      ? { selectedPathEvidence }
+      : {});
   }
 
   function chatAtlasBindCompleteIndexRefreshListeners() {

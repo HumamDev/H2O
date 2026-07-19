@@ -13,6 +13,7 @@ const paginationPath = 'src-runtime-base/0C1b.⚫️🪟 Pagination Windowing (C
 const archivePath = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
 const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const baselineSha = 'be9fcf7369ef66c8db6d2e9acde6b9357fbd58a7';
+const feedbackBaselineSha = '87098eb7cc6ca4edb7eab8617ece92a11df42c53';
 const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
 const paginationSource = fs.readFileSync(path.join(root, paginationPath), 'utf8');
 const archiveSource = fs.readFileSync(path.join(root, archivePath), 'utf8');
@@ -21,8 +22,13 @@ const baselineCoreSource = execFileSync('git', ['show', `${baselineSha}:${corePa
   cwd: root,
   encoding: 'utf8',
 });
+const feedbackBaselineCoreSource = execFileSync('git', ['show', `${feedbackBaselineSha}:${corePath}`], {
+  cwd: root,
+  encoding: 'utf8',
+});
 
 let assertionCount = 0;
+let liveParityEvidence = null;
 const fixtures = [];
 const equal = (actual, expected, message) => {
   assertionCount += 1;
@@ -181,9 +187,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function createRefreshHarness({ writeOk = true } = {}) {
-  const codeFunction = extractFunction(coreSource, 'chatAtlasCompleteIndexCode');
-  const coordinatorFunction = extractFunction(coreSource, 'createCompleteIndexRefreshCoordinator');
+function createRefreshHarness({
+  source = coreSource,
+  writeOk = true,
+  skipUnchangedWrites = false,
+  initialIndex = { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 1 },
+} = {}) {
+  const codeFunction = extractFunction(source, 'chatAtlasCompleteIndexCode');
+  const coordinatorFunction = extractFunction(source, 'createCompleteIndexRefreshCoordinator');
   const factory = vm.runInNewContext(`(function (adapters) {
     const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({ debounceMs: 280, timeoutMs: 4500, diagnosticCauseLimit: 8, errorCodeLength: 96 });
     ${codeFunction}
@@ -194,11 +205,13 @@ function createRefreshHarness({ writeOk = true } = {}) {
   const providerQueue = [];
   const published = [];
   const writes = [];
-  const cache = { bytes: 'previous-cache-bytes' };
+  const cache = { bytes: 'previous-cache-bytes', skipped: 0, identity: JSON.stringify(initialIndex) };
   let timerId = 0;
   let route = 'fixture-chat|/c/fixture-chat';
   let enabled = true;
-  let currentIndex = { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 1 };
+  let currentIndex = initialIndex;
+  let coordinator = null;
+  let publishFeedback = null;
   const adapters = {
     now: (() => { let tick = 0; return () => ++tick; })(),
     routeKey: () => route,
@@ -214,19 +227,83 @@ function createRefreshHarness({ writeOk = true } = {}) {
       ? { ok: true, envelope: raw }
       : { ok: false, errorCode: 'complete-index-proof-invalid' },
     compareRevision: (incoming, retained) => Number(incoming) - Number(retained),
+    selectedPathConfirmed: (incoming, evidence) => {
+      const turn = Array.isArray(incoming?.turns)
+        ? incoming.turns.find((row) => row?.qId === evidence?.qId)
+        : null;
+      return !!turn && (!evidence?.observedAnswerId || turn.primaryAId === evidence.observedAnswerId);
+    },
     writeCache: (incoming) => {
-      writes.push(incoming);
       if (!writeOk) return { ok: false, status: 'cache-write-failed' };
+      const identity = JSON.stringify(incoming);
+      if (skipUnchangedWrites && identity === cache.identity) {
+        cache.skipped += 1;
+        return { ok: true, status: 'cache-write-skipped-unchanged', bytes: cache.bytes, skipped: true };
+      }
+      writes.push(incoming);
       cache.bytes = `cached:${incoming.payloadUpdateTime}`;
+      cache.identity = identity;
       return { ok: true, status: 'cache-written' };
     },
-    publish: (incoming, source) => { currentIndex = incoming; published.push({ incoming, source }); },
+    publish: (incoming, publishSource) => {
+      currentIndex = incoming;
+      published.push({ incoming, source: publishSource });
+      publishFeedback?.({ coordinator, incoming, source: publishSource });
+    },
     onState() {},
     setTimeout(fn, ms) { timerId += 1; timers.set(timerId, { fn, ms }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     AbortController,
   };
-  const coordinator = factory(adapters);
+  coordinator = factory(adapters);
+  let signalRuntime = null;
+  if (source.includes('  function chatAtlasCompleteIndexSelectedPathEvidence(')) {
+    const causeStart = source.indexOf('  const COMPLETE_TURN_INDEX_EVENT_CAUSES = Object.freeze({');
+    const causeEnd = source.indexOf('\n  });', causeStart);
+    const causeDeclaration = source.slice(causeStart, causeEnd + '\n  });'.length);
+    const signalNames = [
+      'chatAtlasCompleteIndexCode',
+      'chatAtlasCompleteIndexIdentity',
+      'chatAtlasCompleteIndexStableHash',
+      'chatAtlasCompleteIndexSelectedPathEvidence',
+      'chatAtlasCompleteIndexTurnEventCause',
+      'chatAtlasHandleCompleteIndexTurnEvent',
+      'chatAtlasInspectCompleteIndexLiveChanges',
+    ];
+    const signalFactory = vm.runInNewContext(`(function (coordinator) {
+      const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = [
+        '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
+        '3bdfa68f-a197-422a-a3d4-29f028fc6564',
+        'e1d4b63f-0be7-4a51-b074-e3372b71d790',
+        'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
+      ];
+      ${causeDeclaration}
+      const completeTurnIndexAuthorityState = {
+        enabled: true,
+        generation: 1,
+        chatId: 'fixture-chat',
+        index: null,
+        pendingDrafts: new Map(),
+      };
+      const completeIndexRefreshCoordinator = coordinator;
+      const getCompleteTurnIndexProjectionStatus = () => coordinator.getStatus();
+      const chatAtlasScheduleCompleteIndexRefresh = (cause, opts) => coordinator.schedule(cause, opts);
+      const isStreamingAnswerPlaceholderId = (value) => String(value || '').startsWith('request-placeholder-');
+      const canonicalDraftHasStructuralQuestionProof = (draft) => draft?.structureKnown !== false;
+      ${signalNames.map((name) => extractFunction(source, name)).join('\n')}
+      return {
+        handle(detail, index) {
+          completeTurnIndexAuthorityState.index = index;
+          return chatAtlasHandleCompleteIndexTurnEvent(detail);
+        },
+        inspect(drafts, index) {
+          completeTurnIndexAuthorityState.index = index;
+          return chatAtlasInspectCompleteIndexLiveChanges(drafts, index);
+        },
+      };
+    })`, { Object, Array, Set, Map, String, Number, Date, Math, JSON, Promise });
+    signalRuntime = signalFactory(coordinator);
+  }
   return {
     coordinator,
     timers,
@@ -234,6 +311,10 @@ function createRefreshHarness({ writeOk = true } = {}) {
     published,
     writes,
     cache,
+    currentIndex: () => currentIndex,
+    emitTurnEvent(detail) { return signalRuntime?.handle?.(detail, currentIndex); },
+    inspectLive(drafts) { return signalRuntime?.inspect?.(drafts, currentIndex); },
+    setPublishFeedback(fn) { publishFeedback = typeof fn === 'function' ? fn : null; },
     setEnabled(value) { enabled = value === true; },
     setRoute(value) { route = String(value); },
     runTimer(ms) {
@@ -244,6 +325,52 @@ function createRefreshHarness({ writeOk = true } = {}) {
       return true;
     },
   };
+}
+
+function createCacheWriteRuntime(initialEnvelope) {
+  const names = [
+    'chatAtlasCompleteIndexIdentity',
+    'chatAtlasCompleteIndexStableHash',
+    'chatAtlasCompleteIndexFingerprint',
+    'chatAtlasCompleteIndexCacheKey',
+    'chatAtlasCompleteIndexExactKeys',
+    'chatAtlasNormalizeCompleteIndexEnvelope',
+    'chatAtlasCompleteIndexCacheIdentityBytes',
+    'chatAtlasWriteCompleteIndexCache',
+  ];
+  const setCalls = [];
+  const initialRaw = JSON.stringify(initialEnvelope);
+  const W = {
+    localStorage: {
+      setItem(key, value) { setCalls.push({ key, value }); },
+    },
+  };
+  const factory = vm.runInNewContext(`(function (W, initialRaw) {
+    const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
+    const COMPLETE_TURN_INDEX_CACHE_KEY_PREFIX = 'h2o:prm:cgx:chat-atlas:complete-turn-index:v1:chat:';
+    const COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS = [
+      '9111ad43-3734-4120-94fe-a34c9cd3a1cc',
+      '3bdfa68f-a197-422a-a3d4-29f028fc6564',
+      'e1d4b63f-0be7-4a51-b074-e3372b71d790',
+      'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
+    ];
+    const COMPLETE_TURN_INDEX_CACHE_KEYS = ['schema','chatId','payloadUpdateTime','sourceFingerprint','capturedAt','validatedAt','complete','proof','turns'];
+    const COMPLETE_TURN_INDEX_ROW_KEYS = ['order','qId','turnId','answerVariants','primaryAId','noAnswer','stopped'];
+    const completeTurnIndexAuthorityState = {
+      cacheRaw: initialRaw,
+      cacheWriteCount: 0,
+      cacheWriteSkippedUnchangedCount: 0,
+      cacheWriteFailureCount: 0,
+    };
+    ${names.map((name) => extractFunction(coreSource, name)).join('\n')}
+    return {
+      write: chatAtlasWriteCompleteIndexCache,
+      state: completeTurnIndexAuthorityState,
+      raw: () => completeTurnIndexAuthorityState.cacheRaw,
+    };
+  })`, { Object, Array, Set, Map, String, Number, Date, JSON });
+  const runtime = factory(W, initialRaw);
+  return { ...runtime, setCalls, initialRaw };
 }
 
 function evaluateAuthorityGuard(routeChatId, stateChatId, routeGeneration = 1) {
@@ -289,6 +416,9 @@ function evaluateSlimTurnDraft(source, draft) {
 }
 
 function createTurnEventRuntime(source, enabled = true) {
+  const codeFunction = extractFunction(source, 'chatAtlasCompleteIndexCode');
+  const hashFunction = extractFunction(source, 'chatAtlasCompleteIndexStableHash');
+  const evidenceFunction = extractFunction(source, 'chatAtlasCompleteIndexSelectedPathEvidence');
   const causeFunction = extractFunction(source, 'chatAtlasCompleteIndexTurnEventCause');
   const handlerFunction = extractFunction(source, 'chatAtlasHandleCompleteIndexTurnEvent');
   const causesStart = source.indexOf('  const COMPLETE_TURN_INDEX_EVENT_CAUSES = Object.freeze({');
@@ -301,12 +431,18 @@ function createTurnEventRuntime(source, enabled = true) {
     const marked = [];
     const completeTurnIndexAuthorityState = {
       enabled: ${enabled === true},
+      generation: 1,
+      chatId: 'fixture-chat',
+      index: { sourceFingerprint: 'djb2:fixture', payloadUpdateTime: 1 },
       pendingDrafts: new Map([['pending-q', { qId: 'pending-q', answerIds: ['request-placeholder-1'] }]]),
     };
     const completeIndexRefreshCoordinator = { markPending: (count) => marked.push(count) };
     const chatAtlasCompleteIndexIdentity = (value) => String(value || '').trim();
     const getCompleteTurnIndexProjectionStatus = () => ({ enabled: completeTurnIndexAuthorityState.enabled });
     const chatAtlasScheduleCompleteIndexRefresh = (cause) => { scheduled.push(cause); return Promise.resolve({ cause }); };
+    ${codeFunction}
+    ${hashFunction}
+    ${evidenceFunction}
     ${causeFunction}
     ${handlerFunction}
     return { cause: chatAtlasCompleteIndexTurnEventCause, handle: chatAtlasHandleCompleteIndexTurnEvent,
@@ -461,6 +597,213 @@ await fixture('B4 MiniMap preserves sibling ownership while rendering one NO ANS
   ok(miniMapSource.includes('hasAssistant: noAnswer ? false'));
 });
 
+await fixture('selected-path publication feedback reproduces the pre-fix refresh storm', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 39,
+    sourceFingerprint: 'djb2:feedback-a',
+    turns: [{ qId: 'feedback-q', primaryAId: 'old-primary-a' }],
+  };
+  const evidence = {
+    signature: 'djb2:feedback-selected-path-a',
+    qId: 'feedback-q',
+    observedAnswerId: 'unconfirmed-primary-b',
+  };
+  const harness = createRefreshHarness({ source: feedbackBaselineCoreSource, initialIndex });
+  harness.setPublishFeedback(({ coordinator }) => {
+    void coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: evidence });
+  });
+  for (let index = 0; index < 4; index += 1) {
+    harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  }
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: evidence,
+  });
+  for (let index = 0; index < 3; index += 1) {
+    equal(harness.runTimer(280), true);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 4);
+  equal(status.trailingRefreshCount, 4);
+  equal(status.timerPending, true);
+  harness.coordinator.cancel('fixture-bounded-stop', 'idle');
+});
+
+await fixture('selected-path unchanged live-parity feedback becomes fully quiescent', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const signal = { reason: 'selected-path-changed' };
+  const liveDraft = {
+    qId: 'live-unconfirmed-question',
+    primaryAId: 'live-unconfirmed-answer',
+    answerIds: ['live-unconfirmed-answer'],
+    structureKnown: true,
+  };
+  const first = deferred();
+  const harness = createRefreshHarness({
+    initialIndex,
+    skipUnchangedWrites: true,
+  });
+  harness.providerQueue.push(() => first.promise);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.setPublishFeedback(() => {
+    for (let index = 0; index < 6; index += 1) {
+      harness.inspectLive([liveDraft]);
+    }
+  });
+  await harness.emitTurnEvent(signal);
+  const active = harness.coordinator.refresh();
+  await Promise.resolve();
+  await Promise.resolve();
+  for (let index = 0; index < 12; index += 1) {
+    void harness.emitTurnEvent(signal);
+  }
+  first.resolve({ ok: true, index: initialIndex });
+  await active;
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let index = 0; index < 5; index += 1) {
+    await harness.emitTurnEvent(signal);
+    harness.inspectLive([liveDraft]);
+  }
+  const status = harness.coordinator.getStatus();
+  ok(status.fetchCount <= 2);
+  ok(status.trailingRefreshCount <= 1);
+  equal(status.fetchCount, 2);
+  equal(status.trailingRefreshCount, 1);
+  equal(status.timerPending, false);
+  equal(status.requestActive, false);
+  equal(status.trailingRequired, false);
+  equal(status.pendingCount, 0);
+  equal(status.selectedPathUnconfirmedCount, 2);
+  equal(status.selectedPathResultCode, 'selected-path-unconfirmed-unchanged');
+  ok(status.selectedPathLastSignature.startsWith('djb2:'));
+  equal(status.selectedPathLastSignature.includes(liveDraft.qId), false);
+  equal(status.selectedPathLastSignature.includes(liveDraft.primaryAId), false);
+  ok(status.selectedPathDeduplicatedCount >= 23);
+  equal(harness.writes.length, 0);
+  equal(harness.cache.skipped, 2);
+  equal(harness.cache.bytes, 'previous-cache-bytes');
+  equal(harness.currentIndex().complete, true);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.currentIndex().turns.some((row) => row.answerVariants.some(
+    (answerId) => answerId.startsWith('request-placeholder-'),
+  )), false);
+  liveParityEvidence = Object.freeze({
+    providerRefreshGets: status.fetchCount,
+    trailingRefreshes: status.trailingRefreshCount,
+    cacheWrites: harness.writes.length,
+    cacheWritesSkippedUnchanged: harness.cache.skipped,
+    selectedPathSignals: status.selectedPathSignalCount,
+    selectedPathDeduplicated: status.selectedPathDeduplicatedCount,
+    selectedPathUnconfirmed: status.selectedPathUnconfirmedCount,
+  });
+});
+
+await fixture('new selected-path evidence and newer host identity remain eligible', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 39,
+    sourceFingerprint: 'djb2:new-evidence-a',
+    turns: [{ qId: 'feedback-q', primaryAId: 'old-primary-a' }],
+  };
+  const unchangedEvidence = {
+    signature: 'djb2:new-evidence-signature-a',
+    qId: 'feedback-q',
+    observedAnswerId: 'new-primary-b',
+  };
+  const newerEvidence = { ...unchangedEvidence, signature: 'djb2:new-evidence-signature-b' };
+  const newerIndex = {
+    ...initialIndex,
+    payloadUpdateTime: 40,
+    sourceFingerprint: 'djb2:new-evidence-b',
+    turns: [{ qId: 'feedback-q', primaryAId: 'new-primary-b' }],
+  };
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: unchangedEvidence,
+  });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: newerIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: newerEvidence });
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathResultCode, null);
+  equal(harness.currentIndex().sourceFingerprint, 'djb2:new-evidence-b');
+  equal(harness.writes.length, 1);
+  equal(harness.cache.bytes, 'cached:40');
+});
+
+await fixture('route change and disable clear selected-path reconciliation state', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:clear-a',
+    turns: [{ qId: 'clear-q', primaryAId: 'old-a' }],
+  };
+  const evidence = { signature: 'djb2:clear-signature', qId: 'clear-q', observedAnswerId: 'new-a' };
+  const harness = createRefreshHarness({ initialIndex });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: evidence,
+  });
+  equal(harness.coordinator.getStatus().selectedPathResultCode, 'selected-path-unconfirmed-unchanged');
+  harness.setRoute('other-chat|/c/other-chat');
+  harness.coordinator.cancel('route-changed', 'stale-route-discarded');
+  equal(harness.coordinator.getStatus().selectedPathLastSignature, null);
+  equal(harness.coordinator.getStatus().selectedPathActiveSignature, null);
+  await harness.coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: evidence });
+  equal(harness.coordinator.getStatus().timerPending, true);
+  harness.setEnabled(false);
+  harness.coordinator.cancel('gate-disabled', 'idle');
+  equal(harness.coordinator.getStatus().timerPending, false);
+  equal(harness.coordinator.getStatus().selectedPathLastSignature, null);
+  equal(harness.coordinator.getStatus().selectedPathActiveSignature, null);
+});
+
+await fixture('identity-equivalent complete cache write is skipped without changing bytes', () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const cached = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const runtime = createCacheWriteRuntime(cached);
+  const timestampOnly = {
+    ...cached,
+    capturedAt: '2026-07-19T00:00:00.000Z',
+    validatedAt: '2026-07-19T00:00:00.000Z',
+  };
+  const unchanged = runtime.write(timestampOnly);
+  equal(unchanged.ok, true);
+  equal(unchanged.status, 'cache-write-skipped-unchanged');
+  equal(unchanged.bytes, runtime.initialRaw);
+  equal(runtime.setCalls.length, 0);
+  equal(runtime.state.cacheWriteCount, 0);
+  equal(runtime.state.cacheWriteSkippedUnchangedCount, 1);
+
+  const newer = { ...timestampOnly, payloadUpdateTime: 501 };
+  const written = runtime.write(newer);
+  equal(written.ok, true);
+  equal(written.status, 'cache-written');
+  equal(runtime.setCalls.length, 1);
+  equal(runtime.state.cacheWriteCount, 1);
+});
+
 await fixture('in-flight causes coalesce into exactly one trailing refresh', async () => {
   const harness = createRefreshHarness();
   const first = deferred();
@@ -612,5 +955,8 @@ await fixture('Gate 5 correctness validator remains production-backed and privac
 
 const failed = fixtures.filter((row) => !row.ok);
 console.log(`CV-3.4 Gate 5 correctness: ${fixtures.length - failed.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failed.length} failures`);
+if (liveParityEvidence) {
+  console.log(`Live parity: provider GET ${liveParityEvidence.providerRefreshGets}, trailing ${liveParityEvidence.trailingRefreshes}, cache writes ${liveParityEvidence.cacheWrites}, unchanged skips ${liveParityEvidence.cacheWritesSkippedUnchanged}, selected-path signals ${liveParityEvidence.selectedPathSignals}, deduplicated ${liveParityEvidence.selectedPathDeduplicated}, unconfirmed ${liveParityEvidence.selectedPathUnconfirmed}`);
+}
 for (const row of failed) console.error(`FAIL ${row.name}\n${row.error}`);
 if (failed.length) process.exitCode = 1;
