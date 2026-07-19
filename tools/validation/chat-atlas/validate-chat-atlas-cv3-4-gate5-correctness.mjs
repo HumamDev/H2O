@@ -232,6 +232,11 @@ function createRefreshHarness({
   source = coreSource,
   writeOk = true,
   skipUnchangedWrites = false,
+  // When true, the selectedPathEvidenceCurrent adapter routes through the REAL
+  // production predicate (intent lookup with the capture age window) instead of
+  // the harness token-match stub — required to reproduce the live slow-refresh
+  // age cancellation on pre-lease sources.
+  productionEvidenceCurrent = false,
   initialIndex = { complete: true, chatId: 'fixture-chat', payloadUpdateTime: 1 },
 } = {}) {
   const codeFunction = extractFunction(source, 'chatAtlasCompleteIndexCode');
@@ -297,8 +302,11 @@ function createRefreshHarness({
       { complete: true, ...incoming },
       evidence,
     ) === true,
-    selectedPathEvidenceCurrent: (evidence) => !!evidence?.selectionToken
-      && evidence.selectionToken === trustedSelectionToken,
+    selectedPathEvidenceCurrent: (evidence) => (productionEvidenceCurrent
+      ? signalRuntime?.evidenceCurrent?.(evidence)
+      : (!!evidence?.selectionToken && evidence.selectionToken === trustedSelectionToken)),
+    selectedPathLeaseCurrent: (evidence) => signalRuntime?.leaseCurrent?.(evidence),
+    routeGeneration: () => signalRuntime?.authorityGeneration?.() ?? 1,
     onSelectedPathResolved: (evidence, result) => {
       resolvedSelections.push({ evidence, result });
       if (evidence?.selectionToken === trustedSelectionToken) trustedSelectionToken = '';
@@ -350,6 +358,12 @@ function createRefreshHarness({
         : []),
       'chatAtlasCurrentTrustedNativeBranchSelection',
       'chatAtlasResolveTrustedNativeBranchSelection',
+      ...(source.includes('  function chatAtlasCompleteIndexSelectedPathEvidenceCurrent(')
+        ? ['chatAtlasCompleteIndexSelectedPathEvidenceCurrent']
+        : []),
+      ...(source.includes('  function chatAtlasCompleteIndexSelectedPathLeaseCurrent(')
+        ? ['chatAtlasCompleteIndexSelectedPathLeaseCurrent']
+        : []),
       'chatAtlasCompleteIndexSelectedPathEvidence',
       'chatAtlasCompleteIndexTurnEventCause',
       'chatAtlasHandleCompleteIndexTurnEvent',
@@ -409,6 +423,17 @@ function createRefreshHarness({
         intent() { return completeTurnIndexAuthorityState.trustedSelectedPathIntent; },
         resolve(evidence, reason) { return chatAtlasResolveTrustedNativeBranchSelection(evidence, reason); },
         lookup(qId) { return chatAtlasCurrentTrustedNativeBranchSelection(qId); },
+        leaseCurrent(evidence) {
+          return typeof chatAtlasCompleteIndexSelectedPathLeaseCurrent === 'function'
+            ? chatAtlasCompleteIndexSelectedPathLeaseCurrent(evidence)
+            : undefined;
+        },
+        evidenceCurrent(evidence) {
+          return typeof chatAtlasCompleteIndexSelectedPathEvidenceCurrent === 'function'
+            ? chatAtlasCompleteIndexSelectedPathEvidenceCurrent(evidence)
+            : undefined;
+        },
+        authorityGeneration() { return Number(completeTurnIndexAuthorityState.generation || 0); },
         trace(event, detail) { return chatAtlasTraceTrustedLifecycle(event, detail); },
         diagnostics() {
           return typeof completeTurnIndexLifecycleDiagnostics === 'object'
@@ -1568,16 +1593,15 @@ await fixture('D7 missing-token confirmation skip records missing-selection-toke
   equal(harness.coordinator.getStatus().selectedPathResultCode, 'selected-path-unconfirmed-unchanged');
 });
 
-await fixture('D8 gone-intent confirmation skip records evidence-not-current', async () => {
-  const initialIndex = {
-    complete: true,
-    chatId: 'fixture-chat',
-    payloadUpdateTime: 1,
-    sourceFingerprint: 'djb2:d8-fingerprint',
-    turns: [{ qId: 'd8-q', primaryAId: 'old-a' }],
-  };
-  const harness = createRefreshHarness({ initialIndex });
+await fixture('D8 superseded-token confirmation skip records evidence-not-current', async () => {
+  // Under the confirmation-lease contract, a GONE intent no longer blocks an
+  // accepted trusted request (the lease holds); only a genuinely NEWER live
+  // token (supersession) fails closed at eligibility.
+  const { harness, initialIndex } = createLiveEnvelopeHarness();
   harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  // A live trusted intent exists (token A, bound to the live branch turn)...
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  // ...while stale evidence carrying a DIFFERENT token reaches the coordinator.
   await harness.coordinator.schedule('question-selected-path-changed', {
     immediate: true,
     selectedPathEvidence: {
@@ -1594,6 +1618,7 @@ await fixture('D8 gone-intent confirmation skip records evidence-not-current', a
   const skipped = harness.lifecycleTrace().findLast((entry) => entry.event === 'confirmation-skipped');
   equal(skipped?.reason, 'evidence-not-current');
   equal(harness.coordinator.getStatus().selectedPathConfirmationScheduledCount, 0);
+  harness.coordinator.cancel('fixture-end', 'idle');
 });
 
 await fixture('D9 route and generation mismatch record their own clear reasons', () => {
@@ -2511,6 +2536,182 @@ await fixture('G5 capture-driven confirmation accepts both qId-resolved and answ
     equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
     equal(harness.coordinator.getStatus().selectedPathConfirmationFetchCount, 1);
     equal(harness.timers.size, 0);
+  }
+});
+
+await fixture('G5 slow first refresh: scheduled confirmation lease survives the capture age window', async () => {
+  // The final live failure: the initial provider refresh took >5s, so by the
+  // time the 1250ms confirmation timer fired, the original capture was older
+  // than the trusted-selection age window and the old staleness recheck
+  // expired the intent ('age-window-exceeded') and cancelled the scheduled
+  // confirmation (scheduled 1 / cancelled 1 / fetch 0, primary stale). The
+  // accepted confirmation now holds its own bounded lease: the capture age
+  // window governs capture->bind->trusted-schedule only.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({
+    initialIndex,
+    skipUnchangedWrites: true,
+    productionEvidenceCurrent: true,
+  });
+  // Items 1-3 + 19: disabled start rejects capture; activation writes no
+  // persisted preference; canary-equivalent enable exposes 39 turns.
+  harness.setEnabled(false);
+  harness.setAuthorityEnabled(false);
+  equal(harness.recordTrustedNativeClick('previous'), false);
+  ok(coreSource.includes("const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';"));
+  equal(coreSource.includes("setItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY, '1')"), false);
+  harness.setEnabled(true);
+  harness.setAuthorityEnabled(true);
+  equal(harness.currentIndex().turns.length, 39);
+
+  // Items 4-5: trusted click canonically binds and schedules exactly once.
+  const slowFirst = deferred();
+  harness.providerQueue.push(() => slowFirst.promise);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [{ id: LIVE_BRANCH_CURRENT_A, role: 'assistant' }],
+  }), true);
+  equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Items 6-8: the first refresh is SLOW — the capture ages past the window
+  // while the provider is still in flight — then returns the unchanged
+  // baseline answer.
+  equal(harness.ageIntent(Date.now() - 6000), true);
+  slowFirst.resolve({ ok: true, index: initialIndex });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Items 9-10: eligibility passes and exactly one confirmation schedules.
+  let status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(harness.diagnostics().selectedPathConfirmationSkipCount, 0);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(status.selectedPathConfirmationLeaseActive, true);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q).primaryAId, LIVE_BRANCH_CURRENT_A);
+
+  // Item 11: the GENERAL trusted intent ages out (the live diagnostic), but
+  // the matching confirmation lease remains valid.
+  equal(harness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(harness.signalIntent(), null);
+  equal(harness.diagnostics().trustedSelectionLastClearReason, 'age-window-exceeded');
+  equal(harness.diagnostics().trustedSelectionLastClearQId, LIVE_BRANCH_Q);
+  equal(harness.coordinator.getStatus().selectedPathConfirmationPending, true);
+
+  // Items 12-18: the delayed confirmation still executes exactly once, is not
+  // cancelled by age, and the host payload confirms the switch.
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationCancelledCount, 0);
+  equal(status.fetchCount, 2);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathResultCode, null);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+  // Item 20 + double-execution guard: runtime settles idle; the consumed lease
+  // cannot fire twice.
+  equal(harness.runTimer(1250), false);
+  equal(harness.coordinator.getStatus().selectedPathConfirmationLeaseActive, false);
+
+  // Lifecycle trace: retained lease, started, confirmed — and NO cancellation.
+  const events = harness.lifecycleTrace().map((entry) => entry.event);
+  const milestones = [
+    'trusted-capture-created',
+    'trusted-bind-success',
+    'trusted-native-branch-click',
+    'selected-schedule-attempt',
+    'selected-refresh-started',
+    'selected-refresh-unchanged',
+    'confirmation-eligibility-checked',
+    'confirmation-scheduled',
+    'trusted-intent-expired',
+    'confirmation-lease-retained',
+    'confirmation-started',
+    'confirmation-confirmed',
+  ];
+  let cursor = -1;
+  for (const milestone of milestones) {
+    const position = events.indexOf(milestone, cursor + 1);
+    ok(position > cursor, `milestone out of order or missing: ${milestone}`);
+    cursor = position;
+  }
+  equal(harness.lifecycleTrace().some((entry) => entry.event === 'confirmation-cancelled'), false);
+});
+
+await fixture('G5 confirmation lease cancels on route generation gate and newer click', async () => {
+  const pendingLease = async (harness, initialIndex) => {
+    harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+    equal(harness.recordTrustedNativeClick('previous'), true);
+    equal(harness.runPostEventTasks(), 1);
+    equal(harness.runTimer(280), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    equal(harness.coordinator.getStatus().selectedPathConfirmationPending, true);
+    return harness;
+  };
+  // Route change during the delayed lease cancels it immediately and bounded.
+  {
+    const { harness, initialIndex } = createLiveEnvelopeHarness({ skipUnchangedWrites: true });
+    await pendingLease(harness, initialIndex);
+    harness.setRoute('other-chat|/c/other-chat');
+    equal(harness.runTimer(1250), true);
+    const status = harness.coordinator.getStatus();
+    equal(status.selectedPathConfirmationFetchCount, 0);
+    equal(status.selectedPathConfirmationCancelledCount, 1);
+    equal(harness.resolvedSelections.at(-1)?.result, 'stale-confirmation');
+  }
+  // Generation change cancels via the frozen lease generation.
+  {
+    const { harness, initialIndex } = createLiveEnvelopeHarness({ skipUnchangedWrites: true });
+    await pendingLease(harness, initialIndex);
+    harness.setAuthorityGeneration(99);
+    equal(harness.runTimer(1250), true);
+    const status = harness.coordinator.getStatus();
+    equal(status.selectedPathConfirmationFetchCount, 0);
+    equal(status.selectedPathConfirmationCancelledCount, 1);
+  }
+  // Gate disable cancels.
+  {
+    const { harness, initialIndex } = createLiveEnvelopeHarness({ skipUnchangedWrites: true });
+    await pendingLease(harness, initialIndex);
+    harness.setEnabled(false);
+    equal(harness.runTimer(1250), true);
+    const status = harness.coordinator.getStatus();
+    equal(status.selectedPathConfirmationFetchCount, 0);
+    equal(status.selectedPathConfirmationCancelledCount, 1);
+  }
+  // A newer trusted click supersedes the older lease (token mismatch at fire).
+  {
+    const { harness, initialIndex } = createLiveEnvelopeHarness({ skipUnchangedWrites: true });
+    await pendingLease(harness, initialIndex);
+    equal(harness.recordTrustedNativeClick('next', {
+      messages: [{ id: '29a40c98-0bd8-48cd-be80-0273311a4977', role: 'user' }],
+    }), true);
+    equal(harness.runTimer(1250), true);
+    const status = harness.coordinator.getStatus();
+    equal(status.selectedPathConfirmationFetchCount, 0);
+    equal(status.selectedPathConfirmationCancelledCount, 1);
+    equal(harness.resolvedSelections.at(-1)?.result, 'stale-confirmation');
+    harness.coordinator.cancel('fixture-end', 'idle');
   }
 });
 

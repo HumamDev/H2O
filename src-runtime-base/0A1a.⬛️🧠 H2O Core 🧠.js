@@ -5576,6 +5576,7 @@
       selectedPathResultCode: null,
       selectedPathConfirmationTimer: null,
       selectedPathConfirmationEvidence: null,
+      selectedPathConfirmationLease: null,
       selectedPathConfirmationTokens: new Set(),
       selectedPathConfirmationScheduledCount: 0,
       selectedPathConfirmationFetchCount: 0,
@@ -5624,6 +5625,7 @@
       )?.trusted === true,
       selectedPathResultCode: state.selectedPathResultCode,
       selectedPathConfirmationPending: !!state.selectedPathConfirmationTimer,
+      selectedPathConfirmationLeaseActive: !!state.selectedPathConfirmationLease,
       selectedPathConfirmationScheduledCount: state.selectedPathConfirmationScheduledCount,
       selectedPathConfirmationFetchCount: state.selectedPathConfirmationFetchCount,
       selectedPathConfirmationCancelledCount: state.selectedPathConfirmationCancelledCount,
@@ -5654,6 +5656,7 @@
       }
       state.selectedPathConfirmationTimer = null;
       state.selectedPathConfirmationEvidence = null;
+      state.selectedPathConfirmationLease = null;
       if (evidence?.selectionToken) state.selectedPathConfirmationTokens.delete(evidence.selectionToken);
       if (clearTokens) state.selectedPathConfirmationTokens.clear();
       if (evidence) {
@@ -5703,7 +5706,15 @@
         });
         return false;
       }
-      if (adapters?.selectedPathEvidenceCurrent?.(evidence) === false) {
+      // An accepted trusted request has already survived capture->bind->
+      // trusted-schedule under the five-second age window; from here on its
+      // confirmation is governed by its own bounded lease, NOT by the original
+      // capture's age. The lease check (when wired) only fails on genuine
+      // supersession by a newer live token; scope changes cancel through the
+      // coordinator instead. Harnesses/baselines without the lease adapter
+      // keep the legacy evidence-current semantics.
+      const leaseCheck = adapters?.selectedPathLeaseCurrent || adapters?.selectedPathEvidenceCurrent;
+      if (leaseCheck?.(evidence) === false) {
         adapters?.trace?.('confirmation-skipped', {
           reason: 'evidence-not-current',
           qId: evidence?.qId,
@@ -5723,6 +5734,20 @@
       state.selectedPathConfirmationTokens.add(token);
       state.selectedPathConfirmationEvidence = evidence;
       state.selectedPathConfirmationScheduledCount += 1;
+      // Freeze the confirmation lease NOW: an immutable bounded record of the
+      // scope this confirmation was accepted under. The 1250ms callback
+      // validates against this record (token/qId/route/generation), never
+      // against the original capture timestamp.
+      state.selectedPathConfirmationLease = Object.freeze({
+        selectionToken: token,
+        qId: String(evidence.qId || ''),
+        routeKey: state.routeKey,
+        generation: Number(adapters?.routeGeneration?.() ?? 0),
+        baselineAnswerId: String(evidence.baselineAnswerId || ''),
+        expectChange: evidence.expectChange === true,
+        scheduledAt: now(),
+        attempt: state.selectedPathConfirmationScheduledCount,
+      });
       state.selectedPathResultCode = 'selected-path-confirmation-pending';
       adapters?.trace?.('confirmation-scheduled', {
         qId: evidence.qId,
@@ -5734,10 +5759,17 @@
         state.selectedPathConfirmationTimer = null;
         const pending = state.selectedPathConfirmationEvidence;
         state.selectedPathConfirmationEvidence = null;
+        const lease = state.selectedPathConfirmationLease;
+        state.selectedPathConfirmationLease = null;
         const current = pending
           && enabled()
           && state.routeKey === routeKey()
-          && adapters?.selectedPathEvidenceCurrent?.(pending) !== false;
+          && lease
+          && lease.selectionToken === pending.selectionToken
+          && lease.qId === pending.qId
+          && lease.routeKey === state.routeKey
+          && Number(lease.generation || 0) === Number(adapters?.routeGeneration?.() ?? lease.generation ?? 0)
+          && leaseCheck?.(pending) !== false;
         if (!current) {
           if (pending) {
             state.selectedPathConfirmationCancelledCount += 1;
@@ -6517,6 +6549,27 @@
     return !!intent && !!evidence?.selectionToken && intent.token === evidence.selectionToken;
   }
 
+  function chatAtlasCompleteIndexSelectedPathLeaseCurrent(evidence) {
+    // Lease validity for a trusted request the coordinator has ALREADY
+    // accepted. The five-second capture age window governed capture->bind->
+    // trusted-schedule and is deliberately NOT re-applied here: a slow but
+    // valid provider response must not convert into a false cancellation.
+    // Only a genuinely NEWER trusted capture (a different LIVE token)
+    // invalidates the lease; route/chat/gate/generation/reset changes cancel
+    // it immediately through the coordinator's own cancel paths instead.
+    if (!evidence?.selectionToken) return false;
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (intent && intent.token !== evidence.selectionToken) return false;
+    if (!intent) {
+      chatAtlasTraceTrustedLifecycle('confirmation-lease-retained', {
+        qId: evidence.qId,
+        token: evidence.selectionToken,
+        reason: 'capture-intent-expired',
+      });
+    }
+    return true;
+  }
+
   function chatAtlasResolveTrustedNativeBranchSelection(evidence, resolutionRaw = 'resolved') {
     const resolution = chatAtlasCompleteIndexCode(resolutionRaw, 'resolved', 48);
     if (resolution === 'confirmed') {
@@ -7081,6 +7134,7 @@
       selectedPathActiveTrusted: refresh?.selectedPathActiveTrusted === true,
       selectedPathResultCode: refresh?.selectedPathResultCode || null,
       selectedPathConfirmationPending: refresh?.selectedPathConfirmationPending === true,
+      selectedPathConfirmationLeaseActive: refresh?.selectedPathConfirmationLeaseActive === true,
       selectedPathConfirmationScheduledCount: Number(refresh?.selectedPathConfirmationScheduledCount || 0),
       selectedPathConfirmationFetchCount: Number(refresh?.selectedPathConfirmationFetchCount || 0),
       selectedPathConfirmationCancelledCount: Number(refresh?.selectedPathConfirmationCancelledCount || 0),
@@ -7166,6 +7220,8 @@
     compareRevision: chatAtlasCompareCompleteIndexRevision,
     selectedPathConfirmed: chatAtlasCompleteIndexSelectedPathConfirmed,
     selectedPathEvidenceCurrent: chatAtlasCompleteIndexSelectedPathEvidenceCurrent,
+    selectedPathLeaseCurrent: chatAtlasCompleteIndexSelectedPathLeaseCurrent,
+    routeGeneration: () => Number(completeTurnIndexAuthorityState.generation || 0),
     onSelectedPathResolved: chatAtlasResolveTrustedNativeBranchSelection,
     trace: chatAtlasTraceTrustedLifecycle,
     writeCache: (envelope) => {
