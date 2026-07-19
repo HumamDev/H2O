@@ -6232,9 +6232,18 @@
     // different turns all fail closed to an untrusted (token-free) capture.
     const button = chatAtlasCompleteIndexNativeBranchButton(event);
     if (!button) return { ok: false, qId: '', reason: 'capture-owner-unresolved' };
+    // The real ChatGPT layout groups a turn's user/assistant messages and its
+    // Previous/Next branch controls under one conversation-turn container
+    // (<div data-testid="conversation-turn-N">) — NOT an <article>. Resolve
+    // the owning scope in that order first (the same anchor existing browser
+    // scripts use via closest('[data-testid^="conversation-turn-"]')), then
+    // keep the legacy article / message-id ancestors as bounded fallbacks.
     let scope = null;
     try {
-      scope = button.closest?.('article') || button.closest?.('[data-message-id]') || null;
+      scope = button.closest?.('[data-testid^="conversation-turn-"]')
+        || button.closest?.('article')
+        || button.closest?.('[data-message-id]')
+        || null;
     } catch { scope = null; }
     const candidates = [];
     try {
@@ -6259,13 +6268,14 @@
       : [];
     if (!turns.length) return { ok: false, qId: '', reason: 'capture-owner-not-canonical' };
     const resolved = new Set();
-    let method = '';
+    let userResolved = false;
+    let answerResolved = false;
     for (const id of userIds) {
       const owners = turns.filter((turn) => turn?.qId === id);
       if (owners.length > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
       if (owners.length === 1) {
         resolved.add(owners[0].qId);
-        method = method || 'capture-owner-qid-resolved';
+        userResolved = true;
       }
     }
     for (const id of assistantIds) {
@@ -6274,12 +6284,20 @@
       if (owners.length > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
       if (owners.length === 1) {
         resolved.add(owners[0].qId);
-        method = method || 'capture-owner-answer-resolved';
+        answerResolved = true;
       }
     }
     if (!resolved.size) return { ok: false, qId: '', reason: 'capture-owner-not-canonical' };
     if (resolved.size > 1) return { ok: false, qId: '', reason: 'capture-owner-ambiguous' };
-    return { ok: true, qId: resolved.values().next().value, reason: method };
+    // The clicked branch control is the CURRENT assistant answer's pager, so
+    // when an assistant answer id uniquely identifies the owning turn that is
+    // the branch-specific signal — report it as the resolution method even if
+    // the same turn's user qId also matched (both agree on one turn here).
+    return {
+      ok: true,
+      qId: resolved.values().next().value,
+      reason: answerResolved ? 'capture-owner-answer-resolved' : 'capture-owner-qid-resolved',
+    };
   }
 
   function chatAtlasRecordTrustedNativeBranchSelection(event) {

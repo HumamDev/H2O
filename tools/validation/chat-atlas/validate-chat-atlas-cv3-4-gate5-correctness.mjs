@@ -420,9 +420,12 @@ function createRefreshHarness({
     ageIntent(observedAt) { return signalRuntime?.ageIntent?.(observedAt); },
     recordTrustedNativeClick(direction = 'previous', opts = {}) {
       const label = direction === 'next' ? 'Next response' : 'Previous response';
-      // Real ChatGPT topology: the branch control button lives inside the
-      // owning conversation-turn <article>, whose [data-message-id] node(s)
-      // identify the candidate owner; the click target is a nested SVG child.
+      // The branch control button lives inside the owning conversation turn's
+      // container; [data-message-id] descendants identify candidate owners and
+      // the click target is a nested SVG child. Three faithful scope shapes:
+      //   'conversation-turn' (real ChatGPT: <div data-testid="conversation-turn-N">, NO article),
+      //   'article' (legacy fallback container),
+      //   'message-node' (no container queryable; nearest [data-message-id] ancestor IS the candidate).
       const messages = Array.isArray(opts.messages) ? opts.messages : [
         { id: LIVE_BRANCH_Q, role: 'user' },
         { id: LIVE_BRANCH_CURRENT_A, role: 'assistant' },
@@ -434,13 +437,17 @@ function createRefreshHarness({
           return null;
         },
       }));
-      const article = {
-        getAttribute: () => null,
+      const scopeMode = ['conversation-turn', 'article', 'message-node'].includes(opts.scope)
+        ? opts.scope
+        : 'article';
+      const testId = opts.testId || 'conversation-turn-69';
+      const container = {
+        getAttribute: (name) => (name === 'data-testid' && scopeMode === 'conversation-turn') ? testId : null,
         querySelectorAll: (selector) => selector === '[data-message-id]' ? messageNodes : [],
       };
-      // scope 'message-node': no ancestor <article>; the nearest
-      // [data-message-id] ancestor itself carries the identity (no
-      // querySelectorAll), exercising the self-candidate fallback.
+      // scope 'message-node': the nearest [data-message-id] ancestor itself
+      // carries the identity (no queryable children), exercising the
+      // self-candidate fallback.
       const selfNode = {
         getAttribute: (name) => {
           if (name === 'data-message-id') return messages[0]?.id || null;
@@ -448,12 +455,14 @@ function createRefreshHarness({
           return null;
         },
       };
-      const scopeMode = opts.scope === 'message-node' ? 'message-node' : 'article';
       const button = {
         tagName: 'BUTTON',
         getAttribute: (name) => name === 'aria-label' ? label : null,
         closest: (selector) => {
-          if (scopeMode === 'article') return selector === 'article' ? article : null;
+          if (scopeMode === 'conversation-turn') {
+            return selector === '[data-testid^="conversation-turn-"]' ? container : null;
+          }
+          if (scopeMode === 'article') return selector === 'article' ? container : null;
           return selector === '[data-message-id]' ? selfNode : null;
         },
       };
@@ -465,7 +474,7 @@ function createRefreshHarness({
       const event = {
         isTrusted: true,
         target: svg,
-        composedPath: opts.composedPath === false ? undefined : () => [svg, button, article],
+        composedPath: opts.composedPath === false ? undefined : () => [svg, button, container],
       };
       const recorded = signalRuntime?.record?.(event, currentIndex) === true;
       trustedSelectionToken = signalRuntime?.intent?.()?.token || '';
@@ -2026,6 +2035,139 @@ await fixture('G5 missing canonical authority and article-less topology fail clo
   }), true);
   equal(fallbackHarness.signalIntent()?.qId, LIVE_BRANCH_Q);
   equal(fallbackHarness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-success')?.reason, 'capture-owner-qid-resolved');
+});
+
+await fixture('G5 conversation-turn container regression: real ChatGPT topology binds canonical owner and confirms', async () => {
+  // Reproduces the FINAL live failure: the target answer + branch controls are
+  // grouped under <div data-testid="conversation-turn-69"> with NO <article>
+  // ancestor. The prior resolver searched only article/[data-message-id] and
+  // returned capture-owner-unresolved, so no trusted intent was ever created.
+  // The clicked button carries no qId; the nested SVG/path is the click target.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+
+  // Real topology: conversation-turn-69 container holds the user qId AND the
+  // current assistant answer id; ownership resolves through the answer id to
+  // the unique canonical qId 5068a46e..., NEVER capture-owner-unresolved.
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    testId: 'conversation-turn-69',
+    messages: [
+      { id: LIVE_BRANCH_Q, role: 'user' },
+      { id: LIVE_BRANCH_CURRENT_A, role: 'assistant' },
+    ],
+  }), true);
+  equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  const events = harness.lifecycleTrace().map((entry) => entry.event);
+  equal(events.includes('capture-owner-unresolved'), false);
+  equal(events.indexOf('trusted-capture-created'), 0);
+  ok(events.includes('trusted-bind-attempt'));
+  ok(events.includes('trusted-bind-success'));
+  const bound = harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-success');
+  equal(bound?.qId, LIVE_BRANCH_Q);
+  equal(bound?.reason, 'capture-owner-answer-resolved');
+
+  // Downstream wrong-first turns stay untrusted; only the target carries the token.
+  const cascade = [
+    { qId: LIVE_DOWNSTREAM_Q1, primaryAId: 'live-downstream-a-19', answerIds: ['live-downstream-a-19'], structureKnown: true },
+    { qId: LIVE_DOWNSTREAM_Q2, primaryAId: 'live-downstream-a-21', answerIds: ['live-downstream-a-21'], structureKnown: true },
+    { qId: LIVE_BRANCH_Q, primaryAId: LIVE_BRANCH_PREVIOUS_A, answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A], structureKnown: true },
+  ];
+  harness.inspectLive(cascade);
+  const evidenceEntries = harness.lifecycleTrace().filter((entry) => entry.event === 'selected-evidence-created');
+  equal(evidenceEntries.filter((entry) => entry.qId === LIVE_DOWNSTREAM_Q1).every((entry) => entry.trusted === false), true);
+  equal(evidenceEntries.filter((entry) => entry.qId === LIVE_DOWNSTREAM_Q2).every((entry) => entry.trusted === false), true);
+  equal(evidenceEntries.filter((entry) => entry.trusted === true).every((entry) => entry.qId === LIVE_BRANCH_Q), true);
+
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathResultCode, null);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+});
+
+await fixture('G5 conversation-turn ownership resolves via unique user message qId', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [{ id: LIVE_BRANCH_Q, role: 'user' }],
+  }), true);
+  equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  equal(harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-success')?.reason, 'capture-owner-qid-resolved');
+});
+
+await fixture('G5 ambiguous conversation-turn container fails closed', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  // Two canonically-distinct owners inside one container (a malformed/merged
+  // turn): user qId 5068a46e... AND an assistant answer belonging to a
+  // DIFFERENT canonical turn — the resolved set has size > 1.
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [
+      { id: LIVE_BRANCH_Q, role: 'user' },
+      { id: '54520999-dedf-4f01-8c60-ac8adcc2c066', role: 'assistant' },
+    ],
+  }), false);
+  equal(harness.signalIntent(), null);
+  equal(harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-skipped')?.reason, 'capture-owner-ambiguous');
+  equal(harness.diagnostics().trustedSelectionBindSuccessCount, 0);
+});
+
+await fixture('G5 conversation-turn container with no canonical message IDs fails closed', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [{ id: 'f0000000-0000-4000-8000-00000000dead', role: 'assistant' }],
+  }), false);
+  equal(harness.signalIntent(), null);
+  equal(harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-skipped')?.reason, 'capture-owner-not-canonical');
+  // An empty container (no [data-message-id] descendants at all) is unresolved.
+  const { harness: emptyContainer } = createLiveEnvelopeHarness();
+  equal(emptyContainer.recordTrustedNativeClick('previous', { scope: 'conversation-turn', messages: [] }), false);
+  equal(emptyContainer.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-skipped')?.reason, 'capture-owner-unresolved');
+});
+
+await fixture('G5 legacy article topology remains supported alongside conversation-turn', () => {
+  const { harness: articleHarness } = createLiveEnvelopeHarness();
+  equal(articleHarness.recordTrustedNativeClick('previous', {
+    scope: 'article',
+    messages: [{ id: LIVE_BRANCH_CURRENT_A, role: 'assistant' }],
+  }), true);
+  equal(articleHarness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  equal(articleHarness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-bind-success')?.reason, 'capture-owner-answer-resolved');
+  // Production tries conversation-turn first, then article — the scope-order
+  // fallback is present in source.
+  ok(coreSource.includes("button.closest?.('[data-testid^=\"conversation-turn-\"]')"));
+  ok(coreSource.includes("|| button.closest?.('article')"));
 });
 
 const failed = fixtures.filter((row) => !row.ok);
