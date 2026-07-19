@@ -5853,10 +5853,21 @@
           }
           const selectedPathConfirmed = !!state.selectedPathActiveEvidence
             && adapters?.selectedPathConfirmed?.(incoming, state.selectedPathActiveEvidence) === true;
+          // A capture-driven request confirms strictly on the host primary
+          // leaving its baseline (expectChange). While it has NOT yet — even if
+          // an unrelated downstream turn advanced the payload revision — the
+          // switch is still pending, so it must still schedule its one delayed
+          // confirmation rather than being dropped by the revision===0 gate the
+          // generic observed-answer path relies on.
           const selectedPathUnchanged = !!state.selectedPathActiveEvidence
             && !selectedPathConfirmed
-            && revisionOrder === 0
-            && String(incoming?.sourceFingerprint || '') === String(retained?.sourceFingerprint || '');
+            && (
+              state.selectedPathActiveEvidence.expectChange === true
+              || (
+                revisionOrder === 0
+                && String(incoming?.sourceFingerprint || '') === String(retained?.sourceFingerprint || '')
+              )
+            );
           if (selectedPathConfirmed) {
             state.selectedPathSuppressedSignatures.delete(state.selectedPathActiveEvidence.signature);
             if (state.selectedPathActiveEvidence.selectionToken) {
@@ -5960,6 +5971,8 @@
             ? String(rawEvidence.selectionToken)
             : '',
           confirmationAttempt: rawEvidence?.confirmationAttempt === true,
+          baselineAnswerId: String(rawEvidence?.baselineAnswerId || '').slice(0, 256),
+          expectChange: rawEvidence?.expectChange === true,
         })
         : null;
       if (selectedPathEvidence) {
@@ -5985,6 +5998,26 @@
             trusted: selectedPathEvidence.trusted,
             token: selectedPathEvidence.selectionToken,
             signature: selectedPathEvidence.signature,
+          });
+          return state.promise || Promise.resolve(snapshot());
+        }
+        // A trusted capture-driven request in flight (pending, confirming, or
+        // actively refreshing) is authoritative. A generic UNTRUSTED signal —
+        // e.g. a downstream turn re-rendering during the branch transition —
+        // must never replace it as the pending evidence, so it cannot divert
+        // the refresh away from the captured qId. It deduplicates against the
+        // capture-driven request instead of clobbering it.
+        const trustedInFlight = state.selectedPathPendingEvidence?.trusted === true
+          || state.selectedPathConfirmationEvidence?.trusted === true
+          || state.selectedPathActiveEvidence?.trusted === true;
+        if (trustedInFlight && selectedPathEvidence.trusted !== true) {
+          state.selectedPathDeduplicatedCount += 1;
+          adapters?.trace?.('selected-schedule-deduplicated', {
+            cause: boundedCause,
+            qId: selectedPathEvidence.qId,
+            trusted: false,
+            signature: selectedPathEvidence.signature,
+            reason: 'trusted-request-in-flight',
           });
           return state.promise || Promise.resolve(snapshot());
         }
@@ -6061,6 +6094,7 @@
     trustedSelectionSequence: 0,
     trustedSelectionCaptureCount: 0,
     trustedSelectedPathIntent: null,
+    trustedNativeReconcileTask: null,
     preferenceResolved: false,
     preferenceStoredValue: null,
     preferenceResolution: 'unresolved',
@@ -6359,6 +6393,9 @@
     chatAtlasTraceTrustedLifecycle('trusted-bind-attempt', { token, qId: ownership.qId });
     if (ownership.ok !== true) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      // A newer click that fails ownership must still cancel any prior click's
+      // pending post-event reconciliation task.
+      chatAtlasCancelTrustedNativeBranchReconcile();
       chatAtlasTraceTrustedLifecycle('trusted-bind-skipped', { reason: ownership.reason, token });
       return false;
     }
@@ -6376,7 +6413,52 @@
       token,
       reason: ownership.reason,
     });
+    // The captured qId is already uniquely and canonically known, so trusted
+    // reconciliation is DRIVEN by the capture — it never waits for generic
+    // live-change inspection to rediscover this qId (the real ChatGPT branch
+    // transition only reports downstream changed turns, so that rediscovery
+    // never happens). Defer past native event propagation, then enqueue one
+    // bounded trusted request for this exact qId/token through the coordinator.
+    chatAtlasScheduleTrustedNativeBranchReconcile(token);
     return true;
+  }
+
+  function chatAtlasCancelTrustedNativeBranchReconcile() {
+    if (completeTurnIndexAuthorityState.trustedNativeReconcileTask != null) {
+      try { (W.clearTimeout || clearTimeout)(completeTurnIndexAuthorityState.trustedNativeReconcileTask); } catch {}
+      completeTurnIndexAuthorityState.trustedNativeReconcileTask = null;
+    }
+  }
+
+  function chatAtlasScheduleTrustedNativeBranchReconcile(token) {
+    // One post-event task per trusted token. A newer click cancels the prior
+    // task (and the run guard re-checks the live token anyway).
+    chatAtlasCancelTrustedNativeBranchReconcile();
+    completeTurnIndexAuthorityState.trustedNativeReconcileTask = (W.setTimeout || setTimeout)(() => {
+      completeTurnIndexAuthorityState.trustedNativeReconcileTask = null;
+      chatAtlasRunTrustedNativeBranchReconcile(token);
+    }, 0);
+  }
+
+  function chatAtlasRunTrustedNativeBranchReconcile(token) {
+    // Re-validate the live intent by exact qId: token match plus the standard
+    // route/chat/generation/gate/age authority the lookup enforces. Any change
+    // since capture (route/gate/generation/supersede/expiry) leaves this a
+    // safe no-op, so the post-event task is fully token/route/gate scoped.
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (!intent || intent.token !== token) return;
+    const current = chatAtlasCurrentTrustedNativeBranchSelection(intent.qId);
+    if (!current || current.token !== token) return;
+    const evidence = chatAtlasCompleteIndexSelectedPathEvidence('trusted-native-branch-click', {
+      qId: intent.qId,
+    });
+    if (!evidence || evidence.trusted !== true || evidence.selectionToken !== token) return;
+    chatAtlasTraceTrustedLifecycle('trusted-native-branch-click', {
+      qId: intent.qId,
+      token,
+      direction: intent.direction,
+    });
+    void chatAtlasScheduleCompleteIndexRefresh(evidence.cause, { selectedPathEvidence: evidence });
   }
 
   function chatAtlasCurrentTrustedNativeBranchSelection(qIdRaw = '') {
@@ -6473,7 +6555,9 @@
       'question-branch-changed',
       'question-selected-path-changed',
       'answer-branch-changed',
+      'trusted-native-branch-click',
     ].includes(cause)) return null;
+    const captureDriven = cause === 'trusted-native-branch-click';
     const index = completeTurnIndexAuthorityState.index;
     const qId = chatAtlasCompleteIndexIdentity(
       detail?.qId || detail?.questionId || detail?.turn?.qId,
@@ -6485,6 +6569,15 @@
       || detail?.answerId
       || detail?.turn?.primaryAId,
     );
+    // The capture-driven request derives its baseline (pre-click) primary from
+    // the host-proven canonical index for the captured qId — never from DOM or
+    // click direction — so confirmation later depends only on the host payload
+    // moving off that baseline.
+    const baselineAnswerId = captureDriven
+      ? chatAtlasCompleteIndexIdentity(
+        (Array.isArray(index?.turns) ? index.turns.find((turn) => turn?.qId === qId) : null)?.primaryAId,
+      )
+      : '';
     const trustedSelection = chatAtlasCurrentTrustedNativeBranchSelection(qId);
     const identity = [
       Number(completeTurnIndexAuthorityState.generation || 0),
@@ -6495,6 +6588,7 @@
       String(index?.payloadUpdateTime ?? ''),
       cause,
       String(trustedSelection?.token || ''),
+      captureDriven ? `baseline:${baselineAnswerId}` : '',
     ];
     const evidence = Object.freeze({
       signature: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`,
@@ -6503,6 +6597,8 @@
       observedAnswerId,
       trusted: !!trustedSelection,
       selectionToken: String(trustedSelection?.token || ''),
+      baselineAnswerId,
+      expectChange: captureDriven,
     });
     chatAtlasTraceTrustedLifecycle('selected-evidence-created', {
       cause,
@@ -6518,6 +6614,15 @@
     if (!index?.complete || !evidence?.qId || !Array.isArray(index?.turns)) return false;
     const turn = index.turns.find((candidate) => candidate?.qId === evidence.qId);
     if (!turn) return false;
+    // Capture-driven trusted reconciliation knows the captured turn's PRE-click
+    // primary (its canonical baseline) but never the incoming answer — the host
+    // payload alone decides that. It is confirmed once the host-proven primary
+    // for the captured qId differs from that baseline; direction is never used
+    // to guess the new answer. Until then the first refresh stays "unchanged"
+    // and schedules exactly one delayed confirmation.
+    if (evidence.expectChange === true) {
+      return !!evidence.baselineAnswerId && turn.primaryAId !== evidence.baselineAnswerId;
+    }
     if (!evidence.observedAnswerId) return true;
     return turn.primaryAId === evidence.observedAnswerId;
   }
@@ -7085,6 +7190,7 @@
 
   function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false) {
     const clearedIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    chatAtlasCancelTrustedNativeBranchReconcile();
     completeIndexRefreshCoordinator?.cancel?.(
       staleStatus ? 'route-changed' : 'authority-reset',
       staleStatus ? 'stale-route-discarded' : 'idle',

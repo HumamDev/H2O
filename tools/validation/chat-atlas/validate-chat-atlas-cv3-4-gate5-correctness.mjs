@@ -236,6 +236,21 @@ function createRefreshHarness({
 } = {}) {
   const codeFunction = extractFunction(source, 'chatAtlasCompleteIndexCode');
   const coordinatorFunction = extractFunction(source, 'createCompleteIndexRefreshCoordinator');
+  // Use the REAL production confirm predicate so the harness can never drift
+  // from the runtime's baseline/expectChange semantics. Baseline sources that
+  // predate this function fall back to the legacy inline observed-answer stub
+  // (they never exercise capture-driven expectChange evidence anyway).
+  const productionSelectedPathConfirmed = source.includes('  function chatAtlasCompleteIndexSelectedPathConfirmed(')
+    ? vm.runInNewContext(`(function () {
+      ${extractFunction(source, 'chatAtlasCompleteIndexSelectedPathConfirmed')}
+      return chatAtlasCompleteIndexSelectedPathConfirmed;
+    })()`, { Object, Array, String, Number })
+    : (incoming, evidence) => {
+      const turn = Array.isArray(incoming?.turns)
+        ? incoming.turns.find((row) => row?.qId === evidence?.qId)
+        : null;
+      return !!turn && (!evidence?.observedAnswerId || turn.primaryAId === evidence.observedAnswerId);
+    };
   const factory = vm.runInNewContext(`(function (adapters) {
     const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({
       debounceMs: 280,
@@ -278,12 +293,10 @@ function createRefreshHarness({
       ? { ok: true, envelope: raw }
       : { ok: false, errorCode: 'complete-index-proof-invalid' },
     compareRevision: (incoming, retained) => Number(incoming) - Number(retained),
-    selectedPathConfirmed: (incoming, evidence) => {
-      const turn = Array.isArray(incoming?.turns)
-        ? incoming.turns.find((row) => row?.qId === evidence?.qId)
-        : null;
-      return !!turn && (!evidence?.observedAnswerId || turn.primaryAId === evidence.observedAnswerId);
-    },
+    selectedPathConfirmed: (incoming, evidence) => productionSelectedPathConfirmed(
+      { complete: true, ...incoming },
+      evidence,
+    ) === true,
     selectedPathEvidenceCurrent: (evidence) => !!evidence?.selectionToken
       && evidence.selectionToken === trustedSelectionToken,
     onSelectedPathResolved: (evidence, result) => {
@@ -328,6 +341,13 @@ function createRefreshHarness({
       ...(source.includes('  function chatAtlasTrustedNativeBranchOwnership(')
         ? ['chatAtlasCompleteIndexNativeBranchButton', 'chatAtlasTrustedNativeBranchOwnership']
         : []),
+      ...(source.includes('  function chatAtlasScheduleTrustedNativeBranchReconcile(')
+        ? [
+          'chatAtlasCancelTrustedNativeBranchReconcile',
+          'chatAtlasScheduleTrustedNativeBranchReconcile',
+          'chatAtlasRunTrustedNativeBranchReconcile',
+        ]
+        : []),
       'chatAtlasCurrentTrustedNativeBranchSelection',
       'chatAtlasResolveTrustedNativeBranchSelection',
       'chatAtlasCompleteIndexSelectedPathEvidence',
@@ -361,6 +381,16 @@ function createRefreshHarness({
       const chatAtlasScheduleCompleteIndexRefresh = (cause, opts) => coordinator.schedule(cause, opts);
       const isStreamingAnswerPlaceholderId = (value) => String(value || '').startsWith('request-placeholder-');
       const canonicalDraftHasStructuralQuestionProof = (draft) => draft?.structureKnown !== false;
+      // Faithful post-event scheduler stub: production defers the capture-driven
+      // reconcile via W.setTimeout(fn, 0). Record the deferred task so the test
+      // can fire it deterministically (post native event propagation) and prove
+      // cancellation. This is a SEPARATE timer queue from the coordinator's.
+      const postEventTasks = new Map();
+      let postEventTimerId = 0;
+      const W = {
+        setTimeout(fn, ms) { postEventTimerId += 1; postEventTasks.set(postEventTimerId, { fn, ms }); return postEventTimerId; },
+        clearTimeout(id) { postEventTasks.delete(id); },
+      };
       ${lifecycleDiagnosticsDeclaration(source)}
       ${signalNames.map((name) => extractFunction(source, name)).join('\n')}
       return {
@@ -388,6 +418,22 @@ function createRefreshHarness({
         setAuthorityGeneration(value) { completeTurnIndexAuthorityState.generation = Number(value); },
         setAuthorityRouteKey(value) { completeTurnIndexAuthorityState.routeKey = String(value); },
         setAuthorityEnabled(value) { completeTurnIndexAuthorityState.enabled = value === true; },
+        setAuthorityIndex(index) { completeTurnIndexAuthorityState.index = index; },
+        resetRoute() {
+          // Simulates chatAtlasResetCompleteIndexRoute's trusted-scope cleanup:
+          // cancel the post-event task, bump generation, null the intent.
+          if (typeof chatAtlasCancelTrustedNativeBranchReconcile === 'function') chatAtlasCancelTrustedNativeBranchReconcile();
+          completeTurnIndexAuthorityState.generation += 1;
+          completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+        },
+        pendingPostEventTaskCount() { return postEventTasks.size; },
+        runPostEventTasks(index) {
+          if (index !== undefined) completeTurnIndexAuthorityState.index = index;
+          const entries = Array.from(postEventTasks.values());
+          postEventTasks.clear();
+          for (const entry of entries) entry.fn();
+          return entries.length;
+        },
         ageIntent(observedAt) {
           const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
           if (!intent) return false;
@@ -417,6 +463,10 @@ function createRefreshHarness({
     setAuthorityGeneration(value) { return signalRuntime?.setAuthorityGeneration?.(value); },
     setAuthorityRouteKey(value) { return signalRuntime?.setAuthorityRouteKey?.(value); },
     setAuthorityEnabled(value) { return signalRuntime?.setAuthorityEnabled?.(value); },
+    setAuthorityIndex(index) { return signalRuntime?.setAuthorityIndex?.(index); },
+    signalResetRoute() { return signalRuntime?.resetRoute?.(); },
+    pendingPostEventTaskCount() { return signalRuntime?.pendingPostEventTaskCount?.() || 0; },
+    runPostEventTasks() { return signalRuntime?.runPostEventTasks?.(currentIndex) || 0; },
     ageIntent(observedAt) { return signalRuntime?.ageIntent?.(observedAt); },
     recordTrustedNativeClick(direction = 'previous', opts = {}) {
       const label = direction === 'next' ? 'Next response' : 'Previous response';
@@ -2168,6 +2218,300 @@ await fixture('G5 legacy article topology remains supported alongside conversati
   // fallback is present in source.
   ok(coreSource.includes("button.closest?.('[data-testid^=\"conversation-turn-\"]')"));
   ok(coreSource.includes("|| button.closest?.('article')"));
+});
+
+await fixture('G5 capture-driven reconciliation: real downstream-only sequence confirms the captured qId', async () => {
+  // The decisive live sequence: capture uniquely resolves the branch owner
+  // (5068a46e...), but generic live inspection reports ONLY downstream changed
+  // turns (de3883e7.../ddb05ee3...) and never the captured qId. The capture-
+  // driven post-event task must schedule reconciliation for the captured qId
+  // anyway, so the delayed confirmation runs and the host-proven switch to
+  // 0de24351... publishes — without ever waiting for inspection to rediscover
+  // the qId, and without downstream signals diverting or blocking it.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  // First refresh returns the UNCHANGED host path; the delayed confirmation GET
+  // returns the switched host path.
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+
+  // (3-6) Trusted click on the real conversation-turn container freezes the qId.
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    testId: 'conversation-turn-69',
+    messages: [
+      { id: LIVE_BRANCH_Q, role: 'user' },
+      { id: LIVE_BRANCH_CURRENT_A, role: 'assistant' },
+    ],
+  }), true);
+  equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  // The capture enqueued exactly one bounded post-event task.
+  equal(harness.pendingPostEventTaskCount(), 1);
+
+  // (7-8-10) Generic inspection reports ONLY downstream qIds; they are untrusted
+  // and must not schedule a trusted request or divert the capture-driven one.
+  const downstream = [
+    { qId: LIVE_DOWNSTREAM_Q1, primaryAId: 'live-downstream-a-19', answerIds: ['live-downstream-a-19'], structureKnown: true },
+    { qId: LIVE_DOWNSTREAM_Q2, primaryAId: 'live-downstream-a-21', answerIds: ['live-downstream-a-21'], structureKnown: true },
+  ];
+  harness.inspectLive(downstream);
+  equal(harness.diagnostics().selectedPathLastScheduleTrusted, false);
+
+  // (9) Fire the post-event task (after native event propagation): exactly one
+  // trusted schedule for the captured qId, despite inspection never emitting it.
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.pendingPostEventTaskCount(), 0);
+  const scheduleTrace = harness.lifecycleTrace().findLast((entry) => entry.event === 'selected-schedule-attempt' && entry.trusted === true);
+  equal(scheduleTrace?.qId, LIVE_BRANCH_Q);
+  equal(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-native-branch-click' && entry.qId === LIVE_BRANCH_Q), true);
+  equal(harness.diagnostics().selectedPathLastScheduleQId, LIVE_BRANCH_Q);
+  equal(harness.diagnostics().selectedPathLastScheduleTrusted, true);
+
+  // A late downstream signal during the window must not replace the trusted request.
+  harness.inspectLive(downstream);
+
+  // (11-12) First provider refresh retains the original primary and schedules
+  // exactly one delayed confirmation.
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(status.selectedPathActiveTrusted, true);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q).primaryAId, LIVE_BRANCH_CURRENT_A);
+
+  // (13-17) Exactly one confirmation GET; host switch publishes; variants and
+  // count preserved.
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathResultCode, null);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+
+  // (12 trace) Full corrected trace ordering.
+  const events = harness.lifecycleTrace().map((entry) => entry.event);
+  const milestones = [
+    'trusted-capture-created',
+    'trusted-bind-attempt',
+    'trusted-bind-success',
+    'trusted-native-branch-click',
+    'selected-schedule-attempt',
+    'selected-refresh-started',
+    'selected-refresh-unchanged',
+    'confirmation-eligibility-checked',
+    'confirmation-scheduled',
+    'confirmation-started',
+    'confirmation-confirmed',
+  ];
+  let cursor = -1;
+  for (const milestone of milestones) {
+    const position = events.indexOf(milestone, cursor + 1);
+    ok(position > cursor, `milestone out of order or missing: ${milestone}`);
+    cursor = position;
+  }
+  equal(harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-intent-cleared')?.reason, 'resolved-confirmed');
+});
+
+await fixture('G5 capture-driven confirmation survives a revision-advanced first refresh', async () => {
+  // The first refresh returns a payload whose revision ADVANCED (an unrelated
+  // downstream turn moved) while the captured branch has NOT switched yet. The
+  // capture-driven request must still schedule its one delayed confirmation
+  // (not be dropped by the generic revision===0 gate), and the later switch
+  // confirms. Provider GETs stay bounded at two.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  // Revision-advanced but captured branch unchanged: bump a DOWNSTREAM turn.
+  const advancedTurns = initialIndex.turns.map((turn) => turn.qId === LIVE_DOWNSTREAM_Q1
+    ? { ...turn, primaryAId: 'live-downstream-a-19b', answerVariants: ['live-downstream-a-19b'] }
+    : { ...turn, answerVariants: turn.answerVariants.slice() });
+  const advancedIndex = {
+    ...initialIndex,
+    payloadUpdateTime: Number(initialIndex.payloadUpdateTime) + 1,
+    sourceFingerprint: envelopeRuntime.fingerprint(advancedTurns),
+    turns: advancedTurns,
+  };
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    advancedIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(advancedIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: advancedIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [{ id: LIVE_BRANCH_CURRENT_A, role: 'assistant' }],
+  }), true);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  // Captured branch still on the baseline primary after the revision-advanced refresh.
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q).primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.trailingRefreshCount, 0);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+});
+
+await fixture('G5 capture-driven schedule is bounded to one per physical click', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.pendingPostEventTaskCount(), 1);
+  // One physical click -> exactly one post-event task -> exactly one trusted
+  // capture-driven schedule. Draining the queue fires it once.
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.pendingPostEventTaskCount(), 0);
+  equal(harness.lifecycleTrace().filter((entry) => entry.event === 'trusted-native-branch-click').length, 1);
+  const trustedSchedules = harness.lifecycleTrace().filter((entry) => entry.event === 'selected-schedule-attempt' && entry.trusted === true);
+  equal(trustedSchedules.length, 1);
+  equal(trustedSchedules[0].qId, LIVE_BRANCH_Q);
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('G5 downstream untrusted signal cannot replace or cancel the capture-driven request', async () => {
+  const { harness, initialIndex } = createLiveEnvelopeHarness({ skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.runPostEventTasks(), 1);
+  // Trusted pending evidence is in flight; a downstream untrusted signal dedups.
+  harness.inspectLive([{ qId: 'gate5-product-q-19', primaryAId: 'gate5-alt-a-19', answerIds: ['gate5-alt-a-19'], structureKnown: true }]);
+  const dedup = harness.lifecycleTrace().findLast((entry) => entry.event === 'selected-schedule-deduplicated' && entry.reason === 'trusted-request-in-flight');
+  ok(dedup);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  // The refresh ran for the trusted captured qId, scheduling the confirmation.
+  // (The last schedule ATTEMPT was the rejected downstream signal — that is the
+  // correct diagnostic; the only ACCEPTED trusted schedule was the captured qId.)
+  equal(status.selectedPathActiveTrusted, true);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  const acceptedTrusted = harness.lifecycleTrace().filter((entry) => entry.event === 'selected-schedule-attempt' && entry.trusted === true);
+  equal(acceptedTrusted.length, 1);
+  equal(acceptedTrusted[0].qId, LIVE_BRANCH_Q);
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('G5 newer trusted click cancels the older capture-driven task', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const firstToken = harness.signalIntent()?.token;
+  equal(harness.pendingPostEventTaskCount(), 1);
+  // A newer click supersedes: prior task cancelled, exactly one pending task remains.
+  equal(harness.recordTrustedNativeClick('next', {
+    messages: [{ id: '29a40c98-0bd8-48cd-be80-0273311a4977', role: 'user' }],
+  }), true);
+  equal(harness.pendingPostEventTaskCount(), 1);
+  equal(harness.signalIntent()?.token === firstToken, false);
+  // Firing the surviving task schedules for the NEWER qId only.
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.diagnostics().selectedPathLastScheduleQId, '29a40c98-0bd8-48cd-be80-0273311a4977');
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
+await fixture('G5 route/gate/reset cancel the pending capture-driven task before it runs', () => {
+  // Static guard: the PRODUCTION route/authority reset actively cancels the
+  // pending post-event task (the harness resetRoute() only simulates it, so
+  // this string check protects the real call-site from silent deletion).
+  ok(coreSource.includes('chatAtlasCancelTrustedNativeBranchReconcile();'));
+  const resetFn = coreSource.slice(coreSource.indexOf('  function chatAtlasResetCompleteIndexRoute('));
+  ok(resetFn.slice(0, resetFn.indexOf('\n  }\n')).includes('chatAtlasCancelTrustedNativeBranchReconcile()'));
+  const resetHarness = createLiveEnvelopeHarness().harness;
+  equal(resetHarness.recordTrustedNativeClick('previous'), true);
+  equal(resetHarness.pendingPostEventTaskCount(), 1);
+  resetHarness.signalResetRoute();
+  equal(resetHarness.pendingPostEventTaskCount(), 0);
+  equal(resetHarness.signalIntent(), null);
+  // Even a stray fire after reset is a safe no-op (guarded by live token/route).
+  equal(resetHarness.runPostEventTasks(), 0);
+
+  const gateHarness = createLiveEnvelopeHarness().harness;
+  equal(gateHarness.recordTrustedNativeClick('previous'), true);
+  gateHarness.setAuthorityEnabled(false);
+  // The intent lookup fails closed on gate disable, so a fired task no-ops.
+  equal(gateHarness.runPostEventTasks(), 1);
+  equal(gateHarness.diagnostics().selectedPathLastScheduleQId !== null
+    ? gateHarness.lifecycleTrace().filter((entry) => entry.event === 'trusted-native-branch-click').length
+    : 0, 0);
+});
+
+await fixture('G5 unresolved ownership creates no capture-driven task', () => {
+  const { harness } = createLiveEnvelopeHarness();
+  equal(harness.recordTrustedNativeClick('previous', { messages: [] }), false);
+  equal(harness.signalIntent(), null);
+  equal(harness.pendingPostEventTaskCount(), 0);
+  equal(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-native-branch-click'), false);
+});
+
+await fixture('G5 capture-driven confirmation accepts both qId-resolved and answer-resolved ownership', async () => {
+  for (const messages of [
+    [{ id: LIVE_BRANCH_Q, role: 'user' }],
+    [{ id: LIVE_BRANCH_CURRENT_A, role: 'assistant' }],
+  ]) {
+    const envelopeRuntime = createEnvelopeRuntime(coreSource);
+    const initialIndex = envelopeRuntime.normalize(
+      acceptedIdentityEnvelope(envelopeRuntime),
+      'fixture-chat',
+      { source: 'host' },
+    ).envelope;
+    const confirmedIndex = withLiveBranchPrimary(
+      envelopeRuntime,
+      initialIndex,
+      LIVE_BRANCH_PREVIOUS_A,
+      Number(initialIndex.payloadUpdateTime) + 1,
+    );
+    const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+    harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+    harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+    equal(harness.recordTrustedNativeClick('previous', { scope: 'conversation-turn', messages }), true);
+    equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+    equal(harness.runPostEventTasks(), 1);
+    equal(harness.runTimer(280), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    equal(harness.runTimer(1250), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+    equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+    equal(harness.coordinator.getStatus().selectedPathConfirmationFetchCount, 1);
+    equal(harness.timers.size, 0);
+  }
 });
 
 const failed = fixtures.filter((row) => !row.ok);
