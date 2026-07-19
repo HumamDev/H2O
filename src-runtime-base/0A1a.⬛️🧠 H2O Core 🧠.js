@@ -5497,6 +5497,8 @@
   const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({
     debounceMs: 280,
     timeoutMs: 4500,
+    selectedPathConfirmationDelayMs: 1250,
+    trustedSelectionWindowMs: 5000,
     diagnosticCauseLimit: 8,
     errorCodeLength: 96,
   });
@@ -5572,6 +5574,12 @@
       selectedPathActiveEvidence: null,
       selectedPathSuppressedSignatures: new Set(),
       selectedPathResultCode: null,
+      selectedPathConfirmationTimer: null,
+      selectedPathConfirmationEvidence: null,
+      selectedPathConfirmationTokens: new Set(),
+      selectedPathConfirmationScheduledCount: 0,
+      selectedPathConfirmationFetchCount: 0,
+      selectedPathConfirmationCancelledCount: 0,
     };
     const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
     const iso = (value) => {
@@ -5607,8 +5615,13 @@
       selectedPathLastSignature: state.selectedPathLastSignature,
       selectedPathActiveSignature: state.selectedPathActiveEvidence?.signature
         || state.selectedPathPendingEvidence?.signature
+        || state.selectedPathConfirmationEvidence?.signature
         || null,
       selectedPathResultCode: state.selectedPathResultCode,
+      selectedPathConfirmationPending: !!state.selectedPathConfirmationTimer,
+      selectedPathConfirmationScheduledCount: state.selectedPathConfirmationScheduledCount,
+      selectedPathConfirmationFetchCount: state.selectedPathConfirmationFetchCount,
+      selectedPathConfirmationCancelledCount: state.selectedPathConfirmationCancelledCount,
       timerPending: !!state.timer,
       requestActive: !!state.promise,
     });
@@ -5628,9 +5641,24 @@
       try { (adapters?.clearTimeout || clearTimeout)(state.timeoutTimer); } catch {}
       state.timeoutTimer = null;
     };
+    const clearSelectedPathConfirmation = (reason = 'cancelled', clearTokens = false) => {
+      const evidence = state.selectedPathConfirmationEvidence;
+      if (state.selectedPathConfirmationTimer) {
+        try { (adapters?.clearTimeout || clearTimeout)(state.selectedPathConfirmationTimer); } catch {}
+        state.selectedPathConfirmationCancelledCount += 1;
+      }
+      state.selectedPathConfirmationTimer = null;
+      state.selectedPathConfirmationEvidence = null;
+      if (evidence?.selectionToken) state.selectedPathConfirmationTokens.delete(evidence.selectionToken);
+      if (clearTokens) state.selectedPathConfirmationTokens.clear();
+      if (evidence) {
+        try { adapters?.onSelectedPathResolved?.(evidence, reason); } catch {}
+      }
+    };
     const cancel = (reason = 'cancelled', status = 'stale-route-discarded') => {
       clearDebounce();
       clearRequestTimeout();
+      clearSelectedPathConfirmation(reason, true);
       state.generation += 1;
       try { state.controller?.abort?.(errorCode(reason)); } catch {}
       state.controller = null;
@@ -5651,6 +5679,40 @@
       state.pendingCount = Math.max(0, Number(count || 0) || 0);
       if (!enabled() || !state.pendingCount) return snapshot();
       return notify('live-pending-overlay', { errorCode: null });
+    };
+    const scheduleSelectedPathConfirmation = (evidence) => {
+      const token = String(evidence?.selectionToken || '');
+      if (!evidence?.trusted || !token || evidence?.confirmationAttempt) return false;
+      if (adapters?.selectedPathEvidenceCurrent?.(evidence) === false) return false;
+      if (state.selectedPathConfirmationTokens.has(token)) return false;
+      clearSelectedPathConfirmation('superseded');
+      state.selectedPathConfirmationTokens.add(token);
+      state.selectedPathConfirmationEvidence = evidence;
+      state.selectedPathConfirmationScheduledCount += 1;
+      state.selectedPathResultCode = 'selected-path-confirmation-pending';
+      state.selectedPathConfirmationTimer = (adapters?.setTimeout || setTimeout)(() => {
+        state.selectedPathConfirmationTimer = null;
+        const pending = state.selectedPathConfirmationEvidence;
+        state.selectedPathConfirmationEvidence = null;
+        const current = pending
+          && enabled()
+          && state.routeKey === routeKey()
+          && adapters?.selectedPathEvidenceCurrent?.(pending) !== false;
+        if (!current) {
+          if (pending) {
+            state.selectedPathConfirmationCancelledCount += 1;
+            if (pending.selectionToken) state.selectedPathConfirmationTokens.delete(pending.selectionToken);
+            try { adapters?.onSelectedPathResolved?.(pending, 'stale-confirmation'); } catch {}
+          }
+          return;
+        }
+        state.selectedPathSuppressedSignatures.delete(pending.signature);
+        state.selectedPathPendingEvidence = Object.freeze({ ...pending, confirmationAttempt: true });
+        if (state.causes.size < Number(limits.diagnosticCauseLimit || 8)) state.causes.add(pending.cause);
+        state.selectedPathConfirmationFetchCount += 1;
+        void refresh();
+      }, Math.max(100, Number(limits.selectedPathConfirmationDelayMs || 1250)));
+      return true;
     };
     const refresh = () => {
       clearDebounce();
@@ -5742,14 +5804,29 @@
             && String(incoming?.sourceFingerprint || '') === String(retained?.sourceFingerprint || '');
           if (selectedPathConfirmed) {
             state.selectedPathSuppressedSignatures.delete(state.selectedPathActiveEvidence.signature);
+            if (state.selectedPathActiveEvidence.selectionToken) {
+              state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
+            }
             state.selectedPathResultCode = null;
+            try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'confirmed'); } catch {}
           } else if (selectedPathUnchanged) {
             state.selectedPathUnconfirmedCount += 1;
             if (state.selectedPathSuppressedSignatures.size >= Number(limits.diagnosticCauseLimit || 8)) {
               state.selectedPathSuppressedSignatures.delete(state.selectedPathSuppressedSignatures.values().next().value);
             }
             state.selectedPathSuppressedSignatures.add(state.selectedPathActiveEvidence.signature);
-            state.selectedPathResultCode = 'selected-path-unconfirmed-unchanged';
+            const confirmationScheduled = scheduleSelectedPathConfirmation(state.selectedPathActiveEvidence);
+            if (!confirmationScheduled) {
+              state.selectedPathResultCode = state.selectedPathActiveEvidence?.confirmationAttempt
+                ? 'selected-path-confirmation-unconfirmed'
+                : 'selected-path-unconfirmed-unchanged';
+              if (state.selectedPathActiveEvidence?.confirmationAttempt) {
+                if (state.selectedPathActiveEvidence.selectionToken) {
+                  state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
+                }
+                try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'unconfirmed'); } catch {}
+              }
+            }
           }
           const write = adapters?.writeCache?.(incoming) || { ok: false, status: 'cache-write-failed' };
           if (!write.ok) {
@@ -5776,6 +5853,16 @@
           clearRequestTimeout();
           state.controller = null;
           state.promise = null;
+          if (
+            state.selectedPathActiveEvidence?.confirmationAttempt
+            && state.selectedPathResultCode === 'selected-path-confirmation-pending'
+          ) {
+            state.selectedPathResultCode = 'selected-path-confirmation-failed';
+            if (state.selectedPathActiveEvidence.selectionToken) {
+              state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
+            }
+            try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'failed'); } catch {}
+          }
           state.selectedPathActiveEvidence = null;
           const shouldTrail = state.trailingRequired
             && state.causes.size > 0
@@ -5806,6 +5893,11 @@
           cause: boundedCause,
           qId: String(rawEvidence?.qId || '').slice(0, 256),
           observedAnswerId: String(rawEvidence?.observedAnswerId || '').slice(0, 256),
+          trusted: rawEvidence?.trusted === true,
+          selectionToken: /^[a-z0-9][a-z0-9._:-]{0,95}$/i.test(String(rawEvidence?.selectionToken || ''))
+            ? String(rawEvidence.selectionToken)
+            : '',
+          confirmationAttempt: rawEvidence?.confirmationAttempt === true,
         })
         : null;
       if (selectedPathEvidence) {
@@ -5813,11 +5905,16 @@
         state.selectedPathLastSignature = selectedPathEvidence.signature;
         const duplicate = state.selectedPathSuppressedSignatures.has(selectedPathEvidence.signature)
           || selectedPathEvidence.signature === state.selectedPathActiveEvidence?.signature
-          || selectedPathEvidence.signature === state.selectedPathPendingEvidence?.signature;
+          || selectedPathEvidence.signature === state.selectedPathPendingEvidence?.signature
+          || selectedPathEvidence.signature === state.selectedPathConfirmationEvidence?.signature;
         if (duplicate) {
           state.selectedPathDeduplicatedCount += 1;
           return state.promise || Promise.resolve(snapshot());
         }
+        if (
+          state.selectedPathConfirmationEvidence
+          && selectedPathEvidence.selectionToken !== state.selectedPathConfirmationEvidence.selectionToken
+        ) clearSelectedPathConfirmation('superseded');
         state.selectedPathPendingEvidence = selectedPathEvidence;
         state.selectedPathResultCode = null;
       }
@@ -5878,6 +5975,9 @@
     pendingStateNotifyQueued: false,
     refreshListenerBound: false,
     refreshListenerRegistrationCount: 0,
+    trustedSelectionSequence: 0,
+    trustedSelectionCaptureCount: 0,
+    trustedSelectedPathIntent: null,
     preferenceResolved: false,
     preferenceStoredValue: null,
     preferenceResolution: 'unresolved',
@@ -5918,6 +6018,81 @@
     return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`;
   }
 
+  function chatAtlasCompleteIndexNativeBranchDirection(event) {
+    if (event?.isTrusted !== true) return '';
+    const button = event?.target?.closest?.('button') || null;
+    const label = String(button?.getAttribute?.('aria-label') || '').trim().toLowerCase();
+    if (label === 'previous response') return 'previous';
+    if (label === 'next response') return 'next';
+    return '';
+  }
+
+  function chatAtlasRecordTrustedNativeBranchSelection(event) {
+    const direction = chatAtlasCompleteIndexNativeBranchDirection(event);
+    const route = chatAtlasFullIndexRoute();
+    if (
+      !direction
+      || !completeTurnIndexAuthorityState.enabled
+      || !route.chatId
+      || route.chatId !== completeTurnIndexAuthorityState.chatId
+      || route.routeKey !== completeTurnIndexAuthorityState.routeKey
+    ) return false;
+    completeTurnIndexAuthorityState.trustedSelectionSequence += 1;
+    completeTurnIndexAuthorityState.trustedSelectionCaptureCount += 1;
+    const observedAt = Date.now();
+    const tokenIdentity = [
+      Number(completeTurnIndexAuthorityState.generation || 0),
+      route.chatId,
+      route.routeKey,
+      completeTurnIndexAuthorityState.trustedSelectionSequence,
+      direction,
+      observedAt,
+    ];
+    completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
+      token: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(tokenIdentity))}`,
+      chatId: route.chatId,
+      routeKey: route.routeKey,
+      generation: Number(completeTurnIndexAuthorityState.generation || 0),
+      direction,
+      qId: '',
+      observedAt,
+    });
+    return true;
+  }
+
+  function chatAtlasCurrentTrustedNativeBranchSelection(qIdRaw = '') {
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (!intent) return null;
+    const qId = chatAtlasCompleteIndexIdentity(qIdRaw);
+    const age = Math.max(0, Date.now() - Number(intent.observedAt || 0));
+    const current = completeTurnIndexAuthorityState.enabled
+      && intent.chatId === completeTurnIndexAuthorityState.chatId
+      && intent.routeKey === completeTurnIndexAuthorityState.routeKey
+      && intent.generation === Number(completeTurnIndexAuthorityState.generation || 0)
+      && age <= Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000)
+      && (!intent.qId || !qId || intent.qId === qId);
+    if (!current) {
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      return null;
+    }
+    if (qId && !intent.qId) {
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({ ...intent, qId });
+    }
+    return completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+  }
+
+  function chatAtlasCompleteIndexSelectedPathEvidenceCurrent(evidence) {
+    const intent = chatAtlasCurrentTrustedNativeBranchSelection(evidence?.qId);
+    return !!intent && !!evidence?.selectionToken && intent.token === evidence.selectionToken;
+  }
+
+  function chatAtlasResolveTrustedNativeBranchSelection(evidence) {
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (intent && evidence?.selectionToken === intent.token) {
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+    }
+  }
+
   function chatAtlasCompleteIndexSelectedPathEvidence(causeRaw, detail = {}) {
     const cause = chatAtlasCompleteIndexCode(causeRaw, 'selected-path-changed', 64);
     if (![
@@ -5936,6 +6111,7 @@
       || detail?.answerId
       || detail?.turn?.primaryAId,
     );
+    const trustedSelection = chatAtlasCurrentTrustedNativeBranchSelection(qId);
     const identity = [
       Number(completeTurnIndexAuthorityState.generation || 0),
       String(completeTurnIndexAuthorityState.chatId || ''),
@@ -5944,12 +6120,15 @@
       String(index?.sourceFingerprint || ''),
       String(index?.payloadUpdateTime ?? ''),
       cause,
+      String(trustedSelection?.token || ''),
     ];
     return Object.freeze({
       signature: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(identity))}`,
       cause,
       qId,
       observedAnswerId,
+      trusted: !!trustedSelection,
+      selectionToken: String(trustedSelection?.token || ''),
     });
   }
 
@@ -6387,6 +6566,11 @@
       selectedPathLastSignature: refresh?.selectedPathLastSignature || null,
       selectedPathActiveSignature: refresh?.selectedPathActiveSignature || null,
       selectedPathResultCode: refresh?.selectedPathResultCode || null,
+      selectedPathConfirmationPending: refresh?.selectedPathConfirmationPending === true,
+      selectedPathConfirmationScheduledCount: Number(refresh?.selectedPathConfirmationScheduledCount || 0),
+      selectedPathConfirmationFetchCount: Number(refresh?.selectedPathConfirmationFetchCount || 0),
+      selectedPathConfirmationCancelledCount: Number(refresh?.selectedPathConfirmationCancelledCount || 0),
+      trustedSelectionCaptureCount: completeTurnIndexAuthorityState.trustedSelectionCaptureCount,
       refreshCauseSample: Array.isArray(refresh?.causeSample) ? refresh.causeSample.slice(0, 8) : [],
       refreshTimerPending: refresh?.timerPending === true,
       refreshRequestActive: refresh?.requestActive === true,
@@ -6447,6 +6631,8 @@
     normalize: (raw, chatId) => chatAtlasNormalizeCompleteIndexEnvelope(raw, chatId, { source: 'host' }),
     compareRevision: chatAtlasCompareCompleteIndexRevision,
     selectedPathConfirmed: chatAtlasCompleteIndexSelectedPathConfirmed,
+    selectedPathEvidenceCurrent: chatAtlasCompleteIndexSelectedPathEvidenceCurrent,
+    onSelectedPathResolved: chatAtlasResolveTrustedNativeBranchSelection,
     writeCache: (envelope) => {
       const result = chatAtlasWriteCompleteIndexCache(envelope);
       if (result.ok) completeTurnIndexAuthorityState.cacheRaw = result.bytes;
@@ -6493,6 +6679,7 @@
     completeTurnIndexAuthorityState.attempted = false;
     completeTurnIndexAuthorityState.promise = null;
     completeTurnIndexAuthorityState.controller = null;
+    completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
     completeTurnIndexAuthorityState.pendingDrafts.clear();
     completeTurnIndexAuthorityState.pendingObservedAt.clear();
     completeTurnIndexAuthorityState.pendingStateNotifyQueued = false;
@@ -6841,6 +7028,7 @@
     if (completeTurnIndexAuthorityState.refreshListenerBound) return true;
     const onCanonicalTurnUpdated = (detail) => { void chatAtlasHandleCompleteIndexTurnEvent(detail || {}); };
     H2O.bus.on(EV_CORE_TURN_UPDATED, onCanonicalTurnUpdated);
+    D.addEventListener('click', chatAtlasRecordTrustedNativeBranchSelection, true);
     completeTurnIndexAuthorityState.refreshListenerBound = true;
     completeTurnIndexAuthorityState.refreshListenerRegistrationCount += 1;
     return true;

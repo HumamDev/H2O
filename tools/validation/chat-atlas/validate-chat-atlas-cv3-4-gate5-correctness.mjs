@@ -26,9 +26,13 @@ const feedbackBaselineCoreSource = execFileSync('git', ['show', `${feedbackBasel
   cwd: root,
   encoding: 'utf8',
 });
+const LIVE_BRANCH_Q = '5068a46e-9a79-4533-a11f-2f96e4c49f4f';
+const LIVE_BRANCH_CURRENT_A = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+const LIVE_BRANCH_PREVIOUS_A = '0de24351-7b1b-471f-a055-539950beac5a';
 
 let assertionCount = 0;
 let liveParityEvidence = null;
+let nativeBranchEvidence = null;
 const fixtures = [];
 const equal = (actual, expected, message) => {
   assertionCount += 1;
@@ -143,7 +147,11 @@ function acceptedIdentityEnvelope(runtime) {
     let primaryAId = answerVariants[0];
     let noAnswer = false;
     let stopped = false;
-    if (order === 20) {
+    if (order === 18) {
+      qId = LIVE_BRANCH_Q;
+      answerVariants = [LIVE_BRANCH_PREVIOUS_A, LIVE_BRANCH_CURRENT_A];
+      primaryAId = LIVE_BRANCH_CURRENT_A;
+    } else if (order === 20) {
       qId = '7e60a524-96df-462c-a6c0-647ed1a9973c';
       answerVariants = [];
       primaryAId = null;
@@ -180,6 +188,24 @@ function acceptedIdentityEnvelope(runtime) {
   };
 }
 
+function withLiveBranchPrimary(runtime, envelope, primaryAId, payloadUpdateTime) {
+  const turns = envelope.turns.map((turn) => turn.qId === LIVE_BRANCH_Q
+    ? {
+      ...turn,
+      answerVariants: primaryAId === LIVE_BRANCH_PREVIOUS_A
+        ? [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]
+        : [LIVE_BRANCH_PREVIOUS_A, LIVE_BRANCH_CURRENT_A],
+      primaryAId,
+    }
+    : { ...turn, answerVariants: turn.answerVariants.slice() });
+  return {
+    ...envelope,
+    payloadUpdateTime,
+    sourceFingerprint: runtime.fingerprint(turns),
+    turns,
+  };
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -196,7 +222,14 @@ function createRefreshHarness({
   const codeFunction = extractFunction(source, 'chatAtlasCompleteIndexCode');
   const coordinatorFunction = extractFunction(source, 'createCompleteIndexRefreshCoordinator');
   const factory = vm.runInNewContext(`(function (adapters) {
-    const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({ debounceMs: 280, timeoutMs: 4500, diagnosticCauseLimit: 8, errorCodeLength: 96 });
+    const COMPLETE_TURN_INDEX_REFRESH_LIMITS = Object.freeze({
+      debounceMs: 280,
+      timeoutMs: 4500,
+      selectedPathConfirmationDelayMs: 1250,
+      trustedSelectionWindowMs: 5000,
+      diagnosticCauseLimit: 8,
+      errorCodeLength: 96,
+    });
     ${codeFunction}
     ${coordinatorFunction}
     return createCompleteIndexRefreshCoordinator(adapters);
@@ -211,7 +244,10 @@ function createRefreshHarness({
   let enabled = true;
   let currentIndex = initialIndex;
   let coordinator = null;
+  let signalRuntime = null;
   let publishFeedback = null;
+  let trustedSelectionToken = '';
+  const resolvedSelections = [];
   const adapters = {
     now: (() => { let tick = 0; return () => ++tick; })(),
     routeKey: () => route,
@@ -232,6 +268,13 @@ function createRefreshHarness({
         ? incoming.turns.find((row) => row?.qId === evidence?.qId)
         : null;
       return !!turn && (!evidence?.observedAnswerId || turn.primaryAId === evidence.observedAnswerId);
+    },
+    selectedPathEvidenceCurrent: (evidence) => !!evidence?.selectionToken
+      && evidence.selectionToken === trustedSelectionToken,
+    onSelectedPathResolved: (evidence, result) => {
+      resolvedSelections.push({ evidence, result });
+      if (evidence?.selectionToken === trustedSelectionToken) trustedSelectionToken = '';
+      signalRuntime?.resolve?.(evidence);
     },
     writeCache: (incoming) => {
       if (!writeOk) return { ok: false, status: 'cache-write-failed' };
@@ -256,7 +299,6 @@ function createRefreshHarness({
     AbortController,
   };
   coordinator = factory(adapters);
-  let signalRuntime = null;
   if (source.includes('  function chatAtlasCompleteIndexSelectedPathEvidence(')) {
     const causeStart = source.indexOf('  const COMPLETE_TURN_INDEX_EVENT_CAUSES = Object.freeze({');
     const causeEnd = source.indexOf('\n  });', causeStart);
@@ -265,6 +307,10 @@ function createRefreshHarness({
       'chatAtlasCompleteIndexCode',
       'chatAtlasCompleteIndexIdentity',
       'chatAtlasCompleteIndexStableHash',
+      'chatAtlasCompleteIndexNativeBranchDirection',
+      'chatAtlasRecordTrustedNativeBranchSelection',
+      'chatAtlasCurrentTrustedNativeBranchSelection',
+      'chatAtlasResolveTrustedNativeBranchSelection',
       'chatAtlasCompleteIndexSelectedPathEvidence',
       'chatAtlasCompleteIndexTurnEventCause',
       'chatAtlasHandleCompleteIndexTurnEvent',
@@ -277,14 +323,20 @@ function createRefreshHarness({
         'e1d4b63f-0be7-4a51-b074-e3372b71d790',
         'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
       ];
+      const COMPLETE_TURN_INDEX_REFRESH_LIMITS = { trustedSelectionWindowMs: 5000 };
       ${causeDeclaration}
       const completeTurnIndexAuthorityState = {
         enabled: true,
         generation: 1,
         chatId: 'fixture-chat',
+        routeKey: '/c/fixture-chat',
         index: null,
         pendingDrafts: new Map(),
+        trustedSelectionSequence: 0,
+        trustedSelectionCaptureCount: 0,
+        trustedSelectedPathIntent: null,
       };
+      const chatAtlasFullIndexRoute = () => ({ chatId: 'fixture-chat', routeKey: '/c/fixture-chat' });
       const completeIndexRefreshCoordinator = coordinator;
       const getCompleteTurnIndexProjectionStatus = () => coordinator.getStatus();
       const chatAtlasScheduleCompleteIndexRefresh = (cause, opts) => coordinator.schedule(cause, opts);
@@ -300,6 +352,12 @@ function createRefreshHarness({
           completeTurnIndexAuthorityState.index = index;
           return chatAtlasInspectCompleteIndexLiveChanges(drafts, index);
         },
+        record(event, index) {
+          completeTurnIndexAuthorityState.index = index;
+          return chatAtlasRecordTrustedNativeBranchSelection(event);
+        },
+        intent() { return completeTurnIndexAuthorityState.trustedSelectedPathIntent; },
+        resolve(evidence) { return chatAtlasResolveTrustedNativeBranchSelection(evidence); },
       };
     })`, { Object, Array, Set, Map, String, Number, Date, Math, JSON, Promise });
     signalRuntime = signalFactory(coordinator);
@@ -311,9 +369,22 @@ function createRefreshHarness({
     published,
     writes,
     cache,
+    resolvedSelections,
     currentIndex: () => currentIndex,
     emitTurnEvent(detail) { return signalRuntime?.handle?.(detail, currentIndex); },
     inspectLive(drafts) { return signalRuntime?.inspect?.(drafts, currentIndex); },
+    recordTrustedNativeClick(direction = 'previous') {
+      const label = direction === 'next' ? 'Next response' : 'Previous response';
+      const button = { getAttribute: (name) => name === 'aria-label' ? label : null };
+      const recorded = signalRuntime?.record?.({ isTrusted: true, target: { closest: () => button } }, currentIndex) === true;
+      trustedSelectionToken = signalRuntime?.intent?.()?.token || '';
+      return recorded;
+    },
+    recordSyntheticNativeClick() {
+      const button = { getAttribute: (name) => name === 'aria-label' ? 'Previous response' : null };
+      return signalRuntime?.record?.({ isTrusted: false, target: { closest: () => button } }, currentIndex) === true;
+    },
+    setTrustedSelectionToken(value) { trustedSelectionToken = String(value || ''); },
     setPublishFeedback(fn) { publishFeedback = typeof fn === 'function' ? fn : null; },
     setEnabled(value) { enabled = value === true; },
     setRoute(value) { route = String(value); },
@@ -438,6 +509,7 @@ function createTurnEventRuntime(source, enabled = true) {
     };
     const completeIndexRefreshCoordinator = { markPending: (count) => marked.push(count) };
     const chatAtlasCompleteIndexIdentity = (value) => String(value || '').trim();
+    const chatAtlasCurrentTrustedNativeBranchSelection = () => null;
     const getCompleteTurnIndexProjectionStatus = () => ({ enabled: completeTurnIndexAuthorityState.enabled });
     const chatAtlasScheduleCompleteIndexRefresh = (cause) => { scheduled.push(cause); return Promise.resolve({ cause }); };
     ${codeFunction}
@@ -708,6 +780,160 @@ await fixture('selected-path unchanged live-parity feedback becomes fully quiesc
   });
 });
 
+await fixture('trusted native previous response receives one delayed host confirmation', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordSyntheticNativeClick(), false);
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  const liveDraft = {
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  };
+  harness.inspectLive([liveDraft]);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathResultCode, 'selected-path-confirmation-pending');
+  for (let index = 0; index < 12; index += 1) harness.inspectLive([liveDraft]);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(status.fetchCount, 2);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationPending, false);
+  equal(status.timerPending, false);
+  equal(status.requestActive, false);
+  equal(status.trailingRequired, false);
+  equal(status.selectedPathResultCode, null);
+  ok(status.selectedPathDeduplicatedCount >= 12);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.currentIndex().turns.some((row) => row.answerVariants.some(
+    (answerId) => answerId.startsWith('request-placeholder-'),
+  )), false);
+  equal(harness.cache.skipped, 1);
+  equal(harness.writes.length, 1);
+  equal(harness.writes[0].sourceFingerprint, confirmedIndex.sourceFingerprint);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+  nativeBranchEvidence = Object.freeze({
+    providerRefreshGets: status.fetchCount,
+    confirmationRefreshes: status.selectedPathConfirmationFetchCount,
+    trailingRefreshes: status.trailingRefreshCount,
+    cacheWrites: harness.writes.length,
+    cacheWritesSkippedUnchanged: harness.cache.skipped,
+    finalPrimaryAId: turn.primaryAId,
+  });
+});
+
+await fixture('pending native confirmation is cleared by route chat gate and runtime reset', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:native-cancel-a',
+    turns: [{ qId: 'native-cancel-q', primaryAId: 'old-a' }],
+  };
+  const evidence = {
+    signature: 'djb2:native-cancel-signature',
+    qId: 'native-cancel-q',
+    observedAnswerId: 'new-a',
+    trusted: true,
+    selectionToken: 'djb2:native-cancel-token',
+  };
+  const routeHarness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  routeHarness.setTrustedSelectionToken(evidence.selectionToken);
+  routeHarness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await routeHarness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: evidence,
+  });
+  equal(routeHarness.coordinator.getStatus().selectedPathConfirmationPending, true);
+  routeHarness.setRoute('other-chat|/c/other-chat');
+  routeHarness.coordinator.cancel('route-changed', 'stale-route-discarded');
+  equal(routeHarness.coordinator.getStatus().selectedPathConfirmationPending, false);
+  equal(routeHarness.runTimer(1250), false);
+
+  const gateHarness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  gateHarness.setTrustedSelectionToken(evidence.selectionToken);
+  gateHarness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await gateHarness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: evidence,
+  });
+  equal(gateHarness.coordinator.getStatus().selectedPathConfirmationPending, true);
+  gateHarness.setEnabled(false);
+  gateHarness.coordinator.cancel('gate-disabled', 'idle');
+  equal(gateHarness.coordinator.getStatus().selectedPathConfirmationPending, false);
+  equal(gateHarness.timers.size, 0);
+
+  const recreated = createRefreshHarness({ initialIndex });
+  equal(recreated.coordinator.getStatus().selectedPathConfirmationPending, false);
+  equal(recreated.coordinator.getStatus().selectedPathLastSignature, null);
+});
+
+await fixture('newer native selection supersedes an older delayed confirmation', async () => {
+  const initialIndex = {
+    complete: true,
+    chatId: 'fixture-chat',
+    payloadUpdateTime: 1,
+    sourceFingerprint: 'djb2:native-supersede-a',
+    turns: [{ qId: 'native-supersede-q', primaryAId: 'old-a' }],
+  };
+  const oldEvidence = {
+    signature: 'djb2:native-supersede-old-signature',
+    qId: 'native-supersede-q',
+    observedAnswerId: 'candidate-a',
+    trusted: true,
+    selectionToken: 'djb2:native-supersede-old-token',
+  };
+  const newEvidence = {
+    ...oldEvidence,
+    signature: 'djb2:native-supersede-new-signature',
+    observedAnswerId: 'candidate-b',
+    selectionToken: 'djb2:native-supersede-new-token',
+  };
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.setTrustedSelectionToken(oldEvidence.selectionToken);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  await harness.coordinator.schedule('question-selected-path-changed', {
+    immediate: true,
+    selectedPathEvidence: oldEvidence,
+  });
+  equal(harness.coordinator.getStatus().selectedPathConfirmationPending, true);
+  harness.setTrustedSelectionToken(newEvidence.selectionToken);
+  await harness.coordinator.schedule('question-selected-path-changed', { selectedPathEvidence: newEvidence });
+  const status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationPending, false);
+  equal(status.selectedPathActiveSignature, newEvidence.signature);
+  equal(status.selectedPathConfirmationCancelledCount, 1);
+  equal(harness.runTimer(1250), false);
+  equal(harness.runTimer(280), true);
+  harness.coordinator.cancel('fixture-end', 'idle');
+});
+
 await fixture('new selected-path evidence and newer host identity remain eligible', async () => {
   const initialIndex = {
     complete: true,
@@ -957,6 +1183,9 @@ const failed = fixtures.filter((row) => !row.ok);
 console.log(`CV-3.4 Gate 5 correctness: ${fixtures.length - failed.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failed.length} failures`);
 if (liveParityEvidence) {
   console.log(`Live parity: provider GET ${liveParityEvidence.providerRefreshGets}, trailing ${liveParityEvidence.trailingRefreshes}, cache writes ${liveParityEvidence.cacheWrites}, unchanged skips ${liveParityEvidence.cacheWritesSkippedUnchanged}, selected-path signals ${liveParityEvidence.selectedPathSignals}, deduplicated ${liveParityEvidence.selectedPathDeduplicated}, unconfirmed ${liveParityEvidence.selectedPathUnconfirmed}`);
+}
+if (nativeBranchEvidence) {
+  console.log(`Native branch confirmation: provider GET ${nativeBranchEvidence.providerRefreshGets}, confirmations ${nativeBranchEvidence.confirmationRefreshes}, trailing ${nativeBranchEvidence.trailingRefreshes}, cache writes ${nativeBranchEvidence.cacheWrites}, unchanged skips ${nativeBranchEvidence.cacheWritesSkippedUnchanged}, primary ${nativeBranchEvidence.finalPrimaryAId}`);
 }
 for (const row of failed) console.error(`FAIL ${row.name}\n${row.error}`);
 if (failed.length) process.exitCode = 1;

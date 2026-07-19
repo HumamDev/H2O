@@ -28,6 +28,9 @@ const BRIDGE_ONE_Q = '01e8bbdc-0000-4000-8000-000000000001';
 const BRIDGE_ONE_A = '377a87ec-0000-4000-8000-000000000001';
 const BRIDGE_TWO_Q = '5068a46e-0000-4000-8000-000000000002';
 const BRIDGE_TWO_A = 'c1a937a4-0000-4000-8000-000000000002';
+const LIVE_BRANCH_Q = '5068a46e-9a79-4533-a11f-2f96e4c49f4f';
+const LIVE_BRANCH_CURRENT_A = 'c1a937a4-8789-44e2-ae45-44a8f6ea4420';
+const LIVE_BRANCH_PREVIOUS_A = '0de24351-7b1b-471f-a055-539950beac5a';
 const HISTORICAL_Q = '7e60a524-96df-462c-a6c0-647ed1a9973c';
 const HISTORICAL_CONTEXT_A = '17d51c70-49a4-4ebb-a9dd-6177a003955f';
 const HISTORICAL_INTERRUPTED_A = '88a66be2-37de-4237-801b-daaae73cc817';
@@ -621,6 +624,64 @@ function systemBranchShellNode({
   });
 }
 
+function buildLiveSelectedBranchGraph(currentNode) {
+  const contextId = 'live-selected-branch-model-editable-context';
+  const internalUserId = 'e1d4b63f-0be7-4a51-b074-e3372b71d790';
+  const reasoningId = 'live-selected-branch-reasoning-recap';
+  return {
+    mapping: {
+      root: node({ id: 'root', role: 'system', children: [LIVE_BRANCH_Q] }),
+      [LIVE_BRANCH_Q]: node({
+        id: LIVE_BRANCH_Q,
+        role: 'user',
+        parent: 'root',
+        children: [LIVE_BRANCH_PREVIOUS_A, contextId],
+      }),
+      [LIVE_BRANCH_PREVIOUS_A]: node({
+        id: LIVE_BRANCH_PREVIOUS_A,
+        role: 'assistant',
+        parent: LIVE_BRANCH_Q,
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+      }),
+      [contextId]: node({
+        id: contextId,
+        role: 'assistant',
+        parent: LIVE_BRANCH_Q,
+        children: [internalUserId],
+        contentType: 'model_editable_context',
+        metadata: { is_visually_hidden_from_conversation: true },
+      }),
+      [internalUserId]: node({
+        id: internalUserId,
+        role: 'user',
+        parent: contextId,
+        children: [reasoningId],
+        contentType: 'user_editable_context',
+        metadata: { user_context_message_data: { fixture: true } },
+      }),
+      [reasoningId]: node({
+        id: reasoningId,
+        role: 'assistant',
+        parent: internalUserId,
+        children: [LIVE_BRANCH_CURRENT_A],
+        contentType: 'reasoning_recap',
+        metadata: { is_visually_hidden_from_conversation: true },
+      }),
+      [LIVE_BRANCH_CURRENT_A]: node({
+        id: LIVE_BRANCH_CURRENT_A,
+        role: 'assistant',
+        parent: reasoningId,
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+      }),
+    },
+    current_node: currentNode,
+  };
+}
+
 function buildFullGraph() {
   const mapping = {};
   const root = 'root';
@@ -889,6 +950,22 @@ const archiveRuntime = createArchiveRuntime();
 const parser = archiveRuntime.api.normalizeBackendConversationTurnIndex;
 const fullFixture = buildFullGraph();
 const fullResult = parser(fullFixture.payload, { chatId: CHAT_ID, capturedAt: '2026-07-18T00:00:00.000Z' });
+
+await fixture('live selected-path parser follows current_node and preserves sibling variants', () => {
+  const currentResult = parser(buildLiveSelectedBranchGraph(LIVE_BRANCH_CURRENT_A), { chatId: CHAT_ID });
+  const previousResult = parser(buildLiveSelectedBranchGraph(LIVE_BRANCH_PREVIOUS_A), { chatId: CHAT_ID });
+  const currentTurn = currentResult.index.turns[0];
+  const previousTurn = previousResult.index.turns[0];
+  equal(currentResult.ok, true);
+  equal(previousResult.ok, true);
+  equal(currentTurn.qId, LIVE_BRANCH_Q);
+  equal(currentTurn.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(currentTurn.answerVariants, [LIVE_BRANCH_PREVIOUS_A, LIVE_BRANCH_CURRENT_A]);
+  equal(previousTurn.qId, LIVE_BRANCH_Q);
+  equal(previousTurn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(previousTurn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(previousResult.index.completeness.proof, 'host-payload-full-graph');
+});
 
 await fixture('production schema is extracted from runtime source', () => {
   equal(archiveRuntime.api.schema, 1);
