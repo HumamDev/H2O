@@ -1016,38 +1016,40 @@ await fixture('e1d4 transparent bridge assigns c1a937a4 final to the preceding p
   equal(turn.primaryAId, BRIDGE_TWO_A);
 });
 
-await fixture('d824 transparent bridge resolves exact final primary', () => {
+await fixture('d824 transparent bridge resolves the selected branch root primary', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
   equal(turn.qId, D824);
   equal(turn.turnId, `turn:${D824}`);
-  equal(turn.primaryAId, A733);
-  equal(turn.answerVariants, [A84, A733]);
+  // Single-child selected system branch root is now the graph-proven primary.
+  equal(turn.primaryAId, A84);
+  equal(turn.answerVariants, [A733, A84]);
   equal(turn.answerVariants.includes('answer-37'), false);
 });
 
 await fixture('d824 retains the accepted hidden branch-shell alias', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.answerVariants[0], A84);
+  equal(turn.answerVariants.includes(A84), true);
   equal(turn.answerVariants.includes('d824-model-editable-context'), false);
   equal(turn.answerVariants.includes('d824-reasoning-recap'), false);
 });
 
-await fixture('d824 shell alias order is exactly shell then completed final', () => {
+await fixture('d824 variant order keeps the selected branch-root primary last', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.answerVariants, [A84, A733]);
-  equal(turn.answerVariants.at(-1), A733);
+  equal(turn.answerVariants, [A733, A84]);
+  equal(turn.answerVariants.at(-1), A84);
 });
 
-await fixture('d824 selected primary remains the completed 733f assistant', () => {
+await fixture('d824 selected primary is the single-child system branch root', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.primaryAId, A733);
+  equal(turn.primaryAId, A84);
+  equal(turn.branch.rootResolution, 'branch-root-system-selected-single-child');
   equal(turn.noAnswer, false);
   equal(turn.stopped, false);
 });
 
-await fixture('d824 branch diagnostics retain selected final and one inactive alias', () => {
+await fixture('d824 branch diagnostics reflect the selected root and one inactive final', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.branch.selectedAssistantNodeId, A733);
+  equal(turn.branch.selectedAssistantNodeId, A84);
   equal(turn.branch.variantCount, 2);
   equal(turn.branch.inactiveVariantCount, 1);
 });
@@ -1063,7 +1065,7 @@ await fixture('live-shaped system-role 84c7 direct shell is retained', () => {
   equal(shell.message.end_turn, true);
   equal(shell.message.channel, undefined);
   equal(shell.message.recipient, 'all');
-  equal(turn.answerVariants, [A84, A733]);
+  equal(turn.answerVariants, [A733, A84]);
 });
 
 await fixture('assistant-only shell classification would reject the live system fixture', () => {
@@ -1140,6 +1142,40 @@ function buildBranchRootIncidentGraph({ shell = {}, shellRole } = {}) {
   };
 }
 
+await fixture('real single-child topology: the only direct child system root becomes primary', () => {
+  // The intercepted HTTP-200 payload's exact shape: the target user node has
+  // EXACTLY ONE direct child — the selected system branch root (0de24351...)
+  // — and the stale assistant (c1a937a4...) is a deeper descendant on the
+  // same current-node ancestry, not a sibling. Sibling count must not gate
+  // the selection.
+  const graph = buildBranchRootIncidentGraph();
+  delete graph.mapping['branch-root-context-sibling'];
+  graph.mapping[LIVE_BRANCH_Q] = node({
+    id: LIVE_BRANCH_Q,
+    role: 'user',
+    parent: 'root',
+    children: [LIVE_BRANCH_PREVIOUS_A],
+  });
+  equal(graph.mapping[LIVE_BRANCH_Q].children.length, 1);
+  const result = parser(graph, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const turn = result.index.turns[0];
+  equal(turn.qId, LIVE_BRANCH_Q);
+  // The only direct child is selected, role system, on the ancestry.
+  equal(graph.mapping[LIVE_BRANCH_PREVIOUS_A].message.author.role, 'system');
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.branch.rootResolution, 'branch-root-system-selected-single-child');
+  equal(turn.branch.rootRole, 'system');
+  // The stale assistant is on the ancestry but is NOT a direct child; it
+  // remains a preserved same-qId variant and cannot override the root.
+  equal(graph.mapping[LIVE_BRANCH_CURRENT_A].parent === LIVE_BRANCH_Q, false);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(turn.noAnswer, false);
+  // No rekey: the continuation turn stays intact under its own qId.
+  equal(result.index.turns[1].qId, 'branch-root-next-question');
+  equal(result.index.turns[1].primaryAId, 'branch-root-next-answer');
+});
+
 await fixture('live incident: selected system branch root becomes primary from graph topology', () => {
   const result = parser(buildBranchRootIncidentGraph(), { chatId: CHAT_ID });
   equal(result.ok, true);
@@ -1197,14 +1233,14 @@ await fixture('unselected system shell sibling never becomes primary', () => {
   equal(turn.branch.rootResolution, 'branch-root-assistant-preserved');
 });
 
-await fixture('single-chain system shell stays inactive alias (d824 contract intact)', () => {
+await fixture('single-child selected system root is primary while the deep final stays preserved', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  // No fork at the user node: the branch-root override is not applicable and
-  // the deep completed final remains primary — a system descendant that is
-  // not a forked selected root can never become primary.
-  equal(turn.branch.rootResolution, 'branch-root-not-applicable');
-  equal(turn.primaryAId, A733);
-  equal(turn.answerVariants, [A84, A733]);
+  // Sibling count is not the authority: the unique selected direct child is
+  // the branch root even without a fork; the deep completed final remains a
+  // preserved same-qId variant.
+  equal(turn.branch.rootResolution, 'branch-root-system-selected-single-child');
+  equal(turn.primaryAId, A84);
+  equal(turn.answerVariants, [A733, A84]);
 });
 
 await fixture('cross-qId system branch root is rejected without rekey', () => {
@@ -1606,7 +1642,7 @@ await fixture('shell alias insertion remains unique and selected primary remains
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
   equal(new Set(turn.answerVariants).size, turn.answerVariants.length);
   equal(turn.answerVariants.at(-1), turn.primaryAId);
-  equal(turn.primaryAId, A733);
+  equal(turn.primaryAId, A84);
 });
 
 await fixture('completed request placeholder cannot become a shell alias', () => {
@@ -1644,8 +1680,8 @@ await fixture('hidden direct assistant without model or completion proof is not 
 await fixture('internal aabc user does not become a product qId or split d824 ownership', () => {
   const d824Turn = fullResult.index.turns.find((row) => row.qId === D824);
   equal(fullResult.index.turns.some((row) => row.qId === INTERNAL_D824), false);
-  equal(d824Turn.answerVariants, [A84, A733]);
-  equal(d824Turn.primaryAId, A733);
+  equal(d824Turn.answerVariants, [A733, A84]);
+  equal(d824Turn.primaryAId, A84);
 });
 
 await fixture('model_editable_context assistant is not a product answer', () => {
@@ -1799,13 +1835,14 @@ await fixture('one selected user produces one logical turn', () => {
 
 await fixture('assistant siblings remain variants under one box', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.answerVariants, [A84, A733]);
+  equal(turn.answerVariants, [A733, A84]);
   equal(turn.branch.variantCount, 2);
 });
 
-await fixture('accepted d824 ownership and primary are preserved', () => {
+await fixture('accepted d824 ownership resolves to the selected branch root', () => {
   const turn = fullResult.index.turns.find((row) => row.qId === D824);
-  equal(turn.primaryAId, A733);
+  equal(turn.primaryAId, A84);
+  equal(turn.answerVariants.includes(A733), true);
   equal(turn.noAnswer, false);
 });
 

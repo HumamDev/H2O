@@ -5577,6 +5577,7 @@
       selectedPathConfirmationTimer: null,
       selectedPathConfirmationEvidence: null,
       selectedPathConfirmationLease: null,
+      selectedPathRequestLease: null,
       selectedPathConfirmationTokens: new Set(),
       selectedPathConfirmationScheduledCount: 0,
       selectedPathConfirmationFetchCount: 0,
@@ -5626,6 +5627,7 @@
       selectedPathResultCode: state.selectedPathResultCode,
       selectedPathConfirmationPending: !!state.selectedPathConfirmationTimer,
       selectedPathConfirmationLeaseActive: !!state.selectedPathConfirmationLease,
+      selectedPathRequestLeaseActive: !!state.selectedPathRequestLease,
       selectedPathConfirmationScheduledCount: state.selectedPathConfirmationScheduledCount,
       selectedPathConfirmationFetchCount: state.selectedPathConfirmationFetchCount,
       selectedPathConfirmationCancelledCount: state.selectedPathConfirmationCancelledCount,
@@ -5648,6 +5650,31 @@
       try { (adapters?.clearTimeout || clearTimeout)(state.timeoutTimer); } catch {}
       state.timeoutTimer = null;
     };
+    // The lease check (when wired) only fails on genuine supersession by a
+    // newer live token; it deliberately ignores the original capture's age.
+    // Harnesses/baselines without the lease adapter keep the legacy
+    // evidence-current semantics.
+    const selectedPathLeaseCheck = (evidence) => {
+      const check = adapters?.selectedPathLeaseCurrent || adapters?.selectedPathEvidenceCurrent;
+      return check ? check(evidence) : undefined;
+    };
+    const clearSelectedPathRequestLease = (reason) => {
+      const lease = state.selectedPathRequestLease;
+      if (!lease) return;
+      state.selectedPathRequestLease = null;
+      adapters?.trace?.('trusted-request-lease-cancelled', {
+        reason,
+        qId: lease.evidence.qId,
+        token: lease.evidence.selectionToken,
+      });
+    };
+    const resolveSelectedPath = (evidence, reason) => {
+      if (
+        state.selectedPathRequestLease
+        && evidence?.selectionToken === state.selectedPathRequestLease.evidence.selectionToken
+      ) clearSelectedPathRequestLease(`resolved-${reason}`);
+      try { adapters?.onSelectedPathResolved?.(evidence, reason); } catch {}
+    };
     const clearSelectedPathConfirmation = (reason = 'cancelled', clearTokens = false) => {
       const evidence = state.selectedPathConfirmationEvidence;
       if (state.selectedPathConfirmationTimer) {
@@ -5660,13 +5687,14 @@
       if (evidence?.selectionToken) state.selectedPathConfirmationTokens.delete(evidence.selectionToken);
       if (clearTokens) state.selectedPathConfirmationTokens.clear();
       if (evidence) {
-        try { adapters?.onSelectedPathResolved?.(evidence, reason); } catch {}
+        resolveSelectedPath(evidence, reason);
       }
     };
     const cancel = (reason = 'cancelled', status = 'stale-route-discarded') => {
       clearDebounce();
       clearRequestTimeout();
       clearSelectedPathConfirmation(reason, true);
+      clearSelectedPathRequestLease(String(reason || 'cancelled'));
       state.generation += 1;
       try { state.controller?.abort?.(errorCode(reason)); } catch {}
       state.controller = null;
@@ -5709,12 +5737,8 @@
       // An accepted trusted request has already survived capture->bind->
       // trusted-schedule under the five-second age window; from here on its
       // confirmation is governed by its own bounded lease, NOT by the original
-      // capture's age. The lease check (when wired) only fails on genuine
-      // supersession by a newer live token; scope changes cancel through the
-      // coordinator instead. Harnesses/baselines without the lease adapter
-      // keep the legacy evidence-current semantics.
-      const leaseCheck = adapters?.selectedPathLeaseCurrent || adapters?.selectedPathEvidenceCurrent;
-      if (leaseCheck?.(evidence) === false) {
+      // capture's age. Scope changes cancel through the coordinator instead.
+      if (selectedPathLeaseCheck(evidence) === false) {
         adapters?.trace?.('confirmation-skipped', {
           reason: 'evidence-not-current',
           qId: evidence?.qId,
@@ -5769,12 +5793,12 @@
           && lease.qId === pending.qId
           && lease.routeKey === state.routeKey
           && Number(lease.generation || 0) === Number(adapters?.routeGeneration?.() ?? lease.generation ?? 0)
-          && leaseCheck?.(pending) !== false;
+          && selectedPathLeaseCheck(pending) !== false;
         if (!current) {
           if (pending) {
             state.selectedPathConfirmationCancelledCount += 1;
             if (pending.selectionToken) state.selectedPathConfirmationTokens.delete(pending.selectionToken);
-            try { adapters?.onSelectedPathResolved?.(pending, 'stale-confirmation'); } catch {}
+            resolveSelectedPath(pending, 'stale-confirmation');
           }
           return;
         }
@@ -5883,53 +5907,76 @@
               completedAt: iso(now()),
             });
           }
-          const selectedPathConfirmed = !!state.selectedPathActiveEvidence
-            && adapters?.selectedPathConfirmed?.(incoming, state.selectedPathActiveEvidence) === true;
+          // The accepted trusted request lease survives outcomes that consume
+          // or bypass the active evidence (races, discarded older payloads):
+          // when no active evidence reached this outcome, a still-valid lease
+          // supplies the trusted evidence so the initial-refresh completion
+          // and the single delayed confirmation are governed by the lease —
+          // never by the original capture's age.
+          const requestLease = state.selectedPathRequestLease;
+          const requestLeaseUsable = !!requestLease
+            && !state.selectedPathActiveEvidence
+            && state.routeKey === routeKey()
+            && requestLease.routeKey === state.routeKey
+            && Number(requestLease.generation || 0) === Number(adapters?.routeGeneration?.() ?? requestLease.generation ?? 0)
+            && !state.selectedPathConfirmationTimer
+            && !state.selectedPathConfirmationTokens.has(requestLease.evidence.selectionToken)
+            && selectedPathLeaseCheck(requestLease.evidence) !== false;
+          const selectedEvidence = state.selectedPathActiveEvidence
+            || (requestLeaseUsable ? requestLease.evidence : null);
+          if (requestLeaseUsable && selectedEvidence) {
+            adapters?.trace?.('trusted-request-lease-retained', {
+              qId: selectedEvidence.qId,
+              token: selectedEvidence.selectionToken,
+            });
+          }
+          const selectedPathConfirmed = !!selectedEvidence
+            && adapters?.selectedPathConfirmed?.(incoming, selectedEvidence) === true;
           // A capture-driven request confirms strictly on the host primary
           // leaving its baseline (expectChange). While it has NOT yet — even if
           // an unrelated downstream turn advanced the payload revision — the
           // switch is still pending, so it must still schedule its one delayed
           // confirmation rather than being dropped by the revision===0 gate the
           // generic observed-answer path relies on.
-          const selectedPathUnchanged = !!state.selectedPathActiveEvidence
+          const selectedPathUnchanged = !!selectedEvidence
             && !selectedPathConfirmed
             && (
-              state.selectedPathActiveEvidence.expectChange === true
+              selectedEvidence.expectChange === true
               || (
                 revisionOrder === 0
                 && String(incoming?.sourceFingerprint || '') === String(retained?.sourceFingerprint || '')
               )
             );
           if (selectedPathConfirmed) {
-            state.selectedPathSuppressedSignatures.delete(state.selectedPathActiveEvidence.signature);
-            if (state.selectedPathActiveEvidence.selectionToken) {
-              state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
+            state.selectedPathSuppressedSignatures.delete(selectedEvidence.signature);
+            if (selectedEvidence.selectionToken) {
+              state.selectedPathConfirmationTokens.delete(selectedEvidence.selectionToken);
             }
             state.selectedPathResultCode = null;
-            try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'confirmed'); } catch {}
+            resolveSelectedPath(selectedEvidence, 'confirmed');
           } else if (selectedPathUnchanged) {
             adapters?.trace?.('selected-refresh-unchanged', {
-              cause: state.selectedPathActiveEvidence.cause,
-              qId: state.selectedPathActiveEvidence.qId,
-              trusted: state.selectedPathActiveEvidence.trusted === true,
-              token: state.selectedPathActiveEvidence.selectionToken,
-              confirmationAttempt: state.selectedPathActiveEvidence.confirmationAttempt === true,
+              cause: selectedEvidence.cause,
+              qId: selectedEvidence.qId,
+              trusted: selectedEvidence.trusted === true,
+              token: selectedEvidence.selectionToken,
+              confirmationAttempt: selectedEvidence.confirmationAttempt === true,
             });
             state.selectedPathUnconfirmedCount += 1;
             if (state.selectedPathSuppressedSignatures.size >= Number(limits.diagnosticCauseLimit || 8)) {
               state.selectedPathSuppressedSignatures.delete(state.selectedPathSuppressedSignatures.values().next().value);
             }
-            state.selectedPathSuppressedSignatures.add(state.selectedPathActiveEvidence.signature);
-            const confirmationScheduled = scheduleSelectedPathConfirmation(state.selectedPathActiveEvidence);
+            state.selectedPathSuppressedSignatures.add(selectedEvidence.signature);
+            const confirmationScheduled = scheduleSelectedPathConfirmation(selectedEvidence);
             if (!confirmationScheduled) {
-              state.selectedPathResultCode = state.selectedPathActiveEvidence?.confirmationAttempt
+              state.selectedPathResultCode = selectedEvidence?.confirmationAttempt
                 ? 'selected-path-confirmation-unconfirmed'
                 : 'selected-path-unconfirmed-unchanged';
-              if (state.selectedPathActiveEvidence?.confirmationAttempt) {
-                if (state.selectedPathActiveEvidence.selectionToken) {
-                  state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
+              if (selectedEvidence?.confirmationAttempt) {
+                if (selectedEvidence.selectionToken) {
+                  state.selectedPathConfirmationTokens.delete(selectedEvidence.selectionToken);
                 }
-                try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'unconfirmed'); } catch {}
+                resolveSelectedPath(selectedEvidence, 'unconfirmed');
               }
             }
           }
@@ -5966,7 +6013,7 @@
             if (state.selectedPathActiveEvidence.selectionToken) {
               state.selectedPathConfirmationTokens.delete(state.selectedPathActiveEvidence.selectionToken);
             }
-            try { adapters?.onSelectedPathResolved?.(state.selectedPathActiveEvidence, 'failed'); } catch {}
+            resolveSelectedPath(state.selectedPathActiveEvidence, 'failed');
           }
           state.selectedPathActiveEvidence = null;
           const shouldTrail = state.trailingRequired
@@ -6065,6 +6112,28 @@
         ) clearSelectedPathConfirmation('superseded');
         state.selectedPathPendingEvidence = selectedPathEvidence;
         state.selectedPathResultCode = null;
+        // ── Trusted request lease: frozen at coordinator ACCEPTANCE, before
+        // the initial provider refresh begins. The five-second capture window
+        // governed capture->bind->coordinator-acceptance; from here on this
+        // immutable bounded record — never the capture's age — governs the
+        // initial refresh completion and the single delayed confirmation.
+        if (selectedPathEvidence.trusted === true && selectedPathEvidence.selectionToken) {
+          if (
+            state.selectedPathRequestLease
+            && state.selectedPathRequestLease.evidence.selectionToken !== selectedPathEvidence.selectionToken
+          ) clearSelectedPathRequestLease('superseded-by-newer-trusted');
+          state.selectedPathRequestLease = Object.freeze({
+            evidence: selectedPathEvidence,
+            routeKey: routeKey(),
+            generation: Number(adapters?.routeGeneration?.() ?? 0),
+            acceptedAt: now(),
+          });
+          adapters?.trace?.('trusted-request-lease-created', {
+            qId: selectedPathEvidence.qId,
+            token: selectedPathEvidence.selectionToken,
+            cause: boundedCause,
+          });
+        }
       }
       if (state.causes.size < Number(limits.diagnosticCauseLimit || 8)) state.causes.add(boundedCause);
       if (state.promise) {
@@ -7135,6 +7204,7 @@
       selectedPathResultCode: refresh?.selectedPathResultCode || null,
       selectedPathConfirmationPending: refresh?.selectedPathConfirmationPending === true,
       selectedPathConfirmationLeaseActive: refresh?.selectedPathConfirmationLeaseActive === true,
+      selectedPathRequestLeaseActive: refresh?.selectedPathRequestLeaseActive === true,
       selectedPathConfirmationScheduledCount: Number(refresh?.selectedPathConfirmationScheduledCount || 0),
       selectedPathConfirmationFetchCount: Number(refresh?.selectedPathConfirmationFetchCount || 0),
       selectedPathConfirmationCancelledCount: Number(refresh?.selectedPathConfirmationCancelledCount || 0),

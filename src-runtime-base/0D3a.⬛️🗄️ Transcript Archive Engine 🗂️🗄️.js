@@ -921,23 +921,25 @@
         }
       }
       // ── Selected branch root from host graph topology ──
-      // At a REAL fork (the user node has more than one non-user direct
-      // child), the current-node ancestry passes through exactly one direct
-      // child: the selected branch ROOT. When that root's author role is
-      // "system" (a hidden branch shell) the role-based descent above cannot
-      // see it and would preserve a stale assistant found deeper on the path.
-      // The graph-selected root becomes primary ONLY under strict canonical
-      // conditions: unique selection, identity present, not a placeholder,
-      // not owned by another qId, and already preserved as a same-qId answer
-      // variant. Assistant-role roots keep the existing role-walk primary
-      // (multi-message answers resolve to their final assistant message), and
-      // single-chain turns (no branch choice) are untouched — arbitrary
-      // system messages can never become a primary through this path.
+      // The current-node ancestry passes through exactly one of the user
+      // node's direct children: the selected branch ROOT. Sibling count is
+      // NOT the authority — the real intercepted payload's target user node
+      // has exactly ONE direct child (the selected system shell) — so the
+      // selection applies whenever at least one non-user direct child exists.
+      // When the root's author role is "system" (a hidden branch shell) the
+      // role-based descent above cannot see it and would preserve a stale
+      // assistant found deeper on the path. The graph-selected root becomes
+      // primary ONLY under strict canonical conditions: unique selection,
+      // identity present, not a placeholder, not owned by another qId, and
+      // already preserved as a same-qId answer variant. Assistant-role roots
+      // keep the existing role-walk primary (multi-message answers resolve to
+      // their final assistant message) — arbitrary system messages can never
+      // become a primary through this path.
       let branchRootResolution = "branch-root-not-applicable";
       let branchRootRole = null;
       const branchDirectChildKeys = orderedChildren(questionNodeKey)
         .filter((childKey) => !conversationTurnIndexProductUser(mapping[childKey]));
-      if (branchDirectChildKeys.length > 1) {
+      if (branchDirectChildKeys.length >= 1) {
         const selectedRootKeys = branchDirectChildKeys.filter((childKey) => {
           const childMessageId = conversationTurnIndexIdentity(mapping[childKey]?.message?.id);
           return selectedIdentitySet.has(childKey)
@@ -967,7 +969,9 @@
             branchRootResolution = "branch-root-already-primary";
           } else {
             primaryAId = branchRootId;
-            branchRootResolution = "branch-root-system-selected";
+            branchRootResolution = branchDirectChildKeys.length === 1
+              ? "branch-root-system-selected-single-child"
+              : "branch-root-system-selected";
           }
         }
       }

@@ -2752,6 +2752,220 @@ await fixture('G5 graph-selected system branch root confirms the expectChange le
   equal(confirmFn(staleShape, evidence), false);
 });
 
+await fixture('G5 slow-start: request lease frozen at acceptance survives capture-age expiry mid-fetch', async () => {
+  // Live timing: capture ~0ms, coordinator acceptance ~4s (still inside the
+  // capture window), initial refresh in flight when the capture crosses 5s
+  // and the general intent expires. The request lease — frozen at ACCEPTANCE,
+  // before the refresh began — must keep the one delayed confirmation
+  // eligible.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  const slowFirst = deferred();
+  harness.providerQueue.push(() => slowFirst.promise);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [{ id: LIVE_BRANCH_CURRENT_A, role: 'assistant' }],
+  }), true);
+  // Post-event scheduling delayed ~4s: the capture is old but still valid.
+  equal(harness.ageIntent(Date.now() - 4000), true);
+  equal(harness.runPostEventTasks(), 1);
+  // Lease exists at ACCEPTANCE — before the initial refresh begins.
+  let status = harness.coordinator.getStatus();
+  equal(status.selectedPathRequestLeaseActive, true);
+  equal(status.fetchCount, 0);
+  equal(status.timerPending, true);
+  ok(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-request-lease-created'));
+  // Initial refresh starts; the capture crosses the 5s boundary mid-fetch.
+  equal(harness.runTimer(280), true);
+  equal(harness.ageIntent(Date.now() - 6000), true);
+  equal(harness.signalLookup(LIVE_BRANCH_Q), null);
+  equal(harness.diagnostics().trustedSelectionLastClearReason, 'age-window-exceeded');
+  equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, true);
+  // First provider result remains baseline.
+  slowFirst.resolve({ ok: true, index: initialIndex });
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(harness.diagnostics().selectedPathConfirmationSkipCount, 0);
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  // The one delayed confirmation executes and confirms the switch.
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.selectedPathConfirmationCancelledCount, 0);
+  equal(status.fetchCount, 2);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathResultCode, null);
+  equal(status.selectedPathRequestLeaseActive, false);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+  equal(harness.runTimer(1250), false);
+  equal(harness.lifecycleTrace().some((entry) => entry.event === 'confirmation-cancelled'), false);
+});
+
+await fixture('G5 request lease survives an outcome that consumed the active evidence', async () => {
+  // Race: the trusted request's own refresh outcome is discarded (older host
+  // payload), consuming the active evidence with no resolution. The accepted
+  // request lease survives and supplies the trusted evidence on the NEXT
+  // refresh outcome, scheduling the single delayed confirmation.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const olderIndex = { ...initialIndex, payloadUpdateTime: Number(initialIndex.payloadUpdateTime) - 1 };
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: olderIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  // The trusted refresh outcome was discarded as older; no confirmation yet,
+  // but the request lease survives.
+  let status = harness.coordinator.getStatus();
+  equal(status.errorCode, 'older-host-payload');
+  equal(status.selectedPathConfirmationScheduledCount, 0);
+  equal(status.selectedPathRequestLeaseActive, true);
+  // A later generic refresh evaluates the retained lease and schedules the
+  // single confirmation.
+  await harness.coordinator.schedule('turn-settled', { immediate: true });
+  ok(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-request-lease-retained'));
+  status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(status.selectedPathRequestLeaseActive, false);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('G5 request lease cancels on scope changes and newer trusted clicks', async () => {
+  // Route/gate/reset cancellation before any refresh runs.
+  {
+    const { harness } = createLiveEnvelopeHarness();
+    equal(harness.recordTrustedNativeClick('previous'), true);
+    equal(harness.runPostEventTasks(), 1);
+    equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, true);
+    harness.setRoute('other-chat|/c/other-chat');
+    harness.coordinator.cancel('route-changed', 'stale-route-discarded');
+    equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, false);
+    ok(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-request-lease-cancelled'));
+  }
+  {
+    const { harness } = createLiveEnvelopeHarness();
+    equal(harness.recordTrustedNativeClick('previous'), true);
+    equal(harness.runPostEventTasks(), 1);
+    harness.setEnabled(false);
+    harness.coordinator.cancel('gate-disabled', 'idle');
+    equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, false);
+  }
+  // A newer trusted click supersedes the older accepted lease.
+  {
+    const { harness } = createLiveEnvelopeHarness();
+    equal(harness.recordTrustedNativeClick('previous'), true);
+    equal(harness.runPostEventTasks(), 1);
+    equal(harness.recordTrustedNativeClick('next', {
+      messages: [{ id: '29a40c98-0bd8-48cd-be80-0273311a4977', role: 'user' }],
+    }), true);
+    equal(harness.runPostEventTasks(), 1);
+    const superseded = harness.lifecycleTrace().findLast((entry) => entry.event === 'trusted-request-lease-cancelled');
+    equal(superseded?.reason, 'superseded-by-newer-trusted');
+    equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, true);
+    harness.coordinator.cancel('fixture-end', 'idle');
+  }
+});
+
+await fixture('G5 combined live parity: single-child graph shape plus boundary-crossing lease confirms', async () => {
+  // Both live conditions together: the retained authority still shows the
+  // STALE primary; acceptance lands near the five-second boundary; the
+  // capture intent expires while the first fetch runs; the first payload is
+  // unchanged; the delayed confirmation payload is shaped exactly as the
+  // fixed parser now emits the real single-child topology (primary
+  // 0de24351..., both variants preserved) and the switch confirms.
+  ok(coreSource.includes("const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';"));
+  equal(coreSource.includes("setItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY, '1')"), false);
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    liveIncidentEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  equal(confirmedIndex.turns.find((row) => row.qId === LIVE_BRANCH_Q).primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(confirmedIndex.turns.find((row) => row.qId === LIVE_BRANCH_Q).answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  const slowFirst = deferred();
+  harness.providerQueue.push(() => slowFirst.promise);
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous', {
+    scope: 'conversation-turn',
+    messages: [
+      { id: LIVE_BRANCH_Q, role: 'user' },
+      { id: LIVE_BRANCH_CURRENT_A, role: 'assistant' },
+    ],
+  }), true);
+  equal(harness.ageIntent(Date.now() - 4400), true);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, true);
+  equal(harness.runTimer(280), true);
+  equal(harness.ageIntent(Date.now() - 5600), true);
+  equal(harness.signalLookup(LIVE_BRANCH_Q), null);
+  slowFirst.resolve({ ok: true, index: initialIndex });
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(harness.coordinator.getStatus().selectedPathConfirmationScheduledCount, 1);
+  equal(harness.runTimer(1250), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 2);
+  equal(status.selectedPathConfirmationFetchCount, 1);
+  equal(status.trailingRefreshCount, 0);
+  equal(status.selectedPathResultCode, null);
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(harness.currentIndex().turns.length, 39);
+  equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
+  equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+});
+
 const failed = fixtures.filter((row) => !row.ok);
 console.log(`CV-3.4 Gate 5 correctness: ${fixtures.length - failed.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failed.length} failures`);
 if (liveParityEvidence) {
