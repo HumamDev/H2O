@@ -83,6 +83,9 @@ function createTurnRuntime({ storedValue = null, compiledDefault = false, availa
     compiledDefault,
     enabled: storedValue === '1' || (storedValue == null && compiledDefault === true),
     autoBranchReconciliationEnabled: false,
+    branchSelectionStale: false,
+    branchSelectionStaleRevision: 0,
+    branchSelectionStaleQId: null,
     setterCalls: [],
     storageWrites: 0,
     refreshCalls: 0,
@@ -102,6 +105,9 @@ function createTurnRuntime({ storedValue = null, compiledDefault = false, availa
         enabled: state.enabled,
         status: state.enabled ? 'complete-validated' : 'disabled',
         autoBranchReconciliationEnabled: state.autoBranchReconciliationEnabled,
+        branchSelectionStale: state.branchSelectionStale,
+        branchSelectionStaleRevision: state.branchSelectionStaleRevision,
+        branchSelectionStaleQId: state.branchSelectionStaleQId,
       };
     },
     setCompleteTurnIndexProjectionPreference(value) {
@@ -113,6 +119,8 @@ function createTurnRuntime({ storedValue = null, compiledDefault = false, availa
     },
     refreshCompleteTurnIndexProjection() {
       state.refreshCalls += 1;
+      state.branchSelectionStale = false;
+      state.branchSelectionStaleQId = null;
       return Promise.resolve({ enabled: state.enabled, status: state.enabled ? 'complete-refresh-validated' : 'disabled' });
     },
     rebuildCompleteTurnIndexProjection() { state.rebuildCalls += 1; },
@@ -175,14 +183,22 @@ function loadSideActionsProductControl(runtimeApi) {
     const H2O = injectedH2O;
     const TAB_MINIMAP = 'minimap';
     const COMPLETE_TURN_INDEX_REFRESH_ACTION_ID = 'minimap.complete-turn-index.refresh';
-    const registerAction = (def) => { actions.push(def); return true; };
+    const state = { actions: new Map() };
+    const registerAction = (def) => { actions.push(def); state.actions.set(def.id, { ...def, node: null }); return true; };
     ${extractFunction(sideActionsSource, 'sideActionsCompleteTurnIndexRuntime')}
+    ${extractFunction(sideActionsSource, 'sideActionsCompleteTurnIndexStatus')}
     ${extractFunction(sideActionsSource, 'sideActionsCompleteTurnIndexEnabled')}
+    ${extractFunction(sideActionsSource, 'sideActionsApplyMiniMapBranchStaleIndicator')}
     ${extractFunction(sideActionsSource, 'sideActionsSetMiniMapRefreshFeedback')}
     ${extractFunction(sideActionsSource, 'sideActionsRefreshCompleteTurnIndex')}
     ${extractFunction(sideActionsSource, 'registerCompleteTurnIndexRefreshAction')}
+    ${extractFunction(sideActionsSource, 'sideActionsSyncCompleteTurnIndexRefreshAvailability')}
     registerCompleteTurnIndexRefreshAction();
-    return { actions };
+    return {
+      actions,
+      bindNode(node) { state.actions.get(COMPLETE_TURN_INDEX_REFRESH_ACTION_ID).node = node; },
+      sync: sideActionsSyncCompleteTurnIndexRefreshAvailability,
+    };
   })()`;
   const out = vm.runInNewContext(code, {
     injectedH2O: H2O,
@@ -194,19 +210,33 @@ function loadSideActionsProductControl(runtimeApi) {
   });
   const action = out.actions.find((entry) => entry.id === 'minimap.complete-turn-index.refresh');
   if (!action) throw new Error('complete-turn-refresh-action-missing');
-  return { action, H2O };
+  return { action, H2O, bindNode: out.bindNode, sync: out.sync };
 }
 
 function fakeActionElement() {
   const label = { textContent: 'Refresh MiniMap' };
+  const stale = { textContent: 'Branch changed — refresh MiniMap', hidden: true };
   return {
     disabled: false,
     dataset: {},
     attributes: new Map(),
-    querySelector(selector) { return selector === '.sa-label' ? label : null; },
+    querySelector(selector) {
+      if (selector === '.sa-label') return label;
+      if (selector === '.sa-branch-stale') return stale;
+      return null;
+    },
     setAttribute(name, value) { this.attributes.set(name, String(value)); },
+    removeAttribute(name) { this.attributes.delete(name); },
     label,
+    stale,
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 await fixture('toggle is placed in Control Hub MiniMap and initial render is mutation-free', () => {
@@ -314,6 +344,45 @@ await fixture('one deliberate refresh activation invokes only refresh once', asy
   totals.directNetworkCalls += runtime.state.networkCalls;
 });
 
+await fixture('complete-index state event handler renders an accessible branch-stale indication without polling', () => {
+  const runtime = createTurnRuntime({ storedValue: '1' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 1;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q';
+  const { bindNode, sync } = loadSideActionsProductControl(runtime.api);
+  const el = fakeActionElement();
+  bindNode(el);
+  sync({ type: 'evt:h2o:complete-turn-index:state' });
+  equal(el.stale.hidden, false);
+  equal(el.stale.textContent, 'Branch changed — refresh MiniMap');
+  equal(el.dataset.branchSelectionStale, 'true');
+  equal(el.attributes.get('aria-describedby'), 'h2o-side-actions-minimap-branch-stale');
+  equal(el.label.textContent, 'Refresh MiniMap');
+  equal(el.dataset.refreshStatus, 'stale');
+  equal(runtime.state.refreshCalls, 0);
+  equal(runtime.state.networkCalls, 0);
+  equal(totals.timers, 0);
+});
+
+await fixture('successful Refresh MiniMap clears the visible stale indication after runtime success', async () => {
+  const runtime = createTurnRuntime({ storedValue: '1' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 1;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q';
+  const { action, bindNode, sync } = loadSideActionsProductControl(runtime.api);
+  const el = fakeActionElement();
+  bindNode(el);
+  sync();
+  equal(el.stale.hidden, false);
+  await action.onClick({ el });
+  equal(runtime.state.refreshCalls, 1);
+  equal(runtime.state.branchSelectionStale, false);
+  equal(el.stale.hidden, true);
+  equal(el.dataset.branchSelectionStale, 'false');
+  equal(el.label.textContent, 'MiniMap refreshed');
+  equal(el.attributes.has('aria-describedby'), false);
+});
+
 await fixture('disabled or unavailable refresh is honest and side-effect free', async () => {
   const disabledRuntime = createTurnRuntime({ storedValue: '0' });
   const disabledAction = loadSideActionsProductControl(disabledRuntime.api).action;
@@ -332,23 +401,68 @@ await fixture('disabled or unavailable refresh is honest and side-effect free', 
 
 await fixture('refresh failure is bounded with no timer or retry fan-out', async () => {
   const runtime = createTurnRuntime({ storedValue: '1' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 1;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q';
   runtime.api.refreshCompleteTurnIndexProjection = () => {
     runtime.state.refreshCalls += 1;
     return Promise.reject(new Error('fixture-failure'));
   };
-  const action = loadSideActionsProductControl(runtime.api).action;
+  const { action, bindNode, sync } = loadSideActionsProductControl(runtime.api);
   const el = fakeActionElement();
+  bindNode(el);
+  sync();
   const result = await action.onClick({ el });
   equal(result.errorCode, 'complete-index-refresh-failed');
   equal(runtime.state.refreshCalls, 1);
   equal(el.label.textContent, 'Refresh failed safely');
   equal(el.dataset.refreshStatus, 'failed');
+  equal(runtime.state.branchSelectionStale, true);
+  equal(el.stale.hidden, false);
+  equal(el.dataset.branchSelectionStale, 'true');
   equal(totals.timers, 0);
+});
+
+await fixture('newer branch state is not overwritten by stale refresh success feedback', async () => {
+  const runtime = createTurnRuntime({ storedValue: '1' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 1;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q-1';
+  const pending = deferred();
+  runtime.api.refreshCompleteTurnIndexProjection = () => {
+    runtime.state.refreshCalls += 1;
+    const acceptedRevision = runtime.state.branchSelectionStaleRevision;
+    return pending.promise.then(() => {
+      if (runtime.state.branchSelectionStaleRevision === acceptedRevision) {
+        runtime.state.branchSelectionStale = false;
+        runtime.state.branchSelectionStaleQId = null;
+      }
+      return { enabled: true, status: 'complete-refresh-validated' };
+    });
+  };
+  const { action, bindNode, sync } = loadSideActionsProductControl(runtime.api);
+  const el = fakeActionElement();
+  bindNode(el);
+  sync();
+  const operation = action.onClick({ el });
+  runtime.state.branchSelectionStaleRevision = 2;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q-2';
+  sync();
+  pending.resolve();
+  await operation;
+  equal(runtime.state.refreshCalls, 1);
+  equal(runtime.state.branchSelectionStale, true);
+  equal(runtime.state.branchSelectionStaleRevision, 2);
+  equal(el.stale.hidden, false);
+  equal(el.dataset.branchSelectionStale, 'true');
+  equal(el.label.textContent, 'Refresh MiniMap');
+  equal(el.dataset.refreshStatus, 'stale');
 });
 
 await fixture('surface contract excludes forbidden APIs and preserves technical controls', () => {
   const settingSource = extractFunction(controlHubSource, 'setCompleteTurnIndexProjectionSetting');
   const refreshSource = [
+    extractFunction(sideActionsSource, 'sideActionsApplyMiniMapBranchStaleIndicator'),
     extractFunction(sideActionsSource, 'sideActionsRefreshCompleteTurnIndex'),
     extractFunction(sideActionsSource, 'registerCompleteTurnIndexRefreshAction'),
   ].join('\n');
@@ -364,6 +478,11 @@ await fixture('surface contract excludes forbidden APIs and preserves technical 
   equal(refreshSource.includes('localStorage'), false);
   equal(sideActionsSource.includes('evt:h2o:complete-turn-index:state'), true);
   equal(sideActionsSource.includes('sideActionsSyncCompleteTurnIndexRefreshAvailability'), true);
+  equal(sideActionsSource.includes('Branch changed — refresh MiniMap'), true);
+  equal(sideActionsSource.includes('role="status"'), true);
+  equal(sideActionsSource.includes('aria-live="polite"'), true);
+  equal(refreshSource.includes('fetch('), false);
+  equal(refreshSource.includes('setTimeout'), false);
   equal(commandRuntimeSource.includes('id: "mm.boot"'), true);
   equal(commandRuntimeSource.includes('id: "mm.resync"'), true);
 });

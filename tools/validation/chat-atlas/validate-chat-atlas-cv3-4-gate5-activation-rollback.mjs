@@ -107,6 +107,13 @@ function hostEnvelope(rows = buildRows(), revision = 100) {
   };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 function createStorage(initial = new Map()) {
   const state = { reads: 0, writes: 0, removals: 0, failRead: false, failWrite: false, failRemove: false, touched: [] };
   return {
@@ -155,6 +162,8 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
     timerSchedules: 0,
     timerClears: 0,
     intervalSchedules: 0,
+    completeIndexStateEvents: 0,
+    authorityPublications: 0,
   };
   let timerId = 0;
   let wasEnabled = false;
@@ -220,6 +229,7 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
         return provider ? provider(chatId, opts) : Promise.resolve({ ok: false, errorCode: 'fixture-provider-unavailable' });
       },
     } },
+    __GATE5_AUTHORITY_PUBLISH__() { counters.authorityPublications += 1; },
   };
   sandbox.addEventListener = (type, fn) => {
     counters.eventRegistrations += 1;
@@ -230,6 +240,7 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
   sandbox.removeEventListener = () => {};
   sandbox.dispatchEvent = (event) => {
     if (event?.type === 'evt:h2o:complete-turn-index:state') {
+      counters.completeIndexStateEvents += 1;
       const enabled = event?.detail?.enabled === true;
       if (wasEnabled && !enabled) counters.navigationCancels += 1;
       wasEnabled = enabled;
@@ -243,7 +254,10 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const setterAnchor = '  function setChatAtlasCanonicalSource(value) {\n';
-  const programSource = coreSource.replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`);
+  const publishAnchor = '  function chatAtlasPublishCompleteIndex(envelope, source) {\n';
+  const programSource = coreSource
+    .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`)
+    .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`);
   vm.runInContext(programSource, context, { filename: corePath, timeout: 8_000 });
   const runtime = {
     context,
@@ -519,18 +533,24 @@ await fixture('no raw content enters preference cache or diagnostics', () => {
 
 // ── Round 1 separation: automatic native branch reconciliation is deferred ──
 // (independent gate, default false; the complete-turn projection never enables it).
-function dispatchTrustedBranchClick(runtime, qId, { direction = 'previous', role = 'user' } = {}) {
+function dispatchTrustedBranchClick(runtime, qId, {
+  direction = 'previous',
+  role = 'user',
+  trusted = true,
+  extraQIds = [],
+} = {}) {
   const label = direction === 'next' ? 'Next response' : 'Previous response';
-  const messageNode = {
+  const messageNode = (messageId) => ({
     getAttribute: (name) => {
-      if (name === 'data-message-id') return qId;
+      if (name === 'data-message-id') return messageId;
       if (name === 'data-message-author-role') return role;
       return null;
     },
-  };
+  });
+  const messageNodes = [qId, ...extraQIds].map(messageNode);
   const container = {
     getAttribute: (name) => (name === 'data-testid' ? 'conversation-turn-1' : null),
-    querySelectorAll: (sel) => (sel === '[data-message-id]' ? [messageNode] : []),
+    querySelectorAll: (sel) => (sel === '[data-message-id]' ? messageNodes : []),
   };
   const button = {
     tagName: 'BUTTON',
@@ -538,10 +558,16 @@ function dispatchTrustedBranchClick(runtime, qId, { direction = 'previous', role
     closest: (sel) => (sel === '[data-testid^="conversation-turn-"]' ? container : null),
   };
   const svg = { tagName: 'svg', getAttribute: () => null, closest: (sel) => (sel === 'button' ? button : null) };
-  const event = { isTrusted: true, target: svg, composedPath: () => [svg, button, container] };
+  const event = { isTrusted: trusted, target: svg, composedPath: () => [svg, button, container] };
   const handlers = runtime.listeners.get('click') || [];
   let recorded = false;
   for (const fn of handlers) { if (fn(event) === true) recorded = true; }
+  return recorded;
+}
+function dispatchUnrelatedClick(runtime) {
+  const event = { isTrusted: true, target: { closest: () => null }, composedPath: () => [] };
+  let recorded = false;
+  for (const fn of runtime.listeners.get('click') || []) { if (fn(event) === true) recorded = true; }
   return recorded;
 }
 function pendingZeroDelayTimerIds(runtime) {
@@ -562,8 +588,12 @@ await fixture('A: automatic reconciliation gate default is false with no persist
   equal(runtime.status().compiledDefault, false);
   equal(runtime.status().autoBranchReconciliationEnabled, false);
   equal(runtime.status().autoBranchReconciliationSetterCallCount, 0);
+  equal(runtime.status().branchSelectionStale, false);
+  equal(runtime.status().branchSelectionStaleRevision, 0);
+  equal(runtime.status().branchSelectionStaleQId, null);
   // No reconciliation-specific storage key is ever touched.
   equal(runtime.storage.state.touched.some(([, key]) => /reconcil/i.test(key)), false);
+  equal([...runtime.storage.map.keys()].some((key) => /branch.*stale|stale.*branch/i.test(key)), false);
 });
 
 await fixture('B: projection enabled + gate false — capture binds but schedules zero reconciliation work', () => {
@@ -571,7 +601,11 @@ await fixture('B: projection enabled + gate false — capture binds but schedule
   equal(runtime.status().enabled, true);
   equal(runtime.status().completeCount, 38);
   const netBefore = runtime.counters.networkReads;
+  const writesBefore = runtime.storage.state.writes;
+  const publicationsBefore = runtime.counters.authorityPublications;
+  const eventsBefore = runtime.counters.completeIndexStateEvents;
   const zeroBefore = pendingZeroDelayTimerIds(runtime);
+  const primaryBefore = runtime.api.getTurnRecordByQId('gate5-pref-q-01')?.primaryAId;
   const recorded = dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01');
   // Trusted native click capture + canonical qId binding remain intact.
   equal(recorded, true);
@@ -579,6 +613,12 @@ await fixture('B: projection enabled + gate false — capture binds but schedule
   equal(runtime.status().trustedSelectionIntentActive, true);
   equal(runtime.status().trustedSelectionIntentQId, 'gate5-pref-q-01');
   equal(runtime.status().trustedSelectionBindSuccessCount, 1);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, 1);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-01');
+  // chatAtlasNotifyCompleteIndexState publishes once through each established
+  // transport (window CustomEvent + H2O replay event); no third notification.
+  equal(runtime.counters.completeIndexStateEvents - eventsBefore, 2);
   // Automatic reconciliation is deferred: no schedule, fetch, lease, mutation, timer.
   const trace = TRACE(runtime);
   equal(trace.includes('trusted-reconcile-deferred'), true);
@@ -586,10 +626,231 @@ await fixture('B: projection enabled + gate false — capture binds but schedule
   equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
   equal(runtime.status().selectedPathConfirmationFetchCount, 0);
   equal(runtime.status().selectedPathTrustedScheduleAttemptCount, 0);
+  equal(runtime.status().selectedPathAcceptanceCount, 0);
   equal(runtime.counters.networkReads - netBefore, 0);
+  equal(runtime.storage.state.writes - writesBefore, 0);
+  equal(runtime.counters.authorityPublications - publicationsBefore, 0);
   equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 0);
+  equal(runtime.status().refreshTimerPending, false);
   // The captured turn's canonical primary was NOT mutated by the click.
   equal(runtime.status().count, 38);
+  equal(runtime.api.getTurnRecordByQId('gate5-pref-q-01')?.primaryAId, primaryBefore);
+});
+
+await fixture('B: invalid native interactions never mark branch state stale', () => {
+  const unresolved = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(dispatchUnrelatedClick(unresolved), false);
+  equal(dispatchTrustedBranchClick(unresolved, 'not-a-canonical-qid'), false);
+  equal(unresolved.status().branchSelectionStale, false);
+  equal(unresolved.status().branchSelectionStaleRevision, 0);
+
+  const ambiguous = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(dispatchTrustedBranchClick(ambiguous, 'gate5-pref-q-01', { extraQIds: ['gate5-pref-q-02'] }), false);
+  equal(ambiguous.status().branchSelectionStale, false);
+
+  const untrusted = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(dispatchTrustedBranchClick(untrusted, 'gate5-pref-q-01', { trusted: false }), false);
+  equal(untrusted.status().branchSelectionStale, false);
+
+  const disabled = createRuntime({ preference: '0', cache: cacheEnvelope() });
+  equal(dispatchTrustedBranchClick(disabled, 'gate5-pref-q-01'), false);
+  equal(disabled.status().branchSelectionStale, false);
+});
+
+await fixture('B: repeated valid captures advance only the memory revision and latest qId', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  const networkBefore = runtime.counters.networkReads;
+  const storageBefore = runtime.storage.state.writes;
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-02', { direction: 'next' }), true);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, 2);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-02');
+  equal(runtime.counters.networkReads - networkBefore, 0);
+  equal(runtime.storage.state.writes - storageBefore, 0);
+  equal(runtime.status().selectedPathAcceptanceCount, 0);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  equal(runtime.status().refreshTimerPending, false);
+});
+
+await fixture('B: successful explicit refresh clears the captured stale revision only after validation', async () => {
+  const rows = buildRows();
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: async () => ({ ok: true, index: hostEnvelope(rows, 101 + providerCalls++) }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  equal(runtime.status().branchSelectionStale, true);
+  const revision = runtime.status().branchSelectionStaleRevision;
+  const readsBefore = runtime.counters.networkReads;
+  const writesBefore = runtime.storage.state.writes;
+  const publicationsBefore = runtime.counters.authorityPublications;
+  const result = await runtime.api.refreshCompleteTurnIndexProjection();
+  equal(result.status, 'complete-refresh-validated');
+  equal(runtime.counters.networkReads - readsBefore, 1);
+  equal(runtime.storage.state.writes - writesBefore, 1);
+  equal(runtime.counters.authorityPublications - publicationsBefore, 1);
+  equal(runtime.status().branchSelectionStale, false);
+  equal(runtime.status().branchSelectionStaleRevision, revision);
+  equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('B: failed explicit refresh preserves stale state without retry work', async () => {
+  const rows = buildRows();
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: async () => {
+      providerCalls += 1;
+      return providerCalls === 1
+        ? { ok: true, index: hostEnvelope(rows, 101) }
+        : { ok: false, errorCode: 'fixture-refresh-failed' };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  const revision = runtime.status().branchSelectionStaleRevision;
+  const writesBefore = runtime.storage.state.writes;
+  const publicationsBefore = runtime.counters.authorityPublications;
+  const result = await runtime.api.refreshCompleteTurnIndexProjection();
+  equal(result.status, 'complete-refresh-failed-cache-preserved');
+  equal(runtime.storage.state.writes - writesBefore, 0);
+  equal(runtime.counters.authorityPublications - publicationsBefore, 0);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, revision);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-01');
+  equal(runtime.status().refreshTimerPending, false);
+  equal(runtime.status().refreshTrailingRequired, false);
+});
+
+await fixture('B: newer native click survives an older successful explicit refresh', async () => {
+  const rows = buildRows();
+  const pending = deferred();
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: () => {
+      providerCalls += 1;
+      if (providerCalls === 1) return Promise.resolve({ ok: true, index: hostEnvelope(rows, 101) });
+      return pending.promise;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  const firstRevision = runtime.status().branchSelectionStaleRevision;
+  const operation = runtime.api.refreshCompleteTurnIndexProjection();
+  await Promise.resolve();
+  await Promise.resolve();
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-02', { direction: 'next' }), true);
+  equal(runtime.status().branchSelectionStaleRevision, firstRevision + 1);
+  pending.resolve({ ok: true, index: hostEnvelope(rows, 102) });
+  await operation;
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, firstRevision + 1);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-02');
+  equal(runtime.status().selectedPathAcceptanceCount, 0);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+});
+
+await fixture('B: click first observed during a clean in-flight refresh remains stale', async () => {
+  const rows = buildRows();
+  const pending = deferred();
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: () => {
+      providerCalls += 1;
+      if (providerCalls === 1) return Promise.resolve({ ok: true, index: hostEnvelope(rows, 101) });
+      return pending.promise;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(runtime.status().branchSelectionStale, false);
+  const operation = runtime.api.refreshCompleteTurnIndexProjection();
+  await Promise.resolve();
+  await Promise.resolve();
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  pending.resolve({ ok: true, index: hostEnvelope(rows, 102) });
+  await operation;
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, 1);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-01');
+});
+
+await fixture('B: manual refresh waits for its own validation when an older request is active', async () => {
+  const rows = buildRows();
+  const olderRequest = deferred();
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: () => {
+      providerCalls += 1;
+      if (providerCalls === 1) return Promise.resolve({ ok: true, index: hostEnvelope(rows, 101) });
+      if (providerCalls === 2) return olderRequest.promise;
+      return Promise.resolve({ ok: true, index: hostEnvelope(rows, 103) });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const olderOperation = runtime.api.refreshCompleteTurnIndexProjection('turn-settled');
+  await Promise.resolve();
+  await Promise.resolve();
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  const manualOperation = runtime.api.refreshCompleteTurnIndexProjection();
+  equal(runtime.status().branchSelectionStale, true);
+  olderRequest.resolve({ ok: true, index: hostEnvelope(rows, 102) });
+  await olderOperation;
+  await manualOperation;
+  equal(providerCalls, 3);
+  equal(runtime.status().branchSelectionStale, false);
+  equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().refreshTimerPending, false);
+});
+
+await fixture('B: route change, projection disable, successful rebuild, and reload clear stale safely', async () => {
+  const rows = buildRows();
+  const routeRuntime = createRuntime({ preference: '1', cache: cacheEnvelope(rows) });
+  equal(dispatchTrustedBranchClick(routeRuntime, 'gate5-pref-q-01'), true);
+  routeRuntime.context.location.pathname = '/c/route-change-chat';
+  routeRuntime.context.location.href = 'https://chatgpt.com/c/route-change-chat';
+  void routeRuntime.api.rebuildCompleteTurnIndexProjection();
+  equal(routeRuntime.status().branchSelectionStale, false);
+  equal(routeRuntime.status().branchSelectionStaleQId, null);
+
+  const disableRuntime = createRuntime({ preference: '1', cache: cacheEnvelope(rows) });
+  equal(dispatchTrustedBranchClick(disableRuntime, 'gate5-pref-q-01'), true);
+  disableRuntime.api.setCompleteTurnIndexProjectionPreference(false);
+  equal(disableRuntime.status().branchSelectionStale, false);
+  equal(disableRuntime.status().branchSelectionStaleQId, null);
+
+  let rebuildCalls = 0;
+  const rebuildRuntime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: async () => ({ ok: true, index: hostEnvelope(rows, 101 + rebuildCalls++) }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(dispatchTrustedBranchClick(rebuildRuntime, 'gate5-pref-q-01'), true);
+  await rebuildRuntime.api.rebuildCompleteTurnIndexProjection();
+  equal(rebuildRuntime.status().branchSelectionStale, false);
+
+  const reload = createRuntime({ preference: '1', cache: cacheEnvelope(rows) });
+  equal(reload.status().branchSelectionStale, false);
+  equal(reload.status().branchSelectionStaleRevision, 0);
+  equal(reload.status().branchSelectionStaleQId, null);
 });
 
 await fixture('C: explicit qualification gate lets the accepted reconciliation run without persistence', () => {

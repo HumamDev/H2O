@@ -191,10 +191,31 @@
     try { return H2O.turnRuntime || null; } catch { return null; }
   }
 
-  function sideActionsCompleteTurnIndexEnabled() {
+  function sideActionsCompleteTurnIndexStatus() {
     const runtime = sideActionsCompleteTurnIndexRuntime();
-    if (typeof runtime?.getCompleteTurnIndexProjectionStatus !== "function") return false;
-    try { return runtime.getCompleteTurnIndexProjectionStatus()?.enabled === true; } catch { return false; }
+    if (typeof runtime?.getCompleteTurnIndexProjectionStatus !== "function") return null;
+    try { return runtime.getCompleteTurnIndexProjectionStatus() || null; } catch { return null; }
+  }
+
+  function sideActionsCompleteTurnIndexEnabled() {
+    return sideActionsCompleteTurnIndexStatus()?.enabled === true;
+  }
+
+  function sideActionsApplyMiniMapBranchStaleIndicator(el, status = sideActionsCompleteTurnIndexStatus()) {
+    if (!el) return false;
+    const stale = status?.enabled === true && status?.branchSelectionStale === true;
+    const indicator = el.querySelector?.(".sa-branch-stale");
+    if (indicator) {
+      indicator.textContent = "Branch changed — refresh MiniMap";
+      indicator.hidden = !stale;
+    }
+    el.dataset.branchSelectionStale = stale ? "true" : "false";
+    if (stale) {
+      el.setAttribute?.("aria-describedby", "h2o-side-actions-minimap-branch-stale");
+    } else {
+      el.removeAttribute?.("aria-describedby");
+    }
+    return stale;
   }
 
   function sideActionsSetMiniMapRefreshFeedback(el, label, status) {
@@ -215,16 +236,20 @@
     sideActionsSetMiniMapRefreshFeedback(el, "Refreshing MiniMap…", "refreshing");
     try {
       const result = await runtime.refreshCompleteTurnIndexProjection();
-      const status = String(result?.status || runtime.getCompleteTurnIndexProjectionStatus?.()?.status || "");
+      const currentStatus = sideActionsCompleteTurnIndexStatus();
+      const status = String(result?.status || currentStatus?.status || "");
       const failed = status.includes("failed") || status.includes("unavailable");
+      const branchStale = currentStatus?.branchSelectionStale === true;
       sideActionsSetMiniMapRefreshFeedback(
         el,
-        failed ? "Refresh failed safely" : "MiniMap refreshed",
-        failed ? "failed" : "refreshed",
+        failed ? "Refresh failed safely" : (branchStale ? "Refresh MiniMap" : "MiniMap refreshed"),
+        failed ? "failed" : (branchStale ? "stale" : "refreshed"),
       );
+      sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus);
       return result;
     } catch {
       sideActionsSetMiniMapRefreshFeedback(el, "Refresh failed safely", "failed");
+      sideActionsApplyMiniMapBranchStaleIndicator(el);
       return { ok: false, errorCode: "complete-index-refresh-failed" };
     } finally {
       if (el) el.disabled = !sideActionsCompleteTurnIndexEnabled();
@@ -249,7 +274,12 @@
   function sideActionsSyncCompleteTurnIndexRefreshAvailability() {
     const rec = state.actions.get(COMPLETE_TURN_INDEX_REFRESH_ACTION_ID);
     if (!rec?.node) return;
-    rec.node.disabled = !sideActionsCompleteTurnIndexEnabled();
+    const status = sideActionsCompleteTurnIndexStatus();
+    rec.node.disabled = status?.enabled !== true;
+    const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status);
+    if (stale && rec.node.dataset.refreshStatus !== "refreshing") {
+      sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "stale");
+    }
   }
 
   function mountStyles() {
@@ -512,6 +542,14 @@
   background:currentColor;
   opacity:.85;
 }
+.h2o-side-actions-action .sa-branch-stale{
+  flex:1 0 100%;
+  color:#ffd6a0;
+  font:600 10px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;
+  white-space:normal;
+}
+.h2o-side-actions-action .sa-branch-stale[hidden]{display:none}
+.h2o-side-actions-action.has-branch-stale{flex-wrap:wrap}
 `;
     D.head?.appendChild(style);
   }
@@ -888,7 +926,10 @@
     const btn = D.createElement("button");
     btn.type = "button";
     btn.className = "h2o-side-actions-action";
-    btn.innerHTML = `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span>`;
+    if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) btn.classList.add("has-branch-stale");
+    btn.innerHTML = rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID
+      ? `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span><span id="h2o-side-actions-minimap-branch-stale" class="sa-branch-stale" role="status" aria-live="polite" hidden>Branch changed — refresh MiniMap</span>`
+      : `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span>`;
     btn.addEventListener("click", (ev) => {
       if (btn.disabled) return;
       try {
@@ -926,6 +967,9 @@
     btn.setAttribute("aria-label", btn.title || label);
     const labelEl = btn.querySelector(".sa-label");
     if (labelEl) labelEl.textContent = label;
+    if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) {
+      sideActionsApplyMiniMapBranchStaleIndicator(btn);
+    }
   }
 
   function renderActions() {

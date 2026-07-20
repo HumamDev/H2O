@@ -6349,6 +6349,15 @@
     trustedSelectionCaptureCount: 0,
     trustedSelectedPathIntent: null,
     trustedNativeReconcileTask: null,
+    // Round 1 passive branch-stale signal. IDs-only and memory-only: a valid
+    // native Previous/Next capture marks the current complete projection as
+    // potentially stale without authorizing any reconciliation work.
+    branchSelectionStale: false,
+    branchSelectionStaleRevision: 0,
+    branchSelectionStaleQId: null,
+    branchSelectionStaleChatId: null,
+    branchSelectionStaleRouteKey: '',
+    branchSelectionStaleGeneration: 0,
     // Round 1: automatic native Previous/Next response-branch reconciliation is
     // DEFERRED to Round 2. This gate is independent of `enabled`, of the
     // persisted complete-turn preference, and of the memory canary; it defaults
@@ -6481,6 +6490,43 @@
       hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
     }
     return Math.abs(hash >>> 0).toString(36);
+  }
+
+  function chatAtlasBranchSelectionStaleCheckpoint() {
+    if (completeTurnIndexAuthorityState.branchSelectionStale !== true) return null;
+    return Object.freeze({
+      revision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
+      qId: String(completeTurnIndexAuthorityState.branchSelectionStaleQId || ''),
+      chatId: String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || ''),
+      routeKey: String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || ''),
+      generation: Number(completeTurnIndexAuthorityState.branchSelectionStaleGeneration || 0),
+    });
+  }
+
+  function chatAtlasClearBranchSelectionStale(checkpoint, reason = 'branch-stale-cleared', notify = true) {
+    if (completeTurnIndexAuthorityState.branchSelectionStale !== true) return false;
+    if (checkpoint && (
+      Number(checkpoint.revision || 0) !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
+      || String(checkpoint.qId || '') !== String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '')
+      || String(checkpoint.chatId || '') !== String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || '')
+      || String(checkpoint.routeKey || '') !== String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || '')
+      || Number(checkpoint.generation || 0) !== Number(completeTurnIndexAuthorityState.branchSelectionStaleGeneration || 0)
+    )) return false;
+    completeTurnIndexAuthorityState.branchSelectionStale = false;
+    completeTurnIndexAuthorityState.branchSelectionStaleQId = null;
+    completeTurnIndexAuthorityState.branchSelectionStaleChatId = null;
+    completeTurnIndexAuthorityState.branchSelectionStaleRouteKey = '';
+    completeTurnIndexAuthorityState.branchSelectionStaleGeneration = 0;
+    chatAtlasTraceTrustedLifecycle('branch-stale-cleared', { reason });
+    if (notify) chatAtlasNotifyCompleteIndexState();
+    return true;
+  }
+
+  function chatAtlasCompleteIndexExplicitRefreshSucceeded(result) {
+    const status = String(result?.status || '');
+    return status === 'complete-refresh-validated'
+      || status === 'complete-validated'
+      || status === 'complete-from-host-payload';
   }
 
   function chatAtlasCompleteIndexFingerprint(turns = []) {
@@ -6677,6 +6723,20 @@
       token,
       reason: ownership.reason,
     });
+    // The ownership and route checks above have already proven the exact
+    // canonical qId and scope. Mark only this memory-only passive state; the
+    // reconciliation scheduler below remains independently gated.
+    completeTurnIndexAuthorityState.branchSelectionStale = true;
+    completeTurnIndexAuthorityState.branchSelectionStaleRevision += 1;
+    completeTurnIndexAuthorityState.branchSelectionStaleQId = ownership.qId;
+    completeTurnIndexAuthorityState.branchSelectionStaleChatId = route.chatId;
+    completeTurnIndexAuthorityState.branchSelectionStaleRouteKey = route.routeKey;
+    completeTurnIndexAuthorityState.branchSelectionStaleGeneration = Number(
+      completeTurnIndexAuthorityState.generation || 0,
+    );
+    // The production runtime owns this notifier. Isolated function-extraction
+    // harnesses may intentionally omit it while still exercising Gate 5.
+    if (typeof chatAtlasNotifyCompleteIndexState === 'function') chatAtlasNotifyCompleteIndexState();
     // The captured qId is already uniquely and canonically known, so trusted
     // reconciliation is DRIVEN by the capture — it never waits for generic
     // live-change inspection to rediscover this qId (the real ChatGPT branch
@@ -7421,6 +7481,9 @@
       trustedSelectionCaptureCount: completeTurnIndexAuthorityState.trustedSelectionCaptureCount,
       trustedSelectionIntentActive: !!completeTurnIndexAuthorityState.trustedSelectedPathIntent,
       trustedSelectionIntentQId: completeTurnIndexAuthorityState.trustedSelectedPathIntent?.qId || null,
+      branchSelectionStale: completeTurnIndexAuthorityState.branchSelectionStale === true,
+      branchSelectionStaleRevision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
+      branchSelectionStaleQId: completeTurnIndexAuthorityState.branchSelectionStaleQId || null,
       autoBranchReconciliationEnabled: completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true,
       autoBranchReconciliationSetterCallCount: completeTurnIndexAuthorityState.autoBranchReconciliationSetterCallCount,
       trustedSelectionLastCaptureTokenHash: completeTurnIndexLifecycleDiagnostics.trustedSelectionLastCaptureTokenHash,
@@ -7527,8 +7590,15 @@
     AbortController: W.AbortController,
   });
 
-  function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false) {
+  function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false, options = {}) {
     const clearedIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const preserveBranchSelectionStale = options?.preserveBranchSelectionStale === true
+      && completeTurnIndexAuthorityState.branchSelectionStale === true
+      && String(nextRoute?.chatId || '') === String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || '')
+      && String(nextRoute?.routeKey || '') === String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || '');
+    if (!preserveBranchSelectionStale) {
+      chatAtlasClearBranchSelectionStale(null, staleStatus ? 'route-changed' : 'authority-reset', false);
+    }
     chatAtlasCancelTrustedNativeBranchReconcile();
     // Lifecycle reset: the memory-only automatic-reconciliation qualification
     // gate must NOT survive an enable/disable transition, a preference clear, or
@@ -7570,6 +7640,9 @@
     completeTurnIndexAuthorityState.promise = null;
     completeTurnIndexAuthorityState.controller = null;
     completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+    if (preserveBranchSelectionStale) {
+      completeTurnIndexAuthorityState.branchSelectionStaleGeneration = completeTurnIndexAuthorityState.generation;
+    }
     if (clearedIntent) {
       chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
         reason: staleStatus ? 'route-reset-route-changed' : 'route-reset-authority-reset',
@@ -7888,15 +7961,52 @@
       buildTurns();
       return Promise.resolve(getCompleteTurnIndexProjectionStatus());
     }
-    chatAtlasResetCompleteIndexRoute(chatAtlasFullIndexRoute(), false);
-    return chatAtlasTriggerCompleteIndexAuthority();
+    const route = chatAtlasFullIndexRoute();
+    chatAtlasResetCompleteIndexRoute(route, false, { preserveBranchSelectionStale: true });
+    const staleCheckpoint = chatAtlasBranchSelectionStaleCheckpoint();
+    return Promise.resolve(chatAtlasTriggerCompleteIndexAuthority()).then((result) => {
+      if (staleCheckpoint && chatAtlasCompleteIndexExplicitRefreshSucceeded(result)) {
+        chatAtlasClearBranchSelectionStale(staleCheckpoint, 'explicit-rebuild-complete');
+      }
+      return result;
+    });
   }
 
   function refreshCompleteTurnIndexProjection(cause = 'explicit-rebuild') {
     if (!completeTurnIndexAuthorityState.enabled) {
       return Promise.resolve(getCompleteTurnIndexProjectionStatus());
     }
-    return chatAtlasScheduleCompleteIndexRefresh(String(cause || 'explicit-rebuild'), { immediate: true });
+    const staleCheckpoint = chatAtlasBranchSelectionStaleCheckpoint();
+    const refreshScope = Object.freeze({
+      chatId: String(completeTurnIndexAuthorityState.chatId || ''),
+      routeKey: String(completeTurnIndexAuthorityState.routeKey || ''),
+      generation: Number(completeTurnIndexAuthorityState.generation || 0),
+    });
+    const requestAlreadyActive = completeIndexRefreshCoordinator?.getStatus?.()?.requestActive === true;
+    const runExplicitRefresh = () => chatAtlasScheduleCompleteIndexRefresh(
+      String(cause || 'explicit-rebuild'),
+      { immediate: true },
+    );
+    let operation = Promise.resolve(runExplicitRefresh());
+    if (requestAlreadyActive) {
+      // The in-flight request began before this explicit action and therefore
+      // cannot honestly clear its stale checkpoint. Once it settles, replace
+      // the coordinator's single queued trailing timer with one immediate,
+      // route-scoped explicit validation and await that result instead.
+      operation = operation.then(() => {
+        const scopeCurrent = completeTurnIndexAuthorityState.enabled === true
+          && refreshScope.chatId === String(completeTurnIndexAuthorityState.chatId || '')
+          && refreshScope.routeKey === String(completeTurnIndexAuthorityState.routeKey || '')
+          && refreshScope.generation === Number(completeTurnIndexAuthorityState.generation || 0);
+        return scopeCurrent ? runExplicitRefresh() : getCompleteTurnIndexProjectionStatus();
+      });
+    }
+    return operation.then((result) => {
+      if (staleCheckpoint && chatAtlasCompleteIndexExplicitRefreshSucceeded(result)) {
+        chatAtlasClearBranchSelectionStale(staleCheckpoint, 'explicit-refresh-complete');
+      }
+      return result;
+    });
   }
 
   const COMPLETE_TURN_INDEX_EVENT_CAUSES = Object.freeze({
