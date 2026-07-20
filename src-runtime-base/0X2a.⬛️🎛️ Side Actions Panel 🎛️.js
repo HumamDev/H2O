@@ -51,6 +51,8 @@
   const TAB_SECTIONS = "sections";
   const TAB_MINIMAP = "minimap";
   const TAB_OTHER = "other";
+  const COMPLETE_TURN_INDEX_REFRESH_ACTION_ID = "minimap.complete-turn-index.refresh";
+  const COMPLETE_TURN_INDEX_STATE_EVENT = "evt:h2o:complete-turn-index:state";
 
   const DEFAULT_TABS = [
     { id: TAB_HIGHLIGHTS, label: "Highlights", order: 100 },
@@ -180,6 +182,74 @@
     const next = normalizeTabId(tabId);
     lsSetStr(keyTab(), next);
     return next;
+  }
+
+  // Round 1 normal product action. The complete-turn runtime remains the only
+  // authority: Side Actions neither enables the feature nor calls a provider,
+  // rebuild path, legacy resync, or either memory-only canary.
+  function sideActionsCompleteTurnIndexRuntime() {
+    try { return H2O.turnRuntime || null; } catch { return null; }
+  }
+
+  function sideActionsCompleteTurnIndexEnabled() {
+    const runtime = sideActionsCompleteTurnIndexRuntime();
+    if (typeof runtime?.getCompleteTurnIndexProjectionStatus !== "function") return false;
+    try { return runtime.getCompleteTurnIndexProjectionStatus()?.enabled === true; } catch { return false; }
+  }
+
+  function sideActionsSetMiniMapRefreshFeedback(el, label, status) {
+    if (!el) return;
+    const labelEl = el.querySelector?.(".sa-label");
+    if (labelEl) labelEl.textContent = String(label || "Refresh MiniMap");
+    el.dataset.refreshStatus = String(status || "idle");
+    el.setAttribute?.("aria-busy", status === "refreshing" ? "true" : "false");
+  }
+
+  async function sideActionsRefreshCompleteTurnIndex({ el } = {}) {
+    const runtime = sideActionsCompleteTurnIndexRuntime();
+    if (typeof runtime?.refreshCompleteTurnIndexProjection !== "function" || !sideActionsCompleteTurnIndexEnabled()) {
+      sideActionsSetMiniMapRefreshFeedback(el, "Refresh unavailable", "unavailable");
+      return { ok: false, errorCode: "complete-index-refresh-unavailable" };
+    }
+    if (el) el.disabled = true;
+    sideActionsSetMiniMapRefreshFeedback(el, "Refreshing MiniMap…", "refreshing");
+    try {
+      const result = await runtime.refreshCompleteTurnIndexProjection();
+      const status = String(result?.status || runtime.getCompleteTurnIndexProjectionStatus?.()?.status || "");
+      const failed = status.includes("failed") || status.includes("unavailable");
+      sideActionsSetMiniMapRefreshFeedback(
+        el,
+        failed ? "Refresh failed safely" : "MiniMap refreshed",
+        failed ? "failed" : "refreshed",
+      );
+      return result;
+    } catch {
+      sideActionsSetMiniMapRefreshFeedback(el, "Refresh failed safely", "failed");
+      return { ok: false, errorCode: "complete-index-refresh-failed" };
+    } finally {
+      if (el) el.disabled = !sideActionsCompleteTurnIndexEnabled();
+    }
+  }
+
+  function registerCompleteTurnIndexRefreshAction() {
+    return registerAction({
+      id: COMPLETE_TURN_INDEX_REFRESH_ACTION_ID,
+      owner: "chat-atlas.complete-turn-index.product-controls",
+      tabId: TAB_MINIMAP,
+      text: "Refresh MiniMap",
+      title: "Refresh the complete conversation MiniMap. Enable Full Conversation MiniMap in Control Hub first.",
+      order: 40,
+      tone: TAB_MINIMAP,
+      disabled: () => !sideActionsCompleteTurnIndexEnabled(),
+      onClick: sideActionsRefreshCompleteTurnIndex,
+      meta: { source: "complete-turn-index-product-control" },
+    });
+  }
+
+  function sideActionsSyncCompleteTurnIndexRefreshAvailability() {
+    const rec = state.actions.get(COMPLETE_TURN_INDEX_REFRESH_ACTION_ID);
+    if (!rec?.node) return;
+    rec.node.disabled = !sideActionsCompleteTurnIndexEnabled();
   }
 
   function mountStyles() {
@@ -1063,6 +1133,11 @@
       positionRoot();
       positionLauncher();
     }, { passive: true });
+    W.addEventListener(
+      COMPLETE_TURN_INDEX_STATE_EVENT,
+      sideActionsSyncCompleteTurnIndexRefreshAvailability,
+      { passive: true },
+    );
     if (!state.routeTimer) {
       state.routeTimer = W.setInterval(() => {
         try {
@@ -1309,6 +1384,8 @@
   API.setTabPlacement = (placementRaw) => applyTabPlacement(placementRaw, true);
   API.attachCommandBarBridge = ensureCommandBarBridge;
   API.adoptCommandBarControls = adoptCommandBarControls;
+
+  registerCompleteTurnIndexRefreshAction();
 
   // Loader V2.1: replay-safe ready event. Emitted only after the panel is
   // actually usable (host mounted, state.mounted=true, registerTab exposed)
