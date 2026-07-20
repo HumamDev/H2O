@@ -5567,6 +5567,9 @@
       authorityUnpersisted: false,
       cacheWriteErrorCode: null,
       selectedPathSignalCount: 0,
+      selectedPathAcceptanceCount: 0,
+      selectedPathRejectedCount: 0,
+      selectedPathCancellationCount: 0,
       selectedPathDeduplicatedCount: 0,
       selectedPathUnconfirmedCount: 0,
       selectedPathLastSignature: null,
@@ -5582,6 +5585,7 @@
       selectedPathConfirmationScheduledCount: 0,
       selectedPathConfirmationFetchCount: 0,
       selectedPathConfirmationCancelledCount: 0,
+      selectedPathActiveRevoked: false,
     };
     const now = () => Math.max(0, Number(adapters?.now?.() ?? Date.now()) || 0);
     const iso = (value) => {
@@ -5594,6 +5598,19 @@
     );
     const routeKey = () => String(adapters?.routeKey?.() || '');
     const enabled = () => adapters?.isEnabled?.() === true;
+    const selectedPathCause = (cause) => [
+      'question-branch-changed',
+      'question-selected-path-changed',
+      'answer-branch-changed',
+      'trusted-native-branch-click',
+    ].includes(String(cause || ''));
+    // Production always supplies this adapter. The permissive missing-adapter
+    // fallback is retained only for older isolated coordinator harnesses; an
+    // installed adapter must return exactly true and exceptions fail closed.
+    const reconciliationActive = () => {
+      if (typeof adapters?.reconciliationActive !== 'function') return true;
+      try { return adapters.reconciliationActive() === true; } catch { return false; }
+    };
     const causeSample = () => Array.from(state.causes).slice(0, Math.max(1, Number(limits.diagnosticCauseLimit || 8)));
     const snapshot = () => Object.freeze({
       status: state.status,
@@ -5612,6 +5629,9 @@
       authorityUnpersisted: state.authorityUnpersisted,
       cacheWriteErrorCode: state.cacheWriteErrorCode,
       selectedPathSignalCount: state.selectedPathSignalCount,
+      selectedPathAcceptanceCount: state.selectedPathAcceptanceCount,
+      selectedPathRejectedCount: state.selectedPathRejectedCount,
+      selectedPathCancellationCount: state.selectedPathCancellationCount,
       selectedPathDeduplicatedCount: state.selectedPathDeduplicatedCount,
       selectedPathUnconfirmedCount: state.selectedPathUnconfirmedCount,
       selectedPathLastSignature: state.selectedPathLastSignature,
@@ -5690,6 +5710,39 @@
         resolveSelectedPath(evidence, reason);
       }
     };
+    const cancelSelectedPathReconciliation = (reasonRaw = 'reconciliation-disabled') => {
+      const reason = errorCode(reasonRaw, 'reconciliation-disabled');
+      const pending = state.selectedPathPendingEvidence;
+      const active = state.selectedPathActiveEvidence;
+      const requestLease = state.selectedPathRequestLease;
+      const confirmation = state.selectedPathConfirmationEvidence;
+      const hadSelectedPathWork = !!(
+        pending
+        || active
+        || requestLease
+        || confirmation
+        || Array.from(state.causes).some(selectedPathCause)
+      );
+      clearSelectedPathConfirmation(reason, true);
+      clearSelectedPathRequestLease(reason);
+      state.selectedPathPendingEvidence = null;
+      if (active) state.selectedPathActiveRevoked = true;
+      state.selectedPathSuppressedSignatures.clear();
+      state.selectedPathResultCode = 'selected-path-reconciliation-disabled';
+      for (const cause of Array.from(state.causes)) {
+        if (selectedPathCause(cause)) state.causes.delete(cause);
+      }
+      if (!state.causes.size) {
+        state.trailingRequired = false;
+        if (!state.promise) clearDebounce();
+      }
+      if (hadSelectedPathWork) state.selectedPathCancellationCount += 1;
+      adapters?.trace?.('selected-reconciliation-cancelled', {
+        reason,
+        qId: pending?.qId || active?.qId || requestLease?.evidence?.qId || confirmation?.qId || '',
+      });
+      return snapshot();
+    };
     const cancel = (reason = 'cancelled', status = 'stale-route-discarded') => {
       clearDebounce();
       clearRequestTimeout();
@@ -5704,6 +5757,7 @@
       state.selectedPathLastSignature = null;
       state.selectedPathPendingEvidence = null;
       state.selectedPathActiveEvidence = null;
+      state.selectedPathActiveRevoked = false;
       state.selectedPathSuppressedSignatures.clear();
       state.selectedPathResultCode = null;
       return notify(status, {
@@ -5724,6 +5778,19 @@
         token,
         confirmationAttempt: evidence?.confirmationAttempt === true,
       });
+      // Execution-time reconciliation-gate recheck: if the memory-only gate was
+      // disabled after a trusted request was accepted but before this confirmation
+      // could be scheduled (e.g. flipped off during the debounce window), no
+      // confirmation lease is created. Absent adapter (focused coordinator
+      // harnesses) is permissive, preserving existing Gate 5 confirmation tests.
+      if (!reconciliationActive()) {
+        adapters?.trace?.('confirmation-skipped', {
+          reason: 'reconciliation-disabled',
+          qId: evidence?.qId,
+          token,
+        });
+        return false;
+      }
       if (!evidence?.trusted || !token || evidence?.confirmationAttempt) {
         adapters?.trace?.('confirmation-skipped', {
           reason: !evidence?.trusted
@@ -5788,6 +5855,10 @@
         const current = pending
           && enabled()
           && state.routeKey === routeKey()
+          // Execution-time reconciliation-gate recheck: a confirmation whose gate
+          // was disabled after scheduling but before this delayed callback fires
+          // performs NO fetch and mutates no primary (bounded stale exit below).
+          && reconciliationActive()
           && lease
           && lease.selectionToken === pending.selectionToken
           && lease.qId === pending.qId
@@ -5832,18 +5903,32 @@
           completedAt: iso(now()),
         }));
       }
+      let causes = causeSample();
+      const queuedSelectedPathWork = !!state.selectedPathPendingEvidence
+        || causes.some(selectedPathCause);
+      const queuedOrdinaryWork = causes.some((cause) => !selectedPathCause(cause));
+      if (queuedSelectedPathWork && !reconciliationActive()) {
+        cancelSelectedPathReconciliation('reconciliation-disabled-before-provider');
+        causes = causeSample();
+        if (!queuedOrdinaryWork) {
+          return Promise.resolve(notify('complete-refresh-failed-cache-preserved', {
+            errorCode: 'selected-path-reconciliation-disabled',
+            completedAt: iso(now()),
+          }));
+        }
+      }
       const Controller = adapters?.AbortController || globalThis.AbortController;
       const controller = typeof Controller === 'function' ? new Controller() : null;
       const generation = state.generation + 1;
       state.generation = generation;
       state.routeKey = routeKey();
-      state.fetchCount += 1;
       state.controller = controller;
       state.startedAt = iso(now());
       state.completedAt = null;
       state.errorCode = null;
       state.selectedPathActiveEvidence = state.selectedPathPendingEvidence;
       state.selectedPathPendingEvidence = null;
+      state.selectedPathActiveRevoked = false;
       if (state.selectedPathActiveEvidence) {
         adapters?.trace?.('selected-refresh-started', {
           cause: state.selectedPathActiveEvidence.cause,
@@ -5853,7 +5938,11 @@
           confirmationAttempt: state.selectedPathActiveEvidence.confirmationAttempt === true,
         });
       }
-      const causes = causeSample();
+      causes = causeSample();
+      const selectedPathExecution = !!state.selectedPathActiveEvidence
+        || causes.some(selectedPathCause);
+      const selectedPathExecutionOnly = selectedPathExecution
+        && !causes.some((cause) => !selectedPathCause(cause));
       state.causes.clear();
       notify('complete-refreshing');
 
@@ -5864,7 +5953,21 @@
         }, Math.max(100, Number(limits.timeoutMs || 4500)));
       });
       const providerPromise = Promise.resolve()
-        .then(() => provider(chatId, { signal: controller?.signal, causes }))
+        .then(() => {
+          // The debounce callback may already have started when the memory-only
+          // gate turns off. Selected-only work must still stop immediately before
+          // the GET; mixed ordinary work continues without selected evidence.
+          if (selectedPathExecution && !reconciliationActive()) {
+            cancelSelectedPathReconciliation('reconciliation-disabled-before-provider');
+            if (selectedPathExecutionOnly) {
+              return { selectedPathDiscarded: true, phase: 'before-provider' };
+            }
+            state.selectedPathActiveEvidence = null;
+            state.selectedPathActiveRevoked = false;
+          }
+          state.fetchCount += 1;
+          return provider(chatId, { signal: controller?.signal, causes });
+        })
         .then((value) => ({ value }), (error) => ({ error }));
 
       const operation = Promise.race([providerPromise, timeoutPromise])
@@ -5873,6 +5976,12 @@
           if (!current) {
             state.staleDiscardCount += 1;
             return snapshot();
+          }
+          if (outcome?.value?.selectedPathDiscarded === true) {
+            return notify('complete-refresh-failed-cache-preserved', {
+              errorCode: 'selected-path-reconciliation-disabled',
+              completedAt: iso(now()),
+            });
           }
           if (outcome?.timeout) {
             return notify('complete-refresh-failed-cache-preserved', {
@@ -5906,6 +6015,22 @@
               errorCode: 'older-host-payload',
               completedAt: iso(now()),
             });
+          }
+          // A selected-only GET may already be in flight when qualification is
+          // disabled. Preserve the existing proven authority byte-for-byte: no
+          // confirmation, cache write, publication, canonical rebuild, or primary
+          // mutation may consume that result. Mixed ordinary refreshes remain
+          // eligible, but their selected evidence is discarded.
+          if (selectedPathExecution && (!reconciliationActive() || state.selectedPathActiveRevoked)) {
+            cancelSelectedPathReconciliation('reconciliation-disabled-before-publication');
+            if (selectedPathExecutionOnly) {
+              return notify('complete-refresh-failed-cache-preserved', {
+                errorCode: 'selected-path-reconciliation-disabled',
+                completedAt: iso(now()),
+              });
+            }
+            state.selectedPathActiveEvidence = null;
+            state.selectedPathActiveRevoked = false;
           }
           // The accepted trusted request lease survives outcomes that consume
           // or bypass the active evidence (races, discarded older payloads):
@@ -6016,6 +6141,7 @@
             resolveSelectedPath(state.selectedPathActiveEvidence, 'failed');
           }
           state.selectedPathActiveEvidence = null;
+          state.selectedPathActiveRevoked = false;
           const shouldTrail = state.trailingRequired
             && state.causes.size > 0
             && enabled()
@@ -6054,6 +6180,24 @@
           expectChange: rawEvidence?.expectChange === true,
         })
         : null;
+      const selectedPathWork = selectedPathCause(boundedCause);
+      if (selectedPathWork && !reconciliationActive()) {
+        if (selectedPathEvidence) {
+          state.selectedPathSignalCount += 1;
+          state.selectedPathLastSignature = selectedPathEvidence.signature;
+        }
+        state.selectedPathRejectedCount += 1;
+        adapters?.trace?.('selected-schedule-attempt', {
+          cause: boundedCause,
+          qId: selectedPathEvidence?.qId || '',
+          trusted: selectedPathEvidence?.trusted === true,
+          token: selectedPathEvidence?.selectionToken || '',
+          signature: selectedPathEvidence?.signature || '',
+          accepted: false,
+          reason: 'reconciliation-disabled',
+        });
+        return Promise.resolve(snapshot());
+      }
       if (selectedPathEvidence) {
         state.selectedPathSignalCount += 1;
         state.selectedPathLastSignature = selectedPathEvidence.signature;
@@ -6110,6 +6254,7 @@
           && selectedPathEvidence.selectionToken
           && selectedPathEvidence.selectionToken !== state.selectedPathConfirmationEvidence.selectionToken
         ) clearSelectedPathConfirmation('superseded');
+        state.selectedPathAcceptanceCount += 1;
         state.selectedPathPendingEvidence = selectedPathEvidence;
         state.selectedPathResultCode = null;
         // ── Trusted request lease: frozen at coordinator ACCEPTANCE, before
@@ -6154,7 +6299,15 @@
       }, Math.max(0, Number(limits.debounceMs || 280)));
       return Promise.resolve(snapshot());
     };
-    return Object.freeze({ schedule, refresh, cancel, markPending, getStatus: snapshot, limits });
+    return Object.freeze({
+      schedule,
+      refresh,
+      cancel,
+      cancelSelectedPathReconciliation,
+      markPending,
+      getStatus: snapshot,
+      limits,
+    });
   }
   // CV-3.4 Gate 4 refresh production seam:end
 
@@ -6196,6 +6349,16 @@
     trustedSelectionCaptureCount: 0,
     trustedSelectedPathIntent: null,
     trustedNativeReconcileTask: null,
+    // Round 1: automatic native Previous/Next response-branch reconciliation is
+    // DEFERRED to Round 2. This gate is independent of `enabled`, of the
+    // persisted complete-turn preference, and of the memory canary; it defaults
+    // false, is never persisted, and is flipped only by the memory-only
+    // qualification setter below. Enabling the complete-turn projection never
+    // enables reconciliation. Trusted native-click capture + canonical qId
+    // binding + tracing stay available (for future passive stale-state
+    // signaling); only the automatic reconciliation SCHEDULE is gated.
+    autoBranchReconciliationEnabled: false,
+    autoBranchReconciliationSetterCallCount: 0,
     preferenceResolved: false,
     preferenceStoredValue: null,
     preferenceResolution: 'unresolved',
@@ -6532,6 +6695,21 @@
   }
 
   function chatAtlasScheduleTrustedNativeBranchReconcile(token) {
+    // Round 1 separation: automatic native branch reconciliation is deferred.
+    // While the reconciliation gate is false the capture has already recorded
+    // its trusted intent + canonical binding + trace above, but NO post-event
+    // task is scheduled — so no reconciliation fetch, no confirmation lease, no
+    // automatic primary-branch mutation, and no timer/polling work occurs. This
+    // is the single narrowest reconciliation trigger boundary; the accepted
+    // Gate 5 implementation is unchanged and runs whenever the gate is enabled
+    // by the memory-only qualification setter.
+    if (completeTurnIndexAuthorityState.autoBranchReconciliationEnabled !== true) {
+      chatAtlasTraceTrustedLifecycle('trusted-reconcile-deferred', {
+        reason: 'auto-branch-reconciliation-disabled',
+        token,
+      });
+      return;
+    }
     // One post-event task per trusted token. A newer click cancels the prior
     // task (and the run guard re-checks the live token anyway).
     chatAtlasCancelTrustedNativeBranchReconcile();
@@ -6542,6 +6720,19 @@
   }
 
   function chatAtlasRunTrustedNativeBranchReconcile(token) {
+    // Execution-time reconciliation-gate recheck: if the memory-only gate was
+    // turned off after this zero-delay task was queued (e.g. qualification
+    // disabled, or a lifecycle reset), the queued task performs NO reconciliation
+    // work. (Correction 1 would also produce untrusted evidence below; this is an
+    // explicit, self-documenting guard so the queued callback cannot request,
+    // confirm, or mutate.)
+    if (completeTurnIndexAuthorityState.autoBranchReconciliationEnabled !== true) {
+      chatAtlasTraceTrustedLifecycle('trusted-reconcile-deferred', {
+        reason: 'auto-branch-reconciliation-disabled-at-run',
+        token,
+      });
+      return;
+    }
     // Re-validate the live intent by exact qId: token match plus the standard
     // route/chat/generation/gate/age authority the lookup enforces. Any change
     // since capture (route/gate/generation/supersede/expiry) leaves this a
@@ -6700,7 +6891,23 @@
         (Array.isArray(index?.turns) ? index.turns.find((turn) => turn?.qId === qId) : null)?.primaryAId,
       )
       : '';
-    const trustedSelection = chatAtlasCurrentTrustedNativeBranchSelection(qId);
+    // Round 1 shared reconciliation-authorization gate. The trusted-selection
+    // lookup still runs (it preserves the frozen capture intent + canonical qId
+    // binding + expiry/route diagnostics that the future passive stale-state
+    // badge needs), but while automatic branch reconciliation is DEFERRED the
+    // evidence is NOT authorized as trusted and carries NO usable reconciliation
+    // token. This is the single narrowest choke point covering EVERY trusted
+    // reconciliation entry: the capture-driven Path 1 (run guard) AND the
+    // generic-inspection Path 2 (chatAtlasInspectCompleteIndexLiveChanges /
+    // chatAtlasHandleCompleteIndexTurnEvent) both obtain their trust here, so
+    // neither can schedule a refresh/request/confirmation/mutation when the gate
+    // is false. The accepted Gate 5 algorithm is unchanged and re-authorizes
+    // the moment the memory-only qualification gate is enabled.
+    const reconciliationAllowed = completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true;
+    const trustedSelection = reconciliationAllowed
+      ? chatAtlasCurrentTrustedNativeBranchSelection(qId)
+      : null;
+    const authorizedToken = reconciliationAllowed ? String(trustedSelection?.token || '') : '';
     const identity = [
       Number(completeTurnIndexAuthorityState.generation || 0),
       String(completeTurnIndexAuthorityState.chatId || ''),
@@ -6709,7 +6916,7 @@
       String(index?.sourceFingerprint || ''),
       String(index?.payloadUpdateTime ?? ''),
       cause,
-      String(trustedSelection?.token || ''),
+      authorizedToken,
       captureDriven ? `baseline:${baselineAnswerId}` : '',
     ];
     const evidence = Object.freeze({
@@ -6717,8 +6924,8 @@
       cause,
       qId,
       observedAnswerId,
-      trusted: !!trustedSelection,
-      selectionToken: String(trustedSelection?.token || ''),
+      trusted: reconciliationAllowed && !!trustedSelection,
+      selectionToken: authorizedToken,
       baselineAnswerId,
       expectChange: captureDriven,
     });
@@ -7196,6 +7403,9 @@
       refreshTrailingRequired: refresh?.trailingRequired === true,
       refreshTrailingCount: Number(refresh?.trailingRefreshCount || 0),
       selectedPathSignalCount: Number(refresh?.selectedPathSignalCount || 0),
+      selectedPathAcceptanceCount: Number(refresh?.selectedPathAcceptanceCount || 0),
+      selectedPathRejectedCount: Number(refresh?.selectedPathRejectedCount || 0),
+      selectedPathCancellationCount: Number(refresh?.selectedPathCancellationCount || 0),
       selectedPathDeduplicatedCount: Number(refresh?.selectedPathDeduplicatedCount || 0),
       selectedPathUnconfirmedCount: Number(refresh?.selectedPathUnconfirmedCount || 0),
       selectedPathLastSignature: refresh?.selectedPathLastSignature || null,
@@ -7211,6 +7421,8 @@
       trustedSelectionCaptureCount: completeTurnIndexAuthorityState.trustedSelectionCaptureCount,
       trustedSelectionIntentActive: !!completeTurnIndexAuthorityState.trustedSelectedPathIntent,
       trustedSelectionIntentQId: completeTurnIndexAuthorityState.trustedSelectedPathIntent?.qId || null,
+      autoBranchReconciliationEnabled: completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true,
+      autoBranchReconciliationSetterCallCount: completeTurnIndexAuthorityState.autoBranchReconciliationSetterCallCount,
       trustedSelectionLastCaptureTokenHash: completeTurnIndexLifecycleDiagnostics.trustedSelectionLastCaptureTokenHash,
       trustedSelectionLastCaptureDirection: completeTurnIndexLifecycleDiagnostics.trustedSelectionLastCaptureDirection,
       trustedSelectionBindAttemptCount: completeTurnIndexLifecycleDiagnostics.trustedSelectionBindAttemptCount,
@@ -7292,6 +7504,7 @@
     selectedPathEvidenceCurrent: chatAtlasCompleteIndexSelectedPathEvidenceCurrent,
     selectedPathLeaseCurrent: chatAtlasCompleteIndexSelectedPathLeaseCurrent,
     routeGeneration: () => Number(completeTurnIndexAuthorityState.generation || 0),
+    reconciliationActive: () => completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true,
     onSelectedPathResolved: chatAtlasResolveTrustedNativeBranchSelection,
     trace: chatAtlasTraceTrustedLifecycle,
     writeCache: (envelope) => {
@@ -7317,6 +7530,20 @@
   function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false) {
     const clearedIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     chatAtlasCancelTrustedNativeBranchReconcile();
+    // Lifecycle reset: the memory-only automatic-reconciliation qualification
+    // gate must NOT survive an enable/disable transition, a preference clear, or
+    // a route/chat generation boundary — all of which funnel through here (from
+    // chatAtlasApplyCompleteIndexProjectionEnabled and chatAtlasTriggerCompleteIndexAuthority).
+    // It returns to false so re-enabling the projection can never silently
+    // reactivate reconciliation; a qualification test must explicitly re-enable
+    // it after any lifecycle boundary. Nothing is persisted.
+    if (completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true) {
+      completeTurnIndexAuthorityState.autoBranchReconciliationEnabled = false;
+      chatAtlasTraceTrustedLifecycle('auto-branch-reconciliation-reset', {
+        reason: staleStatus ? 'route-reset-route-changed' : 'authority-reset',
+        chat: nextRoute?.chatId || '',
+      });
+    }
     completeIndexRefreshCoordinator?.cancel?.(
       staleStatus ? 'route-changed' : 'authority-reset',
       staleStatus ? 'stale-route-discarded' : 'idle',
@@ -7514,6 +7741,38 @@
   function setCompleteTurnIndexProjectionCanary(value) {
     completeTurnIndexAuthorityState.setterCallCount += 1;
     return chatAtlasApplyCompleteIndexProjectionEnabled(value === true, 'memory-canary');
+  }
+
+  // Memory-only qualification control for the DEFERRED automatic native
+  // response-branch reconciliation (Round 2). It writes no localStorage and is
+  // never a normal product setting: it exists only so focused validators (and
+  // manual Gate 5 qualification) can exercise the accepted reconciliation
+  // implementation without enabling it during normal Round 1 operation. Default
+  // is false; boot/reload re-initialise it to false; it is independent of the
+  // complete-turn projection preference and of the projection canary.
+  function setCompleteTurnIndexAutoBranchReconciliationCanary(value) {
+    completeTurnIndexAuthorityState.autoBranchReconciliationSetterCallCount += 1;
+    const enabled = value === true;
+    const disabling = completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true && !enabled;
+    completeTurnIndexAuthorityState.autoBranchReconciliationEnabled = enabled;
+    if (disabling) {
+      // Cause-scoped rollback: revoke only selected-path reconciliation. Initial
+      // authority, explicit/manual refresh, streaming, and turn-settled work keep
+      // their coordinator state. An already-running selected-only GET is allowed
+      // to settle but its result is discarded by the execution guard.
+      chatAtlasCancelTrustedNativeBranchReconcile();
+      completeIndexRefreshCoordinator?.cancelSelectedPathReconciliation?.('reconciliation-disabled-by-setter');
+      const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      if (intent) {
+        completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+        chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
+          reason: 'reconciliation-disabled-by-setter',
+          qId: intent.qId,
+          token: intent.token,
+        });
+      }
+    }
+    return getCompleteTurnIndexProjectionStatus();
   }
 
   function chatAtlasResolveCompleteIndexProjectionPreference() {
@@ -8156,6 +8415,7 @@
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
     setCompleteTurnIndexProjectionCanary,
+    setCompleteTurnIndexAutoBranchReconciliationCanary,
     getCompleteTurnIndexProjectionPreference,
     setCompleteTurnIndexProjectionPreference,
     clearCompleteTurnIndexProjectionPreference,

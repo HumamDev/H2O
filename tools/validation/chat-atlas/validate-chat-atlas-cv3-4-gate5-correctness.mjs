@@ -282,6 +282,11 @@ function createRefreshHarness({
   let signalRuntime = null;
   let publishFeedback = null;
   let trustedSelectionToken = '';
+  // Round 1 separation: the memory-only automatic-reconciliation gate. Default
+  // true = Gate 5 QUALIFICATION mode (these correctness fixtures exercise the
+  // accepted reconciliation), so existing fixtures are unaffected. Fixtures that
+  // flip it false prove the async execution-time confirmation guard.
+  let reconciliationGate = true;
   const resolvedSelections = [];
   const adapters = {
     now: (() => { let tick = 0; return () => ++tick; })(),
@@ -307,6 +312,7 @@ function createRefreshHarness({
       : (!!evidence?.selectionToken && evidence.selectionToken === trustedSelectionToken)),
     selectedPathLeaseCurrent: (evidence) => signalRuntime?.leaseCurrent?.(evidence),
     routeGeneration: () => signalRuntime?.authorityGeneration?.() ?? 1,
+    reconciliationActive: () => reconciliationGate,
     onSelectedPathResolved: (evidence, result) => {
       resolvedSelections.push({ evidence, result });
       if (evidence?.selectionToken === trustedSelectionToken) trustedSelectionToken = '';
@@ -388,6 +394,12 @@ function createRefreshHarness({
         trustedSelectionSequence: 0,
         trustedSelectionCaptureCount: 0,
         trustedSelectedPathIntent: null,
+        // Gate 5 QUALIFICATION harness: automatic native branch reconciliation
+        // is DEFERRED by default in Round 1 and gated behind a memory-only
+        // qualification switch. These correctness fixtures explicitly exercise
+        // the accepted reconciliation implementation, so the harness enables
+        // the gate — mirroring setCompleteTurnIndexAutoBranchReconciliationCanary(true).
+        autoBranchReconciliationEnabled: true,
       };
       const chatAtlasFullIndexRoute = () => ({ chatId: 'fixture-chat', routeKey: '/c/fixture-chat' });
       const completeIndexRefreshCoordinator = coordinator;
@@ -443,6 +455,15 @@ function createRefreshHarness({
         setAuthorityGeneration(value) { completeTurnIndexAuthorityState.generation = Number(value); },
         setAuthorityRouteKey(value) { completeTurnIndexAuthorityState.routeKey = String(value); },
         setAuthorityEnabled(value) { completeTurnIndexAuthorityState.enabled = value === true; },
+        setReconciliationGate(value) {
+          const enabled = value === true;
+          const disabling = completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true && !enabled;
+          completeTurnIndexAuthorityState.autoBranchReconciliationEnabled = enabled;
+          if (disabling) {
+            if (typeof chatAtlasCancelTrustedNativeBranchReconcile === 'function') chatAtlasCancelTrustedNativeBranchReconcile();
+            completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+          }
+        },
         setAuthorityIndex(index) { completeTurnIndexAuthorityState.index = index; },
         resetRoute() {
           // Simulates chatAtlasResetCompleteIndexRoute's trusted-scope cleanup:
@@ -488,6 +509,19 @@ function createRefreshHarness({
     setAuthorityGeneration(value) { return signalRuntime?.setAuthorityGeneration?.(value); },
     setAuthorityRouteKey(value) { return signalRuntime?.setAuthorityRouteKey?.(value); },
     setAuthorityEnabled(value) { return signalRuntime?.setAuthorityEnabled?.(value); },
+    // Flip the memory-only reconciliation gate on BOTH the signal runtime
+    // (Correction 1 evidence trust + Correction 3.1 run guard) and the
+    // coordinator adapter (Correction 3.2/3.3 confirmation guards).
+    setReconciliationGate(value) {
+      const enabled = value === true;
+      const disabling = reconciliationGate && !enabled;
+      reconciliationGate = enabled;
+      signalRuntime?.setReconciliationGate?.(enabled);
+      if (disabling) {
+        coordinator.cancelSelectedPathReconciliation('reconciliation-disabled-by-setter');
+      }
+      return coordinator.getStatus();
+    },
     setAuthorityIndex(index) { return signalRuntime?.setAuthorityIndex?.(index); },
     signalResetRoute() { return signalRuntime?.resetRoute?.(); },
     pendingPostEventTaskCount() { return signalRuntime?.pendingPostEventTaskCount?.() || 0; },
@@ -2963,6 +2997,204 @@ await fixture('G5 combined live parity: single-child graph shape plus boundary-c
   equal(harness.currentIndex().turns.length, 39);
   equal(new Set(harness.currentIndex().turns.map((row) => row.qId)).size, 39);
   equal(harness.resolvedSelections.at(-1)?.result, 'confirmed');
+  equal(harness.timers.size, 0);
+});
+
+await fixture('SEP Path-2 gate false rejects changed selected-path work before acceptance', async () => {
+  // Drive the exact review-confirmed Path-2 bypass with a successful provider
+  // result that would change the same-qId primary if the coordinator accepted it.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const changedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: changedIndex }));
+  harness.setReconciliationGate(false);
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.signalIntent()?.qId, LIVE_BRANCH_Q);
+  equal(harness.diagnostics().trustedSelectionBindSuccessCount, 1);
+  harness.inspectLive([{
+    qId: LIVE_BRANCH_Q,
+    primaryAId: LIVE_BRANCH_PREVIOUS_A,
+    answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    structureKnown: true,
+  }]);
+  const evidenceEntries = harness.lifecycleTrace().filter((entry) => entry.event === 'selected-evidence-created');
+  ok(evidenceEntries.length >= 1);
+  equal(evidenceEntries.every((entry) => entry.trusted === false), true);
+  equal(evidenceEntries.every((entry) => !entry.token), true);
+  equal(harness.diagnostics().selectedPathLastScheduleTrusted, false);
+  const status = harness.coordinator.getStatus();
+  equal(status.selectedPathAcceptanceCount, 0);
+  equal(status.selectedPathRejectedCount, 1);
+  equal(status.timerPending, false);
+  equal(status.fetchCount, 0);
+  equal(status.selectedPathConfirmationScheduledCount, 0);
+  equal(status.selectedPathConfirmationLeaseActive, false);
+  equal(status.selectedPathRequestLeaseActive, false);
+  equal(status.trailingRequired, false);
+  equal(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-native-branch-click'), false);
+  equal(harness.providerQueue.length, 1);
+  equal(harness.writes.length, 0);
+  equal(harness.published.length, 0);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q)?.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('SEP selected-path debounce is revoked when qualification turns off', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const changedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: changedIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.runPostEventTasks(), 1);
+  let status = harness.coordinator.getStatus();
+  equal(status.selectedPathAcceptanceCount, 1);
+  equal(status.timerPending, true);
+  equal(status.selectedPathRequestLeaseActive, true);
+  harness.setReconciliationGate(false);
+  status = harness.coordinator.getStatus();
+  equal(status.timerPending, false);
+  equal(status.selectedPathActiveSignature, null);
+  equal(status.selectedPathRequestLeaseActive, false);
+  equal(status.selectedPathConfirmationLeaseActive, false);
+  equal(status.trailingRequired, false);
+  equal(harness.runTimer(280), false);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 0);
+  equal(harness.providerQueue.length, 1);
+  equal(harness.writes.length, 0);
+  equal(harness.published.length, 0);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q)?.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('SEP in-flight selected-path result is discarded after qualification turns off', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const changedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const pendingProvider = deferred();
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => pendingProvider.promise);
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(harness.coordinator.getStatus().fetchCount, 1);
+  equal(harness.coordinator.getStatus().requestActive, true);
+  harness.setReconciliationGate(false);
+  equal(harness.coordinator.getStatus().selectedPathRequestLeaseActive, false);
+  pendingProvider.resolve({ ok: true, index: changedIndex });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(status.requestActive, false);
+  equal(status.selectedPathConfirmationScheduledCount, 0);
+  equal(status.selectedPathConfirmationFetchCount, 0);
+  equal(status.selectedPathConfirmationLeaseActive, false);
+  equal(status.selectedPathRequestLeaseActive, false);
+  equal(status.trailingRequired, false);
+  equal(harness.writes.length, 0);
+  equal(harness.published.length, 0);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q)?.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('SEP reconciliation false preserves ordinary non-selected-path refresh', async () => {
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const ordinaryIndex = {
+    ...initialIndex,
+    payloadUpdateTime: Number(initialIndex.payloadUpdateTime) + 1,
+    capturedAt: '2026-07-18T00:00:01.000Z',
+  };
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: ordinaryIndex }));
+  harness.setReconciliationGate(false);
+  await harness.coordinator.schedule('turn-settled');
+  equal(harness.coordinator.getStatus().timerPending, true);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const status = harness.coordinator.getStatus();
+  equal(status.fetchCount, 1);
+  equal(status.selectedPathAcceptanceCount, 0);
+  equal(harness.writes.length, 1);
+  equal(harness.published.length, 1);
+  equal(harness.currentIndex().payloadUpdateTime, ordinaryIndex.payloadUpdateTime);
+  equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q)?.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(harness.timers.size, 0);
+});
+
+await fixture('SEP Correction 3.3: gate off before the delayed confirmation fires cancels it with no fetch', async () => {
+  // Reach a bounded pending confirmation (gate true), then disable the gate
+  // before the 1250ms confirmation callback executes. The execution-time
+  // recheck must cancel it: no confirmation fetch, no primary mutation.
+  const envelopeRuntime = createEnvelopeRuntime(coreSource);
+  const initialIndex = envelopeRuntime.normalize(
+    acceptedIdentityEnvelope(envelopeRuntime),
+    'fixture-chat',
+    { source: 'host' },
+  ).envelope;
+  const confirmedIndex = withLiveBranchPrimary(
+    envelopeRuntime,
+    initialIndex,
+    LIVE_BRANCH_PREVIOUS_A,
+    Number(initialIndex.payloadUpdateTime) + 1,
+  );
+  const harness = createRefreshHarness({ initialIndex, skipUnchangedWrites: true });
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: initialIndex }));
+  harness.providerQueue.push(() => Promise.resolve({ ok: true, index: confirmedIndex }));
+  equal(harness.recordTrustedNativeClick('previous'), true);
+  equal(harness.runPostEventTasks(), 1);
+  equal(harness.runTimer(280), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  let status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationScheduledCount, 1);
+  equal(status.selectedPathConfirmationPending, true);
+  // Disabling qualification cancels the pending confirmation immediately.
+  harness.setReconciliationGate(false);
+  equal(harness.runTimer(1250), false);
+  await new Promise((resolve) => setImmediate(resolve));
+  status = harness.coordinator.getStatus();
+  equal(status.selectedPathConfirmationFetchCount, 0);
+  equal(status.selectedPathConfirmationCancelledCount, 1);
+  equal(harness.resolvedSelections.at(-1)?.result, 'reconciliation-disabled-by-setter');
+  // The captured turn's primary was NOT mutated (still the pre-switch host cache).
+  const turn = harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
   equal(harness.timers.size, 0);
 });
 

@@ -517,6 +517,251 @@ await fixture('no raw content enters preference cache or diagnostics', () => {
   equal(serialized.includes('raw payload'), false);
 });
 
+// ── Round 1 separation: automatic native branch reconciliation is deferred ──
+// (independent gate, default false; the complete-turn projection never enables it).
+function dispatchTrustedBranchClick(runtime, qId, { direction = 'previous', role = 'user' } = {}) {
+  const label = direction === 'next' ? 'Next response' : 'Previous response';
+  const messageNode = {
+    getAttribute: (name) => {
+      if (name === 'data-message-id') return qId;
+      if (name === 'data-message-author-role') return role;
+      return null;
+    },
+  };
+  const container = {
+    getAttribute: (name) => (name === 'data-testid' ? 'conversation-turn-1' : null),
+    querySelectorAll: (sel) => (sel === '[data-message-id]' ? [messageNode] : []),
+  };
+  const button = {
+    tagName: 'BUTTON',
+    getAttribute: (name) => (name === 'aria-label' ? label : null),
+    closest: (sel) => (sel === '[data-testid^="conversation-turn-"]' ? container : null),
+  };
+  const svg = { tagName: 'svg', getAttribute: () => null, closest: (sel) => (sel === 'button' ? button : null) };
+  const event = { isTrusted: true, target: svg, composedPath: () => [svg, button, container] };
+  const handlers = runtime.listeners.get('click') || [];
+  let recorded = false;
+  for (const fn of handlers) { if (fn(event) === true) recorded = true; }
+  return recorded;
+}
+function pendingZeroDelayTimerIds(runtime) {
+  return Array.from(runtime.timers.entries()).filter(([, row]) => row.ms === 0).map(([id]) => id);
+}
+function runNewZeroDelayTimers(runtime, beforeIds) {
+  const before = new Set(beforeIds);
+  let ran = 0;
+  for (const [id, row] of Array.from(runtime.timers.entries())) {
+    if (row.ms === 0 && !before.has(id)) { runtime.timers.delete(id); row.fn(); ran += 1; }
+  }
+  return ran;
+}
+const TRACE = (runtime) => (runtime.status().selectedPathLifecycleTrace || []).map((entry) => entry.event);
+
+await fixture('A: automatic reconciliation gate default is false with no persistence key', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(runtime.status().compiledDefault, false);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  equal(runtime.status().autoBranchReconciliationSetterCallCount, 0);
+  // No reconciliation-specific storage key is ever touched.
+  equal(runtime.storage.state.touched.some(([, key]) => /reconcil/i.test(key)), false);
+});
+
+await fixture('B: projection enabled + gate false — capture binds but schedules zero reconciliation work', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().completeCount, 38);
+  const netBefore = runtime.counters.networkReads;
+  const zeroBefore = pendingZeroDelayTimerIds(runtime);
+  const recorded = dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01');
+  // Trusted native click capture + canonical qId binding remain intact.
+  equal(recorded, true);
+  equal(runtime.status().trustedSelectionCaptureCount, 1);
+  equal(runtime.status().trustedSelectionIntentActive, true);
+  equal(runtime.status().trustedSelectionIntentQId, 'gate5-pref-q-01');
+  equal(runtime.status().trustedSelectionBindSuccessCount, 1);
+  // Automatic reconciliation is deferred: no schedule, fetch, lease, mutation, timer.
+  const trace = TRACE(runtime);
+  equal(trace.includes('trusted-reconcile-deferred'), true);
+  equal(trace.includes('trusted-native-branch-click'), false);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  equal(runtime.status().selectedPathConfirmationFetchCount, 0);
+  equal(runtime.status().selectedPathTrustedScheduleAttemptCount, 0);
+  equal(runtime.counters.networkReads - netBefore, 0);
+  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 0);
+  // The captured turn's canonical primary was NOT mutated by the click.
+  equal(runtime.status().count, 38);
+});
+
+await fixture('C: explicit qualification gate lets the accepted reconciliation run without persistence', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  const writesBefore = runtime.storage.state.writes;
+  const removalsBefore = runtime.storage.state.removals;
+  const result = runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  equal(result.autoBranchReconciliationEnabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  equal(runtime.status().autoBranchReconciliationSetterCallCount, 1);
+  // Memory-only: the qualification setter writes/removes no localStorage.
+  equal(runtime.storage.state.writes - writesBefore, 0);
+  equal(runtime.storage.state.removals - removalsBefore, 0);
+  equal(runtime.storage.map.has(PREF_KEY), true);
+  equal(runtime.storage.map.get(PREF_KEY), '1');
+  const zeroBefore = pendingZeroDelayTimerIds(runtime);
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  // With the gate enabled, the capture-driven post-event task is scheduled and,
+  // when run, drives the accepted reconciliation (no more 'deferred').
+  ok(pendingZeroDelayTimerIds(runtime).length > zeroBefore.length);
+  runNewZeroDelayTimers(runtime, zeroBefore);
+  const trace = TRACE(runtime);
+  equal(trace.includes('trusted-native-branch-click'), true);
+  equal(trace.filter((event) => event === 'trusted-reconcile-deferred').length, 0);
+});
+
+await fixture('D: projection canary does not enable reconciliation', () => {
+  const runtime = createRuntime({ cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexProjectionCanary(true);
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('D: persisted-preference activation does not enable reconciliation', () => {
+  const runtime = createRuntime({ cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexProjectionPreference(true);
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('D: booting with stored preference "1" does not enable reconciliation', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('D: manual refresh/rebuild does not silently enable reconciliation', async () => {
+  const rows = buildRows();
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows),
+    provider: () => Promise.resolve({ ok: true, index: hostEnvelope(rows, 101) }),
+  });
+  await runtime.api.refreshCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  await runtime.api.rebuildCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('D: reconciliation setter and lifecycle resets persist nothing; no reconciliation key exists', () => {
+  const storage = createStorage(new Map([['unrelated-key', 'keep']]));
+  const runtime = createRuntime({ storage, preference: '1', cache: cacheEnvelope() });
+  const touchedBefore = runtime.storage.state.touched.length;
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(false);
+  // No set/remove operations were issued by the reconciliation setter.
+  equal(runtime.storage.state.touched.slice(touchedBefore).some(([op]) => ['set', 'remove'].includes(op)), false);
+  // A lifecycle reset (route change) that flips the gate false persists nothing.
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  const beforeReset = runtime.storage.state.touched.length;
+  runtime.context.location.pathname = '/c/88888888-0000-4000-8000-000000000888';
+  runtime.api.rebuildCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  equal(runtime.storage.state.touched.slice(beforeReset).some(([op]) => ['set', 'remove'].includes(op)), false);
+  equal(runtime.storage.map.get('unrelated-key'), 'keep');
+  // No reconciliation-specific key was ever created; the approved key is intact.
+  equal(runtime.storage.state.touched.some(([, key]) => /reconcil/i.test(key)), false);
+  equal([...runtime.storage.map.keys()].some((key) => /reconcil/i.test(key)), false);
+  equal(runtime.status().preference.key, PREF_KEY);
+});
+
+await fixture('E: TRUE -> disable -> re-enable never reactivates reconciliation (Correction 2)', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  // Disable the projection: the lifecycle reset returns the gate to false.
+  runtime.api.setCompleteTurnIndexProjectionPreference(false);
+  equal(runtime.status().enabled, false);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  // Re-enable the projection: the gate stays false (no silent reactivation).
+  runtime.api.setCompleteTurnIndexProjectionPreference(true);
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  // A native click now must not start reconciliation until explicitly re-enabled.
+  const zeroBefore = pendingZeroDelayTimerIds(runtime);
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 0);
+  ok(TRACE(runtime).includes('trusted-reconcile-deferred'));
+});
+
+await fixture('E: TRUE -> clear -> re-enable never reactivates reconciliation (Correction 2)', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  runtime.api.clearCompleteTurnIndexProjectionPreference();
+  equal(runtime.status().enabled, false);
+  equal(runtime.preference().resolution, 'compiled-default-disabled');
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  // Re-enable via canary: reconciliation remains false.
+  runtime.api.setCompleteTurnIndexProjectionCanary(true);
+  equal(runtime.status().enabled, true);
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('E: TRUE -> route/chat change resets reconciliation; old intent cannot authorize (Correction 2C)', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  const originalChat = runtime.status().chatId;
+  // Perform a REAL route/chat generation boundary: change the location and
+  // re-trigger the authority (rebuild routes through chatAtlasResetCompleteIndexRoute).
+  runtime.context.location.pathname = '/c/99999999-0000-4000-8000-000000000999';
+  runtime.context.location.href = 'https://chatgpt.com/c/99999999-0000-4000-8000-000000000999';
+  runtime.api.rebuildCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  ok(runtime.status().chatId !== originalChat || runtime.status().routeGeneration >= 1);
+});
+
+await fixture('E: manual refresh retains qualification while manual rebuild resets it', async () => {
+  const rows = buildRows();
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows),
+    provider: () => Promise.resolve({ ok: true, index: hostEnvelope(rows, 102) }),
+  });
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  await runtime.api.refreshCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, true);
+  await runtime.api.rebuildCompleteTurnIndexProjection();
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+});
+
+await fixture('E: queued post-event task -> gate off before execution does no reconciliation (Correction 3.1)', () => {
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(true);
+  const netBefore = runtime.counters.networkReads;
+  // Dispatch a qualifying native click: the zero-delay reconcile task is queued.
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  const queued = pendingZeroDelayTimerIds(runtime);
+  ok(queued.length >= 1);
+  // Disable the gate BEFORE the queued task runs.
+  runtime.api.setCompleteTurnIndexAutoBranchReconciliationCanary(false);
+  equal(runNewZeroDelayTimers(runtime, []), 0);
+  // The narrow disable transition cancels the queued task and clears its token.
+  equal(runtime.status().trustedSelectionIntentActive, false);
+  equal(pendingZeroDelayTimerIds(runtime).length, 0);
+  equal(TRACE(runtime).includes('trusted-native-branch-click'), false);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  equal(runtime.status().selectedPathConfirmationFetchCount, 0);
+  equal(runtime.status().selectedPathRequestLeaseActive, false);
+  equal(runtime.counters.networkReads - netBefore, 0);
+});
+
+await fixture('E: reload re-initialises the reconciliation gate to false', () => {
+  // A fresh runtime models boot/reload: the memory-only gate never survives.
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  equal(runtime.status().autoBranchReconciliationSetterCallCount, 0);
+});
+
 const failed = fixtures.filter((row) => !row.ok);
 console.log(`CV-3.4 Gate 5 activation and rollback: ${fixtures.length - failed.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failed.length} failures`);
 const totals = runtimes.reduce((out, runtime) => {
