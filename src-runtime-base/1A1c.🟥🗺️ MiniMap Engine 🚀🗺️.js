@@ -161,6 +161,7 @@
     syntheticCurrentReconcileSignature: '',
 
     offScroll: null,
+    activeScrollRoot: null,
     offResize: null,
     offShellReady: null,
     offBehaviorChanged: null,
@@ -1726,6 +1727,41 @@
     return null;
   }
 
+  function MINI_clearActiveScrollRoot() {
+    const off = S.offScroll;
+    S.offScroll = null;
+    S.activeScrollRoot = null;
+    try { off?.(); } catch {}
+    return true;
+  }
+
+  function MINI_bindActiveScrollRoot(reason = 'scroll-root-bind') {
+    const nextRoot = MINI_completeIndexScrollRoot() || window;
+    if (!nextRoot?.addEventListener || !nextRoot?.removeEventListener) return false;
+    if (S.activeScrollRoot === nextRoot && typeof S.offScroll === 'function') return false;
+
+    MINI_clearActiveScrollRoot();
+    const opts = { passive: true };
+    const onScroll = () => scheduleSyncActive('scroll');
+    let removed = false;
+    const off = () => {
+      if (removed) return;
+      removed = true;
+      try { nextRoot.removeEventListener('scroll', onScroll, opts); } catch {}
+      if (S.activeScrollRoot === nextRoot) S.activeScrollRoot = null;
+      if (S.offScroll === off) S.offScroll = null;
+    };
+    try {
+      nextRoot.addEventListener('scroll', onScroll, opts);
+    } catch {
+      return false;
+    }
+    S.activeScrollRoot = nextRoot;
+    S.offScroll = off;
+    scheduleSyncActive(String(reason || 'scroll-root-bind'));
+    return true;
+  }
+
   function MINI_moveTowardCompleteIndexTarget(descriptor, hop = 1) {
     if (!descriptor?.order || !descriptor?.total) return false;
     MINI_bindCompleteIndexMountedAnchors();
@@ -2212,10 +2248,18 @@
       return null;
     }
     S.io = new IntersectionObserver((entries) => {
+      let changed = false;
       for (const e of entries) {
-        if (e.isIntersecting) S.visibleSet.add(e.target);
-        else S.visibleSet.delete(e.target);
+        if (e.isIntersecting) {
+          if (!S.visibleSet.has(e.target)) {
+            S.visibleSet.add(e.target);
+            changed = true;
+          }
+        } else if (S.visibleSet.delete(e.target)) {
+          changed = true;
+        }
       }
+      if (changed) scheduleSyncActive('intersection');
     }, { root: null, rootMargin: '-120px 0px -40px 0px', threshold: 0 });
     return S.io;
   }
@@ -3287,6 +3331,7 @@
       try { ensureChatPageDividerBridgeFromRuntime(); } catch (e) { derr('refreshFromIndexedState:chatPageDividerBridge', e); }
       try { core.attachVisibleAnswers?.(chatId); } catch (e) { derr('refreshFromIndexedState:attachVisibleAnswers', e); }
       try { observeVisibleAnswers(currentAnswerEls()); } catch (e) { derr('refreshFromIndexedState:observeVisibleAnswers', e); }
+      try { MINI_bindActiveScrollRoot('indexed-refresh:scroll-root-bind'); } catch (e) { derr('refreshFromIndexedState:bindActiveScrollRoot', e); }
       try { bindMiniMapScrollGuards(); } catch (e) { derr('refreshFromIndexedState:bindMiniMapScrollGuards', e); }
       scheduleSyncActive(reason);
       ok = true;
@@ -3321,6 +3366,7 @@
       if (ok) {
         ensureChatPageDividerBridgeFromRuntime();
         try { observeVisibleAnswers(core.getAnswerList?.() || []); } catch {}
+        try { MINI_bindActiveScrollRoot('rebuild:scroll-root-bind'); } catch {}
         try { bindMiniMapScrollGuards(); } catch {}
         scheduleSyncActive('rebuild');
       }
@@ -3960,7 +4006,7 @@
     S.formRO = null;
     clearMiniMapGuardBindings();
 
-    try { S.offScroll?.(); } catch {}
+    MINI_clearActiveScrollRoot();
     try { S.offResize?.(); } catch {}
     try { S.offShellReady?.(); } catch {}
     try { S.offBehaviorChanged?.(); } catch {}
@@ -3975,6 +4021,7 @@
     try { S.offCoreTurnUpdated?.(); } catch {}
     try { S.offCompleteTurnIndexState?.(); } catch {}
     S.offScroll = null;
+    S.activeScrollRoot = null;
     S.offResize = null;
     S.offShellReady = null;
     S.offBehaviorChanged = null;
@@ -4207,6 +4254,7 @@
       S.domMO = new MutationObserver((muts) => {
         if (!S.running) return;
         const sig = collectMutationSignals(muts);
+        if (sig.addedAnswers.length) MINI_bindActiveScrollRoot('mo:answers:scroll-root-bind');
         const core = MM_core();
         const chatId = resolveChatId();
         let didDeltaAppend = false;
@@ -4252,7 +4300,7 @@
       S.domMO.observe(root, { childList: true, subtree: true });
     }
 
-    S.offScroll = on(window, 'scroll', () => scheduleSyncActive('scroll'), { passive: true });
+    MINI_bindActiveScrollRoot('observer-bind:scroll-root-bind');
     S.offResize = on(window, 'resize', () => {
       try { W.positionCounterBox?.(); } catch {}
       scheduleSyncActive('resize');
@@ -4289,6 +4337,7 @@
           completeIndexMountedAnchors.clear();
           return;
         }
+        MINI_bindActiveScrollRoot('complete-index-state:scroll-root-bind');
         try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
         scheduleSyncActive('complete-index-state');
       }, { passive: true });
@@ -4299,7 +4348,9 @@
       if (!S.running) return;
       completeIndexNavigationCoordinator.cancel('route-changed', 'stale-route-discarded');
       completeIndexMountedAnchors.clear();
+      MINI_clearActiveScrollRoot();
       resetVisibleAnswersObserver();
+      MINI_bindActiveScrollRoot(`${tag}:scroll-root-bind`);
       S.moRebuildCooldownUntil = 0;
       startStaleStateWatchdog(tag);
     };
@@ -4353,6 +4404,7 @@
       const chatId = resolveChatId();
       try { MM_core()?.attachVisibleAnswers?.(chatId); } catch {}
       try { observeVisibleAnswers(currentAnswerEls()); } catch {}
+      MINI_bindActiveScrollRoot('pagination:pagechanged:scroll-root-bind');
       if (hasPendingPageJump()) return;
       if (paginationCoverageNeedsRebuild('pagination:pagechanged')) {
         scheduleRebuild('pagination:canonical-mismatch:pagechanged');
@@ -4369,6 +4421,7 @@
       const chatId = resolveChatId();
       try { MM_core()?.attachVisibleAnswers?.(chatId); } catch {}
       try { observeVisibleAnswers(currentAnswerEls()); } catch {}
+      MINI_bindActiveScrollRoot('index:hydrated:scroll-root-bind');
       schedulePaginationCoverageCheck('index:hydrated');
       scheduleSyncActive('index:hydrated');
     };
