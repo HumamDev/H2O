@@ -2715,6 +2715,43 @@ await fixture('G5 confirmation lease cancels on route generation gate and newer 
   }
 });
 
+await fixture('G5 graph-selected system branch root confirms the expectChange lease', () => {
+  // The 0D3a parser (shadow-validated) now yields the live incident turn as
+  // primary 0de24351 with both variants preserved. The 0A1a expectChange
+  // confirmation predicate must treat that parsed shape as CONFIRMED against
+  // the stale baseline — ending the live selected-path-unconfirmed-unchanged
+  // result — while the unchanged stale shape stays unconfirmed.
+  const confirmFn = vm.runInNewContext(`(function () {
+    ${extractFunction(coreSource, 'chatAtlasCompleteIndexSelectedPathConfirmed')}
+    return chatAtlasCompleteIndexSelectedPathConfirmed;
+  })()`, { Object, Array, String, Number });
+  const evidence = {
+    qId: LIVE_BRANCH_Q,
+    observedAnswerId: '',
+    baselineAnswerId: LIVE_BRANCH_CURRENT_A,
+    expectChange: true,
+    selectionToken: 'djb2:g5-graph-token',
+  };
+  const parsedShape = {
+    complete: true,
+    turns: [{
+      qId: LIVE_BRANCH_Q,
+      primaryAId: LIVE_BRANCH_PREVIOUS_A,
+      answerVariants: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
+    }],
+  };
+  const staleShape = {
+    complete: true,
+    turns: [{
+      qId: LIVE_BRANCH_Q,
+      primaryAId: LIVE_BRANCH_CURRENT_A,
+      answerVariants: [LIVE_BRANCH_PREVIOUS_A, LIVE_BRANCH_CURRENT_A],
+    }],
+  };
+  equal(confirmFn(parsedShape, evidence), true);
+  equal(confirmFn(staleShape, evidence), false);
+});
+
 const failed = fixtures.filter((row) => !row.ok);
 console.log(`CV-3.4 Gate 5 correctness: ${fixtures.length - failed.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failed.length} failures`);
 if (liveParityEvidence) {

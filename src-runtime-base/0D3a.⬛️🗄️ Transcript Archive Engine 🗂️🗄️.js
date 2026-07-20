@@ -805,6 +805,14 @@
       cursor = String(node?.parent || "").trim();
     }
     selectedKeys.reverse();
+    // Identity set of the selected ancestry (current_node -> root): node keys
+    // AND message ids, so a branch root is recognizable by either identity.
+    const selectedIdentitySet = new Set();
+    for (const selectedKey of selectedKeys) {
+      selectedIdentitySet.add(selectedKey);
+      const selectedMessageId = conversationTurnIndexIdentity(mapping[selectedKey]?.message?.id);
+      if (selectedMessageId) selectedIdentitySet.add(selectedMessageId);
+    }
 
     const nodeOrder = (left, right) => {
       const leftTime = Number(mapping[left]?.message?.create_time ?? mapping[left]?.create_time ?? 0) || 0;
@@ -912,6 +920,57 @@
           if (!variantIds.includes(answerId)) variantIds.push(answerId);
         }
       }
+      // ── Selected branch root from host graph topology ──
+      // At a REAL fork (the user node has more than one non-user direct
+      // child), the current-node ancestry passes through exactly one direct
+      // child: the selected branch ROOT. When that root's author role is
+      // "system" (a hidden branch shell) the role-based descent above cannot
+      // see it and would preserve a stale assistant found deeper on the path.
+      // The graph-selected root becomes primary ONLY under strict canonical
+      // conditions: unique selection, identity present, not a placeholder,
+      // not owned by another qId, and already preserved as a same-qId answer
+      // variant. Assistant-role roots keep the existing role-walk primary
+      // (multi-message answers resolve to their final assistant message), and
+      // single-chain turns (no branch choice) are untouched — arbitrary
+      // system messages can never become a primary through this path.
+      let branchRootResolution = "branch-root-not-applicable";
+      let branchRootRole = null;
+      const branchDirectChildKeys = orderedChildren(questionNodeKey)
+        .filter((childKey) => !conversationTurnIndexProductUser(mapping[childKey]));
+      if (branchDirectChildKeys.length > 1) {
+        const selectedRootKeys = branchDirectChildKeys.filter((childKey) => {
+          const childMessageId = conversationTurnIndexIdentity(mapping[childKey]?.message?.id);
+          return selectedIdentitySet.has(childKey)
+            || (!!childMessageId && selectedIdentitySet.has(childMessageId));
+        });
+        if (selectedRootKeys.length === 0) {
+          branchRootResolution = "branch-root-none-on-selected-path";
+        } else if (selectedRootKeys.length > 1) {
+          branchRootResolution = "branch-root-ambiguous-rejected";
+        } else {
+          const branchRootKey = selectedRootKeys[0];
+          const branchRootNode = mapping[branchRootKey];
+          const branchRootId = conversationTurnIndexMessageId(branchRootKey, branchRootNode);
+          branchRootRole = conversationTurnIndexRole(branchRootNode) || null;
+          const branchRootOwner = branchRootId ? answerOwners.get(branchRootId) : null;
+          if (!branchRootId) {
+            branchRootResolution = "branch-root-identity-missing";
+          } else if (conversationTurnIndexPlaceholder(branchRootId)) {
+            branchRootResolution = "branch-root-unowned-rejected";
+          } else if (branchRootOwner && branchRootOwner !== qId) {
+            branchRootResolution = "branch-root-cross-qid-rejected";
+          } else if (branchRootRole !== "system") {
+            branchRootResolution = "branch-root-assistant-preserved";
+          } else if (!variantIds.includes(branchRootId)) {
+            branchRootResolution = "branch-root-unowned-rejected";
+          } else if (branchRootId === primaryAId) {
+            branchRootResolution = "branch-root-already-primary";
+          } else {
+            primaryAId = branchRootId;
+            branchRootResolution = "branch-root-system-selected";
+          }
+        }
+      }
       if (primaryAId && !variantNodeById.has(primaryAId)) {
         return conversationTurnIndexFailure("selected-assistant-unowned", { chatId, nodeCount });
       }
@@ -958,6 +1017,8 @@
           selectedAssistantNodeId: conversationTurnIndexIdentity(primaryNodeKey) || null,
           variantCount: answerVariants.length,
           inactiveVariantCount: Math.max(0, answerVariants.length - (primaryAId ? 1 : 0)),
+          rootResolution: branchRootResolution,
+          rootRole: branchRootRole,
         }),
       }));
     }

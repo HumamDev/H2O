@@ -1074,6 +1074,253 @@ await fixture('assistant-only shell classification would reject the live system 
   equal(countOccurrences(archiveSource, '["assistant", "system"].includes(role)'), 1);
 });
 
+function buildBranchRootIncidentGraph({ shell = {}, shellRole } = {}) {
+  // Live GATE_5 incident shape (post branch-switch payload): a REAL fork at
+  // the target user node — the selected branch ROOT is a hidden system shell
+  // (0de24351...) whose subtree still contains the STALE assistant
+  // (c1a937a4...) deeper on the current-node ancestry, and the conversation
+  // continues beneath it. Role-based descent picks the stale assistant; graph
+  // topology must select the system branch root.
+  const contextId = 'branch-root-context-sibling';
+  const nextQ = 'branch-root-next-question';
+  const nextA = 'branch-root-next-answer';
+  const shellNode = shellRole === 'assistant'
+    ? node({
+      id: LIVE_BRANCH_PREVIOUS_A,
+      role: 'assistant',
+      parent: LIVE_BRANCH_Q,
+      children: [LIVE_BRANCH_CURRENT_A],
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    })
+    : systemBranchShellNode({
+      id: LIVE_BRANCH_PREVIOUS_A,
+      parent: LIVE_BRANCH_Q,
+      children: [LIVE_BRANCH_CURRENT_A],
+      ...shell,
+    });
+  return {
+    mapping: {
+      root: node({ id: 'root', role: 'system', children: [LIVE_BRANCH_Q] }),
+      [LIVE_BRANCH_Q]: node({
+        id: LIVE_BRANCH_Q,
+        role: 'user',
+        parent: 'root',
+        children: [LIVE_BRANCH_PREVIOUS_A, contextId],
+      }),
+      [LIVE_BRANCH_PREVIOUS_A]: shellNode,
+      [contextId]: node({
+        id: contextId,
+        role: 'assistant',
+        parent: LIVE_BRANCH_Q,
+        contentType: 'model_editable_context',
+        metadata: { is_visually_hidden_from_conversation: true },
+      }),
+      [LIVE_BRANCH_CURRENT_A]: node({
+        id: LIVE_BRANCH_CURRENT_A,
+        role: 'assistant',
+        parent: LIVE_BRANCH_PREVIOUS_A,
+        children: [nextQ],
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+      }),
+      [nextQ]: node({ id: nextQ, role: 'user', parent: LIVE_BRANCH_CURRENT_A, children: [nextA] }),
+      [nextA]: node({
+        id: nextA,
+        role: 'assistant',
+        parent: nextQ,
+        metadata: { finish_details: { type: 'stop' } },
+        channel: 'final',
+        endTurn: true,
+      }),
+    },
+    current_node: nextA,
+  };
+}
+
+await fixture('live incident: selected system branch root becomes primary from graph topology', () => {
+  const result = parser(buildBranchRootIncidentGraph(), { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns.length, 2);
+  const turn = result.index.turns[0];
+  equal(turn.qId, LIVE_BRANCH_Q);
+  // Graph topology selects the system-role branch root, not the stale deeper
+  // assistant the role walk finds.
+  equal(turn.primaryAId, LIVE_BRANCH_PREVIOUS_A);
+  equal(turn.answerVariants, [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A]);
+  equal(turn.noAnswer, false);
+  equal(turn.stopped, false);
+  equal(turn.branch.rootResolution, 'branch-root-system-selected');
+  equal(turn.branch.rootRole, 'system');
+  // No rekey: the continuation turn is intact under its own qId.
+  equal(result.index.turns[1].qId, 'branch-root-next-question');
+  equal(result.index.turns[1].primaryAId, 'branch-root-next-answer');
+});
+
+await fixture('assistant-role selected branch root keeps the role-walk primary', () => {
+  const result = parser(buildBranchRootIncidentGraph({ shellRole: 'assistant' }), { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const turn = result.index.turns[0];
+  // The fork exists and the selected root is an assistant: the existing
+  // final-assistant resolution stays authoritative (multi-message answers).
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(turn.branch.rootResolution, 'branch-root-assistant-preserved');
+  equal(turn.branch.rootRole, 'assistant');
+  equal(turn.answerVariants.includes(LIVE_BRANCH_PREVIOUS_A), true);
+});
+
+await fixture('unselected system shell sibling never becomes primary', () => {
+  const graph = buildBranchRootIncidentGraph({ shellRole: 'assistant' });
+  // Add an alias-qualified system shell as an UNSELECTED sibling branch with
+  // its own completed final.
+  graph.mapping['unselected-system-shell'] = systemBranchShellNode({
+    id: 'unselected-system-shell',
+    parent: LIVE_BRANCH_Q,
+    children: ['unselected-shell-final'],
+  });
+  graph.mapping['unselected-shell-final'] = node({
+    id: 'unselected-shell-final',
+    role: 'assistant',
+    parent: 'unselected-system-shell',
+    metadata: { finish_details: { type: 'stop' } },
+    channel: 'final',
+    endTurn: true,
+  });
+  graph.mapping[LIVE_BRANCH_Q].children.push('unselected-system-shell');
+  const result = parser(graph, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const turn = result.index.turns[0];
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(turn.answerVariants.includes('unselected-system-shell'), true);
+  equal(turn.branch.rootResolution, 'branch-root-assistant-preserved');
+});
+
+await fixture('single-chain system shell stays inactive alias (d824 contract intact)', () => {
+  const turn = fullResult.index.turns.find((row) => row.qId === D824);
+  // No fork at the user node: the branch-root override is not applicable and
+  // the deep completed final remains primary — a system descendant that is
+  // not a forked selected root can never become primary.
+  equal(turn.branch.rootResolution, 'branch-root-not-applicable');
+  equal(turn.primaryAId, A733);
+  equal(turn.answerVariants, [A84, A733]);
+});
+
+await fixture('cross-qId system branch root is rejected without rekey', () => {
+  const graph = buildBranchRootIncidentGraph();
+  // The selected root now carries a message id owned by the PREVIOUS turn's
+  // answer: replace the shell's message id with a rogue alias of turn-1's
+  // answer. Build a 3-turn graph: prior turn -> incident turn.
+  const priorQ = 'branch-root-prior-question';
+  const priorA = 'branch-root-prior-answer';
+  const rogueKey = 'branch-root-rogue-shell';
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: [priorQ] }),
+    [priorQ]: node({ id: priorQ, role: 'user', parent: 'root', children: [priorA] }),
+    [priorA]: node({
+      id: priorA,
+      role: 'assistant',
+      parent: priorQ,
+      children: [LIVE_BRANCH_Q],
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+    [LIVE_BRANCH_Q]: node({
+      id: LIVE_BRANCH_Q,
+      role: 'user',
+      parent: priorA,
+      children: [rogueKey, 'branch-root-context-sibling'],
+    }),
+    [rogueKey]: systemBranchShellNode({
+      id: priorA,
+      parent: LIVE_BRANCH_Q,
+      children: [LIVE_BRANCH_CURRENT_A],
+      modelSlug: '',
+    }),
+    'branch-root-context-sibling': node({
+      id: 'branch-root-context-sibling',
+      role: 'assistant',
+      parent: LIVE_BRANCH_Q,
+      contentType: 'model_editable_context',
+      metadata: { is_visually_hidden_from_conversation: true },
+    }),
+    [LIVE_BRANCH_CURRENT_A]: node({
+      id: LIVE_BRANCH_CURRENT_A,
+      role: 'assistant',
+      parent: rogueKey,
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  void graph;
+  const result = parser({ mapping, current_node: LIVE_BRANCH_CURRENT_A }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const prior = result.index.turns.find((row) => row.qId === priorQ);
+  const turn = result.index.turns.find((row) => row.qId === LIVE_BRANCH_Q);
+  // The rogue root cannot cross-rekey the previous turn's answer; the deep
+  // role-walk primary is preserved and ownership stays with the prior qId.
+  equal(prior.primaryAId, priorA);
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(turn.branch.rootResolution, 'branch-root-cross-qid-rejected');
+  equal(turn.answerVariants.includes(priorA), false);
+});
+
+await fixture('ambiguous multiple selected direct children fail closed', () => {
+  const graph = buildBranchRootIncidentGraph({ shellRole: 'assistant' });
+  // A second direct child whose message id aliases a node key that IS on the
+  // selected ancestry makes the selection ambiguous.
+  graph.mapping['ambiguous-echo-child'] = systemBranchShellNode({
+    id: 'branch-root-next-question',
+    parent: LIVE_BRANCH_Q,
+    children: [],
+    modelSlug: '',
+  });
+  graph.mapping[LIVE_BRANCH_Q].children.push('ambiguous-echo-child');
+  const result = parser(graph, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const turn = result.index.turns[0];
+  equal(turn.branch.rootResolution, 'branch-root-ambiguous-rejected');
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
+});
+
+await fixture('unattributable selected system root fails closed to the role-walk primary', () => {
+  // The selected system root is NOT alias-qualified (no model association), so
+  // it is not a same-qId variant and cannot be canonically attributed: the
+  // previous authoritative primary is preserved.
+  const result = parser(buildBranchRootIncidentGraph({ shell: { modelSlug: '' } }), { chatId: CHAT_ID });
+  equal(result.ok, true);
+  const turn = result.index.turns[0];
+  equal(turn.primaryAId, LIVE_BRANCH_CURRENT_A);
+  equal(turn.branch.rootResolution, 'branch-root-unowned-rejected');
+  equal(turn.answerVariants.includes(LIVE_BRANCH_PREVIOUS_A), false);
+});
+
+await fixture('missing target node parses cleanly without inventing the turn', () => {
+  const graph = buildBranchRootIncidentGraph();
+  // Remove the incident turn entirely: the parser succeeds on the remaining
+  // graph and simply does not contain the target qId (retained authority is
+  // preserved upstream by the coordinator's cache-preserving refresh).
+  const mapping = {
+    root: node({ id: 'root', role: 'system', children: ['solo-q'] }),
+    'solo-q': node({ id: 'solo-question', role: 'user', parent: 'root', children: ['solo-a'] }),
+    'solo-a': node({
+      id: 'solo-answer',
+      role: 'assistant',
+      parent: 'solo-q',
+      metadata: { finish_details: { type: 'stop' } },
+      channel: 'final',
+      endTurn: true,
+    }),
+  };
+  void graph;
+  const result = parser({ mapping, current_node: 'solo-a' }, { chatId: CHAT_ID });
+  equal(result.ok, true);
+  equal(result.index.turns.some((row) => row.qId === LIVE_BRANCH_Q), false);
+});
+
 await fixture('system shell without modelSlug is excluded', () => {
   const mapping = {
     root: node({ id: 'root', role: 'system', children: ['q'] }),
