@@ -20,6 +20,7 @@ export function makeChromeLiveManifest({
   IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS = [],
   IDENTITY_PROVIDER_REQUEST_OTP_ARMED = false,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
+  TITLE_DIAGNOSTIC_ENABLED = false,
   STUDIO_ONLY = false,
   EXTENSION_KEY = null,
 }) {
@@ -71,6 +72,7 @@ export function makeChromeLiveManifest({
     ? ["storage", "tabs", "contextMenus"]
     : ["storage", "contextMenus"];
   if (oauthGoogleEnabled) permissions.push("identity");
+  if (TITLE_DIAGNOSTIC_ENABLED === true) permissions.push("webNavigation", "scripting");
   const manifest = {
     manifest_version: 3,
     name: DEV_NAME,

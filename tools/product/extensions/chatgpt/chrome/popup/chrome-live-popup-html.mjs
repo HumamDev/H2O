@@ -5,7 +5,10 @@ const SETTINGS_ICON = `<svg class="settings-icon" xmlns="http://www.w3.org/2000/
   <path d="M19.4 15a1.9 1.9 0 0 0 .4 2.1l.1.1a2.3 2.3 0 0 1-1.6 3.9 2.3 2.3 0 0 1-1.6-.7l-.1-.1a1.9 1.9 0 0 0-2.1-.4 1.9 1.9 0 0 0-1.1 1.8V22a2.3 2.3 0 0 1-4.6 0v-.2a1.9 1.9 0 0 0-1.1-1.8 1.9 1.9 0 0 0-2.1.4l-.1.1a2.3 2.3 0 0 1-1.6.7 2.3 2.3 0 0 1-1.6-3.9l.1-.1A1.9 1.9 0 0 0 4.6 15a1.9 1.9 0 0 0-1.8-1.1H2.6a2.3 2.3 0 0 1 0-4.6h.2A1.9 1.9 0 0 0 4.6 8a1.9 1.9 0 0 0-.4-2.1l-.1-.1A2.3 2.3 0 0 1 5.7 1.9c.6 0 1.2.2 1.6.7l.1.1A1.9 1.9 0 0 0 9.5 3a1.9 1.9 0 0 0 1.1-1.8V1a2.3 2.3 0 0 1 4.6 0v.2A1.9 1.9 0 0 0 16.3 3a1.9 1.9 0 0 0 2.1-.4l.1-.1c.4-.5 1-.7 1.6-.7a2.3 2.3 0 0 1 1.6 3.9l-.1.1A1.9 1.9 0 0 0 19.4 9a1.9 1.9 0 0 0 1.8 1.1h.2a2.3 2.3 0 0 1 0 4.6h-.2A1.9 1.9 0 0 0 19.4 15z"/>
 </svg>`;
 
-export function makeChromeLivePopupHtml({ panelLogoPath = "panel-icons/icon128.png" } = {}) {
+export function makeChromeLivePopupHtml({
+  panelLogoPath = "panel-icons/icon128.png",
+  titleDiagnosticEnabled = false,
+} = {}) {
   return `<!doctype html>
 <html>
 <head>
@@ -213,6 +216,19 @@ export function makeChromeLivePopupHtml({ panelLogoPath = "panel-icons/icon128.p
                 </label>
                 <div class="info-grid" id="info-grid"></div>
               </section>
+
+              ${titleDiagnosticEnabled ? `<section class="info-panel" id="title-navigation-diagnostic">
+                <div class="info-head">Title navigation diagnostic</div>
+                <div class="settings-note">Passive, one-navigation Stage 0B-2B evidence. It never initiates navigation or changes title state.</div>
+                <div class="set-actions" role="group" aria-label="Title navigation diagnostic controls">
+                  <button id="title-diag-reset" type="button">Reset evidence</button>
+                  <button id="title-diag-arm" type="button">Arm next navigation</button>
+                  <button id="title-diag-status" type="button">Show status</button>
+                  <button id="title-diag-export" type="button">Export evidence</button>
+                  <button id="title-diag-clear" type="button">Clear evidence</button>
+                </div>
+                <pre class="mono" id="title-diag-output" aria-live="polite">Idle</pre>
+              </section>` : ""}
             </div>
             <div class="controls-tail-anchor" data-settings-anchor="info"></div>
           </div>
@@ -241,6 +257,7 @@ export function makeChromeLivePopupHtml({ panelLogoPath = "panel-icons/icon128.p
     </div>
   </div>
   <script src="popup.js"></script>
+  ${titleDiagnosticEnabled ? `<script src="title-navigation-diagnostic-popup.js"></script>` : ""}
 </body>
 </html>
 `;

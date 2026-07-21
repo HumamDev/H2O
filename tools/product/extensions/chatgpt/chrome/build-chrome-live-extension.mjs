@@ -47,6 +47,14 @@ import { makeChromeLivePopupHtml } from "./popup/chrome-live-popup-html.mjs";
 import { makeChromeLivePopupCss } from "./popup/chrome-live-popup-css.mjs";
 import { makeChromeLivePopupJs } from "./popup/chrome-live-popup-js.mjs";
 import { makeChromeLiveReadme } from "./chrome-live-readme.mjs";
+import {
+  TITLE_DIAGNOSTIC_FILES,
+  isTitleDiagnosticBuildEnabled,
+  makeTitleNavigationDiagnosticIsolatedJs,
+  makeTitleNavigationDiagnosticMainJs,
+  makeTitleNavigationDiagnosticPopupJs,
+  makeTitleNavigationDiagnosticServiceWorkerJs,
+} from "./title-diagnostic/chrome-live-title-navigation-diagnostic.mjs";
 // @version 1.3.0
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -88,6 +96,11 @@ const {
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
 } = createChromeLiveBuildContext();
+const OUTPUT_VARIANT = deriveVariantFromOutDir(OUT_DIR);
+const TITLE_DIAGNOSTIC_ENABLED = isTitleDiagnosticBuildEnabled({
+  envValue: process.env.H2O_TITLE_DIAGNOSTIC,
+  outVariant: OUTPUT_VARIANT,
+});
 // Phase 0G-2: ASSETS_DIR comes from paths.mjs (= <REPO_ROOT>/assets). Both
 // constants resolve byte-identical to the pre-Phase-0G-2 `path.join(SRC,
 // "assets", ...)` form under the standard invocation.
@@ -432,7 +445,7 @@ async function main() {
   // whether OUT_DIR comes from H2O_EXT_OUT_DIR (per-task override in
   // .vscode/tasks.json) or from the build-context default. Returns null
   // when the variant isn't registered (preserving pre-8A-1 behavior).
-  const EXTENSION_KEY = getExtensionKey(deriveVariantFromOutDir(OUT_DIR));
+  const EXTENSION_KEY = getExtensionKey(OUTPUT_VARIANT);
 
   const manifest = applyExtensionIconsToManifest(
     makeChromeLiveManifest({
@@ -450,6 +463,7 @@ async function main() {
       IDENTITY_PROVIDER_OPTIONAL_HOST_PERMISSIONS: identityProviderOptionalHostPermissions,
       IDENTITY_PROVIDER_REQUEST_OTP_ARMED: identityProviderRequestOtpArmed,
       IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
+      TITLE_DIAGNOSTIC_ENABLED,
       STUDIO_ONLY,
       EXTENSION_KEY,
     }),
@@ -486,7 +500,7 @@ async function main() {
   }
 
   const backgroundFile = path.join(OUT_DIR, "bg.js");
-  writeFile(backgroundFile, makeChromeLiveBackgroundJs({
+  const backgroundSource = makeChromeLiveBackgroundJs({
     DEV_TAG,
     CHAT_MATCH,
     DEV_HAS_CONTROLS,
@@ -501,7 +515,11 @@ async function main() {
     // entry point, presence-restore-on-reload is unnecessary and was the
     // primary source of duplicate-tab bugs (sw-boot vs onInstalled race).
     STUDIO_AUTO_RESTORE_ENABLED: !STUDIO_ONLY,
-  }));
+  }) + (TITLE_DIAGNOSTIC_ENABLED ? makeTitleNavigationDiagnosticServiceWorkerJs() : "");
+  if ((backgroundSource.match(/H2O_TITLE_STAGE0B2B_SERVICE_WORKER_V1/g) || []).length > 1) {
+    throw new Error("[H2O] Duplicate Stage 0B-2B diagnostic service-worker snippet.");
+  }
+  writeFile(backgroundFile, backgroundSource);
   checkGeneratedJavaScript(backgroundFile);
 
   // Studio-launcher omits the chatgpt.com loader pipeline entirely: no
@@ -535,7 +553,7 @@ async function main() {
 
   if (DEV_HAS_CONTROLS) {
     const panelLogoPath = copyPanelIconAsset(OUT_DIR);
-    writeFile(path.join(OUT_DIR, "popup.html"), makeChromeLivePopupHtml({ panelLogoPath }));
+    writeFile(path.join(OUT_DIR, "popup.html"), makeChromeLivePopupHtml({ panelLogoPath, titleDiagnosticEnabled: TITLE_DIAGNOSTIC_ENABLED }));
     writeFile(path.join(OUT_DIR, "popup.css"), makeChromeLivePopupCss());
     writeFile(path.join(OUT_DIR, "popup.js"), makeChromeLivePopupJs({
       PROXY_PACK_URL,
@@ -549,6 +567,23 @@ async function main() {
       try {
         fs.unlinkSync(path.join(OUT_DIR, n));
       } catch {}
+    }
+  }
+
+  const diagnosticOutputs = [
+    [TITLE_DIAGNOSTIC_FILES.isolated, makeTitleNavigationDiagnosticIsolatedJs],
+    [TITLE_DIAGNOSTIC_FILES.main, makeTitleNavigationDiagnosticMainJs],
+    [TITLE_DIAGNOSTIC_FILES.popup, makeTitleNavigationDiagnosticPopupJs],
+  ];
+  if (TITLE_DIAGNOSTIC_ENABLED) {
+    for (const [name, makeSource] of diagnosticOutputs) {
+      const file = path.join(OUT_DIR, name);
+      writeFile(file, makeSource());
+      checkGeneratedJavaScript(file);
+    }
+  } else {
+    for (const [name] of diagnosticOutputs) {
+      try { fs.unlinkSync(path.join(OUT_DIR, name)); } catch {}
     }
   }
 
