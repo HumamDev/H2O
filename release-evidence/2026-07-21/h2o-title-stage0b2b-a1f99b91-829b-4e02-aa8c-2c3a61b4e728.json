@@ -1,0 +1,1015 @@
+{
+  "armedAt": 1784653217977,
+  "build": {
+    "loaderBuildIso": "2026-07-21T16:15:28.788Z",
+    "loaderBuildTs": 1784650528788,
+    "source": "page-bridge-loader"
+  },
+  "completedAt": 1784653316271,
+  "completionReason": "destination-settled",
+  "createdAt": 1784653217977,
+  "dedupSuppressedCount": 0,
+  "documents": [
+    {
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "firstSeenAt": 1784653218043,
+      "frameId": 0,
+      "isolatedReady": true,
+      "mainReady": true,
+      "route": "/c/#ce8b126a8c69",
+      "tabId": 20722741
+    }
+  ],
+  "droppedBySizeCount": 0,
+  "events": [
+    {
+      "atEpochMs": 1784653218043,
+      "category": "lifecycle",
+      "data": {
+        "contentInstanceId": "2aa69f81-703d-48e1-af0e-b52cfaefb490",
+        "lifecycle": "active"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "boot:2aa69f81-703d-48e1-af0e-b52cfaefb490",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#c05181a1cda8",
+      "seq": 1,
+      "source": "isolated",
+      "tRelMs": 66,
+      "tabId": 20722741,
+      "type": "content.bootstrap"
+    },
+    {
+      "atEpochMs": 1784653218049,
+      "category": "lifecycle",
+      "data": {
+        "contentInstanceId": "2aa69f81-703d-48e1-af0e-b52cfaefb490",
+        "lifecycle": "active"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:1:content.activated",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#id",
+      "seq": 2,
+      "source": "isolated",
+      "tRelMs": 72,
+      "tabId": 20722741,
+      "type": "content.activated"
+    },
+    {
+      "atEpochMs": 1784653218049,
+      "category": "render",
+      "data": {
+        "changeSeq": 1,
+        "length": 19,
+        "lengthCapped": 19,
+        "present": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:2:document.title",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 3,
+      "source": "isolated",
+      "tRelMs": 72,
+      "tabId": 20722741,
+      "type": "document.title"
+    },
+    {
+      "atEpochMs": 1784653218050,
+      "category": "render",
+      "data": {
+        "added": 0,
+        "ariaExpanded": false,
+        "ariaHidden": false,
+        "attribute": "",
+        "count": 1,
+        "hidden": false,
+        "length": 20,
+        "present": true,
+        "removed": 0,
+        "textChanged": false,
+        "textPresent": true,
+        "visible": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:3:dom.under-input",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 4,
+      "source": "isolated",
+      "tRelMs": 73,
+      "tabId": 20722741,
+      "type": "dom.under-input"
+    },
+    {
+      "atEpochMs": 1784653218050,
+      "category": "render",
+      "data": {
+        "count": 0
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:4:dom.title-menu-count",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 5,
+      "source": "isolated",
+      "tRelMs": 73,
+      "tabId": 20722741,
+      "type": "dom.title-menu-count"
+    },
+    {
+      "atEpochMs": 1784653218050,
+      "category": "render",
+      "data": {
+        "count": 0
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:5:dom.emoji-badge-count",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 6,
+      "source": "isolated",
+      "tRelMs": 73,
+      "tabId": 20722741,
+      "type": "dom.emoji-badge-count"
+    },
+    {
+      "atEpochMs": 1784653218051,
+      "category": "bridge",
+      "data": {
+        "pageInstanceId": "cd258495-cf0f-469b-99bd-18b454c46bdd",
+        "performanceTimeOrigin": 1784653008159.3
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:6:bridge.main-ready",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#id",
+      "seq": 7,
+      "source": "main",
+      "tRelMs": 74,
+      "tabId": 20722741,
+      "type": "bridge.main-ready"
+    },
+    {
+      "atEpochMs": 1784653218051,
+      "category": "runtime",
+      "data": {
+        "autoEmojiAbsent": true,
+        "chatTitle": true,
+        "tabTitle": true,
+        "underInput": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:7:runtime.availability",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 8,
+      "source": "main",
+      "tRelMs": 74,
+      "tabId": 20722741,
+      "type": "runtime.availability"
+    },
+    {
+      "atEpochMs": 1784653218051,
+      "category": "title",
+      "data": {
+        "durable": false,
+        "emojiSource": "none",
+        "length": 19,
+        "present": true,
+        "priority": 95,
+        "routeTokenPresent": true,
+        "source": "native",
+        "storageBackend": "memory"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:8:title.direct-notification",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 9,
+      "source": "main",
+      "tRelMs": 74,
+      "tabId": 20722741,
+      "type": "title.direct-notification"
+    },
+    {
+      "atEpochMs": 1784653218051,
+      "category": "bridge",
+      "data": {
+        "present": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:9:bridge.subscribed",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 10,
+      "source": "main",
+      "tRelMs": 74,
+      "tabId": 20722741,
+      "type": "bridge.subscribed"
+    },
+    {
+      "atEpochMs": 1784653218060,
+      "category": "title",
+      "data": {
+        "durable": false,
+        "emojiSource": "none",
+        "length": 19,
+        "present": true,
+        "priority": 95,
+        "routeTokenPresent": true,
+        "selfCheckOk": true,
+        "source": "native",
+        "storageBackend": "memory"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:10:title.state-snapshot",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 11,
+      "source": "main",
+      "tRelMs": 83,
+      "tabId": 20722741,
+      "type": "title.state-snapshot"
+    },
+    {
+      "atEpochMs": 1784653218060,
+      "category": "bridge",
+      "data": {
+        "autoEmojiAbsent": true,
+        "chatTitle": true,
+        "tabTitle": true,
+        "underInput": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:11:bridge.h2o-ready",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 12,
+      "source": "main",
+      "tRelMs": 83,
+      "tabId": 20722741,
+      "type": "bridge.h2o-ready"
+    },
+    {
+      "atEpochMs": 1784653218061,
+      "category": "runtime",
+      "data": {
+        "loaderBuildIso": "2026-07-21T16:15:28.788Z",
+        "loaderBuildTs": 1784650528788,
+        "loaderSource": "page-bridge-loader"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:12:runtime.loader-marker",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#id",
+      "seq": 13,
+      "source": "main",
+      "tRelMs": 84,
+      "tabId": 20722741,
+      "type": "runtime.loader-marker"
+    },
+    {
+      "atEpochMs": 1784653226739,
+      "category": "performance",
+      "data": {
+        "duration": 66,
+        "startTime": 218502.69999998808
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:13:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 14,
+      "source": "isolated",
+      "tRelMs": 8762,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653248316,
+      "category": "performance",
+      "data": {
+        "duration": 71,
+        "startTime": 240074.69999998808
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:14:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 15,
+      "source": "isolated",
+      "tRelMs": 30339,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653299170,
+      "category": "performance",
+      "data": {
+        "duration": 55,
+        "startTime": 290948.90000000596
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:15:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 16,
+      "source": "isolated",
+      "tRelMs": 81193,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653307393,
+      "category": "performance",
+      "data": {
+        "duration": 72,
+        "startTime": 299103.90000000596
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:16:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 17,
+      "source": "isolated",
+      "tRelMs": 89416,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653308790,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 300613.6999999881,
+        "titleOwned": true,
+        "value": 0.026023533505631736
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:17:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 18,
+      "source": "isolated",
+      "tRelMs": 90813,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653309021,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 300647.1999999881,
+        "titleOwned": true,
+        "value": 0.05567239569410586
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:18:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 19,
+      "source": "isolated",
+      "tRelMs": 91044,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653309021,
+      "category": "performance",
+      "data": {
+        "duration": 227,
+        "startTime": 300631.8000000119
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:19:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 20,
+      "source": "isolated",
+      "tRelMs": 91044,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653309064,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 300881.3000000119,
+        "titleOwned": true,
+        "value": 0.04972748714288427
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:20:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 21,
+      "source": "isolated",
+      "tRelMs": 91087,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653309093,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 300918.5,
+        "titleOwned": false,
+        "value": 0.00019393645255990266
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:21:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 22,
+      "source": "isolated",
+      "tRelMs": 91116,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653309276,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 301082,
+        "titleOwned": false,
+        "value": 0.0000229601037479817
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:22:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 23,
+      "source": "isolated",
+      "tRelMs": 91299,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653309307,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": true,
+        "startTime": 301125,
+        "titleOwned": false,
+        "value": 0.000014101481042067498
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:23:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 24,
+      "source": "isolated",
+      "tRelMs": 91330,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653311242.162,
+      "category": "navigation",
+      "data": {
+        "errorKind": ""
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "nav:history-state:831B60F56EF41760906A7F9BE923C158:1784653311242.162",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#ce8b126a8c69",
+      "seq": 25,
+      "source": "service-worker",
+      "tRelMs": 93265.162109375,
+      "tabId": 20722741,
+      "type": "webNavigation.history-state"
+    },
+    {
+      "atEpochMs": 1784653311363,
+      "category": "performance",
+      "data": {
+        "duration": 96,
+        "startTime": 303058.40000000596
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:24:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 26,
+      "source": "isolated",
+      "tRelMs": 93386,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653311374,
+      "category": "route",
+      "data": {
+        "name": "evt:h2o:route:changed",
+        "reason": "",
+        "routeTokenPresent": false,
+        "source": "history:pushState"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:25:route.event",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 27,
+      "source": "main",
+      "tRelMs": 93397,
+      "tabId": 20722741,
+      "type": "route.event"
+    },
+    {
+      "atEpochMs": 1784653311374,
+      "category": "route",
+      "data": {
+        "name": "h2o:route:changed",
+        "reason": "",
+        "routeTokenPresent": false,
+        "source": "history:pushState"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:26:route.event",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 28,
+      "source": "main",
+      "tRelMs": 93397,
+      "tabId": 20722741,
+      "type": "route.event"
+    },
+    {
+      "atEpochMs": 1784653311375,
+      "category": "route",
+      "data": {
+        "name": "evt:h2o:route:changed",
+        "reason": "",
+        "routeTokenPresent": false,
+        "source": ""
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:27:route.event",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 29,
+      "source": "main",
+      "tRelMs": 93398,
+      "tabId": 20722741,
+      "type": "route.event"
+    },
+    {
+      "atEpochMs": 1784653311375,
+      "category": "route",
+      "data": {
+        "name": "h2o:route:changed",
+        "reason": "",
+        "routeTokenPresent": false,
+        "source": ""
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:28:route.event",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 30,
+      "source": "main",
+      "tRelMs": 93398,
+      "tabId": 20722741,
+      "type": "route.event"
+    },
+    {
+      "atEpochMs": 1784653311375,
+      "category": "route",
+      "data": {
+        "name": "ho:navigate",
+        "reason": "",
+        "routeTokenPresent": false,
+        "source": ""
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:29:route.event",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 31,
+      "source": "main",
+      "tRelMs": 93398,
+      "tabId": 20722741,
+      "type": "route.event"
+    },
+    {
+      "atEpochMs": 1784653311644,
+      "category": "performance",
+      "data": {
+        "duration": 66,
+        "startTime": 303233.3000000119
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:30:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 32,
+      "source": "isolated",
+      "tRelMs": 93667,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653312464,
+      "category": "render",
+      "data": {
+        "changeSeq": 2,
+        "length": 7,
+        "lengthCapped": 7,
+        "present": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:31:document.title",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 33,
+      "source": "isolated",
+      "tRelMs": 94487,
+      "tabId": 20722741,
+      "type": "document.title"
+    },
+    {
+      "atEpochMs": 1784653312464,
+      "category": "render",
+      "data": {
+        "added": 0,
+        "ariaExpanded": false,
+        "ariaHidden": false,
+        "attribute": "",
+        "count": 0,
+        "hidden": false,
+        "length": 0,
+        "present": false,
+        "removed": 1,
+        "textChanged": false,
+        "textPresent": false,
+        "visible": false
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:32:dom.under-input",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 34,
+      "source": "isolated",
+      "tRelMs": 94487,
+      "tabId": 20722741,
+      "type": "dom.under-input"
+    },
+    {
+      "atEpochMs": 1784653312647,
+      "category": "performance",
+      "data": {
+        "duration": 154,
+        "startTime": 304152.40000000596
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:33:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 35,
+      "source": "isolated",
+      "tRelMs": 94670,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653312648,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 304324.8000000119,
+        "titleOwned": false,
+        "value": 0.00005743148642587491
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:34:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 36,
+      "source": "isolated",
+      "tRelMs": 94671,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313010,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 304842.3000000119,
+        "titleOwned": false,
+        "value": 0.000616487825044233
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:35:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 37,
+      "source": "isolated",
+      "tRelMs": 95033,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313483,
+      "category": "render",
+      "data": {
+        "changeSeq": 3,
+        "length": 11,
+        "lengthCapped": 11,
+        "present": true
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:36:document.title",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 38,
+      "source": "isolated",
+      "tRelMs": 95506,
+      "tabId": 20722741,
+      "type": "document.title"
+    },
+    {
+      "atEpochMs": 1784653313534,
+      "category": "performance",
+      "data": {
+        "duration": 140,
+        "startTime": 305185.8000000119
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:37:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 39,
+      "source": "isolated",
+      "tRelMs": 95557,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653313535,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305328.09999999404,
+        "titleOwned": false,
+        "value": 0.0002909331838004395
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:38:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 40,
+      "source": "isolated",
+      "tRelMs": 95558,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313535,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305367.1999999881,
+        "titleOwned": false,
+        "value": 0.021978795775527617
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:39:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 41,
+      "source": "isolated",
+      "tRelMs": 95558,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313611,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305440.8000000119,
+        "titleOwned": false,
+        "value": 0.007256385476034642
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:40:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 42,
+      "source": "isolated",
+      "tRelMs": 95634,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313737,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305563.5,
+        "titleOwned": false,
+        "value": 0.006545440737418182
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:41:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 43,
+      "source": "isolated",
+      "tRelMs": 95760,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313809,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305640,
+        "titleOwned": false,
+        "value": 0.01385755500356639
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:42:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 44,
+      "source": "isolated",
+      "tRelMs": 95832,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313922,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305744.3000000119,
+        "titleOwned": false,
+        "value": 0.000043536736968449934
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:43:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 45,
+      "source": "isolated",
+      "tRelMs": 95945,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653313934,
+      "category": "performance",
+      "data": {
+        "hadRecentInput": false,
+        "startTime": 305763.3000000119,
+        "titleOwned": false,
+        "value": 0.0016681524891495924
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:44:performance.layout-shift",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 46,
+      "source": "isolated",
+      "tRelMs": 95957,
+      "tabId": 20722741,
+      "type": "performance.layout-shift"
+    },
+    {
+      "atEpochMs": 1784653315872,
+      "category": "performance",
+      "data": {
+        "duration": 64,
+        "startTime": 307640.3000000119
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:45:performance.longtask",
+      "frameId": 0,
+      "priorityClass": "optional",
+      "route": "/c/#id",
+      "seq": 47,
+      "source": "isolated",
+      "tRelMs": 97895,
+      "tabId": 20722741,
+      "type": "performance.longtask"
+    },
+    {
+      "atEpochMs": 1784653316271,
+      "category": "lifecycle",
+      "data": {
+        "reason": "destination-settled",
+        "state": "complete"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "run:completed:a1f99b91-829b-4e02-aa8c-2c3a61b4e728",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#ce8b126a8c69",
+      "seq": 48,
+      "source": "service-worker",
+      "tRelMs": 98294,
+      "tabId": 20722741,
+      "type": "run.completed"
+    },
+    {
+      "atEpochMs": 1784653316276,
+      "category": "lifecycle",
+      "data": {
+        "reason": "service-worker"
+      },
+      "documentId": "831B60F56EF41760906A7F9BE923C158",
+      "eventId": "2aa69f81-703d-48e1-af0e-b52cfaefb490:46:content.stopped",
+      "frameId": 0,
+      "priorityClass": "critical",
+      "route": "/c/#id",
+      "seq": 49,
+      "source": "isolated",
+      "tRelMs": 98299,
+      "tabId": 20722741,
+      "type": "content.stopped"
+    }
+  ],
+  "limits": {
+    "criticalReserveBytes": 24576,
+    "criticalReserveEvents": 64,
+    "maxDocuments": 20,
+    "maxErrorMessage": 200,
+    "maxEventPayloadBytes": 2048,
+    "maxEvents": 500,
+    "maxStackChars": 500,
+    "maxStackFrames": 5,
+    "maxStatusTtlMs": 86400000,
+    "maxStoredBytes": 131072,
+    "maxTitleLengthMetadata": 128,
+    "runTimeoutMs": 180000,
+    "sameDocumentRouteStableMs": 5000,
+    "settleMs": 2000
+  },
+  "overflowCount": 0,
+  "runId": "a1f99b91-829b-4e02-aa8c-2c3a61b4e728",
+  "schema": "h2o.title-stage0b2b.evidence.v1",
+  "state": "complete",
+  "summary": {
+    "destinationRoute": "/c/#ce8b126a8c69",
+    "markerMatch": true,
+    "sourceRoute": "/c/#c05181a1cda8",
+    "transitionKind": "same-document"
+  },
+  "targetTabId": 20722741,
+  "truncated": false
+}
