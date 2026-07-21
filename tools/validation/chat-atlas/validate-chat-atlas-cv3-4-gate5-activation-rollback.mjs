@@ -172,6 +172,7 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
     timerSchedules: 0,
     timerClears: 0,
     intervalSchedules: 0,
+    rafSchedules: 0,
     completeIndexStateEvents: 0,
     authorityPublications: 0,
   };
@@ -220,7 +221,7 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
     ResizeObserver: HarnessObserver,
     IntersectionObserver: HarnessObserver,
     AbortController,
-    requestAnimationFrame() { return 1; },
+    requestAnimationFrame() { counters.rafSchedules += 1; return 1; },
     cancelAnimationFrame() {},
     setTimeout(fn, ms = 0) { timerId += 1; counters.timerSchedules += 1; timers.set(timerId, { fn, ms }); return timerId; },
     clearTimeout(id) { if (timers.delete(id)) counters.timerClears += 1; },
@@ -265,9 +266,17 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const setterAnchor = '  function setChatAtlasCanonicalSource(value) {\n';
   const publishAnchor = '  function chatAtlasPublishCompleteIndex(envelope, source) {\n';
-  const programSource = coreSource
+  let programSource = coreSource
     .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`)
     .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`);
+  const closeIndex = programSource.lastIndexOf('})();');
+  if (closeIndex < 0) throw new Error('core-iife-close-missing');
+  programSource = `${programSource.slice(0, closeIndex)}
+  globalThis.__GATE5_CANONICAL_RETURN__ = Object.freeze({
+    apply: (members) => chatAtlasClearBranchSelectionStaleOnCanonicalReturn(members),
+    bumpGeneration: () => { completeTurnIndexAuthorityState.generation += 1; },
+  });
+${programSource.slice(closeIndex)}`;
   vm.runInContext(programSource, context, { filename: corePath, timeout: 8_000 });
   const runtime = {
     context,
@@ -548,16 +557,20 @@ function dispatchTrustedBranchClick(runtime, qId, {
   role = 'user',
   trusted = true,
   extraQIds = [],
+  answerIds = [],
 } = {}) {
   const label = direction === 'next' ? 'Next response' : 'Previous response';
-  const messageNode = (messageId) => ({
+  const messageNode = (messageId, messageRole) => ({
     getAttribute: (name) => {
       if (name === 'data-message-id') return messageId;
-      if (name === 'data-message-author-role') return role;
+      if (name === 'data-message-author-role') return messageRole;
       return null;
     },
   });
-  const messageNodes = [qId, ...extraQIds].map(messageNode);
+  const messageNodes = [
+    ...[qId, ...extraQIds].map((messageId) => messageNode(messageId, role)),
+    ...answerIds.map((messageId) => messageNode(messageId, 'assistant')),
+  ];
   const container = {
     getAttribute: (name) => (name === 'data-testid' ? 'conversation-turn-1' : null),
     querySelectorAll: (sel) => (sel === '[data-message-id]' ? messageNodes : []),
@@ -573,6 +586,17 @@ function dispatchTrustedBranchClick(runtime, qId, {
   let recorded = false;
   for (const fn of handlers) { if (fn(event) === true) recorded = true; }
   return recorded;
+}
+function ledgerMembers(qId, answerIds, {
+  currentQId = qId,
+  source = 'native-evidence',
+  duplicate = false,
+} = {}) {
+  const member = {
+    question: { qId, currentQId },
+    answer: { currentProjectionSource: source, currentAnswerIds: answerIds.slice() },
+  };
+  return duplicate ? [member, clean(member)] : [member];
 }
 function dispatchUnrelatedClick(runtime) {
   const event = { isTrusted: true, target: { closest: () => null }, composedPath: () => [] };
@@ -681,6 +705,111 @@ await fixture('B: repeated valid captures advance only the memory revision and l
   equal(runtime.status().selectedPathAcceptanceCount, 0);
   equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
   equal(runtime.status().refreshTimerPending, false);
+});
+
+await fixture('B: exact native return to the canonical answer clears stale without refresh or mutation', () => {
+  const rows = buildRows(39);
+  const qId = 'gate5-pref-q-17';
+  const canonicalAId = 'gate5-pref-a-17';
+  const branchAId = 'gate5-pref-a-17-branch-2';
+  const runtime = createRuntime({ preference: '1', cache: cacheEnvelope(rows) });
+  const decision = runtime.context.__GATE5_CANONICAL_RETURN__;
+  const recordsBefore = runtime.api.listTurnRecords();
+  const networkBefore = runtime.counters.networkReads;
+  const storageBefore = runtime.storage.state.writes;
+  const publicationsBefore = runtime.counters.authorityPublications;
+  const timersBefore = runtime.counters.timerSchedules;
+  const rafBefore = runtime.counters.rafSchedules;
+
+  equal(dispatchTrustedBranchClick(runtime, qId, { direction: 'next', answerIds: [canonicalAId] }), true);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleQId, qId);
+  equal(runtime.status().branchSelectionStaleRevision, 1);
+  equal(decision.apply(ledgerMembers(qId, [branchAId])), false);
+  equal(runtime.status().branchSelectionStale, true);
+
+  equal(dispatchTrustedBranchClick(runtime, qId, { direction: 'previous', answerIds: [branchAId] }), true);
+  equal(runtime.status().branchSelectionStaleRevision, 1);
+  equal(decision.apply(ledgerMembers(qId, [canonicalAId])), true);
+  equal(runtime.status().branchSelectionStale, false);
+  equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().branchSelectionStaleRevision, 1);
+  equal(runtime.status().trustedSelectionIntentActive, false);
+  equal(runtime.status().authoritative, true);
+  equal(runtime.status().completeCount, 39);
+  equal(runtime.api.listTurnRecords(), recordsBefore);
+  equal(runtime.counters.networkReads - networkBefore, 0);
+  equal(runtime.storage.state.writes - storageBefore, 0);
+  equal(runtime.counters.authorityPublications - publicationsBefore, 0);
+  equal(runtime.counters.timerSchedules - timersBefore, 0);
+  equal(runtime.counters.rafSchedules - rafBefore, 1);
+  equal(runtime.status().selectedPathAcceptanceCount, 0);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  const eventsBeforeRepeat = runtime.counters.completeIndexStateEvents;
+  equal(decision.apply(ledgerMembers(qId, [canonicalAId])), false);
+  equal(runtime.counters.completeIndexStateEvents, eventsBeforeRepeat);
+});
+
+await fixture('B: missing ambiguous unchanged or mismatched remount evidence preserves stale', () => {
+  const qId = 'gate5-pref-q-17';
+  const canonicalAId = 'gate5-pref-a-17';
+  const branchAId = 'gate5-pref-a-17-branch-2';
+  const cases = [
+    { name: 'missing-answer', members: ledgerMembers(qId, []) },
+    { name: 'multiple-answers', members: ledgerMembers(qId, [canonicalAId, branchAId]) },
+    { name: 'unchanged-pre-click-answer', members: ledgerMembers(qId, [canonicalAId]) },
+    { name: 'different-answer', members: ledgerMembers(qId, [branchAId]) },
+    { name: 'different-qid', members: ledgerMembers('gate5-pref-q-18', [canonicalAId]) },
+    { name: 'duplicate-qid-member', members: ledgerMembers(qId, [canonicalAId], { duplicate: true }) },
+    { name: 'fallback-not-native', members: ledgerMembers(qId, [canonicalAId], { source: 'previous-primary-fallback' }) },
+  ];
+  for (const row of cases) {
+    const runtime = createRuntime({ preference: '1', cache: cacheEnvelope(buildRows(39)) });
+    const decision = runtime.context.__GATE5_CANONICAL_RETURN__;
+    equal(dispatchTrustedBranchClick(runtime, qId, { answerIds: [canonicalAId] }), true, row.name);
+    equal(decision.apply(row.members), false, row.name);
+    equal(runtime.status().branchSelectionStale, true, row.name);
+    equal(runtime.status().branchSelectionStaleQId, qId, row.name);
+    equal(runtime.status().branchSelectionStaleRevision, 1, row.name);
+    equal(runtime.status().selectedPathAcceptanceCount, 0, row.name);
+  }
+});
+
+await fixture('B: stale scope and latest interaction lease reject route generation and delayed results', () => {
+  const q17 = 'gate5-pref-q-17';
+  const a17 = 'gate5-pref-a-17';
+  const branch17 = 'gate5-pref-a-17-branch-2';
+  const q18 = 'gate5-pref-q-18';
+  const a18 = 'gate5-pref-a-18';
+
+  const routeRuntime = createRuntime({ preference: '1', cache: cacheEnvelope(buildRows(39)) });
+  equal(dispatchTrustedBranchClick(routeRuntime, q17, { answerIds: [a17] }), true);
+  equal(routeRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [branch17])), false);
+  equal(dispatchTrustedBranchClick(routeRuntime, q17, { answerIds: [branch17] }), true);
+  routeRuntime.context.location.pathname = '/c/other-chat';
+  equal(routeRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [a17])), false);
+  equal(routeRuntime.status().branchSelectionStale, true);
+
+  const generationRuntime = createRuntime({ preference: '1', cache: cacheEnvelope(buildRows(39)) });
+  equal(dispatchTrustedBranchClick(generationRuntime, q17, { answerIds: [a17] }), true);
+  equal(generationRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [branch17])), false);
+  equal(dispatchTrustedBranchClick(generationRuntime, q17, { answerIds: [branch17] }), true);
+  generationRuntime.context.__GATE5_CANONICAL_RETURN__.bumpGeneration();
+  equal(generationRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [a17])), false);
+  equal(generationRuntime.status().branchSelectionStale, true);
+
+  const raceRuntime = createRuntime({ preference: '1', cache: cacheEnvelope(buildRows(39)) });
+  equal(dispatchTrustedBranchClick(raceRuntime, q17, { answerIds: [a17] }), true);
+  equal(raceRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [branch17])), false);
+  equal(dispatchTrustedBranchClick(raceRuntime, q17, { answerIds: [branch17] }), true);
+  equal(dispatchTrustedBranchClick(raceRuntime, q18, { answerIds: [a18] }), true);
+  equal(raceRuntime.status().branchSelectionStaleRevision, 2);
+  equal(raceRuntime.context.__GATE5_CANONICAL_RETURN__.apply(ledgerMembers(q17, [a17])), false);
+  equal(raceRuntime.status().branchSelectionStale, true);
+  equal(raceRuntime.status().branchSelectionStaleQId, q18);
+  equal(raceRuntime.status().branchSelectionStaleRevision, 2);
+  equal(raceRuntime.status().autoBranchReconciliationEnabled, false);
+  equal(raceRuntime.status().selectedPathAcceptanceCount, 0);
 });
 
 await fixture('B: unchanged validated host refresh preserves branch-stale state idempotently', async () => {

@@ -279,6 +279,8 @@
     const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status);
     if (stale && rec.node.dataset.refreshStatus !== "refreshing") {
       sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "stale");
+    } else if (!stale && rec.node.dataset.refreshStatus === "stale") {
+      sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "idle");
     }
   }
 

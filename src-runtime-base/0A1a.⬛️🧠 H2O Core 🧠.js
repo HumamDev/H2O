@@ -2382,6 +2382,7 @@
       chatAtlasLedgerState.maxFlushMs = Math.max(chatAtlasLedgerState.maxFlushMs, elapsed);
     }
     chatAtlasRunCanonicalDualComparison(reason);
+    chatAtlasClearBranchSelectionStaleOnCanonicalReturn(next);
 
     const delta = chatAtlasFreeze({
       reason: String(reason || 'unknown'),
@@ -6539,6 +6540,62 @@
     return true;
   }
 
+  function chatAtlasClearBranchSelectionStaleOnCanonicalReturn(members = []) {
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (!intent || completeTurnIndexAuthorityState.branchSelectionStale !== true) return false;
+    const qId = chatAtlasCompleteIndexIdentity(intent.qId);
+    const priorAnswerId = chatAtlasCompleteIndexIdentity(intent.priorAnswerId);
+    const revision = Number(intent.staleRevision || 0);
+    const route = chatAtlasFullIndexRoute();
+    if (
+      !qId
+      || !priorAnswerId
+      || revision !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
+      || qId !== String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '')
+      || intent.chatId !== String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || '')
+      || intent.routeKey !== String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || '')
+      || intent.generation !== Number(completeTurnIndexAuthorityState.branchSelectionStaleGeneration || 0)
+      || route.chatId !== intent.chatId
+      || route.routeKey !== intent.routeKey
+      || intent.generation !== Number(completeTurnIndexAuthorityState.generation || 0)
+    ) return false;
+    const canonicalMatches = (Array.isArray(completeTurnIndexAuthorityState.index?.turns)
+      ? completeTurnIndexAuthorityState.index.turns
+      : []).filter((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === qId);
+    if (canonicalMatches.length !== 1) return false;
+    const canonical = canonicalMatches[0];
+    const canonicalPrimaryAId = chatAtlasCompleteIndexIdentity(canonical?.primaryAId);
+    if (chatAtlasCompleteIndexIdentity(canonical?.qId) !== qId || !canonicalPrimaryAId) return false;
+    const currentMembers = (Array.isArray(members) ? members : []).filter((member) => (
+      chatAtlasCompleteIndexIdentity(member?.question?.currentQId) === qId
+      && member?.answer?.currentProjectionSource === 'native-evidence'
+    ));
+    if (currentMembers.length !== 1) return false;
+    const selectedAnswerIds = chatAtlasCv2CurrentIds(currentMembers[0]?.answer?.currentAnswerIds || []);
+    if (selectedAnswerIds.length !== 1) return false;
+    const selectedAnswerId = chatAtlasCompleteIndexIdentity(selectedAnswerIds[0]);
+    if (!selectedAnswerId || selectedAnswerId === priorAnswerId || selectedAnswerId !== canonicalPrimaryAId) {
+      return false;
+    }
+    const checkpoint = Object.freeze({
+      revision,
+      qId,
+      chatId: intent.chatId,
+      routeKey: intent.routeKey,
+      generation: intent.generation,
+    });
+    const cleared = chatAtlasClearBranchSelectionStale(checkpoint, 'native-branch-returned-to-canonical');
+    if (cleared && completeTurnIndexAuthorityState.trustedSelectedPathIntent?.token === intent.token) {
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
+        reason: 'native-branch-returned-to-canonical',
+        qId,
+        token: intent.token,
+      });
+    }
+    return cleared;
+  }
+
   function chatAtlasCompleteIndexExplicitRefreshSucceeded(result) {
     const status = String(result?.status || '');
     return status === 'complete-refresh-validated'
@@ -6657,6 +6714,7 @@
     return {
       ok: true,
       qId: resolved.values().next().value,
+      currentAnswerId: assistantIds.length === 1 ? assistantIds[0] : '',
       reason: answerResolved ? 'capture-owner-answer-resolved' : 'capture-owner-qid-resolved',
     };
   }
@@ -6726,15 +6784,6 @@
       chatAtlasTraceTrustedLifecycle('trusted-bind-skipped', { reason: ownership.reason, token });
       return false;
     }
-    completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
-      token,
-      chatId: route.chatId,
-      routeKey: route.routeKey,
-      generation: Number(completeTurnIndexAuthorityState.generation || 0),
-      direction,
-      qId: ownership.qId,
-      observedAt,
-    });
     chatAtlasTraceTrustedLifecycle('trusted-bind-success', {
       qId: ownership.qId,
       token,
@@ -6743,17 +6792,38 @@
     // The ownership and route checks above have already proven the exact
     // canonical qId and scope. Mark only this memory-only passive state; the
     // reconciliation scheduler below remains independently gated.
+    const generation = Number(completeTurnIndexAuthorityState.generation || 0);
+    const staleAlreadyCurrent = completeTurnIndexAuthorityState.branchSelectionStale === true
+      && String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '') === ownership.qId
+      && String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || '') === route.chatId
+      && String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || '') === route.routeKey
+      && Number(completeTurnIndexAuthorityState.branchSelectionStaleGeneration || 0) === generation;
+    const staleRevision = staleAlreadyCurrent
+      ? Math.max(1, Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0))
+      : Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0) + 1;
     completeTurnIndexAuthorityState.branchSelectionStale = true;
-    completeTurnIndexAuthorityState.branchSelectionStaleRevision += 1;
+    completeTurnIndexAuthorityState.branchSelectionStaleRevision = staleRevision;
     completeTurnIndexAuthorityState.branchSelectionStaleQId = ownership.qId;
     completeTurnIndexAuthorityState.branchSelectionStaleChatId = route.chatId;
     completeTurnIndexAuthorityState.branchSelectionStaleRouteKey = route.routeKey;
-    completeTurnIndexAuthorityState.branchSelectionStaleGeneration = Number(
-      completeTurnIndexAuthorityState.generation || 0,
-    );
+    completeTurnIndexAuthorityState.branchSelectionStaleGeneration = generation;
+    completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
+      token,
+      chatId: route.chatId,
+      routeKey: route.routeKey,
+      generation,
+      direction,
+      qId: ownership.qId,
+      priorAnswerId: ownership.currentAnswerId,
+      staleRevision,
+      observedAt,
+    });
     // The production runtime owns this notifier. Isolated function-extraction
     // harnesses may intentionally omit it while still exercising Gate 5.
     if (typeof chatAtlasNotifyCompleteIndexState === 'function') chatAtlasNotifyCompleteIndexState();
+    if (ownership.currentAnswerId && typeof scheduleChatAtlasLedgerFlush === 'function') {
+      scheduleChatAtlasLedgerFlush('trusted-native-branch-click');
+    }
     // The captured qId is already uniquely and canonically known, so trusted
     // reconciliation is DRIVEN by the capture — it never waits for generic
     // live-change inspection to rediscover this qId (the real ChatGPT branch

@@ -366,6 +366,31 @@ await fixture('complete-index state event handler renders an accessible branch-s
   equal(totals.timers, 0);
 });
 
+await fixture('exact canonical branch return removes stale warning without refresh feedback', () => {
+  const runtime = createTurnRuntime({ storedValue: '1' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 1;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q';
+  const { bindNode, sync } = loadSideActionsProductControl(runtime.api);
+  const el = fakeActionElement();
+  bindNode(el);
+  sync({ type: 'evt:h2o:complete-turn-index:state' });
+  equal(el.stale.hidden, false);
+  equal(el.dataset.refreshStatus, 'stale');
+  runtime.state.branchSelectionStale = false;
+  runtime.state.branchSelectionStaleQId = null;
+  sync({ type: 'evt:h2o:complete-turn-index:state' });
+  equal(el.stale.hidden, true);
+  equal(el.dataset.branchSelectionStale, 'false');
+  equal(el.attributes.has('aria-describedby'), false);
+  equal(el.label.textContent, 'Refresh MiniMap');
+  equal(el.label.textContent.includes('Branch still differs'), false);
+  equal(el.dataset.refreshStatus, 'idle');
+  equal(runtime.state.refreshCalls, 0);
+  equal(runtime.state.networkCalls, 0);
+  equal(totals.timers, 0);
+});
+
 await fixture('successful Refresh MiniMap clears the visible stale indication after runtime success', async () => {
   const runtime = createTurnRuntime({ storedValue: '1' });
   runtime.state.branchSelectionStale = true;
