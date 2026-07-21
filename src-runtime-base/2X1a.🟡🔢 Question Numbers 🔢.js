@@ -594,9 +594,6 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   }
 
   function getCanonicalTurnNum(hostEl) {
-    const fromPagination = getCanonicalTurnNumFromPaginationState(hostEl);
-    if (fromPagination > 0) return fromPagination;
-
     const fromTurnRoot = getCanonicalTurnNumFromTurnRoot(hostEl);
     if (fromTurnRoot > 0) return fromTurnRoot;
 
@@ -684,7 +681,9 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   }
 
   function computeDisplayNumber(hostEl) {
-    // 1) Canonical: pagination state (answerIndex) or turnRuntime.
+    // 1) Canonical: complete-turn runtime identity. Pagination state is a
+    // mounted-window projection and cannot establish canonical identity for a
+    // branch-remounted question that is absent from the complete index.
     const canonicalTurnNum = getCanonicalTurnNum(hostEl);
     if (canonicalTurnNum > 0) return canonicalTurnNum;
 
@@ -693,19 +692,24 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     // not be renumbered from the visible branch-local subset.
     if (isCompleteTurnIndexProjectionEnabled()) return null;
 
-    // 2) When pagination is on and canonical failed, use page-window offset.
+    // 2) Legacy pagination authority remains available only when complete
+    // projection is explicitly inactive or genuinely unavailable.
+    const fromPagination = getCanonicalTurnNumFromPaginationState(hostEl);
+    if (fromPagination > 0) return fromPagination;
+
+    // 3) When pagination is on and canonical failed, use page-window offset.
     if (isPaginationEnabled()) {
       const fromPagedDom = getPaginationTurnNumFromDomWindow(hostEl);
       if (fromPagedDom > 0) return fromPagedDom;
     }
 
-    // 3) DOM-based fallback: count answered turns up to and including this one.
+    // 4) DOM-based fallback: count answered turns up to and including this one.
     //    This handles the case where Q and A are separate turn nodes and the
     //    raw DOM ordinal would give wrong (doubled) numbers.
     const answeredOrdinal = getDomAnsweredTurnOrdinal(hostEl);
     if (answeredOrdinal > 0) return answeredOrdinal;
 
-    // 4) Last resort: scan index.
+    // 5) Last resort: scan index.
     const scanNum = MOD.state.scanIndexByHost?.get(hostEl) || 0;
     return scanNum || ((MOD.state.scanIndexCounter || 0) + 1);
   }

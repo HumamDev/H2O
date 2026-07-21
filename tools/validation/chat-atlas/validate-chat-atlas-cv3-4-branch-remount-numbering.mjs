@@ -269,6 +269,194 @@ function compileTitleRuntime(runtime, dom, legacyIndex = 0) {
   return context.__api;
 }
 
+function compileTitleLifecycleRuntime(runtime, dom, bar) {
+  const timerQueue = [];
+  let repairCallback = null;
+  let observer = null;
+  let apiRef = null;
+  const answerId = dom.answer.getAttribute('data-message-id') || '';
+  const textEl = makeNode({}, { textContent: 'Existing title' });
+  const badgeEl = makeNode({}, { textContent: '' });
+
+  class HarnessMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      observer = this;
+      counters.mutationObservers += 1;
+    }
+    observe() { this.active = true; }
+    disconnect() {
+      if (!this.active) return;
+      this.active = false;
+      counters.observerDisconnects += 1;
+    }
+    deliver(mutations) {
+      if (!this.active) return false;
+      counters.mutationCallbacks += 1;
+      this.callback(mutations);
+      return true;
+    }
+  }
+
+  const SEL_ = {
+    ASSISTANT_MSG: '[data-message-author-role="assistant"][data-message-id]',
+    OWNED_BAR_ANY: '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]',
+    OWNED_TEXT_ANY: '[data-cgxui="atns-answer-title-text"][data-cgxui-owner="atns"]',
+  };
+  const UI_ = { BAR: 'bar', LABEL: 'label', TEXT: 'text', BADGE: 'badge' };
+  const ATTR_ = {
+    MSG_ID: 'data-message-id',
+    ROLE: 'data-message-author-role',
+    CGXUI_STATE: 'data-cgxui-state',
+    COLLAPSED: 'data-at-collapsed',
+    NO_ANSWER: 'data-at-no-answer',
+  };
+  const STATE_ = {
+    seen: new Set(),
+    pendingTimers: new Map(),
+    titles: { [answerId]: 'Existing title' },
+    collapsed: new Set(),
+    mutatedMsgs: new Set(),
+    clean: { mo: null, repairInt: null, listeners: [], styleEl: null },
+    visitResetPending: false,
+  };
+  textEl.closest = (selector) => {
+    if (selector === SEL_.OWNED_BAR_ANY) return bar;
+    if (selector === SEL_.ASSISTANT_MSG) return dom.answer;
+    return null;
+  };
+  bar.querySelector = (selector) => {
+    if (selector === 'label') return bar._label;
+    if (selector === 'text') return textEl;
+    if (selector === 'badge') return badgeEl;
+    return null;
+  };
+  bar.closest = (selector) => selector === SEL_.ASSISTANT_MSG ? dom.answer : null;
+
+  const W = {
+    H2O: {
+      turnRuntime: runtime,
+      msg: { getIdFromEl: (el) => el?.getAttribute?.('data-message-id') || '' },
+      turn: { getTurnIndexByAEl: () => 0 },
+    },
+  };
+  W.top = W;
+  const context = vm.createContext({
+    Number,
+    Math,
+    String,
+    Array,
+    Map,
+    Set,
+    HTMLElement: Object,
+    MutationObserver: HarnessMutationObserver,
+    setTimeout(callback) { timerQueue.push(callback); return timerQueue.length; },
+    clearTimeout() {},
+    setInterval(callback) { repairCallback = callback; return 1; },
+    W,
+    D: {
+      body: makeNode(),
+      querySelectorAll(selector) {
+        if (selector === SEL_.OWNED_TEXT_ANY) return [textEl];
+        return [];
+      },
+    },
+    SEL_,
+    UI_,
+    ATTR_,
+    CFG_: { DEBOUNCE_MS: 1, REPAIR_EVERY_MS: 5000, REPAIR_TEXT_MIN: 80 },
+    SkID: 'atns',
+    STATE_,
+    DOM_selScoped: (value) => value,
+    API_AT_normalizeAnswerId: (value) => String(value || '').trim(),
+    DOM_getAnswerId: (el) => el?.getAttribute?.('data-message-id') || '',
+    DOM_getAnswerTurnHost: (el) => el?.closest?.('[data-testid="conversation-turn"]') || null,
+    DOM_getAdjacentTurnHost: (host, direction) => direction < 0 ? (host?._previous || null) : null,
+    DOM_turnHostHasRole: (host, role) => String(host?.getAttribute?.('data-turn') || '') === role,
+    DOM_ensureTitleBar: () => bar,
+    DOM_enableTitleEditing: () => {},
+    DOM_enableCollapseToggle: () => {},
+    DOM_reconcileCollapsedDom: () => {},
+    DOM_findCollapsedAnswerIdForMutationTarget: () => '',
+    DOM_getAnswerText: () => 'A sufficiently long existing answer body for repair.',
+    DOM_getAnswerBody: () => [],
+    DOM_hasCollapsedDomResidue: () => false,
+    DOM_applyCollapseState: () => {},
+    DOM_isPlaceholderTitle: () => false,
+    DOM_removeNoAnswerTitleBars: () => 0,
+    ENGINE_applyRtlIfArabic: () => {},
+    ENGINE_isUnmountEngineMode: () => false,
+    ENGINE_getUnmountApi: () => null,
+    ENGINE_readUnmountTitleShellCollapsed: () => false,
+    ENGINE_generateLocalTitle: () => 'Existing title',
+    ENGINE_saveTitles: () => {},
+    DOM_tryUpdateMiniMap: () => {},
+    UTIL_textTrim: (value) => String(value || '').trim(),
+    UTIL_getAttr: (el, name) => el?.getAttribute?.(name) || null,
+    UTIL_setAttr: (el, name, value) => el?.setAttribute?.(name, value),
+    UTIL_delAttr: (el, name) => el?.removeAttribute?.(name),
+    UTIL_dispatch: () => {},
+    DIAG_err: () => {},
+    ENGINE_processAnswer: (msgEl) => apiRef.DOM_setTitleOnAnswer(msgEl, 'Existing title'),
+  });
+  const names = [
+    'DOM_readCanonicalTurnNumber',
+    'DOM_completeTurnIndexProjectionEnabled',
+    'DOM_getCanonicalQuestionOwnerNumber',
+    'DOM_getUserCandidates',
+    'DOM_getCanonicalOwnerTurnNumber',
+    'DOM_getTurnNumber',
+    'DOM_projectTurnNumber',
+    'DOM_setTitleOnAnswer',
+    'TIME_queueProcessAnswer',
+    'TIME_startObserver',
+    'TIME_startRepairLoop',
+  ];
+  const code = names.map((name) => {
+    if (name === 'DOM_setTitleOnAnswer') {
+      const start = TITLE_SOURCE.indexOf('  const DOM_setTitleOnAnswer =');
+      const end = TITLE_SOURCE.indexOf('\n  const DOM_enableTitleEditing =', start);
+      if (start < 0 || end < 0) {
+        throw new Error('production-declaration-missing:DOM_setTitleOnAnswer');
+      }
+      return TITLE_SOURCE.slice(start, end).trimEnd();
+    }
+    if (name !== 'TIME_startRepairLoop') return declaration(TITLE_SOURCE, name);
+    const start = TITLE_SOURCE.indexOf('  const TIME_startRepairLoop =');
+    const assignment = TITLE_SOURCE.indexOf('STATE_.clean.repairInt = intId;', start);
+    const end = TITLE_SOURCE.indexOf('\n  };', assignment);
+    if (start < 0 || assignment < 0 || end < 0) {
+      throw new Error('production-declaration-missing:TIME_startRepairLoop');
+    }
+    return TITLE_SOURCE.slice(start, end + '\n  };'.length);
+  }).join('\n');
+  vm.runInContext(`${code}\nglobalThis.__api = { ${names.join(', ')} };`, context);
+  apiRef = context.__api;
+  apiRef.TIME_startObserver();
+  apiRef.TIME_startRepairLoop();
+  return {
+    api: apiRef,
+    observer: () => observer,
+    deliver(mutations) { return observer?.deliver?.(mutations) === true; },
+    flushTimers() {
+      let count = 0;
+      while (timerQueue.length) {
+        const callback = timerQueue.shift();
+        callback();
+        count += 1;
+      }
+      return count;
+    },
+    runRepair() {
+      if (typeof repairCallback !== 'function') return false;
+      repairCallback();
+      return true;
+    },
+    textEl,
+    state: STATE_,
+  };
+}
+
 function titleBar(initialTurnNumber = '') {
   const label = { textContent: initialTurnNumber ? `TITLE ${initialTurnNumber}` : 'TITLE' };
   const bar = makeNode(initialTurnNumber ? { 'data-h2o-turn-num': String(initialTurnNumber) } : {}, {
@@ -653,56 +841,100 @@ function compileAnswerNumberRuntime(runtime, root = null) {
   };
 }
 
-function compileQuestionNumberRuntime(runtime) {
-  const numberNode = makeNode({ 'data-h2o-qbig-sig-num': '1||' }, {
+function compileQuestionNumberRuntime(runtime, opts = {}) {
+  const host = opts.host || null;
+  const paginationRows = Array.isArray(opts.paginationRows) ? opts.paginationRows : [];
+  const paginationEnabled = opts.paginationEnabled === true;
+  const numberNode = makeNode({ 'data-h2o-qbig-sig-num': '1|' }, {
     className: 'cgxui-qbig-number',
     innerHTML: '1',
   });
+  const state = {
+    pendingUsers: new Set(),
+    pendingPos: new Set(),
+    visibleUsers: new Set(),
+    ioObserved: new Set(),
+    userSeen: new WeakSet(),
+    scanIndexByHost: new WeakMap(),
+    scanIndexCounter: 0,
+    needFull: false,
+    orderDirty: false,
+    lastPosTick: 0,
+  };
   const context = vm.createContext({
     Number,
     Math,
     String,
+    Array,
+    Map,
+    Set,
+    WeakMap,
+    WeakSet,
     HTMLElement: Object,
     W: {
       H2O: {
         turnRuntime: runtime,
         msg: { getIdFromEl: (el) => el?.getAttribute?.('data-message-id') || '' },
         index: { getQId: (el) => el?.getAttribute?.('data-message-id') || '' },
+        PW: { pgnwndw: { state: { masterTurns: paginationRows } } },
       },
-      H2O_Pagination: null,
+      H2O_Pagination: {
+        getPageInfo: () => ({ enabled: paginationEnabled, answerRange: { start: 1 } }),
+      },
     },
     D: {},
     SEL: {
+      USER_MSG: '[data-message-author-role="user"]',
       TURN: '[data-testid="conversation-turn"]',
       TURN_ROOT: '[tabindex="-1"]',
       TURN_GROUP_HINT: '[class*="group/turn-messages"]',
     },
     ATTR: { SIG_NUM: 'data-h2o-qbig-sig-num', SIG_POS: 'data-h2o-qbig-sig-pos' },
     UI: { NUM_CLASS: 'cgxui-qbig-number' },
-    MOD: { state: { scanIndexByHost: new WeakMap(), scanIndexCounter: 0 } },
+    MOD: { state },
+    CFG: { INC_PER_FRAME: 30, POS_PER_FRAME: 30 },
     getStableQuestionIdFromElement: (el) => el?.getAttribute?.('data-message-id') || '',
-    getCanonicalTurnNumFromPaginationState: () => 0,
-    getCanonicalTurnNumFromTurnRoot: () => 0,
-    isPaginationEnabled: () => false,
     getPaginationTurnNumFromDomWindow: () => 1,
     getDomAnsweredTurnOrdinal: () => 1,
+    qsa: (selector) => selector.includes('data-message-author-role="user"') && host ? [host] : [],
+    observeUser: () => {},
+    bindObserverHub: () => true,
+    attachMO: () => {},
+    unobserveDeadUsers: () => {},
+    parseEditInfoForHost: () => '',
+    readPosition: () => null,
+    scheduleFlush: () => {},
     ensureHostFallback: () => {},
     ensureNumNode: () => numberNode,
     digitClass: () => 'digit',
     makeNumHTML: (number) => String(number),
     setAttr: (el, name, value) => el.setAttribute(name, value),
-    PERF: { positionedVisibleCount: 0 },
+    PERF: { positionedVisibleCount: 0, fullScans: 0 },
   });
   const names = [
     'readCanonicalTurnNumFromRecord',
+    'getPaginationState',
+    'getCanonicalTurnNumFromPaginationState',
+    'getCanonicalTurnNumFromTurnRoot',
     'getCanonicalTurnNum',
+    'isPaginationEnabled',
     'isCompleteTurnIndexProjectionEnabled',
     'computeDisplayNumber',
+    'fullScanUsers',
     'applyPatch',
+    'flush',
   ];
   const code = names.map((name) => declaration(QUESTION_NUMBER_SOURCE, name, 'function')).join('\n');
   vm.runInContext(`${code}\nglobalThis.__api = { ${names.join(', ')} };`, context);
-  return { api: context.__api, numberNode };
+  return {
+    api: context.__api,
+    numberNode,
+    state,
+    runFullScan() {
+      state.needFull = true;
+      context.__api.flush();
+    },
+  };
 }
 
 function branchDom(qId = 'fixture-q-18', answerId = 'fixture-a-18-remounted', opts = {}) {
@@ -1241,6 +1473,89 @@ await fixture('Question Numbers real canonical path displays q18 and fails close
   equal(question.numberNode.hasAttribute('data-h2o-qbig-sig-num'), false);
 });
 
+await fixture('complete authority rejects pagination answerIndex 1 through real question full-scan flush apply', () => {
+  const runtime = createRuntime(rows, true);
+  const dom = branchDom('fixture-q-branch-local', 'fixture-a-branch-local');
+  const question = compileQuestionNumberRuntime(runtime, {
+    host: dom.question,
+    paginationEnabled: true,
+    paginationRows: [{ node: dom.questionTurn, answerIndex: 1 }],
+  });
+  dom.question.querySelector = (selector) => selector.includes('cgxui-qbig-number')
+    ? question.numberNode
+    : null;
+
+  equal(question.api.getCanonicalTurnNumFromPaginationState(dom.question), 1,
+    'fixture proves the live pagination row advertises branch-local answerIndex 1');
+  equal(question.api.getCanonicalTurnNum(dom.question), 0,
+    'runtime-backed canonical resolution rejects the mounted branch-local qId');
+  equal(question.api.computeDisplayNumber(dom.question), null,
+    'complete authority fails closed before pagination fallback');
+
+  question.runFullScan();
+  equal(question.state.needFull, false, 'real full scan is consumed by flush');
+  equal(question.state.pendingUsers.size, 0, 'full-scan target queue drains');
+  equal(question.numberNode.hidden, true, 'real apply path hides the existing false qbig 1');
+  equal(question.numberNode.style.getPropertyValue('display'), 'none');
+  equal(question.numberNode.hasAttribute('data-h2o-qbig-sig-num'), false,
+    'real apply path removes the stale numeric signature');
+
+  question.runFullScan();
+  equal(question.numberNode.hidden, true, 'repeated full repaint remains fail-closed and idempotent');
+  equal(question.numberNode.hasAttribute('data-h2o-qbig-sig-num'), false);
+});
+
+await fixture('legacy question pagination answerIndex remains available without complete authority', () => {
+  const runtime = createRuntime(rows, false);
+  const dom = branchDom('fixture-q-legacy-window', 'fixture-a-legacy-window');
+  const question = compileQuestionNumberRuntime(runtime, {
+    host: dom.question,
+    paginationEnabled: true,
+    paginationRows: [{ node: dom.questionTurn, answerIndex: 1 }],
+  });
+  dom.question.querySelector = (selector) => selector.includes('cgxui-qbig-number')
+    ? question.numberNode
+    : null;
+
+  equal(question.api.computeDisplayNumber(dom.question), 1,
+    'legacy mode still accepts pagination answerIndex');
+  question.runFullScan();
+  equal(question.numberNode.hidden, false);
+  equal(question.numberNode.innerHTML, '1');
+  equal(question.numberNode.getAttribute('data-h2o-qbig-sig-num'), '1|');
+});
+
+await fixture('ordinary title observer queue and repair remove an existing branch-local TITLE 1', () => {
+  const runtime = createRuntime(rows, true);
+  const dom = branchDom('fixture-q-branch-local', 'fixture-a-branch-local');
+  const bar = titleBar(1);
+  bar.setAttribute('data-answer-id', 'fixture-a-branch-local');
+  const lifecycle = compileTitleLifecycleRuntime(runtime, dom, bar);
+
+  equal(bar.hasAttribute('data-at-no-answer'), false);
+  equal(bar.hasAttribute('data-h2o-detached-title-bar'), false);
+  equal(bar.hasAttribute('data-h2o-in-title-stack'), false);
+  equal(lifecycle.api.DOM_getTurnNumber(dom.answer), 0,
+    'ordinary remounted assistant is unresolved under complete authority');
+  equal(lifecycle.deliver([{ type: 'childList', addedNodes: [dom.answer] }]), true,
+    'real title MutationObserver receives the branch-remounted assistant');
+  equal(lifecycle.flushTimers(), 1, 'real queued answer processing runs once');
+  equal(bar._label.textContent, 'TITLE');
+  equal(bar.hasAttribute('data-h2o-turn-num'), false);
+  equal(bar.getAttribute('data-answer-id'), 'fixture-a-branch-local',
+    'fail-closed projection preserves mounted answer ownership metadata');
+
+  bar._label.textContent = 'TITLE 1';
+  bar.setAttribute('data-h2o-turn-num', '1');
+  equal(lifecycle.runRepair(), true, 'actual bounded repair callback executes');
+  equal(bar._label.textContent, 'TITLE');
+  equal(bar.hasAttribute('data-h2o-turn-num'), false);
+  equal(lifecycle.runRepair(), true, 'repeated repair remains idempotent');
+  equal(bar._label.textContent, 'TITLE');
+  equal(bar.hasAttribute('data-h2o-turn-num'), false);
+  counters.titleProjects += 2;
+});
+
 await fixture('legacy mounted-order fallbacks remain available only outside complete mode', () => {
   const runtime = createRuntime(rows, false);
   const dom = branchDom('fixture-q-not-canonical', 'fixture-a-not-canonical');
@@ -1293,9 +1608,9 @@ await fixture('canonical membership variants and safety counters remain unchange
   equal(counters.selectedPathPublications, 0);
   equal(counters.primaryMutations, 0);
   equal(counters.timers, 0);
-  equal(counters.mutationObservers, 7);
+  equal(counters.mutationObservers, 8);
   equal(counters.observerDisconnects, 7);
-  equal(counters.mutationCallbacks, 7);
+  equal(counters.mutationCallbacks, 8);
   equal(counters.answerTargetsCollected, 7);
   equal(counters.answerTargetsScheduled, 7);
   equal(counters.answerTargetsRejected, 1);
