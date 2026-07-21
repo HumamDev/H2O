@@ -563,13 +563,15 @@
   function getRecordByQIdInternal(qId) {
     const key = normalizeTurnAlias(qId);
     if (!key) return null;
-    return getRecordByTurnNoInternal(turnState.byQId.get(key) || 0);
+    const turnNo = turnState.byQId.get(key);
+    return turnNo > 0 ? getRecordByTurnNoInternal(turnNo) : null;
   }
 
   function getRecordByAIdInternal(aId) {
     const key = normalizeTurnAlias(aId);
     if (!key) return null;
-    return getRecordByTurnNoInternal(turnState.byAId.get(key) || 0);
+    const turnNo = turnState.byAId.get(key);
+    return turnNo > 0 ? getRecordByTurnNoInternal(turnNo) : null;
   }
 
   function buildCanonicalTurnId(turn) {

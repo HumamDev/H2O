@@ -8,10 +8,14 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const CORE_RUNTIME_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
+const CORE_STUDIO_PATH = 'src-surfaces-base/studio/S0A1a. 🎬 H2O Core - Studio.js';
 const TITLE_PATH = 'src-runtime-base/1C1a.🟥📛 Turn Title Bar 📛.js';
 const TIMESTAMP_PATH = 'src-runtime-base/1Z1a.🔴⏳ Answer Timestamp ⏳.js';
 const ANSWER_NUMBER_PATH = 'src-runtime-base/1X1a.🔴🧮 Answer Numbers 🧮.js';
 const QUESTION_NUMBER_PATH = 'src-runtime-base/2X1a.🟡🔢 Question Numbers 🔢.js';
+const CORE_RUNTIME_SOURCE = fs.readFileSync(path.join(ROOT, CORE_RUNTIME_PATH), 'utf8');
+const CORE_STUDIO_SOURCE = fs.readFileSync(path.join(ROOT, CORE_STUDIO_PATH), 'utf8');
 const TITLE_SOURCE = fs.readFileSync(path.join(ROOT, TITLE_PATH), 'utf8');
 const TIMESTAMP_SOURCE = fs.readFileSync(path.join(ROOT, TIMESTAMP_PATH), 'utf8');
 const ANSWER_NUMBER_SOURCE = fs.readFileSync(path.join(ROOT, ANSWER_NUMBER_PATH), 'utf8');
@@ -226,6 +230,97 @@ function createRuntime(rows, enabled = true) {
     rebuildCompleteTurnIndexProjection() { counters.networkCalls += 1; },
     listTurnRecords() { return rows.slice(); },
   };
+}
+
+function createProductionCoreRuntime(source, rows, enabled = true) {
+  const normalizeAssignment = source.match(/^\s*H2O\.msg\.normalizeId\s*=.*;\s*$/m)?.[0] || '';
+  if (!normalizeAssignment) throw new Error('production-normalizer-missing:H2O.msg.normalizeId');
+
+  const wrapperNames = [
+    'getTurnRecordByTurnId',
+    'getTurnRecordByAId',
+    'getTurnRecordByQId',
+    'getTurnRecordByTurnNo',
+  ];
+  const wrappers = wrapperNames.map((name) => {
+    const line = source.match(new RegExp(`^\\s*${name}:.*,$`, 'm'))?.[0] || '';
+    if (!line) throw new Error(`production-public-wrapper-missing:${name}`);
+    return line.trim();
+  });
+  const internals = [
+    'normalizeTurnAlias',
+    'getRecordByTurnNoInternal',
+    'getRecordByTurnIdInternal',
+    'getRecordByQIdInternal',
+    'getRecordByAIdInternal',
+  ].map((name) => declaration(source, name, 'function')).join('\n');
+
+  const context = vm.createContext({
+    Number,
+    Math,
+    String,
+    Map,
+    Array,
+    __records: rows,
+  });
+  vm.runInContext(`
+    const H2O = { msg: {} };
+    ${normalizeAssignment.trim()}
+    const turnState = {
+      byTurnId: new Map(),
+      byTurnNo: new Map(),
+      byQId: new Map(),
+      byAId: new Map(),
+      aliasToTurnId: new Map(),
+    };
+    for (const sourceRecord of __records) {
+      const qId = String(sourceRecord?.qId || '').trim();
+      const turnNo = Math.max(1, Number(sourceRecord?.turnNo || 0) || 0);
+      const turnId = String(sourceRecord?.turnId || (qId ? 'turn:' + qId : 'turn:' + turnNo));
+      const record = { ...sourceRecord, turnId };
+      turnState.byTurnId.set(turnId, record);
+      turnState.byTurnNo.set(turnNo, record);
+      if (qId) {
+        turnState.byQId.set(qId, turnNo);
+        turnState.aliasToTurnId.set(qId, turnId);
+        turnState.aliasToTurnId.set('turn:' + qId, turnId);
+      }
+      for (const answerId of sourceRecord?.answerIds || []) {
+        const id = String(answerId || '').trim();
+        if (!id) continue;
+        turnState.byAId.set(id, turnNo);
+        turnState.aliasToTurnId.set(id, turnId);
+        turnState.aliasToTurnId.set('turn:' + id, turnId);
+        turnState.aliasToTurnId.set('turn:a:' + id, turnId);
+      }
+    }
+    ${internals}
+    H2O.turnRuntime = {
+      ${wrappers.join('\n')}
+    };
+    globalThis.__runtime = H2O.turnRuntime;
+  `, context);
+
+  const rawRuntime = context.__runtime;
+  rawRuntime.getCompleteTurnIndexProjectionStatus = () => ({
+    enabled,
+    authoritative: enabled,
+    status: enabled ? 'complete-validated' : 'disabled',
+    count: rows.length,
+  });
+  rawRuntime.getCompleteTurnIndexProjectionPreference = () => ({ enabled });
+  rawRuntime.listTurnRecords = () => rows.slice();
+
+  const runtime = Object.create(rawRuntime);
+  runtime.getTurnRecordByAId = (id) => {
+    counters.canonicalAnswerReads += 1;
+    return rawRuntime.getTurnRecordByAId(id);
+  };
+  runtime.getTurnRecordByQId = (id) => {
+    counters.canonicalQuestionReads += 1;
+    return rawRuntime.getTurnRecordByQId(id);
+  };
+  return { rawRuntime, runtime };
 }
 
 function compileTitleRuntime(runtime, dom, legacyIndex = 0) {
@@ -1081,6 +1176,140 @@ function accountPipelineProbe(probe) {
 const rows = canonicalRecords();
 const identitySnapshot = JSON.stringify(rows);
 
+await fixture('production Runtime and Studio Core getters reject exact identity misses', () => {
+  const sources = [
+    ['Runtime', CORE_RUNTIME_SOURCE],
+    ['Studio', CORE_STUDIO_SOURCE],
+  ];
+  const parity = [];
+
+  for (const [label, source] of sources) {
+    const { rawRuntime } = createProductionCoreRuntime(source, rows, true);
+    equal(rawRuntime.getTurnRecordByQId('fixture-q-01')?.turnNo, 1, `${label} q1 exact lookup`);
+    equal(rawRuntime.getTurnRecordByAId('fixture-a-01')?.turnNo, 1, `${label} a1 exact lookup`);
+    equal(rawRuntime.getTurnRecordByQId('fixture-q-18')?.turnNo, 18, `${label} q18 exact lookup`);
+    equal(rawRuntime.getTurnRecordByAId('fixture-a-18-original')?.turnNo, 18, `${label} a18 exact lookup`);
+    equal(rawRuntime.getTurnRecordByQId('fixture-q-branch-remount'), null, `${label} unknown branch qId`);
+    equal(rawRuntime.getTurnRecordByAId('fixture-a-branch-remount'), null, `${label} unknown branch aId`);
+
+    for (const arbitrary of [
+      'user',
+      'assistant',
+      'conversation-turn-35',
+      'conversation-turn-36',
+      'gpt-5-2',
+      '1',
+    ]) {
+      equal(rawRuntime.getTurnRecordByQId(arbitrary), null, `${label} arbitrary qId ${arbitrary}`);
+      equal(rawRuntime.getTurnRecordByAId(arbitrary), null, `${label} arbitrary aId ${arbitrary}`);
+    }
+
+    equal(rawRuntime.getTurnRecordByQId(''), null, `${label} empty qId`);
+    equal(rawRuntime.getTurnRecordByAId(''), null, `${label} empty aId`);
+    equal(rawRuntime.getTurnRecordByQId(undefined), null, `${label} undefined qId`);
+    equal(rawRuntime.getTurnRecordByAId(undefined), null, `${label} undefined aId`);
+    equal(rawRuntime.getTurnRecordByTurnId('turn:fixture-q-18')?.turnNo, 18, `${label} exact turnId`);
+    equal(rawRuntime.getTurnRecordByTurnId('turn:fixture-q-missing'), null, `${label} missing turnId`);
+    equal(rawRuntime.getTurnRecordByTurnId(undefined), null, `${label} undefined turnId`);
+    equal(rawRuntime.getTurnRecordByTurnNo(1)?.turnNo, 1, `${label} explicit ordinal 1`);
+
+    parity.push([
+      rawRuntime.getTurnRecordByQId('fixture-q-18')?.turnNo || null,
+      rawRuntime.getTurnRecordByAId('fixture-a-18-original')?.turnNo || null,
+      rawRuntime.getTurnRecordByQId('fixture-q-branch-remount')?.turnNo || null,
+      rawRuntime.getTurnRecordByAId('fixture-a-branch-remount')?.turnNo || null,
+      rawRuntime.getTurnRecordByTurnId('turn:fixture-q-18')?.turnNo || null,
+      rawRuntime.getTurnRecordByTurnNo(1)?.turnNo || null,
+    ]);
+  }
+
+  equal(parity[0], parity[1], 'Runtime and Studio exact lookup contracts remain identical');
+});
+
+await fixture('real Core identity misses suppress all four turn-1 surfaces and canonical q18 restores them', () => {
+  const { runtime } = createProductionCoreRuntime(CORE_RUNTIME_SOURCE, rows, true);
+  const dom = branchDom('fixture-q-branch-remount', 'fixture-a-branch-remount');
+  const presentation = attachPresentation(dom, 1);
+  const title = compileTitleRuntime(runtime, dom);
+  const timestamp = compileTimestampRuntime(runtime, dom.root, () => 1, 0);
+  const numbers = compileAnswerNumberRuntime(runtime, dom.root);
+  const question = compileQuestionNumberRuntime(runtime, { host: dom.question });
+  dom.question.querySelector = (selector) => selector.includes('cgxui-qbig-number')
+    ? question.numberNode
+    : null;
+  dom.answer.setAttribute('data-h2o-x1n-sig', '1|0|');
+  dom.answer.setAttribute('data-cgxui-ansn-num', '1');
+
+  const initialIdentity = numbers.api.UTIL_getRuntimeIdentity(dom.answer, 'fixture-a-branch-remount');
+  numbers.api.UTIL_rememberStableNumber(initialIdentity, 1);
+  equal(numbers.api.UTIL_getCachedStableNumber(initialIdentity), 1, 'real Core fixture starts with cached false 1');
+  numbers.api.OBS_attachMO();
+
+  equal(title.DOM_getTurnNumber(dom.answer), 0, 'real Core answer miss reaches title fail-closed path');
+  title.DOM_projectTurnNumber(presentation.bar, 0);
+  timestamp.DOM_AT_addOrUpdateOne(dom.answer);
+  question.runFullScan();
+  equal(numbers.deliver([
+    { type: 'attributes', attributeName: 'data-h2o-turn-num', target: presentation.bar, addedNodes: [] },
+    { type: 'attributes', attributeName: 'data-full-label', target: presentation.stamp, addedNodes: [] },
+  ]), true, 'real metadata mutations enter the Answer Numbers observer');
+  equal(numbers.flushOneRaf(), true, 'real Core miss is consumed by one bounded RAF');
+
+  equal(presentation.bar._label.textContent, 'TITLE');
+  equal(presentation.bar.hasAttribute('data-h2o-turn-num'), false);
+  equal(presentation.stamp.textContent, 'Jul 20');
+  equal(presentation.stamp.dataset.fullLabel, 'Jul 20');
+  equal(question.numberNode.hidden, true);
+  equal(question.numberNode.hasAttribute('data-h2o-qbig-sig-num'), false);
+  equal(presentation.big.hidden, true);
+  equal(presentation.big.hasAttribute('data-h2o-big-answer-num'), false);
+  equal(numbers.api.UTIL_getCachedStableNumber(initialIdentity), 0);
+  equal(dom.answer.hasAttribute('data-h2o-x1n-sig'), false);
+  equal(dom.answer.hasAttribute('data-cgxui-ansn-num'), false);
+  equal(numbers.api.__state().pendingSize, 0);
+  equal(numbers.pendingRafs(), 0);
+
+  dom.question.setAttribute('data-message-id', 'fixture-q-18');
+  dom.answer.setAttribute('data-message-id', 'fixture-a-18-original');
+  title.DOM_projectTurnNumber(presentation.bar, title.DOM_getTurnNumber(dom.answer));
+  timestamp.DOM_AT_addOrUpdateOne(dom.answer);
+  question.runFullScan();
+  equal(numbers.deliver([
+    { type: 'attributes', attributeName: 'data-h2o-turn-num', target: presentation.bar, addedNodes: [] },
+    { type: 'attributes', attributeName: 'data-full-label', target: presentation.stamp, addedNodes: [] },
+  ]), true);
+  equal(numbers.flushOneRaf(), true, 'canonical restoration uses one bounded RAF');
+
+  const restoredIdentity = numbers.api.UTIL_getRuntimeIdentity(dom.answer, 'fixture-a-18-original');
+  equal(presentation.bar._label.textContent, 'TITLE 18');
+  equal(presentation.bar.getAttribute('data-h2o-turn-num'), '18');
+  equal(presentation.stamp.textContent, 'Jul 20 | 18');
+  equal((presentation.stamp.textContent.match(/\|\s*18/g) || []).length, 1);
+  equal(presentation.stamp.dataset.fullLabel, 'Jul 20 | 18');
+  equal(question.numberNode.hidden, false);
+  equal(question.numberNode.innerHTML, '18');
+  equal(question.numberNode.getAttribute('data-h2o-qbig-sig-num'), '18|');
+  equal(presentation.big.hidden, false);
+  equal(presentation.big.getAttribute('data-h2o-big-answer-num'), '18');
+  equal(numbers.api.UTIL_getCachedStableNumber(restoredIdentity), 18);
+  equal(numbers.api.__state().pendingSize, 0);
+  equal(numbers.pendingRafs(), 0);
+  equal(counters.canonicalWrites, 0);
+  equal(counters.aliasWrites, 0);
+  equal(counters.storageWrites, 0);
+  equal(counters.networkCalls, 0);
+  equal(counters.reconciliationAccepts, 0);
+  equal(counters.confirmations, 0);
+  equal(counters.selectedPathPublications, 0);
+  equal(counters.primaryMutations, 0);
+
+  counters.titleProjects += 2;
+  counters.timestampLabels += 2;
+  counters.largeNumberResolutions += 2;
+  numbers.api.CORE_ANSNUM_dispose();
+  accountPipelineProbe(numbers.probe);
+});
+
 await fixture('normal mounted q18 resolves by accepted answer identity', () => {
   const runtime = createRuntime(rows, true);
   const dom = branchDom('fixture-q-18', 'fixture-a-18-original');
@@ -1608,28 +1837,38 @@ await fixture('canonical membership variants and safety counters remain unchange
   equal(counters.selectedPathPublications, 0);
   equal(counters.primaryMutations, 0);
   equal(counters.timers, 0);
-  equal(counters.mutationObservers, 8);
-  equal(counters.observerDisconnects, 7);
-  equal(counters.mutationCallbacks, 8);
-  equal(counters.answerTargetsCollected, 7);
-  equal(counters.answerTargetsScheduled, 7);
+  equal(counters.mutationObservers, 9);
+  equal(counters.observerDisconnects, 8);
+  equal(counters.mutationCallbacks, 10);
+  equal(counters.answerTargetsCollected, 9);
+  equal(counters.answerTargetsScheduled, 9);
   equal(counters.answerTargetsRejected, 1);
-  equal(counters.rafsScheduled, 6);
+  equal(counters.rafsScheduled, 8);
   equal(counters.rafsCoalesced, 1);
-  equal(counters.rafsFlushed, 4);
+  equal(counters.rafsFlushed, 6);
   equal(counters.rafsCanceled, 2);
   equal(counters.queueTargetsCleared, 2);
   equal(counters.staleTargetsDiscarded, 1);
-  equal(counters.patchReads, 4);
-  equal(counters.suppressions, 2);
-  equal(counters.patchApplications, 2);
-  equal(counters.visibleLargeNumberRemovals, 2);
-  equal(counters.visibleLargeNumberRestorations, 1);
-  equal(counters.cacheInvalidations, 2);
-  equal(counters.cacheRestorations, 3);
+  equal(counters.patchReads, 6);
+  equal(counters.suppressions, 3);
+  equal(counters.patchApplications, 3);
+  equal(counters.visibleLargeNumberRemovals, 3);
+  equal(counters.visibleLargeNumberRestorations, 2);
+  equal(counters.cacheInvalidations, 3);
+  equal(counters.cacheRestorations, 5);
 });
 
 await fixture('source contracts retain bounded presentation-only scope', () => {
+  for (const source of [CORE_RUNTIME_SOURCE, CORE_STUDIO_SOURCE]) {
+    equal(source.includes('getRecordByTurnNoInternal(turnState.byQId.get(key) || 0)'), false,
+      'qId misses never enter the clamping ordinal helper');
+    equal(source.includes('getRecordByTurnNoInternal(turnState.byAId.get(key) || 0)'), false,
+      'aId misses never enter the clamping ordinal helper');
+    ok(source.includes('const turnNo = turnState.byQId.get(key);'));
+    ok(source.includes('const turnNo = turnState.byAId.get(key);'));
+    ok(source.includes('const no = Math.max(1, Number(turnNo || 0) || 0);'),
+      'legacy ordinal clamping remains unchanged');
+  }
   ok(!TITLE_SOURCE.includes('if (tRaw === 0) return 1;')
     || TITLE_SOURCE.includes('if (DOM_completeTurnIndexProjectionEnabled()) return 0;'),
   'legacy zero-to-one fallback is unreachable in complete mode');
@@ -1664,7 +1903,14 @@ console.log(JSON.stringify({
   fixtureCount: results.length,
   assertionCount,
   failures: failures.length,
-  productionSources: [TITLE_PATH, TIMESTAMP_PATH, ANSWER_NUMBER_PATH, QUESTION_NUMBER_PATH],
+  productionSources: [
+    CORE_RUNTIME_PATH,
+    CORE_STUDIO_PATH,
+    TITLE_PATH,
+    TIMESTAMP_PATH,
+    ANSWER_NUMBER_PATH,
+    QUESTION_NUMBER_PATH,
+  ],
   counters,
   results,
 }));
