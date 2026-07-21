@@ -640,6 +640,26 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     }
   }
 
+  function isCompleteTurnIndexProjectionEnabled() {
+    const rt = W.H2O?.turnRuntime || null;
+    if (!rt) return false;
+    const completeApiPresent = [
+      'getCompleteTurnIndexProjectionPreference',
+      'setCompleteTurnIndexProjectionPreference',
+      'refreshCompleteTurnIndexProjection',
+      'rebuildCompleteTurnIndexProjection',
+    ].some((name) => typeof rt?.[name] === 'function');
+    if (typeof rt.getCompleteTurnIndexProjectionStatus !== 'function') return completeApiPresent;
+    try {
+      const status = rt.getCompleteTurnIndexProjectionStatus();
+      if (status?.enabled === true) return true;
+      if (status?.enabled === false) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
   // Returns the 1-based count of answered turns (Q+A pairs) that appear at or
   // before hostEl in the full conversation DOM, regardless of page.
   // This is the correct user-visible turn number when canonical resolution fails.
@@ -667,6 +687,11 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     // 1) Canonical: pagination state (answerIndex) or turnRuntime.
     const canonicalTurnNum = getCanonicalTurnNum(hostEl);
     if (canonicalTurnNum > 0) return canonicalTurnNum;
+
+    // Complete projection membership is canonical. While it is enabled (or
+    // its status is temporarily unknown), an unresolved mounted question must
+    // not be renumbered from the visible branch-local subset.
+    if (isCompleteTurnIndexProjectionEnabled()) return null;
 
     // 2) When pagination is on and canonical failed, use page-window offset.
     if (isPaginationEnabled()) {
@@ -908,8 +933,20 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
   function applyPatch(patch) {
     if (!patch?.host || !(patch.host instanceof HTMLElement)) return;
 
+    if (!(Number(patch.num) > 0)) {
+      const existing = patch.host.querySelector(`.${UI.NUM_CLASS}`);
+      if (existing) {
+        existing.hidden = true;
+        existing.style.setProperty('display', 'none', 'important');
+        existing.removeAttribute(ATTR.SIG_NUM);
+      }
+      return;
+    }
+
     ensureHostFallback(patch.host);
     const numEl = ensureNumNode(patch.host);
+    numEl.hidden = false;
+    numEl.style.removeProperty('display');
 
     if (patch.numSig && numEl.getAttribute(ATTR.SIG_NUM) !== patch.numSig) {
       numEl.className = `${UI.NUM_CLASS} ${digitClass(patch.num)}`;

@@ -45,10 +45,12 @@
   /** @core Constants & registries (no raw selector/key/style IDs) */
   const SEL_ = Object.freeze({
     ASSIST_MSG: 'div[data-message-author-role="assistant"]',
+    USER_MSG: '[data-message-author-role="user"]',
     STAMP_OURS: ':scope > .cgxui-ats-ts',
     STAMP_LEGACY: ':scope > .chatgpt-timestamp',
     CONV_TURNS: '[data-testid="conversation-turns"]',
     CONV_TURN: '[data-testid="conversation-turn"]',
+    CONV_TURN_ANY: '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]',
     MAIN: 'main',
   });
 
@@ -526,6 +528,90 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
   }
 
   /** @helper */
+  function DOM_AT_readCanonicalTurnNumber(record) {
+    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    return (Number.isFinite(turnNo) && turnNo > 0) ? Math.floor(turnNo) : null;
+  }
+
+  /** @helper */
+  function DOM_AT_completeTurnIndexProjectionEnabled() {
+    const rt = W.H2O?.turnRuntime || null;
+    if (!rt) return false;
+    const completeApiPresent = [
+      'getCompleteTurnIndexProjectionPreference',
+      'setCompleteTurnIndexProjectionPreference',
+      'refreshCompleteTurnIndexProjection',
+      'rebuildCompleteTurnIndexProjection',
+    ].some((name) => typeof rt?.[name] === 'function');
+    if (typeof rt.getCompleteTurnIndexProjectionStatus !== 'function') return completeApiPresent;
+    try {
+      const status = rt.getCompleteTurnIndexProjectionStatus();
+      if (status?.enabled === true) return true;
+      if (status?.enabled === false) return false;
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /** @helper */
+  function DOM_AT_getUserCandidates(host, div = null) {
+    if (!host) return [];
+    const out = [];
+    const seen = new Set();
+    const add = (node) => {
+      if (!node || seen.has(node) || node === div || node.contains?.(div)) return;
+      seen.add(node);
+      out.push(node);
+    };
+    if (host.matches?.(SEL_.USER_MSG)) add(host);
+    try { host.querySelectorAll?.(SEL_.USER_MSG)?.forEach(add); } catch (_) {}
+    return out;
+  }
+
+  /** @helper */
+  function DOM_AT_getCanonicalQuestionOwnerNumber(nodes, rt) {
+    const owners = new Map();
+    for (const questionEl of Array.from(nodes || [])) {
+      const qId = String(
+        W.H2O?.msg?.getIdFromEl?.(questionEl)
+        || questionEl?.getAttribute?.('data-message-id')
+        || questionEl?.dataset?.messageId
+        || ''
+      ).trim();
+      if (!qId) continue;
+      try {
+        const record = rt?.getTurnRecordByQId?.(qId) || null;
+        const recordQId = String(record?.qId || '').trim();
+        const turnNo = DOM_AT_readCanonicalTurnNumber(record);
+        if (!turnNo || (recordQId && recordQId !== qId)) continue;
+        owners.set(qId, turnNo);
+      } catch (_) {}
+    }
+    return owners.size === 1 ? Array.from(owners.values())[0] : null;
+  }
+
+  /** @helper */
+  function DOM_AT_getCanonicalOwnerTurnNumber(div, rt) {
+    const answerTurn = div?.closest?.(SEL_.CONV_TURN_ANY) || null;
+    if (!answerTurn) return null;
+    const sameTurnCandidates = DOM_AT_getUserCandidates(answerTurn, div);
+    if (sameTurnCandidates.length) {
+      return DOM_AT_getCanonicalQuestionOwnerNumber(sameTurnCandidates, rt);
+    }
+
+    const root = DOM_AT_getConversationRoot() || DOC;
+    const turns = Array.from(root.querySelectorAll?.(SEL_.CONV_TURN_ANY) || []);
+    const index = turns.indexOf(answerTurn);
+    if (index <= 0) return null;
+    const previous = turns[index - 1] || null;
+    const role = String(previous?.getAttribute?.('data-turn') || '').trim().toLowerCase();
+    if (role && role !== 'user') return null;
+    if (previous?.querySelector?.(SEL_.ASSIST_MSG)) return null;
+    return DOM_AT_getCanonicalQuestionOwnerNumber(DOM_AT_getUserCandidates(previous), rt);
+  }
+
+  /** @helper */
   function DOM_AT_getCanonicalTurnIndexFromRuntime(div) {
     const rt = W.H2O?.turnRuntime;
     if (!rt) return null;
@@ -536,12 +622,12 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
       || div?.dataset?.messageId
       || ''
     ).trim();
-    if (!aId) return null;
-
     try {
-      const record = rt.getTurnRecordByAId?.(aId) || null;
-      const turnNo = Number(record?.turnNo || record?.idx || 0);
-      return (Number.isFinite(turnNo) && turnNo > 0) ? turnNo : null;
+      const record = aId ? (rt.getTurnRecordByAId?.(aId) || null) : null;
+      const answerTurnNo = DOM_AT_readCanonicalTurnNumber(record);
+      if (answerTurnNo) return answerTurnNo;
+
+      return DOM_AT_getCanonicalOwnerTurnNumber(div, rt);
     } catch (_) {
       return null;
     }
@@ -551,6 +637,11 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
   function DOM_AT_getTurnIndex(div) {
     const canonical = DOM_AT_getCanonicalTurnIndexFromRuntime(div);
     if (canonical) return canonical;
+
+    // A complete projection must never label an unresolved branch-local
+    // answer with its mounted subset ordinal. Omit only the numeric suffix;
+    // the date/time remains available until canonical ownership is resolvable.
+    if (DOM_AT_completeTurnIndexProjectionEnabled()) return null;
 
     const t0 = W.H2O?.turn?.getTurnIndexByAEl?.(div);
     if (!Number.isFinite(t0) || t0 <= 0) return null;
@@ -607,7 +698,9 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
 
     // Prefer turn index to stay aligned with Turn(Q→A) system.
     const tIdx = DOM_AT_getTurnIndex(div);
-    const aIdx = DOM_AT_getAIndex(div);
+    const aIdx = DOM_AT_completeTurnIndexProjectionEnabled()
+      ? null
+      : DOM_AT_getAIndex(div);
 
     if (tIdx) return `${base} | ${tIdx}`;
     if (aIdx) return `${base} | ${aIdx}`;

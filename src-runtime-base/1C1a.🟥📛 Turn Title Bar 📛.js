@@ -863,6 +863,81 @@ No quotes, no emojis, no numbering. Just the title text.`;
     }
   };
 
+  const DOM_readCanonicalTurnNumber = (record) => {
+    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    return (Number.isFinite(turnNo) && turnNo > 0) ? Math.floor(turnNo) : 0;
+  };
+
+  const DOM_completeTurnIndexProjectionEnabled = () => {
+    const rt = W.H2O?.turnRuntime || null;
+    if (!rt) return false;
+    const completeApiPresent = [
+      'getCompleteTurnIndexProjectionPreference',
+      'setCompleteTurnIndexProjectionPreference',
+      'refreshCompleteTurnIndexProjection',
+      'rebuildCompleteTurnIndexProjection',
+    ].some((name) => typeof rt?.[name] === 'function');
+    if (typeof rt.getCompleteTurnIndexProjectionStatus !== 'function') return completeApiPresent;
+    try {
+      const status = rt.getCompleteTurnIndexProjectionStatus();
+      if (status?.enabled === true) return true;
+      if (status?.enabled === false) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  };
+
+  const DOM_getCanonicalQuestionOwnerNumber = (nodes, rt) => {
+    if (!rt) return 0;
+    const owners = new Map();
+    for (const questionEl of Array.from(nodes || [])) {
+      if (!questionEl) continue;
+      const qId = String(
+        W.H2O?.msg?.getIdFromEl?.(questionEl)
+        || questionEl.getAttribute?.(ATTR_.MSG_ID)
+        || questionEl.dataset?.messageId
+        || ''
+      ).trim();
+      if (!qId) continue;
+      try {
+        const record = rt.getTurnRecordByQId?.(qId) || null;
+        const recordQId = String(record?.qId || '').trim();
+        const turnNo = DOM_readCanonicalTurnNumber(record);
+        if (!turnNo || (recordQId && recordQId !== qId)) continue;
+        owners.set(qId, turnNo);
+      } catch {}
+    }
+    return owners.size === 1 ? Array.from(owners.values())[0] : 0;
+  };
+
+  const DOM_getUserCandidates = (host, msgEl = null) => {
+    if (!host) return [];
+    const out = [];
+    const seen = new Set();
+    const add = (node) => {
+      if (!node || seen.has(node) || node === msgEl || node.contains?.(msgEl)) return;
+      seen.add(node);
+      out.push(node);
+    };
+    if (host.matches?.('[data-message-author-role="user"]')) add(host);
+    try { host.querySelectorAll?.('[data-message-author-role="user"]')?.forEach(add); } catch {}
+    return out;
+  };
+
+  const DOM_getCanonicalOwnerTurnNumber = (msgEl, rt) => {
+    if (!msgEl || !rt) return 0;
+    const turnHost = DOM_getAnswerTurnHost(msgEl);
+    if (!turnHost) return 0;
+    const sameTurnCandidates = DOM_getUserCandidates(turnHost, msgEl);
+    if (sameTurnCandidates.length) {
+      return DOM_getCanonicalQuestionOwnerNumber(sameTurnCandidates, rt);
+    }
+    const previous = DOM_getAdjacentTurnHost(turnHost, -1);
+    if (!previous || !DOM_turnHostHasRole(previous, 'user') || DOM_turnHostHasRole(previous, 'assistant')) return 0;
+    return DOM_getCanonicalQuestionOwnerNumber(DOM_getUserCandidates(previous), rt);
+  };
+
   const DOM_getTurnNumber = (msgEl) => {
     // Stable identity first: the number registered for this turn in the
     // authoritative runtime map (section-derived, full chat). Never derive it
@@ -878,10 +953,18 @@ No quotes, no emojis, no numbering. Just the title text.`;
           || rt.getTurnRecordByTurnId?.(aId)
           || rt.getTurnRecordByTurnId?.(`turn:a:${aId}`)
           || null;
-        const turnNo = Number(record?.turnNo || record?.idx || 0);
-        if (Number.isFinite(turnNo) && turnNo > 0) return Math.floor(turnNo);
+        const turnNo = DOM_readCanonicalTurnNumber(record);
+        if (turnNo > 0) return turnNo;
       }
+      const ownerTurnNo = DOM_getCanonicalOwnerTurnNumber(msgEl, rt);
+      if (ownerTurnNo > 0) return ownerTurnNo;
     } catch {}
+
+    // Complete-turn authority is canonical membership. A mounted branch-local
+    // answer that is not yet an accepted answer alias may still bind through
+    // its owning canonical qId above, but it must never be presented as turn 1
+    // merely because the answer lookup returned zero.
+    if (DOM_completeTurnIndexProjectionEnabled()) return 0;
 
     try {
       const tRaw = Number(W.H2O?.turn?.getTurnIndexByAEl?.(msgEl));
@@ -892,6 +975,18 @@ No quotes, no emojis, no numbering. Just the title text.`;
     } catch {}
 
     return 0;
+  };
+
+  const DOM_projectTurnNumber = (bar, turnNum) => {
+    if (!bar) return 0;
+    const canonical = Number.isFinite(Number(turnNum)) && Number(turnNum) > 0
+      ? Math.floor(Number(turnNum))
+      : 0;
+    const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
+    if (labelEl) labelEl.textContent = canonical > 0 ? `TITLE ${canonical}` : 'TITLE';
+    if (canonical > 0) UTIL_setAttr(bar, 'data-h2o-turn-num', String(canonical));
+    else UTIL_delAttr(bar, 'data-h2o-turn-num');
+    return canonical;
   };
 
   const DOM_selScoped = (uiToken) => `[${ATTR_.CGXUI}="${uiToken}"][${ATTR_.CGXUI_OWNER}="${SkID}"]`;
@@ -1227,13 +1322,12 @@ No quotes, no emojis, no numbering. Just the title text.`;
 
   const DOM_setTitleOnAnswer = (msgEl, title) => {
     const bar = DOM_ensureTitleBar(msgEl);
-    const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
     const turnNum = DOM_getTurnNumber(msgEl);
-    if (labelEl) labelEl.textContent = turnNum > 0 ? `TITLE ${turnNum}` : 'TITLE';
     // The small external collapsed number is rendered by a ::before
     // pseudo-element from this attribute — generated content never enters the
-    // bar's text content and cannot break click/edit handlers.
-    if (turnNum > 0) UTIL_setAttr(bar, 'data-h2o-turn-num', String(turnNum));
+    // bar's text content and cannot break click/edit handlers. Unresolved
+    // complete-authority identity is deliberately projected without a number.
+    DOM_projectTurnNumber(bar, turnNum);
 
     const id = DOM_getAnswerId(msgEl);
     if (id) {
@@ -2071,13 +2165,7 @@ ${S_BAR}:active{
           // answer yet) instead of trusting whatever was written before.
           try {
             const canonicalNum = DOM_getTurnNumber(msgEl);
-            if (canonicalNum > 0) {
-              const numStr = String(canonicalNum);
-              const labelEl = bar.querySelector(DOM_selScoped(UI_.LABEL));
-              const expectedLabel = `TITLE ${numStr}`;
-              if (labelEl && labelEl.textContent !== expectedLabel) labelEl.textContent = expectedLabel;
-              if (UTIL_getAttr(bar, 'data-h2o-turn-num') !== numStr) UTIL_setAttr(bar, 'data-h2o-turn-num', numStr);
-            }
+            DOM_projectTurnNumber(bar, canonicalNum);
             // Stale builds wrote the number into the badge element itself —
             // clear any leftover text so the badge stays a pure dot.
             const badgeEl = bar.querySelector(DOM_selScoped(UI_.BADGE));

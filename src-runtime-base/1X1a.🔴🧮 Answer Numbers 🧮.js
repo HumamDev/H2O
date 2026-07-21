@@ -39,8 +39,11 @@
 
   const SEL = Object.freeze({
     ANSWER: '[data-message-author-role="assistant"]',
+    USER: '[data-message-author-role="user"]',
     TURN: '[data-testid="conversation-turn"]',
+    TURN_ANY: '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]',
     TURNS: '[data-testid="conversation-turns"]',
+    NUMBER_META: '[data-h2o-turn-num], .cgxui-ats-ts, .chatgpt-timestamp, [data-cgxui="ats-stamp"]',
   });
 
   const EV = Object.freeze({
@@ -474,9 +477,89 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     return value ? `${UTIL_routeKey()}|${kind}:${value}` : '';
   }
 
+  function UTIL_completeTurnIndexProjectionEnabled() {
+    const rt = W.H2O?.turnRuntime || null;
+    if (!rt) return false;
+    const completeApiPresent = [
+      'getCompleteTurnIndexProjectionPreference',
+      'setCompleteTurnIndexProjectionPreference',
+      'refreshCompleteTurnIndexProjection',
+      'rebuildCompleteTurnIndexProjection',
+    ].some((name) => typeof rt?.[name] === 'function');
+    if (typeof rt.getCompleteTurnIndexProjectionStatus !== 'function') return completeApiPresent;
+    try {
+      const status = rt.getCompleteTurnIndexProjectionStatus();
+      if (status?.enabled === true) return true;
+      if (status?.enabled === false) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
+  function UTIL_readCanonicalTurnNumber(record) {
+    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    return Number.isFinite(turnNo) && turnNo > 0 ? Math.floor(turnNo) : 0;
+  }
+
+  function UTIL_getUserCandidates(host, answerEl = null) {
+    if (!host) return [];
+    const out = [];
+    const seen = new Set();
+    const add = (node) => {
+      if (!node || seen.has(node) || node === answerEl || node.contains?.(answerEl)) return;
+      seen.add(node);
+      out.push(node);
+    };
+    if (host.matches?.(SEL.USER)) add(host);
+    try { host.querySelectorAll?.(SEL.USER)?.forEach(add); } catch {}
+    return out;
+  }
+
+  function UTIL_getUniqueCanonicalQuestionRecord(nodes, rt) {
+    const owners = new Map();
+    for (const questionEl of Array.from(nodes || [])) {
+      const qId = String(
+        W.H2O?.msg?.getIdFromEl?.(questionEl)
+        || questionEl?.getAttribute?.('data-message-id')
+        || questionEl?.dataset?.messageId
+        || ''
+      ).trim();
+      if (!qId) continue;
+      try {
+        const record = rt?.getTurnRecordByQId?.(qId) || null;
+        const recordQId = String(record?.qId || '').trim();
+        if (!UTIL_readCanonicalTurnNumber(record) || (recordQId && recordQId !== qId)) continue;
+        owners.set(qId, record);
+      } catch {}
+    }
+    if (owners.size !== 1) return null;
+    const [qId, record] = Array.from(owners.entries())[0];
+    return { qId, record };
+  }
+
+  function UTIL_getCanonicalOwnerRecord(el, rt) {
+    const answerTurn = el?.closest?.(SEL.TURN_ANY) || null;
+    if (!answerTurn || !rt) return null;
+    const sameTurnCandidates = UTIL_getUserCandidates(answerTurn, el);
+    if (sameTurnCandidates.length) {
+      return UTIL_getUniqueCanonicalQuestionRecord(sameTurnCandidates, rt);
+    }
+    const root = UTIL_findConversationRoot() || D;
+    const turns = Array.from(root.querySelectorAll?.(SEL.TURN_ANY) || []);
+    const index = turns.indexOf(answerTurn);
+    if (index <= 0) return null;
+    const previous = turns[index - 1] || null;
+    const role = String(previous?.getAttribute?.('data-turn') || '').trim().toLowerCase();
+    if ((role && role !== 'user') || previous?.querySelector?.(SEL.ANSWER)) return null;
+    return UTIL_getUniqueCanonicalQuestionRecord(UTIL_getUserCandidates(previous), rt);
+  }
+
   function UTIL_getRuntimeIdentity(el, answerId) {
     const rt = W.H2O?.turnRuntime || null;
     let record = null;
+    let qId = '';
+    let canonicalSource = 'unresolved';
 
     try {
       if (answerId && rt) {
@@ -484,8 +567,18 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
           || rt.getTurnRecordByTurnId?.(answerId)
           || rt.getTurnRecordByTurnId?.(`turn:a:${answerId}`)
           || null;
+        if (record) canonicalSource = 'answer-runtime';
       }
     } catch {}
+
+    if (!record && rt) {
+      const owner = UTIL_getCanonicalOwnerRecord(el, rt);
+      if (owner?.record) {
+        record = owner.record;
+        qId = owner.qId;
+        canonicalSource = 'question-runtime';
+      }
+    }
 
     const turnHost = el?.closest?.(SEL.TURN) || null;
     const turnId = String(
@@ -498,9 +591,11 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     return {
       answerId,
+      qId: qId || String(record?.qId || '').trim(),
       turnId,
       record,
-      runtimeNumber: UTIL_positiveInt(record?.turnNo || record?.idx || record?.index),
+      runtimeNumber: UTIL_readCanonicalTurnNumber(record),
+      canonicalSource,
     };
   }
 
@@ -548,6 +643,13 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     if (tKey) STABLE_NUMBERS.byTurnId.set(tKey, stableNumber);
   }
 
+  function UTIL_forgetStableNumber(identity) {
+    const aKey = UTIL_cacheKey('a', identity?.answerId);
+    const tKey = UTIL_cacheKey('t', identity?.turnId);
+    if (aKey) STABLE_NUMBERS.byAnswerId.delete(aKey);
+    if (tKey) STABLE_NUMBERS.byTurnId.delete(tKey);
+  }
+
   function UTIL_getStampedStableNumber(el, identity) {
     const big = el?.querySelector?.(`:scope > .${CLS.BIG}`) || null;
     if (!big || big.getAttribute(ATTR.BIG_NUM_STABLE) !== '1') return 0;
@@ -569,6 +671,17 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     let number = 0;
     let source = 'unresolved';
+
+    if (UTIL_completeTurnIndexProjectionEnabled()) {
+      const canonical = UTIL_positiveInt(identity.runtimeNumber);
+      if (!canonical) return { number: null, source, stable: false, ...identity };
+      number = canonical;
+      if (timestampNumber === canonical) source = 'timestamp-metadata';
+      else if (titleNumber === canonical) source = 'title-metadata';
+      else source = identity.canonicalSource || 'turn-runtime';
+      UTIL_rememberStableNumber(identity, number);
+      return { number, source, stable: true, ...identity };
+    }
 
     // Timestamp and title metadata are the existing stable display contract.
     if (timestampNumber) {
@@ -597,6 +710,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
   }
 
   function CORE_suppressUnstableBigNumber(el, resolution) {
+    if (UTIL_completeTurnIndexProjectionEnabled()) UTIL_forgetStableNumber(resolution);
     const big = el?.querySelector?.(`:scope > .${CLS.BIG}`) || null;
     if (big) {
       big.hidden = true;
@@ -606,10 +720,12 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
       big.setAttribute(ATTR.BIG_NUM_SOURCE, String(resolution?.source || 'unresolved'));
       big.setAttribute(ATTR.BIG_ANSWER_ID, String(resolution?.answerId || ''));
       big.setAttribute(ATTR.BIG_TURN_ID, String(resolution?.turnId || ''));
+      big.removeAttribute(ATTR.BIG_NUM);
     }
     const legacyBig = el?.querySelector?.(':scope > .ho-big-number') || null;
     if (legacyBig && legacyBig !== big) legacyBig.style.setProperty('display', 'none', 'important');
     el.removeAttribute(ATTR.SIG_FAST);
+    el.removeAttribute(ATTR.SIG_NUM);
   }
 
   function UTIL_unclipAncestorsOnce(el) {
@@ -781,9 +897,33 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
   }
 
   let rafPending = false;
+  let rafHandle = 0;
   let needFull = false;
   let fullDebounceT = 0;
   const pending = new Set();
+
+  function CORE_isCurrentAnswerTarget(el, root = UTIL_findConversationRoot()) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    if (el.isConnected !== true || !el.matches?.(SEL.ANSWER)) return false;
+    if (!root || root.isConnected === false) return false;
+    return root === el || root.contains?.(el) === true;
+  }
+
+  function CORE_cancelPendingFlush() {
+    if (!rafPending) return;
+    try {
+      if (rafHandle && typeof W.cancelAnimationFrame === 'function') {
+        W.cancelAnimationFrame(rafHandle);
+      }
+    } catch {}
+    rafPending = false;
+    rafHandle = 0;
+  }
+
+  function CORE_clearPendingAnswers(cancelFlush = false) {
+    pending.clear();
+    if (cancelFlush && !needFull) CORE_cancelPendingFlush();
+  }
 
   function CORE_flush() {
     const t0 = performance.now();
@@ -809,23 +949,31 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     const patches = [];
     for (let j = 0; j < targets.length; j++) {
-      const patch = CORE_readPatch(targets[j]);
+      const target = targets[j];
+      if (!CORE_isCurrentAnswerTarget(target)) continue;
+      const patch = CORE_readPatch(target);
       if (patch) patches.push(patch);
     }
 
-    for (const patch of patches) CORE_applyPatch(patch);
+    let applied = 0;
+    for (const patch of patches) {
+      if (!CORE_isCurrentAnswerTarget(patch?.el)) continue;
+      CORE_applyPatch(patch);
+      applied++;
+    }
 
     if (pending.size) CORE_scheduleFlush();
 
-    DIAG.lastIncCount = patches.length;
+    DIAG.lastIncCount = applied;
     DIAG.lastFlushMs = Math.round(performance.now() - t0);
   }
 
   function CORE_scheduleFlush() {
     if (rafPending) return;
     rafPending = true;
-    requestAnimationFrame(() => {
+    rafHandle = requestAnimationFrame(() => {
       rafPending = false;
+      rafHandle = 0;
       try { CORE_flush(); } catch (e) { DIAG.lastErr = String(e); }
     });
   }
@@ -844,7 +992,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
   }
 
   function CORE_scheduleAnswer(el) {
-    if (!el || !(el instanceof HTMLElement)) return;
+    if (!CORE_isCurrentAnswerTarget(el)) return;
     pending.add(el);
     PERF.deltaUpdates++;
     CORE_scheduleFlush();
@@ -877,10 +1025,31 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     return false;
   }
 
+  function OBS_collectNumberMutationSignals(muts) {
+    const hit = new Set();
+    let needRepair = false;
+    for (const m of Array.from(muts || [])) {
+      const targetEl = m.target?.nodeType === 1 ? m.target : m.target?.parentElement;
+      const metadataChanged = m.type === 'attributes'
+        || (m.type === 'childList' && targetEl?.matches?.(SEL.NUMBER_META));
+      if (metadataChanged) {
+        const answer = targetEl?.closest?.(SEL.ANSWER) || null;
+        if (CORE_isCurrentAnswerTarget(answer)) hit.add(answer);
+      }
+      if (!m.addedNodes?.length) continue;
+      for (const n of m.addedNodes) {
+        if (UTIL_collectAssistantNode(n, hit)) needRepair = true;
+      }
+    }
+    return { hit, needRepair };
+  }
+
   function OBS_attachMO() {
     const root = UTIL_findConversationRoot();
     if (!root) return;
     if (MO && MO_ROOT === root) return;
+
+    if (MO_ROOT && MO_ROOT !== root) CORE_clearPendingAnswers(true);
 
     if (MO) {
       try { MO.disconnect(); } catch {}
@@ -889,15 +1058,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     MO_ROOT = root;
     MO = new MutationObserver((muts) => {
-      const hit = new Set();
-      let needRepair = false;
-
-      for (const m of muts) {
-        if (!m.addedNodes?.length) continue;
-        for (const n of m.addedNodes) {
-          if (UTIL_collectAssistantNode(n, hit)) needRepair = true;
-        }
-      }
+      const { hit, needRepair } = OBS_collectNumberMutationSignals(muts);
 
       if (hit.size) {
         hit.forEach(CORE_scheduleAnswer);
@@ -907,7 +1068,12 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
       }
     });
 
-    MO.observe(root, { childList: true, subtree: true });
+    MO.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-h2o-turn-num', 'data-full-label'],
+    });
   }
 
   function OBS_detachMO() {
@@ -939,6 +1105,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
   }
 
   function onRouteOrPageEvent() {
+    CORE_clearPendingAnswers(true);
     OBS_attachMO();
     CORE_scheduleFullScanDebounced();
   }
@@ -976,6 +1143,8 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
     booted = false;
     DIAG.disposeCount++;
 
+    needFull = false;
+    CORE_clearPendingAnswers(true);
     try { OBS_detachMO(); } catch {}
     try { if (fullDebounceT) W.clearTimeout(fullDebounceT); } catch {}
     fullDebounceT = 0;
