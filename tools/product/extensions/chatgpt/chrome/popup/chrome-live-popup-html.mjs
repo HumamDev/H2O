@@ -85,7 +85,7 @@ export function makeChromeLivePopupHtml({
               <button type="button" class="project-color-dot is-blue" title="Project blue"></button>
               <button type="button" class="project-color-dot is-red" title="Project red"></button>
               <button type="button" class="project-color-dot is-green" title="Project green"></button>
-              <button type="button" class="project-color-dot is-yellow" title="Project yellow"></button>
+              <button type="button" class="project-color-dot is-yellow" title="Open Diagnostics Workspace" aria-label="Open Diagnostics Workspace" data-popup-action="open-diagnostics"></button>
             </div>
           </div>
         </div>
@@ -217,18 +217,6 @@ export function makeChromeLivePopupHtml({
                 <div class="info-grid" id="info-grid"></div>
               </section>
 
-              ${titleDiagnosticEnabled ? `<section class="info-panel" id="title-navigation-diagnostic">
-                <div class="info-head">Title navigation diagnostic</div>
-                <div class="settings-note">Passive, one-navigation Stage 0B-2B evidence. It never initiates navigation or changes title state.</div>
-                <div class="set-actions" role="group" aria-label="Title navigation diagnostic controls">
-                  <button id="title-diag-reset" type="button">Reset evidence</button>
-                  <button id="title-diag-arm" type="button">Arm next navigation</button>
-                  <button id="title-diag-status" type="button">Show status</button>
-                  <button id="title-diag-export" type="button">Export evidence</button>
-                  <button id="title-diag-clear" type="button">Clear evidence</button>
-                </div>
-                <pre class="mono" id="title-diag-output" aria-live="polite">Idle</pre>
-              </section>` : ""}
             </div>
             <div class="controls-tail-anchor" data-settings-anchor="info"></div>
           </div>
@@ -255,6 +243,103 @@ export function makeChromeLivePopupHtml({
     <div class="list" id="list">
       <div class="table-shell" id="table-shell"></div>
     </div>
+
+    ${titleDiagnosticEnabled ? `<section class="diagnostics-workspace" id="diagnostics-workspace" aria-labelledby="diagnostics-workspace-title" hidden>
+      <aside class="diagnostics-sidebar" id="diagnostics-sidebar" aria-label="Diagnostics navigation and controls">
+        <div class="diagnostics-sidebar-head">
+          <div class="diagnostics-eyebrow">Developer tools</div>
+          <h1 id="diagnostics-workspace-title">Diagnostics</h1>
+          <p>Passive, bounded evidence from the existing H2O extension.</p>
+        </div>
+        <nav class="diagnostics-module-nav" id="diagnostics-module-list" aria-label="Diagnostic modules"></nav>
+        <section class="diagnostics-selected-controls" aria-labelledby="diagnostics-controls-title">
+          <div class="diagnostics-controls-head">
+            <h2 id="diagnostics-controls-title">Selected controls</h2>
+            <span class="diagnostics-state-badge" id="title-diag-sidebar-state" data-run-state="idle">Idle</span>
+          </div>
+          <div class="diagnostics-action-grid" role="group" aria-label="Title navigation diagnostic controls">
+            <button id="title-diag-reset" type="button">Reset evidence</button>
+            <button id="title-diag-arm" type="button" class="is-primary">Arm next navigation</button>
+            <button id="title-diag-status" type="button">Refresh status</button>
+            <button id="title-diag-export" type="button">Export evidence</button>
+            <button id="title-diag-clear" type="button" class="is-danger">Clear evidence</button>
+          </div>
+          <div class="diagnostics-command-status" id="title-diag-command-status" role="status" aria-live="polite"></div>
+          <div class="diagnostics-command-error" id="title-diag-command-error" role="alert" hidden></div>
+        </section>
+      </aside>
+
+      <main class="diagnostics-detail" id="diagnostics-detail" tabindex="-1">
+        <header class="diagnostics-detail-head">
+          <div>
+            <div class="diagnostics-eyebrow">Stage 0B-2B · passive navigation evidence</div>
+            <h2 id="title-diag-detail-title">Title navigation diagnostic</h2>
+            <p id="title-diag-detail-description">Capture one manual chat-to-chat navigation across document replacement.</p>
+          </div>
+          <div class="diagnostics-detail-state">
+            <span class="diagnostics-state-badge is-large" id="title-diag-state" data-run-state="idle">Idle</span>
+            <span id="title-diag-last-updated">Not refreshed</span>
+            <span id="title-diag-completion-reason" hidden></span>
+          </div>
+        </header>
+
+        <section class="diagnostics-empty" id="title-diag-empty">
+          <div class="diagnostics-empty-mark" aria-hidden="true">⌁</div>
+          <h3>Ready for a passive capture</h3>
+          <p>Arm once, then navigate manually to another quiet normal chat. The diagnostic never navigates, renames, or changes title state on its own.</p>
+        </section>
+
+        <div class="diagnostics-report" id="title-diag-report" hidden>
+          <section class="diagnostics-summary-grid" aria-label="Diagnostic summary">
+            <article class="diagnostics-summary-card"><span>Events</span><strong id="title-diag-event-count">0</strong></article>
+            <article class="diagnostics-summary-card"><span>Documents</span><strong id="title-diag-document-count">0</strong></article>
+            <article class="diagnostics-summary-card"><span>Loader marker</span><strong id="title-diag-marker-match">Unknown</strong></article>
+            <article class="diagnostics-summary-card"><span>Timeout</span><strong id="title-diag-timeout">No</strong></article>
+            <article class="diagnostics-summary-card" id="title-diag-overflow-card" hidden><span>Dropped / overflow</span><strong id="title-diag-overflow">0</strong></article>
+          </section>
+
+          <div class="diagnostics-info-grid">
+            <section class="diagnostics-panel" aria-labelledby="title-diag-build-heading">
+              <div class="diagnostics-panel-head"><h3 id="title-diag-build-heading">Build identity</h3></div>
+              <dl class="diagnostics-kv" id="title-diag-build"></dl>
+            </section>
+            <section class="diagnostics-panel" aria-labelledby="title-diag-navigation-heading">
+              <div class="diagnostics-panel-head"><h3 id="title-diag-navigation-heading">Navigation summary</h3></div>
+              <dl class="diagnostics-kv" id="title-diag-navigation"></dl>
+            </section>
+          </div>
+
+          <section class="diagnostics-panel" aria-labelledby="title-diag-documents-heading">
+            <div class="diagnostics-panel-head"><h3 id="title-diag-documents-heading">Documents</h3><span id="title-diag-documents-note"></span></div>
+            <div class="diagnostics-table-wrap">
+              <table class="diagnostics-table">
+                <thead><tr><th>Seq</th><th>Trusted document</th><th>Lifecycle</th><th>Route</th><th>Content instance</th><th>Page instance</th><th>Ready timing</th></tr></thead>
+                <tbody id="title-diag-documents"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="diagnostics-panel" aria-labelledby="title-diag-events-heading">
+            <div class="diagnostics-panel-head diagnostics-panel-head-wrap">
+              <h3 id="title-diag-events-heading">Timeline</h3>
+              <div class="diagnostics-filter-row" id="title-diag-event-filters" role="group" aria-label="Filter diagnostic events"></div>
+            </div>
+            <div class="diagnostics-timeline" id="title-diag-events"></div>
+          </section>
+
+          <section class="diagnostics-panel diagnostics-warnings" id="title-diag-warnings-panel" aria-labelledby="title-diag-warnings-heading" hidden>
+            <div class="diagnostics-panel-head"><h3 id="title-diag-warnings-heading">Warnings and errors</h3></div>
+            <ul id="title-diag-warnings"></ul>
+          </section>
+
+          <details class="diagnostics-raw" id="title-diag-raw-details">
+            <summary>Raw sanitized evidence</summary>
+            <div class="diagnostics-raw-actions"><button type="button" id="title-diag-copy-raw">Copy sanitized JSON</button></div>
+            <pre id="title-diag-raw" tabindex="0"></pre>
+          </details>
+        </div>
+      </main>
+    </section>` : ""}
   </div>
   <script src="popup.js"></script>
   ${titleDiagnosticEnabled ? `<script src="title-navigation-diagnostic-popup.js"></script>` : ""}

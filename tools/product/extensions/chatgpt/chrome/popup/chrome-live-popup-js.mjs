@@ -853,6 +853,13 @@ ${makeChromeLivePopupViewRenderSource()}  function commitGroupTitleInput(inputEl
   if (elLogoToggle instanceof HTMLButtonElement) {
     elLogoToggle.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      if (elApp?.dataset.workspaceMode === "diagnostics") {
+        const workspace = document.getElementById("diagnostics-workspace");
+        document.dispatchEvent(new CustomEvent("h2o:title-diagnostics-workspace-toggle-sidebar", {
+          detail: { collapsed: !workspace?.classList.contains("is-sidebar-collapsed") }
+        }));
+        return;
+      }
       setLeftbarCollapsed(!leftbarCollapsed).catch((e) => {
         elHint.textContent = "Leftbar toggle save failed: " + String(e && (e.message || e));
       });
@@ -861,6 +868,12 @@ ${makeChromeLivePopupViewRenderSource()}  function commitGroupTitleInput(inputEl
   if (elRailLogoToggle instanceof HTMLButtonElement) {
     elRailLogoToggle.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      if (elApp?.dataset.workspaceMode === "diagnostics") {
+        document.dispatchEvent(new CustomEvent("h2o:title-diagnostics-workspace-toggle-sidebar", {
+          detail: { collapsed: false }
+        }));
+        return;
+      }
       setLeftbarCollapsed(false).catch((e) => {
         elHint.textContent = "Leftbar toggle save failed: " + String(e && (e.message || e));
       });

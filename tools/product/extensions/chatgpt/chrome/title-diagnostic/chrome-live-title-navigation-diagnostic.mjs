@@ -244,6 +244,25 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     if (ids.length) await chrome.scripting.unregisterContentScripts({ ids }).catch(() => {});
   }
 
+  function registrationIsHealthy(item, id, file, world) {
+    return Boolean(item && item.id === id && item.runAt === "document_start" &&
+      item.persistAcrossSessions === false && item.allFrames === false && item.world === world &&
+      Array.isArray(item.matches) && item.matches.length === 1 && item.matches[0] === "https://chatgpt.com/*" &&
+      Array.isArray(item.js) && item.js.length === 1 && item.js[0] === file);
+  }
+
+  async function ownedRegistrationHealth() {
+    const registered = await chrome.scripting.getRegisteredContentScripts({ ids: OWNED_IDS }).catch(() => []);
+    const isolated = registered.find((item) => item.id === C.registrationIds.isolated);
+    const main = registered.find((item) => item.id === C.registrationIds.main);
+    return {
+      count: registered.length,
+      healthy: registered.length === 2 &&
+        registrationIsHealthy(isolated, C.registrationIds.isolated, C.files.isolated, "ISOLATED") &&
+        registrationIsHealthy(main, C.registrationIds.main, C.files.main, "MAIN")
+    };
+  }
+
   async function registerOwned() {
     await unregisterOwned();
     await chrome.scripting.registerContentScripts([
@@ -320,12 +339,13 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
   async function reconcile(reason) {
     const all = await readAll();
     const control = all[C.storage.control];
-    await unregisterOwned();
+    const registrationHealth = await ownedRegistrationHealth();
     if (control && ["armed", "navigating", "settling"].includes(control.state) && control.expiresAt > now()) {
-      await registerOwned();
-      scheduleTimeout(control);
-      return { active: true, reason };
+      if (!registrationHealth.healthy) await registerOwned();
+      if (!timeoutTimer) scheduleTimeout(control);
+      return { active: true, repaired: !registrationHealth.healthy, reason };
     }
+    if (registrationHealth.count) await unregisterOwned();
     if (control && ["armed", "navigating", "settling"].includes(control.state)) await completeRun("timeout");
     return { active: false, reason };
   }
@@ -822,47 +842,487 @@ export function makeTitleNavigationDiagnosticPopupJs() {
 (function h2oTitleStage0B2BPopup() {
   "use strict";
   const C = ${constants};
+  const TITLE_SINGLE_CLICK_DELAY_MS = 500;
+  const MODULES = Object.freeze([Object.freeze({
+    id: "title-navigation",
+    label: "Title navigation diagnostic",
+    description: "Passive one-navigation Stage 0B-2B evidence",
+    icon: "⌁",
+    operations: Object.freeze(["reset", "arm", "status", "export", "clear"]),
+    renderer: "title-navigation-detail-v1",
+    availability: "available"
+  })]);
   const ids = Object.freeze({
     reset: "title-diag-reset", arm: "title-diag-arm", status: "title-diag-status",
-    export: "title-diag-export", clear: "title-diag-clear", output: "title-diag-output"
+    export: "title-diag-export", clear: "title-diag-clear"
   });
-  const output = document.getElementById(ids.output);
-  function show(value, error) {
-    if (!output) return;
-    output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-    output.setAttribute("data-state", error ? "error" : "ok");
-  }
+  const FILTERS = Object.freeze([
+    ["all", "All"], ["navigation", "Navigation"], ["lifecycle", "Lifecycle"],
+    ["title", "Title"], ["dom", "DOM"], ["performance", "Performance"], ["errors", "Errors"]
+  ]);
+  const DISPLAY_DATA_KEYS = new Set([
+    "reason", "state", "name", "present", "active", "count", "added", "removed",
+    "textChanged", "attribute", "length", "lengthCapped", "changeSeq", "value", "duration",
+    "startTime", "hadRecentInput", "titleOwned", "source", "emojiSource", "priority",
+    "routeTokenPresent", "stateRevision", "storageBackend", "durable", "selfCheckOk",
+    "chatTitle", "tabTitle", "underInput", "autoEmojiAbsent", "loaderBuildTs", "loaderBuildIso",
+    "loaderSource", "contentInstanceId", "pageInstanceId", "performanceTimeOrigin", "errorKind",
+    "message", "markerMatch", "lifecycle", "destinationReady", "isolatedReady", "mainReady"
+  ]);
+  const app = document.getElementById("app");
+  const workspace = document.getElementById("diagnostics-workspace");
+  const detail = document.getElementById("diagnostics-detail");
+  const titleText = document.querySelector("#brand-title-toggle .brand-title");
+  const logo = document.getElementById("logo-toggle");
+  const yellow = document.querySelector('[data-popup-action="open-diagnostics"]');
+  const actionButtons = [...Object.values(ids), "title-diag-copy-raw"].map((id) => document.getElementById(id))
+    .filter((item) => item instanceof HTMLButtonElement);
+  const ui = {
+    workspaceMode: "normal", lastNormalView: "main", selectedModuleId: "title-navigation",
+    diagnosticsSidebarCollapsed: false, commandInFlight: false, activeFilter: "all",
+    status: null, evidence: null, pendingTitleClick: null
+  };
+
+  const byId = (id) => document.getElementById(id);
+  const text = (id, value) => { const node = byId(id); if (node) node.textContent = String(value ?? ""); };
+  const clean = (value, max = 160) => String(value == null ? "" : value).replace(/[\\r\\n\\t]+/g, " ").slice(0, max);
+  const create = (tag, className, value) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (value != null) node.textContent = String(value);
+    return node;
+  };
+  const clearNode = (node) => { while (node?.firstChild) node.removeChild(node.firstChild); };
+  const stateLabel = (value) => ({
+    idle: "Idle", armed: "Armed", navigating: "Navigating", settling: "Settling",
+    complete: "Complete", error: "Error"
+  })[value] || "Idle";
+  const timeLabel = (value) => Number.isFinite(Number(value)) ? new Date(Number(value)).toLocaleString() : "—";
+  const durationLabel = (start, end) => Number.isFinite(Number(start)) && Number.isFinite(Number(end))
+    ? Math.max(0, Number(end) - Number(start)).toLocaleString() + " ms" : "—";
+  const shortRef = (value) => {
+    const raw = clean(value, 128);
+    return raw.length > 14 ? raw.slice(0, 6) + "…" + raw.slice(-6) : (raw || "—");
+  };
   async function command(command) {
     const reply = await chrome.runtime.sendMessage({ namespace: C.namespace, op: "popup", command });
     if (!reply?.ok) throw new Error(reply?.error || "Diagnostic command failed.");
     return reply.data;
   }
-  async function refresh() { try { show(await command("status"), false); } catch (error) { show(error.message, true); } }
+
+  function setBadge(node, state) {
+    if (!node) return;
+    node.textContent = stateLabel(state);
+    node.dataset.runState = state || "idle";
+  }
+
+  function setBusy(active, label) {
+    ui.commandInFlight = Boolean(active);
+    for (const button of actionButtons) button.disabled = ui.commandInFlight;
+    workspace?.setAttribute("aria-busy", ui.commandInFlight ? "true" : "false");
+    if (ui.commandInFlight) text("title-diag-command-status", label || "Working…");
+  }
+
+  function showError(error) {
+    const node = byId("title-diag-command-error");
+    if (!node) return;
+    const message = clean(error?.message || error || "", 200);
+    node.textContent = message;
+    node.hidden = !message;
+  }
+
+  function appendKv(target, label, value, fullValue) {
+    if (!target) return;
+    const term = create("dt", "", label);
+    const description = create("dd", "", value == null || value === "" ? "—" : value);
+    if (fullValue) description.title = clean(fullValue, 500);
+    target.append(term, description);
+  }
+
+  function renderRegistry() {
+    const target = byId("diagnostics-module-list");
+    if (!target) return;
+    clearNode(target);
+    for (const module of MODULES) {
+      const button = create("button", "diagnostics-module-button");
+      button.type = "button";
+      button.dataset.diagnosticModule = module.id;
+      button.setAttribute("aria-current", module.id === ui.selectedModuleId ? "page" : "false");
+      button.disabled = module.availability !== "available";
+      const icon = create("span", "diagnostics-module-icon", module.icon);
+      icon.setAttribute("aria-hidden", "true");
+      const copy = create("span", "diagnostics-module-copy");
+      copy.append(create("strong", "", module.label), create("span", "", module.description));
+      button.append(icon, copy);
+      button.addEventListener("click", () => {
+        if (ui.commandInFlight || module.availability !== "available") return;
+        ui.selectedModuleId = module.id;
+        renderRegistry();
+        render();
+      });
+      target.appendChild(button);
+    }
+  }
+
+  function eventMatchesFilter(event) {
+    if (ui.activeFilter === "all") return true;
+    if (ui.activeFilter === "errors") {
+      return event?.category === "error" || /error|timeout|failure/i.test(String(event?.type || ""));
+    }
+    if (ui.activeFilter === "navigation") {
+      return event?.category === "navigation" || event?.category === "route";
+    }
+    if (ui.activeFilter === "title") {
+      return event?.category === "title" || event?.type === "document.title";
+    }
+    if (ui.activeFilter === "dom") {
+      return event?.category === "dom" || /^dom\./.test(String(event?.type || ""));
+    }
+    return event?.category === ui.activeFilter;
+  }
+
+  function safeEventDetail(event) {
+    const fields = [];
+    if (event?.route) fields.push(event.route);
+    if (event?.data && typeof event.data === "object") {
+      for (const [key, value] of Object.entries(event.data)) {
+        if (!DISPLAY_DATA_KEYS.has(key) || value == null || value === "") continue;
+        fields.push(key + "=" + clean(value, 96));
+      }
+    }
+    return fields.join(" · ").slice(0, 420);
+  }
+
+  function renderFilters() {
+    const target = byId("title-diag-event-filters");
+    if (!target) return;
+    clearNode(target);
+    for (const [id, label] of FILTERS) {
+      const button = create("button", "diagnostics-filter-button", label);
+      button.type = "button";
+      button.dataset.eventFilter = id;
+      button.setAttribute("aria-pressed", id === ui.activeFilter ? "true" : "false");
+      button.addEventListener("click", () => {
+        ui.activeFilter = id;
+        renderFilters();
+        renderEvents();
+      });
+      target.appendChild(button);
+    }
+  }
+
+  function renderEvents() {
+    const target = byId("title-diag-events");
+    if (!target) return;
+    clearNode(target);
+    const events = Array.isArray(ui.evidence?.events)
+      ? ui.evidence.events.filter(eventMatchesFilter)
+      : [];
+    if (!events.length) {
+      target.appendChild(create("div", "diagnostics-timeline-empty", "No events in this filter."));
+      return;
+    }
+    for (const event of events) {
+      const row = create("article", "diagnostics-event");
+      row.dataset.category = clean(event.category || "other", 24);
+      row.append(
+        create("span", "diagnostics-event-time", "+" + Math.max(0, Number(event.tRelMs) || 0).toLocaleString() + " ms"),
+        create("span", "diagnostics-event-source", clean(event.source || "unknown", 28))
+      );
+      const copy = create("div", "diagnostics-event-copy");
+      copy.append(create("strong", "", clean(event.type || "event", 80)));
+      const detailText = safeEventDetail(event);
+      if (detailText) copy.append(create("span", "", detailText));
+      row.append(copy);
+      target.appendChild(row);
+    }
+  }
+
+  function documentEvidence(documentRecord) {
+    const events = Array.isArray(ui.evidence?.events)
+      ? ui.evidence.events.filter((event) => event.documentId === documentRecord.documentId)
+      : [];
+    const content = events.find((event) => event.data?.contentInstanceId)?.data?.contentInstanceId;
+    const page = events.find((event) => event.data?.pageInstanceId)?.data?.pageInstanceId;
+    const lifecycle = [...events].reverse().find((event) => event.data?.lifecycle)?.data?.lifecycle ||
+      (documentRecord.mainReady && documentRecord.isolatedReady ? "ready" : "initializing");
+    const isolatedAt = events.find((event) => event.type === "content.activated")?.tRelMs;
+    const mainAt = events.find((event) => event.type === "bridge.main-ready")?.tRelMs;
+    return { content, page, lifecycle, isolatedAt, mainAt };
+  }
+
+  function renderDocuments() {
+    const target = byId("title-diag-documents");
+    if (!target) return;
+    clearNode(target);
+    const documents = Array.isArray(ui.evidence?.documents) ? ui.evidence.documents : [];
+    text("title-diag-documents-note", documents.length
+      ? documents.length + " trusted document record" + (documents.length === 1 ? "" : "s")
+      : "No documents captured");
+    for (const [index, documentRecord] of documents.entries()) {
+      const extra = documentEvidence(documentRecord);
+      const row = document.createElement("tr");
+      const values = [
+        String(index + 1), shortRef(documentRecord.documentId), clean(extra.lifecycle, 40),
+        clean(documentRecord.route || "—", 96), shortRef(extra.content), shortRef(extra.page),
+        "isolated " + (Number.isFinite(Number(extra.isolatedAt))
+          ? "+" + Number(extra.isolatedAt).toLocaleString() + " ms" : "—") +
+          " · MAIN " + (Number.isFinite(Number(extra.mainAt))
+            ? "+" + Number(extra.mainAt).toLocaleString() + " ms" : "—")
+      ];
+      const fullValues = [null, documentRecord.documentId, null, documentRecord.route,
+        extra.content, extra.page, null];
+      for (const [cellIndex, value] of values.entries()) {
+        const cell = create("td", "", value);
+        if (fullValues[cellIndex]) cell.title = clean(fullValues[cellIndex], 500);
+        row.appendChild(cell);
+      }
+      target.appendChild(row);
+    }
+  }
+
+  function warningMessages() {
+    const evidence = ui.evidence;
+    const status = ui.status;
+    const messages = [];
+    if (status?.timeout || evidence?.completionReason === "timeout") {
+      messages.push("The run reached its bounded timeout.");
+    }
+    if (evidence?.summary?.markerMatch === false || status?.markerMatch === false) {
+      messages.push("Loader markers differed between captured documents.");
+    }
+    if ((evidence?.overflowCount || 0) > 0) {
+      messages.push(String(evidence.overflowCount) + " event or document entries exceeded a configured limit.");
+    }
+    if ((evidence?.droppedBySizeCount || 0) > 0) {
+      messages.push(String(evidence.droppedBySizeCount) + " event payloads were dropped by size limits.");
+    }
+    for (const event of Array.isArray(evidence?.events) ? evidence.events : []) {
+      if (event.category === "error" || /error|timeout|failure/i.test(String(event.type || ""))) {
+        messages.push(clean(event.type, 80) +
+          (event.data?.message ? ": " + clean(event.data.message, 160) : ""));
+      }
+    }
+    return [...new Set(messages)].slice(0, 20);
+  }
+
+  function renderWarnings() {
+    const panel = byId("title-diag-warnings-panel");
+    const target = byId("title-diag-warnings");
+    if (!panel || !target) return;
+    const messages = warningMessages();
+    panel.hidden = !messages.length;
+    clearNode(target);
+    for (const message of messages) target.appendChild(create("li", "", message));
+  }
+
+  function render() {
+    const evidence = ui.evidence;
+    const status = ui.status || {};
+    const runState = clean(status.state || evidence?.state || "idle", 24).toLowerCase();
+    setBadge(byId("title-diag-state"), runState);
+    setBadge(byId("title-diag-sidebar-state"), runState);
+    text("title-diag-last-updated", status.updatedAt
+      ? "Updated " + timeLabel(status.updatedAt)
+      : "Not refreshed");
+    const completion = clean(status.completionReason || evidence?.completionReason || "", 120);
+    const completionNode = byId("title-diag-completion-reason");
+    if (completionNode) {
+      completionNode.hidden = !completion;
+      completionNode.textContent = completion ? "Reason: " + completion : "";
+    }
+
+    const hasEvidence = Boolean(evidence &&
+      (evidence.runId || evidence.events?.length || evidence.documents?.length || runState !== "idle"));
+    const empty = byId("title-diag-empty");
+    const report = byId("title-diag-report");
+    if (empty) empty.hidden = hasEvidence;
+    if (report) report.hidden = !hasEvidence;
+    if (!hasEvidence) return;
+
+    const eventCount = evidence?.events?.length ?? status.eventCount ?? 0;
+    const documentCount = evidence?.documents?.length ?? status.documentCount ?? 0;
+    const markerMatch = evidence?.summary?.markerMatch ?? status.markerMatch ?? null;
+    const overflow = Number(evidence?.overflowCount || 0) + Number(evidence?.droppedBySizeCount || 0);
+    text("title-diag-event-count", eventCount);
+    text("title-diag-document-count", documentCount);
+    text("title-diag-marker-match", markerMatch == null ? "Unknown" : markerMatch ? "Match" : "Mismatch");
+    text("title-diag-timeout", status.timeout || evidence?.completionReason === "timeout" ? "Yes" : "No");
+    text("title-diag-overflow", overflow);
+    const overflowCard = byId("title-diag-overflow-card");
+    if (overflowCard) overflowCard.hidden = overflow === 0;
+
+    const build = byId("title-diag-build");
+    clearNode(build);
+    appendKv(build, "Loader source", evidence?.build?.source || "—");
+    appendKv(build, "Build timestamp", evidence?.build?.loaderBuildTs ?? "—");
+    appendKv(build, "Build ISO", evidence?.build?.loaderBuildIso || "—", evidence?.build?.loaderBuildIso);
+    appendKv(build, "Marker match", markerMatch == null ? "Unknown" : markerMatch ? "Yes" : "No");
+
+    const navigation = byId("title-diag-navigation");
+    clearNode(navigation);
+    appendKv(navigation, "Source route", evidence?.summary?.sourceRoute || status.sourceRoute || "—");
+    appendKv(navigation, "Destination route", evidence?.summary?.destinationRoute || status.destinationRoute || "—");
+    appendKv(navigation, "Started", timeLabel(evidence?.armedAt || evidence?.createdAt));
+    appendKv(navigation, "Completed", timeLabel(evidence?.completedAt));
+    appendKv(navigation, "Duration", durationLabel(evidence?.armedAt || evidence?.createdAt, evidence?.completedAt));
+    appendKv(navigation, "Completion reason", completion || "—");
+
+    renderDocuments();
+    renderFilters();
+    renderEvents();
+    renderWarnings();
+    const raw = byId("title-diag-raw");
+    if (raw) raw.textContent = JSON.stringify(evidence, null, 2);
+  }
+
+  async function refreshSnapshot() {
+    ui.status = await command("status");
+    ui.evidence = await command("export");
+    render();
+  }
+
+  async function runOperation(label, operation) {
+    if (ui.commandInFlight) return;
+    setBusy(true, label);
+    showError("");
+    try {
+      await operation();
+      if (byId("title-diag-command-status")?.textContent === label) {
+        text("title-diag-command-status", "Ready.");
+      }
+    }
+    catch (error) {
+      showError(error);
+      text("title-diag-command-status", "Operation failed.");
+    }
+    finally { setBusy(false, ""); }
+  }
   async function exportEvidence() {
     const evidence = await command("export");
+    ui.evidence = evidence;
+    render();
     const blob = new Blob([JSON.stringify(evidence, null, 2) + "\\n"], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = "h2o-title-stage0b2b-" + String(evidence?.runId || "idle").replace(/[^a-z0-9-]/gi, "").slice(0, 48) + ".json";
     anchor.hidden = true; document.body.appendChild(anchor);
-    try { anchor.click(); show({ state: evidence?.state || "idle", exported: true, eventCount: evidence?.events?.length || 0 }, false); }
+    try {
+      anchor.click();
+      text("title-diag-command-status", "Sanitized evidence exported.");
+    }
     catch (error) {
-      try { await navigator.clipboard?.writeText(JSON.stringify(evidence, null, 2)); show({ exported: false, copiedToClipboard: true }, false); }
-      catch { show("Export failed: " + String(error?.message || "unknown").slice(0, 160), true); }
+      try {
+        await navigator.clipboard?.writeText(JSON.stringify(evidence, null, 2));
+        text("title-diag-command-status", "Export unavailable; sanitized JSON copied.");
+      } catch {
+        throw new Error("Export failed: " + clean(error?.message || "unknown", 160));
+      }
     } finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    ui.status = await command("status");
+    render();
   }
+
+  function setDiagnosticsSidebarCollapsed(value) {
+    ui.diagnosticsSidebarCollapsed = Boolean(value);
+    workspace?.classList.toggle("is-sidebar-collapsed", ui.diagnosticsSidebarCollapsed);
+    if (logo instanceof HTMLButtonElement && ui.workspaceMode === "diagnostics") {
+      logo.setAttribute("aria-pressed", ui.diagnosticsSidebarCollapsed ? "true" : "false");
+      logo.title = ui.diagnosticsSidebarCollapsed
+        ? "Expand diagnostics sidebar"
+        : "Collapse diagnostics sidebar";
+      logo.setAttribute("aria-label", logo.title);
+    }
+  }
+
+  function enterDiagnostics() {
+    if (!workspace || !app || ui.workspaceMode === "diagnostics") return;
+    const active = document.querySelector('[data-controls-tab][aria-selected="true"]');
+    ui.lastNormalView = active?.dataset?.controlsTab || "main";
+    ui.workspaceMode = "diagnostics";
+    app.dataset.workspaceMode = "diagnostics";
+    app.classList.add("diagnostics-workspace-active");
+    workspace.hidden = false;
+    setDiagnosticsSidebarCollapsed(ui.diagnosticsSidebarCollapsed);
+    renderRegistry();
+    render();
+    const selected = workspace.querySelector('[data-diagnostic-module][aria-current="page"]');
+    (selected || detail)?.focus();
+    void runOperation("Refreshing status…", () => refreshSnapshot());
+  }
+
+  function leaveDiagnostics() {
+    if (!workspace || !app || ui.workspaceMode !== "diagnostics") return;
+    cancelPendingTitleClick();
+    ui.workspaceMode = "normal";
+    workspace.hidden = true;
+    app.classList.remove("diagnostics-workspace-active");
+    delete app.dataset.workspaceMode;
+    if (logo instanceof HTMLButtonElement) {
+      const collapsed = app.classList.contains("leftbar-collapsed");
+      logo.setAttribute("aria-pressed", collapsed ? "true" : "false");
+      logo.title = collapsed ? "Open leftbar" : "Collapse leftbar";
+      logo.setAttribute("aria-label", logo.title);
+    }
+    const previous = document.querySelector(
+      '[data-controls-tab="' + clean(ui.lastNormalView, 20) + '"]'
+    );
+    (previous || titleText)?.focus();
+  }
+
+  function cancelPendingTitleClick() {
+    if (!ui.pendingTitleClick) return;
+    clearTimeout(ui.pendingTitleClick);
+    ui.pendingTitleClick = null;
+  }
+
   const actions = {
-    [ids.reset]: async () => show(await command("reset"), false),
-    [ids.arm]: async () => show(await command("arm"), false),
-    [ids.status]: refresh,
-    [ids.export]: exportEvidence,
-    [ids.clear]: async () => show(await command("clear"), false)
+    [ids.reset]: () => runOperation("Resetting evidence…", async () => {
+      await command("reset");
+      await refreshSnapshot();
+    }),
+    [ids.arm]: () => runOperation("Arming next navigation…", async () => {
+      await command("arm");
+      await refreshSnapshot();
+    }),
+    [ids.status]: () => runOperation("Refreshing status…", () => refreshSnapshot()),
+    [ids.export]: () => runOperation("Preparing sanitized export…", () => exportEvidence()),
+    [ids.clear]: () => runOperation("Clearing evidence…", async () => {
+      await command("clear");
+      await refreshSnapshot();
+    })
   };
-  for (const [id, action] of Object.entries(actions)) {
-    document.getElementById(id)?.addEventListener("click", () => { Promise.resolve(action()).catch((error) => show(error.message, true)); });
-  }
-  void refresh();
+  for (const [id, action] of Object.entries(actions)) byId(id)?.addEventListener("click", action);
+
+  byId("title-diag-copy-raw")?.addEventListener("click", () => {
+    void runOperation("Copying sanitized evidence…", async () => {
+      if (!ui.evidence) throw new Error("No sanitized evidence is available to copy.");
+      await navigator.clipboard.writeText(JSON.stringify(ui.evidence, null, 2));
+      text("title-diag-command-status", "Sanitized JSON copied.");
+    });
+  });
+  yellow?.addEventListener("click", enterDiagnostics);
+  document.addEventListener("h2o:title-diagnostics-workspace-toggle-sidebar", (event) => {
+    if (ui.workspaceMode !== "diagnostics") return;
+    setDiagnosticsSidebarCollapsed(Boolean(event.detail?.collapsed));
+  });
+  titleText?.addEventListener("click", (event) => {
+    if (ui.workspaceMode !== "diagnostics") return;
+    if (event.detail >= 2) {
+      cancelPendingTitleClick();
+      return;
+    }
+    cancelPendingTitleClick();
+    ui.pendingTitleClick = setTimeout(() => {
+      ui.pendingTitleClick = null;
+      leaveDiagnostics();
+    }, TITLE_SINGLE_CLICK_DELAY_MS);
+  });
+  titleText?.addEventListener("dblclick", cancelPendingTitleClick);
+
+  renderRegistry();
+  render();
 })();
 `;
 }
