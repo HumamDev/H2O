@@ -29,6 +29,8 @@ export const TITLE_DIAGNOSTIC_CONSTANTS = Object.freeze({
     maxDocuments: 20,
     maxStoredBytes: 128 * 1024,
     maxEventPayloadBytes: 2 * 1024,
+    criticalReserveEvents: 64,
+    criticalReserveBytes: 24 * 1024,
     maxTitleLengthMetadata: 128,
     maxErrorMessage: 200,
     maxStackFrames: 5,
@@ -72,6 +74,15 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     "performance.layout-shift", "runtime.availability", "runtime.loader-marker",
     "runtime.error", "runtime.timeout"
   ]);
+  const CRITICAL_EVENT_TYPES = new Set([
+    "content.bootstrap", "content.activated", "bridge.main-ready", "bridge.h2o-replaced",
+    "runtime.loader-marker", "runtime.error", "runtime.timeout", "run.completed"
+  ]);
+  const DESTINATION_ACTIVITY_TYPES = new Set([
+    "content.bootstrap", "content.activated", "bridge.main-ready", "title.direct-notification",
+    "title.state-snapshot", "title.event", "route.event", "route.popstate", "document.title",
+    "dom.under-input", "dom.title-menu-count", "dom.emoji-badge-count", "runtime.error"
+  ]);
   const DATA_KEYS = new Set([
     "reason", "state", "name", "present", "active", "count", "added", "removed",
     "textChanged", "attribute", "length", "lengthCapped", "changeSeq", "value",
@@ -92,7 +103,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     .replace(/https?:\\/\\/\\S+/gi, "[url]")
     .replace(/(?:[A-Za-z]:)?[\\/][^\\s]+/g, "[path]")
     .replace(/[\\r\\n\\t]+/g, " ").slice(0, max);
-  const finite = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+  const finite = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
   const validNonce = (value) => typeof value === "string" && /^[a-z0-9-]{16,80}$/i.test(value);
   const validId = (value) => typeof value === "string" && /^[a-z0-9._:-]{1,128}$/i.test(value);
   const isChatUrl = (value) => {
@@ -175,6 +186,102 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     };
   }
 
+  function bumpCounter(evidence, key) {
+    evidence[key] = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Number(evidence[key]) || 0) + 1);
+    evidence.truncated = true;
+  }
+
+  function nextSequence(evidence) {
+    return evidence.events.reduce((max, event) => Math.max(max, Number(event.seq) || 0), 0) + 1;
+  }
+
+  function makeEvent(evidence, spec) {
+    const atEpochMs = finite(spec.atEpochMs) ?? now();
+    return {
+      seq: nextSequence(evidence), eventId: spec.eventId, atEpochMs,
+      tRelMs: Math.max(0, atEpochMs - evidence.createdAt),
+      source: cleanText(spec.source, 32), category: cleanText(spec.category, 32), type: cleanText(spec.type, 80),
+      priorityClass: spec.priorityClass === "critical" ? "critical" : "optional",
+      tabId: Number.isInteger(spec.tabId) ? spec.tabId : null,
+      frameId: Number.isInteger(spec.frameId) ? spec.frameId : null,
+      documentId: validId(spec.documentId) ? spec.documentId : null,
+      route: typeof spec.route === "string" && spec.route.length <= 96 ? spec.route : null,
+      data: sanitizeData(spec.data)
+    };
+  }
+
+  function trimToHardLimit(evidence, protectedEventId) {
+    while (evidence.events.length > C.limits.maxEvents || bytes(evidence) > C.limits.maxStoredBytes) {
+      let index = evidence.events.findIndex((event) => event.priorityClass !== "critical" && event.eventId !== protectedEventId);
+      if (index < 0) index = evidence.events.findIndex((event) => event.eventId !== protectedEventId);
+      if (index < 0) break;
+      evidence.events.splice(index, 1);
+      bumpCounter(evidence, "overflowCount");
+    }
+    return evidence.events.some((event) => event.eventId === protectedEventId) && bytes(evidence) <= C.limits.maxStoredBytes;
+  }
+
+  // Optional telemetry may use only the non-reserved portion of the record.
+  // Critical events evict oldest optional telemetry first and, only if the
+  // record contains critical evidence exclusively, the oldest prior critical
+  // event. The newest critical transition therefore remains bounded and visible.
+  function retainEvent(evidence, event) {
+    if (bytes(event) > C.limits.maxEventPayloadBytes) {
+      bumpCounter(evidence, "droppedBySizeCount");
+      trimToHardLimit(evidence, null);
+      return false;
+    }
+    const critical = event.priorityClass === "critical";
+    const optionalCount = evidence.events.filter((item) => item.priorityClass !== "critical").length;
+    if (!critical && (optionalCount >= C.limits.maxEvents - C.limits.criticalReserveEvents ||
+      bytes(evidence) + bytes(event) > C.limits.maxStoredBytes - C.limits.criticalReserveBytes)) {
+      bumpCounter(evidence, "droppedBySizeCount");
+      trimToHardLimit(evidence, null);
+      return false;
+    }
+    evidence.events.push(event);
+    if (!critical && (evidence.events.length > C.limits.maxEvents || bytes(evidence) > C.limits.maxStoredBytes)) {
+      evidence.events.pop();
+      bumpCounter(evidence, "droppedBySizeCount");
+      trimToHardLimit(evidence, null);
+      return false;
+    }
+    const retained = trimToHardLimit(evidence, event.eventId);
+    if (!retained) bumpCounter(evidence, "droppedBySizeCount");
+    trimToHardLimit(evidence, retained ? event.eventId : null);
+    return retained;
+  }
+
+  function applyEventState(evidence, event, spec) {
+    if (spec.type === "runtime.loader-marker") {
+      const reported = {
+        loaderBuildTs: event.data.loaderBuildTs ?? null,
+        loaderBuildIso: event.data.loaderBuildIso || "",
+        source: event.data.loaderSource || ""
+      };
+      if (!evidence.build) evidence.build = reported;
+      const matches = evidence.build.loaderBuildTs === reported.loaderBuildTs &&
+        evidence.build.loaderBuildIso === reported.loaderBuildIso && evidence.build.source === reported.source;
+      evidence.summary.markerMatch = evidence.summary.markerMatch === false ? false : matches;
+    }
+    if (spec.documentId && !evidence.documents.some((doc) => doc.documentId === spec.documentId)) {
+      if (evidence.documents.length < C.limits.maxDocuments) {
+        evidence.documents.push({
+          documentId: spec.documentId, tabId: event.tabId, frameId: event.frameId,
+          firstSeenAt: event.atEpochMs, route: event.route, isolatedReady: false, mainReady: false
+        });
+      } else { bumpCounter(evidence, "overflowCount"); }
+    }
+    const document = evidence.documents.find((doc) => doc.documentId === spec.documentId);
+    if (document && spec.type === "content.activated") document.isolatedReady = true;
+    if (document && spec.type === "bridge.main-ready") document.mainReady = true;
+  }
+
+  function eventPriority(spec) {
+    return spec.priorityClass === "critical" || spec.category === "navigation" || CRITICAL_EVENT_TYPES.has(spec.type)
+      ? "critical" : "optional";
+  }
+
   async function appendEvent(spec) {
     return enqueue(async () => {
       const all = await readAll();
@@ -182,59 +289,16 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       const evidence = all[C.storage.evidence];
       if (!control || !evidence || control.runId !== spec.runId || evidence.runId !== spec.runId) return false;
       if (!validId(spec.eventId) || evidence.events.some((event) => event.eventId === spec.eventId)) {
-        evidence.dedupSuppressedCount += 1;
+        bumpCounter(evidence, "dedupSuppressedCount");
+        trimToHardLimit(evidence, null);
         await rawWriteValues({ [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
         return false;
       }
-      if (evidence.events.length >= C.limits.maxEvents) {
-        evidence.overflowCount += 1; evidence.truncated = true;
-        await rawWriteValues({ [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
-        return false;
-      }
-      const event = {
-        seq: evidence.events.length + 1, eventId: spec.eventId, atEpochMs: finite(spec.atEpochMs) || now(),
-        tRelMs: Math.max(0, (finite(spec.atEpochMs) || now()) - evidence.createdAt),
-        source: cleanText(spec.source, 32), category: cleanText(spec.category, 32), type: cleanText(spec.type, 80),
-        tabId: Number.isInteger(spec.tabId) ? spec.tabId : null,
-        frameId: Number.isInteger(spec.frameId) ? spec.frameId : null,
-        documentId: validId(spec.documentId) ? spec.documentId : null,
-        route: typeof spec.route === "string" && spec.route.length <= 96 ? spec.route : null,
-        data: sanitizeData(spec.data)
-      };
-      if (bytes(event) > C.limits.maxEventPayloadBytes) {
-        evidence.droppedBySizeCount += 1; evidence.truncated = true;
-        await rawWriteValues({ [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
-        return false;
-      }
-      evidence.events.push(event);
-      if (spec.type === "runtime.loader-marker") {
-        const reported = {
-          loaderBuildTs: event.data.loaderBuildTs ?? null,
-          loaderBuildIso: event.data.loaderBuildIso || "",
-          source: event.data.loaderSource || ""
-        };
-        if (!evidence.build) evidence.build = reported;
-        const matches = evidence.build.loaderBuildTs === reported.loaderBuildTs &&
-          evidence.build.loaderBuildIso === reported.loaderBuildIso && evidence.build.source === reported.source;
-        evidence.summary.markerMatch = evidence.summary.markerMatch === false ? false : matches;
-      }
-      if (spec.documentId && !evidence.documents.some((doc) => doc.documentId === spec.documentId)) {
-        if (evidence.documents.length < C.limits.maxDocuments) {
-          evidence.documents.push({
-            documentId: spec.documentId, tabId: event.tabId, frameId: event.frameId,
-            firstSeenAt: event.atEpochMs, route: event.route, isolatedReady: false, mainReady: false
-          });
-        } else { evidence.overflowCount += 1; evidence.truncated = true; }
-      }
-      const document = evidence.documents.find((doc) => doc.documentId === spec.documentId);
-      if (document && spec.type === "content.activated") document.isolatedReady = true;
-      if (document && spec.type === "bridge.main-ready") document.mainReady = true;
-      const candidate = structuredClone(evidence);
-      if (bytes(candidate) > C.limits.maxStoredBytes) {
-        evidence.events.pop(); evidence.droppedBySizeCount += 1; evidence.truncated = true;
-      }
+      const event = makeEvent(evidence, { ...spec, priorityClass: eventPriority(spec) });
+      applyEventState(evidence, event, spec);
+      const retained = retainEvent(evidence, event);
       await rawWriteValues({ [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
-      return true;
+      return retained;
     });
   }
 
@@ -286,6 +350,16 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     settleTimer = null; timeoutTimer = null;
   }
 
+  function clearSettleTimer() {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = null;
+  }
+
+  function clearTimeoutTimer() {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    timeoutTimer = null;
+  }
+
   async function completeRun(reason) {
     clearTimers();
     const result = await enqueue(async () => {
@@ -296,6 +370,14 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       control.state = reason === "timeout" ? "error" : "complete";
       control.completedAt = now();
       evidence.state = control.state; evidence.completedAt = control.completedAt; evidence.completionReason = reason;
+      const completedEvent = makeEvent(evidence, {
+        runId: control.runId, eventId: "run:completed:" + control.runId + ":" + control.completedAt,
+        atEpochMs: control.completedAt, source: "service-worker", category: "lifecycle", type: "run.completed",
+        priorityClass: "critical", tabId: control.targetTabId, frameId: 0,
+        documentId: control.destinationDocumentId || control.sourceDocumentId,
+        route: control.destinationRoute || control.sourceRoute, data: { reason, state: control.state }
+      });
+      retainEvent(evidence, completedEvent);
       await rawWriteValues({
         [C.storage.control]: control,
         [C.storage.evidence]: evidence,
@@ -308,32 +390,45 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
   }
 
   function scheduleTimeout(control) {
-    clearTimers();
+    clearTimeoutTimer();
     if (!control || !Number.isFinite(control.expiresAt)) return;
     timeoutTimer = setTimeout(() => { void completeRun("timeout"); }, Math.max(0, control.expiresAt - now()));
   }
 
-  async function maybeSettle(runId, documentId) {
-    const all = await readAll();
-    const control = all[C.storage.control];
-    const evidence = all[C.storage.evidence];
-    if (!control || !evidence || control.runId !== runId || !control.destinationDocumentId) return;
-    const document = evidence.documents.find((doc) => doc.documentId === control.destinationDocumentId);
-    if (!document || !document.isolatedReady || !document.mainReady || document.documentId !== documentId) return;
-    control.state = "settling"; control.quietDeadline = now() + C.limits.settleMs;
-    evidence.state = "settling";
-    await writeValues({
-      [C.storage.control]: control,
-      [C.storage.evidence]: evidence,
-      [C.storage.status]: makeStatus(control, evidence)
-    });
-    if (settleTimer) clearTimeout(settleTimer);
+  function scheduleSettle(control) {
+    clearSettleTimer();
+    if (!control || control.state !== "settling" || !Number.isFinite(control.quietDeadline)) return;
+    const runId = control.runId;
     settleTimer = setTimeout(async () => {
       const current = (await readAll())[C.storage.control];
       if (current?.runId === runId && current.state === "settling" && current.quietDeadline <= now()) {
         await completeRun("destination-settled");
+      } else if (current?.runId === runId && current.state === "settling") {
+        scheduleSettle(current);
       }
-    }, C.limits.settleMs + 25);
+    }, Math.max(0, control.quietDeadline - now()) + 25);
+  }
+
+  async function maybeSettle(runId, documentId, extendQuiet) {
+    const scheduled = await enqueue(async () => {
+      const all = await readAll();
+      const control = all[C.storage.control];
+      const evidence = all[C.storage.evidence];
+      if (!control || !evidence || control.runId !== runId || !control.destinationDocumentId) return null;
+      const document = evidence.documents.find((doc) => doc.documentId === control.destinationDocumentId);
+      if (!document || !document.isolatedReady || !document.mainReady || document.documentId !== documentId) return null;
+      const entering = control.state !== "settling" || !Number.isFinite(control.quietDeadline);
+      if (entering || extendQuiet === true) control.quietDeadline = now() + C.limits.settleMs;
+      control.state = "settling";
+      evidence.state = "settling";
+      await rawWriteValues({
+        [C.storage.control]: control,
+        [C.storage.evidence]: evidence,
+        [C.storage.status]: makeStatus(control, evidence)
+      });
+      return structuredClone(control);
+    });
+    if (scheduled) scheduleSettle(scheduled);
   }
 
   async function reconcile(reason) {
@@ -342,6 +437,13 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const registrationHealth = await ownedRegistrationHealth();
     if (control && ["armed", "navigating", "settling"].includes(control.state) && control.expiresAt > now()) {
       if (!registrationHealth.healthy) await registerOwned();
+      if (control.state === "settling" && Number.isFinite(control.quietDeadline)) {
+        if (control.quietDeadline <= now()) {
+          await completeRun("destination-settled");
+          return { active: false, repaired: !registrationHealth.healthy, reason };
+        }
+        if (!settleTimer) scheduleSettle(control);
+      }
       if (!timeoutTimer) scheduleTimeout(control);
       return { active: true, repaired: !registrationHealth.healthy, reason };
     }
@@ -431,6 +533,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const route = await routeShape(sender.url || sender.tab.url, control.nonce);
     if (!control.sourceDocumentId) {
       control.sourceDocumentId = sender.documentId;
+      if (control.destinationRoute && route === control.destinationRoute) control.destinationDocumentId = sender.documentId;
     } else if (sender.documentId !== control.sourceDocumentId && route.startsWith("/c/#")) {
       control.destinationDocumentId = sender.documentId;
       control.destinationRoute = route;
@@ -447,6 +550,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId, route,
       data: { contentInstanceId: cleanText(message.contentInstanceId, 80), lifecycle: sender.documentLifecycle || "unknown" }
     });
+    if (control.destinationDocumentId === sender.documentId) await maybeSettle(control.runId, sender.documentId, true);
     return { active: true, runId: control.runId, nonce: control.nonce, route, expiresAt: control.expiresAt };
   }
 
@@ -463,8 +567,30 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       type: message.type, tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId,
       route, data: message.data
     });
-    if (stored) await maybeSettle(control.runId, sender.documentId);
+    if (control.destinationDocumentId === sender.documentId) {
+      await maybeSettle(control.runId, sender.documentId, DESTINATION_ACTIVITY_TYPES.has(message.type));
+    }
     return stored;
+  }
+
+  async function markDestination(control, evidence, route, documentId, transitionKind) {
+    if (!route.startsWith("/c/#") || route === control.sourceRoute) return false;
+    const destinationDocumentId = validId(documentId) ? documentId : control.sourceDocumentId;
+    control.destinationRoute = route;
+    control.destinationDocumentId = destinationDocumentId || null;
+    control.transitionKind = transitionKind;
+    control.state = "navigating";
+    evidence.state = "navigating";
+    evidence.summary.destinationRoute = route;
+    evidence.summary.transitionKind = transitionKind;
+    const document = evidence.documents.find((item) => item.documentId === destinationDocumentId);
+    if (document) document.route = route;
+    await writeValues({
+      [C.storage.control]: control,
+      [C.storage.evidence]: evidence,
+      [C.storage.status]: makeStatus(control, evidence)
+    });
+    return true;
   }
 
   async function navigationEvent(kind, details) {
@@ -474,11 +600,12 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     if (!control || !["armed", "navigating", "settling"].includes(control.state) || control.targetTabId !== details.tabId || control.expiresAt <= now()) return;
     const route = await routeShape(details.url, control.nonce);
     const documentId = validId(details.documentId) ? details.documentId : null;
-    if (kind === "committed" && documentId && control.sourceDocumentId && documentId !== control.sourceDocumentId && route.startsWith("/c/#")) {
-      control.destinationDocumentId = documentId; control.destinationRoute = route; control.state = "navigating";
-      const evidence = all[C.storage.evidence];
-      evidence.state = "navigating"; evidence.summary.destinationRoute = route;
-      await writeValues({ [C.storage.control]: control, [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
+    const evidence = all[C.storage.evidence];
+    if (kind === "committed" && documentId && control.sourceDocumentId && documentId !== control.sourceDocumentId) {
+      await markDestination(control, evidence, route, documentId, "full-document");
+    } else if ((kind === "history-state" || kind === "fragment") &&
+      (!documentId || !control.sourceDocumentId || documentId === control.sourceDocumentId)) {
+      await markDestination(control, evidence, route, documentId || control.sourceDocumentId, "same-document");
     }
     await appendEvent({
       runId: control.runId, eventId: "nav:" + kind + ":" + (documentId || "none") + ":" + String(details.timeStamp || now()),
@@ -486,7 +613,10 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       type: "webNavigation." + kind, tabId: details.tabId, frameId: details.frameId,
       documentId, route, data: { errorKind: details.error ? cleanText(details.error, 80) : "" }
     });
-    if (documentId) await maybeSettle(control.runId, documentId);
+    const destinationDocumentId = control.destinationDocumentId || documentId;
+    const destinationRelevant = route === control.destinationRoute &&
+      ["committed", "domcontentloaded", "completed", "history-state", "fragment", "error"].includes(kind);
+    if (destinationDocumentId) await maybeSettle(control.runId, destinationDocumentId, destinationRelevant);
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -532,6 +662,10 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
   let stopped = false;
   let observer = null;
   let runtimeHandler = null;
+  let lastTitleValue = null;
+  let lastUnderInputCount = null;
+  let lastTitleMenuCount = null;
+  let lastEmojiBadgeCount = null;
   const performanceObservers = [];
   const activationTimers = [];
   const listeners = [];
@@ -560,9 +694,32 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
       route: route(), data: data && typeof data === "object" ? data : {} });
   }
   function count(selector) { try { return document.querySelectorAll(selector).length; } catch { return 0; } }
-  function titleMetadata() {
-    const len = String(document.title || "").length;
+  function titleMetadata(value) {
+    const len = String(value == null ? document.title || "" : value).length;
     return { present: len > 0, length: Math.min(len, C.limits.maxTitleLengthMetadata), lengthCapped: Math.min(len, C.limits.maxTitleLengthMetadata), changeSeq: ++titleSeq };
+  }
+  function emitTitleSnapshot(force) {
+    const value = String(document.title || "");
+    if (!force && value === lastTitleValue) return false;
+    lastTitleValue = value;
+    emit("document.title", "render", titleMetadata(value));
+    return true;
+  }
+  function emitUnderInputSnapshot(meta, force) {
+    const current = count(".ho-tab-title-under-input");
+    const meaningful = force || current !== lastUnderInputCount || meta.added > 0 || meta.removed > 0 || meta.textChanged || !!meta.attribute;
+    lastUnderInputCount = current;
+    if (!meaningful) return false;
+    emit("dom.under-input", "render", { count: current, ...meta });
+    return true;
+  }
+  function emitCountSnapshot(type, selector, key, force) {
+    const current = count(selector);
+    const previous = key === "menu" ? lastTitleMenuCount : lastEmojiBadgeCount;
+    if (key === "menu") lastTitleMenuCount = current; else lastEmojiBadgeCount = current;
+    if (!force && current === previous) return false;
+    emit(type, "render", { count: current });
+    return true;
   }
   function related(node, selector) {
     if (!(node instanceof Element)) return false;
@@ -588,11 +745,11 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
           if (related(node, ".ho-title-action-menu,.ho-emoji-badge")) uiRelevant = true;
         }
       }
-      if (titleChanged) emit("document.title", "render", titleMetadata());
-      if (relevant) emit("dom.under-input", "render", { count: count(".ho-tab-title-under-input"), added, removed, textChanged, attribute: attr || "" });
+      if (titleChanged) emitTitleSnapshot(false);
+      if (relevant) emitUnderInputSnapshot({ added, removed, textChanged, attribute: attr || "" }, false);
       if (uiRelevant) {
-        emit("dom.title-menu-count", "render", { count: count(".ho-title-action-menu") });
-        emit("dom.emoji-badge-count", "render", { count: count(".ho-emoji-badge") });
+        emitCountSnapshot("dom.title-menu-count", ".ho-title-action-menu", "menu", false);
+        emitCountSnapshot("dom.emoji-badge-count", ".ho-emoji-badge", "emoji", false);
       }
     });
     observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: Array.from(allowedAttributes) });
@@ -658,10 +815,10 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
     chrome.runtime.onMessage.addListener(runtimeHandler);
     installObservers();
     emit("content.activated", "lifecycle", { contentInstanceId, lifecycle: "active" });
-    emit("document.title", "render", titleMetadata());
-    emit("dom.under-input", "render", { count: count(".ho-tab-title-under-input"), added: 0, removed: 0, textChanged: false, attribute: "" });
-    emit("dom.title-menu-count", "render", { count: count(".ho-title-action-menu") });
-    emit("dom.emoji-badge-count", "render", { count: count(".ho-emoji-badge") });
+    emitTitleSnapshot(true);
+    emitUnderInputSnapshot({ added: 0, removed: 0, textChanged: false, attribute: "" }, true);
+    emitCountSnapshot("dom.title-menu-count", ".ho-title-action-menu", "menu", true);
+    emitCountSnapshot("dom.emoji-badge-count", ".ho-emoji-badge", "emoji", true);
     activateMain();
   }
   globalThis.__h2oTitleStage0B2BIsolatedV1 = { reinjected: () => emit("content.reinjected", "lifecycle", { contentInstanceId }), teardown };
@@ -688,7 +845,13 @@ export function makeTitleNavigationDiagnosticMainJs() {
   let chatTitleOwner = null;
   let tabTitleOwner = null;
   let underInputOwner = null;
-  let loaderReported = false;
+  let autoEmojiOwner = null;
+  let lastAvailabilityFingerprint = null;
+  let chatReady = false;
+  let loaderMarkerSettled = false;
+  let loaderMarkerPromise = null;
+  let loaderMarkerGeneration = 0;
+  let loaderErrorReported = false;
   let unsubscribe = null;
   const listeners = [];
   const PASSIVE_EVENTS = [
@@ -741,33 +904,55 @@ export function makeTitleNavigationDiagnosticMainJs() {
       autoEmojiAbsent: !H2O?.AutoEmojiTitle && typeof globalThis.H2O_AutoEmojiTitle_openPanel !== "function"
     };
   }
-  async function loaderMarker() {
-    if (loaderReported) return;
-    try {
-      const bridge = globalThis.H2O?.archiveBoot?._getExtensionBridge?.();
-      const info = await bridge?.__loaderInfo?.();
-      if (!Number.isFinite(Number(info?.loaderBuildTs)) || !info?.loaderBuildIso) return;
-      loaderReported = true;
-      emit("runtime.loader-marker", "runtime", {
-        loaderBuildTs: Number.isFinite(Number(info?.loaderBuildTs)) ? Number(info.loaderBuildTs) : null,
-        loaderBuildIso: clean(info?.loaderBuildIso, 40), loaderSource: clean(info?.source, 48)
-      });
-    } catch (error) {
-      emit("runtime.error", "error", { errorKind: "loader-marker", message: clean(error?.message, C.limits.maxErrorMessage) });
-    }
+  function loaderMarker() {
+    if (loaderMarkerSettled || stopped || !active) return Promise.resolve(false);
+    if (loaderMarkerPromise) return loaderMarkerPromise;
+    const generation = loaderMarkerGeneration;
+    const runId = run?.runId;
+    loaderMarkerPromise = (async () => {
+      try {
+        const bridge = globalThis.H2O?.archiveBoot?._getExtensionBridge?.();
+        const info = await bridge?.__loaderInfo?.();
+        if (stopped || !active || generation !== loaderMarkerGeneration || run?.runId !== runId) return false;
+        if (!Number.isFinite(Number(info?.loaderBuildTs)) || !info?.loaderBuildIso) return false;
+        loaderMarkerSettled = true;
+        emit("runtime.loader-marker", "runtime", {
+          loaderBuildTs: Number(info.loaderBuildTs), loaderBuildIso: clean(info.loaderBuildIso, 40),
+          loaderSource: clean(info?.source, 48)
+        });
+        return true;
+      } catch (error) {
+        if (!loaderErrorReported && !stopped && generation === loaderMarkerGeneration) {
+          loaderErrorReported = true;
+          emit("runtime.error", "error", { errorKind: "loader-marker", message: clean(error?.message, C.limits.maxErrorMessage) });
+        }
+        return false;
+      } finally {
+        if (generation === loaderMarkerGeneration) loaderMarkerPromise = null;
+      }
+    })();
+    return loaderMarkerPromise;
   }
   function inspectApis() {
     if (!active || stopped) return;
     const current = globalThis.H2O?.ChatTitle || null;
     const currentTabTitle = globalThis.H2O?.TabTitle || null;
     const currentUnderInput = globalThis.__h2oTitleUnderInputRuntime_v4 || null;
-    emit("runtime.availability", "runtime", availability());
+    const currentAutoEmoji = globalThis.H2O?.AutoEmojiTitle || globalThis.H2O_AutoEmojiTitle_openPanel || null;
+    const available = availability();
+    const availabilityFingerprint = JSON.stringify(available);
+    if (lastAvailabilityFingerprint === null || availabilityFingerprint !== lastAvailabilityFingerprint) {
+      lastAvailabilityFingerprint = availabilityFingerprint;
+      emit("runtime.availability", "runtime", available);
+    }
     if (tabTitleOwner && currentTabTitle !== tabTitleOwner) emit("bridge.h2o-replaced", "bridge", { name: "TabTitle", present: !!currentTabTitle });
     if (underInputOwner && currentUnderInput !== underInputOwner) emit("bridge.h2o-replaced", "bridge", { name: "TitleUnderInput", present: !!currentUnderInput });
+    if (autoEmojiOwner && currentAutoEmoji !== autoEmojiOwner) emit("bridge.h2o-replaced", "bridge", { name: "AutoEmojiTitle", present: !!currentAutoEmoji });
     tabTitleOwner = currentTabTitle;
     underInputOwner = currentUnderInput;
+    autoEmojiOwner = currentAutoEmoji;
     if (current !== chatTitleOwner) {
-      if (chatTitleOwner) { unsubscribeCurrent("api-replaced"); emit("bridge.h2o-replaced", "bridge", { present: !!current }); }
+      if (chatTitleOwner) { unsubscribeCurrent("api-replaced"); emit("bridge.h2o-replaced", "bridge", { name: "ChatTitle", present: !!current }); }
       if (current && typeof current.subscribe === "function") {
         chatTitleOwner = current;
         try {
@@ -784,8 +969,9 @@ export function makeTitleNavigationDiagnosticMainJs() {
         } catch (error) { emit("runtime.error", "error", { errorKind: "subscribe", message: clean(error?.message, C.limits.maxErrorMessage) }); }
       }
     }
-    if (current) emit("bridge.h2o-ready", "bridge", availability());
-    if (!loaderReported) void loaderMarker();
+    if (current && !chatReady) emit("bridge.h2o-ready", "bridge", available);
+    chatReady = !!current;
+    if (!loaderMarkerSettled) void loaderMarker();
     if (!current && now() >= apiDeadline) {
       emit("runtime.timeout", "runtime", { reason: "h2o-api-readiness" });
       clearInterval(apiTimer); apiTimer = null;
@@ -805,6 +991,8 @@ export function makeTitleNavigationDiagnosticMainJs() {
     stopped = true; active = false;
     if (apiTimer) clearInterval(apiTimer);
     apiTimer = null;
+    loaderMarkerGeneration += 1;
+    loaderMarkerPromise = null;
     unsubscribeCurrent("teardown");
     listeners.splice(0).forEach(([target, type, handler]) => { try { target.removeEventListener(type, handler); } catch {} });
     try { delete globalThis.__h2oTitleStage0B2BMainV1; } catch {}
@@ -897,9 +1085,17 @@ export function makeTitleNavigationDiagnosticPopupJs() {
     idle: "Idle", armed: "Armed", navigating: "Navigating", settling: "Settling",
     complete: "Complete", error: "Error"
   })[value] || "Idle";
-  const timeLabel = (value) => Number.isFinite(Number(value)) ? new Date(Number(value)).toLocaleString() : "—";
-  const durationLabel = (start, end) => Number.isFinite(Number(start)) && Number.isFinite(Number(end))
-    ? Math.max(0, Number(end) - Number(start)).toLocaleString() + " ms" : "—";
+  const finiteDisplayNumber = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value))
+    ? Number(value) : null;
+  const timeLabel = (value) => {
+    const number = finiteDisplayNumber(value);
+    return number === null ? "—" : new Date(number).toLocaleString();
+  };
+  const durationLabel = (start, end) => {
+    const startNumber = finiteDisplayNumber(start);
+    const endNumber = finiteDisplayNumber(end);
+    return startNumber === null || endNumber === null ? "—" : Math.max(0, endNumber - startNumber).toLocaleString() + " ms";
+  };
   const shortRef = (value) => {
     const raw = clean(value, 128);
     return raw.length > 14 ? raw.slice(0, 6) + "…" + raw.slice(-6) : (raw || "—");

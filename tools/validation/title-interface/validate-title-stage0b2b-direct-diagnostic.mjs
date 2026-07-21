@@ -366,7 +366,21 @@ function assertTitleClickTimingContract() {
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
     console,
   };
-  vm.runInNewContext(popup, context, { filename: "generated-title-diagnostic-popup.js" });
+  const instrumentedPopup = popup.replace(
+    "  const shortRef = (value) => {",
+    "  globalThis.__h2oTitleDiagnosticFormatters = Object.freeze({ timeLabel, durationLabel });\n  const shortRef = (value) => {"
+  );
+  assert.notEqual(instrumentedPopup, popup, "popup formatter instrumentation point missing");
+  vm.runInNewContext(instrumentedPopup, context, { filename: "generated-title-diagnostic-popup.js" });
+
+  const formatters = context.__h2oTitleDiagnosticFormatters;
+  assert.equal(formatters.timeLabel(null), "—", "null timestamp rendered as epoch zero");
+  assert.equal(formatters.timeLabel(undefined), "—", "undefined timestamp must be missing");
+  assert.equal(formatters.timeLabel(""), "—", "empty timestamp must be missing");
+  assert.equal(formatters.durationLabel(100, null), "—", "null duration end rendered as zero");
+  assert.equal(formatters.durationLabel(undefined, 100), "—", "missing duration start must be missing");
+  assert(!formatters.timeLabel(null).includes("1970"), "missing timestamp exposed Unix epoch");
+  assert(!formatters.durationLabel(100, null).includes("0 ms"), "missing duration exposed false zero");
 
   const isDiagnostics = () => document.app.dataset.workspaceMode === "diagnostics";
   document.yellow.emit("click", { detail: 1 });
@@ -393,6 +407,372 @@ function assertTitleClickTimingContract() {
   document.titleText.emit("dblclick", { detail: 2 });
   clock.tick(delayMs);
   assert(isDiagnostics(), "dblclick did not cancel the pending single-click return");
+}
+
+class FakeEventTarget {
+  constructor() { this.listeners = new Map(); }
+  addEventListener(type, handler) {
+    const list = this.listeners.get(type) || [];
+    list.push(handler);
+    this.listeners.set(type, list);
+  }
+  removeEventListener(type, handler) {
+    const list = this.listeners.get(type) || [];
+    this.listeners.set(type, list.filter((item) => item !== handler));
+  }
+  emit(type, init = {}) {
+    const event = { type, target: this, currentTarget: this, ...init };
+    for (const handler of this.listeners.get(type) || []) handler(event);
+  }
+}
+
+async function flushAsync() {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function assertMainCollectorChangeDriven() {
+  const messages = [];
+  const intervals = new Map();
+  let intervalId = 0;
+  let loaderReads = 0;
+  const window = new FakeEventTarget();
+  window.postMessage = (message) => { if (message?.direction === "main-to-isolated") messages.push(message); };
+  const makeChatTitle = () => ({
+    subscribe: () => () => {},
+    getState: () => ({ baseTitle: "private title not emitted", durable: true }),
+    selfCheck: () => ({ ok: true }),
+  });
+  const context = {
+    window,
+    location: { pathname: "/c/source" },
+    crypto: crypto.webcrypto,
+    TextEncoder,
+    performance: { timeOrigin: 1234 },
+    setInterval: (handler) => { const id = ++intervalId; intervals.set(id, handler); return id; },
+    clearInterval: (id) => intervals.delete(id),
+    H2O: {
+      ChatTitle: makeChatTitle(),
+      TabTitle: {},
+      archiveBoot: { _getExtensionBridge: () => ({ __loaderInfo: async () => {
+        loaderReads += 1;
+        return { loaderBuildTs: 123456789, loaderBuildIso: "2026-07-21T00:00:00.000Z", source: "page-bridge-loader" };
+      } }) },
+    },
+    __h2oTitleUnderInputRuntime_v4: {},
+    console,
+  };
+  vm.runInNewContext(makeTitleNavigationDiagnosticMainJs(), context, { filename: "generated-main-change-driven.js" });
+  window.emit("message", { source: window, data: {
+    marker: C.bridgeMarker, direction: "isolated-to-main", messageType: "activate",
+    runId: "run-main-test", nonce: "12345678-1234-1234-1234-123456789abc"
+  } });
+  await flushAsync();
+  assert.equal(loaderReads, 1, "concurrent loader-marker paths did not share one bridge read");
+  assert.equal(messages.filter((item) => item.messageType === "runtime.loader-marker").length, 1,
+    "loader marker was emitted more than once");
+  assert.equal(messages.filter((item) => item.messageType === "runtime.availability").length, 1,
+    "initial availability must emit exactly once");
+  assert.equal(messages.filter((item) => item.messageType === "bridge.h2o-ready").length, 1,
+    "initial ready transition must emit exactly once");
+
+  const poll = [...intervals.values()][0];
+  assert.equal(typeof poll, "function", "API identity polling was not installed");
+  for (let index = 0; index < 360; index += 1) poll();
+  await flushAsync();
+  assert.equal(messages.filter((item) => item.messageType === "runtime.availability").length, 1,
+    "stable 180-second API polling emitted availability heartbeats");
+  assert.equal(messages.filter((item) => item.messageType === "bridge.h2o-ready").length, 1,
+    "stable 180-second API polling emitted ready heartbeats");
+
+  context.H2O.ChatTitle = makeChatTitle();
+  poll(); poll();
+  assert.equal(messages.filter((item) => item.messageType === "bridge.h2o-replaced" && item.data?.name === "ChatTitle").length, 1,
+    "one ChatTitle identity replacement must emit exactly once");
+  assert.equal(messages.filter((item) => item.messageType === "runtime.availability").length, 1,
+    "identity-only replacement must not duplicate an unchanged availability fingerprint");
+}
+
+async function assertIsolatedDomSuppression() {
+  const sent = [];
+  let mutationCallback = null;
+  class FakeElement extends FakeEventTarget {
+    constructor(selectors = []) { super(); this.selectors = new Set(selectors); this.parentElement = null; }
+    matches(selector) { return String(selector).split(",").some((item) => this.selectors.has(item.trim())); }
+    closest(selector) { return this.matches(selector) ? this : null; }
+    querySelector(selector) { return this.matches(selector) ? this : null; }
+  }
+  const titleNode = new FakeElement(["title"]);
+  const root = new FakeElement();
+  const counts = new Map([
+    [".ho-tab-title-under-input", 1], [".ho-title-action-menu", 0], [".ho-emoji-badge", 0]
+  ]);
+  const document = {
+    title: "Initial private title",
+    documentElement: root,
+    querySelector: (selector) => selector === "title" ? titleNode : null,
+    querySelectorAll: (selector) => Array.from({ length: counts.get(selector) || 0 }, () => ({})),
+  };
+  const window = new FakeEventTarget();
+  window.postMessage = () => {};
+  const runtimeListeners = new Set();
+  const context = {
+    window,
+    document,
+    location: { pathname: "/c/source" },
+    Element: FakeElement,
+    crypto: crypto.webcrypto,
+    TextEncoder,
+    MutationObserver: class {
+      constructor(callback) { mutationCallback = callback; }
+      observe() {}
+      disconnect() {}
+    },
+    PerformanceObserver: class { observe() {} disconnect() {} },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    chrome: {
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.op === "collector-boot") return { ok: true, data: {
+            active: true, runId: "run-isolated-test", nonce: "12345678-1234-1234-1234-123456789abc",
+            route: "/c/#hash", expiresAt: Date.now() + 10000
+          } };
+          if (message.op === "collector-event") sent.push(message);
+          return { ok: true, data: true };
+        },
+        onMessage: { addListener: (handler) => runtimeListeners.add(handler), removeListener: (handler) => runtimeListeners.delete(handler) },
+      },
+    },
+    console,
+  };
+  vm.runInNewContext(makeTitleNavigationDiagnosticIsolatedJs(), context, { filename: "generated-isolated-dom.js" });
+  await flushAsync();
+  const countType = (type) => sent.filter((item) => item.type === type).length;
+  assert.equal(countType("document.title"), 1);
+  assert.equal(countType("dom.under-input"), 1);
+  assert.equal(countType("dom.title-menu-count"), 1);
+  assert.equal(countType("dom.emoji-badge-count"), 1);
+
+  mutationCallback([{ type: "childList", target: new FakeElement(), addedNodes: [], removedNodes: [] }]);
+  assert.equal(countType("dom.title-menu-count"), 1, "unrelated mutation repeated unchanged menu count");
+  assert.equal(countType("dom.emoji-badge-count"), 1, "unrelated mutation repeated unchanged emoji count");
+
+  counts.set(".ho-title-action-menu", 1);
+  mutationCallback([{ type: "childList", target: root, addedNodes: [new FakeElement([".ho-title-action-menu"])], removedNodes: [] }]);
+  assert.equal(countType("dom.title-menu-count"), 2, "actual menu-count change was not emitted");
+  assert.equal(countType("dom.emoji-badge-count"), 1, "unchanged emoji count repeated beside menu change");
+
+  document.title = "Changed private title";
+  mutationCallback([{ type: "childList", target: titleNode, addedNodes: [], removedNodes: [] }]);
+  mutationCallback([{ type: "childList", target: titleNode, addedNodes: [], removedNodes: [] }]);
+  assert.equal(countType("document.title"), 2, "title snapshot must emit once per actual title value change");
+
+  counts.set(".ho-tab-title-under-input", 2);
+  mutationCallback([{ type: "childList", target: root, addedNodes: [new FakeElement([".ho-tab-title-under-input"])], removedNodes: [] }]);
+  assert.equal(countType("dom.under-input"), 2, "actual under-input count change was not emitted");
+}
+
+class FakeClock {
+  constructor(now = 1000000) { this.now = now; this.nextId = 1; this.tasks = new Map(); }
+  setTimeout(handler, delay) {
+    const id = this.nextId++;
+    this.tasks.set(id, { at: this.now + Math.max(0, Number(delay) || 0), handler });
+    return id;
+  }
+  clearTimeout(id) { this.tasks.delete(id); }
+  async tick(amount) {
+    const end = this.now + amount;
+    for (;;) {
+      const due = [...this.tasks.entries()].filter(([, task]) => task.at <= end)
+        .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+      if (!due) break;
+      this.now = due[1].at;
+      this.tasks.delete(due[0]);
+      await due[1].handler();
+      await flushAsync();
+    }
+    this.now = end;
+    await flushAsync();
+  }
+}
+
+function listenerSlot() {
+  return { listeners: [], addListener(handler) { this.listeners.push(handler); } };
+}
+
+function makeWorkerHarness() {
+  const clock = new FakeClock();
+  const values = new Map();
+  let registrations = [];
+  const clone = (value) => value === undefined ? undefined : structuredClone(value);
+  const storage = {
+    get: async (keys) => Object.fromEntries(keys.filter((key) => values.has(key)).map((key) => [key, clone(values.get(key))])),
+    set: async (items) => { for (const [key, value] of Object.entries(items)) values.set(key, clone(value)); },
+    remove: async (keys) => { for (const key of keys) values.delete(key); },
+  };
+  const chrome = {
+    storage: { local: storage },
+    scripting: {
+      getRegisteredContentScripts: async ({ ids }) => registrations.filter((item) => ids.includes(item.id)).map(clone),
+      unregisterContentScripts: async ({ ids }) => { registrations = registrations.filter((item) => !ids.includes(item.id)); },
+      registerContentScripts: async (items) => { registrations.push(...items.map(clone)); },
+      executeScript: async () => [],
+    },
+    tabs: { query: async () => [], sendMessage: async () => null },
+    runtime: { onMessage: listenerSlot(), onStartup: listenerSlot(), onInstalled: listenerSlot() },
+    webNavigation: {
+      onBeforeNavigate: listenerSlot(), onCommitted: listenerSlot(), onDOMContentLoaded: listenerSlot(),
+      onCompleted: listenerSlot(), onErrorOccurred: listenerSlot(), onHistoryStateUpdated: listenerSlot(),
+      onReferenceFragmentUpdated: listenerSlot(),
+    },
+  };
+  const FakeDate = class extends Date { static now() { return clock.now; } };
+  const source = makeTitleNavigationDiagnosticServiceWorkerJs();
+  const marker = '  void reconcile("worker-wake");';
+  const instrumented = source.replace(marker, `  globalThis.__h2oTitleStage0B2BTest = Object.freeze({
+    bytes, emptyEvidence, makeEvent, retainEvent, appendEvent, navigationEvent, collectorBoot,
+    collectorEvent, maybeSettle, reconcile, completeRun, clearTimers, routeShape
+  });`);
+  assert.notEqual(instrumented, source, "service-worker test instrumentation point missing");
+  const context = {
+    chrome, crypto: crypto.webcrypto, TextEncoder, URL, structuredClone, Date: FakeDate,
+    setTimeout: (handler, delay) => clock.setTimeout(handler, delay),
+    clearTimeout: (id) => clock.clearTimeout(id), console,
+  };
+  vm.runInNewContext(instrumented, context, { filename: "generated-service-worker-runtime.js" });
+  return { clock, values, storage, chrome, hook: context.__h2oTitleStage0B2BTest };
+}
+
+async function seedWorkerRun(harness, options = {}) {
+  const runId = options.runId || "run-worker-test";
+  const nonce = options.nonce || "12345678-1234-1234-1234-123456789abc";
+  const tabId = options.tabId || 77;
+  const documentId = options.documentId || "doc-source";
+  const sourceUrl = options.sourceUrl || "https://chatgpt.com/c/source-chat";
+  const sourceRoute = await harness.hook.routeShape(sourceUrl, nonce);
+  const control = {
+    schema: C.schema, state: "armed", runId, nonce, createdAt: harness.clock.now, armedAt: harness.clock.now,
+    expiresAt: harness.clock.now + C.limits.runTimeoutMs, targetTabId: tabId,
+    sourceDocumentId: documentId, destinationDocumentId: null, sourceRoute, destinationRoute: null, quietDeadline: null
+  };
+  const evidence = harness.hook.emptyEvidence(runId, "armed", harness.clock.now);
+  evidence.armedAt = harness.clock.now;
+  evidence.targetTabId = tabId;
+  evidence.summary.sourceRoute = sourceRoute;
+  evidence.documents.push({ documentId, tabId, frameId: 0, firstSeenAt: harness.clock.now,
+    route: sourceRoute, isolatedReady: true, mainReady: true });
+  await harness.storage.set({ [C.storage.control]: control, [C.storage.evidence]: evidence });
+  return { runId, nonce, tabId, documentId, sourceRoute };
+}
+
+async function assertEvidenceAndNavigationStateMachine() {
+  {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness);
+    const evidence = (await harness.storage.get([C.storage.evidence]))[C.storage.evidence];
+    for (let index = 0; index < 700; index += 1) {
+      const event = harness.hook.makeEvent(evidence, {
+        eventId: "optional:" + index, atEpochMs: harness.clock.now + index,
+        source: "isolated", category: "performance", type: "performance.longtask",
+        priorityClass: "optional", tabId: seeded.tabId, frameId: 0, documentId: seeded.documentId,
+        route: seeded.sourceRoute, data: { message: "x".repeat(200), duration: index }
+      });
+      harness.hook.retainEvent(evidence, event);
+    }
+    evidence.summary.destinationRoute = "/c/#destination";
+    evidence.state = "settling";
+    const control = (await harness.storage.get([C.storage.control]))[C.storage.control];
+    control.state = "settling";
+    control.destinationRoute = evidence.summary.destinationRoute;
+    control.destinationDocumentId = seeded.documentId;
+    control.quietDeadline = harness.clock.now + 1000;
+    await harness.storage.set({ [C.storage.control]: control, [C.storage.evidence]: evidence });
+    await harness.hook.completeRun("destination-settled");
+    const result = (await harness.storage.get([C.storage.evidence]))[C.storage.evidence];
+    assert.equal(result.state, "complete", "completion state was starved by optional saturation");
+    assert.equal(result.summary.destinationRoute, "/c/#destination", "destination summary was starved");
+    assert(result.events.some((event) => event.type === "run.completed" && event.priorityClass === "critical"),
+      "critical completion timeline event was not retained");
+    assert(harness.hook.bytes(result) <= C.limits.maxStoredBytes, "saturated evidence exceeded 128 KB");
+    assert(result.droppedBySizeCount > 0, "optional saturation did not record bounded drops");
+  }
+
+  {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness);
+    await harness.hook.navigationEvent("history-state", {
+      tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/destination-chat", timeStamp: harness.clock.now
+    });
+    let all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].transitionKind, "same-document");
+    assert.equal(all[C.storage.control].destinationDocumentId, seeded.documentId,
+      "same-document navigation fabricated or lost its trusted document identity");
+    assert.notEqual(all[C.storage.control].destinationRoute, seeded.sourceRoute,
+      "same-document chats were not distinguished by salted routes");
+    assert.equal(all[C.storage.evidence].documents.length, 1, "same-document navigation created a second document");
+    assert.equal(all[C.storage.control].state, "settling", "same-document navigation did not reach settling");
+    const deadline = all[C.storage.control].quietDeadline;
+    await harness.hook.collectorEvent({
+      runId: seeded.runId, nonce: seeded.nonce, eventId: "optional:availability", atEpochMs: harness.clock.now + 10,
+      source: "main", category: "runtime", type: "runtime.availability", route: "/c/#id",
+      data: { chatTitle: true, tabTitle: true, underInput: true, autoEmojiAbsent: true }
+    }, { tab: { id: seeded.tabId }, frameId: 0, documentId: seeded.documentId });
+    all = await harness.storage.get([C.storage.control]);
+    assert.equal(all[C.storage.control].quietDeadline, deadline, "optional telemetry postponed the quiet deadline");
+    await harness.clock.tick(C.limits.settleMs + 25);
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].state, "complete", "same-document navigation did not complete");
+    assert.equal(all[C.storage.evidence].completionReason, "destination-settled");
+  }
+
+  {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness, { runId: "run-full-document" });
+    const destinationDocumentId = "doc-destination";
+    const destinationUrl = "https://chatgpt.com/c/full-destination";
+    await harness.hook.navigationEvent("committed", {
+      tabId: seeded.tabId, frameId: 0, documentId: destinationDocumentId,
+      url: destinationUrl, timeStamp: harness.clock.now
+    });
+    await harness.hook.collectorBoot({ eventId: "boot:destination", contentInstanceId: "content-destination" }, {
+      tab: { id: seeded.tabId, url: destinationUrl }, frameId: 0, documentId: destinationDocumentId,
+      documentLifecycle: "active", url: destinationUrl
+    });
+    for (const [type, eventId] of [["content.activated", "destination:isolated"], ["bridge.main-ready", "destination:main"]]) {
+      await harness.hook.collectorEvent({
+        runId: seeded.runId, nonce: seeded.nonce, eventId, atEpochMs: harness.clock.now,
+        source: type === "bridge.main-ready" ? "main" : "isolated", category: "lifecycle", type,
+        route: "/c/#id", data: {}
+      }, { tab: { id: seeded.tabId }, frameId: 0, documentId: destinationDocumentId });
+    }
+    let all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].transitionKind, "full-document");
+    assert.equal(all[C.storage.evidence].documents.length, 2, "full-document navigation did not retain two documents");
+    await harness.clock.tick(C.limits.settleMs + 25);
+    all = await harness.storage.get([C.storage.control]);
+    assert.equal(all[C.storage.control].state, "complete", "full-document navigation did not complete");
+  }
+
+  for (const expired of [false, true]) {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness, { runId: expired ? "run-restart-expired" : "run-restart-future" });
+    const all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    all[C.storage.control].state = "settling";
+    all[C.storage.control].destinationDocumentId = seeded.documentId;
+    all[C.storage.control].destinationRoute = "/c/#restart";
+    all[C.storage.control].quietDeadline = harness.clock.now + (expired ? -1 : 1000);
+    all[C.storage.evidence].state = "settling";
+    all[C.storage.evidence].summary.destinationRoute = "/c/#restart";
+    await harness.storage.set({ [C.storage.control]: all[C.storage.control], [C.storage.evidence]: all[C.storage.evidence] });
+    harness.hook.clearTimers();
+    await harness.hook.reconcile("test-restart");
+    if (!expired) await harness.clock.tick(1025);
+    const finalControl = (await harness.storage.get([C.storage.control]))[C.storage.control];
+    assert.equal(finalControl.state, "complete", expired
+      ? "expired persisted quiet deadline did not complete during reconciliation"
+      : "future persisted quiet deadline was not reconstructed after restart");
+  }
 }
 
 function assertRuntimeContract() {
@@ -423,6 +803,10 @@ function assertRuntimeContract() {
   assert.equal(C.limits.maxDocuments, 20);
   assert.equal(C.limits.maxStoredBytes, 128 * 1024);
   assert.equal(C.limits.maxEventPayloadBytes, 2 * 1024);
+  assert(C.limits.criticalReserveEvents > 0 && C.limits.criticalReserveEvents < C.limits.maxEvents,
+    "critical event reserve must be bounded within maxEvents");
+  assert(C.limits.criticalReserveBytes > 0 && C.limits.criticalReserveBytes < C.limits.maxStoredBytes,
+    "critical byte reserve must be bounded within maxStoredBytes");
   assert.equal(C.limits.maxTitleLengthMetadata, 128);
   assert.equal(C.limits.maxErrorMessage, 200);
   assert.equal(C.limits.maxStackFrames, 5);
@@ -434,6 +818,18 @@ function assertRuntimeContract() {
   assert(worker.includes('world: "MAIN"') && worker.includes('world: "ISOLATED"'), "world isolation missing");
   assert(worker.includes("executeScript") && worker.includes("registerContentScripts") && worker.includes("getRegisteredContentScripts"), "current/future injection missing");
   assert(worker.includes("writeChain") && worker.includes("dedupSuppressedCount") && worker.includes("maxStoredBytes"), "serialized bounded reducer missing");
+  assert(worker.includes("priorityClass") && worker.includes("criticalReserveEvents") && worker.includes("trimToHardLimit"),
+    "critical/optional bounded retention policy missing");
+  assert(worker.includes('kind === "history-state" || kind === "fragment"') &&
+    worker.includes('"same-document"') && worker.includes('"full-document"'),
+    "same-document/full-document destination paths missing");
+  assert(worker.includes("scheduleSettle(control)") && worker.includes("control.quietDeadline <= now()"),
+    "persisted settle-deadline reconstruction missing");
+  assert(main.includes("lastAvailabilityFingerprint") && main.includes("loaderMarkerPromise") &&
+    main.includes("availabilityFingerprint !== lastAvailabilityFingerprint"),
+    "change-driven API readiness or loader-marker concurrency guard missing");
+  assert(isolated.includes("lastTitleValue") && isolated.includes("lastTitleMenuCount") &&
+    isolated.includes("lastEmojiBadgeCount"), "isolated DOM snapshot suppression missing");
   assert(worker.includes('throw new Error("Unknown diagnostic message operation.")'), "unknown service-worker operations must be rejected");
   assert(worker.includes('throw new Error("Unknown diagnostic operation.")'), "unknown popup operations must be rejected");
   assert(worker.includes("worker-wake") && worker.includes("unregisterOwned") && worker.includes("reconcile"), "restart reconciliation missing");
@@ -511,6 +907,9 @@ assertTitleState();
 assertVariantIsolation();
 assertWorkspaceContract();
 assertTitleClickTimingContract();
+await assertMainCollectorChangeDriven();
+await assertIsolatedDomSuppression();
+await assertEvidenceAndNavigationStateMachine();
 assertRuntimeContract();
 assertBuildIntegration();
 if (GENERATED) assertGenerated();
