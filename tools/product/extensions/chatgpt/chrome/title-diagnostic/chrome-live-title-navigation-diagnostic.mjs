@@ -38,6 +38,7 @@ export const TITLE_DIAGNOSTIC_CONSTANTS = Object.freeze({
     maxStatusTtlMs: 24 * 60 * 60 * 1000,
     runTimeoutMs: 3 * 60 * 1000,
     settleMs: 2 * 1000,
+    sameDocumentRouteStableMs: 5 * 1000,
   }),
 });
 
@@ -65,6 +66,8 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
   const OWNED_IDS = Object.freeze([C.registrationIds.isolated, C.registrationIds.main]);
   const CHAT_FILTER = Object.freeze({ url: [{ hostEquals: "chatgpt.com", schemes: ["https"] }] });
   const ALLOWED_POPUP_OPS = new Set(["reset", "arm", "status", "export", "clear"]);
+  const ACTIVE_STATES = new Set(["armed", "navigating", "settling"]);
+  const TERMINAL_STATES = new Set(["complete", "error"]);
   const ALLOWED_COLLECTOR_TYPES = new Set([
     "content.bootstrap", "content.activated", "content.reinjected", "content.stopped",
     "bridge.main-ready", "bridge.h2o-ready", "bridge.h2o-replaced", "bridge.subscribed",
@@ -75,7 +78,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     "runtime.error", "runtime.timeout"
   ]);
   const CRITICAL_EVENT_TYPES = new Set([
-    "content.bootstrap", "content.activated", "bridge.main-ready", "bridge.h2o-replaced",
+    "content.bootstrap", "content.activated", "content.stopped", "bridge.main-ready", "bridge.h2o-replaced",
     "runtime.loader-marker", "runtime.error", "runtime.timeout", "run.completed"
   ]);
   const DESTINATION_ACTIVITY_TYPES = new Set([
@@ -91,7 +94,8 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     "selfCheckOk", "chatTitle", "tabTitle", "underInput", "autoEmojiAbsent",
     "loaderBuildTs", "loaderBuildIso", "loaderSource", "contentInstanceId",
     "pageInstanceId", "performanceTimeOrigin", "errorKind", "message", "stack",
-    "markerMatch", "lifecycle", "destinationReady", "isolatedReady", "mainReady"
+    "markerMatch", "lifecycle", "destinationReady", "isolatedReady", "mainReady",
+    "textPresent", "hidden", "visible", "ariaHidden", "ariaExpanded"
   ]);
   let writeChain = Promise.resolve();
   let settleTimer = null;
@@ -212,8 +216,9 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
 
   function trimToHardLimit(evidence, protectedEventId) {
     while (evidence.events.length > C.limits.maxEvents || bytes(evidence) > C.limits.maxStoredBytes) {
-      let index = evidence.events.findIndex((event) => event.priorityClass !== "critical" && event.eventId !== protectedEventId);
-      if (index < 0) index = evidence.events.findIndex((event) => event.eventId !== protectedEventId);
+      const removable = (event) => event.eventId !== protectedEventId && event.type !== "run.completed";
+      let index = evidence.events.findIndex((event) => event.priorityClass !== "critical" && removable(event));
+      if (index < 0) index = evidence.events.findIndex(removable);
       if (index < 0) break;
       evidence.events.splice(index, 1);
       bumpCounter(evidence, "overflowCount");
@@ -288,6 +293,9 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       const control = all[C.storage.control];
       const evidence = all[C.storage.evidence];
       if (!control || !evidence || control.runId !== spec.runId || evidence.runId !== spec.runId) return false;
+      const terminalStop = TERMINAL_STATES.has(control.state) && spec.type === "content.stopped";
+      if (!ACTIVE_STATES.has(control.state) && !terminalStop) return false;
+      if (terminalStop && evidence.events.some((event) => event.type === "content.stopped")) return false;
       if (!validId(spec.eventId) || evidence.events.some((event) => event.eventId === spec.eventId)) {
         bumpCounter(evidence, "dedupSuppressedCount");
         trimToHardLimit(evidence, null);
@@ -360,18 +368,45 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     timeoutTimer = null;
   }
 
-  async function completeRun(reason) {
-    clearTimers();
+  function settleDeadline(control) {
+    if (!control || !Number.isFinite(control.quietDeadline)) return null;
+    const routeDeadline = control.transitionKind === "same-document" && Number.isFinite(control.routeStableDeadline)
+      ? control.routeStableDeadline : control.quietDeadline;
+    return Math.max(control.quietDeadline, routeDeadline);
+  }
+
+  function destinationIsReady(control, evidence) {
+    if (!control?.destinationDocumentId) return false;
+    const document = evidence?.documents?.find((item) => item.documentId === control.destinationDocumentId);
+    return Boolean(document?.isolatedReady && document?.mainReady);
+  }
+
+  // Terminal ownership is claimed inside the serialized mutation. Timers,
+  // navigation handlers, and reconciliation may race to call this function,
+  // but only the first active-state mutation can append completion and request
+  // collector teardown.
+  async function completeRun(reason, expectedRunId) {
     const result = await enqueue(async () => {
       const all = await readAll();
       const control = all[C.storage.control];
       const evidence = all[C.storage.evidence];
-      if (!control || !evidence || !["armed", "navigating", "settling"].includes(control.state)) return null;
+      if (!control || !evidence || !ACTIVE_STATES.has(control.state)) return null;
+      if (expectedRunId && control.runId !== expectedRunId) return null;
+      if (reason === "destination-settled") {
+        const deadline = settleDeadline(control);
+        if (control.state !== "settling" || !destinationIsReady(control, evidence) ||
+          !Number.isFinite(deadline) || deadline > now()) {
+          return Number.isFinite(deadline) ? { schedule: structuredClone(control) } : null;
+        }
+      }
       control.state = reason === "timeout" ? "error" : "complete";
       control.completedAt = now();
-      evidence.state = control.state; evidence.completedAt = control.completedAt; evidence.completionReason = reason;
+      control.teardownStartedAt = control.completedAt;
+      evidence.state = control.state;
+      evidence.completedAt = control.completedAt;
+      evidence.completionReason = reason;
       const completedEvent = makeEvent(evidence, {
-        runId: control.runId, eventId: "run:completed:" + control.runId + ":" + control.completedAt,
+        runId: control.runId, eventId: "run:completed:" + control.runId,
         atEpochMs: control.completedAt, source: "service-worker", category: "lifecycle", type: "run.completed",
         priorityClass: "critical", tabId: control.targetTabId, frameId: 0,
         documentId: control.destinationDocumentId || control.sourceDocumentId,
@@ -383,30 +418,33 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
         [C.storage.evidence]: evidence,
         [C.storage.status]: makeStatus(control, evidence)
       });
-      return { tabId: control.targetTabId, nonce: control.nonce };
+      return { completed: true, tabId: control.targetTabId, nonce: control.nonce };
     });
+    if (result?.schedule) {
+      scheduleSettle(result.schedule);
+      return false;
+    }
+    if (!result?.completed) return false;
+    clearTimers();
     await unregisterOwned();
-    if (result) await requestTeardown(result.tabId, result.nonce);
+    await requestTeardown(result.tabId, result.nonce);
+    return true;
   }
 
   function scheduleTimeout(control) {
     clearTimeoutTimer();
     if (!control || !Number.isFinite(control.expiresAt)) return;
-    timeoutTimer = setTimeout(() => { void completeRun("timeout"); }, Math.max(0, control.expiresAt - now()));
+    const runId = control.runId;
+    timeoutTimer = setTimeout(() => { void completeRun("timeout", runId); }, Math.max(0, control.expiresAt - now()));
   }
 
   function scheduleSettle(control) {
     clearSettleTimer();
-    if (!control || control.state !== "settling" || !Number.isFinite(control.quietDeadline)) return;
+    const deadline = settleDeadline(control);
+    if (!control || control.state !== "settling" || !Number.isFinite(deadline)) return;
     const runId = control.runId;
-    settleTimer = setTimeout(async () => {
-      const current = (await readAll())[C.storage.control];
-      if (current?.runId === runId && current.state === "settling" && current.quietDeadline <= now()) {
-        await completeRun("destination-settled");
-      } else if (current?.runId === runId && current.state === "settling") {
-        scheduleSettle(current);
-      }
-    }, Math.max(0, control.quietDeadline - now()) + 25);
+    settleTimer = setTimeout(() => { void completeRun("destination-settled", runId); },
+      Math.max(0, deadline - now()) + 25);
   }
 
   async function maybeSettle(runId, documentId, extendQuiet) {
@@ -414,7 +452,8 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       const all = await readAll();
       const control = all[C.storage.control];
       const evidence = all[C.storage.evidence];
-      if (!control || !evidence || control.runId !== runId || !control.destinationDocumentId) return null;
+      if (!control || !evidence || control.runId !== runId || !ACTIVE_STATES.has(control.state) ||
+        !control.destinationDocumentId) return null;
       const document = evidence.documents.find((doc) => doc.documentId === control.destinationDocumentId);
       if (!document || !document.isolatedReady || !document.mainReady || document.documentId !== documentId) return null;
       const entering = control.state !== "settling" || !Number.isFinite(control.quietDeadline);
@@ -432,14 +471,21 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
   }
 
   async function reconcile(reason) {
-    const all = await readAll();
-    const control = all[C.storage.control];
+    let all = await readAll();
+    let control = all[C.storage.control];
     const registrationHealth = await ownedRegistrationHealth();
-    if (control && ["armed", "navigating", "settling"].includes(control.state) && control.expiresAt > now()) {
+    all = await readAll();
+    control = all[C.storage.control];
+    if (control && ACTIVE_STATES.has(control.state) && control.expiresAt > now()) {
       if (!registrationHealth.healthy) await registerOwned();
-      if (control.state === "settling" && Number.isFinite(control.quietDeadline)) {
-        if (control.quietDeadline <= now()) {
-          await completeRun("destination-settled");
+      control = (await readAll())[C.storage.control];
+      if (!control || !ACTIVE_STATES.has(control.state)) {
+        await unregisterOwned();
+        return { active: false, repaired: !registrationHealth.healthy, reason };
+      }
+      if (control.state === "settling" && Number.isFinite(settleDeadline(control))) {
+        if (settleDeadline(control) <= now()) {
+          await completeRun("destination-settled", control.runId);
           return { active: false, repaired: !registrationHealth.healthy, reason };
         }
         if (!settleTimer) scheduleSettle(control);
@@ -448,7 +494,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       return { active: true, repaired: !registrationHealth.healthy, reason };
     }
     if (registrationHealth.count) await unregisterOwned();
-    if (control && ["armed", "navigating", "settling"].includes(control.state)) await completeRun("timeout");
+    if (control && ACTIVE_STATES.has(control.state)) await completeRun("timeout", control.runId);
     return { active: false, reason };
   }
 
@@ -456,7 +502,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const all = await readAll();
     const previous = all[C.storage.control];
     clearTimers(); await unregisterOwned();
-    if (previous) await requestTeardown(previous.targetTabId, previous.nonce);
+    if (previous && ACTIVE_STATES.has(previous.state)) await requestTeardown(previous.targetTabId, previous.nonce);
     const at = now();
     const control = { schema: C.schema, state: "idle", runId: null, nonce: null, createdAt: at, expiresAt: null };
     const evidence = emptyEvidence(null, "idle", at);
@@ -473,7 +519,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const tab = tabs[0];
     if (!tab || !Number.isInteger(tab.id) || !isChatUrl(tab.url)) throw new Error("Open one active normal https://chatgpt.com/c/... tab before arming.");
     const old = (await readAll())[C.storage.control];
-    if (old) await requestTeardown(old.targetTabId, old.nonce);
+    if (old && ACTIVE_STATES.has(old.state)) await requestTeardown(old.targetTabId, old.nonce);
     clearTimers(); await unregisterOwned();
     const at = now();
     const runId = crypto.randomUUID();
@@ -482,7 +528,9 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const control = {
       schema: C.schema, state: "armed", runId, nonce, createdAt: at, armedAt: at,
       expiresAt: at + C.limits.runTimeoutMs, targetTabId: tab.id, sourceDocumentId: null,
-      destinationDocumentId: null, sourceRoute, destinationRoute: null, quietDeadline: null
+      destinationDocumentId: null, sourceRoute, destinationRoute: null, transitionKind: null,
+      destinationRouteChangedAt: null, routeStableDeadline: null, quietDeadline: null,
+      teardownStartedAt: null
     };
     const evidence = emptyEvidence(runId, "armed", at);
     evidence.armedAt = at; evidence.targetTabId = tab.id; evidence.summary.sourceRoute = sourceRoute;
@@ -506,7 +554,7 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
   async function clearEvidence() {
     const previous = (await readAll())[C.storage.control];
     clearTimers(); await unregisterOwned();
-    if (previous) await requestTeardown(previous.targetTabId, previous.nonce);
+    if (previous && ACTIVE_STATES.has(previous.state)) await requestTeardown(previous.targetTabId, previous.nonce);
     await removeValues([C.storage.control, C.storage.evidence, C.storage.status]);
     return { schema: C.schema, state: "idle", cleared: true };
   }
@@ -527,29 +575,45 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
 
   async function collectorBoot(message, sender) {
     if (!sender.tab || !Number.isInteger(sender.tab.id) || sender.frameId !== 0 || !validId(sender.documentId)) return { active: false };
-    const all = await readAll();
-    const control = all[C.storage.control];
-    if (!control || !["armed", "navigating", "settling"].includes(control.state) || control.expiresAt <= now() || control.targetTabId !== sender.tab.id) return { active: false };
-    const route = await routeShape(sender.url || sender.tab.url, control.nonce);
-    if (!control.sourceDocumentId) {
-      control.sourceDocumentId = sender.documentId;
-      if (control.destinationRoute && route === control.destinationRoute) control.destinationDocumentId = sender.documentId;
-    } else if (sender.documentId !== control.sourceDocumentId && route.startsWith("/c/#")) {
-      control.destinationDocumentId = sender.documentId;
-      control.destinationRoute = route;
-      control.state = "navigating";
+    const initial = (await readAll())[C.storage.control];
+    if (!initial || !ACTIVE_STATES.has(initial.state) || initial.expiresAt <= now() ||
+      initial.targetTabId !== sender.tab.id) return { active: false };
+    const route = await routeShape(sender.url || sender.tab.url, initial.nonce);
+    const result = await enqueue(async () => {
+      const all = await readAll();
+      const control = all[C.storage.control];
       const evidence = all[C.storage.evidence];
-      evidence.state = "navigating"; evidence.summary.destinationRoute = route;
-      await writeValues({ [C.storage.control]: control, [C.storage.evidence]: evidence, [C.storage.status]: makeStatus(control, evidence) });
-    } else {
-      await writeValues({ [C.storage.control]: control });
-    }
-    await appendEvent({
-      runId: control.runId, eventId: validId(message.eventId) ? message.eventId : "boot:" + sender.documentId,
-      atEpochMs: now(), source: "isolated", category: "lifecycle", type: "content.bootstrap",
-      tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId, route,
-      data: { contentInstanceId: cleanText(message.contentInstanceId, 80), lifecycle: sender.documentLifecycle || "unknown" }
+      if (!control || !evidence || control.runId !== initial.runId || !ACTIVE_STATES.has(control.state) ||
+        control.expiresAt <= now() || control.targetTabId !== sender.tab.id) return null;
+      if (!control.sourceDocumentId) {
+        control.sourceDocumentId = sender.documentId;
+        if (control.destinationRoute && route === control.destinationRoute) control.destinationDocumentId = sender.documentId;
+      } else if (sender.documentId !== control.sourceDocumentId && route.startsWith("/c/#")) {
+        applyDestinationState(control, evidence, route, sender.documentId, "full-document", now());
+      }
+      const spec = {
+        runId: control.runId, eventId: validId(message.eventId) ? message.eventId : "boot:" + sender.documentId,
+        atEpochMs: now(), source: "isolated", category: "lifecycle", type: "content.bootstrap",
+        priorityClass: "critical", tabId: sender.tab.id, frameId: sender.frameId,
+        documentId: sender.documentId, route,
+        data: { contentInstanceId: cleanText(message.contentInstanceId, 80), lifecycle: sender.documentLifecycle || "unknown" }
+      };
+      if (!evidence.events.some((event) => event.eventId === spec.eventId)) {
+        const event = makeEvent(evidence, spec);
+        applyEventState(evidence, event, spec);
+        retainEvent(evidence, event);
+      } else {
+        bumpCounter(evidence, "dedupSuppressedCount");
+      }
+      await rawWriteValues({
+        [C.storage.control]: control,
+        [C.storage.evidence]: evidence,
+        [C.storage.status]: makeStatus(control, evidence)
+      });
+      return { control: structuredClone(control), route };
     });
+    if (!result) return { active: false };
+    const control = result.control;
     if (control.destinationDocumentId === sender.documentId) await maybeSettle(control.runId, sender.documentId, true);
     return { active: true, runId: control.runId, nonce: control.nonce, route, expiresAt: control.expiresAt };
   }
@@ -560,6 +624,8 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
     const all = await readAll();
     const control = all[C.storage.control];
     if (!control || control.runId !== message.runId || control.nonce !== message.nonce || control.targetTabId !== sender.tab.id) return false;
+    const terminalStop = TERMINAL_STATES.has(control.state) && message.type === "content.stopped";
+    if (!ACTIVE_STATES.has(control.state) && !terminalStop) return false;
     const route = typeof message.route === "string" && /^\\/(?:c\\/#id|g\\/#slug(?:\\/c\\/#id)?|)$/.test(message.route) ? message.route : null;
     const stored = await appendEvent({
       runId: control.runId, eventId: message.eventId, atEpochMs: finite(message.atEpochMs) || now(),
@@ -567,56 +633,80 @@ export function makeTitleNavigationDiagnosticServiceWorkerJs() {
       type: message.type, tabId: sender.tab.id, frameId: sender.frameId, documentId: sender.documentId,
       route, data: message.data
     });
-    if (control.destinationDocumentId === sender.documentId) {
+    if (ACTIVE_STATES.has(control.state) && control.destinationDocumentId === sender.documentId) {
       await maybeSettle(control.runId, sender.documentId, DESTINATION_ACTIVITY_TYPES.has(message.type));
     }
     return stored;
   }
 
-  async function markDestination(control, evidence, route, documentId, transitionKind) {
+  function applyDestinationState(control, evidence, route, documentId, transitionKind, changedAt) {
     if (!route.startsWith("/c/#") || route === control.sourceRoute) return false;
+    const changed = route !== control.destinationRoute || transitionKind !== control.transitionKind;
+    if (!changed) return false;
     const destinationDocumentId = validId(documentId) ? documentId : control.sourceDocumentId;
     control.destinationRoute = route;
     control.destinationDocumentId = destinationDocumentId || null;
     control.transitionKind = transitionKind;
+    control.destinationRouteChangedAt = changedAt;
+    control.routeStableDeadline = transitionKind === "same-document"
+      ? changedAt + C.limits.sameDocumentRouteStableMs : null;
+    control.quietDeadline = null;
     control.state = "navigating";
     evidence.state = "navigating";
     evidence.summary.destinationRoute = route;
     evidence.summary.transitionKind = transitionKind;
     const document = evidence.documents.find((item) => item.documentId === destinationDocumentId);
     if (document) document.route = route;
-    await writeValues({
-      [C.storage.control]: control,
-      [C.storage.evidence]: evidence,
-      [C.storage.status]: makeStatus(control, evidence)
-    });
     return true;
   }
 
   async function navigationEvent(kind, details) {
     if (!details || details.frameId !== 0 || !Number.isInteger(details.tabId)) return;
-    const all = await readAll();
-    const control = all[C.storage.control];
-    if (!control || !["armed", "navigating", "settling"].includes(control.state) || control.targetTabId !== details.tabId || control.expiresAt <= now()) return;
-    const route = await routeShape(details.url, control.nonce);
-    const documentId = validId(details.documentId) ? details.documentId : null;
-    const evidence = all[C.storage.evidence];
-    if (kind === "committed" && documentId && control.sourceDocumentId && documentId !== control.sourceDocumentId) {
-      await markDestination(control, evidence, route, documentId, "full-document");
-    } else if ((kind === "history-state" || kind === "fragment") &&
-      (!documentId || !control.sourceDocumentId || documentId === control.sourceDocumentId)) {
-      await markDestination(control, evidence, route, documentId || control.sourceDocumentId, "same-document");
-    }
-    await appendEvent({
-      runId: control.runId, eventId: "nav:" + kind + ":" + (documentId || "none") + ":" + String(details.timeStamp || now()),
-      atEpochMs: finite(details.timeStamp) || now(), source: "service-worker", category: "navigation",
-      type: "webNavigation." + kind, tabId: details.tabId, frameId: details.frameId,
-      documentId, route, data: { errorKind: details.error ? cleanText(details.error, 80) : "" }
+    const result = await enqueue(async () => {
+      const all = await readAll();
+      const control = all[C.storage.control];
+      const evidence = all[C.storage.evidence];
+      if (!control || !evidence || !ACTIVE_STATES.has(control.state) ||
+        control.targetTabId !== details.tabId || control.expiresAt <= now()) return null;
+      const route = await routeShape(details.url, control.nonce);
+      const documentId = validId(details.documentId) ? details.documentId : null;
+      const eventAt = finite(details.timeStamp) || now();
+      if (kind === "committed" && documentId && control.sourceDocumentId && documentId !== control.sourceDocumentId) {
+        applyDestinationState(control, evidence, route, documentId, "full-document", eventAt);
+      } else if ((kind === "history-state" || kind === "fragment") &&
+        (!documentId || !control.sourceDocumentId || documentId === control.sourceDocumentId)) {
+        applyDestinationState(control, evidence, route, documentId || control.sourceDocumentId, "same-document", eventAt);
+      }
+      const spec = {
+        runId: control.runId,
+        eventId: "nav:" + kind + ":" + (documentId || "none") + ":" + String(details.timeStamp || eventAt),
+        atEpochMs: eventAt, source: "service-worker", category: "navigation",
+        type: "webNavigation." + kind, priorityClass: "critical",
+        tabId: details.tabId, frameId: details.frameId, documentId, route,
+        data: { errorKind: details.error ? cleanText(details.error, 80) : "" }
+      };
+      if (!evidence.events.some((event) => event.eventId === spec.eventId)) {
+        const event = makeEvent(evidence, spec);
+        applyEventState(evidence, event, spec);
+        retainEvent(evidence, event);
+      } else {
+        bumpCounter(evidence, "dedupSuppressedCount");
+      }
+      await rawWriteValues({
+        [C.storage.control]: control,
+        [C.storage.evidence]: evidence,
+        [C.storage.status]: makeStatus(control, evidence)
+      });
+      const destinationDocumentId = control.destinationDocumentId || documentId;
+      return {
+        control: structuredClone(control), destinationDocumentId,
+        destinationRelevant: route === control.destinationRoute &&
+          ["committed", "domcontentloaded", "completed", "history-state", "fragment", "error"].includes(kind)
+      };
     });
-    const destinationDocumentId = control.destinationDocumentId || documentId;
-    const destinationRelevant = route === control.destinationRoute &&
-      ["committed", "domcontentloaded", "completed", "history-state", "fragment", "error"].includes(kind);
-    if (destinationDocumentId) await maybeSettle(control.runId, destinationDocumentId, destinationRelevant);
+    if (result?.destinationDocumentId) {
+      await maybeSettle(result.control.runId, result.destinationDocumentId, result.destinationRelevant);
+    }
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -663,7 +753,7 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
   let observer = null;
   let runtimeHandler = null;
   let lastTitleValue = null;
-  let lastUnderInputCount = null;
+  let lastUnderInputFingerprint = null;
   let lastTitleMenuCount = null;
   let lastEmojiBadgeCount = null;
   const performanceObservers = [];
@@ -675,7 +765,7 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
     "route.event", "route.popstate", "runtime.availability", "runtime.loader-marker",
     "runtime.error", "runtime.timeout"
   ]);
-  const allowedAttributes = new Set(["class", "role", "title", "hidden", "aria-label", "aria-expanded", "aria-hidden"]);
+  const allowedAttributes = new Set(["class", "style", "role", "title", "hidden", "aria-label", "aria-expanded", "aria-hidden"]);
   const now = () => Date.now();
   const route = () => {
     const parts = location.pathname.split("/").filter(Boolean);
@@ -705,12 +795,41 @@ export function makeTitleNavigationDiagnosticIsolatedJs() {
     emit("document.title", "render", titleMetadata(value));
     return true;
   }
+  function underInputMetadata() {
+    let nodes = [];
+    try { nodes = Array.from(document.querySelectorAll(".ho-tab-title-under-input")); } catch {}
+    let textLength = 0;
+    let hidden = false;
+    let visible = false;
+    let ariaHidden = false;
+    let ariaExpanded = false;
+    for (const node of nodes.slice(0, C.limits.maxDocuments)) {
+      const text = String(node?.textContent || "");
+      textLength = Math.min(C.limits.maxTitleLengthMetadata, textLength + text.length);
+      const getAttribute = (name) => typeof node?.getAttribute === "function" ? node.getAttribute(name) : null;
+      const nodeHidden = node?.hidden === true || getAttribute("hidden") !== null;
+      const nodeAriaHidden = getAttribute("aria-hidden") === "true";
+      let styleHidden = false;
+      try {
+        const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+        styleHidden = style?.display === "none" || style?.visibility === "hidden" || style?.visibility === "collapse";
+      } catch {}
+      hidden = hidden || nodeHidden;
+      ariaHidden = ariaHidden || nodeAriaHidden;
+      visible = visible || !(nodeHidden || nodeAriaHidden || styleHidden);
+      ariaExpanded = ariaExpanded || getAttribute("aria-expanded") === "true";
+    }
+    return {
+      count: nodes.length, present: nodes.length > 0, textPresent: textLength > 0,
+      length: textLength, hidden, visible, ariaHidden, ariaExpanded
+    };
+  }
   function emitUnderInputSnapshot(meta, force) {
-    const current = count(".ho-tab-title-under-input");
-    const meaningful = force || current !== lastUnderInputCount || meta.added > 0 || meta.removed > 0 || meta.textChanged || !!meta.attribute;
-    lastUnderInputCount = current;
-    if (!meaningful) return false;
-    emit("dom.under-input", "render", { count: current, ...meta });
+    const snapshot = underInputMetadata();
+    const fingerprint = JSON.stringify(snapshot);
+    if (!force && fingerprint === lastUnderInputFingerprint) return false;
+    lastUnderInputFingerprint = fingerprint;
+    emit("dom.under-input", "render", { ...snapshot, ...meta });
     return true;
   }
   function emitCountSnapshot(type, selector, key, force) {

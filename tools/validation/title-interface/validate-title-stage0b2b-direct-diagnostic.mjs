@@ -497,21 +497,31 @@ async function assertIsolatedDomSuppression() {
   const sent = [];
   let mutationCallback = null;
   class FakeElement extends FakeEventTarget {
-    constructor(selectors = []) { super(); this.selectors = new Set(selectors); this.parentElement = null; }
+    constructor(selectors = []) {
+      super(); this.selectors = new Set(selectors); this.parentElement = null;
+      this.attributes = new Map(); this.hidden = false; this.textContent = "";
+      this.styleDisplay = "block"; this.styleVisibility = "visible";
+    }
     matches(selector) { return String(selector).split(",").some((item) => this.selectors.has(item.trim())); }
     closest(selector) { return this.matches(selector) ? this : null; }
     querySelector(selector) { return this.matches(selector) ? this : null; }
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
   }
   const titleNode = new FakeElement(["title"]);
   const root = new FakeElement();
+  const initialUnderInput = new FakeElement([".ho-tab-title-under-input"]);
+  initialUnderInput.textContent = "Initial title";
+  const underInputNodes = [initialUnderInput];
   const counts = new Map([
-    [".ho-tab-title-under-input", 1], [".ho-title-action-menu", 0], [".ho-emoji-badge", 0]
+    [".ho-title-action-menu", 0], [".ho-emoji-badge", 0]
   ]);
   const document = {
     title: "Initial private title",
     documentElement: root,
     querySelector: (selector) => selector === "title" ? titleNode : null,
-    querySelectorAll: (selector) => Array.from({ length: counts.get(selector) || 0 }, () => ({})),
+    querySelectorAll: (selector) => selector === ".ho-tab-title-under-input"
+      ? underInputNodes : Array.from({ length: counts.get(selector) || 0 }, () => ({})),
   };
   const window = new FakeEventTarget();
   window.postMessage = () => {};
@@ -521,6 +531,7 @@ async function assertIsolatedDomSuppression() {
     document,
     location: { pathname: "/c/source" },
     Element: FakeElement,
+    getComputedStyle: (node) => ({ display: node.styleDisplay, visibility: node.styleVisibility }),
     crypto: crypto.webcrypto,
     TextEncoder,
     MutationObserver: class {
@@ -554,6 +565,13 @@ async function assertIsolatedDomSuppression() {
   assert.equal(countType("dom.title-menu-count"), 1);
   assert.equal(countType("dom.emoji-badge-count"), 1);
 
+  for (let index = 0; index < 30; index += 1) {
+    mutationCallback([{ type: "attributes", target: initialUnderInput, attributeName: "class",
+      addedNodes: [], removedNodes: [] }]);
+  }
+  assert.equal(countType("dom.under-input"), 1,
+    "class-only churn with unchanged semantics repeated under-input evidence");
+
   mutationCallback([{ type: "childList", target: new FakeElement(), addedNodes: [], removedNodes: [] }]);
   assert.equal(countType("dom.title-menu-count"), 1, "unrelated mutation repeated unchanged menu count");
   assert.equal(countType("dom.emoji-badge-count"), 1, "unrelated mutation repeated unchanged emoji count");
@@ -568,9 +586,19 @@ async function assertIsolatedDomSuppression() {
   mutationCallback([{ type: "childList", target: titleNode, addedNodes: [], removedNodes: [] }]);
   assert.equal(countType("document.title"), 2, "title snapshot must emit once per actual title value change");
 
-  counts.set(".ho-tab-title-under-input", 2);
-  mutationCallback([{ type: "childList", target: root, addedNodes: [new FakeElement([".ho-tab-title-under-input"])], removedNodes: [] }]);
+  const addedUnderInput = new FakeElement([".ho-tab-title-under-input"]);
+  underInputNodes.push(addedUnderInput);
+  mutationCallback([{ type: "childList", target: root, addedNodes: [addedUnderInput], removedNodes: [] }]);
   assert.equal(countType("dom.under-input"), 2, "actual under-input count change was not emitted");
+
+  initialUnderInput.textContent = "Changed title length";
+  mutationCallback([{ type: "characterData", target: { parentElement: initialUnderInput }, addedNodes: [], removedNodes: [] }]);
+  assert.equal(countType("dom.under-input"), 3, "actual under-input text metadata change was not emitted");
+
+  initialUnderInput.hidden = true;
+  mutationCallback([{ type: "attributes", target: initialUnderInput, attributeName: "hidden",
+    addedNodes: [], removedNodes: [] }]);
+  assert.equal(countType("dom.under-input"), 4, "actual under-input semantic visibility change was not emitted");
 }
 
 class FakeClock {
@@ -605,6 +633,7 @@ function makeWorkerHarness() {
   const clock = new FakeClock();
   const values = new Map();
   let registrations = [];
+  const teardownRequests = [];
   const clone = (value) => value === undefined ? undefined : structuredClone(value);
   const storage = {
     get: async (keys) => Object.fromEntries(keys.filter((key) => values.has(key)).map((key) => [key, clone(values.get(key))])),
@@ -619,7 +648,14 @@ function makeWorkerHarness() {
       registerContentScripts: async (items) => { registrations.push(...items.map(clone)); },
       executeScript: async () => [],
     },
-    tabs: { query: async () => [], sendMessage: async () => null },
+    tabs: { query: async () => [], sendMessage: async (tabId, message) => {
+      const evidence = values.get(C.storage.evidence);
+      teardownRequests.push({
+        at: clock.now, tabId, message: clone(message), evidenceState: evidence?.state || null,
+        completedEvents: evidence?.events?.filter((event) => event.type === "run.completed").length || 0
+      });
+      return null;
+    } },
     runtime: { onMessage: listenerSlot(), onStartup: listenerSlot(), onInstalled: listenerSlot() },
     webNavigation: {
       onBeforeNavigate: listenerSlot(), onCommitted: listenerSlot(), onDOMContentLoaded: listenerSlot(),
@@ -632,7 +668,8 @@ function makeWorkerHarness() {
   const marker = '  void reconcile("worker-wake");';
   const instrumented = source.replace(marker, `  globalThis.__h2oTitleStage0B2BTest = Object.freeze({
     bytes, emptyEvidence, makeEvent, retainEvent, appendEvent, navigationEvent, collectorBoot,
-    collectorEvent, maybeSettle, reconcile, completeRun, clearTimers, routeShape
+    collectorEvent, maybeSettle, reconcile, completeRun, clearTimers, routeShape,
+    scheduleSettle, scheduleTimeout, settleDeadline
   });`);
   assert.notEqual(instrumented, source, "service-worker test instrumentation point missing");
   const context = {
@@ -641,7 +678,7 @@ function makeWorkerHarness() {
     clearTimeout: (id) => clock.clearTimeout(id), console,
   };
   vm.runInNewContext(instrumented, context, { filename: "generated-service-worker-runtime.js" });
-  return { clock, values, storage, chrome, hook: context.__h2oTitleStage0B2BTest };
+  return { clock, values, storage, chrome, teardownRequests, hook: context.__h2oTitleStage0B2BTest };
 }
 
 async function seedWorkerRun(harness, options = {}) {
@@ -654,7 +691,9 @@ async function seedWorkerRun(harness, options = {}) {
   const control = {
     schema: C.schema, state: "armed", runId, nonce, createdAt: harness.clock.now, armedAt: harness.clock.now,
     expiresAt: harness.clock.now + C.limits.runTimeoutMs, targetTabId: tabId,
-    sourceDocumentId: documentId, destinationDocumentId: null, sourceRoute, destinationRoute: null, quietDeadline: null
+    sourceDocumentId: documentId, destinationDocumentId: null, sourceRoute, destinationRoute: null,
+    transitionKind: null, destinationRouteChangedAt: null, routeStableDeadline: null,
+    quietDeadline: null, teardownStartedAt: null
   };
   const evidence = harness.hook.emptyEvidence(runId, "armed", harness.clock.now);
   evidence.armedAt = harness.clock.now;
@@ -686,7 +725,7 @@ async function assertEvidenceAndNavigationStateMachine() {
     control.state = "settling";
     control.destinationRoute = evidence.summary.destinationRoute;
     control.destinationDocumentId = seeded.documentId;
-    control.quietDeadline = harness.clock.now + 1000;
+    control.quietDeadline = harness.clock.now;
     await harness.storage.set({ [C.storage.control]: control, [C.storage.evidence]: evidence });
     await harness.hook.completeRun("destination-settled");
     const result = (await harness.storage.get([C.storage.evidence]))[C.storage.evidence];
@@ -713,6 +752,9 @@ async function assertEvidenceAndNavigationStateMachine() {
     assert.equal(all[C.storage.evidence].documents.length, 1, "same-document navigation created a second document");
     assert.equal(all[C.storage.control].state, "settling", "same-document navigation did not reach settling");
     const deadline = all[C.storage.control].quietDeadline;
+    const routeStableDeadline = all[C.storage.control].routeStableDeadline;
+    assert(routeStableDeadline - harness.clock.now >= 5000,
+      "same-document route stability interval must be at least 5000 ms");
     await harness.hook.collectorEvent({
       runId: seeded.runId, nonce: seeded.nonce, eventId: "optional:availability", atEpochMs: harness.clock.now + 10,
       source: "main", category: "runtime", type: "runtime.availability", route: "/c/#id",
@@ -721,9 +763,114 @@ async function assertEvidenceAndNavigationStateMachine() {
     all = await harness.storage.get([C.storage.control]);
     assert.equal(all[C.storage.control].quietDeadline, deadline, "optional telemetry postponed the quiet deadline");
     await harness.clock.tick(C.limits.settleMs + 25);
+    all = await harness.storage.get([C.storage.control]);
+    assert.equal(all[C.storage.control].state, "settling", "same-document navigation completed before route stability");
+    await harness.clock.tick(routeStableDeadline - harness.clock.now + 25);
     all = await harness.storage.get([C.storage.control, C.storage.evidence]);
     assert.equal(all[C.storage.control].state, "complete", "same-document navigation did not complete");
     assert.equal(all[C.storage.evidence].completionReason, "destination-settled");
+  }
+
+  {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness, { runId: "run-late-canonical-route" });
+    await harness.hook.navigationEvent("history-state", {
+      tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/provisional-chat", timeStamp: harness.clock.now
+    });
+    let all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    const provisionalRoute = all[C.storage.control].destinationRoute;
+    await harness.clock.tick(C.limits.settleMs + 500);
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].state, "settling", "provisional route completed after only the quiet window");
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.type === "run.completed").length, 0,
+      "provisional route emitted completion");
+
+    await harness.hook.navigationEvent("history-state", {
+      tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/final-chat", timeStamp: harness.clock.now
+    });
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    const finalRoute = all[C.storage.control].destinationRoute;
+    const finalStableDeadline = all[C.storage.control].routeStableDeadline;
+    assert.notEqual(finalRoute, provisionalRoute, "late canonical route did not replace the provisional candidate");
+    await harness.clock.tick(finalStableDeadline - harness.clock.now + 24);
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].state, "settling", "final route completed before its stability deadline");
+    await harness.clock.tick(1);
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert.equal(all[C.storage.control].state, "complete", "stable final route did not complete");
+    assert.equal(all[C.storage.control].destinationRoute, finalRoute);
+    assert.equal(all[C.storage.evidence].summary.destinationRoute, finalRoute);
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.type === "run.completed").length, 1,
+      "final route emitted duplicate completion");
+    assert.equal(harness.teardownRequests.length, 1, "completion did not initiate exactly one teardown");
+    assert.equal(harness.teardownRequests[0].evidenceState, "complete",
+      "collector teardown began before terminal evidence was stored");
+    assert.equal(harness.teardownRequests[0].completedEvents, 1,
+      "collector teardown began before run.completed was retained");
+
+    const terminal = structuredClone(all[C.storage.control]);
+    const terminalEvidence = structuredClone(all[C.storage.evidence]);
+    const navigationCount = all[C.storage.evidence].events.filter((event) => event.category === "navigation").length;
+    await harness.hook.navigationEvent("history-state", {
+      tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/too-late", timeStamp: harness.clock.now
+    });
+    await harness.hook.completeRun("destination-settled", seeded.runId);
+    await harness.hook.reconcile("late-terminal-reconcile");
+    await harness.hook.collectorEvent({
+      runId: seeded.runId, nonce: seeded.nonce, eventId: "late:collector", atEpochMs: harness.clock.now,
+      source: "main", category: "runtime", type: "runtime.availability", route: "/c/#id", data: { present: true }
+    }, { tab: { id: seeded.tabId }, frameId: 0, documentId: seeded.documentId });
+    all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    for (const key of ["state", "completedAt", "destinationRoute", "destinationDocumentId", "transitionKind"]) {
+      assert.equal(all[C.storage.control][key], terminal[key], `terminal field changed after completion: ${key}`);
+    }
+    assert.equal(all[C.storage.evidence].completedAt, terminalEvidence.completedAt,
+      "terminal evidence timestamp changed after completion");
+    assert.equal(all[C.storage.evidence].summary.destinationRoute, terminalEvidence.summary.destinationRoute,
+      "terminal destination summary changed after completion");
+    assert.equal(all[C.storage.evidence].completionReason, "destination-settled");
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.type === "run.completed").length, 1);
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.category === "navigation").length, navigationCount,
+      "late navigation was accepted after teardown");
+    assert.equal(harness.teardownRequests.length, 1, "terminal paths initiated a second teardown");
+
+    const stoppedMessage = (eventId) => ({
+      runId: seeded.runId, nonce: seeded.nonce, eventId, atEpochMs: harness.clock.now,
+      source: "isolated", category: "lifecycle", type: "content.stopped", route: "/c/#id",
+      data: { reason: "service-worker" }
+    });
+    const sender = { tab: { id: seeded.tabId }, frameId: 0, documentId: seeded.documentId };
+    await harness.hook.collectorEvent(stoppedMessage("stop:one"), sender);
+    await harness.hook.collectorEvent(stoppedMessage("stop:two"), sender);
+    all = await harness.storage.get([C.storage.evidence]);
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.type === "content.stopped").length, 1,
+      "collector teardown evidence was duplicated");
+    const completedIndex = all[C.storage.evidence].events.findIndex((event) => event.type === "run.completed");
+    const stoppedIndex = all[C.storage.evidence].events.findIndex((event) => event.type === "content.stopped");
+    assert(completedIndex >= 0 && stoppedIndex > completedIndex, "teardown evidence preceded terminal completion");
+  }
+
+  {
+    const harness = makeWorkerHarness();
+    const seeded = await seedWorkerRun(harness, { runId: "run-terminal-race" });
+    await harness.hook.navigationEvent("history-state", {
+      tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/race-destination", timeStamp: harness.clock.now
+    });
+    const settling = (await harness.storage.get([C.storage.control]))[C.storage.control];
+    harness.clock.now = Math.max(settling.quietDeadline, settling.routeStableDeadline) + 25;
+    await Promise.all([
+      harness.hook.completeRun("destination-settled", seeded.runId),
+      harness.hook.navigationEvent("history-state", {
+        tabId: seeded.tabId, frameId: 0, url: "https://chatgpt.com/c/race-late", timeStamp: harness.clock.now
+      }),
+      harness.hook.completeRun("timeout", seeded.runId),
+      harness.hook.reconcile("race-reconcile"),
+    ]);
+    const all = await harness.storage.get([C.storage.control, C.storage.evidence]);
+    assert(["complete", "error"].includes(all[C.storage.control].state), "completion race produced no terminal winner");
+    assert.equal(all[C.storage.evidence].events.filter((event) => event.type === "run.completed").length, 1,
+      "completion race produced multiple terminal events");
+    assert.equal(harness.teardownRequests.length, 1, "completion race initiated multiple teardowns");
   }
 
   {
@@ -761,13 +908,16 @@ async function assertEvidenceAndNavigationStateMachine() {
     all[C.storage.control].state = "settling";
     all[C.storage.control].destinationDocumentId = seeded.documentId;
     all[C.storage.control].destinationRoute = "/c/#restart";
+    all[C.storage.control].transitionKind = "same-document";
+    all[C.storage.control].destinationRouteChangedAt = harness.clock.now - (expired ? 5001 : 3500);
+    all[C.storage.control].routeStableDeadline = harness.clock.now + (expired ? -1 : 1500);
     all[C.storage.control].quietDeadline = harness.clock.now + (expired ? -1 : 1000);
     all[C.storage.evidence].state = "settling";
     all[C.storage.evidence].summary.destinationRoute = "/c/#restart";
     await harness.storage.set({ [C.storage.control]: all[C.storage.control], [C.storage.evidence]: all[C.storage.evidence] });
     harness.hook.clearTimers();
     await harness.hook.reconcile("test-restart");
-    if (!expired) await harness.clock.tick(1025);
+    if (!expired) await harness.clock.tick(1525);
     const finalControl = (await harness.storage.get([C.storage.control]))[C.storage.control];
     assert.equal(finalControl.state, "complete", expired
       ? "expired persisted quiet deadline did not complete during reconciliation"
@@ -812,6 +962,8 @@ function assertRuntimeContract() {
   assert.equal(C.limits.maxStackFrames, 5);
   assert.equal(C.limits.maxStackChars, 500);
   assert(C.limits.maxStatusTtlMs <= 24 * 60 * 60 * 1000);
+  assert(C.limits.sameDocumentRouteStableMs >= 5000,
+    "same-document route stability interval must be at least 5000 ms");
 
   for (const id of Object.values(C.registrationIds)) assert.equal((worker.match(new RegExp(id, "g")) || []).length >= 1, true, `missing registration ID ${id}`);
   assert(worker.includes("persistAcrossSessions: false") && worker.includes('runAt: "document_start"'), "dynamic registration lifecycle missing");
@@ -823,13 +975,19 @@ function assertRuntimeContract() {
   assert(worker.includes('kind === "history-state" || kind === "fragment"') &&
     worker.includes('"same-document"') && worker.includes('"full-document"'),
     "same-document/full-document destination paths missing");
-  assert(worker.includes("scheduleSettle(control)") && worker.includes("control.quietDeadline <= now()"),
+  assert(worker.includes("scheduleSettle(control)") && worker.includes("settleDeadline(control)"),
     "persisted settle-deadline reconstruction missing");
+  assert(worker.includes("sameDocumentRouteStableMs") && worker.includes("routeStableDeadline") &&
+    worker.includes("destinationRouteChangedAt"), "same-document route stabilization missing");
+  assert(worker.includes("ACTIVE_STATES.has(control.state)") && worker.includes("teardownStartedAt") &&
+    worker.includes('eventId: "run:completed:" + control.runId'),
+    "serialized terminal-state ownership missing");
   assert(main.includes("lastAvailabilityFingerprint") && main.includes("loaderMarkerPromise") &&
     main.includes("availabilityFingerprint !== lastAvailabilityFingerprint"),
     "change-driven API readiness or loader-marker concurrency guard missing");
   assert(isolated.includes("lastTitleValue") && isolated.includes("lastTitleMenuCount") &&
-    isolated.includes("lastEmojiBadgeCount"), "isolated DOM snapshot suppression missing");
+    isolated.includes("lastEmojiBadgeCount") && isolated.includes("lastUnderInputFingerprint") &&
+    isolated.includes("underInputMetadata"), "isolated DOM snapshot suppression missing");
   assert(worker.includes('throw new Error("Unknown diagnostic message operation.")'), "unknown service-worker operations must be rejected");
   assert(worker.includes('throw new Error("Unknown diagnostic operation.")'), "unknown popup operations must be rejected");
   assert(worker.includes("worker-wake") && worker.includes("unregisterOwned") && worker.includes("reconcile"), "restart reconciliation missing");
