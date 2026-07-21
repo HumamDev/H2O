@@ -77,7 +77,7 @@ function extractFunction(source, name) {
   throw new Error(`function-boundary-invalid:${name}`);
 }
 
-function createTurnRuntime({ storedValue = null, compiledDefault = false, available = true } = {}) {
+function createTurnRuntime({ storedValue = null, compiledDefault = false, available = true, refreshOutcome = 'reconciled' } = {}) {
   const state = {
     storedValue,
     compiledDefault,
@@ -119,8 +119,10 @@ function createTurnRuntime({ storedValue = null, compiledDefault = false, availa
     },
     refreshCompleteTurnIndexProjection() {
       state.refreshCalls += 1;
-      state.branchSelectionStale = false;
-      state.branchSelectionStaleQId = null;
+      if (refreshOutcome === 'reconciled') {
+        state.branchSelectionStale = false;
+        state.branchSelectionStaleQId = null;
+      }
       return Promise.resolve({ enabled: state.enabled, status: state.enabled ? 'complete-refresh-validated' : 'disabled' });
     },
     rebuildCompleteTurnIndexProjection() { state.rebuildCalls += 1; },
@@ -383,6 +385,32 @@ await fixture('successful Refresh MiniMap clears the visible stale indication af
   equal(el.attributes.has('aria-describedby'), false);
 });
 
+await fixture('validated Refresh MiniMap keeps truthful stale feedback when branch identity is unchanged', async () => {
+  const runtime = createTurnRuntime({ storedValue: '1', refreshOutcome: 'unchanged' });
+  runtime.state.branchSelectionStale = true;
+  runtime.state.branchSelectionStaleRevision = 7;
+  runtime.state.branchSelectionStaleQId = 'fixture-branch-q';
+  const { action, bindNode, sync } = loadSideActionsProductControl(runtime.api);
+  const el = fakeActionElement();
+  bindNode(el);
+  sync();
+  await action.onClick({ el });
+  await action.onClick({ el });
+  equal(runtime.state.refreshCalls, 2);
+  equal(runtime.state.branchSelectionStale, true);
+  equal(runtime.state.branchSelectionStaleRevision, 7);
+  equal(runtime.state.branchSelectionStaleQId, 'fixture-branch-q');
+  equal(el.stale.hidden, false);
+  equal(el.dataset.branchSelectionStale, 'true');
+  equal(el.label.textContent, 'Branch still differs');
+  equal(el.dataset.refreshStatus, 'stale');
+  equal(el.attributes.get('aria-describedby'), 'h2o-side-actions-minimap-branch-stale');
+  equal(runtime.state.rebuildCalls, 0);
+  equal(runtime.state.reconciliationSetterCalls, 0);
+  equal(runtime.state.networkCalls, 0);
+  equal(totals.timers, 0);
+});
+
 await fixture('disabled or unavailable refresh is honest and side-effect free', async () => {
   const disabledRuntime = createTurnRuntime({ storedValue: '0' });
   const disabledAction = loadSideActionsProductControl(disabledRuntime.api).action;
@@ -455,7 +483,7 @@ await fixture('newer branch state is not overwritten by stale refresh success fe
   equal(runtime.state.branchSelectionStaleRevision, 2);
   equal(el.stale.hidden, false);
   equal(el.dataset.branchSelectionStale, 'true');
-  equal(el.label.textContent, 'Refresh MiniMap');
+  equal(el.label.textContent, 'Branch still differs');
   equal(el.dataset.refreshStatus, 'stale');
 });
 
@@ -479,6 +507,7 @@ await fixture('surface contract excludes forbidden APIs and preserves technical 
   equal(sideActionsSource.includes('evt:h2o:complete-turn-index:state'), true);
   equal(sideActionsSource.includes('sideActionsSyncCompleteTurnIndexRefreshAvailability'), true);
   equal(sideActionsSource.includes('Branch changed — refresh MiniMap'), true);
+  equal(refreshSource.includes('Branch still differs'), true);
   equal(sideActionsSource.includes('role="status"'), true);
   equal(sideActionsSource.includes('aria-live="polite"'), true);
   equal(refreshSource.includes('fetch('), false);

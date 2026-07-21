@@ -242,7 +242,7 @@
       const branchStale = currentStatus?.branchSelectionStale === true;
       sideActionsSetMiniMapRefreshFeedback(
         el,
-        failed ? "Refresh failed safely" : (branchStale ? "Refresh MiniMap" : "MiniMap refreshed"),
+        failed ? "Refresh failed safely" : (branchStale ? "Branch still differs" : "MiniMap refreshed"),
         failed ? "failed" : (branchStale ? "stale" : "refreshed"),
       );
       sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus);

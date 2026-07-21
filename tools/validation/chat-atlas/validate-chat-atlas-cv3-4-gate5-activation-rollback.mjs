@@ -79,6 +79,16 @@ function buildRows(count = 38) {
   });
 }
 
+function withPrimaryAId(rows, qId, primaryAId) {
+  return rows.map((row) => row.qId === qId
+    ? {
+      ...row,
+      primaryAId,
+      answerVariants: [...row.answerVariants.filter((id) => id !== primaryAId), primaryAId],
+    }
+    : row);
+}
+
 function cacheEnvelope(rows = buildRows(), revision = 100) {
   return {
     schema: 1,
@@ -673,17 +683,61 @@ await fixture('B: repeated valid captures advance only the memory revision and l
   equal(runtime.status().refreshTimerPending, false);
 });
 
-await fixture('B: successful explicit refresh clears the captured stale revision only after validation', async () => {
-  const rows = buildRows();
+await fixture('B: unchanged validated host refresh preserves branch-stale state idempotently', async () => {
+  const rows = buildRows(39);
   let providerCalls = 0;
   const runtime = createRuntime({
     preference: '1',
     cache: cacheEnvelope(rows, 100),
-    provider: async () => ({ ok: true, index: hostEnvelope(rows, 101 + providerCalls++) }),
+    provider: async () => {
+      providerCalls += 1;
+      return { ok: true, index: hostEnvelope(rows, 100) };
+    },
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-17'), true);
+  const revision = runtime.status().branchSelectionStaleRevision;
+  const primaryBefore = runtime.api.getTurnRecordByQId('gate5-pref-q-17')?.primaryAId;
+  const readsBefore = runtime.counters.networkReads;
+  const writesBefore = runtime.storage.state.writes;
+  const skipsBefore = runtime.status().cacheWriteSkippedUnchangedCount;
+  const first = await runtime.api.refreshCompleteTurnIndexProjection();
+  const second = await runtime.api.refreshCompleteTurnIndexProjection();
+  equal(first.status, 'complete-refresh-validated');
+  equal(second.status, 'complete-refresh-validated');
+  equal(runtime.counters.networkReads - readsBefore, 2);
+  equal(runtime.storage.state.writes - writesBefore, 0);
+  equal(runtime.status().cacheWriteSkippedUnchangedCount - skipsBefore, 2);
+  equal(runtime.status().authoritative, true);
+  equal(runtime.status().completeCount, 39);
+  equal(runtime.api.listTurnRecords().length, 39);
+  equal(runtime.api.getTurnRecordByQId('gate5-pref-q-17')?.primaryAId, primaryBefore);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleRevision, revision);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-17');
+  equal(runtime.status().autoBranchReconciliationEnabled, false);
+  equal(runtime.status().selectedPathAcceptanceCount, 0);
+  equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
+  equal(runtime.status().refreshTimerPending, false);
+  equal(providerCalls, 3);
+});
+
+await fixture('B: reconciled explicit refresh clears the captured stale revision only after validation', async () => {
+  const rows = buildRows(39);
+  const reconciledRows = withPrimaryAId(rows, 'gate5-pref-q-17', 'gate5-pref-a-17-branch-2');
+  let providerCalls = 0;
+  const runtime = createRuntime({
+    preference: '1',
+    cache: cacheEnvelope(rows, 100),
+    provider: async () => {
+      const call = providerCalls++;
+      return { ok: true, index: hostEnvelope(call === 0 ? rows : reconciledRows, 101 + call) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-17'), true);
   equal(runtime.status().branchSelectionStale, true);
   const revision = runtime.status().branchSelectionStaleRevision;
   const readsBefore = runtime.counters.networkReads;
@@ -697,6 +751,8 @@ await fixture('B: successful explicit refresh clears the captured stale revision
   equal(runtime.status().branchSelectionStale, false);
   equal(runtime.status().branchSelectionStaleRevision, revision);
   equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().completeCount, 39);
+  equal(runtime.api.getTurnRecordByQId('gate5-pref-q-17')?.primaryAId, 'gate5-pref-a-17-branch-2');
   equal(runtime.status().autoBranchReconciliationEnabled, false);
 });
 
@@ -731,7 +787,8 @@ await fixture('B: failed explicit refresh preserves stale state without retry wo
 });
 
 await fixture('B: newer native click survives an older successful explicit refresh', async () => {
-  const rows = buildRows();
+  const rows = buildRows(39);
+  const reconciledRows = withPrimaryAId(rows, 'gate5-pref-q-01', 'gate5-pref-a-01-branch-2');
   const pending = deferred();
   let providerCalls = 0;
   const runtime = createRuntime({
@@ -752,7 +809,7 @@ await fixture('B: newer native click survives an older successful explicit refre
   await Promise.resolve();
   equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-02', { direction: 'next' }), true);
   equal(runtime.status().branchSelectionStaleRevision, firstRevision + 1);
-  pending.resolve({ ok: true, index: hostEnvelope(rows, 102) });
+  pending.resolve({ ok: true, index: hostEnvelope(reconciledRows, 102) });
   await operation;
   equal(runtime.status().branchSelectionStale, true);
   equal(runtime.status().branchSelectionStaleRevision, firstRevision + 1);
@@ -790,6 +847,7 @@ await fixture('B: click first observed during a clean in-flight refresh remains 
 
 await fixture('B: manual refresh waits for its own validation when an older request is active', async () => {
   const rows = buildRows();
+  const reconciledRows = withPrimaryAId(rows, 'gate5-pref-q-01', 'gate5-pref-a-01-branch-2');
   const olderRequest = deferred();
   let providerCalls = 0;
   const runtime = createRuntime({
@@ -799,7 +857,7 @@ await fixture('B: manual refresh waits for its own validation when an older requ
       providerCalls += 1;
       if (providerCalls === 1) return Promise.resolve({ ok: true, index: hostEnvelope(rows, 101) });
       if (providerCalls === 2) return olderRequest.promise;
-      return Promise.resolve({ ok: true, index: hostEnvelope(rows, 103) });
+      return Promise.resolve({ ok: true, index: hostEnvelope(reconciledRows, 103) });
     },
   });
   await new Promise((resolve) => setImmediate(resolve));

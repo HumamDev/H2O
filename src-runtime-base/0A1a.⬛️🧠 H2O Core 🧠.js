@@ -6496,13 +6496,28 @@
 
   function chatAtlasBranchSelectionStaleCheckpoint() {
     if (completeTurnIndexAuthorityState.branchSelectionStale !== true) return null;
+    const qId = String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '');
+    const primaryAId = String(getRecordByQIdInternal(qId)?.primaryAId || '');
     return Object.freeze({
       revision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
-      qId: String(completeTurnIndexAuthorityState.branchSelectionStaleQId || ''),
+      qId,
+      primaryAId,
       chatId: String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || ''),
       routeKey: String(completeTurnIndexAuthorityState.branchSelectionStaleRouteKey || ''),
       generation: Number(completeTurnIndexAuthorityState.branchSelectionStaleGeneration || 0),
     });
+  }
+
+  function chatAtlasBranchSelectionStaleReconciled(checkpoint) {
+    const qId = normalizeTurnAlias(checkpoint?.qId || '');
+    const priorPrimaryAId = normalizeTurnAlias(checkpoint?.primaryAId || '');
+    if (!qId || !priorPrimaryAId) return false;
+    const record = getRecordByQIdInternal(qId);
+    const recordQId = normalizeTurnAlias(record?.qId || '');
+    const refreshedPrimaryAId = normalizeTurnAlias(record?.primaryAId || '');
+    return recordQId === qId
+      && !!refreshedPrimaryAId
+      && refreshedPrimaryAId !== priorPrimaryAId;
   }
 
   function chatAtlasClearBranchSelectionStale(checkpoint, reason = 'branch-stale-cleared', notify = true) {
@@ -8004,7 +8019,11 @@
       });
     }
     return operation.then((result) => {
-      if (staleCheckpoint && chatAtlasCompleteIndexExplicitRefreshSucceeded(result)) {
+      if (
+        staleCheckpoint
+        && chatAtlasCompleteIndexExplicitRefreshSucceeded(result)
+        && chatAtlasBranchSelectionStaleReconciled(staleCheckpoint)
+      ) {
         chatAtlasClearBranchSelectionStale(staleCheckpoint, 'explicit-refresh-complete');
       }
       return result;
