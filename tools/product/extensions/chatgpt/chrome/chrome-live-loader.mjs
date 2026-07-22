@@ -1,4 +1,67 @@
 // @version 1.2.0  (Phase 0H: LOADER_BUILD_TS / LOADER_BUILD_ISO honor H2O_BUILD_TS env override)
+import { TITLE_CONTRACT_BRIDGE_FILENAME } from "./title-contract/make-title-contract-bridge.mjs";
+
+export function makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME } = {}) {
+  if (typeof TITLE_CONTRACT_BRIDGE_FILE !== "string" || !TITLE_CONTRACT_BRIDGE_FILE.trim()) {
+    throw new TypeError("TITLE_CONTRACT_BRIDGE_FILE is required");
+  }
+  return `
+  const TITLE_CONTRACT_BRIDGE_FILE = ${JSON.stringify(TITLE_CONTRACT_BRIDGE_FILE)};
+  const TITLE_CONTRACT_BRIDGE_PROMISE_KEY = "__H2O_TITLE_CONTRACT_BRIDGE_PROMISE_V1__";
+  const TITLE_CONTRACT_BRIDGE_FAILURE_KEY = "__H2O_TITLE_CONTRACT_BRIDGE_FAILURE_V1__";
+
+  function recordTitleContractBridgeFailure(error) {
+    try {
+      if (Object.prototype.hasOwnProperty.call(globalThis, TITLE_CONTRACT_BRIDGE_FAILURE_KEY)) return;
+      const message = String(error && (error.message || error) || "bridge injection failed").slice(0, 160);
+      Object.defineProperty(globalThis, TITLE_CONTRACT_BRIDGE_FAILURE_KEY, {
+        value: Object.freeze({ kind: "title-contract-bridge-load-failed", message }),
+        writable: false,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch {}
+  }
+
+  function ensureTitleContractBridge() {
+    try {
+      const existing = globalThis[TITLE_CONTRACT_BRIDGE_PROMISE_KEY];
+      if (existing && typeof existing.then === "function") return existing;
+    } catch {}
+    const promise = (async () => {
+      try {
+        const host = await waitScriptHost();
+        if (!host) throw new Error("document host unavailable");
+        const sourceUrl = chrome.runtime.getURL(TITLE_CONTRACT_BRIDGE_FILE);
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          let settled = false;
+          const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            try { if (script.parentNode) script.parentNode.removeChild(script); } catch {}
+            if (ok) resolve(true);
+            else reject(new Error("title contract bridge script failed to load"));
+          };
+          script.type = "text/javascript";
+          script.async = false;
+          script.src = sourceUrl;
+          script.onload = () => finish(true);
+          script.onerror = () => finish(false);
+          host.appendChild(script);
+        });
+        return true;
+      } catch (error) {
+        recordTitleContractBridgeFailure(error);
+        return false;
+      }
+    })();
+    try { globalThis[TITLE_CONTRACT_BRIDGE_PROMISE_KEY] = promise; } catch {}
+    return promise;
+  }
+`;
+}
+
 export function makeChromeLiveLoaderJs({
   DEV_TAG,
   DEV_TITLE,
@@ -11,6 +74,7 @@ export function makeChromeLiveLoaderJs({
   STORAGE_ORDER_OVERRIDES_KEY,
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
+  TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME,
 }) {
   // Phase 0H: prefer H2O_BUILD_TS env override (same value the rest of the
   // build chain already honors — proxy-pack `@version`, alias URL `?v=`,
@@ -21,8 +85,10 @@ export function makeChromeLiveLoaderJs({
   const envBuildTs = Number(process.env.H2O_BUILD_TS);
   const buildTsMs = Number.isFinite(envBuildTs) && envBuildTs > 0 ? envBuildTs : Date.now();
   const buildIso = new Date(buildTsMs).toISOString();
+  const titleContractBridgePrelude = makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE });
   return `(() => {
   "use strict";
+${titleContractBridgePrelude}
 
   const TAG = ${JSON.stringify(DEV_TAG)};
   // Loader build marker — interpolated at template build time so each rebuild gets a fresh
@@ -3650,6 +3716,7 @@ export function makeChromeLiveLoaderJs({
 
     setStatus(STATUS_LABEL + ": loading...");
     log("boot start", location.href);
+    await ensureTitleContractBridge();
     if (ENABLE_TOGGLES && await consumePageDisableOnce()) {
       log("page-only disable armed; skipping script load for this page", location.href);
       setStatus(STATUS_LABEL + ": disabled for this page load");

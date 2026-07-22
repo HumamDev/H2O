@@ -21,6 +21,7 @@ export function makeChromeLiveManifest({
   IDENTITY_PROVIDER_REQUEST_OTP_ARMED = false,
   IDENTITY_PROVIDER_OAUTH_PROVIDER = null,
   TITLE_DIAGNOSTIC_ENABLED = false,
+  TITLE_CONTRACT_BRIDGE_FILE = null,
   STUDIO_ONLY = false,
   EXTENSION_KEY = null,
 }) {
@@ -110,7 +111,7 @@ export function makeChromeLiveManifest({
     // output entirely.)
     web_accessible_resources: STUDIO_ONLY ? [] : [
       {
-        resources: [PAGE_FOLDER_BRIDGE_FILE],
+        resources: [PAGE_FOLDER_BRIDGE_FILE, TITLE_CONTRACT_BRIDGE_FILE].filter(Boolean),
         matches: [CHAT_MATCH],
       },
       // P3-pilot WAR observer (loaded only when the pilot flag is on; harmless

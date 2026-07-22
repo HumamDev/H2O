@@ -55,6 +55,10 @@ import {
   makeTitleNavigationDiagnosticPopupJs,
   makeTitleNavigationDiagnosticServiceWorkerJs,
 } from "./title-diagnostic/chrome-live-title-navigation-diagnostic.mjs";
+import {
+  TITLE_CONTRACT_BRIDGE_FILENAME,
+  makeCanonicalTitleContractBridge,
+} from "./title-contract/make-title-contract-bridge.mjs";
 // @version 1.3.0
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -423,6 +427,9 @@ function syncIdentityProviderPrivateConfigToOut(outDir, privateConfig) {
 }
 
 async function main() {
+  const titleContractBridge = STUDIO_ONLY
+    ? null
+    : makeCanonicalTitleContractBridge({ repositoryRoot: SRC });
   ensureDir(OUT_DIR);
   const identityProviderOAuthProvider = resolveIdentityProviderOAuthProvider();
   const identityProviderBuildConfig = resolveIdentityProviderBuildConfig();
@@ -464,6 +471,7 @@ async function main() {
       IDENTITY_PROVIDER_REQUEST_OTP_ARMED: identityProviderRequestOtpArmed,
       IDENTITY_PROVIDER_OAUTH_PROVIDER: identityProviderOAuthProvider,
       TITLE_DIAGNOSTIC_ENABLED,
+      TITLE_CONTRACT_BRIDGE_FILE: titleContractBridge ? TITLE_CONTRACT_BRIDGE_FILENAME : null,
       STUDIO_ONLY,
       EXTENSION_KEY,
     }),
@@ -528,6 +536,9 @@ async function main() {
   // never load anyway — omitting them keeps the bundle minimal and removes
   // any chance of accidental future references.
   if (!STUDIO_ONLY) {
+    const titleContractBridgeFile = path.join(OUT_DIR, TITLE_CONTRACT_BRIDGE_FILENAME);
+    writeFile(titleContractBridgeFile, titleContractBridge.code);
+    checkGeneratedJavaScript(titleContractBridgeFile);
     writeFile(path.join(OUT_DIR, "loader.js"), makeChromeLiveLoaderJs({
       DEV_TAG,
       DEV_TITLE,
@@ -540,13 +551,14 @@ async function main() {
       STORAGE_ORDER_OVERRIDES_KEY,
       PAGE_FOLDER_BRIDGE_FILE,
       PAGE_PILOT_OBSERVER_FILE,
+      TITLE_CONTRACT_BRIDGE_FILE: TITLE_CONTRACT_BRIDGE_FILENAME,
     }));
     writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
     writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());
   } else {
     // Defensive: remove stale loader / bridge / observer files from prior
     // non-studio-launcher builds at the same OUT_DIR.
-    for (const n of ["loader.js", PAGE_FOLDER_BRIDGE_FILE, PAGE_PILOT_OBSERVER_FILE]) {
+    for (const n of ["loader.js", PAGE_FOLDER_BRIDGE_FILE, PAGE_PILOT_OBSERVER_FILE, TITLE_CONTRACT_BRIDGE_FILENAME]) {
       try { fs.unlinkSync(path.join(OUT_DIR, n)); } catch {}
     }
   }
