@@ -38,6 +38,12 @@ const EXPECTED_EXTENSION_ID = "ogcjkeaiicglflamhjaaimdhphjlgkbb";
 const REJECTED_BUILD_MARKER = 1784650528788;
 const GLOBAL_STATUS_KEY = "__H2O_TITLE_CONTRACT_BRIDGE_STATUS_V2__";
 const SOURCE_ONLY = process.argv.includes("--source-only");
+const SCOPE_MODE_PREFIX = "--scope-mode=";
+const scopeModeArguments = process.argv.filter((argument) => argument.startsWith(SCOPE_MODE_PREFIX));
+assert(scopeModeArguments.length <= 1, "at most one --scope-mode option is allowed");
+const REQUESTED_SCOPE_MODE = scopeModeArguments.length === 1
+  ? scopeModeArguments[0].slice(SCOPE_MODE_PREFIX.length)
+  : null;
 const EXPECTED_TRACKED = new Set([
   "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs",
   "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
@@ -50,8 +56,14 @@ const EXPECTED_MODIFIED = new Set([
   "tools/product/extensions/chatgpt/chrome/chrome-live-manifest.mjs",
   "tools/product/extensions/chatgpt/chrome/chrome-live-loader.mjs",
 ]);
+const EXPECTED_UNTRACKED = new Set([
+  "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs",
+  "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
+]);
+const VALIDATOR_REL = "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs";
 const TITLE_PREFIXES = ["9B0a", "9B1a", "9C1a", "9D1a"];
 const tests = [];
+const scopeTests = [];
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, { cwd: ROOT, encoding: "utf8", ...options });
@@ -74,16 +86,96 @@ function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
+function sameSet(actual, expected) {
+  return actual.size === expected.size && [...actual].every((value) => expected.has(value));
+}
+
+function classifyStage1BScope({
+  requestedMode = null,
+  modifiedTracked,
+  staged,
+  untracked,
+  trackedStage1BFiles,
+  generatedBridgeIgnored,
+}) {
+  const modified = new Set(modifiedTracked);
+  const stagedPaths = new Set(staged);
+  const untrackedPaths = new Set(untracked);
+  const trackedFiles = new Set(trackedStage1BFiles);
+
+  assert(
+    requestedMode === null || requestedMode === "validator-self-correction",
+    `unknown requested Stage 1B scope mode: ${String(requestedMode)}`,
+  );
+  assert.equal(stagedPaths.size, 0, `staged paths are forbidden: ${[...stagedPaths].sort().join(", ")}`);
+  assert.equal(generatedBridgeIgnored, true, "generated bridge must remain ignored and unstaged");
+
+  const unexpectedUntracked = [...untrackedPaths]
+    .filter((relative) => !relative.startsWith("chrome/") && !EXPECTED_UNTRACKED.has(relative));
+  assert.deepEqual(unexpectedUntracked, [], `unexpected untracked paths: ${unexpectedUntracked.join(", ")}`);
+
+  const stage1BUntracked = new Set(
+    [...untrackedPaths].filter((relative) => EXPECTED_UNTRACKED.has(relative)),
+  );
+
+  if (requestedMode === "validator-self-correction") {
+    assert(
+      sameSet(modified, new Set([VALIDATOR_REL])),
+      `validator-self-correction requires exactly one modified path: ${VALIDATOR_REL}`,
+    );
+    assert.equal(stage1BUntracked.size, 0, "validator-self-correction forbids untracked Stage 1B source files");
+    assert(sameSet(trackedFiles, EXPECTED_TRACKED), "validator-self-correction requires all five tracked Stage 1B files");
+    return "validator-self-correction";
+  }
+
+  const unexpectedModified = [...modified].filter((relative) => !EXPECTED_MODIFIED.has(relative));
+  assert.deepEqual(unexpectedModified, [], `unexpected modified tracked paths: ${unexpectedModified.join(", ")}`);
+  const uncommitted = sameSet(modified, EXPECTED_MODIFIED)
+    && sameSet(stage1BUntracked, EXPECTED_UNTRACKED)
+    && sameSet(trackedFiles, EXPECTED_MODIFIED);
+  const committedClean = modified.size === 0
+    && stage1BUntracked.size === 0
+    && sameSet(trackedFiles, EXPECTED_TRACKED);
+
+  assert(!(uncommitted && committedClean), "Stage 1B scope classification is ambiguous");
+  if (uncommitted) return "uncommitted";
+  if (committedClean) return "committed-clean";
+
+  assert.fail(
+    "Stage 1B scope is neither exact uncommitted nor exact committed-clean state"
+      + `; modified=${JSON.stringify([...modified].sort())}`
+      + `; Stage1B-untracked=${JSON.stringify([...stage1BUntracked].sort())}`
+      + `; tracked=${JSON.stringify([...trackedFiles].sort())}`,
+  );
+}
+
+function scopeTest(name, callback) {
+  callback();
+  scopeTests.push(name);
+  console.log(`ok scope ${scopeTests.length} - ${name}`);
+}
+
 function assertScope() {
-  const tracked = run("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "--"])
+  const modifiedTracked = run("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "--"])
     .split("\n").filter(Boolean);
-  assert.deepEqual(new Set(tracked), EXPECTED_MODIFIED, "modified Stage 1B scope mismatch");
-  assert.equal(run("git", ["diff", "--cached", "--name-only", "--"]).trim(), "", "nothing may be staged");
+  const staged = run("git", ["diff", "--cached", "--name-only", "--"])
+    .split("\n").filter(Boolean);
   const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "--"])
     .split("\n").filter(Boolean);
-  for (const relative of untracked) {
-    assert(relative.startsWith("chrome/") || EXPECTED_TRACKED.has(relative), `unexpected untracked path: ${relative}`);
-  }
+  const trackedStage1BFiles = run("git", ["ls-files", "--", ...EXPECTED_TRACKED])
+    .split("\n").filter(Boolean);
+
+  assert(fs.existsSync(path.join(ROOT, GENERATED_REL)), "generated bridge is missing");
+  assert.equal(run("git", ["ls-files", "--", GENERATED_REL]).trim(), "", "generated bridge must remain untracked");
+  run("git", ["check-ignore", "-q", "--", GENERATED_REL]);
+  return classifyStage1BScope({
+    requestedMode: REQUESTED_SCOPE_MODE,
+    modifiedTracked,
+    staged,
+    untracked,
+    trackedStage1BFiles,
+    generatedBridgeIgnored: true,
+  });
 }
 
 function titlePaths() {
@@ -211,7 +303,111 @@ function mutateSource(source, mutation) {
   return Buffer.from(`${source.toString("utf8")}\n${mutation}\n`, "utf8");
 }
 
-assertScope();
+const scopeMode = assertScope();
+
+function committedScopeInput(overrides = {}) {
+  return {
+    requestedMode: null,
+    modifiedTracked: [],
+    staged: [],
+    untracked: ["chrome/protected"],
+    trackedStage1BFiles: [...EXPECTED_TRACKED],
+    generatedBridgeIgnored: true,
+    ...overrides,
+  };
+}
+
+scopeTest("exact uncommitted implementation scope is accepted", () => {
+  assert.equal(classifyStage1BScope(committedScopeInput({
+    modifiedTracked: [...EXPECTED_MODIFIED],
+    untracked: [...EXPECTED_UNTRACKED, "chrome/protected"],
+    trackedStage1BFiles: [...EXPECTED_MODIFIED],
+  })), "uncommitted");
+});
+
+scopeTest("exact committed-clean scope is accepted", () => {
+  assert.equal(classifyStage1BScope(committedScopeInput()), "committed-clean");
+});
+
+scopeTest("explicit validator-self-correction scope is accepted", () => {
+  assert.equal(classifyStage1BScope(committedScopeInput({
+    requestedMode: "validator-self-correction",
+    modifiedTracked: [VALIDATOR_REL],
+  })), "validator-self-correction");
+});
+
+scopeTest("validator-only modification is rejected by default", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    modifiedTracked: [VALIDATOR_REL],
+  })), new RegExp(`unexpected modified tracked paths: ${VALIDATOR_REL}`, "u"));
+});
+
+scopeTest("validator-only modification never reports committed-clean", () => {
+  assert.notEqual(classifyStage1BScope(committedScopeInput({
+    requestedMode: "validator-self-correction",
+    modifiedTracked: [VALIDATOR_REL],
+  })), "committed-clean");
+});
+
+scopeTest("partial modified build-file set is rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    modifiedTracked: [...EXPECTED_MODIFIED].slice(0, 2),
+    untracked: [...EXPECTED_UNTRACKED],
+    trackedStage1BFiles: [...EXPECTED_MODIFIED],
+  })), /neither exact uncommitted nor exact committed-clean/u);
+});
+
+scopeTest("staged paths are rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    staged: [VALIDATOR_REL],
+  })), /staged paths are forbidden/u);
+});
+
+scopeTest("unexpected tracked paths are rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    modifiedTracked: ["src-runtime-base/unexpected.js"],
+  })), /unexpected modified tracked paths/u);
+});
+
+scopeTest("unexpected untracked paths are rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    untracked: ["chrome/protected", "unexpected.tmp"],
+  })), /unexpected untracked paths/u);
+});
+
+scopeTest("missing committed Stage 1B file is rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    trackedStage1BFiles: [...EXPECTED_TRACKED].filter((relative) => relative !== VALIDATOR_REL),
+  })), /neither exact uncommitted nor exact committed-clean/u);
+});
+
+scopeTest("mixed committed and uncommitted state is rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    modifiedTracked: [...EXPECTED_MODIFIED],
+    untracked: [...EXPECTED_UNTRACKED],
+    trackedStage1BFiles: [...EXPECTED_TRACKED],
+  })), /neither exact uncommitted nor exact committed-clean/u);
+});
+
+scopeTest("self-correction mode rejects a second modified path", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    requestedMode: "validator-self-correction",
+    modifiedTracked: [VALIDATOR_REL, [...EXPECTED_MODIFIED][0]],
+  })), /requires exactly one modified path/u);
+});
+
+scopeTest("committed-clean rejects a modified validator", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    modifiedTracked: [VALIDATOR_REL],
+  })), /unexpected modified tracked paths/u);
+});
+
+scopeTest("unknown requested scope mode is rejected", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    requestedMode: "unknown-mode",
+  })), /unknown requested Stage 1B scope mode/u);
+});
+
 assertTitleAndConfigIdentity();
 
 const sourceBytes = fs.readFileSync(path.join(ROOT, CONTRACT_REL));
@@ -557,17 +753,35 @@ await test("fresh loader and proxy share one non-rejected build marker", () => {
 
 if (!SOURCE_ONLY && fs.existsSync(path.join(ROOT, GENERATED_REL))) {
   const generated = fs.readFileSync(path.join(ROOT, GENERATED_REL), "utf8");
-  assert.equal(generated, canonical.code, "generated bridge drifted from canonical generation");
+  const generatedPage = executeBridge(generated);
+  const repositoryHeadAtBuild = generatedPage.H2O?.TitleContract?.identity?.repositoryHeadAtBuild;
+  assert.match(repositoryHeadAtBuild ?? "", /^[0-9a-f]{40}$/u, "generated bridge build HEAD identity");
+  const committedSourceBytes = execFileSync("git", ["show", `HEAD:${CONTRACT_REL}`], {
+    cwd: ROOT,
+    encoding: null,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const generatedCanonical = transformTitleContractToClassicBridge({
+    sourceBytes,
+    committedSourceBytes,
+    repositoryHeadAtBuild,
+  });
+  assert.equal(generated, generatedCanonical.code, "generated bridge drifted from its attested build identity");
   new vm.Script(generated, { filename: GENERATED_REL });
 }
 
 assert.equal(tests.length, 39, "bridge scenario count drifted");
+assert.equal(scopeTests.length, 14, "scope scenario count drifted");
 console.log(JSON.stringify({
   ok: true,
   validator: "title-contract-bridge-v1",
+  scopeMode,
+  scopeScenarios: scopeTests.length,
   scenarios: tests.length,
   sourceSha256: canonical.sourceSha256,
-  bridgeSha256: sha256(Buffer.from(canonical.code)),
+  bridgeSha256: !SOURCE_ONLY && fs.existsSync(path.join(ROOT, GENERATED_REL))
+    ? sha256(fs.readFileSync(path.join(ROOT, GENERATED_REL)))
+    : sha256(Buffer.from(canonical.code)),
   sourceExportCount: canonical.sourceExportCount,
   publicSurfaceCount: canonical.publicSurfaceKeys.length,
   publicSurfaceKeys: canonical.publicSurfaceKeys,
