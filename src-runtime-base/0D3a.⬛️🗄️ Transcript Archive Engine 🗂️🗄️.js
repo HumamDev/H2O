@@ -699,6 +699,36 @@
     return `djb2:${stableHash(JSON.stringify(identity))}`;
   }
 
+  function conversationIdentityGraphFromMapping(
+    mapping,
+    nodeKeys,
+    orderedChildren,
+    currentNode,
+    chatId,
+    capturedAt,
+  ) {
+    const nodes = nodeKeys.map((nodeId) => {
+      const node = mapping[nodeId];
+      return Object.freeze({
+        nodeId,
+        parentId: conversationTurnIndexIdentity(node?.parent) || null,
+        childIds: Object.freeze(orderedChildren(nodeId)),
+        role: conversationTurnIndexRole(node) || null,
+        messageId: conversationTurnIndexMessageId(nodeId, node) || null,
+        productUser: conversationTurnIndexProductUser(node),
+        productAnswer: conversationTurnIndexProductAnswer(node),
+        stopped: conversationTurnIndexStopped(node?.message),
+      });
+    });
+    return Object.freeze({
+      chatId: chatId || null,
+      currentNode,
+      nodeCount: nodes.length,
+      capturedAt,
+      nodes: Object.freeze(nodes),
+    });
+  }
+
   function normalizeBackendConversationTurnIndexUnsafe(payload, options = {}) {
     const mapping = isObj(payload?.mapping) ? payload.mapping : null;
     const chatId = conversationTurnIndexIdentity(options?.chatId || payload?.conversation_id || payload?.id);
@@ -1047,7 +1077,30 @@
       }),
       turns: Object.freeze(turns.slice()),
     });
-    return Object.freeze({ ok: true, index });
+    if (options?.includeIdentityGraph !== true) {
+      return Object.freeze({ ok: true, index });
+    }
+    if (nodeCount > 8192) {
+      return Object.freeze({
+        ok: true,
+        index,
+        identityGraph: null,
+        identityGraphError: "graph-too-large",
+      });
+    }
+    return Object.freeze({
+      ok: true,
+      index,
+      identityGraph: conversationIdentityGraphFromMapping(
+        mapping,
+        nodeKeys,
+        orderedChildren,
+        currentNode,
+        chatId,
+        capturedAt,
+      ),
+      identityGraphError: null,
+    });
   }
 
   function normalizeBackendConversationTurnIndex(payload, options = {}) {
@@ -1105,6 +1158,7 @@
       const parsed = normalizeBackendConversationTurnIndex(payload, {
         chatId,
         capturedAt: opts?.capturedAt || nowIso(),
+        includeIdentityGraph: opts?.includeIdentityGraph === true,
       });
       finish();
       return parsed;

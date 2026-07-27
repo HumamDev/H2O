@@ -2383,6 +2383,10 @@
     }
     chatAtlasRunCanonicalDualComparison(reason);
     chatAtlasClearBranchSelectionStaleOnCanonicalReturn(next);
+    chatAtlasSelectedPathEvaluate(next);
+    if (typeof chatAtlasSelectedPathOverlayEvaluate === 'function') {
+      chatAtlasSelectedPathOverlayEvaluate();
+    }
 
     const delta = chatAtlasFreeze({
       reason: String(reason || 'unknown'),
@@ -6386,6 +6390,47 @@
     bootActivationCount: 0,
   };
 
+  const selectedPathAcquisitionState = {
+    status: 'inactive',
+    reason: 'runtime-initialized',
+    token: null,
+    anchorQId: null,
+    anchorSelectedAId: null,
+    priorAnswerId: null,
+    chatId: null,
+    routeKey: '',
+    generation: 0,
+    staleRevision: 0,
+    graph: null,
+    refetchAttemptedForToken: null,
+    path: null,
+    proof: null,
+    provenAt: null,
+    evaluatedLedgerVersion: 0,
+    evaluationKey: '',
+  };
+
+  const selectedPathOverlayState = {
+    status: 'inactive',
+    reason: 'runtime-initialized',
+    token: null,
+    chatId: null,
+    routeKey: '',
+    generation: 0,
+    staleRevision: 0,
+    canonicalFingerprint: '',
+    acquisitionProofIdentity: '',
+    acquisitionPathIdentity: '',
+    evaluationKey: '',
+    anchorQId: null,
+    activatedAt: null,
+    pathLength: 0,
+    index: null,
+    byQId: null,
+    byAId: null,
+    proof: null,
+  };
+
   // CV-3.4 Gate 5 diagnostic-only trusted-branch lifecycle trace. Memory-only,
   // IDs-only (identifiers, hashes, reason codes — never message/payload content,
   // never the raw selection token). The persistent "last event" fields survive
@@ -6495,6 +6540,1227 @@
     return Math.abs(hash >>> 0).toString(36);
   }
 
+  function getSelectedPathAcquisitionStatus() {
+    const token = String(selectedPathAcquisitionState.token || '');
+    const status = {
+      status: selectedPathAcquisitionState.status,
+      reason: selectedPathAcquisitionState.reason,
+      pathLength: Array.isArray(selectedPathAcquisitionState.path)
+        ? selectedPathAcquisitionState.path.length
+        : 0,
+      anchorQId: selectedPathAcquisitionState.anchorQId,
+      provenAt: selectedPathAcquisitionState.provenAt,
+    };
+    Object.defineProperty(status, 'token', {
+      value: token ? `djb2:${chatAtlasCompleteIndexStableHash(token)}` : null,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+    return chatAtlasFreeze(status);
+  }
+
+  function chatAtlasClearSelectedPathAcquisition(reason = 'cleared', options = {}) {
+    const retainedGraph = options?.preserveGraph === true
+      ? selectedPathAcquisitionState.graph
+      : null;
+    selectedPathAcquisitionState.status = 'inactive';
+    selectedPathAcquisitionState.reason = chatAtlasCompleteIndexCode(reason, 'cleared', 64);
+    selectedPathAcquisitionState.token = null;
+    selectedPathAcquisitionState.anchorQId = null;
+    selectedPathAcquisitionState.anchorSelectedAId = null;
+    selectedPathAcquisitionState.priorAnswerId = null;
+    selectedPathAcquisitionState.chatId = null;
+    selectedPathAcquisitionState.routeKey = '';
+    selectedPathAcquisitionState.generation = 0;
+    selectedPathAcquisitionState.staleRevision = 0;
+    selectedPathAcquisitionState.graph = retainedGraph;
+    if (options?.resetRefetchGuard === true) {
+      selectedPathAcquisitionState.refetchAttemptedForToken = null;
+    }
+    selectedPathAcquisitionState.path = null;
+    selectedPathAcquisitionState.proof = null;
+    selectedPathAcquisitionState.provenAt = null;
+    selectedPathAcquisitionState.evaluatedLedgerVersion = 0;
+    selectedPathAcquisitionState.evaluationKey = '';
+    return getSelectedPathAcquisitionStatus();
+  }
+
+  function chatAtlasSelectedPathFail(reason, intent, selectedAnswerId = '') {
+    selectedPathAcquisitionState.status = 'failed';
+    selectedPathAcquisitionState.reason = chatAtlasCompleteIndexCode(reason, 'selected-path-failed', 64);
+    selectedPathAcquisitionState.token = String(intent?.token || '') || null;
+    selectedPathAcquisitionState.anchorQId = chatAtlasCompleteIndexIdentity(intent?.qId) || null;
+    selectedPathAcquisitionState.anchorSelectedAId = chatAtlasCompleteIndexIdentity(selectedAnswerId) || null;
+    selectedPathAcquisitionState.priorAnswerId = chatAtlasCompleteIndexIdentity(intent?.priorAnswerId) || null;
+    selectedPathAcquisitionState.chatId = String(intent?.chatId || '') || null;
+    selectedPathAcquisitionState.routeKey = String(intent?.routeKey || '');
+    selectedPathAcquisitionState.generation = Number(intent?.generation || 0);
+    selectedPathAcquisitionState.staleRevision = Number(intent?.staleRevision || 0);
+    selectedPathAcquisitionState.path = null;
+    selectedPathAcquisitionState.proof = null;
+    selectedPathAcquisitionState.provenAt = null;
+    selectedPathAcquisitionState.evaluatedLedgerVersion = Number(chatAtlasLedgerState.version || 0);
+    return getSelectedPathAcquisitionStatus();
+  }
+
+  function chatAtlasSelectedPathOverlayProofIdentity(proof) {
+    if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return '';
+    return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify([
+      proof.anchorQId,
+      proof.anchorSelectedAId,
+      proof.rootNodeId,
+      proof.tailNodeId,
+      proof.pathLength,
+      proof.canonicalPrefixLength,
+      proof.canonicalFingerprint,
+      proof.token,
+      proof.chatId,
+      proof.routeKey,
+      proof.generation,
+      proof.staleRevision,
+      proof.reason,
+      proof.source,
+    ]))}`;
+  }
+
+  function chatAtlasSelectedPathOverlayPathIdentity(path) {
+    if (!Array.isArray(path)) return '';
+    return `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(path.map((turn) => [
+      turn?.order,
+      turn?.qId,
+      turn?.turnId,
+      turn?.primaryAId,
+      ...(Array.isArray(turn?.answerVariants) ? turn.answerVariants : []),
+      turn?.noAnswer === true,
+      turn?.stopped === true,
+      turn?.provenance,
+      turn?.confirmedByNativeEvidence === true,
+    ])))}`;
+  }
+
+  function chatAtlasCanonicalPresentationIndex() {
+    const index = completeTurnIndexAuthorityState.index;
+    return index?.complete === true
+      && index?.proof === 'host-payload-full-graph'
+      && Array.isArray(index?.turns)
+      && Object.isFrozen(index)
+      && Object.isFrozen(index.turns)
+      ? index
+      : null;
+  }
+
+  function chatAtlasClearSelectedPathOverlay(reason = 'overlay-cleared', options = {}) {
+    selectedPathOverlayState.status = options?.invalid === true ? 'invalid' : 'inactive';
+    selectedPathOverlayState.reason = chatAtlasCompleteIndexCode(reason, 'overlay-cleared', 64);
+    selectedPathOverlayState.token = null;
+    selectedPathOverlayState.chatId = null;
+    selectedPathOverlayState.routeKey = '';
+    selectedPathOverlayState.generation = 0;
+    selectedPathOverlayState.staleRevision = 0;
+    selectedPathOverlayState.canonicalFingerprint = '';
+    selectedPathOverlayState.acquisitionProofIdentity = '';
+    selectedPathOverlayState.acquisitionPathIdentity = '';
+    selectedPathOverlayState.evaluationKey = '';
+    selectedPathOverlayState.anchorQId = null;
+    selectedPathOverlayState.activatedAt = null;
+    selectedPathOverlayState.pathLength = 0;
+    selectedPathOverlayState.index = null;
+    selectedPathOverlayState.byQId = null;
+    selectedPathOverlayState.byAId = null;
+    selectedPathOverlayState.proof = null;
+    return getEffectivePresentationStatus();
+  }
+
+  function chatAtlasSelectedPathOverlayCurrent() {
+    if (
+      selectedPathOverlayState.status !== 'active'
+      || !selectedPathOverlayState.index
+      || !(selectedPathOverlayState.byQId instanceof Map)
+      || !(selectedPathOverlayState.byAId instanceof Map)
+      || !selectedPathOverlayState.proof
+      || completeTurnIndexAuthorityState.enabled !== true
+      || completeTurnIndexAuthorityState.branchSelectionStale !== true
+      || selectedPathOverlayState.staleRevision
+        !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
+      || selectedPathOverlayState.anchorQId
+        !== String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '')
+      || selectedPathOverlayState.chatId
+        !== String(completeTurnIndexAuthorityState.chatId || '')
+      || selectedPathOverlayState.routeKey
+        !== String(completeTurnIndexAuthorityState.routeKey || '')
+      || selectedPathOverlayState.generation
+        !== Number(completeTurnIndexAuthorityState.generation || 0)
+      || selectedPathOverlayState.canonicalFingerprint
+        !== String(completeTurnIndexAuthorityState.index?.sourceFingerprint || '')
+    ) return false;
+    const route = chatAtlasFullIndexRoute();
+    return selectedPathOverlayState.chatId === String(route?.chatId || '')
+      && selectedPathOverlayState.routeKey === String(route?.routeKey || '');
+  }
+
+  function getEffectivePresentationIndex() {
+    if (chatAtlasSelectedPathOverlayCurrent()) {
+      return selectedPathOverlayState.index;
+    }
+    return chatAtlasCanonicalPresentationIndex();
+  }
+
+  function getEffectivePresentationStatus() {
+    const overlayActive = chatAtlasSelectedPathOverlayCurrent();
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    const effective = overlayActive ? selectedPathOverlayState.index : canonical;
+    return chatAtlasFreeze({
+      source: overlayActive ? 'selected-path-overlay' : 'canonical',
+      overlayActive,
+      reason: overlayActive
+        ? selectedPathOverlayState.reason
+        : (selectedPathOverlayState.status === 'active'
+          ? 'overlay-not-current'
+          : selectedPathOverlayState.reason),
+      count: Array.isArray(effective?.turns) ? effective.turns.length : 0,
+      chatId: String(completeTurnIndexAuthorityState.chatId || '') || null,
+      routeKey: String(completeTurnIndexAuthorityState.routeKey || ''),
+      generation: Number(completeTurnIndexAuthorityState.generation || 0),
+      canonicalFingerprint: String(canonical?.sourceFingerprint || ''),
+      anchorQId: overlayActive ? selectedPathOverlayState.anchorQId : null,
+      pathLength: overlayActive ? selectedPathOverlayState.pathLength : 0,
+      activatedAt: overlayActive ? selectedPathOverlayState.activatedAt : null,
+    });
+  }
+
+  function getEffectiveTurnRecordByQId(qIdRaw) {
+    const qId = chatAtlasCompleteIndexIdentity(qIdRaw);
+    if (!qId) return null;
+    if (chatAtlasSelectedPathOverlayCurrent()) {
+      return selectedPathOverlayState.byQId.get(qId) || null;
+    }
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    const matches = canonical?.turns?.filter((turn) => turn.qId === qId) || [];
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function getEffectiveTurnRecordByAId(aIdRaw) {
+    const aId = chatAtlasCompleteIndexIdentity(aIdRaw);
+    if (!aId) return null;
+    if (chatAtlasSelectedPathOverlayCurrent()) {
+      return selectedPathOverlayState.byAId.get(aId) || null;
+    }
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    const matches = canonical?.turns?.filter((turn) => (
+      turn.primaryAId === aId
+      || (Array.isArray(turn.answerVariants) && turn.answerVariants.includes(aId))
+    )) || [];
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function chatAtlasBuildSelectedPathOverlay(acquisition, canonical, ownership = {}) {
+    const fail = (reason) => Object.freeze({
+      ok: false,
+      reason: chatAtlasCompleteIndexCode(reason, 'overlay-invalid', 64),
+    });
+    const proof = acquisition?.proof;
+    const path = acquisition?.path;
+    const intent = ownership?.intent;
+    const expectedProofKeys = [
+      'anchorQId',
+      'anchorSelectedAId',
+      'rootNodeId',
+      'tailNodeId',
+      'pathLength',
+      'canonicalPrefixLength',
+      'canonicalFingerprint',
+      'graphCapturedAt',
+      'token',
+      'chatId',
+      'routeKey',
+      'generation',
+      'staleRevision',
+      'reason',
+      'source',
+    ];
+    const expectedPathKeys = [
+      'order',
+      'qId',
+      'turnId',
+      'primaryAId',
+      'answerVariants',
+      'noAnswer',
+      'stopped',
+      'provenance',
+      'confirmedByNativeEvidence',
+    ];
+    if (ownership?.enabled !== true) return fail('feature-disabled');
+    if (acquisition?.status !== 'proven') return fail('acquisition-not-proven');
+    if (
+      !canonical
+      || canonical.complete !== true
+      || canonical.proof !== 'host-payload-full-graph'
+      || !Array.isArray(canonical.turns)
+      || !canonical.turns.length
+      || !Object.isFrozen(canonical)
+      || !Object.isFrozen(canonical.turns)
+      || canonical.turns.some((turn) => (
+        !Object.isFrozen(turn)
+        || !Object.isFrozen(turn?.answerVariants)
+      ))
+    ) return fail('canonical-authority-unavailable');
+    if (
+      !proof
+      || !Object.isFrozen(proof)
+      || !chatAtlasCompleteIndexExactKeys(proof, expectedProofKeys)
+      || proof.reason !== 'selected-path-proven'
+      || proof.source !== 'host-identity-graph'
+      || !chatAtlasCompleteIndexIdentity(proof.rootNodeId)
+      || !chatAtlasCompleteIndexIdentity(proof.tailNodeId)
+      || !String(proof.graphCapturedAt || '')
+      || !String(proof.token || '')
+    ) return fail('acquisition-proof-invalid');
+    if (
+      !Array.isArray(path)
+      || !Object.isFrozen(path)
+      || path.length < 1
+      || path.length > 512
+      || path.some((turn) => (
+        !turn
+        || !Object.isFrozen(turn)
+        || !Object.isFrozen(turn.answerVariants)
+        || !chatAtlasCompleteIndexExactKeys(turn, expectedPathKeys)
+      ))
+    ) return fail(path?.length > 512 ? 'path-bounds-exceeded' : 'path-invalid');
+    if (Number(proof.pathLength || 0) !== path.length) {
+      return fail('proof-path-length-mismatch');
+    }
+    if (
+      String(acquisition?.token || '') !== String(proof.token || '')
+      || String(acquisition?.anchorQId || '') !== String(proof.anchorQId || '')
+      || String(acquisition?.anchorSelectedAId || '') !== String(proof.anchorSelectedAId || '')
+      || String(acquisition?.chatId || '') !== String(proof.chatId || '')
+      || String(acquisition?.routeKey || '') !== String(proof.routeKey || '')
+      || Number(acquisition?.generation || 0) !== Number(proof.generation || 0)
+      || Number(acquisition?.staleRevision || 0) !== Number(proof.staleRevision || 0)
+    ) return fail('acquisition-ownership-mismatch');
+    if (!intent || String(intent.token || '') !== String(proof.token || '')) {
+      return fail(intent ? 'token-mismatch' : 'trusted-intent-missing');
+    }
+    if (
+      String(ownership.chatId || '') !== String(ownership.routeChatId || '')
+      || String(ownership.routeKey || '') !== String(ownership.routeRouteKey || '')
+    ) return fail('route-mismatch');
+    if (
+      String(proof.chatId || '') !== String(ownership.chatId || '')
+      || String(intent.chatId || '') !== String(ownership.chatId || '')
+      || chatAtlasCompleteIndexIdentity(canonical.chatId) !== String(ownership.chatId || '')
+    ) return fail('chat-mismatch');
+    if (
+      String(proof.routeKey || '') !== String(ownership.routeKey || '')
+      || String(intent.routeKey || '') !== String(ownership.routeKey || '')
+    ) return fail('route-mismatch');
+    if (
+      Number(proof.generation || 0) !== Number(ownership.generation || 0)
+      || Number(intent.generation || 0) !== Number(ownership.generation || 0)
+    ) return fail('generation-mismatch');
+    if (ownership.stale !== true) return fail('stale-inactive');
+    if (
+      String(proof.anchorQId || '') !== String(ownership.staleQId || '')
+      || String(intent.qId || '') !== String(ownership.staleQId || '')
+    ) return fail('stale-qid-mismatch');
+    if (
+      Number(proof.staleRevision || 0) !== Number(ownership.staleRevision || 0)
+      || Number(intent.staleRevision || 0) !== Number(ownership.staleRevision || 0)
+    ) return fail('stale-revision-mismatch');
+    if (
+      String(proof.canonicalFingerprint || '') !== String(canonical.sourceFingerprint || '')
+      || String(canonical.sourceFingerprint || '') !== chatAtlasCompleteIndexFingerprint(canonical.turns)
+    ) return fail('canonical-fingerprint-mismatch');
+
+    const canonicalPrefixLength = Number(proof.canonicalPrefixLength || 0);
+    if (
+      !Number.isInteger(canonicalPrefixLength)
+      || canonicalPrefixLength < 1
+      || canonicalPrefixLength > path.length
+      || canonicalPrefixLength > canonical.turns.length
+    ) return fail('anchor-qid-mismatch');
+    const anchorIndex = canonicalPrefixLength - 1;
+    const proofAnchorQId = chatAtlasCompleteIndexIdentity(proof.anchorQId);
+    const proofAnchorAId = chatAtlasCompleteIndexIdentity(proof.anchorSelectedAId);
+    if (!proofAnchorQId || !proofAnchorAId) return fail('anchor-answer-mismatch');
+
+    const answerOwners = new Map();
+    const byQId = new Map();
+    const byAId = new Map();
+    const turnIds = new Set();
+    const rows = [];
+    let answerLookupCount = 0;
+    for (let index = 0; index < path.length; index += 1) {
+      const sourceRow = path[index];
+      const order = Number(sourceRow.order || 0);
+      const qId = chatAtlasCompleteIndexIdentity(sourceRow.qId);
+      const turnId = String(sourceRow.turnId || '');
+      if (order !== index + 1) return fail('order-noncontiguous');
+      if (!qId || COMPLETE_TURN_INDEX_INTERNAL_CONTEXT_QIDS.includes(qId)) {
+        return fail('question-identity-invalid');
+      }
+      if (byQId.has(qId)) return fail('duplicate-qid');
+      if (turnId !== `turn:${qId}`) return fail('turn-identity-invalid');
+      if (turnIds.has(turnId)) return fail('duplicate-turn-id');
+      if (!Array.isArray(sourceRow.answerVariants)) return fail('answer-variants-invalid');
+      const variants = [];
+      for (const rawAnswerId of sourceRow.answerVariants) {
+        const answerId = chatAtlasCompleteIndexIdentity(rawAnswerId);
+        if (!answerId || variants.includes(answerId)) return fail('answer-variants-invalid');
+        const owner = answerOwners.get(answerId);
+        if (owner && owner !== qId) return fail('answer-identity-ambiguous');
+        answerOwners.set(answerId, qId);
+        variants.push(answerId);
+        answerLookupCount += 1;
+        if (answerLookupCount > 8192) return fail('path-bounds-exceeded');
+      }
+      const primaryAId = sourceRow.primaryAId == null
+        ? null
+        : chatAtlasCompleteIndexIdentity(sourceRow.primaryAId);
+      if (
+        typeof sourceRow.noAnswer !== 'boolean'
+        || typeof sourceRow.stopped !== 'boolean'
+      ) return fail('answer-state-invalid');
+      if (sourceRow.noAnswer) {
+        if (sourceRow.primaryAId != null || primaryAId || variants.length) {
+          return fail('answer-state-invalid');
+        }
+        if (index !== path.length - 1) return fail('nonterminal-no-answer');
+      } else if (
+        !primaryAId
+        || !variants.length
+        || variants[variants.length - 1] !== primaryAId
+      ) return fail('answer-state-invalid');
+      const row = chatAtlasFreeze({
+        order,
+        qId,
+        turnId,
+        primaryAId,
+        answerVariants: variants,
+        noAnswer: sourceRow.noAnswer,
+        stopped: sourceRow.stopped,
+      });
+      rows.push(row);
+      byQId.set(qId, row);
+      turnIds.add(turnId);
+      for (const answerId of variants) byAId.set(answerId, row);
+    }
+
+    const sameCanonicalRow = (left, right) => (
+      left.order === right.order
+      && left.qId === right.qId
+      && left.turnId === right.turnId
+      && left.primaryAId === right.primaryAId
+      && left.noAnswer === right.noAnswer
+      && left.stopped === right.stopped
+      && JSON.stringify(left.answerVariants) === JSON.stringify(right.answerVariants)
+    );
+    for (let index = 0; index < anchorIndex; index += 1) {
+      if (
+        path[index].provenance !== 'canonical-prefix'
+        || !sameCanonicalRow(rows[index], canonical.turns[index])
+      ) return fail('canonical-prefix-mismatch');
+    }
+    const anchorSource = path[anchorIndex];
+    const anchorRow = rows[anchorIndex];
+    const canonicalAnchor = canonical.turns[anchorIndex];
+    if (
+      anchorSource.provenance !== 'anchor'
+      || anchorSource.confirmedByNativeEvidence !== true
+      || anchorRow.qId !== proofAnchorQId
+      || canonicalAnchor?.qId !== proofAnchorQId
+    ) return fail('anchor-qid-mismatch');
+    if (anchorRow.primaryAId !== proofAnchorAId) return fail('anchor-answer-mismatch');
+    if (!canonicalAnchor.answerVariants.includes(proofAnchorAId)) {
+      return fail('anchor-answer-not-variant');
+    }
+    if (canonicalAnchor.primaryAId === proofAnchorAId) return fail('anchor-does-not-diverge');
+    const canonicalQIds = new Set(canonical.turns.map((turn) => turn.qId));
+    for (let index = anchorIndex + 1; index < path.length; index += 1) {
+      if (path[index].provenance !== 'graph-descent') return fail('path-invalid');
+      if (canonicalQIds.has(rows[index].qId)) return fail('duplicate-qid');
+    }
+
+    const activatedAt = String(ownership.activatedAt || '').slice(0, 64);
+    if (!activatedAt) return fail('acquisition-proof-invalid');
+    const acquisitionProofIdentity = chatAtlasSelectedPathOverlayProofIdentity(proof);
+    const acquisitionPathIdentity = chatAtlasSelectedPathOverlayPathIdentity(path);
+    if (!acquisitionProofIdentity || !acquisitionPathIdentity) {
+      return fail('acquisition-proof-invalid');
+    }
+    const frozenRows = chatAtlasFreeze(rows);
+    const sourceFingerprint = chatAtlasCompleteIndexFingerprint(frozenRows);
+    const index = chatAtlasFreeze({
+      schema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
+      chatId: canonical.chatId,
+      payloadUpdateTime: canonical.payloadUpdateTime,
+      sourceFingerprint,
+      capturedAt: activatedAt,
+      validatedAt: activatedAt,
+      complete: true,
+      proof: 'selected-path-overlay',
+      turns: frozenRows,
+    });
+    const overlayProof = chatAtlasFreeze({
+      source: 'selected-path-acquisition',
+      reason: 'selected-path-overlay-proven',
+      anchorQId: proofAnchorQId,
+      anchorSelectedAId: proofAnchorAId,
+      rootNodeId: proof.rootNodeId,
+      tailNodeId: proof.tailNodeId,
+      pathLength: rows.length,
+      canonicalPrefixLength,
+      canonicalFingerprint: canonical.sourceFingerprint,
+      overlayFingerprint: sourceFingerprint,
+      acquisitionProofIdentity,
+      acquisitionPathIdentity,
+      token: proof.token,
+      chatId: ownership.chatId,
+      routeKey: ownership.routeKey,
+      generation: ownership.generation,
+      staleRevision: ownership.staleRevision,
+      activatedAt,
+    });
+    return Object.freeze({
+      ok: true,
+      reason: 'selected-path-overlay-proven',
+      token: proof.token,
+      chatId: ownership.chatId,
+      routeKey: ownership.routeKey,
+      generation: ownership.generation,
+      staleRevision: ownership.staleRevision,
+      canonicalFingerprint: canonical.sourceFingerprint,
+      acquisitionProofIdentity,
+      acquisitionPathIdentity,
+      evaluationKey: JSON.stringify([
+        proof.token,
+        acquisitionProofIdentity,
+        acquisitionPathIdentity,
+        canonical.sourceFingerprint,
+      ]),
+      anchorQId: proofAnchorQId,
+      activatedAt,
+      pathLength: rows.length,
+      index,
+      byQId,
+      byAId,
+      proof: overlayProof,
+    });
+  }
+
+  function chatAtlasSelectedPathOverlayCandidateValid(candidate) {
+    return candidate?.ok === true
+      && candidate?.index?.complete === true
+      && candidate?.index?.proof === 'selected-path-overlay'
+      && Array.isArray(candidate?.index?.turns)
+      && candidate.index.turns.length === Number(candidate.pathLength || 0)
+      && candidate.byQId instanceof Map
+      && candidate.byAId instanceof Map
+      && candidate.byQId.size === candidate.index.turns.length
+      && Object.isFrozen(candidate.index)
+      && Object.isFrozen(candidate.index.turns)
+      && Object.isFrozen(candidate.proof);
+  }
+
+  function chatAtlasInstallSelectedPathOverlay(candidate) {
+    if (!chatAtlasSelectedPathOverlayCandidateValid(candidate)) {
+      return chatAtlasClearSelectedPathOverlay(
+        candidate?.reason || 'overlay-candidate-invalid',
+        { invalid: true },
+      );
+    }
+    selectedPathOverlayState.status = 'active';
+    selectedPathOverlayState.reason = 'selected-path-overlay-active';
+    selectedPathOverlayState.token = candidate.token;
+    selectedPathOverlayState.chatId = candidate.chatId;
+    selectedPathOverlayState.routeKey = candidate.routeKey;
+    selectedPathOverlayState.generation = candidate.generation;
+    selectedPathOverlayState.staleRevision = candidate.staleRevision;
+    selectedPathOverlayState.canonicalFingerprint = candidate.canonicalFingerprint;
+    selectedPathOverlayState.acquisitionProofIdentity = candidate.acquisitionProofIdentity;
+    selectedPathOverlayState.acquisitionPathIdentity = candidate.acquisitionPathIdentity;
+    selectedPathOverlayState.evaluationKey = candidate.evaluationKey;
+    selectedPathOverlayState.anchorQId = candidate.anchorQId;
+    selectedPathOverlayState.activatedAt = candidate.activatedAt;
+    selectedPathOverlayState.pathLength = candidate.pathLength;
+    selectedPathOverlayState.index = candidate.index;
+    selectedPathOverlayState.byQId = candidate.byQId;
+    selectedPathOverlayState.byAId = candidate.byAId;
+    selectedPathOverlayState.proof = candidate.proof;
+    return getEffectivePresentationStatus();
+  }
+
+  function chatAtlasSelectedPathOverlayEvaluate() {
+    const acquisition = selectedPathAcquisitionState;
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    const proofIdentity = chatAtlasSelectedPathOverlayProofIdentity(acquisition?.proof);
+    const pathIdentity = chatAtlasSelectedPathOverlayPathIdentity(acquisition?.path);
+    const prospectiveKey = acquisition?.proof
+      ? JSON.stringify([
+        acquisition.proof.token,
+        proofIdentity,
+        pathIdentity,
+        canonical?.sourceFingerprint || '',
+      ])
+      : '';
+    if (
+      chatAtlasSelectedPathOverlayCurrent()
+      && prospectiveKey
+      && selectedPathOverlayState.evaluationKey === prospectiveKey
+    ) return getEffectivePresentationStatus();
+    if (acquisition?.status !== 'proven') {
+      const retainAfterProofReasons = new Set([
+        'anchor-member-missing',
+        'trusted-intent-expired',
+        'trusted-intent-unavailable',
+        'trusted-intent-resolved-unconfirmed',
+        'trusted-intent-resolved-failed',
+        'trusted-intent-resolved-cancelled',
+        'reconciliation-disabled-by-setter',
+      ]);
+      if (
+        retainAfterProofReasons.has(String(acquisition?.reason || ''))
+        && chatAtlasSelectedPathOverlayCurrent()
+      ) return getEffectivePresentationStatus();
+      if (selectedPathOverlayState.status === 'active') {
+        return chatAtlasClearSelectedPathOverlay('acquisition-not-proven');
+      }
+      return getEffectivePresentationStatus();
+    }
+    const intent = chatAtlasCurrentTrustedNativeBranchSelection(acquisition.anchorQId);
+    const route = chatAtlasFullIndexRoute();
+    const candidate = chatAtlasBuildSelectedPathOverlay(acquisition, canonical, {
+      intent,
+      enabled: completeTurnIndexAuthorityState.enabled === true,
+      chatId: String(completeTurnIndexAuthorityState.chatId || ''),
+      routeKey: String(completeTurnIndexAuthorityState.routeKey || ''),
+      generation: Number(completeTurnIndexAuthorityState.generation || 0),
+      stale: completeTurnIndexAuthorityState.branchSelectionStale === true,
+      staleQId: String(completeTurnIndexAuthorityState.branchSelectionStaleQId || ''),
+      staleRevision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
+      routeChatId: String(route?.chatId || ''),
+      routeRouteKey: String(route?.routeKey || ''),
+      activatedAt: new Date().toISOString(),
+    });
+    if (!candidate.ok) {
+      return chatAtlasClearSelectedPathOverlay(candidate.reason, { invalid: true });
+    }
+    if (
+      candidate.chatId !== String(route?.chatId || '')
+      || candidate.routeKey !== String(route?.routeKey || '')
+    ) {
+      return chatAtlasClearSelectedPathOverlay('route-mismatch', { invalid: true });
+    }
+    return chatAtlasInstallSelectedPathOverlay(candidate);
+  }
+
+  function chatAtlasIdentityGraphValid(graph, chatIdRaw) {
+    const chatId = chatAtlasCompleteIndexIdentity(chatIdRaw);
+    if (
+      !graph
+      || typeof graph !== 'object'
+      || Array.isArray(graph)
+      || chatAtlasCompleteIndexIdentity(graph.chatId) !== chatId
+      || !chatAtlasCompleteIndexIdentity(graph.currentNode)
+      || !Array.isArray(graph.nodes)
+      || !Number.isInteger(graph.nodeCount)
+      || graph.nodeCount !== graph.nodes.length
+      || graph.nodeCount < 1
+      || graph.nodeCount > 8192
+      || !String(graph.capturedAt || '')
+    ) return false;
+    const nodeIds = new Set();
+    for (const node of graph.nodes) {
+      if (
+        !node
+        || typeof node !== 'object'
+        || Array.isArray(node)
+        || !chatAtlasCompleteIndexExactKeys(node, [
+          'nodeId',
+          'parentId',
+          'childIds',
+          'role',
+          'messageId',
+          'productUser',
+          'productAnswer',
+          'stopped',
+        ])
+      ) return false;
+      const nodeId = chatAtlasCompleteIndexIdentity(node.nodeId);
+      const messageId = chatAtlasCompleteIndexIdentity(node.messageId);
+      if (
+        !nodeId
+        || nodeIds.has(nodeId)
+        || !messageId
+        || (node.parentId != null && !chatAtlasCompleteIndexIdentity(node.parentId))
+        || !Array.isArray(node.childIds)
+        || node.childIds.some((childId) => !chatAtlasCompleteIndexIdentity(childId))
+        || new Set(node.childIds).size !== node.childIds.length
+        || typeof node.productUser !== 'boolean'
+        || typeof node.productAnswer !== 'boolean'
+        || typeof node.stopped !== 'boolean'
+      ) return false;
+      nodeIds.add(nodeId);
+    }
+    if (!nodeIds.has(graph.currentNode)) return false;
+    const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    for (const node of graph.nodes) {
+      if (node.parentId && !nodeIds.has(node.parentId)) return false;
+      if (node.childIds.some((childId) => !nodeIds.has(childId))) return false;
+      if (
+        node.parentId
+        && !nodeById.get(node.parentId)?.childIds?.includes(node.nodeId)
+      ) return false;
+      if (node.childIds.some((childId) => nodeById.get(childId)?.parentId !== node.nodeId)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function chatAtlasRetainIdentityGraph(result, context = {}) {
+    const chatId = chatAtlasCompleteIndexIdentity(context?.chatId);
+    const routeKey = String(context?.routeKey || '');
+    const generation = Number(context?.generation || 0);
+    const graph = result?.ok === true ? result?.identityGraph : null;
+    if (
+      !chatId
+      || !routeKey
+      || !Number.isInteger(generation)
+      || generation < 1
+      || !chatAtlasIdentityGraphValid(graph, chatId)
+    ) return false;
+    const captureIdentity = `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify([
+      graph.currentNode,
+      ...graph.nodes.map((node) => [
+        node.nodeId,
+        node.parentId,
+        ...node.childIds,
+        node.role,
+        node.messageId,
+        node.productUser,
+        node.productAnswer,
+        node.stopped,
+      ]),
+    ]))}`;
+    const priorGraph = selectedPathAcquisitionState.graph;
+    const graphUnchanged = priorGraph?.captureIdentity === captureIdentity;
+    selectedPathAcquisitionState.graph = Object.freeze({
+      identityGraph: graph,
+      chatId,
+      routeKey,
+      generation,
+      captureIdentity,
+    });
+    if (
+      selectedPathAcquisitionState.status === 'proven'
+      && graphUnchanged
+      && selectedPathAcquisitionState.proof
+    ) {
+      selectedPathAcquisitionState.proof = chatAtlasFreeze({
+        ...selectedPathAcquisitionState.proof,
+        graphCapturedAt: String(graph.capturedAt || ''),
+      });
+    } else if (selectedPathAcquisitionState.status === 'proven') {
+      selectedPathAcquisitionState.status = 'inactive';
+      selectedPathAcquisitionState.reason = 'graph-replaced';
+      selectedPathAcquisitionState.path = null;
+      selectedPathAcquisitionState.proof = null;
+      selectedPathAcquisitionState.provenAt = null;
+      selectedPathAcquisitionState.evaluationKey = '';
+    }
+    return true;
+  }
+
+  function chatAtlasSelectedPathNativeEvidence(members = []) {
+    const byQId = new Map();
+    for (const member of Array.isArray(members) ? members : []) {
+      const qId = chatAtlasCompleteIndexIdentity(member?.question?.currentQId);
+      if (!qId || member?.answer?.currentProjectionSource !== 'native-evidence') continue;
+      const answerIds = chatAtlasCv2CurrentIds(member?.answer?.currentAnswerIds || [])
+        .map(chatAtlasCompleteIndexIdentity)
+        .filter(Boolean);
+      const prior = byQId.get(qId);
+      if (prior) {
+        prior.memberCount += 1;
+        for (const answerId of answerIds) prior.answerIds.add(answerId);
+      } else {
+        byQId.set(qId, { memberCount: 1, answerIds: new Set(answerIds) });
+      }
+    }
+    return byQId;
+  }
+
+  function chatAtlasSelectedPathGraphAnchorNode(graph, selectedAnswerIdRaw) {
+    const selectedAnswerId = chatAtlasCompleteIndexIdentity(selectedAnswerIdRaw);
+    if (!selectedAnswerId || !Array.isArray(graph?.nodes)) return null;
+    const matches = graph.nodes.filter((node) => (
+      node?.productAnswer === true
+      && chatAtlasCompleteIndexIdentity(node?.messageId) === selectedAnswerId
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function chatAtlasDeriveSelectedPath(graph, intent, selectedAnswerIdRaw) {
+    const fail = (reason) => ({ ok: false, reason });
+    const selectedAnswerId = chatAtlasCompleteIndexIdentity(selectedAnswerIdRaw);
+    const canonical = completeTurnIndexAuthorityState.index;
+    const turns = Array.isArray(canonical?.turns) ? canonical.turns : [];
+    const qId = chatAtlasCompleteIndexIdentity(intent?.qId);
+    const canonicalMatches = turns.filter((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === qId);
+    if (canonicalMatches.length !== 1) return fail('anchor-canonical-invalid');
+    const anchorCanonical = canonicalMatches[0];
+    const anchorOrder = Number(anchorCanonical.order || 0);
+    if (
+      anchorOrder < 1
+      || !selectedAnswerId
+      || !Array.isArray(anchorCanonical.answerVariants)
+      || !anchorCanonical.answerVariants.includes(selectedAnswerId)
+    ) return fail('anchor-answer-not-canonical-variant');
+
+    const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    const anchorAnswerNode = chatAtlasSelectedPathGraphAnchorNode(graph, selectedAnswerId);
+    if (!anchorAnswerNode) return fail('anchor-not-in-graph');
+    let visits = 0;
+    const visit = (node) => {
+      visits += 1;
+      return !!node && visits <= 4096;
+    };
+    const parentSeen = new Set();
+    let cursor = anchorAnswerNode;
+    let anchorQuestionNode = null;
+    while (cursor?.parentId) {
+      if (parentSeen.has(cursor.nodeId)) return fail('anchor-linkage-invalid');
+      parentSeen.add(cursor.nodeId);
+      cursor = nodeById.get(cursor.parentId);
+      if (!visit(cursor)) return fail('derivation-bounds-exceeded');
+      if (cursor?.productUser === true) {
+        anchorQuestionNode = cursor;
+        break;
+      }
+    }
+    if (
+      !anchorQuestionNode
+      || chatAtlasCompleteIndexIdentity(anchorQuestionNode.messageId) !== qId
+    ) return fail('anchor-linkage-invalid');
+
+    const prefixQIds = [];
+    const prefixSeen = new Set();
+    cursor = anchorQuestionNode;
+    let rootNodeId = cursor.nodeId;
+    while (cursor) {
+      if (prefixSeen.has(cursor.nodeId)) return fail('anchor-linkage-invalid');
+      prefixSeen.add(cursor.nodeId);
+      if (cursor.productUser === true) {
+        const prefixQId = chatAtlasCompleteIndexIdentity(cursor.messageId);
+        if (!prefixQId) return fail('prefix-mismatch');
+        prefixQIds.push(prefixQId);
+      }
+      rootNodeId = cursor.nodeId;
+      if (!cursor.parentId) break;
+      cursor = nodeById.get(cursor.parentId);
+      if (!visit(cursor)) return fail('derivation-bounds-exceeded');
+    }
+    prefixQIds.reverse();
+    const canonicalPrefix = turns.slice(0, anchorOrder).map((turn) => turn.qId);
+    if (
+      prefixQIds.length !== canonicalPrefix.length
+      || prefixQIds.some((prefixQId, index) => prefixQId !== canonicalPrefix[index])
+    ) return fail('prefix-mismatch');
+
+    const copyCanonical = (turn, provenance, primaryAId = turn.primaryAId) => {
+      const variants = Array.isArray(turn.answerVariants) ? turn.answerVariants.slice() : [];
+      if (primaryAId && variants.includes(primaryAId) && variants[variants.length - 1] !== primaryAId) {
+        variants.splice(variants.indexOf(primaryAId), 1);
+        variants.push(primaryAId);
+      }
+      return chatAtlasFreeze({
+        order: Number(turn.order),
+        qId: turn.qId,
+        turnId: turn.turnId,
+        primaryAId: primaryAId || null,
+        answerVariants: variants,
+        noAnswer: turn.noAnswer === true,
+        stopped: turn.stopped === true,
+        provenance,
+        confirmedByNativeEvidence: provenance === 'anchor',
+      });
+    };
+    const path = turns.slice(0, anchorOrder - 1)
+      .map((turn) => copyCanonical(turn, 'canonical-prefix'));
+    path.push(copyCanonical(anchorCanonical, 'anchor', selectedAnswerId));
+    const pathQIds = new Set(path.map((turn) => turn.qId));
+    const canonicalQIds = new Set(turns.map((turn) => turn.qId));
+    const mountedEvidence = intent?.mountedEvidence instanceof Map
+      ? intent.mountedEvidence
+      : new Map();
+
+    const collectBoundary = (startNode) => {
+      const users = [];
+      const leaves = startNode?.childIds?.length ? [] : [startNode];
+      const seen = new Set();
+      const stack = (startNode?.childIds || []).slice().reverse();
+      while (stack.length) {
+        const node = nodeById.get(stack.pop());
+        if (!visit(node)) return { ok: false, reason: 'derivation-bounds-exceeded' };
+        if (seen.has(node.nodeId)) return { ok: false, reason: 'fork-unresolved' };
+        seen.add(node.nodeId);
+        if (node.productUser === true) {
+          users.push(node);
+          continue;
+        }
+        if (!node.childIds.length) {
+          leaves.push(node);
+          continue;
+        }
+        for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+          stack.push(node.childIds[index]);
+        }
+      }
+      return { ok: true, users, leaves };
+    };
+    const collectAnswers = (questionNode) => {
+      const answers = [];
+      const users = [];
+      const leaves = questionNode?.childIds?.length ? [] : [questionNode];
+      const seen = new Set();
+      let stopped = false;
+      const stack = (questionNode?.childIds || []).slice().reverse();
+      while (stack.length) {
+        const node = nodeById.get(stack.pop());
+        if (!visit(node)) return { ok: false, reason: 'derivation-bounds-exceeded' };
+        if (seen.has(node.nodeId)) return { ok: false, reason: 'descent-variant-ambiguous' };
+        seen.add(node.nodeId);
+        if (node.productUser === true) {
+          users.push(node);
+          continue;
+        }
+        if (node.stopped === true) stopped = true;
+        if (node.productAnswer === true) answers.push(node);
+        if (!node.childIds.length) leaves.push(node);
+        for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+          stack.push(node.childIds[index]);
+        }
+      }
+      return { ok: true, answers, users, leaves, stopped };
+    };
+    const chooseMountedQuestion = (candidates) => {
+      const matches = candidates.filter((candidate) => {
+        const candidateQId = chatAtlasCompleteIndexIdentity(candidate.messageId);
+        const evidence = mountedEvidence.get(candidateQId);
+        return evidence?.memberCount === 1;
+      });
+      return matches.length === 1 ? matches[0] : null;
+    };
+    const chooseAnswer = (questionQId, answerNodes) => {
+      const unique = [];
+      const seen = new Set();
+      for (const node of answerNodes) {
+        const answerId = chatAtlasCompleteIndexIdentity(node.messageId);
+        if (!answerId || seen.has(answerId)) continue;
+        seen.add(answerId);
+        unique.push(node);
+      }
+      if (unique.length === 1) return { node: unique[0], confirmed: false, variants: unique };
+      if (unique.length < 1) return { node: null, confirmed: false, variants: [] };
+      const evidence = mountedEvidence.get(questionQId);
+      if (evidence?.memberCount !== 1 || evidence.answerIds.size !== 1) {
+        return { node: null, confirmed: false, variants: unique, ambiguous: true };
+      }
+      const selected = Array.from(evidence.answerIds)[0];
+      const matches = unique.filter((node) => node.messageId === selected);
+      return matches.length === 1
+        ? { node: matches[0], confirmed: true, variants: unique }
+        : { node: null, confirmed: false, variants: unique, ambiguous: true };
+    };
+
+    let selectedNode = anchorAnswerNode;
+    let tailNodeId = selectedNode.nodeId;
+    while (true) {
+      if (path.length > 512) return fail('derivation-bounds-exceeded');
+      const boundary = collectBoundary(selectedNode);
+      if (!boundary.ok) return fail(boundary.reason);
+      if (!boundary.users.length) {
+        if (boundary.leaves.length !== 1) return fail('fork-unresolved');
+        tailNodeId = boundary.leaves[0].nodeId;
+        break;
+      }
+      if (boundary.leaves.length) return fail('fork-unresolved');
+      const questionNode = boundary.users.length === 1
+        ? boundary.users[0]
+        : chooseMountedQuestion(boundary.users);
+      if (!questionNode) return fail('fork-unresolved');
+      const nextQId = chatAtlasCompleteIndexIdentity(questionNode.messageId);
+      if (!nextQId) return fail('duplicate-qid');
+      if (pathQIds.has(nextQId)) return fail('duplicate-qid');
+      if (canonicalQIds.has(nextQId)) return fail('descent-qid-already-canonical');
+      pathQIds.add(nextQId);
+
+      const answerResult = collectAnswers(questionNode);
+      if (!answerResult.ok) return fail(answerResult.reason);
+      const selected = chooseAnswer(nextQId, answerResult.answers);
+      if (selected.ambiguous) return fail('descent-variant-ambiguous');
+      if (!selected.node) {
+        if (answerResult.users.length) return fail('gap-in-path');
+        if (answerResult.leaves.length !== 1) return fail('fork-unresolved');
+        path.push(chatAtlasFreeze({
+          order: path.length + 1,
+          qId: nextQId,
+          turnId: `turn:${nextQId}`,
+          primaryAId: null,
+          answerVariants: [],
+          noAnswer: true,
+          stopped: answerResult.stopped === true,
+          provenance: 'graph-descent',
+          confirmedByNativeEvidence: false,
+        }));
+        tailNodeId = answerResult.leaves[0].nodeId;
+        break;
+      }
+      const primaryAId = selected.node.messageId;
+      const answerVariants = selected.variants.map((node) => node.messageId);
+      if (answerVariants[answerVariants.length - 1] !== primaryAId) {
+        answerVariants.splice(answerVariants.indexOf(primaryAId), 1);
+        answerVariants.push(primaryAId);
+      }
+      path.push(chatAtlasFreeze({
+        order: path.length + 1,
+        qId: nextQId,
+        turnId: `turn:${nextQId}`,
+        primaryAId,
+        answerVariants,
+        noAnswer: false,
+        stopped: selected.node.stopped === true,
+        provenance: 'graph-descent',
+        confirmedByNativeEvidence: selected.confirmed,
+      }));
+      selectedNode = selected.node;
+      tailNodeId = selectedNode.nodeId;
+    }
+    if (
+      path.length > 512
+      || path.some((turn, index) => turn.order !== index + 1)
+      || new Set(path.map((turn) => turn.qId)).size !== path.length
+    ) return fail(path.length > 512 ? 'derivation-bounds-exceeded' : 'duplicate-qid');
+    const proof = chatAtlasFreeze({
+      anchorQId: qId,
+      anchorSelectedAId: selectedAnswerId,
+      rootNodeId,
+      tailNodeId,
+      pathLength: path.length,
+      canonicalPrefixLength: anchorOrder,
+      canonicalFingerprint: String(canonical?.sourceFingerprint || ''),
+      graphCapturedAt: String(graph?.capturedAt || ''),
+      token: String(intent?.token || ''),
+      chatId: String(intent?.chatId || ''),
+      routeKey: String(intent?.routeKey || ''),
+      generation: Number(intent?.generation || 0),
+      staleRevision: Number(intent?.staleRevision || 0),
+      reason: 'selected-path-proven',
+      source: 'host-identity-graph',
+    });
+    return { ok: true, path: chatAtlasFreeze(path), proof };
+  }
+
+  function chatAtlasSelectedPathProofValid(candidate) {
+    const proof = candidate?.proof;
+    const path = candidate?.path;
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const index = completeTurnIndexAuthorityState.index;
+    if (
+      !proof
+      || !Array.isArray(path)
+      || !path.length
+      || !intent
+      || proof.token !== intent.token
+      || proof.chatId !== completeTurnIndexAuthorityState.chatId
+      || proof.routeKey !== completeTurnIndexAuthorityState.routeKey
+      || proof.generation !== Number(completeTurnIndexAuthorityState.generation || 0)
+      || proof.staleRevision !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
+      || proof.anchorQId !== completeTurnIndexAuthorityState.branchSelectionStaleQId
+      || proof.canonicalFingerprint !== String(index?.sourceFingerprint || '')
+      || proof.pathLength !== path.length
+      || path.some((turn, indexValue) => Number(turn?.order) !== indexValue + 1)
+      || new Set(path.map((turn) => turn?.qId)).size !== path.length
+    ) return false;
+    return completeTurnIndexAuthorityState.branchSelectionStale === true;
+  }
+
+  async function chatAtlasSelectedPathRefetch(intent) {
+    const token = String(intent?.token || '');
+    if (!token || selectedPathAcquisitionState.refetchAttemptedForToken === token) {
+      return chatAtlasSelectedPathFail(
+        'anchor-not-in-graph',
+        intent,
+        selectedPathAcquisitionState.anchorSelectedAId,
+      );
+    }
+    selectedPathAcquisitionState.refetchAttemptedForToken = token;
+    selectedPathAcquisitionState.status = 'inactive';
+    selectedPathAcquisitionState.reason = 'identity-graph-refetch-pending';
+    const provider = H2O.archiveBoot?.fetchConversationTurnIndex;
+    if (typeof provider !== 'function') {
+      return chatAtlasSelectedPathFail(
+        'anchor-not-in-graph',
+        intent,
+        selectedPathAcquisitionState.anchorSelectedAId,
+      );
+    }
+    let result = null;
+    try {
+      result = await provider(intent.chatId, { includeIdentityGraph: true });
+    } catch {}
+    const currentIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const scopeCurrent = currentIntent?.token === token
+      && currentIntent?.qId === intent.qId
+      && completeTurnIndexAuthorityState.branchSelectionStale === true
+      && Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0) === Number(intent.staleRevision || 0)
+      && completeTurnIndexAuthorityState.chatId === intent.chatId
+      && completeTurnIndexAuthorityState.routeKey === intent.routeKey
+      && Number(completeTurnIndexAuthorityState.generation || 0) === Number(intent.generation || 0);
+    if (!scopeCurrent) {
+      return chatAtlasClearSelectedPathAcquisition('identity-graph-refetch-scope-drift');
+    }
+    chatAtlasRetainIdentityGraph(result, {
+      chatId: intent.chatId,
+      routeKey: intent.routeKey,
+      generation: intent.generation,
+    });
+    const retained = selectedPathAcquisitionState.graph;
+    if (
+      !retained
+      || !chatAtlasSelectedPathGraphAnchorNode(
+        retained.identityGraph,
+        selectedPathAcquisitionState.anchorSelectedAId,
+      )
+    ) {
+      return chatAtlasSelectedPathFail(
+        'anchor-not-in-graph',
+        intent,
+        selectedPathAcquisitionState.anchorSelectedAId,
+      );
+    }
+    return chatAtlasSelectedPathEvaluate(chatAtlasLedgerState.members);
+  }
+
+  function chatAtlasSelectedPathEvaluate(members = []) {
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const index = completeTurnIndexAuthorityState.index;
+    if (
+      completeTurnIndexAuthorityState.enabled !== true
+      || !chatAtlasCompleteIndexAuthorityActive()
+      || index?.proof !== 'host-payload-full-graph'
+      || !intent
+    ) {
+      if (selectedPathAcquisitionState.token && !intent) {
+        chatAtlasClearSelectedPathAcquisition('trusted-intent-unavailable', { preserveGraph: true });
+      }
+      return getSelectedPathAcquisitionStatus();
+    }
+    const currentIntent = chatAtlasCurrentTrustedNativeBranchSelection(intent.qId);
+    const scopeCurrent = currentIntent?.token === intent.token
+      && intent.chatId === completeTurnIndexAuthorityState.chatId
+      && intent.routeKey === completeTurnIndexAuthorityState.routeKey
+      && intent.generation === Number(completeTurnIndexAuthorityState.generation || 0)
+      && completeTurnIndexAuthorityState.branchSelectionStale === true
+      && intent.qId === completeTurnIndexAuthorityState.branchSelectionStaleQId
+      && intent.staleRevision === Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0);
+    if (!scopeCurrent) {
+      if (selectedPathAcquisitionState.token) {
+        chatAtlasClearSelectedPathAcquisition('selected-path-ownership-changed', { preserveGraph: true });
+      }
+      return getSelectedPathAcquisitionStatus();
+    }
+    const evidence = chatAtlasSelectedPathNativeEvidence(members);
+    const anchorEvidence = evidence.get(intent.qId);
+    if (!anchorEvidence || anchorEvidence.memberCount !== 1) {
+      return chatAtlasSelectedPathFail(
+        anchorEvidence ? 'anchor-member-ambiguous' : 'anchor-member-missing',
+        intent,
+      );
+    }
+    if (anchorEvidence.answerIds.size !== 1) {
+      return chatAtlasSelectedPathFail('anchor-answer-ambiguous', intent);
+    }
+    const selectedAnswerId = Array.from(anchorEvidence.answerIds)[0];
+    const canonicalMatches = index.turns.filter((turn) => turn?.qId === intent.qId);
+    if (canonicalMatches.length !== 1) {
+      return chatAtlasSelectedPathFail('anchor-canonical-invalid', intent, selectedAnswerId);
+    }
+    const canonical = canonicalMatches[0];
+    if (intent.priorAnswerId && selectedAnswerId === intent.priorAnswerId) {
+      return chatAtlasSelectedPathFail('selected-answer-not-changed', intent, selectedAnswerId);
+    }
+    if (
+      !selectedAnswerId
+      || selectedAnswerId === canonical.primaryAId
+      || !canonical.answerVariants.includes(selectedAnswerId)
+    ) {
+      return chatAtlasSelectedPathFail(
+        selectedAnswerId === canonical.primaryAId
+          ? 'selected-answer-is-canonical'
+          : 'anchor-answer-not-canonical-variant',
+        intent,
+        selectedAnswerId,
+      );
+    }
+    const retained = selectedPathAcquisitionState.graph;
+    const graphCurrent = retained
+      && retained.chatId === intent.chatId
+      && retained.routeKey === intent.routeKey
+      && retained.generation === intent.generation;
+    const evaluationKey = JSON.stringify([
+      intent.token,
+      index.sourceFingerprint,
+      Number(chatAtlasLedgerState.version || 0),
+      graphCurrent ? retained.captureIdentity : '',
+    ]);
+    if (
+      selectedPathAcquisitionState.evaluationKey === evaluationKey
+      && ['proven', 'failed'].includes(selectedPathAcquisitionState.status)
+    ) return getSelectedPathAcquisitionStatus();
+    selectedPathAcquisitionState.token = intent.token;
+    selectedPathAcquisitionState.anchorQId = intent.qId;
+    selectedPathAcquisitionState.anchorSelectedAId = selectedAnswerId;
+    selectedPathAcquisitionState.priorAnswerId = intent.priorAnswerId || null;
+    selectedPathAcquisitionState.chatId = intent.chatId;
+    selectedPathAcquisitionState.routeKey = intent.routeKey;
+    selectedPathAcquisitionState.generation = intent.generation;
+    selectedPathAcquisitionState.staleRevision = intent.staleRevision;
+    selectedPathAcquisitionState.evaluatedLedgerVersion = Number(chatAtlasLedgerState.version || 0);
+    selectedPathAcquisitionState.evaluationKey = evaluationKey;
+    if (
+      !graphCurrent
+      || !chatAtlasSelectedPathGraphAnchorNode(retained.identityGraph, selectedAnswerId)
+    ) {
+      if (selectedPathAcquisitionState.refetchAttemptedForToken === intent.token) {
+        return chatAtlasSelectedPathFail('anchor-not-in-graph', intent, selectedAnswerId);
+      }
+      void chatAtlasSelectedPathRefetch(intent);
+      return getSelectedPathAcquisitionStatus();
+    }
+    const derived = chatAtlasDeriveSelectedPath(
+      retained.identityGraph,
+      Object.freeze({ ...intent, mountedEvidence: evidence }),
+      selectedAnswerId,
+    );
+    if (!derived.ok) return chatAtlasSelectedPathFail(derived.reason, intent, selectedAnswerId);
+    if (!chatAtlasSelectedPathProofValid(derived)) {
+      return chatAtlasSelectedPathFail('proof-ownership-invalid', intent, selectedAnswerId);
+    }
+    selectedPathAcquisitionState.status = 'proven';
+    selectedPathAcquisitionState.reason = 'selected-path-proven';
+    selectedPathAcquisitionState.path = derived.path;
+    selectedPathAcquisitionState.proof = derived.proof;
+    selectedPathAcquisitionState.provenAt = new Date().toISOString();
+    if (typeof chatAtlasSelectedPathOverlayEvaluate === 'function') {
+      chatAtlasSelectedPathOverlayEvaluate();
+    }
+    return getSelectedPathAcquisitionStatus();
+  }
+
   function chatAtlasBranchSelectionStaleCheckpoint() {
     if (completeTurnIndexAuthorityState.branchSelectionStale !== true) return null;
     const qId = String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '');
@@ -6535,6 +7801,12 @@
     completeTurnIndexAuthorityState.branchSelectionStaleChatId = null;
     completeTurnIndexAuthorityState.branchSelectionStaleRouteKey = '';
     completeTurnIndexAuthorityState.branchSelectionStaleGeneration = 0;
+    if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
+      chatAtlasClearSelectedPathOverlay(reason);
+    }
+    if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+      chatAtlasClearSelectedPathAcquisition(reason, { preserveGraph: true });
+    }
     chatAtlasTraceTrustedLifecycle('branch-stale-cleared', { reason });
     if (notify) chatAtlasNotifyCompleteIndexState();
     return true;
@@ -6769,6 +8041,15 @@
         token: priorIntent.token,
       });
     }
+    if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
+      chatAtlasClearSelectedPathOverlay('trusted-intent-superseded');
+    }
+    if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+      chatAtlasClearSelectedPathAcquisition('trusted-intent-superseded', {
+        preserveGraph: true,
+        resetRefetchGuard: true,
+      });
+    }
     // The clicked control's owning canonical qId resolves and freezes NOW, at
     // capture, from DOM topology verified against the host-proven index. The
     // intent never binds lazily to a first-observed changed turn: a capture
@@ -6921,6 +8202,12 @@
       && !ageExpired;
     if (!authoritative) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+        chatAtlasClearSelectedPathAcquisition(
+          ageExpired ? 'trusted-intent-expired' : 'trusted-intent-scope-changed',
+          { preserveGraph: true },
+        );
+      }
       chatAtlasTraceTrustedLifecycle(ageExpired ? 'trusted-intent-expired' : 'trusted-intent-cleared', {
         reason: ageExpired
           ? 'age-window-exceeded'
@@ -7001,6 +8288,9 @@
     const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     if (intent && evidence?.selectionToken === intent.token) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+        chatAtlasClearSelectedPathAcquisition(`trusted-intent-resolved-${resolution}`, { preserveGraph: true });
+      }
       chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
         reason: `resolved-${resolution}`,
         qId: intent.qId,
@@ -7571,6 +8861,8 @@
       branchSelectionStale: completeTurnIndexAuthorityState.branchSelectionStale === true,
       branchSelectionStaleRevision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
       branchSelectionStaleQId: completeTurnIndexAuthorityState.branchSelectionStaleQId || null,
+      selectedPathAcquisition: getSelectedPathAcquisitionStatus(),
+      selectedPathOverlay: getEffectivePresentationStatus(),
       autoBranchReconciliationEnabled: completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true,
       autoBranchReconciliationSetterCallCount: completeTurnIndexAuthorityState.autoBranchReconciliationSetterCallCount,
       trustedSelectionLastCaptureTokenHash: completeTurnIndexLifecycleDiagnostics.trustedSelectionLastCaptureTokenHash,
@@ -7628,9 +8920,41 @@
   }
 
   function chatAtlasPublishCompleteIndex(envelope, source) {
+    const priorSelectedPathFingerprint = (
+      typeof selectedPathAcquisitionState !== 'undefined'
+      && selectedPathAcquisitionState.status === 'proven'
+    )
+      ? String(selectedPathAcquisitionState.proof?.canonicalFingerprint || '')
+      : '';
+    const priorOverlayFingerprint = (
+      typeof selectedPathOverlayState !== 'undefined'
+      && selectedPathOverlayState.status === 'active'
+    )
+      ? String(selectedPathOverlayState.canonicalFingerprint || '')
+      : '';
+    if (
+      priorOverlayFingerprint
+      && priorOverlayFingerprint !== String(envelope?.sourceFingerprint || '')
+      && typeof chatAtlasClearSelectedPathOverlay === 'function'
+    ) {
+      chatAtlasClearSelectedPathOverlay('canonical-fingerprint-changed');
+    }
     completeTurnIndexAuthorityState.index = envelope;
     completeTurnIndexAuthorityState.indexSource = source;
     buildTurns();
+    if (
+      priorSelectedPathFingerprint
+      && priorSelectedPathFingerprint !== String(envelope?.sourceFingerprint || '')
+      && typeof chatAtlasClearSelectedPathAcquisition === 'function'
+    ) {
+      chatAtlasClearSelectedPathAcquisition(
+        'canonical-fingerprint-changed',
+        { preserveGraph: true },
+      );
+      if (typeof chatAtlasSelectedPathEvaluate === 'function') {
+        chatAtlasSelectedPathEvaluate(chatAtlasLedgerState.members);
+      }
+    }
     return chatAtlasNotifyCompleteIndexState();
   }
 
@@ -7645,7 +8969,21 @@
       if (typeof provider !== 'function') return null;
       return (chatId, opts) => {
         completeTurnIndexAuthorityState.fetchCount += 1;
-        return provider(chatId, opts);
+        const context = Object.freeze({
+          chatId: String(completeTurnIndexAuthorityState.chatId || ''),
+          routeKey: String(completeTurnIndexAuthorityState.routeKey || ''),
+          generation: Number(completeTurnIndexAuthorityState.generation || 0),
+        });
+        return Promise.resolve(provider(chatId, {
+          ...(opts || {}),
+          includeIdentityGraph: true,
+        })).then((result) => {
+          const scopeCurrent = context.chatId === String(completeTurnIndexAuthorityState.chatId || '')
+            && context.routeKey === String(completeTurnIndexAuthorityState.routeKey || '')
+            && context.generation === Number(completeTurnIndexAuthorityState.generation || 0);
+          if (scopeCurrent) chatAtlasRetainIdentityGraph(result, context);
+          return result;
+        });
       };
     },
     normalize: (raw, chatId) => chatAtlasNormalizeCompleteIndexEnvelope(raw, chatId, { source: 'host' }),
@@ -7679,6 +9017,17 @@
 
   function chatAtlasResetCompleteIndexRoute(nextRoute, staleStatus = false, options = {}) {
     const clearedIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
+      chatAtlasClearSelectedPathOverlay(
+        staleStatus ? 'route-changed' : 'authority-reset',
+      );
+    }
+    if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+      chatAtlasClearSelectedPathAcquisition(
+        staleStatus ? 'route-changed' : 'authority-reset',
+        { resetRefetchGuard: true },
+      );
+    }
     const preserveBranchSelectionStale = options?.preserveBranchSelectionStale === true
       && completeTurnIndexAuthorityState.branchSelectionStale === true
       && String(nextRoute?.chatId || '') === String(completeTurnIndexAuthorityState.branchSelectionStaleChatId || '')
@@ -7790,7 +9139,10 @@
     completeTurnIndexAuthorityState.completedAt = null;
     completeTurnIndexAuthorityState.controller = controller;
     const operation = Promise.resolve()
-      .then(() => provider(route.chatId, { signal: controller?.signal }))
+      .then(() => provider(route.chatId, {
+        signal: controller?.signal,
+        includeIdentityGraph: true,
+      }))
       .then((result) => {
         const stillCurrent = generation === completeTurnIndexAuthorityState.generation
           && routeKey === completeTurnIndexAuthorityState.routeKey
@@ -7799,6 +9151,11 @@
           completeTurnIndexAuthorityState.staleDiscardCount += 1;
           return getCompleteTurnIndexProjectionStatus();
         }
+        chatAtlasRetainIdentityGraph(result, {
+          chatId: route.chatId,
+          routeKey,
+          generation,
+        });
         completeTurnIndexAuthorityState.completedAt = new Date().toISOString();
         const normalized = result?.ok === true
           ? chatAtlasNormalizeCompleteIndexEnvelope(result.index, route.chatId, { source: 'host' })
@@ -7925,6 +9282,12 @@
       const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
       if (intent) {
         completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+        if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+          chatAtlasClearSelectedPathAcquisition(
+            'reconciliation-disabled-by-setter',
+            { preserveGraph: true },
+          );
+        }
         chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
           reason: 'reconciliation-disabled-by-setter',
           qId: intent.qId,
@@ -8615,6 +9978,11 @@
     getChatAtlasConvergenceParity,
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
+    getSelectedPathAcquisitionStatus,
+    getEffectivePresentationIndex,
+    getEffectivePresentationStatus,
+    getEffectiveTurnRecordByQId,
+    getEffectiveTurnRecordByAId,
     setCompleteTurnIndexProjectionCanary,
     setCompleteTurnIndexAutoBranchReconciliationCanary,
     getCompleteTurnIndexProjectionPreference,
