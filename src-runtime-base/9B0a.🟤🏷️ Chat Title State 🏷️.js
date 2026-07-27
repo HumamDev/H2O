@@ -88,6 +88,266 @@
     attachedAt: 0,
   };
 
+  // H2O_TITLE_STAGE1C_PARITY_BEGIN
+  const PARITY_MAX_COMPARISONS = 200;
+  const PARITY_MAX_LENGTH = 1024;
+  const PARITY_MAX_SUPPRESSED = 200;
+  const PARITY_MAX_EMOJI_LENGTH = 64;
+  const PARITY_CLASSES = Object.freeze([
+    'empty-value',
+    'chatgpt-suffix',
+    'edge-emoji-dedupe',
+    'rtl-range',
+    'whitespace',
+    'other',
+  ]);
+  const PARITY_IDENTITY = Object.freeze({
+    schemaVersion: 2,
+    bridgeVersion: '2',
+    generatorVersion: '2',
+    sourceExportCount: 35,
+    sourceSha256: '9d795e840d6236cc1b35c8142243e16528e14af6095c55a2dcb7230a219fc551',
+    publicSurfaceDigest: 'b86b9dcc0d1258e6a5112ceeca19bf207e54a4fc921ddf95dc91b0cc20a3d3eb',
+  });
+
+  function parityOrdinaryObject(value) {
+    if (!value || typeof value !== 'object') return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function parityOwnData(object, key) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+    return descriptor;
+  }
+
+  function inspectTitleContractParityGate() {
+    try {
+      const h2oDescriptor = Object.getOwnPropertyDescriptor(W, 'H2O');
+      if (!h2oDescriptor) return Object.freeze({ gate: 'absent', contract: null, formatter: null });
+      if (!Object.prototype.hasOwnProperty.call(h2oDescriptor, 'value') ||
+          !parityOrdinaryObject(h2oDescriptor.value)) {
+        return Object.freeze({ gate: 'descriptor-mismatch', contract: null, formatter: null });
+      }
+
+      const contractDescriptor = Object.getOwnPropertyDescriptor(h2oDescriptor.value, 'TitleContract');
+      if (!contractDescriptor) return Object.freeze({ gate: 'absent', contract: null, formatter: null });
+      if (!Object.prototype.hasOwnProperty.call(contractDescriptor, 'value') ||
+          contractDescriptor.writable !== false ||
+          contractDescriptor.enumerable !== false ||
+          contractDescriptor.configurable !== false ||
+          !parityOrdinaryObject(contractDescriptor.value)) {
+        return Object.freeze({ gate: 'descriptor-mismatch', contract: null, formatter: null });
+      }
+
+      const contract = contractDescriptor.value;
+      const identityDescriptor = parityOwnData(contract, 'identity');
+      const identity = identityDescriptor && identityDescriptor.value;
+      if (!parityOrdinaryObject(identity)) {
+        return Object.freeze({ gate: 'identity-mismatch', contract: null, formatter: null });
+      }
+      for (const [key, expected] of Object.entries(PARITY_IDENTITY)) {
+        const field = parityOwnData(identity, key);
+        if (!field || field.value !== expected) {
+          return Object.freeze({ gate: 'identity-mismatch', contract: null, formatter: null });
+        }
+      }
+
+      const rtlDescriptor = parityOwnData(contract, 'isRTL');
+      const formatterDescriptor = parityOwnData(contract, 'formatDisplayTitle');
+      if (!rtlDescriptor || typeof rtlDescriptor.value !== 'function' ||
+          !formatterDescriptor || typeof formatterDescriptor.value !== 'function') {
+        return Object.freeze({ gate: 'helper-missing', contract: null, formatter: null });
+      }
+      return Object.freeze({ gate: 'ok', contract, formatter: formatterDescriptor.value });
+    } catch {
+      return Object.freeze({ gate: 'gate-error', contract: null, formatter: null });
+    }
+  }
+
+  function parityIncrement(value, cap) {
+    return value >= cap ? cap : value + 1;
+  }
+
+  function parityInputString(value) {
+    return typeof value === 'string' ? value : String(value || '');
+  }
+
+  function parityBoundedSample(value, limit) {
+    if (value.length <= limit) return value;
+    const half = Math.floor(limit / 2);
+    return `${value.slice(0, half)}${value.slice(value.length - half)}`;
+  }
+
+  function paritySignature(baseTitle, emoji, currentRouteToken) {
+    const base = parityInputString(baseTitle);
+    const mark = parityInputString(emoji);
+    const baseLen = Math.min(base.length, PARITY_MAX_LENGTH);
+    const emojiLen = Math.min(mark.length, PARITY_MAX_EMOJI_LENGTH);
+    const routeEpoch = Number.isSafeInteger(currentRouteToken) ? currentRouteToken : 0;
+    const baseSample = parityBoundedSample(base, PARITY_MAX_LENGTH);
+    const emojiSample = parityBoundedSample(mark, PARITY_MAX_EMOJI_LENGTH);
+    const metadata = `${routeEpoch}|${baseLen}|${emojiLen}|`;
+    let h1 = 0x811c9dc5;
+    let h2 = 0x9e3779b9;
+    let offset = 0;
+
+    const update = (text) => {
+      for (let index = 0; index < text.length; index += 1) {
+        const code = text.charCodeAt(index);
+        h1 = Math.imul((h1 ^ code) >>> 0, 0x01000193) >>> 0;
+        h2 = Math.imul((h2 + code + offset + 0x7f4a7c15) ^ (h2 >>> 13), 0x85ebca6b) >>> 0;
+        offset += 1;
+      }
+      h1 = Math.imul((h1 ^ 0xff) >>> 0, 0x01000193) >>> 0;
+      h2 = Math.imul((h2 ^ 0xa5a5a5a5) >>> 0, 0xc2b2ae35) >>> 0;
+      offset += 1;
+    };
+
+    update(metadata);
+    update(baseSample);
+    update(emojiSample);
+    return Object.freeze({ routeToken: routeEpoch, baseLen, emojiLen, h1, h2 });
+  }
+
+  function paritySameSignature(left, right) {
+    return !!left && !!right &&
+      left.routeToken === right.routeToken &&
+      left.baseLen === right.baseLen &&
+      left.emojiLen === right.emojiLen &&
+      left.h1 === right.h1 &&
+      left.h2 === right.h2;
+  }
+
+  function parityLength(value) {
+    return Math.min(typeof value === 'string' ? value.length : 0, PARITY_MAX_LENGTH);
+  }
+
+  function parityDirection(value) {
+    return value === 'ltr' || value === 'rtl' ? value : 'unknown';
+  }
+
+  function createTitleContractParityController() {
+    const gateResult = inspectTitleContractParityGate();
+    const counters = {
+      comparisons: 0,
+      matches: 0,
+      mismatches: 0,
+      errors: 0,
+      suppressed: 0,
+      byClass: Object.fromEntries(PARITY_CLASSES.map((name) => [name, 0])),
+      lastMismatch: null,
+    };
+    let previousSignature = null;
+
+    function compare(baseTitle, emoji, legacyOutput, currentRouteToken) {
+      if (gateResult.gate !== 'ok') return;
+      let signature;
+      try {
+        signature = paritySignature(baseTitle, emoji, currentRouteToken);
+      } catch {
+        return;
+      }
+      if (paritySameSignature(previousSignature, signature)) {
+        counters.suppressed = parityIncrement(counters.suppressed, PARITY_MAX_SUPPRESSED);
+        return;
+      }
+      previousSignature = signature;
+      if (counters.comparisons >= PARITY_MAX_COMPARISONS) {
+        counters.suppressed = parityIncrement(counters.suppressed, PARITY_MAX_SUPPRESSED);
+        return;
+      }
+
+      counters.comparisons = parityIncrement(counters.comparisons, PARITY_MAX_COMPARISONS);
+      try {
+        const contractResult = gateResult.formatter.call(gateResult.contract, baseTitle, emoji);
+        const textDescriptor = contractResult && typeof contractResult === 'object'
+          ? parityOwnData(contractResult, 'text')
+          : null;
+        const dirDescriptor = contractResult && typeof contractResult === 'object'
+          ? parityOwnData(contractResult, 'dir')
+          : null;
+        if (!contractResult ||
+            typeof contractResult !== 'object' ||
+            !Object.isFrozen(contractResult) ||
+            !textDescriptor ||
+            typeof textDescriptor.value !== 'string' ||
+            textDescriptor.value.length > PARITY_MAX_LENGTH ||
+            !dirDescriptor ||
+            (dirDescriptor.value !== 'ltr' && dirDescriptor.value !== 'rtl')) {
+          counters.errors = parityIncrement(counters.errors, PARITY_MAX_COMPARISONS);
+          return;
+        }
+
+        const contractText = textDescriptor.value;
+        const contractDir = dirDescriptor.value;
+        if (contractText === legacyOutput) {
+          counters.matches = parityIncrement(counters.matches, PARITY_MAX_COMPARISONS);
+          return;
+        }
+
+        const baseClean = cleanTitle(baseTitle);
+        const baseNorm = norm(baseTitle);
+        const emojiNorm = norm(emoji);
+        const legacyDir = isRTL(baseClean) ? 'rtl' : 'ltr';
+        let mismatchClass = 'other';
+        if ((!baseClean || !emojiNorm) && baseClean === baseNorm) {
+          mismatchClass = 'empty-value';
+        } else if (baseClean !== baseNorm) {
+          mismatchClass = 'chatgpt-suffix';
+        } else if (baseClean && emojiNorm && getEdgeEmoji(baseClean) === emojiNorm) {
+          mismatchClass = 'edge-emoji-dedupe';
+        } else if (legacyDir !== contractDir) {
+          mismatchClass = 'rtl-range';
+        } else if (norm(legacyOutput) === norm(contractText)) {
+          mismatchClass = 'whitespace';
+        }
+
+        counters.mismatches = parityIncrement(counters.mismatches, PARITY_MAX_COMPARISONS);
+        counters.byClass[mismatchClass] = parityIncrement(
+          counters.byClass[mismatchClass],
+          PARITY_MAX_COMPARISONS,
+        );
+        counters.lastMismatch = Object.freeze({
+          class: mismatchClass,
+          baseLen: signature.baseLen,
+          emojiLen: signature.emojiLen,
+          legacyLen: parityLength(legacyOutput),
+          contractLen: parityLength(contractText),
+          legacyDir: parityDirection(legacyDir),
+          contractDir: parityDirection(contractDir),
+        });
+      } catch {
+        counters.errors = parityIncrement(counters.errors, PARITY_MAX_COMPARISONS);
+      }
+    }
+
+    function snapshot() {
+      const byClass = Object.freeze(Object.fromEntries(
+        PARITY_CLASSES.map((name) => [name, counters.byClass[name]]),
+      ));
+      const lastMismatch = counters.lastMismatch
+        ? Object.freeze({ ...counters.lastMismatch })
+        : null;
+      return Object.freeze({
+        gate: gateResult.gate,
+        comparisons: counters.comparisons,
+        matches: counters.matches,
+        mismatches: counters.mismatches,
+        errors: counters.errors,
+        suppressed: counters.suppressed,
+        byClass,
+        lastMismatch,
+      });
+    }
+
+    return Object.freeze({ compare, snapshot });
+  }
+
+  const titleContractParity = createTitleContractParityController();
+  // H2O_TITLE_STAGE1C_PARITY_END
+
   let identity = detectIdentity();
   let activeRecordKey = recordKeyForIdentity(identity);
   let activeRecord = ensureRecord(activeRecordKey, identity.chatId);
@@ -346,6 +606,7 @@
 
   function composeState(rec, nextIdentity, reason) {
     const displayTitle = displayFrom(rec.baseTitle, rec.emoji);
+    titleContractParity.compare(rec.baseTitle, rec.emoji, displayTitle, routeToken);
     return {
       version: VERSION,
       chatId: nextIdentity.chatId || null,
@@ -1088,6 +1349,7 @@
       lastUpdateTimestamp: state.lastUpdateAt || 0,
       lastError: lastError || '',
       lastWarning: lastWarning || '',
+      titleContractParity: titleContractParity.snapshot(),
       ownDocumentWrite: ownDocumentWrite ? {
         expectedTitle: ownDocumentWrite.expectedTitle,
         source: ownDocumentWrite.source,
