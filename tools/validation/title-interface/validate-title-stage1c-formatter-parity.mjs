@@ -12,8 +12,16 @@ import {
   getExtensionId,
   getExtensionKey,
 } from "../../product/extensions/chatgpt/chrome/chrome-extension-keys.mjs";
+import {
+  TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION,
+  TITLE_CONTRACT_PRIVILEGED_EXPORTS,
+  TITLE_CONTRACT_PUBLIC_EXPORTS,
+  makeCanonicalTitleContractBridge,
+  transformTitleContractToClassicBridge,
+} from "../../product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const CONTRACT_REL = "packages/title-contract/index.mjs";
 const RUNTIME_REL = "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js";
 const VALIDATOR_REL = "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs";
 const BRIDGE_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/title-contract-bridge.js";
@@ -35,16 +43,20 @@ const EXPECTED_IDENTITY = Object.freeze({
   sourceSha256: "9d795e840d6236cc1b35c8142243e16528e14af6095c55a2dcb7230a219fc551",
   publicSurfaceDigest: "b86b9dcc0d1258e6a5112ceeca19bf207e54a4fc921ddf95dc91b0cc20a3d3eb",
 });
+const EXPECTED_BRIDGE_BUILD_HEAD = "3fa9adb1568b4a769dd8552eb36854d86f42815e";
+const EXPECTED_CURRENT_BRIDGE_SHA256 = "9a11dc693bddcee5957f6c73580ef2a3ca3250e488ded4be7baafdd755b02696";
+const HISTORICAL_STAGE1B_HEAD = "9776f6738c074798de02edd16eb6a2911105af63";
+const HISTORICAL_STAGE1B_BRIDGE_SHA256 = "4c11f0b9aca19944fe74e90c953d694ed94ddd33bcc23cf67bd631f6c2cc33f5";
 const EXPECTED_HASHES = Object.freeze({
-  [BRIDGE_REL]: "4c11f0b9aca19944fe74e90c953d694ed94ddd33bcc23cf67bd631f6c2cc33f5",
-  [LOADER_REL]: "116311d63a53208490a873968bc992af50b49e94ab2885ee390a80b290d2faa0",
-  [PROXY_REL]: "904cd21e6b47cf6c774474a5be61145c384b34b23d39eb27abaac5b8a4df3436",
+  [LOADER_REL]: "cbc342289da0fff4d62027059693f4c9626d0e7da8b3cbc807421127b2500d3e",
+  [PROXY_REL]: "0aa14e0360d88bfbdec00e41aca1d4f3febaa00ec9b0b8c84f544d30eb190793",
   [MANIFEST_REL]: "500dc39dcd559a80dc65d669b10a87bdac0d29e1ffc7f365c76a1bb57e0b5e28",
 });
 const EXPECTED_EXTENSION_ID = "ogcjkeaiicglflamhjaaimdhphjlgkbb";
 const SCOPE_MODE_PREFIX = "--scope-mode=";
 const scopeTests = [];
 const tests = [];
+let bridgeAttestation = null;
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, { cwd: ROOT, encoding: "utf8", ...options });
@@ -912,7 +924,89 @@ test("protected title runtimes, H2O Core, and dev-order remain unchanged", () =>
   assert(!fs.readFileSync(path.join(ROOT, PROXY_REL), "utf8").includes("9D1a."));
 });
 
-test("bridge, loader, proxy, manifest, and extension identity remain unchanged", () => {
+test("bridge regeneration and generated identities remain coherent", () => {
+  const currentHead = run("git", ["rev-parse", "HEAD"]).trim();
+  execFileSync("git", ["merge-base", "--is-ancestor", EXPECTED_BRIDGE_BUILD_HEAD, currentHead], {
+    cwd: ROOT,
+  });
+  assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "2");
+
+  const contractPath = path.join(ROOT, CONTRACT_REL);
+  const sourceBytes = fs.readFileSync(contractPath);
+  const committedSourceBytes = execFileSync("git", ["show", `HEAD:${CONTRACT_REL}`], {
+    cwd: ROOT,
+    encoding: null,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  assert(sourceBytes.equals(committedSourceBytes), "working contract source must equal committed HEAD");
+  const buildHeadSourceBytes = execFileSync("git", ["show", `${EXPECTED_BRIDGE_BUILD_HEAD}:${CONTRACT_REL}`], {
+    cwd: ROOT,
+    encoding: null,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  assert(sourceBytes.equals(buildHeadSourceBytes), "contract source changed since bridge generation");
+
+  const current = transformTitleContractToClassicBridge({
+    sourceBytes,
+    committedSourceBytes,
+    repositoryHeadAtBuild: EXPECTED_BRIDGE_BUILD_HEAD,
+  });
+  if (currentHead === EXPECTED_BRIDGE_BUILD_HEAD) {
+    const canonical = makeCanonicalTitleContractBridge({ repositoryRoot: ROOT });
+    assert.equal(canonical.code, current.code, "canonical current-HEAD regeneration mismatch");
+  }
+  const bridgeBytes = fs.readFileSync(path.join(ROOT, BRIDGE_REL));
+  assert.equal(current.repositoryHeadAtBuild, EXPECTED_BRIDGE_BUILD_HEAD);
+  assert(Buffer.from(current.code, "utf8").equals(bridgeBytes), "current bridge differs from in-memory regeneration");
+  assert.equal(sha256(bridgeBytes), EXPECTED_CURRENT_BRIDGE_SHA256);
+
+  const historical = transformTitleContractToClassicBridge({
+    sourceBytes,
+    committedSourceBytes,
+    repositoryHeadAtBuild: HISTORICAL_STAGE1B_HEAD,
+  });
+  assert.equal(sha256(Buffer.from(historical.code, "utf8")), HISTORICAL_STAGE1B_BRIDGE_SHA256);
+  assert.equal(current.code.split(EXPECTED_BRIDGE_BUILD_HEAD).length - 1, 1);
+  assert.equal(historical.code.split(HISTORICAL_STAGE1B_HEAD).length - 1, 1);
+  assert.equal(
+    current.code.replace(EXPECTED_BRIDGE_BUILD_HEAD, "<REPOSITORY_HEAD>"),
+    historical.code.replace(HISTORICAL_STAGE1B_HEAD, "<REPOSITORY_HEAD>"),
+    "bridge generations differ beyond repositoryHeadAtBuild",
+  );
+
+  const sandbox = {};
+  vm.createContext(sandbox);
+  new vm.Script(current.code, { filename: BRIDGE_REL }).runInContext(sandbox);
+  const contract = sandbox.H2O?.TitleContract;
+  assert(contract && typeof contract === "object", "generated public bridge missing");
+  const identity = contract.identity;
+  for (const [key, expected] of Object.entries(EXPECTED_IDENTITY)) {
+    assert.equal(identity?.[key], expected, `bridge identity ${key}`);
+  }
+  assert.equal(identity.repositoryHeadAtBuild, EXPECTED_BRIDGE_BUILD_HEAD);
+  assert.deepEqual([...identity.publicSurfaceKeys], [...TITLE_CONTRACT_PUBLIC_EXPORTS]);
+  assert.equal(identity.publicSurfaceKeys.length, 27);
+  assert.deepEqual(
+    Object.keys(contract).filter((key) => key !== "identity").sort(),
+    [...TITLE_CONTRACT_PUBLIC_EXPORTS],
+  );
+  for (const name of TITLE_CONTRACT_PRIVILEGED_EXPORTS) {
+    assert.equal(Object.prototype.hasOwnProperty.call(contract, name), false, `${name} exposed`);
+  }
+
+  bridgeAttestation = Object.freeze({
+    currentSha256: EXPECTED_CURRENT_BRIDGE_SHA256,
+    currentRepositoryHeadAtBuild: current.repositoryHeadAtBuild,
+    repositoryHeadAtReview: currentHead,
+    deterministicCurrentMatch: true,
+    stableCompatibilityIdentity: true,
+    publicSurfaceCount: identity.publicSurfaceKeys.length,
+    privilegedExportsExposed: 0,
+    historicalSha256: HISTORICAL_STAGE1B_BRIDGE_SHA256,
+    historicalReconstructionMatch: true,
+    normalizedDifferenceOnly: "repositoryHeadAtBuild",
+  });
+
   for (const [relative, expected] of Object.entries(EXPECTED_HASHES)) {
     assert.equal(sha256(fs.readFileSync(path.join(ROOT, relative))), expected, `${relative} hash`);
   }
@@ -940,7 +1034,7 @@ test("all 154 canonical aliases remain valid symlinks", () => {
 });
 
 assert.equal(scopeTests.length, 15, "scope test count drifted");
-assert(tests.length >= 30, "runtime scenario count unexpectedly low");
+assert.equal(tests.length, 34, "runtime scenario count drifted");
 
 console.log(JSON.stringify({
   ok: true,
@@ -950,5 +1044,6 @@ console.log(JSON.stringify({
   runtimeScenarios: tests.length,
   runtimeSha256: sha256(fs.readFileSync(runtimePath)),
   validatorSha256: sha256(fs.readFileSync(path.join(ROOT, VALIDATOR_REL))),
-  bridgeSha256: EXPECTED_HASHES[BRIDGE_REL],
+  bridgeSha256: EXPECTED_CURRENT_BRIDGE_SHA256,
+  bridgeAttestation,
 }));
