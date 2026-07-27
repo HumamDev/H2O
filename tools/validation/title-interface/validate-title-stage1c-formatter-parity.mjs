@@ -24,6 +24,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const CONTRACT_REL = "packages/title-contract/index.mjs";
 const RUNTIME_REL = "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js";
 const VALIDATOR_REL = "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs";
+const ALIAS_REL = "apps/dev-server/alias/9B0a._Chat_Title_State_.js";
 const BRIDGE_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/title-contract-bridge.js";
 const LOADER_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/loader.js";
 const MANIFEST_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/manifest.json";
@@ -32,9 +33,21 @@ const BEGIN_MARKER = "// H2O_TITLE_STAGE1C_PARITY_BEGIN";
 const END_MARKER = "// H2O_TITLE_STAGE1C_PARITY_END";
 const BOOT_INVOCATION = "\n  boot();\n";
 const TEST_HOOK = "__H2O_STAGE1C_FORMATTER_PARITY_TEST__";
+const LIFECYCLE_TEST_HOOK = "__H2O_STAGE1C_DOCUMENT_LIFECYCLE_TEST__";
+const EXPECTED_RUNTIME_SHA256 = "ec8ea13b92d2cb4f71f49f08c9d9f957cfdcf551cf17cd263521678e81ed9077";
 const EXPECTED_STAGE1C = new Set([RUNTIME_REL, VALIDATOR_REL]);
 const EXPECTED_MODIFIED = new Set([RUNTIME_REL]);
 const EXPECTED_UNTRACKED = new Set([VALIDATOR_REL]);
+const CANARY_EXPECTATION = Object.freeze({
+  schema: "h2o.title-stage1c.canary-expectation.v1",
+  counterContinuityRequires: Object.freeze([
+    "same-in-memory-instance",
+    "performance.timeOrigin",
+    "trusted-diagnostic-documentId",
+  ]),
+  evaluateUnknownContinuityPerDocument: true,
+  sameRouteSemanticNoopMayKeepCounters: true,
+});
 const EXPECTED_IDENTITY = Object.freeze({
   schemaVersion: 2,
   bridgeVersion: "2",
@@ -146,6 +159,12 @@ function scopeTest(name, callback) {
 
 function test(name, callback) {
   callback();
+  tests.push(name);
+  console.log(`ok ${tests.length} - ${name}`);
+}
+
+async function asyncTest(name, callback) {
+  await callback();
   tests.push(name);
   console.log(`ok ${tests.length} - ${name}`);
 }
@@ -315,10 +334,52 @@ function instrumentBaselineSource(source) {
 `);
 }
 
+function instrumentLifecycleSource(source) {
+  assert.equal(countLiteral(source, BOOT_INVOCATION), 1, "lifecycle boot anchor count");
+  for (const name of [
+    "displayFrom",
+    "setTitle",
+    "setEmoji",
+    "hydrateFromStore",
+    "attachStore",
+    "refresh",
+    "renameNative",
+    "applyCrossSurfaceTitlePayload",
+    "boot",
+  ]) {
+    const declarations = source.match(new RegExp(`^  (?:async )?function ${name}\\(`, "gmu")) || [];
+    assert.equal(declarations.length, 1, `lifecycle ${name} declaration count`);
+  }
+  assert.equal(countLiteral(source, "  const api = {\n"), 1, "lifecycle API declaration count");
+  return source.replace(BOOT_INVOCATION, `
+  W.${LIFECYCLE_TEST_HOOK} = Object.freeze({
+    api,
+    refresh,
+    setTitle,
+    setEmoji,
+    hydrateFromStore,
+    attachStore,
+    applyCrossSurfaceTitlePayload,
+    renameNative,
+    displayFrom,
+    paritySnapshot: titleContractParity.snapshot,
+    currentState: () => ({
+      ...state,
+      durability: { ...state.durability },
+    }),
+    currentRecord: () => snapshotRecord(activeRecord),
+    currentRouteToken: () => routeToken,
+  });
+  boot();
+`);
+}
+
 const instrumentedSource = instrumentCurrentSource(runtimeSource);
 const instrumentedBaseline = instrumentBaselineSource(baselineSource);
+const instrumentedLifecycle = instrumentLifecycleSource(runtimeSource);
 new vm.Script(bridgeSource, { filename: BRIDGE_REL });
 new vm.Script(instrumentedSource, { filename: `${RUNTIME_REL}:instrumented` });
+new vm.Script(instrumentedLifecycle, { filename: `${RUNTIME_REL}:lifecycle-instrumented` });
 
 function createStorage() {
   const values = new Map();
@@ -331,6 +392,7 @@ function createStorage() {
       setItem(key, value) { mutations += 1; values.set(String(key), String(value)); },
       removeItem(key) { mutations += 1; values.delete(String(key)); },
     },
+    seed(key, value) { values.set(String(key), String(value)); },
     reset() { mutations = 0; },
     get mutations() { return mutations; },
   };
@@ -458,6 +520,228 @@ function createHarness({
     callState,
     resetCalls() { callState.count = 0; },
   };
+}
+
+function createFakeClock(start = 1_786_000_000_000) {
+  let current = start;
+  let nextId = 1;
+  const tasks = new Map();
+
+  function schedule(callback, delay, interval) {
+    const id = nextId;
+    nextId += 1;
+    const duration = Math.max(0, Number(delay) || 0);
+    tasks.set(id, {
+      callback,
+      dueAt: current + duration,
+      interval: interval ? Math.max(1, duration) : 0,
+    });
+    return id;
+  }
+
+  function clear(id) {
+    tasks.delete(id);
+  }
+
+  function advance(duration) {
+    const target = current + Math.max(0, Number(duration) || 0);
+    for (;;) {
+      const pending = [...tasks.entries()]
+        .filter(([, task]) => task.dueAt <= target)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt || left[0] - right[0])[0];
+      if (!pending) break;
+      const [id, task] = pending;
+      current = task.dueAt;
+      if (!task.interval) tasks.delete(id);
+      task.callback();
+      if (task.interval && tasks.has(id)) {
+        task.dueAt = current + task.interval;
+        tasks.set(id, task);
+      }
+    }
+    current = target;
+  }
+
+  return {
+    advance,
+    clear,
+    setInterval(callback, delay) { return schedule(callback, delay, true); },
+    setTimeout(callback, delay) { return schedule(callback, delay, false); },
+    get now() { return current; },
+    get pending() { return tasks.size; },
+  };
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function createLifecycleHarness({
+  pathname = "/c/stage1c-chat-a",
+  titleByChat = {},
+  timeOrigin = 1_785_000_000_000,
+  clockStart = 1_786_000_000_000,
+  storageSeed = [],
+} = {}) {
+  const clock = createFakeClock(clockStart);
+  const storage = createStorage();
+  for (const [key, value] of storageSeed) storage.seed(key, value);
+  const effects = {
+    dispatched: [],
+    documentListeners: new Map(),
+    windowListeners: new Map(),
+    fetches: [],
+    observers: 0,
+    timerCalls: 0,
+  };
+  const titleNode = {};
+  const bodyNode = {};
+  let fetchImplementation = async () => {
+    throw new Error("unexpected fetch");
+  };
+  const sandbox = {
+    location: { pathname },
+    localStorage: storage.api,
+    performance: { timeOrigin },
+    console: { warn() {}, log() {}, error() {} },
+    Intl,
+    NodeFilter: { SHOW_TEXT: 4, FILTER_REJECT: 2, FILTER_ACCEPT: 1 },
+    CustomEvent: class CustomEvent {
+      constructor(type, options = {}) {
+        this.type = type;
+        this.detail = options.detail;
+      }
+    },
+    MutationObserver: class MutationObserver {
+      constructor(callback) {
+        this.callback = callback;
+        effects.observers += 1;
+      }
+      observe() {}
+      disconnect() {}
+    },
+    setTimeout(callback, delay) {
+      effects.timerCalls += 1;
+      return clock.setTimeout(callback, delay);
+    },
+    clearTimeout(id) { clock.clear(id); },
+    setInterval(callback, delay) {
+      effects.timerCalls += 1;
+      return clock.setInterval(callback, delay);
+    },
+    clearInterval(id) { clock.clear(id); },
+    queueMicrotask(callback) { Promise.resolve().then(callback); },
+    dispatchEvent(event) {
+      effects.dispatched.push({ type: event?.type || "", detail: cloneJson(event?.detail ?? null) });
+      for (const callback of effects.windowListeners.get(event?.type) || []) callback(event);
+      return true;
+    },
+    addEventListener(type, callback) {
+      const callbacks = effects.windowListeners.get(type) || [];
+      callbacks.push(callback);
+      effects.windowListeners.set(type, callbacks);
+    },
+    async fetch(...args) {
+      effects.fetches.push(args);
+      return fetchImplementation(...args);
+    },
+  };
+  class FakeDate extends Date {
+    constructor(...args) {
+      if (args.length) super(...args);
+      else super(clock.now);
+    }
+    static now() { return clock.now; }
+  }
+  sandbox.Date = FakeDate;
+  sandbox.document = {
+    title: "ChatGPT",
+    body: bodyNode,
+    hidden: false,
+    querySelector(selector) {
+      if (selector === "title") return titleNode;
+      const match = String(selector).match(/\/c\/([a-z0-9_-]+)/iu);
+      const chatId = match?.[1] || "";
+      const rawTitle = titleByChat[chatId];
+      if (!rawTitle) return null;
+      return {
+        dataset: { hoRawTitle: rawTitle, hoRawTitleFull: rawTitle },
+        getAttribute(name) { return name === "data-ho-raw-title" ? rawTitle : null; },
+      };
+    },
+    createTreeWalker() {
+      return {
+        currentNode: null,
+        nextNode() { return false; },
+      };
+    },
+    addEventListener(type, callback) {
+      const callbacks = effects.documentListeners.get(type) || [];
+      callbacks.push(callback);
+      effects.documentListeners.set(type, callbacks);
+    },
+  };
+  sandbox.history = {
+    pushState(_state, _title, url) {
+      if (typeof url === "string") sandbox.location.pathname = new URL(url, "https://chatgpt.com").pathname;
+    },
+    replaceState(_state, _title, url) {
+      if (typeof url === "string") sandbox.location.pathname = new URL(url, "https://chatgpt.com").pathname;
+    },
+  };
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(bridgeSource, { filename: BRIDGE_REL }).runInContext(sandbox);
+  new vm.Script(instrumentedLifecycle, { filename: `${RUNTIME_REL}:lifecycle-vm` }).runInContext(sandbox);
+  const hook = sandbox[LIFECYCLE_TEST_HOOK];
+  assert(hook, "lifecycle production hook missing");
+
+  return {
+    sandbox,
+    hook,
+    clock,
+    storage,
+    effects,
+    timeOrigin,
+    setFetch(callback) { fetchImplementation = callback; },
+    setStore(store) {
+      sandbox.H2O.Library = { Store: store };
+    },
+    resetEffects() {
+      effects.dispatched.length = 0;
+      effects.fetches.length = 0;
+      effects.timerCalls = 0;
+      storage.reset();
+    },
+  };
+}
+
+function lifecycleSnapshot(harness) {
+  const state = cloneJson(harness.hook.currentState());
+  const parity = cloneJson(harness.hook.paritySnapshot());
+  assert.equal(parity.comparisons, parity.matches + parity.mismatches + parity.errors);
+  return {
+    state,
+    parity,
+    routeToken: harness.hook.currentRouteToken(),
+  };
+}
+
+function parityActivityChanged(before, after) {
+  return after.comparisons !== before.comparisons || after.suppressed !== before.suppressed;
+}
+
+function assertLegacyAuthority(harness, current) {
+  assert.equal(
+    current.state.displayTitle,
+    harness.hook.displayFrom(current.state.baseTitle, current.state.emoji),
+    "legacy displayFrom output must remain authoritative",
+  );
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function accessorWindowProxy({ throwDescriptor = false } = {}) {
@@ -898,6 +1182,302 @@ test("H2O.ChatTitle public API keys remain compatible with HEAD", () => {
   assert.equal(countLiteral(runtimeSource, "H2O.ChatTitle = api;"), 1);
 });
 
+function createRouteLifecycleHarness(pathname = "/c/stage1c-chat-a", timeOrigin) {
+  return createLifecycleHarness({
+    pathname,
+    timeOrigin,
+    titleByChat: {
+      "stage1c-chat-a": "Lifecycle title A",
+      "stage1c-chat-b": "Lifecycle title B",
+    },
+  });
+}
+
+function transitionLifecycleToB(harness) {
+  harness.sandbox.history.pushState({}, "", "/c/stage1c-chat-b");
+  harness.clock.advance(60);
+  return lifecycleSnapshot(harness);
+}
+
+test("continuous same-document route transition reaches production composition and parity", () => {
+  const harness = createRouteLifecycleHarness();
+  const source = lifecycleSnapshot(harness);
+  assert.equal(source.state.chatId, "stage1c-chat-a");
+  assert.equal(source.routeToken, 1);
+  assertLegacyAuthority(harness, source);
+
+  const destination = transitionLifecycleToB(harness);
+  assert.equal(harness.sandbox.location.pathname, "/c/stage1c-chat-b");
+  assert.equal(destination.state.chatId, "stage1c-chat-b");
+  assert.equal(destination.state.baseTitle, "Lifecycle title B");
+  assert.equal(destination.routeToken, 2);
+  assert(parityActivityChanged(source.parity, destination.parity), "destination composition did not reach parity");
+  assertLegacyAuthority(harness, destination);
+});
+
+test("same-route public refresh may remain a semantic and parity no-op", () => {
+  const harness = createRouteLifecycleHarness();
+  transitionLifecycleToB(harness);
+  const before = lifecycleSnapshot(harness);
+  const beforePublicTitle = harness.sandbox.H2O_fullOriginalTitle;
+  const beforeDocumentTitle = harness.sandbox.document.title;
+  harness.resetEffects();
+
+  const returned = cloneJson(harness.hook.api.refresh("explicit-same-route-noop"));
+  const after = lifecycleSnapshot(harness);
+  assert.deepEqual(after.state, before.state);
+  assert.equal(after.routeToken, 2);
+  assert.deepEqual(after.parity, before.parity);
+  assert.deepEqual(returned, before.state);
+  assert.equal(harness.sandbox.H2O_fullOriginalTitle, beforePublicTitle);
+  assert.equal(harness.sandbox.document.title, beforeDocumentTitle);
+  assert.equal(harness.effects.dispatched.length, 0);
+  assert.equal(harness.storage.mutations, 0);
+  assert.equal(harness.effects.fetches.length, 0);
+  assertLegacyAuthority(harness, after);
+});
+
+test("fresh document starts independent route and parity counters", () => {
+  const first = createRouteLifecycleHarness("/c/stage1c-chat-b", 1_785_000_000_001);
+  const second = createRouteLifecycleHarness("/c/stage1c-chat-b", 1_785_000_000_777);
+  const firstSnapshot = lifecycleSnapshot(first);
+  const secondSnapshot = lifecycleSnapshot(second);
+  const parityTuple = ({ comparisons, matches, mismatches, errors, suppressed }) => (
+    [comparisons, matches, mismatches, errors, suppressed]
+  );
+
+  assert.equal(firstSnapshot.routeToken, 1);
+  assert.equal(secondSnapshot.routeToken, 1);
+  assert(firstSnapshot.parity.comparisons > 0);
+  assert(secondSnapshot.parity.comparisons > 0);
+  assert.notEqual(first.sandbox, second.sandbox);
+  assert.notEqual(first.hook, second.hook);
+  assert.notEqual(first.timeOrigin, second.timeOrigin);
+  assert.deepEqual(parityTuple(firstSnapshot.parity), parityTuple(secondSnapshot.parity));
+  assertLegacyAuthority(first, firstSnapshot);
+  assertLegacyAuthority(second, secondSnapshot);
+});
+
+test("boot-cache provenance timestamp may remain old after equal native detection", () => {
+  const chatId = "stage1c-cache-chat";
+  const oldUpdatedAt = 1_784_634_141_828;
+  const cacheKey = `h2o:prm:cgx:library:chat-title:boot-cache:v1:${chatId}`;
+  const cacheValue = JSON.stringify({
+    version: 1,
+    chatId,
+    state: {
+      version: 1,
+      chatId,
+      baseTitle: "Restored native title",
+      source: "native",
+      priority: 95,
+      confidence: 0.95,
+      emoji: "",
+      emojiSource: "none",
+      emojiPriority: 0,
+      emojiConfidence: 0,
+      updatedAt: oldUpdatedAt,
+      emojiUpdatedAt: 0,
+    },
+    updatedAt: oldUpdatedAt,
+    expiresAt: 1_786_100_000_000,
+  });
+  const harness = createLifecycleHarness({
+    pathname: `/c/${chatId}`,
+    titleByChat: { [chatId]: "Restored native title" },
+    storageSeed: [[cacheKey, cacheValue]],
+  });
+  const before = lifecycleSnapshot(harness);
+  assert.equal(before.state.chatId, chatId);
+  assert.equal(before.state.baseTitle, "Restored native title");
+  assert.equal(before.state.source, "native");
+  assert.equal(before.state.lastUpdateAt, oldUpdatedAt);
+  harness.hook.api.refresh("equal-native-noop");
+  const after = lifecycleSnapshot(harness);
+  assert.equal(after.state.lastUpdateAt, oldUpdatedAt);
+  assert.deepEqual(after.parity, before.parity);
+  assertLegacyAuthority(harness, after);
+});
+
+await asyncTest("state-producer matrix reaches parity only for accepted semantic state", async () => {
+  const titleHarness = createRouteLifecycleHarness();
+  const initial = lifecycleSnapshot(titleHarness);
+  assert.equal(titleHarness.hook.setTitle({
+    chatId: "stage1c-chat-a",
+    baseTitle: "Accepted user title",
+    source: "user",
+    priority: 100,
+  }, { reason: "matrix-set-title" }), true);
+  const acceptedTitle = lifecycleSnapshot(titleHarness);
+  assert.equal(acceptedTitle.state.baseTitle, "Accepted user title");
+  assert(parityActivityChanged(initial.parity, acceptedTitle.parity));
+  assert.equal(titleHarness.hook.setTitle({
+    chatId: "stage1c-chat-a",
+    baseTitle: "Rejected document title",
+    source: "document",
+    priority: 60,
+  }, { reason: "matrix-stale-title" }), false);
+  const rejectedTitle = lifecycleSnapshot(titleHarness);
+  assert.deepEqual(rejectedTitle, acceptedTitle);
+  assertLegacyAuthority(titleHarness, rejectedTitle);
+
+  assert.equal(titleHarness.hook.setEmoji({
+    chatId: "stage1c-chat-a",
+    emoji: "🟣",
+    source: "user",
+    priority: 100,
+  }, { reason: "matrix-set-emoji" }), true);
+  const acceptedEmoji = lifecycleSnapshot(titleHarness);
+  assert.equal(acceptedEmoji.state.emoji, "🟣");
+  assert(parityActivityChanged(rejectedTitle.parity, acceptedEmoji.parity));
+  assert.equal(titleHarness.hook.setEmoji({
+    chatId: "stage1c-chat-a",
+    emoji: "🟣",
+    source: "user",
+    priority: 100,
+  }, { reason: "matrix-noop-emoji" }), false);
+  const rejectedEmoji = lifecycleSnapshot(titleHarness);
+  assert.deepEqual(rejectedEmoji, acceptedEmoji);
+  assert.equal(rejectedEmoji.routeToken, 1);
+  assertLegacyAuthority(titleHarness, rejectedEmoji);
+
+  let storePayload = null;
+  const storeHarness = createRouteLifecycleHarness();
+  storeHarness.setStore({
+    caps() { return { ready: true, durable: true, health: "ok" }; },
+    backend() { return "validator-store"; },
+    async get() { return storePayload; },
+    async set() { return true; },
+  });
+  await storeHarness.hook.attachStore("matrix-attach");
+  await flushMicrotasks();
+  const beforeStore = lifecycleSnapshot(storeHarness);
+  storePayload = {
+    baseTitle: "Accepted Store title",
+    source: "user",
+    priority: 100,
+    confidence: 1,
+    updatedAt: 1_786_000_000_050,
+  };
+  assert.equal(await storeHarness.hook.hydrateFromStore("stage1c-chat-a", "matrix-store"), true);
+  const acceptedStore = lifecycleSnapshot(storeHarness);
+  assert.equal(acceptedStore.state.baseTitle, "Accepted Store title");
+  assert.equal(acceptedStore.routeToken, 1);
+  assert(parityActivityChanged(beforeStore.parity, acceptedStore.parity));
+  storePayload = {
+    baseTitle: "Stale Store title",
+    source: "library",
+    priority: 80,
+    updatedAt: 1_786_000_000_060,
+  };
+  assert.equal(await storeHarness.hook.hydrateFromStore("stage1c-chat-a", "matrix-stale-store"), false);
+  const staleStore = lifecycleSnapshot(storeHarness);
+  assert.deepEqual(staleStore, acceptedStore);
+  assert.equal(staleStore.routeToken, 1);
+  assertLegacyAuthority(storeHarness, staleStore);
+
+  const crossHarness = createRouteLifecycleHarness();
+  const beforeCross = lifecycleSnapshot(crossHarness);
+  assert.equal(crossHarness.hook.applyCrossSurfaceTitlePayload({
+    chatId: "stage1c-chat-a",
+    titleState: {
+      chatId: "stage1c-chat-a",
+      baseTitle: "Accepted cross surface title",
+      source: "user",
+      priority: 100,
+      updatedAt: 1_786_000_000_070,
+    },
+  }), true);
+  const acceptedCross = lifecycleSnapshot(crossHarness);
+  assert.equal(acceptedCross.state.baseTitle, "Accepted cross surface title");
+  assert.equal(acceptedCross.routeToken, 1);
+  assert(parityActivityChanged(beforeCross.parity, acceptedCross.parity));
+  assert.equal(crossHarness.hook.applyCrossSurfaceTitlePayload({
+    chatId: "stage1c-inactive",
+    titleState: { chatId: "stage1c-inactive" },
+  }), false);
+  const inactiveCross = lifecycleSnapshot(crossHarness);
+  assert.deepEqual(inactiveCross, acceptedCross);
+  assert.equal(inactiveCross.routeToken, 1);
+  assertLegacyAuthority(crossHarness, inactiveCross);
+
+  const renameHarness = createRouteLifecycleHarness();
+  renameHarness.setFetch(async (url) => {
+    if (url === "/api/auth/session") {
+      return { ok: true, async json() { return { accessToken: "validator-token" }; } };
+    }
+    return {
+      ok: true,
+      status: 200,
+      clone() { return { async json() { return {}; } }; },
+    };
+  });
+  const beforeRename = lifecycleSnapshot(renameHarness);
+  const renameResult = await renameHarness.hook.renameNative("Accepted native completion", {
+    userInitiated: true,
+    source: "matrix-native",
+  });
+  const acceptedRename = lifecycleSnapshot(renameHarness);
+  assert.equal(renameResult.ok, true);
+  assert.equal(acceptedRename.state.baseTitle, "Accepted native completion");
+  assert(parityActivityChanged(beforeRename.parity, acceptedRename.parity));
+  assert.equal(acceptedRename.routeToken, 1);
+  assertLegacyAuthority(renameHarness, acceptedRename);
+
+  const failedRenameHarness = createRouteLifecycleHarness();
+  failedRenameHarness.setFetch(async (url) => {
+    if (url === "/api/auth/session") {
+      return { ok: true, async json() { return {}; } };
+    }
+    return {
+      ok: false,
+      status: 500,
+      clone() { return { async json() { return { error: "expected" }; } }; },
+    };
+  });
+  const beforeFailedRename = lifecycleSnapshot(failedRenameHarness);
+  const failedRename = await failedRenameHarness.hook.renameNative("Rejected native completion", {
+    userInitiated: true,
+    source: "matrix-native-failure",
+  });
+  const afterFailedRename = lifecycleSnapshot(failedRenameHarness);
+  assert.equal(failedRename.ok, false);
+  assert.deepEqual(afterFailedRename, beforeFailedRename);
+  assert.equal(afterFailedRename.routeToken, 1);
+  assertLegacyAuthority(failedRenameHarness, afterFailedRename);
+});
+
+test("delivered proxy references the exact committed Stage 1C alias bytes", () => {
+  const aliasPath = path.join(ROOT, ALIAS_REL);
+  assert.equal(fs.lstatSync(aliasPath).isSymbolicLink(), true);
+  assert.equal(fs.realpathSync(aliasPath), fs.realpathSync(runtimePath));
+  const committedBytes = execFileSync("git", ["show", `HEAD:${RUNTIME_REL}`], {
+    cwd: ROOT,
+    encoding: null,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const aliasBytes = fs.readFileSync(aliasPath);
+  assert(aliasBytes.equals(committedBytes), "delivered alias differs from committed Stage 1C runtime");
+  assert.equal(sha256(aliasBytes), EXPECTED_RUNTIME_SHA256);
+  const proxy = fs.readFileSync(path.join(ROOT, PROXY_REL), "utf8");
+  assert.match(
+    proxy,
+    /@require\s+http:\/\/127\.0\.0\.1:5500\/alias\/9B0a\._Chat_Title_State_\.js\?v=1785173400249/u,
+  );
+});
+
+test("canary expectation requires document continuity and permits no-op refresh", () => {
+  assert(Object.isFrozen(CANARY_EXPECTATION));
+  assert(Object.isFrozen(CANARY_EXPECTATION.counterContinuityRequires));
+  assert.equal(CANARY_EXPECTATION.evaluateUnknownContinuityPerDocument, true);
+  assert.equal(CANARY_EXPECTATION.sameRouteSemanticNoopMayKeepCounters, true);
+  assert.deepEqual([...CANARY_EXPECTATION.counterContinuityRequires], [
+    "same-in-memory-instance",
+    "performance.timeOrigin",
+    "trusted-diagnostic-documentId",
+  ]);
+});
+
 function assertProtectedRuntimeIdentity() {
   const raw = execFileSync("git", [
     "-c", "core.quotePath=false", "ls-tree", "-rz", "--name-only", "HEAD", "--", "src-runtime-base",
@@ -1034,7 +1614,7 @@ test("all 154 canonical aliases remain valid symlinks", () => {
 });
 
 assert.equal(scopeTests.length, 15, "scope test count drifted");
-assert.equal(tests.length, 34, "runtime scenario count drifted");
+assert.equal(tests.length, 41, "runtime scenario count drifted");
 
 console.log(JSON.stringify({
   ok: true,
@@ -1046,4 +1626,5 @@ console.log(JSON.stringify({
   validatorSha256: sha256(fs.readFileSync(path.join(ROOT, VALIDATOR_REL))),
   bridgeSha256: EXPECTED_CURRENT_BRIDGE_SHA256,
   bridgeAttestation,
+  canaryExpectation: CANARY_EXPECTATION,
 }));
