@@ -115,11 +115,14 @@
   ]);
   const PARITY_IDENTITY = Object.freeze({
     schemaVersion: 2,
-    bridgeVersion: '2',
-    generatorVersion: '2',
-    sourceExportCount: 35,
-    sourceSha256: '9d795e840d6236cc1b35c8142243e16528e14af6095c55a2dcb7230a219fc551',
-    publicSurfaceDigest: 'b86b9dcc0d1258e6a5112ceeca19bf207e54a4fc921ddf95dc91b0cc20a3d3eb',
+    bridgeVersion: '3',
+    generatorVersion: '3',
+    sourceExportCount: 39,
+    publicExportCount: 29,
+    privilegedExportCount: 8,
+    sourceOnlyExportCount: 2,
+    sourceSha256: '57f3fe783b5253d07dafcd7ec4c89b75602337b86d83033ed52fbcc104097b0d',
+    publicSurfaceDigest: 'd525371c9e82cea7e59351a429120f049b52ca6c3b81ff72eeb599460bc755d3',
   });
 
   function parityOrdinaryObject(value) {
@@ -137,44 +140,80 @@
   function inspectTitleContractParityGate() {
     try {
       const h2oDescriptor = Object.getOwnPropertyDescriptor(W, 'H2O');
-      if (!h2oDescriptor) return Object.freeze({ gate: 'absent', contract: null, formatter: null });
+      if (!h2oDescriptor) {
+        return Object.freeze({ gate: 'absent', contract: null, sanitizer: null, formatter: null });
+      }
       if (!Object.prototype.hasOwnProperty.call(h2oDescriptor, 'value') ||
           !parityOrdinaryObject(h2oDescriptor.value)) {
-        return Object.freeze({ gate: 'descriptor-mismatch', contract: null, formatter: null });
+        return Object.freeze({
+          gate: 'descriptor-mismatch',
+          contract: null,
+          sanitizer: null,
+          formatter: null,
+        });
       }
 
       const contractDescriptor = Object.getOwnPropertyDescriptor(h2oDescriptor.value, 'TitleContract');
-      if (!contractDescriptor) return Object.freeze({ gate: 'absent', contract: null, formatter: null });
+      if (!contractDescriptor) {
+        return Object.freeze({ gate: 'absent', contract: null, sanitizer: null, formatter: null });
+      }
       if (!Object.prototype.hasOwnProperty.call(contractDescriptor, 'value') ||
           contractDescriptor.writable !== false ||
           contractDescriptor.enumerable !== false ||
           contractDescriptor.configurable !== false ||
           !parityOrdinaryObject(contractDescriptor.value)) {
-        return Object.freeze({ gate: 'descriptor-mismatch', contract: null, formatter: null });
+        return Object.freeze({
+          gate: 'descriptor-mismatch',
+          contract: null,
+          sanitizer: null,
+          formatter: null,
+        });
       }
 
       const contract = contractDescriptor.value;
       const identityDescriptor = parityOwnData(contract, 'identity');
       const identity = identityDescriptor && identityDescriptor.value;
       if (!parityOrdinaryObject(identity)) {
-        return Object.freeze({ gate: 'identity-mismatch', contract: null, formatter: null });
+        return Object.freeze({
+          gate: 'identity-mismatch',
+          contract: null,
+          sanitizer: null,
+          formatter: null,
+        });
       }
       for (const [key, expected] of Object.entries(PARITY_IDENTITY)) {
         const field = parityOwnData(identity, key);
         if (!field || field.value !== expected) {
-          return Object.freeze({ gate: 'identity-mismatch', contract: null, formatter: null });
+          return Object.freeze({
+            gate: 'identity-mismatch',
+            contract: null,
+            sanitizer: null,
+            formatter: null,
+          });
         }
       }
 
       const rtlDescriptor = parityOwnData(contract, 'isRTL');
-      const formatterDescriptor = parityOwnData(contract, 'formatDisplayTitle');
+      const sanitizerDescriptor = parityOwnData(contract, 'sanitizeNativeTitle');
+      const formatterDescriptor = parityOwnData(contract, 'formatNativeDisplayTitle');
       if (!rtlDescriptor || typeof rtlDescriptor.value !== 'function' ||
+          !sanitizerDescriptor || typeof sanitizerDescriptor.value !== 'function' ||
           !formatterDescriptor || typeof formatterDescriptor.value !== 'function') {
-        return Object.freeze({ gate: 'helper-missing', contract: null, formatter: null });
+        return Object.freeze({
+          gate: 'helper-missing',
+          contract: null,
+          sanitizer: null,
+          formatter: null,
+        });
       }
-      return Object.freeze({ gate: 'ok', contract, formatter: formatterDescriptor.value });
+      return Object.freeze({
+        gate: 'ok',
+        contract,
+        sanitizer: sanitizerDescriptor.value,
+        formatter: formatterDescriptor.value,
+      });
     } catch {
-      return Object.freeze({ gate: 'gate-error', contract: null, formatter: null });
+      return Object.freeze({ gate: 'gate-error', contract: null, sanitizer: null, formatter: null });
     }
   }
 
@@ -273,6 +312,11 @@
 
       counters.comparisons = parityIncrement(counters.comparisons, PARITY_MAX_COMPARISONS);
       try {
+        const sanitizedBase = gateResult.sanitizer.call(gateResult.contract, baseTitle);
+        if (typeof sanitizedBase !== 'string') {
+          counters.errors = parityIncrement(counters.errors, PARITY_MAX_COMPARISONS);
+          return;
+        }
         const contractResult = gateResult.formatter.call(gateResult.contract, baseTitle, emoji);
         const textDescriptor = contractResult && typeof contractResult === 'object'
           ? parityOwnData(contractResult, 'text')

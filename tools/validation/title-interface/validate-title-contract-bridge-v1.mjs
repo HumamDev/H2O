@@ -10,12 +10,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   TITLE_CONTRACT_BRIDGE_FILENAME,
+  TITLE_CONTRACT_BRIDGE_VERSION,
   TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION,
   TITLE_CONTRACT_PRIVILEGED_EXPORTS,
   TITLE_CONTRACT_PUBLIC_EXPORTS,
   TITLE_CONTRACT_SOURCE_EXPORTS,
+  TITLE_CONTRACT_SOURCE_ONLY_EXPORTS,
+  computeTitleContractPublicSurfaceDigest,
   makeCanonicalTitleContractBridge,
   transformTitleContractToClassicBridge,
+  validateTitleContractExportPartition,
 } from "../../product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
 import {
   makeChromeLiveLoaderJs,
@@ -36,7 +40,7 @@ const CONTRACT_REL = "packages/title-contract/index.mjs";
 const GENERATED_REL = `apps/extensions/chatgpt/chrome/dev-controls-oauth-google/${TITLE_CONTRACT_BRIDGE_FILENAME}`;
 const EXPECTED_EXTENSION_ID = "ogcjkeaiicglflamhjaaimdhphjlgkbb";
 const REJECTED_BUILD_MARKER = 1784650528788;
-const GLOBAL_STATUS_KEY = "__H2O_TITLE_CONTRACT_BRIDGE_STATUS_V2__";
+const GLOBAL_STATUS_KEY = "__H2O_TITLE_CONTRACT_BRIDGE_STATUS_V3__";
 const SOURCE_ONLY = process.argv.includes("--source-only");
 const SCOPE_MODE_PREFIX = "--scope-mode=";
 const scopeModeArguments = process.argv.filter((argument) => argument.startsWith(SCOPE_MODE_PREFIX));
@@ -61,6 +65,15 @@ const EXPECTED_UNTRACKED = new Set([
   "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
 ]);
 const VALIDATOR_REL = "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs";
+const STAGE1C_VALIDATOR_REL = "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs";
+const GENERATOR_REL = "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
+const RUNTIME_REL = "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js";
+const COORDINATION_SCOPE = new Set([
+  GENERATOR_REL,
+  RUNTIME_REL,
+  VALIDATOR_REL,
+  STAGE1C_VALIDATOR_REL,
+]);
 const TITLE_PREFIXES = ["9B0a", "9B1a", "9C1a", "9D1a"];
 const tests = [];
 const scopeTests = [];
@@ -96,15 +109,19 @@ function classifyStage1BScope({
   staged,
   untracked,
   trackedStage1BFiles,
+  trackedCoordinationFiles,
   generatedBridgeIgnored,
 }) {
   const modified = new Set(modifiedTracked);
   const stagedPaths = new Set(staged);
   const untrackedPaths = new Set(untracked);
   const trackedFiles = new Set(trackedStage1BFiles);
+  const coordinationFiles = new Set(trackedCoordinationFiles);
 
   assert(
-    requestedMode === null || requestedMode === "validator-self-correction",
+    requestedMode === null ||
+      requestedMode === "validator-self-correction" ||
+      requestedMode === "stage1d-bridge-coordination",
     `unknown requested Stage 1B scope mode: ${String(requestedMode)}`,
   );
   assert.equal(stagedPaths.size, 0, `staged paths are forbidden: ${[...stagedPaths].sort().join(", ")}`);
@@ -126,6 +143,20 @@ function classifyStage1BScope({
     assert.equal(stage1BUntracked.size, 0, "validator-self-correction forbids untracked Stage 1B source files");
     assert(sameSet(trackedFiles, EXPECTED_TRACKED), "validator-self-correction requires all five tracked Stage 1B files");
     return "validator-self-correction";
+  }
+
+  if (requestedMode === "stage1d-bridge-coordination") {
+    assert(
+      sameSet(modified, COORDINATION_SCOPE),
+      `stage1d-bridge-coordination requires exactly ${JSON.stringify([...COORDINATION_SCOPE].sort())}`,
+    );
+    assert.equal(stage1BUntracked.size, 0, "stage1d-bridge-coordination forbids untracked Stage 1B source files");
+    assert(sameSet(trackedFiles, EXPECTED_TRACKED), "stage1d-bridge-coordination requires all five tracked Stage 1B files");
+    assert(
+      sameSet(coordinationFiles, COORDINATION_SCOPE),
+      "stage1d-bridge-coordination requires all four coordination files to be tracked",
+    );
+    return "stage1d-bridge-coordination";
   }
 
   const unexpectedModified = [...modified].filter((relative) => !EXPECTED_MODIFIED.has(relative));
@@ -156,13 +187,15 @@ function scopeTest(name, callback) {
 }
 
 function assertScope() {
-  const modifiedTracked = run("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "--"])
+  const modifiedTracked = run("git", ["-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "--"])
     .split("\n").filter(Boolean);
-  const staged = run("git", ["diff", "--cached", "--name-only", "--"])
+  const staged = run("git", ["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--"])
     .split("\n").filter(Boolean);
-  const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "--"])
+  const untracked = run("git", ["-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard", "--"])
     .split("\n").filter(Boolean);
-  const trackedStage1BFiles = run("git", ["ls-files", "--", ...EXPECTED_TRACKED])
+  const trackedStage1BFiles = run("git", ["-c", "core.quotePath=false", "ls-files", "--", ...EXPECTED_TRACKED])
+    .split("\n").filter(Boolean);
+  const trackedCoordinationFiles = run("git", ["-c", "core.quotePath=false", "ls-files", "--", ...COORDINATION_SCOPE])
     .split("\n").filter(Boolean);
 
   assert(fs.existsSync(path.join(ROOT, GENERATED_REL)), "generated bridge is missing");
@@ -174,6 +207,7 @@ function assertScope() {
     staged,
     untracked,
     trackedStage1BFiles,
+    trackedCoordinationFiles,
     generatedBridgeIgnored: true,
   });
 }
@@ -188,8 +222,9 @@ function titlePaths() {
   });
 }
 
-function assertTitleAndConfigIdentity() {
-  for (const [, relative] of titlePaths()) {
+function assertTitleAndConfigIdentity({ allowCoordinated9B0a = false } = {}) {
+  for (const [prefix, relative] of titlePaths()) {
+    if (allowCoordinated9B0a && prefix === "9B0a") continue;
     const working = run("git", ["hash-object", "--no-filters", "--", relative]).trim();
     const committed = run("git", ["rev-parse", `HEAD:${relative}`]).trim();
     assert.equal(working, committed, `${relative} differs from HEAD`);
@@ -312,6 +347,7 @@ function committedScopeInput(overrides = {}) {
     staged: [],
     untracked: ["chrome/protected"],
     trackedStage1BFiles: [...EXPECTED_TRACKED],
+    trackedCoordinationFiles: [...COORDINATION_SCOPE],
     generatedBridgeIgnored: true,
     ...overrides,
   };
@@ -334,6 +370,13 @@ scopeTest("explicit validator-self-correction scope is accepted", () => {
     requestedMode: "validator-self-correction",
     modifiedTracked: [VALIDATOR_REL],
   })), "validator-self-correction");
+});
+
+scopeTest("explicit Stage 1D bridge-coordination scope is accepted", () => {
+  assert.equal(classifyStage1BScope(committedScopeInput({
+    requestedMode: "stage1d-bridge-coordination",
+    modifiedTracked: [...COORDINATION_SCOPE],
+  })), "stage1d-bridge-coordination");
 });
 
 scopeTest("validator-only modification is rejected by default", () => {
@@ -396,6 +439,20 @@ scopeTest("self-correction mode rejects a second modified path", () => {
   })), /requires exactly one modified path/u);
 });
 
+scopeTest("Stage 1D bridge-coordination rejects a partial path set", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    requestedMode: "stage1d-bridge-coordination",
+    modifiedTracked: [...COORDINATION_SCOPE].slice(0, 3),
+  })), /requires exactly/u);
+});
+
+scopeTest("Stage 1D bridge-coordination rejects a foreign fifth path", () => {
+  assert.throws(() => classifyStage1BScope(committedScopeInput({
+    requestedMode: "stage1d-bridge-coordination",
+    modifiedTracked: [...COORDINATION_SCOPE, "foreign.js"],
+  })), /requires exactly/u);
+});
+
 scopeTest("committed-clean rejects a modified validator", () => {
   assert.throws(() => classifyStage1BScope(committedScopeInput({
     modifiedTracked: [VALIDATOR_REL],
@@ -408,7 +465,7 @@ scopeTest("unknown requested scope mode is rejected", () => {
   })), /unknown requested Stage 1B scope mode/u);
 });
 
-assertTitleAndConfigIdentity();
+assertTitleAndConfigIdentity({ allowCoordinated9B0a: scopeMode === "stage1d-bridge-coordination" });
 
 const sourceBytes = fs.readFileSync(path.join(ROOT, CONTRACT_REL));
 const canonical = makeCanonicalTitleContractBridge({ repositoryRoot: ROOT });
@@ -424,11 +481,16 @@ const stage1aProbe = contractModule.normalizeRecord({
 
 await test("1 identity schema and export count", () => {
   const page = executeBridge(canonical.code);
-  assert.equal(page.H2O.TitleContract.identity.schemaVersion, 2);
-  assert.equal(page.H2O.TitleContract.identity.bridgeVersion, "2");
-  assert.equal(page.H2O.TitleContract.identity.generatorVersion, "2");
-  assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "2");
-  assert.equal(page.H2O.TitleContract.identity.sourceExportCount, 35);
+  const { identity } = page.H2O.TitleContract;
+  assert.equal(identity.schemaVersion, 2);
+  assert.equal(identity.bridgeVersion, "3");
+  assert.equal(identity.bridgeVersion, TITLE_CONTRACT_BRIDGE_VERSION);
+  assert.equal(identity.generatorVersion, "3");
+  assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "3");
+  assert.equal(identity.sourceExportCount, 39);
+  assert.equal(identity.publicExportCount, 29);
+  assert.equal(identity.privilegedExportCount, 8);
+  assert.equal(identity.sourceOnlyExportCount, 2);
 });
 
 await test("2 deterministic generated bytes", () => {
@@ -455,6 +517,67 @@ await test("5 privileged exports are unreachable", () => {
     assert(!JSON.stringify(page.H2O.TitleContractBridgeStatus).includes(name), `${name} leaked in metadata`);
     assert(!String(JSON.stringify(page[GLOBAL_STATUS_KEY]) ?? "").includes(name), `${name} leaked in global metadata`);
   }
+});
+
+await test("source-only exports are unreachable", () => {
+  const page = executeBridge(canonical.code);
+  for (const name of TITLE_CONTRACT_SOURCE_ONLY_EXPORTS) {
+    assert.equal(page.H2O.TitleContract[name], undefined, `${name} leaked publicly`);
+    assert.equal(page[name], undefined, `${name} leaked globally`);
+    assert.equal(page.H2O[name], undefined, `${name} leaked on H2O`);
+    assert(!JSON.stringify(page.H2O.TitleContract.identity).includes(name), `${name} leaked in identity`);
+  }
+});
+
+await test("source export classifications form one exact disjoint partition", () => {
+  const partition = validateTitleContractExportPartition();
+  assert.equal(partition.sourceExports.length, 39);
+  assert.equal(partition.publicExports.length, 29);
+  assert.equal(partition.privilegedExports.length, 8);
+  assert.equal(partition.sourceOnlyExports.length, 2);
+  assert.equal(
+    new Set([
+      ...partition.publicExports,
+      ...partition.privilegedExports,
+      ...partition.sourceOnlyExports,
+    ]).size,
+    39,
+  );
+  assert.deepEqual(partition.sourceExports, TITLE_CONTRACT_SOURCE_EXPORTS);
+});
+
+await test("partition policy rejects overlap, omission, unexpected names, and source-only exposure", () => {
+  assert.throws(() => validateTitleContractExportPartition({
+    publicExports: [...TITLE_CONTRACT_PUBLIC_EXPORTS, TITLE_CONTRACT_PRIVILEGED_EXPORTS[0]],
+  }), /overlap/u);
+  assert.throws(() => validateTitleContractExportPartition({
+    publicExports: TITLE_CONTRACT_PUBLIC_EXPORTS.slice(1),
+  }), /partition mismatch/u);
+  assert.throws(() => validateTitleContractExportPartition({
+    publicExports: [...TITLE_CONTRACT_PUBLIC_EXPORTS, "unexpectedExport"],
+  }), /partition mismatch/u);
+  assert.throws(() => validateTitleContractExportPartition({
+    publicExports: [...TITLE_CONTRACT_PUBLIC_EXPORTS, TITLE_CONTRACT_SOURCE_ONLY_EXPORTS[0]],
+    sourceOnlyExports: TITLE_CONTRACT_SOURCE_ONLY_EXPORTS.slice(1),
+  }), /classification|partition mismatch|overlap/u);
+});
+
+await test("public-surface digest is normalized by exact export name", () => {
+  assert.equal(
+    computeTitleContractPublicSurfaceDigest([...TITLE_CONTRACT_PUBLIC_EXPORTS].reverse()),
+    canonical.publicSurfaceDigest,
+  );
+  assert.notEqual(
+    computeTitleContractPublicSurfaceDigest(TITLE_CONTRACT_PUBLIC_EXPORTS.slice(1)),
+    canonical.publicSurfaceDigest,
+  );
+});
+
+await test("generator result exposes exact classification metadata", () => {
+  assert.equal(canonical.bridgeVersion, "3");
+  assert.deepEqual(canonical.publicSurfaceKeys, TITLE_CONTRACT_PUBLIC_EXPORTS);
+  assert.deepEqual(canonical.privilegedSurfaceKeys, TITLE_CONTRACT_PRIVILEGED_EXPORTS);
+  assert.deepEqual(canonical.sourceOnlySurfaceKeys, TITLE_CONTRACT_SOURCE_ONLY_EXPORTS);
 });
 
 await test("6 absent H2O bootstrap and first-install descriptors", () => {
@@ -565,12 +688,12 @@ await test("8 same-identity creates no second bridge", () => {
   assert.strictEqual(page.H2O.TitleContract.identity, first.identity);
 });
 
-await test("identity-v1 requires reload and is never replaced", () => {
+await test("identity-v2 requires reload and is never replaced", () => {
   const setup = `
     globalThis.H2O = {};
     const identity = Object.freeze({
       schemaVersion: 2,
-      bridgeVersion: "1",
+      bridgeVersion: "2",
       sourceSha256: ${JSON.stringify(canonical.sourceSha256)},
       publicSurfaceDigest: ${JSON.stringify(canonical.publicSurfaceDigest)}
     });
@@ -582,7 +705,7 @@ await test("identity-v1 requires reload and is never replaced", () => {
   `;
   const page = executeBridge(canonical.code, setup);
   assert.strictEqual(page.H2O.TitleContract, page.__oldBridge);
-  assert.equal(page.H2O.TitleContract.identity.bridgeVersion, "1");
+  assert.equal(page.H2O.TitleContract.identity.bridgeVersion, "2");
   assert.equal(page.H2O.TitleContractBridgeStatus.result, "reload-required");
 });
 
@@ -685,10 +808,29 @@ await test("20 export lists and re-exports rejected", () => {
   rejectsSyntax('export * from "x";', /unsupported export/);
 });
 await test("21 duplicate exports rejected", () => rejectsSyntax("export const SCHEMA_VERSION = 2;", /duplicate export/));
-await test("22 34-name and 36-name sets rejected", () => {
+await test("22 38-name, stale 35-name, and 40-name sets rejected", () => {
   const source = sourceBytes.toString("utf8");
   const fewer = Buffer.from(source.replace(/^export const SCHEMA_VERSION = 2;\n/u, ""));
   assert.throws(() => transformTitleContractToClassicBridge({ sourceBytes: fewer, committedSourceBytes: fewer, repositoryHeadAtBuild: canonical.repositoryHeadAtBuild }), /export-set mismatch/);
+  const stale35 = Buffer.from(
+    [
+      "sanitizeNativeTitle",
+      "formatNativeDisplayTitle",
+      "normalizePersistedTitleRecordV1",
+      "normalizeTitleBootCacheV1",
+    ].reduce(
+      (current, name) => current.replace(new RegExp(`^export function ${name}\\b`, "mu"), `function ${name}`),
+      source,
+    ),
+  );
+  assert.throws(
+    () => transformTitleContractToClassicBridge({
+      sourceBytes: stale35,
+      committedSourceBytes: stale35,
+      repositoryHeadAtBuild: canonical.repositoryHeadAtBuild,
+    }),
+    /expected 39, observed 35/u,
+  );
   rejectsSyntax("export const EXTRA_TITLE_CONTRACT_EXPORT = 1;", /export-set mismatch/);
 });
 await test("23 dirty source fails closed", () => {
@@ -696,10 +838,18 @@ await test("23 dirty source fails closed", () => {
   assert.throws(() => transformTitleContractToClassicBridge({ sourceBytes: dirty, committedSourceBytes: sourceBytes, repositoryHeadAtBuild: canonical.repositoryHeadAtBuild }), /differs from the committed/);
 });
 
-await test("24 runtime title modules are byte-identical", assertTitleAndConfigIdentity);
-await test("25 H2O.ChatTitle API remains unchanged", () => {
+await test("24 protected runtime title modules are byte-identical", () => {
+  assertTitleAndConfigIdentity({ allowCoordinated9B0a: scopeMode === "stage1d-bridge-coordination" });
+});
+await test("25 H2O.ChatTitle retains legacy authority and API anchors", () => {
   const [, titlePath] = titlePaths().find(([prefix]) => prefix === "9B0a");
-  assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", titlePath]).trim(), "");
+  const titleSource = fs.readFileSync(path.join(ROOT, titlePath), "utf8");
+  assert(titleSource.includes("const displayTitle = displayFrom(rec.baseTitle, rec.emoji);"));
+  assert(titleSource.includes("titleContractParity.compare(rec.baseTitle, rec.emoji, displayTitle, routeToken);"));
+  assert(titleSource.includes("titleContractParity: titleContractParity.snapshot()"));
+  if (scopeMode !== "stage1d-bridge-coordination") {
+    assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", titlePath]).trim(), "");
+  }
 });
 await test("26 9D1a remains disabled and absent from proxy", () => {
   const order = fs.readFileSync(path.join(ROOT, "config/dev-order.tsv"), "utf8");
@@ -720,7 +870,7 @@ await test("28 extension identity, key, and permissions remain unchanged", () =>
 });
 
 await test("29 Stage 1A contract substance remains valid", () => {
-  assert.equal(canonical.sourceExportCount, 35);
+  assert.equal(canonical.sourceExportCount, 39);
   assert.equal(contractModule.SCHEMA_VERSION, 2);
   assert.equal(contractModule.validateCanonicalRecord(stage1aProbe), true);
 });
@@ -754,7 +904,26 @@ await test("fresh loader and proxy share one non-rejected build marker", () => {
 if (!SOURCE_ONLY && fs.existsSync(path.join(ROOT, GENERATED_REL))) {
   const generated = fs.readFileSync(path.join(ROOT, GENERATED_REL), "utf8");
   const generatedPage = executeBridge(generated);
-  const repositoryHeadAtBuild = generatedPage.H2O?.TitleContract?.identity?.repositoryHeadAtBuild;
+  const generatedIdentity = generatedPage.H2O?.TitleContract?.identity;
+  const expectedGeneratedIdentity = {
+    bridgeVersion: TITLE_CONTRACT_BRIDGE_VERSION,
+    generatorVersion: TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION,
+    sourceSha256: canonical.sourceSha256,
+    sourceExportCount: TITLE_CONTRACT_SOURCE_EXPORTS.length,
+    publicExportCount: TITLE_CONTRACT_PUBLIC_EXPORTS.length,
+    privilegedExportCount: TITLE_CONTRACT_PRIVILEGED_EXPORTS.length,
+    sourceOnlyExportCount: TITLE_CONTRACT_SOURCE_ONLY_EXPORTS.length,
+    publicSurfaceDigest: canonical.publicSurfaceDigest,
+  };
+  const staleIdentityFields = Object.entries(expectedGeneratedIdentity)
+    .filter(([key, expected]) => generatedIdentity?.[key] !== expected)
+    .map(([key]) => key);
+  assert.deepEqual(
+    staleIdentityFields,
+    [],
+    `stale generated bridge identity: ${staleIdentityFields.join(", ") || "missing bridge"}`,
+  );
+  const repositoryHeadAtBuild = generatedIdentity?.repositoryHeadAtBuild;
   assert.match(repositoryHeadAtBuild ?? "", /^[0-9a-f]{40}$/u, "generated bridge build HEAD identity");
   const committedSourceBytes = execFileSync("git", ["show", `HEAD:${CONTRACT_REL}`], {
     cwd: ROOT,
@@ -770,8 +939,8 @@ if (!SOURCE_ONLY && fs.existsSync(path.join(ROOT, GENERATED_REL))) {
   new vm.Script(generated, { filename: GENERATED_REL });
 }
 
-assert.equal(tests.length, 39, "bridge scenario count drifted");
-assert.equal(scopeTests.length, 14, "scope scenario count drifted");
+assert.equal(tests.length, 44, "bridge scenario count drifted");
+assert.equal(scopeTests.length, 17, "scope scenario count drifted");
 console.log(JSON.stringify({
   ok: true,
   validator: "title-contract-bridge-v1",
