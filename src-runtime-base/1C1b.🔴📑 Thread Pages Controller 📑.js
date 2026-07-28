@@ -3544,7 +3544,12 @@
   function setTitleListFlowAnchorHidden(anchor = null, pageNum = 0, hidden = false) {
     if (!anchor?.style) return false;
     const num = Math.max(1, Number(pageNum || 0) || 0);
+    const existingOwner = Math.max(0, Number(anchor.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
     if (hidden) {
+      // One mounted artifact can belong to only one page in one coherent
+      // presentation snapshot. Never let a later page projection steal an
+      // existing page's visibility stamp.
+      if (existingOwner && existingOwner !== num) return false;
       // A wrapper still inline-adopted in the stack must return to canonical
       // flow before the page-level hide projection is applied.
       if (anchor.hasAttribute?.(ATTR_TITLE_STACK_INLINE)) restoreInlineTurnToFlow(anchor);
@@ -3558,6 +3563,7 @@
       try { anchor.style.setProperty('display', 'none', 'important'); } catch {}
       return !alreadyStamped || !alreadyHidden;
     }
+    if (existingOwner && existingOwner !== num) return false;
     const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
     const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
     try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
@@ -3591,7 +3597,7 @@
     try {
       if (node.matches?.(
         '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
-        + ` ${TITLE_LIST_SYNTH_SEL}, [${ATTR_TITLE_INLINE_SLOT}="1"]`
+        + ` ${TITLE_LIST_SYNTH_SEL}, [${ATTR_TITLE_INLINE_SLOT}="1"], [data-h2o-native-ts="1"]`
       )) return true;
     } catch {}
     return false;
@@ -3614,6 +3620,14 @@
     return 0;
   }
 
+  function titleListExactTurnOrderForSection(section = null) {
+    if (!section) return 0;
+    const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+    if (!identity) return 0;
+    const record = turnRecordForTitleListIdentity(identity);
+    return Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+  }
+
   function titleListAdjacentTurnOrders(node = null) {
     if (!node) return [];
     const before = [];
@@ -3624,14 +3638,17 @@
       if (relation & 4) after.push(section);
       else if (relation & 2) before.push(section);
     }
-    const orders = new Set();
-    const previous = before[before.length - 1] || null;
-    const next = after[0] || null;
-    for (const section of [previous, next]) {
-      const order = titleListTurnOrderForSection(section);
-      if (order) orders.add(order);
-    }
-    return Array.from(orders);
+    // Native separators introduce the following host turn. Ownership is
+    // therefore the first following USER turn when one exists, not both
+    // adjacent pages. At a Page 1/Page 2 boundary this keeps Page 2's
+    // separator visible when only Page 1 is title-listed. The previous USER
+    // turn is a tail fallback for a separator mounted after the final turn.
+    const next = after.find((section) => getTurnHostRole(section) === 'user') || after[0] || null;
+    const previous = before.slice().reverse().find((section) => getTurnHostRole(section) === 'user')
+      || before[before.length - 1]
+      || null;
+    const order = titleListExactTurnOrderForSection(next || previous);
+    return order ? [order] : [];
   }
 
   function stampTitleListNativeTimestampArtifacts(members = [], pageNum = 0) {
@@ -3667,32 +3684,132 @@
       );
     } catch {}
     const flowRoot = divider?.parentElement || container?.parentElement || null;
-    const directAnchors = new Set();
-    let hidden = 0;
+    const identityToOrder = new Map();
+    for (const member of members) {
+      const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+      if (!order) continue;
+      for (const value of [
+        member?.id,
+        member?.questionId,
+        member?.answerId,
+        member?.turnId,
+        ...(Array.isArray(member?.aliasIds) ? member.aliasIds : []),
+      ]) {
+        const identity = String(value || '').trim();
+        if (identity) identityToOrder.set(identity, order);
+      }
+    }
+
+    const protectedAnchors = new Set();
     for (const member of members) {
       const row = findStackRowForMember(container, member);
       const explicitlyOpened = row?.getAttribute?.('data-h2o-title-row-opened') === '1'
         && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
-      if (explicitlyOpened) continue;
-      for (const anchor of memberAllFlowAnchors(member)) {
-        const direct = titleListDirectFlowChild(flowRoot, anchor);
-        if (direct) directAnchors.add(direct);
-        if (setTitleListFlowAnchorHidden(anchor, num, true)) hidden += 1;
-      }
+      if (!explicitlyOpened) continue;
+      for (const anchor of memberAllFlowAnchors(member)) protectedAnchors.add(anchor);
     }
 
-    if (flowRoot && directAnchors.size) {
-      const children = Array.from(flowRoot.children || []);
-      const positions = Array.from(directAnchors)
-        .map((node) => children.indexOf(node))
+    // Resolve ownership from exact current qId/aId/turn identities. A shared
+    // conversation wrapper that contains Page 1 and Page 2 is "mixed" and
+    // can never receive a Page 1 hide stamp. We recurse until reaching maximal
+    // page-owned subtrees; neutral siblings are hidden only when bracketed by
+    // page-owned turn artifacts inside that same parent.
+    const classifyArtifact = (node) => {
+      if (!node) return { kind: 'neutral', owned: 0, foreign: 0 };
+      const sections = [];
+      try {
+        if (node.matches?.(TURN_HOST_SEL)) sections.push(node);
+        for (const section of Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || [])) {
+          if (!sections.includes(section)) sections.push(section);
+        }
+      } catch {}
+      if (!sections.length) return { kind: 'neutral', owned: 0, foreign: 0 };
+      let owned = 0;
+      let foreign = 0;
+      for (const section of sections) {
+        const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+        if (identity && identityToOrder.has(identity)) owned += 1;
+        else foreign += 1;
+      }
+      return {
+        kind: owned && foreign ? 'mixed' : owned ? 'owned' : 'foreign',
+        owned,
+        foreign,
+      };
+    };
+    const intersectsProtectedAnchor = (node) => {
+      for (const anchor of protectedAnchors) {
+        try {
+          if (node === anchor || node.contains?.(anchor) || anchor.contains?.(node)) return true;
+        } catch {}
+      }
+      return false;
+    };
+    let hidden = 0;
+    const projectOwnedChildren = (parent) => {
+      const children = Array.from(parent?.children || []);
+      if (!children.length) return;
+      const classes = children.map((node) => classifyArtifact(node));
+      const pageBearingIndexes = classes
+        .map((entry, index) => ((entry.kind === 'owned' || entry.kind === 'mixed') && entry.owned > 0 ? index : -1))
         .filter((index) => index >= 0);
-      if (positions.length) {
-        const first = Math.min(...positions);
-        const last = Math.max(...positions);
-        for (let index = first; index <= last; index += 1) {
-          const node = children[index] || null;
-          if (!node || titleListFlowArtifactAllowed(node, container)) continue;
+      const first = pageBearingIndexes.length ? Math.min(...pageBearingIndexes) : -1;
+      const last = pageBearingIndexes.length ? Math.max(...pageBearingIndexes) : -1;
+      let previousBoundary = -1;
+      let nextBoundary = children.length;
+      if (first >= 0) {
+        for (let index = 0; index < first; index += 1) {
+          const dividerPage = Math.max(0, Number(children[index]?.getAttribute?.('data-page-num') || 0) || 0);
+          if (classes[index]?.kind === 'foreign' || dividerPage === num) previousBoundary = index;
+        }
+      }
+      if (last >= 0) {
+        for (let index = last + 1; index < children.length; index += 1) {
+          const dividerPage = Math.max(0, Number(children[index]?.getAttribute?.('data-page-num') || 0) || 0);
+          if (classes[index]?.kind === 'foreign' || dividerPage > num) {
+            nextBoundary = index;
+            break;
+          }
+        }
+      }
+      for (let index = 0; index < children.length; index += 1) {
+        const node = children[index] || null;
+        const ownership = classes[index];
+        if (!node || titleListFlowArtifactAllowed(node, container)) continue;
+        if (ownership.kind === 'mixed') {
+          projectOwnedChildren(node);
+          continue;
+        }
+        if (ownership.kind === 'owned') {
+          if (intersectsProtectedAnchor(node)) {
+            projectOwnedChildren(node);
+            continue;
+          }
           if (setTitleListFlowAnchorHidden(node, num, true)) hidden += 1;
+          continue;
+        }
+        // Unknown host-owned siblings (quote cards, footer/action rows, etc.)
+        // are page-owned only when they are enclosed by exact page-owned turn
+        // artifacts in this same DOM parent. Never sweep past a foreign turn.
+        if (
+          ownership.kind === 'neutral'
+          && first >= 0
+          && index > previousBoundary
+          && index < nextBoundary
+          && !intersectsProtectedAnchor(node)
+        ) {
+          if (setTitleListFlowAnchorHidden(node, num, true)) hidden += 1;
+        }
+      }
+    };
+    if (flowRoot) projectOwnedChildren(flowRoot);
+    else {
+      // Missing divider/root is a hydration edge. Hide only exact member
+      // anchors; do not infer a wider page range from visual position.
+      for (const member of members) {
+        for (const anchor of memberAllFlowAnchors(member)) {
+          if (classifyArtifact(anchor).kind !== 'owned' || intersectsProtectedAnchor(anchor)) continue;
+          if (setTitleListFlowAnchorHidden(anchor, num, true)) hidden += 1;
         }
       }
     }
