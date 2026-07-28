@@ -235,6 +235,12 @@ function UM_PUBLIC() {
   const EV_MM_INDEX_APPENDED = 'evt:h2o:minimap:index:appended';
   const EV_MM_DIVIDER_CHANGED = 'evt:h2o:minimap:divider:changed';
   const EV_MM_DIVIDER_SELECTED = 'evt:h2o:minimap:divider:selected';
+  const EFFECTIVE_TURN_RUNTIME_METHOD = Object.freeze({
+    INDEX: ['getEffective', 'PresentationIndex'].join(''),
+    STATUS: ['getEffective', 'PresentationStatus'].join(''),
+    QID: ['getEffective', 'TurnRecordByQId'].join(''),
+    AID: ['getEffective', 'TurnRecordByAId'].join(''),
+  });
   const ATTR_PAGE_LABEL_STYLE = 'data-cgxui-page-label-style';
   const ATTR_PAGE_DIVIDERS = 'data-cgxui-page-dividers';
   const ATTR_CHAT_PAGE_DIVIDERS = 'data-cgxui-chat-pages';
@@ -740,6 +746,14 @@ function UM_PUBLIC() {
     const key = String(anyId || '').trim();
     if (!api || !key) return null;
     try {
+      if (selectedPathPresentationActive()) {
+        if (kind === 'question') return callEffectiveTurnRuntime('QID', key);
+        if (kind === 'answer') return callEffectiveTurnRuntime('AID', key);
+        if (kind === 'turn' && key.startsWith('turn:')) {
+          return callEffectiveTurnRuntime('QID', key.slice(5));
+        }
+        return null;
+      }
       if (kind === 'turn') return api.getTurnRecordByTurnId?.(key) || null;
       if (kind === 'question') return api.getTurnRecordByQId?.(key) || null;
       if (kind === 'answer') return api.getTurnRecordByAId?.(key) || null;
@@ -4400,6 +4414,14 @@ function UM_PUBLIC() {
     const id = String(chatId || resolveChatId()).trim();
     const finish = (result) => rememberCachePersistenceDecision(id, result);
     if (!id) return finish({ ok: false, status: 'chat-id-missing' });
+    if (selectedPathPresentationActive()) {
+      return finish({
+        ok: true,
+        status: 'selected-path-overlay-skipped',
+        chatId: id,
+        writesAttempted: 0,
+      });
+    }
 
     const turnsKey = keyTurnCacheTurns(id);
     const metaKey = keyTurnCacheMeta(id);
@@ -5396,6 +5418,14 @@ function UM_PUBLIC() {
   function persistPublishedTurnList(chatId = '', currentRows = [], opts = {}) {
     const id = String(chatId || resolveChatId() || '').trim();
     if (!id) return rememberCachePersistenceDecision('', { ok: false, status: 'chat-id-missing' });
+    if (selectedPathPresentationActive()) {
+      return rememberCachePersistenceDecision(id, {
+        ok: true,
+        status: 'selected-path-overlay-skipped',
+        chatId: id,
+        writesAttempted: 0,
+      });
+    }
     const merged = mergeTurnListWithCache(id, currentRows, {
       source: String(opts?.reason || 'current-publication'),
       inputKind: 'internal-state',
@@ -6206,6 +6236,43 @@ function UM_PUBLIC() {
     return TOPW?.H2O?.turnRuntime || W?.H2O?.turnRuntime || null;
   }
 
+  function callEffectiveTurnRuntime(method, ...args) {
+    const api = getTurnRuntimeApi();
+    const name = EFFECTIVE_TURN_RUNTIME_METHOD[method];
+    const fn = name ? api?.[name] : null;
+    if (typeof fn !== 'function') return null;
+    try { return fn.apply(api, args); } catch { return null; }
+  }
+
+  function getEffectivePresentationRuntimeStatus() {
+    const status = callEffectiveTurnRuntime('STATUS');
+    if (!status || typeof status !== 'object') {
+      return Object.freeze({
+        source: 'canonical',
+        overlayActive: false,
+        count: 0,
+        canonicalFingerprint: '',
+        anchorQId: null,
+        pathLength: 0,
+      });
+    }
+    return Object.freeze({
+      source: String(status.source || 'canonical'),
+      overlayActive: status.overlayActive === true,
+      count: Math.max(0, Number(status.count || 0) || 0),
+      canonicalFingerprint: String(status.canonicalFingerprint || ''),
+      anchorQId: String(status.anchorQId || '') || null,
+      pathLength: Math.max(0, Number(status.pathLength || 0) || 0),
+    });
+  }
+
+  function selectedPathPresentationActive() {
+    const status = getEffectivePresentationRuntimeStatus();
+    return status.overlayActive === true
+      && status.source === 'selected-path-overlay'
+      && status.count > 0;
+  }
+
   function getCompleteIndexProjectionStatus() {
     const api = getTurnRuntimeApi();
     try {
@@ -6269,10 +6336,10 @@ function UM_PUBLIC() {
     if (!turnId) return null;
     const answerId = noAnswer ? '' : String(record?.primaryAId || record?.answerId || '').trim();
     const answerIds = cacheRowAnswerIds({
-      answerIds: record?.answerIds,
+      answerIds: Array.isArray(record?.answerVariants) ? record.answerVariants : record?.answerIds,
       primaryAId: answerId,
     });
-    const index = Math.max(1, Number(record?.turnNo || record?.idx || fallbackIndex || 1) || 1);
+    const index = Math.max(1, Number(record?.order || record?.turnNo || record?.idx || fallbackIndex || 1) || 1);
     const el = record?.live?.primaryAEl || record?.primaryAEl || null;
     const questionEl = record?.live?.qEl || record?.qEl || null;
     const projected = {
@@ -6603,9 +6670,80 @@ function UM_PUBLIC() {
     } : null;
   }
 
+  function getEffectiveTurnsFromSharedRuntime() {
+    const status = getEffectivePresentationRuntimeStatus();
+    if (
+      status.overlayActive !== true
+      || status.source !== 'selected-path-overlay'
+      || status.count < 1
+    ) return null;
+    const index = callEffectiveTurnRuntime('INDEX');
+    if (
+      !index
+      || index.complete !== true
+      || index.proof !== 'selected-path-overlay'
+      || !Array.isArray(index.turns)
+      || index.turns.length !== status.count
+    ) return null;
+
+    const mountedByAnswerId = new Map();
+    for (const answerEl of getAnswerEls()) {
+      const answerId = String(
+        answerEl?.getAttribute?.('data-message-id')
+        || answerEl?.dataset?.messageId
+        || answerEl?.getAttribute?.('data-h2o-ans-id')
+        || answerEl?.dataset?.h2oAnsId
+        || ''
+      ).trim();
+      if (answerId && !mountedByAnswerId.has(answerId)) mountedByAnswerId.set(answerId, answerEl);
+    }
+
+    const list = [];
+    const byId = new Map();
+    const byAId = new Map();
+    const answerByTurn = new Map();
+    const answers = [];
+    for (let indexNo = 0; indexNo < index.turns.length; indexNo += 1) {
+      const turn = projectSharedTurnRecord(index.turns[indexNo], indexNo + 1);
+      if (!turn || turn.index !== indexNo + 1 || byId.has(turn.turnId)) return null;
+      const answerEl = turn.answerId ? (mountedByAnswerId.get(turn.answerId) || null) : null;
+      if (answerEl) {
+        turn.el = answerEl;
+        answerByTurn.set(turn.turnId, answerEl);
+        answers.push(answerEl);
+      }
+      list.push(turn);
+      byId.set(turn.turnId, turn);
+      for (const answerId of turn.answerIds) {
+        if (byAId.has(answerId)) return null;
+        byAId.set(answerId, turn.turnId);
+      }
+    }
+    return {
+      list,
+      byId,
+      byAId,
+      answerByTurn,
+      answers,
+      source: 'selected-path-overlay',
+      completeness: 'selected-path-overlay',
+      presentationOverlayActive: true,
+      presentationCount: status.count,
+      canonicalFingerprint: status.canonicalFingerprint,
+    };
+  }
+
   function getAuthoritativeTurnSnapshot() {
     const completeIndex = getCompleteIndexProjectionStatus();
     if (completeIndex.enabled) {
+      const effective = getEffectiveTurnsFromSharedRuntime();
+      if (
+        effective
+        &&
+        completeIndex.authoritative
+        && completeIndex.completenessProof === 'host-payload-full-graph'
+        && effective?.list?.length === effective?.presentationCount
+      ) return effective;
       const runtimeCanonical = getCanonicalTurnsFromSharedRuntime();
       if (
         completeIndex.authoritative
@@ -6701,6 +6839,11 @@ function UM_PUBLIC() {
     const key = String(anyId || '').trim();
     if (!api || !key) return null;
     try {
+      if (selectedPathPresentationActive()) {
+        return callEffectiveTurnRuntime('AID', key)
+          || callEffectiveTurnRuntime('QID', key.replace(/^turn:/, ''))
+          || null;
+      }
       return api.getTurnRecordByTurnId?.(key)
         || api.getTurnRecordByAId?.(key)
         || api.getTurnRecordByQId?.(key)
@@ -6746,6 +6889,8 @@ function UM_PUBLIC() {
           : null,
         completeness: String(authoritative?.completeness || 'unproven'),
       },
+      presentationOverlayActive: authoritative?.presentationOverlayActive === true,
+      presentationSource: String(authoritative?.source || ''),
     };
     if (opts?.commit === false) return snapshot;
     publishTurnSnapshot(snapshot);
@@ -11093,6 +11238,10 @@ function unbindChatPageDividerBridge() {
       applyMiniMapPageUiPrefs();
 
       const completeIndex = getCompleteIndexProjectionStatus();
+      const effectivePresentation = getEffectivePresentationRuntimeStatus();
+      const overlayActive = effectivePresentation.overlayActive === true
+        && effectivePresentation.source === 'selected-path-overlay'
+        && effectivePresentation.count > 0;
       if (completeIndex.enabled && !completeIndex.authoritative) {
         publishTurnSnapshot({
           list: [],
@@ -11116,7 +11265,13 @@ function unbindChatPageDividerBridge() {
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
       let retainedListForPersistence = list;
-      if (completeIndex.enabled && list.length !== completeIndex.projectedCount) {
+      const expectedPresentationCount = overlayActive
+        ? effectivePresentation.count
+        : completeIndex.projectedCount;
+      // Canonical-only regression contract: when no overlay is active this is
+      // exactly the historical `list.length !== completeIndex.projectedCount`
+      // boundary; the effective count is consulted only for proven overlays.
+      if (completeIndex.enabled && list.length !== expectedPresentationCount) {
         publishTurnSnapshot({
           list: [],
           byId: new Map(),
@@ -11130,7 +11285,9 @@ function unbindChatPageDividerBridge() {
         out.built.buttons = true;
         out.status = 'full-index-unavailable';
         out.ok = true;
-        out.reason = 'complete-index-canonical-count-mismatch';
+        out.reason = overlayActive
+          ? 'effective-presentation-count-mismatch'
+          : 'complete-index-canonical-count-mismatch';
         S.lastRebuildResult = out;
         return out;
       }
@@ -11144,16 +11301,16 @@ function unbindChatPageDividerBridge() {
             retainedList: list.slice(),
             decision: Object.freeze({
               accepted: true,
-              mode: 'complete-index-authority',
-              reason: 'host-payload-full-graph',
+              mode: overlayActive ? 'effective-presentation' : 'complete-index-authority',
+              reason: overlayActive ? 'selected-path-overlay' : 'host-payload-full-graph',
               incomingCount: list.length,
               retainedCount: list.length,
             }),
           },
           decision: Object.freeze({
             accepted: true,
-            mode: 'complete-index-authority',
-            reason: 'host-payload-full-graph',
+            mode: overlayActive ? 'effective-presentation' : 'complete-index-authority',
+            reason: overlayActive ? 'selected-path-overlay' : 'host-payload-full-graph',
             incomingCount: list.length,
             retainedCount: list.length,
           }),
@@ -11237,13 +11394,20 @@ function unbindChatPageDividerBridge() {
       try { finalizeRebuildUi(why); } catch {}
       try {
         const chatId = resolveChatId();
-        if (chatId) {
+        if (chatId && !overlayActive) {
           out.cachePersistence = saveTurnCache(chatId, retainedListForPersistence, {
             reason: 'rebuild',
             liveRows: S.turnList,
             shrinkProof: out.cacheMerge?.mode === 'proven-shrink'
               ? out.cacheMerge?.shrinkProof
               : null,
+          });
+        } else if (chatId) {
+          out.cachePersistence = Object.freeze({
+            ok: true,
+            status: 'selected-path-overlay-skipped',
+            chatId,
+            writesAttempted: 0,
           });
         }
       } catch {}

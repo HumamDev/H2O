@@ -131,6 +131,7 @@
     TITLE_SET:       'evt:h2o:title:set',
     TITLE_SET_LEG:   'ho:title:set',
     ANSWER_COLLAPSE: 'evt:h2o:answer:collapse',  // NEW: emitted on collapse/expand
+    CORE_TURN_UPDATED: 'h2o:turn:updated',
   });
 
   /* [DEFINE][STORE] Keys (shared + migrate) */
@@ -864,7 +865,7 @@ No quotes, no emojis, no numbering. Just the title text.`;
   };
 
   const DOM_readCanonicalTurnNumber = (record) => {
-    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    const turnNo = Number(record?.order || record?.turnNo || record?.idx || record?.index || 0);
     return (Number.isFinite(turnNo) && turnNo > 0) ? Math.floor(turnNo) : 0;
   };
 
@@ -901,7 +902,10 @@ No quotes, no emojis, no numbering. Just the title text.`;
       ).trim();
       if (!qId) continue;
       try {
-        const record = rt.getTurnRecordByQId?.(qId) || null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByQId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, qId) || null)
+          : (rt.getTurnRecordByQId?.(qId) || null);
         const recordQId = String(record?.qId || '').trim();
         const turnNo = DOM_readCanonicalTurnNumber(record);
         if (!turnNo || (recordQId && recordQId !== qId)) continue;
@@ -949,10 +953,15 @@ No quotes, no emojis, no numbering. Just the title text.`;
       const aId = API_AT_normalizeAnswerId(DOM_getAnswerId(msgEl));
       const rt = W.H2O?.turnRuntime || null;
       if (aId && rt) {
-        const record = rt.getTurnRecordByAId?.(aId)
-          || rt.getTurnRecordByTurnId?.(aId)
-          || rt.getTurnRecordByTurnId?.(`turn:a:${aId}`)
-          || null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByAId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, aId) || null)
+          : (
+            rt.getTurnRecordByAId?.(aId)
+            || rt.getTurnRecordByTurnId?.(aId)
+            || rt.getTurnRecordByTurnId?.(`turn:a:${aId}`)
+            || null
+          );
         const turnNo = DOM_readCanonicalTurnNumber(record);
         if (turnNo > 0) return turnNo;
       }
@@ -996,7 +1005,10 @@ No quotes, no emojis, no numbering. Just the title text.`;
     if (!id) return '';
     try {
       const rt = W.H2O?.turnRuntime || null;
-      const record = rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null;
+      const effectiveFn = rt?.[['getEffective', 'TurnRecordByAId'].join('')];
+      const record = typeof effectiveFn === 'function'
+        ? (effectiveFn.call(rt, id) || null)
+        : (rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null);
       const primary = API_AT_normalizeAnswerId(record?.primaryAId || record?.answerId || '');
       if (primary) return primary;
     } catch {}
@@ -1012,8 +1024,11 @@ No quotes, no emojis, no numbering. Just the title text.`;
     if (!id) return 0;
     try {
       const rt = W.H2O?.turnRuntime || null;
-      const record = rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null;
-      const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+      const effectiveFn = rt?.[['getEffective', 'TurnRecordByAId'].join('')];
+      const record = typeof effectiveFn === 'function'
+        ? (effectiveFn.call(rt, id) || null)
+        : (rt?.getTurnRecordByAId?.(id) || rt?.getTurnRecordByTurnId?.(id) || null);
+      const turnNo = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
       if (turnNo) return turnNo;
     } catch {}
     return 0;
@@ -1043,14 +1058,20 @@ No quotes, no emojis, no numbering. Just the title text.`;
     const identityIds = new Set([id, primaryId].filter(Boolean));
     try {
       const rt = W.H2O?.turnRuntime || null;
-      const record = rt?.getTurnRecordByAId?.(id)
-        || rt?.getTurnRecordByTurnId?.(id)
-        || (turnNo ? rt?.getTurnRecordByTurnNo?.(turnNo) : null)
-        || null;
+      const effectiveFn = rt?.[['getEffective', 'TurnRecordByAId'].join('')];
+      const record = typeof effectiveFn === 'function'
+        ? (effectiveFn.call(rt, id) || null)
+        : (
+          rt?.getTurnRecordByAId?.(id)
+          || rt?.getTurnRecordByTurnId?.(id)
+          || (turnNo ? rt?.getTurnRecordByTurnNo?.(turnNo) : null)
+          || null
+        );
       for (const value of [
         record?.primaryAId,
         record?.answerId,
         record?.turnId,
+        ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
         ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
         ...(Array.isArray(record?._aliasIds) ? record._aliasIds : []),
       ]) {
@@ -2623,6 +2644,23 @@ MOD_OBJ.api.public = Object.freeze({
   getConfig: API_AT_getConfig,
   applySetting: API_AT_applySetting,
 });
+
+  const DOM_refreshVisibleTurnNumbers = () => {
+    let changed = 0;
+    for (const msgEl of DOM_getAssistantMessages()) {
+      const answerId = API_AT_normalizeAnswerId(DOM_getAnswerId(msgEl));
+      const bar = answerId
+        ? (API_AT_getBar(answerId) || msgEl.querySelector?.(DOM_selScoped(UI_.BAR)) || null)
+        : (msgEl.querySelector?.(DOM_selScoped(UI_.BAR)) || null);
+      if (!bar) continue;
+      const before = String(bar.getAttribute?.('data-h2o-turn-num') || '');
+      DOM_projectTurnNumber(bar, DOM_getTurnNumber(msgEl));
+      const after = String(bar.getAttribute?.('data-h2o-turn-num') || '');
+      if (before !== after) changed += 1;
+    }
+    return changed;
+  };
+
   /* ───────────────────────────── ⚫️ LIFECYCLE — INIT / WIRING / STARTUP 📝🔓💥 ───────────────────────────── */
 
   function CORE_AT_boot() {
@@ -2692,9 +2730,11 @@ MOD_OBJ.api.public = Object.freeze({
     W.addEventListener(EV_.TITLE_SET_LEG, onTitle);
     W.addEventListener(EV_.TITLE_SET, onTitle);
     W.addEventListener(EV_.ANSWER_COLLAPSE, onAnswerCollapse);
+    W.addEventListener(EV_.CORE_TURN_UPDATED, DOM_refreshVisibleTurnNumbers, { passive: true });
     STATE_.clean.listeners.push(() => W.removeEventListener(EV_.TITLE_SET_LEG, onTitle));
     STATE_.clean.listeners.push(() => W.removeEventListener(EV_.TITLE_SET, onTitle));
     STATE_.clean.listeners.push(() => W.removeEventListener(EV_.ANSWER_COLLAPSE, onAnswerCollapse));
+    STATE_.clean.listeners.push(() => W.removeEventListener(EV_.CORE_TURN_UPDATED, DOM_refreshVisibleTurnNumbers));
 
     TIME_initialScan();
     TIME_startObserver();

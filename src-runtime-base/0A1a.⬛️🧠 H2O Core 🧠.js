@@ -6651,6 +6651,7 @@
   }
 
   function chatAtlasClearSelectedPathOverlay(reason = 'overlay-cleared', options = {}) {
+    const previousPresentation = getEffectivePresentationStatus();
     selectedPathOverlayState.status = options?.invalid === true ? 'invalid' : 'inactive';
     selectedPathOverlayState.reason = chatAtlasCompleteIndexCode(reason, 'overlay-cleared', 64);
     selectedPathOverlayState.token = null;
@@ -6669,7 +6670,11 @@
     selectedPathOverlayState.byQId = null;
     selectedPathOverlayState.byAId = null;
     selectedPathOverlayState.proof = null;
-    return getEffectivePresentationStatus();
+    return chatAtlasEmitEffectivePresentationChanged(
+      previousPresentation,
+      getEffectivePresentationStatus(),
+      reason,
+    );
   }
 
   function chatAtlasSelectedPathOverlayCurrent() {
@@ -6727,6 +6732,46 @@
       pathLength: overlayActive ? selectedPathOverlayState.pathLength : 0,
       activatedAt: overlayActive ? selectedPathOverlayState.activatedAt : null,
     });
+  }
+
+  function chatAtlasEffectivePresentationIdentity(status) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.anchorQId || ''),
+      Math.max(0, Number(status?.pathLength || 0) || 0),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function chatAtlasEmitEffectivePresentationChanged(previous, current, reason = 'presentation-updated') {
+    if (
+      chatAtlasEffectivePresentationIdentity(previous)
+      === chatAtlasEffectivePresentationIdentity(current)
+    ) return current;
+    // A late-loading presentation stack will read the current effective
+    // snapshot during its normal initial build. Emit only after MiniMap Core
+    // has installed its presentation bridge, so no transient pre-consumer
+    // publication becomes a second state channel.
+    if (!W?.H2O_MM_CORE_API) return current;
+    busEmit(EV_CORE_TURN_UPDATED, {
+      reason: 'effective-presentation',
+      cause: chatAtlasCompleteIndexCode(reason, 'presentation-updated', 64),
+      version: state.version,
+      qTotal: state.qTotal,
+      aTotal: state.aTotal,
+      turnTotal: Math.max(0, Number(current?.count || 0) || 0),
+      presentationSource: String(current?.source || 'canonical'),
+      presentationOverlayActive: current?.overlayActive === true,
+      presentationCount: Math.max(0, Number(current?.count || 0) || 0),
+      presentationAnchorQId: String(current?.anchorQId || '') || null,
+      presentationPathLength: Math.max(0, Number(current?.pathLength || 0) || 0),
+    });
+    return current;
   }
 
   function getEffectiveTurnRecordByQId(qIdRaw) {
@@ -7071,6 +7116,7 @@
         { invalid: true },
       );
     }
+    const previousPresentation = getEffectivePresentationStatus();
     selectedPathOverlayState.status = 'active';
     selectedPathOverlayState.reason = 'selected-path-overlay-active';
     selectedPathOverlayState.token = candidate.token;
@@ -7089,7 +7135,11 @@
     selectedPathOverlayState.byQId = candidate.byQId;
     selectedPathOverlayState.byAId = candidate.byAId;
     selectedPathOverlayState.proof = candidate.proof;
-    return getEffectivePresentationStatus();
+    return chatAtlasEmitEffectivePresentationChanged(
+      previousPresentation,
+      getEffectivePresentationStatus(),
+      'selected-path-overlay-active',
+    );
   }
 
   function chatAtlasSelectedPathOverlayEvaluate() {
@@ -8016,9 +8066,52 @@
       }
       return false;
     }
+    const observedAt = Date.now();
+    const priorIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const branchButton = chatAtlasCompleteIndexNativeBranchButton(event);
+    const eventStamp = Number(event?.timeStamp);
+    let scopeIdentity = '';
+    try {
+      const scope = branchButton?.closest?.('[data-testid^="conversation-turn-"]') || null;
+      scopeIdentity = String(scope?.getAttribute?.('data-testid') || '').trim().slice(0, 128);
+    } catch {}
+    const deliveryIdentity = (
+      branchButton
+      && Number.isFinite(eventStamp)
+      && eventStamp > 0
+    )
+      ? `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify([
+        Number(completeTurnIndexAuthorityState.generation || 0),
+        route.chatId,
+        route.routeKey,
+        direction,
+        String(event?.type || 'click').slice(0, 16),
+        eventStamp,
+        Number(event?.detail || 0),
+        Number(event?.button || 0),
+        Number(event?.pointerId || 0),
+        scopeIdentity,
+      ]))}`
+      : '';
+    const duplicateDelivery = !!priorIntent
+      && !!deliveryIdentity
+      && deliveryIdentity === String(priorIntent.deliveryIdentity || '')
+      && Math.max(0, observedAt - Number(priorIntent.observedAt || 0)) <= 1000;
+    if (duplicateDelivery) {
+      chatAtlasTraceTrustedLifecycle('trusted-capture-deduplicated', {
+        direction,
+        chat: route.chatId,
+        qId: priorIntent.qId,
+        token: priorIntent.token,
+        reason: 'same-native-click-delivery',
+      });
+      if (typeof scheduleChatAtlasLedgerFlush === 'function') {
+        scheduleChatAtlasLedgerFlush('trusted-native-branch-click-deduplicated');
+      }
+      return true;
+    }
     completeTurnIndexAuthorityState.trustedSelectionSequence += 1;
     completeTurnIndexAuthorityState.trustedSelectionCaptureCount += 1;
-    const observedAt = Date.now();
     const tokenIdentity = [
       Number(completeTurnIndexAuthorityState.generation || 0),
       route.chatId,
@@ -8028,7 +8121,6 @@
       observedAt,
     ];
     const token = `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify(tokenIdentity))}`;
-    const priorIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     chatAtlasTraceTrustedLifecycle('trusted-capture-created', {
       direction,
       chat: route.chatId,
@@ -8041,15 +8133,6 @@
         token: priorIntent.token,
       });
     }
-    if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
-      chatAtlasClearSelectedPathOverlay('trusted-intent-superseded');
-    }
-    if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
-      chatAtlasClearSelectedPathAcquisition('trusted-intent-superseded', {
-        preserveGraph: true,
-        resetRefetchGuard: true,
-      });
-    }
     // The clicked control's owning canonical qId resolves and freezes NOW, at
     // capture, from DOM topology verified against the host-proven index. The
     // intent never binds lazily to a first-observed changed turn: a capture
@@ -8058,7 +8141,18 @@
     const ownership = chatAtlasTrustedNativeBranchOwnership(event);
     chatAtlasTraceTrustedLifecycle('trusted-bind-attempt', { token, qId: ownership.qId });
     if (ownership.ok !== true) {
-      completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      if (priorIntent) {
+        completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+        if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
+          chatAtlasClearSelectedPathOverlay('trusted-intent-superseded');
+        }
+        if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+          chatAtlasClearSelectedPathAcquisition('trusted-intent-superseded', {
+            preserveGraph: true,
+            resetRefetchGuard: true,
+          });
+        }
+      }
       // A newer click that fails ownership must still cancel any prior click's
       // pending post-event reconciliation task.
       chatAtlasCancelTrustedNativeBranchReconcile();
@@ -8070,6 +8164,20 @@
       token,
       reason: ownership.reason,
     });
+    if (typeof chatAtlasClearSelectedPathOverlay === 'function') {
+      chatAtlasClearSelectedPathOverlay(
+        priorIntent ? 'trusted-intent-superseded' : 'trusted-intent-created',
+      );
+    }
+    if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+      chatAtlasClearSelectedPathAcquisition(
+        priorIntent ? 'trusted-intent-superseded' : 'trusted-intent-created',
+        {
+          preserveGraph: true,
+          resetRefetchGuard: true,
+        },
+      );
+    }
     // The ownership and route checks above have already proven the exact
     // canonical qId and scope. Mark only this memory-only passive state; the
     // reconciliation scheduler below remains independently gated.
@@ -8098,11 +8206,18 @@
       priorAnswerId: ownership.currentAnswerId,
       staleRevision,
       observedAt,
+      deliveryIdentity,
+      interactionIdentity: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify([
+        deliveryIdentity,
+        ownership.qId,
+        ownership.currentAnswerId,
+        direction,
+      ]))}`,
     });
     // The production runtime owns this notifier. Isolated function-extraction
     // harnesses may intentionally omit it while still exercising Gate 5.
     if (typeof chatAtlasNotifyCompleteIndexState === 'function') chatAtlasNotifyCompleteIndexState();
-    if (ownership.currentAnswerId && typeof scheduleChatAtlasLedgerFlush === 'function') {
+    if (typeof scheduleChatAtlasLedgerFlush === 'function') {
       scheduleChatAtlasLedgerFlush('trusted-native-branch-click');
     }
     // The captured qId is already uniquely and canonically known, so trusted

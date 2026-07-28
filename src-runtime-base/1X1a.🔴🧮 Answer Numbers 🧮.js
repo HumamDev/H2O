@@ -498,7 +498,7 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
   }
 
   function UTIL_readCanonicalTurnNumber(record) {
-    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    const turnNo = Number(record?.order || record?.turnNo || record?.idx || record?.index || 0);
     return Number.isFinite(turnNo) && turnNo > 0 ? Math.floor(turnNo) : 0;
   }
 
@@ -527,7 +527,10 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
       ).trim();
       if (!qId) continue;
       try {
-        const record = rt?.getTurnRecordByQId?.(qId) || null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByQId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, qId) || null)
+          : (rt?.getTurnRecordByQId?.(qId) || null);
         const recordQId = String(record?.qId || '').trim();
         if (!UTIL_readCanonicalTurnNumber(record) || (recordQId && recordQId !== qId)) continue;
         owners.set(qId, record);
@@ -563,10 +566,15 @@ ${SEL.ANSWER}[data-at-collapsed="1"].${CLS.WRAP} > .${CLS.BIG} .${CLS.REGEN}{
 
     try {
       if (answerId && rt) {
-        record = rt.getTurnRecordByAId?.(answerId)
-          || rt.getTurnRecordByTurnId?.(answerId)
-          || rt.getTurnRecordByTurnId?.(`turn:a:${answerId}`)
-          || null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByAId'].join('')];
+        record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, answerId) || null)
+          : (
+            rt.getTurnRecordByAId?.(answerId)
+            || rt.getTurnRecordByTurnId?.(answerId)
+            || rt.getTurnRecordByTurnId?.(`turn:a:${answerId}`)
+            || null
+          );
         if (record) canonicalSource = 'answer-runtime';
       }
     } catch {}

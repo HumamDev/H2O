@@ -116,6 +116,10 @@
   const EVT_ARCHIVE_SCROLL_TO_COLD = 'evt:h2o:archive:scroll-to-cold';
   const EVT_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
   const EVT_COMPLETE_TURN_INDEX_STATE = 'evt:h2o:complete-turn-index:state';
+  const EFFECTIVE_TURN_RUNTIME_METHOD = Object.freeze({
+    INDEX: ['getEffective', 'PresentationIndex'].join(''),
+    STATUS: ['getEffective', 'PresentationStatus'].join(''),
+  });
 
   const BOOT_MAX_TRIES = 80;
   const BOOT_GAP_MS = 120;
@@ -1576,6 +1580,19 @@
     }
   }
 
+  function MINI_callEffectiveTurnRuntime(method) {
+    const api = W?.H2O?.turnRuntime || null;
+    const name = EFFECTIVE_TURN_RUNTIME_METHOD[method];
+    const fn = name ? api?.[name] : null;
+    if (typeof fn !== 'function') return null;
+    try { return fn.call(api); } catch { return null; }
+  }
+
+  function MINI_effectivePresentationStatus() {
+    const status = MINI_callEffectiveTurnRuntime('STATUS');
+    return status && typeof status === 'object' ? status : null;
+  }
+
   function MINI_completeIndexNavigationEnabled() {
     const status = MINI_completeIndexStatus();
     return status?.enabled === true
@@ -1591,6 +1608,20 @@
   function MINI_completeIndexRecords() {
     if (!MINI_completeIndexNavigationEnabled()) return [];
     try {
+      const effectiveStatus = MINI_effectivePresentationStatus();
+      if (
+        effectiveStatus?.overlayActive === true
+        && effectiveStatus?.source === 'selected-path-overlay'
+      ) {
+        const effectiveIndex = MINI_callEffectiveTurnRuntime('INDEX');
+        const turns = Array.isArray(effectiveIndex?.turns) ? effectiveIndex.turns : [];
+        if (
+          effectiveIndex?.complete === true
+          && effectiveIndex?.proof === 'selected-path-overlay'
+          && turns.length === Number(effectiveStatus?.count || 0)
+        ) return turns.slice();
+        return [];
+      }
       const list = W?.H2O?.turnRuntime?.listTurnRecords?.()
         || W?.H2O?.turnRuntime?.listTurns?.()
         || [];
@@ -1642,9 +1673,10 @@
     }
 
     const qId = String(record?.qId || '').trim();
-    const order = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+    const order = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
     if (!qId || !order || COMPLETE_INDEX_INTERNAL_QIDS.has(qId)) return null;
     const answerVariants = Array.from(new Set([
+      ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
       ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
       record?.primaryAId,
     ].map((value) => normalizeNavId(value)).filter(Boolean)));
@@ -1766,7 +1798,10 @@
     if (!descriptor?.order || !descriptor?.total) return false;
     MINI_bindCompleteIndexMountedAnchors();
     const records = MINI_completeIndexRecords();
-    const orderByQId = new Map(records.map((row) => [String(row?.qId || ''), Number(row?.turnNo || row?.idx || 0)]));
+    const orderByQId = new Map(records.map((row) => [
+      String(row?.qId || ''),
+      Number(row?.order || row?.turnNo || row?.idx || 0),
+    ]));
     const mountedOrders = Array.from(completeIndexMountedAnchors.keys())
       .map((qId) => Number(orderByQId.get(qId) || 0))
       .filter((value) => value > 0);
@@ -3488,8 +3523,11 @@
   function readAuthoritativeCoreUniverse(detail = {}) {
     let records = [];
     try {
-      const list = W?.H2O?.turnRuntime?.listTurnRecords;
-      if (typeof list === 'function') records = list() || [];
+      records = MINI_completeIndexRecords();
+      if (!records.length) {
+        const list = W?.H2O?.turnRuntime?.listTurnRecords;
+        if (typeof list === 'function') records = list() || [];
+      }
     } catch {
       records = [];
     }
@@ -3519,13 +3557,21 @@
   function readMiniMapIdentityAlignment(opts = {}) {
     let records = [];
     try {
-      const list = W?.H2O?.turnRuntime?.listTurnRecords;
-      if (typeof list !== 'function') {
-        return { available: false, missing: false, reason: 'canonical-records-unavailable', drifts: [] };
+      records = MINI_completeIndexRecords();
+      if (!records.length) {
+        const list = W?.H2O?.turnRuntime?.listTurnRecords;
+        if (typeof list !== 'function') {
+          return { available: false, missing: false, reason: 'presentation-records-unavailable', drifts: [] };
+        }
+        records = list() || [];
       }
-      records = list().slice().sort((a, b) => {
-        return Number(a?.turnNo || a?.idx || 0) - Number(b?.turnNo || b?.idx || 0);
+      records = records.slice().sort((a, b) => {
+        return Number(a?.order || a?.turnNo || a?.idx || 0)
+          - Number(b?.order || b?.turnNo || b?.idx || 0);
       });
+      if (!records.length) {
+        return { available: false, missing: false, reason: 'presentation-records-unavailable', drifts: [] };
+      }
     } catch {
       return { available: false, missing: false, reason: 'canonical-records-read-failed', drifts: [] };
     }
@@ -3556,7 +3602,7 @@
     const retainedProjection = opts?.allowRetainedProjection === true
       && buttons.length > records.length;
     for (const record of records) {
-      const turnNo = Math.max(0, Number(record?.turnNo || record?.idx || 0) || 0);
+      const turnNo = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
       if (!turnNo) continue;
       const candidates = buttonsByTurnNo.get(turnNo) || [];
       let btn = null;

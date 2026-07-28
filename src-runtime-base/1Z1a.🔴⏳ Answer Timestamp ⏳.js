@@ -529,7 +529,7 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
 
   /** @helper */
   function DOM_AT_readCanonicalTurnNumber(record) {
-    const turnNo = Number(record?.turnNo || record?.idx || record?.index || 0);
+    const turnNo = Number(record?.order || record?.turnNo || record?.idx || record?.index || 0);
     return (Number.isFinite(turnNo) && turnNo > 0) ? Math.floor(turnNo) : null;
   }
 
@@ -581,7 +581,10 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
       ).trim();
       if (!qId) continue;
       try {
-        const record = rt?.getTurnRecordByQId?.(qId) || null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByQId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, qId) || null)
+          : (rt?.getTurnRecordByQId?.(qId) || null);
         const recordQId = String(record?.qId || '').trim();
         const turnNo = DOM_AT_readCanonicalTurnNumber(record);
         if (!turnNo || (recordQId && recordQId !== qId)) continue;
@@ -623,7 +626,12 @@ html[data-cgxui-ats-collapsed-hover-mode="title-right"] ${SEL_.ASSIST_MSG}[data-
       || ''
     ).trim();
     try {
-      const record = aId ? (rt.getTurnRecordByAId?.(aId) || null) : null;
+      const effectiveFn = aId ? rt?.[['getEffective', 'TurnRecordByAId'].join('')] : null;
+      const record = aId
+        ? (typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, aId) || null)
+          : (rt.getTurnRecordByAId?.(aId) || null))
+        : null;
       const answerTurnNo = DOM_AT_readCanonicalTurnNumber(record);
       if (answerTurnNo) return answerTurnNo;
 

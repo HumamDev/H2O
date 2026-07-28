@@ -443,7 +443,8 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
 
   function readCanonicalTurnNumFromRecord(record) {
     const turnNo = Number(
-      record?.turnNo
+      record?.order
+      || record?.turnNo
       || record?.index
       || record?.idx
       || record?.gid
@@ -580,11 +581,15 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
 
     for (const id of candidates) {
       try {
-        const record =
-          rt.getTurnRecordByTurnId?.(id) ||
-          rt.getTurnRecordByAId?.(id) ||
-          rt.getTurnRecordByQId?.(id) ||
-          null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByQId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, id) || null)
+          : (
+            rt.getTurnRecordByTurnId?.(id)
+            || rt.getTurnRecordByAId?.(id)
+            || rt.getTurnRecordByQId?.(id)
+            || null
+          );
         const turnNo = readCanonicalTurnNumFromRecord(record);
         if (turnNo > 0) return turnNo;
       } catch {}
@@ -616,11 +621,15 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
 
     for (const qId of qIdCandidates) {
       try {
-        const record =
-          rt.getTurnRecordByQId?.(qId) ||
-          rt.getTurnRecordByTurnId?.(qId) ||
-          rt.getTurnRecordByAId?.(qId) ||
-          null;
+        const effectiveFn = rt?.[['getEffective', 'TurnRecordByQId'].join('')];
+        const record = typeof effectiveFn === 'function'
+          ? (effectiveFn.call(rt, qId) || null)
+          : (
+            rt.getTurnRecordByQId?.(qId)
+            || rt.getTurnRecordByTurnId?.(qId)
+            || rt.getTurnRecordByAId?.(qId)
+            || null
+          );
         const turnNo = readCanonicalTurnNumFromRecord(record);
         if (turnNo > 0) return turnNo;
       } catch {}
