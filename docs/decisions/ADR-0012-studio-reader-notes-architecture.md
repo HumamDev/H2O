@@ -1,8 +1,13 @@
-# ADR-0011: Studio Reader & Notes Architecture Contract
+# ADR-0012: Studio Reader & Notes Architecture Contract
 
 Status: Accepted for MVP-A0 docs/contract foundation
 
 Date: 2026-06-29
+
+Historical note: this decision was originally published with the duplicate
+number ADR-0011. It was renumbered to ADR-0012 during Title Stage 1D-A to
+remove ambiguity while preserving the accepted content and history of both
+decisions.
 
 Related:
 

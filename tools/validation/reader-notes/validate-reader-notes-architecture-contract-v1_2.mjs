@@ -14,7 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const CONTRACT_REL = 'docs/systems/reader-notes/architecture-contract-v1.2.md';
-const ADR_REL = 'docs/decisions/ADR-0011-studio-reader-notes-architecture.md';
+const ADR_REL = 'docs/decisions/ADR-0012-studio-reader-notes-architecture.md';
 const HIGHLIGHTS_REL = 'docs/systems/highlights/contract.md';
 const COMMAND_BAR_REL = 'docs/systems/command-bar/contract.md';
 const SIDE_ACTIONS_REL = 'docs/systems/side-actions-panel/contract.md';
@@ -58,7 +58,7 @@ const allDocs = [contract, adr, highlights, commandBar, sideActions].join('\n\n'
 
 check('contract and ADR exist', () => {
   includes(contract, '# Studio Reader & Notes Architecture Contract v1.2', 'contract title');
-  includes(adr, '# ADR-0011: Studio Reader & Notes Architecture Contract', 'ADR title');
+  includes(adr, '# ADR-0012: Studio Reader & Notes Architecture Contract', 'ADR title');
 });
 
 check('contract mentions Hybrid Typed-Object Architecture', () => {
