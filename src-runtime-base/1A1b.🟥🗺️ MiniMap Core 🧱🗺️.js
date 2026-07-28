@@ -10536,6 +10536,29 @@ function unbindChatPageDividerBridge() {
     return null;
   }
 
+  // An authority page must retain its divider even during the short interval
+  // before that page's start turn is hydrated. Park the divider immediately
+  // after the exact authoritative tail of the preceding page; once the real
+  // page-start wrapper mounts, forcePlaceDividerBeforeTurnWrapper moves and
+  // verifies it at the final anchor. This never guesses from visible DOM
+  // order and never creates a page that is absent from S.turnList.
+  function getAuthorityDividerParkingPosition(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    if (num <= 1 || !Array.isArray(S.turnList)) return null;
+    const previousTurn = S.turnList[((num - 1) * 25) - 1] || null;
+    if (!previousTurn) return null;
+    let host = getChatPageTurnHost(previousTurn);
+    if (!host) {
+      const questionId = String(previousTurn.questionId || previousTurn.qId || '').trim();
+      host = questionId ? sectionByStableId(questionId) : null;
+    }
+    if (!host) return null;
+    const anchor = getChatPagePairAnchorNode(host);
+    const parent = anchor?.parentNode || null;
+    if (!parent) return null;
+    return { parent, before: anchor.nextSibling || null };
+  }
+
   function forcePlaceDividerBeforeTurnWrapper(divider, pageNum) {
     const resolved = getPageStartTurnWrapper(pageNum);
     if (!divider || !resolved?.wrapper?.parentNode) return false;
@@ -10579,6 +10602,7 @@ function unbindChatPageDividerBridge() {
     const ok = okOrder && nextTestId === resolved.testid;
 
     try {
+      divider.removeAttribute('data-h2o-divider-authority-parked');
       divider.setAttribute('data-h2o-divider-anchor-testid', resolved.testid || '');
       divider.setAttribute('data-h2o-divider-anchor-mode', resolved.mode || '');
       divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
@@ -10681,8 +10705,19 @@ function unbindChatPageDividerBridge() {
           || qq(`.cgxui-pgnw-page-divider[data-page-num="${String(pageNum)}"]`)[0]
           || null;
         if (!divider) {
-          if (!startWrap?.wrapper?.parentNode) continue;
           divider = createChatPageDivider(pageNum, band);
+          if (startWrap?.wrapper?.parentNode) {
+            try { startWrap.wrapper.parentNode.insertBefore(divider, startWrap.wrapper); } catch {}
+          } else {
+            const parking = getAuthorityDividerParkingPosition(pageNum);
+            if (!parking?.parent) continue;
+            try {
+              parking.parent.insertBefore(divider, parking.before || null);
+              divider.setAttribute('data-h2o-divider-authority-parked', '1');
+            } catch {
+              continue;
+            }
+          }
           createdCount += 1;
           noteNodeLifecycle('created', 'chatPageDividers');
         } else {

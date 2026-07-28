@@ -318,11 +318,18 @@
 
     // uid -> untilMs (protect from immediate re-unmount after a mount request)
     protectUntil: new Map(),
+    // owner -> frozen-by-convention normalized id set. Presentation owners
+    // may keep a bounded adjacent page mounted without disabling the normal
+    // unmount engine or persisting any state.
+    presentationMountGuardsByOwner: new Map(),
     clickRestoreViewportToken: 0,
     manualRestoreTimer: 0,
   };
 
   const S = VAULT.state;
+  S.presentationMountGuardsByOwner = (S.presentationMountGuardsByOwner instanceof Map)
+    ? S.presentationMountGuardsByOwner
+    : new Map();
 
   /* ───────────────────────────── 3.1) Runtime Config (persisted) ───────────────────────────── */
 
@@ -614,6 +621,13 @@
   function CORE_UM_isTurnGroupProtected(group) {
     const ids = Array.isArray(group?.aliasIds) && group.aliasIds.length ? group.aliasIds : group?.uids;
     if (!Array.isArray(ids) || !ids.length) return false;
+    const normalized = new Set(ids.map(UTIL_UM_normalizeId).filter(Boolean));
+    for (const guarded of S.presentationMountGuardsByOwner?.values?.() || []) {
+      if (!(guarded instanceof Set) || !guarded.size) continue;
+      for (const id of normalized) {
+        if (guarded.has(id)) return true;
+      }
+    }
     let protectedAny = false;
     for (const uid of ids) {
       const id = UTIL_UM_normalizeId(uid);
@@ -2626,6 +2640,51 @@
     return API_UM_requestMountByUid(uid, why);
   }
 
+  function API_UM_setPresentationMountGuard(owner = '', ids = []) {
+    const key = String(owner || '').trim();
+    if (!key) return { ok: false, status: 'owner-missing', ids: 0, requested: 0 };
+    const normalized = new Set((Array.isArray(ids) ? ids : [])
+      .map(UTIL_UM_normalizeId)
+      .filter(Boolean));
+    const previous = S.presentationMountGuardsByOwner.get(key);
+    const unchanged = previous instanceof Set
+      && previous.size === normalized.size
+      && Array.from(normalized).every((id) => previous.has(id));
+    if (unchanged) {
+      return {
+        ok: true,
+        status: normalized.size ? 'guarded-unchanged' : 'released',
+        ids: normalized.size,
+        requested: 0,
+        owners: S.presentationMountGuardsByOwner.size,
+      };
+    }
+    if (normalized.size) S.presentationMountGuardsByOwner.set(key, normalized);
+    else S.presentationMountGuardsByOwner.delete(key);
+
+    let requested = 0;
+    for (const id of normalized) {
+      if (API_UM_requestMountByUid(id, `presentation-mount-guard:${key}`)) requested += 1;
+    }
+    return {
+      ok: true,
+      status: normalized.size ? 'guarded' : 'released',
+      ids: normalized.size,
+      requested,
+      owners: S.presentationMountGuardsByOwner.size,
+    };
+  }
+
+  function API_UM_getPresentationMountGuardStatus(owner = '') {
+    const key = String(owner || '').trim();
+    const guarded = key ? S.presentationMountGuardsByOwner.get(key) : null;
+    return Object.freeze({
+      active: !!(guarded instanceof Set && guarded.size),
+      ids: guarded instanceof Set ? guarded.size : 0,
+      owners: S.presentationMountGuardsByOwner.size,
+    });
+  }
+
   function UI_UM_handlePlaceholderClick(ev) {
     const ph = ev?.target?.closest?.(SEL_UNMOUNTM_PH);
     if (!ph) return;
@@ -3396,6 +3455,7 @@
       try { S.uidAliasToPrimary.clear(); } catch (_) {}
       try { S.remountWaiters.clear(); } catch (_) {}
       try { S.protectUntil.clear(); } catch (_) {}
+      try { S.presentationMountGuardsByOwner.clear(); } catch (_) {}
 
       S.msgsCache = [];
       S.msgsDirty = true;
@@ -3450,6 +3510,8 @@
     getVisitResetState: API_UM_getVisitResetState,
     requestMountByUid: API_UM_requestMountByUid,
     requestMountPairByUid: API_UM_requestMountPairByUid,
+    setPresentationMountGuard: API_UM_setPresentationMountGuard,
+    getPresentationMountGuardStatus: API_UM_getPresentationMountGuardStatus,
     remountAll: API_UM_remountAll,
     waitUntilRemounted: API_UM_waitUntilRemounted,
     resolvePrimaryUid: CORE_UM_resolvePrimaryUid,

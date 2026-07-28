@@ -185,6 +185,10 @@ Self-check:
   S.offObsMut = (typeof S.offObsMut === 'function') ? S.offObsMut : null;
   S.diagConfig = null;
   S.transientWindowingActive = !!S.transientWindowingActive;
+  S.presentationFullFlowOwners = (S.presentationFullFlowOwners instanceof Set)
+    ? S.presentationFullFlowOwners
+    : new Set();
+  S.presentationFullFlowResumeRequested = !!S.presentationFullFlowResumeRequested;
   S.dividerPagination = (S.dividerPagination && typeof S.dividerPagination === 'object') ? S.dividerPagination : {};
   S.dividerPagination.active = !!S.dividerPagination.active;
   S.dividerPagination.chatId = String(S.dividerPagination.chatId || '');
@@ -307,7 +311,59 @@ Self-check:
   }
 
   function isWindowingActive() {
-    return isFeatureEnabled() || !!S.transientWindowingActive;
+    return (isFeatureEnabled() || !!S.transientWindowingActive)
+      && !(S.presentationFullFlowOwners instanceof Set && S.presentationFullFlowOwners.size);
+  }
+
+  // Title-list presentation must be able to show one collapsed page beside
+  // its adjacent normal page. Pagination's ordinary exact-page window owns
+  // only one materialized page, so the page owner may place a bounded,
+  // memory-only hold on windowing. The established teardown restores the
+  // captured master turns into the live root atomically; releasing the final
+  // owner resumes the configured windowing runtime.
+  function API_PG_setPresentationFullFlowHold(owner = '', active = false) {
+    const key = String(owner || '').trim();
+    if (!key) return { ok: false, status: 'owner-missing', active: false, owners: 0 };
+    const owners = S.presentationFullFlowOwners instanceof Set
+      ? S.presentationFullFlowOwners
+      : (S.presentationFullFlowOwners = new Set());
+    const wasHeld = owners.has(key);
+    if (active) owners.add(key);
+    else owners.delete(key);
+
+    if (active && !wasHeld) {
+      const runtimeWasActive = !!(S.booted || S.renderedOnce);
+      S.presentationFullFlowResumeRequested = S.presentationFullFlowResumeRequested || runtimeWasActive;
+      if (runtimeWasActive) {
+        teardownRuntimeSession('title-list:full-flow-hold', {
+          preserveApi: true,
+          preservePresentationFullFlowHold: true,
+        });
+      }
+    } else if (!active && wasHeld && owners.size === 0) {
+      const shouldResume = !!S.presentationFullFlowResumeRequested && isFeatureEnabled();
+      S.presentationFullFlowResumeRequested = false;
+      if (shouldResume) boot('title-list:full-flow-release');
+    }
+
+    return {
+      ok: true,
+      status: active ? 'held' : (owners.size ? 'held-by-other-owner' : 'released'),
+      active: owners.size > 0,
+      owners: owners.size,
+      resumed: !active && owners.size === 0 && !!S.booted,
+    };
+  }
+
+  function API_PG_getPresentationFullFlowHoldStatus() {
+    const owners = S.presentationFullFlowOwners instanceof Set
+      ? S.presentationFullFlowOwners
+      : new Set();
+    return Object.freeze({
+      active: owners.size > 0,
+      owners: owners.size,
+      resumeRequested: !!S.presentationFullFlowResumeRequested,
+    });
   }
 
   function clearDividerPaginationState() {
@@ -3665,6 +3721,7 @@ Self-check:
 
   function teardownRuntimeSession(reason = 'dispose', opts = {}) {
     const preserveApi = !!opts?.preserveApi;
+    const preservePresentationFullFlowHold = opts?.preservePresentationFullFlowHold === true;
     debugLog('dispose-cleanup', {
       reason: String(reason || 'dispose'),
       swapMode: S.lastAppliedSwapMode || getSwapMode(),
@@ -3755,6 +3812,10 @@ Self-check:
     S.offObsMut = null;
     S.transientWindowingActive = false;
     clearDividerPaginationState();
+    if (!preservePresentationFullFlowHold) {
+      try { S.presentationFullFlowOwners?.clear?.(); } catch (_) {}
+      S.presentationFullFlowResumeRequested = false;
+    }
 
     try { delete W[KEY_BOOT]; } catch (_) {}
     clearCommandBarBindTimer();
@@ -3832,6 +3893,8 @@ Self-check:
     getSummary,
     goToAnswerGid,
     ensureVisibleById: API_PG_ensureVisibleById,
+    setPresentationFullFlowHold: API_PG_setPresentationFullFlowHold,
+    getPresentationFullFlowHoldStatus: API_PG_getPresentationFullFlowHoldStatus,
     goToPage,
     goToPageStart,
     getDividerPaginationState,
