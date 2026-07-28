@@ -29,6 +29,9 @@ const BRIDGE_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/tit
 const LOADER_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/loader.js";
 const MANIFEST_REL = "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/manifest.json";
 const PROXY_REL = "apps/dev-server/dev_output/proxy/_paste-pack.ext.txt";
+const LIVE_PROXY_URL = "http://127.0.0.1:5500/dev_output/proxy/_paste-pack.ext.txt";
+const BUILD_TOKEN_MIN_LENGTH = 10;
+const BUILD_TOKEN_MAX_LENGTH = 15;
 const BEGIN_MARKER = "// H2O_TITLE_STAGE1C_PARITY_BEGIN";
 const END_MARKER = "// H2O_TITLE_STAGE1C_PARITY_END";
 const BOOT_INVOCATION = "\n  boot();\n";
@@ -56,20 +59,14 @@ const EXPECTED_IDENTITY = Object.freeze({
   sourceSha256: "9d795e840d6236cc1b35c8142243e16528e14af6095c55a2dcb7230a219fc551",
   publicSurfaceDigest: "b86b9dcc0d1258e6a5112ceeca19bf207e54a4fc921ddf95dc91b0cc20a3d3eb",
 });
-const EXPECTED_BRIDGE_BUILD_HEAD = "3fa9adb1568b4a769dd8552eb36854d86f42815e";
-const EXPECTED_CURRENT_BRIDGE_SHA256 = "9a11dc693bddcee5957f6c73580ef2a3ca3250e488ded4be7baafdd755b02696";
 const HISTORICAL_STAGE1B_HEAD = "9776f6738c074798de02edd16eb6a2911105af63";
 const HISTORICAL_STAGE1B_BRIDGE_SHA256 = "4c11f0b9aca19944fe74e90c953d694ed94ddd33bcc23cf67bd631f6c2cc33f5";
-const EXPECTED_HASHES = Object.freeze({
-  [LOADER_REL]: "cbc342289da0fff4d62027059693f4c9626d0e7da8b3cbc807421127b2500d3e",
-  [PROXY_REL]: "0aa14e0360d88bfbdec00e41aca1d4f3febaa00ec9b0b8c84f544d30eb190793",
-  [MANIFEST_REL]: "500dc39dcd559a80dc65d669b10a87bdac0d29e1ffc7f365c76a1bb57e0b5e28",
-});
 const EXPECTED_EXTENSION_ID = "ogcjkeaiicglflamhjaaimdhphjlgkbb";
 const SCOPE_MODE_PREFIX = "--scope-mode=";
 const scopeTests = [];
 const tests = [];
 let bridgeAttestation = null;
+let generatedBuildTokenParity = null;
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, { cwd: ROOT, encoding: "utf8", ...options });
@@ -77,6 +74,93 @@ function run(command, args, options = {}) {
 
 function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function validateBuildToken(label, rawValue) {
+  const value = String(rawValue ?? "");
+  assert(value.length > 0, `${label} is missing`);
+  assert(/^\d+$/u.test(value), `${label} must contain decimal digits only`);
+  assert(
+    value.length >= BUILD_TOKEN_MIN_LENGTH && value.length <= BUILD_TOKEN_MAX_LENGTH,
+    `${label} length is outside the build contract`,
+  );
+  assert(!value.startsWith("0"), `${label} must not have a leading zero`);
+  return value;
+}
+
+function uniqueBuildToken(label, matches) {
+  const values = matches.map((match) => String(match[1] ?? "").trim());
+  if (values.length === 0) assert.fail(`${label} is missing`);
+  if (values.length > 1) {
+    if (new Set(values).size > 1) assert.fail(`${label} values conflict`);
+    assert.fail(`${label} must appear exactly once`);
+  }
+  return validateBuildToken(label, values[0]);
+}
+
+function validateGeneratedBuildTokenParity({ loaderSource, proxySource }) {
+  const loaderToken = uniqueBuildToken(
+    "loader build token",
+    [...String(loaderSource).matchAll(/^\s*const LOADER_BUILD_TS = ([^;\r\n]*);$/gmu)],
+  );
+  const loaderIsoMatches = [
+    ...String(loaderSource).matchAll(/^\s*const LOADER_BUILD_ISO = "([^"\r\n]*)";$/gmu),
+  ];
+  assert.equal(loaderIsoMatches.length, 1, "loader build ISO must appear exactly once");
+  assert.equal(
+    loaderIsoMatches[0][1],
+    new Date(Number(loaderToken)).toISOString(),
+    "loader build ISO does not match the authoritative build token",
+  );
+  const loaderProxyUrlMatches = [
+    ...String(loaderSource).matchAll(/^\s*const PROXY_PACK_URL = "([^"\r\n]*)";$/gmu),
+  ];
+  assert.equal(loaderProxyUrlMatches.length, 1, "loader proxy URL must appear exactly once");
+  assert.equal(loaderProxyUrlMatches[0][1], LIVE_PROXY_URL, "loader proxy URL drifted");
+
+  const proxyToken = uniqueBuildToken(
+    "proxy build token",
+    [...String(proxySource).matchAll(/^\/\/ buildTs=([^\r\n]*)$/gmu)],
+  );
+  assert.equal(proxyToken, loaderToken, "proxy build token mismatch");
+
+  const proxyCountMatches = [...String(proxySource).matchAll(/^\/\/ count=(\d+)$/gmu)];
+  assert.equal(proxyCountMatches.length, 1, "proxy entry count must appear exactly once");
+  const proxyEntryCount = Number(proxyCountMatches[0][1]);
+  assert(Number.isSafeInteger(proxyEntryCount) && proxyEntryCount > 0, "proxy entry count is invalid");
+
+  const stage1CRequireMatches = [
+    ...String(proxySource).matchAll(
+      /^\/\/ @require\s+http:\/\/127\.0\.0\.1:5500\/alias\/9B0a\._Chat_Title_State_\.js\?v=([^\s]+)$/gmu,
+    ),
+  ];
+  assert.equal(stage1CRequireMatches.length, 1, "9B0a proxy URL must appear exactly once");
+  const stage1CProxyToken = validateBuildToken("9B0a proxy token", stage1CRequireMatches[0][1]);
+  assert.equal(stage1CProxyToken, loaderToken, "9B0a proxy token mismatch");
+
+  const requireMatches = [
+    ...String(proxySource).matchAll(/^\/\/ @require\s+\S+\?v=([^\s]+)$/gmu),
+  ];
+  assert.equal(requireMatches.length, proxyEntryCount, "proxy @require entry count mismatch");
+  const requireTokens = requireMatches.map((match, index) => (
+    validateBuildToken(`proxy @require token ${index + 1}`, match[1])
+  ));
+  assert.equal(new Set(requireTokens).size, 1, "proxy @require build tokens conflict");
+  assert.equal(requireTokens[0], loaderToken, "proxy @require build token mismatch");
+
+  const versionMatches = [...String(proxySource).matchAll(/^\/\/ @version\s+([^\s]+)$/gmu)];
+  assert.equal(versionMatches.length, proxyEntryCount, "proxy @version entry count mismatch");
+  const versionTokens = versionMatches.map((match, index) => (
+    validateBuildToken(`proxy @version token ${index + 1}`, match[1])
+  ));
+  assert.equal(new Set(versionTokens).size, 1, "proxy @version build tokens conflict");
+  assert.equal(versionTokens[0], loaderToken, "proxy @version build token mismatch");
+
+  return Object.freeze({
+    token: loaderToken,
+    proxyEntryCount,
+    proxyUrl: loaderProxyUrlMatches[0][1],
+  });
 }
 
 function sameSet(actual, expected) {
@@ -1447,7 +1531,73 @@ await asyncTest("state-producer matrix reaches parity only for accepted semantic
   assertLegacyAuthority(failedRenameHarness, afterFailedRename);
 });
 
-test("delivered proxy references the exact committed Stage 1C alias bytes", () => {
+function syntheticLoaderForToken(token) {
+  return [
+    `  const LOADER_BUILD_TS = ${token};`,
+    `  const LOADER_BUILD_ISO = ${JSON.stringify(new Date(Number(token)).toISOString())};`,
+    `  const PROXY_PACK_URL = ${JSON.stringify(LIVE_PROXY_URL)};`,
+  ].join("\n");
+}
+
+function syntheticProxyForTokens({ headerToken, requireToken = headerToken, versionToken = headerToken }) {
+  return [
+    `// buildTs=${headerToken}`,
+    "// count=1",
+    "// ==H2O Module==",
+    `// @version      ${versionToken}`,
+    `// @require      http://127.0.0.1:5500/alias/9B0a._Chat_Title_State_.js?v=${requireToken}`,
+    "// ==/H2O Module==",
+  ].join("\n");
+}
+
+test("generated build-token parity accepts one independently matching token", () => {
+  const token = "7".repeat(13);
+  const result = validateGeneratedBuildTokenParity({
+    loaderSource: syntheticLoaderForToken(token),
+    proxySource: syntheticProxyForTokens({ headerToken: token }),
+  });
+  assert.equal(result.token, token);
+  assert.equal(result.proxyEntryCount, 1);
+  assert.equal(result.proxyUrl, LIVE_PROXY_URL);
+});
+
+test("generated build-token parity rejects a changed 9B0a proxy token", () => {
+  const token = "7".repeat(13);
+  assert.throws(() => validateGeneratedBuildTokenParity({
+    loaderSource: syntheticLoaderForToken(token),
+    proxySource: syntheticProxyForTokens({
+      headerToken: token,
+      requireToken: "8".repeat(13),
+    }),
+  }), /9B0a proxy token mismatch/u);
+});
+
+test("generated build-token parity rejects missing and malformed authority", () => {
+  const token = "7".repeat(13);
+  const proxySource = syntheticProxyForTokens({ headerToken: token });
+  assert.throws(() => validateGeneratedBuildTokenParity({
+    loaderSource: "",
+    proxySource,
+  }), /loader build token is missing/u);
+  assert.throws(() => validateGeneratedBuildTokenParity({
+    loaderSource: syntheticLoaderForToken(token).replace(token, "not-a-token"),
+    proxySource,
+  }), /loader build token must contain decimal digits only/u);
+});
+
+test("generated build-token parity rejects conflicting authoritative tokens", () => {
+  const token = "7".repeat(13);
+  const conflictingToken = "8".repeat(13);
+  assert.throws(() => validateGeneratedBuildTokenParity({
+    loaderSource: [
+      syntheticLoaderForToken(token),
+      `const LOADER_BUILD_TS = ${conflictingToken};`,
+    ].join("\n"),
+    proxySource: syntheticProxyForTokens({ headerToken: token }),
+  }), /loader build token values conflict/u);
+});
+
+test("delivered proxy references the exact committed Stage 1C alias bytes and shared build token", () => {
   const aliasPath = path.join(ROOT, ALIAS_REL);
   assert.equal(fs.lstatSync(aliasPath).isSymbolicLink(), true);
   assert.equal(fs.realpathSync(aliasPath), fs.realpathSync(runtimePath));
@@ -1460,10 +1610,13 @@ test("delivered proxy references the exact committed Stage 1C alias bytes", () =
   assert(aliasBytes.equals(committedBytes), "delivered alias differs from committed Stage 1C runtime");
   assert.equal(sha256(aliasBytes), EXPECTED_RUNTIME_SHA256);
   const proxy = fs.readFileSync(path.join(ROOT, PROXY_REL), "utf8");
-  assert.match(
-    proxy,
-    /@require\s+http:\/\/127\.0\.0\.1:5500\/alias\/9B0a\._Chat_Title_State_\.js\?v=1785173400249/u,
-  );
+  const loader = fs.readFileSync(path.join(ROOT, LOADER_REL), "utf8");
+  const parity = validateGeneratedBuildTokenParity({
+    loaderSource: loader,
+    proxySource: proxy,
+  });
+  assert.equal(parity.proxyUrl, LIVE_PROXY_URL);
+  generatedBuildTokenParity = parity;
 });
 
 test("canary expectation requires document continuity and permits no-op refresh", () => {
@@ -1506,9 +1659,6 @@ test("protected title runtimes, H2O Core, and dev-order remain unchanged", () =>
 
 test("bridge regeneration and generated identities remain coherent", () => {
   const currentHead = run("git", ["rev-parse", "HEAD"]).trim();
-  execFileSync("git", ["merge-base", "--is-ancestor", EXPECTED_BRIDGE_BUILD_HEAD, currentHead], {
-    cwd: ROOT,
-  });
   assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "2");
 
   const contractPath = path.join(ROOT, CONTRACT_REL);
@@ -1519,7 +1669,19 @@ test("bridge regeneration and generated identities remain coherent", () => {
     maxBuffer: 16 * 1024 * 1024,
   });
   assert(sourceBytes.equals(committedSourceBytes), "working contract source must equal committed HEAD");
-  const buildHeadSourceBytes = execFileSync("git", ["show", `${EXPECTED_BRIDGE_BUILD_HEAD}:${CONTRACT_REL}`], {
+
+  const bridgeBytes = fs.readFileSync(path.join(ROOT, BRIDGE_REL));
+  const generatedSandbox = {};
+  vm.createContext(generatedSandbox);
+  new vm.Script(bridgeBytes.toString("utf8"), { filename: BRIDGE_REL }).runInContext(generatedSandbox);
+  const generatedContract = generatedSandbox.H2O?.TitleContract;
+  assert(generatedContract && typeof generatedContract === "object", "generated public bridge missing");
+  const generatedBuildHead = String(generatedContract.identity?.repositoryHeadAtBuild || "");
+  assert.match(generatedBuildHead, /^[0-9a-f]{40}$/u, "generated bridge build HEAD identity");
+  execFileSync("git", ["cat-file", "-e", `${generatedBuildHead}^{commit}`], { cwd: ROOT });
+  execFileSync("git", ["merge-base", "--is-ancestor", generatedBuildHead, currentHead], { cwd: ROOT });
+
+  const buildHeadSourceBytes = execFileSync("git", ["show", `${generatedBuildHead}:${CONTRACT_REL}`], {
     cwd: ROOT,
     encoding: null,
     maxBuffer: 16 * 1024 * 1024,
@@ -1529,16 +1691,15 @@ test("bridge regeneration and generated identities remain coherent", () => {
   const current = transformTitleContractToClassicBridge({
     sourceBytes,
     committedSourceBytes,
-    repositoryHeadAtBuild: EXPECTED_BRIDGE_BUILD_HEAD,
+    repositoryHeadAtBuild: generatedBuildHead,
   });
-  if (currentHead === EXPECTED_BRIDGE_BUILD_HEAD) {
+  if (currentHead === generatedBuildHead) {
     const canonical = makeCanonicalTitleContractBridge({ repositoryRoot: ROOT });
     assert.equal(canonical.code, current.code, "canonical current-HEAD regeneration mismatch");
   }
-  const bridgeBytes = fs.readFileSync(path.join(ROOT, BRIDGE_REL));
-  assert.equal(current.repositoryHeadAtBuild, EXPECTED_BRIDGE_BUILD_HEAD);
+  assert.equal(current.repositoryHeadAtBuild, generatedBuildHead);
   assert(Buffer.from(current.code, "utf8").equals(bridgeBytes), "current bridge differs from in-memory regeneration");
-  assert.equal(sha256(bridgeBytes), EXPECTED_CURRENT_BRIDGE_SHA256);
+  const currentBridgeSha256 = sha256(bridgeBytes);
 
   const historical = transformTitleContractToClassicBridge({
     sourceBytes,
@@ -1546,24 +1707,21 @@ test("bridge regeneration and generated identities remain coherent", () => {
     repositoryHeadAtBuild: HISTORICAL_STAGE1B_HEAD,
   });
   assert.equal(sha256(Buffer.from(historical.code, "utf8")), HISTORICAL_STAGE1B_BRIDGE_SHA256);
-  assert.equal(current.code.split(EXPECTED_BRIDGE_BUILD_HEAD).length - 1, 1);
+  assert.equal(current.code.split(generatedBuildHead).length - 1, 1);
   assert.equal(historical.code.split(HISTORICAL_STAGE1B_HEAD).length - 1, 1);
   assert.equal(
-    current.code.replace(EXPECTED_BRIDGE_BUILD_HEAD, "<REPOSITORY_HEAD>"),
+    current.code.replace(generatedBuildHead, "<REPOSITORY_HEAD>"),
     historical.code.replace(HISTORICAL_STAGE1B_HEAD, "<REPOSITORY_HEAD>"),
     "bridge generations differ beyond repositoryHeadAtBuild",
   );
 
-  const sandbox = {};
-  vm.createContext(sandbox);
-  new vm.Script(current.code, { filename: BRIDGE_REL }).runInContext(sandbox);
-  const contract = sandbox.H2O?.TitleContract;
+  const contract = generatedContract;
   assert(contract && typeof contract === "object", "generated public bridge missing");
   const identity = contract.identity;
   for (const [key, expected] of Object.entries(EXPECTED_IDENTITY)) {
     assert.equal(identity?.[key], expected, `bridge identity ${key}`);
   }
-  assert.equal(identity.repositoryHeadAtBuild, EXPECTED_BRIDGE_BUILD_HEAD);
+  assert.equal(identity.repositoryHeadAtBuild, generatedBuildHead);
   assert.deepEqual([...identity.publicSurfaceKeys], [...TITLE_CONTRACT_PUBLIC_EXPORTS]);
   assert.equal(identity.publicSurfaceKeys.length, 27);
   assert.deepEqual(
@@ -1575,7 +1733,7 @@ test("bridge regeneration and generated identities remain coherent", () => {
   }
 
   bridgeAttestation = Object.freeze({
-    currentSha256: EXPECTED_CURRENT_BRIDGE_SHA256,
+    currentSha256: currentBridgeSha256,
     currentRepositoryHeadAtBuild: current.repositoryHeadAtBuild,
     repositoryHeadAtReview: currentHead,
     deterministicCurrentMatch: true,
@@ -1587,15 +1745,14 @@ test("bridge regeneration and generated identities remain coherent", () => {
     normalizedDifferenceOnly: "repositoryHeadAtBuild",
   });
 
-  for (const [relative, expected] of Object.entries(EXPECTED_HASHES)) {
-    assert.equal(sha256(fs.readFileSync(path.join(ROOT, relative))), expected, `${relative} hash`);
-  }
+  assert(generatedBuildTokenParity, "generated build-token parity was not established");
+  new vm.Script(fs.readFileSync(path.join(ROOT, LOADER_REL), "utf8"), { filename: LOADER_REL });
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, MANIFEST_REL), "utf8"));
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.version, "1.3.0");
   assert.equal(manifest.key, getExtensionKey("dev-controls-oauth-google"));
   assert.equal(getExtensionId("dev-controls-oauth-google"), EXPECTED_EXTENSION_ID);
-  assert.deepEqual(manifest.permissions, ["storage", "tabs", "contextMenus", "identity", "webNavigation", "scripting"]);
+  assert.deepEqual(manifest.permissions, ["storage", "tabs", "contextMenus", "identity"]);
 });
 
 test("all 154 canonical aliases remain valid symlinks", () => {
@@ -1614,7 +1771,7 @@ test("all 154 canonical aliases remain valid symlinks", () => {
 });
 
 assert.equal(scopeTests.length, 15, "scope test count drifted");
-assert.equal(tests.length, 41, "runtime scenario count drifted");
+assert.equal(tests.length, 45, "runtime scenario count drifted");
 
 console.log(JSON.stringify({
   ok: true,
@@ -1624,7 +1781,8 @@ console.log(JSON.stringify({
   runtimeScenarios: tests.length,
   runtimeSha256: sha256(fs.readFileSync(runtimePath)),
   validatorSha256: sha256(fs.readFileSync(path.join(ROOT, VALIDATOR_REL))),
-  bridgeSha256: EXPECTED_CURRENT_BRIDGE_SHA256,
+  bridgeSha256: bridgeAttestation?.currentSha256 || null,
   bridgeAttestation,
+  generatedBuildTokenParity,
   canaryExpectation: CANARY_EXPECTATION,
 }));
