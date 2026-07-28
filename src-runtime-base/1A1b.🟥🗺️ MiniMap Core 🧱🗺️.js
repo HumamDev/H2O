@@ -10552,11 +10552,35 @@ function unbindChatPageDividerBridge() {
       const questionId = String(previousTurn.questionId || previousTurn.qId || '').trim();
       host = questionId ? sectionByStableId(questionId) : null;
     }
-    if (!host) return null;
-    const anchor = getChatPagePairAnchorNode(host);
-    const parent = anchor?.parentNode || null;
-    if (!parent) return null;
-    return { parent, before: anchor.nextSibling || null };
+    if (host) {
+      const anchor = getChatPagePairAnchorNode(host);
+      const parent = anchor?.parentNode || null;
+      if (parent) return { parent, before: anchor.nextSibling || null, mode: 'authority-previous-tail' };
+    }
+    // The preceding title-listed page may have no mounted tail wrapper after
+    // bootstrap. Its authority-owned divider/title stack is still a stable
+    // H2O unit, so Page N can be parked after that unit until the exact page
+    // start remounts. Page existence remains derived only from S.turnList.
+    let previousDivider = null;
+    try {
+      previousDivider = document.querySelector(
+        `.cgxui-chat-page-divider[data-page-num="${String(num - 1)}"],`
+        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num - 1)}"]`
+      );
+    } catch {}
+    if (!previousDivider?.parentNode) return null;
+    let unitTail = previousDivider;
+    try {
+      const stack = document.querySelector(
+        `[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(num - 1)}"]`
+      );
+      if (stack?.parentNode === previousDivider.parentNode) unitTail = stack;
+    } catch {}
+    return {
+      parent: previousDivider.parentNode,
+      before: unitTail.nextSibling || null,
+      mode: 'authority-previous-page-unit',
+    };
   }
 
   function forcePlaceDividerBeforeTurnWrapper(divider, pageNum) {
@@ -10714,6 +10738,7 @@ function unbindChatPageDividerBridge() {
             try {
               parking.parent.insertBefore(divider, parking.before || null);
               divider.setAttribute('data-h2o-divider-authority-parked', '1');
+              divider.setAttribute('data-h2o-divider-anchor-mode', parking.mode || 'authority-parked');
             } catch {
               continue;
             }

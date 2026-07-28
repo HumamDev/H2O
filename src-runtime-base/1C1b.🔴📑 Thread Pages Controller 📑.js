@@ -112,6 +112,8 @@
     titleListRepairTimer: 0,
     titleListRepairPages: new Set(),
     titleListRepairAllPages: false,
+    titleListHydrationRecoveryIdentity: '',
+    titleListHydrationRecoveryIds: new Set(),
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
@@ -2389,18 +2391,10 @@
       ? sectionByAnswerIdForTitleList(member.answerId, 'assistant', record)
       : null;
     let questionSection = sectionByAnswerIdForTitleList(member.questionId || record?.qId || identity, 'user', record);
-    // Persistent USER shells survive hydration and retain canonical prompt
-    // order. Use that order only to locate the already-canonical turn record;
-    // never infer page membership or an assistant shell from raw testid math,
-    // which shifts after a genuine NO ANSWER turn.
-    const turnNo = Math.max(0, Number(member.turnNo || record?.turnNo || 0) || 0);
-    if (!questionSection && turnNo > 0) {
-      try {
-        const questionSections = Array.from(document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]'))
-          .sort((a, b) => turnNumberOfSection(a) - turnNumberOfSection(b));
-        questionSection = questionSections[turnNo - 1] || null;
-      } catch {}
-    }
+    // Never recover a missing exact qId by indexing the currently mounted
+    // USER subset. With Page 1 title-listed, the first mounted USER can be
+    // canonical order 26; treating it as order 1 leaks Page 1 ownership onto
+    // Page 2. Hydration must restore the exact identity instead.
     // Adjacency is a placement fallback only. Canonical membership and the
     // page/turn number still come from turnRuntime; visible order never
     // decides which page owns the pair.
@@ -2663,6 +2657,60 @@
     )).map((value) => String(value || '').trim()).filter(Boolean)));
   }
 
+  function recoverMissingTitleListPageMembers(normalPages = [], model = null, mountGuard = null) {
+    const pageModel = model?.pages ? model : buildTitleListPresentationPageModel();
+    const identity = JSON.stringify([
+      String(pageModel?.source || ''),
+      Math.max(0, Number(pageModel?.count || 0) || 0),
+      Math.max(0, Number(pageModel?.pageCount || 0) || 0),
+      (Array.isArray(normalPages) ? normalPages : []).map((page) => Number(page?.pageNo || 0)),
+      (Array.isArray(normalPages) ? normalPages : []).flatMap((page) => (
+        (Array.isArray(page?.turnRecords) ? page.turnRecords : []).map((member) => (
+          String(member?.questionId || member?.answerId || member?.turnId || '').trim()
+        ))
+      )),
+    ]);
+    if (S.titleListHydrationRecoveryIdentity !== identity) {
+      S.titleListHydrationRecoveryIdentity = identity;
+      S.titleListHydrationRecoveryIds.clear();
+    }
+    const um = UM_ADAPTER();
+    const canRecover = String(mountGuard?.status || '') === 'guarded-unchanged';
+    let represented = 0;
+    let missing = 0;
+    let requested = 0;
+    const missingOrders = [];
+    for (const page of Array.isArray(normalPages) ? normalPages : []) {
+      for (const member of Array.isArray(page?.turnRecords) ? page.turnRecords : []) {
+        const key = String(member?.questionId || member?.answerId || member?.turnId || '').trim();
+        if (titleListMemberMateriallyPresent(member)) {
+          represented += 1;
+          if (key) S.titleListHydrationRecoveryIds.delete(key);
+          continue;
+        }
+        missing += 1;
+        missingOrders.push(Math.max(0, Number(member?.turnNo || 0) || 0));
+        if (!canRecover || !key || S.titleListHydrationRecoveryIds.has(key)) continue;
+        let accepted = false;
+        try { accepted = um?.requestMountPairByUid?.(key, 'title-list-adjacent-page-recovery') === true; } catch {}
+        if (!accepted) {
+          try { accepted = um?.requestMountByUid?.(key, 'title-list-adjacent-page-recovery') === true; } catch {}
+        }
+        if (accepted) {
+          S.titleListHydrationRecoveryIds.add(key);
+          requested += 1;
+        }
+      }
+    }
+    return {
+      represented,
+      missing,
+      missingOrders,
+      requested,
+      pending: S.titleListHydrationRecoveryIds.size,
+    };
+  }
+
   // Keep only the immediately adjacent, uncollapsed page(s) materialized.
   // Pagination temporarily restores its already-captured full flow; Unmount
   // then guards just those adjacent page identities. Farther pages remain
@@ -2675,6 +2723,9 @@
       .map((value) => Math.max(1, Number(value || 0) || 0))
       .filter((pageNo) => pageNo <= model.pageCount)
       .sort((a, b) => a - b);
+    const stampCleanup = typeof reconcileTitleListFlowHiddenArtifacts === 'function'
+      ? reconcileTitleListFlowHiddenArtifacts(model, new Set(activePages))
+      : { scanned: 0, kept: 0, released: 0 };
     const pg = PG_ADAPTER();
     const um = UM_ADAPTER();
     if (!activePages.length || !model.coherent) {
@@ -2700,6 +2751,7 @@
         normalPages: [],
         pagination,
         mountGuard,
+        stampCleanup,
         timestamps,
       };
     }
@@ -2717,6 +2769,9 @@
     const guardIds = titleListPageHydrationIds(normalPages);
     let mountGuard = null;
     try { mountGuard = um?.setPresentationMountGuard?.(TITLE_LIST_PAGE_HYDRATION_OWNER, guardIds); } catch {}
+    const materialization = typeof recoverMissingTitleListPageMembers === 'function'
+      ? recoverMissingTitleListPageMembers(normalPages, model, mountGuard)
+      : { represented: 0, missing: 0, missingOrders: [], requested: 0, pending: 0 };
 
     // The pagination hold restores master turn wrappers synchronously and the
     // mount guard restores any H2O-soft-unmounted bodies synchronously. Divider
@@ -2743,6 +2798,8 @@
       guardedIds: guardIds.length,
       pagination,
       mountGuard,
+      materialization,
+      stampCleanup,
       timestamps,
     };
   }
@@ -3672,11 +3729,6 @@
       const sectionRecord = turnRecordForTitleListIdentity(sectionId);
       if (sectionRecord && Number(sectionRecord.turnNo || 0) === Number(member.turnNo || 0)) out.add(section);
     }
-    if (wantedRole === 'user' && member.turnNo > 0) {
-      const sorted = sections.slice().sort((a, b) => turnNumberOfSection(a) - turnNumberOfSection(b));
-      const fallback = sorted[member.turnNo - 1] || null;
-      if (fallback) out.add(fallback);
-    }
     return Array.from(out).filter((section) => section?.isConnected);
   }
 
@@ -3696,15 +3748,160 @@
     return Array.from(out).filter((anchor) => anchor?.isConnected);
   }
 
-  function setTitleListFlowAnchorHidden(anchor = null, pageNum = 0, hidden = false) {
+  function clearTitleListFlowHiddenNode(anchor = null) {
+    if (!anchor?.style) return false;
+    const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
+    const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
+    try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
+    try { anchor.style.removeProperty('display'); } catch {}
+    try { anchor.style.removeProperty('--h2o-title-inline-display'); } catch {}
+    return !!(hadStamp || hadInlineHide);
+  }
+
+  function buildTitleListFlowOwnershipSnapshot(modelInput = null) {
+    const model = modelInput?.pages ? modelInput : buildTitleListPresentationPageModel();
+    const identityToPage = new Map();
+    const orderToPage = new Map();
+    for (const page of Array.isArray(model?.pages) ? model.pages : []) {
+      const pageNo = Math.max(1, Number(page?.pageNo || 0) || 0);
+      for (const member of Array.isArray(page?.turnRecords) ? page.turnRecords : []) {
+        const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+        if (order) orderToPage.set(order, pageNo);
+        for (const value of [
+          member?.id,
+          member?.questionId,
+          member?.answerId,
+          member?.turnId,
+          ...(Array.isArray(member?.aliasIds) ? member.aliasIds : []),
+        ]) {
+          const identity = String(value || '').trim();
+          if (identity) identityToPage.set(identity, pageNo);
+        }
+      }
+    }
+    return { model, identityToPage, orderToPage };
+  }
+
+  function classifyTitleListFlowOwnership(node = null, snapshotInput = null) {
+    if (!node) return { kind: 'neutral', pageNo: 0, pages: [], sections: 0, unknown: 0 };
+    const snapshot = snapshotInput?.identityToPage
+      ? snapshotInput
+      : buildTitleListFlowOwnershipSnapshot();
+    if (node.getAttribute?.('data-h2o-native-ts') === '1') {
+      const order = Math.max(0, Number(titleListAdjacentTurnOrders(node)[0] || 0) || 0);
+      const pageNo = Math.max(0, Number(snapshot.orderToPage.get(order) || 0) || 0);
+      return pageNo
+        ? { kind: 'owned', pageNo, pages: [pageNo], sections: 0, unknown: 0, timestamp: true }
+        : { kind: 'foreign', pageNo: 0, pages: [], sections: 0, unknown: 1, timestamp: true };
+    }
+    const sections = [];
+    try {
+      if (node.matches?.(TURN_HOST_SEL)) sections.push(node);
+      for (const section of Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || [])) {
+        if (!sections.includes(section)) sections.push(section);
+      }
+    } catch {}
+    if (!sections.length) return { kind: 'neutral', pageNo: 0, pages: [], sections: 0, unknown: 0 };
+    const pages = new Set();
+    let unknown = 0;
+    for (const section of sections) {
+      const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+      const pageNo = identity ? Math.max(0, Number(snapshot.identityToPage.get(identity) || 0) || 0) : 0;
+      if (pageNo) pages.add(pageNo);
+      else unknown += 1;
+    }
+    const pageList = Array.from(pages).sort((a, b) => a - b);
+    if (pageList.length > 1 || (pageList.length && unknown)) {
+      return { kind: 'mixed', pageNo: 0, pages: pageList, sections: sections.length, unknown };
+    }
+    if (pageList.length === 1) {
+      return { kind: 'owned', pageNo: pageList[0], pages: pageList, sections: sections.length, unknown: 0 };
+    }
+    return { kind: 'foreign', pageNo: 0, pages: [], sections: sections.length, unknown };
+  }
+
+  function reconcileTitleListFlowHiddenArtifacts(modelInput = null, activePagesInput = null) {
+    const snapshot = buildTitleListFlowOwnershipSnapshot(modelInput);
+    const activePages = activePagesInput instanceof Set
+      ? activePagesInput
+      : new Set(Array.from(readTitleListPages(resolveChatId())));
+    let scanned = 0;
+    let kept = 0;
+    let released = 0;
+    let mixedReleased = 0;
+    let foreignReleased = 0;
+    let wrongOwnerReleased = 0;
+    let nodes = [];
+    try { nodes = Array.from(document.querySelectorAll(`[${ATTR_TITLE_LIST_FLOW_HIDDEN}]`)); } catch {}
+    for (const node of nodes) {
+      scanned += 1;
+      const markerPage = Math.max(0, Number(node.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+      const ownership = classifyTitleListFlowOwnership(node, snapshot);
+      const valid = markerPage > 0
+        && activePages.has(markerPage)
+        && ownership.kind === 'owned'
+        && ownership.pageNo === markerPage;
+      if (valid) {
+        kept += 1;
+        continue;
+      }
+      if (ownership.kind === 'mixed') mixedReleased += 1;
+      else if (ownership.kind === 'foreign' || ownership.kind === 'neutral') foreignReleased += 1;
+      else if (ownership.pageNo !== markerPage) wrongOwnerReleased += 1;
+      if (clearTitleListFlowHiddenNode(node)) released += 1;
+    }
+    return {
+      scanned,
+      kept,
+      released,
+      mixedReleased,
+      foreignReleased,
+      wrongOwnerReleased,
+      activePages: Array.from(activePages).sort((a, b) => a - b),
+      snapshot,
+    };
+  }
+
+  function setTitleListFlowAnchorHidden(anchor = null, pageNum = 0, hidden = false, opts = {}) {
     if (!anchor?.style) return false;
     const num = Math.max(1, Number(pageNum || 0) || 0);
-    const existingOwner = Math.max(0, Number(anchor.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+    let existingOwner = Math.max(0, Number(anchor.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+    const clearOwnedStamp = () => {
+      if (typeof clearTitleListFlowHiddenNode === 'function') return clearTitleListFlowHiddenNode(anchor);
+      const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
+      const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
+      try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
+      try { anchor.style.removeProperty('display'); } catch {}
+      return !!(hadStamp || hadInlineHide);
+    };
     if (hidden) {
-      // One mounted artifact can belong to only one page in one coherent
-      // presentation snapshot. Never let a later page projection steal an
-      // existing page's visibility stamp.
-      if (existingOwner && existingOwner !== num) return false;
+      if (
+        typeof buildTitleListFlowOwnershipSnapshot === 'function'
+        && typeof classifyTitleListFlowOwnership === 'function'
+      ) {
+        const snapshot = opts?.ownershipSnapshot?.identityToPage
+          ? opts.ownershipSnapshot
+          : buildTitleListFlowOwnershipSnapshot();
+        const ownership = classifyTitleListFlowOwnership(anchor, snapshot);
+        const stampAllowed = ownership.kind === 'owned'
+          ? ownership.pageNo === num
+          : ownership.kind === 'neutral' && opts?.allowNeutral === true;
+        if (!stampAllowed) {
+          let existingOwnerStillValid = false;
+          if (existingOwner && ownership.kind === 'owned' && ownership.pageNo === existingOwner) {
+            try {
+              existingOwnerStillValid = typeof readTitleListPages !== 'function'
+                || readTitleListPages(resolveChatId()).has(existingOwner);
+            } catch {}
+          }
+          if (existingOwner && !existingOwnerStillValid) clearOwnedStamp();
+          return false;
+        }
+      }
+      if (existingOwner && existingOwner !== num) {
+        clearOwnedStamp();
+        existingOwner = 0;
+      }
       // A wrapper still inline-adopted in the stack must return to canonical
       // flow before the page-level hide projection is applied.
       if (anchor.hasAttribute?.(ATTR_TITLE_STACK_INLINE)) restoreInlineTurnToFlow(anchor);
@@ -3719,11 +3916,7 @@
       return !alreadyStamped || !alreadyHidden;
     }
     if (existingOwner && existingOwner !== num) return false;
-    const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
-    const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
-    try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
-    try { anchor.style.removeProperty('display'); } catch {}
-    return !!(hadStamp || hadInlineHide);
+    return clearOwnedStamp();
   }
 
   function syncTitleOnlyModeRootAttribute(chatId = '') {
@@ -3912,6 +4105,27 @@
   function applyAtomicTitleOnlyPageProjection(pageNum = 0, chatId = '', members = [], container = null) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
+    const pageModel = typeof buildTitleListPresentationPageModel === 'function'
+      ? buildTitleListPresentationPageModel()
+      : null;
+    const cleanup = (
+      typeof reconcileTitleListFlowHiddenArtifacts === 'function'
+      && typeof readTitleListPages === 'function'
+    )
+      ? reconcileTitleListFlowHiddenArtifacts(
+        pageModel,
+        new Set(Array.from(readTitleListPages(id)))
+      )
+      : {
+        scanned: 0,
+        kept: 0,
+        released: 0,
+        mixedReleased: 0,
+        foreignReleased: 0,
+        wrongOwnerReleased: 0,
+        snapshot: null,
+      };
+    const ownershipSnapshot = cleanup.snapshot;
     let divider = null;
     try {
       divider = document.querySelector(
@@ -4021,7 +4235,7 @@
             projectOwnedChildren(node);
             continue;
           }
-          if (setTitleListFlowAnchorHidden(node, num, true)) hidden += 1;
+          if (setTitleListFlowAnchorHidden(node, num, true, { ownershipSnapshot })) hidden += 1;
           continue;
         }
         // Unknown host-owned siblings (quote cards, footer/action rows, etc.)
@@ -4034,7 +4248,10 @@
           && index < nextBoundary
           && !intersectsProtectedAnchor(node)
         ) {
-          if (setTitleListFlowAnchorHidden(node, num, true)) hidden += 1;
+          if (setTitleListFlowAnchorHidden(node, num, true, {
+            ownershipSnapshot,
+            allowNeutral: true,
+          })) hidden += 1;
         }
       }
     };
@@ -4045,7 +4262,7 @@
       for (const member of members) {
         for (const anchor of memberAllFlowAnchors(member)) {
           if (classifyArtifact(anchor).kind !== 'owned' || intersectsProtectedAnchor(anchor)) continue;
-          if (setTitleListFlowAnchorHidden(anchor, num, true)) hidden += 1;
+          if (setTitleListFlowAnchorHidden(anchor, num, true, { ownershipSnapshot })) hidden += 1;
         }
       }
     }
@@ -4058,6 +4275,14 @@
       source: readTitleListPresentationAuthority().source,
       hidden,
       nativeTimestampsHidden,
+      cleanup: {
+        scanned: cleanup.scanned,
+        kept: cleanup.kept,
+        released: cleanup.released,
+        mixedReleased: cleanup.mixedReleased,
+        foreignReleased: cleanup.foreignReleased,
+        wrongOwnerReleased: cleanup.wrongOwnerReleased,
+      },
       activePages,
     };
   }
@@ -4160,7 +4385,7 @@
       // CSS override makes it visible here; if ChatGPT reparents this same
       // node back to normal flow, the global stamped rule hides it instantly
       // until the canonical repair re-adopts it.
-      try { anchor.setAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN, String(pageNum)); } catch {}
+      setTitleListFlowAnchorHidden(anchor, pageNum, true);
       try { anchor.style.removeProperty('display'); } catch {}
       adopted.push(anchor);
     }
@@ -4492,6 +4717,14 @@
         source: authority.source,
       };
     }
+    // Clean-before-project: every repair/bootstrap pass reclassifies all
+    // temporary stamps against the current authority before any member row
+    // can write a new one. This releases stale Page 1 stamps from Page 2
+    // sections and wrappers that became mixed during native remount.
+    reconcileTitleListFlowHiddenArtifacts(
+      buildTitleListPresentationPageModel(),
+      new Set(Array.from(readTitleListPages(id)))
+    );
     let divider = null;
     try {
       divider = document.querySelector(`.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`);
@@ -4740,6 +4973,10 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     if (!isTitleListActive(num, id)) return { ok: true, status: 'inactive', hidden: 0 };
+    const cleanup = reconcileTitleListFlowHiddenArtifacts(
+      buildTitleListPresentationPageModel(),
+      new Set(Array.from(readTitleListPages(id)))
+    );
     const container = getSyntheticTitleListContainer(num, id);
     let hidden = 0;
     for (const member of purePresentationPageMemberDetails(num)) {
@@ -4748,7 +4985,17 @@
         && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
       if (!explicitlyOpened && setTitleListMemberFlowHidden(member, num, true)) hidden += 1;
     }
-    return { ok: true, status: 'ok', hidden };
+    return {
+      ok: true,
+      status: 'ok',
+      hidden,
+      cleanup: {
+        scanned: cleanup.scanned,
+        released: cleanup.released,
+        mixedReleased: cleanup.mixedReleased,
+        wrongOwnerReleased: cleanup.wrongOwnerReleased,
+      },
+    };
   }
 
   function applyTitleListVisuals(pageNum = 0, opts = {}) {
@@ -6858,8 +7105,14 @@
   function syncActiveTitleListsNow(reason = 'presentation-updated') {
     const chatId = resolveChatId();
     const activePages = Array.from(readTitleListPages(chatId)).sort((a, b) => a - b);
+    const stampCleanup = reconcileTitleListFlowHiddenArtifacts(
+      buildTitleListPresentationPageModel(),
+      new Set(activePages)
+    );
     const hydration = reconcileTitleListPageHydration(chatId, { reason });
-    if (!activePages.length) return { ok: true, status: 'inactive', pages: 0, results: [], hydration };
+    if (!activePages.length) {
+      return { ok: true, status: 'inactive', pages: 0, results: [], hydration, stampCleanup };
+    }
     const results = [];
     for (const pageNum of activePages) {
       try {
@@ -6876,6 +7129,7 @@
       pages: activePages.length,
       results,
       hydration,
+      stampCleanup,
     };
   }
 
@@ -7257,6 +7511,8 @@
     }
     S.titleListRepairPages.clear();
     S.titleListRepairAllPages = false;
+    S.titleListHydrationRecoveryIdentity = '';
+    S.titleListHydrationRecoveryIds.clear();
     for (const campaign of S.dotExpandCampaigns.values()) {
       if (campaign?.timer) { try { W.clearTimeout(campaign.timer); } catch {} }
     }
