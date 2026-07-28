@@ -53,6 +53,7 @@
   const TAB_OTHER = "other";
   const COMPLETE_TURN_INDEX_REFRESH_ACTION_ID = "minimap.complete-turn-index.refresh";
   const COMPLETE_TURN_INDEX_STATE_EVENT = "evt:h2o:complete-turn-index:state";
+  const CORE_TURN_UPDATED_EVENT = "h2o:turn:updated";
 
   const DEFAULT_TABS = [
     { id: TAB_HIGHLIGHTS, label: "Highlights", order: 100 },
@@ -197,13 +198,51 @@
     try { return runtime.getCompleteTurnIndexProjectionStatus() || null; } catch { return null; }
   }
 
+  function sideActionsEffectivePresentationStatus() {
+    const runtime = sideActionsCompleteTurnIndexRuntime();
+    const getter = runtime?.[["getEffective", "PresentationStatus"].join("")];
+    if (typeof getter !== "function") return null;
+    try { return getter.call(runtime) || null; } catch { return null; }
+  }
+
+  function sideActionsSelectedPathPresentationStatus(
+    canonicalStatus = sideActionsCompleteTurnIndexStatus(),
+    effectiveStatus = sideActionsEffectivePresentationStatus(),
+  ) {
+    const effectiveCount = Number(effectiveStatus?.count);
+    const canonicalCount = Number(canonicalStatus?.completeCount);
+    if (
+      effectiveStatus?.overlayActive !== true
+      || effectiveStatus?.source !== "selected-path-overlay"
+      || !Number.isInteger(effectiveCount)
+      || effectiveCount <= 0
+      || !Number.isInteger(canonicalCount)
+      || canonicalCount <= 0
+      || effectiveCount === canonicalCount
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      title: "Viewing selected branch",
+      detail: `${effectiveCount} turns · canonical conversation has ${canonicalCount} turns`,
+      effectiveCount,
+      canonicalCount,
+    });
+  }
+
   function sideActionsCompleteTurnIndexEnabled() {
     return sideActionsCompleteTurnIndexStatus()?.enabled === true;
   }
 
-  function sideActionsApplyMiniMapBranchStaleIndicator(el, status = sideActionsCompleteTurnIndexStatus()) {
+  function sideActionsApplyMiniMapBranchStaleIndicator(
+    el,
+    status = sideActionsCompleteTurnIndexStatus(),
+    selectedPathStatus = null,
+  ) {
     if (!el) return false;
-    const stale = status?.enabled === true && status?.branchSelectionStale === true;
+    const stale = !selectedPathStatus
+      && status?.enabled === true
+      && status?.branchSelectionStale === true;
     const indicator = el.querySelector?.(".sa-branch-stale");
     if (indicator) {
       indicator.textContent = "Branch changed — refresh MiniMap";
@@ -226,6 +265,21 @@
     el.setAttribute?.("aria-busy", status === "refreshing" ? "true" : "false");
   }
 
+  function sideActionsApplyMiniMapSelectedPathStatus(el, selectedPathStatus = null) {
+    if (!el) return false;
+    const detail = el.querySelector?.(".sa-selected-path-detail");
+    const active = !!selectedPathStatus;
+    if (detail) {
+      detail.textContent = active ? selectedPathStatus.detail : "";
+      detail.hidden = !active;
+    }
+    el.dataset.selectedPathPresentation = active ? "true" : "false";
+    if (active) {
+      sideActionsSetMiniMapRefreshFeedback(el, selectedPathStatus.title, "selected-path");
+    }
+    return active;
+  }
+
   async function sideActionsRefreshCompleteTurnIndex({ el } = {}) {
     const runtime = sideActionsCompleteTurnIndexRuntime();
     if (typeof runtime?.refreshCompleteTurnIndexProjection !== "function" || !sideActionsCompleteTurnIndexEnabled()) {
@@ -240,14 +294,28 @@
       const status = String(result?.status || currentStatus?.status || "");
       const failed = status.includes("failed") || status.includes("unavailable");
       const branchStale = currentStatus?.branchSelectionStale === true;
-      sideActionsSetMiniMapRefreshFeedback(
-        el,
-        failed ? "Refresh failed safely" : (branchStale ? "Branch still differs" : "MiniMap refreshed"),
-        failed ? "failed" : (branchStale ? "stale" : "refreshed"),
-      );
-      sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus);
+      const selectedPathStatus = !failed
+        && typeof sideActionsSelectedPathPresentationStatus === "function"
+        ? sideActionsSelectedPathPresentationStatus(currentStatus)
+        : null;
+      if (selectedPathStatus && typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(el, selectedPathStatus);
+      } else {
+        if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+          sideActionsApplyMiniMapSelectedPathStatus(el, null);
+        }
+        sideActionsSetMiniMapRefreshFeedback(
+          el,
+          failed ? "Refresh failed safely" : (branchStale ? "Branch still differs" : "MiniMap refreshed"),
+          failed ? "failed" : (branchStale ? "stale" : "refreshed"),
+        );
+      }
+      sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus, selectedPathStatus);
       return result;
     } catch {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(el, null);
+      }
       sideActionsSetMiniMapRefreshFeedback(el, "Refresh failed safely", "failed");
       sideActionsApplyMiniMapBranchStaleIndicator(el);
       return { ok: false, errorCode: "complete-index-refresh-failed" };
@@ -276,8 +344,23 @@
     if (!rec?.node) return;
     const status = sideActionsCompleteTurnIndexStatus();
     rec.node.disabled = status?.enabled !== true;
-    const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status);
-    if (stale && rec.node.dataset.refreshStatus !== "refreshing") {
+    const selectedPathStatus = typeof sideActionsSelectedPathPresentationStatus === "function"
+      ? sideActionsSelectedPathPresentationStatus(status)
+      : null;
+    const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status, selectedPathStatus);
+    if (selectedPathStatus && rec.node.dataset.refreshStatus !== "refreshing") {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(rec.node, selectedPathStatus);
+      }
+    } else {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(rec.node, null);
+      }
+      if (rec.node.dataset.refreshStatus === "selected-path") {
+        sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", stale ? "stale" : "idle");
+      }
+    }
+    if (stale && rec.node.dataset.refreshStatus !== "refreshing" && rec.node.dataset.refreshStatus !== "failed") {
       sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "stale");
     } else if (!stale && rec.node.dataset.refreshStatus === "stale") {
       sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "idle");
@@ -551,6 +634,13 @@
   white-space:normal;
 }
 .h2o-side-actions-action .sa-branch-stale[hidden]{display:none}
+.h2o-side-actions-action .sa-selected-path-detail{
+  flex:1 0 100%;
+  color:var(--h2o-side-actions-gold);
+  font:600 10px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;
+  white-space:normal;
+}
+.h2o-side-actions-action .sa-selected-path-detail[hidden]{display:none}
 .h2o-side-actions-action.has-branch-stale{flex-wrap:wrap}
 `;
     D.head?.appendChild(style);
@@ -930,7 +1020,7 @@
     btn.className = "h2o-side-actions-action";
     if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) btn.classList.add("has-branch-stale");
     btn.innerHTML = rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID
-      ? `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span><span id="h2o-side-actions-minimap-branch-stale" class="sa-branch-stale" role="status" aria-live="polite" hidden>Branch changed — refresh MiniMap</span>`
+      ? `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span><span id="h2o-side-actions-minimap-branch-stale" class="sa-branch-stale" role="status" aria-live="polite" hidden>Branch changed — refresh MiniMap</span><span class="sa-selected-path-detail" role="status" aria-live="polite" hidden></span>`
       : `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span>`;
     btn.addEventListener("click", (ev) => {
       if (btn.disabled) return;
@@ -970,7 +1060,10 @@
     const labelEl = btn.querySelector(".sa-label");
     if (labelEl) labelEl.textContent = label;
     if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) {
-      sideActionsApplyMiniMapBranchStaleIndicator(btn);
+      const status = sideActionsCompleteTurnIndexStatus();
+      const selectedPathStatus = sideActionsSelectedPathPresentationStatus(status);
+      sideActionsApplyMiniMapBranchStaleIndicator(btn, status, selectedPathStatus);
+      sideActionsApplyMiniMapSelectedPathStatus(btn, selectedPathStatus);
     }
   }
 
@@ -1181,6 +1274,11 @@
     }, { passive: true });
     W.addEventListener(
       COMPLETE_TURN_INDEX_STATE_EVENT,
+      sideActionsSyncCompleteTurnIndexRefreshAvailability,
+      { passive: true },
+    );
+    W.addEventListener(
+      CORE_TURN_UPDATED_EVENT,
       sideActionsSyncCompleteTurnIndexRefreshAvailability,
       { passive: true },
     );
