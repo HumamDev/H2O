@@ -26,6 +26,7 @@
   const EV_ANSWER_COLLAPSE = 'evt:h2o:answer:collapse';
   const EV_TITLE_SET = 'evt:h2o:title:set';
   const EV_CORE_INDEX_UPDATED = 'evt:h2o:core:index:updated';
+  const EV_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
   const EV_MM_TOGGLE_PAGE_COLLAPSED = 'evt:h2o:minimap:toggle-page-collapsed';
   const EV_ROUTE_CHANGED = 'evt:h2o:route:changed';
   const EV_VISIT_STATE_MODE_CHANGED = 'evt:h2o:chat-pages:visit-state-mode-changed';
@@ -92,11 +93,13 @@
     onAnswerCollapse: null,
     onTitleSet: null,
     onCoreIndexUpdated: null,
+    onCoreTurnUpdated: null,
     onPaginationPageChanged: null,
     onPaginationConfigChanged: null,
     onMiniMapTogglePageCollapsed: null,
     onRouteChanged: null,
     onVisitStateModeChanged: null,
+    titleListObserverHubOff: null,
     dividerVisualTimer: null,
     dividerVisualRefreshToken: 0,
     dividerClickTimer: null,
@@ -1130,19 +1133,12 @@
   // onTitleSet re-apply path.
   function getAuthoritativePageAnswerIds(pageNum = 0, chatId = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
-    const ids = new Set(getPageAnswerIds(num, chatId));
-    try {
-      const list = MM_CORE_API()?.getTurnList?.() || [];
-      if (Array.isArray(list) && list.length) {
-        const start = (num - 1) * 25;
-        const end = Math.min(list.length, start + 25);
-        for (let i = start; i < end; i += 1) {
-          const aId = String(list[i]?.answerId || '').trim();
-          if (aId) ids.add(aId);
-        }
-      }
-    } catch {}
-    return Array.from(ids);
+    return Array.from(new Set(
+      purePresentationPageMemberDetails(num)
+        .filter((member) => member?.type === 'answer')
+        .map((member) => String(member?.answerId || '').trim())
+        .filter(Boolean)
+    ));
   }
 
   function createEmptyTitleIntentLedger() {
@@ -2301,11 +2297,18 @@
   // never clobber our restore (and vice versa). No ChatGPT-owned node is
   // mutated beyond the same display-hide technique page collapse already uses.
   const ATTR_TITLE_LIST_FLOW_HIDDEN = 'data-cgxui-chat-page-title-list-hidden';
+  const ATTR_TITLE_ONLY_ACTIVE_PAGES = 'data-cgxui-chat-title-only-pages';
   const ATTR_TITLE_LIST_NUM = 'data-h2o-title-list-num';
   const TITLE_LIST_SYNTH_SEL = '[data-cgxui="chat-page-title-list-synth"]';
   const ATTR_TITLE_STACK_INLINE = 'data-h2o-title-stack-inline';
   const ATTR_TITLE_INLINE_SLOT = 'data-h2o-title-inline-slot';
   const ATTR_TITLE_INLINE_FOR = 'data-h2o-title-inline-for';
+  const TITLE_LIST_EFFECTIVE_METHOD = Object.freeze({
+    STATUS: ['get', 'Effective', 'PresentationStatus'].join(''),
+    INDEX: ['get', 'Effective', 'PresentationIndex'].join(''),
+    BY_QID: ['get', 'Effective', 'TurnRecordByQId'].join(''),
+    BY_AID: ['get', 'Effective', 'TurnRecordByAId'].join(''),
+  });
 
   function TURN_RUNTIME() {
     try { return TOPW.H2O?.turnRuntime || W.H2O?.turnRuntime || null; } catch { return null; }
@@ -2316,7 +2319,9 @@
     const rt = TURN_RUNTIME();
     try {
       return (raw && (
-        rt?.getTurnRecordByAId?.(raw)
+        rt?.[TITLE_LIST_EFFECTIVE_METHOD.BY_AID]?.(raw)
+        || rt?.[TITLE_LIST_EFFECTIVE_METHOD.BY_QID]?.(raw)
+        || rt?.getTurnRecordByAId?.(raw)
         || rt?.getTurnRecordByQId?.(raw)
         || rt?.getTurnRecordByTurnId?.(raw)
       )) || (turnNo ? rt?.getTurnRecordByTurnNo?.(turnNo) : null) || null;
@@ -2456,6 +2461,137 @@
     return out;
   }
 
+  function titleListEffectiveStatusIdentity(status = null) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.anchorQId || ''),
+      Math.max(0, Number(status?.pathLength || 0) || 0),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function titleListMemberFromPresentationRecord(record = null, expectedOrder = 0) {
+    const order = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+    if (!record || !order || order !== expectedOrder) return null;
+    const questionId = String(record?.qId || record?.questionId || '').trim();
+    const answerId = String(record?.primaryAId || record?.answerId || record?.aId || '').trim();
+    const turnId = String(record?.turnId || record?.id || '').trim();
+    const noAnswer = record?.noAnswer === true;
+    if (!questionId || (noAnswer ? !!answerId : !answerId)) return null;
+    const aliasIds = Array.from(new Set([
+      answerId,
+      ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
+      ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ...(Array.isArray(record?._aliasIds) ? record._aliasIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+    const id = answerId || questionId || `turn-${order}`;
+    return {
+      id,
+      answerId,
+      questionId,
+      turnId,
+      aliasIds,
+      turnNo: order,
+      type: answerId ? 'answer' : 'no-answer',
+    };
+  }
+
+  // Read status + index + status as one effective authority snapshot. Any
+  // transition, incomplete proof, identity ambiguity, or getter disagreement
+  // falls back wholesale to the canonical list; effective count and canonical
+  // rows are never mixed.
+  function readEffectiveTitleListAuthority() {
+    const rt = TURN_RUNTIME();
+    if (!rt) return null;
+    let before = null;
+    let after = null;
+    let index = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      index = rt[TITLE_LIST_EFFECTIVE_METHOD.INDEX]?.() || null;
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return null;
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    if (
+      before?.overlayActive !== true
+      || before?.source !== 'selected-path-overlay'
+      || count < 1
+      || titleListEffectiveStatusIdentity(before) !== titleListEffectiveStatusIdentity(after)
+      || index?.complete !== true
+      || index?.proof !== 'selected-path-overlay'
+      || !Array.isArray(index?.turns)
+      || index.turns.length !== count
+    ) return null;
+
+    const members = [];
+    const qIds = new Set();
+    const aIds = new Set();
+    for (let offset = 0; offset < index.turns.length; offset += 1) {
+      const member = titleListMemberFromPresentationRecord(index.turns[offset], offset + 1);
+      if (!member || qIds.has(member.questionId)) return null;
+      qIds.add(member.questionId);
+      let exactQ = null;
+      try { exactQ = rt[TITLE_LIST_EFFECTIVE_METHOD.BY_QID]?.(member.questionId) || null; } catch {}
+      if (
+        Number(exactQ?.order || exactQ?.turnNo || exactQ?.idx || 0) !== member.turnNo
+        || String(exactQ?.qId || exactQ?.questionId || '') !== member.questionId
+      ) return null;
+      if (member.answerId) {
+        if (aIds.has(member.answerId)) return null;
+        aIds.add(member.answerId);
+        let exactA = null;
+        try { exactA = rt[TITLE_LIST_EFFECTIVE_METHOD.BY_AID]?.(member.answerId) || null; } catch {}
+        if (
+          Number(exactA?.order || exactA?.turnNo || exactA?.idx || 0) !== member.turnNo
+          || String(exactA?.primaryAId || exactA?.answerId || exactA?.aId || '') !== member.answerId
+        ) return null;
+      }
+      members.push(member);
+    }
+    return {
+      source: 'selected-path-overlay',
+      count,
+      pageCount: Math.ceil(count / 25),
+      members,
+      status: before,
+    };
+  }
+
+  function readTitleListPresentationAuthority() {
+    const effective = readEffectiveTitleListAuthority();
+    if (effective) return effective;
+    const members = [];
+    for (let pageNum = 1; pageNum <= 512; pageNum += 1) {
+      const page = pureCanonicalPageMemberDetails(pageNum);
+      if (!page.length) break;
+      members.push(...page);
+      if (page.length < 25) break;
+    }
+    const count = members.length
+      ? Math.max(...members.map((member) => Number(member?.turnNo || 0)))
+      : 0;
+    return {
+      source: 'canonical',
+      count,
+      pageCount: count ? Math.ceil(count / 25) : 0,
+      members,
+      status: null,
+    };
+  }
+
+  function purePresentationPageMemberDetails(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const authority = readTitleListPresentationAuthority();
+    return authority.members.filter((member) => Math.ceil(Number(member?.turnNo || 0) / 25) === num);
+  }
+
   function isSyntheticTitlePlaceholder(value = '') {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return true;
@@ -2470,9 +2606,7 @@
       member.id,
       ...(Array.isArray(member.aliasIds) ? member.aliasIds : []),
     ].map((value) => String(value || '').trim()).filter(Boolean));
-    let rec = null;
-    try { rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo) || null; } catch {}
-    if (!rec) rec = turnRecordForTitleListIdentity(member.answerId || member.id, 0);
+    let rec = turnRecordForTitleListIdentity(member.answerId || member.questionId || member.id, member.turnNo);
     const recTurnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
     if (recTurnNo && member.turnNo && recTurnNo !== member.turnNo) rec = null;
     for (const value of [rec?.primaryAId, rec?.answerId, ...(Array.isArray(rec?.answerIds) ? rec.answerIds : []), ...(Array.isArray(rec?._aliasIds) ? rec._aliasIds : [])]) {
@@ -2540,8 +2674,7 @@
       } catch {}
     }
     try {
-      const rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo)
-        || turnRecordForTitleListIdentity(member.answerId || member.id, 0);
+      const rec = turnRecordForTitleListIdentity(member.answerId || member.questionId || member.id, member.turnNo);
       const metaTitle = String(rec?.title || rec?.answerTitle || '').trim();
       if (!isSyntheticTitlePlaceholder(metaTitle)) return { text: metaTitle, source: 'metadata', rank: 1, answerId: member.answerId };
     } catch {}
@@ -3432,6 +3565,150 @@
     return !!(hadStamp || hadInlineHide);
   }
 
+  function syncTitleOnlyModeRootAttribute(chatId = '') {
+    const id = String(chatId || resolveChatId()).trim();
+    const pages = Array.from(readTitleListPages(id))
+      .map((value) => Math.max(1, Number(value || 0) || 0))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+    try {
+      if (pages.length) document.documentElement?.setAttribute?.(ATTR_TITLE_ONLY_ACTIVE_PAGES, pages.join(','));
+      else document.documentElement?.removeAttribute?.(ATTR_TITLE_ONLY_ACTIVE_PAGES);
+    } catch {}
+    return pages;
+  }
+
+  function titleListDirectFlowChild(root = null, node = null) {
+    if (!root || !node || !root.contains?.(node)) return null;
+    let current = node;
+    while (current?.parentElement && current.parentElement !== root) current = current.parentElement;
+    return current?.parentElement === root ? current : null;
+  }
+
+  function titleListFlowArtifactAllowed(node = null, container = null) {
+    if (!node) return false;
+    if (node === container || node.contains?.(container)) return true;
+    try {
+      if (node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ` ${TITLE_LIST_SYNTH_SEL}, [${ATTR_TITLE_INLINE_SLOT}="1"]`
+      )) return true;
+    } catch {}
+    return false;
+  }
+
+  function titleListTurnOrderForSection(section = null) {
+    if (!section) return 0;
+    const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+    const record = turnRecordForTitleListIdentity(identity);
+    const exact = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+    if (exact) return exact;
+    const role = getTurnHostRole(section);
+    const sections = listTurnSections();
+    const users = sections.filter((candidate) => getTurnHostRole(candidate) === 'user');
+    if (role === 'user') return Math.max(0, users.indexOf(section) + 1);
+    if (role === 'assistant') {
+      const previous = getPreviousTurnHost(section);
+      return Math.max(0, users.indexOf(previous) + 1);
+    }
+    return 0;
+  }
+
+  function titleListAdjacentTurnOrders(node = null) {
+    if (!node) return [];
+    const before = [];
+    const after = [];
+    for (const section of listTurnSections()) {
+      let relation = 0;
+      try { relation = node.compareDocumentPosition(section); } catch {}
+      if (relation & 4) after.push(section);
+      else if (relation & 2) before.push(section);
+    }
+    const orders = new Set();
+    const previous = before[before.length - 1] || null;
+    const next = after[0] || null;
+    for (const section of [previous, next]) {
+      const order = titleListTurnOrderForSection(section);
+      if (order) orders.add(order);
+    }
+    return Array.from(orders);
+  }
+
+  function stampTitleListNativeTimestampArtifacts(members = [], pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const orders = new Set(members.map((member) => Number(member?.turnNo || 0)).filter(Boolean));
+    if (!orders.size) return 0;
+    // Reuse the existing semantic native-timestamp recognizer. Its scan only
+    // applies the stable `data-h2o-native-ts` ownership marker; the user's
+    // global show/hide preference remains untouched.
+    try { (TOPW.H2O?.NativeTimestamps || W.H2O?.NativeTimestamps)?.scan?.(); } catch {}
+    let hidden = 0;
+    let timestamps = [];
+    try { timestamps = Array.from(document.querySelectorAll('[data-h2o-native-ts="1"]')); } catch {}
+    for (const timestamp of timestamps) {
+      if (!titleListAdjacentTurnOrders(timestamp).some((order) => orders.has(order))) continue;
+      if (setTitleListFlowAnchorHidden(timestamp, num, true)) hidden += 1;
+    }
+    return hidden;
+  }
+
+  // One synchronous title-only projection owns every visibility write for a
+  // listed page. It hides complete turn wrappers plus unknown host-owned
+  // siblings in the page range, while explicitly allowing only the H2O title
+  // stack, its inline-open slot, and page-divider controls.
+  function applyAtomicTitleOnlyPageProjection(pageNum = 0, chatId = '', members = [], container = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    let divider = null;
+    try {
+      divider = document.querySelector(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"],`
+        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      );
+    } catch {}
+    const flowRoot = divider?.parentElement || container?.parentElement || null;
+    const directAnchors = new Set();
+    let hidden = 0;
+    for (const member of members) {
+      const row = findStackRowForMember(container, member);
+      const explicitlyOpened = row?.getAttribute?.('data-h2o-title-row-opened') === '1'
+        && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
+      if (explicitlyOpened) continue;
+      for (const anchor of memberAllFlowAnchors(member)) {
+        const direct = titleListDirectFlowChild(flowRoot, anchor);
+        if (direct) directAnchors.add(direct);
+        if (setTitleListFlowAnchorHidden(anchor, num, true)) hidden += 1;
+      }
+    }
+
+    if (flowRoot && directAnchors.size) {
+      const children = Array.from(flowRoot.children || []);
+      const positions = Array.from(directAnchors)
+        .map((node) => children.indexOf(node))
+        .filter((index) => index >= 0);
+      if (positions.length) {
+        const first = Math.min(...positions);
+        const last = Math.max(...positions);
+        for (let index = first; index <= last; index += 1) {
+          const node = children[index] || null;
+          if (!node || titleListFlowArtifactAllowed(node, container)) continue;
+          if (setTitleListFlowAnchorHidden(node, num, true)) hidden += 1;
+        }
+      }
+    }
+    const nativeTimestampsHidden = stampTitleListNativeTimestampArtifacts(members, num);
+    const activePages = syncTitleOnlyModeRootAttribute(id);
+    return {
+      ok: true,
+      status: 'title-only',
+      pageNum: num,
+      source: readTitleListPresentationAuthority().source,
+      hidden,
+      nativeTimestampsHidden,
+      activePages,
+    };
+  }
+
   function titleListRectSnapshot(el = null) {
     try {
       const rect = el?.getBoundingClientRect?.();
@@ -3834,14 +4111,33 @@
       released += sweepSyntheticTitleListHidden(num);
       S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
       getTitleListStackStats(num, id).activeStackId = '';
+      syncTitleOnlyModeRootAttribute(id);
       try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-release:${reason}`); } catch {}
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
-    const members = pureCanonicalPageMemberDetails(num);
+    const authority = readTitleListPresentationAuthority();
+    const members = authority.members.filter((member) => Math.ceil(Number(member?.turnNo || 0) / 25) === num);
     if (!members.length) {
-      // No canonical membership yet (turn ledger still hydrating): keep the
-      // legacy in-place behavior for now; the next visuals pass retries.
-      return { ok: true, status: 'no-members', pageNum: num, rows: 0 };
+      // An effective path shorter than this page removes the stale canonical
+      // stack without mutating the durable page/title intent. Canonical return
+      // can therefore rebuild it immediately from the canonical authority.
+      let released = 0;
+      for (const stale of getSyntheticTitleListContainers(num)) {
+        restoreAllInlineTurns(stale);
+        released += releaseTitleStackBars(stale);
+        try { stale.remove(); } catch {}
+      }
+      released += sweepSyntheticTitleListHidden(num);
+      S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+      syncTitleOnlyModeRootAttribute(id);
+      return {
+        ok: true,
+        status: authority.count > 0 && num > authority.pageCount ? 'page-outside-presentation' : 'no-members',
+        pageNum: num,
+        rows: 0,
+        released,
+        source: authority.source,
+      };
     }
     let divider = null;
     try {
@@ -4043,11 +4339,23 @@
       }
     } catch {}
     stats.lastListSettledAt = Date.now();
+    const titleOnly = applyAtomicTitleOnlyPageProjection(num, id, members, container);
     // One RAF-coalesced exact-ID pass clears any stale button projection left
     // by a prior/hot-reloaded alias-aware build without multiplying work by
     // the number of title-list rows.
     try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-sync:${reason}`); } catch {}
-    return { ok: true, status: 'ok', pageNum: num, rows: members.length, stackId: container.id, reason };
+    return {
+      ok: true,
+      status: 'ok',
+      pageNum: num,
+      rows: members.length,
+      stackId: container.id,
+      reason,
+      source: authority.source,
+      presentationCount: authority.count,
+      pageCount: authority.pageCount,
+      titleOnly,
+    };
   }
 
   function scheduleActiveTitleListRepair(reason = 'canonical-index-updated', delay = 16, pageNum = 0) {
@@ -4080,7 +4388,7 @@
     if (!isTitleListActive(num, id)) return { ok: true, status: 'inactive', hidden: 0 };
     const container = getSyntheticTitleListContainer(num, id);
     let hidden = 0;
-    for (const member of pureCanonicalPageMemberDetails(num)) {
+    for (const member of purePresentationPageMemberDetails(num)) {
       const row = findStackRowForMember(container, member);
       const explicitlyOpened = row?.getAttribute?.('data-h2o-title-row-opened') === '1'
         && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
@@ -4111,6 +4419,14 @@
     const pageHasTitleIntent = titleIntentPageHasActiveState(num, ledger);
     const needsAnswerIds = !!active || explicitDotAction || pageHasTitleIntent;
     const answerIds = needsAnswerIds ? normalizeAnswerIds(getAuthoritativePageAnswerIds(num, id)) : [];
+
+    // Enter title-only mode before any collapse/unmount executor can expose a
+    // row-by-row teardown. All host flow is synchronously hidden behind the
+    // central projection in this same task; background collapse remains a
+    // performance operation and is never a visible transition.
+    let synth = active
+      ? syncSyntheticTitleList(num, id, true, { reason: String(opts?.source || 'apply-title-list-visuals') })
+      : null;
 
     if (answerIds.length && !skipAnswerBatch) {
       if (driver === 'engine') {
@@ -4154,9 +4470,11 @@
       }
     }
     if (!active) sweepQuestionHostRestore();
-    // Stable synthetic list: renders/updates the full-page canonical row list
-    // while active; removes it and releases the flow stamps when inactive.
-    const synth = syncSyntheticTitleList(num, id, !!active, { reason: String(opts?.source || 'apply-title-list-visuals') });
+    // Exit only after expansion/restoration has completed, so releasing the
+    // central stamp reveals one coherent normal-conversation state.
+    if (!active) {
+      synth = syncSyntheticTitleList(num, id, false, { reason: String(opts?.source || 'apply-title-list-visuals') });
+    }
 
     const intentReplay = pageHasTitleIntent
       ? applyTitleIntentToPage(num, { chatId: id, answerIds, animate: opts?.animate === true, ledger })
@@ -6166,6 +6484,71 @@
     }
   }
 
+  function syncActiveTitleListsNow(reason = 'presentation-updated') {
+    const chatId = resolveChatId();
+    const activePages = Array.from(readTitleListPages(chatId)).sort((a, b) => a - b);
+    if (!activePages.length) return { ok: true, status: 'inactive', pages: 0, results: [] };
+    const results = [];
+    for (const pageNum of activePages) {
+      try {
+        results.push(syncSyntheticTitleList(pageNum, chatId, true, { reason }));
+      } catch (error) {
+        results.push({ ok: false, status: 'sync-failed', pageNum, error: String(error?.message || error) });
+      }
+    }
+    try { MM_CORE_PAGES()?.renderDividers?.(chatId); } catch {}
+    scheduleDividerVisualRefresh(chatId, 0);
+    return { ok: results.every((result) => result?.ok !== false), status: 'synced', pages: activePages.length, results };
+  }
+
+  function titleListMutationTouchesOwnedFlow(payload = null) {
+    if (!payload?.conversationRelevant) return false;
+    for (const node of Array.isArray(payload?.addedElements) ? payload.addedElements : []) {
+      if (!node || node.nodeType !== 1) continue;
+      try {
+        if (
+          node.matches?.(`${TURN_HOST_SEL}, [role="separator"]`)
+          || node.querySelector?.(`${TURN_HOST_SEL}, [role="separator"]`)
+        ) return true;
+        if (
+          node.matches?.(`${TITLE_LIST_SYNTH_SEL}, [data-cgxui-owner="chtpgs"]`)
+          || node.closest?.(TITLE_LIST_SYNTH_SEL)
+        ) continue;
+      } catch {}
+    }
+    return false;
+  }
+
+  function bindTitleListObserverHub() {
+    if (typeof S.titleListObserverHubOff === 'function') return true;
+    const hub = W.H2O?.obs || TOPW.H2O?.obs || null;
+    if (!hub || typeof hub.onMutations !== 'function') return false;
+    try { hub.ensureRoot?.('chat-pages:title-list'); } catch {}
+    try {
+      S.titleListObserverHubOff = hub.onMutations('chat-pages:title-list', (payload) => {
+        const chatId = resolveChatId();
+        if (!readTitleListPages(chatId).size) return;
+        if (!titleListMutationTouchesOwnedFlow(payload)) return;
+        // Observer Hub already batches native remounts into one microtask.
+        // Reapply synchronously here so a newly mounted shell or timestamp is
+        // stamped before the browser's next paint; no timer or second observer.
+        syncActiveTitleListsNow('observer-hub-remount');
+      });
+      return typeof S.titleListObserverHubOff === 'function';
+    } catch {
+      S.titleListObserverHubOff = null;
+      return false;
+    }
+  }
+
+  function unbindTitleListObserverHub() {
+    if (typeof S.titleListObserverHubOff !== 'function') return false;
+    const off = S.titleListObserverHubOff;
+    S.titleListObserverHubOff = null;
+    try { off(); } catch {}
+    return true;
+  }
+
   function bind() {
     if (S.listenersBound) {
       S.bound = true;
@@ -6226,8 +6609,9 @@
       try { ev.preventDefault(); ev.stopPropagation(); } catch {}
       const chatId = resolveChatId();
       const answerIds = getAuthoritativePageAnswerIds(pageNum, chatId);
-      // Deterministic mass action: resolve over canonical page membership and
-      // the durable intent ledger, not the current hydrated title-bar subset.
+      // Deterministic mass action: resolve over the coherent effective-or-
+      // canonical page authority and the durable page intent, never the
+      // current hydrated title-bar subset.
       const intentSummary = getResolvedPageTitleIntentSummary(pageNum, chatId);
       const nextEnabled = !intentSummary.allCollapsed;
       writePageTitleIntent(pageNum, nextEnabled ? 'collapsed' : 'expanded', {
@@ -6239,6 +6623,18 @@
       // any inline Q+A wrappers to flow before the resolved batch runs; the
       // stack sync below will then hide or release them deterministically.
       resetOpenedTitleListRows(pageNum);
+      // For collapse, install title-only presentation first. The router and
+      // unmount engines may then reconcile in the background without exposing
+      // their per-answer cadence. Expansion keeps the inverse order: restore
+      // the engines first, then release the title-only projection.
+      if (nextEnabled) {
+        setTitleListMode(pageNum, true, {
+          chatId,
+          source: 'chat-page-divider:dot',
+          animate: false,
+          skipAnswerBatch: true,
+        });
+      }
       const routed = CM_ROUTER_API()?.routeChatPageDotClick?.({
         pageNum,
         chatId,
@@ -6255,12 +6651,15 @@
         && /^(batch-toggle-unavailable|batch-(collapse|expand)-failed)$/.test(String(routed?.action || ''));
 
       if (routed?.handled === true) {
-        setTitleListMode(pageNum, nextEnabled, {
-          chatId,
-          source: 'chat-page-divider:dot',
-          animate: false,
-          skipAnswerBatch: routerHandledEngineBatch,
-        });
+        if (nextEnabled) reassertActiveTitleListFlowHidden(pageNum, chatId);
+        else {
+          setTitleListMode(pageNum, false, {
+            chatId,
+            source: 'chat-page-divider:dot',
+            animate: false,
+            skipAnswerBatch: routerHandledEngineBatch,
+          });
+        }
         return;
       }
       // Legacy fallback: batch toggle via Title Bar API (normal answer rows only)
@@ -6278,12 +6677,15 @@
           if (!S.titleListBatchDepth) S.titleListBatchDirty = false;
         }
       }
-      setTitleListMode(pageNum, nextEnabled, {
-        chatId,
-        source: 'chat-page-divider:dot',
-        animate: false,
-        skipAnswerBatch: routerAttemptedEngineBatch || legacyBatchApplied,
-      });
+      if (nextEnabled) reassertActiveTitleListFlowHidden(pageNum, chatId);
+      else {
+        setTitleListMode(pageNum, false, {
+          chatId,
+          source: 'chat-page-divider:dot',
+          animate: false,
+          skipAnswerBatch: routerAttemptedEngineBatch || legacyBatchApplied,
+        });
+      }
     };
 
     S.onAnswerCollapse = (ev) => {
@@ -6348,6 +6750,11 @@
       scheduleActiveTitleListRepair('core-index-updated', 16);
     };
 
+    S.onCoreTurnUpdated = (ev) => {
+      if (String(ev?.detail?.reason || '') !== 'effective-presentation') return;
+      syncActiveTitleListsNow('effective-presentation');
+    };
+
     S.onPaginationPageChanged = () => {
       try { refreshAll(resolveChatId()); } catch {}
     };
@@ -6408,6 +6815,7 @@
     window.addEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse);
     window.addEventListener(EV_TITLE_SET, S.onTitleSet);
     window.addEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated);
+    window.addEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated);
     window.addEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed);
     window.addEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged);
     window.addEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true);
@@ -6417,6 +6825,7 @@
     if (EV_PAGE_CHANGED.startsWith('evt:')) {
       window.addEventListener(EV_PAGE_CHANGED.slice(4), S.onPaginationPageChanged);
     }
+    bindTitleListObserverHub();
 
     S.listenersBound = true;
     S.bound = true;
@@ -6436,6 +6845,7 @@
     try { window.removeEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse); } catch {}
     try { window.removeEventListener(EV_TITLE_SET, S.onTitleSet); } catch {}
     try { window.removeEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated); } catch {}
+    try { window.removeEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated); } catch {}
     try { window.removeEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed); } catch {}
     try { window.removeEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged); } catch {}
     try { window.removeEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true); } catch {}
@@ -6445,12 +6855,14 @@
     if (EV_PAGE_CHANGED.startsWith('evt:')) {
       try { window.removeEventListener(EV_PAGE_CHANGED.slice(4), S.onPaginationPageChanged); } catch {}
     }
+    unbindTitleListObserverHub();
     S.onDividerDblClick = null;
     S.onDividerClick = null;
     S.onDividerDotClick = null;
     S.onAnswerCollapse = null;
     S.onTitleSet = null;
     S.onCoreIndexUpdated = null;
+    S.onCoreTurnUpdated = null;
     S.onPaginationPageChanged = null;
     S.onPaginationConfigChanged = null;
     S.onMiniMapTogglePageCollapsed = null;
