@@ -35,6 +35,13 @@
   const BOOT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const TITLE_WRITE_TTL_MS = 900;
   const ACTIVE_TRANSIENT_KEY = '__active_transient__';
+  const ROUTE_EVENT_NAMES = Object.freeze([
+    'evt:h2o:route:changed',
+    'h2o:route:changed',
+  ]);
+  const REFRESH_PRIORITY_DEFAULT = 0;
+  const REFRESH_PRIORITY_ROUTE = 100;
+  const ROUTE_REFRESH_DELAY_MS = 60;
 
   const BASE_PRIORITY = Object.freeze({
     none: 0,
@@ -68,6 +75,11 @@
   let bodyObserver = null;
   let titleObserver = null;
   let refreshTimer = 0;
+  let pendingRefresh = null;
+  let refreshScheduleSeq = 0;
+  let routeListenersInstalled = false;
+  let routeListenerDisposer = null;
+  let destroyed = false;
   let attachTimer = 0;
   let storeAdapter = null;
   let storeAttachInFlight = false;
@@ -1258,6 +1270,7 @@
   }
 
   function refresh(reason) {
+    if (destroyed) return getState();
     const nextIdentity = detectIdentity();
     const nextKey = nextIdentity.routeKey;
     if (nextKey !== lastIdentityKey) {
@@ -1285,11 +1298,98 @@
     return getState();
   }
 
-  function scheduleRefresh(reason, delay) {
+  function scheduleRefresh(reason, delay, scheduling) {
+    if (destroyed) return false;
+    const options = scheduling && typeof scheduling === 'object' ? scheduling : {};
+    const priority = Number.isFinite(options.priority)
+      ? options.priority
+      : REFRESH_PRIORITY_DEFAULT;
+    const routeKey = typeof options.routeKey === 'string' ? options.routeKey : '';
+
+    if (pendingRefresh) {
+      if (pendingRefresh.priority > priority) return false;
+      if (
+        priority === REFRESH_PRIORITY_ROUTE
+        && pendingRefresh.priority === REFRESH_PRIORITY_ROUTE
+        && pendingRefresh.routeKey === routeKey
+      ) {
+        return false;
+      }
+    }
+
     clearTimeout(refreshTimer);
+    const token = ++refreshScheduleSeq;
+    pendingRefresh = {
+      token,
+      priority,
+      routeKey,
+      reason: String(reason || 'scheduled-refresh'),
+    };
     refreshTimer = setTimeout(() => {
-      try { refresh(reason || 'scheduled-refresh'); } catch (err) { fail('refresh', err); }
+      if (destroyed || !pendingRefresh || pendingRefresh.token !== token) return;
+      const scheduled = pendingRefresh;
+      pendingRefresh = null;
+      refreshTimer = 0;
+      try { refresh(scheduled.reason); } catch (err) { fail('refresh', err); }
     }, Number.isFinite(delay) ? delay : 120);
+    return true;
+  }
+
+  function scheduleRouteRefresh(reason) {
+    if (destroyed) return false;
+    const nextIdentity = detectIdentity();
+    const routeKey = nextIdentity.routeKey;
+    if (routeKey === lastIdentityKey) {
+      if (
+        pendingRefresh
+        && pendingRefresh.priority === REFRESH_PRIORITY_ROUTE
+        && pendingRefresh.routeKey !== routeKey
+      ) {
+        clearTimeout(refreshTimer);
+        refreshTimer = 0;
+        pendingRefresh = null;
+      }
+      return false;
+    }
+    return scheduleRefresh(reason || 'route-event', ROUTE_REFRESH_DELAY_MS, {
+      priority: REFRESH_PRIORITY_ROUTE,
+      routeKey,
+    });
+  }
+
+  function installRouteEventListeners() {
+    if (destroyed || routeListenersInstalled) return false;
+    const onRouteEvent = () => {
+      scheduleRouteRefresh('route-event');
+    };
+    const installed = [];
+    for (const eventName of ROUTE_EVENT_NAMES) {
+      try {
+        W.addEventListener(eventName, onRouteEvent, { passive: true });
+        installed.push(eventName);
+      } catch {}
+    }
+    if (installed.length === 0) return false;
+    routeListenersInstalled = true;
+    routeListenerDisposer = () => {
+      if (!routeListenersInstalled) return;
+      routeListenersInstalled = false;
+      for (const eventName of installed) {
+        try { W.removeEventListener(eventName, onRouteEvent); } catch {}
+      }
+    };
+    return true;
+  }
+
+  function destroy() {
+    if (destroyed) return false;
+    destroyed = true;
+    clearTimeout(refreshTimer);
+    refreshTimer = 0;
+    pendingRefresh = null;
+    if (routeListenerDisposer) routeListenerDisposer();
+    routeListenerDisposer = null;
+    return true;
   }
 
   async function renameNative(title, options) {
@@ -1396,16 +1496,16 @@
     const replace = history.replaceState;
     history.pushState = function (...args) {
       const ret = push.apply(this, args);
-      scheduleRefresh('pushstate', 60);
+      scheduleRouteRefresh('pushstate');
       return ret;
     };
     history.replaceState = function (...args) {
       const ret = replace.apply(this, args);
-      scheduleRefresh('replacestate', 60);
+      scheduleRouteRefresh('replacestate');
       return ret;
     };
     try { Object.defineProperty(history, '__h2oChatTitlePatched', { value: true, configurable: true }); } catch { history.__h2oChatTitlePatched = true; }
-    W.addEventListener('popstate', () => scheduleRefresh('popstate', 60));
+    W.addEventListener('popstate', () => scheduleRouteRefresh('popstate'));
     W.addEventListener('focus', () => scheduleRefresh('focus', 80));
     D.addEventListener('visibilitychange', () => {
       if (!D.hidden) scheduleRefresh('visibilitychange', 80);
@@ -1458,6 +1558,7 @@
   function boot() {
     H2O.ChatTitle = api;
     patchHistory();
+    installRouteEventListeners();
     bindCrossSurfaceTitleSync();
     installObservers();
     scheduleStoreAttach('boot');
@@ -1489,5 +1590,6 @@
     },
   };
 
+  W[BOOT_KEY] = Object.freeze({ destroy });
   boot();
 })();

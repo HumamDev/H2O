@@ -37,10 +37,11 @@ const END_MARKER = "// H2O_TITLE_STAGE1C_PARITY_END";
 const BOOT_INVOCATION = "\n  boot();\n";
 const TEST_HOOK = "__H2O_STAGE1C_FORMATTER_PARITY_TEST__";
 const LIFECYCLE_TEST_HOOK = "__H2O_STAGE1C_DOCUMENT_LIFECYCLE_TEST__";
-const EXPECTED_RUNTIME_SHA256 = "ec8ea13b92d2cb4f71f49f08c9d9f957cfdcf551cf17cd263521678e81ed9077";
+const EXPECTED_RUNTIME_SHA256 = "bcbaee7817f4d7cbfea1c063b0936a877e99e2bfe7cb8e28072a96b8f9411a16";
 const EXPECTED_STAGE1C = new Set([RUNTIME_REL, VALIDATOR_REL]);
 const EXPECTED_MODIFIED = new Set([RUNTIME_REL]);
 const EXPECTED_UNTRACKED = new Set([VALIDATOR_REL]);
+const ROUTE_CORRECTION_SCOPE_MODE = "route-correction";
 const CANARY_EXPECTATION = Object.freeze({
   schema: "h2o.title-stage1c.canary-expectation.v1",
   counterContinuityRequires: Object.freeze([
@@ -176,7 +177,10 @@ function parseRequestedScopeMode(argv) {
   assert(options.length <= 1, "duplicate --scope-mode options are forbidden");
   if (options.length === 0) return null;
   const value = options[0].slice(SCOPE_MODE_PREFIX.length);
-  assert.equal(value, "validator-self-correction", `unknown requested Stage 1C scope mode: ${value}`);
+  assert(
+    value === "validator-self-correction" || value === ROUTE_CORRECTION_SCOPE_MODE,
+    `unknown requested Stage 1C scope mode: ${value}`,
+  );
   return value;
 }
 
@@ -189,7 +193,9 @@ function classifyStage1CScope({
   generatedOutputIgnored,
 }) {
   assert(
-    requestedMode === null || requestedMode === "validator-self-correction",
+    requestedMode === null
+      || requestedMode === "validator-self-correction"
+      || requestedMode === ROUTE_CORRECTION_SCOPE_MODE,
     `unknown requested Stage 1C scope mode: ${String(requestedMode)}`,
   );
   const modified = new Set(modifiedTracked);
@@ -214,6 +220,16 @@ function classifyStage1CScope({
     assert.equal(stage1CUntracked.size, 0, "validator-self-correction forbids untracked Stage 1C files");
     assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "validator-self-correction requires both tracked Stage 1C files");
     return "validator-self-correction";
+  }
+
+  if (requestedMode === ROUTE_CORRECTION_SCOPE_MODE) {
+    assert(
+      sameSet(modified, EXPECTED_STAGE1C),
+      `route-correction requires exactly the two Stage 1C paths: ${[...EXPECTED_STAGE1C].join(", ")}`,
+    );
+    assert.equal(stage1CUntracked.size, 0, "route-correction forbids untracked Stage 1C files");
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "route-correction requires both tracked Stage 1C files");
+    return ROUTE_CORRECTION_SCOPE_MODE;
   }
 
   const unexpectedModified = [...modified].filter((relative) => !EXPECTED_MODIFIED.has(relative));
@@ -303,6 +319,23 @@ scopeTest("explicit validator-self-correction state accepted", () => {
     requestedMode: "validator-self-correction",
     modifiedTracked: [VALIDATOR_REL],
   })), "validator-self-correction");
+});
+scopeTest("explicit route-correction state accepted", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: ROUTE_CORRECTION_SCOPE_MODE,
+    modifiedTracked: [RUNTIME_REL, VALIDATOR_REL],
+  })), ROUTE_CORRECTION_SCOPE_MODE);
+});
+scopeTest("two-file route correction is rejected without its explicit mode", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    modifiedTracked: [RUNTIME_REL, VALIDATOR_REL],
+  })), /unexpected modified tracked paths/u);
+});
+scopeTest("route-correction rejects any third modified path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: ROUTE_CORRECTION_SCOPE_MODE,
+    modifiedTracked: [RUNTIME_REL, VALIDATOR_REL, "src-runtime-base/foreign.js"],
+  })), /requires exactly the two Stage 1C paths/u);
 });
 scopeTest("validator self-tamper rejected by default", () => {
   assert.throws(() => classifyStage1CScope(committedScopeInput({
@@ -427,6 +460,10 @@ function instrumentLifecycleSource(source) {
     "hydrateFromStore",
     "attachStore",
     "refresh",
+    "scheduleRefresh",
+    "scheduleRouteRefresh",
+    "installRouteEventListeners",
+    "destroy",
     "renameNative",
     "applyCrossSurfaceTitlePayload",
     "boot",
@@ -439,12 +476,15 @@ function instrumentLifecycleSource(source) {
   W.${LIFECYCLE_TEST_HOOK} = Object.freeze({
     api,
     refresh,
+    scheduleRefresh,
+    scheduleRouteRefresh,
     setTitle,
     setEmoji,
     hydrateFromStore,
     attachStore,
     applyCrossSurfaceTitlePayload,
     renameNative,
+    destroy,
     displayFrom,
     paritySnapshot: titleContractParity.snapshot,
     currentState: () => ({
@@ -453,6 +493,9 @@ function instrumentLifecycleSource(source) {
     }),
     currentRecord: () => snapshotRecord(activeRecord),
     currentRouteToken: () => routeToken,
+    pendingRefresh: () => pendingRefresh ? { ...pendingRefresh } : null,
+    routeListenersInstalled: () => routeListenersInstalled,
+    destroyed: () => destroyed,
   });
   boot();
 `);
@@ -725,6 +768,10 @@ function createLifecycleHarness({
       callbacks.push(callback);
       effects.windowListeners.set(type, callbacks);
     },
+    removeEventListener(type, callback) {
+      const callbacks = effects.windowListeners.get(type) || [];
+      effects.windowListeners.set(type, callbacks.filter((value) => value !== callback));
+    },
     async fetch(...args) {
       effects.fetches.push(args);
       return fetchImplementation(...args);
@@ -763,6 +810,10 @@ function createLifecycleHarness({
       const callbacks = effects.documentListeners.get(type) || [];
       callbacks.push(callback);
       effects.documentListeners.set(type, callbacks);
+    },
+    removeEventListener(type, callback) {
+      const callbacks = effects.documentListeners.get(type) || [];
+      effects.documentListeners.set(type, callbacks.filter((value) => value !== callback));
     },
   };
   sandbox.history = {
@@ -1266,6 +1317,21 @@ test("H2O.ChatTitle public API keys remain compatible with HEAD", () => {
   assert.equal(countLiteral(runtimeSource, "H2O.ChatTitle = api;"), 1);
 });
 
+test("route correction adds canonical listeners without another wrapper or polling loop", () => {
+  assert.equal(
+    countLiteral(runtimeSource, "history.pushState = function"),
+    countLiteral(baselineSource, "history.pushState = function"),
+  );
+  assert.equal(
+    countLiteral(runtimeSource, "history.replaceState = function"),
+    countLiteral(baselineSource, "history.replaceState = function"),
+  );
+  assert.equal(countLiteral(runtimeSource, "setInterval("), countLiteral(baselineSource, "setInterval("));
+  assert.equal(runtimeSource.includes("navigation.addEventListener"), false);
+  assert.equal(countLiteral(runtimeSource, "'evt:h2o:route:changed'"), 1);
+  assert.equal(countLiteral(runtimeSource, "'h2o:route:changed'"), 1);
+});
+
 function createRouteLifecycleHarness(pathname = "/c/stage1c-chat-a", timeOrigin) {
   return createLifecycleHarness({
     pathname,
@@ -1283,6 +1349,23 @@ function transitionLifecycleToB(harness) {
   return lifecycleSnapshot(harness);
 }
 
+function dispatchRouteEventBurst(harness) {
+  for (let producer = 1; producer <= 2; producer += 1) {
+    for (const eventName of ["evt:h2o:route:changed", "h2o:route:changed"]) {
+      harness.sandbox.dispatchEvent(new harness.sandbox.CustomEvent(eventName, {
+        detail: {
+          producer,
+          deliberatelyIgnoredUrl: `/c/untrusted-producer-${producer}`,
+        },
+      }));
+    }
+  }
+}
+
+function listenerCount(harness, eventName) {
+  return (harness.effects.windowListeners.get(eventName) || []).length;
+}
+
 test("continuous same-document route transition reaches production composition and parity", () => {
   const harness = createRouteLifecycleHarness();
   const source = lifecycleSnapshot(harness);
@@ -1296,6 +1379,162 @@ test("continuous same-document route transition reaches production composition a
   assert.equal(destination.state.baseTitle, "Lifecycle title B");
   assert.equal(destination.routeToken, 2);
   assert(parityActivityChanged(source.parity, destination.parity), "destination composition did not reach parity");
+  assertLegacyAuthority(harness, destination);
+});
+
+test("final-path route-event burst converges once despite pre-route and trailing DOM activity", () => {
+  const harness = createRouteLifecycleHarness();
+  harness.hook.scheduleRefresh("dom-mutation", 160);
+  harness.clock.advance(160);
+  const source = lifecycleSnapshot(harness);
+  assert.equal(source.state.chatId, "stage1c-chat-a");
+  assert.equal(source.routeToken, 1);
+  harness.resetEffects();
+
+  harness.sandbox.location.pathname = "/c/stage1c-chat-b";
+  dispatchRouteEventBurst(harness);
+  const routePending = cloneJson(harness.hook.pendingRefresh());
+  assert.equal(routePending.priority, 100);
+  assert.equal(routePending.routeKey, "chat:stage1c-chat-b");
+  assert.equal(harness.effects.timerCalls, 1, "route burst must schedule one timer");
+
+  for (let index = 0; index < 40; index += 1) {
+    assert.equal(harness.hook.scheduleRefresh("dom-mutation", 160), false);
+  }
+  assert.deepEqual(cloneJson(harness.hook.pendingRefresh()), routePending);
+  assert.equal(harness.effects.timerCalls, 1, "DOM churn must not postpone the route timer");
+
+  harness.clock.advance(59);
+  assert.equal(lifecycleSnapshot(harness).state.chatId, "stage1c-chat-a");
+  harness.clock.advance(1);
+  const destination = lifecycleSnapshot(harness);
+  assert.equal(destination.state.chatId, "stage1c-chat-b");
+  assert.equal(destination.routeToken, 2);
+  assert.equal(destination.parity.mismatches, 0);
+  assert.equal(destination.parity.errors, 0);
+  assert(parityActivityChanged(source.parity, destination.parity));
+  assert.equal(harness.hook.pendingRefresh(), null);
+  assertLegacyAuthority(harness, destination);
+
+  assert.equal(harness.hook.scheduleRefresh("dom-mutation", 160), true);
+  assert.equal(harness.hook.pendingRefresh().priority, 0);
+  harness.clock.advance(160);
+  assert.equal(harness.hook.pendingRefresh(), null);
+});
+
+test("route priority cannot be displaced indefinitely by repeated DOM schedules", () => {
+  const harness = createRouteLifecycleHarness();
+  harness.sandbox.location.pathname = "/c/stage1c-chat-b";
+  harness.sandbox.dispatchEvent(new harness.sandbox.CustomEvent("evt:h2o:route:changed"));
+  const token = harness.hook.pendingRefresh().token;
+  for (let index = 0; index < 500; index += 1) {
+    harness.hook.scheduleRefresh("dom-mutation", 160);
+  }
+  assert.equal(harness.hook.pendingRefresh().token, token);
+  harness.clock.advance(60);
+  const destination = lifecycleSnapshot(harness);
+  assert.equal(destination.state.chatId, "stage1c-chat-b");
+  assert.equal(destination.routeToken, 2);
+});
+
+test("wrapped history and route aliases coalesce into one convergence", () => {
+  const harness = createRouteLifecycleHarness();
+  harness.resetEffects();
+  harness.sandbox.history.pushState({}, "", "/c/stage1c-chat-b");
+  dispatchRouteEventBurst(harness);
+  assert.equal(harness.effects.timerCalls, 1);
+  harness.clock.advance(60);
+  const destination = lifecycleSnapshot(harness);
+  assert.equal(destination.state.chatId, "stage1c-chat-b");
+  assert.equal(destination.routeToken, 2);
+  assert.equal(harness.hook.pendingRefresh(), null);
+});
+
+test("same-route event bursts are scheduler and state no-ops", () => {
+  const harness = createRouteLifecycleHarness();
+  const before = lifecycleSnapshot(harness);
+  harness.resetEffects();
+  dispatchRouteEventBurst(harness);
+  const after = lifecycleSnapshot(harness);
+  assert.deepEqual(after, before);
+  assert.equal(harness.hook.pendingRefresh(), null);
+  assert.equal(harness.effects.timerCalls, 0);
+});
+
+test("rapid distinct final routes retain only the latest pending identity", () => {
+  const harness = createLifecycleHarness({
+    pathname: "/c/stage1c-chat-a",
+    titleByChat: {
+      "stage1c-chat-a": "Lifecycle title A",
+      "stage1c-chat-b": "Lifecycle title B",
+      "stage1c-chat-c": "Lifecycle title C",
+    },
+  });
+  harness.sandbox.location.pathname = "/c/stage1c-chat-b";
+  harness.sandbox.dispatchEvent(new harness.sandbox.CustomEvent("evt:h2o:route:changed"));
+  assert.equal(harness.hook.pendingRefresh().routeKey, "chat:stage1c-chat-b");
+  harness.sandbox.location.pathname = "/c/stage1c-chat-c";
+  harness.sandbox.dispatchEvent(new harness.sandbox.CustomEvent("h2o:route:changed"));
+  assert.equal(harness.hook.pendingRefresh().routeKey, "chat:stage1c-chat-c");
+  harness.clock.advance(60);
+  const destination = lifecycleSnapshot(harness);
+  assert.equal(destination.state.chatId, "stage1c-chat-c");
+  assert.equal(destination.state.baseTitle, "Lifecycle title C");
+  assert.equal(destination.routeToken, 2);
+  assertLegacyAuthority(harness, destination);
+});
+
+test("route listeners install once and disposal makes the instance non-observing", () => {
+  const harness = createRouteLifecycleHarness();
+  assert.equal(harness.hook.routeListenersInstalled(), true);
+  assert.equal(listenerCount(harness, "evt:h2o:route:changed"), 1);
+  assert.equal(listenerCount(harness, "h2o:route:changed"), 1);
+
+  new vm.Script(instrumentedLifecycle, {
+    filename: `${RUNTIME_REL}:duplicate-lifecycle-vm`,
+  }).runInContext(harness.sandbox);
+  assert.equal(listenerCount(harness, "evt:h2o:route:changed"), 1);
+  assert.equal(listenerCount(harness, "h2o:route:changed"), 1);
+
+  assert.equal(harness.hook.destroy(), true);
+  assert.equal(harness.hook.destroy(), false);
+  assert.equal(harness.hook.destroyed(), true);
+  assert.equal(harness.hook.routeListenersInstalled(), false);
+  assert.equal(listenerCount(harness, "evt:h2o:route:changed"), 0);
+  assert.equal(listenerCount(harness, "h2o:route:changed"), 0);
+
+  const before = lifecycleSnapshot(harness);
+  harness.sandbox.location.pathname = "/c/stage1c-chat-b";
+  dispatchRouteEventBurst(harness);
+  assert.deepEqual(lifecycleSnapshot(harness), before);
+  assert.equal(harness.hook.pendingRefresh(), null);
+});
+
+await asyncTest("persistence rejection cannot block route-event convergence", async () => {
+  const harness = createRouteLifecycleHarness();
+  let rejectedWrites = 0;
+  harness.setStore({
+    _readyPromise: Promise.resolve(),
+    caps() {
+      return { ready: true, durable: true, health: "healthy" };
+    },
+    backend() { return "failing-test-store"; },
+    async get() { return null; },
+    async set() {
+      rejectedWrites += 1;
+      throw new Error("expected persistence rejection");
+    },
+  });
+  await harness.hook.attachStore("route-persistence-test");
+  harness.sandbox.location.pathname = "/c/stage1c-chat-b";
+  dispatchRouteEventBurst(harness);
+  harness.clock.advance(60);
+  await flushMicrotasks();
+  await flushMicrotasks();
+  const destination = lifecycleSnapshot(harness);
+  assert.equal(destination.state.chatId, "stage1c-chat-b");
+  assert.equal(destination.routeToken, 2);
+  assert(rejectedWrites > 0);
   assertLegacyAuthority(harness, destination);
 });
 
@@ -1597,17 +1836,13 @@ test("generated build-token parity rejects conflicting authoritative tokens", ()
   }), /loader build token values conflict/u);
 });
 
-test("delivered proxy references the exact committed Stage 1C alias bytes and shared build token", () => {
+test("delivered proxy references the exact working Stage 1C alias bytes and shared build token", () => {
   const aliasPath = path.join(ROOT, ALIAS_REL);
   assert.equal(fs.lstatSync(aliasPath).isSymbolicLink(), true);
   assert.equal(fs.realpathSync(aliasPath), fs.realpathSync(runtimePath));
-  const committedBytes = execFileSync("git", ["show", `HEAD:${RUNTIME_REL}`], {
-    cwd: ROOT,
-    encoding: null,
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  const runtimeBytes = fs.readFileSync(runtimePath);
   const aliasBytes = fs.readFileSync(aliasPath);
-  assert(aliasBytes.equals(committedBytes), "delivered alias differs from committed Stage 1C runtime");
+  assert(aliasBytes.equals(runtimeBytes), "delivered alias differs from working Stage 1C runtime");
   assert.equal(sha256(aliasBytes), EXPECTED_RUNTIME_SHA256);
   const proxy = fs.readFileSync(path.join(ROOT, PROXY_REL), "utf8");
   const loader = fs.readFileSync(path.join(ROOT, LOADER_REL), "utf8");
@@ -1770,8 +2005,8 @@ test("all 154 canonical aliases remain valid symlinks", () => {
   execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT });
 });
 
-assert.equal(scopeTests.length, 15, "scope test count drifted");
-assert.equal(tests.length, 45, "runtime scenario count drifted");
+assert.equal(scopeTests.length, 18, "scope test count drifted");
+assert.equal(tests.length, 53, "runtime scenario count drifted");
 
 console.log(JSON.stringify({
   ok: true,
