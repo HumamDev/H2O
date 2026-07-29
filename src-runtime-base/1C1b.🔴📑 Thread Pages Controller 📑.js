@@ -2879,70 +2879,173 @@
       } catch {}
       const identity = nativeTurnSlotMountedIdentity(section, membersByOrder, expectedSlotCount);
       if (!identity) continue;
-      const anchor = getTurnAnchorNode(section);
-      const parent = anchor?.parentElement || null;
-      if (!anchor || !parent || isNativeTurnSlotExcluded(anchor)) continue;
       if (seenNativeOrdinals.has(identity.ordinal)) {
         return fail('native-slot-mounted-identity-ambiguous');
       }
       seenNativeOrdinals.add(identity.ordinal);
-      exactMounted.push({ section, anchor, parent, identity });
+      exactMounted.push({ section, identity });
     }
     if (!exactMounted.length) return fail('native-slot-calibration-unavailable');
-    const flowRoots = new Set(exactMounted.map((entry) => entry.parent));
-    if (flowRoots.size !== 1) return fail('native-slot-flow-parent-incoherent');
-    const flowRoot = exactMounted[0].parent;
-    const exactAnchors = new Map(exactMounted.map((entry) => [entry.anchor, entry]));
-    const structuralSignatures = new Set(
-      exactMounted.map((entry) => nativeTurnSlotClassSignature(entry.anchor)).filter(Boolean)
-    );
-    if (!structuralSignatures.size) return fail('native-slot-structural-signature-unavailable', { flowRoot });
-    const candidates = [];
-    for (const node of Array.from(flowRoot.children || [])) {
-      if (isNativeTurnSlotExcluded(node) || String(node.tagName || '').toUpperCase() !== 'DIV') continue;
-      let nodeSections = [];
+    let activeThread = null;
+    try { activeThread = document.querySelector?.('#thread') || null; } catch {}
+    if (!activeThread?.isConnected) return fail('native-slot-active-thread-unavailable');
+
+    // A section's local only-child anchor may stop at different host wrapper
+    // depths. Project every exact section to a direct child of each common
+    // ancestor candidate instead of requiring those local anchor parents to
+    // match. Candidates are visited from deepest to shallowest.
+    const directChildUnder = (candidateRoot, section) => {
+      if (!candidateRoot || !section || candidateRoot === section) return null;
+      let node = section;
+      while (node?.parentElement && node.parentElement !== candidateRoot) {
+        node = node.parentElement;
+      }
+      return node?.parentElement === candidateRoot ? node : null;
+    };
+    const commonRoots = [];
+    let ancestor = exactMounted[0].section?.parentElement || null;
+    while (ancestor) {
+      let insideActiveThread = false;
       try {
-        nodeSections = Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || []);
-        if (node.matches?.(TURN_HOST_SEL)) nodeSections.unshift(node);
+        insideActiveThread = ancestor === activeThread || activeThread.contains?.(ancestor);
       } catch {}
-      const exact = exactAnchors.get(node) || null;
-      if (nodeSections.length) {
-        if (nodeSections.length !== 1 || !exact) {
-          return fail('native-slot-mounted-structure-invalid', { flowRoot, actualSlotCount: candidates.length });
+      if (
+        insideActiveThread
+        && exactMounted.every((entry) => ancestor.contains?.(entry.section))
+      ) commonRoots.push(ancestor);
+      if (ancestor === activeThread) break;
+      ancestor = ancestor.parentElement;
+    }
+    if (!commonRoots.length) return fail('native-slot-flow-root-unavailable');
+
+    const exactBySection = new Map(exactMounted.map((entry) => [entry.section, entry]));
+    let selected = null;
+    let deepestFailure = null;
+    for (const candidateRoot of commonRoots) {
+      const directSlots = new Map();
+      let collision = false;
+      for (const entry of exactMounted) {
+        const directSlot = directChildUnder(candidateRoot, entry.section);
+        if (!directSlot || isNativeTurnSlotExcluded(directSlot) || directSlots.has(directSlot)) {
+          collision = true;
+          break;
         }
-        candidates.push(node);
+        directSlots.set(directSlot, entry);
+      }
+      if (collision) {
+        deepestFailure ||= {
+          reason: 'native-slot-mounted-slot-collision',
+          flowRoot: candidateRoot,
+          actualSlotCount: 0,
+        };
         continue;
       }
-      if (
-        nativeTurnSlotLastKnownHeight(node)
-        && structuralSignatures.has(nativeTurnSlotClassSignature(node))
-      ) candidates.push(node);
-    }
-    if (candidates.length !== expectedSlotCount) {
-      return fail('native-slot-count-mismatch', {
-        flowRoot,
-        actualSlotCount: candidates.length,
-      });
-    }
-    const calibrationIdentities = [];
-    for (let index = 0; index < candidates.length; index += 1) {
-      const slot = candidates[index];
-      const exact = exactAnchors.get(slot) || null;
-      if (!exact) continue;
-      if (exact.identity.ordinal !== index + 1) {
-        return fail('native-slot-calibration-mismatch', {
-          flowRoot,
-          actualSlotCount: candidates.length,
-        });
+      const structuralSignatures = new Set(
+        Array.from(directSlots.keys())
+          .map((node) => nativeTurnSlotClassSignature(node))
+          .filter(Boolean)
+      );
+      if (!structuralSignatures.size) {
+        deepestFailure ||= {
+          reason: 'native-slot-structural-signature-unavailable',
+          flowRoot: candidateRoot,
+          actualSlotCount: 0,
+        };
+        continue;
       }
-      calibrationIdentities.push(exact.identity);
+      const candidateSlots = [];
+      let mountedStructureInvalid = false;
+      for (const node of Array.from(candidateRoot.children || [])) {
+        if (isNativeTurnSlotExcluded(node) || String(node.tagName || '').toUpperCase() !== 'DIV') continue;
+        let nodeSections = [];
+        try {
+          nodeSections = Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || []);
+          if (node.matches?.(TURN_HOST_SEL)) nodeSections.unshift(node);
+        } catch {}
+        if (nodeSections.length) {
+          const exactEntries = nodeSections
+            .map((section) => exactBySection.get(section) || null)
+            .filter(Boolean);
+          if (
+            nodeSections.length !== 1
+            || exactEntries.length !== 1
+            || directSlots.get(node) !== exactEntries[0]
+          ) {
+            mountedStructureInvalid = true;
+            break;
+          }
+          candidateSlots.push(node);
+          continue;
+        }
+        if (
+          nativeTurnSlotLastKnownHeight(node)
+          && structuralSignatures.has(nativeTurnSlotClassSignature(node))
+        ) candidateSlots.push(node);
+      }
+      if (mountedStructureInvalid) {
+        deepestFailure ||= {
+          reason: 'native-slot-mounted-structure-invalid',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      if (candidateSlots.length !== expectedSlotCount) {
+        deepestFailure ||= {
+          reason: 'native-slot-count-mismatch',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      const calibrationIdentities = [];
+      let calibrationMismatch = false;
+      for (let index = 0; index < candidateSlots.length; index += 1) {
+        const exact = directSlots.get(candidateSlots[index]) || null;
+        if (!exact) continue;
+        if (exact.identity.ordinal !== index + 1) {
+          calibrationMismatch = true;
+          break;
+        }
+        calibrationIdentities.push(exact.identity);
+      }
+      if (calibrationMismatch) {
+        deepestFailure ||= {
+          reason: 'native-slot-calibration-mismatch',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      if (calibrationIdentities.length < 3) {
+        deepestFailure ||= {
+          reason: 'native-slot-calibration-insufficient',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      selected = {
+        flowRoot: candidateRoot,
+        candidates: candidateSlots,
+        exactSlots: directSlots,
+        calibrationIdentities,
+      };
+      break;
     }
-    if (!calibrationIdentities.length) {
-      return fail('native-slot-calibration-unavailable', {
-        flowRoot,
-        actualSlotCount: candidates.length,
-      });
-    }
+    if (!selected) return fail(
+      deepestFailure?.reason || 'native-slot-flow-root-unavailable',
+      {
+        flowRoot: deepestFailure?.flowRoot || null,
+        actualSlotCount: deepestFailure?.actualSlotCount || 0,
+      }
+    );
+    const {
+      flowRoot,
+      candidates,
+      exactSlots,
+      calibrationIdentities,
+    } = selected;
     let current = null;
     try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
     if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
@@ -2952,7 +3055,7 @@
       });
     }
     const slots = candidates.map((element, index) => {
-      const exact = exactAnchors.get(element) || null;
+      const exact = exactSlots.get(element) || null;
       return {
         ordinal: index + 1,
         element,

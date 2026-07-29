@@ -304,6 +304,7 @@ function createFlow({
   includeTitleList = true,
 } = {}) {
   const flow = new FakeElement('DIV', 'host-thread-flow');
+  flow.setAttribute('id', 'thread');
   const page1Divider = h2oNode('divider', 1);
   const page2Divider = h2oNode('divider', 2);
   const titleList = h2oNode('title-list', 1);
@@ -799,7 +800,7 @@ await fixture('resolver performs no automatic navigation or scrolling', () => {
 await fixture('resolver contains no nearest-neighbour or mounted-array inference', () => {
   const source = extractFunction(PAGE_SOURCE, 'resolveNativeTurnSlotSequence');
   equal(/nearest|previousElementSibling|nextElementSibling|mounted-array|conversation-turn-74/.test(source), false, 'forbidden inference absent');
-  ok(source.includes('candidates.length !== expectedSlotCount'), 'exact count gate');
+  ok(source.includes('candidateSlots.length !== expectedSlotCount'), 'exact count gate');
   ok(source.includes('exact.identity.ordinal !== index + 1'), 'exact calibration gate');
 });
 
