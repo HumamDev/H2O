@@ -37,6 +37,12 @@
   const ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
   const ATTR_CHAT_PAGE_WRAPPER_HIDDEN = 'data-cgxui-chat-page-wrapper-hidden';
   const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
+  const ATTR_COLLAPSE_READINESS = 'data-h2o-collapse-readiness';
+  const ATTR_COLLAPSE_REASON = 'data-h2o-collapse-reason';
+  const ATTR_COLLAPSE_CONTROL_STATE = 'data-h2o-collapse-control-state';
+  const ATTR_COLLAPSE_FEEDBACK = 'data-h2o-collapse-feedback';
+  const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
+  const COLLAPSE_UNAVAILABLE_MESSAGE = 'Collapse unavailable until the next page boundary is loaded.';
   const ANSWER_TITLE_COLLAPSED_ATTR = 'data-at-collapsed';
   const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
   const USER_MSG_SEL = '[data-message-author-role="user"]';
@@ -93,6 +99,7 @@
     onDividerDblClick: null,
     onDividerClick: null,
     onDividerDotClick: null,
+    onDividerDotKeyDown: null,
     onAnswerCollapse: null,
     onTitleSet: null,
     onCoreIndexUpdated: null,
@@ -659,7 +666,17 @@
     const wrapped = isPageWrappedByPagination(num, chatId);
     const roots = getDividerRoots(num);
     for (const divider of roots) applyDividerVisualsToRoot(divider, state, { wrapped });
-    return { ok: true, status: 'ok', pageNum: num, mode, state, wrapped, count: roots.length };
+    const collapseControl = syncCollapsedBoundaryControlForPage(num, chatId);
+    return {
+      ok: true,
+      status: 'ok',
+      pageNum: num,
+      mode,
+      state,
+      wrapped,
+      count: roots.length,
+      collapseControl,
+    };
   }
 
   function collectKnownPageNums(chatId = '') {
@@ -2900,6 +2917,181 @@
     return { ok: true, status: 'collapsed', hidden: candidates.length, mutations };
   }
 
+  function collapsedBoundaryDividers(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    try {
+      return Array.from(document.querySelectorAll(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      ));
+    } catch {
+      return [];
+    }
+  }
+
+  function setCollapseFeedbackAttribute(node = null, name = '', value = null) {
+    if (!node || !name) return 0;
+    const next = value == null ? null : String(value);
+    let current = null;
+    try { current = node.getAttribute(name); } catch {}
+    if (current === next) return 0;
+    try {
+      if (next == null) node.removeAttribute(name);
+      else node.setAttribute(name, next);
+      return 1;
+    } catch {
+      return 0;
+    }
+  }
+
+  function collapseUnavailableStatusNode(divider = null, pageNum = 0, create = false) {
+    if (!divider?.querySelector) return null;
+    let node = null;
+    try { node = divider.querySelector(`[${ATTR_COLLAPSE_FEEDBACK}]`); } catch {}
+    if (node || !create) return node;
+    try {
+      node = document.createElement('div');
+      node.className = 'cgxui-chat-page-collapse-feedback';
+      node.setAttribute(ATTR_COLLAPSE_FEEDBACK, String(Math.max(1, Number(pageNum || 0) || 1)));
+      node.setAttribute('data-cgxui-owner', 'chtpgs');
+      node.setAttribute('role', 'status');
+      node.setAttribute('aria-live', 'polite');
+      node.setAttribute('aria-atomic', 'true');
+      node.setAttribute('aria-hidden', 'true');
+      node.hidden = true;
+      divider.appendChild(node);
+    } catch {
+      node = null;
+    }
+    return node;
+  }
+
+  function clearCollapseUnavailableFeedback(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let mutations = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      const node = collapseUnavailableStatusNode(divider, num, false);
+      if (!node) continue;
+      if (node.hidden !== true) {
+        try { node.hidden = true; mutations += 1; } catch {}
+      }
+      mutations += setCollapseFeedbackAttribute(node, 'aria-hidden', 'true');
+      mutations += setCollapseFeedbackAttribute(node, ATTR_COLLAPSE_REASON, null);
+      try {
+        if (node.textContent !== '') {
+          node.textContent = '';
+          mutations += 1;
+        }
+      } catch {}
+      try { node.removeAttribute('title'); } catch {}
+    }
+    return mutations;
+  }
+
+  function applyCollapsedBoundaryControlState(pageNum = 0, chatId = '', readiness = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const titleListActive = isTitleListActive(num, id);
+    const blocked = !titleListActive && readiness?.ready !== true;
+    const reason = blocked
+      ? String(readiness?.reason || 'readiness-api-unavailable')
+      : '';
+    const actionTitle = titleListActive
+      ? `Expand Page ${num}`
+      : blocked
+        ? `Collapse currently unavailable — ${reason}`
+        : `Collapse Page ${num}`;
+    const ariaLabel = titleListActive
+      ? `Page ${num}. Expand page titles.`
+      : blocked
+        ? `Page ${num}. Collapse currently unavailable because the next page boundary is not loaded. Technical reason: ${reason}.`
+        : `Page ${num}. Collapse page titles.`;
+    let mutations = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      mutations += setCollapseFeedbackAttribute(
+        divider,
+        ATTR_COLLAPSE_READINESS,
+        blocked ? COLLAPSE_UNAVAILABLE_STATUS : null
+      );
+      mutations += setCollapseFeedbackAttribute(divider, ATTR_COLLAPSE_REASON, blocked ? reason : null);
+      const dot = divider.querySelector?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot') || null;
+      if (!dot) continue;
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-hidden', null);
+      mutations += setCollapseFeedbackAttribute(dot, 'role', 'button');
+      mutations += setCollapseFeedbackAttribute(dot, 'tabindex', '0');
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-disabled', null);
+      mutations += setCollapseFeedbackAttribute(dot, ATTR_COLLAPSE_CONTROL_STATE, blocked ? 'blocked' : 'ready');
+      mutations += setCollapseFeedbackAttribute(dot, 'title', actionTitle);
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-label', ariaLabel);
+    }
+    if (!blocked) clearCollapseUnavailableFeedback(num);
+    return { ok: true, blocked, reason, pageNum: num, mutations };
+  }
+
+  function showCollapseUnavailableFeedback(pageNum = 0, chatId = '', readiness = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const reason = String(readiness?.reason || 'readiness-api-unavailable');
+    applyCollapsedBoundaryControlState(num, id, readiness);
+    let visible = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      const node = collapseUnavailableStatusNode(divider, num, true);
+      if (!node) continue;
+      try { node.textContent = COLLAPSE_UNAVAILABLE_MESSAGE; } catch {}
+      try { node.hidden = false; } catch {}
+      setCollapseFeedbackAttribute(node, 'aria-hidden', 'false');
+      setCollapseFeedbackAttribute(node, ATTR_COLLAPSE_REASON, reason);
+      setCollapseFeedbackAttribute(node, 'title', reason);
+      visible += 1;
+    }
+    return { ok: visible > 0, status: visible ? 'visible' : 'divider-unavailable', visible, reason };
+  }
+
+  function explicitCollapseFeedbackSource(source = '') {
+    return /^chat-page-divider:(circle|keyboard-enter|keyboard-space)$/.test(String(source || '').trim());
+  }
+
+  function handleCollapseUnavailableActivation(pageNum = 0, chatId = '', readiness = null, source = '') {
+    return failClosedCollapsedTitleList(pageNum, chatId, readiness, source);
+  }
+
+  function forwardCollapseControlKeyboardActivation(ev = null) {
+    const key = String(ev?.key || '');
+    if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') {
+      return { ok: false, status: 'not-collapse-key' };
+    }
+    if (ev?.repeat === true) return { ok: false, status: 'repeat-ignored' };
+    const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
+    if (!dot) return { ok: false, status: 'control-missing' };
+    try { ev.preventDefault(); ev.stopPropagation(); } catch {}
+    if (typeof S.onDividerDotClick !== 'function') {
+      return { ok: false, status: 'collapse-handler-unavailable' };
+    }
+    const source = key === 'Enter'
+      ? 'chat-page-divider:keyboard-enter'
+      : 'chat-page-divider:keyboard-space';
+    S.onDividerDotClick({
+      target: dot,
+      detail: 1,
+      h2oActivationSource: source,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    return { ok: true, status: 'forwarded', source };
+  }
+
+  function syncCollapsedBoundaryControlForPage(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    if (isTitleListActive(num, id)) {
+      return applyCollapsedBoundaryControlState(num, id, { ready: true, reason: 'title-list-active' });
+    }
+    const readiness = getCollapsedNativeBoundaryReadiness(num);
+    if (readiness.ready) {
+      S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
+    }
+    return applyCollapsedBoundaryControlState(num, id, readiness);
+  }
+
   function recordCollapsedBoundaryDiagnostic(pageNum = 0, readiness = null, source = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const chatId = resolveChatId();
@@ -2913,11 +3105,7 @@
       source: String(source || ''),
     });
     S.collapsedBoundaryDiagnostics.set(collapsedNativeRangeKey(chatId, num), detail);
-    try {
-      for (const divider of Array.from(document.querySelectorAll(
-        `.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
-      ))) divider.setAttribute('data-h2o-collapse-readiness', detail.status);
-    } catch {}
+    applyCollapsedBoundaryControlState(num, chatId, readiness);
     try {
       W.dispatchEvent(new CustomEvent('h2o:turn:updated', {
         detail: { reason: detail.status, pageNum: num },
@@ -2930,11 +3118,10 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
-    try {
-      for (const divider of Array.from(document.querySelectorAll(
-        `.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
-      ))) divider.removeAttribute('data-h2o-collapse-readiness');
-    } catch {}
+    const readiness = isTitleListActive(num, id)
+      ? { ready: true, reason: 'title-list-active' }
+      : getCollapsedNativeBoundaryReadiness(num);
+    applyCollapsedBoundaryControlState(num, id, readiness);
   }
 
   function getCollapsedBoundaryDiagnostic(pageNum = 0, chatId = '') {
@@ -2998,6 +3185,9 @@
     localForgetTitleListPage(id, num);
     try { syncSyntheticTitleList(num, id, false, { reason: 'collapsed-exact-boundary-unavailable' }); } catch {}
     const diagnostic = recordCollapsedBoundaryDiagnostic(num, readiness, source);
+    if (explicitCollapseFeedbackSource(source)) {
+      showCollapseUnavailableFeedback(num, id, readiness);
+    }
     return {
       ok: false,
       status: 'collapsed-exact-boundary-unavailable',
@@ -7677,6 +7867,9 @@
       if (!pageNum) return;
       try { ev.preventDefault(); ev.stopPropagation(); } catch {}
       const chatId = resolveChatId();
+      const activationSource = String(
+        ev?.h2oActivationSource || 'chat-page-divider:circle'
+      ).trim() || 'chat-page-divider:circle';
       const answerIds = getAuthoritativePageAnswerIds(pageNum, chatId);
       // Deterministic mass action: resolve over the coherent effective-or-
       // canonical page authority and the durable page intent, never the
@@ -7685,14 +7878,14 @@
       const nextEnabled = !intentSummary.allCollapsed;
       const readiness = nextEnabled ? getCollapsedNativeBoundaryReadiness(pageNum) : null;
       if (nextEnabled && !readiness?.ready) {
-        failClosedCollapsedTitleList(pageNum, chatId, readiness, 'chat-page-divider:circle');
+        handleCollapseUnavailableActivation(pageNum, chatId, readiness, activationSource);
         return;
       }
       if (!nextEnabled) {
         writePageTitleIntent(pageNum, 'expanded', {
           chatId,
           answerIds,
-          source: 'chat-page-divider:circle',
+          source: activationSource,
         });
       }
       // A newer page intent supersedes older per-row open projections. Return
@@ -7714,7 +7907,7 @@
         writePageTitleIntent(pageNum, 'collapsed', {
           chatId,
           answerIds,
-          source: 'chat-page-divider:circle',
+          source: activationSource,
         });
       }
       const routed = CM_ROUTER_API()?.routeChatPageDotClick?.({
@@ -7769,6 +7962,8 @@
         });
       }
     };
+
+    S.onDividerDotKeyDown = forwardCollapseControlKeyboardActivation;
 
     S.onAnswerCollapse = (ev) => {
       const answerId = String(ev?.detail?.answerId || '').trim();
@@ -7893,6 +8088,7 @@
     document.addEventListener('dblclick', S.onDividerDblClick, true);
     window.addEventListener('click', S.onDividerClick, true);
     window.addEventListener('click', S.onDividerDotClick, true);
+    window.addEventListener('keydown', S.onDividerDotKeyDown, true);
     window.addEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged);
     window.addEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse);
     window.addEventListener(EV_TITLE_SET, S.onTitleSet);
@@ -7923,6 +8119,7 @@
     try { document.removeEventListener('dblclick', S.onDividerDblClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerDotClick, true); } catch {}
+    try { window.removeEventListener('keydown', S.onDividerDotKeyDown, true); } catch {}
     try { window.removeEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged); } catch {}
     try { window.removeEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse); } catch {}
     try { window.removeEventListener(EV_TITLE_SET, S.onTitleSet); } catch {}
@@ -7941,6 +8138,7 @@
     S.onDividerDblClick = null;
     S.onDividerClick = null;
     S.onDividerDotClick = null;
+    S.onDividerDotKeyDown = null;
     S.onAnswerCollapse = null;
     S.onTitleSet = null;
     S.onCoreIndexUpdated = null;
@@ -7965,6 +8163,17 @@
     S.titleListHydrationRecoveryIds.clear();
     S.nativeRangeActivePages.clear();
     S.collapsedBoundaryDiagnostics.clear();
+    try {
+      for (const node of Array.from(document.querySelectorAll(`[${ATTR_COLLAPSE_FEEDBACK}]`))) {
+        try {
+          node.hidden = true;
+          node.textContent = '';
+          node.setAttribute('aria-hidden', 'true');
+          node.removeAttribute(ATTR_COLLAPSE_REASON);
+          node.removeAttribute('title');
+        } catch {}
+      }
+    } catch {}
     for (const campaign of S.dotExpandCampaigns.values()) {
       if (campaign?.timer) { try { W.clearTimeout(campaign.timer); } catch {} }
     }

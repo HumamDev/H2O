@@ -1468,6 +1468,7 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
 }
 .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider-dot{
+  position: relative;
   width: 8px;
   height: 8px;
   min-width: 8px;
@@ -1478,6 +1479,46 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
   opacity: 0.92;
   cursor: pointer;
   transition: opacity 0.18s ease, filter 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+.cgxui-chat-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-chat-page-divider-dot,
+.cgxui-pgnw-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-pgnw-page-divider-dot{
+  cursor: not-allowed !important;
+  outline: 2px dashed currentColor;
+  outline-offset: 3px;
+  filter: grayscale(0.72) brightness(0.82);
+}
+.cgxui-chat-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-chat-page-divider-dot::after,
+.cgxui-pgnw-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-pgnw-page-divider-dot::after{
+  content: "!";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  color: currentColor;
+  font: 800 9px/1 ui-sans-serif, system-ui, sans-serif;
+}
+.cgxui-chat-page-collapse-feedback{
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cgxui-chat-page-bg, rgba(15, 23, 42, 0.96)) 92%, black 8%);
+  color: var(--cgxui-chat-page-fg, rgba(241,245,249,0.98));
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  font: 600 12px/1.35 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+}
+.cgxui-chat-page-collapse-feedback[hidden]{
+  display: none !important;
 }
 .cgxui-chat-page-divider[data-cgxui-chat-page-title-state="expanded"] .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider[data-cgxui-chat-page-title-state="expanded"] .cgxui-pgnw-page-divider-dot{
@@ -1500,6 +1541,7 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
 }
 .cgxui-chat-page-divider,
 .cgxui-pgnw-page-divider[data-cgxui-chat-page-divider="1"]{
+  position: relative;
   cursor: pointer;
 }
 .cgxui-chat-page-divider:hover .cgxui-chat-page-divider-label,

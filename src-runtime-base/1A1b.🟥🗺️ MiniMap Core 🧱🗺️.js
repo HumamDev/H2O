@@ -10254,7 +10254,29 @@ function unbindChatPageDividerBridge() {
     const dot = getChatPageDividerDotEl(divider);
     if (dot) {
       try { dot.setAttribute('data-page-title-state', effectiveTitleState); } catch {}
-      try { dot.removeAttribute('title'); } catch {}
+      const collapseUnavailable = String(
+        divider.getAttribute?.('data-h2o-collapse-readiness') || ''
+      ) === 'collapsed-exact-boundary-unavailable';
+      const collapseReason = String(
+        divider.getAttribute?.('data-h2o-collapse-reason') || 'readiness-api-unavailable'
+      ).trim() || 'readiness-api-unavailable';
+      const collapseTitle = effectiveTitleListActive
+        ? `Expand Page ${num}`
+        : collapseUnavailable
+          ? `Collapse currently unavailable — ${collapseReason}`
+          : `Collapse Page ${num}`;
+      const collapseLabel = effectiveTitleListActive
+        ? `Page ${num}. Expand page titles.`
+        : collapseUnavailable
+          ? `Page ${num}. Collapse currently unavailable because the next page boundary is not loaded. Technical reason: ${collapseReason}.`
+          : `Page ${num}. Collapse page titles.`;
+      try { dot.removeAttribute('aria-hidden'); } catch {}
+      try { dot.setAttribute('role', 'button'); } catch {}
+      try { dot.setAttribute('tabindex', '0'); } catch {}
+      try { dot.removeAttribute('aria-disabled'); } catch {}
+      try { dot.setAttribute('data-h2o-collapse-control-state', collapseUnavailable ? 'blocked' : 'ready'); } catch {}
+      try { dot.setAttribute('title', collapseTitle); } catch {}
+      try { dot.setAttribute('aria-label', collapseLabel); } catch {}
     }
 
     const title = `Page ${num}`;
