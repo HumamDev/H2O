@@ -48,8 +48,9 @@ Stage 1D-E1 adds a proof-only ownership foundation:
 - a sandbox-only adversarial validator;
 - narrow ignore rules for future alias and dev-output staging/retired siblings.
 
-No current writer imports the library. No live canonical lease is created.
-No canonical destination permissions or flags are changed. Generation,
+At E1 acceptance no writer imported the library. Stage E2A adds only the
+bounded alias-writer guard described below. No live canonical lease is created,
+and no canonical destination permissions or flags are changed. Generation,
 staging, promotion, rollback, provenance publication, and browser activation
 remain outside this phase.
 
@@ -82,12 +83,39 @@ worktree from executable Git configuration and worktree discovery.
 
 ## Destination classes
 
-Normalized absolute paths are resolved through the longest existing ancestor,
-so symlinked spellings cannot evade classification.
+Normalized absolute paths are resolved through the longest existing ancestor
+with the E1 real-aware path helper, so symlinked spellings and missing
+descendants cannot evade classification.
+
+E2A classification is destination-authoritative and multi-context. The guard
+derives a trusted writer repository from the real filesystem location of
+`canonical-write-guard.mjs`, never from caller `cwd`, `H2O_SRC_DIR`, or
+`H2O_SERVER_DIR`. It also starts at the destination's nearest existing
+directory, walks every real ancestor to the filesystem root, and resolves
+every `.git` directory or `.git` file through the E1 shared-anchor API. The
+contexts are deduplicated by authoritative repository root and shared-anchor
+root. Caller `cwd` remains ordinary execution context only; it is not an
+authority boundary.
+
+Classification runs against the trusted writer context and every
+destination-derived repository context. A `CANONICAL` result from any context
+wins. Nested repositories therefore cannot hide an outer repository's
+canonical generated-delivery path. Duplicate observations of one owner are
+accepted, while distinct canonical owners are a path-coupling ambiguity and
+fail before mutation.
 
 `LOCAL` includes equivalent generated-looking paths beneath non-authoritative
 worktrees. Local destinations require no canonical lease and retain their
-existing behavior.
+existing behavior. A destination with no `.git` boundary anywhere on its real
+ancestor chain is a legitimate outside-repository `LOCAL` destination and
+also remains token-free. An unrelated standalone repository can classify its
+own canonical generated-output paths as `CANONICAL`, but its anchor and lease
+cannot authorize a different repository's canonical destination.
+
+Repository discovery has no permissive error fallback. Once a `.git` marker
+is detected, malformed or unreadable metadata, corrupt worktree state,
+ambiguous Git output, command failure, or any inability to resolve the marker
+through E1 fails closed. Such a failure is never converted to `LOCAL`.
 
 `CANONICAL` includes authoritative:
 
@@ -220,12 +248,12 @@ Success and failure each produce one JSON response on stdout. Stderr is
 reserved and currently unused by the CLI; callers must evaluate both the exit
 code and JSON body.
 
-During E1, `acquire`, `renew`, `release`, `force-release`, and
+During the proof-only foundation phase, `acquire`, `renew`, `release`, `force-release`, and
 `approve-canary` require `--ack-foundation-real-anchor` before they may mutate
 the default shared anchor. Sandbox overrides remain explicitly acknowledged
 with `--allow-root-override`. `status` and `verify` remain read-only. This
-temporary foundation guard must be reviewed when E2 enables operational
-enforcement.
+temporary foundation guard must be reviewed before operational canonical
+publication is enabled.
 
 Force recovery requires a bounded reason and evidence. A live valid lease can
 never be force-released. A stale valid lease audit preserves a redacted prior
@@ -234,6 +262,52 @@ marker, lifecycle and staging names. A corrupt-state audit preserves bounded
 directory inventory, malformed-metadata digest or parse failure, evidence
 digest, and actor/process context. Audit publication must succeed before the
 lease directory is removed; audit failure leaves it intact.
+
+## Stage E2A alias-writer guard
+
+Stage E2A is source-only, direct pre-mutation enforcement for
+`tools/loader/make-aliases.mjs`. It adds a reusable canonical-write guard that
+imports E1 destination, anchor, lease, token, eligibility, expiry, and session
+verification logic instead of copying it.
+
+For a `LOCAL` alias destination the guard returns an immutable result with no
+canonical session and permits existing token-free behavior. It neither creates
+nor reads a canonical lease for authorization. This preserves ordinary
+worktree-local alias generation, including direct and compatibility symlinks,
+linked foreign-worktree-local generation, and output entirely outside a
+repository.
+
+For a `CANONICAL` destination, diagnostics fail closed in this order: lease
+absence, token validity, expiry, repository/worktree/HEAD/session eligibility,
+and caller assertions such as the shared build marker. Environment values for
+session ID, approved HEAD, and build timestamp are assertions only; the
+verified lease remains authoritative. The writer token is supplied through
+`H2O_CANONICAL_DELIVERY_TOKEN`, remains subject to the same-user observation
+limitations above, and is never returned or logged by the guard.
+
+The selected canonical owner, not caller `cwd`, supplies the anchor passed to
+lease status and verification and the repository/worktree/branch/HEAD identity
+expected from the lease. This closes the independently demonstrated case where
+`H2O_SRC_DIR` named unrelated repository B while `H2O_SERVER_DIR` named
+repository A's canonical server. A lease under B's anchor cannot authorize A,
+and a valid lease under A reaches the same E2 terminal rejection regardless of
+the unrelated caller context.
+
+Even a fully valid lease cannot authorize a live canonical alias mutation in
+E2A. The guard returns path-coupling exit code 16 with
+`canonical-live-write-disabled-until-stage-e3`. This rejection occurs before
+the alias writer's first `mkdirSync`, cleanup, unlink, symlink, or copy. Stage
+E3 must provide a verified staging destination before canonical writes can
+become possible. The authoritative worktree's normal default canonical alias
+build is therefore intentionally blocked during E2. This correction closes
+the caller-controlled-`cwd` classification bypass specifically; it does not
+claim global live-delivery exclusivity while other writers remain unwired.
+
+Only `make-aliases.mjs` imports the guard in E2A. Proxy, loader, bridge, and
+extension writers remain unintegrated. Historical copies of any writer remain
+unprotected until E3 activates and proves the destination permission floor.
+Live enforcement is therefore incomplete, Stage 1D remains blocked, and the
+promotion primitive remains unresolved and rejected.
 
 ## Why a lease alone is insufficient
 
@@ -311,16 +385,17 @@ pre-authorization for a candidate.
 ## Rollout
 
 1. **E1 — foundation:** lease, classifier, CLI, ADR, and sandbox proofs.
-2. **E2 — local/canonical writer plumbing:** make every generated writer
-   classify its destination and require a verified session only for canonical
-   output.
-3. **E3 — staging and permission floor:** keep live content unchanged while
+2. **E2A — alias-writer guard:** preserve token-free local aliases and reject
+   direct live canonical aliases before mutation, even with a valid session.
+3. **E2B — remaining writer plumbing:** make every remaining generated writer
+   classify its destination without yet enabling live publication.
+4. **E3 — staging and permission floor:** keep live content unchanged while
    session output is generated and validated in staging.
-4. **E4 — promotion primitive:** independently accept atomic exchange, pointer
+5. **E4 — promotion primitive:** independently accept atomic exchange, pointer
    promotion, or a demonstrably fail-closed reversible protocol.
-5. **E5 — provenance and recovery:** publish receipts only after validation,
+6. **E5 — provenance and recovery:** publish receipts only after validation,
    exercise rollback, expiry, reboot, and force-release evidence.
-6. **E6 — activation:** independent delivery review followed by a narrow
+7. **E6 — activation:** independent delivery review followed by a narrow
    browser canary.
 
 Stage 1D remains blocked until staging publication and operational tests 3, 4,
