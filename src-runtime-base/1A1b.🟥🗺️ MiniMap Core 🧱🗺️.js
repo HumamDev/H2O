@@ -10625,10 +10625,22 @@ function unbindChatPageDividerBridge() {
       && status.count === count
       ? 'selected-path-overlay'
       : 'canonical';
+    let nativeSlotSequence = null;
+    try {
+      nativeSlotSequence = getChatPagesControllerApi()?.resolveNativeTurnSlotSequence?.() || null;
+    } catch {}
+    const nativeSlotSequenceReady = nativeSlotSequence?.ready === true
+      && nativeSlotSequence.count === count
+      && nativeSlotSequence.expectedSlotCount === count * 2
+      && nativeSlotSequence.actualSlotCount === count * 2
+      && nativeSlotSequence.flowRoot
+      && Array.isArray(nativeSlotSequence.slots);
     const pages = [];
     for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
       const startOrder = ((pageNum - 1) * 25) + 1;
       const endOrder = Math.min(count, pageNum * 25);
+      const nativeStartOrdinal = ((pageNum - 1) * 25 * 2) + 1;
+      const nativeEndOrdinal = Math.min(pageNum * 25 * 2, count * 2);
       const records = [];
       const artifacts = [];
       for (let index = startOrder - 1; index < endOrder; index += 1) {
@@ -10642,16 +10654,35 @@ function unbindChatPageDividerBridge() {
       artifacts.sort((a, b) => a.order - b.order);
       const exactStart = getPageStartTurnWrapper(pageNum);
       const titleListRoot = getChatPageTitleListRoot(pageNum);
+      const nativeStartSlot = nativeSlotSequenceReady
+        ? nativeSlotSequence.slots[nativeStartOrdinal - 1]?.element || null
+        : null;
+      const nativeEndSlot = nativeSlotSequenceReady
+        ? nativeSlotSequence.slots[nativeEndOrdinal - 1]?.element || null
+        : null;
+      const nextNativeStartSlot = nativeSlotSequenceReady
+        ? nativeSlotSequence.slots[nativeEndOrdinal]?.element || null
+        : null;
       pages.push({
         pageNum,
         startOrder,
         endOrder,
+        nativeStartOrdinal,
+        nativeEndOrdinal,
         records,
         artifacts,
         exactStart,
         earliest: artifacts[0] || null,
         latest: artifacts[artifacts.length - 1] || null,
         titleListRoot: titleListRoot?.isConnected ? titleListRoot : null,
+        nativeStartSlot: nativeSlotSequenceReady
+          && nativeStartSlot?.parentNode === nativeSlotSequence.flowRoot ? nativeStartSlot : null,
+        nativeEndSlot: nativeSlotSequenceReady
+          && nativeEndSlot?.parentNode === nativeSlotSequence.flowRoot ? nativeEndSlot : null,
+        nextNativeStartSlot: nativeSlotSequenceReady
+          && nextNativeStartSlot?.parentNode === nativeSlotSequence.flowRoot
+          ? nextNativeStartSlot
+          : null,
       });
     }
     return Object.freeze({
@@ -10661,6 +10692,7 @@ function unbindChatPageDividerBridge() {
       count,
       pageCount,
       pages,
+      nativeSlotSequence: nativeSlotSequenceReady ? nativeSlotSequence : null,
     });
   }
 
@@ -10740,6 +10772,15 @@ function unbindChatPageDividerBridge() {
     const isStart = kind !== 'end';
     const titleList = page.titleListRoot;
     if (isStart) {
+      if (page.nativeStartSlot?.parentNode) {
+        return {
+          ok: true,
+          parent: page.nativeStartSlot.parentNode,
+          before: page.nativeStartSlot,
+          mode: 'exact-native-turn-slot',
+          evidence: page.nativeStartSlot,
+        };
+      }
       if (page.exactStart?.wrapper?.parentNode) {
         return {
           ok: true,
@@ -11033,7 +11074,16 @@ function unbindChatPageDividerBridge() {
       if (placeNode?.(anchor.parent, divider, anchor.before || null)) stats.moved += 1;
       if (placeNode?.(anchor.parent, startSentinel, divider)) stats.moved += 1;
       const titleList = page.titleListRoot;
-      if (titleList && divider.parentNode && divider.nextSibling !== titleList) {
+      if (titleList && page.nativeEndSlot?.parentNode) {
+        const nativeParent = page.nativeEndSlot.parentNode;
+        const nativeBefore = page.nextNativeStartSlot?.parentNode === nativeParent
+          ? page.nextNativeStartSlot
+          : (page.nativeEndSlot.nextSibling || null);
+        // Host turn slots stay in their React-owned positions. Move only the
+        // H2O title-list unit to the end of its hidden native range, so the
+        // next page divider can sit immediately before its exact slot.
+        if (placeNode?.(nativeParent, titleList, nativeBefore)) stats.moved += 1;
+      } else if (titleList && divider.parentNode && divider.nextSibling !== titleList) {
         if (placeNode?.(divider.parentNode, titleList, divider.nextSibling || null)) stats.moved += 1;
       }
       const endAnchor = resolveChatPageBoundaryAnchor(model, page, 'end');

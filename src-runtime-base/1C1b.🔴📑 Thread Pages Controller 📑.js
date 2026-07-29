@@ -43,6 +43,7 @@
   const ATTR_COLLAPSE_FEEDBACK = 'data-h2o-collapse-feedback';
   const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
   const COLLAPSE_UNAVAILABLE_MESSAGE = 'Collapse unavailable until the next page boundary is loaded.';
+  const COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE = 'Collapse temporarily unavailable because the conversation layout is incomplete.';
   const ANSWER_TITLE_COLLAPSED_ATTR = 'data-at-collapsed';
   const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
   const USER_MSG_SEL = '[data-message-author-role="user"]';
@@ -2707,10 +2708,14 @@
     const value = {
       ready: raw.ready === true,
       reason: String(raw.reason || (raw.ready ? 'ready' : 'collapsed-exact-boundary-unavailable')),
+      structuralReason: String(raw.structuralReason || ''),
       pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
       flowRoot: raw.flowRoot || null,
       nativeStart: raw.nativeStart || null,
       nextPageNativeStart: raw.nextPageNativeStart || null,
+      nativeSlotSequence: raw.nativeSlotSequence || null,
+      nativeStartOrdinal: Math.max(0, Number(raw.nativeStartOrdinal || 0) || 0),
+      nativeEndOrdinal: Math.max(0, Number(raw.nativeEndOrdinal || 0) || 0),
       startIdentity: raw.startIdentity ? Object.freeze({ ...raw.startIdentity }) : null,
       nextStartIdentity: raw.nextStartIdentity ? Object.freeze({ ...raw.nextStartIdentity }) : null,
       generation: Math.max(0, Number(raw.generation || 0) || 0),
@@ -2721,11 +2726,264 @@
     return Object.freeze(value);
   }
 
-  // Read-only fail-closed gate. It never asks Unmount/Pagination/MiniMap to
-  // mount anything and never navigates or scrolls. A native page range exists
-  // only when both exact authority identities are mounted and their production
-  // only-child anchors are direct siblings in ascending order.
-  function getCollapsedNativeBoundaryReadiness(pageNum = 0) {
+  function nativeTurnSlotClassSignature(node = null) {
+    if (!node || node.nodeType !== 1) return '';
+    const classes = String(node.className || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .sort();
+    return `${String(node.tagName || '').toUpperCase()}|${classes.join('.')}`;
+  }
+
+  function nativeTurnSlotLastKnownHeight(node = null) {
+    if (!node?.style) return '';
+    let value = '';
+    try {
+      const computed = typeof W.getComputedStyle === 'function'
+        ? W.getComputedStyle(node)
+        : (typeof getComputedStyle === 'function' ? getComputedStyle(node) : null);
+      value = String(computed?.getPropertyValue?.('--last-known-height') || '').trim();
+    } catch {}
+    if (value) return value;
+    try { return String(node.style.getPropertyValue?.('--last-known-height') || '').trim(); } catch {}
+    return '';
+  }
+
+  function isNativeTurnSlotExcluded(node = null) {
+    if (!node || node.nodeType !== 1) return true;
+    try {
+      if (node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' form, [contenteditable="true"],'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      )) return true;
+      if (node.hasAttribute?.('data-cgxui-owner')) return true;
+      if (node.closest?.('#cgx-mm-root')) return true;
+    } catch {}
+    return false;
+  }
+
+  function nativeTurnSlotMountedIdentity(section = null, membersByOrder = new Map(), expectedSlotCount = 0) {
+    const nativeOrdinal = turnNumberOfSection(section);
+    if (
+      !nativeOrdinal
+      || nativeOrdinal > expectedSlotCount
+      || nativeOrdinal < 1
+    ) return null;
+    const order = Math.ceil(nativeOrdinal / 2);
+    const member = membersByOrder.get(order) || null;
+    if (!member) return null;
+    const role = nativeOrdinal % 2 ? 'user' : 'assistant';
+    if (getTurnHostRole(section) !== role) return null;
+    const expectedId = role === 'user'
+      ? String(member.questionId || '').trim()
+      : String(member.answerId || '').trim();
+    if (!expectedId) return null;
+    const actualId = String(section.getAttribute?.('data-turn-id') || '').trim();
+    if (actualId !== expectedId) return null;
+    return Object.freeze({
+      ordinal: nativeOrdinal,
+      order,
+      role,
+      id: actualId,
+      testId: `conversation-turn-${String(nativeOrdinal)}`,
+    });
+  }
+
+  function frozenNativeTurnSlotSequence(raw = {}) {
+    const slots = Array.isArray(raw.slots)
+      ? raw.slots.map((slot) => Object.freeze({ ...slot }))
+      : [];
+    const calibrationIdentities = Array.isArray(raw.calibrationIdentities)
+      ? raw.calibrationIdentities.map((identity) => Object.freeze({ ...identity }))
+      : [];
+    return Object.freeze({
+      ready: raw.ready === true,
+      reason: String(raw.reason || (raw.ready ? 'ready' : 'native-turn-slot-sequence-unavailable')),
+      flowRoot: raw.flowRoot || null,
+      expectedSlotCount: Math.max(0, Number(raw.expectedSlotCount || 0) || 0),
+      actualSlotCount: Math.max(0, Number(raw.actualSlotCount || 0) || 0),
+      calibrated: raw.calibrated === true,
+      slots: Object.freeze(slots),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      fingerprint: String(raw.fingerprint || ''),
+      source: String(raw.source || ''),
+      count: Math.max(0, Number(raw.count || 0) || 0),
+      calibrationIdentities: Object.freeze(calibrationIdentities),
+    });
+  }
+
+  // Read-only native-slot resolver. ChatGPT retains one direct-flow layout
+  // slot per native USER/ASSISTANT turn even while the section is virtualized;
+  // section-less slots keep the same host class signature and
+  // --last-known-height. Exact count plus every mounted test-id calibration
+  // is the authority—never nearest neighbours, mounted-array ordinals, or a
+  // late Page 2 artifact.
+  function resolveNativeTurnSlotSequence() {
+    const rt = TURN_RUNTIME();
+    if (!rt) return frozenNativeTurnSlotSequence({ reason: 'native-slot-runtime-unavailable' });
+    let before = null;
+    let after = null;
+    let model = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      model = buildTitleListPresentationPageModel();
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return frozenNativeTurnSlotSequence({ reason: 'native-slot-authority-read-failed' });
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    const expectedSlotCount = count * 2;
+    const generation = Math.max(0, Number(before?.generation || 0) || 0);
+    const fingerprint = String(before?.canonicalFingerprint || '');
+    const source = String(before?.source || '');
+    const fail = (reason, extra = {}) => frozenNativeTurnSlotSequence({
+      reason,
+      expectedSlotCount,
+      generation,
+      fingerprint,
+      source,
+      count,
+      ...extra,
+    });
+    if (
+      !model?.coherent
+      || count < 1
+      || expectedSlotCount < 2
+      || model.count !== count
+      || model.source !== source
+      || !generation
+      || !fingerprint
+      || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+    ) return fail('native-slot-authority-not-coherent');
+    const members = model.pages
+      .flatMap((page) => Array.isArray(page?.turnRecords) ? page.turnRecords : [])
+      .sort((a, b) => Number(a?.turnNo || 0) - Number(b?.turnNo || 0));
+    if (members.length !== count) return fail('native-slot-membership-incomplete');
+    const membersByOrder = new Map(
+      members.map((member) => [Math.max(0, Number(member?.turnNo || 0) || 0), member])
+    );
+    if (membersByOrder.size !== count || membersByOrder.has(0)) {
+      return fail('native-slot-membership-ambiguous');
+    }
+    const exactMounted = [];
+    const seenNativeOrdinals = new Set();
+    let sections = [];
+    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
+    for (const section of sections) {
+      try {
+        if (section.closest?.(`${TITLE_LIST_SYNTH_SEL}, [data-h2o-title-inline-slot="1"]`)) continue;
+      } catch {}
+      const identity = nativeTurnSlotMountedIdentity(section, membersByOrder, expectedSlotCount);
+      if (!identity) continue;
+      const anchor = getTurnAnchorNode(section);
+      const parent = anchor?.parentElement || null;
+      if (!anchor || !parent || isNativeTurnSlotExcluded(anchor)) continue;
+      if (seenNativeOrdinals.has(identity.ordinal)) {
+        return fail('native-slot-mounted-identity-ambiguous');
+      }
+      seenNativeOrdinals.add(identity.ordinal);
+      exactMounted.push({ section, anchor, parent, identity });
+    }
+    if (!exactMounted.length) return fail('native-slot-calibration-unavailable');
+    const flowRoots = new Set(exactMounted.map((entry) => entry.parent));
+    if (flowRoots.size !== 1) return fail('native-slot-flow-parent-incoherent');
+    const flowRoot = exactMounted[0].parent;
+    const exactAnchors = new Map(exactMounted.map((entry) => [entry.anchor, entry]));
+    const structuralSignatures = new Set(
+      exactMounted.map((entry) => nativeTurnSlotClassSignature(entry.anchor)).filter(Boolean)
+    );
+    if (!structuralSignatures.size) return fail('native-slot-structural-signature-unavailable', { flowRoot });
+    const candidates = [];
+    for (const node of Array.from(flowRoot.children || [])) {
+      if (isNativeTurnSlotExcluded(node) || String(node.tagName || '').toUpperCase() !== 'DIV') continue;
+      let nodeSections = [];
+      try {
+        nodeSections = Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || []);
+        if (node.matches?.(TURN_HOST_SEL)) nodeSections.unshift(node);
+      } catch {}
+      const exact = exactAnchors.get(node) || null;
+      if (nodeSections.length) {
+        if (nodeSections.length !== 1 || !exact) {
+          return fail('native-slot-mounted-structure-invalid', { flowRoot, actualSlotCount: candidates.length });
+        }
+        candidates.push(node);
+        continue;
+      }
+      if (
+        nativeTurnSlotLastKnownHeight(node)
+        && structuralSignatures.has(nativeTurnSlotClassSignature(node))
+      ) candidates.push(node);
+    }
+    if (candidates.length !== expectedSlotCount) {
+      return fail('native-slot-count-mismatch', {
+        flowRoot,
+        actualSlotCount: candidates.length,
+      });
+    }
+    const calibrationIdentities = [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const slot = candidates[index];
+      const exact = exactAnchors.get(slot) || null;
+      if (!exact) continue;
+      if (exact.identity.ordinal !== index + 1) {
+        return fail('native-slot-calibration-mismatch', {
+          flowRoot,
+          actualSlotCount: candidates.length,
+        });
+      }
+      calibrationIdentities.push(exact.identity);
+    }
+    if (!calibrationIdentities.length) {
+      return fail('native-slot-calibration-unavailable', {
+        flowRoot,
+        actualSlotCount: candidates.length,
+      });
+    }
+    let current = null;
+    try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+    if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+      return fail('native-slot-authority-changed', {
+        flowRoot,
+        actualSlotCount: candidates.length,
+      });
+    }
+    const slots = candidates.map((element, index) => {
+      const exact = exactAnchors.get(element) || null;
+      return {
+        ordinal: index + 1,
+        element,
+        mountedTestId: exact?.identity?.testId || '',
+        mountedQId: exact?.identity?.role === 'user' ? exact.identity.id : '',
+        mountedAId: exact?.identity?.role === 'assistant' ? exact.identity.id : '',
+        structuralClassification: exact ? 'mounted-exact' : 'sectionless-last-known-height',
+        generation,
+        fingerprint,
+      };
+    });
+    return frozenNativeTurnSlotSequence({
+      ready: true,
+      reason: 'ready',
+      flowRoot,
+      expectedSlotCount,
+      actualSlotCount: slots.length,
+      calibrated: true,
+      slots,
+      generation,
+      fingerprint,
+      source,
+      count,
+      calibrationIdentities,
+    });
+  }
+
+  // Legacy exact-mounted boundary gate remains only as a conservative
+  // structural fallback for hosts that do not expose the proven persistent
+  // native-slot sequence.
+  function getCollapsedExactBoundaryReadiness(pageNum = 0) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const rt = TURN_RUNTIME();
     if (!rt || !num) {
@@ -2826,6 +3084,183 @@
     });
   }
 
+  // Collapse readiness prefers the exact persistent native-slot sequence. The
+  // page range formula is generic: 25 presentation pairs × two native turns.
+  // conversation-turn-51 may be section-less; slot ordinal 51 remains exact.
+  function getCollapsedNativeBoundaryReadiness(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const sequence = typeof resolveNativeTurnSlotSequence === 'function'
+      ? resolveNativeTurnSlotSequence()
+      : Object.freeze({ ready: false, reason: 'native-slot-resolver-unavailable' });
+    if (sequence.ready) {
+      const pageSizeNative = TITLE_LIST_PAGE_SIZE * 2;
+      const startOrdinal = ((num - 1) * pageSizeNative) + 1;
+      const endOrdinal = Math.min(num * pageSizeNative, sequence.expectedSlotCount);
+      if (
+        startOrdinal > sequence.expectedSlotCount
+        || endOrdinal < startOrdinal
+      ) {
+        return frozenCollapsedBoundaryResult({
+          pageNum: num,
+          reason: 'page-outside-presentation',
+          structuralReason: 'native-slot-page-outside-presentation',
+          generation: sequence.generation,
+          fingerprint: sequence.fingerprint,
+          source: sequence.source,
+          count: sequence.count,
+        });
+      }
+      const nativeStart = sequence.slots[startOrdinal - 1]?.element || null;
+      const nextPageNativeStart = sequence.slots[endOrdinal]?.element || null;
+      if (
+        !nativeStart
+        || nativeStart.parentElement !== sequence.flowRoot
+        || (nextPageNativeStart && nextPageNativeStart.parentElement !== sequence.flowRoot)
+      ) {
+        return frozenCollapsedBoundaryResult({
+          pageNum: num,
+          reason: 'collapsed-exact-boundary-unavailable',
+          structuralReason: 'native-slot-range-incoherent',
+          generation: sequence.generation,
+          fingerprint: sequence.fingerprint,
+          source: sequence.source,
+          count: sequence.count,
+        });
+      }
+      return frozenCollapsedBoundaryResult({
+        ready: true,
+        reason: 'ready-native-turn-slots',
+        pageNum: num,
+        flowRoot: sequence.flowRoot,
+        nativeStart,
+        nextPageNativeStart,
+        nativeSlotSequence: sequence,
+        nativeStartOrdinal: startOrdinal,
+        nativeEndOrdinal: endOrdinal,
+        startIdentity: {
+          order: Math.ceil(startOrdinal / 2),
+          testId: `conversation-turn-${String(startOrdinal)}`,
+        },
+        nextStartIdentity: nextPageNativeStart ? {
+          order: Math.ceil((endOrdinal + 1) / 2),
+          testId: `conversation-turn-${String(endOrdinal + 1)}`,
+        } : null,
+        generation: sequence.generation,
+        fingerprint: sequence.fingerprint,
+        source: sequence.source,
+        count: sequence.count,
+      });
+    }
+    const exact = typeof getCollapsedExactBoundaryReadiness === 'function'
+      ? getCollapsedExactBoundaryReadiness(num)
+      : (() => {
+          // Extraction-compatible legacy fallback for older real-source
+          // validators. Production always owns getCollapsedExactBoundaryReadiness.
+          const rt = TURN_RUNTIME();
+          if (!rt || !num) {
+            return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'readiness-api-unavailable' });
+          }
+          let before = null;
+          let after = null;
+          let model = null;
+          try {
+            before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+            model = buildTitleListPresentationPageModel();
+            after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+          } catch {
+            return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'authority-read-failed' });
+          }
+          const count = Math.max(0, Number(before?.count || 0) || 0);
+          const fingerprint = String(before?.canonicalFingerprint || '');
+          const generation = Math.max(0, Number(before?.generation || 0) || 0);
+          const source = String(before?.source || '');
+          const fail = (reason, extra = {}) => frozenCollapsedBoundaryResult({
+            pageNum: num,
+            reason,
+            generation,
+            fingerprint,
+            source,
+            count,
+            ...extra,
+          });
+          if (
+            !model?.coherent
+            || count < 1
+            || model.count !== count
+            || model.source !== source
+            || !generation
+            || !fingerprint
+            || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+          ) return fail('authority-not-coherent');
+          const page = model.pages.find((entry) => entry.pageNo === num) || null;
+          const nextPage = model.pages.find((entry) => entry.pageNo === num + 1) || null;
+          if (!page) return fail('page-outside-presentation');
+          if (!nextPage) return fail('next-page-native-start-unavailable');
+          const startMember = page.turnRecords[0] || null;
+          const nextStartMember = nextPage.turnRecords[0] || null;
+          const startSection = exactNativeStartSection(startMember);
+          const nextStartSection = exactNativeStartSection(nextStartMember);
+          const startIdentity = {
+            order: Number(startMember?.turnNo || 0),
+            qId: String(startMember?.questionId || ''),
+            testId: `conversation-turn-${String((((Number(startMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+          };
+          const nextStartIdentity = {
+            order: Number(nextStartMember?.turnNo || 0),
+            qId: String(nextStartMember?.questionId || ''),
+            testId: `conversation-turn-${String((((Number(nextStartMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+          };
+          if (!startSection) return fail('native-start-not-mounted', { startIdentity, nextStartIdentity });
+          if (!nextStartSection) return fail('next-page-native-start-not-mounted', { startIdentity, nextStartIdentity });
+          const nativeStart = getTurnAnchorNode(startSection);
+          const nextPageNativeStart = getTurnAnchorNode(nextStartSection);
+          const flowRoot = nativeStart?.parentElement || null;
+          if (
+            !nativeStart
+            || !nextPageNativeStart
+            || !flowRoot
+            || nextPageNativeStart.parentElement !== flowRoot
+          ) return fail('native-layout-boundary-unresolved', { startIdentity, nextStartIdentity });
+          let ordered = false;
+          try {
+            ordered = !!(nativeStart.compareDocumentPosition(nextPageNativeStart) & Node.DOCUMENT_POSITION_FOLLOWING);
+          } catch {}
+          if (!ordered) {
+            return fail('native-layout-boundary-order-invalid', {
+              flowRoot,
+              nativeStart,
+              nextPageNativeStart,
+              startIdentity,
+              nextStartIdentity,
+            });
+          }
+          let current = null;
+          try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+          if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+            return fail('authority-changed-during-readiness', { startIdentity, nextStartIdentity });
+          }
+          return frozenCollapsedBoundaryResult({
+            ready: true,
+            reason: 'ready',
+            pageNum: num,
+            flowRoot,
+            nativeStart,
+            nextPageNativeStart,
+            startIdentity,
+            nextStartIdentity,
+            generation,
+            fingerprint,
+            source,
+            count,
+          });
+        })();
+    if (exact.ready) return exact;
+    return frozenCollapsedBoundaryResult({
+      ...exact,
+      structuralReason: sequence.reason,
+    });
+  }
+
   function isCollapsedNativeRangeExcluded(node = null) {
     if (!node || node.nodeType !== 1) return true;
     try {
@@ -2880,25 +3315,55 @@
     const root = readiness.flowRoot;
     const start = readiness.nativeStart;
     const end = readiness.nextPageNativeStart;
-    if (!root || start?.parentElement !== root || end?.parentElement !== root) {
+    if (!root || start?.parentElement !== root || (end && end.parentElement !== root)) {
       return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
     }
-    let inRange = false;
-    let reachedEnd = false;
     const candidates = [];
-    for (const node of Array.from(root.children || [])) {
-      if (node === start) inRange = true;
-      if (node === end) {
-        reachedEnd = true;
-        break;
+    const sequence = readiness.nativeSlotSequence;
+    if (sequence?.ready === true) {
+      if (
+        sequence.flowRoot !== root
+        || sequence.generation !== readiness.generation
+        || sequence.fingerprint !== readiness.fingerprint
+        || readiness.nativeStartOrdinal < 1
+        || readiness.nativeEndOrdinal < readiness.nativeStartOrdinal
+      ) {
+        return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
       }
-      if (!inRange || isCollapsedNativeRangeExcluded(node)) continue;
-      const ownedPages = directNodePresentationPages(node);
-      if (ownedPages.size > 1 || (ownedPages.size === 1 && !ownedPages.has(num))) continue;
-      candidates.push(node);
-    }
-    if (!inRange || !reachedEnd || !candidates.includes(start)) {
-      return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
+      for (
+        let ordinal = readiness.nativeStartOrdinal;
+        ordinal <= readiness.nativeEndOrdinal;
+        ordinal += 1
+      ) {
+        const slot = sequence.slots[ordinal - 1] || null;
+        const node = slot?.element || null;
+        if (
+          slot?.ordinal !== ordinal
+          || !node
+          || node.parentElement !== root
+          || isCollapsedNativeRangeExcluded(node)
+        ) {
+          return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
+        }
+        candidates.push(node);
+      }
+    } else {
+      let inRange = false;
+      let reachedEnd = false;
+      for (const node of Array.from(root.children || [])) {
+        if (node === start) inRange = true;
+        if (node === end) {
+          reachedEnd = true;
+          break;
+        }
+        if (!inRange || isCollapsedNativeRangeExcluded(node)) continue;
+        const ownedPages = directNodePresentationPages(node);
+        if (ownedPages.size > 1 || (ownedPages.size === 1 && !ownedPages.has(num))) continue;
+        candidates.push(node);
+      }
+      if (!inRange || !reachedEnd || !candidates.includes(start)) {
+        return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
+      }
     }
     let mutations = 0;
     const keep = new Set(candidates);
@@ -2914,7 +3379,14 @@
       if (node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)) continue;
       try { node.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(num)); mutations += 1; } catch {}
     }
-    return { ok: true, status: 'collapsed', hidden: candidates.length, mutations };
+    return {
+      ok: true,
+      status: 'collapsed',
+      hidden: candidates.length,
+      mutations,
+      startOrdinal: readiness.nativeStartOrdinal || 0,
+      endOrdinal: readiness.nativeEndOrdinal || 0,
+    };
   }
 
   function collapsedBoundaryDividers(pageNum = 0) {
@@ -2993,8 +3465,9 @@
     const titleListActive = isTitleListActive(num, id);
     const blocked = !titleListActive && readiness?.ready !== true;
     const reason = blocked
-      ? String(readiness?.reason || 'readiness-api-unavailable')
+      ? String(readiness?.structuralReason || readiness?.reason || 'readiness-api-unavailable')
       : '';
+    const structuralFailure = blocked && !!String(readiness?.structuralReason || '').trim();
     const actionTitle = titleListActive
       ? `Expand Page ${num}`
       : blocked
@@ -3003,7 +3476,9 @@
     const ariaLabel = titleListActive
       ? `Page ${num}. Expand page titles.`
       : blocked
-        ? `Page ${num}. Collapse currently unavailable because the next page boundary is not loaded. Technical reason: ${reason}.`
+        ? structuralFailure
+          ? `Page ${num}. Collapse temporarily unavailable because the conversation layout is incomplete. Technical reason: ${reason}.`
+          : `Page ${num}. Collapse currently unavailable because the next page boundary is not loaded. Technical reason: ${reason}.`
         : `Page ${num}. Collapse page titles.`;
     let mutations = 0;
     for (const divider of collapsedBoundaryDividers(num)) {
@@ -3030,13 +3505,17 @@
   function showCollapseUnavailableFeedback(pageNum = 0, chatId = '', readiness = null) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
-    const reason = String(readiness?.reason || 'readiness-api-unavailable');
+    const structuralReason = String(readiness?.structuralReason || '').trim();
+    const reason = structuralReason || String(readiness?.reason || 'readiness-api-unavailable');
+    const message = structuralReason
+      ? COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE
+      : COLLAPSE_UNAVAILABLE_MESSAGE;
     applyCollapsedBoundaryControlState(num, id, readiness);
     let visible = 0;
     for (const divider of collapsedBoundaryDividers(num)) {
       const node = collapseUnavailableStatusNode(divider, num, true);
       if (!node) continue;
-      try { node.textContent = COLLAPSE_UNAVAILABLE_MESSAGE; } catch {}
+      try { node.textContent = message; } catch {}
       try { node.hidden = false; } catch {}
       setCollapseFeedbackAttribute(node, 'aria-hidden', 'false');
       setCollapseFeedbackAttribute(node, ATTR_COLLAPSE_REASON, reason);
@@ -3097,7 +3576,11 @@
     const chatId = resolveChatId();
     const detail = Object.freeze({
       status: 'collapsed-exact-boundary-unavailable',
-      reason: String(readiness?.reason || 'collapsed-exact-boundary-unavailable'),
+      reason: String(
+        readiness?.structuralReason
+        || readiness?.reason
+        || 'collapsed-exact-boundary-unavailable'
+      ),
       pageNum: num,
       chatId,
       generation: Math.max(0, Number(readiness?.generation || 0) || 0),
@@ -8212,6 +8695,7 @@
       writeTitleListPages,
       isPageCollapsed,
       isTitleListActive,
+      resolveNativeTurnSlotSequence,
       getCollapsedNativeBoundaryReadiness,
       getCollapsedBoundaryDiagnostic,
       setTitleListMode,
