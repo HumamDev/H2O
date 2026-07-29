@@ -7324,6 +7324,131 @@
     return true;
   }
 
+  function chatAtlasNormalizeGraphDiagnosticIds(ids = []) {
+    const normalized = [];
+    const seen = new Set();
+    for (const rawId of Array.isArray(ids) ? ids : []) {
+      if (typeof rawId !== 'string') continue;
+      const withoutTurnPrefix = rawId.trim().replace(/^turn:/i, '').trim();
+      const identity = chatAtlasCompleteIndexIdentity(withoutTurnPrefix);
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      normalized.push(identity);
+      if (normalized.length >= 32) break;
+    }
+    return normalized;
+  }
+
+  function chatAtlasGraphIdentitySummary(node = null) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+    return {
+      nodeId: chatAtlasCompleteIndexIdentity(node.nodeId) || null,
+      messageId: chatAtlasCompleteIndexIdentity(node.messageId) || null,
+      role: String(node.role || '') || null,
+      productUser: node.productUser === true,
+      productAnswer: node.productAnswer === true,
+      stopped: node.stopped === true,
+    };
+  }
+
+  function chatAtlasGraphIdentityMiss(requestedId) {
+    return {
+      requestedId,
+      found: false,
+      matchedDomains: [],
+      nodeId: null,
+      messageId: null,
+      role: null,
+      parent: null,
+      children: [],
+      productUser: false,
+      productAnswer: false,
+      stopped: false,
+      isCurrentNode: false,
+    };
+  }
+
+  function getGraphIdentityDiagnostics(ids = []) {
+    const requestedIds = chatAtlasNormalizeGraphDiagnosticIds(ids);
+    const unavailable = (reason, scope = null) => chatAtlasFreeze({
+      version: 1,
+      available: false,
+      reason,
+      scope,
+      records: requestedIds.map((requestedId) => chatAtlasGraphIdentityMiss(requestedId)),
+    });
+    const retained = selectedPathAcquisitionState.graph;
+    const graph = retained?.identityGraph || null;
+    if (!graph) return unavailable('graph-unavailable');
+
+    const authority = completeTurnIndexAuthorityState;
+    const route = chatAtlasFullIndexRoute();
+    if (
+      authority.enabled !== true
+      || !chatAtlasCompleteIndexAuthorityActive()
+      || !authority.index
+      || !route?.chatId
+      || !route?.routeKey
+    ) return unavailable('authority-unavailable');
+
+    const scope = chatAtlasFreeze({
+      chatId: String(retained.chatId || '') || null,
+      routeKey: String(retained.routeKey || ''),
+      generation: Math.max(0, Number(retained.generation || 0)),
+      fingerprint: String(retained.captureIdentity || '') || null,
+      graphCurrentNodeId: chatAtlasCompleteIndexIdentity(graph.currentNode) || null,
+      graphNodeCount: Number.isInteger(graph.nodeCount) ? graph.nodeCount : 0,
+    });
+    const scopeCurrent = (
+      chatAtlasCompleteIndexIdentity(retained.chatId) === chatAtlasCompleteIndexIdentity(route.chatId)
+      && String(retained.routeKey || '') === String(route.routeKey || '')
+      && Number(retained.generation || 0) === Number(authority.generation || 0)
+      && chatAtlasCompleteIndexIdentity(authority.chatId) === chatAtlasCompleteIndexIdentity(route.chatId)
+      && String(authority.routeKey || '') === String(route.routeKey || '')
+      && !!scope.fingerprint
+      && chatAtlasIdentityGraphValid(graph, route.chatId)
+    );
+    if (!scopeCurrent) return unavailable('graph-stale', scope);
+
+    const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    const records = requestedIds.map((requestedId) => {
+      const matches = graph.nodes.filter((node) => (
+        node.nodeId === requestedId || node.messageId === requestedId
+      ));
+      if (matches.length !== 1) return chatAtlasGraphIdentityMiss(requestedId);
+      const node = matches[0];
+      const matchedDomains = [];
+      if (node.nodeId === requestedId) matchedDomains.push('nodeId');
+      if (node.messageId === requestedId) matchedDomains.push('messageId');
+      const parent = node.parentId ? chatAtlasGraphIdentitySummary(nodeById.get(node.parentId)) : null;
+      const children = node.childIds
+        .slice(0, 32)
+        .map((childId) => chatAtlasGraphIdentitySummary(nodeById.get(childId)))
+        .filter(Boolean);
+      return {
+        requestedId,
+        found: true,
+        matchedDomains,
+        nodeId: chatAtlasCompleteIndexIdentity(node.nodeId) || null,
+        messageId: chatAtlasCompleteIndexIdentity(node.messageId) || null,
+        role: String(node.role || '') || null,
+        parent,
+        children,
+        productUser: node.productUser === true,
+        productAnswer: node.productAnswer === true,
+        stopped: node.stopped === true,
+        isCurrentNode: node.nodeId === graph.currentNode,
+      };
+    });
+    return chatAtlasFreeze({
+      version: 1,
+      available: true,
+      reason: null,
+      scope,
+      records,
+    });
+  }
+
   function chatAtlasSelectedPathNativeEvidence(members = []) {
     const byQId = new Map();
     for (const member of Array.isArray(members) ? members : []) {
@@ -10094,6 +10219,7 @@
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
     getSelectedPathAcquisitionStatus,
+    getGraphIdentityDiagnostics,
     getEffectivePresentationIndex,
     getEffectivePresentationStatus,
     getEffectiveTurnRecordByQId,
