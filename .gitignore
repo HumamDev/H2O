@@ -36,7 +36,11 @@ apps/extensions/gemini/firefox/**
 # are produced by tools/loader/make-aliases.mjs and
 # tools/loader/make-ext-proxy-pack.mjs at every dev build.
 apps/dev-server/alias/**
+apps/dev-server/alias.staging-*/
+apps/dev-server/alias.retired-*/
 apps/dev-server/dev_output/**
+apps/dev-server/dev_output.staging-*/
+apps/dev-server/dev_output.retired-*/
 
 # Python bytecode cache (created by python3 -m py_compile / running scripts).
 __pycache__/
