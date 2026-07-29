@@ -10536,106 +10536,610 @@ function unbindChatPageDividerBridge() {
     return null;
   }
 
-  // An authority page must retain its divider even during the short interval
-  // before that page's start turn is hydrated. Park the divider immediately
-  // after the exact authoritative tail of the preceding page; once the real
-  // page-start wrapper mounts, forcePlaceDividerBeforeTurnWrapper moves and
-  // verifies it at the final anchor. This never guesses from visible DOM
-  // order and never creates a page that is absent from S.turnList.
-  function getAuthorityDividerParkingPosition(pageNum = 0) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (num <= 1 || !Array.isArray(S.turnList)) return null;
-    const previousTurn = S.turnList[((num - 1) * 25) - 1] || null;
-    if (!previousTurn) return null;
-    let host = getChatPageTurnHost(previousTurn);
-    if (!host) {
-      const questionId = String(previousTurn.questionId || previousTurn.qId || '').trim();
-      host = questionId ? sectionByStableId(questionId) : null;
+  const CHAT_PAGE_BOUNDARY_ATTR = 'data-h2o-chat-page-boundary';
+  const CHAT_PAGE_BOUNDARY_PAGE_ATTR = 'data-h2o-chat-page-boundary-page';
+  const CHAT_PAGE_BOUNDARY_KIND_ATTR = 'data-h2o-chat-page-boundary-kind';
+  const CHAT_PAGE_UNIT_OWNER = '1A1b:reconcileChatPageUnits';
+
+  function getChatPageUnitState() {
+    if (!S.chatPageUnitState || typeof S.chatPageUnitState !== 'object') {
+      S.chatPageUnitState = {
+        identity: '',
+        sentinels: new Map(),
+        pendingDividers: new Map(),
+        reconcileInFlight: false,
+        hydrationRequested: new Set(),
+        last: null,
+      };
     }
-    if (host) {
-      const anchor = getChatPagePairAnchorNode(host);
-      const parent = anchor?.parentNode || null;
-      if (parent) return { parent, before: anchor.nextSibling || null, mode: 'authority-previous-tail' };
-    }
-    // The preceding title-listed page may have no mounted tail wrapper after
-    // bootstrap. Its authority-owned divider/title stack is still a stable
-    // H2O unit, so Page N can be parked after that unit until the exact page
-    // start remounts. Page existence remains derived only from S.turnList.
-    let previousDivider = null;
-    try {
-      previousDivider = document.querySelector(
-        `.cgxui-chat-page-divider[data-page-num="${String(num - 1)}"],`
-        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num - 1)}"]`
-      );
-    } catch {}
-    if (!previousDivider?.parentNode) return null;
-    let unitTail = previousDivider;
-    try {
-      const stack = document.querySelector(
-        `[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(num - 1)}"]`
-      );
-      if (stack?.parentNode === previousDivider.parentNode) unitTail = stack;
-    } catch {}
-    return {
-      parent: previousDivider.parentNode,
-      before: unitTail.nextSibling || null,
-      mode: 'authority-previous-page-unit',
-    };
+    if (!(S.chatPageUnitState.sentinels instanceof Map)) S.chatPageUnitState.sentinels = new Map();
+    if (!(S.chatPageUnitState.pendingDividers instanceof Map)) S.chatPageUnitState.pendingDividers = new Map();
+    if (!(S.chatPageUnitState.hydrationRequested instanceof Set)) S.chatPageUnitState.hydrationRequested = new Set();
+    return S.chatPageUnitState;
   }
 
-  function forcePlaceDividerBeforeTurnWrapper(divider, pageNum) {
-    const resolved = getPageStartTurnWrapper(pageNum);
-    if (!divider || !resolved?.wrapper?.parentNode) return false;
-    const wrapper = resolved.wrapper;
+  function chatPageUnitIdentity() {
+    const status = getEffectivePresentationRuntimeStatus();
+    const chatId = String(resolveChatId() || '').trim();
+    const routeKey = String(W.location?.pathname || '').trim();
+    const source = status.overlayActive === true
+      && status.source === 'selected-path-overlay'
+      && status.count === Number(S.turnList?.length || 0)
+      ? 'selected-path-overlay'
+      : 'canonical';
+    const fingerprint = String(status.canonicalFingerprint || '');
+    return [chatId, routeKey, source, String(S.turnList?.length || 0), fingerprint].join('|');
+  }
 
-    // Effective adjacency looks through H2O pass-through helpers (the page's
-    // synthetic title-list sits between divider and wrapper by design).
-    let effectiveNext = divider.nextElementSibling;
-    while (effectiveNext && isDividerPassThroughEl(effectiveNext)) effectiveNext = effectiveNext.nextElementSibling;
+  function chatPageRecordOrder(turn = null, fallbackOrder = 0) {
+    return Math.max(0, Number(
+      turn?.order
+      || turn?.turnNo
+      || turn?.idx
+      || fallbackOrder
+      || 0
+    ) || 0);
+  }
 
-    // Move only if not already (effectively) the previous sibling of the
-    // wrapper. When moving, land ABOVE any pass-through run so the divider
-    // stays the page header with its helper content below it.
-    if (divider.parentNode !== wrapper.parentNode || effectiveNext !== wrapper) {
-      try {
-        let insertRef = wrapper;
-        while (insertRef.previousElementSibling && isDividerPassThroughEl(insertRef.previousElementSibling)) {
-          insertRef = insertRef.previousElementSibling;
-        }
-        wrapper.parentNode.insertBefore(divider, insertRef);
-      } catch {}
+  function resolveChatPageExactArtifact(turn = null) {
+    if (!turn) return null;
+    const ids = [
+      turn.questionId,
+      turn.qId,
+      turn.answerId,
+      turn.primaryAId,
+      String(turn.turnId || '').replace(/^turn:[aq]:/, ''),
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    let section = null;
+    for (const id of ids) {
+      section = sectionByStableId(id);
+      if (section) break;
     }
-
-    // Divider/Stack Unit Rule (MECHANISMS_RULES.md §4): the divider repair
-    // owns the [divider][stack] order. The stack sync runs on title events
-    // only, so without this re-anchor any divider move (scroll/hydration
-    // re-parenting) strands the page's stack ABOVE its divider until the
-    // next title event — the exact divider-under-list failure.
+    if (!section) {
+      try { section = getChatPageTurnHost(turn) || null; } catch {}
+    }
+    if (!section?.isConnected) return null;
     try {
-      const stack = document.querySelector(`[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(pageNum)}"]`);
-      if (stack && divider.parentNode && divider.nextElementSibling !== stack) {
-        divider.parentNode.insertBefore(stack, divider.nextSibling);
+      if (section.closest?.('[data-cgxui="chat-page-title-list-synth"]')) return null;
+    } catch {}
+    let ownedSection = section;
+    try {
+      if (!ownedSection.matches?.('section[data-testid^="conversation-turn"]')) {
+        ownedSection = ownedSection.closest?.('section[data-testid^="conversation-turn"]')
+          || ownedSection.querySelector?.('section[data-testid^="conversation-turn"]')
+          || ownedSection;
       }
     } catch {}
+    if (!ownedSection?.isConnected) return null;
+    const wrapper = ownedSection.parentElement || ownedSection;
+    if (!wrapper?.parentNode) return null;
+    return { section: ownedSection, wrapper };
+  }
 
-    const okOrder = !!(divider.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING);
-    let immediateNext = divider.nextElementSibling;
-    while (immediateNext && isDividerPassThroughEl(immediateNext)) immediateNext = immediateNext.nextElementSibling;
-    const immediate = immediateNext === wrapper;
-    const nextTestId = getNextTurnTestIdAfterDivider(divider);
-    const ok = okOrder && nextTestId === resolved.testid;
-
+  function getChatPageTitleListRoot(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
     try {
-      divider.removeAttribute('data-h2o-divider-authority-parked');
-      divider.setAttribute('data-h2o-divider-anchor-testid', resolved.testid || '');
-      divider.setAttribute('data-h2o-divider-anchor-mode', resolved.mode || '');
-      divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
-      divider.setAttribute('data-h2o-divider-order-ok', ok ? '1' : '0');
-      divider.setAttribute('data-h2o-divider-immediate', immediate ? '1' : '0');
-      if (ok) divider.setAttribute('data-h2o-divider-order-repaired', '1');
-      else divider.removeAttribute('data-h2o-divider-order-repaired');
+      return document.querySelector(
+        `[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(num)}"]`
+      ) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function buildChatPageUnitModel() {
+    const turns = Array.isArray(S.turnList) ? S.turnList.slice() : [];
+    const count = turns.length;
+    const pageCount = count > 0 ? Math.ceil(count / 25) : 0;
+    const status = getEffectivePresentationRuntimeStatus();
+    const source = status.overlayActive === true
+      && status.source === 'selected-path-overlay'
+      && status.count === count
+      ? 'selected-path-overlay'
+      : 'canonical';
+    const pages = [];
+    for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
+      const startOrder = ((pageNum - 1) * 25) + 1;
+      const endOrder = Math.min(count, pageNum * 25);
+      const records = [];
+      const artifacts = [];
+      for (let index = startOrder - 1; index < endOrder; index += 1) {
+        const turn = turns[index] || null;
+        if (!turn) continue;
+        const order = chatPageRecordOrder(turn, index + 1);
+        records.push({ order, turn });
+        const exact = resolveChatPageExactArtifact(turn);
+        if (exact) artifacts.push({ order, turn, ...exact });
+      }
+      artifacts.sort((a, b) => a.order - b.order);
+      const exactStart = getPageStartTurnWrapper(pageNum);
+      const titleListRoot = getChatPageTitleListRoot(pageNum);
+      pages.push({
+        pageNum,
+        startOrder,
+        endOrder,
+        records,
+        artifacts,
+        exactStart,
+        earliest: artifacts[0] || null,
+        latest: artifacts[artifacts.length - 1] || null,
+        titleListRoot: titleListRoot?.isConnected ? titleListRoot : null,
+      });
+    }
+    return Object.freeze({
+      identity: chatPageUnitIdentity(),
+      chatId: String(resolveChatId() || '').trim(),
+      source,
+      count,
+      pageCount,
+      pages,
+    });
+  }
+
+  function createChatPageBoundarySentinel(pageNum = 0, kind = 'start') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const safeKind = kind === 'end' ? 'end' : 'start';
+    const sentinel = document.createElement('span');
+    sentinel.setAttribute(CHAT_PAGE_BOUNDARY_ATTR, `page-${String(num)}-${safeKind}`);
+    sentinel.setAttribute(CHAT_PAGE_BOUNDARY_PAGE_ATTR, String(num));
+    sentinel.setAttribute(CHAT_PAGE_BOUNDARY_KIND_ATTR, safeKind);
+    sentinel.setAttribute('data-cgxui-owner', UI_TOK.OWNER);
+    sentinel.setAttribute('aria-hidden', 'true');
+    sentinel.setAttribute('role', 'presentation');
+    try { sentinel.inert = true; } catch {}
+    try {
+      sentinel.style.setProperty('display', 'block');
+      sentinel.style.setProperty('width', '0');
+      sentinel.style.setProperty('height', '0');
+      sentinel.style.setProperty('min-width', '0');
+      sentinel.style.setProperty('min-height', '0');
+      sentinel.style.setProperty('overflow', 'hidden');
+      sentinel.style.setProperty('pointer-events', 'none');
+      sentinel.style.setProperty('margin', '0');
+      sentinel.style.setProperty('padding', '0');
+      sentinel.style.setProperty('border', '0');
     } catch {}
-    return ok;
+    return sentinel;
+  }
+
+  function ensureChatPageBoundarySentinels(model = null) {
+    const state = getChatPageUnitState();
+    const nextIdentity = String(model?.identity || '');
+    const stale = [];
+    if (state.identity && state.identity !== nextIdentity) {
+      for (const sentinel of state.sentinels.values()) stale.push(sentinel);
+      state.sentinels.clear();
+      state.hydrationRequested.clear();
+    }
+    state.identity = nextIdentity;
+    const keep = new Set();
+    for (const page of Array.isArray(model?.pages) ? model.pages : []) {
+      for (const kind of ['start', 'end']) {
+        const key = `${String(page.pageNum)}:${kind}`;
+        let sentinel = state.sentinels.get(key) || null;
+        if (!sentinel) {
+          try {
+            sentinel = document.querySelector(
+              `[${CHAT_PAGE_BOUNDARY_ATTR}="page-${String(page.pageNum)}-${kind}"]`
+            ) || null;
+          } catch {}
+        }
+        if (!sentinel) sentinel = createChatPageBoundarySentinel(page.pageNum, kind);
+        state.sentinels.set(key, sentinel);
+        keep.add(sentinel);
+      }
+    }
+    try {
+      for (const sentinel of Array.from(document.querySelectorAll(`[${CHAT_PAGE_BOUNDARY_ATTR}]`))) {
+        if (!keep.has(sentinel)) stale.push(sentinel);
+      }
+    } catch {}
+    return { state, stale, keep };
+  }
+
+  function compareChatPageNodes(a = null, b = null) {
+    if (!a || !b || a === b) return 0;
+    try {
+      const relation = a.compareDocumentPosition(b);
+      if (relation & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (relation & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    } catch {}
+    return 0;
+  }
+
+  function resolveChatPageBoundaryAnchor(model = null, page = null, kind = 'start') {
+    if (!model || !page) return { ok: false, reason: 'page-unit-anchor-unavailable' };
+    const isStart = kind !== 'end';
+    const titleList = page.titleListRoot;
+    if (isStart) {
+      if (page.exactStart?.wrapper?.parentNode) {
+        return {
+          ok: true,
+          parent: page.exactStart.wrapper.parentNode,
+          before: page.exactStart.wrapper,
+          mode: 'exact-page-start',
+          evidence: page.exactStart.wrapper,
+        };
+      }
+      if (titleList?.parentNode) {
+        return { ok: true, parent: titleList.parentNode, before: titleList, mode: 'exact-title-list', evidence: titleList };
+      }
+      if (page.earliest?.wrapper?.parentNode) {
+        return {
+          ok: true,
+          parent: page.earliest.wrapper.parentNode,
+          before: page.earliest.wrapper,
+          mode: 'earliest-exact-page-artifact',
+          evidence: page.earliest.wrapper,
+        };
+      }
+      const previous = model.pages[page.pageNum - 2] || null;
+      if (previous) {
+        const previousEnd = getChatPageUnitState().sentinels.get(`${String(previous.pageNum)}:end`) || null;
+        if (previousEnd?.isConnected && previousEnd.parentNode) {
+          return {
+            ok: true,
+            parent: previousEnd.parentNode,
+            before: previousEnd.nextSibling || null,
+            mode: 'previous-page-end-sentinel',
+            evidence: previousEnd,
+          };
+        }
+        const previousTail = previous.titleListRoot?.parentNode
+          ? previous.titleListRoot
+          : (previous.latest?.wrapper?.parentNode ? previous.latest.wrapper : null);
+        if (previousTail?.parentNode) {
+          return {
+            ok: true,
+            parent: previousTail.parentNode,
+            before: previousTail.nextSibling || null,
+            mode: previous.titleListRoot ? 'previous-title-list-unit' : 'previous-latest-exact-artifact',
+            evidence: previousTail,
+          };
+        }
+      }
+      const startSentinel = getChatPageUnitState().sentinels.get(`${String(page.pageNum)}:start`) || null;
+      if (startSentinel?.isConnected && startSentinel.parentNode) {
+        return {
+          ok: true,
+          parent: startSentinel.parentNode,
+          before: startSentinel.nextSibling || null,
+          mode: 'last-proven-page-start',
+          evidence: startSentinel,
+        };
+      }
+      return { ok: false, reason: 'page-unit-anchor-unavailable' };
+    }
+    const tail = titleList?.parentNode
+      ? titleList
+      : (page.latest?.wrapper?.parentNode ? page.latest.wrapper : null);
+    if (tail?.parentNode) {
+      return {
+        ok: true,
+        parent: tail.parentNode,
+        before: tail.nextSibling || null,
+        mode: titleList ? 'title-list-end' : 'latest-exact-page-artifact',
+        evidence: tail,
+      };
+    }
+    const endSentinel = getChatPageUnitState().sentinels.get(`${String(page.pageNum)}:end`) || null;
+    if (endSentinel?.isConnected && endSentinel.parentNode) {
+      return {
+        ok: true,
+        parent: endSentinel.parentNode,
+        before: endSentinel.nextSibling || null,
+        mode: 'last-proven-page-end',
+        evidence: endSentinel,
+      };
+    }
+    return { ok: false, reason: 'page-unit-anchor-unavailable' };
+  }
+
+  function requestChatPageUnitHydration(page = null, reason = 'page-unit-anchor-unavailable') {
+    if (!page) return false;
+    const state = getChatPageUnitState();
+    const key = `${state.identity}|${String(page.pageNum)}`;
+    if (state.hydrationRequested.has(key)) return false;
+    state.hydrationRequested.add(key);
+    const first = page.records?.[0]?.turn || null;
+    const id = String(
+      first?.questionId
+      || first?.qId
+      || first?.answerId
+      || first?.primaryAId
+      || ''
+    ).trim();
+    if (!id) return false;
+    const um = UM_PUBLIC();
+    try {
+      if (um?.requestMountPairByUid?.(id, `page-unit-ordering:${reason}`) === true) return true;
+    } catch {}
+    try {
+      return um?.requestMountByUid?.(id, `page-unit-ordering:${reason}`) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Retired compatibility query for older page-hydration validators and
+  // diagnostics. It resolves an authority-backed parking position but never
+  // inserts or moves a divider; reconcileChatPageUnits remains the sole writer.
+  function getAuthorityDividerParkingPosition(pageNum = 0) {
+    const targetPage = Math.max(0, Number(pageNum) || 0);
+    const turnList = Array.isArray(S.turnList) ? S.turnList : [];
+    const authPairCount = turnList.length;
+    const authPageCount = authPairCount > 0 ? Math.ceil(authPairCount / 25) : 0;
+    if (targetPage < 1 || targetPage > authPageCount) return null;
+    if (targetPage === 1) {
+      const first = turnList[0] || null;
+      const firstHost = first ? getChatPageTurnHost(first) : null;
+      const firstAnchor = firstHost ? getChatPagePairAnchorNode(firstHost) : null;
+      return firstAnchor?.parentNode
+        ? { parent: firstAnchor.parentNode, before: firstAnchor, mode: 'authority-page-start' }
+        : null;
+    }
+    const previousPage = targetPage - 1;
+    let titleList = null;
+    try {
+      if (typeof document !== 'undefined') {
+        titleList = document.querySelector(
+          `[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(previousPage)}"]`
+        );
+      }
+    } catch {}
+    if (titleList?.parentNode) {
+      const parking = {
+        parent: titleList.parentNode,
+        before: titleList.nextSibling || null,
+        mode: 'authority-previous-page-unit',
+      };
+      return { ...parking, mode: parking.mode || 'authority-parked' };
+    }
+    const previousEndIndex = Math.min(authPairCount, previousPage * 25) - 1;
+    const previousEnd = turnList[previousEndIndex] || null;
+    const previousHost = previousEnd ? getChatPageTurnHost(previousEnd) : null;
+    const previousAnchor = previousHost ? getChatPagePairAnchorNode(previousHost) : null;
+    if (!previousAnchor?.parentNode) return null;
+    const parking = {
+      parent: previousAnchor.parentNode,
+      before: previousAnchor.nextSibling || null,
+      mode: 'authority-previous-page-unit',
+    };
+    return { ...parking, mode: parking.mode || 'authority-parked' };
+  }
+
+  function getActualThreadPageDividers() {
+    let candidates = [];
+    try {
+      candidates = Array.from(document.querySelectorAll(
+        '.cgxui-chat-page-divider[data-page-num], .cgxui-pgnw-page-divider[data-page-num]'
+      ));
+    } catch {}
+    return candidates.filter((divider) => {
+      if (!divider?.isConnected) return false;
+      try {
+        if (divider.closest?.('#cgx-mm-root, .cgxui-mm-page-divider')) return false;
+      } catch {}
+      return true;
+    });
+  }
+
+  function pageNumberOfThreadDivider(divider = null) {
+    return Math.max(0, Number(
+      divider?.getAttribute?.('data-page-num')
+      || divider?.getAttribute?.(ATTR_CHAT_PAGE_NUM)
+      || 0
+    ) || 0);
+  }
+
+  function removeH2OChatPageUnitNode(node = null) {
+    if (!node?.parentNode) return false;
+    let owned = false;
+    try {
+      owned = node.getAttribute?.(CHAT_PAGE_BOUNDARY_ATTR) === '1'
+        || node.classList?.contains('cgxui-chat-page-divider')
+        || node.classList?.contains('cgxui-pgnw-page-divider');
+    } catch {}
+    if (!owned) return false;
+    try {
+      node.parentNode.removeChild(node);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function detachDeferredChatPageDivider(divider = null, pageNum = 0) {
+    if (!divider) return false;
+    getChatPageUnitState().pendingDividers.set(Number(pageNum), divider);
+    if (!divider.parentNode) return false;
+    return removeH2OChatPageUnitNode(divider);
+  }
+
+  function enforceChatPageUnitOrder(model = null, candidatesByPage = new Map(), reason = 'reconcile', placeNode = null) {
+    const state = getChatPageUnitState();
+    const sentinelPlan = ensureChatPageBoundarySentinels(model);
+    const stats = {
+      reason: String(reason || 'reconcile'),
+      identity: String(model?.identity || ''),
+      source: String(model?.source || 'canonical'),
+      count: Number(model?.count || 0),
+      pageCount: Number(model?.pageCount || 0),
+      created: 0,
+      moved: 0,
+      removed: 0,
+      deferred: 0,
+      hydrationRequests: 0,
+      pages: [],
+    };
+    for (const stale of sentinelPlan.stale) {
+      if (!stale?.parentNode) continue;
+      if (removeH2OChatPageUnitNode(stale)) stats.removed += 1;
+    }
+    let previousPlaced = true;
+    for (const page of Array.isArray(model?.pages) ? model.pages : []) {
+      const pageNum = page.pageNum;
+      const candidates = Array.isArray(candidatesByPage.get(pageNum))
+        ? candidatesByPage.get(pageNum).filter(Boolean)
+        : [];
+      let divider = candidates.find((entry) => entry.classList?.contains('cgxui-chat-page-divider'))
+        || candidates[0]
+        || state.pendingDividers.get(pageNum)
+        || null;
+      if (!divider) {
+        divider = createChatPageDivider(pageNum, getTurnPageBand(page.startOrder) || 'normal');
+        stats.created += 1;
+      }
+      state.pendingDividers.set(pageNum, divider);
+      for (const duplicate of candidates) {
+        if (duplicate === divider) continue;
+        if (removeH2OChatPageUnitNode(duplicate)) stats.removed += 1;
+      }
+      let anchor = previousPlaced
+        ? resolveChatPageBoundaryAnchor(model, page, 'start')
+        : { ok: false, reason: 'previous-page-unit-unresolved' };
+      if (anchor.ok && pageNum > 1) {
+        const previousEnd = state.sentinels.get(`${String(pageNum - 1)}:end`) || null;
+        if (previousEnd?.isConnected && previousEnd.parentNode) {
+          const anchorPrecedesPreviousEnd = anchor.parent !== previousEnd.parentNode
+            || (anchor.before && (
+              anchor.before === previousEnd
+              || compareChatPageNodes(anchor.before, previousEnd) < 0
+            ));
+          if (anchorPrecedesPreviousEnd) {
+            anchor = {
+              ok: true,
+              parent: previousEnd.parentNode,
+              before: previousEnd.nextSibling || null,
+              mode: 'previous-page-end-sentinel-clamp',
+              evidence: previousEnd,
+            };
+          }
+        }
+      }
+      if (!anchor.ok || !anchor.parent) {
+        if (detachDeferredChatPageDivider(divider, pageNum)) stats.moved += 1;
+        stats.deferred += 1;
+        const hydrationRequested = requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable');
+        if (hydrationRequested) stats.hydrationRequests += 1;
+        previousPlaced = false;
+        stats.pages.push({
+          pageNum,
+          status: 'deferred',
+          reason: anchor.reason || 'page-unit-anchor-unavailable',
+        });
+        continue;
+      }
+      const startSentinel = state.sentinels.get(`${String(pageNum)}:start`) || null;
+      const endSentinel = state.sentinels.get(`${String(pageNum)}:end`) || null;
+      if (placeNode?.(anchor.parent, divider, anchor.before || null)) stats.moved += 1;
+      if (placeNode?.(anchor.parent, startSentinel, divider)) stats.moved += 1;
+      const titleList = page.titleListRoot;
+      if (titleList && divider.parentNode && divider.nextSibling !== titleList) {
+        if (placeNode?.(divider.parentNode, titleList, divider.nextSibling || null)) stats.moved += 1;
+      }
+      const endAnchor = resolveChatPageBoundaryAnchor(model, page, 'end');
+      if (endAnchor.ok && endAnchor.parent && endSentinel) {
+        if (placeNode?.(endAnchor.parent, endSentinel, endAnchor.before || null)) stats.moved += 1;
+      }
+      const nextTestId = getNextTurnTestIdAfterDivider(divider);
+      try {
+        divider.removeAttribute('data-h2o-divider-authority-parked');
+        divider.setAttribute('data-h2o-divider-anchor-mode', anchor.mode || '');
+        divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
+        divider.setAttribute('data-h2o-divider-order-owner', CHAT_PAGE_UNIT_OWNER);
+        divider.setAttribute('data-h2o-divider-order-ok', '1');
+        divider.setAttribute('data-h2o-divider-order-repaired', '1');
+      } catch {}
+      previousPlaced = true;
+      stats.pages.push({ pageNum, status: 'placed', mode: anchor.mode || '' });
+    }
+    for (const [pageNum, dividers] of candidatesByPage.entries()) {
+      if (pageNum > model.pageCount || pageNum < 1) {
+        for (const divider of dividers || []) {
+          if (removeH2OChatPageUnitNode(divider)) stats.removed += 1;
+        }
+        state.pendingDividers.delete(pageNum);
+      }
+    }
+    for (const [pageNum, divider] of Array.from(state.pendingDividers.entries())) {
+      if (pageNum <= model.pageCount) continue;
+      removeH2OChatPageUnitNode(divider);
+      state.pendingDividers.delete(pageNum);
+    }
+    return stats;
+  }
+
+  function reconcileChatPageUnits(reason = 'reconcile') {
+    const state = getChatPageUnitState();
+    if (state.reconcileInFlight) {
+      return state.last || {
+        reason: String(reason || 'reconcile'),
+        status: 'in-flight',
+        created: 0,
+        moved: 0,
+        removed: 0,
+      };
+    }
+    state.reconcileInFlight = true;
+    try {
+      const model = buildChatPageUnitModel();
+      const candidatesByPage = new Map();
+      for (const divider of getActualThreadPageDividers()) {
+        const pageNum = pageNumberOfThreadDivider(divider);
+        if (!candidatesByPage.has(pageNum)) candidatesByPage.set(pageNum, []);
+        candidatesByPage.get(pageNum).push(divider);
+      }
+      for (const [pageNum, divider] of state.pendingDividers.entries()) {
+        if (!candidatesByPage.has(pageNum)) candidatesByPage.set(pageNum, []);
+        if (!candidatesByPage.get(pageNum).includes(divider)) candidatesByPage.get(pageNum).push(divider);
+      }
+      // Sole final live-thread insertion/movement primitive. All render,
+      // scroll, observer, refresh, authority and title-list repair paths reach
+      // this closure through reconcileChatPageUnits.
+      const placeNode = (parent = null, node = null, before = null) => {
+        if (!parent || !node || before === node) return false;
+        if (node.parentNode === parent && node.nextSibling === before) return false;
+        try {
+          parent.insertBefore(node, before || null);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const stats = enforceChatPageUnitOrder(model, candidatesByPage, reason, placeNode);
+      const orderedDividers = getActualThreadPageDividers()
+        .map((divider) => ({ divider, pageNum: pageNumberOfThreadDivider(divider) }))
+        .filter((entry) => entry.pageNum > 0 && entry.pageNum <= model.pageCount)
+        .sort((a, b) => compareChatPageNodes(a.divider, b.divider));
+      const order = orderedDividers.map((entry) => entry.pageNum);
+      const ascending = order.every((pageNum, index) => index === 0 || order[index - 1] < pageNum);
+      stats.status = stats.deferred > 0
+        ? 'page-unit-anchor-unavailable'
+        : (ascending ? 'settled' : 'page-unit-order-invalid');
+      stats.order = order;
+      stats.ascending = ascending;
+      state.last = Object.freeze({
+        ...stats,
+        pages: Object.freeze(stats.pages.map((entry) => Object.freeze({ ...entry }))),
+        order: Object.freeze(order.slice()),
+      });
+      try {
+        document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', stats.status);
+        document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', String(model.pageCount));
+      } catch {}
+      return state.last;
+    } finally {
+      state.reconcileInFlight = false;
+    }
+  }
+
+  // Retired mover compatibility hook. It owns no placement primitive; legacy
+  // callers delegate into the coherent page-unit coordinator.
+  function forcePlaceDividerBeforeTurnWrapper(divider, pageNum) {
+    void divider;
+    const result = reconcileChatPageUnits(`legacy-divider-repair:page-${String(pageNum || 0)}`);
+    return result?.status === 'settled';
   }
 
   // ChatGPT reparents turn wrappers after scroll/hydration, which can strand a
@@ -10722,33 +11226,21 @@ function unbindChatPageDividerBridge() {
         const startWrap = getPageStartTurnWrapper(pageNum);
         const geomHost = startWrap?.section || hosts[0] || null;
 
-        // Reuse an existing divider for this page from anywhere in the DOM
-        // (dedup: extras get removed below). Create only when a valid
-        // page-start wrapper exists to place it against.
+        // Reuse an existing divider candidate from anywhere in the DOM.
+        // Creation is detached: reconcileChatPageUnits is the sole insertion
+        // and movement owner for live thread dividers.
         let divider = qq(`.cgxui-chat-page-divider[data-cgxui-owner="${escAttr(UI_TOK.OWNER)}"][data-page-num="${String(pageNum)}"]`)[0]
           || qq(`.cgxui-pgnw-page-divider[data-page-num="${String(pageNum)}"]`)[0]
           || null;
         if (!divider) {
           divider = createChatPageDivider(pageNum, band);
-          if (startWrap?.wrapper?.parentNode) {
-            try { startWrap.wrapper.parentNode.insertBefore(divider, startWrap.wrapper); } catch {}
-          } else {
-            const parking = getAuthorityDividerParkingPosition(pageNum);
-            if (!parking?.parent) continue;
-            try {
-              parking.parent.insertBefore(divider, parking.before || null);
-              divider.setAttribute('data-h2o-divider-authority-parked', '1');
-              divider.setAttribute('data-h2o-divider-anchor-mode', parking.mode || 'authority-parked');
-            } catch {
-              continue;
-            }
-          }
           createdCount += 1;
           noteNodeLifecycle('created', 'chatPageDividers');
         } else {
           reusedCount += 1;
           noteNodeLifecycle('reused', 'chatPageDividers');
         }
+        getChatPageUnitState().pendingDividers.set(pageNum, divider);
         // Dedup: exactly one core divider per page. The keep-by-page-count
         // rule below would otherwise preserve a stale duplicate.
         try {
@@ -10764,11 +11256,6 @@ function unbindChatPageDividerBridge() {
         // adopted pgnw divider is a stale leftover and must obey the same
         // verified anchor invariant as core dividers.
         if (coreOwnedDivider || !paginationOwnsFlow) {
-          // Move + verify against the exact operator wrapper; stamps proof
-          // attrs from the FINAL DOM (never from intent).
-          if (startWrap?.wrapper?.parentNode) {
-            forcePlaceDividerBeforeTurnWrapper(divider, pageNum);
-          }
           // Cross-family dedup: exactly one divider per page once windowing no
           // longer owns the flow (a stale pgnw twin would duplicate the label).
           if (!paginationOwnsFlow) {
@@ -10786,11 +11273,9 @@ function unbindChatPageDividerBridge() {
               applyChatPageDividerVisuals(divider, pageNum, id);
               requestAnimationFrame(() => {
                 try {
-                  // Re-assert the verified anchor BEFORE recomputing geometry:
-                  // the visuals delegation must never decide final placement.
-                  if (startWrap?.wrapper?.parentNode) {
-                    forcePlaceDividerBeforeTurnWrapper(divider, pageNum);
-                  }
+                  // Reconcile through the sole ordering owner before visual
+                  // geometry reads; this callback never decides placement.
+                  reconcileChatPageUnits('renderChatPageDividers:raf');
                   const livePrevHost = getPreviousChatPageAnchorHost(geomHost);
                   applyChatPageDividerGeometry(divider, livePrevHost, geomHost);
                   applyChatPageDividerVisuals(divider, pageNum, id);
@@ -10800,6 +11285,13 @@ function unbindChatPageDividerBridge() {
           }
           if (coreOwnedDivider) keepCoreDividers.add(divider);
         }
+      }
+
+      const pageUnitResult = reconcileChatPageUnits('renderChatPageDividers');
+      if (pageUnitResult?.created > 0) createdCount += Number(pageUnitResult.created || 0);
+      if (pageUnitResult?.removed > 0) {
+        PERF.dividerUi.removedCount = Number(PERF.dividerUi.removedCount || 0)
+          + Number(pageUnitResult.removed || 0);
       }
 
       let removedCount = 0;
@@ -11620,6 +12112,9 @@ function unbindChatPageDividerBridge() {
     getRows: buildChatPageAnswerRows,
     findRowByAnswerId: findChatPageRowByAnswerId,
     renderDividers: renderChatPageDividers,
+    buildPageUnitModel: buildChatPageUnitModel,
+    reconcilePageUnits: reconcileChatPageUnits,
+    getPageUnitDiagnostics: () => getChatPageUnitState().last,
     scheduleRebuild,
     setMiniMapPageCollapsed,
     toggleMiniMapPageCollapsed,
@@ -11681,6 +12176,9 @@ function unbindChatPageDividerBridge() {
     getChatPageDividersEnabled,
     setChatPageDividersEnabled,
     renderChatPageDividers,
+    buildChatPageUnitModel,
+    reconcileChatPageUnits,
+    getChatPageUnitDiagnostics: () => getChatPageUnitState().last,
     ensureChatPageDividerBridge,
     isChatPageCollapsed,
     setChatPageCollapsed,
