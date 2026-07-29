@@ -10228,40 +10228,6 @@ function unbindChatPageDividerBridge() {
       || { sections: new Map(), allHosts: [] };
   }
 
-  function setChatPageTurnHostDomState(host, pageNum = 0, collapsed = false) {
-    if (!host) return null;
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (num) host.setAttribute(ATTR_CHAT_PAGE_NUM, String(num));
-    else host.removeAttribute(ATTR_CHAT_PAGE_NUM);
-    if (collapsed) {
-      host.setAttribute(ATTR_CHAT_PAGE_HIDDEN, '1');
-      // Also set inline display:none so the node is hidden regardless of
-      // whether the Skin CSS is loaded — this is the only reliable way to
-      // hide unanswered-question turn nodes (e.g. Q19 with no answer) which
-      // have no assistant element and may not be caught by CSS attribute rules.
-      try { host.style.setProperty('display', 'none', 'important'); } catch {}
-    } else {
-      host.removeAttribute(ATTR_CHAT_PAGE_HIDDEN);
-      try { host.style.removeProperty('display'); } catch {}
-    }
-    // ChatGPT sizes every turn through an only-child wrapper div
-    // (height: var(--last-known-height, 50vh)); the section itself measures
-    // 0px when its content is virtualized, so hiding only the section leaves
-    // the page's full reserved space in layout. Hide/restore the wrapper
-    // (layout node) together with the host.
-    const layoutNode = getChatPagePairAnchorNode(host);
-    if (layoutNode && layoutNode !== host) {
-      if (collapsed) {
-        layoutNode.setAttribute('data-cgxui-chat-page-wrapper-hidden', '1');
-        try { layoutNode.style.setProperty('display', 'none', 'important'); } catch {}
-      } else {
-        layoutNode.removeAttribute('data-cgxui-chat-page-wrapper-hidden');
-        try { layoutNode.style.removeProperty('display'); } catch {}
-      }
-    }
-    return host;
-  }
-
   function setChatPageDividerDomState(divider, collapsed = false, pageNum = 0, band = 'normal', chatId = '') {
     if (!divider) return null;
     const num = Math.max(1, Number(pageNum || getChatPageDividerPageNum(divider) || 0) || 1);
@@ -10835,6 +10801,9 @@ function unbindChatPageDividerBridge() {
     return { ok: false, reason: 'page-unit-anchor-unavailable' };
   }
 
+  // Existing page-window materialization request only; this is not complete-
+  // index navigation and does not scroll. Collapsed-page readiness never calls
+  // this helper.
   function requestChatPageUnitHydration(page = null, reason = 'page-unit-anchor-unavailable') {
     if (!page) return false;
     const state = getChatPageUnitState();
@@ -10949,11 +10918,12 @@ function unbindChatPageDividerBridge() {
     }
   }
 
+  // Compatibility seam retained for page-ordering diagnostics. Authoritative
+  // dividers are no longer detached on transient anchor loss.
   function detachDeferredChatPageDivider(divider = null, pageNum = 0) {
     if (!divider) return false;
     getChatPageUnitState().pendingDividers.set(Number(pageNum), divider);
-    if (!divider.parentNode) return false;
-    return removeH2OChatPageUnitNode(divider);
+    return false;
   }
 
   function enforceChatPageUnitOrder(model = null, candidatesByPage = new Map(), reason = 'reconcile', placeNode = null) {
@@ -11018,15 +10988,21 @@ function unbindChatPageDividerBridge() {
         }
       }
       if (!anchor.ok || !anchor.parent) {
-        if (detachDeferredChatPageDivider(divider, pageNum)) stats.moved += 1;
+        // Authority still owns this page. A transiently unavailable native
+        // anchor must not delete or detach its sole divider. Keep a connected
+        // divider exactly where the last proven reconciliation left it; the
+        // existing non-scrolling page-window request may gather ordinary
+        // remount evidence, but final movement remains deferred until exact.
         stats.deferred += 1;
-        const hydrationRequested = requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable');
-        if (hydrationRequested) stats.hydrationRequests += 1;
+        if (requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable')) {
+          stats.hydrationRequests += 1;
+        }
         previousPlaced = false;
         stats.pages.push({
           pageNum,
           status: 'deferred',
           reason: anchor.reason || 'page-unit-anchor-unavailable',
+          retained: divider?.isConnected === true,
         });
         continue;
       }

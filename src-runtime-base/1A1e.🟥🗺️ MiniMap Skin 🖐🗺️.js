@@ -1268,6 +1268,12 @@ html[data-cgxui-chat-pages="0"] [data-cgxui-chat-page-divider="1"]{
 html [data-cgxui-chat-page-hidden="1"]{
   display: none !important;
 }
+/* Thread Pages Controller is the sole writer. This direct-flow range marker
+   defeats host --last-known-height reservation only after both exact native
+   page-start wrappers are already mounted and source-proven. */
+html [data-cgxui-chat-page-native-hidden]{
+  display: none !important;
+}
 /* ── React-resistant sibling/toolbar hiding ──
    Stamped on thinking blocks, "Quick answer", toolbars etc. when a turn is collapsed.
    Uses !important so it survives ChatGPT's stylesheet rules AND React re-renders
