@@ -42,6 +42,8 @@
   const REFRESH_PRIORITY_DEFAULT = 0;
   const REFRESH_PRIORITY_ROUTE = 100;
   const ROUTE_REFRESH_DELAY_MS = 60;
+  const CONVERGENCE_FLAG_KEY = 'title.threeSurfaceConvergenceV1';
+  const CONVERGENCE_SESSION_OVERRIDE_KEY = '__H2O_TITLE_THREE_SURFACE_CONVERGENCE_V1__';
 
   const BASE_PRIORITY = Object.freeze({
     none: 0,
@@ -87,6 +89,15 @@
   let ownDocumentWrite = null;
   let lastWarning = '';
   let lastError = '';
+  let renameOperationSeq = 0;
+  let activeRenameOperation = null;
+  let lastConvergenceStatus = Object.freeze({
+    requested: false,
+    enabled: false,
+    mode: 'legacy',
+    source: 'default',
+    gate: 'not-requested',
+  });
 
   let storageStatus = {
     backend: 'memory',
@@ -490,7 +501,7 @@
   }
 
   function splitEmojiFromTitle(raw) {
-    const title = cleanTitle(raw);
+    const title = sanitizeTitleForState(raw);
     if (!title) return { baseTitle: '', emoji: '' };
     const emoji = getEdgeEmoji(title);
     const baseTitle = emoji ? stripEdgeEmoji(title) : title;
@@ -501,13 +512,159 @@
     return /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(text || '');
   }
 
-  function displayFrom(baseTitle, emoji) {
+  function legacyDisplayFrom(baseTitle, emoji) {
     const base = cleanTitle(baseTitle);
     const e = norm(emoji);
     if (!base) return e || '';
     if (!e) return base;
     if (getEdgeEmoji(base) === e) return base;
     return isRTL(base) ? `${base} ${e}` : `${e} ${base}`;
+  }
+
+  function convergenceDiagnostic(kind, message) {
+    const text = `title-convergence: ${String(message || kind || 'unknown')}`;
+    if (kind === 'error') lastError = text;
+    else lastWarning = text;
+  }
+
+  function clearConvergenceDiagnostics() {
+    if (/^title-convergence:/u.test(lastWarning)) lastWarning = '';
+    if (/^title-convergence:/u.test(lastError)) lastError = '';
+  }
+
+  function convergenceStatus(status) {
+    lastConvergenceStatus = Object.freeze({
+      requested: status.requested === true,
+      enabled: status.enabled === true,
+      mode: status.mode || 'legacy',
+      source: status.source || 'default',
+      gate: status.gate || 'not-requested',
+    });
+    return lastConvergenceStatus;
+  }
+
+  function resolveConvergenceStatus() {
+    let requested = false;
+    let source = 'default';
+    try {
+      if (Object.prototype.hasOwnProperty.call(W, CONVERGENCE_SESSION_OVERRIDE_KEY)) {
+        const override = W[CONVERGENCE_SESSION_OVERRIDE_KEY];
+        if (typeof override !== 'boolean') {
+          convergenceDiagnostic('warning', 'invalid session override; legacy fallback active');
+          return convergenceStatus({
+            requested: false,
+            enabled: false,
+            mode: 'legacy-fallback',
+            source: 'invalid-session-override',
+            gate: 'not-requested',
+          });
+        }
+        requested = override;
+        source = 'session-override';
+      } else {
+        const flags = H2O.flags;
+        if (flags && typeof flags.get === 'function') {
+          const value = flags.get(CONVERGENCE_FLAG_KEY, false);
+          if (value !== true && value !== false && value !== undefined) {
+            convergenceDiagnostic('warning', 'invalid feature flag value; legacy fallback active');
+            return convergenceStatus({
+              requested: false,
+              enabled: false,
+              mode: 'legacy-fallback',
+              source: 'invalid-feature-flag',
+              gate: 'not-requested',
+            });
+          }
+          requested = value === true;
+          source = 'feature-flags';
+        }
+      }
+    } catch (err) {
+      convergenceDiagnostic('error', `flag resolution failed: ${err && err.message ? err.message : String(err || '')}`);
+      return convergenceStatus({
+        requested: false,
+        enabled: false,
+        mode: 'legacy-fallback',
+        source: 'flag-error',
+        gate: 'not-requested',
+      });
+    }
+
+    if (!requested) {
+      clearConvergenceDiagnostics();
+      return convergenceStatus({
+        requested: false,
+        enabled: false,
+        mode: 'legacy',
+        source,
+        gate: 'not-requested',
+      });
+    }
+
+    const gate = inspectTitleContractParityGate();
+    if (gate.gate !== 'ok' || typeof gate.sanitizer !== 'function' || typeof gate.formatter !== 'function') {
+      convergenceDiagnostic('warning', `contract gate ${gate.gate || 'invalid'}; legacy fallback active`);
+      return convergenceStatus({
+        requested: true,
+        enabled: false,
+        mode: 'legacy-fallback',
+        source,
+        gate: gate.gate || 'invalid',
+      });
+    }
+
+    clearConvergenceDiagnostics();
+    convergenceStatus({
+      requested: true,
+      enabled: true,
+      mode: 'canonical',
+      source,
+      gate: 'ok',
+    });
+    return Object.freeze({
+      ...lastConvergenceStatus,
+      sanitizer: gate.sanitizer,
+      formatter: gate.formatter,
+    });
+  }
+
+  function canonicalSanitizedTitle(raw, status) {
+    const value = status.sanitizer(raw);
+    if (typeof value !== 'string') throw new TypeError('sanitizeNativeTitle returned a non-string value');
+    return value;
+  }
+
+  function canonicalDisplayFrom(baseTitle, emoji, status) {
+    const sanitized = canonicalSanitizedTitle(baseTitle, status);
+    const formatted = status.formatter(sanitized, emoji);
+    if (!parityOrdinaryObject(formatted) || !Object.isFrozen(formatted)) {
+      throw new TypeError('formatNativeDisplayTitle returned an invalid object');
+    }
+    const textDescriptor = parityOwnData(formatted, 'text');
+    const dirDescriptor = parityOwnData(formatted, 'dir');
+    if (!textDescriptor || typeof textDescriptor.value !== 'string' ||
+        !dirDescriptor || !['ltr', 'rtl'].includes(dirDescriptor.value)) {
+      throw new TypeError('formatNativeDisplayTitle returned invalid fields');
+    }
+    return textDescriptor.value;
+  }
+
+  function displayFrom(baseTitle, emoji) {
+    const status = resolveConvergenceStatus();
+    if (!status.enabled) return legacyDisplayFrom(baseTitle, emoji);
+    try {
+      return canonicalDisplayFrom(baseTitle, emoji, status);
+    } catch (err) {
+      convergenceDiagnostic('error', `canonical formatter failed: ${err && err.message ? err.message : String(err || '')}`);
+      convergenceStatus({
+        requested: true,
+        enabled: false,
+        mode: 'legacy-fallback',
+        source: status.source,
+        gate: 'formatter-error',
+      });
+      return legacyDisplayFrom(baseTitle, emoji);
+    }
   }
 
   function cleanTitle(raw) {
@@ -523,6 +680,32 @@
 
   function cleanFullTitle(raw) {
     return norm(raw).replace(/\s*[–—-]\s*ChatGPT\s*$/i, '').trim();
+  }
+
+  function sanitizeWithConvergence(raw, legacySanitizer, diagnosticLabel) {
+    const status = resolveConvergenceStatus();
+    if (!status.enabled) return legacySanitizer(raw);
+    try {
+      return canonicalSanitizedTitle(raw, status);
+    } catch (err) {
+      convergenceDiagnostic('error', `${diagnosticLabel} failed: ${err && err.message ? err.message : String(err || '')}`);
+      convergenceStatus({
+        requested: true,
+        enabled: false,
+        mode: 'legacy-fallback',
+        source: status.source,
+        gate: 'sanitizer-error',
+      });
+      return legacySanitizer(raw);
+    }
+  }
+
+  function sanitizeTitleForState(raw) {
+    return sanitizeWithConvergence(raw, cleanTitle, 'canonical sanitizer');
+  }
+
+  function sanitizeNativeBaseTitle(raw) {
+    return sanitizeWithConvergence(raw, cleanFullTitle, 'native sanitizer');
   }
 
   function safeId(id) {
@@ -630,7 +813,7 @@
     const emojiPriority = Number(payload.emojiPriority || 0);
 
     if (payload.baseTitle && basePriority >= (rec.priority || 0)) {
-      const nextBase = cleanTitle(payload.baseTitle);
+      const nextBase = sanitizeTitleForState(payload.baseTitle);
       if (nextBase && (nextBase !== rec.baseTitle || basePriority !== rec.priority)) {
         rec.baseTitle = nextBase;
         rec.source = payload.source || rec.source || reason || 'stored';
@@ -678,6 +861,7 @@
       priority: rec.priority || 0,
       emojiPriority: rec.emojiPriority || 0,
       confidence: rec.confidence || 0,
+      convergence: { ...lastConvergenceStatus },
       storageBackend: storageStatus.backend,
       durability: {
         durable: !!storageStatus.durable,
@@ -710,6 +894,7 @@
       priority: eventState.priority || 0,
       emojiPriority: eventState.emojiPriority || 0,
       confidence: eventState.confidence || 0,
+      convergence: eventState.convergence ? { ...eventState.convergence } : { ...lastConvergenceStatus },
       reason: reason || eventState.lastReason || '',
       timestamp: now(),
     };
@@ -1175,14 +1360,14 @@
       entry.dataset?.hoRawTitleFull ||
       ''
     );
-    if (raw) return cleanTitle(raw) || raw;
+    if (raw) return sanitizeTitleForState(raw) || raw;
     return readTextExcluding(entry);
   }
 
   function readProjectTitle() {
     const selectors = ['main h1', 'header h1', 'h1', '[role="heading"][aria-level="1"]'];
     for (const selector of selectors) {
-      const text = cleanTitle(D.querySelector(selector)?.textContent || '');
+      const text = sanitizeTitleForState(D.querySelector(selector)?.textContent || '');
       if (text) return text;
     }
     return '';
@@ -1193,7 +1378,7 @@
       const index = H2O.LibraryIndex;
       if (!index || typeof index.getChat !== 'function') return '';
       const row = index.getChat(chatId);
-      return cleanTitle(row && (row.title || row.name || row.label));
+      return sanitizeTitleForState(row && (row.title || row.name || row.label));
     } catch {
       return '';
     }
@@ -1202,10 +1387,10 @@
   function readDocumentTitle() {
     const raw = D.title || '';
     if (!raw || isOwnDocumentTitle(raw)) return '';
-    return cleanTitle(raw);
+    return sanitizeTitleForState(raw);
   }
 
-  async function readChatGptAccessToken() {
+  async function readChatGptAccessToken(signal) {
     try {
       if (typeof W.fetch !== 'function') return '';
       const res = await W.fetch('/api/auth/session', {
@@ -1213,11 +1398,13 @@
         credentials: 'include',
         cache: 'no-store',
         headers: { accept: 'application/json' },
+        signal,
       });
       if (!res?.ok) return '';
       const json = await res.json();
       return norm(json?.accessToken || json?.access_token || '');
-    } catch {
+    } catch (err) {
+      if (signal?.aborted || err?.name === 'AbortError') throw err;
       return '';
     }
   }
@@ -1233,16 +1420,19 @@
     return headers;
   }
 
-  async function patchNativeConversationTitle(chatId, title) {
+  async function patchNativeConversationTitle(chatId, title, options) {
     if (typeof W.fetch !== 'function') return { ok: false, status: 'fetch-unavailable' };
+    const signal = options?.signal;
     const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
-    const accessToken = await readChatGptAccessToken();
+    const accessToken = await readChatGptAccessToken(signal);
+    if (signal?.aborted) return { ok: false, status: 'aborted' };
     const res = await W.fetch(path, {
       method: 'PATCH',
       credentials: 'include',
       cache: 'no-store',
       headers: nativeConversationHeaders(path, accessToken),
       body: JSON.stringify({ title }),
+      signal,
     });
     let body = null;
     try { body = await res.clone().json(); } catch {}
@@ -1428,6 +1618,8 @@
   function destroy() {
     if (destroyed) return false;
     destroyed = true;
+    try { activeRenameOperation?.controller?.abort?.(); } catch {}
+    activeRenameOperation = null;
     clearTimeout(refreshTimer);
     refreshTimer = 0;
     pendingRefresh = null;
@@ -1442,23 +1634,74 @@
       warn('renameNative.refused', 'missing userInitiated option');
       return Promise.resolve({ ok: false, status: 'not-user-initiated' });
     }
-    const nextTitle = cleanFullTitle(title);
+    const nextTitle = sanitizeNativeBaseTitle(title);
     if (!nextTitle) return Promise.resolve({ ok: false, status: 'empty-title' });
     const chatId = opts.chatId || identity.chatId;
     if (!chatId) return Promise.resolve({ ok: false, status: 'missing-chat-id' });
     const reason = opts.source || 'rename-native';
+    const operationId = `title-rename-${++renameOperationSeq}`;
+    try { activeRenameOperation?.controller?.abort?.(); } catch {}
+    const controller = typeof W.AbortController === 'function' ? new W.AbortController() : null;
+    const operation = {
+      operationId,
+      chatId,
+      routeToken,
+      controller,
+    };
+    activeRenameOperation = operation;
+
+    const operationStatus = () => {
+      if (!activeRenameOperation || activeRenameOperation.operationId !== operationId) return 'superseded';
+      if (operation.routeToken !== routeToken || operation.chatId !== identity.chatId) return 'route-stale';
+      if (operation.controller?.signal?.aborted) return 'aborted';
+      return 'current';
+    };
 
     try {
-      const result = await patchNativeConversationTitle(chatId, nextTitle);
-      if (!result.ok) return { ...result, title: nextTitle, chatId };
+      const result = await patchNativeConversationTitle(chatId, nextTitle, {
+        signal: controller?.signal,
+      });
+      const completionStatus = operationStatus();
+      if (completionStatus !== 'current') {
+        return { ok: false, status: completionStatus, operationId, title: nextTitle, chatId };
+      }
+      if (!result.ok) {
+        activeRenameOperation = null;
+        return { ...result, operationId, title: nextTitle, chatId };
+      }
       updateConversationHistoryCacheTitle(chatId, nextTitle);
       setTitle({ chatId, baseTitle: nextTitle, source: 'user', priority: BASE_PRIORITY.user, confidence: 1, reason }, { force: true, userInitiated: true, reason });
+      activeRenameOperation = null;
       scheduleRefresh(reason, 80);
-      return { ...result, title: nextTitle, chatId };
+      return { ...result, operationId, title: nextTitle, chatId };
     } catch (err) {
+      const completionStatus = operationStatus();
+      if (completionStatus !== 'current' || err?.name === 'AbortError') {
+        if (activeRenameOperation?.operationId === operationId) activeRenameOperation = null;
+        return {
+          ok: false,
+          status: completionStatus === 'current' ? 'aborted' : completionStatus,
+          operationId,
+          title: nextTitle,
+          chatId,
+        };
+      }
+      activeRenameOperation = null;
       fail('renameNative', err);
-      return { ok: false, status: 'error', error: String(err && err.message || err) };
+      return {
+        ok: false,
+        status: 'error',
+        operationId,
+        title: nextTitle,
+        chatId,
+        error: String(err && err.message || err),
+      };
     }
+  }
+
+  function refreshDisplay(reason) {
+    if (destroyed) return getState();
+    return notify(reason || 'display-refresh', null);
   }
 
   function selfCheck() {
@@ -1493,6 +1736,7 @@
       lastUpdateTimestamp: state.lastUpdateAt || 0,
       lastError: lastError || '',
       lastWarning: lastWarning || '',
+      convergence: { ...state.convergence },
       titleContractParity: titleContractParity.snapshot(),
       ownDocumentWrite: ownDocumentWrite ? {
         expectedTitle: ownDocumentWrite.expectedTitle,
@@ -1509,7 +1753,7 @@
     titleObserver = new MutationObserver(() => {
       const raw = D.title || '';
       if (isOwnDocumentTitle(raw)) return;
-      const title = cleanTitle(raw);
+      const title = sanitizeTitleForState(raw);
       if (title) {
         setTitle({ baseTitle: title, source: 'document', priority: BASE_PRIORITY.document, confidence: 0.65, reason: 'document-title-observer' }, { reason: 'document-title-observer' });
       }
@@ -1622,6 +1866,7 @@
     _isOwnDocumentTitle: isOwnDocumentTitle,
     _eventPayload: () => payloadFor(state, 'debug'),
     debug: {
+      refreshDisplay,
       simulateStorageDegraded(value) {
         debugStorageDegraded = !!value;
         if (debugStorageDegraded) storeAdapter = null;

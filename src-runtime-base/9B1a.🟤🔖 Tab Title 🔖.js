@@ -17,6 +17,8 @@
 
   const W = window;
   const D = document;
+  const BOOT_KEY = '__h2oTabTitleRuntime_v2';
+  try { W[BOOT_KEY]?.destroy?.(); } catch {}
   const TITLE_WRITE_TTL_MS = 900;
   const PAGE_TITLE_SYNC_MS = 300;
   const H2O_QUERY_FLAG = 'h2o_flsc';
@@ -71,6 +73,27 @@
   let lastWriteReason = '';
   let lastNativeOverwrite = null;
   let locationWatchInstalled = false;
+  let historyRestore = null;
+  let lastCanonicalChatState = null;
+  let lastCanonicalRouteToken = -1;
+  let destroyed = false;
+  let publicApi = null;
+  const cleanups = new Set();
+
+  function addCleanup(fn) {
+    if (typeof fn === 'function') cleanups.add(fn);
+    return fn;
+  }
+
+  function listen(target, eventName, handler, options) {
+    try {
+      target?.addEventListener?.(eventName, handler, options);
+      addCleanup(() => target?.removeEventListener?.(eventName, handler, options));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   function norm(value) {
     return String(value || '').replace(/[\s\u00A0]+/g, ' ').trim();
@@ -88,9 +111,10 @@
     return filtered[filtered.length - 1] || raw;
   }
 
-  function renderTitle(nextTitle, reason = 'render') {
+  function renderTitle(nextTitle, reason = 'render', options) {
     const title = norm(nextTitle);
-    if (!title || /^chatgpt$/i.test(title)) return;
+    const canonical = options?.canonical === true;
+    if (!title || (!canonical && /^chatgpt$/i.test(title))) return;
     if (title === lastRendered && document.title === title) return;
 
     lastRendered = title;
@@ -115,6 +139,22 @@
       renderTitle(pageTitleOverride);
       return;
     }
+    if (state?.convergence?.enabled === true && state?.routeKind === 'chat') {
+      const token = Number(state.routeToken);
+      if (Number.isSafeInteger(token) && token < lastCanonicalRouteToken) return;
+      if (Number.isSafeInteger(token)) lastCanonicalRouteToken = token;
+      lastCanonicalChatState = {
+        chatId: state.chatId || null,
+        routeToken: Number.isSafeInteger(token) ? token : lastCanonicalRouteToken,
+        documentTitle: state.documentTitle || '',
+        displayTitle: state.displayTitle || '',
+        convergence: { ...state.convergence },
+      };
+      const canonicalTitle = state.documentTitle || state.displayTitle || '';
+      if (canonicalTitle) renderTitle(canonicalTitle, 'canonical-chat-state', { canonical: true });
+      return;
+    }
+    lastCanonicalChatState = null;
     const nextTitle = state?.documentTitle || state?.displayTitle || state?.baseTitle || '';
     if (nextTitle) renderTitle(nextTitle);
   }
@@ -403,6 +443,7 @@
   }
 
   function syncPageTitleOverride(reason = 'page-title-sync') {
+    if (destroyed) return false;
     const activePageTitle = readActiveH2OPageTitle();
     if (activePageTitle) {
       const currentTitle = norm(D.title || '');
@@ -419,6 +460,24 @@
       return true;
     }
 
+    if (lastCanonicalChatState?.convergence?.enabled === true) {
+      const canonicalTitle = lastCanonicalChatState.documentTitle || lastCanonicalChatState.displayTitle || '';
+      if (canonicalTitle) {
+        const currentTitle = norm(D.title || '');
+        if (currentTitle && currentTitle !== canonicalTitle) {
+          lastNativeOverwrite = {
+            at: Date.now(),
+            reason: String(reason || ''),
+            currentTitle,
+            expectedTitle: canonicalTitle,
+          };
+        }
+        pageTitleOverride = '';
+        renderTitle(canonicalTitle, reason, { canonical: true });
+        return true;
+      }
+    }
+
     if (!pageTitleOverride) return false;
     pageTitleOverride = '';
     try {
@@ -430,7 +489,7 @@
   }
 
   function schedulePageTitleSync(reason = 'page-title-scheduled') {
-    if (pageTitleSyncFrame) return;
+    if (destroyed || pageTitleSyncFrame) return;
     const run = () => {
       pageTitleSyncFrame = 0;
       syncPageTitleOverride(reason);
@@ -445,6 +504,7 @@
   }
 
   function installPageTitleWatch() {
+    if (destroyed) return;
     if (!pageTitleSyncTimer) {
       pageTitleSyncTimer = W.setInterval(() => syncPageTitleOverride('page-title-interval'), PAGE_TITLE_SYNC_MS);
     }
@@ -479,31 +539,48 @@
   }
 
   function installLocationWatch() {
-    if (locationWatchInstalled) return;
+    if (destroyed || locationWatchInstalled) return;
     locationWatchInstalled = true;
 
     try {
       if (!W.history.__h2oTabTitlePatchedV1) {
+        const bases = {
+          pushState: W.history.pushState,
+          replaceState: W.history.replaceState,
+        };
+        const wrappers = {};
         ['pushState', 'replaceState'].forEach((name) => {
-          const base = W.history[name];
+          const base = bases[name];
           if (typeof base !== 'function') return;
-          W.history[name] = function (...args) {
+          wrappers[name] = function (...args) {
             const result = base.apply(this, args);
             schedulePageTitleSync(`history:${name}`);
             return result;
           };
+          W.history[name] = wrappers[name];
         });
         try { Object.defineProperty(W.history, '__h2oTabTitlePatchedV1', { value: true, configurable: true }); } catch { W.history.__h2oTabTitlePatchedV1 = true; }
+        historyRestore = () => {
+          ['pushState', 'replaceState'].forEach((name) => {
+            if (wrappers[name] && W.history[name] === wrappers[name]) W.history[name] = bases[name];
+          });
+          try { delete W.history.__h2oTabTitlePatchedV1; } catch {}
+        };
       }
     } catch {}
 
-    try { W.addEventListener('popstate', () => schedulePageTitleSync('popstate'), true); } catch {}
-    try { W.addEventListener('hashchange', () => schedulePageTitleSync('hashchange'), true); } catch {}
-    try { W.addEventListener('focus', () => schedulePageTitleSync('window-focus'), true); } catch {}
-    try { D.addEventListener('visibilitychange', () => schedulePageTitleSync('visibilitychange'), true); } catch {}
+    const onPopState = () => schedulePageTitleSync('popstate');
+    const onHashChange = () => schedulePageTitleSync('hashchange');
+    const onFocus = () => schedulePageTitleSync('window-focus');
+    const onVisibilityChange = () => schedulePageTitleSync('visibilitychange');
+    listen(W, 'popstate', onPopState, true);
+    listen(W, 'hashchange', onHashChange, true);
+    listen(W, 'focus', onFocus, true);
+    listen(D, 'visibilitychange', onVisibilityChange, true);
   }
 
   function attach() {
+    if (destroyed) return false;
     const api = W.H2O && W.H2O.ChatTitle;
     if (!api || typeof api.subscribe !== 'function') return false;
     if (unsubscribe) return true;
@@ -518,7 +595,7 @@
   function installPublicApi() {
     try {
       const H2O = (W.H2O = W.H2O || {});
-      H2O.TabTitle = {
+      publicApi = {
         version: '1.2.0',
         inspect: inspectTitleState,
         refresh(reason = 'api') {
@@ -533,15 +610,54 @@
           return info.activePage;
         },
       };
+      H2O.TabTitle = publicApi;
     } catch {}
   }
 
   function scheduleAttach() {
+    if (destroyed) return;
     clearTimeout(attachTimer);
     attachTimer = setTimeout(() => {
       if (!attach()) scheduleAttach();
     }, 120);
   }
+
+  function destroy() {
+    if (destroyed) return false;
+    destroyed = true;
+    clearTimeout(attachTimer);
+    attachTimer = 0;
+    if (pageTitleSyncTimer) W.clearInterval(pageTitleSyncTimer);
+    pageTitleSyncTimer = 0;
+    if (pageTitleSyncFrame) {
+      try { W.cancelAnimationFrame?.(pageTitleSyncFrame); } catch {}
+      try { W.clearTimeout(pageTitleSyncFrame); } catch {}
+    }
+    pageTitleSyncFrame = 0;
+    try { pageTitleObserver?.disconnect?.(); } catch {}
+    pageTitleObserver = null;
+    try { unsubscribe?.(); } catch {}
+    unsubscribe = null;
+    try { historyRestore?.(); } catch {}
+    historyRestore = null;
+    cleanups.forEach((fn) => {
+      try { fn(); } catch {}
+    });
+    cleanups.clear();
+    locationWatchInstalled = false;
+    lastCanonicalChatState = null;
+    try {
+      if (W.H2O?.TabTitle === publicApi) delete W.H2O.TabTitle;
+    } catch {}
+    publicApi = null;
+    try {
+      if (W[BOOT_KEY] === runtimeHandle) delete W[BOOT_KEY];
+    } catch {}
+    return true;
+  }
+
+  const runtimeHandle = Object.freeze({ destroy });
+  W[BOOT_KEY] = runtimeHandle;
 
   if (!attach()) {
     if (!readH2ORouteFromUrl()) {
@@ -555,20 +671,25 @@
   installPublicApi();
   syncPageTitleOverride('boot');
   if (D.readyState === 'loading') {
-    D.addEventListener('DOMContentLoaded', () => {
+    const onDomContentLoaded = () => {
       installPageTitleWatch();
       installLocationWatch();
       installPublicApi();
       schedulePageTitleSync('domcontentloaded');
-    }, { once: true });
+    };
+    listen(D, 'DOMContentLoaded', onDomContentLoaded, { once: true });
   }
 
-  W.addEventListener('h2o:chat-title:changed', (event) => {
-    renderFromState(event && event.detail);
-  });
-  W.addEventListener('evt:h2o:chat-title:changed', (event) => {
-    renderFromState(event && event.detail);
-  });
+  const renderCurrentTitleState = (event) => {
+    const api = W.H2O && W.H2O.ChatTitle;
+    let current = event && event.detail;
+    try {
+      if (api && typeof api.getState === 'function') current = api.getState();
+    } catch {}
+    renderFromState(current);
+  };
+  listen(W, 'h2o:chat-title:changed', renderCurrentTitleState);
+  listen(W, 'evt:h2o:chat-title:changed', renderCurrentTitleState);
 
   const onLibraryPageMounted = (event) => {
     const detail = event?.detail || {};
@@ -584,10 +705,11 @@
     );
     setPageTitleOverride(title, event?.detail?.reason || 'library-page-mounted');
   };
-  W.addEventListener('evt:h2o:library-core:page-entered', onLibraryPageMounted);
-  W.addEventListener('evt:h2o:library-core:page-replaced', onLibraryPageMounted);
-  W.addEventListener('evt:h2o:library-core:page-exited', () => {
+  const onLibraryPageExited = () => {
     clearPageTitleOverride();
     schedulePageTitleSync('library-page-exited');
-  });
+  };
+  listen(W, 'evt:h2o:library-core:page-entered', onLibraryPageMounted);
+  listen(W, 'evt:h2o:library-core:page-replaced', onLibraryPageMounted);
+  listen(W, 'evt:h2o:library-core:page-exited', onLibraryPageExited);
 })();

@@ -1,8 +1,8 @@
 # ADR-0011: Title Management Contract
 
-- Status: Accepted Stage 1A foundation; Stage 1D-A source-only amendment pending review
+- Status: Accepted through Stage 1D; Stage 1E-a source implementation pending canary
 - Date: 2026-07-21
-- Amended: 2026-07-28
+- Amended: 2026-07-30
 - Scope: Pure contract, source-only DTO boundaries, and executable validation
 
 ## Context
@@ -13,9 +13,10 @@ Stage 0B established the delivered title-interface baseline and proved that
 `9B0a`, `9B1a`, and `9C1a` are active while `9D1a` remains disabled. Stage 1A
 defined the shared pure contract. Stage 1B delivered a non-authoritative
 classic-script bridge, and Stage 1C added formatter-parity observation while
-keeping the legacy display result authoritative. Stage 1D-A corrects only the
-browser-neutral source contract and its documentation; it does not adopt the
-new helpers in Native or Studio runtime code.
+keeping the legacy display result authoritative. Stage 1D corrected the
+browser-neutral source contract and coordinated the accepted public bridge.
+Stage 1E-a introduces a disabled-by-default Native runtime adoption path while
+retaining the full legacy path for immediate rollback.
 
 ## Decision
 
@@ -256,12 +257,28 @@ authoritative runtime adoption.
   formatter remains authoritative.
 - Stage 1D-A adds source-only DTO and formatting helpers. No runtime imports or
   consumers are added.
-- `9B0a` will evolve toward canonical coordination only through a separately
-  reviewed runtime stage.
-- `9B1a` will move toward a passive renderer that consumes canonical display output.
-- `9C1a` will move toward a transactional editor that produces explicit intent and waits for trusted confirmation.
+- Stage 1E-a resolves `title.threeSurfaceConvergenceV1` centrally in `9B0a`.
+  The flag defaults to `false`; the accepted canonical formatter remains
+  opt-in until protected browser canary acceptance. Invalid or unavailable
+  flag or bridge state fails closed to the unchanged legacy formatter.
+- Under the Stage 1E-a opt-in path, `9B0a` alone invokes
+  `sanitizeNativeTitle` and `formatNativeDisplayTitle`. Native ChatGPT
+  persists only the sanitized clean base title. Emoji remains a separately
+  stored H2O field, and `displayTitle` remains derived inside `9B0a`.
+- Stage 1E-a corrects the optimistic rename defect. `9C1a` keeps pending editor
+  text locally, awaits `9B0a.renameNative`, and never installs canonical title
+  state before successful Native PATCH completion. `9B0a.renameNative` is the
+  single confirmed-state installation point; failed, aborted, superseded, and
+  route-stale operations cannot update canonical state.
+- With the convergence flag enabled, confirmed `9C1a` display and native-chat
+  `9B1a` tab display consume the full canonical snapshot without independent
+  title sanitation or emoji composition. Flag rollback immediately restores
+  their legacy display paths without changing title records.
+- Native sidebar/list rendering is explicitly deferred to Stage 1E-b.
 - `9D1a` will be decomposed into suggestion and explicit emoji-intent responsibilities; it remains disabled.
-- Native and Studio persistence adapters, readback, trusted evidence creation, migrations, accessibility UI, cross-surface synchronization, rollback presentation, and telemetry remain deferred.
+- Storage migration, NativeTitleAdapter, read-back receipts, Studio
+  convergence, and generalized transaction architecture are not part of Stage
+  1E-a and remain deferred.
 
-No existing title runtime, Studio runtime, configuration, generated extension
-artifact, browser state, storage, or diagnostic state is changed by Stage 1D-A.
+Stage 1E-a is source-only. It changes no configuration, generated extension
+artifact, browser state, existing stored title record, or storage schema.

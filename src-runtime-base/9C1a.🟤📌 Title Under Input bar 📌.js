@@ -37,6 +37,11 @@
   let attachTimer = 0;
   let refreshTimer = 0;
   let bodyObserver = null;
+  let renameSubmissionSeq = 0;
+  let activeRenameSubmission = null;
+  let pendingRenameText = '';
+  let renameError = null;
+  let destroyed = false;
   const cleanups = new Set();
 
   const STYLE_ID = 'ho-title-under-input-style-v3';
@@ -162,6 +167,40 @@
       text-align: center;
       outline: none;
       font-weight: 600;
+    }
+
+    .ho-title-rename-error {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: min(36vw, 300px);
+      color: rgba(255, 176, 176, 0.96);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .ho-title-rename-error > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ho-title-rename-retry {
+      border: 0;
+      border-radius: 4px;
+      padding: 1px 5px;
+      background: rgba(255, 255, 255, 0.10);
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .ho-title-rename-status {
+      color: rgba(255, 255, 255, 0.62);
+      font-size: 10px;
+      font-weight: 600;
+      white-space: nowrap;
     }
 
     .ho-title-placeholder-title {
@@ -363,6 +402,11 @@
   }
 
   function destroy() {
+    destroyed = true;
+    renameSubmissionSeq += 1;
+    activeRenameSubmission = null;
+    pendingRenameText = '';
+    renameError = null;
     clearTimeout(attachTimer);
     clearTimeout(refreshTimer);
     closeTitleMenu();
@@ -402,6 +446,7 @@
     shownTitle = '';
     shownProjectKey = '';
     baseTitle = '';
+    renameError = null;
     if (labelEl) {
       try { labelEl.remove(); } catch {}
       labelEl = null;
@@ -990,28 +1035,76 @@
     }
   }
 
+  function clearRenameError() {
+    renameError = null;
+    try { labelEl?.querySelector?.('.ho-title-rename-error')?.remove?.(); } catch {}
+  }
+
+  function renderRenameError() {
+    if (!renameError || isEditing || !labelEl) return;
+    const currentChatId = getCurrentChatId();
+    if (renameError.chatId !== currentChatId) {
+      clearRenameError();
+      return;
+    }
+    const main = labelEl.querySelector('.ho-title-main');
+    if (!main || main.querySelector('.ho-title-rename-error')) return;
+    const box = D.createElement('span');
+    box.className = 'ho-title-rename-error';
+    box.setAttribute('role', 'status');
+    box.setAttribute('aria-live', 'polite');
+    const message = D.createElement('span');
+    message.textContent = renameError.message;
+    const retry = D.createElement('button');
+    retry.type = 'button';
+    retry.className = 'ho-title-rename-retry';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const retryText = renameError?.pendingText || '';
+      clearRenameError();
+      startInlineEdit(retryText);
+    });
+    box.appendChild(message);
+    box.appendChild(retry);
+    main.appendChild(box);
+  }
+
   function renderFromState(state) {
-    if (!getCurrentChatId() || !state || state.routeKind === 'project') {
+    const currentChatId = getCurrentChatId();
+    if (!currentChatId || !state || state.routeKind === 'project') {
       hideTitleLabel();
       return;
     }
+    if (renameError && (
+      renameError.chatId !== currentChatId ||
+      (Number.isSafeInteger(state.routeToken) && renameError.routeToken !== state.routeToken)
+    )) {
+      clearRenameError();
+    }
     baseTitle = norm(state.baseTitle || '');
-    const display = norm(state.displayTitle || state.baseTitle || '');
+    const display = state.convergence?.enabled === true
+      ? norm(state.displayTitle || '')
+      : norm(state.displayTitle || state.baseTitle || '');
     if (display && !(isEmojiOnlyTitle(display) && !baseTitle)) {
       updateLabelText(display);
     } else {
       updatePlaceholderLabel();
     }
+    renderRenameError();
   }
 
-  function startInlineEdit() {
+  function startInlineEdit(initialValue) {
     if (!ensureLabel() || !labelEl || isEditing) return;
     const api = W.H2O && W.H2O.ChatTitle;
     const state = api?.getState?.() || {};
     const currentBase = norm(state.baseTitle || baseTitle || shownTitle);
     if (!currentBase) return;
+    const editValue = norm(initialValue || currentBase);
 
     isEditing = true;
+    clearRenameError();
     closeTitleMenu();
     labelEl.innerHTML = '';
 
@@ -1041,24 +1134,52 @@
     const input = D.createElement('input');
     input.type = 'text';
     input.className = 'ho-title-edit-input';
-    input.value = currentBase;
+    input.value = editValue;
     main.appendChild(input);
     labelEl.appendChild(main);
     input.focus();
     input.select();
 
     let finished = false;
-    function finish(commit) {
+    async function finish(commit) {
       if (finished) return;
       finished = true;
-      isEditing = false;
 
-      const nextBase = norm(commit ? input.value : currentBase);
-      labelEl.innerHTML = '';
+      const nextBase = norm(commit ? input.value : editValue);
 
       if (commit && nextBase && nextBase !== currentBase) {
-        applyRename(nextBase);
+        pendingRenameText = nextBase;
+        input.disabled = true;
+        input.setAttribute('aria-busy', 'true');
+        const status = D.createElement('span');
+        status.className = 'ho-title-rename-status';
+        status.textContent = 'Saving…';
+        main.appendChild(status);
+        const result = await applyRename(nextBase);
+        if (result?.ignored) {
+          isEditing = false;
+          labelEl.innerHTML = '';
+          renderFromState(api?.getState?.() || {});
+          return;
+        }
+        isEditing = false;
+        labelEl.innerHTML = '';
+        if (result?.ok) {
+          pendingRenameText = '';
+          clearRenameError();
+        } else {
+          renameError = {
+            chatId: result?.chatId || getCurrentChatId(),
+            routeToken: Number.isSafeInteger(result?.routeToken) ? result.routeToken : state.routeToken,
+            pendingText: nextBase,
+            message: 'Title was not saved.',
+          };
+        }
+        renderFromState(api?.getState?.() || state);
       } else {
+        isEditing = false;
+        pendingRenameText = '';
+        labelEl.innerHTML = '';
         renderFromState(api?.getState?.() || { baseTitle: currentBase, displayTitle: shownTitle || currentBase });
       }
     }
@@ -1075,28 +1196,62 @@
     input.addEventListener('blur', () => finish(true));
   }
 
-  function applyRename(nextBase) {
+  async function applyRename(nextBase) {
     const api = W.H2O && W.H2O.ChatTitle;
-    if (!api) {
-      updateLabelText(nextBase);
-      return;
+    const snapshot = api?.getState?.() || {};
+    const chatId = getCurrentChatId();
+    const capturedRouteToken = Number.isSafeInteger(snapshot.routeToken) ? snapshot.routeToken : -1;
+    const submission = {
+      operationId: `under-input-rename-${++renameSubmissionSeq}`,
+      chatId,
+      routeToken: capturedRouteToken,
+    };
+    activeRenameSubmission = submission;
+
+    if (!api || typeof api.renameNative !== 'function') {
+      activeRenameSubmission = null;
+      return {
+        ok: false,
+        status: 'title-api-unavailable',
+        chatId,
+        routeToken: capturedRouteToken,
+      };
     }
-    api.setTitle?.({
-      baseTitle: nextBase,
-      source: 'user',
-      priority: 100,
-      confidence: 1,
-      reason: 'under-input-rename',
-    }, {
-      force: true,
-      userInitiated: true,
-      reason: 'under-input-rename',
-    });
-    updateLabelText(api.getState?.().displayTitle || nextBase);
-    api.renameNative?.(nextBase, {
-      userInitiated: true,
-      source: 'under-input',
-    });
+
+    let result;
+    try {
+      result = await api.renameNative(nextBase, {
+        userInitiated: true,
+        source: 'under-input',
+        chatId,
+      });
+    } catch (err) {
+      result = {
+        ok: false,
+        status: 'error',
+        error: String(err && err.message || err),
+      };
+    }
+
+    if (destroyed || activeRenameSubmission?.operationId !== submission.operationId) {
+      return { ok: false, status: 'superseded', ignored: true, chatId, routeToken: capturedRouteToken };
+    }
+    const current = api.getState?.() || {};
+    if (
+      getCurrentChatId() !== chatId ||
+      current.chatId !== chatId ||
+      (Number.isSafeInteger(current.routeToken) && current.routeToken !== capturedRouteToken) ||
+      result?.status === 'route-stale'
+    ) {
+      activeRenameSubmission = null;
+      return { ok: false, status: 'route-stale', ignored: true, chatId, routeToken: capturedRouteToken };
+    }
+    activeRenameSubmission = null;
+    return {
+      ...(result || { ok: false, status: 'unknown' }),
+      chatId,
+      routeToken: capturedRouteToken,
+    };
   }
 
   function attachChatTitle() {
@@ -1109,6 +1264,7 @@
   }
 
   function scheduleAttach() {
+    if (destroyed) return;
     clearTimeout(attachTimer);
     attachTimer = setTimeout(() => {
       if (!attachChatTitle()) scheduleAttach();
@@ -1116,6 +1272,7 @@
   }
 
   function refreshSoon(reason) {
+    if (destroyed) return;
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       try {
@@ -1126,12 +1283,18 @@
   }
 
   function init() {
+    if (destroyed) return;
     ensureLabel();
     if (!attachChatTitle()) scheduleAttach();
     refreshSoon('under-input-init');
 
-    const onTitleChanged = (event) => renderFromState(event?.detail);
-    const onEmojiUpdated = (event) => renderFromState(event?.detail);
+    const renderCurrentState = (event) => {
+      let current = event?.detail;
+      try { current = W.H2O?.ChatTitle?.getState?.() || current; } catch {}
+      renderFromState(current);
+    };
+    const onTitleChanged = (event) => renderCurrentState(event);
+    const onEmojiUpdated = (event) => renderCurrentState(event);
     const onAutoEmojiChanged = () => refreshSoon('legacy-autoemoji-changed');
     const onPopState = () => refreshSoon('popstate');
 
