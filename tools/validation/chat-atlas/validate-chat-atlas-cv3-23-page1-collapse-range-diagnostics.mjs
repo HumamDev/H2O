@@ -398,10 +398,15 @@ function createHarness(options = {}) {
   const p2Divider = divider(2, guard);
   flow.appendChild(p2Sentinel);
   flow.appendChild(p2Divider);
-  const end = nestedWrapper('q-26', 'user', 'conversation-turn-51', guard);
-  const answer26 = nestedWrapper('a-26', 'assistant', 'conversation-turn-52', guard);
+  const end = options.coldEnd === true
+    ? { wrapper: simpleWrapper('q-26', guard), host: null, carrier: null }
+    : nestedWrapper('q-26', 'user', 'conversation-turn-51', guard);
+  const answer26 = options.coldEnd === true
+    ? { wrapper: simpleWrapper('a-26', guard), host: null, carrier: null }
+    : nestedWrapper('a-26', 'assistant', 'conversation-turn-52', guard);
   if (options.missingEnd !== true) flow.appendChild(end.wrapper);
   flow.appendChild(answer26.wrapper);
+  if (options.duplicateEnd === true) flow.appendChild(simpleWrapper('q-26', guard));
   const afterEnd = simpleWrapper('q-27', guard);
   flow.appendChild(afterEnd);
 
@@ -458,6 +463,11 @@ function createHarness(options = {}) {
         });
       }
       const scope = { ...graphScope };
+      if (
+        options.staleEndGraph === true
+        && Array.isArray(ids)
+        && ids.includes('q-26')
+      ) scope.routeKey = '/c/stale-page-two-graph';
       if (options.graphReason === 'graph-stale') scope.fingerprint = 'djb2:stale';
       return Object.freeze({
         available: true,
@@ -525,6 +535,8 @@ function createHarness(options = {}) {
     'renderedBoundaryOrderingNodeAllowed',
     'renderedBoundaryLayoutProof',
     'renderedBoundaryWrapperCarriesIdentity',
+    'renderedBoundaryColdWrapperH2OOwned',
+    'resolveColdRenderedBoundaryWrapper',
     'renderedBoundaryPageUnitPlacement',
     'renderedBoundaryTransitionActive',
     'renderedBoundaryRecordStreaming',
@@ -545,7 +557,10 @@ function createHarness(options = {}) {
     'readPageCollapseRangeGraphRecords',
     'getPageCollapseRangeDiagnostics',
   ];
-  const body = functionNames.map((name) => extractFunction(productionSource, name)).join('\n');
+  const body = functionNames
+    .filter((name) => productionSource.includes(`function ${name}(`))
+    .map((name) => extractFunction(productionSource, name))
+    .join('\n');
   const rangeBody = productionSource.includes('function getPageCollapseRangeDiagnostics(')
     ? rangeNames.map((name) => extractFunction(productionSource, name)).join('\n')
     : '';
@@ -658,6 +673,100 @@ await fixture('exact order-26 wrapper is the exclusive end', () => {
   equal(result.supported, true, 'supported');
   equal(result.nextBoundaryQId, 'q-26', 'q26 end');
   equal(result.rangeEndIndex, h.flow.children.indexOf(h.end.wrapper), 'exact end index');
+});
+
+await fixture('cold Page 2 exact wrapper creates two valid boundary leases', () => {
+  const h = createHarness({ coldEnd: true });
+  const capabilities = prime(h);
+  equal(capabilities.start.supported, true, 'Page 1 boundary supported');
+  equal(capabilities.end.supported, true, 'Page 2 boundary supported');
+  equal(
+    capabilities.end.source,
+    'exact-graph-backed-product-qid-wrapper',
+    'cold Page 2 source',
+  );
+  equal(h.S.renderedPageBoundaryLeases.size, 2, 'two exact leases');
+});
+
+await fixture('cold Page 2 exact wrapper remains the exclusive range end', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  const result = h.api.range(1);
+  equal(result.supported, true, 'range supported');
+  equal(result.nextBoundaryQId, 'q-26', 'exact qId');
+  equal(result.rangeEndIndex, h.flow.children.indexOf(h.end.wrapper), 'exclusive cold end');
+});
+
+await fixture('cold Page 2 wrapper is never classified inside Page 1', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  const result = h.api.range(1);
+  const pageTwoIndex = h.flow.children.indexOf(h.end.wrapper);
+  equal(result.supported, true, 'range supported');
+  equal(result.rangeEndIndex, pageTwoIndex, 'range stops at Page 2');
+  ok(result.rangeStartIndex < pageTwoIndex, 'Page 1 precedes Page 2');
+});
+
+await fixture('cold Page 1 and Page 2 leases share the active flow root', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  const startLease = h.S.renderedPageBoundaryLeases.get(1);
+  const endLease = h.S.renderedPageBoundaryLeases.get(2);
+  ok(startLease.flowRoot === h.flow, 'Page 1 uses active flow');
+  ok(endLease.flowRoot === h.flow, 'Page 2 uses active flow');
+  equal(h.api.range(1).rangeProven, true, 'same-root range proven');
+});
+
+await fixture('cold Page 2 source does not weaken host-wrapper classification', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  const result = h.api.range(1);
+  equal(result.supported, true, 'range supported');
+  equal(result.ambiguousWrapperCount, 0, 'no classifier ambiguity introduced');
+  ok(result.classifierSignals.graphIdentity > 0, 'graph classifier remains active');
+});
+
+await fixture('client-created-root remains ambiguous with a cold Page 2 end', () => {
+  const h = createHarness({ coldEnd: true, extraKind: 'client-created-root' });
+  prime(h);
+  const result = h.api.range(1);
+  equal(result.supported, false, 'range blocked');
+  equal(result.reason, 'range-wrapper-ambiguous', 'bare container remains ambiguous');
+  equal(result.firstAmbiguous.graphIdentityFound, false, 'no graph ownership');
+});
+
+await fixture('duplicate cold Page 2 exact wrappers block the range', () => {
+  const h = createHarness({ coldEnd: true, duplicateEnd: true });
+  const capabilities = prime(h);
+  equal(capabilities.end.supported, false, 'Page 2 boundary unsupported');
+  equal(capabilities.end.reason, 'boundary-section-ambiguous', 'duplicate exact match');
+  equal(h.api.range(1).reason, 'next-boundary-unavailable', 'range blocked');
+});
+
+await fixture('stale Page 2 graph scope blocks the cold range', () => {
+  const h = createHarness({ coldEnd: true, staleEndGraph: true });
+  const capabilities = prime(h);
+  equal(capabilities.start.supported, true, 'Page 1 remains current');
+  equal(capabilities.end.reason, 'graph-stale', 'Page 2 graph rejected');
+  equal(h.api.range(1).reason, 'graph-stale', 'range reports stale graph');
+});
+
+await fixture('repeated cold range diagnostic is mutation free', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  const first = h.api.range(1);
+  const second = h.api.range(1);
+  equal(second, first, 'equivalent scalar result');
+  assertSafety(h);
+});
+
+await fixture('cold range API remains read-only with no new production consumer', () => {
+  const h = createHarness({ coldEnd: true });
+  prime(h);
+  equal(h.api.range(1).supported, true, 'diagnostic supported');
+  const occurrences = Array.from(SOURCE.matchAll(/getPageCollapseRangeDiagnostics/g)).length;
+  equal(occurrences, 2, 'definition plus public export only');
+  assertSafety(h);
 });
 
 await fixture('start and end wrappers share one flow root', () => {

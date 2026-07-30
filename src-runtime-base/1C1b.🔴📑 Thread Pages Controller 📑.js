@@ -2897,6 +2897,44 @@
       && String(wrapper.getAttribute?.('data-turn-id-container') || '').trim() === id;
   }
 
+  function renderedBoundaryColdWrapperH2OOwned(node = null) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      return node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      ) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveColdRenderedBoundaryWrapper(flowRoot = null, identity = '') {
+    const id = String(identity || '').trim();
+    if (!flowRoot || flowRoot?.isConnected !== true || !id) {
+      return { ok: false, reason: 'identity-unmounted', wrapper: null };
+    }
+    const exactMatches = Array.from(flowRoot.children || []).filter((child) => (
+      child?.nodeType === 1
+      && child?.isConnected === true
+      && child?.parentElement === flowRoot
+      && String(child.getAttribute?.('data-turn-id-container') || '').trim() === id
+    ));
+    if (!exactMatches.length) {
+      return { ok: false, reason: 'identity-unmounted', wrapper: null };
+    }
+    if (exactMatches.length !== 1) {
+      return { ok: false, reason: 'identity-ambiguous', wrapper: null };
+    }
+    const wrapper = exactMatches[0];
+    if (renderedBoundaryColdWrapperH2OOwned(wrapper)) {
+      return { ok: false, reason: 'identity-unproven', wrapper: null };
+    }
+    return { ok: true, reason: null, wrapper };
+  }
+
   function renderedBoundaryPageUnitPlacement(flowRoot = null, wrapper = null, pageNum = 0) {
     const divider = renderedBoundaryThreadDivider(pageNum);
     const startSentinel = renderedBoundaryStartSentinel(pageNum);
@@ -3199,10 +3237,99 @@
     }
     if (boundarySurface.reason === 'identity-unmounted') {
       if (!lease) {
-        return fail('rendered-boundary-head-unproven', {
+        const coldBoundary = resolveColdRenderedBoundaryWrapper(flowRoot, authority.qId);
+        if (coldBoundary.reason === 'identity-ambiguous') {
+          return fail('boundary-section-ambiguous', {
+            flowRootConnected: true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        if (!coldBoundary.ok) {
+          return fail('rendered-boundary-head-unproven', {
+            flowRootConnected: true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        const coldWrapper = coldBoundary.wrapper;
+        let currentAuthority = null;
+        let currentGraph = null;
+        try {
+          currentAuthority = readRenderedBoundaryAuthority(num);
+          currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+        } catch {}
+        const currentGraphFingerprint = String(currentGraph?.scope?.fingerprint || '');
+        const currentGraphQ = currentGraph?.records?.find((record) => (
+          record?.requestedId === authority.qId
+        )) || null;
+        if (
+          !currentAuthority?.ok
+          || currentAuthority.statusIdentity !== authority.statusIdentity
+          || currentAuthority.qId !== authority.qId
+          || currentAuthority.primaryAId !== authority.primaryAId
+          || renderedBoundaryTransitionActive(currentAuthority.projection)
+        ) return fail('boundary-scope-changed');
+        if (renderedBoundaryRecordStreaming(currentAuthority.record)) {
+          return fail('streaming-active');
+        }
+        if (
+          currentGraph?.available !== true
+          || String(currentGraph?.scope?.chatId || '') !== authority.chatId
+          || String(currentGraph?.scope?.routeKey || '') !== authority.routeKey
+          || Math.max(0, Number(currentGraph?.scope?.generation || 0) || 0) !== authority.generation
+          || currentGraphFingerprint !== graphFingerprint
+        ) return fail('graph-stale');
+        if (currentGraphQ?.found !== true || currentGraphQ?.productUser !== true) {
+          return fail('rendered-boundary-head-unproven');
+        }
+        if (
+          coldWrapper?.isConnected !== true
+          || coldWrapper?.parentElement !== flowRoot
+          || !renderedBoundaryWrapperCarriesIdentity(coldWrapper, authority.qId)
+          || renderedBoundaryColdWrapperH2OOwned(coldWrapper)
+        ) {
+          return fail('rendered-boundary-head-unproven', {
+            flowRootConnected: true,
+            boundaryWrapperConnected: coldWrapper?.isConnected === true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        const coldLease = Object.freeze({
+          pageNum: num,
+          pageStartOrder: authority.pageStartOrder,
+          chatId: authority.chatId,
+          routeKey: authority.routeKey,
+          generation: authority.generation,
+          effectiveFingerprint: authority.effectiveFingerprint,
+          graphFingerprint,
+          qId: authority.qId,
+          primaryAId: authority.primaryAId,
+          flowRoot,
+          boundaryWrapper: coldWrapper,
+        });
+        S.renderedPageBoundaryLeases.set(num, coldLease);
+        const placement = renderedBoundaryPageUnitPlacement(flowRoot, coldWrapper, num);
+        return frozenRenderedPageBoundaryCapability({
+          ...base,
+          supported: true,
+          reason: null,
+          source: 'exact-graph-backed-product-qid-wrapper',
+          boundaryIdentityCurrent: true,
           flowRootConnected: true,
-          dividerConnected: currentDivider?.isConnected === true,
-          startSentinelConnected: currentStartSentinel?.isConnected === true,
+          boundarySectionMounted: false,
+          boundaryWrapperConnected: true,
+          boundaryDirectFlowIndex: placement.boundaryIndex,
+          dividerConnected: placement.dividerConnected,
+          dividerBeforeBoundary: placement.dividerBeforeBoundary,
+          startSentinelConnected: placement.startSentinelConnected,
+          startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+          interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+          pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+          pageUnitOrderReason: placement.pageUnitOrderReason,
+          placementRepairRequired: !placement.pageUnitOrderCurrent,
+          leaseCurrent: true,
         });
       }
       if (

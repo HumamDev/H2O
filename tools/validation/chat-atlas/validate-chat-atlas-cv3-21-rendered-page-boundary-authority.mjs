@@ -27,6 +27,12 @@ const PAGE1_PARENT_PAGE_SOURCE = execFileSync(
   ['show', `${PAGE1_PARENT_COMMIT}:${PAGE_PATH}`],
   { cwd: ROOT, encoding: 'utf8' },
 );
+const COLD_PARENT_COMMIT = 'e6cacc710b44658f5f710ce86730ec2cce8335e4';
+const COLD_PARENT_PAGE_SOURCE = execFileSync(
+  'git',
+  ['show', `${COLD_PARENT_COMMIT}:${PAGE_PATH}`],
+  { cwd: ROOT, encoding: 'utf8' },
+);
 const fixtures = [];
 let assertions = 0;
 
@@ -406,13 +412,21 @@ function createHarness(options = {}) {
       rolePlacement: options.boundaryRolePlacement,
     })
     : null;
-  const boundaryWrapper = boundarySurface?.wrapper || wrapperWithSection(
-    boundaryIdentity,
-    boundaryRole,
-    boundaryTestId,
-    guard,
+  const boundaryWrapper = options.coldBoundaryWrapper === true
+    ? node('DIV', 'host-cold-boundary-wrapper', guard)
+    : (boundarySurface?.wrapper || wrapperWithSection(
+      boundaryIdentity,
+      boundaryRole,
+      boundaryTestId,
+      guard,
+    ));
+  boundaryWrapper.setAttribute(
+    'data-turn-id-container',
+    options.coldContainerIdentity || boundaryIdentity,
   );
-  boundaryWrapper.setAttribute('data-turn-id-container', boundaryIdentity);
+  if (options.coldH2OOwned === true) {
+    boundaryWrapper.setAttribute('data-cgxui-owner', 'mnmp');
+  }
   if (options.boundaryMounted !== false) flow.appendChild(boundaryWrapper);
   let answerWrapper = null;
   let answerSurface = null;
@@ -459,6 +473,11 @@ function createHarness(options = {}) {
   if (options.duplicateBoundary === true) {
     flow.appendChild(wrapperWithSection(qId, 'user', 'conversation-turn-duplicate', guard));
   }
+  if (options.duplicateColdBoundary === true) {
+    const duplicate = node('DIV', 'host-cold-boundary-duplicate', guard);
+    duplicate.setAttribute('data-turn-id-container', qId);
+    flow.appendChild(duplicate);
+  }
   const status = {
     source: 'canonical',
     overlayActive: false,
@@ -482,7 +501,7 @@ function createHarness(options = {}) {
   };
   const graphScope = {
     chatId: CHAT_ID,
-    routeKey: ROUTE_KEY,
+    routeKey: options.graphScopeStale === true ? '/c/stale-graph' : ROUTE_KEY,
     generation: 1,
     fingerprint: GRAPH_FP,
     graphCurrentNodeId: 'graph-current',
@@ -628,6 +647,12 @@ function createHarness(options = {}) {
     ${productionSource.includes('function renderedBoundaryWrapperCarriesIdentity(')
       ? extractFunction(productionSource, 'renderedBoundaryWrapperCarriesIdentity')
       : ''}
+    ${productionSource.includes('function renderedBoundaryColdWrapperH2OOwned(')
+      ? extractFunction(productionSource, 'renderedBoundaryColdWrapperH2OOwned')
+      : ''}
+    ${productionSource.includes('function resolveColdRenderedBoundaryWrapper(')
+      ? extractFunction(productionSource, 'resolveColdRenderedBoundaryWrapper')
+      : ''}
     ${productionSource.includes('function renderedBoundaryPageUnitPlacement(')
       ? extractFunction(productionSource, 'renderedBoundaryPageUnitPlacement')
       : ''}
@@ -734,6 +759,295 @@ await fixture('parent nested live surface is rejected before correction', () => 
   equal(result.supported, false, 'parent rejects live shape');
   equal(result.reason, 'rendered-boundary-head-unproven', 'parent failure reason');
   equal(result.boundarySectionMounted, false, 'parent misses mounted nested identity');
+});
+
+await fixture('parent cold exact sectionless wrapper is rejected before correction', () => {
+  const h = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    productionSource: COLD_PARENT_PAGE_SOURCE,
+  });
+  equal(
+    h.boundaryWrapper.getAttribute('data-turn-id-container'),
+    Q26,
+    'exact canonical qId wrapper exists',
+  );
+  equal(h.boundaryWrapper.parentElement, h.flow, 'wrapper is a direct flow child');
+  equal(h.boundaryWrapper.querySelector('section[data-turn-id]'), null, 'no nested identity section');
+  equal(
+    h.boundaryWrapper.querySelector('[data-testid^="conversation-turn-"]'),
+    null,
+    'no native test host',
+  );
+  equal(h.leases.size, 0, 'no existing lease');
+  const result = h.api.get(2);
+  equal(result.supported, false, 'parent rejects cold wrapper');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'parent failure reason');
+  equal(result.boundarySectionMounted, false, 'section remains absent');
+  equal(result.boundaryWrapperConnected, false, 'wrapper is not captured');
+  equal(result.leaseCurrent, false, 'lease remains unavailable');
+});
+
+await fixture('cold exact graph-backed sectionless wrapper is supported', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+  }).api.get(2);
+  equal(result.supported, true, 'cold wrapper supported');
+  equal(result.reason, null, 'no failure reason');
+  equal(result.source, 'exact-graph-backed-product-qid-wrapper', 'cold exact source');
+  equal(result.boundarySectionMounted, false, 'section is absent');
+  equal(result.boundaryWrapperConnected, true, 'wrapper is connected');
+  equal(result.boundaryDomRole, null, 'DOM role remains unknown');
+  equal(result.boundaryTestId, null, 'test ID remains unknown');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.leaseCurrent, true, 'lease current');
+});
+
+await fixture('cold exact wrapper captures the normal memory-only lease', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  equal(h.leases.size, 1, 'one lease captured');
+  const lease = h.leases.get(2);
+  equal(lease.qId, Q26, 'lease carries exact qId');
+  ok(lease.flowRoot === h.flow, 'lease carries exact flow root');
+  ok(lease.boundaryWrapper === h.boundaryWrapper, 'lease carries exact wrapper');
+});
+
+await fixture('cold exact wrapper uses the retained lease on a later read', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  const first = h.api.get(2);
+  const lease = h.leases.get(2);
+  h.leases.resetCounts();
+  const second = h.api.get(2);
+  equal(first.source, 'exact-graph-backed-product-qid-wrapper', 'first read bootstraps');
+  equal(second.source, 'same-generation-captured-wrapper', 'second read retains');
+  ok(h.leases.get(2) === lease, 'same lease object retained');
+  equal(h.leases.writes, 0, 'no lease rewrite');
+});
+
+await fixture('mounted exact surface upgrades a cold lease to mounted authority', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  equal(h.api.get(2).source, 'exact-graph-backed-product-qid-wrapper', 'cold capture');
+  let mounted = null;
+  withUnlocked(h, () => {
+    mounted = wrapperWithNestedIdentity(
+      Q26,
+      'user',
+      'conversation-turn-51',
+      h.guard,
+    );
+    h.boundaryWrapper.appendChild(mounted.nativeTestHost);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, true, 'mounted surface supported');
+  equal(result.source, 'exact-mounted-product-qid', 'mounted source wins');
+  equal(result.boundarySectionMounted, true, 'section mounted');
+  equal(result.boundaryDomRole, 'user', 'mounted role observed');
+});
+
+await fixture('cold bootstrap fails closed with zero direct exact matches', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    coldContainerIdentity: 'other-host-identity',
+    answerMounted: false,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'zero-match reason');
+  equal(result.leaseCurrent, false, 'no lease');
+});
+
+await fixture('cold bootstrap fails closed with duplicate direct exact matches', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    duplicateColdBoundary: true,
+    answerMounted: false,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'boundary-section-ambiguous', 'duplicate reason');
+  equal(result.leaseCurrent, false, 'no lease');
+});
+
+await fixture('client-created-root cannot bootstrap a rendered boundary', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    coldContainerIdentity: 'client-created-root',
+    answerMounted: false,
+  }).api.get(2);
+  equal(result.supported, false, 'helper identity rejected');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'not exact canonical qId');
+});
+
+await fixture('graph-unresolved qId cannot bootstrap a cold boundary', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    graphQFound: false,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'graph proof required');
+});
+
+await fixture('stale graph scope cannot bootstrap a cold boundary', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    graphScopeStale: true,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'graph-stale', 'stale graph rejected');
+});
+
+await fixture('non-product graph qId cannot bootstrap a cold boundary', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    graphProductUser: false,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'product user proof required');
+});
+
+await fixture('H2O-owned exact container cannot bootstrap a cold boundary', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    coldH2OOwned: true,
+  }).api.get(2);
+  equal(result.supported, false, 'H2O node rejected');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'host ownership required');
+});
+
+await fixture('cold boundary wrapper replacement invalidates the lease', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  equal(h.api.get(2).supported, true, 'cold capture');
+  withUnlocked(h, () => {
+    const replacement = node('DIV', 'replacement-cold-wrapper', h.guard);
+    replacement.setAttribute('data-turn-id-container', Q26);
+    h.flow.replaceChild(replacement, h.boundaryWrapper);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, false, 'replacement rejected');
+  equal(result.reason, 'captured-wrapper-replaced', 'exact element identity retained');
+  equal(result.leaseCurrent, false, 'lease invalidated');
+});
+
+await fixture('cold boundary wrapper disconnection invalidates the lease', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  withUnlocked(h, () => h.flow.removeChild(h.boundaryWrapper));
+  const result = h.api.get(2);
+  equal(result.reason, 'captured-wrapper-replaced', 'disconnection rejected');
+  equal(result.leaseCurrent, false, 'lease invalidated');
+});
+
+await fixture('cold boundary wrapper identity loss invalidates the lease', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  withUnlocked(h, () => h.boundaryWrapper.removeAttribute('data-turn-id-container'));
+  const result = h.api.get(2);
+  equal(result.reason, 'captured-wrapper-replaced', 'identity loss rejected');
+  equal(result.leaseCurrent, false, 'lease invalidated');
+});
+
+await fixture('cold boundary flow-root replacement invalidates the lease', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  const replacement = node('DIV', 'replacement-cold-flow', h.guard);
+  withUnlocked(h, () => {
+    for (const child of [...h.flow.children]) replacement.appendChild(child);
+    h.thread.replaceChild(replacement, h.flow);
+  });
+  const result = h.api.get(2);
+  equal(result.reason, 'captured-wrapper-replaced', 'flow replacement rejected');
+  equal(result.leaseCurrent, false, 'lease invalidated');
+});
+
+await fixture('streaming prevents cold wrapper bootstrap', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    streaming: true,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'streaming-active', 'streaming rejected');
+});
+
+await fixture('branch transition prevents cold wrapper bootstrap', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    branchTransition: true,
+  }).api.get(2);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'boundary-scope-changed', 'transition rejected');
+});
+
+await fixture('cold NO ANSWER boundary has no answer-wrapper dependency', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    noAnswer: true,
+    answerMounted: false,
+  }).api.get(2);
+  equal(result.supported, true, 'NO ANSWER start supported');
+  equal(result.primaryAId, null, 'no canonical primary answer');
+  equal(result.primaryAnswerMounted, false, 'no answer surface required');
+});
+
+await fixture('cold boundary page-unit diagnostics use the exact wrapper read-only', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  withUnlocked(h, () => {
+    h.flow.appendChild(h.sentinel);
+    h.flow.appendChild(h.divider);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity remains supported');
+  equal(result.source, 'exact-graph-backed-product-qid-wrapper', 'cold source');
+  equal(result.pageUnitOrderCurrent, false, 'stale placement diagnosed');
+  equal(result.placementRepairRequired, true, 'external repair requested');
+  equal(h.flow.children.indexOf(h.boundaryWrapper) >= 0, true, 'wrapper stays in place');
+});
+
+await fixture('cold boundary direct-flow index is diagnostic only', () => {
+  const a = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    rawChildCount: 87,
+  }).api.get(2);
+  const b = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+    rawChildCount: 140,
+  }).api.get(2);
+  equal(a.supported, true, 'first raw shape supported');
+  equal(b.supported, true, 'second raw shape supported');
+  equal(a.qId, b.qId, 'same exact identity authority');
+});
+
+await fixture('cold result is deeply frozen and exposes no DOM node', () => {
+  const result = createHarness({
+    coldBoundaryWrapper: true,
+    answerMounted: false,
+  }).api.get(2);
+  assertDeepFrozen(result);
+  equal(containsDomNode(result), false, 'DOM free');
+});
+
+await fixture('cold bootstrap performs no DOM or persistent mutation', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  assertSafetyZero(h.safety);
+  equal(h.leases.size, 1, 'only private memory lease created');
+});
+
+await fixture('cold retained read is idempotent', () => {
+  const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
+  h.api.get(2);
+  h.leases.resetCounts();
+  equal(h.api.get(2).source, 'same-generation-captured-wrapper', 'retained source');
+  equal(h.leases.writes, 0, 'no rewrite');
+  equal(h.leases.deletes, 0, 'no deletion');
+  assertSafetyZero(h.safety);
 });
 
 await fixture('corrected nested qId and primary-answer surfaces are supported', () => {
