@@ -25,6 +25,9 @@ const ADR_REL = "docs/decisions/ADR-0011-title-management-contract.md";
 const DEV_ORDER_REL = "config/dev-order.tsv";
 const LOADER_DEPS_REL = "config/loader-deps.json";
 const STAGE1EB_SCOPE_OPTION = "--stage1eb-sidebar-scope";
+const STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION = "--stage1eb-validator-fix-scope";
+const STAGE1EB_BASELINE_COMMIT = "767c934a3723e6f6cde8209494bf417e91b26187";
+const STAGE1EB_IMPLEMENTATION_COMMIT = "6baabd48083333a7e5e06eb9da970c8157626261";
 const F0D_REL = "src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js";
 const F1C_REL = "src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js";
 const F2A_REL = "src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js";
@@ -208,20 +211,133 @@ function classifyStage1EBScope({ modifiedTracked, staged, untracked, committedHe
   return "stage1eb-sidebar-dirty";
 }
 
+function resolveStage1EBScope({
+  modifiedTracked,
+  staged,
+  untracked,
+  committedHeadPaths = [],
+  combinedProductPaths = [],
+  head = "",
+  parent = "",
+  baselineIsAncestor = false,
+  implementationIsAncestor = false,
+}, requestedMode) {
+  const modified = new Set(modifiedTracked);
+  const stagedPaths = new Set(staged);
+  const untrackedPaths = new Set(untracked);
+  const currentCommitPaths = new Set(committedHeadPaths);
+  const productPaths = new Set(combinedProductPaths);
+
+  if (requestedMode === "stage1eb-sidebar") {
+    const mode = classifyStage1EBScope({
+      modifiedTracked,
+      staged,
+      untracked,
+      committedHeadPaths,
+    });
+    const resolvedProductPaths = mode === "stage1eb-sidebar-dirty"
+      ? new Set([...modified, ...untrackedPaths])
+      : currentCommitPaths;
+    assert(
+      sameSet(resolvedProductPaths, STAGE1EB_COMMITTED),
+      `resolved Stage 1E-b product scope mismatch: ${JSON.stringify([...resolvedProductPaths].sort())}`,
+    );
+    return Object.freeze({
+      mode,
+      productPaths: Object.freeze([...resolvedProductPaths].sort()),
+      currentCommitPaths: Object.freeze([...currentCommitPaths].sort()),
+    });
+  }
+
+  assert.equal(
+    requestedMode,
+    "stage1eb-validator-fix",
+    `unsupported Stage 1E-b scope mode: ${String(requestedMode)}`,
+  );
+  assert.equal(stagedPaths.size, 0, `staged paths forbidden: ${[...stagedPaths].sort().join(", ")}`);
+  assert.equal(untrackedPaths.size, 0, `validator repair forbids untracked paths: ${[...untrackedPaths].sort()}`);
+  assert.equal(baselineIsAncestor, true, "Stage 1E-b baseline must be an ancestor of the candidate");
+  assert.equal(
+    implementationIsAncestor,
+    true,
+    "accepted Stage 1E-b implementation must be an ancestor of the candidate",
+  );
+  assert(
+    sameSet(productPaths, STAGE1EB_COMMITTED),
+    `combined Stage 1E-b product scope mismatch: ${JSON.stringify([...productPaths].sort())}`,
+  );
+
+  if (modified.size > 0) {
+    assert.equal(head, STAGE1EB_IMPLEMENTATION_COMMIT, "dirty validator repair requires accepted Stage 1E-b HEAD");
+    assert.equal(parent, STAGE1EB_BASELINE_COMMIT, "accepted Stage 1E-b implementation parent mismatch");
+    assert(
+      sameSet(currentCommitPaths, STAGE1EB_COMMITTED),
+      `accepted Stage 1E-b implementation scope mismatch: ${JSON.stringify([...currentCommitPaths].sort())}`,
+    );
+    assert(
+      sameSet(modified, new Set([SELF_REL])),
+      `dirty validator repair requires exactly ${SELF_REL}: ${JSON.stringify([...modified].sort())}`,
+    );
+    return Object.freeze({
+      mode: "stage1eb-validator-fix-dirty",
+      productPaths: Object.freeze([...productPaths].sort()),
+      currentCommitPaths: Object.freeze([...currentCommitPaths].sort()),
+    });
+  }
+
+  assert.notEqual(head, STAGE1EB_IMPLEMENTATION_COMMIT, "committed validator repair requires a new commit");
+  assert.equal(parent, STAGE1EB_IMPLEMENTATION_COMMIT, "validator repair parent must be accepted Stage 1E-b");
+  assert(
+    sameSet(currentCommitPaths, new Set([SELF_REL])),
+    `validator repair commit must modify exactly ${SELF_REL}: ${JSON.stringify([...currentCommitPaths].sort())}`,
+  );
+  return Object.freeze({
+    mode: "stage1eb-validator-fix-committed-clean",
+    productPaths: Object.freeze([...productPaths].sort()),
+    currentCommitPaths: Object.freeze([...currentCommitPaths].sort()),
+  });
+}
+
 function requestedScopeMode(argv) {
   assert(
-    argv.length === 0 || (argv.length === 1 && argv[0] === STAGE1EB_SCOPE_OPTION),
+    argv.length === 0
+      || (
+        argv.length === 1
+        && (argv[0] === STAGE1EB_SCOPE_OPTION || argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION)
+      ),
     `unknown or conflicting Stage 1E validator option: ${argv.join(" ")}`,
   );
-  return argv[0] === STAGE1EB_SCOPE_OPTION ? "stage1eb-sidebar" : "stage1ea";
+  if (argv[0] === STAGE1EB_SCOPE_OPTION) return "stage1eb-sidebar";
+  if (argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION) return "stage1eb-validator-fix";
+  return "stage1ea";
+}
+
+function isAncestor(ancestor, descendant) {
+  try {
+    run("git", ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function currentScope() {
+  const head = run("git", ["rev-parse", "HEAD"]).trim();
+  const parent = run("git", ["rev-parse", "HEAD^"]).trim();
+  const untracked = splitNul(run("git", ["ls-files", "-z", "--others", "--exclude-standard", "--"]));
   return {
     modifiedTracked: splitNul(run("git", ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"])),
     staged: splitNul(run("git", ["diff", "--cached", "--name-only", "-z", "--"])),
-    untracked: splitNul(run("git", ["ls-files", "-z", "--others", "--exclude-standard", "--"])),
+    untracked,
     committedHeadPaths: splitNul(run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD^", "HEAD", "--"])),
+    combinedProductPaths: [
+      ...splitNul(run("git", ["diff", "--name-only", "-z", STAGE1EB_BASELINE_COMMIT, "--"])),
+      ...untracked,
+    ],
+    head,
+    parent,
+    baselineIsAncestor: isAncestor(STAGE1EB_BASELINE_COMMIT, head),
+    implementationIsAncestor: isAncestor(STAGE1EB_IMPLEMENTATION_COMMIT, head),
   };
 }
 
@@ -245,9 +361,11 @@ function structuralTest(name, callback) {
 
 const requestedMode = requestedScopeMode(process.argv.slice(2));
 const actualScope = currentScope();
-const scopeMode = requestedMode === "stage1eb-sidebar"
-  ? classifyStage1EBScope(actualScope)
-  : classifyScope(actualScope);
+const stage1EBScopeResolution = requestedMode === "stage1eb-sidebar"
+  || requestedMode === "stage1eb-validator-fix"
+  ? resolveStage1EBScope(actualScope, requestedMode)
+  : null;
+const scopeMode = stage1EBScopeResolution?.mode || classifyScope(actualScope);
 
 scopeTest("exact authorized six-file scope is accepted", () => {
   assert.equal(classifyScope({
@@ -356,11 +474,148 @@ scopeTest("Stage 1E-b rejects a second untracked path", () => {
   }), /untracked Stage 1E-b scope mismatch/u);
 });
 scopeTest("Stage 1E-b CLI fails closed for unknown or conflicting options", () => {
+  assert.equal(
+    requestedScopeMode([STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION]),
+    "stage1eb-validator-fix",
+  );
   assert.throws(() => requestedScopeMode(["--unknown"]), /unknown or conflicting/u);
   assert.throws(
     () => requestedScopeMode([STAGE1EB_SCOPE_OPTION, STAGE1EB_SCOPE_OPTION]),
     /unknown or conflicting/u,
   );
+  assert.throws(
+    () => requestedScopeMode([STAGE1EB_SCOPE_OPTION, STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION]),
+    /unknown or conflicting/u,
+  );
+});
+scopeTest("dirty validator-only repair is accepted only by its explicit mode", () => {
+  const input = {
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  };
+  assert.equal(
+    resolveStage1EBScope(input, "stage1eb-validator-fix").mode,
+    "stage1eb-validator-fix-dirty",
+  );
+  assert.throws(() => classifyStage1EBScope(input), /tracked Stage 1E-b scope mismatch/u);
+});
+scopeTest("committed validator-only repair is accepted by its explicit mode", () => {
+  assert.equal(resolveStage1EBScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [SELF_REL],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: "validator-repair-commit",
+    parent: STAGE1EB_IMPLEMENTATION_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  }, "stage1eb-validator-fix").mode, "stage1eb-validator-fix-committed-clean");
+});
+scopeTest("validator repair rejects a second modified file", () => {
+  assert.throws(() => resolveStage1EBScope({
+    modifiedTracked: [SELF_REL, ADR_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  }, "stage1eb-validator-fix"), /requires exactly/u);
+});
+scopeTest("validator repair rejects an untracked path", () => {
+  const base = {
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  };
+  assert.throws(
+    () => resolveStage1EBScope({ ...base, untracked: ["foreign.js"] }, "stage1eb-validator-fix"),
+    /forbids untracked/u,
+  );
+});
+scopeTest("validator repair rejects a staged path", () => {
+  const base = {
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  };
+  assert.throws(
+    () => resolveStage1EBScope({ ...base, staged: [SELF_REL] }, "stage1eb-validator-fix"),
+    /staged paths forbidden/u,
+  );
+});
+scopeTest("validator repair rejects wrong parent and ancestry", () => {
+  const base = {
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  };
+  assert.throws(
+    () => resolveStage1EBScope({ ...base, parent: "wrong-parent" }, "stage1eb-validator-fix"),
+    /parent mismatch/u,
+  );
+  assert.throws(
+    () => resolveStage1EBScope({ ...base, baselineIsAncestor: false }, "stage1eb-validator-fix"),
+    /baseline must be an ancestor/u,
+  );
+  assert.throws(
+    () => resolveStage1EBScope({ ...base, implementationIsAncestor: false }, "stage1eb-validator-fix"),
+    /implementation must be an ancestor/u,
+  );
+});
+scopeTest("validator repair rejects a sixth combined product path", () => {
+  assert.throws(() => resolveStage1EBScope({
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED, ADR_REL.replace("ADR-0011", "ADR-foreign")],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  }, "stage1eb-validator-fix"), /combined Stage 1E-b product scope mismatch/u);
+});
+scopeTest("validator repair rejects generated output in the combined product scope", () => {
+  assert.throws(() => resolveStage1EBScope({
+    modifiedTracked: [SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+    combinedProductPaths: [...STAGE1EB_COMMITTED, "apps/dev-server/alias/9B2a._Sidebar_Title_Renderer_.js"],
+    head: STAGE1EB_IMPLEMENTATION_COMMIT,
+    parent: STAGE1EB_BASELINE_COMMIT,
+    baselineIsAncestor: true,
+    implementationIsAncestor: true,
+  }, "stage1eb-validator-fix"), /combined Stage 1E-b product scope mismatch/u);
 });
 
 function makeEventHub() {
@@ -3436,15 +3691,14 @@ structuralTest("native reader harness distinguishes textContent from rendered in
   assert.equal(row.innerText, "✨ Canonical");
 });
 
-structuralTest("Stage 1E-b dirty changes are exactly the authorized five paths", () => {
-  const changed = new Set([
-    ...splitNul(run("git", ["diff", "--name-only", "-z", "HEAD", "--"])),
-    ...splitNul(run("git", ["ls-files", "-z", "--others", "--exclude-standard", "--"])),
-  ]);
+structuralTest("resolved Stage 1E-b product scope is exactly the authorized five paths", () => {
+  assert(stage1EBScopeResolution, "Stage 1E-b structural validation requires resolved scope evidence");
+  const changed = new Set(stage1EBScopeResolution.productPaths);
   assert(sameSet(changed, STAGE1EB_COMMITTED), `unexpected Stage 1E-b path: ${[...changed].sort()}`);
 });
 
 structuralTest("protected title coordinator consumers readers and disabled module remain unchanged", () => {
+  assert(stage1EBScopeResolution, "protected-path validation requires resolved Stage 1E-b scope evidence");
   const protectedPaths = [
     B0_REL,
     B1_REL,
@@ -3463,13 +3717,15 @@ structuralTest("protected title coordinator consumers readers and disabled modul
     "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
     STAGE1C_REL,
   ];
+  const resolvedProductPaths = new Set(stage1EBScopeResolution.productPaths);
   for (const relative of protectedPaths) {
     assert.equal(fs.existsSync(path.join(ROOT, relative)), true, `missing protected source: ${relative}`);
+    assert.equal(resolvedProductPaths.has(relative), false, `protected source entered product scope: ${relative}`);
   }
   assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", ...protectedPaths]).trim(), "");
 });
 
-assert.equal(scopeTests.length, 14, "Stage 1E scope scenario count drifted");
+assert.equal(scopeTests.length, 22, "Stage 1E scope scenario count drifted");
 assert.equal(scenarios.length, 97, "Stage 1E runtime scenario count drifted");
 assert.equal(structuralAssertions.length, 10, "Stage 1E structural assertion count drifted");
 
@@ -3480,5 +3736,12 @@ console.log(JSON.stringify({
   scopeScenarios: scopeTests.length,
   runtimeScenarios: scenarios.length,
   structuralAssertions: structuralAssertions.length,
-  authorizedPaths: [...(requestedMode === "stage1eb-sidebar" ? STAGE1EB_COMMITTED : AUTHORIZED)].sort(),
+  authorizedPaths: [
+    ...(
+      requestedMode === "stage1eb-sidebar" || requestedMode === "stage1eb-validator-fix"
+        ? STAGE1EB_COMMITTED
+        : AUTHORIZED
+    ),
+  ].sort(),
+  scopeResolution: stage1EBScopeResolution,
 }));
