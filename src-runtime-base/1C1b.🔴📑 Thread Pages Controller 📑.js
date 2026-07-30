@@ -44,6 +44,9 @@
   const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
   const COLLAPSE_UNAVAILABLE_MESSAGE = 'Collapse unavailable until the next page boundary is loaded.';
   const COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE = 'Collapse temporarily unavailable because the conversation layout is incomplete.';
+  // Shown when the capability was ready but the transaction itself could not
+  // commit. Naming a boundary or a layout problem there would be inaccurate.
+  const COLLAPSE_TRANSIENT_FAILURE_MESSAGE = 'Collapse is temporarily unavailable. Please try again.';
   const ANSWER_TITLE_COLLAPSED_ATTR = 'data-at-collapsed';
   const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
   const USER_MSG_SEL = '[data-message-author-role="user"]';
@@ -129,6 +132,8 @@
     pageCollapseRangeContinuity: new Map(),
     atomicPageCollapseTransactions: new Map(),
     atomicPageCollapseGuards: new Set(),
+    atomicPageCollapseAttemptSeq: 0,
+    atomicPageCollapseLastAttempt: null,
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
@@ -2858,6 +2863,15 @@
   function renderedBoundaryOrderingNodeAllowed(node = null, divider = null) {
     if (!node || node.nodeType !== 1) return false;
     if (node === divider) return true;
+    // Every H2O-owned page unit legitimately sits between the page start
+    // sentinel and the boundary wrapper — divider, boundary sentinels and the
+    // collapse title-list projection. The counter this feeds is
+    // interveningNonH2ONodeCount, so an H2O node must never increment it.
+    // Omitting the title list made the atomic transaction invalidate its own
+    // committed output: inserting the projection flipped pageUnitOrderCurrent
+    // to false, and the post-commit revalidation then rolled the whole
+    // collapse back while the capability still reported activationReady.
+    if (typeof pageCollapseRangeH2OOwned === 'function' && pageCollapseRangeH2OOwned(node)) return true;
     try {
       return !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_ATTR)
         && !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR)
@@ -5380,9 +5394,13 @@
     const id = String(chatId || resolveChatId()).trim();
     const structuralReason = String(readiness?.structuralReason || '').trim();
     const reason = structuralReason || String(readiness?.reason || 'readiness-api-unavailable');
-    const message = structuralReason
-      ? COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE
-      : COLLAPSE_UNAVAILABLE_MESSAGE;
+    // A ready capability whose transaction failed is neither a missing next
+    // boundary nor an incomplete layout — say only that it can be retried.
+    const message = String(readiness?.productReason || '') === 'transient-failure'
+      ? COLLAPSE_TRANSIENT_FAILURE_MESSAGE
+      : structuralReason
+        ? COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE
+        : COLLAPSE_UNAVAILABLE_MESSAGE;
     applyCollapsedBoundaryControlState(num, id, readiness);
     let visible = 0;
     for (const divider of collapsedBoundaryDividers(num)) {
@@ -5414,21 +5432,20 @@
     if (ev?.repeat === true) return { ok: false, status: 'repeat-ignored' };
     const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
     if (!dot) return { ok: false, status: 'control-missing' };
+    const divider = dot.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
+    const pageNum = getDividerPageNum(divider);
+    if (!pageNum) return { ok: false, status: 'page-missing' };
     try { ev.preventDefault(); ev.stopPropagation(); } catch {}
-    if (typeof S.onDividerDotClick !== 'function') {
-      return { ok: false, status: 'collapse-handler-unavailable' };
-    }
     const source = key === 'Enter'
       ? 'chat-page-divider:keyboard-enter'
       : 'chat-page-divider:keyboard-space';
-    S.onDividerDotClick({
-      target: dot,
-      detail: 1,
-      h2oActivationSource: source,
-      preventDefault() {},
-      stopPropagation() {},
+    // Keyboard converges on the same owner as pointer activation rather than
+    // synthesising a click, so both paths share one reentrancy guard, one
+    // capability evaluation and one attempt diagnostic.
+    const result = executeAtomicPageCollapseTransaction(pageNum, source, {
+      chatId: resolveChatId(),
     });
-    return { ok: true, status: 'forwarded', source };
+    return { ok: result?.ok === true, status: result?.ok === true ? 'forwarded' : String(result?.status || 'collapse-transaction-failed'), source };
   }
 
   function syncCollapsedBoundaryControlForPage(pageNum = 0, chatId = '') {
@@ -5780,10 +5797,12 @@
       return { ok: false, status: 'transaction-busy', pageNum: num, chatId: id };
     }
     S.atomicPageCollapseGuards.add(key);
+    const metrics = options?.metrics || null;
     let viewportAnchor = null;
     let transaction = null;
     try {
       const evaluation = evaluatePageCollapseCapability(num, { includePlan: true });
+      if (metrics) metrics.capabilityEvaluations += 1;
       const capability = evaluation.capability;
       const plan = evaluation.plan;
       if (!capability?.activationReady || !plan) {
@@ -5794,10 +5813,18 @@
           capability,
         };
       }
+      if (metrics) {
+        metrics.rangePlansBuilt += 1;
+        metrics.wrappersPlanned = plan.hostWrappers.length;
+      }
       plan.atomicRenderedBoundaryPlan = true;
       const prepared = prepareDetachedPageTitleList(plan);
       if (!prepared.ok) {
         return { ok: false, status: prepared.status, capability };
+      }
+      if (metrics) {
+        metrics.detachedListsPrepared += 1;
+        metrics.titleRowsPrepared = prepared.rows.length;
       }
       viewportAnchor = captureCollapsedPageViewportAnchor(num);
       if (!viewportAnchor) {
@@ -5836,8 +5863,13 @@
       };
       try {
         plan.flowRoot.insertBefore(prepared.container, plan.pageDivider.nextSibling);
+        if (metrics) {
+          metrics.firstWriteReached = true;
+          metrics.syntheticListsInserted += 1;
+        }
         const stamped = applyCollapsedNativeRange(plan);
         transaction.stampedWrappers = stamped.stamped || [];
+        if (metrics) metrics.wrappersStamped = transaction.stampedWrappers.length;
         if (!stamped.ok || stamped.hidden !== plan.hostWrappers.length) {
           return rollbackAtomicPageCollapse(transaction, viewportAnchor, stamped.status);
         }
@@ -5867,6 +5899,9 @@
         chatId: id,
         hidden: transaction.hostWrappers.length,
         rows: transaction.titleRowsPrepared.length,
+        generation: transaction.generation,
+        effectiveFingerprint: transaction.effectiveFingerprint,
+        graphFingerprint: transaction.graphFingerprint,
       };
     } finally {
       S.atomicPageCollapseGuards.delete(key);
@@ -5939,6 +5974,230 @@
       }));
     }
     return results;
+  }
+
+  // ── Last-attempt transaction diagnostic ───────────────────────────────────
+  // Memory-only, most-recent attempt only, scalars only. It exists so a live
+  // failure names the exact stage it stopped at without another broad DOM
+  // probe. No DOM references, no identities, no titles, no stack traces.
+  function frozenAtomicPageCollapseDiagnostic(raw = {}) {
+    return Object.freeze({
+      version: 1,
+      available: true,
+      attemptId: Math.max(0, Number(raw.attemptId || 0) || 0),
+      pageNum: Math.max(0, Number(raw.pageNum || 0) || 0),
+      activationSource: String(raw.activationSource || ''),
+      startedAt: Math.max(0, Number(raw.startedAt || 0) || 0),
+      finishedAt: Math.max(0, Number(raw.finishedAt || 0) || 0),
+      result: String(raw.result || ''),
+      internalReason: raw.internalReason == null ? null : String(raw.internalReason),
+      productReason: raw.productReason == null ? null : String(raw.productReason),
+      capabilityEvaluations: Math.max(0, Number(raw.capabilityEvaluations || 0) || 0),
+      rangePlansBuilt: Math.max(0, Number(raw.rangePlansBuilt || 0) || 0),
+      detachedListsPrepared: Math.max(0, Number(raw.detachedListsPrepared || 0) || 0),
+      firstWriteReached: raw.firstWriteReached === true,
+      wrappersPlanned: Math.max(0, Number(raw.wrappersPlanned || 0) || 0),
+      wrappersStamped: Math.max(0, Number(raw.wrappersStamped || 0) || 0),
+      titleRowsPrepared: Math.max(0, Number(raw.titleRowsPrepared || 0) || 0),
+      syntheticListsInserted: Math.max(0, Number(raw.syntheticListsInserted || 0) || 0),
+      rollbackPerformed: raw.rollbackPerformed === true,
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || ''),
+      graphFingerprint: String(raw.graphFingerprint || ''),
+    });
+  }
+
+  function recordAtomicPageCollapseAttempt(input = {}) {
+    S.atomicPageCollapseAttemptSeq = Math.max(0, Number(S.atomicPageCollapseAttemptSeq || 0) || 0) + 1;
+    const metrics = input.metrics || {};
+    const diagnostic = frozenAtomicPageCollapseDiagnostic({
+      ...metrics,
+      attemptId: S.atomicPageCollapseAttemptSeq,
+      pageNum: input.pageNum,
+      activationSource: input.activationSource,
+      startedAt: input.startedAt,
+      finishedAt: Date.now(),
+      result: input.result,
+      internalReason: input.internalReason,
+      productReason: input.productReason,
+      generation: input.generation,
+      effectiveFingerprint: input.effectiveFingerprint,
+      graphFingerprint: input.graphFingerprint,
+    });
+    S.atomicPageCollapseLastAttempt = diagnostic;
+    return diagnostic;
+  }
+
+  function getAtomicPageCollapseTransactionDiagnostic() {
+    const last = S.atomicPageCollapseLastAttempt;
+    return last || Object.freeze({ version: 1, available: false });
+  }
+
+  // Map a transaction status to the stage it stopped at. The stage — not a
+  // stale legacy readiness reason — is what drives the product message.
+  function atomicPageCollapseFailureStage(status = '') {
+    const value = String(status || '');
+    if (value === 'transaction-busy') return 'reentrant-blocked';
+    if (value === 'collapsed-exact-boundary-unavailable') return 'blocked-before-plan';
+    if (value === 'atomic-collapse-rolled-back') return 'rolled-back';
+    if (value === 'viewport-anchor-unavailable') return 'preparation-failed';
+    if (value.startsWith('detached-title-list-')) return 'preparation-failed';
+    if (value.startsWith('atomic-plan-')) return 'revalidation-failed';
+    if (value === 'transaction-commit-incomplete') return 'commit-failed';
+    return 'commit-failed';
+  }
+
+  // ── Single collapse-activation owner ──────────────────────────────────────
+  // Pointer and keyboard activation converge here, and nowhere else. The
+  // legacy title-list mode is never the user activation owner: it may only
+  // maintain an already-committed projection. No legacy compatibility field
+  // (flowRoot, nativeStart, nextPageNativeStart, nativeSlotSequence, ordinals,
+  // identities) is read on this path — those remain null placeholders.
+  function executeAtomicPageCollapseTransaction(pageNum = 0, activationSource = '', options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const source = String(activationSource || '').trim() || 'chat-page-divider:circle';
+    const key = collapsedNativeRangeKey(id, num);
+    const startedAt = Date.now();
+    const metrics = {
+      capabilityEvaluations: 0,
+      rangePlansBuilt: 0,
+      detachedListsPrepared: 0,
+      firstWriteReached: false,
+      wrappersPlanned: 0,
+      wrappersStamped: 0,
+      titleRowsPrepared: 0,
+      syntheticListsInserted: 0,
+      rollbackPerformed: false,
+    };
+    const record = (result, extra = {}) => recordAtomicPageCollapseAttempt({
+      pageNum: num,
+      activationSource: source,
+      startedAt,
+      metrics,
+      result,
+      ...extra,
+    });
+
+    // 1) One reentrancy-guard check.
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return {
+        ok: false,
+        status: 'transaction-busy',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('reentrant-blocked', {
+          internalReason: 'transaction-busy',
+          productReason: 'page-updating',
+        }),
+      };
+    }
+
+    // An explicit desired state lets the legacy entry points route through
+    // this owner without inverting an already-correct state; the divider
+    // controls pass no desired state and toggle against the atomic registry.
+    const desired = String(options?.desired || '').trim();
+    const alreadyCollapsed = S.atomicPageCollapseTransactions.has(key);
+    if (desired === 'collapsed' && alreadyCollapsed) {
+      return {
+        ok: true,
+        status: 'already-collapsed',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('committed', { internalReason: null, productReason: null }),
+      };
+    }
+    if (desired === 'expanded' && !alreadyCollapsed) {
+      return {
+        ok: true,
+        status: 'already-expanded',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('expanded', { internalReason: null, productReason: null }),
+      };
+    }
+
+    // Already collapsed → atomic expansion through the same owner.
+    if (alreadyCollapsed) {
+      const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+      const expanded = expandPageWithRenderedBoundaries(num, { chatId: id, source });
+      if (expanded?.ok === true) clearCollapseUnavailableFeedback(num);
+      return {
+        ok: expanded?.ok === true,
+        status: expanded?.status || 'expanded',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record(expanded?.ok === true ? 'expanded' : 'commit-failed', {
+          internalReason: expanded?.ok === true ? null : String(expanded?.status || 'expansion-incomplete'),
+          productReason: expanded?.ok === true ? null : 'transient-failure',
+          generation: transaction?.generation,
+          effectiveFingerprint: transaction?.effectiveFingerprint,
+          graphFingerprint: transaction?.graphFingerprint,
+        }),
+      };
+    }
+
+    // 2-7) capability → plan → detached preparation → viewport anchor →
+    // final revalidation → atomic commit, all owned by the transaction.
+    const collapsed = collapsePageWithRenderedBoundaries(num, { chatId: id, source, metrics });
+    const capability = collapsed?.capability || null;
+    if (collapsed?.ok === true) {
+      clearCollapseUnavailableFeedback(num);
+      return {
+        ok: true,
+        status: 'collapsed',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('committed', {
+          internalReason: null,
+          productReason: null,
+          generation: collapsed?.generation,
+          effectiveFingerprint: collapsed?.effectiveFingerprint,
+          graphFingerprint: collapsed?.graphFingerprint,
+        }),
+      };
+    }
+
+    const status = String(collapsed?.status || 'collapse-transaction-failed');
+    const stage = atomicPageCollapseFailureStage(status);
+    if (stage === 'rolled-back') metrics.rollbackPerformed = true;
+    const internalReason = String(collapsed?.reason || status);
+    // A capability that was ready must never be reported as a boundary or
+    // layout problem: the transaction, not the layout, is what failed.
+    const capabilityWasReady = capability?.activationReady === true;
+    const productReason = (capabilityWasReady || stage !== 'blocked-before-plan')
+      ? 'transient-failure'
+      : String(capability?.productReason || 'layout-incomplete');
+    const diagnostic = record(stage, {
+      internalReason,
+      productReason,
+      generation: capability?.generation,
+      effectiveFingerprint: capability?.effectiveFingerprint,
+      graphFingerprint: capability?.graphFingerprint,
+    });
+    const readiness = frozenCollapsedBoundaryResult({
+      pageNum: num,
+      ready: false,
+      reason: internalReason,
+      productReason,
+      structuralReason: productReason === 'layout-incomplete' ? internalReason : '',
+      generation: capability?.generation,
+      fingerprint: capability?.effectiveFingerprint,
+      prerequisitesReady: capability?.prerequisitesReady === true,
+      activationReady: capabilityWasReady,
+    });
+    if (explicitCollapseFeedbackSource(source)) {
+      showCollapseUnavailableFeedback(num, id, readiness);
+    }
+    recordCollapsedBoundaryDiagnostic(num, readiness, source);
+    return {
+      ok: false,
+      status,
+      reason: internalReason,
+      pageNum: num,
+      chatId: id,
+      diagnostic,
+    };
   }
 
   function failClosedCollapsedTitleList(pageNum = 0, chatId = '', readiness = null, source = '') {
@@ -8567,6 +8826,26 @@
     const driver = normalizeVisualDriver(opts?.driver);
     const mode = String(opts?.mode || '').trim().toLowerCase();
     const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
+    // The atomic rendered-boundary transaction owns ordinary page collapse.
+    // Only the pagination/unmount engine driver keeps the legacy detach-based
+    // path — a different mechanism, not a second collapse implementation.
+    if (driver !== 'engine' && mode !== 'pagination') {
+      const transaction = executeAtomicPageCollapseTransaction(num, source, {
+        chatId: id,
+        desired: collapsed ? 'collapsed' : 'expanded',
+      });
+      return {
+        ok: transaction?.ok === true,
+        status: transaction?.status || 'ok',
+        chatId: id,
+        pageNum: num,
+        collapsed: !!collapsed,
+        source,
+        driver,
+        mode,
+        transaction,
+      };
+    }
     const next = localReadCollapsedPagesSet(id);
     if (collapsed) next.add(num); else next.delete(num);
     localWriteCollapsedPagesSet(id, Array.from(next));
@@ -8579,6 +8858,20 @@
   function togglePageCollapsed(pageNum = 0, opts = {}) {
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
+    const driver = normalizeVisualDriver(opts?.driver);
+    const mode = String(opts?.mode || '').trim().toLowerCase();
+    if (driver !== 'engine' && mode !== 'pagination') {
+      const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
+      const transaction = executeAtomicPageCollapseTransaction(num, source, { chatId: id });
+      return {
+        ok: transaction?.ok === true,
+        status: transaction?.status || 'ok',
+        chatId: id,
+        pageNum: num,
+        source,
+        transaction,
+      };
+    }
     return setPageCollapsed(num, !isPageCollapsed(num, id), Object.assign({}, opts, { chatId: id }));
   }
 
@@ -10627,21 +10920,12 @@
       const activationSource = String(
         ev?.h2oActivationSource || 'chat-page-divider:circle'
       ).trim() || 'chat-page-divider:circle';
-      const key = collapsedNativeRangeKey(chatId, pageNum);
-      if (S.atomicPageCollapseTransactions.has(key)) {
-        expandPageWithRenderedBoundaries(pageNum, {
-          chatId,
-          source: activationSource,
-        });
-        return;
-      }
-      const result = collapsePageWithRenderedBoundaries(pageNum, {
-        chatId,
-        source: activationSource,
-      });
-      if (result?.ok === true) return;
-      const readiness = getCollapsedNativeBoundaryReadiness(pageNum);
-      handleCollapseUnavailableActivation(pageNum, chatId, readiness, activationSource);
+      // Pointer activation converges on the single transaction owner, which
+      // decides collapse vs expansion, records the attempt diagnostic and maps
+      // its own failure feedback. No legacy readiness re-read here: it was the
+      // stale legacy reason that mislabelled a transaction failure as a
+      // missing next page boundary.
+      executeAtomicPageCollapseTransaction(pageNum, activationSource, { chatId });
     };
 
     S.onDividerDotKeyDown = forwardCollapseControlKeyboardActivation;
@@ -10902,6 +11186,7 @@
       getRenderedPageBoundaryCapability,
       getPageCollapseRangeDiagnostics,
       getPageCollapseCapability,
+      getAtomicPageCollapseTransactionDiagnostic,
       getCollapsedBoundaryDiagnostic,
       setTitleListMode,
       setPageCollapsed,

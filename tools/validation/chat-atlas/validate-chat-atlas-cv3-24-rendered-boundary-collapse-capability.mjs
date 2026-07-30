@@ -813,18 +813,26 @@ await fixture('repeated capability reads perform zero storage writes', () => {
 
 await fixture('collapse click delegates to the atomic transaction', () => {
   const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
-  ok(handler.includes('collapsePageWithRenderedBoundaries'), 'atomic collapse delegated');
-  ok(handler.includes('expandPageWithRenderedBoundaries'), 'atomic expansion delegated');
+  // Pointer activation reaches the atomic transactions through the single
+  // owner, which is also what keyboard activation converges on.
+  ok(handler.includes('executeAtomicPageCollapseTransaction'), 'single transaction owner invoked');
+  const owner = extractFunction(SOURCE, 'executeAtomicPageCollapseTransaction');
+  ok(owner.includes('collapsePageWithRenderedBoundaries'), 'atomic collapse delegated');
+  ok(owner.includes('expandPageWithRenderedBoundaries'), 'atomic expansion delegated');
 });
 
 await fixture('collapse click cannot invoke legacy title-list activation', () => {
   const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
-  ok(!/setTitleListMode|syncSyntheticTitleList|writePageTitleIntent/.test(handler), 'legacy activation absent');
+  const owner = extractFunction(SOURCE, 'executeAtomicPageCollapseTransaction');
+  ok(!/setTitleListMode|syncSyntheticTitleList|writePageTitleIntent/.test(handler), 'legacy activation absent from click');
+  ok(!/setTitleListMode|syncSyntheticTitleList|writePageTitleIntent/.test(owner), 'legacy activation absent from owner');
 });
 
 await fixture('collapse click contains no page-unit movement', () => {
   const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
-  ok(!/renderDividers|insertBefore|appendChild|sentinel/.test(handler), 'no page-unit writer');
+  const owner = extractFunction(SOURCE, 'executeAtomicPageCollapseTransaction');
+  ok(!/renderDividers|insertBefore|appendChild|sentinel/.test(handler), 'no page-unit writer in click');
+  ok(!/renderDividers|insertBefore|appendChild|sentinel/.test(owner), 'no page-unit writer in owner');
 });
 
 await fixture('collapse click performs no navigation or direct scrolling', () => {
@@ -882,8 +890,13 @@ await fixture('live activation callers are transaction-owned', () => {
   const callers = Array.from(SOURCE.matchAll(/getCollapsedNativeBoundaryReadiness\(([^)]*)\)/g));
   ok(callers.length >= 2, 'compatibility diagnostics remain');
   const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
-  ok(handler.includes('collapsePageWithRenderedBoundaries'), 'click uses transaction');
-  ok(!handler.includes('getCollapsedNativeBoundaryReadiness(pageNum)') || handler.indexOf('getCollapsedNativeBoundaryReadiness') > handler.indexOf('collapsePageWithRenderedBoundaries'), 'compatibility read is failure feedback only');
+  const keyboard = extractFunction(SOURCE, 'forwardCollapseControlKeyboardActivation');
+  ok(handler.includes('executeAtomicPageCollapseTransaction'), 'click uses transaction owner');
+  ok(keyboard.includes('executeAtomicPageCollapseTransaction'), 'keyboard uses the same owner');
+  // The stale compatibility re-read was what mislabelled a transaction
+  // failure as a missing next page boundary; the owner maps its own reason.
+  ok(!handler.includes('getCollapsedNativeBoundaryReadiness'), 'click never re-reads legacy readiness');
+  ok(!keyboard.includes('getCollapsedNativeBoundaryReadiness'), 'keyboard never re-reads legacy readiness');
   const legacyCalls = Array.from(
     SOURCE.matchAll(/getLegacyCollapsedNativeBoundaryReadinessDiagnostic\(/g),
   ).length;

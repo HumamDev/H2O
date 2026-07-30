@@ -271,6 +271,23 @@ function makeHarness({ reason = 'next-page-native-start-not-mounted' } = {}) {
       constructor() { counters.observers += 1; throw new Error('observer-forbidden'); }
     },
     __titleListActive: false,
+    resolveChatId: () => 'chat-1',
+    getDividerPageNum: (divider) => Number(divider?.getAttribute?.('data-page-num') || 0),
+    // Keyboard activation now converges on the single atomic transaction
+    // owner instead of synthesising a divider click. For this validator the
+    // owner stands in for a capability that is not ready, so the observable
+    // contract under test — one activation, one message, focus retained — is
+    // unchanged.
+    executeAtomicPageCollapseTransaction: (pageNum, activationSource) => {
+      counters.clickForwards += 1;
+      sandbox.__api.handleCollapseUnavailableActivation(
+        pageNum,
+        'chat-1',
+        sandbox.__readiness,
+        activationSource,
+      );
+      return { ok: false, status: 'collapsed-exact-boundary-unavailable', pageNum };
+    },
   };
   vm.createContext(sandbox);
   const names = [
@@ -296,6 +313,7 @@ function makeHarness({ reason = 'next-page-native-start-not-mounted' } = {}) {
     generation: 2,
     fingerprint: 'djb2:2iocqu',
   });
+  sandbox.__readiness = readiness;
   return {
     api: sandbox.__api,
     sandbox,
@@ -338,12 +356,8 @@ await fixture('mouse activation shows one human-readable source-grounded message
   equal(nodes[0].getAttribute('role'), 'status', 'status role');
 });
 
-await fixture('Enter forwards once without focus loss', () => {
+await fixture('Enter reaches the transaction owner once without focus loss', () => {
   const h = makeHarness();
-  h.sandbox.S.onDividerDotClick = (event) => {
-    h.counters.clickForwards += 1;
-    h.api.handleCollapseUnavailableActivation(1, 'chat-1', h.readiness, event.h2oActivationSource);
-  };
   const result = h.api.forwardCollapseControlKeyboardActivation({
     key: 'Enter',
     target: h.page1Dot,
@@ -352,17 +366,13 @@ await fixture('Enter forwards once without focus loss', () => {
     stopPropagation() {},
   });
   equal(result.source, 'chat-page-divider:keyboard-enter', 'Enter source');
-  equal(h.counters.clickForwards, 1, 'one forward');
+  equal(h.counters.clickForwards, 1, 'one activation through the single owner');
   equal(h.document.activeElement, h.page1Dot, 'focus retained');
   equal(feedbackNodes(h).length, 1, 'one message');
 });
 
-await fixture('Space forwards once and suppresses repeats', () => {
+await fixture('Space reaches the transaction owner once and suppresses repeats', () => {
   const h = makeHarness();
-  h.sandbox.S.onDividerDotClick = (event) => {
-    h.counters.clickForwards += 1;
-    h.api.handleCollapseUnavailableActivation(1, 'chat-1', h.readiness, event.h2oActivationSource);
-  };
   const first = h.api.forwardCollapseControlKeyboardActivation({
     key: ' ',
     target: h.page1Dot,
