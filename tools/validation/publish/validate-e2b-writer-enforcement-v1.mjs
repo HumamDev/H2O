@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   EXIT_CODES,
@@ -25,6 +25,8 @@ const OPS_PANEL_WRITER_REL =
   "tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs";
 const DESK_WRITER_REL =
   "tools/product/extensions/chatgpt/chrome/pack-desk.mjs";
+const IDENTITY_PROVIDER_WRITER_REL =
+  "tools/product/identity/build-identity-provider-bundle.mjs";
 const IDENTITY_RELEASE_GATE_REL =
   "tools/validation/identity/run-identity-release-gate.mjs";
 const F17_RELEASE_VALIDATOR_REL =
@@ -35,6 +37,10 @@ const PROXY_WRITER = path.join(ROOT, PROXY_WRITER_REL);
 const EXTENSION_WRITER = path.join(ROOT, EXTENSION_WRITER_REL);
 const OPS_PANEL_WRITER = path.join(ROOT, OPS_PANEL_WRITER_REL);
 const DESK_WRITER = path.join(ROOT, DESK_WRITER_REL);
+const IDENTITY_PROVIDER_WRITER = path.join(
+  ROOT,
+  IDENTITY_PROVIDER_WRITER_REL,
+);
 const IDENTITY_RELEASE_GATE = path.join(ROOT, IDENTITY_RELEASE_GATE_REL);
 const F17_RELEASE_VALIDATOR = path.join(ROOT, F17_RELEASE_VALIDATOR_REL);
 const FINAL_PATHS = Object.freeze([
@@ -42,13 +48,13 @@ const FINAL_PATHS = Object.freeze([
   EXTENSION_WRITER_REL,
   OPS_PANEL_WRITER_REL,
   DESK_WRITER_REL,
+  IDENTITY_PROVIDER_WRITER_REL,
   VALIDATOR_REL,
   IDENTITY_RELEASE_GATE_REL,
   F17_RELEASE_VALIDATOR_REL,
 ]);
 const UNCOMMITTED_MODIFIED = Object.freeze([
-  OPS_PANEL_WRITER_REL,
-  DESK_WRITER_REL,
+  IDENTITY_PROVIDER_WRITER_REL,
   VALIDATOR_REL,
 ]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([]);
@@ -58,10 +64,11 @@ const GUARDED_WRITER_SET = Object.freeze([
   EXTENSION_WRITER_REL,
   OPS_PANEL_WRITER_REL,
   DESK_WRITER_REL,
+  IDENTITY_PROVIDER_WRITER_REL,
 ]);
-const EXPECTED_RUNTIME_SCENARIOS = 99;
+const EXPECTED_RUNTIME_SCENARIOS = 111;
 const EXPECTED_SCOPE_SCENARIOS = 14;
-const CANONICAL_PRESERVATION_CHECKS = 32;
+const CANONICAL_PRESERVATION_CHECKS = 40;
 const AUTHORITY_ENV_NAMES = Object.freeze([
   "H2O_CANONICAL_DELIVERY_ROOT",
   "H2O_CANONICAL_DELIVERY_TOKEN",
@@ -116,6 +123,11 @@ const DESK_MUTATION_INVOCATIONS = Object.freeze([
   "await writeManifest();",
   "await writeServiceWorker();",
 ]);
+const IDENTITY_PROVIDER_MUTATION_INVOCATIONS = Object.freeze([
+  "ensureDir(path.dirname(outFile));",
+  "fs.rmSync(staleOutFile, { force: true });",
+  "await esbuild.build({",
+]);
 
 const runtimeResults = [];
 const scopeResults = [];
@@ -124,6 +136,7 @@ const canonicalRejections = [];
 const extensionCanonicalRejections = [];
 const opsPanelCanonicalRejections = [];
 const deskCanonicalRejections = [];
+const identityProviderCanonicalRejections = [];
 let localOutsideResult = null;
 let localForeignResult = null;
 let noLeaseResult = null;
@@ -140,6 +153,10 @@ let deskLocalOutsideResult = null;
 let deskLocalForeignResult = null;
 let deskNoLeaseResult = null;
 let deskValidSessionResult = null;
+let identityProviderLocalOutsideResult = null;
+let identityProviderLocalForeignResult = null;
+let identityProviderNoLeaseResult = null;
+let identityProviderValidSessionResult = null;
 let releaseValidatorResults = null;
 let tokenRedactionProven = true;
 
@@ -225,7 +242,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
     missingFinal: sorted(state.missingFinal ?? []),
   };
   if (normalized.staged.length) {
-    scopeFailure("Stage 1D-E2B Batch 3 forbids staged paths", normalized);
+    scopeFailure("Stage 1D-E2B final lean guard forbids staged paths", normalized);
   }
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
@@ -239,7 +256,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
     sameSet(normalized.trackedFinal, FINAL_PATHS) &&
     normalized.missingFinal.length === 0;
   if (committed) return "committed-clean";
-  scopeFailure("Stage 1D-E2B Batch 3 scope mismatch", normalized);
+  scopeFailure("Stage 1D-E2B final lean guard scope mismatch", normalized);
 }
 
 function currentScopeState() {
@@ -274,10 +291,10 @@ function scopeTest(name, fn) {
 }
 
 function runScopeSelfTests() {
-  scopeTest("exact cumulative E2B Batch 3 uncommitted scope is accepted", () => {
+  scopeTest("exact cumulative E2B final lean guard uncommitted scope is accepted", () => {
     assert.equal(classifyStage1DE2BBatch1Scope(baseScope()), "uncommitted");
   });
-  scopeTest("exact cumulative E2B Batch 3 committed-clean scope is accepted", () => {
+  scopeTest("exact cumulative E2B final lean guard committed-clean scope is accepted", () => {
     assert.equal(
       classifyStage1DE2BBatch1Scope(
         baseScope({
@@ -298,12 +315,12 @@ function runScopeSelfTests() {
       /forbids staged/u,
     );
   });
-  scopeTest("missing Ops Panel writer modification is rejected", () => {
+  scopeTest("missing identity-provider writer modification is rejected", () => {
     assert.throws(
       () =>
         classifyStage1DE2BBatch1Scope(baseScope({
           modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-            (relative) => relative !== OPS_PANEL_WRITER_REL,
+            (relative) => relative !== IDENTITY_PROVIDER_WRITER_REL,
           ),
         })),
       /scope mismatch/u,
@@ -319,12 +336,10 @@ function runScopeSelfTests() {
       /scope mismatch/u,
     );
   });
-  scopeTest("missing Desk writer modification is rejected", () => {
+  scopeTest("dirty protected Batch 3 writer is rejected", () => {
     assert.throws(
       () => classifyStage1DE2BBatch1Scope(baseScope({
-        modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-          (relative) => relative !== DESK_WRITER_REL,
-        ),
+        modifiedTracked: [...UNCOMMITTED_MODIFIED, DESK_WRITER_REL],
       })),
       /scope mismatch/u,
     );
@@ -394,15 +409,15 @@ function runScopeSelfTests() {
       /scope mismatch/u,
     );
   });
-  scopeTest("tracked Batch 3 file moved to untracked role is rejected", () => {
+  scopeTest("tracked identity-provider writer moved to untracked role is rejected", () => {
     assert.throws(
       () =>
         classifyStage1DE2BBatch1Scope(
           baseScope({
             modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-              (relative) => relative !== DESK_WRITER_REL,
+              (relative) => relative !== IDENTITY_PROVIDER_WRITER_REL,
             ),
-            untracked: [DESK_WRITER_REL],
+            untracked: [IDENTITY_PROVIDER_WRITER_REL],
           }),
         ),
       /scope mismatch/u,
@@ -717,6 +732,84 @@ async function runPackWriter(fixture, kind, options = {}) {
   });
 }
 
+function identityProviderEnvironment({
+  sourceRoot = ROOT,
+  outDir,
+  overrides = {},
+} = {}) {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("H2O_")) delete environment[name];
+  }
+  environment.H2O_SRC_DIR = sourceRoot;
+  environment.H2O_EXT_OUT_DIR = outDir;
+  Object.assign(environment, overrides);
+  return environment;
+}
+
+async function runIdentityProviderWriter(fixture, options = {}) {
+  const writer = options.writer ?? IDENTITY_PROVIDER_WRITER;
+  const sourceRoot = options.sourceRoot ?? ROOT;
+  const outDir = options.outDir;
+  if (path.resolve(sourceRoot) !== path.resolve(ROOT)) {
+    assertSandboxPath(sourceRoot);
+  }
+  if (path.resolve(writer) !== path.resolve(IDENTITY_PROVIDER_WRITER)) {
+    assertSandboxPath(writer);
+  }
+  assertSandboxPath(outDir);
+  const executableWriter = fs.realpathSync(writer);
+  return managedChild(process.execPath, [executableWriter], {
+    cwd: options.cwd ?? sourceRoot,
+    env: identityProviderEnvironment({
+      sourceRoot,
+      outDir,
+      overrides: options.overrides ?? {},
+    }),
+    timeoutMs: options.timeoutMs ?? 30_000,
+  });
+}
+
+async function runImportedIdentityProviderWriter(fixture, options = {}) {
+  const sourceRoot = options.sourceRoot ?? ROOT;
+  const outDir = options.outDir;
+  assertSandboxPath(outDir);
+  if (path.resolve(sourceRoot) !== path.resolve(ROOT)) {
+    assertSandboxPath(sourceRoot);
+  }
+  const moduleUrl = pathToFileURL(IDENTITY_PROVIDER_WRITER).href;
+  const probe = [
+    `import { buildIdentityProviderBundle } from ${JSON.stringify(moduleUrl)};`,
+    "try {",
+    "  await buildIdentityProviderBundle(process.env.H2O_EXT_OUT_DIR);",
+    "  process.stdout.write(JSON.stringify({ ok: true }) + \"\\n\");",
+    "} catch (error) {",
+    "  const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;",
+    "  const body = {",
+    "    ok: false,",
+    "    error: typeof error?.code === \"string\" ? error.code : \"identity-provider-bundle-import-failed\",",
+    "    message: typeof error?.message === \"string\" ? error.message : \"Identity-provider bundle import failed.\",",
+    "    exitCode,",
+    "  };",
+    "  process.stderr.write(\"[H2O] identity-provider-bundle imported guard rejected: \" + JSON.stringify(body) + \"\\n\");",
+    "  process.exit(exitCode);",
+    "}",
+  ].join("\n");
+  return managedChild(
+    process.execPath,
+    ["--input-type=module", "--eval", probe],
+    {
+      cwd: options.cwd ?? sourceRoot,
+      env: identityProviderEnvironment({
+        sourceRoot,
+        outDir,
+        overrides: options.overrides ?? {},
+      }),
+      timeoutMs: options.timeoutMs ?? 30_000,
+    },
+  );
+}
+
 function snapshotPath(target) {
   let stat;
   try {
@@ -819,6 +912,16 @@ function packGuardDiagnostic(result, kind) {
   const prefix = kind === "ops-panel"
     ? "[H2O] ops-panel write guard rejected: "
     : "[H2O] desk write guard rejected: ";
+  assert.equal(diagnosticLines[0].startsWith(prefix), true);
+  return JSON.parse(diagnosticLines[0].slice(prefix.length));
+}
+
+function identityProviderGuardDiagnostic(result, { imported = false } = {}) {
+  const diagnosticLines = lines(result.stderr);
+  assert.equal(diagnosticLines.length, 1, result.stderr);
+  const prefix = imported
+    ? "[H2O] identity-provider-bundle imported guard rejected: "
+    : "[H2O] identity-provider-bundle write guard rejected: ";
   assert.equal(diagnosticLines[0].startsWith(prefix), true);
   return JSON.parse(diagnosticLines[0].slice(prefix.length));
 }
@@ -1062,6 +1165,92 @@ async function rejectedPackCase(kind, label, {
   return { fixture, prepared, result, diagnostic, before, after };
 }
 
+async function rejectedIdentityProviderCase(label, {
+  prepare,
+  sourceRoot,
+  outDir,
+  overrides,
+  snapshotTarget,
+  expectedExit,
+  expectedCode,
+  expectedText,
+  imported = false,
+  linkedWorktree = false,
+} = {}) {
+  const fixture = createFixture(`identity-provider-${label}`, {
+    linkedWorktree,
+  });
+  const prepared = prepare ? await prepare(fixture) : {};
+  const effectiveSource =
+    typeof sourceRoot === "function"
+      ? sourceRoot(fixture, prepared)
+      : sourceRoot ?? ROOT;
+  const effectiveOut =
+    typeof outDir === "function"
+      ? outDir(fixture, prepared)
+      : outDir ?? fixture.canonicalExtensionOutput;
+  const effectiveOverrides =
+    typeof overrides === "function"
+      ? overrides(fixture, prepared)
+      : overrides ?? {};
+  const effectiveSnapshot =
+    typeof snapshotTarget === "function"
+      ? snapshotTarget(fixture, prepared)
+      : snapshotTarget ?? effectiveOut;
+  const snapshotTargets = Array.isArray(effectiveSnapshot)
+    ? effectiveSnapshot
+    : [effectiveSnapshot];
+  snapshotTargets.forEach(assertSandboxPath);
+  const before = snapshotTargets.map(snapshotPath);
+  const result = imported
+    ? await runImportedIdentityProviderWriter(fixture, {
+        sourceRoot: effectiveSource,
+        outDir: effectiveOut,
+        cwd: effectiveSource,
+        overrides: effectiveOverrides,
+      })
+    : await runIdentityProviderWriter(fixture, {
+        sourceRoot: effectiveSource,
+        outDir: effectiveOut,
+        cwd: effectiveSource,
+        overrides: effectiveOverrides,
+      });
+  const after = snapshotTargets.map(snapshotPath);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.code, expectedExit, result.stderr);
+  assert.deepEqual(after, before, `identity-provider-${label}`);
+  assert.equal(result.stdout, "");
+  const diagnostic = identityProviderGuardDiagnostic(result, { imported });
+  assert.equal(diagnostic.exitCode, expectedExit);
+  if (expectedCode) assert.equal(diagnostic.error, expectedCode);
+  if (expectedText) {
+    assert.match(`${result.stdout}\n${result.stderr}`, expectedText);
+  }
+  const token = prepared.acquisition?.ownershipToken ??
+    effectiveOverrides.H2O_CANONICAL_DELIVERY_TOKEN;
+  const tokenDigest = token ? sha256Bytes(token) : null;
+  const exposed = JSON.stringify({ result, diagnostic });
+  if (token) {
+    assert.equal(exposed.includes(token), false);
+    assert.equal(exposed.includes(tokenDigest), false);
+    assert.equal(result.argv.includes(token), false);
+    tokenRedactionProven &&= !exposed.includes(token) &&
+      !exposed.includes(tokenDigest) &&
+      !result.argv.includes(token);
+  }
+  identityProviderCanonicalRejections.push({
+    label,
+    before,
+    after,
+    result,
+    diagnostic,
+    token,
+    tokenDigest,
+    imported,
+  });
+  return { fixture, prepared, result, diagnostic, before, after };
+}
+
 function initializeNestedRepository(repository, label) {
   initializeRepository(repository, label);
   fs.writeFileSync(path.join(repository, "nested-owner.txt"), "owner\n");
@@ -1238,6 +1427,59 @@ function movePackGuardAfterFirstMutation(source, kind) {
   );
 }
 
+function structuralIdentityProviderGuardOrdering(source) {
+  const importIndex = source.indexOf(
+    'import { assertDeliveryWritePermitted } from "../../publish/canonical-write-guard.mjs";',
+  );
+  const functionIndex = source.indexOf(
+    "export async function buildIdentityProviderBundle(outDir) {",
+  );
+  const destinationIndex = source.indexOf(
+    'const outRoot = path.resolve(outDir || extensionBuildDir("dev-controls"));',
+    functionIndex,
+  );
+  const guardIndex = source.indexOf(
+    "assertDeliveryWritePermitted({",
+    destinationIndex,
+  );
+  const outFileIndex = source.indexOf(
+    "const outFile = path.join(outRoot, IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH);",
+    guardIndex,
+  );
+  const mutationIndexes = IDENTITY_PROVIDER_MUTATION_INVOCATIONS.map(
+    (token) => ({
+      token,
+      index: source.indexOf(token, functionIndex),
+    }),
+  );
+  return {
+    importIndex,
+    functionIndex,
+    destinationIndex,
+    guardIndex,
+    outFileIndex,
+    mutationIndexes,
+    valid:
+      importIndex >= 0 &&
+      functionIndex > importIndex &&
+      destinationIndex > functionIndex &&
+      guardIndex > destinationIndex &&
+      outFileIndex > guardIndex &&
+      mutationIndexes.every(({ index }) => index > guardIndex),
+  };
+}
+
+function moveIdentityProviderGuardAfterEnsure(source) {
+  const guardBlock =
+    /  assertDeliveryWritePermitted\(\{\n    destination: outRoot,\n    purpose: "identity-provider-bundle",\n    environment: process\.env,\n  \}\);\n/u;
+  const match = source.match(guardBlock);
+  assert.ok(match, "identity-provider guard block fixture not found");
+  return source.replace(guardBlock, "").replace(
+    "  ensureDir(path.dirname(outFile));",
+    `  ensureDir(path.dirname(outFile));\n${match[0]}`,
+  );
+}
+
 function contentIdentity(target) {
   const stat = fs.lstatSync(target);
   if (stat.isSymbolicLink()) {
@@ -1390,6 +1632,88 @@ async function proveLocalByteEquivalence(kind) {
   const after = contentIdentity(output);
   assert.deepEqual(after, before);
   return { output, before, after, baselineResult, patchedResult };
+}
+
+function unpatchedIdentityProviderWriterBytes() {
+  const source = committedHeadBytes(IDENTITY_PROVIDER_WRITER_REL);
+  const guardImport =
+    'import { assertDeliveryWritePermitted } from "../../publish/canonical-write-guard.mjs";\n';
+  const guardBlock =
+    /  assertDeliveryWritePermitted\(\{\n    destination: outRoot,\n    purpose: "identity-provider-bundle",\n    environment: process\.env,\n  \}\);\n/u;
+  const cliGuardBlock =
+    /      if \(Number\.isInteger\(error\?\.exitCode\)\) \{[\s\S]*?        return;\n      \}\n(?=      console\.error)/u;
+  const hasGuardImport = source.includes(guardImport);
+  const hasGuardBlock = guardBlock.test(source);
+  const hasCliGuardBlock = cliGuardBlock.test(source);
+  assert.equal(
+    hasGuardImport,
+    hasGuardBlock && hasCliGuardBlock,
+    "committed identity-provider writer contains a partial guard",
+  );
+  if (!hasGuardImport) return source;
+  const unpatched = source
+    .replace(guardImport, "")
+    .replace(guardBlock, "")
+    .replace(cliGuardBlock, "");
+  assert.doesNotMatch(unpatched, /assertDeliveryWritePermitted/u);
+  assert.doesNotMatch(
+    unpatched,
+    /identity-provider-bundle write guard rejected/u,
+  );
+  return unpatched;
+}
+
+function provisionCloneDependencies(clone) {
+  const dependencySource = path.join(ROOT, "node_modules");
+  assert.equal(fs.statSync(dependencySource).isDirectory(), true);
+  const dependencyTarget = path.join(clone, "node_modules");
+  fs.symlinkSync(dependencySource, dependencyTarget, "dir");
+  assert.equal(fs.statSync(dependencyTarget).isDirectory(), true);
+}
+
+async function proveIdentityProviderLocalByteEquivalence() {
+  const top = temporaryRoot("identity-provider-equivalence");
+  const output = path.join(top, "output", "dev-controls");
+  const baseline = materializeCommittedHeadClone("identity-provider-unpatched");
+  const patched = materializeCommittedHeadClone("identity-provider-patched");
+  provisionCloneDependencies(baseline);
+  provisionCloneDependencies(patched);
+  fs.writeFileSync(
+    path.join(baseline, IDENTITY_PROVIDER_WRITER_REL),
+    unpatchedIdentityProviderWriterBytes(),
+  );
+  fs.copyFileSync(
+    IDENTITY_PROVIDER_WRITER,
+    path.join(patched, IDENTITY_PROVIDER_WRITER_REL),
+  );
+  const fixture = { top };
+  const baselineResult = await runIdentityProviderWriter(fixture, {
+    writer: path.join(baseline, IDENTITY_PROVIDER_WRITER_REL),
+    sourceRoot: baseline,
+    outDir: output,
+  });
+  assert.equal(baselineResult.code, 0, baselineResult.stderr);
+  assert.equal(baselineResult.timedOut, false);
+  const before = contentIdentity(output);
+  fs.rmSync(output, { recursive: true, force: true });
+  const patchedResult = await runIdentityProviderWriter(fixture, {
+    writer: path.join(patched, IDENTITY_PROVIDER_WRITER_REL),
+    sourceRoot: patched,
+    outDir: output,
+  });
+  assert.equal(patchedResult.code, 0, patchedResult.stderr);
+  assert.equal(patchedResult.timedOut, false);
+  const after = contentIdentity(output);
+  assert.deepEqual(after, before);
+  assert.equal(patchedResult.stdout, baselineResult.stdout);
+  assert.equal(patchedResult.stderr, baselineResult.stderr);
+  return {
+    output,
+    before,
+    after,
+    baselineResult,
+    patchedResult,
+  };
 }
 
 function releaseValidatorStructuralContract(source, kind) {
@@ -1817,6 +2141,262 @@ async function runLeanPackWriterScenarios(kind) {
   });
 }
 
+async function runIdentityProviderWriterScenarios() {
+  const purpose = "identity-provider-bundle";
+
+  await test("identity-provider outside-repository LOCAL output succeeds token-free", async () => {
+    const fixture = createFixture("identity-provider-outside-local");
+    const output = path.join(
+      fixture.top,
+      "outside-extension-output",
+      "dev-controls",
+    );
+    const result = await runIdentityProviderWriter(fixture, {
+      outDir: output,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.stderr, "");
+    assert.equal(
+      fs.existsSync(
+        path.join(output, "provider/identity-provider-supabase.js"),
+      ),
+      true,
+    );
+    assertSandboxPath(output);
+    const anchor = deriveSharedAnchor({
+      cwd: fixture.repository,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(anchor), false);
+    identityProviderLocalOutsideResult = { fixture, output, result };
+  });
+
+  await test("identity-provider linked foreign-worktree LOCAL output succeeds token-free", async () => {
+    const fixture = createFixture("identity-provider-foreign-local", {
+      linkedWorktree: true,
+    });
+    const output = path.join(
+      fixture.foreignWorktree,
+      "apps/extensions/chatgpt/chrome/dev-controls",
+    );
+    const result = await runIdentityProviderWriter(fixture, {
+      sourceRoot: fixture.foreignWorktree,
+      outDir: output,
+      cwd: fixture.foreignWorktree,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.stderr, "");
+    assert.equal(
+      fs.existsSync(
+        path.join(output, "provider/identity-provider-supabase.js"),
+      ),
+      true,
+    );
+    assertSandboxPath(output);
+    const anchor = deriveSharedAnchor({
+      cwd: fixture.repository,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(anchor), false);
+    identityProviderLocalForeignResult = { fixture, output, result };
+  });
+
+  await test("identity-provider patched and unpatched LOCAL outputs are byte-identical", async () => {
+    const equivalence = await proveIdentityProviderLocalByteEquivalence();
+    assert.deepEqual(equivalence.after, equivalence.before);
+    assertSandboxPath(equivalence.output);
+  });
+
+  await test("identity-provider canonical destination without a lease rejects before mutation", async () => {
+    identityProviderNoLeaseResult = await rejectedIdentityProviderCase(
+      "no-lease",
+      {
+        expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+        expectedCode: "canonical-delivery-lease-absent",
+      },
+    );
+  });
+
+  await test("identity-provider direct CLI invocation is guarded", () => {
+    assert.ok(identityProviderNoLeaseResult);
+    assert.deepEqual(identityProviderNoLeaseResult.result.argv, [
+      process.execPath,
+      IDENTITY_PROVIDER_WRITER,
+    ]);
+    assert.equal(identityProviderNoLeaseResult.result.stdout, "");
+    assert.match(
+      identityProviderNoLeaseResult.result.stderr,
+      /^\[H2O\] identity-provider-bundle write guard rejected: \{.*\}\n$/u,
+    );
+  });
+
+  await test("identity-provider direct imported-function invocation is guarded", async () => {
+    const checked = await rejectedIdentityProviderCase(
+      "imported-no-lease",
+      {
+        imported: true,
+        expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+        expectedCode: "canonical-delivery-lease-absent",
+      },
+    );
+    assert.equal(checked.result.argv.includes("--eval"), true);
+    assert.match(
+      checked.result.stderr,
+      /^\[H2O\] identity-provider-bundle imported guard rejected: \{.*\}\n$/u,
+    );
+  });
+
+  await test("identity-provider wrong ownership token rejects without leakage", async () => {
+    await rejectedIdentityProviderCase("wrong-token", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, { purpose }),
+      overrides: {
+        H2O_CANONICAL_DELIVERY_TOKEN: "i".repeat(43),
+      },
+      expectedExit: EXIT_CODES.TOKEN_INVALID,
+      expectedText: /ownership token is missing or invalid/u,
+    });
+  });
+
+  await test("identity-provider fully valid session still exits 16", async () => {
+    identityProviderValidSessionResult = await rejectedIdentityProviderCase(
+      "valid-still-disabled",
+      {
+        prepare: (fixture) => acquireCanonicalLease(fixture, { purpose }),
+        overrides: (_fixture, prepared) => ({
+          H2O_CANONICAL_DELIVERY_TOKEN:
+            prepared.acquisition.ownershipToken,
+          H2O_DELIVERY_SESSION_ID:
+            prepared.acquisition.lease.sessionId,
+          H2O_DELIVERY_APPROVED_HEAD:
+            prepared.acquisition.lease.approvedHead,
+          H2O_BUILD_TS: prepared.acquisition.lease.buildTs,
+        }),
+        expectedExit: EXIT_CODES.PATH_COUPLING_VIOLATION,
+        expectedCode: "canonical-live-write-disabled-until-stage-e3",
+      },
+    );
+    assert.equal(identityProviderValidSessionResult.result.code, 16);
+    assert.equal(
+      identityProviderValidSessionResult.diagnostic.error,
+      "canonical-live-write-disabled-until-stage-e3",
+    );
+  });
+
+  await test("identity-provider unrelated source cwd cannot downgrade canonical output", async () => {
+    await rejectedIdentityProviderCase("unrelated-source", {
+      prepare: (fixture) => ({
+        unrelated: createUnrelatedRepository(
+          fixture,
+          "identity-provider-caller",
+        ),
+      }),
+      sourceRoot: (_fixture, prepared) => prepared.unrelated,
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("identity-provider symlink redirection into canonical output rejects", async () => {
+    await rejectedIdentityProviderCase("symlink-redirect", {
+      prepare: (fixture) => {
+        const target = fixture.canonicalExtensionOutput;
+        const spelling = path.join(
+          fixture.top,
+          "identity-provider-output-link",
+        );
+        fs.symlinkSync(target, spelling);
+        return { spelling, target };
+      },
+      outDir: (_fixture, prepared) => prepared.spelling,
+      snapshotTarget: (_fixture, prepared) => [
+        prepared.spelling,
+        prepared.target,
+      ],
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("identity-provider malformed .git boundary fails closed", async () => {
+    await rejectedIdentityProviderCase("malformed-boundary", {
+      prepare: (fixture) => {
+        const boundary = path.join(
+          fixture.top,
+          "identity-provider-malformed-boundary",
+        );
+        const output = path.join(
+          boundary,
+          "apps/extensions/chatgpt/chrome/dev-controls",
+        );
+        seedPreservedDestination(output);
+        fs.writeFileSync(path.join(boundary, ".git"), "not-a-gitdir\n");
+        return { output };
+      },
+      outDir: (_fixture, prepared) => prepared.output,
+      snapshotTarget: (_fixture, prepared) => prepared.output,
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedCode: "destination-repository-context-invalid",
+    });
+  });
+
+  await test("identity-provider guard structurally precedes every mutation", () => {
+    const source = fs.readFileSync(IDENTITY_PROVIDER_WRITER, "utf8");
+    const ordering = structuralIdentityProviderGuardOrdering(source);
+    assert.equal(ordering.valid, true);
+    assert.match(
+      source,
+      /purpose: "identity-provider-bundle"/u,
+    );
+    assert.match(
+      source,
+      /export async function buildIdentityProviderBundle\(outDir\)/u,
+    );
+    for (const mutation of ordering.mutationIndexes) {
+      assert.ok(
+        mutation.index > ordering.guardIndex,
+        `${mutation.token} precedes identity-provider guard`,
+      );
+    }
+    assert.equal(
+      structuralIdentityProviderGuardOrdering(
+        moveIdentityProviderGuardAfterEnsure(source),
+      ).valid,
+      false,
+    );
+    assert.equal(identityProviderCanonicalRejections.length, 7);
+    for (const rejection of identityProviderCanonicalRejections) {
+      assert.deepEqual(rejection.after, rejection.before, rejection.label);
+      if (!rejection.token) continue;
+      const observable = JSON.stringify({
+        result: rejection.result,
+        diagnostic: rejection.diagnostic,
+      });
+      assert.equal(observable.includes(rejection.token), false);
+      assert.equal(observable.includes(rejection.tokenDigest), false);
+    }
+    for (const checked of [
+      identityProviderLocalOutsideResult,
+      identityProviderLocalForeignResult,
+    ]) {
+      assert.ok(checked);
+      assert.equal(
+        checked.result.argv.some((value) => value.includes("H2O_")),
+        false,
+      );
+    }
+    assert.doesNotMatch(
+      source,
+      /canonicalSession|verifiedLease|sessionEnvelope|ownershipCapability/u,
+    );
+    assert.equal(tokenRedactionProven, true);
+    assert.equal(CANONICAL_PRESERVATION_CHECKS, 40);
+  });
+}
+
 async function runRuntimeScenarios() {
   const writerAnchor = deriveSharedAnchor({
     cwd: ROOT,
@@ -2199,13 +2779,14 @@ async function runRuntimeScenarios() {
     }
   });
 
-  await test("coverage scaffold recognizes exactly the five guarded writers", () => {
+  await test("coverage scaffold recognizes exactly the six guarded writers", () => {
     assert.deepEqual([...GUARDED_WRITER_SET], [
       ALIAS_WRITER_REL,
       PROXY_WRITER_REL,
       EXTENSION_WRITER_REL,
       OPS_PANEL_WRITER_REL,
       DESK_WRITER_REL,
+      IDENTITY_PROVIDER_WRITER_REL,
     ]);
     assert.deepEqual(
       productionGuardImports(),
@@ -2215,8 +2796,7 @@ async function runRuntimeScenarios() {
       "write-extension-icons.mjs",
       "pack-identity.mjs",
       "pack-studio.mjs",
-      "build-identity-provider-bundle.mjs",
-      "extension-stub",
+      "build-extension-stub.mjs",
     ]) {
       assert.equal(
         GUARDED_WRITER_SET.some((relative) => relative.includes(unprotected)),
@@ -2241,6 +2821,7 @@ async function runRuntimeScenarios() {
       EXTENSION_WRITER,
       OPS_PANEL_WRITER,
       DESK_WRITER,
+      IDENTITY_PROVIDER_WRITER,
     ]) {
       const source = fs.readFileSync(writer, "utf8");
       assert.doesNotMatch(source, /H2O_CANONICAL_DELIVERY_TOKEN/u);
@@ -2653,7 +3234,7 @@ async function runRuntimeScenarios() {
     for (const rejection of extensionCanonicalRejections) {
       assert.deepEqual(rejection.after, rejection.before, rejection.label);
     }
-    assert.equal(CANONICAL_PRESERVATION_CHECKS, 32);
+    assert.equal(CANONICAL_PRESERVATION_CHECKS, 40);
   });
 
   await test("extension token and digest are absent from every observable value", () => {
@@ -2804,6 +3385,7 @@ async function runRuntimeScenarios() {
 
   await runLeanPackWriterScenarios("ops-panel");
   await runLeanPackWriterScenarios("desk");
+  await runIdentityProviderWriterScenarios();
 
   await test("runtime scenario count is exact", () => {
     assert.equal(runtimeResults.length + 1, EXPECTED_RUNTIME_SCENARIOS);
@@ -2822,6 +3404,7 @@ function printScope() {
         EXTENSION_WRITER_REL,
         OPS_PANEL_WRITER_REL,
         DESK_WRITER_REL,
+        IDENTITY_PROVIDER_WRITER_REL,
         IDENTITY_RELEASE_GATE_REL,
         F17_RELEASE_VALIDATOR_REL,
       ],
@@ -2878,7 +3461,8 @@ async function main() {
         canonicalRejections.length +
         extensionCanonicalRejections.length +
         opsPanelCanonicalRejections.length +
-        deskCanonicalRejections.length,
+        deskCanonicalRejections.length +
+        identityProviderCanonicalRejections.length,
       canonicalPreservationChecks: CANONICAL_PRESERVATION_CHECKS,
       tokenRedactionProven,
       guardedWriterSet: GUARDED_WRITER_SET,
