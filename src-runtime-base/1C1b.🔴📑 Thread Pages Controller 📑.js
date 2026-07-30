@@ -3564,6 +3564,10 @@
       nextBoundaryQId: String(raw.nextBoundaryQId || '') || null,
       startWrapperCurrent: raw.startWrapperCurrent === true,
       endWrapperCurrent: raw.endWrapperCurrent === true,
+      finalTailSupported: raw.finalTailSupported === true,
+      terminalIdentityCurrent: raw.terminalIdentityCurrent === true,
+      terminalWrapperCurrent: raw.terminalWrapperCurrent === true,
+      pageEndSentinelCurrent: raw.pageEndSentinelCurrent === true,
       rangeStartIndex: Number.isInteger(raw.rangeStartIndex) ? raw.rangeStartIndex : -1,
       rangeEndIndex: Number.isInteger(raw.rangeEndIndex) ? raw.rangeEndIndex : -1,
       hostWrapperCount: Math.max(0, Number(raw.hostWrapperCount || 0) || 0),
@@ -3705,6 +3709,152 @@
     return { ok: true, reason: null, fingerprint, records };
   }
 
+  // ── Final-page tail authority ─────────────────────────────────────────────
+  // A final page has no next-page start boundary, so its exclusive end is the
+  // H2O page-end sentinel. The sentinel is never trusted on its own: it is a
+  // structural delimiter accepted only after it has been cross-proven against
+  // the exact terminal canonical identity of the page's last authoritative row.
+  function renderedBoundaryPageEndSentinel(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let sentinels = [];
+    try {
+      sentinels = Array.from(document.querySelectorAll(
+        `[${RENDERED_BOUNDARY_SENTINEL_ATTR}="page-${String(num)}-end"]`
+      )).filter((sentinel) => (
+        sentinel?.isConnected === true
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR) || '') === String(num)
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || '') === 'end'
+      ));
+    } catch {}
+    return sentinels.length === 1 ? sentinels[0] : null;
+  }
+
+  // The terminal row is the authoritative row at pageEndOrder — never the last
+  // mounted row, the highest test id, or the last flow child. Its terminal
+  // identity is the accepted primary answer when the row has one, and the
+  // question identity for NO ANSWER / stopped-without-answer rows.
+  function readFinalPageTerminalRecord(pageEndOrder = 0, authority = null) {
+    const order = Math.max(1, Number(pageEndOrder || 0) || 0);
+    const rt = TURN_RUNTIME();
+    if (!rt || typeof rt.getEffectivePresentationIndex !== 'function') {
+      return { ok: false, reason: 'authority-unavailable' };
+    }
+    let index = null;
+    try { index = rt.getEffectivePresentationIndex() || null; } catch {}
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    if (
+      index?.complete !== true
+      || String(index?.sourceFingerprint || '') !== String(authority?.effectiveFingerprint || '')
+      || turns.length !== Math.max(0, Number(authority?.count || 0) || 0)
+      || order > turns.length
+    ) return { ok: false, reason: 'authority-unavailable' };
+    const record = turns[order - 1] || null;
+    if (
+      !record
+      || Math.max(0, Number(record.order || record.turnNo || 0) || 0) !== order
+    ) return { ok: false, reason: 'authority-unavailable' };
+    const primaryAId = String(record.primaryAId || '').trim();
+    const qId = String(record.qId || '').trim();
+    const terminalId = primaryAId || qId;
+    if (!terminalId) return { ok: false, reason: 'final-page-tail-unproven' };
+    return {
+      ok: true,
+      reason: null,
+      terminalOrder: order,
+      terminalId,
+      terminalKind: primaryAId ? 'answer' : 'question',
+    };
+  }
+
+  // Resolve the one direct-flow wrapper carrying the exact terminal identity,
+  // through the same accepted sources as the start boundary: an exact mounted
+  // identity surface, or an exact graph-backed direct-flow identity wrapper.
+  function resolveFinalPageTerminalWrapper(flowRoot = null, terminalId = '') {
+    const id = String(terminalId || '').trim();
+    if (!flowRoot || flowRoot?.isConnected !== true || !id) {
+      return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+    }
+    const surface = resolveRenderedTurnSurfaceByIdentity(id, flowRoot);
+    if (surface.reason === 'identity-ambiguous') {
+      return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+    }
+    if (surface.ok) {
+      return { ok: true, reason: null, wrapper: surface.directFlowWrapper, source: 'exact-mounted-identity' };
+    }
+    const cold = resolveColdRenderedBoundaryWrapper(flowRoot, id);
+    if (cold.ok) {
+      return { ok: true, reason: null, wrapper: cold.wrapper, source: 'exact-graph-backed-wrapper' };
+    }
+    return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+  }
+
+  // Full tail proof. Yields the exclusive end delimiter (the sentinel) only when
+  // the terminal wrapper is current, the sentinel is H2O-owned and positioned
+  // after it, and every direct sibling strictly between them is H2O-owned.
+  function resolveFinalPageTailAuthority(pageNum = 0, pageEndOrder = 0, authority = null, flowRoot = null) {
+    const terminal = readFinalPageTerminalRecord(pageEndOrder, authority);
+    if (!terminal.ok) {
+      return { ok: false, reason: terminal.reason, terminalIdentityCurrent: false };
+    }
+    const resolved = resolveFinalPageTerminalWrapper(flowRoot, terminal.terminalId);
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        reason: resolved.reason,
+        terminalIdentityCurrent: true,
+        terminalWrapperCurrent: false,
+      };
+    }
+    const terminalWrapper = resolved.wrapper;
+    const endSentinel = renderedBoundaryPageEndSentinel(pageNum);
+    const base = {
+      terminalIdentityCurrent: true,
+      terminalWrapperCurrent: true,
+      terminalKind: terminal.terminalKind,
+    };
+    if (
+      !endSentinel
+      || endSentinel.isConnected !== true
+      || endSentinel.parentElement !== flowRoot
+      || !pageCollapseRangeH2OOwned(endSentinel)
+    ) {
+      return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: false };
+    }
+    if (
+      terminalWrapper?.isConnected !== true
+      || terminalWrapper?.parentElement !== flowRoot
+    ) {
+      return {
+        ok: false,
+        reason: 'final-page-tail-unproven',
+        ...base,
+        terminalWrapperCurrent: false,
+        pageEndSentinelCurrent: true,
+      };
+    }
+    const children = Array.from(flowRoot.children || []);
+    const terminalIndex = children.indexOf(terminalWrapper);
+    const sentinelIndex = children.indexOf(endSentinel);
+    if (terminalIndex < 0 || sentinelIndex < 0 || sentinelIndex <= terminalIndex) {
+      return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: true };
+    }
+    // Everything strictly between the terminal wrapper and the sentinel must be
+    // H2O-owned. A host-rendered or unclassifiable node there means the tail is
+    // not proven: fail closed rather than extend the range or move the sentinel.
+    for (let index = terminalIndex + 1; index < sentinelIndex; index += 1) {
+      if (!pageCollapseRangeH2OOwned(children[index])) {
+        return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: true };
+      }
+    }
+    return {
+      ok: true,
+      reason: null,
+      ...base,
+      pageEndSentinelCurrent: true,
+      endExclusive: endSentinel,
+    };
+  }
+
   function buildPageCollapseRangePlan(pageNum = 0, options = {}) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const includeDom = options?.includeDom === true;
@@ -3760,12 +3910,92 @@
     base.graphFingerprint = startCapability.graphFingerprint || '';
     base.startBoundarySupported = startCapability.supported === true;
     base.pageUnitOrderCurrent = startCapability.pageUnitOrderCurrent === true;
+    // A final page has no next-page start boundary. Its exclusive end comes
+    // from the proven page-end sentinel instead, and the shared direct-flow
+    // classifier below then runs over the identical kind of interval.
     if (base.isFinalPage) {
-      S.pageCollapseRangeContinuity.delete(num);
-      return fail('final-page-end-authority-unavailable', {
-        startBoundarySupported: base.startBoundarySupported,
-        graphFingerprint: base.graphFingerprint,
-        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      if (
+        startCapability.supported !== true
+        || startCapability.boundaryIdentityCurrent !== true
+        || startCapability.leaseCurrent !== true
+      ) {
+        S.pageCollapseRangeContinuity.delete(num);
+        const startReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+          .includes(String(startCapability.reason || ''))
+          ? startCapability.reason
+          : 'start-boundary-unavailable';
+        return fail(startReason, {
+          startBoundarySupported: false,
+          graphFingerprint: base.graphFingerprint,
+          pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+        });
+      }
+      if (!base.pageUnitOrderCurrent) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('page-unit-order-invalid', {
+          startBoundarySupported: true,
+          graphFingerprint: base.graphFingerprint,
+          pageUnitOrderCurrent: false,
+        });
+      }
+      const finalGraphFingerprint = String(startCapability.graphFingerprint || '');
+      base.graphFingerprint = finalGraphFingerprint;
+      const finalStartLease = S.renderedPageBoundaryLeases.get(num) || null;
+      if (!renderedBoundaryLeaseScopeCurrent(finalStartLease, authority, finalGraphFingerprint)) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('start-boundary-unavailable', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          pageUnitOrderCurrent: true,
+        });
+      }
+      const finalFlowRoot = finalStartLease.flowRoot;
+      const finalStartWrapper = finalStartLease.boundaryWrapper;
+      if (!(
+        finalFlowRoot?.isConnected === true
+        && finalStartWrapper?.isConnected === true
+        && finalStartWrapper?.parentElement === finalFlowRoot
+        && renderedBoundaryWrapperCarriesIdentity(finalStartWrapper, authority.qId)
+      )) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('range-flow-root-incoherent', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          startWrapperCurrent: false,
+          pageUnitOrderCurrent: true,
+        });
+      }
+      const tail = resolveFinalPageTailAuthority(num, base.pageEndOrder, authority, finalFlowRoot);
+      if (!tail.ok) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail(tail.reason || 'final-page-tail-unproven', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          startWrapperCurrent: true,
+          endWrapperCurrent: false,
+          pageUnitOrderCurrent: true,
+          finalTailSupported: false,
+          terminalIdentityCurrent: tail.terminalIdentityCurrent === true,
+          terminalWrapperCurrent: tail.terminalWrapperCurrent === true,
+          pageEndSentinelCurrent: tail.pageEndSentinelCurrent === true,
+        });
+      }
+      return classifyPageCollapseRange({
+        num,
+        base,
+        finish,
+        fail,
+        authority,
+        nextAuthority: null,
+        startCapability,
+        nextCapability: null,
+        graphFingerprint: finalGraphFingerprint,
+        flowRoot: finalFlowRoot,
+        startWrapper: finalStartWrapper,
+        endExclusive: tail.endExclusive,
+        startWrapperCurrent: true,
+        endWrapperCurrent: true,
+        finalTail: tail,
       });
     }
 
@@ -3904,14 +4134,44 @@
       });
     }
 
+    return classifyPageCollapseRange({
+      num,
+      base,
+      finish,
+      fail,
+      authority,
+      nextAuthority,
+      startCapability,
+      nextCapability,
+      graphFingerprint,
+      flowRoot,
+      startWrapper,
+      endExclusive: endWrapper,
+      startWrapperCurrent,
+      endWrapperCurrent,
+      finalTail: null,
+    });
+  }
+
+  // One classifier for both range kinds. Non-final pages end at the next
+  // page start wrapper, final pages end at their proven page-end sentinel;
+  // the exclusive delimiter is never itself part of the hide set.
+  function classifyPageCollapseRange(ctx = {}) {
+    const {
+      num, base, finish, fail, authority, nextAuthority = null,
+      startCapability = null, nextCapability = null, graphFingerprint,
+      flowRoot, startWrapper, endExclusive,
+      startWrapperCurrent, endWrapperCurrent, finalTail = null,
+    } = ctx;
+    const nextSupported = base.isFinalPage !== true;
     const children = Array.from(flowRoot.children || []);
     const rangeStartIndex = children.indexOf(startWrapper);
-    const rangeEndIndex = children.indexOf(endWrapper);
+    const rangeEndIndex = children.indexOf(endExclusive);
     if (rangeStartIndex < 0 || rangeEndIndex <= rangeStartIndex) {
       S.pageCollapseRangeContinuity.delete(num);
       return fail('range-order-invalid', {
         startBoundarySupported: true,
-        nextBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
         nextBoundaryQId: base.nextBoundaryQId,
         graphFingerprint,
         startWrapperCurrent,
@@ -3937,7 +4197,7 @@
       S.pageCollapseRangeContinuity.delete(num);
       return fail(graphRead.reason, {
         startBoundarySupported: true,
-        nextBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
         nextBoundaryQId: base.nextBoundaryQId,
         graphFingerprint: graphRead.fingerprint || graphFingerprint,
         startWrapperCurrent,
@@ -3951,7 +4211,7 @@
       S.pageCollapseRangeContinuity.clear();
       return fail('graph-stale', {
         startBoundarySupported: true,
-        nextBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
         nextBoundaryQId: base.nextBoundaryQId,
         graphFingerprint: graphRead.fingerprint,
         startWrapperCurrent,
@@ -4063,7 +4323,7 @@
       finalStatus = rt?.getEffectivePresentationStatus?.() || null;
       finalGraph = rt?.getGraphIdentityDiagnostics?.([
         authority.qId,
-        nextAuthority.qId,
+        ...(nextAuthority ? [nextAuthority.qId] : []),
       ]) || null;
     } catch {}
     if (
@@ -4077,7 +4337,7 @@
       S.pageCollapseRangeContinuity.clear();
       return fail('range-scope-changed', {
         startBoundarySupported: true,
-        nextBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
         nextBoundaryQId: base.nextBoundaryQId,
         graphFingerprint,
         startWrapperCurrent,
@@ -4097,7 +4357,7 @@
       S.pageCollapseRangeContinuity.delete(num);
       return fail('range-wrapper-ambiguous', {
         startBoundarySupported: true,
-        nextBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
         nextBoundaryQId: base.nextBoundaryQId,
         graphFingerprint,
         startWrapperCurrent,
@@ -4129,7 +4389,7 @@
       reason: null,
       graphFingerprint,
       startBoundarySupported: true,
-      nextBoundarySupported: true,
+      nextBoundarySupported: nextSupported,
       nextBoundaryQId: base.nextBoundaryQId,
       startWrapperCurrent,
       endWrapperCurrent,
@@ -4145,7 +4405,11 @@
       streaming: false,
       branchTransition: false,
       rangeProven: true,
-      isFinalPage: false,
+      isFinalPage: base.isFinalPage === true,
+      finalTailSupported: !!finalTail,
+      terminalIdentityCurrent: finalTail ? finalTail.terminalIdentityCurrent === true : false,
+      terminalWrapperCurrent: finalTail ? finalTail.terminalWrapperCurrent === true : false,
+      pageEndSentinelCurrent: finalTail ? finalTail.pageEndSentinelCurrent === true : false,
     });
     return finish(diagnostic, {
       authority,
@@ -4154,12 +4418,13 @@
       nextCapability,
       flowRoot,
       startWrapper,
-      endWrapper,
+      endWrapper: endExclusive,
       hostWrappers: Array.from(provenWrappers.keys()),
       h2oNodes: interval.filter((node) => pageCollapseRangeH2OOwned(node)),
       wrapperProofs: provenWrappers,
     });
   }
+
 
   function getPageCollapseRangeDiagnostics(pageNum = 0) {
     return buildPageCollapseRangePlan(pageNum, { includeDom: false });
@@ -4193,6 +4458,8 @@
         ? raw.firstAmbiguousIndex
         : -1,
       pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      isFinalPage: raw.isFinalPage === true,
+      finalTailSupported: raw.finalTailSupported === true,
       streaming: raw.streaming === true,
       branchTransition: raw.branchTransition === true,
       titleRowsCurrent: raw.titleRowsCurrent === true,
@@ -4223,6 +4490,9 @@
       ambiguousWrapperCount > 0
       || /ambiguous|unsupported-host|unsupported-layout/.test(String(reason || ''))
     ) return 'unsupported-layout';
+    // A final page whose tail is not yet proven is still settling: report it as
+    // loading rather than as a layout the reader is told is incomplete.
+    if (/final-page-tail-unproven/.test(String(reason || ''))) return 'page-loading';
     if (
       /boundary|page-unit|range-scope|final-page|layout-incomplete/.test(String(reason || ''))
     ) return 'layout-incomplete';
@@ -4265,12 +4535,13 @@
       || getRenderedPageBoundaryCapability(num);
     const nextCapability = rangePlan?.nextCapability
       || getRenderedPageBoundaryCapability(num + 1);
+    const finalPage = range.isFinalPage === true;
     const authorityCurrent = (
       model?.coherent === true
       && !!page
-      && !!nextPage
+      && (finalPage || !!nextPage)
       && startCapability.pageStartOrder === pageStartOrder
-      && nextCapability.pageStartOrder === nextPage.startOrder
+      && (finalPage || nextCapability.pageStartOrder === nextPage.startOrder)
       && range.pageStartOrder === pageStartOrder
       && range.pageEndOrder === pageEndOrder
       && !!range.chatId
@@ -4281,15 +4552,17 @@
     const scopesCurrent = (
       authorityCurrent
       && startCapability.chatId === range.chatId
-      && nextCapability.chatId === range.chatId
       && startCapability.routeKey === range.routeKey
-      && nextCapability.routeKey === range.routeKey
       && startCapability.generation === range.generation
-      && nextCapability.generation === range.generation
       && startCapability.effectiveFingerprint === range.effectiveFingerprint
-      && nextCapability.effectiveFingerprint === range.effectiveFingerprint
       && startCapability.graphFingerprint === range.graphFingerprint
-      && nextCapability.graphFingerprint === range.graphFingerprint
+      && (finalPage || (
+        nextCapability.chatId === range.chatId
+        && nextCapability.routeKey === range.routeKey
+        && nextCapability.generation === range.generation
+        && nextCapability.effectiveFingerprint === range.effectiveFingerprint
+        && nextCapability.graphFingerprint === range.graphFingerprint
+      ))
     );
     const streaming = range.streaming === true;
     const branchTransition = range.branchTransition === true;
@@ -4298,12 +4571,15 @@
       && startCapability.supported === true
       && startCapability.boundaryIdentityCurrent === true
       && startCapability.leaseCurrent === true
-      && nextCapability.supported === true
-      && nextCapability.boundaryIdentityCurrent === true
-      && nextCapability.leaseCurrent === true
+      && (finalPage || (
+        nextCapability.supported === true
+        && nextCapability.boundaryIdentityCurrent === true
+        && nextCapability.leaseCurrent === true
+      ))
       && range.supported === true
       && range.startBoundarySupported === true
-      && range.nextBoundarySupported === true
+      && (finalPage || range.nextBoundarySupported === true)
+      && (!finalPage || range.finalTailSupported === true)
       && range.startWrapperCurrent === true
       && range.endWrapperCurrent === true
       && range.rangeProven === true
@@ -4319,7 +4595,8 @@
     let reason = null;
     if (!prerequisitesReady) {
       if (!model?.coherent || !page) reason = model?.reason || 'authority-unavailable';
-      else if (!nextPage || range.isFinalPage) reason = 'final-page-end-authority-unavailable';
+      else if (range.isFinalPage) reason = range.reason || 'final-page-tail-unproven';
+      else if (!nextPage) reason = 'next-boundary-unavailable';
       else if (!startCapability.supported) reason = startCapability.reason || 'start-boundary-unavailable';
       else if (!nextCapability.supported) reason = nextCapability.reason || 'next-boundary-unavailable';
       else if (!scopesCurrent) reason = 'range-scope-changed';
@@ -4360,6 +4637,8 @@
       ambiguousWrapperCount: range.ambiguousWrapperCount,
       firstAmbiguousIndex: range.firstAmbiguousIndex,
       pageUnitOrderCurrent: range.pageUnitOrderCurrent === true,
+      isFinalPage: range.isFinalPage === true,
+      finalTailSupported: range.finalTailSupported === true,
       streaming,
       branchTransition,
       titleRowsCurrent,
@@ -4386,6 +4665,7 @@
       graphFingerprint: capability.graphFingerprint,
       startBoundaryQId: range.startQId,
       nextBoundaryQId: range.nextBoundaryQId,
+      isFinalPage: range.isFinalPage === true,
       titleRows: Array.isArray(page?.turnRecords) ? page.turnRecords.slice() : [],
       expectedTitleRowCount,
       pageDivider: renderedBoundaryThreadDivider(num),
@@ -5551,6 +5831,26 @@
       && Math.abs(current - snapshot.top) <= Math.max(0, Number(tolerancePx || 0) || 0);
   }
 
+  // ── Chat Page Divider -> MiniMap, one way only ───────────────────────────
+  // The Chat Page Divider is the origin for cross-surface page state: a Chat
+  // collapse or expansion mirrors onto the same MiniMap page. The MiniMap
+  // owner writes only MiniMap state, so there is no path back into the Chat
+  // page and no recursion. Direct MiniMap actions never reach this function.
+  function propagateChatPageCollapseToMiniMap(pageNum = 0, chatId = '', collapsed = false) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    if (!num || !id) return { ok: false, status: 'page-missing' };
+    try {
+      MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, !!collapsed, id, {
+        source: 'chat-page-divider:atomic-transaction',
+        propagate: true,
+      });
+      return { ok: true, status: 'propagated', pageNum: num, collapsed: !!collapsed };
+    } catch {
+      return { ok: false, status: 'minimap-unavailable', pageNum: num };
+    }
+  }
+
   function setAtomicTitleListMemory(chatId = '', pageNum = 0, active = false) {
     const id = String(chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
@@ -5660,7 +5960,9 @@
       || plan.startWrapper?.parentElement !== plan.flowRoot
       || plan.endWrapper?.parentElement !== plan.flowRoot
       || !renderedBoundaryWrapperCarriesIdentity(plan.startWrapper, plan.startBoundaryQId)
-      || !renderedBoundaryWrapperCarriesIdentity(plan.endWrapper, plan.nextBoundaryQId)
+      || (plan.isFinalPage === true
+        ? !pageCollapseRangeH2OOwned(plan.endWrapper)
+        : !renderedBoundaryWrapperCarriesIdentity(plan.endWrapper, plan.nextBoundaryQId))
       || plan.pageDivider?.isConnected !== true
       || plan.pageDivider?.parentElement !== plan.flowRoot
       || !Array.isArray(plan.hostWrappers)
@@ -5678,34 +5980,48 @@
       ) return { ok: false, reason: 'atomic-plan-member-stale' };
     }
     const authority = readRenderedBoundaryAuthority(plan.pageNum);
-    const nextAuthority = readRenderedBoundaryAuthority(plan.pageNum + 1);
+    const finalPlan = plan.isFinalPage === true;
+    const nextAuthority = finalPlan ? null : readRenderedBoundaryAuthority(plan.pageNum + 1);
     const startCapability = getRenderedPageBoundaryCapability(plan.pageNum);
-    const nextCapability = getRenderedPageBoundaryCapability(plan.pageNum + 1);
+    const nextCapability = finalPlan ? null : getRenderedPageBoundaryCapability(plan.pageNum + 1);
+    if (finalPlan) {
+      const tail = resolveFinalPageTailAuthority(
+        plan.pageNum,
+        plan.pageEndOrder,
+        authority,
+        plan.flowRoot,
+      );
+      if (!tail.ok || tail.endExclusive !== plan.endWrapper) {
+        return { ok: false, reason: 'atomic-plan-scope-stale' };
+      }
+    }
     if (
       !authority?.ok
-      || !nextAuthority?.ok
+      || (!finalPlan && !nextAuthority?.ok)
       || authority.chatId !== plan.chatId
       || authority.routeKey !== plan.routeKey
       || authority.generation !== plan.generation
       || authority.effectiveFingerprint !== plan.effectiveFingerprint
-      || nextAuthority.chatId !== plan.chatId
-      || nextAuthority.routeKey !== plan.routeKey
-      || nextAuthority.generation !== plan.generation
-      || nextAuthority.effectiveFingerprint !== plan.effectiveFingerprint
       || authority.qId !== plan.startBoundaryQId
-      || nextAuthority.qId !== plan.nextBoundaryQId
       || renderedBoundaryTransitionActive(authority.projection)
-      || renderedBoundaryTransitionActive(nextAuthority.projection)
       || renderedBoundaryRecordStreaming(authority.record)
-      || renderedBoundaryRecordStreaming(nextAuthority.record)
       || startCapability.supported !== true
-      || nextCapability.supported !== true
       || startCapability.leaseCurrent !== true
-      || nextCapability.leaseCurrent !== true
       || startCapability.graphFingerprint !== plan.graphFingerprint
-      || nextCapability.graphFingerprint !== plan.graphFingerprint
       || startCapability.pageUnitOrderCurrent !== true
-      || nextCapability.pageUnitOrderCurrent !== true
+      || (!finalPlan && (
+        nextAuthority.chatId !== plan.chatId
+        || nextAuthority.routeKey !== plan.routeKey
+        || nextAuthority.generation !== plan.generation
+        || nextAuthority.effectiveFingerprint !== plan.effectiveFingerprint
+        || nextAuthority.qId !== plan.nextBoundaryQId
+        || renderedBoundaryTransitionActive(nextAuthority.projection)
+        || renderedBoundaryRecordStreaming(nextAuthority.record)
+        || nextCapability.supported !== true
+        || nextCapability.leaseCurrent !== true
+        || nextCapability.graphFingerprint !== plan.graphFingerprint
+        || nextCapability.pageUnitOrderCurrent !== true
+      ))
     ) return { ok: false, reason: 'atomic-plan-scope-stale' };
     const model = buildTitleListPresentationPageModel();
     const page = model?.pages?.find?.((entry) => entry.pageNo === plan.pageNum) || null;
@@ -5745,6 +6061,7 @@
     S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
     setAtomicTitleListMemory(id, num, false);
     setAtomicCollapsedPageMemory(id, num, false);
+    propagateChatPageCollapseToMiniMap(num, id, false);
     getTitleListStackStats(num, id).activeStackId = '';
     syncTitleOnlyModeRootAttribute(id);
     if (options?.clearDiagnostic !== false) {
@@ -5848,6 +6165,8 @@
         flowRoot: plan.flowRoot,
         startBoundaryQId: plan.startBoundaryQId,
         nextBoundaryQId: plan.nextBoundaryQId,
+        isFinalPage: plan.isFinalPage === true,
+        pageEndOrder: plan.pageEndOrder,
         startWrapper: plan.startWrapper,
         endWrapper: plan.endWrapper,
         hostWrappers: plan.hostWrappers.slice(),
@@ -5882,6 +6201,7 @@
         syncTitleOnlyModeRootAttribute(id);
         clearCollapsedBoundaryDiagnostic(num, id);
         clearCollapseUnavailableFeedback(num);
+        propagateChatPageCollapseToMiniMap(num, id, true);
       } catch {
         return rollbackAtomicPageCollapse(transaction, viewportAnchor, 'atomic-collapse-write-failed');
       }

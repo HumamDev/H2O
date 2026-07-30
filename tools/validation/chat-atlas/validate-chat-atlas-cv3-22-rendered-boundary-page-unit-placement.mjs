@@ -487,6 +487,7 @@ function createCoreHarness(coreSource, document, coreState, modelState, controll
     ${coreSource.includes('function resolveRenderedBoundaryPageUnitAnchor(')
       ? extractFunction(coreSource, 'resolveRenderedBoundaryPageUnitAnchor')
       : ''}
+    ${coreSource.includes('function resolveChatPageTerminalArtifact(') ? extractFunction(coreSource, 'resolveChatPageTerminalArtifact') : ''}
     ${extractFunction(coreSource, 'resolveChatPageBoundaryAnchor')}
     ${extractFunction(coreSource, 'requestChatPageUnitHydration')}
     ${extractFunction(coreSource, 'getActualThreadPageDividers')}

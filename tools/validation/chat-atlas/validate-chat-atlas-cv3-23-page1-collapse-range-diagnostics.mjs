@@ -584,6 +584,9 @@ function createHarness(options = {}) {
     'clearStalePageCollapseRangeContinuity',
     'readPageCollapseRangeGraphRecords',
     'buildPageCollapseRangePlan',
+    'classifyPageCollapseRange', 'readFinalPageTerminalRecord',
+    'resolveFinalPageTerminalWrapper', 'resolveFinalPageTailAuthority',
+    'renderedBoundaryPageEndSentinel',
     'getPageCollapseRangeDiagnostics',
   ];
   const body = functionNames
@@ -1065,9 +1068,9 @@ await fixture('missing Page 2 lease is unsupported', () => {
   equal(h.api.range(1).reason, 'next-boundary-unavailable', 'missing end');
 });
 
-await fixture('final page end authority is intentionally unavailable', () => {
+await fixture('final page without a provable tail is refused', () => {
   const h = createHarness();
-  equal(h.api.range(2).reason, 'final-page-end-authority-unavailable', 'final page');
+  equal(h.api.range(2).reason, 'final-page-tail-unproven', 'final page');
   equal(h.api.range(2).isFinalPage, true, 'final diagnostic');
 });
 

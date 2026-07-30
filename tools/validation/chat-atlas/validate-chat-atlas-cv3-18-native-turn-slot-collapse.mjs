@@ -533,6 +533,7 @@ function createCoreOrderingHarness(pageHarness) {
       divider?.nextSibling?.querySelector?.('[data-testid^="conversation-turn-"]')?.getAttribute?.('data-testid') || ''
     );
     ${extractFunction(CORE_SOURCE, 'compareChatPageNodes')}
+    ${CORE_SOURCE.includes('function resolveChatPageTerminalArtifact(') ? extractFunction(CORE_SOURCE, 'resolveChatPageTerminalArtifact') : ''}
     ${extractFunction(CORE_SOURCE, 'resolveChatPageBoundaryAnchor')}
     ${extractFunction(CORE_SOURCE, 'enforceChatPageUnitOrder')}
     const placeNode = (parent, node, before) => {

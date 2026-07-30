@@ -172,6 +172,7 @@ function buildTitleModel(count = 39) {
 const ATOMIC_NAMES = [
   'resolveSyntheticRowTitle', 'projectSyntheticRowTitle', 'applyStackedTitleBarWash',
   'applyCollapsedNativeRange', 'captureCollapsedPageViewportAnchor',
+  'propagateChatPageCollapseToMiniMap',
   'restoreCollapsedPageViewportAnchor', 'setAtomicTitleListMemory',
   'setAtomicCollapsedPageMemory', 'prepareDetachedPageTitleList',
   'revalidateAtomicPageCollapsePlan', 'releaseAtomicPageCollapseState',
@@ -199,7 +200,10 @@ const RANGE_NAMES = [
   'pageCollapseRangeContainerIdentity', 'pageCollapseRangeNodeCarriesIdentity',
   'pageCollapseRangeHasRetainedHeight', 'pageCollapseRangeScopeCurrent',
   'clearStalePageCollapseRangeContinuity', 'readPageCollapseRangeGraphRecords',
-  'buildPageCollapseRangePlan', 'getPageCollapseRangeDiagnostics',
+  'buildPageCollapseRangePlan', 'classifyPageCollapseRange',
+  'readFinalPageTerminalRecord', 'resolveFinalPageTerminalWrapper',
+  'resolveFinalPageTailAuthority', 'renderedBoundaryPageEndSentinel',
+  'getPageCollapseRangeDiagnostics',
 ];
 const CAPABILITY_NAMES = [
   'frozenPageCollapseCapability', 'pageCollapseCapabilityProductReason',
@@ -324,6 +328,12 @@ function createActivationHarness(options = {}) {
     const getSyntheticTitleListContainers = (pageNum) => Array.from(
       document.querySelectorAll('.cgxui-chat-page-title-list-synth')
     ).filter((node) => Number(node.getAttribute('data-page-num') || 0) === Number(pageNum));
+    const MM_CORE_PAGES = () => ({
+      setMiniMapPageCollapsed(pageNum, collapsed) {
+        calls.minimapPropagations = Number(calls.minimapPropagations || 0) + 1;
+        return { ok: true, pageNum, collapsed: !!collapsed };
+      },
+    });
     const AT_PUBLIC = () => ({
       buildDetachedBar(input) {
         if (control.failBarFactory === true) return null;

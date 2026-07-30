@@ -10857,6 +10857,22 @@ function unbindChatPageDividerBridge() {
     };
   }
 
+  // The page-end sentinel must follow the page's exact terminal wrapper. The
+  // generic artifact resolver tries the question identity first, so for a row
+  // with an accepted answer it resolves to the question wrapper and would leave
+  // the end sentinel sitting between that question and its own answer. Resolve
+  // the terminal row by answer identity here; a row without an accepted answer
+  // (NO ANSWER / stopped) keeps the generic result.
+  function resolveChatPageTerminalArtifact(page = null) {
+    if (typeof resolveChatPageExactArtifact !== 'function') return null;
+    const records = Array.isArray(page?.records) ? page.records : [];
+    const turn = records[records.length - 1]?.turn || null;
+    if (!turn) return null;
+    const answerId = String(turn.primaryAId || turn.answerId || '').trim();
+    if (!answerId) return null;
+    return resolveChatPageExactArtifact({ answerId, primaryAId: answerId });
+  }
+
   function resolveChatPageBoundaryAnchor(model = null, page = null, kind = 'start') {
     if (!model || !page) return { ok: false, reason: 'page-unit-anchor-unavailable' };
     const isStart = kind !== 'end';
@@ -10933,15 +10949,19 @@ function unbindChatPageDividerBridge() {
       }
       return { ok: false, reason: 'page-unit-anchor-unavailable' };
     }
+    const terminal = resolveChatPageTerminalArtifact(page);
+    const terminalTail = terminal?.wrapper?.parentNode ? terminal.wrapper : null;
     const tail = titleList?.parentNode
       ? titleList
-      : (page.latest?.wrapper?.parentNode ? page.latest.wrapper : null);
+      : (terminalTail || (page.latest?.wrapper?.parentNode ? page.latest.wrapper : null));
     if (tail?.parentNode) {
       return {
         ok: true,
         parent: tail.parentNode,
         before: tail.nextSibling || null,
-        mode: titleList ? 'title-list-end' : 'latest-exact-page-artifact',
+        mode: titleList
+          ? 'title-list-end'
+          : (tail === terminalTail ? 'exact-terminal-page-artifact' : 'latest-exact-page-artifact'),
         evidence: tail,
       };
     }

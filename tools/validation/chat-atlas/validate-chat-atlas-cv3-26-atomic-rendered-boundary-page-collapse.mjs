@@ -367,6 +367,7 @@ function createTransactionHarness(options = {}) {
     'applyCollapsedNativeRange',
     'captureCollapsedPageViewportAnchor',
     'restoreCollapsedPageViewportAnchor',
+    'propagateChatPageCollapseToMiniMap',
     'setAtomicTitleListMemory',
     'setAtomicCollapsedPageMemory',
     'prepareDetachedPageTitleList',
@@ -394,6 +395,12 @@ function createTransactionHarness(options = {}) {
     const getSyntheticTitleListContainers = (pageNum) => Array.from(
       document.querySelectorAll('.cgxui-chat-page-title-list-synth')
     ).filter((node) => Number(node.getAttribute('data-page-num') || 0) === Number(pageNum));
+    const MM_CORE_PAGES = () => ({
+      setMiniMapPageCollapsed(pageNum, collapsed) {
+        injectedCalls.minimapPropagations = Number(injectedCalls.minimapPropagations || 0) + 1;
+        return { ok: true, pageNum, collapsed: !!collapsed };
+      },
+    });
     const AT_PUBLIC = () => ({
       buildDetachedBar(input) {
         injectedCalls.preparations += 1;

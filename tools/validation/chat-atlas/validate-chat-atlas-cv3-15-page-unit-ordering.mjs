@@ -497,6 +497,7 @@ function createFixedHarness({
     ${extractFunction(CORE_SOURCE, 'createChatPageBoundarySentinel')}
     ${extractFunction(CORE_SOURCE, 'ensureChatPageBoundarySentinels')}
     ${extractFunction(CORE_SOURCE, 'compareChatPageNodes')}
+    ${CORE_SOURCE.includes('function resolveChatPageTerminalArtifact(') ? extractFunction(CORE_SOURCE, 'resolveChatPageTerminalArtifact') : ''}
     ${extractFunction(CORE_SOURCE, 'resolveChatPageBoundaryAnchor')}
     ${extractFunction(CORE_SOURCE, 'requestChatPageUnitHydration')}
     ${extractFunction(CORE_SOURCE, 'getActualThreadPageDividers')}
