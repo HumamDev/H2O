@@ -232,8 +232,13 @@ function createCapabilityVm({ model, boundary, range } = {}) {
         injectedCalls.range.push(pageNum);
         return injectedControl.range(pageNum);
       };
+      const buildPageCollapseRangePlan = (pageNum) => ({
+        ok: true,
+        diagnostic: getPageCollapseRangeDiagnostics(pageNum),
+      });
       ${extractFunction(SOURCE, 'frozenPageCollapseCapability')}
       ${extractFunction(SOURCE, 'pageCollapseCapabilityProductReason')}
+      ${extractFunction(SOURCE, 'evaluatePageCollapseCapability')}
       ${extractFunction(SOURCE, 'getPageCollapseCapability')}
       ${extractFunction(SOURCE, 'frozenCollapsedBoundaryResult')}
       ${extractFunction(SOURCE, 'getCollapsedNativeBoundaryReadiness')}
@@ -478,8 +483,8 @@ await fixture('corrected capability consumes existing range diagnostic', () => {
 });
 
 await fixture('corrected capability does not reclassify wrappers independently', () => {
-  const source = extractFunction(SOURCE, 'getPageCollapseCapability');
-  ok(source.includes('getPageCollapseRangeDiagnostics(num)'), 'range proof consumed');
+  const source = extractFunction(SOURCE, 'evaluatePageCollapseCapability');
+  ok(source.includes('buildPageCollapseRangePlan(num, { includeDom: true })'), 'single range-plan proof consumed');
   ok(!/flowRoot|querySelector|children|data-turn-id/.test(source), 'no independent DOM classification');
 });
 
@@ -514,31 +519,28 @@ await fixture('all exact prerequisites report ready', () => {
   equal(result.prerequisitesReady, true, 'all prerequisites ready');
 });
 
-await fixture('atomic transaction remains unimplemented', () => {
+await fixture('atomic transaction is implemented', () => {
   const result = createLiveCapabilityHarness().capability.capability(1);
-  equal(result.atomicTransactionImplemented, false, 'transaction sealed');
+  equal(result.atomicTransactionImplemented, true, 'transaction installed');
 });
 
-await fixture('activation remains sealed', () => {
+await fixture('activation follows complete prerequisites', () => {
   const result = createLiveCapabilityHarness().capability.capability(1);
-  equal(result.activationReady, false, 'activation blocked');
+  equal(result.activationReady, true, 'activation ready');
 });
 
-await fixture('activation seal reports the exact internal reason', () => {
+await fixture('ready activation has no internal block reason', () => {
   const result = createLiveCapabilityHarness().capability.capability(1);
-  equal(
-    result.activationBlockReason,
-    'atomic-collapse-transaction-pending',
-    'stage seal reason',
-  );
+  equal(result.activationBlockReason, null, 'no activation block');
 });
 
-await fixture('compatibility wrapper remains not ready', () => {
+await fixture('compatibility wrapper becomes ready', () => {
   const h = createLiveCapabilityHarness();
   const result = h.capability.compatibility(1);
-  equal(result.ready, false, 'legacy top-level readiness sealed');
+  equal(result.ready, true, 'compatibility readiness active');
   equal(result.prerequisitesReady, true, 'prerequisite proof retained');
-  equal(result.activationReady, false, 'activation remains false');
+  equal(result.activationReady, true, 'activation ready');
+  equal(result.reason, null, 'no readiness reason');
 });
 
 await fixture('compatibility wrapper reports rendered-boundary provenance', () => {
@@ -809,34 +811,25 @@ await fixture('repeated capability reads perform zero storage writes', () => {
   equal(h.capabilitySafety.storage, 0, 'capability storage unchanged');
 });
 
-await fixture('sealed collapse click creates zero native-hidden stamps', () => {
-  const h = createLiveCapabilityHarness();
-  const readiness = h.capability.compatibility(1);
-  const effects = executeSealedClick(readiness);
-  equal(effects.feedback, 1, 'feedback path reached');
-  equal(effects.nativeHidden, 0, 'native path unreachable');
+await fixture('collapse click delegates to the atomic transaction', () => {
+  const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
+  ok(handler.includes('collapsePageWithRenderedBoundaries'), 'atomic collapse delegated');
+  ok(handler.includes('expandPageWithRenderedBoundaries'), 'atomic expansion delegated');
 });
 
-await fixture('sealed collapse click creates no synthetic title list', () => {
-  const h = createLiveCapabilityHarness();
-  const effects = executeSealedClick(h.capability.compatibility(1));
-  equal(effects.titleLists, 0, 'title-list path unreachable');
+await fixture('collapse click cannot invoke legacy title-list activation', () => {
+  const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
+  ok(!/setTitleListMode|syncSyntheticTitleList|writePageTitleIntent/.test(handler), 'legacy activation absent');
 });
 
-await fixture('sealed collapse click moves no page units', () => {
-  const h = createLiveCapabilityHarness();
-  const before = [...h.flow.children];
-  const effects = executeSealedClick(h.capability.compatibility(1));
-  equal(effects.pageUnits, 0, 'no page-unit call');
-  equal(h.flow.children.length, before.length, 'flow child count unchanged');
-  ok(h.flow.children.every((node, index) => node === before[index]), 'flow order unchanged');
+await fixture('collapse click contains no page-unit movement', () => {
+  const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
+  ok(!/renderDividers|insertBefore|appendChild|sentinel/.test(handler), 'no page-unit writer');
 });
 
-await fixture('sealed collapse click performs no navigation or scrolling', () => {
-  const h = createLiveCapabilityHarness();
-  const effects = executeSealedClick(h.capability.compatibility(1));
-  equal(effects.navigation, 0, 'no navigation');
-  equal(effects.scrolling, 0, 'no scrolling');
+await fixture('collapse click performs no navigation or direct scrolling', () => {
+  const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
+  ok(!/navigate|scroll|completeIndex/i.test(handler), 'no navigation or scroll');
 });
 
 await fixture('capability performs no cache preference canonical or alias writes', () => {
@@ -869,29 +862,28 @@ await fixture('existing rendered-boundary API remains byte-for-byte unchanged', 
   );
 });
 
-await fixture('existing range diagnostic remains byte-for-byte unchanged', () => {
-  equal(
-    extractFunction(SOURCE, 'getPageCollapseRangeDiagnostics'),
-    extractFunction(PARENT, 'getPageCollapseRangeDiagnostics'),
-    'range diagnostic implementation unchanged',
-  );
+await fixture('existing range diagnostic remains a DOM-free delegation', () => {
+  const getter = extractFunction(SOURCE, 'getPageCollapseRangeDiagnostics');
+  ok(getter.includes('buildPageCollapseRangePlan(pageNum, { includeDom: false })'), 'public range stays DOM-free');
 });
 
-await fixture('production callers never treat prerequisites as activation', () => {
+await fixture('production activation requires activationReady', () => {
   const wrapper = extractFunction(SOURCE, 'getCollapsedNativeBoundaryReadiness');
-  equal(wrapper.includes('ready: false'), true, 'compatibility is always sealed');
-  equal(wrapper.includes('activationReady: false'), true, 'activation explicitly false');
+  equal(wrapper.includes('ready: activationReady'), true, 'compatibility uses activation field');
   const prerequisiteUses = Array.from(SOURCE.matchAll(/prerequisitesReady/g)).length;
   ok(prerequisiteUses > 0, 'prerequisite diagnostics exposed');
   ok(
-    !/activationReady\s*:\s*(?:raw\.)?prerequisitesReady|ready\s*:\s*prerequisitesReady/.test(SOURCE),
-    'prerequisite readiness is never promoted to activation readiness',
+    extractFunction(SOURCE, 'collapsePageWithRenderedBoundaries').includes('capability?.activationReady'),
+    'transaction checks activation readiness',
   );
 });
 
-await fixture('all production readiness callers consume only the sealed ready field', () => {
+await fixture('live activation callers are transaction-owned', () => {
   const callers = Array.from(SOURCE.matchAll(/getCollapsedNativeBoundaryReadiness\(([^)]*)\)/g));
-  ok(callers.length >= 8, 'all production callers retained');
+  ok(callers.length >= 2, 'compatibility diagnostics remain');
+  const handler = extractAssignedArrow(SOURCE, 'S.onDividerDotClick');
+  ok(handler.includes('collapsePageWithRenderedBoundaries'), 'click uses transaction');
+  ok(!handler.includes('getCollapsedNativeBoundaryReadiness(pageNum)') || handler.indexOf('getCollapsedNativeBoundaryReadiness') > handler.indexOf('collapsePageWithRenderedBoundaries'), 'compatibility read is failure feedback only');
   const legacyCalls = Array.from(
     SOURCE.matchAll(/getLegacyCollapsedNativeBoundaryReadinessDiagnostic\(/g),
   ).length;

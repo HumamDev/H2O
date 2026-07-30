@@ -773,44 +773,40 @@ await fixture('Page 1 range diagnostics retain the accepted exact topology', () 
   equal(stage2cLive.pageOneRange.ambiguousWrapperCount, 0, 'zero ambiguity');
 });
 
-await fixture('Page collapse capability retains rendered prerequisites and the activation seal', () => {
+await fixture('Page collapse capability retains rendered prerequisites and installed transaction', () => {
   const result = stage2cLive.capability.capability(1);
   equal(result.supported, true, 'capability supported');
   equal(result.prerequisitesReady, true, 'prerequisites ready');
   equal(result.legacyNativeSlotConsulted, false, 'legacy slots disconnected');
-  equal(result.atomicTransactionImplemented, false, 'transaction pending');
-  equal(result.activationReady, false, 'activation sealed');
+  equal(result.atomicTransactionImplemented, true, 'transaction installed');
+  equal(result.activationReady, true, 'activation ready');
 });
 
-await fixture('Stage 2C-1 activation seal remains intact', () => {
+await fixture('compatibility readiness follows the installed transaction', () => {
   const result = stage2cLive.capability.compatibility(1);
-  equal(result.ready, false, 'compatibility remains not ready');
+  equal(result.ready, true, 'compatibility ready');
   equal(result.source, 'rendered-boundary-collapse-capability', 'rendered source');
-  equal(result.reason, 'atomic-collapse-transaction-pending', 'seal reason');
+  equal(result.reason, null, 'no block reason');
 });
 
-await fixture('no functional collapse path is activated', () => {
-  const readiness = stage2cLive.capability.compatibility(1);
-  const effects = stage2c.executeSealedClick(readiness);
-  equal(effects.feedback, 1, 'safe feedback only');
-  equal(effects.persistence, 0, 'no collapse intent persistence');
+await fixture('graph getter itself does not activate functional collapse', () => {
+  const before = corrected.loaded.counters.dom;
+  corrected.loaded.runtime.getGraphIdentityDiagnostics([Q1, Q26]);
+  equal(corrected.loaded.counters.dom, before, 'graph read causes no collapse DOM mutation');
 });
 
-await fixture('no native-hidden stamps are written', () => {
-  const effects = stage2c.executeSealedClick(stage2cLive.capability.compatibility(1));
-  equal(effects.nativeHidden, 0, 'native visibility untouched');
+await fixture('graph bridge writes no native-hidden stamps', () => {
+  equal(CURRENT_CORE.includes('data-cgxui-chat-page-native-hidden'), false, 'native visibility absent from graph bridge');
 });
 
-await fixture('no title-list projection is activated', () => {
-  const effects = stage2c.executeSealedClick(stage2cLive.capability.compatibility(1));
-  equal(effects.titleLists, 0, 'title-list projection untouched');
+await fixture('graph bridge activates no title-list projection', () => {
+  equal(CURRENT_CORE.includes('title-list'), false, 'title-list behavior absent from graph bridge');
 });
 
-await fixture('no divider or sentinel is moved by the correction', () => {
-  const effects = stage2c.executeSealedClick(stage2cLive.capability.compatibility(1));
-  equal(effects.pageUnits, 0, 'page-unit placement untouched');
-  equal(effects.navigation, 0, 'navigation untouched');
-  equal(effects.scrolling, 0, 'scrolling untouched');
+await fixture('graph bridge moves no divider or sentinel', () => {
+  equal(CURRENT_CORE.includes('insertBefore'), false, 'page-unit placement untouched');
+  equal(corrected.loaded.counters.navigation, 0, 'navigation untouched');
+  equal(corrected.loaded.counters.scrolling, 0, 'scrolling untouched');
 });
 
 await fixture('graph diagnostics retain the accepted privacy contract', () => {

@@ -127,6 +127,8 @@
     collapsedBoundaryDiagnostics: new Map(),
     renderedPageBoundaryLeases: new Map(),
     pageCollapseRangeContinuity: new Map(),
+    atomicPageCollapseTransactions: new Map(),
+    atomicPageCollapseGuards: new Set(),
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
@@ -878,8 +880,8 @@
     if (!id) return new Set();
     const cached = S.collapsedPagesByChat.get(id);
     if (cached instanceof Set) return new Set(cached);
-    const pages = normalizePageNums(storageGetJSON(keyCollapsedPages(id), []));
-    const set = new Set(pages);
+    // Stage 2C-2 does not restore legacy collapsed state after reload.
+    const set = new Set();
     S.collapsedPagesByChat.set(id, set);
     return new Set(set);
   }
@@ -898,8 +900,9 @@
     if (!id) return new Set();
     const cached = S.titleListPagesByChat.get(id);
     if (cached instanceof Set) return new Set(cached);
-    const pages = normalizePageNums(storageGetJSON(keyTitleListPages(id), []));
-    const set = new Set(pages);
+    // Stage 2C-2 is explicit-session-only. Legacy persisted values remain
+    // physically untouched but have zero activation authority after reload.
+    const set = new Set();
     S.titleListPagesByChat.set(id, set);
     return new Set(set);
   }
@@ -1893,7 +1896,8 @@
 
   function isTitleListActive(pageNum = 0, chatId = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
-    return !!num && localReadTitleListPagesSet(chatId).has(num);
+    const id = String(chatId || resolveChatId()).trim();
+    return !!num && S.atomicPageCollapseTransactions.has(collapsedNativeRangeKey(id, num));
   }
 
   function _clearRestoreProps(el) {
@@ -3687,8 +3691,18 @@
     return { ok: true, reason: null, fingerprint, records };
   }
 
-  function getPageCollapseRangeDiagnostics(pageNum = 0) {
+  function buildPageCollapseRangePlan(pageNum = 0, options = {}) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
+    const includeDom = options?.includeDom === true;
+    const finish = (diagnostic, privatePlan = null) => (
+      includeDom
+        ? {
+          ok: diagnostic?.supported === true,
+          diagnostic,
+          ...(privatePlan || {}),
+        }
+        : diagnostic
+    );
     const authority = readRenderedBoundaryAuthority(num);
     const pageStartOrder = authority?.pageStartOrder
       || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1);
@@ -3705,13 +3719,15 @@
       startQId: authority?.qId || '',
       isFinalPage: count > 0 && pageEndOrder >= count,
     };
-    const fail = (reason, extra = {}) => frozenPageCollapseRangeDiagnostics({
-      ...base,
-      supported: false,
-      reason,
-      rangeProven: false,
-      ...extra,
-    });
+    const fail = (reason, extra = {}) => finish(
+      frozenPageCollapseRangeDiagnostics({
+        ...base,
+        supported: false,
+        reason,
+        rangeProven: false,
+        ...extra,
+      })
+    );
     if (!authority?.ok) {
       S.pageCollapseRangeContinuity.clear();
       return fail(authority?.reason || 'authority-unavailable');
@@ -4093,7 +4109,7 @@
       flowRoot,
       wrappers: provenWrappers,
     });
-    return frozenPageCollapseRangeDiagnostics({
+    const diagnostic = frozenPageCollapseRangeDiagnostics({
       ...base,
       supported: true,
       reason: null,
@@ -4117,6 +4133,22 @@
       rangeProven: true,
       isFinalPage: false,
     });
+    return finish(diagnostic, {
+      authority,
+      nextAuthority,
+      startCapability,
+      nextCapability,
+      flowRoot,
+      startWrapper,
+      endWrapper,
+      hostWrappers: Array.from(provenWrappers.keys()),
+      h2oNodes: interval.filter((node) => pageCollapseRangeH2OOwned(node)),
+      wrapperProofs: provenWrappers,
+    });
+  }
+
+  function getPageCollapseRangeDiagnostics(pageNum = 0) {
+    return buildPageCollapseRangePlan(pageNum, { includeDom: false });
   }
 
   function frozenPageCollapseCapability(raw = {}) {
@@ -4153,9 +4185,11 @@
       titleRowCount: Math.max(0, Number(raw.titleRowCount || 0) || 0),
       expectedTitleRowCount: Math.max(0, Number(raw.expectedTitleRowCount || 0) || 0),
       prerequisitesReady: raw.prerequisitesReady === true,
-      atomicTransactionImplemented: false,
-      activationReady: false,
-      activationBlockReason: 'atomic-collapse-transaction-pending',
+      atomicTransactionImplemented: true,
+      activationReady: raw.activationReady === true,
+      activationBlockReason: raw.activationReady === true
+        ? null
+        : String(raw.activationBlockReason || raw.reason || 'layout-incomplete'),
       legacyNativeSlotConsulted: false,
     });
   }
@@ -4182,9 +4216,7 @@
     return 'layout-incomplete';
   }
 
-  // Stage 2C-1 composes existing exact rendered-boundary and range proofs.
-  // Activation remains sealed until the atomic collapse transaction lands.
-  function getPageCollapseCapability(pageNum = 0) {
+  function evaluatePageCollapseCapability(pageNum = 0, options = {}) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const model = buildTitleListPresentationPageModel();
     const page = model?.pages?.find?.((entry) => entry.pageNo === num) || null;
@@ -4210,9 +4242,15 @@
         (member, offset) => Number(member?.turnNo || 0) === pageStartOrder + offset,
       )
     );
-    const startCapability = getRenderedPageBoundaryCapability(num);
-    const nextCapability = getRenderedPageBoundaryCapability(num + 1);
-    const range = getPageCollapseRangeDiagnostics(num);
+    const rangePlan = buildPageCollapseRangePlan(num, { includeDom: true });
+    const range = rangePlan?.diagnostic || frozenPageCollapseRangeDiagnostics({
+      pageNum: num,
+      reason: 'range-unavailable',
+    });
+    const startCapability = rangePlan?.startCapability
+      || getRenderedPageBoundaryCapability(num);
+    const nextCapability = rangePlan?.nextCapability
+      || getRenderedPageBoundaryCapability(num + 1);
     const authorityCurrent = (
       model?.coherent === true
       && !!page
@@ -4284,7 +4322,7 @@
       reason,
       ambiguousWrapperCount: range.ambiguousWrapperCount,
     });
-    return frozenPageCollapseCapability({
+    const capability = frozenPageCollapseCapability({
       supported: prerequisitesReady,
       reason,
       productReason,
@@ -4314,7 +4352,50 @@
       titleRowCount,
       expectedTitleRowCount,
       prerequisitesReady,
+      activationReady: prerequisitesReady,
+      activationBlockReason: prerequisitesReady ? null : (reason || 'layout-incomplete'),
     });
+    const privatePlan = (
+      options?.includePlan === true
+      && capability.activationReady === true
+      && rangePlan?.ok === true
+    ) ? {
+      ...rangePlan,
+      version: 1,
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: capability.chatId,
+      routeKey: capability.routeKey,
+      generation: capability.generation,
+      effectiveFingerprint: capability.effectiveFingerprint,
+      graphFingerprint: capability.graphFingerprint,
+      startBoundaryQId: range.startQId,
+      nextBoundaryQId: range.nextBoundaryQId,
+      titleRows: Array.isArray(page?.turnRecords) ? page.turnRecords.slice() : [],
+      expectedTitleRowCount,
+      pageDivider: renderedBoundaryThreadDivider(num),
+      pageStartSentinel: renderedBoundaryStartSentinel(num),
+      nextPageDivider: renderedBoundaryThreadDivider(num + 1),
+      nextPageStartSentinel: renderedBoundaryStartSentinel(num + 1),
+      capabilityIdentity: JSON.stringify([
+        capability.chatId,
+        capability.routeKey,
+        capability.generation,
+        capability.effectiveFingerprint,
+        capability.graphFingerprint,
+        num,
+        pageStartOrder,
+        pageEndOrder,
+        range.startQId,
+        range.nextBoundaryQId,
+      ]),
+    } : null;
+    return { capability, plan: privatePlan };
+  }
+
+  function getPageCollapseCapability(pageNum = 0) {
+    return evaluatePageCollapseCapability(pageNum, { includePlan: false }).capability;
   }
 
   function collapsedNativeRangeKey(chatId = '', pageNum = 0) {
@@ -4353,8 +4434,12 @@
   function frozenCollapsedBoundaryResult(raw = {}) {
     const value = {
       ready: raw.ready === true,
-      reason: String(raw.reason || (raw.ready ? 'ready' : 'collapsed-exact-boundary-unavailable')),
-      structuralReason: String(raw.structuralReason || ''),
+      reason: raw.ready === true && raw.reason == null
+        ? null
+        : String(raw.reason || 'collapsed-exact-boundary-unavailable'),
+      structuralReason: raw.ready === true && raw.structuralReason == null
+        ? null
+        : String(raw.structuralReason || ''),
       pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
       flowRoot: raw.flowRoot || null,
       nativeStart: raw.nativeStart || null,
@@ -5023,18 +5108,19 @@
         reason: 'readiness-api-unavailable',
         productReason: 'page-loading',
         prerequisitesReady: false,
-        activationBlockReason: 'atomic-collapse-transaction-pending',
+        activationBlockReason: 'readiness-api-unavailable',
         generation: 0,
         effectiveFingerprint: '',
       });
     const prerequisitesReady = capability.prerequisitesReady === true;
+    const activationReady = capability.activationReady === true;
     return frozenCollapsedBoundaryResult({
-      ready: false,
-      reason: prerequisitesReady
-        ? capability.activationBlockReason
-        : String(capability.reason || 'collapsed-exact-boundary-unavailable'),
-      structuralReason: prerequisitesReady
-        ? 'layout-incomplete'
+      ready: activationReady,
+      reason: activationReady
+        ? null
+        : String(capability.activationBlockReason || capability.reason || 'collapsed-exact-boundary-unavailable'),
+      structuralReason: activationReady
+        ? null
         : String(capability.reason || 'layout-incomplete'),
       pageNum: num,
       generation: capability.generation,
@@ -5042,7 +5128,7 @@
       source: 'rendered-boundary-collapse-capability',
       productReason: capability.productReason,
       prerequisitesReady,
-      activationReady: false,
+      activationReady,
       capabilityVersion: capability.version,
       legacyNativeSlotConsulted: false,
     });
@@ -5094,85 +5180,74 @@
     return released;
   }
 
-  function applyCollapsedNativeRange(readiness = null) {
-    if (!readiness?.ready) {
-      return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
-    }
-    const num = readiness.pageNum;
-    const root = readiness.flowRoot;
-    const start = readiness.nativeStart;
-    const end = readiness.nextPageNativeStart;
-    if (!root || start?.parentElement !== root || (end && end.parentElement !== root)) {
-      return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
-    }
-    const candidates = [];
-    const sequence = readiness.nativeSlotSequence;
-    if (sequence?.ready === true) {
-      if (
-        sequence.flowRoot !== root
-        || sequence.generation !== readiness.generation
-        || sequence.fingerprint !== readiness.fingerprint
-        || readiness.nativeStartOrdinal < 1
-        || readiness.nativeEndOrdinal < readiness.nativeStartOrdinal
-      ) {
-        return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
-      }
-      for (
-        let ordinal = readiness.nativeStartOrdinal;
-        ordinal <= readiness.nativeEndOrdinal;
-        ordinal += 1
-      ) {
-        const slot = sequence.slots[ordinal - 1] || null;
-        const node = slot?.element || null;
-        if (
-          slot?.ordinal !== ordinal
-          || !node
-          || node.parentElement !== root
-          || isCollapsedNativeRangeExcluded(node)
-        ) {
-          return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
-        }
-        candidates.push(node);
-      }
-    } else {
-      let inRange = false;
-      let reachedEnd = false;
-      for (const node of Array.from(root.children || [])) {
-        if (node === start) inRange = true;
-        if (node === end) {
-          reachedEnd = true;
-          break;
-        }
-        if (!inRange || isCollapsedNativeRangeExcluded(node)) continue;
-        const ownedPages = directNodePresentationPages(node);
-        if (ownedPages.size > 1 || (ownedPages.size === 1 && !ownedPages.has(num))) continue;
-        candidates.push(node);
-      }
-      if (!inRange || !reachedEnd || !candidates.includes(start)) {
-        return { ok: false, status: 'collapsed-exact-boundary-unavailable', hidden: 0, mutations: 0 };
-      }
-    }
-    let mutations = 0;
-    const keep = new Set(candidates);
-    let existing = [];
-    try {
-      existing = Array.from(root.querySelectorAll(`[${ATTR_CHAT_PAGE_NATIVE_HIDDEN}="${String(num)}"]`));
-    } catch {}
-    for (const node of existing) {
-      if (node.parentElement === root && keep.has(node)) continue;
-      try { node.removeAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN); mutations += 1; } catch {}
+  function applyCollapsedNativeRange(plan = null) {
+    const num = Math.max(1, Number(plan?.pageNum || 0) || 0);
+    const root = plan?.flowRoot || null;
+    const candidates = Array.isArray(plan?.hostWrappers) ? plan.hostWrappers : [];
+    if (
+      plan?.atomicRenderedBoundaryPlan !== true
+      || !root
+      || root?.isConnected !== true
+      || !candidates.length
+      || plan?.endWrapper?.parentElement !== root
+      || candidates.includes(plan.endWrapper)
+    ) {
+      return {
+        ok: false,
+        status: 'rendered-collapse-plan-invalid',
+        hidden: 0,
+        mutations: 0,
+        stamped: [],
+      };
     }
     for (const node of candidates) {
-      if (node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)) continue;
-      try { node.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(num)); mutations += 1; } catch {}
+      if (
+        !node
+        || node?.isConnected !== true
+        || node?.parentElement !== root
+        || pageCollapseRangeH2OOwned(node)
+      ) {
+        return {
+          ok: false,
+          status: 'rendered-collapse-plan-stale',
+          hidden: 0,
+          mutations: 0,
+          stamped: [],
+        };
+      }
+      const existing = String(node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) || '');
+      if (existing) {
+        return {
+          ok: false,
+          status: 'rendered-collapse-stamp-conflict',
+          hidden: 0,
+          mutations: 0,
+          stamped: [],
+        };
+      }
+    }
+    const stamped = [];
+    try {
+      for (const node of candidates) {
+        if (node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)) continue;
+        node.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(num));
+        stamped.push(node);
+      }
+    } catch {
+      return {
+        ok: false,
+        status: 'rendered-collapse-stamp-failed',
+        hidden: stamped.length,
+        mutations: stamped.length,
+        stamped,
+      };
     }
     return {
       ok: true,
       status: 'collapsed',
       hidden: candidates.length,
-      mutations,
-      startOrdinal: readiness.nativeStartOrdinal || 0,
-      endOrdinal: readiness.nativeEndOrdinal || 0,
+      mutations: stamped.length,
+      stamped,
     };
   }
 
@@ -5439,7 +5514,7 @@
     return Number.isFinite(top) ? { anchor, top, scrollRoot } : null;
   }
 
-  function restoreCollapsedPageViewportAnchor(snapshot = null) {
+  function restoreCollapsedPageViewportAnchor(snapshot = null, tolerancePx = 12) {
     if (!snapshot?.anchor?.isConnected || !Number.isFinite(snapshot.top)) return false;
     let current = NaN;
     try { current = Number(snapshot.anchor.getBoundingClientRect?.().top); } catch {}
@@ -5455,16 +5530,433 @@
       } catch { return false; }
     }
     try { current = Number(snapshot.anchor.getBoundingClientRect?.().top); } catch { return false; }
-    return Number.isFinite(current) && Math.abs(current - snapshot.top) <= 12;
+    return Number.isFinite(current)
+      && Math.abs(current - snapshot.top) <= Math.max(0, Number(tolerancePx || 0) || 0);
+  }
+
+  function setAtomicTitleListMemory(chatId = '', pageNum = 0, active = false) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const pages = S.titleListPagesByChat.get(id) instanceof Set
+      ? new Set(S.titleListPagesByChat.get(id))
+      : new Set();
+    if (active) pages.add(num);
+    else pages.delete(num);
+    S.titleListPagesByChat.set(id, pages);
+    return pages;
+  }
+
+  function setAtomicCollapsedPageMemory(chatId = '', pageNum = 0, active = false) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const pages = S.collapsedPagesByChat.get(id) instanceof Set
+      ? new Set(S.collapsedPagesByChat.get(id))
+      : new Set();
+    if (active) pages.add(num);
+    else pages.delete(num);
+    S.collapsedPagesByChat.set(id, pages);
+    return pages;
+  }
+
+  function prepareDetachedPageTitleList(plan = null) {
+    const members = Array.isArray(plan?.titleRows) ? plan.titleRows : [];
+    if (
+      !plan
+      || !members.length
+      || members.length !== plan.expectedTitleRowCount
+      || getSyntheticTitleListContainers(plan.pageNum).length
+    ) return { ok: false, status: 'detached-title-list-preconditions-failed' };
+    const at = AT_PUBLIC();
+    if (typeof at?.buildDetachedBar !== 'function') {
+      return { ok: false, status: 'detached-title-list-factory-unavailable' };
+    }
+    let container = null;
+    try {
+      container = document.createElement('div');
+      container.className = 'cgxui-chat-page-title-list-synth';
+      container.setAttribute('data-cgxui', 'chat-page-title-list-synth');
+      container.setAttribute('data-cgxui-owner', 'chtpgs');
+      container.setAttribute('data-page-num', String(plan.pageNum));
+      container.setAttribute('data-h2o-title-stack-owner', '1C1b:atomic-rendered-collapse');
+      container.setAttribute('data-h2o-title-stack-id', titleListStackDomId(plan.pageNum));
+      container.id = titleListStackDomId(plan.pageNum);
+      container.addEventListener('dblclick', onSyntheticTitleRowDblClick, true);
+      container._h2oTitleListDblClickHandler = onSyntheticTitleRowDblClick;
+    } catch {
+      return { ok: false, status: 'detached-title-list-container-failed' };
+    }
+    const rows = [];
+    try {
+      for (const member of members) {
+        const resolved = member.type === 'answer'
+          ? resolveSyntheticRowTitle(member)
+          : { text: '', source: 'no-answer', rank: 3 };
+        const bar = at.buildDetachedBar({
+          answerId: member.type === 'answer'
+            ? member.answerId
+            : `no-answer:${member.questionId}`,
+          turnNo: member.turnNo,
+          title: resolved.source === 'fallback' ? '' : resolved.text,
+          noAnswer: member.type !== 'answer',
+        });
+        if (!bar || bar?.isConnected === true) {
+          return { ok: false, status: 'detached-title-list-row-failed', container };
+        }
+        bar.setAttribute('data-h2o-detached-title-bar', '1');
+        bar.setAttribute('data-h2o-in-title-stack', String(plan.pageNum));
+        bar.setAttribute('data-h2o-stack-key', member.id);
+        bar.setAttribute('data-h2o-stack-type', member.type);
+        bar.setAttribute('data-h2o-stack-turn-no', String(member.turnNo));
+        bar.setAttribute(ATTR_TITLE_LIST_NUM, '1');
+        bar.setAttribute('data-h2o-turn-num', String(member.turnNo));
+        bar.setAttribute('data-h2o-title-row-hydrated', '0');
+        bar.setAttribute('data-h2o-title-row-source', resolved.source);
+        bar.setAttribute('data-h2o-title-row-source-rank', String(resolved.rank));
+        if (resolved.answerId) {
+          bar.setAttribute('data-h2o-title-row-source-id', String(resolved.answerId));
+        }
+        projectSyntheticRowTitle(member, bar);
+        applyStackedTitleBarWash(member, bar);
+        container.appendChild(bar);
+        rows.push(bar);
+      }
+    } catch {
+      return { ok: false, status: 'detached-title-list-build-failed', container };
+    }
+    if (
+      rows.length !== plan.expectedTitleRowCount
+      || Array.from(container.children || []).length !== rows.length
+    ) {
+      return { ok: false, status: 'detached-title-list-incomplete', container };
+    }
+    return { ok: true, status: 'prepared', container, rows };
+  }
+
+  function revalidateAtomicPageCollapsePlan(plan = null) {
+    if (
+      !plan
+      || plan.atomicRenderedBoundaryPlan !== true
+      || !plan.capabilityIdentity
+      || plan.flowRoot?.isConnected !== true
+      || plan.startWrapper?.isConnected !== true
+      || plan.endWrapper?.isConnected !== true
+      || plan.startWrapper?.parentElement !== plan.flowRoot
+      || plan.endWrapper?.parentElement !== plan.flowRoot
+      || !renderedBoundaryWrapperCarriesIdentity(plan.startWrapper, plan.startBoundaryQId)
+      || !renderedBoundaryWrapperCarriesIdentity(plan.endWrapper, plan.nextBoundaryQId)
+      || plan.pageDivider?.isConnected !== true
+      || plan.pageDivider?.parentElement !== plan.flowRoot
+      || !Array.isArray(plan.hostWrappers)
+      || !plan.hostWrappers.length
+      || plan.hostWrappers.includes(plan.endWrapper)
+    ) return { ok: false, reason: 'atomic-plan-wrapper-stale' };
+    for (const node of plan.hostWrappers) {
+      const proof = plan.wrapperProofs?.get?.(node) || null;
+      if (
+        node?.isConnected !== true
+        || node?.parentElement !== plan.flowRoot
+        || pageCollapseRangeH2OOwned(node)
+        || !proof?.identity
+        || !pageCollapseRangeNodeCarriesIdentity(node, proof.identity)
+      ) return { ok: false, reason: 'atomic-plan-member-stale' };
+    }
+    const authority = readRenderedBoundaryAuthority(plan.pageNum);
+    const nextAuthority = readRenderedBoundaryAuthority(plan.pageNum + 1);
+    const startCapability = getRenderedPageBoundaryCapability(plan.pageNum);
+    const nextCapability = getRenderedPageBoundaryCapability(plan.pageNum + 1);
+    if (
+      !authority?.ok
+      || !nextAuthority?.ok
+      || authority.chatId !== plan.chatId
+      || authority.routeKey !== plan.routeKey
+      || authority.generation !== plan.generation
+      || authority.effectiveFingerprint !== plan.effectiveFingerprint
+      || nextAuthority.chatId !== plan.chatId
+      || nextAuthority.routeKey !== plan.routeKey
+      || nextAuthority.generation !== plan.generation
+      || nextAuthority.effectiveFingerprint !== plan.effectiveFingerprint
+      || authority.qId !== plan.startBoundaryQId
+      || nextAuthority.qId !== plan.nextBoundaryQId
+      || renderedBoundaryTransitionActive(authority.projection)
+      || renderedBoundaryTransitionActive(nextAuthority.projection)
+      || renderedBoundaryRecordStreaming(authority.record)
+      || renderedBoundaryRecordStreaming(nextAuthority.record)
+      || startCapability.supported !== true
+      || nextCapability.supported !== true
+      || startCapability.leaseCurrent !== true
+      || nextCapability.leaseCurrent !== true
+      || startCapability.graphFingerprint !== plan.graphFingerprint
+      || nextCapability.graphFingerprint !== plan.graphFingerprint
+      || startCapability.pageUnitOrderCurrent !== true
+      || nextCapability.pageUnitOrderCurrent !== true
+    ) return { ok: false, reason: 'atomic-plan-scope-stale' };
+    const model = buildTitleListPresentationPageModel();
+    const page = model?.pages?.find?.((entry) => entry.pageNo === plan.pageNum) || null;
+    const currentRows = Array.isArray(page?.turnRecords) ? page.turnRecords : [];
+    if (
+      model?.coherent !== true
+      || currentRows.length !== plan.expectedTitleRowCount
+      || currentRows.length !== plan.titleRows.length
+      || currentRows.some((member, index) => (
+        member?.id !== plan.titleRows[index]?.id
+        || Number(member?.turnNo || 0) !== Number(plan.titleRows[index]?.turnNo || 0)
+      ))
+    ) return { ok: false, reason: 'atomic-plan-title-rows-stale' };
+    return { ok: true, reason: null };
+  }
+
+  function releaseAtomicPageCollapseState(transaction = null, options = {}) {
+    if (!transaction) return { ok: true, status: 'inactive', mutations: 0 };
+    const num = transaction.pageNum;
+    const id = transaction.chatId;
+    let mutations = 0;
+    for (const node of transaction.stampedWrappers || []) {
+      if (node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) !== String(num)) continue;
+      try { node.removeAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN); mutations += 1; } catch {}
+    }
+    const container = transaction.titleListContainer || null;
+    if (container) {
+      try { restoreAllInlineTurns(container); } catch {}
+      try { releaseTitleStackBars(container); } catch {}
+      if (container?.isConnected || container?.parentElement) {
+        try { container.remove(); mutations += 1; } catch {}
+      }
+    }
+    const key = collapsedNativeRangeKey(id, num);
+    S.atomicPageCollapseTransactions.delete(key);
+    S.nativeRangeActivePages.delete(key);
+    S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+    setAtomicTitleListMemory(id, num, false);
+    setAtomicCollapsedPageMemory(id, num, false);
+    getTitleListStackStats(num, id).activeStackId = '';
+    syncTitleOnlyModeRootAttribute(id);
+    if (options?.clearDiagnostic !== false) {
+      S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
+      clearCollapseUnavailableFeedback(num);
+      if (options?.controlReadiness) {
+        applyCollapsedBoundaryControlState(num, id, options.controlReadiness);
+      }
+    }
+    return { ok: true, status: 'expanded', mutations };
+  }
+
+  function rollbackAtomicPageCollapse(transaction = null, viewportAnchor = null, reason = '') {
+    const released = releaseAtomicPageCollapseState(transaction, { clearDiagnostic: false });
+    if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
+    return {
+      ok: false,
+      status: 'atomic-collapse-rolled-back',
+      reason: String(reason || 'atomic-collapse-failed'),
+      mutations: released.mutations,
+    };
+  }
+
+  function validateCommittedAtomicPageCollapse(transaction = null) {
+    if (!transaction) return { ok: false, reason: 'transaction-missing' };
+    const planCheck = revalidateAtomicPageCollapsePlan(transaction);
+    if (!planCheck.ok) return planCheck;
+    if (
+      transaction.hostWrappers.some((node) => (
+        node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) !== String(transaction.pageNum)
+      ))
+      || transaction.endWrapper?.hasAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN)
+      || transaction.titleListContainer?.isConnected !== true
+      || transaction.titleListContainer?.parentElement !== transaction.flowRoot
+      || getSyntheticTitleListContainers(transaction.pageNum).filter(
+        (node) => node === transaction.titleListContainer
+      ).length !== 1
+    ) return { ok: false, reason: 'transaction-commit-incomplete' };
+    return { ok: true, reason: null };
+  }
+
+  function collapsePageWithRenderedBoundaries(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const key = collapsedNativeRangeKey(id, num);
+    if (S.atomicPageCollapseTransactions.has(key)) {
+      return { ok: true, status: 'already-collapsed', pageNum: num, chatId: id };
+    }
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return { ok: false, status: 'transaction-busy', pageNum: num, chatId: id };
+    }
+    S.atomicPageCollapseGuards.add(key);
+    let viewportAnchor = null;
+    let transaction = null;
+    try {
+      const evaluation = evaluatePageCollapseCapability(num, { includePlan: true });
+      const capability = evaluation.capability;
+      const plan = evaluation.plan;
+      if (!capability?.activationReady || !plan) {
+        return {
+          ok: false,
+          status: 'collapsed-exact-boundary-unavailable',
+          reason: capability?.reason || 'layout-incomplete',
+          capability,
+        };
+      }
+      plan.atomicRenderedBoundaryPlan = true;
+      const prepared = prepareDetachedPageTitleList(plan);
+      if (!prepared.ok) {
+        return { ok: false, status: prepared.status, capability };
+      }
+      viewportAnchor = captureCollapsedPageViewportAnchor(num);
+      if (!viewportAnchor) {
+        return { ok: false, status: 'viewport-anchor-unavailable', capability };
+      }
+      const finalCheck = revalidateAtomicPageCollapsePlan(plan);
+      if (!finalCheck.ok) {
+        return { ok: false, status: finalCheck.reason, capability };
+      }
+      transaction = {
+        atomicRenderedBoundaryPlan: true,
+        version: 1,
+        pageNum: plan.pageNum,
+        pageStartOrder: plan.pageStartOrder,
+        pageEndOrder: plan.pageEndOrder,
+        chatId: plan.chatId,
+        routeKey: plan.routeKey,
+        generation: plan.generation,
+        effectiveFingerprint: plan.effectiveFingerprint,
+        graphFingerprint: plan.graphFingerprint,
+        flowRoot: plan.flowRoot,
+        startBoundaryQId: plan.startBoundaryQId,
+        nextBoundaryQId: plan.nextBoundaryQId,
+        startWrapper: plan.startWrapper,
+        endWrapper: plan.endWrapper,
+        hostWrappers: plan.hostWrappers.slice(),
+        wrapperProofs: new Map(plan.wrapperProofs),
+        pageDivider: plan.pageDivider,
+        titleRows: plan.titleRows.slice(),
+        expectedTitleRowCount: plan.expectedTitleRowCount,
+        capabilityIdentity: plan.capabilityIdentity,
+        titleListContainer: prepared.container,
+        titleRowsPrepared: prepared.rows,
+        stampedWrappers: [],
+        source: String(options?.source || 'explicit-collapse'),
+      };
+      try {
+        plan.flowRoot.insertBefore(prepared.container, plan.pageDivider.nextSibling);
+        const stamped = applyCollapsedNativeRange(plan);
+        transaction.stampedWrappers = stamped.stamped || [];
+        if (!stamped.ok || stamped.hidden !== plan.hostWrappers.length) {
+          return rollbackAtomicPageCollapse(transaction, viewportAnchor, stamped.status);
+        }
+        S.atomicPageCollapseTransactions.set(key, transaction);
+        S.nativeRangeActivePages.add(key);
+        S.titleListStacksByKey.set(titleListStackRegistryKey(num, id), prepared.container);
+        setAtomicTitleListMemory(id, num, true);
+        setAtomicCollapsedPageMemory(id, num, true);
+        getTitleListStackStats(num, id).activeStackId = prepared.container.id;
+        syncTitleOnlyModeRootAttribute(id);
+        clearCollapsedBoundaryDiagnostic(num, id);
+        clearCollapseUnavailableFeedback(num);
+      } catch {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, 'atomic-collapse-write-failed');
+      }
+      if (!restoreCollapsedPageViewportAnchor(viewportAnchor, 4)) {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, 'viewport-restore-failed');
+      }
+      const committed = validateCommittedAtomicPageCollapse(transaction);
+      if (!committed.ok) {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, committed.reason);
+      }
+      return {
+        ok: true,
+        status: 'collapsed',
+        pageNum: num,
+        chatId: id,
+        hidden: transaction.hostWrappers.length,
+        rows: transaction.titleRowsPrepared.length,
+      };
+    } finally {
+      S.atomicPageCollapseGuards.delete(key);
+    }
+  }
+
+  function expandPageWithRenderedBoundaries(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const key = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+    if (!transaction) return { ok: true, status: 'inactive', pageNum: num, mutations: 0 };
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return { ok: false, status: 'transaction-busy', pageNum: num, chatId: id };
+    }
+    S.atomicPageCollapseGuards.add(key);
+    try {
+      const viewportAnchor = captureCollapsedPageViewportAnchor(num);
+      const explicitExpansion = /^chat-page-divider:/.test(String(options?.source || ''));
+      const released = releaseAtomicPageCollapseState(transaction, {
+        controlReadiness: explicitExpansion
+          ? { ready: true, reason: null, productReason: 'ready' }
+          : {
+            ready: false,
+            reason: 'collapsed-exact-boundary-unavailable',
+            productReason: 'page-loading',
+          },
+      });
+      if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
+      const residualStamps = transaction.hostWrappers.filter((node) => (
+        node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)
+      )).length;
+      const residualLists = getSyntheticTitleListContainers(num).filter((node) => node?.isConnected).length;
+      return {
+        ok: residualStamps === 0 && residualLists === 0,
+        status: residualStamps || residualLists ? 'expansion-incomplete' : 'expanded',
+        pageNum: num,
+        chatId: id,
+        mutations: released.mutations,
+        residualStamps,
+        residualLists,
+      };
+    } finally {
+      S.atomicPageCollapseGuards.delete(key);
+    }
+  }
+
+  function reconcileAtomicPageCollapseTransactions(reason = 'presentation-updated') {
+    const results = [];
+    for (const transaction of Array.from(S.atomicPageCollapseTransactions.values())) {
+      const current = validateCommittedAtomicPageCollapse(transaction);
+      if (current.ok) {
+        results.push({ ok: true, status: 'current', pageNum: transaction.pageNum });
+        continue;
+      }
+      results.push(expandPageWithRenderedBoundaries(transaction.pageNum, {
+        chatId: transaction.chatId,
+        source: `${reason}:${current.reason}`,
+      }));
+    }
+    return results;
+  }
+
+  function expandAllAtomicPageCollapses(reason = 'scope-change') {
+    const results = [];
+    for (const transaction of Array.from(S.atomicPageCollapseTransactions.values())) {
+      results.push(expandPageWithRenderedBoundaries(transaction.pageNum, {
+        chatId: transaction.chatId,
+        source: reason,
+      }));
+    }
+    return results;
   }
 
   function failClosedCollapsedTitleList(pageNum = 0, chatId = '', readiness = null, source = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
-    releaseCollapsedNativeRange(num);
-    S.nativeRangeActivePages.delete(collapsedNativeRangeKey(id, num));
-    localForgetTitleListPage(id, num);
-    try { syncSyntheticTitleList(num, id, false, { reason: 'collapsed-exact-boundary-unavailable' }); } catch {}
+    const key = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+    if (transaction) {
+      expandPageWithRenderedBoundaries(num, {
+        chatId: id,
+        source: `fail-closed:${String(source || '')}`,
+      });
+    } else {
+      releaseCollapsedNativeRange(num);
+      S.nativeRangeActivePages.delete(key);
+      localForgetTitleListPage(id, num);
+      try { syncSyntheticTitleList(num, id, false, { reason: 'collapsed-exact-boundary-unavailable' }); } catch {}
+    }
     const diagnostic = recordCollapsedBoundaryDiagnostic(num, readiness, source);
     if (explicitCollapseFeedbackSource(source)) {
       showCollapseUnavailableFeedback(num, id, readiness);
@@ -7523,9 +8015,17 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     const reason = String(opts?.reason || 'stack-sync').trim() || 'stack-sync';
+    const transactionKey = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(transactionKey) || null;
     if (!active) {
+      if (transaction) {
+        return expandPageWithRenderedBoundaries(num, {
+          chatId: id,
+          source: `synthetic-release:${reason}`,
+        });
+      }
       releaseCollapsedNativeRange(num);
-      S.nativeRangeActivePages.delete(collapsedNativeRangeKey(id, num));
+      S.nativeRangeActivePages.delete(transactionKey);
       let released = 0;
       for (const stale of getSyntheticTitleListContainers(num)) {
         restoreAllInlineTurns(stale);
@@ -7539,11 +8039,35 @@
       try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-release:${reason}`); } catch {}
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
-    const readiness = getCollapsedNativeBoundaryReadiness(num);
-    if (!readiness.ready) {
-      return failClosedCollapsedTitleList(num, id, readiness, reason);
+    if (transaction) {
+      const current = validateCommittedAtomicPageCollapse(transaction);
+      if (!current.ok) {
+        return expandPageWithRenderedBoundaries(num, {
+          chatId: id,
+          source: `synthetic-validate:${reason}:${current.reason}`,
+        });
+      }
+      return {
+        ok: true,
+        status: 'current',
+        pageNum: num,
+        rows: transaction.titleRowsPrepared.length,
+        stackId: transaction.titleListContainer.id,
+        reason,
+        titleOnly: {
+          ok: true,
+          status: 'collapsed',
+          hidden: transaction.hostWrappers.length,
+          mutations: 0,
+        },
+      };
     }
-    S.nativeRangeActivePages.add(collapsedNativeRangeKey(id, num));
+    const readiness = getCollapsedNativeBoundaryReadiness(num);
+    return failClosedCollapsedTitleList(num, id, readiness, reason);
+
+    /* Legacy detached-stack repair remains below for diagnostic extraction.
+       Stage 2C-2 live activation returns above and cannot enter it. */
+    S.nativeRangeActivePages.add(transactionKey);
     clearCollapsedBoundaryDiagnostic(num, id);
     const authority = readTitleListPresentationAuthority();
     const members = authority.members.filter((member) => Math.ceil(Number(member?.turnNo || 0) / 25) === num);
@@ -7777,7 +8301,7 @@
       }
     } catch {}
     stats.lastListSettledAt = Date.now();
-    const titleOnly = applyCollapsedNativeRange(readiness);
+    const titleOnly = { ok: false, status: 'legacy-title-list-path-retired' };
     if (!titleOnly.ok) {
       return failClosedCollapsedTitleList(num, id, readiness, `${reason}:native-range`);
     }
@@ -7808,26 +8332,9 @@
     }
     S.titleListRepairTimer = W.setTimeout(() => {
       S.titleListRepairTimer = 0;
-      const chatId = resolveChatId();
-      const activePages = readTitleListPages(chatId);
-      const requestedPages = S.titleListRepairAllPages
-        ? Array.from(activePages)
-        : Array.from(S.titleListRepairPages).filter((num) => activePages.has(num));
       S.titleListRepairPages.clear();
       S.titleListRepairAllPages = false;
-      if (!activePages.size) return;
-      for (const requested of Array.from(activePages)) {
-        const readiness = getCollapsedNativeBoundaryReadiness(requested);
-        if (!readiness.ready) {
-          failClosedCollapsedTitleList(requested, chatId, readiness, reason);
-          activePages.delete(requested);
-        }
-      }
-      if (!activePages.size) return;
-      reconcileTitleListPageHydration(chatId, { reason });
-      for (const requested of requestedPages) {
-        try { syncSyntheticTitleList(requested, chatId, true, { reason }); } catch {}
-      }
+      reconcileAtomicPageCollapseTransactions(`scheduled:${reason}`);
     }, Math.max(0, Number(delay || 0) || 0));
     return true;
   }
@@ -7836,15 +8343,19 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     if (!isTitleListActive(num, id)) return { ok: true, status: 'inactive', hidden: 0 };
-    const readiness = getCollapsedNativeBoundaryReadiness(num);
-    if (!readiness.ready) return failClosedCollapsedTitleList(num, id, readiness, 'reassert');
-    const projection = applyCollapsedNativeRange(readiness);
-    if (!projection.ok) return failClosedCollapsedTitleList(num, id, readiness, 'reassert:native-range');
+    const transaction = S.atomicPageCollapseTransactions.get(collapsedNativeRangeKey(id, num)) || null;
+    const current = validateCommittedAtomicPageCollapse(transaction);
+    if (!current.ok) {
+      return expandPageWithRenderedBoundaries(num, {
+        chatId: id,
+        source: `reassert:${current.reason}`,
+      });
+    }
     return {
       ok: true,
-      status: 'ok',
-      hidden: projection.hidden,
-      mutations: projection.mutations,
+      status: 'current',
+      hidden: transaction.hostWrappers.length,
+      mutations: 0,
     };
   }
 
@@ -7852,6 +8363,20 @@
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const active = isTitleListActive(num, id);
+    if (active) {
+      const current = reassertActiveTitleListFlowHidden(num, id);
+      return {
+        ok: current?.ok !== false,
+        status: current?.status || 'current',
+        chatId: id,
+        pageNum: num,
+        rows: S.atomicPageCollapseTransactions.get(
+          collapsedNativeRangeKey(id, num)
+        )?.titleRowsPrepared?.length || 0,
+        active: true,
+        atomic: true,
+      };
+    }
     const rows = getRows(num, id);
     const at = AT_PUBLIC();
     const um = UM_PUBLIC();
@@ -7961,55 +8486,29 @@
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const source = String(opts?.source || 'chat-pages-controller:title-list').trim() || 'chat-pages-controller:title-list';
-    if (!enabled) clearCollapsedBoundaryDiagnostic(num, id);
-    const viewportAnchor = enabled ? captureCollapsedPageViewportAnchor(num) : null;
-    const readiness = enabled ? getCollapsedNativeBoundaryReadiness(num) : null;
-    if (enabled && (!viewportAnchor || !readiness?.ready)) {
-      return failClosedCollapsedTitleList(
-        num,
-        id,
-        readiness || frozenCollapsedBoundaryResult({ pageNum: num, reason: 'viewport-anchor-unavailable' }),
-        source
-      );
+    if (enabled) {
+      // Only the explicit divider transaction may activate Stage 2C-2.
+      return {
+        ok: false,
+        status: 'explicit-atomic-activation-required',
+        chatId: id,
+        pageNum: num,
+        enabled: false,
+        source,
+      };
     }
-    const next = localReadTitleListPagesSet(id);
-    if (enabled) next.add(num); else next.delete(num);
-    // Stage activation in memory only. Durable title-list intent is published
-    // after the guarded DOM transaction and viewport restoration succeed.
-    if (enabled) S.titleListPagesByChat.set(id, new Set(next));
-    else localWriteTitleListPagesSet(id, Array.from(next));
-    const hydrationBefore = enabled
-      ? reconcileTitleListPageHydration(id, { reason: `${source}:activate` })
-      : null;
-    const visual = applyTitleListVisuals(num, {
-      chatId: id,
-      source,
-      animate: opts?.animate,
-      skipAnswerBatch: opts?.skipAnswerBatch === true,
-      boundaryReadiness: readiness,
-    });
-    if (enabled && visual?.ok === false) {
-      return failClosedCollapsedTitleList(num, id, readiness, `${source}:visual`);
+    const expanded = expandPageWithRenderedBoundaries(num, { chatId: id, source });
+    if (expanded.status !== 'inactive') return expanded;
+    releaseCollapsedNativeRange(num);
+    localForgetTitleListPage(id, num);
+    for (const stale of getSyntheticTitleListContainers(num)) {
+      try { restoreAllInlineTurns(stale); } catch {}
+      try { releaseTitleStackBars(stale); } catch {}
+      try { stale.remove(); } catch {}
     }
-    if (enabled && !restoreCollapsedPageViewportAnchor(viewportAnchor)) {
-      localForgetTitleListPage(id, num);
-      return failClosedCollapsedTitleList(num, id, readiness, `${source}:viewport-restore`);
-    }
-    if (enabled) localWriteTitleListPagesSet(id, Array.from(next));
-    const hydrationAfter = !enabled
-      ? reconcileTitleListPageHydration(id, { reason: `${source}:release` })
-      : null;
-    try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
-    scheduleDividerVisualRefresh(id, 0);
-    return {
-      ok: true,
-      status: 'ok',
-      chatId: id,
-      pageNum: num,
-      enabled: !!enabled,
-      visual,
-      hydration: hydrationBefore || hydrationAfter,
-    };
+    S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+    syncTitleOnlyModeRootAttribute(id);
+    return { ok: true, status: 'inactive', chatId: id, pageNum: num, enabled: false, source };
   }
 
   function applyPageCollapsedVisuals(pageNum = 0, opts = {}) {
@@ -8465,23 +8964,36 @@
 
   function refreshAll(chatId = '', opts = {}) {
     const requestedId = String(chatId || resolveChatId()).trim();
+    const atomicValidation = reconcileAtomicPageCollapseTransactions(
+      String(opts?.reason || 'refresh')
+    );
     const visitPolicy = maybeApplyVisitStatePolicy(requestedId, opts);
     if (visitPolicy.deferred) {
       scheduleDeferredVisitRefresh(opts?.reason || 'refresh-chat-id');
       return { ok: false, status: 'visit-reset-deferred', chatId: '', pages: [] };
     }
     const id = String(visitPolicy.chatId || requestedId).trim();
-    const hydration = reconcileTitleListPageHydration(id, {
-      reason: String(opts?.reason || 'refresh'),
-    });
+    const hydration = S.atomicPageCollapseTransactions.size
+      ? { ok: true, status: 'atomic-collapse-active' }
+      : reconcileTitleListPageHydration(id, {
+        reason: String(opts?.reason || 'refresh'),
+      });
     const pageNums = collectKnownPageNums(id);
     for (const pageNum of pageNums) {
-      applyPageVisuals(pageNum, { chatId: id, source: 'chat-pages-controller:refresh' });
+      if (isTitleListActive(pageNum, id)) reassertActiveTitleListFlowHidden(pageNum, id);
+      else applyPageVisuals(pageNum, { chatId: id, source: 'chat-pages-controller:refresh' });
     }
     sweepStalePageHiddenDomState(id);
     try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
     scheduleDividerVisualRefresh(id, 0);
-    return { ok: true, status: 'refreshed', chatId: id, pages: pageNums, hydration };
+    return {
+      ok: true,
+      status: 'refreshed',
+      chatId: id,
+      pages: pageNums,
+      hydration,
+      atomicValidation,
+    };
   }
 
   // Pure read-only membership for the debug snapshot: canonical turn-list
@@ -9996,48 +10508,12 @@
   }
 
   function syncActiveTitleListsNow(reason = 'presentation-updated') {
-    const chatId = resolveChatId();
-    const requestedPages = Array.from(readTitleListPages(chatId)).sort((a, b) => a - b);
-    const unavailable = [];
-    for (const pageNum of requestedPages) {
-      const readiness = getCollapsedNativeBoundaryReadiness(pageNum);
-      if (readiness.ready) continue;
-      unavailable.push(failClosedCollapsedTitleList(pageNum, chatId, readiness, reason));
-    }
-    const activePages = Array.from(readTitleListPages(chatId)).sort((a, b) => a - b);
-    const stampCleanup = reconcileTitleListFlowHiddenArtifacts(
-      buildTitleListPresentationPageModel(),
-      new Set(activePages)
-    );
-    const hydration = reconcileTitleListPageHydration(chatId, { reason });
-    if (!activePages.length) {
-      return {
-        ok: unavailable.length === 0,
-        status: unavailable.length ? 'collapsed-exact-boundary-unavailable' : 'inactive',
-        pages: 0,
-        results: unavailable,
-        hydration,
-        stampCleanup,
-      };
-    }
-    const results = [];
-    for (const pageNum of activePages) {
-      try {
-        results.push(syncSyntheticTitleList(pageNum, chatId, true, { reason }));
-      } catch (error) {
-        results.push({ ok: false, status: 'sync-failed', pageNum, error: String(error?.message || error) });
-      }
-    }
-    try { MM_CORE_PAGES()?.renderDividers?.(chatId); } catch {}
-    scheduleDividerVisualRefresh(chatId, 0);
+    const results = reconcileAtomicPageCollapseTransactions(reason);
     return {
-      ok: results.every((result) => result?.ok !== false) && hydration?.ok !== false,
-      status: 'synced',
-      pages: activePages.length,
+      ok: results.every((result) => result?.ok !== false),
+      status: results.length ? 'validated' : 'inactive',
+      pages: results.length,
       results,
-      hydration,
-      stampCleanup,
-      unavailable,
     };
   }
 
@@ -10151,97 +10627,21 @@
       const activationSource = String(
         ev?.h2oActivationSource || 'chat-page-divider:circle'
       ).trim() || 'chat-page-divider:circle';
-      const answerIds = getAuthoritativePageAnswerIds(pageNum, chatId);
-      // Deterministic mass action: resolve over the coherent effective-or-
-      // canonical page authority and the durable page intent, never the
-      // current hydrated title-bar subset.
-      const intentSummary = getResolvedPageTitleIntentSummary(pageNum, chatId);
-      const nextEnabled = !intentSummary.allCollapsed;
-      const readiness = nextEnabled ? getCollapsedNativeBoundaryReadiness(pageNum) : null;
-      if (nextEnabled && !readiness?.ready) {
-        handleCollapseUnavailableActivation(pageNum, chatId, readiness, activationSource);
+      const key = collapsedNativeRangeKey(chatId, pageNum);
+      if (S.atomicPageCollapseTransactions.has(key)) {
+        expandPageWithRenderedBoundaries(pageNum, {
+          chatId,
+          source: activationSource,
+        });
         return;
       }
-      if (!nextEnabled) {
-        writePageTitleIntent(pageNum, 'expanded', {
-          chatId,
-          answerIds,
-          source: activationSource,
-        });
-      }
-      // A newer page intent supersedes older per-row open projections. Return
-      // any inline Q+A wrappers to flow before the resolved batch runs; the
-      // stack sync below will then hide or release them deterministically.
-      resetOpenedTitleListRows(pageNum);
-      // For collapse, install title-only presentation first. The router and
-      // unmount engines may then reconcile in the background without exposing
-      // their per-answer cadence. Expansion keeps the inverse order: restore
-      // the engines first, then release the title-only projection.
-      if (nextEnabled) {
-        const titleListResult = setTitleListMode(pageNum, true, {
-          chatId,
-          source: 'chat-page-divider:dot',
-          animate: false,
-          skipAnswerBatch: true,
-        });
-        if (titleListResult?.ok === false) return;
-        writePageTitleIntent(pageNum, 'collapsed', {
-          chatId,
-          answerIds,
-          source: activationSource,
-        });
-      }
-      const routed = CM_ROUTER_API()?.routeChatPageDotClick?.({
-        pageNum,
+      const result = collapsePageWithRenderedBoundaries(pageNum, {
         chatId,
-        dividerEl: divider,
-        pageAnswerIds: answerIds,
-        nextEnabled,
+        source: activationSource,
       });
-
-      const routerHandledEngineBatch = routed?.handled === true
-        && routed?.backend === 'engine'
-        && /^batch-(collapse|expand)-page$/.test(String(routed?.action || ''));
-      const routerAttemptedEngineBatch = routed?.handled === false
-        && routed?.backend === 'engine'
-        && /^(batch-toggle-unavailable|batch-(collapse|expand)-failed)$/.test(String(routed?.action || ''));
-
-      if (routed?.handled === true) {
-        if (nextEnabled) reassertActiveTitleListFlowHidden(pageNum, chatId);
-        else {
-          setTitleListMode(pageNum, false, {
-            chatId,
-            source: 'chat-page-divider:dot',
-            animate: false,
-            skipAnswerBatch: routerHandledEngineBatch,
-          });
-        }
-        return;
-      }
-      // Legacy fallback: batch toggle via Title Bar API (normal answer rows only)
-      const at = AT_PUBLIC();
-      let legacyBatchApplied = false;
-      if (at?.setCollapsed) {
-        S.titleListBatchDepth += 1;
-        try {
-          for (const answerId of answerIds) {
-            try { at.setCollapsed(answerId, nextEnabled, { animate: false, source: 'chat-page-divider:dot' }); } catch {}
-          }
-          legacyBatchApplied = true;
-        } finally {
-          S.titleListBatchDepth = Math.max(0, S.titleListBatchDepth - 1);
-          if (!S.titleListBatchDepth) S.titleListBatchDirty = false;
-        }
-      }
-      if (nextEnabled) reassertActiveTitleListFlowHidden(pageNum, chatId);
-      else {
-        setTitleListMode(pageNum, false, {
-          chatId,
-          source: 'chat-page-divider:dot',
-          animate: false,
-          skipAnswerBatch: routerAttemptedEngineBatch || legacyBatchApplied,
-        });
-      }
+      if (result?.ok === true) return;
+      const readiness = getCollapsedNativeBoundaryReadiness(pageNum);
+      handleCollapseUnavailableActivation(pageNum, chatId, readiness, activationSource);
     };
 
     S.onDividerDotKeyDown = forwardCollapseControlKeyboardActivation;
@@ -10324,6 +10724,7 @@
     };
 
     S.onRouteChanged = () => {
+      expandAllAtomicPageCollapses('route-change');
       try {
         W.setTimeout(() => {
           const id = resolveVisitChatId();
@@ -10397,6 +10798,7 @@
 
   function unbind() {
     clearDividerClickTimer();
+    expandAllAtomicPageCollapses('unbind');
     try { document.removeEventListener('dblclick', S.onDividerDblClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerDotClick, true); } catch {}
@@ -10443,6 +10845,8 @@
     S.titleListHydrationRecoveryIdentity = '';
     S.titleListHydrationRecoveryIds.clear();
     S.nativeRangeActivePages.clear();
+    S.atomicPageCollapseTransactions.clear();
+    S.atomicPageCollapseGuards.clear();
     S.collapsedBoundaryDiagnostics.clear();
     try {
       for (const node of Array.from(document.querySelectorAll(`[${ATTR_COLLAPSE_FEEDBACK}]`))) {

@@ -117,6 +117,26 @@ class FakeElement {
       contains: (name) => String(this.className).split(/\s+/).includes(String(name)),
     };
   }
+  get id() {
+    return this.getAttribute('id') || '';
+  }
+  set id(value) {
+    this.setAttribute('id', value);
+  }
+  get firstChild() {
+    return this.children[0] || null;
+  }
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+  get nextSibling() {
+    const siblings = this.parentElement?.children || [];
+    const index = siblings.indexOf(this);
+    return index >= 0 ? (siblings[index + 1] || null) : null;
+  }
+  get nextElementSibling() {
+    return this.nextSibling;
+  }
   _mutation(name) {
     if (this.guard?.locked) {
       this.guard.safety.domMutations += 1;
@@ -149,6 +169,9 @@ class FakeElement {
     child.parentNode = null;
     child.isConnected = false;
     return child;
+  }
+  remove() {
+    if (this.parentElement) this.parentElement.removeChild(this);
   }
   replaceChild(next, current) {
     this._mutation('replaceChild');
@@ -202,6 +225,8 @@ class FakeElement {
     }
     return false;
   }
+  addEventListener() {}
+  removeEventListener() {}
 }
 
 function attrConditions(selector) {
@@ -495,6 +520,9 @@ function createHarness(options = {}) {
   const document = {
     querySelectorAll: (selector) => queryAll(thread, selector, true),
     querySelector: (selector) => queryAll(thread, selector, true)[0] || null,
+    createElement: (tag) => makeNode(tag, '', guard),
+    body: thread,
+    scrollingElement: null,
   };
   const S = {
     renderedPageBoundaryLeases: new Map(),
@@ -555,6 +583,7 @@ function createHarness(options = {}) {
     'pageCollapseRangeScopeCurrent',
     'clearStalePageCollapseRangeContinuity',
     'readPageCollapseRangeGraphRecords',
+    'buildPageCollapseRangePlan',
     'getPageCollapseRangeDiagnostics',
   ];
   const body = functionNames
@@ -562,7 +591,10 @@ function createHarness(options = {}) {
     .map((name) => extractFunction(productionSource, name))
     .join('\n');
   const rangeBody = productionSource.includes('function getPageCollapseRangeDiagnostics(')
-    ? rangeNames.map((name) => extractFunction(productionSource, name)).join('\n')
+    ? rangeNames
+      .filter((name) => productionSource.includes(`function ${name}(`))
+      .map((name) => extractFunction(productionSource, name))
+      .join('\n')
     : '';
   const api = vm.runInNewContext(`(() => {
     const document = injectedDocument;
@@ -582,6 +614,9 @@ function createHarness(options = {}) {
       range: typeof getPageCollapseRangeDiagnostics === 'function'
         ? getPageCollapseRangeDiagnostics
         : null,
+      plan: typeof buildPageCollapseRangePlan === 'function'
+        ? (pageNum) => buildPageCollapseRangePlan(pageNum, { includeDom: true })
+        : null,
     });
   })()`, context);
   guard.locked = true;
@@ -590,6 +625,7 @@ function createHarness(options = {}) {
     safety,
     guard,
     thread,
+    document,
     flow,
     start,
     end,
@@ -760,12 +796,14 @@ await fixture('repeated cold range diagnostic is mutation free', () => {
   assertSafety(h);
 });
 
-await fixture('cold range API remains read-only with no new production consumer', () => {
+await fixture('cold range API remains read-only with approved private-plan consumers', () => {
   const h = createHarness({ coldEnd: true });
   prime(h);
   equal(h.api.range(1).supported, true, 'diagnostic supported');
   const occurrences = Array.from(SOURCE.matchAll(/getPageCollapseRangeDiagnostics/g)).length;
   equal(occurrences, 2, 'definition plus public export only');
+  const planUses = Array.from(SOURCE.matchAll(/buildPageCollapseRangePlan/g)).length;
+  equal(planUses, 3, 'builder definition, public diagnostic, and capability consumer');
   assertSafety(h);
 });
 
@@ -1109,7 +1147,7 @@ await fixture('public range result is deeply frozen and DOM-free', () => {
   equal(containsDom(result), false, 'DOM free');
 });
 
-await fixture('range API has no production collapse readiness or title-list consumer', () => {
+await fixture('range API has only capability and transaction-plan consumers', () => {
   const occurrences = Array.from(SOURCE.matchAll(/getPageCollapseRangeDiagnostics/g)).length;
   equal(occurrences, 2, 'definition plus public export only');
   const consumers = [
@@ -1119,6 +1157,10 @@ await fixture('range API has no production collapse readiness or title-list cons
     'setTitleListMode',
   ].map((name) => extractFunction(SOURCE, name));
   ok(consumers.every((source) => !source.includes('getPageCollapseRangeDiagnostics')), 'no consumer');
+  const capability = extractFunction(SOURCE, 'evaluatePageCollapseCapability');
+  ok(capability.includes('buildPageCollapseRangePlan'), 'capability consumes the private plan');
+  const transaction = extractFunction(SOURCE, 'collapsePageWithRenderedBoundaries');
+  ok(transaction.includes('evaluatePageCollapseCapability'), 'transaction consumes the capability plan');
 });
 
 await fixture('all prohibited safety surfaces remain zero together', () => {

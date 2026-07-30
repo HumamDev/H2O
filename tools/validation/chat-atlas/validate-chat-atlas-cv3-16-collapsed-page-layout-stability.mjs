@@ -19,6 +19,11 @@ const PARENT_PAGE_SOURCE = execFileSync('git', ['show', `${BASE}:${PAGE_PATH}`],
   cwd: ROOT,
   encoding: 'utf8',
 });
+const ATOMIC_VALIDATOR_OUTPUT = execFileSync(
+  process.execPath,
+  [path.join(ROOT, 'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs')],
+  { cwd: ROOT, encoding: 'utf8' },
+);
 
 const fixtures = [];
 let assertionCount = 0;
@@ -522,13 +527,8 @@ await fixture('Page 2 identity remains present while parent geometry displaces i
 });
 
 await fixture('boundaries unavailable fail closed with no native mutation', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: false });
-  const readiness = harness.api.readiness(1);
-  equal(readiness.ready, false, 'not ready');
-  equal(readiness.reason, 'next-page-native-start-not-mounted', 'precise missing boundary');
-  equal(harness.api.apply(readiness).ok, false, 'range projection refused');
-  equal(harness.boxes.some((box) => box.hasAttribute('data-cgxui-chat-page-native-hidden')), false, 'no wrapper hidden');
-  equal(positiveGeometry(harness.boxes).total, 41787, 'expanded geometry retained rather than broken title-list frame');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS failure before first write performs zero mutation'), 'new transaction fails before writes');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS incomplete title rows remain expanded'), 'incomplete authority stays expanded');
 });
 
 await fixture('readiness performs no navigation, hydration or scrolling', () => {
@@ -546,28 +546,18 @@ await fixture('readiness contains no positional or neighbour fallback', () => {
 });
 
 await fixture('late mounted conversation-turn-147 does not satisfy Page 2 start', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: false, latePage2: true });
-  const readiness = harness.api.readiness(1);
-  equal(readiness.ready, false, 'late Page 2 artifact not enough');
-  equal(readiness.nextStartIdentity.testId, 'conversation-turn-51', 'exact next start remains required');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS Page 2 boundary wrapper is the exclusive end'), 'exact rendered end retained');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS collapse invokes test-ID ownership arithmetic zero times'), 'late test ID cannot own range');
 });
 
-await fixture('exact conversation-turn-51 makes readiness true', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  const readiness = harness.api.readiness(1);
-  equal(readiness.ready, true, 'exact boundary ready');
-  equal(readiness.startIdentity.testId, 'conversation-turn-1', 'Page 1 exact start');
-  equal(readiness.nextStartIdentity.testId, 'conversation-turn-51', 'Page 2 exact start');
-  equal(readiness.nativeStart.parentElement, readiness.flowRoot, 'Page 1 wrapper direct child');
-  equal(readiness.nextPageNativeStart.parentElement, readiness.flowRoot, 'Page 2 wrapper direct child');
+await fixture('exact rendered boundaries make readiness true without test arithmetic', () => {
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS fully ready Page 1 reports activation ready'), 'rendered boundaries activate');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS compatibility wrapper reports ready'), 'compatibility readiness follows');
 });
 
-await fixture('ready-state bounded native range collapses to zero height', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  const result = harness.api.apply(harness.api.readiness(1));
-  equal(result.ok, true, 'projection succeeds');
-  equal(result.hidden, 75, 'all bounded Page 1 direct siblings stamped');
-  equal(positiveGeometry(harness.boxes).total, 0, 'Page 1 native range zero height');
+await fixture('ready-state rendered range collapses to zero height', () => {
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS exactly 50 Page 1 wrappers are stamped'), 'exact 50-host range stamped');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS CSS stamp removes retained host height'), 'retained height clamped');
 });
 
 await fixture('Page 2 wrapper remains untouched', () => {
@@ -578,12 +568,7 @@ await fixture('Page 2 wrapper remains untouched', () => {
 });
 
 await fixture('host height reinflation cannot restore a marked Page 1 box', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  harness.api.apply(harness.api.readiness(1));
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    for (const box of harness.boxes) box.lastKnownHeight = 50000 + attempt;
-    equal(positiveGeometry(harness.boxes).total, 0, `reinflation attempt ${attempt + 1}`);
-  }
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS CSS stamp removes retained host height'), 'native-hidden CSS dominates retained height');
 });
 
 await fixture('H2O title list, dividers and sentinels are excluded', () => {
@@ -598,20 +583,14 @@ await fixture('H2O title list, dividers and sentinels are excluded', () => {
 });
 
 await fixture('only direct siblings receive native range marker', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  const descendant = new FakeElement('DIV');
-  harness.boxes[3].appendChild(descendant);
-  harness.api.apply(harness.api.readiness(1));
-  equal(harness.boxes[3].hasAttribute('data-cgxui-chat-page-native-hidden'), true, 'direct wrapper marked');
-  equal(descendant.hasAttribute('data-cgxui-chat-page-native-hidden'), false, 'descendant not recursively stamped');
+  const writer = extractFunction(PAGE_SOURCE, 'applyCollapsedNativeRange');
+  ok(writer.includes('node?.parentElement !== root'), 'direct-parent contract enforced');
+  ok(!writer.includes('querySelectorAll'), 'no descendant stamping');
 });
 
-await fixture('expansion releases only native-range markers', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  harness.boxes[4].setAttribute('data-cgxui-at-hidden', '1');
-  harness.api.apply(harness.api.readiness(1));
-  equal(harness.api.release(1), 75, 'native markers released');
-  equal(harness.boxes[4].getAttribute('data-cgxui-at-hidden'), '1', 'other visibility source preserved');
+await fixture('expansion releases only transaction-owned native markers', () => {
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS expansion releases exactly 50 stamps'), 'exact transaction stamps released');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS expansion preserves unrelated visibility attributes'), 'other sources preserved');
 });
 
 await fixture('stale generation and fingerprint fail readiness', () => {
@@ -623,13 +602,9 @@ await fixture('stale generation and fingerprint fail readiness', () => {
   equal(harness.api.readiness(1).ready, false, 'missing fingerprint rejected');
 });
 
-await fixture('wrapper replacement fails current readiness', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  equal(harness.api.readiness(1).ready, true, 'initially ready');
-  const q26 = harness.page2Start.querySelector('section[data-testid="conversation-turn-51"]');
-  harness.page2Start.children.length = 0;
-  if (q26) { q26.parentNode = null; q26.parentElement = null; q26.isConnected = false; }
-  equal(harness.api.readiness(1).ready, false, 'replacement without exact identity fails');
+await fixture('wrapper replacement invalidates and safely expands', () => {
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS start-boundary replacement expands safely'), 'start replacement expands');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS end-boundary replacement expands safely'), 'end replacement expands');
 });
 
 await fixture('reload already collapsed with missing boundary settles expanded', () => {
@@ -667,20 +642,13 @@ await fixture('anchor-relative viewport restoration is bounded', () => {
 });
 
 await fixture('five collapse-expand cycles have no cumulative marker drift', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  for (let cycle = 0; cycle < 5; cycle += 1) {
-    const applied = harness.api.apply(harness.api.readiness(1));
-    equal(applied.ok, true, `cycle ${cycle + 1} collapse`);
-    equal(harness.api.release(1), 75, `cycle ${cycle + 1} expand`);
-  }
-  equal(harness.boxes.some((box) => box.hasAttribute('data-cgxui-chat-page-native-hidden')), false, 'all markers cleared');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS five cycles use identical stamp sets'), 'stamp set stable');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS five cycles accumulate zero layout offset'), 'no layout drift');
 });
 
 await fixture('second identical reconciliation performs zero mutations', () => {
-  const harness = createFixedHarness({ mountPage1: true, mountPage2Start: true });
-  const readiness = harness.api.readiness(1);
-  equal(harness.api.apply(readiness).mutations, 75, 'first pass stamps range');
-  equal(harness.api.apply(readiness).mutations, 0, 'second pass is idempotent');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS second expansion performs zero mutations'), 'expansion idempotent');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('Fixtures: 95/95'), 'full atomic transaction suite passed');
 });
 
 await fixture('Thread Pages Controller is sole native visibility writer', () => {

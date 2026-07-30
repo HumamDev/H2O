@@ -247,12 +247,15 @@ function makeHarness({ reason = 'next-page-native-start-not-mounted' } = {}) {
     S: {
       collapsedBoundaryDiagnostics: new Map(),
       nativeRangeActivePages: new Set(),
+      atomicPageCollapseTransactions: new Map(),
+      atomicPageCollapseGuards: new Set(),
       onDividerDotClick: null,
     },
     resolveChatId: () => 'chat-1',
     collapsedNativeRangeKey: (chatId, pageNum) => `${String(chatId || 'chat-1')}:${Number(pageNum || 0)}`,
     isTitleListActive: () => sandbox.__titleListActive === true,
     releaseCollapsedNativeRange: () => { counters.nativeRelease += 1; return 0; },
+    expandPageWithRenderedBoundaries: () => ({ ok: true, status: 'inactive', mutations: 0 }),
     localForgetTitleListPage: () => { counters.titleListForget += 1; },
     syncSyntheticTitleList: (_page, _chat, active) => {
       if (active) counters.titleListCreate += 1;
@@ -395,8 +398,9 @@ await fixture('blocked visual contract is non-color and accessible', () => {
   equal(h.page1Dot.getAttribute('data-h2o-collapse-control-state'), 'blocked', 'blocked state');
   equal(h.page1Dot.getAttribute('role'), 'button', 'button role');
   equal(h.page1Dot.getAttribute('tabindex'), '0', 'keyboard focusable');
-  ok(h.page1Dot.getAttribute('title').includes(h.readiness.reason), 'technical title');
-  ok(h.page1Dot.getAttribute('aria-label').includes(h.readiness.reason), 'technical aria label');
+  equal(h.page1Dot.getAttribute('title'), 'Collapse currently unavailable', 'stable product title');
+  ok(!h.page1Dot.getAttribute('aria-label').includes(h.readiness.reason), 'technical reason excluded from aria label');
+  equal(h.page1.getAttribute('data-h2o-collapse-reason'), h.readiness.reason, 'technical reason retained on divider diagnostic');
   equal(h.page1Dot.hasAttribute('aria-disabled'), false, 'feedback activation remains enabled');
   ok(SKIN_SOURCE.includes('cursor: not-allowed !important'), 'blocked cursor');
   ok(SKIN_SOURCE.includes('content: \"!\"'), 'non-color indicator');
