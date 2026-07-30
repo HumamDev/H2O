@@ -125,6 +125,7 @@
     titleListHydrationRecoveryIds: new Set(),
     nativeRangeActivePages: new Set(),
     collapsedBoundaryDiagnostics: new Map(),
+    renderedPageBoundaryLeases: new Map(),
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
@@ -2669,6 +2670,641 @@
       coherent: count > 0 && pages.length === pageCount,
       reason: count > 0 ? 'complete' : 'authority-empty',
     };
+  }
+
+  const RENDERED_BOUNDARY_SENTINEL_ATTR = 'data-h2o-chat-page-boundary';
+  const RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR = 'data-h2o-chat-page-boundary-page';
+  const RENDERED_BOUNDARY_SENTINEL_KIND_ATTR = 'data-h2o-chat-page-boundary-kind';
+
+  function renderedBoundaryStatusIdentity(status = null) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.anchorQId || ''),
+      Math.max(0, Number(status?.pathLength || 0) || 0),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function frozenRenderedPageBoundaryCapability(raw = {}) {
+    return Object.freeze({
+      version: 1,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      qId: String(raw.qId || '') || null,
+      primaryAId: String(raw.primaryAId || '') || null,
+      source: raw.source == null ? null : String(raw.source || ''),
+      flowRootConnected: raw.flowRootConnected === true,
+      boundarySectionMounted: raw.boundarySectionMounted === true,
+      boundaryWrapperConnected: raw.boundaryWrapperConnected === true,
+      boundaryDomRole: String(raw.boundaryDomRole || '') || null,
+      boundaryTestId: String(raw.boundaryTestId || '') || null,
+      boundaryDirectFlowIndex: Number.isInteger(raw.boundaryDirectFlowIndex)
+        ? raw.boundaryDirectFlowIndex
+        : -1,
+      primaryAnswerMounted: raw.primaryAnswerMounted === true,
+      primaryAnswerDomRole: String(raw.primaryAnswerDomRole || '') || null,
+      primaryAnswerTestId: String(raw.primaryAnswerTestId || '') || null,
+      primaryAnswerDirectFlowIndex: Number.isInteger(raw.primaryAnswerDirectFlowIndex)
+        ? raw.primaryAnswerDirectFlowIndex
+        : -1,
+      dividerConnected: raw.dividerConnected === true,
+      dividerBeforeBoundary: raw.dividerBeforeBoundary === true,
+      startSentinelConnected: raw.startSentinelConnected === true,
+      startSentinelBeforeBoundary: raw.startSentinelBeforeBoundary === true,
+      interveningNonH2ONodeCount: Math.max(
+        0,
+        Number(raw.interveningNonH2ONodeCount || 0) || 0,
+      ),
+      leaseCurrent: raw.leaseCurrent === true,
+    });
+  }
+
+  function renderedBoundaryDirectChildUnder(root = null, node = null) {
+    if (!root || !node || root === node) return null;
+    let current = node;
+    while (current?.parentElement && current.parentElement !== root) {
+      current = current.parentElement;
+    }
+    return current?.parentElement === root ? current : null;
+  }
+
+  function renderedBoundarySectionsById(identity = '') {
+    const id = String(identity || '').trim();
+    if (!id) return [];
+    let sections = [];
+    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
+    return sections.filter((section) => (
+      String(section?.getAttribute?.('data-turn-id') || '').trim() === id
+    ));
+  }
+
+  function renderedBoundaryThreadDivider(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let dividers = [];
+    try {
+      dividers = Array.from(document.querySelectorAll(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"],`
+        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      )).filter((divider) => (
+        divider?.isConnected === true
+        && !divider.closest?.('#cgx-mm-root, .cgxui-mm-page-divider')
+      ));
+    } catch {}
+    return dividers.length === 1 ? dividers[0] : null;
+  }
+
+  function renderedBoundaryStartSentinel(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let sentinels = [];
+    try {
+      sentinels = Array.from(document.querySelectorAll(
+        `[${RENDERED_BOUNDARY_SENTINEL_ATTR}="page-${String(num)}-start"]`
+      )).filter((sentinel) => (
+        sentinel?.isConnected === true
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR) || '') === String(num)
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || '') === 'start'
+      ));
+    } catch {}
+    return sentinels.length === 1 ? sentinels[0] : null;
+  }
+
+  function renderedBoundaryOrderingNodeAllowed(node = null, divider = null) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === divider) return true;
+    try {
+      return !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_ATTR)
+        && !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR)
+        && ['start', 'end'].includes(String(
+          node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || ''
+        ));
+    } catch {
+      return false;
+    }
+  }
+
+  function renderedBoundaryLayoutProof(flowRoot = null, wrapper = null, divider = null, sentinel = null) {
+    const children = Array.from(flowRoot?.children || []);
+    const boundaryIndex = children.indexOf(wrapper);
+    const dividerIndex = children.indexOf(divider);
+    const sentinelIndex = children.indexOf(sentinel);
+    const dividerBeforeBoundary = dividerIndex >= 0
+      && boundaryIndex >= 0
+      && dividerIndex < boundaryIndex;
+    const startSentinelBeforeBoundary = sentinelIndex >= 0
+      && boundaryIndex >= 0
+      && sentinelIndex < boundaryIndex;
+    const intervening = startSentinelBeforeBoundary
+      ? children.slice(sentinelIndex + 1, boundaryIndex)
+      : [];
+    const interveningNonH2ONodeCount = intervening.filter(
+      (node) => !renderedBoundaryOrderingNodeAllowed(node, divider)
+    ).length;
+    return {
+      boundaryIndex,
+      dividerBeforeBoundary,
+      startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount,
+    };
+  }
+
+  function renderedBoundaryTransitionActive(projection = null) {
+    return projection?.selectedPathConfirmationPending === true
+      || projection?.selectedPathConfirmationLeaseActive === true
+      || projection?.selectedPathRequestLeaseActive === true;
+  }
+
+  function renderedBoundaryRecordStreaming(record = null) {
+    return record?.completeIndexPending === true
+      || record?.livePendingStreaming === true;
+  }
+
+  function readRenderedBoundaryAuthority(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const rt = TURN_RUNTIME();
+    if (
+      !rt
+      || typeof rt.getEffectivePresentationStatus !== 'function'
+      || typeof rt.getEffectivePresentationIndex !== 'function'
+    ) return { ok: false, reason: 'authority-unavailable', pageNum: num };
+    let before = null;
+    let after = null;
+    let index = null;
+    let projection = null;
+    try {
+      before = rt.getEffectivePresentationStatus() || null;
+      index = rt.getEffectivePresentationIndex() || null;
+      projection = rt.getCompleteTurnIndexProjectionStatus?.() || null;
+      after = rt.getEffectivePresentationStatus() || null;
+    } catch {
+      return { ok: false, reason: 'authority-unavailable', pageNum: num };
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    const generation = Math.max(0, Number(before?.generation || 0) || 0);
+    const effectiveFingerprint = String(index?.sourceFingerprint || '');
+    const canonicalFingerprint = String(before?.canonicalFingerprint || '');
+    const chatId = String(before?.chatId || '');
+    const routeKey = String(before?.routeKey || '');
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    const coherent = (
+      count > 0
+      && generation > 0
+      && !!effectiveFingerprint
+      && !!chatId
+      && !!routeKey
+      && index?.complete === true
+      && turns.length === count
+      && renderedBoundaryStatusIdentity(before) === renderedBoundaryStatusIdentity(after)
+      && turns.every((record, offset) => (
+        Math.max(0, Number(record?.order || record?.turnNo || 0) || 0) === offset + 1
+        && !!String(record?.qId || '').trim()
+      ))
+      && projection?.authoritative === true
+      && String(projection?.chatId || '') === chatId
+      && Math.max(0, Number(projection?.routeGeneration || 0) || 0) === generation
+      && String(projection?.fingerprint || '') === canonicalFingerprint
+    );
+    if (!coherent) {
+      return {
+        ok: false,
+        reason: 'authority-incoherent',
+        pageNum: num,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    const pageStartOrder = ((num - 1) * TITLE_LIST_PAGE_SIZE) + 1;
+    if (pageStartOrder > count) {
+      return {
+        ok: false,
+        reason: 'page-not-present',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    const record = turns[pageStartOrder - 1] || null;
+    const qId = String(record?.qId || '').trim();
+    if (!qId) {
+      return {
+        ok: false,
+        reason: 'boundary-qid-unavailable',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    let exact = null;
+    try { exact = rt.getEffectiveTurnRecordByQId?.(qId) || null; } catch {}
+    if (
+      !exact
+      || Math.max(0, Number(exact?.order || exact?.turnNo || 0) || 0) !== pageStartOrder
+      || String(exact?.qId || '') !== qId
+    ) {
+      return {
+        ok: false,
+        reason: 'authority-incoherent',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    return {
+      ok: true,
+      pageNum: num,
+      pageStartOrder,
+      count,
+      generation,
+      effectiveFingerprint,
+      chatId,
+      routeKey,
+      projection,
+      statusIdentity: renderedBoundaryStatusIdentity(before),
+      record: exact,
+      qId,
+      primaryAId: String(exact?.primaryAId || '').trim(),
+    };
+  }
+
+  function renderedBoundaryLeaseScopeCurrent(lease = null, authority = null, graphFingerprint = '') {
+    return !!lease
+      && lease.pageNum === authority?.pageNum
+      && lease.pageStartOrder === authority?.pageStartOrder
+      && lease.chatId === authority?.chatId
+      && lease.routeKey === authority?.routeKey
+      && lease.generation === authority?.generation
+      && lease.effectiveFingerprint === authority?.effectiveFingerprint
+      && lease.graphFingerprint === graphFingerprint
+      && lease.qId === authority?.qId
+      && lease.primaryAId === authority?.primaryAId;
+  }
+
+  function getRenderedPageBoundaryCapability(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const authority = readRenderedBoundaryAuthority(num);
+    const base = {
+      pageNum: num,
+      pageStartOrder: authority?.pageStartOrder || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1),
+      chatId: authority?.chatId || '',
+      routeKey: authority?.routeKey || '',
+      generation: authority?.generation || 0,
+      effectiveFingerprint: authority?.effectiveFingerprint || '',
+      qId: authority?.qId || '',
+      primaryAId: authority?.primaryAId || '',
+    };
+    const fail = (reason, extra = {}) => frozenRenderedPageBoundaryCapability({
+      ...base,
+      supported: false,
+      reason,
+      ...extra,
+    });
+    if (!authority?.ok) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(authority?.reason || 'authority-unavailable');
+    }
+    const rt = TURN_RUNTIME();
+    let graph = null;
+    try {
+      graph = rt?.getGraphIdentityDiagnostics?.([
+        authority.qId,
+        authority.primaryAId,
+      ].filter(Boolean)) || null;
+    } catch {}
+    if (!graph?.available) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(
+        graph?.reason === 'graph-stale'
+          ? 'graph-stale'
+          : (graph?.reason === 'authority-unavailable'
+            ? 'authority-unavailable'
+            : 'graph-unavailable'),
+        { graphFingerprint: graph?.scope?.fingerprint || '' },
+      );
+    }
+    const graphFingerprint = String(graph?.scope?.fingerprint || '');
+    base.graphFingerprint = graphFingerprint;
+    if (
+      String(graph?.scope?.chatId || '') !== authority.chatId
+      || String(graph?.scope?.routeKey || '') !== authority.routeKey
+      || Math.max(0, Number(graph?.scope?.generation || 0) || 0) !== authority.generation
+      || !graphFingerprint
+    ) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('graph-stale');
+    }
+    const graphQ = graph.records?.find((record) => (
+      record?.requestedId === authority.qId
+    )) || null;
+    if (graphQ?.found !== true || graphQ?.productUser !== true) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('rendered-boundary-head-unproven');
+    }
+    if (num === 1) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return frozenRenderedPageBoundaryCapability({
+        ...base,
+        supported: true,
+        reason: 'active-thread-start',
+        source: null,
+      });
+    }
+    if (renderedBoundaryTransitionActive(authority.projection)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    if (renderedBoundaryRecordStreaming(authority.record)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('streaming-active');
+    }
+
+    const lease = S.renderedPageBoundaryLeases.get(num) || null;
+    if (lease && !renderedBoundaryLeaseScopeCurrent(lease, authority, graphFingerprint)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    const divider = renderedBoundaryThreadDivider(num);
+    if (!divider) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('divider-unavailable');
+    }
+    const startSentinel = renderedBoundaryStartSentinel(num);
+    if (!startSentinel) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('sentinel-unavailable', { dividerConnected: true });
+    }
+    const flowRoot = divider.parentElement || null;
+    let activeThread = null;
+    try { activeThread = document.querySelector?.('#thread') || null; } catch {}
+    if (
+      !flowRoot
+      || flowRoot !== startSentinel.parentElement
+      || flowRoot?.isConnected !== true
+      || activeThread?.isConnected !== true
+      || !activeThread.contains?.(flowRoot)
+    ) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('flow-root-unavailable', {
+        dividerConnected: divider?.isConnected === true,
+        startSentinelConnected: startSentinel?.isConnected === true,
+      });
+    }
+
+    const boundarySections = renderedBoundarySectionsById(authority.qId);
+    if (boundarySections.length > 1) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-section-ambiguous', {
+        flowRootConnected: true,
+        dividerConnected: true,
+        startSentinelConnected: true,
+      });
+    }
+    if (!boundarySections.length) {
+      if (!lease) {
+        return fail('rendered-boundary-head-unproven', {
+          flowRootConnected: true,
+          dividerConnected: true,
+          startSentinelConnected: true,
+        });
+      }
+      if (
+        lease.flowRoot !== flowRoot
+        || lease.boundaryWrapper?.isConnected !== true
+        || lease.boundaryWrapper?.parentElement !== flowRoot
+        || lease.divider !== divider
+        || lease.startSentinel !== startSentinel
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('captured-wrapper-replaced', {
+          flowRootConnected: true,
+          dividerConnected: true,
+          startSentinelConnected: true,
+        });
+      }
+      const layout = renderedBoundaryLayoutProof(
+        flowRoot,
+        lease.boundaryWrapper,
+        divider,
+        startSentinel,
+      );
+      if (!layout.dividerBeforeBoundary || !layout.startSentinelBeforeBoundary) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-order-invalid', {
+          flowRootConnected: true,
+          boundaryWrapperConnected: true,
+          dividerConnected: true,
+          startSentinelConnected: true,
+          ...layout,
+        });
+      }
+      if (layout.interveningNonH2ONodeCount) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-intervening-host-node', {
+          flowRootConnected: true,
+          boundaryWrapperConnected: true,
+          dividerConnected: true,
+          startSentinelConnected: true,
+          ...layout,
+        });
+      }
+      let currentStatus = null;
+      let currentGraph = null;
+      try {
+        currentStatus = rt.getEffectivePresentationStatus?.() || null;
+        currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+      } catch {}
+      if (
+        renderedBoundaryStatusIdentity(currentStatus) !== authority.statusIdentity
+        || String(currentGraph?.scope?.fingerprint || '') !== graphFingerprint
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-scope-changed');
+      }
+      return frozenRenderedPageBoundaryCapability({
+        ...base,
+        supported: true,
+        reason: null,
+        source: 'same-generation-captured-wrapper',
+        flowRootConnected: true,
+        boundarySectionMounted: false,
+        boundaryWrapperConnected: true,
+        boundaryDirectFlowIndex: layout.boundaryIndex,
+        dividerConnected: true,
+        dividerBeforeBoundary: true,
+        startSentinelConnected: true,
+        startSentinelBeforeBoundary: true,
+        interveningNonH2ONodeCount: 0,
+        leaseCurrent: true,
+      });
+    }
+
+    const boundarySection = boundarySections[0];
+    const boundaryDomRole = getTurnHostRole(boundarySection);
+    if (boundaryDomRole !== 'user') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('rendered-boundary-head-unproven', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryDomRole,
+        dividerConnected: true,
+        startSentinelConnected: true,
+      });
+    }
+    const boundaryWrapper = renderedBoundaryDirectChildUnder(flowRoot, boundarySection);
+    if (!boundaryWrapper) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-wrapper-unavailable', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryDomRole,
+        dividerConnected: true,
+        startSentinelConnected: true,
+      });
+    }
+    if (lease && (
+      lease.flowRoot !== flowRoot
+      || lease.boundaryWrapper !== boundaryWrapper
+      || lease.divider !== divider
+      || lease.startSentinel !== startSentinel
+    )) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('captured-wrapper-replaced', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
+        boundaryDomRole,
+        dividerConnected: true,
+        startSentinelConnected: true,
+      });
+    }
+    const layout = renderedBoundaryLayoutProof(flowRoot, boundaryWrapper, divider, startSentinel);
+    if (!layout.dividerBeforeBoundary || !layout.startSentinelBeforeBoundary) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-order-invalid', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
+        boundaryDomRole,
+        dividerConnected: true,
+        startSentinelConnected: true,
+        ...layout,
+      });
+    }
+    if (layout.interveningNonH2ONodeCount) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-intervening-host-node', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryWrapperConnected: true,
+        boundaryDomRole,
+        dividerConnected: true,
+        startSentinelConnected: true,
+        ...layout,
+      });
+    }
+
+    let primaryAnswerSection = null;
+    let primaryAnswerDomRole = '';
+    let primaryAnswerWrapper = null;
+    const answerSections = renderedBoundarySectionsById(authority.primaryAId);
+    if (answerSections.length > 1) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-section-ambiguous');
+    }
+    if (answerSections.length === 1) {
+      primaryAnswerSection = answerSections[0];
+      primaryAnswerDomRole = getTurnHostRole(primaryAnswerSection);
+      primaryAnswerWrapper = renderedBoundaryDirectChildUnder(flowRoot, primaryAnswerSection);
+      const answerIndex = Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper);
+      if (
+        primaryAnswerDomRole !== 'assistant'
+        || !primaryAnswerWrapper
+        || answerIndex <= layout.boundaryIndex
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-order-invalid');
+      }
+    }
+
+    let finalStatus = null;
+    let finalGraph = null;
+    try {
+      finalStatus = rt.getEffectivePresentationStatus?.() || null;
+      finalGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+    } catch {}
+    if (
+      renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
+      || String(finalGraph?.scope?.fingerprint || '') !== graphFingerprint
+    ) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    if (!lease) {
+      S.renderedPageBoundaryLeases.set(num, Object.freeze({
+        pageNum: num,
+        pageStartOrder: authority.pageStartOrder,
+        chatId: authority.chatId,
+        routeKey: authority.routeKey,
+        generation: authority.generation,
+        effectiveFingerprint: authority.effectiveFingerprint,
+        graphFingerprint,
+        qId: authority.qId,
+        primaryAId: authority.primaryAId,
+        flowRoot,
+        boundaryWrapper,
+        divider,
+        startSentinel,
+      }));
+    }
+    return frozenRenderedPageBoundaryCapability({
+      ...base,
+      supported: true,
+      reason: null,
+      source: 'exact-mounted-product-qid',
+      flowRootConnected: true,
+      boundarySectionMounted: true,
+      boundaryWrapperConnected: true,
+      boundaryDomRole,
+      boundaryTestId: boundarySection.getAttribute?.('data-testid') || '',
+      boundaryDirectFlowIndex: layout.boundaryIndex,
+      primaryAnswerMounted: !!primaryAnswerSection,
+      primaryAnswerDomRole,
+      primaryAnswerTestId: primaryAnswerSection?.getAttribute?.('data-testid') || '',
+      primaryAnswerDirectFlowIndex: primaryAnswerWrapper
+        ? Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper)
+        : -1,
+      dividerConnected: true,
+      dividerBeforeBoundary: true,
+      startSentinelConnected: true,
+      startSentinelBeforeBoundary: true,
+      interveningNonH2ONodeCount: 0,
+      leaseCurrent: true,
+    });
   }
 
   function collapsedNativeRangeKey(chatId = '', pageNum = 0) {
@@ -8800,6 +9436,7 @@
       isTitleListActive,
       resolveNativeTurnSlotSequence,
       getCollapsedNativeBoundaryReadiness,
+      getRenderedPageBoundaryCapability,
       getCollapsedBoundaryDiagnostic,
       setTitleListMode,
       setPageCollapsed,
