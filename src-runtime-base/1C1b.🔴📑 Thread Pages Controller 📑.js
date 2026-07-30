@@ -2692,7 +2692,7 @@
 
   function frozenRenderedPageBoundaryCapability(raw = {}) {
     return Object.freeze({
-      version: 1,
+      version: 2,
       supported: raw.supported === true,
       reason: raw.reason == null ? null : String(raw.reason || ''),
       pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
@@ -2727,6 +2727,12 @@
         0,
         Number(raw.interveningNonH2ONodeCount || 0) || 0,
       ),
+      boundaryIdentityCurrent: raw.boundaryIdentityCurrent === true,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      pageUnitOrderReason: raw.pageUnitOrderReason == null
+        ? null
+        : String(raw.pageUnitOrderReason || ''),
+      placementRepairRequired: raw.placementRepairRequired === true,
       leaseCurrent: raw.leaseCurrent === true,
     });
   }
@@ -2879,6 +2885,52 @@
       dividerBeforeBoundary,
       startSentinelBeforeBoundary,
       interveningNonH2ONodeCount,
+    };
+  }
+
+  function renderedBoundaryWrapperCarriesIdentity(wrapper = null, identity = '') {
+    const id = String(identity || '').trim();
+    return !!wrapper
+      && !!id
+      && String(wrapper.getAttribute?.('data-turn-id-container') || '').trim() === id;
+  }
+
+  function renderedBoundaryPageUnitPlacement(flowRoot = null, wrapper = null, pageNum = 0) {
+    const divider = renderedBoundaryThreadDivider(pageNum);
+    const startSentinel = renderedBoundaryStartSentinel(pageNum);
+    const dividerConnected = divider?.isConnected === true;
+    const startSentinelConnected = startSentinel?.isConnected === true;
+    const dividerInFlow = dividerConnected && divider?.parentElement === flowRoot;
+    const sentinelInFlow = startSentinelConnected && startSentinel?.parentElement === flowRoot;
+    const layout = renderedBoundaryLayoutProof(
+      flowRoot,
+      wrapper,
+      dividerInFlow ? divider : null,
+      sentinelInFlow ? startSentinel : null,
+    );
+    let pageUnitOrderReason = null;
+    if (!dividerConnected) pageUnitOrderReason = 'divider-unavailable';
+    else if (!startSentinelConnected) pageUnitOrderReason = 'sentinel-unavailable';
+    else if (!dividerInFlow || !sentinelInFlow) pageUnitOrderReason = 'page-unit-order-incomplete';
+    else if (!layout.startSentinelBeforeBoundary) {
+      pageUnitOrderReason = 'sentinel-after-boundary';
+    } else if (!layout.dividerBeforeBoundary) {
+      pageUnitOrderReason = 'divider-after-boundary';
+    } else if (layout.interveningNonH2ONodeCount) {
+      pageUnitOrderReason = 'intervening-host-node';
+    }
+    const pageUnitOrderCurrent = pageUnitOrderReason == null;
+    return {
+      divider,
+      startSentinel,
+      dividerConnected,
+      dividerBeforeBoundary: layout.dividerBeforeBoundary,
+      startSentinelConnected,
+      startSentinelBeforeBoundary: layout.startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount: layout.interveningNonH2ONodeCount,
+      boundaryIndex: layout.boundaryIndex,
+      pageUnitOrderCurrent,
+      pageUnitOrderReason,
     };
   }
 
@@ -3045,6 +3097,8 @@
       ...base,
       supported: false,
       reason,
+      boundaryIdentityCurrent: false,
+      leaseCurrent: false,
       ...extra,
     });
     if (!authority?.ok) {
@@ -3095,6 +3149,9 @@
         supported: true,
         reason: 'active-thread-start',
         source: null,
+        boundaryIdentityCurrent: true,
+        pageUnitOrderCurrent: true,
+        placementRepairRequired: false,
       });
     }
     if (renderedBoundaryTransitionActive(authority.projection)) {
@@ -3111,30 +3168,32 @@
       S.renderedPageBoundaryLeases.delete(num);
       return fail('boundary-scope-changed');
     }
-    const divider = renderedBoundaryThreadDivider(num);
-    if (!divider) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('divider-unavailable');
+    const currentDivider = renderedBoundaryThreadDivider(num);
+    const currentStartSentinel = renderedBoundaryStartSentinel(num);
+    if (!lease && !currentDivider) return fail('divider-unavailable');
+    if (!lease && !currentStartSentinel) {
+      return fail('sentinel-unavailable', {
+        dividerConnected: currentDivider?.isConnected === true,
+      });
     }
-    const startSentinel = renderedBoundaryStartSentinel(num);
-    if (!startSentinel) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('sentinel-unavailable', { dividerConnected: true });
-    }
-    const flowRoot = divider.parentElement || null;
+    const flowRoot = lease?.flowRoot || currentDivider?.parentElement || null;
     let activeThread = null;
     try { activeThread = document.querySelector?.('#thread') || null; } catch {}
     if (
       !flowRoot
-      || flowRoot !== startSentinel.parentElement
       || flowRoot?.isConnected !== true
       || activeThread?.isConnected !== true
       || !activeThread.contains?.(flowRoot)
+      || (!lease && (
+        flowRoot !== currentStartSentinel?.parentElement
+        || currentDivider?.parentElement !== flowRoot
+      ))
     ) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('flow-root-unavailable', {
-        dividerConnected: divider?.isConnected === true,
-        startSentinelConnected: startSentinel?.isConnected === true,
+      if (lease) S.renderedPageBoundaryLeases.delete(num);
+      return fail(lease ? 'captured-wrapper-replaced' : 'flow-root-unavailable', {
+        flowRootConnected: flowRoot?.isConnected === true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
       });
     }
 
@@ -3143,58 +3202,37 @@
       S.renderedPageBoundaryLeases.delete(num);
       return fail('boundary-section-ambiguous', {
         flowRootConnected: true,
-        dividerConnected: true,
-        startSentinelConnected: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
       });
     }
     if (boundarySurface.reason === 'identity-unmounted') {
       if (!lease) {
         return fail('rendered-boundary-head-unproven', {
           flowRootConnected: true,
-          dividerConnected: true,
-          startSentinelConnected: true,
+          dividerConnected: currentDivider?.isConnected === true,
+          startSentinelConnected: currentStartSentinel?.isConnected === true,
         });
       }
       if (
         lease.flowRoot !== flowRoot
         || lease.boundaryWrapper?.isConnected !== true
         || lease.boundaryWrapper?.parentElement !== flowRoot
-        || lease.divider !== divider
-        || lease.startSentinel !== startSentinel
+        || !renderedBoundaryWrapperCarriesIdentity(lease.boundaryWrapper, authority.qId)
       ) {
         S.renderedPageBoundaryLeases.delete(num);
         return fail('captured-wrapper-replaced', {
           flowRootConnected: true,
-          dividerConnected: true,
-          startSentinelConnected: true,
+          boundaryWrapperConnected: lease.boundaryWrapper?.isConnected === true,
+          dividerConnected: currentDivider?.isConnected === true,
+          startSentinelConnected: currentStartSentinel?.isConnected === true,
         });
       }
-      const layout = renderedBoundaryLayoutProof(
+      const placement = renderedBoundaryPageUnitPlacement(
         flowRoot,
         lease.boundaryWrapper,
-        divider,
-        startSentinel,
+        num,
       );
-      if (!layout.dividerBeforeBoundary || !layout.startSentinelBeforeBoundary) {
-        S.renderedPageBoundaryLeases.delete(num);
-        return fail('boundary-order-invalid', {
-          flowRootConnected: true,
-          boundaryWrapperConnected: true,
-          dividerConnected: true,
-          startSentinelConnected: true,
-          ...layout,
-        });
-      }
-      if (layout.interveningNonH2ONodeCount) {
-        S.renderedPageBoundaryLeases.delete(num);
-        return fail('boundary-intervening-host-node', {
-          flowRootConnected: true,
-          boundaryWrapperConnected: true,
-          dividerConnected: true,
-          startSentinelConnected: true,
-          ...layout,
-        });
-      }
       let currentStatus = null;
       let currentGraph = null;
       try {
@@ -3213,15 +3251,19 @@
         supported: true,
         reason: null,
         source: 'same-generation-captured-wrapper',
+        boundaryIdentityCurrent: true,
         flowRootConnected: true,
         boundarySectionMounted: false,
         boundaryWrapperConnected: true,
-        boundaryDirectFlowIndex: layout.boundaryIndex,
-        dividerConnected: true,
-        dividerBeforeBoundary: true,
-        startSentinelConnected: true,
-        startSentinelBeforeBoundary: true,
-        interveningNonH2ONodeCount: 0,
+        boundaryDirectFlowIndex: placement.boundaryIndex,
+        dividerConnected: placement.dividerConnected,
+        dividerBeforeBoundary: placement.dividerBeforeBoundary,
+        startSentinelConnected: placement.startSentinelConnected,
+        startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+        interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+        pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+        pageUnitOrderReason: placement.pageUnitOrderReason,
+        placementRepairRequired: !placement.pageUnitOrderCurrent,
         leaseCurrent: true,
       });
     }
@@ -3231,8 +3273,8 @@
       return fail(lease ? 'captured-wrapper-replaced' : 'boundary-wrapper-unavailable', {
         flowRootConnected: true,
         boundarySectionMounted: true,
-        dividerConnected: true,
-        startSentinelConnected: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
       });
     }
     const boundaryDomRole = boundarySurface.renderedRole;
@@ -3242,16 +3284,14 @@
         flowRootConnected: true,
         boundarySectionMounted: true,
         boundaryDomRole,
-        dividerConnected: true,
-        startSentinelConnected: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
       });
     }
     const boundaryWrapper = boundarySurface.directFlowWrapper;
     if (lease && (
       lease.flowRoot !== flowRoot
       || lease.boundaryWrapper !== boundaryWrapper
-      || lease.divider !== divider
-      || lease.startSentinel !== startSentinel
     )) {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('captured-wrapper-replaced', {
@@ -3259,35 +3299,11 @@
         boundarySectionMounted: true,
         boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
         boundaryDomRole,
-        dividerConnected: true,
-        startSentinelConnected: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
       });
     }
-    const layout = renderedBoundaryLayoutProof(flowRoot, boundaryWrapper, divider, startSentinel);
-    if (!layout.dividerBeforeBoundary || !layout.startSentinelBeforeBoundary) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('boundary-order-invalid', {
-        flowRootConnected: true,
-        boundarySectionMounted: true,
-        boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
-        boundaryDomRole,
-        dividerConnected: true,
-        startSentinelConnected: true,
-        ...layout,
-      });
-    }
-    if (layout.interveningNonH2ONodeCount) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('boundary-intervening-host-node', {
-        flowRootConnected: true,
-        boundarySectionMounted: true,
-        boundaryWrapperConnected: true,
-        boundaryDomRole,
-        dividerConnected: true,
-        startSentinelConnected: true,
-        ...layout,
-      });
-    }
+    const placement = renderedBoundaryPageUnitPlacement(flowRoot, boundaryWrapper, num);
 
     let primaryAnswerSurface = null;
     let primaryAnswerDomRole = '';
@@ -3305,7 +3321,7 @@
       if (
         primaryAnswerDomRole !== 'assistant'
         || !primaryAnswerWrapper
-        || answerIndex <= layout.boundaryIndex
+        || answerIndex <= placement.boundaryIndex
       ) {
         S.renderedPageBoundaryLeases.delete(num);
         return fail('boundary-order-invalid');
@@ -3341,8 +3357,6 @@
         primaryAId: authority.primaryAId,
         flowRoot,
         boundaryWrapper,
-        divider,
-        startSentinel,
       }));
     }
     return frozenRenderedPageBoundaryCapability({
@@ -3350,23 +3364,27 @@
       supported: true,
       reason: null,
       source: 'exact-mounted-product-qid',
+      boundaryIdentityCurrent: true,
       flowRootConnected: true,
       boundarySectionMounted: true,
       boundaryWrapperConnected: true,
       boundaryDomRole,
       boundaryTestId: boundarySurface.testId,
-      boundaryDirectFlowIndex: layout.boundaryIndex,
+      boundaryDirectFlowIndex: placement.boundaryIndex,
       primaryAnswerMounted: !!primaryAnswerSurface,
       primaryAnswerDomRole,
       primaryAnswerTestId: primaryAnswerSurface?.testId || '',
       primaryAnswerDirectFlowIndex: primaryAnswerWrapper
         ? Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper)
         : -1,
-      dividerConnected: true,
-      dividerBeforeBoundary: true,
-      startSentinelConnected: true,
-      startSentinelBeforeBoundary: true,
-      interveningNonH2ONodeCount: 0,
+      dividerConnected: placement.dividerConnected,
+      dividerBeforeBoundary: placement.dividerBeforeBoundary,
+      startSentinelConnected: placement.startSentinelConnected,
+      startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+      pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+      pageUnitOrderReason: placement.pageUnitOrderReason,
+      placementRepairRequired: !placement.pageUnitOrderCurrent,
       leaseCurrent: true,
     });
   }

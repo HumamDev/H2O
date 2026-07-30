@@ -15,6 +15,12 @@ const PARENT_PAGE_SOURCE = execFileSync('git', ['show', `${PARENT_COMMIT}:${PAGE
   cwd: ROOT,
   encoding: 'utf8',
 });
+const LEASE_PARENT_COMMIT = 'bf540a0da0c41f30643e929d08362f178d1c6f5a';
+const LEASE_PARENT_PAGE_SOURCE = execFileSync(
+  'git',
+  ['show', `${LEASE_PARENT_COMMIT}:${PAGE_PATH}`],
+  { cwd: ROOT, encoding: 'utf8' },
+);
 const fixtures = [];
 let assertions = 0;
 
@@ -189,6 +195,10 @@ class FakeElement {
   setAttribute(name, value) {
     this._mutation('setAttribute');
     this.attrs.set(String(name), String(value));
+  }
+  removeAttribute(name) {
+    this._mutation('removeAttribute');
+    this.attrs.delete(String(name));
   }
   getAttribute(name) {
     return this.attrs.has(String(name)) ? this.attrs.get(String(name)) : null;
@@ -395,6 +405,7 @@ function createHarness(options = {}) {
     boundaryTestId,
     guard,
   );
+  boundaryWrapper.setAttribute('data-turn-id-container', boundaryIdentity);
   if (options.boundaryMounted !== false) flow.appendChild(boundaryWrapper);
   let answerWrapper = null;
   let answerSurface = null;
@@ -607,6 +618,12 @@ function createHarness(options = {}) {
     ${extractFunction(productionSource, 'renderedBoundaryStartSentinel')}
     ${extractFunction(productionSource, 'renderedBoundaryOrderingNodeAllowed')}
     ${extractFunction(productionSource, 'renderedBoundaryLayoutProof')}
+    ${productionSource.includes('function renderedBoundaryWrapperCarriesIdentity(')
+      ? extractFunction(productionSource, 'renderedBoundaryWrapperCarriesIdentity')
+      : ''}
+    ${productionSource.includes('function renderedBoundaryPageUnitPlacement(')
+      ? extractFunction(productionSource, 'renderedBoundaryPageUnitPlacement')
+      : ''}
     ${extractFunction(productionSource, 'renderedBoundaryTransitionActive')}
     ${extractFunction(productionSource, 'renderedBoundaryRecordStreaming')}
     ${extractFunction(productionSource, 'readRenderedBoundaryAuthority')}
@@ -714,9 +731,11 @@ await fixture('parent nested live surface is rejected before correction', () => 
 
 await fixture('corrected nested qId and primary-answer surfaces are supported', () => {
   const result = createHarness({ nestedBoundary: true, nestedAnswer: true }).api.get(2);
+  equal(result.version, 2, 'version two semantics');
   equal(result.supported, true, 'nested boundary supported');
   equal(result.reason, null, 'no failure reason');
   equal(result.source, 'exact-mounted-product-qid', 'exact mounted source');
+  equal(result.boundaryIdentityCurrent, true, 'boundary identity current');
   equal(result.boundarySectionMounted, true, 'boundary identity mounted');
   equal(result.boundaryWrapperConnected, true, 'boundary wrapper connected');
   equal(result.boundaryDomRole, 'user', 'boundary DOM role');
@@ -727,6 +746,9 @@ await fixture('corrected nested qId and primary-answer surfaces are supported', 
   equal(result.dividerBeforeBoundary, true, 'divider precedes boundary');
   equal(result.startSentinelBeforeBoundary, true, 'sentinel precedes boundary');
   equal(result.interveningNonH2ONodeCount, 0, 'no host node between');
+  equal(result.pageUnitOrderCurrent, true, 'marker order current');
+  equal(result.pageUnitOrderReason, null, 'no marker-order reason');
+  equal(result.placementRepairRequired, false, 'no placement repair');
   equal(result.leaseCurrent, true, 'lease current');
 });
 
@@ -831,6 +853,88 @@ await fixture('nested identity unmount retains the exact wrapper lease', () => {
   equal(result.boundaryWrapperConnected, true, 'exact wrapper retained');
 });
 
+await fixture('parent marker drift discards an otherwise exact retained lease', () => {
+  const h = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    productionSource: LEASE_PARENT_PAGE_SOURCE,
+  });
+  withUnlocked(h, () => {
+    h.boundaryWrapper.setAttribute('data-turn-id-container', Q26);
+  });
+  const initial = h.api.get(2);
+  equal(initial.supported, true, 'parent captures mounted boundary');
+  equal(initial.source, 'exact-mounted-product-qid', 'parent mounted source');
+  equal(initial.leaseCurrent, true, 'parent lease initially current');
+  const capturedLease = h.leases.get(2);
+  ok(capturedLease?.boundaryWrapper === h.boundaryWrapper, 'exact wrapper captured');
+  withUnlocked(h, () => {
+    h.boundarySurface.nativeTestHost.removeChild(h.boundarySurface.identityCarrier);
+    h.answerSurface.nativeTestHost.removeChild(h.answerSurface.identityCarrier);
+    const later = wrapperWithNestedIdentity(
+      'later-page-two-user',
+      'user',
+      'conversation-turn-74',
+      h.guard,
+    ).wrapper;
+    h.flow.insertBefore(later, h.next);
+    h.flow.insertBefore(h.sentinel, later);
+    h.flow.insertBefore(h.divider, later);
+  });
+  ok(h.boundaryWrapper.isConnected, 'retained wrapper remains connected');
+  ok(h.boundaryWrapper.parentElement === h.flow, 'retained wrapper stays in flow root');
+  equal(
+    h.boundaryWrapper.getAttribute('data-turn-id-container'),
+    Q26,
+    'retained wrapper preserves exact qId',
+  );
+  const drifted = h.api.get(2);
+  equal(drifted.supported, false, 'parent rejects placement drift');
+  equal(drifted.reason, 'boundary-order-invalid', 'parent order failure');
+  equal(drifted.boundarySectionMounted, false, 'nested qId is unmounted');
+  equal(drifted.boundaryWrapperConnected, true, 'exact wrapper remains connected');
+  equal(drifted.leaseCurrent, false, 'parent no longer reports current lease');
+  equal(h.leases.has(2), false, 'parent deletes the identity lease');
+});
+
+await fixture('corrected marker drift retains exact identity and reports placement repair', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  const initial = h.api.get(2);
+  equal(initial.supported, true, 'initial boundary supported');
+  const capturedLease = h.leases.get(2);
+  withUnlocked(h, () => {
+    h.boundarySurface.nativeTestHost.removeChild(h.boundarySurface.identityCarrier);
+    h.answerSurface.nativeTestHost.removeChild(h.answerSurface.identityCarrier);
+    const later = wrapperWithNestedIdentity(
+      'later-page-two-user',
+      'user',
+      'conversation-turn-74',
+      h.guard,
+    ).wrapper;
+    h.flow.insertBefore(later, h.next);
+    h.flow.insertBefore(h.sentinel, later);
+    h.flow.insertBefore(h.divider, later);
+  });
+  h.leases.resetCounts();
+  const result = h.api.get(2);
+  equal(result.version, 2, 'version two');
+  equal(result.supported, true, 'identity remains supported');
+  equal(result.reason, null, 'identity has no failure reason');
+  equal(result.source, 'same-generation-captured-wrapper', 'captured source');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.boundarySectionMounted, false, 'section unmounted');
+  equal(result.boundaryWrapperConnected, true, 'wrapper connected');
+  equal(result.dividerBeforeBoundary, false, 'divider drift reported');
+  equal(result.startSentinelBeforeBoundary, false, 'sentinel drift reported');
+  equal(result.pageUnitOrderCurrent, false, 'placement not current');
+  equal(result.pageUnitOrderReason, 'sentinel-after-boundary', 'precise placement reason');
+  equal(result.placementRepairRequired, true, 'repair reported');
+  equal(result.leaseCurrent, true, 'lease remains current');
+  ok(h.leases.get(2) === capturedLease, 'same private lease retained');
+  equal(h.leases.writes, 0, 'no lease replacement');
+  equal(h.leases.deletes, 0, 'no lease deletion');
+});
+
 await fixture('valid nested wrapper replacement invalidates the lease', () => {
   const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
   equal(h.api.get(2).supported, true, 'initial nested capture');
@@ -921,6 +1025,10 @@ await fixture('section unmount with retained wrapper uses captured lease', () =>
   equal(result.supported, true, 'lease supported');
   equal(result.source, 'same-generation-captured-wrapper', 'lease source');
   equal(result.boundarySectionMounted, false, 'section absent');
+  equal(result.boundaryIdentityCurrent, true, 'identity remains current');
+  equal(result.pageUnitOrderCurrent, true, 'marker order remains current');
+  equal(result.placementRepairRequired, false, 'repair not required');
+  equal(result.leaseCurrent, true, 'lease current');
 });
 
 await fixture('wrapper replacement invalidates the lease', () => {
@@ -934,13 +1042,18 @@ await fixture('wrapper replacement invalidates the lease', () => {
   const result = h.api.get(2);
   equal(result.supported, false, 'invalid');
   equal(result.reason, 'captured-wrapper-replaced', 'reason');
+  equal(result.boundaryIdentityCurrent, false, 'identity invalid');
+  equal(result.leaseCurrent, false, 'lease invalid');
 });
 
 await fixture('wrapper disconnection invalidates the lease', () => {
   const h = createHarness();
   h.api.get(2);
   withUnlocked(h, () => h.flow.removeChild(h.boundaryWrapper));
-  equal(h.api.get(2).reason, 'captured-wrapper-replaced', 'disconnected');
+  const result = h.api.get(2);
+  equal(result.reason, 'captured-wrapper-replaced', 'disconnected');
+  equal(result.boundaryIdentityCurrent, false, 'identity invalid');
+  equal(result.leaseCurrent, false, 'lease invalid');
 });
 
 await fixture('flow-root replacement invalidates the lease', () => {
@@ -951,30 +1064,171 @@ await fixture('flow-root replacement invalidates the lease', () => {
     for (const child of [...h.flow.children]) replacement.appendChild(child);
     h.thread.replaceChild(replacement, h.flow);
   });
-  equal(h.api.get(2).reason, 'captured-wrapper-replaced', 'flow replaced');
+  const result = h.api.get(2);
+  equal(result.reason, 'captured-wrapper-replaced', 'flow replaced');
+  equal(result.boundaryIdentityCurrent, false, 'identity invalid');
+  equal(result.leaseCurrent, false, 'lease invalid');
 });
 
-await fixture('divider disconnection invalidates support', () => {
+await fixture('divider absence preserves identity and reports placement repair', () => {
   const h = createHarness();
   h.api.get(2);
   withUnlocked(h, () => h.flow.removeChild(h.divider));
-  equal(h.api.get(2).reason, 'divider-unavailable', 'divider required');
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity remains supported');
+  equal(result.boundaryIdentityCurrent, true, 'identity remains current');
+  equal(result.dividerConnected, false, 'divider absent');
+  equal(result.pageUnitOrderCurrent, false, 'placement not current');
+  equal(result.pageUnitOrderReason, 'divider-unavailable', 'placement reason');
+  equal(result.placementRepairRequired, true, 'repair required');
+  equal(result.leaseCurrent, true, 'lease retained');
 });
 
-await fixture('sentinel disconnection invalidates support', () => {
+await fixture('sentinel absence preserves identity and reports placement repair', () => {
   const h = createHarness();
   h.api.get(2);
   withUnlocked(h, () => h.flow.removeChild(h.sentinel));
-  equal(h.api.get(2).reason, 'sentinel-unavailable', 'sentinel required');
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity remains supported');
+  equal(result.boundaryIdentityCurrent, true, 'identity remains current');
+  equal(result.startSentinelConnected, false, 'sentinel absent');
+  equal(result.pageUnitOrderCurrent, false, 'placement not current');
+  equal(result.pageUnitOrderReason, 'sentinel-unavailable', 'placement reason');
+  equal(result.placementRepairRequired, true, 'repair required');
+  equal(result.leaseCurrent, true, 'lease retained');
 });
 
-await fixture('intervening host node invalidates support', () => {
+await fixture('intervening host node reports placement repair without losing identity', () => {
   const h = createHarness();
+  h.api.get(2);
   const host = node('DIV', 'host-intervening', h.guard);
   withUnlocked(h, () => h.flow.insertBefore(host, h.boundaryWrapper));
   const result = h.api.get(2);
-  equal(result.reason, 'boundary-intervening-host-node', 'host rejected');
+  equal(result.supported, true, 'identity remains supported');
+  equal(result.reason, null, 'identity has no failure reason');
+  equal(result.pageUnitOrderCurrent, false, 'placement not current');
+  equal(result.pageUnitOrderReason, 'intervening-host-node', 'placement reason');
+  equal(result.placementRepairRequired, true, 'repair required');
   equal(result.interveningNonH2ONodeCount, 1, 'one host node');
+  equal(result.leaseCurrent, true, 'lease retained');
+});
+
+await fixture('divider moved after boundary does not invalidate identity', () => {
+  const h = createHarness();
+  h.api.get(2);
+  withUnlocked(h, () => h.flow.insertBefore(h.divider, h.answerWrapper));
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity supported');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.dividerBeforeBoundary, false, 'divider drift reported');
+  equal(result.startSentinelBeforeBoundary, true, 'sentinel remains current');
+  equal(result.pageUnitOrderReason, 'divider-after-boundary', 'divider reason');
+  equal(result.placementRepairRequired, true, 'repair required');
+});
+
+await fixture('start sentinel moved after boundary does not invalidate identity', () => {
+  const h = createHarness();
+  h.api.get(2);
+  withUnlocked(h, () => h.flow.insertBefore(h.sentinel, h.answerWrapper));
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity supported');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.dividerBeforeBoundary, true, 'divider remains current');
+  equal(result.startSentinelBeforeBoundary, false, 'sentinel drift reported');
+  equal(result.pageUnitOrderReason, 'sentinel-after-boundary', 'sentinel reason');
+  equal(result.placementRepairRequired, true, 'repair required');
+});
+
+await fixture('both page-unit markers may drift without invalidating identity', () => {
+  const h = createHarness();
+  h.api.get(2);
+  withUnlocked(h, () => {
+    h.flow.insertBefore(h.sentinel, h.answerWrapper);
+    h.flow.insertBefore(h.divider, h.answerWrapper);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity supported');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.dividerBeforeBoundary, false, 'divider drift');
+  equal(result.startSentinelBeforeBoundary, false, 'sentinel drift');
+  equal(result.pageUnitOrderCurrent, false, 'placement stale');
+  equal(result.pageUnitOrderReason, 'sentinel-after-boundary', 'deterministic priority');
+  equal(result.leaseCurrent, true, 'lease current');
+});
+
+await fixture('marker DOM replacement does not replace the boundary identity lease', () => {
+  const h = createHarness();
+  h.api.get(2);
+  const lease = h.leases.get(2);
+  withUnlocked(h, () => {
+    const sentinel = node('SPAN', 'h2o-page-start', h.guard);
+    sentinel.setAttribute('data-h2o-chat-page-boundary', 'page-2-start');
+    sentinel.setAttribute('data-h2o-chat-page-boundary-page', '2');
+    sentinel.setAttribute('data-h2o-chat-page-boundary-kind', 'start');
+    sentinel.setAttribute('data-cgxui-owner', 'mnmp');
+    const divider = node('DIV', 'cgxui-chat-page-divider', h.guard);
+    divider.setAttribute('data-page-num', '2');
+    divider.setAttribute('data-cgxui-owner', 'mnmp');
+    h.flow.replaceChild(sentinel, h.sentinel);
+    h.flow.replaceChild(divider, h.divider);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, true, 'identity supported');
+  equal(result.pageUnitOrderCurrent, true, 'replacement markers ordered');
+  equal(result.placementRepairRequired, false, 'no repair needed');
+  ok(h.leases.get(2) === lease, 'same identity lease');
+});
+
+await fixture('boundary wrapper ceasing to be a direct child invalidates identity', () => {
+  const h = createHarness({ nestedBoundary: true });
+  h.api.get(2);
+  withUnlocked(h, () => {
+    const container = node('DIV', 'host-nested-container', h.guard);
+    h.flow.insertBefore(container, h.boundaryWrapper);
+    container.appendChild(h.boundaryWrapper);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, false, 'identity invalid');
+  equal(result.boundaryIdentityCurrent, false, 'identity not current');
+  equal(result.reason, 'captured-wrapper-replaced', 'direct-child failure');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('retained wrapper losing exact qId container identity invalidates lease', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  h.api.get(2);
+  withUnlocked(h, () => {
+    h.boundarySurface.nativeTestHost.removeChild(h.boundarySurface.identityCarrier);
+    h.boundaryWrapper.removeAttribute('data-turn-id-container');
+  });
+  const result = h.api.get(2);
+  equal(result.supported, false, 'identity invalid');
+  equal(result.boundaryIdentityCurrent, false, 'identity not current');
+  equal(result.reason, 'captured-wrapper-replaced', 'lost carrier reason');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('external page-unit repair restores order using the same retained lease', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  h.api.get(2);
+  const lease = h.leases.get(2);
+  withUnlocked(h, () => {
+    h.boundarySurface.nativeTestHost.removeChild(h.boundarySurface.identityCarrier);
+    h.flow.insertBefore(h.sentinel, h.answerWrapper);
+    h.flow.insertBefore(h.divider, h.answerWrapper);
+  });
+  equal(h.api.get(2).pageUnitOrderCurrent, false, 'drift observed');
+  withUnlocked(h, () => {
+    h.flow.insertBefore(h.sentinel, h.boundaryWrapper);
+    h.flow.insertBefore(h.divider, h.boundaryWrapper);
+  });
+  const repaired = h.api.get(2);
+  equal(repaired.supported, true, 'identity remains supported');
+  equal(repaired.source, 'same-generation-captured-wrapper', 'same captured source');
+  equal(repaired.pageUnitOrderCurrent, true, 'placement current again');
+  equal(repaired.pageUnitOrderReason, null, 'repair reason cleared');
+  equal(repaired.placementRepairRequired, false, 'repair no longer required');
+  ok(h.leases.get(2) === lease, 'same retained lease used');
 });
 
 await fixture('explicit H2O ordering sentinel is allowed between boundary nodes', () => {
