@@ -10767,11 +10767,105 @@ function unbindChatPageDividerBridge() {
     return 0;
   }
 
+  function resolveRenderedBoundaryWrapperFromCapability(flowRoot = null, capability = null) {
+    if (capability?.supported !== true) {
+      return { ok: false, reason: 'rendered-boundary-capability-unsupported' };
+    }
+    if (capability.boundaryIdentityCurrent !== true || capability.leaseCurrent !== true) {
+      return { ok: false, reason: 'rendered-boundary-capability-not-current' };
+    }
+    const qId = String(capability.qId || '').trim();
+    if (!qId) return { ok: false, reason: 'rendered-boundary-qid-unavailable' };
+    if (!flowRoot?.isConnected) {
+      return { ok: false, reason: 'rendered-boundary-flow-root-unavailable' };
+    }
+    const matches = [];
+    try {
+      for (const child of Array.from(flowRoot.children || [])) {
+        if (!child?.isConnected || child.parentElement !== flowRoot) continue;
+        if (String(child.getAttribute?.('data-turn-id-container') || '').trim() === qId) {
+          matches.push(child);
+        }
+      }
+    } catch {
+      return { ok: false, reason: 'rendered-boundary-wrapper-unavailable' };
+    }
+    if (matches.length > 1) {
+      return { ok: false, reason: 'rendered-boundary-wrapper-ambiguous' };
+    }
+    if (matches.length !== 1) {
+      return { ok: false, reason: 'rendered-boundary-wrapper-unavailable' };
+    }
+    return { ok: true, wrapper: matches[0], qId };
+  }
+
+  function resolveRenderedBoundaryPageUnitAnchor(model = null, page = null) {
+    if (!model || !page || Number(page.pageNum || 0) <= 1) {
+      return { applicable: false };
+    }
+    const api = getChatPagesControllerApi();
+    if (typeof api?.getRenderedPageBoundaryCapability !== 'function') {
+      return { applicable: false };
+    }
+    let capability = null;
+    try {
+      capability = api.getRenderedPageBoundaryCapability(page.pageNum) || null;
+    } catch {
+      return { applicable: false };
+    }
+    if (capability?.supported !== true) return { applicable: false, capability };
+    if (capability.boundaryIdentityCurrent !== true || capability.leaseCurrent !== true) {
+      return {
+        applicable: true,
+        ok: false,
+        allowHydration: false,
+        reason: 'rendered-boundary-capability-not-current',
+        capability,
+      };
+    }
+    const state = getChatPageUnitState();
+    const startSentinel = state.sentinels.get(`${String(page.pageNum)}:start`) || null;
+    const divider = state.pendingDividers.get(page.pageNum) || null;
+    const flowRoot = (
+      (startSentinel?.isConnected && startSentinel.parentElement)
+      || (divider?.isConnected && divider.parentElement)
+      || page.nativeStartSlot?.parentElement
+      || page.exactStart?.wrapper?.parentElement
+      || page.titleListRoot?.parentElement
+      || page.earliest?.wrapper?.parentElement
+      || page.latest?.wrapper?.parentElement
+      || null
+    );
+    const resolved = resolveRenderedBoundaryWrapperFromCapability(flowRoot, capability);
+    if (!resolved.ok) {
+      return {
+        applicable: true,
+        ok: false,
+        allowHydration: false,
+        reason: resolved.reason,
+        capability,
+      };
+    }
+    return {
+      applicable: true,
+      ok: true,
+      parent: flowRoot,
+      before: resolved.wrapper,
+      mode: 'rendered-boundary-authority',
+      evidence: resolved.wrapper,
+      capability,
+    };
+  }
+
   function resolveChatPageBoundaryAnchor(model = null, page = null, kind = 'start') {
     if (!model || !page) return { ok: false, reason: 'page-unit-anchor-unavailable' };
     const isStart = kind !== 'end';
     const titleList = page.titleListRoot;
     if (isStart) {
+      const renderedBoundary = typeof resolveRenderedBoundaryPageUnitAnchor === 'function'
+        ? resolveRenderedBoundaryPageUnitAnchor(model, page)
+        : { applicable: false };
+      if (renderedBoundary.applicable) return renderedBoundary;
       if (page.nativeStartSlot?.parentNode) {
         return {
           ok: true,
@@ -10989,6 +11083,23 @@ function unbindChatPageDividerBridge() {
     return false;
   }
 
+  function setChatPageUnitAttributeIfChanged(node = null, name = '', value = null) {
+    if (!node || !name) return false;
+    try {
+      if (value == null) {
+        if (!node.hasAttribute?.(name)) return false;
+        node.removeAttribute(name);
+        return true;
+      }
+      const next = String(value);
+      if (node.getAttribute?.(name) === next) return false;
+      node.setAttribute(name, next);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function enforceChatPageUnitOrder(model = null, candidatesByPage = new Map(), reason = 'reconcile', placeNode = null) {
     const state = getChatPageUnitState();
     const sentinelPlan = ensureChatPageBoundarySentinels(model);
@@ -11031,7 +11142,7 @@ function unbindChatPageDividerBridge() {
       let anchor = previousPlaced
         ? resolveChatPageBoundaryAnchor(model, page, 'start')
         : { ok: false, reason: 'previous-page-unit-unresolved' };
-      if (anchor.ok && pageNum > 1) {
+      if (anchor.ok && pageNum > 1 && anchor.mode !== 'rendered-boundary-authority') {
         const previousEnd = state.sentinels.get(`${String(pageNum - 1)}:end`) || null;
         if (previousEnd?.isConnected && previousEnd.parentNode) {
           const anchorPrecedesPreviousEnd = anchor.parent !== previousEnd.parentNode
@@ -11057,7 +11168,8 @@ function unbindChatPageDividerBridge() {
         // existing non-scrolling page-window request may gather ordinary
         // remount evidence, but final movement remains deferred until exact.
         stats.deferred += 1;
-        if (requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable')) {
+        if (anchor.allowHydration !== false
+          && requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable')) {
           stats.hydrationRequests += 1;
         }
         previousPlaced = false;
@@ -11091,14 +11203,23 @@ function unbindChatPageDividerBridge() {
         if (placeNode?.(endAnchor.parent, endSentinel, endAnchor.before || null)) stats.moved += 1;
       }
       const nextTestId = getNextTurnTestIdAfterDivider(divider);
-      try {
-        divider.removeAttribute('data-h2o-divider-authority-parked');
-        divider.setAttribute('data-h2o-divider-anchor-mode', anchor.mode || '');
-        divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
-        divider.setAttribute('data-h2o-divider-order-owner', CHAT_PAGE_UNIT_OWNER);
-        divider.setAttribute('data-h2o-divider-order-ok', '1');
-        divider.setAttribute('data-h2o-divider-order-repaired', '1');
-      } catch {}
+      if (typeof setChatPageUnitAttributeIfChanged === 'function') {
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-authority-parked', null);
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-anchor-mode', anchor.mode || '');
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-next-testid', nextTestId || '');
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-order-owner', CHAT_PAGE_UNIT_OWNER);
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-order-ok', '1');
+        setChatPageUnitAttributeIfChanged(divider, 'data-h2o-divider-order-repaired', '1');
+      } else {
+        try {
+          divider.removeAttribute('data-h2o-divider-authority-parked');
+          divider.setAttribute('data-h2o-divider-anchor-mode', anchor.mode || '');
+          divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
+          divider.setAttribute('data-h2o-divider-order-owner', CHAT_PAGE_UNIT_OWNER);
+          divider.setAttribute('data-h2o-divider-order-ok', '1');
+          divider.setAttribute('data-h2o-divider-order-repaired', '1');
+        } catch {}
+      }
       previousPlaced = true;
       stats.pages.push({ pageNum, status: 'placed', mode: anchor.mode || '' });
     }
@@ -11172,10 +11293,23 @@ function unbindChatPageDividerBridge() {
         pages: Object.freeze(stats.pages.map((entry) => Object.freeze({ ...entry }))),
         order: Object.freeze(order.slice()),
       });
-      try {
-        document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', stats.status);
-        document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', String(model.pageCount));
-      } catch {}
+      if (typeof setChatPageUnitAttributeIfChanged === 'function') {
+        setChatPageUnitAttributeIfChanged(
+          document.documentElement,
+          'data-h2o-page-unit-ordering-status',
+          stats.status,
+        );
+        setChatPageUnitAttributeIfChanged(
+          document.documentElement,
+          'data-h2o-page-unit-ordering-count',
+          String(model.pageCount),
+        );
+      } else {
+        try {
+          document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', stats.status);
+          document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', String(model.pageCount));
+        } catch {}
+      }
       return state.last;
     } finally {
       state.reconcileInFlight = false;
