@@ -10203,7 +10203,12 @@
     getTurnIdByTurnIndex: (i) => getRecordByTurnNoInternal(i)?.turnId || null,
   };
 
-  H2O.turnRuntime = {
+  const sharedTurnRuntime = (
+    H2O.turnRuntime
+    && typeof H2O.turnRuntime === 'object'
+    && !Array.isArray(H2O.turnRuntime)
+  ) ? H2O.turnRuntime : {};
+  Object.assign(sharedTurnRuntime, {
     getTurnRecordByTurnId: (turnId) => getRecordByTurnIdInternal(turnId),
     getTurnRecordByAId: (aId) => getRecordByAIdInternal(aId),
     getTurnRecordByQId: (qId) => getRecordByQIdInternal(qId),
@@ -10237,7 +10242,8 @@
     setChatAtlasCanonicalSource,
     _reconcilePaginationSnapshot: (rows = []) => reconcileTurnRecordsFromPaginationSnapshot(rows),
     _clearPaginationSnapshot: () => clearPaginationTurnSnapshot(),
-  };
+  });
+  H2O.turnRuntime = sharedTurnRuntime;
 
   /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */
   (() => {

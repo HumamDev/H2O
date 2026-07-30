@@ -67,7 +67,7 @@ function runStep(label, scriptPath, extraEnv = {}) {
 
 async function main() {
   await runStep("1/4 sync-dev-order", "tools/loader/sync-dev-order.mjs");
-  await runStep("2/4 make-aliases", "tools/loader/make-aliases.mjs", { H2O_ALIAS_MODE: "symlink" });
+  await runStep("2/4 make-aliases", "tools/loader/make-aliases.mjs", { H2O_ALIAS_MODE: "copy" });
   await runStep("3/4 make-ext-proxy-pack", "tools/loader/make-ext-proxy-pack.mjs");
   await runStep("4/4 validate-loader-order", "tools/loader/validate-loader-order.mjs");
   console.log("\n[dev:rebuild] done");
