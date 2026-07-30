@@ -21,6 +21,12 @@ const LEASE_PARENT_PAGE_SOURCE = execFileSync(
   ['show', `${LEASE_PARENT_COMMIT}:${PAGE_PATH}`],
   { cwd: ROOT, encoding: 'utf8' },
 );
+const PAGE1_PARENT_COMMIT = '30e0c785a2ec69ae15bef81ddcff1ec103c99702';
+const PAGE1_PARENT_PAGE_SOURCE = execFileSync(
+  'git',
+  ['show', `${PAGE1_PARENT_COMMIT}:${PAGE_PATH}`],
+  { cwd: ROOT, encoding: 'utf8' },
+);
 const fixtures = [];
 let assertions = 0;
 
@@ -313,7 +319,7 @@ function wrapperWithNestedIdentity(identity, role, testId, guard, options = {}) 
   return { wrapper, nativeTestHost, identityCarrier, renderedRoleCarrier };
 }
 
-function pageRecords(count = 39, { noAnswer = false, streaming = false } = {}) {
+function pageRecords(count = 39, { noAnswer = false, streaming = false, streamingOrder = 26 } = {}) {
   return Array.from({ length: count }, (_unused, index) => {
     const order = index + 1;
     const record = {
@@ -324,7 +330,7 @@ function pageRecords(count = 39, { noAnswer = false, streaming = false } = {}) {
       noAnswer: order === 26 ? noAnswer : false,
       stopped: false,
     };
-    if (order === 26 && streaming) record.livePendingStreaming = true;
+    if (order === streamingOrder && streaming) record.livePendingStreaming = true;
     return record;
   });
 }
@@ -362,6 +368,7 @@ function createHarness(options = {}) {
   const records = pageRecords(pairCount, {
     noAnswer: options.noAnswer === true,
     streaming: options.streaming === true,
+    streamingOrder: startOrder,
   });
   if (startOrder !== 26 && records[startOrder - 1]) {
     records[startOrder - 1] = {
@@ -392,7 +399,7 @@ function createHarness(options = {}) {
   const boundaryIdentity = options.hiddenParent === true ? 'hidden-parent-node' : qId;
   const boundaryRole = options.boundaryRole || 'user';
   const boundaryTestId = options.boundaryTestId
-    || (startOrder === 26 ? 'conversation-turn-51' : `diagnostic-${startOrder}`);
+    || `conversation-turn-${String(((startOrder - 1) * 2) + 1)}`;
   const boundarySurface = options.nestedBoundary === true
     ? wrapperWithNestedIdentity(boundaryIdentity, boundaryRole, boundaryTestId, guard, {
       missingNativeTestHost: options.missingBoundaryNativeTestHost === true,
@@ -412,7 +419,7 @@ function createHarness(options = {}) {
   if (primaryAId && options.answerMounted !== false) {
     const answerRole = options.answerRole || 'assistant';
     const answerTestId = options.answerTestId
-      || (startOrder === 26 ? 'conversation-turn-52' : `answer-${startOrder}`);
+      || `conversation-turn-${String(startOrder * 2)}`;
     answerSurface = options.nestedAnswer === true
       ? wrapperWithNestedIdentity(primaryAId, answerRole, answerTestId, guard, {
         missingNativeTestHost: options.missingAnswerNativeTestHost === true,
@@ -1334,11 +1341,207 @@ await fixture('page outside effective count is page-not-present', () => {
   equal(createHarness({ pairCount: 39, pageNum: 4 }).api.get(4).reason, 'page-not-present', 'outside');
 });
 
-await fixture('Page 1 reports active thread start without a native boundary', () => {
-  const result = createHarness({ pageNum: 1 }).api.get(1);
-  equal(result.supported, true, 'defined non-error');
-  equal(result.reason, 'active-thread-start', 'thread start reason');
+await fixture('parent Page 1 shortcut bypasses exact authority and transition guards', () => {
+  const mounted = createHarness({
+    pageNum: 1,
+    nestedBoundary: true,
+    nestedAnswer: true,
+    productionSource: PAGE1_PARENT_PAGE_SOURCE,
+  });
+  const result = mounted.api.get(1);
+  equal(result.supported, true, 'synthetic support');
+  equal(result.reason, 'active-thread-start', 'synthetic reason');
   equal(result.pageStartOrder, 1, 'order one');
+  equal(result.source, null, 'no exact source');
+  equal(result.boundarySectionMounted, false, 'mounted qId ignored');
+  equal(result.boundaryWrapperConnected, false, 'wrapper not captured');
+  equal(result.leaseCurrent, false, 'no lease');
+  equal(mounted.leases.size, 0, 'lease map empty');
+
+  const streaming = createHarness({
+    pageNum: 1,
+    nestedBoundary: true,
+    streaming: true,
+    productionSource: PAGE1_PARENT_PAGE_SOURCE,
+  }).api.get(1);
+  equal(streaming.supported, true, 'streaming bypassed');
+  equal(streaming.reason, 'active-thread-start', 'streaming guard bypassed');
+
+  const transition = createHarness({
+    pageNum: 1,
+    nestedBoundary: true,
+    branchTransition: true,
+    productionSource: PAGE1_PARENT_PAGE_SOURCE,
+  }).api.get(1);
+  equal(transition.supported, true, 'branch transition bypassed');
+  equal(transition.reason, 'active-thread-start', 'transition guard bypassed');
+});
+
+await fixture('corrected Page 1 resolves the exact order-one qId surface', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true, nestedAnswer: true });
+  const result = h.api.get(1);
+  equal(result.supported, true, 'supported');
+  equal(result.reason, null, 'no failure');
+  equal(result.pageStartOrder, 1, 'order one');
+  equal(result.qId, 'q-1', 'exact canonical qId');
+  equal(result.isThreadStart, true, 'thread-start diagnostic');
+  equal(result.boundarySectionMounted, true, 'exact surface mounted');
+  equal(result.boundaryDomRole, 'user', 'rendered user role');
+});
+
+await fixture('corrected Page 1 mounted source is exact product qId', () => {
+  const result = createHarness({ pageNum: 1, nestedBoundary: true }).api.get(1);
+  equal(result.source, 'exact-mounted-product-qid', 'exact source');
+  equal(result.boundaryIdentityCurrent, true, 'identity current');
+  equal(result.pageUnitOrderCurrent, true, 'page unit current');
+  equal(result.leaseCurrent, true, 'lease current');
+});
+
+await fixture('corrected Page 1 captures the exact wrapper lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  equal(h.leases.size, 1, 'one lease');
+  equal(h.leases.get(1).qId, 'q-1', 'lease qId');
+  ok(h.leases.get(1).boundaryWrapper === h.boundaryWrapper, 'exact wrapper retained');
+});
+
+await fixture('corrected Page 1 section unmount retains its wrapper lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  equal(h.api.get(1).supported, true, 'initial capture');
+  const lease = h.leases.get(1);
+  withUnlocked(h, () => h.boundaryWrapper.removeChild(h.boundarySurface.nativeTestHost));
+  const result = h.api.get(1);
+  equal(result.supported, true, 'captured support');
+  equal(result.source, 'same-generation-captured-wrapper', 'captured source');
+  equal(result.boundarySectionMounted, false, 'section absent');
+  equal(result.boundaryWrapperConnected, true, 'wrapper retained');
+  ok(h.leases.get(1) === lease, 'same lease');
+});
+
+await fixture('corrected Page 1 wrapper replacement invalidates its lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  withUnlocked(h, () => {
+    const replacement = wrapperWithSection('q-1', 'user', 'replacement-one', h.guard);
+    replacement.setAttribute('data-turn-id-container', 'q-1');
+    h.flow.replaceChild(replacement, h.boundaryWrapper);
+  });
+  const result = h.api.get(1);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'captured-wrapper-replaced', 'replacement detected');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('corrected Page 1 wrapper disconnection invalidates its lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  withUnlocked(h, () => h.flow.removeChild(h.boundaryWrapper));
+  const result = h.api.get(1);
+  equal(result.reason, 'captured-wrapper-replaced', 'disconnection detected');
+  equal(result.boundaryIdentityCurrent, false, 'identity invalid');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('corrected Page 1 wrapper losing qId identity invalidates its lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  withUnlocked(h, () => {
+    h.boundaryWrapper.removeChild(h.boundarySurface.nativeTestHost);
+    h.boundaryWrapper.removeAttribute('data-turn-id-container');
+  });
+  const result = h.api.get(1);
+  equal(result.reason, 'captured-wrapper-replaced', 'identity loss detected');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('corrected Page 1 flow-root replacement invalidates its lease', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  const replacement = node('DIV', 'replacement-flow-one', h.guard);
+  withUnlocked(h, () => {
+    for (const child of [...h.flow.children]) replacement.appendChild(child);
+    h.thread.replaceChild(replacement, h.flow);
+  });
+  const result = h.api.get(1);
+  equal(result.reason, 'captured-wrapper-replaced', 'flow replacement detected');
+  equal(result.leaseCurrent, false, 'lease invalid');
+});
+
+await fixture('corrected Page 1 scope changes invalidate its lease', () => {
+  const generation = createHarness({ pageNum: 1 });
+  generation.api.get(1);
+  generation.status.generation = 2;
+  generation.projection.routeGeneration = 2;
+  generation.graphScope.generation = 2;
+  equal(generation.api.get(1).reason, 'boundary-scope-changed', 'generation');
+
+  const fingerprint = createHarness({ pageNum: 1 });
+  fingerprint.api.get(1);
+  fingerprint.indexState.sourceFingerprint = 'djb2:page-one-next';
+  fingerprint.status.canonicalFingerprint = 'djb2:page-one-next';
+  fingerprint.projection.fingerprint = 'djb2:page-one-next';
+  equal(fingerprint.api.get(1).reason, 'boundary-scope-changed', 'effective fingerprint');
+
+  const graph = createHarness({ pageNum: 1 });
+  graph.api.get(1);
+  graph.graphScope.fingerprint = 'djb2:page-one-graph-next';
+  equal(graph.api.get(1).reason, 'boundary-scope-changed', 'graph fingerprint');
+
+  const route = createHarness({ pageNum: 1 });
+  route.api.get(1);
+  route.status.routeKey = '/c/page-one-other';
+  route.graphScope.routeKey = '/c/page-one-other';
+  equal(route.api.get(1).reason, 'boundary-scope-changed', 'route');
+
+  const chat = createHarness({ pageNum: 1 });
+  chat.api.get(1);
+  chat.status.chatId = 'page-one-other-chat';
+  chat.projection.chatId = 'page-one-other-chat';
+  chat.graphScope.chatId = 'page-one-other-chat';
+  equal(chat.api.get(1).reason, 'boundary-scope-changed', 'chat');
+});
+
+await fixture('corrected Page 1 streaming is unsupported', () => {
+  const result = createHarness({ pageNum: 1, nestedBoundary: true, streaming: true }).api.get(1);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'streaming-active', 'streaming reason');
+});
+
+await fixture('corrected Page 1 branch transition is unsupported', () => {
+  const result = createHarness({
+    pageNum: 1,
+    nestedBoundary: true,
+    branchTransition: true,
+  }).api.get(1);
+  equal(result.supported, false, 'unsupported');
+  equal(result.reason, 'boundary-scope-changed', 'transition reason');
+});
+
+await fixture('corrected Page 1 test ID remains diagnostic only', () => {
+  const a = createHarness({
+    pageNum: 1,
+    boundaryTestId: 'conversation-turn-page-one-alpha',
+  }).api.get(1);
+  const b = createHarness({
+    pageNum: 1,
+    boundaryTestId: 'conversation-turn-page-one-beta',
+  }).api.get(1);
+  equal(a.supported, true, 'first supported');
+  equal(b.supported, true, 'second supported');
+  equal(a.boundaryTestId, 'conversation-turn-page-one-alpha', 'first diagnostic');
+  equal(b.boundaryTestId, 'conversation-turn-page-one-beta', 'second diagnostic');
+});
+
+await fixture('corrected Page 1 public result is frozen and DOM-free', () => {
+  const result = createHarness({ pageNum: 1, nestedBoundary: true }).api.get(1);
+  assertDeepFrozen(result);
+  equal(containsDomNode(result), false, 'DOM free');
+});
+
+await fixture('corrected Page 1 read is mutation free', () => {
+  const h = createHarness({ pageNum: 1, nestedBoundary: true });
+  h.api.get(1);
+  assertSafetyZero(h.safety);
 });
 
 await fixture('public result is deeply frozen', () => {

@@ -126,6 +126,7 @@
     nativeRangeActivePages: new Set(),
     collapsedBoundaryDiagnostics: new Map(),
     renderedPageBoundaryLeases: new Map(),
+    pageCollapseRangeContinuity: new Map(),
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
@@ -2697,6 +2698,7 @@
       reason: raw.reason == null ? null : String(raw.reason || ''),
       pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
       pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      isThreadStart: raw.isThreadStart === true,
       chatId: String(raw.chatId || '') || null,
       routeKey: String(raw.routeKey || ''),
       generation: Math.max(0, Number(raw.generation || 0) || 0),
@@ -3086,6 +3088,7 @@
     const base = {
       pageNum: num,
       pageStartOrder: authority?.pageStartOrder || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1),
+      isThreadStart: num === 1,
       chatId: authority?.chatId || '',
       routeKey: authority?.routeKey || '',
       generation: authority?.generation || 0,
@@ -3141,18 +3144,6 @@
     if (graphQ?.found !== true || graphQ?.productUser !== true) {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('rendered-boundary-head-unproven');
-    }
-    if (num === 1) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return frozenRenderedPageBoundaryCapability({
-        ...base,
-        supported: true,
-        reason: 'active-thread-start',
-        source: null,
-        boundaryIdentityCurrent: true,
-        pageUnitOrderCurrent: true,
-        placementRepairRequired: false,
-      });
     }
     if (renderedBoundaryTransitionActive(authority.projection)) {
       S.renderedPageBoundaryLeases.delete(num);
@@ -3386,6 +3377,618 @@
       pageUnitOrderReason: placement.pageUnitOrderReason,
       placementRepairRequired: !placement.pageUnitOrderCurrent,
       leaseCurrent: true,
+    });
+  }
+
+  function frozenPageCollapseRangeDiagnostics(raw = {}) {
+    const firstAmbiguous = raw.firstAmbiguous && typeof raw.firstAmbiguous === 'object'
+      ? Object.freeze({
+        index: Number.isInteger(raw.firstAmbiguous.index) ? raw.firstAmbiguous.index : -1,
+        tag: String(raw.firstAmbiguous.tag || ''),
+        hasTurnIdContainer: raw.firstAmbiguous.hasTurnIdContainer === true,
+        containsMountedIdentity: raw.firstAmbiguous.containsMountedIdentity === true,
+        containsNativeTestHost: raw.firstAmbiguous.containsNativeTestHost === true,
+        hasRetainedHeightStyle: raw.firstAmbiguous.hasRetainedHeightStyle === true,
+        graphIdentityFound: raw.firstAmbiguous.graphIdentityFound === true,
+      })
+      : null;
+    const signals = Object.freeze({
+      graphIdentity: Math.max(0, Number(raw.classifierSignals?.graphIdentity || 0) || 0),
+      mountedIdentity: Math.max(0, Number(raw.classifierSignals?.mountedIdentity || 0) || 0),
+      nativeTestHost: Math.max(0, Number(raw.classifierSignals?.nativeTestHost || 0) || 0),
+      retainedHeightContinuity: Math.max(
+        0,
+        Number(raw.classifierSignals?.retainedHeightContinuity || 0) || 0,
+      ),
+    });
+    return Object.freeze({
+      version: 1,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      pageEndOrder: Math.max(1, Number(raw.pageEndOrder || 0) || 0),
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      startBoundarySupported: raw.startBoundarySupported === true,
+      nextBoundarySupported: raw.nextBoundarySupported === true,
+      startQId: String(raw.startQId || '') || null,
+      nextBoundaryQId: String(raw.nextBoundaryQId || '') || null,
+      startWrapperCurrent: raw.startWrapperCurrent === true,
+      endWrapperCurrent: raw.endWrapperCurrent === true,
+      rangeStartIndex: Number.isInteger(raw.rangeStartIndex) ? raw.rangeStartIndex : -1,
+      rangeEndIndex: Number.isInteger(raw.rangeEndIndex) ? raw.rangeEndIndex : -1,
+      hostWrapperCount: Math.max(0, Number(raw.hostWrapperCount || 0) || 0),
+      h2oNodeCount: Math.max(0, Number(raw.h2oNodeCount || 0) || 0),
+      ambiguousWrapperCount: Math.max(0, Number(raw.ambiguousWrapperCount || 0) || 0),
+      firstAmbiguousIndex: Number.isInteger(raw.firstAmbiguousIndex)
+        ? raw.firstAmbiguousIndex
+        : -1,
+      firstAmbiguous,
+      classifierSignals: signals,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      streaming: raw.streaming === true,
+      branchTransition: raw.branchTransition === true,
+      rangeProven: raw.rangeProven === true,
+      isFinalPage: raw.isFinalPage === true,
+    });
+  }
+
+  function pageCollapseRangeH2OOwned(node = null) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      return node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      ) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function pageCollapseRangeIdentityCarriers(node = null) {
+    const carriers = [];
+    if (!node || node.nodeType !== 1) return carriers;
+    try {
+      if (node.matches?.('section[data-turn-id]')) carriers.push(node);
+      for (const carrier of Array.from(node.querySelectorAll?.('section[data-turn-id]') || [])) {
+        if (!carriers.includes(carrier)) carriers.push(carrier);
+      }
+    } catch {}
+    return carriers.filter((carrier) => carrier?.isConnected === true);
+  }
+
+  function pageCollapseRangeIdentityOfCarrier(carrier = null) {
+    return String(carrier?.getAttribute?.('data-turn-id') || '').trim();
+  }
+
+  function pageCollapseRangeContainerIdentity(node = null) {
+    return String(node?.getAttribute?.('data-turn-id-container') || '').trim();
+  }
+
+  function pageCollapseRangeNodeCarriesIdentity(node = null, identity = '') {
+    const id = String(identity || '').trim();
+    if (!node || !id) return false;
+    if (pageCollapseRangeContainerIdentity(node) === id) return true;
+    return pageCollapseRangeIdentityCarriers(node).some(
+      (carrier) => pageCollapseRangeIdentityOfCarrier(carrier) === id
+    );
+  }
+
+  function pageCollapseRangeHasRetainedHeight(node = null) {
+    if (!node) return false;
+    let value = '';
+    try { value = String(node.style?.getPropertyValue?.('--last-known-height') || '').trim(); } catch {}
+    if (value) return true;
+    try {
+      const computed = typeof W.getComputedStyle === 'function'
+        ? W.getComputedStyle(node)
+        : null;
+      value = String(computed?.getPropertyValue?.('--last-known-height') || '').trim();
+    } catch {}
+    return !!value;
+  }
+
+  function pageCollapseRangeScopeCurrent(entry = null, authority = null, graphFingerprint = '', flowRoot = null) {
+    return !!entry
+      && entry.chatId === authority?.chatId
+      && entry.routeKey === authority?.routeKey
+      && entry.generation === authority?.generation
+      && entry.effectiveFingerprint === authority?.effectiveFingerprint
+      && entry.graphFingerprint === graphFingerprint
+      && entry.pageNum === authority?.pageNum
+      && entry.flowRoot === flowRoot;
+  }
+
+  function clearStalePageCollapseRangeContinuity(
+    authority = null,
+    graphFingerprint = '',
+    flowRoot = null,
+  ) {
+    for (const [pageNum, entry] of Array.from(S.pageCollapseRangeContinuity.entries())) {
+      if (!pageCollapseRangeScopeCurrent(entry, authority, graphFingerprint, flowRoot)) {
+        S.pageCollapseRangeContinuity.delete(pageNum);
+      }
+    }
+  }
+
+  function readPageCollapseRangeGraphRecords(rt = null, identities = [], authority = null) {
+    const ids = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(identities) ? identities : []) {
+      const id = String(raw || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    const records = new Map();
+    let fingerprint = '';
+    if (!ids.length) return { ok: true, reason: null, fingerprint, records };
+    for (let offset = 0; offset < ids.length; offset += 32) {
+      const batch = ids.slice(offset, offset + 32);
+      let graph = null;
+      try { graph = rt?.getGraphIdentityDiagnostics?.(batch) || null; } catch {}
+      if (!graph?.available) {
+        return {
+          ok: false,
+          reason: graph?.reason === 'graph-stale' ? 'graph-stale' : 'graph-unavailable',
+          fingerprint: String(graph?.scope?.fingerprint || ''),
+          records,
+        };
+      }
+      const batchFingerprint = String(graph?.scope?.fingerprint || '');
+      if (
+        String(graph?.scope?.chatId || '') !== authority?.chatId
+        || String(graph?.scope?.routeKey || '') !== authority?.routeKey
+        || Math.max(0, Number(graph?.scope?.generation || 0) || 0) !== authority?.generation
+        || !batchFingerprint
+        || (fingerprint && batchFingerprint !== fingerprint)
+      ) {
+        return { ok: false, reason: 'graph-stale', fingerprint: batchFingerprint, records };
+      }
+      fingerprint = batchFingerprint;
+      for (const record of Array.isArray(graph.records) ? graph.records : []) {
+        const requestedId = String(record?.requestedId || '').trim();
+        if (requestedId && batch.includes(requestedId)) records.set(requestedId, record);
+      }
+    }
+    return { ok: true, reason: null, fingerprint, records };
+  }
+
+  function getPageCollapseRangeDiagnostics(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const authority = readRenderedBoundaryAuthority(num);
+    const pageStartOrder = authority?.pageStartOrder
+      || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1);
+    const count = Math.max(0, Number(authority?.count || 0) || 0);
+    const pageEndOrder = Math.min(count || pageStartOrder, num * TITLE_LIST_PAGE_SIZE);
+    const base = {
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: authority?.chatId || '',
+      routeKey: authority?.routeKey || '',
+      generation: authority?.generation || 0,
+      effectiveFingerprint: authority?.effectiveFingerprint || '',
+      startQId: authority?.qId || '',
+      isFinalPage: count > 0 && pageEndOrder >= count,
+    };
+    const fail = (reason, extra = {}) => frozenPageCollapseRangeDiagnostics({
+      ...base,
+      supported: false,
+      reason,
+      rangeProven: false,
+      ...extra,
+    });
+    if (!authority?.ok) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(authority?.reason || 'authority-unavailable');
+    }
+    const branchTransition = renderedBoundaryTransitionActive(authority.projection);
+    const streaming = renderedBoundaryRecordStreaming(authority.record);
+    if (branchTransition || streaming) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(branchTransition ? 'boundary-scope-changed' : 'streaming-active', {
+        branchTransition,
+        streaming,
+      });
+    }
+
+    const startCapability = getRenderedPageBoundaryCapability(num);
+    base.graphFingerprint = startCapability.graphFingerprint || '';
+    base.startBoundarySupported = startCapability.supported === true;
+    base.pageUnitOrderCurrent = startCapability.pageUnitOrderCurrent === true;
+    if (base.isFinalPage) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('final-page-end-authority-unavailable', {
+        startBoundarySupported: base.startBoundarySupported,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      });
+    }
+
+    const nextAuthority = readRenderedBoundaryAuthority(num + 1);
+    if (!nextAuthority?.ok) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('next-boundary-unavailable', {
+        startBoundarySupported: base.startBoundarySupported,
+        graphFingerprint: base.graphFingerprint,
+      });
+    }
+    const nextStreaming = renderedBoundaryRecordStreaming(nextAuthority.record);
+    const nextTransition = renderedBoundaryTransitionActive(nextAuthority.projection);
+    if (nextStreaming || nextTransition) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(nextTransition ? 'boundary-scope-changed' : 'streaming-active', {
+        startBoundarySupported: base.startBoundarySupported,
+        graphFingerprint: base.graphFingerprint,
+        nextBoundaryQId: nextAuthority.qId,
+        branchTransition: nextTransition,
+        streaming: nextStreaming,
+      });
+    }
+    const nextCapability = getRenderedPageBoundaryCapability(num + 1);
+    base.nextBoundaryQId = nextAuthority.qId;
+    base.nextBoundarySupported = nextCapability.supported === true;
+    base.pageUnitOrderCurrent = (
+      startCapability.pageUnitOrderCurrent === true
+      && nextCapability.pageUnitOrderCurrent === true
+    );
+    if (
+      startCapability.supported !== true
+      || startCapability.boundaryIdentityCurrent !== true
+      || startCapability.leaseCurrent !== true
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      const startReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+        .includes(String(startCapability.reason || ''))
+        ? startCapability.reason
+        : 'start-boundary-unavailable';
+      return fail(startReason, {
+        startBoundarySupported: false,
+        nextBoundarySupported: base.nextBoundarySupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      });
+    }
+    if (
+      nextCapability.supported !== true
+      || nextCapability.boundaryIdentityCurrent !== true
+      || nextCapability.leaseCurrent !== true
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      const nextReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+        .includes(String(nextCapability.reason || ''))
+        ? nextCapability.reason
+        : 'next-boundary-unavailable';
+      return fail(nextReason, {
+        startBoundarySupported: true,
+        nextBoundarySupported: false,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      });
+    }
+    if (!base.pageUnitOrderCurrent) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('page-unit-order-invalid', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: false,
+      });
+    }
+    if (
+      authority.chatId !== nextAuthority.chatId
+      || authority.routeKey !== nextAuthority.routeKey
+      || authority.generation !== nextAuthority.generation
+      || authority.effectiveFingerprint !== nextAuthority.effectiveFingerprint
+      || startCapability.graphFingerprint !== nextCapability.graphFingerprint
+    ) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('range-scope-changed', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    const startLease = S.renderedPageBoundaryLeases.get(num) || null;
+    const endLease = S.renderedPageBoundaryLeases.get(num + 1) || null;
+    const graphFingerprint = String(startCapability.graphFingerprint || '');
+    base.graphFingerprint = graphFingerprint;
+    if (
+      !renderedBoundaryLeaseScopeCurrent(startLease, authority, graphFingerprint)
+      || !renderedBoundaryLeaseScopeCurrent(endLease, nextAuthority, graphFingerprint)
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail(!startLease ? 'start-boundary-unavailable' : 'next-boundary-unavailable', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    const flowRoot = startLease.flowRoot;
+    const startWrapper = startLease.boundaryWrapper;
+    const endWrapper = endLease.boundaryWrapper;
+    const startWrapperCurrent = (
+      flowRoot?.isConnected === true
+      && startWrapper?.isConnected === true
+      && startWrapper?.parentElement === flowRoot
+      && renderedBoundaryWrapperCarriesIdentity(startWrapper, authority.qId)
+    );
+    const endWrapperCurrent = (
+      endLease.flowRoot === flowRoot
+      && endWrapper?.isConnected === true
+      && endWrapper?.parentElement === flowRoot
+      && renderedBoundaryWrapperCarriesIdentity(endWrapper, nextAuthority.qId)
+    );
+    if (!startWrapperCurrent || !endWrapperCurrent) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-flow-root-incoherent', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    const children = Array.from(flowRoot.children || []);
+    const rangeStartIndex = children.indexOf(startWrapper);
+    const rangeEndIndex = children.indexOf(endWrapper);
+    if (rangeStartIndex < 0 || rangeEndIndex <= rangeStartIndex) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-order-invalid', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    const interval = children.slice(rangeStartIndex, rangeEndIndex);
+    const identities = [];
+    for (const node of interval) {
+      const containerId = pageCollapseRangeContainerIdentity(node);
+      if (containerId) identities.push(containerId);
+      for (const carrier of pageCollapseRangeIdentityCarriers(node)) {
+        const id = pageCollapseRangeIdentityOfCarrier(carrier);
+        if (id) identities.push(id);
+      }
+    }
+    const rt = TURN_RUNTIME();
+    const graphRead = readPageCollapseRangeGraphRecords(rt, identities, authority);
+    if (!graphRead.ok) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail(graphRead.reason, {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: graphRead.fingerprint || graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    if (graphRead.fingerprint && graphRead.fingerprint !== graphFingerprint) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('graph-stale', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: graphRead.fingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    clearStalePageCollapseRangeContinuity(authority, graphFingerprint, flowRoot);
+    const prior = S.pageCollapseRangeContinuity.get(num) || null;
+    const priorWrappers = pageCollapseRangeScopeCurrent(
+      prior,
+      authority,
+      graphFingerprint,
+      flowRoot,
+    ) ? prior.wrappers : new Map();
+    let hostWrapperCount = 0;
+    let h2oNodeCount = 0;
+    let ambiguousWrapperCount = 0;
+    let firstAmbiguous = null;
+    const classifierSignals = {
+      graphIdentity: 0,
+      mountedIdentity: 0,
+      nativeTestHost: 0,
+      retainedHeightContinuity: 0,
+    };
+    const provenWrappers = new Map();
+    for (let offset = 0; offset < interval.length; offset += 1) {
+      const node = interval[offset];
+      const index = rangeStartIndex + offset;
+      if (pageCollapseRangeH2OOwned(node)) {
+        h2oNodeCount += 1;
+        continue;
+      }
+      const containerId = pageCollapseRangeContainerIdentity(node);
+      const containerRecord = containerId ? graphRead.records.get(containerId) : null;
+      const carriers = pageCollapseRangeIdentityCarriers(node);
+      let provenIdentity = '';
+      let proofSource = '';
+      if (containerId && containerRecord?.found === true) {
+        provenIdentity = containerId;
+        proofSource = 'graph-identity';
+        classifierSignals.graphIdentity += 1;
+      }
+      if (!provenIdentity) {
+        for (const carrier of carriers) {
+          const id = pageCollapseRangeIdentityOfCarrier(carrier);
+          const graphRecord = id ? graphRead.records.get(id) : null;
+          if (graphRecord?.found !== true) continue;
+          const surface = resolveRenderedTurnSurfaceByIdentity(id, flowRoot);
+          if (
+            surface?.ok === true
+            && surface.directFlowWrapper === node
+            && renderedBoundaryDirectChildUnder(flowRoot, surface.nativeTestHost) === node
+          ) {
+            provenIdentity = id;
+            proofSource = 'mounted-identity';
+            classifierSignals.mountedIdentity += 1;
+            classifierSignals.nativeTestHost += 1;
+            break;
+          }
+        }
+      }
+      if (!provenIdentity) {
+        const continuity = priorWrappers?.get?.(node) || null;
+        if (
+          continuity
+          && node?.isConnected === true
+          && node?.parentElement === flowRoot
+          && pageCollapseRangeNodeCarriesIdentity(node, continuity.identity)
+        ) {
+          provenIdentity = continuity.identity;
+          proofSource = 'same-generation-continuity';
+          classifierSignals.retainedHeightContinuity += 1;
+        }
+      }
+      if (provenIdentity) {
+        hostWrapperCount += 1;
+        provenWrappers.set(node, Object.freeze({
+          identity: provenIdentity,
+          proofSource,
+        }));
+        continue;
+      }
+      ambiguousWrapperCount += 1;
+      if (!firstAmbiguous) {
+        const mountedIds = carriers
+          .map(pageCollapseRangeIdentityOfCarrier)
+          .filter(Boolean);
+        firstAmbiguous = {
+          index,
+          tag: String(node?.tagName || '').toUpperCase(),
+          hasTurnIdContainer: !!containerId,
+          containsMountedIdentity: mountedIds.length > 0,
+          containsNativeTestHost: !!node?.matches?.(TURN_HOST_SEL)
+            || !!node?.querySelector?.(TURN_HOST_SEL),
+          hasRetainedHeightStyle: pageCollapseRangeHasRetainedHeight(node),
+          graphIdentityFound: !!containerRecord?.found
+            || mountedIds.some((id) => graphRead.records.get(id)?.found === true),
+        };
+      }
+    }
+
+    let finalStatus = null;
+    let finalGraph = null;
+    try {
+      finalStatus = rt?.getEffectivePresentationStatus?.() || null;
+      finalGraph = rt?.getGraphIdentityDiagnostics?.([
+        authority.qId,
+        nextAuthority.qId,
+      ]) || null;
+    } catch {}
+    if (
+      renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
+      || finalGraph?.available !== true
+      || String(finalGraph?.scope?.fingerprint || '') !== graphFingerprint
+      || String(finalGraph?.scope?.chatId || '') !== authority.chatId
+      || String(finalGraph?.scope?.routeKey || '') !== authority.routeKey
+      || Math.max(0, Number(finalGraph?.scope?.generation || 0) || 0) !== authority.generation
+    ) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('range-scope-changed', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        hostWrapperCount,
+        h2oNodeCount,
+        ambiguousWrapperCount,
+        firstAmbiguousIndex: firstAmbiguous?.index ?? -1,
+        firstAmbiguous,
+        classifierSignals,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    if (ambiguousWrapperCount) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-wrapper-ambiguous', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        hostWrapperCount,
+        h2oNodeCount,
+        ambiguousWrapperCount,
+        firstAmbiguousIndex: firstAmbiguous?.index ?? -1,
+        firstAmbiguous,
+        classifierSignals,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    S.pageCollapseRangeContinuity.set(num, {
+      pageNum: num,
+      chatId: authority.chatId,
+      routeKey: authority.routeKey,
+      generation: authority.generation,
+      effectiveFingerprint: authority.effectiveFingerprint,
+      graphFingerprint,
+      flowRoot,
+      wrappers: provenWrappers,
+    });
+    return frozenPageCollapseRangeDiagnostics({
+      ...base,
+      supported: true,
+      reason: null,
+      graphFingerprint,
+      startBoundarySupported: true,
+      nextBoundarySupported: true,
+      nextBoundaryQId: base.nextBoundaryQId,
+      startWrapperCurrent,
+      endWrapperCurrent,
+      rangeStartIndex,
+      rangeEndIndex,
+      hostWrapperCount,
+      h2oNodeCount,
+      ambiguousWrapperCount: 0,
+      firstAmbiguousIndex: -1,
+      firstAmbiguous: null,
+      classifierSignals,
+      pageUnitOrderCurrent: true,
+      streaming: false,
+      branchTransition: false,
+      rangeProven: true,
+      isFinalPage: false,
     });
   }
 
@@ -9519,6 +10122,7 @@
       resolveNativeTurnSlotSequence,
       getCollapsedNativeBoundaryReadiness,
       getRenderedPageBoundaryCapability,
+      getPageCollapseRangeDiagnostics,
       getCollapsedBoundaryDiagnostic,
       setTitleListMode,
       setPageCollapsed,
