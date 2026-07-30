@@ -21,6 +21,10 @@ const PROXY_WRITER_REL = "tools/loader/make-ext-proxy-pack.mjs";
 const ALIAS_WRITER_REL = "tools/loader/make-aliases.mjs";
 const EXTENSION_WRITER_REL =
   "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
+const OPS_PANEL_WRITER_REL =
+  "tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs";
+const DESK_WRITER_REL =
+  "tools/product/extensions/chatgpt/chrome/pack-desk.mjs";
 const IDENTITY_RELEASE_GATE_REL =
   "tools/validation/identity/run-identity-release-gate.mjs";
 const F17_RELEASE_VALIDATOR_REL =
@@ -29,30 +33,35 @@ const VALIDATOR_REL =
   "tools/validation/publish/validate-e2b-writer-enforcement-v1.mjs";
 const PROXY_WRITER = path.join(ROOT, PROXY_WRITER_REL);
 const EXTENSION_WRITER = path.join(ROOT, EXTENSION_WRITER_REL);
+const OPS_PANEL_WRITER = path.join(ROOT, OPS_PANEL_WRITER_REL);
+const DESK_WRITER = path.join(ROOT, DESK_WRITER_REL);
 const IDENTITY_RELEASE_GATE = path.join(ROOT, IDENTITY_RELEASE_GATE_REL);
 const F17_RELEASE_VALIDATOR = path.join(ROOT, F17_RELEASE_VALIDATOR_REL);
 const FINAL_PATHS = Object.freeze([
   PROXY_WRITER_REL,
   EXTENSION_WRITER_REL,
+  OPS_PANEL_WRITER_REL,
+  DESK_WRITER_REL,
   VALIDATOR_REL,
   IDENTITY_RELEASE_GATE_REL,
   F17_RELEASE_VALIDATOR_REL,
 ]);
 const UNCOMMITTED_MODIFIED = Object.freeze([
-  EXTENSION_WRITER_REL,
+  OPS_PANEL_WRITER_REL,
+  DESK_WRITER_REL,
   VALIDATOR_REL,
-  IDENTITY_RELEASE_GATE_REL,
-  F17_RELEASE_VALIDATOR_REL,
 ]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([]);
 const GUARDED_WRITER_SET = Object.freeze([
   ALIAS_WRITER_REL,
   PROXY_WRITER_REL,
   EXTENSION_WRITER_REL,
+  OPS_PANEL_WRITER_REL,
+  DESK_WRITER_REL,
 ]);
-const EXPECTED_RUNTIME_SCENARIOS = 69;
+const EXPECTED_RUNTIME_SCENARIOS = 99;
 const EXPECTED_SCOPE_SCENARIOS = 14;
-const CANONICAL_PRESERVATION_CHECKS = 16;
+const CANONICAL_PRESERVATION_CHECKS = 32;
 const AUTHORITY_ENV_NAMES = Object.freeze([
   "H2O_CANONICAL_DELIVERY_ROOT",
   "H2O_CANONICAL_DELIVERY_TOKEN",
@@ -84,12 +93,37 @@ const EXTENSION_MUTATION_INVOCATIONS = Object.freeze([
   "fs.rmSync(path.join(OUT_DIR, \"surfaces\", \"studio\")",
   "writeFile(path.join(OUT_DIR, \"README.txt\")",
 ]);
+const OPS_PANEL_MUTATION_INVOCATIONS = Object.freeze([
+  "ensureDir(OUT_DIR);",
+  "writeExtensionIcons(OUT_DIR, \"panel\");",
+  "copyIconPack(OUT_DIR, OPS_ICON_PACK_DIR);",
+  "writeFile(path.join(OUT_DIR, \"manifest.json\")",
+  "writeFile(path.join(OUT_DIR, \"panel.html\")",
+  "writeFile(path.join(OUT_DIR, \"panel.css\")",
+  "writeFile(path.join(OUT_DIR, \"panel.js\")",
+  "removeArchiveWorkbenchFromOut(OUT_DIR);",
+  "removeIfPresent(path.join(OUT_DIR, staleName));",
+  "writeFile(path.join(OUT_DIR, \"README.txt\")",
+]);
+const DESK_MUTATION_INVOCATIONS = Object.freeze([
+  "await removeDir(buildDir);",
+  "await ensureDir(buildUiDeskDir);",
+  "await ensureDir(buildContentDir);",
+  "await ensureDir(deskIconBuildDir);",
+  "await copyFileSafe(from, to);",
+  "await copyFileSafe(contentSourceFile, contentBuildFile);",
+  "await copyDeskIcons();",
+  "await writeManifest();",
+  "await writeServiceWorker();",
+]);
 
 const runtimeResults = [];
 const scopeResults = [];
 const temporaryRoots = new Set();
 const canonicalRejections = [];
 const extensionCanonicalRejections = [];
+const opsPanelCanonicalRejections = [];
+const deskCanonicalRejections = [];
 let localOutsideResult = null;
 let localForeignResult = null;
 let noLeaseResult = null;
@@ -98,6 +132,14 @@ let extensionLocalOutsideResult = null;
 let extensionLocalForeignResult = null;
 let extensionNoLeaseResult = null;
 let extensionValidSessionResult = null;
+let opsPanelLocalOutsideResult = null;
+let opsPanelLocalForeignResult = null;
+let opsPanelNoLeaseResult = null;
+let opsPanelValidSessionResult = null;
+let deskLocalOutsideResult = null;
+let deskLocalForeignResult = null;
+let deskNoLeaseResult = null;
+let deskValidSessionResult = null;
 let releaseValidatorResults = null;
 let tokenRedactionProven = true;
 
@@ -143,7 +185,7 @@ function sha256File(filename) {
 
 function temporaryRoot(label) {
   const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), `h2o-stage1de2b-b2-${label}-`),
+    path.join(os.tmpdir(), `h2o-stage1de2b-b3-${label}-`),
   );
   temporaryRoots.add(root);
   return root;
@@ -183,7 +225,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
     missingFinal: sorted(state.missingFinal ?? []),
   };
   if (normalized.staged.length) {
-    scopeFailure("Stage 1D-E2B Batch 2 forbids staged paths", normalized);
+    scopeFailure("Stage 1D-E2B Batch 3 forbids staged paths", normalized);
   }
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
@@ -197,7 +239,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
     sameSet(normalized.trackedFinal, FINAL_PATHS) &&
     normalized.missingFinal.length === 0;
   if (committed) return "committed-clean";
-  scopeFailure("Stage 1D-E2B Batch 2 scope mismatch", normalized);
+  scopeFailure("Stage 1D-E2B Batch 3 scope mismatch", normalized);
 }
 
 function currentScopeState() {
@@ -232,10 +274,10 @@ function scopeTest(name, fn) {
 }
 
 function runScopeSelfTests() {
-  scopeTest("exact cumulative E2B Batch 2 uncommitted scope is accepted", () => {
+  scopeTest("exact cumulative E2B Batch 3 uncommitted scope is accepted", () => {
     assert.equal(classifyStage1DE2BBatch1Scope(baseScope()), "uncommitted");
   });
-  scopeTest("exact cumulative E2B Batch 2 committed-clean scope is accepted", () => {
+  scopeTest("exact cumulative E2B Batch 3 committed-clean scope is accepted", () => {
     assert.equal(
       classifyStage1DE2BBatch1Scope(
         baseScope({
@@ -256,12 +298,12 @@ function runScopeSelfTests() {
       /forbids staged/u,
     );
   });
-  scopeTest("missing extension-writer modification is rejected", () => {
+  scopeTest("missing Ops Panel writer modification is rejected", () => {
     assert.throws(
       () =>
         classifyStage1DE2BBatch1Scope(baseScope({
           modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-            (relative) => relative !== EXTENSION_WRITER_REL,
+            (relative) => relative !== OPS_PANEL_WRITER_REL,
           ),
         })),
       /scope mismatch/u,
@@ -277,22 +319,20 @@ function runScopeSelfTests() {
       /scope mismatch/u,
     );
   });
-  scopeTest("missing identity release-gate modification is rejected", () => {
+  scopeTest("missing Desk writer modification is rejected", () => {
     assert.throws(
       () => classifyStage1DE2BBatch1Scope(baseScope({
         modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-          (relative) => relative !== IDENTITY_RELEASE_GATE_REL,
+          (relative) => relative !== DESK_WRITER_REL,
         ),
       })),
       /scope mismatch/u,
     );
   });
-  scopeTest("missing F17 release-validator modification is rejected", () => {
+  scopeTest("dirty committed Batch 2 extension writer is rejected", () => {
     assert.throws(
       () => classifyStage1DE2BBatch1Scope(baseScope({
-        modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-          (relative) => relative !== F17_RELEASE_VALIDATOR_REL,
-        ),
+        modifiedTracked: [...UNCOMMITTED_MODIFIED, EXTENSION_WRITER_REL],
       })),
       /scope mismatch/u,
     );
@@ -354,15 +394,15 @@ function runScopeSelfTests() {
       /scope mismatch/u,
     );
   });
-  scopeTest("tracked Batch 2 file moved to untracked role is rejected", () => {
+  scopeTest("tracked Batch 3 file moved to untracked role is rejected", () => {
     assert.throws(
       () =>
         classifyStage1DE2BBatch1Scope(
           baseScope({
             modifiedTracked: UNCOMMITTED_MODIFIED.filter(
-              (relative) => relative !== F17_RELEASE_VALIDATOR_REL,
+              (relative) => relative !== DESK_WRITER_REL,
             ),
-            untracked: [F17_RELEASE_VALIDATOR_REL],
+            untracked: [DESK_WRITER_REL],
           }),
         ),
       /scope mismatch/u,
@@ -633,6 +673,50 @@ async function runExtensionWriter(fixture, options = {}) {
   });
 }
 
+function packWriterEnvironment({
+  sourceRoot = ROOT,
+  outDir,
+  kind,
+  overrides = {},
+} = {}) {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("H2O_")) delete environment[name];
+  }
+  environment.H2O_SRC_DIR = sourceRoot;
+  if (kind === "ops-panel") {
+    environment.H2O_PANEL_OUT_DIR = outDir;
+  } else if (kind === "desk") {
+    assert.equal(path.basename(outDir), "desk");
+    environment.H2O_EXT_BUILD_ROOT = path.dirname(outDir);
+  } else {
+    throw new Error(`unknown pack writer kind: ${kind}`);
+  }
+  Object.assign(environment, overrides);
+  return environment;
+}
+
+async function runPackWriter(fixture, kind, options = {}) {
+  const writer = options.writer ??
+    (kind === "ops-panel" ? OPS_PANEL_WRITER : DESK_WRITER);
+  const sourceRoot = options.sourceRoot ?? ROOT;
+  const outDir = options.outDir;
+  if (path.resolve(sourceRoot) !== path.resolve(ROOT)) {
+    assertSandboxPath(sourceRoot);
+  }
+  assertSandboxPath(outDir);
+  return managedChild(process.execPath, [writer], {
+    cwd: options.cwd ?? sourceRoot,
+    env: packWriterEnvironment({
+      sourceRoot,
+      outDir,
+      kind,
+      overrides: options.overrides ?? {},
+    }),
+    timeoutMs: options.timeoutMs ?? 30_000,
+  });
+}
+
 function snapshotPath(target) {
   let stat;
   try {
@@ -725,6 +809,16 @@ function extensionGuardDiagnostic(result) {
   const diagnosticLines = lines(result.stderr);
   assert.equal(diagnosticLines.length, 1, result.stderr);
   const prefix = "[H2O] extension write guard rejected: ";
+  assert.equal(diagnosticLines[0].startsWith(prefix), true);
+  return JSON.parse(diagnosticLines[0].slice(prefix.length));
+}
+
+function packGuardDiagnostic(result, kind) {
+  const diagnosticLines = lines(result.stderr);
+  assert.equal(diagnosticLines.length, 1, result.stderr);
+  const prefix = kind === "ops-panel"
+    ? "[H2O] ops-panel write guard rejected: "
+    : "[H2O] desk write guard rejected: ";
   assert.equal(diagnosticLines[0].startsWith(prefix), true);
   return JSON.parse(diagnosticLines[0].slice(prefix.length));
 }
@@ -881,6 +975,93 @@ async function rejectedExtensionCase(label, {
   return { fixture, prepared, result, diagnostic, before, after };
 }
 
+async function rejectedPackCase(kind, label, {
+  prepare,
+  sourceRoot,
+  outDir,
+  overrides,
+  snapshotTarget,
+  expectedExit,
+  expectedCode,
+  expectedText,
+  linkedWorktree = false,
+} = {}) {
+  const fixture = createFixture(`${kind}-${label}`, { linkedWorktree });
+  const prepared = prepare ? await prepare(fixture) : {};
+  const variant = kind === "ops-panel" ? "ops-panel" : "desk";
+  const defaultOutput = path.join(
+    fixture.repository,
+    "apps/extensions/chatgpt/chrome",
+    variant,
+  );
+  if (!fs.existsSync(defaultOutput)) seedPreservedDestination(defaultOutput);
+  const effectiveSource =
+    typeof sourceRoot === "function"
+      ? sourceRoot(fixture, prepared)
+      : sourceRoot ?? ROOT;
+  const effectiveOut =
+    typeof outDir === "function"
+      ? outDir(fixture, prepared)
+      : outDir ?? defaultOutput;
+  const effectiveOverrides =
+    typeof overrides === "function"
+      ? overrides(fixture, prepared)
+      : overrides ?? {};
+  const effectiveSnapshot =
+    typeof snapshotTarget === "function"
+      ? snapshotTarget(fixture, prepared)
+      : snapshotTarget ?? effectiveOut;
+  const snapshotTargets = Array.isArray(effectiveSnapshot)
+    ? effectiveSnapshot
+    : [effectiveSnapshot];
+  snapshotTargets.forEach(assertSandboxPath);
+  const before = snapshotTargets.map(snapshotPath);
+  const result = await runPackWriter(fixture, kind, {
+    sourceRoot: effectiveSource,
+    outDir: effectiveOut,
+    cwd: effectiveSource,
+    overrides: effectiveOverrides,
+  });
+  const after = snapshotTargets.map(snapshotPath);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.code, expectedExit, result.stderr);
+  assert.deepEqual(after, before, `${kind}-${label}`);
+  assert.equal(result.stdout, "");
+  const diagnostic = packGuardDiagnostic(result, kind);
+  assert.equal(diagnostic.exitCode, expectedExit);
+  if (expectedCode) assert.equal(diagnostic.error, expectedCode);
+  if (expectedText) {
+    assert.match(`${result.stdout}\n${result.stderr}`, expectedText);
+  }
+  const token = prepared.acquisition?.ownershipToken ??
+    effectiveOverrides.H2O_CANONICAL_DELIVERY_TOKEN;
+  const tokenDigest = token ? sha256Bytes(token) : null;
+  const exposed = JSON.stringify({ result, diagnostic });
+  if (token) {
+    assert.equal(exposed.includes(token), false);
+    assert.equal(exposed.includes(tokenDigest), false);
+    assert.equal(result.argv.includes(token), false);
+    tokenRedactionProven &&= !exposed.includes(token) &&
+      !exposed.includes(tokenDigest) &&
+      !result.argv.includes(token);
+  }
+  const rejection = {
+    label,
+    before,
+    after,
+    result,
+    diagnostic,
+    token,
+    tokenDigest,
+  };
+  if (kind === "ops-panel") {
+    opsPanelCanonicalRejections.push(rejection);
+  } else {
+    deskCanonicalRejections.push(rejection);
+  }
+  return { fixture, prepared, result, diagnostic, before, after };
+}
+
 function initializeNestedRepository(repository, label) {
   initializeRepository(repository, label);
   fs.writeFileSync(path.join(repository, "nested-owner.txt"), "owner\n");
@@ -996,6 +1177,221 @@ function removeExtensionGuard(source) {
   return source.replace(blockPattern, "");
 }
 
+function structuralPackGuardOrdering(source, kind) {
+  const importIndex = source.indexOf(
+    'import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";',
+  );
+  const entryToken = kind === "ops-panel"
+    ? "async function main() {"
+    : "async function build() {";
+  const destinationToken = kind === "ops-panel"
+    ? "const OUT_DIR ="
+    : 'const buildDir = extensionBuildDir("desk");';
+  const destinationIndex = source.indexOf(destinationToken);
+  const entryIndex = source.indexOf(entryToken);
+  const guardIndex = source.indexOf("assertDeliveryWritePermitted({", entryIndex);
+  const tryIndex = source.lastIndexOf("try {", guardIndex);
+  const prefixBeforeGuard = source.slice(
+    source.indexOf("{", entryIndex) + 1,
+    tryIndex,
+  ).trim();
+  const mutationTokens = kind === "ops-panel"
+    ? OPS_PANEL_MUTATION_INVOCATIONS
+    : DESK_MUTATION_INVOCATIONS;
+  const mutationIndexes = mutationTokens.map((token) => ({
+    token,
+    index: source.indexOf(token, entryIndex),
+  }));
+  const firstMutationIndex = Math.min(
+    ...mutationIndexes.map(({ index }) => index),
+  );
+  return {
+    importIndex,
+    destinationIndex,
+    entryIndex,
+    guardIndex,
+    prefixBeforeGuard,
+    mutationIndexes,
+    firstMutationIndex,
+    valid:
+      importIndex >= 0 &&
+      destinationIndex > importIndex &&
+      entryIndex > destinationIndex &&
+      guardIndex > entryIndex &&
+      prefixBeforeGuard === "" &&
+      mutationIndexes.every(({ index }) => index > guardIndex),
+  };
+}
+
+function movePackGuardAfterFirstMutation(source, kind) {
+  const blockPattern =
+    /  try \{\n    assertDeliveryWritePermitted\(\{[\s\S]*?\n    process\.exit\(exitCode\);\n  \}\n\n/u;
+  const match = source.match(blockPattern);
+  assert.ok(match, `${kind} guard block fixture not found`);
+  const without = source.replace(blockPattern, "");
+  const firstMutation = kind === "ops-panel"
+    ? "  ensureDir(OUT_DIR);"
+    : "  await removeDir(buildDir);";
+  return without.replace(
+    firstMutation,
+    `${firstMutation}\n${match[0]}`,
+  );
+}
+
+function contentIdentity(target) {
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink()) {
+    return {
+      type: "symlink",
+      mode: stat.mode,
+      target: fs.readlinkSync(target),
+    };
+  }
+  if (stat.isFile()) {
+    return {
+      type: "file",
+      mode: stat.mode,
+      size: stat.size,
+      sha256: sha256File(target),
+    };
+  }
+  assert.equal(stat.isDirectory(), true);
+  return {
+    type: "directory",
+    mode: stat.mode,
+    entries: fs.readdirSync(target)
+      .sort((a, b) => a.localeCompare(b, "en"))
+      .map((name) => ({
+        name,
+        value: contentIdentity(path.join(target, name)),
+      })),
+  };
+}
+
+function committedHeadBytes(relative) {
+  return execFileSync("git", ["show", `HEAD:${relative}`], {
+    cwd: ROOT,
+    encoding: "utf8",
+    timeout: 10_000,
+    killSignal: "SIGTERM",
+  });
+}
+
+function unpatchedCommittedWriterBytes(kind) {
+  const relative = kind === "ops-panel"
+    ? OPS_PANEL_WRITER_REL
+    : DESK_WRITER_REL;
+  const source = committedHeadBytes(relative);
+  const guardImport =
+    'import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";\n';
+  const guardBlock =
+    /  try \{\n    assertDeliveryWritePermitted\(\{[\s\S]*?\n    process\.exit\(exitCode\);\n  \}\n\n/u;
+  const hasGuardImport = source.includes(guardImport);
+  const hasGuardBlock = guardBlock.test(source);
+  assert.equal(
+    hasGuardImport,
+    hasGuardBlock,
+    `${kind} committed HEAD contains a partial guard`,
+  );
+  if (!hasGuardImport) return source;
+  const unpatched = source
+    .replace(guardImport, "")
+    .replace(guardBlock, "");
+  assert.doesNotMatch(unpatched, /assertDeliveryWritePermitted/u);
+  return unpatched;
+}
+
+function materializeCommittedHeadClone(label) {
+  const top = temporaryRoot(`baseline-${label}`);
+  const clone = path.join(top, "committed-head");
+  const sourceHead = git(ROOT, ["rev-parse", "HEAD"]);
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", ROOT, clone], {
+    cwd: top,
+    encoding: "utf8",
+    timeout: 30_000,
+    killSignal: "SIGTERM",
+  });
+  assert.equal(git(clone, ["rev-parse", "HEAD"]), sourceHead);
+  return clone;
+}
+
+function prepareDeskFixtureAssets(repository) {
+  const icons = path.join(
+    repository,
+    "assets/surface-chrome-desk-icons",
+  );
+  fs.mkdirSync(icons, { recursive: true });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  for (const size of [16, 32, 48, 128, 256, 512, 1024]) {
+    fs.writeFileSync(path.join(icons, `icon${size}.png`), png);
+  }
+}
+
+function materializePatchedPackClone(kind, label) {
+  const clone = materializeCommittedHeadClone(`patched-${label}`);
+  const relative = kind === "ops-panel"
+    ? OPS_PANEL_WRITER_REL
+    : DESK_WRITER_REL;
+  fs.copyFileSync(path.join(ROOT, relative), path.join(clone, relative));
+  if (kind === "desk") prepareDeskFixtureAssets(clone);
+  return clone;
+}
+
+async function proveLocalByteEquivalence(kind) {
+  const top = temporaryRoot(`${kind}-equivalence`);
+  const output = path.join(top, "output", kind === "ops-panel" ? "ops-panel" : "desk");
+  const baseline = materializeCommittedHeadClone(kind);
+  const baselineRelative = kind === "ops-panel"
+    ? OPS_PANEL_WRITER_REL
+    : DESK_WRITER_REL;
+  fs.writeFileSync(
+    path.join(baseline, baselineRelative),
+    unpatchedCommittedWriterBytes(kind),
+  );
+  if (kind === "desk") prepareDeskFixtureAssets(baseline);
+  const baselineWriter = path.join(
+    baseline,
+    baselineRelative,
+  );
+  const baselineEnvironment = packWriterEnvironment({
+    sourceRoot: baseline,
+    outDir: output,
+    kind,
+  });
+  baselineEnvironment.NODE_PATH = path.join(ROOT, "node_modules");
+  const baselineResult = await managedChild(process.execPath, [baselineWriter], {
+    cwd: baseline,
+    env: baselineEnvironment,
+    timeoutMs: 30_000,
+  });
+  assert.equal(baselineResult.code, 0, baselineResult.stderr);
+  assert.equal(baselineResult.timedOut, false);
+  const before = contentIdentity(output);
+  fs.rmSync(output, { recursive: true, force: true });
+  const fixture = { top };
+  const patchedClone = materializePatchedPackClone(
+    kind,
+    `${kind}-equivalence`,
+  );
+  const patchedRelative = kind === "ops-panel"
+    ? OPS_PANEL_WRITER_REL
+    : DESK_WRITER_REL;
+  const patchedResult = await runPackWriter(fixture, kind, {
+    sourceRoot: patchedClone,
+    outDir: output,
+    writer: path.join(patchedClone, patchedRelative),
+    overrides: { NODE_PATH: path.join(ROOT, "node_modules") },
+  });
+  assert.equal(patchedResult.code, 0, patchedResult.stderr);
+  assert.equal(patchedResult.timedOut, false);
+  const after = contentIdentity(output);
+  assert.deepEqual(after, before);
+  return { output, before, after, baselineResult, patchedResult };
+}
+
 function releaseValidatorStructuralContract(source, kind) {
   const browserControlAbsent =
     !/\b(?:playwright|puppeteer|osascript|chrome-debug|remote-debugging)\b/iu
@@ -1097,6 +1493,328 @@ function productionGuardImports() {
   return lines(output)
     .filter((relative) => !relative.startsWith("tools/validation/"))
     .sort();
+}
+
+function canonicalPackOutput(fixture, kind) {
+  return path.join(
+    fixture.repository,
+    "apps/extensions/chatgpt/chrome",
+    kind === "ops-panel" ? "ops-panel" : "desk",
+  );
+}
+
+async function runLeanPackWriterScenarios(kind) {
+  const label = kind === "ops-panel" ? "Ops Panel" : "Desk";
+  const writer = kind === "ops-panel" ? OPS_PANEL_WRITER : DESK_WRITER;
+  const purpose = kind === "ops-panel" ? "pack-ops-panel" : "pack-desk";
+  const outputName = kind === "ops-panel" ? "ops-panel" : "desk";
+  const rejectionSet = kind === "ops-panel"
+    ? opsPanelCanonicalRejections
+    : deskCanonicalRejections;
+
+  await test(`${label} outside-repository LOCAL output succeeds token-free`, async () => {
+    const fixture = createFixture(`${kind}-outside-local`);
+    const output = path.join(
+      fixture.top,
+      "outside-extension-output",
+      outputName,
+    );
+    const executionClone = materializePatchedPackClone(
+      kind,
+      `${kind}-outside-local`,
+    );
+    const executionRelative = kind === "ops-panel"
+      ? OPS_PANEL_WRITER_REL
+      : DESK_WRITER_REL;
+    const result = await runPackWriter(fixture, kind, {
+      sourceRoot: executionClone,
+      outDir: output,
+      writer: path.join(executionClone, executionRelative),
+      overrides: { NODE_PATH: path.join(ROOT, "node_modules") },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(output, "manifest.json")), true);
+    assertSandboxPath(output);
+    const anchor = deriveSharedAnchor({
+      cwd: fixture.repository,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(anchor), false);
+    const executionAnchor = deriveSharedAnchor({
+      cwd: executionClone,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(executionAnchor), false);
+    const checked = { fixture, output, result };
+    if (kind === "ops-panel") opsPanelLocalOutsideResult = checked;
+    else deskLocalOutsideResult = checked;
+  });
+
+  await test(`${label} linked foreign-worktree LOCAL output succeeds token-free`, async () => {
+    const fixture = createFixture(`${kind}-foreign-local`, {
+      linkedWorktree: true,
+    });
+    const output = path.join(
+      fixture.foreignWorktree,
+      "apps/extensions/chatgpt/chrome",
+      outputName,
+    );
+    const executionClone = materializePatchedPackClone(
+      kind,
+      `${kind}-foreign-local`,
+    );
+    const executionRelative = kind === "ops-panel"
+      ? OPS_PANEL_WRITER_REL
+      : DESK_WRITER_REL;
+    const result = await runPackWriter(fixture, kind, {
+      sourceRoot: executionClone,
+      outDir: output,
+      writer: path.join(executionClone, executionRelative),
+      overrides: { NODE_PATH: path.join(ROOT, "node_modules") },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(output, "manifest.json")), true);
+    assertSandboxPath(output);
+    const anchor = deriveSharedAnchor({
+      cwd: fixture.repository,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(anchor), false);
+    const executionAnchor = deriveSharedAnchor({
+      cwd: executionClone,
+      env: {},
+      allowOverride: false,
+    }).root;
+    assert.equal(fs.existsSync(executionAnchor), false);
+    const checked = { fixture, output, result };
+    if (kind === "ops-panel") opsPanelLocalForeignResult = checked;
+    else deskLocalForeignResult = checked;
+  });
+
+  await test(`${label} patched and unpatched LOCAL outputs are byte-identical`, async () => {
+    const equivalence = await proveLocalByteEquivalence(kind);
+    assert.deepEqual(equivalence.after, equivalence.before);
+    assertSandboxPath(equivalence.output);
+  });
+
+  await test(`${label} canonical output without a lease rejects before mutation`, async () => {
+    const checked = await rejectedPackCase(kind, "no-lease", {
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+    if (kind === "ops-panel") opsPanelNoLeaseResult = checked;
+    else deskNoLeaseResult = checked;
+  });
+
+  await test(`${label} wrong ownership token rejects without disclosure`, async () => {
+    await rejectedPackCase(kind, "wrong-token", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, { purpose }),
+      overrides: {
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          kind === "ops-panel" ? "o".repeat(43) : "d".repeat(43),
+      },
+      expectedExit: EXIT_CODES.TOKEN_INVALID,
+      expectedText: /ownership token is missing or invalid/u,
+    });
+  });
+
+  await test(`${label} fully valid canonical session still exits 16`, async () => {
+    const checked = await rejectedPackCase(kind, "valid-still-disabled", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, { purpose }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+        H2O_DELIVERY_SESSION_ID: prepared.acquisition.lease.sessionId,
+        H2O_DELIVERY_APPROVED_HEAD:
+          prepared.acquisition.lease.approvedHead,
+        H2O_BUILD_TS: prepared.acquisition.lease.buildTs,
+      }),
+      expectedExit: EXIT_CODES.PATH_COUPLING_VIOLATION,
+      expectedCode: "canonical-live-write-disabled-until-stage-e3",
+    });
+    assert.equal(checked.result.code, 16);
+    assert.equal(
+      checked.diagnostic.error,
+      "canonical-live-write-disabled-until-stage-e3",
+    );
+    if (kind === "ops-panel") opsPanelValidSessionResult = checked;
+    else deskValidSessionResult = checked;
+  });
+
+  await test(`${label} unrelated source cwd cannot downgrade canonical output`, async () => {
+    await rejectedPackCase(kind, "unrelated-source", {
+      prepare: (fixture) => {
+        const unrelated = createUnrelatedRepository(
+          fixture,
+          `${kind}-caller`,
+        );
+        if (kind === "desk") {
+          fs.copyFileSync(
+            path.join(ROOT, "config/extension-keys.json"),
+            path.join(unrelated, "config/extension-keys.json"),
+          );
+        }
+        return { unrelated };
+      },
+      sourceRoot: (_fixture, prepared) => prepared.unrelated,
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test(`${label} symlink redirection into canonical output rejects`, async () => {
+    await rejectedPackCase(kind, "symlink-redirect", {
+      prepare: (fixture) => {
+        const target = canonicalPackOutput(fixture, kind);
+        seedPreservedDestination(target);
+        const spelling = path.join(fixture.top, outputName);
+        fs.symlinkSync(target, spelling);
+        return { spelling, target };
+      },
+      outDir: (_fixture, prepared) => prepared.spelling,
+      snapshotTarget: (_fixture, prepared) => [
+        prepared.spelling,
+        prepared.target,
+      ],
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test(`${label} missing descendant beneath canonical output rejects`, async () => {
+    await rejectedPackCase(kind, "missing-descendant", {
+      outDir: (fixture) => path.join(
+        canonicalPackOutput(fixture, kind),
+        "missing",
+        outputName,
+      ),
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test(`${label} nested repository cannot hide the outer canonical owner`, async () => {
+    await rejectedPackCase(kind, "nested-repository", {
+      prepare: (fixture) => {
+        initializeNestedRepository(
+          fixture.canonicalExtensionRoot,
+          `E2B ${label} Nested`,
+        );
+        return {};
+      },
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test(`${label} malformed .git boundary fails closed`, async () => {
+    await rejectedPackCase(kind, "malformed-boundary", {
+      prepare: (fixture) => {
+        const boundary = path.join(
+          fixture.top,
+          `${kind}-malformed-boundary`,
+        );
+        const output = path.join(
+          boundary,
+          "apps/extensions/chatgpt/chrome",
+          outputName,
+        );
+        seedPreservedDestination(output);
+        fs.writeFileSync(path.join(boundary, ".git"), "not-a-gitdir\n");
+        return { output };
+      },
+      outDir: (_fixture, prepared) => prepared.output,
+      snapshotTarget: (_fixture, prepared) => prepared.output,
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedCode: "destination-repository-context-invalid",
+    });
+  });
+
+  await test(`${label} multiple canonical owners fail closed`, async () => {
+    await rejectedPackCase(kind, "multiple-owners", {
+      prepare: (fixture) => {
+        const owner = canonicalPackOutput(fixture, kind);
+        initializeNestedRepository(owner, `E2B ${label} Inner Owner`);
+        const output = path.join(
+          owner,
+          "apps/extensions/chatgpt/chrome",
+          outputName,
+        );
+        seedPreservedDestination(output);
+        return { output };
+      },
+      outDir: (_fixture, prepared) => prepared.output,
+      snapshotTarget: (_fixture, prepared) => prepared.output,
+      expectedExit: EXIT_CODES.PATH_COUPLING_VIOLATION,
+      expectedCode: "canonical-delivery-owner-ambiguity",
+    });
+  });
+
+  await test(`${label} direct invocation and first-mutation ordering are guarded`, () => {
+    const noLease = kind === "ops-panel"
+      ? opsPanelNoLeaseResult
+      : deskNoLeaseResult;
+    assert.ok(noLease);
+    assert.deepEqual(noLease.result.argv, [process.execPath, writer]);
+    const source = fs.readFileSync(writer, "utf8");
+    const ordering = structuralPackGuardOrdering(source, kind);
+    assert.equal(ordering.valid, true);
+    assert.ok(ordering.firstMutationIndex > ordering.guardIndex);
+    assert.match(
+      source,
+      new RegExp(`purpose: "${purpose}"`, "u"),
+    );
+    const moved = movePackGuardAfterFirstMutation(source, kind);
+    assert.equal(structuralPackGuardOrdering(moved, kind).valid, false);
+    const removed = source.replace(
+      /  try \{\n    assertDeliveryWritePermitted\(\{[\s\S]*?\n    process\.exit\(exitCode\);\n  \}\n\n/u,
+      "",
+    );
+    assert.equal(structuralPackGuardOrdering(removed, kind).valid, false);
+  });
+
+  await test(`${label} canonical failures preserve all eight identity dimensions`, () => {
+    assert.equal(rejectionSet.length, 9);
+    for (const rejection of rejectionSet) {
+      assert.deepEqual(rejection.after, rejection.before, rejection.label);
+    }
+  });
+
+  await test(`${label} token material and authority envelopes never propagate`, () => {
+    const localResults = kind === "ops-panel"
+      ? [opsPanelLocalOutsideResult, opsPanelLocalForeignResult]
+      : [deskLocalOutsideResult, deskLocalForeignResult];
+    for (const checked of localResults) {
+      assert.ok(checked);
+      assert.equal(
+        checked.result.argv.some((value) => value.includes("H2O_")),
+        false,
+      );
+    }
+    for (const rejection of rejectionSet) {
+      if (!rejection.token) continue;
+      const observable = JSON.stringify({
+        result: rejection.result,
+        diagnostic: rejection.diagnostic,
+      });
+      assert.equal(observable.includes(rejection.token), false);
+      assert.equal(observable.includes(rejection.tokenDigest), false);
+      assert.equal(rejection.result.argv.includes(rejection.token), false);
+    }
+    const source = fs.readFileSync(writer, "utf8");
+    assert.doesNotMatch(
+      source,
+      /canonicalSession|verifiedLease|sessionEnvelope|ownershipCapability/u,
+    );
+    assert.equal(tokenRedactionProven, true);
+  });
 }
 
 async function runRuntimeScenarios() {
@@ -1481,16 +2199,19 @@ async function runRuntimeScenarios() {
     }
   });
 
-  await test("coverage scaffold recognizes exactly the three guarded writers", () => {
+  await test("coverage scaffold recognizes exactly the five guarded writers", () => {
     assert.deepEqual([...GUARDED_WRITER_SET], [
       ALIAS_WRITER_REL,
       PROXY_WRITER_REL,
       EXTENSION_WRITER_REL,
+      OPS_PANEL_WRITER_REL,
+      DESK_WRITER_REL,
     ]);
-    assert.deepEqual(productionGuardImports(), [...GUARDED_WRITER_SET]);
+    assert.deepEqual(
+      productionGuardImports(),
+      sorted([...GUARDED_WRITER_SET]),
+    );
     for (const unprotected of [
-      "pack-ops-panel.mjs",
-      "pack-desk.mjs",
       "write-extension-icons.mjs",
       "pack-identity.mjs",
       "pack-studio.mjs",
@@ -1515,7 +2236,12 @@ async function runRuntimeScenarios() {
   });
 
   await test("writer propagates no explicit E2 session capability", () => {
-    for (const writer of [PROXY_WRITER, EXTENSION_WRITER]) {
+    for (const writer of [
+      PROXY_WRITER,
+      EXTENSION_WRITER,
+      OPS_PANEL_WRITER,
+      DESK_WRITER,
+    ]) {
       const source = fs.readFileSync(writer, "utf8");
       assert.doesNotMatch(source, /H2O_CANONICAL_DELIVERY_TOKEN/u);
       assert.doesNotMatch(source, /H2O_DELIVERY_SESSION_ID/u);
@@ -1927,7 +2653,7 @@ async function runRuntimeScenarios() {
     for (const rejection of extensionCanonicalRejections) {
       assert.deepEqual(rejection.after, rejection.before, rejection.label);
     }
-    assert.equal(CANONICAL_PRESERVATION_CHECKS, 16);
+    assert.equal(CANONICAL_PRESERVATION_CHECKS, 32);
   });
 
   await test("extension token and digest are absent from every observable value", () => {
@@ -2076,6 +2802,9 @@ async function runRuntimeScenarios() {
     );
   });
 
+  await runLeanPackWriterScenarios("ops-panel");
+  await runLeanPackWriterScenarios("desk");
+
   await test("runtime scenario count is exact", () => {
     assert.equal(runtimeResults.length + 1, EXPECTED_RUNTIME_SCENARIOS);
   });
@@ -2091,6 +2820,8 @@ function printScope() {
       implementation: [
         PROXY_WRITER_REL,
         EXTENSION_WRITER_REL,
+        OPS_PANEL_WRITER_REL,
+        DESK_WRITER_REL,
         IDENTITY_RELEASE_GATE_REL,
         F17_RELEASE_VALIDATOR_REL,
       ],
@@ -2144,7 +2875,10 @@ async function main() {
       runtimeScenarios: runtimeResults.length,
       scopeScenarios: scopeResults.length,
       canonicalRejectionCases:
-        canonicalRejections.length + extensionCanonicalRejections.length,
+        canonicalRejections.length +
+        extensionCanonicalRejections.length +
+        opsPanelCanonicalRejections.length +
+        deskCanonicalRejections.length,
       canonicalPreservationChecks: CANONICAL_PRESERVATION_CHECKS,
       tokenRedactionProven,
       guardedWriterSet: GUARDED_WRITER_SET,

@@ -8,6 +8,7 @@ import {
   getExtensionKey,
   deriveVariantFromOutDir,
 } from "./chrome-extension-keys.mjs";
+import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -530,6 +531,32 @@ async function writeServiceWorker() {
 }
 
 async function build() {
+  try {
+    assertDeliveryWritePermitted({
+      destination: buildDir,
+      purpose: "pack-desk",
+      environment: process.env,
+    });
+  } catch (error) {
+    const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+    const body = {
+      ok: false,
+      error:
+        typeof error?.code === "string"
+          ? error.code
+          : "desk-write-guard-failed",
+      message:
+        typeof error?.message === "string"
+          ? error.message
+          : "Desk write guard failed.",
+      exitCode,
+    };
+    process.stderr.write(
+      `[H2O] desk write guard rejected: ${JSON.stringify(body)}\n`,
+    );
+    process.exit(exitCode);
+  }
+
   console.log("Building Desk extension...");
   console.log(`UI source: ${path.relative(repoRoot, uiSourceDir)}`);
   console.log(`Output: ${path.relative(repoRoot, buildDir)}`);
