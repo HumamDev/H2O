@@ -35,6 +35,8 @@
   const BOOT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const TITLE_WRITE_TTL_MS = 900;
   const ACTIVE_TRANSIENT_KEY = '__active_transient__';
+  // Same native title container every committed sidebar-title reader uses.
+  const NATIVE_TITLE_SELECTOR = '.truncate,[class*="truncate"]';
   const ROUTE_EVENT_NAMES = Object.freeze([
     'evt:h2o:route:changed',
     'h2o:route:changed',
@@ -687,15 +689,15 @@
     }
   }
 
+  // A base title may legitimately contain an internal " - " separator, so the
+  // separator must never be treated as a title delimiter. Only one terminal
+  // "<dash> ChatGPT" suffix may be removed, matching the accepted contract
+  // sanitizer. A bare "ChatGPT" stays rejected because the legacy ingestion
+  // path uses this helper to read document/native titles on non-chat routes.
   function cleanTitle(raw) {
-    let s = norm(raw);
-    if (!s) return '';
-    s = s.replace(/\s*[–—-]\s*ChatGPT\s*$/i, '').trim();
+    const s = cleanFullTitle(raw);
     if (!s || /^chatgpt$/i.test(s)) return '';
-    const parts = s.split(/\s*[–—-]\s*/g).map(norm).filter(Boolean);
-    const filtered = parts.filter((part) => !/^chatgpt$/i.test(part));
-    if (!filtered.length) return '';
-    return filtered[filtered.length - 1] || '';
+    return s;
   }
 
   function cleanFullTitle(raw) {
@@ -826,13 +828,25 @@
     };
   }
 
-  function mergeRecordPayload(rec, payload, reason) {
+  function mergeRecordPayload(rec, payload, reason, restored) {
     if (!rec || !payload || typeof payload !== 'object') return false;
     let changed = false;
     const basePriority = Number(payload.priority || payload.basePriority || 0);
     const emojiPriority = Number(payload.emojiPriority || 0);
 
-    if (payload.baseTitle && basePriority >= (rec.priority || 0)) {
+    // Persisted sources (boot cache, Store, cross-surface) all carry user
+    // priority, so priority alone cannot order them. A higher priority still
+    // wins outright; at equal priority only a strictly newer record may
+    // replace the incumbent, which keeps equal-freshness deterministic and
+    // stops a late stale Store read from defeating a newer cached record.
+    const recordUpdatedAt = Number(rec.updatedAt || 0);
+    const payloadUpdatedAt = Number(payload.updatedAt || 0);
+    const basePriorityWins = basePriority > (rec.priority || 0);
+    const baseFreshEnough = basePriorityWins
+      || !recordUpdatedAt
+      || (Number.isFinite(payloadUpdatedAt) && payloadUpdatedAt > recordUpdatedAt);
+
+    if (payload.baseTitle && basePriority >= (rec.priority || 0) && baseFreshEnough) {
       const nextBase = sanitizeTitleForState(payload.baseTitle);
       if (nextBase && (nextBase !== rec.baseTitle || basePriority !== rec.priority)) {
         rec.baseTitle = nextBase;
@@ -844,7 +858,13 @@
       }
     }
 
-    if (payload.emoji && emojiPriority >= (rec.emojiPriority || 0)) {
+    const emojiRecordUpdatedAt = Number(rec.emojiUpdatedAt || 0);
+    const emojiPayloadUpdatedAt = Number(payload.emojiUpdatedAt || payload.updatedAt || 0);
+    const emojiFreshEnough = emojiPriority > (rec.emojiPriority || 0)
+      || !emojiRecordUpdatedAt
+      || (Number.isFinite(emojiPayloadUpdatedAt) && emojiPayloadUpdatedAt > emojiRecordUpdatedAt);
+
+    if (payload.emoji && emojiPriority >= (rec.emojiPriority || 0) && emojiFreshEnough) {
       const nextEmoji = norm(payload.emoji);
       if (nextEmoji && (nextEmoji !== rec.emoji || emojiPriority !== rec.emojiPriority)) {
         rec.emoji = nextEmoji;
@@ -859,6 +879,11 @@
     if (changed) {
       rec.rev += 1;
       rec.hydrated = true;
+      // A restore from persistence (boot cache or durable Store) is a stale
+      // snapshot, not a live decision, so it is marked reconcilable against the
+      // current native title exactly once. A live cross-surface broadcast is
+      // not a restore and is never marked.
+      rec.restoredFromPersistence = restored === true;
     }
     return changed;
   }
@@ -957,9 +982,17 @@
     try { console.warn('[H2O.ChatTitle]', context, err); } catch {}
   }
 
-  function shouldAccept(rec, nextPriority, options) {
-    if (options && options.force) return true;
-    return Number(nextPriority || 0) >= Number(rec.priority || 0);
+  // A restored snapshot must not outrank current reality forever. Native
+  // ChatGPT is re-fetched on reload, so an exact-route native observation for
+  // the active chat may supersede a restored record once, after which normal
+  // provenance ordering resumes. Live in-session titles are never lowered.
+  function canReconcileRestoredRecord(rec, options) {
+    if (!rec || rec.restoredFromPersistence !== true) return false;
+    const context = options && typeof options === 'object' ? options : {};
+    if (context.nativeObservation !== true) return false;
+    if (identity.routeKind !== 'chat') return false;
+    if (!identity.chatId || !isStableChatId(identity.chatId)) return false;
+    return rec.chatId === identity.chatId;
   }
 
   function shouldAcceptEmoji(rec, nextPriority, options) {
@@ -980,16 +1013,39 @@
     const baseTitle = split.baseTitle;
     if (!baseTitle) return false;
 
+    // A reconciling native observation replaces the value of a startup-restored
+    // record without lowering its authority, so a later stale persisted read at
+    // the original priority cannot win it back on priority alone.
+    const priorityAccepted = !!(options && options.force)
+      || Number(priority || 0) >= Number(rec.priority || 0);
+    // A native read that merely confirms the restored value is an observation,
+    // not a new authorship: it must not restamp the record (which would make
+    // every genuinely newer persisted record look stale) and must not consume
+    // the single reconciliation allowance.
+    const reconcileAccepted = !priorityAccepted
+      && baseTitle !== rec.baseTitle
+      && canReconcileRestoredRecord(rec, options);
+
     let changed = false;
-    if (shouldAccept(rec, priority, options)) {
-      if (baseTitle !== rec.baseTitle || priority !== rec.priority || source !== rec.source) {
+    if (priorityAccepted || reconcileAccepted) {
+      const nextPriority = reconcileAccepted ? (rec.priority || priority) : priority;
+      if (baseTitle !== rec.baseTitle || nextPriority !== rec.priority || source !== rec.source) {
         rec.baseTitle = baseTitle;
         rec.source = source;
-        rec.priority = priority;
+        rec.priority = nextPriority;
         rec.confidence = clampConfidence(input.confidence, 0.8);
         rec.updatedAt = now();
         rec.rev += 1;
         rec.hydrated = true;
+        // Adopting native truth is not a live authorship. A sidebar row can
+        // still be rendering ChatGPT's pre-reload cached title when startup
+        // reads it, and that stale value differs from the restored record just
+        // as a current one would, so consuming the allowance here would let the
+        // first stale read capture the record permanently. The record stays
+        // restored-derived until something live authors it (user submit,
+        // confirmed rename, live cross-surface payload), which lets the settled
+        // native title still win; same-value reads change nothing.
+        if (!reconcileAccepted) rec.restoredFromPersistence = false;
         changed = true;
       }
     }
@@ -1112,7 +1168,7 @@
       }
       if (capture && !isCaptureCurrent(capture)) return false;
       const rec = ensureRecord(chatId, chatId);
-      const changed = mergeRecordPayload(rec, parsed.state, 'boot-cache');
+      const changed = mergeRecordPayload(rec, parsed.state, 'boot-cache', true);
       storageStatus.localStorageFallbackUsedThisSession = true;
       if (!storageStatus.durable || !storageStatus.healthy || storageStatus.degraded) {
         storageStatus.localStorageFallbackActive = true;
@@ -1125,7 +1181,10 @@
     }
   }
 
-  function writeBootCache(rec) {
+  // The boot cache is the reload fallback. It is written both as the active
+  // fallback store and as a durability mirror while a healthy primary Store is
+  // present; only the former marks the localStorage fallback as active.
+  function writeBootCache(rec, options) {
     if (!rec || !canPersistChatId(rec.chatId, 'chat')) return;
     try {
       const payload = {
@@ -1137,7 +1196,7 @@
       };
       localStorage.setItem(`${BOOT_CACHE_KEY_PREFIX}${rec.chatId}`, JSON.stringify(payload));
       storageStatus.localStorageFallbackUsedThisSession = true;
-      storageStatus.localStorageFallbackActive = true;
+      if (!options || options.fallbackActive !== false) storageStatus.localStorageFallbackActive = true;
     } catch (err) {
       warn('boot-cache.write', err);
     }
@@ -1217,7 +1276,7 @@
       if (!isCaptureCurrent(capture)) return false;
       if (!payload || typeof payload !== 'object') return false;
       const rec = ensureRecord(chatId, chatId);
-      const changed = mergeRecordPayload(rec, payload, reason || 'store-hydrate');
+      const changed = mergeRecordPayload(rec, payload, reason || 'store-hydrate', true);
       if (changed) notify(reason || 'store-hydrate', null);
       return changed;
     } catch (err) {
@@ -1233,10 +1292,13 @@
     const capture = { chatId, routeToken, opId: ++opSeq };
     const payload = snapshotRecord(rec);
 
-    if (!storeAdapter || !storageStatus.durable || debugStorageDegraded) {
-      writeBootCache(rec);
-      return false;
-    }
+    // Write the reload fallback from the accepted record before any await, so
+    // the boot cache carries it whether the primary Store is unavailable,
+    // delayed, superseded, rejected, timed out, or successful.
+    const durablePrimary = !!storeAdapter && !!storageStatus.durable && !debugStorageDegraded;
+    writeBootCache(rec, { fallbackActive: !durablePrimary });
+
+    if (!durablePrimary) return false;
     await Promise.resolve();
     if (capture.routeToken !== routeToken) return false;
     const latest = records.get(chatId);
@@ -1507,10 +1569,44 @@
     }
   }
 
+  // After a confirmed Native rename the server and the ChatGPT history cache
+  // both hold the new clean base title, but an already-rendered sidebar row
+  // keeps its previous text until ChatGPT itself re-renders. Reconcile those
+  // rows with the value we just made authoritative so a later reveal (feature
+  // rollback, collapse, virtualization) cannot expose a pre-rename title.
+  //
+  // Only the confirmed clean baseTitle is written - never a composed display
+  // title - so every existing native-title reader keeps reading clean base
+  // text. H2O-owned nodes are skipped and no ownership marker is added.
+  function reconcileNativeSidebarTitle(chatId, baseTitle) {
+    const nextText = norm(baseTitle);
+    if (!chatId || !nextText || !isStableChatId(chatId)) return 0;
+    const id = String(chatId).replace(/"/g, '\\"');
+    let updated = 0;
+    try {
+      const anchors = D.querySelectorAll(
+        `aside a[href*="/c/${id}"], nav a[href*="/c/${id}"]`
+      );
+      for (const anchor of anchors || []) {
+        if (!anchor || typeof anchor.querySelector !== 'function') continue;
+        if (anchor.closest && anchor.closest('[data-h2o-owner]')) continue;
+        const source = anchor.querySelector(NATIVE_TITLE_SELECTOR);
+        if (!source || typeof source.textContent !== 'string') continue;
+        if (source.closest && source.closest('[data-h2o-owner]')) continue;
+        if (norm(source.textContent) === nextText) continue;
+        source.textContent = nextText;
+        updated += 1;
+      }
+    } catch (err) {
+      warn('native-sidebar-title-reconcile', err);
+    }
+    return updated;
+  }
+
   function detectTitles(reason) {
     if (identity.routeKind === 'chat' && identity.chatId) {
       const sidebarTitle = readSidebarTitle(identity.chatId);
-      if (sidebarTitle) setTitle({ chatId: identity.chatId, baseTitle: sidebarTitle, source: 'native', priority: BASE_PRIORITY.native, confidence: 0.95, reason }, { reason });
+      if (sidebarTitle) setTitle({ chatId: identity.chatId, baseTitle: sidebarTitle, source: 'native', priority: BASE_PRIORITY.native, confidence: 0.95, reason }, { reason, nativeObservation: true });
 
       const libraryTitle = readLibraryTitle(identity.chatId);
       if (libraryTitle) setTitle({ chatId: identity.chatId, baseTitle: libraryTitle, source: 'library', priority: BASE_PRIORITY.library, confidence: 0.85, reason }, { reason });
@@ -1888,6 +1984,7 @@
         };
       }
       updateConversationHistoryCacheTitle(chatId, nextBaseTitle);
+      reconcileNativeSidebarTitle(chatId, nextBaseTitle);
       setTitle({
         chatId,
         baseTitle: submitted.emoji ? sanitizedSubmission : nextBaseTitle,

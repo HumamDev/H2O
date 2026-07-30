@@ -48,11 +48,14 @@ const STAGE1D_COORDINATION_SCOPE_MODE = "stage1d-bridge-coordination";
 const STAGE1E_CONVERGENCE_SCOPE_MODE = "stage1e-convergence";
 const STAGE1E_CONVERGENCE_SCOPE_OPTION = "--stage1e-convergence-scope";
 const STAGE1E_CORRECTIONS_SCOPE_MODE = "stage1e-corrections";
+const STAGE1F_SCOPE_MODE = "stage1f-rollback";
+const STAGE1F_SCOPE_OPTION = "--stage1f-rollback-scope";
 const STAGE1E_CORRECTIONS_SCOPE_OPTION = "--stage1e-corrections-scope";
 const GENERATOR_REL = "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
 const STAGE1B_VALIDATOR_REL = "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs";
 const TAB_RUNTIME_REL = "src-runtime-base/9B1a.🟤🔖 Tab Title 🔖.js";
 const UNDER_INPUT_RUNTIME_REL = "src-runtime-base/9C1a.🟤📌 Title Under Input bar 📌.js";
+const SIDEBAR_RUNTIME_REL = "src-runtime-base/9B2a.🟤🏷️ Sidebar Title Renderer 🏷️.js";
 const STAGE1E_VALIDATOR_REL = "tools/validation/title-interface/validate-title-stage1e-convergence-v1.mjs";
 const TITLE_ADR_REL = "docs/decisions/ADR-0011-title-management-contract.md";
 const STAGE1D_COORDINATION_SCOPE = new Set([
@@ -70,6 +73,15 @@ const STAGE1E_CONVERGENCE_TRACKED_SCOPE = new Set([
 ]);
 const STAGE1E_CONVERGENCE_SCOPE = new Set([
   ...STAGE1E_CONVERGENCE_TRACKED_SCOPE,
+  STAGE1E_VALIDATOR_REL,
+]);
+// The Stage 1F candidate now also carries the passive sidebar presentation
+// adapter, because canonical convergence OFF must no longer strip the emoji.
+const STAGE1F_SCOPE = new Set([
+  RUNTIME_REL,
+  TAB_RUNTIME_REL,
+  SIDEBAR_RUNTIME_REL,
+  VALIDATOR_REL,
   STAGE1E_VALIDATOR_REL,
 ]);
 const STAGE1E_CORRECTIONS_SCOPE = new Set([
@@ -216,6 +228,12 @@ function parseRequestedScopeMode(argv) {
   const options = argv.filter((argument) => argument.startsWith(SCOPE_MODE_PREFIX));
   const stage1EOptions = argv.filter((argument) => argument.startsWith("--stage1e-convergence"));
   const correctionOptions = argv.filter((argument) => argument.startsWith("--stage1e-corrections"));
+  const stage1FOptions = argv.filter((argument) => argument.startsWith("--stage1f-rollback"));
+  assert(
+    stage1FOptions.every((argument) => argument === STAGE1F_SCOPE_OPTION),
+    "unknown Stage 1F rollback scope option",
+  );
+  assert(stage1FOptions.length <= 1, "duplicate Stage 1F rollback scope options are forbidden");
   assert(options.length <= 1, "duplicate --scope-mode options are forbidden");
   assert(
     stage1EOptions.every((argument) => argument === STAGE1E_CONVERGENCE_SCOPE_OPTION),
@@ -231,6 +249,11 @@ function parseRequestedScopeMode(argv) {
     Number(options.length > 0) + Number(stage1EOptions.length > 0) + Number(correctionOptions.length > 0) <= 1,
     "Stage 1E convergence scope conflicts with --scope-mode or another Stage 1E scope",
   );
+  assert(
+    !(stage1FOptions.length && (options.length || stage1EOptions.length || correctionOptions.length)),
+    "Stage 1F rollback scope conflicts with another scope option",
+  );
+  if (stage1FOptions.length === 1) return STAGE1F_SCOPE_MODE;
   if (stage1EOptions.length === 1) return STAGE1E_CONVERGENCE_SCOPE_MODE;
   if (correctionOptions.length === 1) return STAGE1E_CORRECTIONS_SCOPE_MODE;
   if (options.length === 0) return null;
@@ -249,6 +272,7 @@ function classifyStage1CScope({
   modifiedTracked,
   staged,
   untracked,
+  committedHeadPaths = [],
   trackedStage1CFiles,
   trackedCoordinationFiles,
   trackedStage1EFiles,
@@ -256,6 +280,7 @@ function classifyStage1CScope({
 }) {
   assert(
     requestedMode === null
+      || requestedMode === STAGE1F_SCOPE_MODE
       || requestedMode === "validator-self-correction"
       || requestedMode === ROUTE_CORRECTION_SCOPE_MODE
       || requestedMode === STAGE1D_COORDINATION_SCOPE_MODE
@@ -338,6 +363,26 @@ function classifyStage1CScope({
     );
     assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1e-convergence requires both tracked Stage 1C files");
     return STAGE1E_CONVERGENCE_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1F_SCOPE_MODE) {
+    assert.equal(untrackedPaths.size, 0, "stage1f-rollback forbids untracked paths");
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1f-rollback requires both tracked Stage 1C files");
+    // The candidate is equivalent whether it is still uncommitted or already
+    // committed as one focused commit, so both shapes are accepted and every
+    // partial, foreign, staged or mixed set still fails closed.
+    if (modified.size === 0) {
+      assert(
+        sameSet(new Set(committedHeadPaths), STAGE1F_SCOPE),
+        `committed-clean stage1f-rollback requires exactly ${JSON.stringify([...STAGE1F_SCOPE].sort())}`,
+      );
+      return STAGE1F_SCOPE_MODE;
+    }
+    assert(
+      sameSet(modified, STAGE1F_SCOPE),
+      `stage1f-rollback requires exactly ${JSON.stringify([...STAGE1F_SCOPE].sort())}`,
+    );
+    return STAGE1F_SCOPE_MODE;
   }
 
   if (requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE) {
@@ -426,6 +471,9 @@ function assertRepositoryScope(requestedMode) {
     modifiedTracked,
     staged,
     untracked,
+    committedHeadPaths: splitNul(
+      run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD", "--"]),
+    ),
     trackedStage1CFiles,
     trackedCoordinationFiles,
     trackedStage1EFiles,
@@ -610,6 +658,53 @@ scopeTest("unknown Stage 1E convergence scope options are rejected", () => {
     () => parseRequestedScopeMode(["--stage1e-convergence-scope=unknown"]),
     /unknown Stage 1E convergence scope option/u,
   );
+});
+scopeTest("Stage 1F rollback scope accepts the exact dirty four-file shape", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [...STAGE1F_SCOPE],
+    untracked: [],
+  })), STAGE1F_SCOPE_MODE);
+});
+scopeTest("Stage 1F rollback scope accepts the exact committed-clean four-file shape", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE],
+  })), STAGE1F_SCOPE_MODE);
+});
+scopeTest("Stage 1F rollback scope rejects a partial committed set", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE].slice(0, 3),
+  })), /committed-clean stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects a foreign fifth committed path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE, "src-runtime-base/foreign.js"],
+  })), /committed-clean stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects a mixed committed and dirty state", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [RUNTIME_REL],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE],
+  })), /stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects staged Stage 1F paths", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [...STAGE1F_SCOPE],
+    staged: [RUNTIME_REL],
+    untracked: [],
+  })), /staged paths are forbidden/u);
 });
 scopeTest("Stage 1E corrections scope accepts exactly the focused six-file set", () => {
   assert.equal(classifyStage1CScope(committedScopeInput({
@@ -1387,10 +1482,9 @@ test("native sanitizer attestation and formatter independently receive the origi
   const fixtures = [
     {
       baseTitle: "Title - ChatGPT - ChatGPT",
-      legacy: "✨ Title",
+      legacy: "✨ Title - ChatGPT",
       contract: "✨ Title - ChatGPT",
-      outcome: "mismatch",
-      mismatchClass: "chatgpt-suffix",
+      outcome: "match",
     },
     {
       baseTitle: "Title - ChatGPT",
@@ -1400,17 +1494,15 @@ test("native sanitizer attestation and formatter independently receive the origi
     },
     {
       baseTitle: "Alpha - Beta",
-      legacy: "✨ Beta",
+      legacy: "✨ Alpha - Beta",
       contract: "✨ Alpha - Beta",
-      outcome: "mismatch",
-      mismatchClass: "chatgpt-suffix",
+      outcome: "match",
     },
     {
       baseTitle: "Alpha - Beta - ChatGPT",
-      legacy: "✨ Beta",
+      legacy: "✨ Alpha - Beta",
       contract: "✨ Alpha - Beta",
-      outcome: "mismatch",
-      mismatchClass: "chatgpt-suffix",
+      outcome: "match",
     },
     {
       baseTitle: "ChatGPT",
@@ -1421,10 +1513,9 @@ test("native sanitizer attestation and formatter independently receive the origi
     },
     {
       baseTitle: "Title - ChatGPT\u200B",
-      legacy: "✨ ChatGPT\u200B",
+      legacy: "✨ Title - ChatGPT\u200B",
       contract: "✨ Title - ChatGPT\u200B",
-      outcome: "mismatch",
-      mismatchClass: "chatgpt-suffix",
+      outcome: "match",
     },
   ];
 
@@ -2280,7 +2371,8 @@ function assertProtectedRuntimeIdentity() {
   const paths = raw.toString().split("\0").filter(Boolean);
   const protectedPrefixes = (
     scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE ||
-    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE ||
+    scopeMode === STAGE1F_SCOPE_MODE
   )
     ? ["0A1a", "9D1a"]
     : ["0A1a", "9B1a", "9C1a", "9D1a"];
@@ -2300,6 +2392,23 @@ function assertProtectedRuntimeIdentity() {
   ) {
     assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", TAB_RUNTIME_REL]).trim(), "");
     assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", UNDER_INPUT_RUNTIME_REL]).trim(), "");
+  }
+  if (scopeMode === STAGE1F_SCOPE_MODE) {
+    // Stage 1F changes 9B1a and must never change 9C1a. The candidate carries
+    // that change either as a working-tree diff or as the committed diff, so
+    // the same requirement is checked against whichever shape is present.
+    const dirtyTab = run("git", ["diff", "--name-only", "HEAD", "--", TAB_RUNTIME_REL]).trim();
+    const dirtyUnderInput = run("git", ["diff", "--name-only", "HEAD", "--", UNDER_INPUT_RUNTIME_REL]).trim();
+    if (dirtyTab === "") {
+      const committed = splitNul(
+        run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD", "--"]),
+      );
+      assert(committed.includes(TAB_RUNTIME_REL), "stage1f-rollback requires a 9B1a change");
+      assert.equal(committed.includes(UNDER_INPUT_RUNTIME_REL), false, "stage1f-rollback must not change 9C1a");
+    } else {
+      assert.notEqual(dirtyTab, "");
+      assert.equal(dirtyUnderInput, "");
+    }
   }
 }
 
@@ -2409,22 +2518,26 @@ test("bridge regeneration and generated identities remain coherent", () => {
   assert.deepEqual(manifest.permissions, ["storage", "tabs", "contextMenus", "identity"]);
 });
 
-test("all 154 canonical aliases remain valid symlinks", () => {
+test("all 155 canonical aliases remain valid symlinks", () => {
   const script = `
     import fs from "node:fs";
     import path from "node:path";
     import { listAliasArtifacts } from "./tools/script-registry.mjs";
     const artifacts = listAliasArtifacts(path.resolve("apps/dev-server/alias"));
-    if (artifacts.length !== 154) process.exit(2);
+    if (artifacts.length !== 155) process.exit(2);
     for (const artifact of artifacts) {
       if (!fs.lstatSync(artifact.fullPath).isSymbolicLink()) process.exit(3);
       fs.realpathSync(artifact.fullPath);
     }
+    const sidebar = artifacts.filter((artifact) => artifact.filename === "9B2a._Sidebar_Title_Renderer_.js");
+    if (sidebar.length !== 1) process.exit(4);
+    if (!fs.lstatSync(sidebar[0].fullPath).isSymbolicLink()) process.exit(5);
+    fs.realpathSync(sidebar[0].fullPath);
   `;
   execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT });
 });
 
-assert.equal(scopeTests.length, 37, "scope test count drifted");
+assert.equal(scopeTests.length, 43, "scope test count drifted");
 assert.equal(tests.length, 56, "runtime scenario count drifted");
 
 console.log(JSON.stringify({

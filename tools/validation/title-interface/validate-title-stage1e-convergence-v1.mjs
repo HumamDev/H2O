@@ -28,6 +28,8 @@ const STAGE1EB_SCOPE_OPTION = "--stage1eb-sidebar-scope";
 const STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION = "--stage1eb-validator-fix-scope";
 const STAGE1EB_BASELINE_COMMIT = "767c934a3723e6f6cde8209494bf417e91b26187";
 const STAGE1EB_IMPLEMENTATION_COMMIT = "6baabd48083333a7e5e06eb9da970c8157626261";
+const STAGE1F_SCOPE_OPTION = "--stage1f-rollback-scope";
+const STAGE1F_ACCEPTED_HEAD = "262f68410c09e94e42de275992aaefcea928b2d1";
 const F0D_REL = "src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js";
 const F1C_REL = "src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js";
 const F2A_REL = "src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js";
@@ -40,6 +42,8 @@ const AUTHORIZED = new Set([B0_REL, B1_REL, C1_REL, SELF_REL, STAGE1C_REL, ADR_R
 const AUTHORIZED_TRACKED = new Set(AUTHORIZED);
 const STAGE1EB_TRACKED = new Set([DEV_ORDER_REL, LOADER_DEPS_REL, SELF_REL, ADR_REL]);
 const STAGE1EB_COMMITTED = new Set([...STAGE1EB_TRACKED, B2_REL]);
+// Stage 1F now also repairs the passive sidebar presentation adapter (9B2a).
+const STAGE1F_TRACKED = new Set([B0_REL, B1_REL, B2_REL, STAGE1C_REL, SELF_REL]);
 const EXPECTED_IDENTITY = Object.freeze({
   schemaVersion: 2,
   bridgeVersion: "3",
@@ -211,6 +215,48 @@ function classifyStage1EBScope({ modifiedTracked, staged, untracked, committedHe
   return "stage1eb-sidebar-dirty";
 }
 
+function classifyStage1FScope({ modifiedTracked, staged, untracked, committedHeadPaths = [], head = "", parent = "" }) {
+  const modified = new Set(modifiedTracked);
+  const stagedPaths = new Set(staged);
+  const untrackedPaths = new Set(untracked);
+  const headPaths = new Set(committedHeadPaths);
+  assert.equal(stagedPaths.size, 0, `staged paths forbidden: ${[...stagedPaths].sort().join(", ")}`);
+  assert.equal(untrackedPaths.size, 0, `Stage 1F scope forbids untracked paths: ${[...untrackedPaths].sort()}`);
+  if (modified.size === 0) {
+    assert.equal(parent, STAGE1F_ACCEPTED_HEAD, "Stage 1F commit parent must be the accepted Stage 1E HEAD");
+    assert(
+      sameSet(headPaths, STAGE1F_TRACKED),
+      `committed-clean Stage 1F scope mismatch: ${JSON.stringify([...headPaths].sort())}`,
+    );
+    return "stage1f-rollback-committed-clean";
+  }
+  // Dirty Stage 1F work sits either directly on the accepted Stage 1E HEAD or
+  // on the single amendable Stage 1F candidate whose parent is that HEAD. Any
+  // other base still fails closed.
+  assert(
+    head === STAGE1F_ACCEPTED_HEAD || parent === STAGE1F_ACCEPTED_HEAD,
+    "dirty Stage 1F work requires the accepted Stage 1E HEAD or its single-commit candidate",
+  );
+  if (head === STAGE1F_ACCEPTED_HEAD) {
+    assert(
+      sameSet(modified, STAGE1F_TRACKED),
+      `tracked Stage 1F scope mismatch: ${JSON.stringify([...modified].sort())}`,
+    );
+    return "stage1f-rollback-dirty";
+  }
+  // Amend round: the working set may touch a subset of the candidate, but the
+  // candidate as a whole must still be exactly the authorized four paths.
+  assert(
+    [...modified].every((relative) => STAGE1F_TRACKED.has(relative)),
+    `tracked Stage 1F scope mismatch: ${JSON.stringify([...modified].sort())}`,
+  );
+  assert(
+    sameSet(new Set([...modified, ...headPaths]), STAGE1F_TRACKED),
+    `combined Stage 1F candidate scope mismatch: ${JSON.stringify([...new Set([...modified, ...headPaths])].sort())}`,
+  );
+  return "stage1f-rollback-dirty";
+}
+
 function resolveStage1EBScope({
   modifiedTracked,
   staged,
@@ -303,12 +349,17 @@ function requestedScopeMode(argv) {
     argv.length === 0
       || (
         argv.length === 1
-        && (argv[0] === STAGE1EB_SCOPE_OPTION || argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION)
+        && (
+          argv[0] === STAGE1EB_SCOPE_OPTION
+          || argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION
+          || argv[0] === STAGE1F_SCOPE_OPTION
+        )
       ),
     `unknown or conflicting Stage 1E validator option: ${argv.join(" ")}`,
   );
   if (argv[0] === STAGE1EB_SCOPE_OPTION) return "stage1eb-sidebar";
   if (argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION) return "stage1eb-validator-fix";
+  if (argv[0] === STAGE1F_SCOPE_OPTION) return "stage1f-rollback";
   return "stage1ea";
 }
 
@@ -365,8 +416,103 @@ const stage1EBScopeResolution = requestedMode === "stage1eb-sidebar"
   || requestedMode === "stage1eb-validator-fix"
   ? resolveStage1EBScope(actualScope, requestedMode)
   : null;
-const scopeMode = stage1EBScopeResolution?.mode || classifyScope(actualScope);
+const scopeMode = requestedMode === "stage1f-rollback"
+  ? classifyStage1FScope(actualScope)
+  : (stage1EBScopeResolution?.mode || classifyScope(actualScope));
 
+// Stage 1F gate: the candidate is exactly five paths and stays fail-closed for
+// every partial, foreign, staged, untracked, generated or mis-based shape.
+const STAGE1F_CANDIDATE = [...STAGE1F_TRACKED];
+scopeTest("Stage 1F exact dirty five-file scope on the accepted head is accepted", () => {
+  assert.equal(classifyStage1FScope({
+    modifiedTracked: STAGE1F_CANDIDATE,
+    staged: [],
+    untracked: [],
+    head: STAGE1F_ACCEPTED_HEAD,
+  }), "stage1f-rollback-dirty");
+});
+scopeTest("Stage 1F committed-clean five-file candidate is accepted", () => {
+  assert.equal(classifyStage1FScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: STAGE1F_CANDIDATE,
+    head: "0000000000000000000000000000000000000000",
+    parent: STAGE1F_ACCEPTED_HEAD,
+  }), "stage1f-rollback-committed-clean");
+});
+scopeTest("Stage 1F amend round accepts a subset whose union is the candidate", () => {
+  assert.equal(classifyStage1FScope({
+    modifiedTracked: [B2_REL, SELF_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: STAGE1F_CANDIDATE,
+    head: "0000000000000000000000000000000000000000",
+    parent: STAGE1F_ACCEPTED_HEAD,
+  }), "stage1f-rollback-dirty");
+});
+scopeTest("Stage 1F rejects a partial candidate", () => {
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: [B0_REL, B1_REL, B2_REL, SELF_REL],
+    staged: [],
+    untracked: [],
+    head: STAGE1F_ACCEPTED_HEAD,
+  }), /tracked Stage 1F scope mismatch/u);
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: [B2_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [B0_REL, B1_REL],
+    head: "0000000000000000000000000000000000000000",
+    parent: STAGE1F_ACCEPTED_HEAD,
+  }), /combined Stage 1F candidate scope mismatch/u);
+});
+scopeTest("Stage 1F rejects foreign, disabled, generated and publication paths", () => {
+  for (const foreign of [
+    "foreign.js",
+    "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js",
+    "apps/dev-server/alias/9B2a._Sidebar_Title_Renderer_.js",
+    "tools/publish/canonical-write-guard.mjs",
+    C1_REL,
+  ]) {
+    assert.throws(() => classifyStage1FScope({
+      modifiedTracked: [...STAGE1F_CANDIDATE, foreign],
+      staged: [],
+      untracked: [],
+      head: STAGE1F_ACCEPTED_HEAD,
+    }), /tracked Stage 1F scope mismatch/u, `must reject ${foreign}`);
+  }
+});
+scopeTest("Stage 1F rejects staged and untracked paths", () => {
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: STAGE1F_CANDIDATE,
+    staged: [B2_REL],
+    untracked: [],
+    head: STAGE1F_ACCEPTED_HEAD,
+  }), /staged paths forbidden/u);
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: STAGE1F_CANDIDATE,
+    staged: [],
+    untracked: ["src-runtime-base/9B2a.generated.js"],
+    head: STAGE1F_ACCEPTED_HEAD,
+  }), /forbids untracked paths/u);
+});
+scopeTest("Stage 1F rejects a wrong base commit", () => {
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: STAGE1F_CANDIDATE,
+    staged: [],
+    untracked: [],
+    head: "1111111111111111111111111111111111111111",
+    parent: "2222222222222222222222222222222222222222",
+  }), /requires the accepted Stage 1E HEAD/u);
+  assert.throws(() => classifyStage1FScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: STAGE1F_CANDIDATE,
+    parent: "2222222222222222222222222222222222222222",
+  }), /parent must be the accepted Stage 1E HEAD/u);
+});
 scopeTest("exact authorized six-file scope is accepted", () => {
   assert.equal(classifyScope({
     modifiedTracked: [...AUTHORIZED_TRACKED],
@@ -661,9 +807,12 @@ function makeEffects() {
   };
 }
 
-function makeStorage(effects) {
-  const values = new Map();
+function makeStorage(effects, seed = null) {
+  const values = new Map(seed ? Object.entries(seed) : []);
   return {
+    entries() {
+      return Object.fromEntries(values);
+    },
     get length() {
       return values.size;
     },
@@ -822,15 +971,17 @@ function instrumentB0(source) {
 `);
 }
 
-function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Initial base - ChatGPT" } = {}) {
+function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Initial base - ChatGPT", storageSeed = null, store = "durable" } = {}) {
   const effects = makeEffects();
   const sidebarDom = createMiniDom(effects);
-  const storage = makeStorage(effects);
+  const storage = makeStorage(effects, storageSeed);
   const timers = makeTimers(effects);
   const windowEvents = makeEventHub();
   const documentEvents = makeEventHub();
   const titleNode = {};
   let sidebarEntry = null;
+  const sidebarRows = [];
+  let persistFailure = "";
   const libraryRows = new Map();
   let fetchHandler = async (url) => (
     url === "/api/auth/session"
@@ -882,8 +1033,13 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
       if (/^(?:aside|nav) /u.test(String(selector || ""))) return sidebarEntry;
       return null;
     },
-    querySelectorAll() {
-      return [];
+    querySelectorAll(selector) {
+      const value = String(selector || "");
+      const match = value.match(/\/c\/([a-z0-9_-]+)/iu);
+      if (!match) return [];
+      return sidebarRows.filter(
+        (anchor) => String(anchor.getAttribute("href") || "").includes(`/c/${match[1]}`),
+      );
     },
     createTreeWalker(root, show, filter) {
       return sidebarDom.document.createTreeWalker(root, show, filter);
@@ -951,6 +1107,32 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
       return libraryRows.get(String(chatId || "")) || null;
     },
   };
+  // Real durable Store so persistRecord executes its actual success/failure branches.
+  const storeRecords = new Map();
+  let storeSetCalls = 0;
+  if (store !== "none") sandbox.H2O.Library = {
+    Store: {
+      caps() {
+        return { ready: true, durable: true, health: "ok" };
+      },
+      backend() {
+        return "stage1e-store";
+      },
+      async get(key) {
+        return storeRecords.get(String(key)) || null;
+      },
+      async set(key, value) {
+        storeSetCalls += 1;
+        if (persistFailure) {
+          const message = persistFailure;
+          persistFailure = "";
+          throw new Error(message);
+        }
+        storeRecords.set(String(key), value);
+        return true;
+      },
+    },
+  };
   installContractBridge(context, sandbox, bridge);
   const instrumentedB0Source = instrumentB0(b0Source);
   new vm.Script(instrumentedB0Source, { filename: `${B0_REL}:stage1e-harness` }).runInContext(context);
@@ -983,6 +1165,33 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     setDocumentTitle(value) {
       document.title = value;
     },
+    addForeignSidebarRow(chatId, nativeText) {
+      const anchor = sidebarDom.document.createElement("a");
+      anchor.setAttribute("href", `/c/${chatId}`);
+      const layout = sidebarDom.document.createElement("div");
+      const native = sidebarDom.document.createElement("span");
+      native.className = "truncate";
+      native.textContent = String(nativeText || "");
+      layout.appendChild(native);
+      anchor.appendChild(layout);
+      sidebarDom.document.body.appendChild(anchor);
+      sidebarRows.push(anchor);
+      return { anchor, layout, native };
+    },
+    setStoreRecord(key, value) {
+      storeRecords.set(String(key), value);
+    },
+    failNextPersist(message) {
+      persistFailure = String(message || "bridge timeout (1500ms)");
+    },
+    storeSetCalls() { return storeSetCalls; },
+    runTimers(kind) {
+      for (const [id, timer] of [...effects.timers]) {
+        if (kind && timer.kind !== kind) continue;
+        if (timer.kind !== "interval") effects.timers.delete(id);
+        timer.callback();
+      }
+    },
     setSidebarReaderFixture(nativeText, displayText) {
       const anchor = sidebarDom.document.createElement("a");
       anchor.setAttribute("href", "/c/stage1e-chat-a");
@@ -998,6 +1207,7 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
       anchor.appendChild(layout);
       sidebarDom.document.body.appendChild(anchor);
       sidebarEntry = anchor;
+      sidebarRows.push(anchor);
       return {
         anchor,
         layout,
@@ -1211,6 +1421,7 @@ function createTabHarness(initialState) {
         if (observer.active) observer.callback([]);
       }
     },
+    storeSetCalls() { return storeSetCalls; },
     runTimers(kind) {
       for (const [id, timer] of [...effects.timers]) {
         if (kind && timer.kind !== kind) continue;
@@ -2105,7 +2316,10 @@ function patchBody(effects) {
 
 await scenario("default flag state preserves the legacy formatter path", () => {
   const harness = createB0Harness();
-  assert.equal(harness.hook.displayFrom("Alpha - Beta", "✨"), "✨ Beta");
+  // internal separators are ordinary content in both modes
+  assert.equal(harness.hook.displayFrom("Alpha - Beta", "✨"), "✨ Alpha - Beta");
+  // legacy still differs from canonical where the contract intends it to
+  assert.equal(harness.hook.displayFrom("ChatGPT", "✨"), "✨");
   harness.api.debug.refreshDisplay("default-legacy");
   assert.equal(harness.api.getState().convergence.mode, "legacy");
   assert.equal(harness.api.getState().convergence.enabled, false);
@@ -2114,6 +2328,8 @@ await scenario("default flag state preserves the legacy formatter path", () => {
 await scenario("explicit flag activation selects the canonical formatter path", () => {
   const harness = createB0Harness({ flag: true });
   assert.equal(harness.hook.displayFrom("Alpha - Beta", "✨"), "✨ Alpha - Beta");
+  // canonical keeps a bare "ChatGPT" as valid content; legacy rejects it
+  assert.equal(harness.hook.displayFrom("ChatGPT", "✨"), "✨ ChatGPT");
   harness.api.debug.refreshDisplay("canonical-on");
   assert.equal(harness.api.getState().convergence.mode, "canonical");
   assert.equal(harness.api.getState().convergence.enabled, true);
@@ -2121,13 +2337,15 @@ await scenario("explicit flag activation selects the canonical formatter path", 
 
 await scenario("invalid or missing bridge identity falls back to legacy", () => {
   const invalid = createB0Harness({ flag: true, bridge: "invalid" });
-  assert.equal(invalid.hook.displayFrom("Alpha - Beta", "✨"), "✨ Beta");
+  assert.equal(invalid.hook.displayFrom("Alpha - Beta", "✨"), "✨ Alpha - Beta");
+  assert.equal(invalid.hook.displayFrom("ChatGPT", "✨"), "✨");
   invalid.api.debug.refreshDisplay("invalid-bridge");
   assert.equal(invalid.api.getState().convergence.mode, "legacy-fallback");
   assert.match(invalid.api.getState().lastWarning, /contract gate identity-mismatch/u);
 
   const absent = createB0Harness({ flag: true, bridge: "absent" });
-  assert.equal(absent.hook.displayFrom("Alpha - Beta", "✨"), "✨ Beta");
+  assert.equal(absent.hook.displayFrom("Alpha - Beta", "✨"), "✨ Alpha - Beta");
+  assert.equal(absent.hook.displayFrom("ChatGPT", "✨"), "✨");
 });
 
 await scenario("ordinary LTR title uses canonical composition", () => {
@@ -3603,6 +3821,937 @@ await scenario("sidebar INV-3 performs zero canonical mutations", () => {
   assert.equal(harness.mutations.canonical, 0);
 });
 
+/* ── Stage 1F live rollback regression ─────────────────────────────────────
+   Reproduces the confirmed browser canary divergence: a base title with an
+   internal " - " separator collapsed to its final segment in legacy mode,
+   and the revealed native sidebar row kept a pre-rename title. */
+
+const LIVE_BASE_TITLE = "Title Canary Alpha - Beta";
+const LIVE_EMOJI = "🔶";
+const LIVE_DISPLAY_TITLE = `${LIVE_EMOJI} ${LIVE_BASE_TITLE}`;
+const LIVE_STALE_NATIVE_TITLE = `${LIVE_EMOJI} Talk about something`;
+
+await scenario("live regression: internal separator survives legacy canonical legacy transitions", async () => {
+  const harness = createB0Harness({ flag: false });
+  const chatId = harness.api.getState().chatId;
+  await seedConfirmedUserTitle(harness, LIVE_DISPLAY_TITLE, "stage1f-live-seed");
+  assert.equal(harness.api.getState().baseTitle, LIVE_BASE_TITLE);
+  assert.equal(harness.api.getState().emoji, LIVE_EMOJI);
+
+  // legacy (flag off) must not collapse the hyphenated base to its last segment
+  assert.equal(harness.api.getState().convergence.enabled, false);
+  assert.equal(harness.api.getState().displayTitle, LIVE_DISPLAY_TITLE);
+  assert.equal(harness.hook.legacyDisplayFrom(LIVE_BASE_TITLE, LIVE_EMOJI), LIVE_DISPLAY_TITLE);
+
+  // legacy -> canonical
+  harness.setRuntimeFlag(true);
+  assert.equal(harness.api.getState().convergence.mode, "canonical");
+  assert.equal(harness.api.getState().displayTitle, LIVE_DISPLAY_TITLE);
+  assert.equal(harness.api.getState().baseTitle, LIVE_BASE_TITLE);
+
+  // canonical -> legacy (the live rollback step)
+  harness.setRuntimeFlag(false);
+  assert.equal(harness.api.getState().convergence.mode, "legacy");
+  assert.equal(harness.api.getState().displayTitle, LIVE_DISPLAY_TITLE);
+  assert.equal(harness.api.getState().baseTitle, LIVE_BASE_TITLE);
+  assert.notEqual(harness.api.getState().displayTitle, `${LIVE_EMOJI} Beta`);
+});
+
+await scenario("live regression: legacy sanitizer preserves internal separators and suffix rules", () => {
+  const harness = createB0Harness({ flag: false });
+  const cases = [
+    ["Title Canary Alpha - Beta", "Title Canary Alpha - Beta"],
+    ["Alpha - Beta", "Alpha - Beta"],
+    ["Alpha - Beta - ChatGPT", "Alpha - Beta"],
+    ["Design - implementation", "Design - implementation"],
+    ["Release plan - ChatGPT", "Release plan"],
+    ["Title - ChatGPT - ChatGPT", "Title - ChatGPT"],
+    ["ChatGPT", ""],
+    ["  spaced   base  ", "spaced base"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(harness.hook.legacyDisplayFrom(input, ""), expected, `legacy base for ${JSON.stringify(input)}`);
+  }
+  // legacy ingestion must not truncate a hyphenated native title either
+  assert.equal(harness.hook.splitNativeSubmission("Title Canary Alpha - Beta").baseTitle, "Title Canary Alpha - Beta");
+});
+
+await scenario("live regression: confirmed rename reconciles the stale native sidebar row", async () => {
+  const harness = createB0Harness({ flag: true });
+  const chatId = harness.api.getState().chatId;
+  const fixture = harness.setSidebarReaderFixture(LIVE_STALE_NATIVE_TITLE, "");
+  const foreign = harness.addForeignSidebarRow("stage1e-chat-foreign", "Foreign untouched");
+  harness.effects.resetTransient();
+
+  const result = await harness.api.renameNative(LIVE_DISPLAY_TITLE, {
+    userInitiated: true,
+    source: "under-input",
+    chatId,
+    expectedRouteToken: harness.api.getState().routeToken,
+    expectedRouteKind: "chat",
+    operationId: "stage1f-native-reconcile",
+  });
+  assert.equal(result.ok, true);
+
+  // exactly one PATCH, carrying the clean base only
+  const patches = harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH");
+  assert.equal(patches.length, 1);
+  assert.deepEqual(JSON.parse(patches[0].options.body), { title: LIVE_BASE_TITLE });
+
+  // the revealed native row now carries the confirmed clean base, never the composed display
+  assert.equal(fixture.native.textContent, LIVE_BASE_TITLE);
+  assert.notEqual(fixture.native.textContent, LIVE_DISPLAY_TITLE);
+  assert.equal(fixture.native.textContent.includes(LIVE_EMOJI), false);
+  // 9B0a must not take renderer ownership of the native node
+  assert.equal(fixture.native.getAttribute("data-h2o-owner"), null);
+  assert.equal(fixture.anchor.getAttribute("data-h2o-title-sidebar-adopted"), null);
+  // native readers still see the clean confirmed base
+  assert.equal(harness.hook.readSidebarTitle(chatId), LIVE_BASE_TITLE);
+  // wrong-chat rows are never rewritten
+  assert.equal(foreign.native.textContent, "Foreign untouched");
+});
+
+await scenario("live regression: rollback keeps the emoji and teardown reveals the native title", async () => {
+  const harness = createB0Harness({ flag: true });
+  const chatId = harness.api.getState().chatId;
+  const fixture = harness.setSidebarReaderFixture(LIVE_STALE_NATIVE_TITLE, "");
+  await seedConfirmedUserTitle(harness, LIVE_DISPLAY_TITLE, "stage1f-rollback-seed");
+  assert.equal(fixture.native.textContent, LIVE_BASE_TITLE);
+
+  const sidebar = adoptedSidebar({
+    nativeTitle: LIVE_BASE_TITLE,
+    displayTitle: LIVE_DISPLAY_TITLE,
+    baseTitle: LIVE_BASE_TITLE,
+    emoji: LIVE_EMOJI,
+  });
+  assert.equal(sidebar.harness.renderedText(sidebar.row), LIVE_DISPLAY_TITLE);
+  assert.equal(sidebar.row.anchor.hasAttribute("aria-labelledby"), true);
+
+  sidebar.harness.emit({ convergence: { enabled: false, mode: "legacy" } });
+  sidebar.harness.runFrames();
+
+  // Convergence OFF drops title authority, not the emoji: the passive legacy
+  // presentation stays and the native node is still only hidden, never rewritten.
+  assert.notEqual(sidebar.harness.visual(sidebar.row), null);
+  assert.equal(sidebar.harness.renderedText(sidebar.row), LIVE_DISPLAY_TITLE);
+  assert.equal(sidebar.row.anchor.getAttribute("aria-labelledby"), sidebar.harness.visual(sidebar.row).id);
+  assert.equal(sidebar.row.source.textContent, LIVE_BASE_TITLE);
+  assert.equal(sidebar.harness.runtime().diagnose().presentationMode, "legacy");
+  assert.equal(sidebar.harness.mutations.patches, 0);
+  assert.equal(sidebar.harness.mutations.canonical, 0);
+  assert.equal(sidebar.harness.mutations.storeWrites, 0);
+
+  // Teardown is where the untouched native title becomes the safe fallback.
+  sidebar.harness.destroy();
+  assert.equal(sidebar.harness.visual(sidebar.row), null);
+  assert.equal(sidebar.row.anchor.hasAttribute("aria-labelledby"), false);
+  assert.equal(sidebar.row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(sidebar.row.source.textContent, LIVE_BASE_TITLE);
+  assert.equal(sidebar.harness.renderedText(sidebar.row), LIVE_BASE_TITLE);
+
+  // the coordinator's legacy display is still the full confirmed title
+  harness.setRuntimeFlag(false);
+  assert.equal(harness.api.getState().displayTitle, LIVE_DISPLAY_TITLE);
+});
+
+await scenario("live regression: store.persist bridge timeout does not alter canonical display", async () => {
+  const harness = createB0Harness({ flag: true });
+  await seedConfirmedUserTitle(harness, LIVE_DISPLAY_TITLE, "stage1f-persist-seed");
+  // attach the durable Store so persistRecord executes its real failure branch
+  harness.runTimers("timeout");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().storageBackend, "stage1e-store");
+  const before = currentRecord(harness);
+  harness.failNextPersist("bridge timeout (1500ms)");
+  harness.api.setEmoji({
+    chatId: harness.api.getState().chatId,
+    emoji: LIVE_EMOJI,
+    source: "user",
+    priority: 100,
+  }, { force: true, reason: "stage1f-persist-probe" });
+  await flushMicrotasks(8);
+
+  const state = harness.api.getState();
+  // the real persist branch ran and failed exactly once
+  assert.equal(harness.storeSetCalls(), 1);
+  assert.match(harness.api.selfCheck().lastError, /^store\.persist: bridge timeout \(1500ms\)$/u);
+  assert.equal(state.baseTitle, LIVE_BASE_TITLE);
+  assert.equal(state.emoji, LIVE_EMOJI);
+  assert.equal(state.displayTitle, LIVE_DISPLAY_TITLE);
+  assert.equal(state.convergence.mode, "canonical");
+  harness.setRuntimeFlag(false);
+  assert.equal(harness.api.getState().displayTitle, LIVE_DISPLAY_TITLE);
+  assert.equal(currentRecord(harness).baseTitle, before.baseTitle);
+});
+
+/* ── Stage 1F reload-persistence regression ────────────────────────────────
+   Live sequence: a confirmed rename to "Title Canary Gamma - Delta" succeeded
+   against a durable Store, but the boot cache kept the previous confirmed
+   "Title Canary Alpha - Beta" record. After a reload with the durable bridge
+   unavailable, that stale priority-100 record defeated the current native
+   title indefinitely. */
+
+const RELOAD_OLD_BASE = "Title Canary Alpha - Beta";
+const RELOAD_NEW_BASE = "Title Canary Gamma - Delta";
+const RELOAD_EMOJI = "🔶";
+const RELOAD_NEW_DISPLAY = `${RELOAD_EMOJI} ${RELOAD_NEW_BASE}`;
+
+function bootCacheKeyFor(chatId) {
+  return `h2o:prm:cgx:library:chat-title:boot-cache:v1:${chatId}`;
+}
+
+function staleBootCacheSeed(chatId, baseTitle = RELOAD_OLD_BASE) {
+  const stamp = 1785426477911;
+  return {
+    [bootCacheKeyFor(chatId)]: JSON.stringify({
+      version: 1,
+      chatId,
+      state: {
+        version: 1,
+        chatId,
+        baseTitle,
+        source: "user",
+        priority: 100,
+        confidence: 1,
+        emoji: RELOAD_EMOJI,
+        emojiSource: "native-title",
+        emojiPriority: 90,
+        emojiConfidence: 0.95,
+        updatedAt: stamp,
+        emojiUpdatedAt: 1785239809513,
+      },
+      updatedAt: stamp + 6537,
+      expiresAt: stamp + 604800000,
+    }),
+  };
+}
+
+function readBootCacheRecord(harness, chatId) {
+  const raw = harness.storage.entries()[bootCacheKeyFor(chatId)];
+  return raw ? JSON.parse(raw) : null;
+}
+
+await scenario("live reload: confirmed rename refreshes the boot cache even when the durable Store succeeds", async () => {
+  const harness = createB0Harness({ flag: true });
+  const chatId = harness.api.getState().chatId;
+  harness.runTimers("timeout");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().storageBackend, "stage1e-store");
+
+  await seedConfirmedUserTitle(harness, `${RELOAD_EMOJI} ${RELOAD_NEW_BASE}`, "stage1f-reload-write");
+  await flushMicrotasks(8);
+
+  // the durable Store write must not be the only durable copy
+  assert.equal(harness.storeSetCalls() >= 1, true);
+  const cached = readBootCacheRecord(harness, chatId);
+  assert(cached, "confirmed rename must leave a boot-cache record");
+  assert.equal(cached.state.baseTitle, RELOAD_NEW_BASE);
+  assert.equal(cached.state.emoji, RELOAD_EMOJI);
+  assert.notEqual(cached.state.baseTitle, RELOAD_OLD_BASE);
+});
+
+await scenario("live reload: stale boot record cannot defeat the current native title", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  // fresh document: durable bridge unavailable, stale boot cache, current native title
+  const reload = createB0Harness({
+    flag: true,
+    store: "none",
+    documentTitle: `${RELOAD_NEW_BASE} - ChatGPT`,
+    storageSeed: staleBootCacheSeed(chatId),
+  });
+  reload.setRoute(`/c/${chatId}`);
+  reload.setSidebarReaderFixture(RELOAD_NEW_BASE, "");
+  reload.api.refresh("stage1f-reload-boot");
+  await flushMicrotasks(8);
+
+  const state = reload.api.getState();
+  assert.equal(state.chatId, chatId);
+  assert.equal(state.baseTitle, RELOAD_NEW_BASE, "current native title must win over the stale boot record");
+  assert.equal(state.emoji, RELOAD_EMOJI, "separately stored emoji must survive reconciliation");
+  assert.equal(state.displayTitle, RELOAD_NEW_DISPLAY);
+  assert.equal(state.convergence.enabled, true);
+
+  // durability is honestly reported and no error is invented
+  const check = reload.api.selfCheck();
+  assert.equal(check.storageBackend, "memory");
+  assert.equal(check.durability.durable, false);
+
+  // reconciliation performs no PATCH and no wrong-chat write
+  assert.equal(reload.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+  assert.equal(recordFor(reload, "stage1e-chat-b"), null);
+
+  // the corrected record is written back so a second reload is already clean
+  const refreshed = readBootCacheRecord(reload, chatId);
+  assert(refreshed, "reconciled record must refresh the boot cache");
+  assert.equal(refreshed.state.baseTitle, RELOAD_NEW_BASE);
+  assert.equal(refreshed.state.emoji, RELOAD_EMOJI);
+});
+
+await scenario("live reload: legacy mode reconciles the same stale record without hyphen truncation", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const reload = createB0Harness({
+    flag: false,
+    store: "none",
+    documentTitle: `${RELOAD_NEW_BASE} - ChatGPT`,
+    storageSeed: staleBootCacheSeed(chatId),
+  });
+  reload.setRoute(`/c/${chatId}`);
+  reload.setSidebarReaderFixture(RELOAD_NEW_BASE, "");
+  reload.api.refresh("stage1f-reload-legacy");
+  await flushMicrotasks(8);
+
+  const state = reload.api.getState();
+  assert.equal(state.baseTitle, RELOAD_NEW_BASE);
+  assert.equal(state.displayTitle, RELOAD_NEW_DISPLAY);
+  assert.equal(state.convergence.mode, "legacy");
+});
+
+await scenario("live reload: a fresh in-session user title still outranks native detection", async () => {
+  const harness = createB0Harness({ flag: true, store: "none" });
+  const chatId = harness.api.getState().chatId;
+  harness.setSidebarReaderFixture("Native sidebar value", "");
+  harness.api.setTitle({
+    chatId,
+    baseTitle: "User chosen in session",
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason: "stage1f-user-precedence" });
+
+  harness.hook.detectTitles("stage1f-user-precedence-detect");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, "User chosen in session");
+});
+
+await scenario("live reload: store rejection and unavailability both leave a current boot record", async () => {
+  const rejected = createB0Harness({ flag: true });
+  const rejectedChatId = rejected.api.getState().chatId;
+  rejected.runTimers("timeout");
+  await flushMicrotasks(8);
+  rejected.failNextPersist("bridge timeout (1500ms)");
+  await seedConfirmedUserTitle(rejected, `${RELOAD_EMOJI} ${RELOAD_NEW_BASE}`, "stage1f-reject-write");
+  await flushMicrotasks(8);
+  const rejectedCache = readBootCacheRecord(rejected, rejectedChatId);
+  assert(rejectedCache, "rejected persist must still leave a boot record");
+  assert.equal(rejectedCache.state.baseTitle, RELOAD_NEW_BASE);
+
+  const unavailable = createB0Harness({ flag: true, store: "none" });
+  const unavailableChatId = unavailable.api.getState().chatId;
+  await seedConfirmedUserTitle(unavailable, `${RELOAD_EMOJI} ${RELOAD_NEW_BASE}`, "stage1f-unavailable-write");
+  await flushMicrotasks(8);
+  const unavailableCache = readBootCacheRecord(unavailable, unavailableChatId);
+  assert(unavailableCache, "unavailable Store must still leave a boot record");
+  assert.equal(unavailableCache.state.baseTitle, RELOAD_NEW_BASE);
+  assert.equal(unavailable.api.selfCheck().durability.durable, false);
+});
+
+/* ── Stage 1F Store-vs-boot-cache freshness regression ─────────────────────
+   Live sequence: the durable Store held an older confirmed title while the
+   boot cache and the native row already held a newer one. Equal user priority
+   let the late Store hydration overwrite the newer record, and the restored
+   record was no longer reconcilable, so current native truth could not
+   recover canonical state. */
+
+const FRESH_OLD_BASE = "Title Canary Gamma - Delta";
+const FRESH_NEW_BASE = "Title Canary Epsilon - Zeta";
+const FRESH_EMOJI = "🔶";
+const FRESH_NEW_DISPLAY = `${FRESH_EMOJI} ${FRESH_NEW_BASE}`;
+const FRESH_T_OLD = 1785426477911;
+const FRESH_T_NEW = 1785440877911;
+
+function persistedTitleRecord(chatId, baseTitle, updatedAt) {
+  return {
+    version: 1,
+    chatId,
+    baseTitle,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+    emoji: FRESH_EMOJI,
+    emojiSource: "native-title",
+    emojiPriority: 90,
+    emojiConfidence: 0.95,
+    updatedAt,
+    emojiUpdatedAt: 1785239809513,
+  };
+}
+
+function bootCacheSeedAt(chatId, baseTitle, updatedAt) {
+  return {
+    [bootCacheKeyFor(chatId)]: JSON.stringify({
+      version: 1,
+      chatId,
+      state: persistedTitleRecord(chatId, baseTitle, updatedAt),
+      updatedAt: updatedAt + 10,
+      expiresAt: updatedAt + 604800000,
+    }),
+  };
+}
+
+async function hydrateWithStoreRecord(harness, chatId, storeRecord) {
+  harness.setStoreRecord(storageKeyFor(chatId), storeRecord);
+  harness.runTimers("timeout");
+  await flushMicrotasks(12);
+}
+
+function storageKeyFor(chatId) {
+  return `h2o:prm:cgx:library:chat-title:state:v1:${chatId}`;
+}
+
+await scenario("live reload: an older Store record cannot overwrite a newer boot cache", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: `${FRESH_NEW_BASE} - ChatGPT`,
+    storageSeed: bootCacheSeedAt(chatId, FRESH_NEW_BASE, FRESH_T_NEW),
+  });
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture(FRESH_NEW_BASE, "");
+  harness.api.refresh("stage1f-store-freshness-boot");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_NEW_BASE);
+
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, FRESH_OLD_BASE, FRESH_T_OLD));
+
+  const state = harness.api.getState();
+  assert.equal(state.baseTitle, FRESH_NEW_BASE, "older Store record must not defeat the newer cache");
+  assert.equal(state.emoji, FRESH_EMOJI);
+  assert.equal(state.displayTitle, FRESH_NEW_DISPLAY);
+  assert.equal(readBootCacheRecord(harness, chatId).state.baseTitle, FRESH_NEW_BASE);
+
+  // repeated native detection must not oscillate
+  harness.hook.detectTitles("stage1f-store-freshness-repeat-1");
+  harness.hook.detectTitles("stage1f-store-freshness-repeat-2");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_NEW_BASE);
+  assert.equal(readBootCacheRecord(harness, chatId).state.baseTitle, FRESH_NEW_BASE);
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+  assert.equal(recordFor(harness, "stage1e-chat-b"), null);
+});
+
+await scenario("live reload: a genuinely newer Store record still wins", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: `${FRESH_OLD_BASE} - ChatGPT`,
+    storageSeed: bootCacheSeedAt(chatId, FRESH_OLD_BASE, FRESH_T_OLD),
+  });
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture(FRESH_OLD_BASE, "");
+  harness.api.refresh("stage1f-store-newer-boot");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_OLD_BASE);
+
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, FRESH_NEW_BASE, FRESH_T_NEW));
+  assert.equal(harness.api.getState().baseTitle, FRESH_NEW_BASE, "newer Store record must win");
+  assert.equal(harness.api.getState().emoji, FRESH_EMOJI);
+});
+
+await scenario("live reload: equal freshness keeps the incumbent deterministically", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: "ChatGPT",
+    storageSeed: bootCacheSeedAt(chatId, FRESH_NEW_BASE, FRESH_T_NEW),
+  });
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture("", "");
+  harness.api.refresh("stage1f-store-equal-boot");
+  await flushMicrotasks(8);
+
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, FRESH_OLD_BASE, FRESH_T_NEW));
+  assert.equal(harness.api.getState().baseTitle, FRESH_NEW_BASE);
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, FRESH_OLD_BASE, FRESH_T_NEW));
+  assert.equal(harness.api.getState().baseTitle, FRESH_NEW_BASE, "equal freshness must not oscillate");
+});
+
+await scenario("live reload: stale Store hydration is reconciled once by exact-route native truth", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: `${FRESH_NEW_BASE} - ChatGPT`,
+    storageSeed: null,
+  });
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture(FRESH_NEW_BASE, "");
+  harness.api.refresh("stage1f-store-reconcile-boot");
+  await flushMicrotasks(8);
+  // no cache at all: the only startup record comes from a stale Store
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, FRESH_OLD_BASE, FRESH_T_OLD));
+  harness.hook.detectTitles("stage1f-store-reconcile");
+  await flushMicrotasks(8);
+
+  const state = harness.api.getState();
+  assert.equal(state.baseTitle, FRESH_NEW_BASE, "exact-route native truth must reconcile a stale Store record");
+  assert.equal(state.emoji, FRESH_EMOJI);
+  assert.equal(state.displayTitle, FRESH_NEW_DISPLAY);
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+});
+
+await scenario("live reload: wrong-route and wrong-chat native titles never reconcile", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: `${FRESH_NEW_BASE} - ChatGPT`,
+    storageSeed: bootCacheSeedAt(chatId, FRESH_OLD_BASE, FRESH_T_OLD),
+  });
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture("", "");
+  harness.api.refresh("stage1f-wrong-route-boot");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_OLD_BASE);
+
+  // a transient non-chat route carries no exact-route native truth, so the
+  // restored record must survive it untouched
+  harness.setRoute("/");
+  harness.setSidebarReaderFixture(FRESH_NEW_BASE, "");
+  harness.api.refresh("stage1f-wrong-route");
+  await flushMicrotasks(8);
+  assert.equal(recordFor(harness, chatId)?.baseTitle ?? null, FRESH_OLD_BASE);
+
+  harness.setRoute(`/c/${chatId}`);
+  harness.setSidebarReaderFixture("", "");
+  harness.api.refresh("stage1f-empty-native");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_OLD_BASE, "empty native text must not reconcile");
+});
+
+await scenario("live reload: interrupted and completed Store writes both stay recoverable", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  // interrupted: Store write never lands, but the boot cache already carries it
+  const interrupted = createB0Harness({ flag: true, store: "none", documentTitle: `${FRESH_NEW_BASE} - ChatGPT` });
+  interrupted.setRoute(`/c/${chatId}`);
+  interrupted.api.setTitle({
+    chatId,
+    baseTitle: FRESH_NEW_BASE,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason: "stage1f-interrupted-write" });
+  await flushMicrotasks(8);
+  assert.equal(readBootCacheRecord(interrupted, chatId).state.baseTitle, FRESH_NEW_BASE);
+  assert.equal(interrupted.api.selfCheck().durability.durable, false);
+
+  // completed: durable Store write also mirrors into the boot cache
+  const completed = createB0Harness({ flag: true, documentTitle: `${FRESH_NEW_BASE} - ChatGPT` });
+  completed.setRoute(`/c/${chatId}`);
+  completed.runTimers("timeout");
+  await flushMicrotasks(8);
+  completed.api.setTitle({
+    chatId,
+    baseTitle: FRESH_NEW_BASE,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason: "stage1f-completed-write" });
+  await flushMicrotasks(8);
+  assert.equal(readBootCacheRecord(completed, chatId).state.baseTitle, FRESH_NEW_BASE);
+  assert.equal(completed.storeSetCalls() >= 1, true);
+});
+
+// Stage 1F live canary: after a reload the exact-route sidebar row can still be
+// rendering ChatGPT's pre-reload cached title for a few frames. That stale value
+// differs from the restored record exactly as a current one would, so startup
+// reconciliation must not be spent on it.
+const STARTUP_STALE_BASE = FRESH_NEW_BASE;
+const STARTUP_CURRENT_BASE = "Title Canary Eta - Theta";
+const STARTUP_CURRENT_DISPLAY = `${FRESH_EMOJI} ${STARTUP_CURRENT_BASE}`;
+
+function startupHarness(chatId) {
+  // boot cache holds the newest persisted title; the Store lags behind it
+  const harness = createB0Harness({
+    flag: true,
+    documentTitle: `${STARTUP_STALE_BASE} - ChatGPT`,
+    storageSeed: bootCacheSeedAt(chatId, STARTUP_CURRENT_BASE, FRESH_T_NEW),
+  });
+  harness.setRoute(`/c/${chatId}`);
+  return harness;
+}
+
+await scenario("live reload: a stale startup sidebar row cannot capture the restored record", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  // the row still shows ChatGPT's pre-reload cached title
+  const fixture = harness.setSidebarReaderFixture(STARTUP_STALE_BASE, "");
+  harness.api.refresh("stage1f-startup-stale-row");
+  await flushMicrotasks(8);
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, STARTUP_STALE_BASE, FRESH_T_OLD));
+  const captured = recordFor(harness, chatId);
+  assert.equal(
+    captured.restoredFromPersistence,
+    true,
+    "a stale startup row must not consume restored-persistence reconciliation",
+  );
+
+  // React replaces the row with the real current title
+  fixture.native.textContent = STARTUP_CURRENT_BASE;
+  harness.api.refresh("stage1f-startup-row-settled");
+  await flushMicrotasks(8);
+
+  const state = harness.api.getState();
+  assert.equal(state.baseTitle, STARTUP_CURRENT_BASE, "the settled native title must still win");
+  assert.equal(state.emoji, FRESH_EMOJI, "emoji stays separately stored");
+  assert.equal(state.displayTitle, STARTUP_CURRENT_DISPLAY);
+  assert.equal(readBootCacheRecord(harness, chatId).state.baseTitle, STARTUP_CURRENT_BASE);
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+
+  // a late stale Store read must not revert the reconciled title
+  await hydrateWithStoreRecord(harness, chatId, persistedTitleRecord(chatId, STARTUP_STALE_BASE, FRESH_T_OLD));
+  assert.equal(harness.api.getState().baseTitle, STARTUP_CURRENT_BASE, "older Store data must not regain authority");
+});
+
+await scenario("live reload: an absent startup sidebar row defers reconciliation to the mounted row", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  harness.api.refresh("stage1f-startup-no-row");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, STARTUP_CURRENT_BASE);
+  assert.equal(recordFor(harness, chatId).restoredFromPersistence, true);
+
+  const fixture = harness.setSidebarReaderFixture(STARTUP_STALE_BASE, "");
+  harness.api.refresh("stage1f-startup-row-mounted-stale");
+  await flushMicrotasks(8);
+  fixture.native.textContent = STARTUP_CURRENT_BASE;
+  harness.api.refresh("stage1f-startup-row-mounted-current");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, STARTUP_CURRENT_BASE);
+});
+
+await scenario("live reload: H2O-owned document titles never reconcile a restored record", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  harness.setSidebarReaderFixture("", "");
+  harness.api.refresh("stage1f-owned-doc-boot");
+  await flushMicrotasks(8);
+
+  // 9B1a composes and writes the canonical display, then declares the own write
+  const composed = `${FRESH_EMOJI} ${STARTUP_STALE_BASE}`;
+  harness.api.markDocumentTitleWrite(composed, { source: "tab-title" });
+  harness.setDocumentTitle(composed);
+  harness.api.refresh("stage1f-owned-doc-readback");
+  await flushMicrotasks(8);
+
+  assert.equal(harness.api._isOwnDocumentTitle(composed), true, "own-write tracking must recognise the write");
+  const rec = recordFor(harness, chatId);
+  assert.equal(rec.baseTitle, STARTUP_CURRENT_BASE, "H2O's own document title must not become canonical state");
+  assert.equal(rec.source, "user", "an own document title must not change provenance");
+  assert.equal(rec.restoredFromPersistence, true, "an own document title must not consume reconciliation");
+});
+
+await scenario("live reload: a non-owned same-value document title never reconciles", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  harness.setSidebarReaderFixture("", "");
+  harness.api.refresh("stage1f-foreign-doc-boot");
+  await flushMicrotasks(8);
+  const before = recordFor(harness, chatId);
+
+  harness.setDocumentTitle(`${STARTUP_CURRENT_BASE} - ChatGPT`);
+  harness.api.refresh("stage1f-foreign-doc-readback");
+  await flushMicrotasks(8);
+
+  const after = recordFor(harness, chatId);
+  assert.equal(after.baseTitle, STARTUP_CURRENT_BASE);
+  assert.equal(after.source, before.source, "a same-value document read must not change provenance");
+  assert.equal(after.updatedAt, before.updatedAt, "a same-value document read must not restamp");
+  assert.equal(after.restoredFromPersistence, true, "a document read must never consume reconciliation");
+});
+
+await scenario("live reload: repeated settled native observations cause no churn or oscillation", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  const fixture = harness.setSidebarReaderFixture(STARTUP_STALE_BASE, "");
+  harness.api.refresh("stage1f-churn-stale");
+  await flushMicrotasks(8);
+  fixture.native.textContent = STARTUP_CURRENT_BASE;
+  harness.api.refresh("stage1f-churn-settled");
+  await flushMicrotasks(8);
+  const settled = recordFor(harness, chatId);
+
+  for (const reason of ["stage1f-churn-a", "stage1f-churn-b", "stage1f-churn-c"]) {
+    harness.api.refresh(reason);
+    await flushMicrotasks(8);
+  }
+  const repeated = recordFor(harness, chatId);
+  assert.equal(repeated.baseTitle, STARTUP_CURRENT_BASE);
+  assert.equal(repeated.updatedAt, settled.updatedAt, "repeated identical native reads must not restamp");
+  assert.equal(repeated.rev, settled.rev, "repeated identical native reads must not bump the revision");
+});
+
+await scenario("live reload: a live in-session rename ends restored reconciliation", async () => {
+  const chatId = "691751f6-7c8c-832a-8ebf-04dc0adc6b01";
+  const harness = startupHarness(chatId);
+  const fixture = harness.setSidebarReaderFixture(STARTUP_STALE_BASE, "");
+  harness.api.refresh("stage1f-live-rename-boot");
+  await flushMicrotasks(8);
+
+  harness.api.setTitle({
+    chatId,
+    baseTitle: FRESH_OLD_BASE,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason: "stage1f-live-rename" });
+  await flushMicrotasks(8);
+  assert.equal(recordFor(harness, chatId).restoredFromPersistence, false, "a live authorship ends the restored phase");
+
+  // ordinary native observations must no longer outrank the live user title
+  fixture.native.textContent = STARTUP_CURRENT_BASE;
+  harness.api.refresh("stage1f-live-rename-native");
+  await flushMicrotasks(8);
+  assert.equal(harness.api.getState().baseTitle, FRESH_OLD_BASE, "a fresh in-session title still outranks native");
+});
+
+// Stage 1F permanent product contract: the H2O emoji is part of the visible
+// title on every visible surface while the runtime is active. The convergence
+// flag governs title authority, not whether the emoji is rendered. The passive
+// legacy presentation exists solely to carry the emoji the native node cannot,
+// so with no emoji H2O still releases the surface entirely.
+const VIS_BASE = "Title Canary Eta - Theta";
+const VIS_EMOJI = "🔶";
+const VIS_DISPLAY = `${VIS_EMOJI} ${VIS_BASE}`;
+const VIS_RENAME_BASE = "Title Canary Iota - Kappa";
+const VIS_RENAME_DISPLAY = `${VIS_EMOJI} ${VIS_RENAME_BASE}`;
+const LEGACY_MODE = { enabled: false, mode: "legacy" };
+const CANONICAL_MODE = { enabled: true, mode: "canonical" };
+
+function visibleSidebar(overrides = {}) {
+  const harness = createSidebarHarness({
+    baseTitle: VIS_BASE,
+    emoji: VIS_EMOJI,
+    displayTitle: VIS_DISPLAY,
+    documentTitle: VIS_DISPLAY,
+    convergence: LEGACY_MODE,
+    ...overrides,
+  });
+  // the native row always carries the clean base title, never the display title
+  const row = harness.createRow({ nativeTitle: overrides.baseTitle ?? VIS_BASE });
+  harness.evaluate();
+  harness.runFrames();
+  return { harness, row };
+}
+
+function ownedVisuals(harness, row) {
+  return row.anchor
+    .querySelectorAll('[data-h2o-owner="title-sidebar-renderer"][data-h2o-title-role="visual"]')
+    .length;
+}
+
+await scenario("visible contract: legacy sidebar renders the emoji without owning authority", () => {
+  const { harness, row } = visibleSidebar();
+  const visual = harness.visual(row);
+  assert.notEqual(visual, null, "legacy mode must still present the canonical display");
+  assert.equal(visual.textContent, VIS_DISPLAY);
+  assert.equal(ownedVisuals(harness, row), 1, "exactly one H2O visual title");
+  // the native node is hidden, never overwritten or removed
+  assert.equal(row.source.isConnected, true);
+  assert.equal(row.source.textContent, VIS_BASE, "native node keeps the byte-exact clean base");
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), "1");
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), visual.id);
+  assert.equal(harness.mutations.patches, 0, "no PATCH from the sidebar");
+  assert.equal(harness.mutations.storeWrites, 0, "no persistence from the sidebar");
+  assert.equal(harness.mutations.canonical, 0, "no canonical state ownership");
+});
+
+await scenario("visible contract: legacy sidebar diagnostics report passive presentation", () => {
+  const { harness } = visibleSidebar();
+  const legacy = harness.runtime().diagnose();
+  assert.equal(legacy.presentationMode, "legacy", "diagnostics must not claim canonical authority");
+  assert.equal(legacy.phase, "legacy-adopted");
+
+  harness.emit({ convergence: CANONICAL_MODE });
+  harness.runFrames();
+  const canonical = harness.runtime().diagnose();
+  assert.equal(canonical.presentationMode, "canonical");
+  assert.equal(canonical.phase, "adopted");
+});
+
+await scenario("visible contract: emoji survives legacy to canonical to legacy toggling", () => {
+  const { harness, row } = visibleSidebar();
+  assert.equal(harness.visual(row).textContent, VIS_DISPLAY);
+
+  harness.emit({ convergence: CANONICAL_MODE });
+  harness.runFrames();
+  assert.equal(harness.visual(row).textContent, VIS_DISPLAY);
+  assert.equal(ownedVisuals(harness, row), 1);
+
+  harness.emit({ convergence: LEGACY_MODE });
+  harness.runFrames();
+  assert.equal(harness.visual(row).textContent, VIS_DISPLAY, "rollback must retain the emoji");
+  assert.equal(ownedVisuals(harness, row), 1, "toggling must not duplicate the visual");
+  assert.equal(row.source.textContent, VIS_BASE);
+});
+
+await scenario("visible contract: legacy rename re-renders one visual with the emoji", () => {
+  const { harness, row } = visibleSidebar();
+  harness.emit({
+    baseTitle: VIS_RENAME_BASE,
+    displayTitle: VIS_RENAME_DISPLAY,
+    documentTitle: VIS_RENAME_DISPLAY,
+  });
+  harness.runFrames();
+  assert.equal(harness.visual(row).textContent, VIS_RENAME_DISPLAY);
+  assert.equal(ownedVisuals(harness, row), 1);
+  assert.equal(harness.mutations.patches, 0);
+});
+
+await scenario("visible contract: canonical rename then rollback keeps the rendered emoji", () => {
+  const { harness, row } = visibleSidebar({ convergence: CANONICAL_MODE });
+  harness.emit({
+    baseTitle: VIS_RENAME_BASE,
+    displayTitle: VIS_RENAME_DISPLAY,
+    documentTitle: VIS_RENAME_DISPLAY,
+  });
+  harness.runFrames();
+  assert.equal(harness.visual(row).textContent, VIS_RENAME_DISPLAY);
+
+  harness.emit({ convergence: LEGACY_MODE });
+  harness.runFrames();
+  assert.equal(harness.visual(row).textContent, VIS_RENAME_DISPLAY);
+  assert.equal(row.source.textContent, VIS_BASE, "native text is never rewritten by the renderer");
+});
+
+await scenario("visible contract: repeated scans and remounts never duplicate the legacy visual", () => {
+  const { harness, row } = visibleSidebar();
+  for (let i = 0; i < 3; i += 1) {
+    harness.triggerMutation();
+    harness.runFrames();
+  }
+  assert.equal(ownedVisuals(harness, row), 1);
+  harness.emit({ routeToken: 2 });
+  harness.runFrames();
+  assert.equal(ownedVisuals(harness, row), 1, "a route-token bump must not duplicate the visual");
+  assert.equal(harness.visual(row).textContent, VIS_DISPLAY);
+});
+
+await scenario("visible contract: legacy presentation releases cleanly on teardown", () => {
+  const { harness, row } = visibleSidebar();
+  const visualId = harness.visual(row).id;
+  harness.destroy();
+  assert.equal(harness.visual(row), null, "teardown removes the H2O visual");
+  assert.equal(row.source.textContent, VIS_BASE, "native base title is the safe fallback");
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-owner"), null);
+  assert.equal(row.anchor.hasAttribute("data-h2o-title-sidebar-adopted"), false);
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), null, "no stale owned aria after teardown");
+  assert.notEqual(visualId, undefined);
+});
+
+await scenario("visible contract: without an emoji legacy mode still releases the sidebar", () => {
+  const { harness, row } = visibleSidebar({
+    emoji: "",
+    displayTitle: VIS_BASE,
+    documentTitle: VIS_BASE,
+    convergence: CANONICAL_MODE,
+  });
+  assert.notEqual(harness.visual(row), null);
+  harness.emit({ convergence: LEGACY_MODE });
+  harness.runFrames();
+  assert.equal(harness.visual(row), null, "no emoji means nothing to present in legacy mode");
+  assert.equal(row.source.textContent, VIS_BASE);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(row.anchor.innerText.startsWith(" "), false, "no leading whitespace or placeholder");
+});
+
+await scenario("visible contract: complex emoji stay byte-exact at the start of the sidebar title", () => {
+  const complex = [
+    ["flag", "🇯🇵"],
+    ["zwj", "👩‍💻"],
+    ["skin-tone", "👍🏽"],
+    ["variation-selector", "❤️"],
+  ];
+  for (const [label, emoji] of complex) {
+    const display = `${emoji} ${VIS_BASE}`;
+    const { harness, row } = visibleSidebar({ emoji, displayTitle: display, documentTitle: display });
+    const visual = harness.visual(row);
+    assert.notEqual(visual, null, `${label} emoji must render in legacy mode`);
+    assert.equal(visual.textContent, display, `${label} emoji must stay byte-exact`);
+    assert.equal(visual.textContent.startsWith(emoji), true, `${label} emoji must lead the title`);
+    assert.equal(row.source.textContent, VIS_BASE);
+  }
+});
+
+await scenario("visible contract: RTL titles keep the emoji leading in legacy mode", () => {
+  const rtlBase = "لوحة العنوان";
+  const rtlDisplay = `${VIS_EMOJI} ${rtlBase}`;
+  const { harness, row } = visibleSidebar({
+    baseTitle: rtlBase,
+    displayTitle: rtlDisplay,
+    documentTitle: rtlDisplay,
+  });
+  const visual = harness.visual(row);
+  assert.equal(visual.textContent, rtlDisplay);
+  assert.equal(visual.getAttribute("dir"), "auto", "bidi isolation is preserved");
+  assert.equal(row.source.textContent, rtlBase);
+});
+
+await scenario("visible contract: legacy sidebar never adopts a wrong-chat row", () => {
+  const { harness } = visibleSidebar();
+  const foreign = harness.createRow({ nativeTitle: "Foreign chat", href: "/c/stage1eb-chat-z" });
+  harness.runFrames();
+  assert.equal(harness.visual(foreign), null, "exact-route identity still gates adoption");
+  assert.equal(foreign.source.textContent, "Foreign chat");
+});
+
+await scenario("visible contract: legacy browser tab keeps the emoji against native overwrites", () => {
+  const harness = createTabHarness({
+    chatId: "stage1e-chat-a",
+    routeKind: "chat",
+    routeToken: 4,
+    baseTitle: VIS_BASE,
+    emoji: VIS_EMOJI,
+    displayTitle: VIS_DISPLAY,
+    documentTitle: VIS_DISPLAY,
+    convergence: LEGACY_MODE,
+  });
+  harness.evaluate();
+  assert.equal(harness.document.title, VIS_DISPLAY, "legacy tab must render the emoji");
+
+  harness.document.title = `${VIS_BASE} - ChatGPT`;
+  harness.triggerObservers();
+  harness.runTimers("frame");
+  assert.equal(harness.document.title, VIS_DISPLAY, "a native overwrite must be reasserted in legacy mode");
+});
+
+await scenario("visible contract: legacy browser tab without an emoji yields to native", () => {
+  const harness = createTabHarness({
+    chatId: "stage1e-chat-a",
+    routeKind: "chat",
+    routeToken: 4,
+    baseTitle: VIS_BASE,
+    emoji: "",
+    displayTitle: VIS_BASE,
+    documentTitle: VIS_BASE,
+    convergence: LEGACY_MODE,
+  });
+  harness.evaluate();
+  assert.equal(harness.document.title, VIS_BASE);
+  harness.document.title = "Native rewrite - ChatGPT";
+  harness.triggerObservers();
+  harness.runTimers("frame");
+  assert.equal(harness.document.title, "Native rewrite - ChatGPT", "nothing to add means no contest");
+});
+
+await scenario("visible contract: canonical tab rendering is unchanged by the legacy path", () => {
+  const harness = createTabHarness({
+    chatId: "stage1e-chat-a",
+    routeKind: "chat",
+    routeToken: 4,
+    baseTitle: VIS_BASE,
+    emoji: VIS_EMOJI,
+    displayTitle: VIS_DISPLAY,
+    documentTitle: VIS_DISPLAY,
+    convergence: CANONICAL_MODE,
+  });
+  harness.evaluate();
+  assert.equal(harness.document.title, VIS_DISPLAY);
+  assert.equal(harness.titleAssignments(), 1);
+  harness.document.title = "Native overwrite - ChatGPT";
+  harness.triggerObservers();
+  harness.runTimers("frame");
+  assert.equal(harness.document.title, VIS_DISPLAY);
+});
+
 structuralTest("9B0a alone owns the convergence flag key", () => {
   assert.equal(
   (b0Source.match(new RegExp(FLAG_KEY.replaceAll(".", "\\."), "gu")) || []).length >= 1,
@@ -3691,14 +4840,32 @@ structuralTest("native reader harness distinguishes textContent from rendered in
   assert.equal(row.innerText, "✨ Canonical");
 });
 
-structuralTest("resolved Stage 1E-b product scope is exactly the authorized five paths", () => {
+structuralTest("resolved product scope is exactly the authorized paths for the requested stage", () => {
+  if (requestedMode === "stage1f-rollback") {
+    // The candidate is the union of what the single commit already carries and
+    // anything still uncommitted during an amend round.
+    const onAcceptedHead = actualScope.head === STAGE1F_ACCEPTED_HEAD;
+    const changed = new Set([
+      ...actualScope.modifiedTracked,
+      ...(onAcceptedHead ? [] : actualScope.committedHeadPaths),
+    ]);
+    assert(sameSet(changed, STAGE1F_TRACKED), `unexpected Stage 1F path: ${[...changed].sort()}`);
+    return;
+  }
   assert(stage1EBScopeResolution, "Stage 1E-b structural validation requires resolved scope evidence");
   const changed = new Set(stage1EBScopeResolution.productPaths);
   assert(sameSet(changed, STAGE1EB_COMMITTED), `unexpected Stage 1E-b path: ${[...changed].sort()}`);
 });
 
 structuralTest("protected title coordinator consumers readers and disabled module remain unchanged", () => {
-  assert(stage1EBScopeResolution, "protected-path validation requires resolved Stage 1E-b scope evidence");
+  const stage1F = requestedMode === "stage1f-rollback";
+  assert(
+    stage1F || stage1EBScopeResolution,
+    "protected-path validation requires resolved scope evidence",
+  );
+  // Stage 1F repairs exactly its authorized candidate, so precisely those paths
+  // leave the protected set; every other protected source must still be
+  // untouched, including 9C1a, every native reader and the disabled 9D1a.
   const protectedPaths = [
     B0_REL,
     B1_REL,
@@ -3716,8 +4883,10 @@ structuralTest("protected title coordinator consumers readers and disabled modul
     "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs",
     "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
     STAGE1C_REL,
-  ];
-  const resolvedProductPaths = new Set(stage1EBScopeResolution.productPaths);
+  ].filter((relative) => !(stage1F && STAGE1F_TRACKED.has(relative)));
+  const resolvedProductPaths = new Set(
+    stage1F ? actualScope.modifiedTracked : stage1EBScopeResolution.productPaths,
+  );
   for (const relative of protectedPaths) {
     assert.equal(fs.existsSync(path.join(ROOT, relative)), true, `missing protected source: ${relative}`);
     assert.equal(resolvedProductPaths.has(relative), false, `protected source entered product scope: ${relative}`);
@@ -3725,8 +4894,8 @@ structuralTest("protected title coordinator consumers readers and disabled modul
   assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", ...protectedPaths]).trim(), "");
 });
 
-assert.equal(scopeTests.length, 22, "Stage 1E scope scenario count drifted");
-assert.equal(scenarios.length, 97, "Stage 1E runtime scenario count drifted");
+assert.equal(scopeTests.length, 29, "Stage 1E scope scenario count drifted");
+assert.equal(scenarios.length, 133, "Stage 1E runtime scenario count drifted");
 assert.equal(structuralAssertions.length, 10, "Stage 1E structural assertion count drifted");
 
 console.log(JSON.stringify({
@@ -3740,7 +4909,9 @@ console.log(JSON.stringify({
     ...(
       requestedMode === "stage1eb-sidebar" || requestedMode === "stage1eb-validator-fix"
         ? STAGE1EB_COMMITTED
-        : AUTHORIZED
+        : requestedMode === "stage1f-rollback"
+          ? STAGE1F_TRACKED
+          : AUTHORIZED
     ),
   ].sort(),
   scopeResolution: stage1EBScopeResolution,

@@ -45,15 +45,27 @@
   };
   function setPhase(phase) { diagnostics.phase = String(phase || 'unattached'); }
   function validChatId(value) { return typeof value === 'string' && /^[a-z0-9_-]+$/iu.test(value); }
-  function snapshotIsCanonical(snapshot) {
+  function snapshotIsRenderable(snapshot) {
     return !!snapshot &&
-      snapshot.convergence?.enabled === true &&
-      snapshot.convergence?.mode === 'canonical' &&
       snapshot.routeKind === 'chat' &&
       validChatId(snapshot.chatId) &&
       Number.isSafeInteger(snapshot.routeToken) &&
       typeof snapshot.displayTitle === 'string' &&
       snapshot.displayTitle.length > 0;
+  }
+  // Title authority and visible presentation are separate concerns. Canonical
+  // convergence grants 9B0a's authority over the row; legacy mode grants none,
+  // yet the visible title must still start with the H2O emoji, which the native
+  // node cannot carry. So legacy keeps a purely passive visual whose only job is
+  // that emoji - and when there is no emoji there is nothing to add, so the row
+  // is released to ChatGPT entirely.
+  function presentationModeFor(snapshot) {
+    if (!snapshotIsRenderable(snapshot)) return '';
+    if (snapshot.convergence?.enabled === true && snapshot.convergence?.mode === 'canonical') return 'canonical';
+    return typeof snapshot.emoji === 'string' && snapshot.emoji !== '' ? 'legacy' : '';
+  }
+  function snapshotIsPresentable(snapshot) {
+    return presentationModeFor(snapshot) !== '';
   }
   function routeIdentityFromHref(rawHref) {
     try {
@@ -116,7 +128,7 @@
     return out;
   }
   function candidateFor(anchor, snapshot) {
-    if (!snapshotIsCanonical(snapshot) || !(anchor instanceof HTMLElement)) return null;
+    if (!snapshotIsPresentable(snapshot) || !(anchor instanceof HTMLElement)) return null;
     if (!isVisibleAnchor(anchor)) return null;
     const candidateIdentity = routeIdentityFromHref(anchor.getAttribute('href'));
     if (!candidateIdentity || candidateIdentity.key !== snapshot.routeIdentity?.key) return null;
@@ -243,6 +255,9 @@
         }
         current.visual.setAttribute('data-h2o-title-route-token', String(snapshot.routeToken));
         current.visual.setAttribute('data-h2o-title-chat-id', snapshot.chatId);
+        // A live convergence toggle keeps the same visual, so the reported phase
+        // must follow the current presentation instead of the one it adopted in.
+        setPhase(snapshot.presentationMode === 'legacy' ? 'legacy-adopted' : 'adopted');
         return true;
       }
     }
@@ -269,7 +284,7 @@
     anchor.setAttribute('aria-labelledby', visual.id);
     adoptions.set(anchor, { anchor, source, visual, nativeText });
     diagnostics.adoptions += 1;
-    setPhase('adopted');
+    setPhase(snapshot.presentationMode === 'legacy' ? 'legacy-adopted' : 'adopted');
     return true;
   }
   function adoptionStillValid(record, snapshot) {
@@ -355,7 +370,7 @@
   }
   function syncSidebar() {
     frameId = 0;
-    if (destroyed || !snapshotIsCanonical(acceptedSnapshot)) return;
+    if (destroyed || !snapshotIsPresentable(acceptedSnapshot)) return;
     const currentRoute = liveRouteIdentity();
     if (!currentRoute || currentRoute.key !== acceptedSnapshot.routeIdentity?.key) {
       releaseAll('route-stale');
@@ -398,7 +413,7 @@
   }
   function acceptSnapshot(snapshot) {
     if (destroyed) return;
-    if (!snapshotIsCanonical(snapshot)) {
+    if (!snapshotIsPresentable(snapshot)) {
       acceptedSnapshot = null;
       disableRendering('rolled-back');
       return;
@@ -422,6 +437,7 @@
       emoji: snapshot.emoji,
       displayTitle: snapshot.displayTitle,
       routeIdentity,
+      presentationMode: presentationModeFor(snapshot),
       convergence: {
         enabled: snapshot.convergence.enabled,
         mode: snapshot.convergence.mode,
@@ -446,6 +462,7 @@
     return Object.freeze({
       version: 1,
       phase: diagnostics.phase,
+      presentationMode: acceptedSnapshot?.presentationMode || '',
       adoptedRows: adoptions.size,
       scans: diagnostics.scans,
       adoptions: diagnostics.adoptions,

@@ -103,12 +103,12 @@
     return norm(raw).replace(/\s*[–—-]\s*ChatGPT\s*$/i, '').trim();
   }
 
+  // An internal " - " separator is ordinary title content, never a delimiter,
+  // so only one terminal "<dash> ChatGPT" suffix is removed here.
   function fallbackTitle() {
     const raw = stripTrailingChatGPT(D.title || '');
     if (!raw || /^chatgpt$/i.test(raw)) return '';
-    const parts = raw.split(/\s*[–—-]\s*/g).map(norm).filter(Boolean);
-    const filtered = parts.filter((part) => !/^chatgpt$/i.test(part));
-    return filtered[filtered.length - 1] || raw;
+    return raw;
   }
 
   function renderTitle(nextTitle, reason = 'render', options) {
@@ -141,7 +141,17 @@
       renderTitle(pageTitleOverride);
       return;
     }
-    if (state?.convergence?.enabled === true && state?.routeKind === 'chat') {
+    // The convergence flag decides who owns the title, not whether the emoji is
+    // visible. Canonical mode owns the tab outright; legacy mode owns it only
+    // while there is an emoji to add, because the native tab title cannot carry
+    // one. With no emoji the native title already is the display title, so H2O
+    // renders once and leaves the tab to ChatGPT exactly as before.
+    const canonicalChat = state?.convergence?.enabled === true && state?.routeKind === 'chat';
+    const legacyEmojiChat = !canonicalChat
+      && state?.routeKind === 'chat'
+      && typeof state?.emoji === 'string'
+      && state.emoji !== '';
+    if (canonicalChat || legacyEmojiChat) {
       const token = Number(state.routeToken);
       if (Number.isSafeInteger(token) && token < lastCanonicalRouteToken) return;
       if (Number.isSafeInteger(token)) lastCanonicalRouteToken = token;
@@ -150,10 +160,17 @@
         routeToken: Number.isSafeInteger(token) ? token : lastCanonicalRouteToken,
         documentTitle: state.documentTitle || '',
         displayTitle: state.displayTitle || '',
+        presentationMode: canonicalChat ? 'canonical' : 'legacy',
         convergence: { ...state.convergence },
       };
-      const canonicalTitle = state.documentTitle || state.displayTitle || '';
-      if (canonicalTitle) renderTitle(canonicalTitle, 'canonical-chat-state', { canonical: true });
+      const ownedTitle = state.documentTitle || state.displayTitle || '';
+      if (ownedTitle) {
+        renderTitle(
+          ownedTitle,
+          canonicalChat ? 'canonical-chat-state' : 'legacy-emoji-chat-state',
+          { canonical: canonicalChat },
+        );
+      }
       return;
     }
     lastCanonicalChatState = null;
@@ -462,20 +479,22 @@
       return true;
     }
 
-    if (lastCanonicalChatState?.convergence?.enabled === true) {
-      const canonicalTitle = lastCanonicalChatState.documentTitle || lastCanonicalChatState.displayTitle || '';
-      if (canonicalTitle) {
+    if (lastCanonicalChatState?.presentationMode) {
+      const ownedTitle = lastCanonicalChatState.documentTitle || lastCanonicalChatState.displayTitle || '';
+      if (ownedTitle) {
         const currentTitle = typeof D.title === 'string' ? D.title : '';
-        if (currentTitle && currentTitle !== canonicalTitle) {
+        if (currentTitle && currentTitle !== ownedTitle) {
           lastNativeOverwrite = {
             at: Date.now(),
             reason: String(reason || ''),
             currentTitle,
-            expectedTitle: canonicalTitle,
+            expectedTitle: ownedTitle,
           };
         }
         pageTitleOverride = '';
-        renderTitle(canonicalTitle, reason, { canonical: true });
+        renderTitle(ownedTitle, reason, {
+          canonical: lastCanonicalChatState.presentationMode === 'canonical',
+        });
         return true;
       }
     }
