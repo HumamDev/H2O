@@ -4119,6 +4119,204 @@
     });
   }
 
+  function frozenPageCollapseCapability(raw = {}) {
+    return Object.freeze({
+      version: 1,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      productReason: String(raw.productReason || 'layout-incomplete'),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      pageEndOrder: Math.max(1, Number(raw.pageEndOrder || 0) || 0),
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      startBoundarySupported: raw.startBoundarySupported === true,
+      nextBoundarySupported: raw.nextBoundarySupported === true,
+      rangeProven: raw.rangeProven === true,
+      startWrapperCurrent: raw.startWrapperCurrent === true,
+      endWrapperCurrent: raw.endWrapperCurrent === true,
+      rangeStartIndex: Number.isInteger(raw.rangeStartIndex) ? raw.rangeStartIndex : -1,
+      rangeEndIndex: Number.isInteger(raw.rangeEndIndex) ? raw.rangeEndIndex : -1,
+      hostWrapperCount: Math.max(0, Number(raw.hostWrapperCount || 0) || 0),
+      h2oNodeCount: Math.max(0, Number(raw.h2oNodeCount || 0) || 0),
+      ambiguousWrapperCount: Math.max(0, Number(raw.ambiguousWrapperCount || 0) || 0),
+      firstAmbiguousIndex: Number.isInteger(raw.firstAmbiguousIndex)
+        ? raw.firstAmbiguousIndex
+        : -1,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      streaming: raw.streaming === true,
+      branchTransition: raw.branchTransition === true,
+      titleRowsCurrent: raw.titleRowsCurrent === true,
+      titleRowCount: Math.max(0, Number(raw.titleRowCount || 0) || 0),
+      expectedTitleRowCount: Math.max(0, Number(raw.expectedTitleRowCount || 0) || 0),
+      prerequisitesReady: raw.prerequisitesReady === true,
+      atomicTransactionImplemented: false,
+      activationReady: false,
+      activationBlockReason: 'atomic-collapse-transaction-pending',
+      legacyNativeSlotConsulted: false,
+    });
+  }
+
+  function pageCollapseCapabilityProductReason({
+    prerequisitesReady = false,
+    authorityCurrent = false,
+    titleRowsCurrent = false,
+    streaming = false,
+    branchTransition = false,
+    reason = '',
+    ambiguousWrapperCount = 0,
+  } = {}) {
+    if (prerequisitesReady) return 'ready';
+    if (streaming || branchTransition) return 'page-updating';
+    if (
+      ambiguousWrapperCount > 0
+      || /ambiguous|unsupported-host|unsupported-layout/.test(String(reason || ''))
+    ) return 'unsupported-layout';
+    if (
+      /boundary|page-unit|range-scope|final-page|layout-incomplete/.test(String(reason || ''))
+    ) return 'layout-incomplete';
+    if (!authorityCurrent || !titleRowsCurrent) return 'page-loading';
+    return 'layout-incomplete';
+  }
+
+  // Stage 2C-1 composes existing exact rendered-boundary and range proofs.
+  // Activation remains sealed until the atomic collapse transaction lands.
+  function getPageCollapseCapability(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const model = buildTitleListPresentationPageModel();
+    const page = model?.pages?.find?.((entry) => entry.pageNo === num) || null;
+    const nextPage = model?.pages?.find?.((entry) => entry.pageNo === num + 1) || null;
+    const pageStartOrder = Math.max(
+      1,
+      Number(page?.startOrder || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1)) || 1,
+    );
+    const pageEndOrder = Math.max(
+      pageStartOrder,
+      Number(page?.endOrder || pageStartOrder) || pageStartOrder,
+    );
+    const expectedTitleRowCount = page
+      ? Math.max(0, pageEndOrder - pageStartOrder + 1)
+      : 0;
+    const titleRowCount = Array.isArray(page?.turnRecords) ? page.turnRecords.length : 0;
+    const titleRowsCurrent = (
+      model?.coherent === true
+      && !!page
+      && expectedTitleRowCount > 0
+      && titleRowCount === expectedTitleRowCount
+      && page.turnRecords.every(
+        (member, offset) => Number(member?.turnNo || 0) === pageStartOrder + offset,
+      )
+    );
+    const startCapability = getRenderedPageBoundaryCapability(num);
+    const nextCapability = getRenderedPageBoundaryCapability(num + 1);
+    const range = getPageCollapseRangeDiagnostics(num);
+    const authorityCurrent = (
+      model?.coherent === true
+      && !!page
+      && !!nextPage
+      && startCapability.pageStartOrder === pageStartOrder
+      && nextCapability.pageStartOrder === nextPage.startOrder
+      && range.pageStartOrder === pageStartOrder
+      && range.pageEndOrder === pageEndOrder
+      && !!range.chatId
+      && !!range.generation
+      && !!range.effectiveFingerprint
+      && !!range.graphFingerprint
+    );
+    const scopesCurrent = (
+      authorityCurrent
+      && startCapability.chatId === range.chatId
+      && nextCapability.chatId === range.chatId
+      && startCapability.routeKey === range.routeKey
+      && nextCapability.routeKey === range.routeKey
+      && startCapability.generation === range.generation
+      && nextCapability.generation === range.generation
+      && startCapability.effectiveFingerprint === range.effectiveFingerprint
+      && nextCapability.effectiveFingerprint === range.effectiveFingerprint
+      && startCapability.graphFingerprint === range.graphFingerprint
+      && nextCapability.graphFingerprint === range.graphFingerprint
+    );
+    const streaming = range.streaming === true;
+    const branchTransition = range.branchTransition === true;
+    const prerequisitesReady = (
+      scopesCurrent
+      && startCapability.supported === true
+      && startCapability.boundaryIdentityCurrent === true
+      && startCapability.leaseCurrent === true
+      && nextCapability.supported === true
+      && nextCapability.boundaryIdentityCurrent === true
+      && nextCapability.leaseCurrent === true
+      && range.supported === true
+      && range.startBoundarySupported === true
+      && range.nextBoundarySupported === true
+      && range.startWrapperCurrent === true
+      && range.endWrapperCurrent === true
+      && range.rangeProven === true
+      && range.rangeStartIndex >= 0
+      && range.rangeEndIndex > range.rangeStartIndex
+      && range.hostWrapperCount > 0
+      && range.ambiguousWrapperCount === 0
+      && range.pageUnitOrderCurrent === true
+      && !streaming
+      && !branchTransition
+      && titleRowsCurrent
+    );
+    let reason = null;
+    if (!prerequisitesReady) {
+      if (!model?.coherent || !page) reason = model?.reason || 'authority-unavailable';
+      else if (!nextPage || range.isFinalPage) reason = 'final-page-end-authority-unavailable';
+      else if (!startCapability.supported) reason = startCapability.reason || 'start-boundary-unavailable';
+      else if (!nextCapability.supported) reason = nextCapability.reason || 'next-boundary-unavailable';
+      else if (!scopesCurrent) reason = 'range-scope-changed';
+      else if (!range.supported || !range.rangeProven) reason = range.reason || 'range-unavailable';
+      else if (!titleRowsCurrent) reason = 'title-rows-incomplete';
+      else reason = 'layout-incomplete';
+    }
+    const productReason = pageCollapseCapabilityProductReason({
+      prerequisitesReady,
+      authorityCurrent,
+      titleRowsCurrent,
+      streaming,
+      branchTransition,
+      reason,
+      ambiguousWrapperCount: range.ambiguousWrapperCount,
+    });
+    return frozenPageCollapseCapability({
+      supported: prerequisitesReady,
+      reason,
+      productReason,
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: range.chatId || startCapability.chatId,
+      routeKey: range.routeKey || startCapability.routeKey,
+      generation: range.generation || startCapability.generation,
+      effectiveFingerprint: range.effectiveFingerprint || startCapability.effectiveFingerprint,
+      graphFingerprint: range.graphFingerprint || startCapability.graphFingerprint,
+      startBoundarySupported: startCapability.supported === true,
+      nextBoundarySupported: nextCapability.supported === true,
+      rangeProven: range.rangeProven === true,
+      startWrapperCurrent: range.startWrapperCurrent === true,
+      endWrapperCurrent: range.endWrapperCurrent === true,
+      rangeStartIndex: range.rangeStartIndex,
+      rangeEndIndex: range.rangeEndIndex,
+      hostWrapperCount: range.hostWrapperCount,
+      h2oNodeCount: range.h2oNodeCount,
+      ambiguousWrapperCount: range.ambiguousWrapperCount,
+      firstAmbiguousIndex: range.firstAmbiguousIndex,
+      pageUnitOrderCurrent: range.pageUnitOrderCurrent === true,
+      streaming,
+      branchTransition,
+      titleRowsCurrent,
+      titleRowCount,
+      expectedTitleRowCount,
+      prerequisitesReady,
+    });
+  }
+
   function collapsedNativeRangeKey(chatId = '', pageNum = 0) {
     return `${String(chatId || resolveChatId()).trim()}|${String(Math.max(1, Number(pageNum || 0) || 0))}`;
   }
@@ -4170,6 +4368,11 @@
       fingerprint: String(raw.fingerprint || ''),
       source: String(raw.source || ''),
       count: Math.max(0, Number(raw.count || 0) || 0),
+      productReason: String(raw.productReason || ''),
+      prerequisitesReady: raw.prerequisitesReady === true,
+      activationReady: raw.activationReady === true,
+      capabilityVersion: Math.max(0, Number(raw.capabilityVersion || 0) || 0),
+      legacyNativeSlotConsulted: raw.legacyNativeSlotConsulted === true,
     };
     return Object.freeze(value);
   }
@@ -4635,10 +4838,9 @@
     });
   }
 
-  // Collapse readiness prefers the exact persistent native-slot sequence. The
-  // page range formula is generic: 25 presentation pairs × two native turns.
-  // conversation-turn-51 may be section-less; slot ordinal 51 remains exact.
-  function getCollapsedNativeBoundaryReadiness(pageNum = 0) {
+  // Retained diagnostic compatibility for the native-slot retirement stage.
+  // Production collapse readiness no longer calls this legacy resolver path.
+  function getLegacyCollapsedNativeBoundaryReadinessDiagnostic(pageNum = 0) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const sequence = typeof resolveNativeTurnSlotSequence === 'function'
       ? resolveNativeTurnSlotSequence()
@@ -4809,6 +5011,40 @@
     return frozenCollapsedBoundaryResult({
       ...exact,
       structuralReason: sequence.reason,
+    });
+  }
+
+  function getCollapsedNativeBoundaryReadiness(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const capability = typeof getPageCollapseCapability === 'function'
+      ? getPageCollapseCapability(num)
+      : Object.freeze({
+        version: 1,
+        reason: 'readiness-api-unavailable',
+        productReason: 'page-loading',
+        prerequisitesReady: false,
+        activationBlockReason: 'atomic-collapse-transaction-pending',
+        generation: 0,
+        effectiveFingerprint: '',
+      });
+    const prerequisitesReady = capability.prerequisitesReady === true;
+    return frozenCollapsedBoundaryResult({
+      ready: false,
+      reason: prerequisitesReady
+        ? capability.activationBlockReason
+        : String(capability.reason || 'collapsed-exact-boundary-unavailable'),
+      structuralReason: prerequisitesReady
+        ? 'layout-incomplete'
+        : String(capability.reason || 'layout-incomplete'),
+      pageNum: num,
+      generation: capability.generation,
+      fingerprint: capability.effectiveFingerprint,
+      source: 'rendered-boundary-collapse-capability',
+      productReason: capability.productReason,
+      prerequisitesReady,
+      activationReady: false,
+      capabilityVersion: capability.version,
+      legacyNativeSlotConsulted: false,
     });
   }
 
@@ -5015,21 +5251,21 @@
     const id = String(chatId || resolveChatId()).trim();
     const titleListActive = isTitleListActive(num, id);
     const blocked = !titleListActive && readiness?.ready !== true;
-    const reason = blocked
+    const diagnosticReason = blocked
       ? String(readiness?.structuralReason || readiness?.reason || 'readiness-api-unavailable')
       : '';
     const structuralFailure = blocked && !!String(readiness?.structuralReason || '').trim();
     const actionTitle = titleListActive
       ? `Expand Page ${num}`
       : blocked
-        ? `Collapse currently unavailable — ${reason}`
+        ? 'Collapse currently unavailable'
         : `Collapse Page ${num}`;
     const ariaLabel = titleListActive
       ? `Page ${num}. Expand page titles.`
       : blocked
         ? structuralFailure
-          ? `Page ${num}. Collapse temporarily unavailable because the conversation layout is incomplete. Technical reason: ${reason}.`
-          : `Page ${num}. Collapse currently unavailable because the next page boundary is not loaded. Technical reason: ${reason}.`
+          ? `Page ${num}. Collapse temporarily unavailable because the conversation layout is incomplete.`
+          : `Page ${num}. Collapse currently unavailable.`
         : `Page ${num}. Collapse page titles.`;
     let mutations = 0;
     for (const divider of collapsedBoundaryDividers(num)) {
@@ -5038,7 +5274,11 @@
         ATTR_COLLAPSE_READINESS,
         blocked ? COLLAPSE_UNAVAILABLE_STATUS : null
       );
-      mutations += setCollapseFeedbackAttribute(divider, ATTR_COLLAPSE_REASON, blocked ? reason : null);
+      mutations += setCollapseFeedbackAttribute(
+        divider,
+        ATTR_COLLAPSE_REASON,
+        blocked ? diagnosticReason : null
+      );
       const dot = divider.querySelector?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot') || null;
       if (!dot) continue;
       mutations += setCollapseFeedbackAttribute(dot, 'aria-hidden', null);
@@ -5050,7 +5290,14 @@
       mutations += setCollapseFeedbackAttribute(dot, 'aria-label', ariaLabel);
     }
     if (!blocked) clearCollapseUnavailableFeedback(num);
-    return { ok: true, blocked, reason, pageNum: num, mutations };
+    return {
+      ok: true,
+      blocked,
+      reason: diagnosticReason,
+      productReason: String(readiness?.productReason || ''),
+      pageNum: num,
+      mutations,
+    };
   }
 
   function showCollapseUnavailableFeedback(pageNum = 0, chatId = '', readiness = null) {
@@ -10250,6 +10497,7 @@
       getCollapsedNativeBoundaryReadiness,
       getRenderedPageBoundaryCapability,
       getPageCollapseRangeDiagnostics,
+      getPageCollapseCapability,
       getCollapsedBoundaryDiagnostic,
       setTitleListMode,
       setPageCollapsed,
