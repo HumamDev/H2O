@@ -44,6 +44,11 @@
   const ROUTE_REFRESH_DELAY_MS = 60;
   const CONVERGENCE_FLAG_KEY = 'title.threeSurfaceConvergenceV1';
   const CONVERGENCE_SESSION_OVERRIDE_KEY = '__H2O_TITLE_THREE_SURFACE_CONVERGENCE_V1__';
+  const FLAGS_STORAGE_KEY = 'h2o:flags:v1';
+  const CONVERGENCE_FLAG_EVENT_NAMES = Object.freeze([
+    'h2o:flags:changed',
+    'evt:h2o:flags:changed',
+  ]);
 
   const BASE_PRIORITY = Object.freeze({
     none: 0,
@@ -91,6 +96,10 @@
   let lastError = '';
   let renameOperationSeq = 0;
   let activeRenameOperation = null;
+  let convergenceFlagListenerInstalled = false;
+  let convergenceFlagListenerDisposer = null;
+  let convergenceFlagAttachTimer = 0;
+  let convergenceFlagSetRestore = null;
   let lastConvergenceStatus = Object.freeze({
     requested: false,
     enabled: false,
@@ -506,6 +515,17 @@
     const emoji = getEdgeEmoji(title);
     const baseTitle = emoji ? stripEdgeEmoji(title) : title;
     return { baseTitle: baseTitle || title, emoji };
+  }
+
+  function splitNativeSubmission(raw) {
+    const title = norm(raw);
+    if (!title) return { baseTitle: '', emoji: '' };
+    const emoji = getEdgeEmoji(title);
+    const baseTitle = emoji ? stripEdgeEmoji(title) : title;
+    return {
+      baseTitle: norm(baseTitle),
+      emoji,
+    };
   }
 
   function isRTL(text) {
@@ -1426,6 +1446,17 @@
     const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
     const accessToken = await readChatGptAccessToken(signal);
     if (signal?.aborted) return { ok: false, status: 'aborted' };
+    const prePatchStatus = typeof options?.operationStatus === 'function'
+      ? options.operationStatus()
+      : 'current';
+    if (prePatchStatus !== 'current') {
+      return {
+        ok: false,
+        status: prePatchStatus,
+        reason: prePatchStatus,
+        beforePatch: true,
+      };
+    }
     const res = await W.fetch(path, {
       method: 'PATCH',
       credentials: 'include',
@@ -1615,6 +1646,87 @@
     return true;
   }
 
+  function dispatchConvergenceFlagChange(value, source) {
+    try {
+      W.dispatchEvent(new CustomEvent(CONVERGENCE_FLAG_EVENT_NAMES[0], {
+        detail: {
+          name: CONVERGENCE_FLAG_KEY,
+          value,
+          source: source || 'flags.set',
+        },
+      }));
+    } catch {}
+  }
+
+  function attachConvergenceFlagSetHook() {
+    if (destroyed || convergenceFlagSetRestore) return !!convergenceFlagSetRestore;
+    const flags = H2O.flags;
+    if (!flags || typeof flags.set !== 'function') return false;
+    const originalSet = flags.set;
+    const wrappedSet = function (name, value) {
+      const result = originalSet.apply(this, arguments);
+      if (String(name || '') === CONVERGENCE_FLAG_KEY) {
+        dispatchConvergenceFlagChange(value, 'flags.set');
+      }
+      return result;
+    };
+    try {
+      flags.set = wrappedSet;
+    } catch {
+      return false;
+    }
+    if (flags.set !== wrappedSet) return false;
+    convergenceFlagSetRestore = () => {
+      try {
+        if (flags.set === wrappedSet) flags.set = originalSet;
+      } catch {}
+      convergenceFlagSetRestore = null;
+    };
+    return true;
+  }
+
+  function scheduleConvergenceFlagSetHook() {
+    if (destroyed || convergenceFlagSetRestore || convergenceFlagAttachTimer) return;
+    convergenceFlagAttachTimer = setTimeout(() => {
+      convergenceFlagAttachTimer = 0;
+      if (!attachConvergenceFlagSetHook()) scheduleConvergenceFlagSetHook();
+    }, 120);
+  }
+
+  function installConvergenceFlagListener() {
+    if (destroyed || convergenceFlagListenerInstalled) return convergenceFlagListenerInstalled;
+    const onFlagChange = (event) => {
+      if (destroyed) return;
+      const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+      const name = String(detail.name || detail.key || detail.flag || '');
+      if (name && name !== CONVERGENCE_FLAG_KEY) return;
+      refreshDisplayIfConvergenceChanged('convergence-flag-change');
+    };
+    const onStorage = (event) => {
+      if (destroyed || String(event?.key || '') !== FLAGS_STORAGE_KEY) return;
+      refreshDisplayIfConvergenceChanged('convergence-flag-storage-change');
+    };
+    for (const eventName of CONVERGENCE_FLAG_EVENT_NAMES) {
+      W.addEventListener(eventName, onFlagChange);
+    }
+    W.addEventListener('storage', onStorage);
+    convergenceFlagListenerInstalled = true;
+    convergenceFlagListenerDisposer = () => {
+      if (!convergenceFlagListenerInstalled) return;
+      convergenceFlagListenerInstalled = false;
+      for (const eventName of CONVERGENCE_FLAG_EVENT_NAMES) {
+        try { W.removeEventListener(eventName, onFlagChange); } catch {}
+      }
+      try { W.removeEventListener('storage', onStorage); } catch {}
+      clearTimeout(convergenceFlagAttachTimer);
+      convergenceFlagAttachTimer = 0;
+      try { convergenceFlagSetRestore?.(); } catch {}
+      convergenceFlagSetRestore = null;
+    };
+    if (!attachConvergenceFlagSetHook()) scheduleConvergenceFlagSetHook();
+    return true;
+  }
+
   function destroy() {
     if (destroyed) return false;
     destroyed = true;
@@ -1625,83 +1737,223 @@
     pendingRefresh = null;
     if (routeListenerDisposer) routeListenerDisposer();
     routeListenerDisposer = null;
+    if (convergenceFlagListenerDisposer) convergenceFlagListenerDisposer();
+    convergenceFlagListenerDisposer = null;
     return true;
   }
 
   async function renameNative(title, options) {
     const opts = options || {};
+    const rejectBeforeRequest = (reason, extra) => ({
+      ok: false,
+      status: reason,
+      reason,
+      beforeRequest: true,
+      ...(extra || {}),
+    });
     if (!opts.userInitiated) {
       warn('renameNative.refused', 'missing userInitiated option');
-      return Promise.resolve({ ok: false, status: 'not-user-initiated' });
+      return rejectBeforeRequest('not-user-initiated');
     }
-    const nextTitle = sanitizeNativeBaseTitle(title);
-    if (!nextTitle) return Promise.resolve({ ok: false, status: 'empty-title' });
-    const chatId = opts.chatId || identity.chatId;
-    if (!chatId) return Promise.resolve({ ok: false, status: 'missing-chat-id' });
+
+    const liveIdentity = detectIdentity();
+    if (destroyed) return rejectBeforeRequest('destroyed-before-request');
+    if (identity.routeKind !== 'chat' || !identity.chatId) {
+      return rejectBeforeRequest('route-stale-before-request');
+    }
+    if (
+      liveIdentity.routeKind !== identity.routeKind ||
+      liveIdentity.chatId !== identity.chatId ||
+      liveIdentity.routeKey !== identity.routeKey
+    ) {
+      return rejectBeforeRequest('route-stale-before-request', {
+        chatId: identity.chatId || null,
+        routeToken,
+      });
+    }
+
+    const chatId = String(opts.chatId || identity.chatId || '').trim();
+    if (!chatId) return rejectBeforeRequest('missing-chat-id');
+    if (chatId !== identity.chatId) {
+      return rejectBeforeRequest('route-stale-before-request', { chatId, routeToken });
+    }
+    if (Object.prototype.hasOwnProperty.call(opts, 'expectedRouteToken')) {
+      if (!Number.isSafeInteger(opts.expectedRouteToken) || opts.expectedRouteToken !== routeToken) {
+        return rejectBeforeRequest('route-stale-before-request', { chatId, routeToken });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(opts, 'expectedRouteKind')) {
+      if (String(opts.expectedRouteKind || '') !== identity.routeKind) {
+        return rejectBeforeRequest('route-stale-before-request', { chatId, routeToken });
+      }
+    }
+
+    const externalSignal = opts.signal;
+    if (externalSignal !== undefined && (
+      !externalSignal ||
+      typeof externalSignal !== 'object' ||
+      typeof externalSignal.aborted !== 'boolean'
+    )) {
+      return rejectBeforeRequest('invalid-signal-before-request', { chatId, routeToken });
+    }
+    if (externalSignal?.aborted) {
+      return rejectBeforeRequest('aborted-before-request', { chatId, routeToken });
+    }
+
+    const sanitizedSubmission = sanitizeNativeBaseTitle(title);
+    if (!sanitizedSubmission) return rejectBeforeRequest('empty-title', { chatId, routeToken });
+    const submitted = splitNativeSubmission(sanitizedSubmission);
+    const nextBaseTitle = sanitizeNativeBaseTitle(submitted.baseTitle);
+    if (!nextBaseTitle) {
+      return rejectBeforeRequest('empty-base-after-emoji', { chatId, routeToken });
+    }
+
     const reason = opts.source || 'rename-native';
-    const operationId = `title-rename-${++renameOperationSeq}`;
+    const operationNonce = ++renameOperationSeq;
+    const requestedOperationId = typeof opts.operationId === 'string' ? opts.operationId.trim() : '';
+    if (Object.prototype.hasOwnProperty.call(opts, 'operationId') && !requestedOperationId) {
+      return rejectBeforeRequest('invalid-operation-id-before-request', { chatId, routeToken });
+    }
+    const operationId = requestedOperationId || `title-rename-${operationNonce}`;
     try { activeRenameOperation?.controller?.abort?.(); } catch {}
     const controller = typeof W.AbortController === 'function' ? new W.AbortController() : null;
+    let removeExternalAbort = null;
+    if (controller && externalSignal && typeof externalSignal.addEventListener === 'function') {
+      const forwardAbort = () => {
+        try { controller.abort(externalSignal.reason); } catch { try { controller.abort(); } catch {} }
+      };
+      externalSignal.addEventListener('abort', forwardAbort, { once: true });
+      removeExternalAbort = () => {
+        try { externalSignal.removeEventListener?.('abort', forwardAbort); } catch {}
+      };
+    }
+    const signal = controller?.signal || externalSignal;
     const operation = {
+      nonce: operationNonce,
       operationId,
       chatId,
       routeToken,
+      routeKind: identity.routeKind,
       controller,
+      signal,
     };
     activeRenameOperation = operation;
 
     const operationStatus = () => {
-      if (!activeRenameOperation || activeRenameOperation.operationId !== operationId) return 'superseded';
-      if (operation.routeToken !== routeToken || operation.chatId !== identity.chatId) return 'route-stale';
-      if (operation.controller?.signal?.aborted) return 'aborted';
+      if (destroyed) return 'destroyed';
+      if (!activeRenameOperation || activeRenameOperation.nonce !== operationNonce) return 'superseded';
+      const currentLiveIdentity = detectIdentity();
+      if (
+        operation.routeToken !== routeToken ||
+        operation.routeKind !== identity.routeKind ||
+        operation.chatId !== identity.chatId ||
+        currentLiveIdentity.routeKind !== operation.routeKind ||
+        currentLiveIdentity.chatId !== operation.chatId ||
+        currentLiveIdentity.routeKey !== identity.routeKey
+      ) {
+        return 'route-stale';
+      }
+      if (operation.signal?.aborted) return 'aborted';
       return 'current';
     };
 
     try {
-      const result = await patchNativeConversationTitle(chatId, nextTitle, {
-        signal: controller?.signal,
+      const freshness = operationStatus();
+      if (freshness !== 'current') {
+        return { ok: false, status: freshness, reason: freshness, operationId, title: nextBaseTitle, chatId };
+      }
+      const result = await patchNativeConversationTitle(chatId, nextBaseTitle, {
+        signal,
+        operationStatus,
       });
       const completionStatus = operationStatus();
       if (completionStatus !== 'current') {
-        return { ok: false, status: completionStatus, operationId, title: nextTitle, chatId };
-      }
-      if (!result.ok) {
-        activeRenameOperation = null;
-        return { ...result, operationId, title: nextTitle, chatId };
-      }
-      updateConversationHistoryCacheTitle(chatId, nextTitle);
-      setTitle({ chatId, baseTitle: nextTitle, source: 'user', priority: BASE_PRIORITY.user, confidence: 1, reason }, { force: true, userInitiated: true, reason });
-      activeRenameOperation = null;
-      scheduleRefresh(reason, 80);
-      return { ...result, operationId, title: nextTitle, chatId };
-    } catch (err) {
-      const completionStatus = operationStatus();
-      if (completionStatus !== 'current' || err?.name === 'AbortError') {
-        if (activeRenameOperation?.operationId === operationId) activeRenameOperation = null;
         return {
           ok: false,
-          status: completionStatus === 'current' ? 'aborted' : completionStatus,
+          status: completionStatus,
+          reason: completionStatus,
           operationId,
-          title: nextTitle,
+          title: nextBaseTitle,
+          emoji: submitted.emoji,
           chatId,
         };
       }
-      activeRenameOperation = null;
+      if (!result.ok) {
+        return {
+          ...result,
+          operationId,
+          title: nextBaseTitle,
+          emoji: submitted.emoji,
+          chatId,
+        };
+      }
+      updateConversationHistoryCacheTitle(chatId, nextBaseTitle);
+      setTitle({
+        chatId,
+        baseTitle: submitted.emoji ? sanitizedSubmission : nextBaseTitle,
+        source: 'user',
+        priority: BASE_PRIORITY.user,
+        confidence: 1,
+        reason,
+      }, { force: true, userInitiated: true, reason });
+      scheduleRefresh(reason, 80);
+      return {
+        ...result,
+        operationId,
+        title: nextBaseTitle,
+        baseTitle: nextBaseTitle,
+        emoji: submitted.emoji,
+        chatId,
+      };
+    } catch (err) {
+      const completionStatus = operationStatus();
+      if (completionStatus !== 'current' || err?.name === 'AbortError') {
+        return {
+          ok: false,
+          status: completionStatus === 'current' ? 'aborted' : completionStatus,
+          reason: completionStatus === 'current' ? 'aborted' : completionStatus,
+          operationId,
+          title: nextBaseTitle,
+          emoji: submitted.emoji,
+          chatId,
+        };
+      }
       fail('renameNative', err);
       return {
         ok: false,
         status: 'error',
+        reason: 'error',
         operationId,
-        title: nextTitle,
+        title: nextBaseTitle,
+        emoji: submitted.emoji,
         chatId,
         error: String(err && err.message || err),
       };
+    } finally {
+      try { removeExternalAbort?.(); } catch {}
+      if (activeRenameOperation?.nonce === operationNonce) activeRenameOperation = null;
     }
   }
 
   function refreshDisplay(reason) {
     if (destroyed) return getState();
     return notify(reason || 'display-refresh', null);
+  }
+
+  function refreshDisplayIfConvergenceChanged(reason) {
+    if (destroyed) return getState();
+    const previous = state?.convergence || {};
+    const next = resolveConvergenceStatus();
+    if (
+      previous.requested === next.requested &&
+      previous.enabled === next.enabled &&
+      previous.mode === next.mode &&
+      previous.source === next.source &&
+      previous.gate === next.gate
+    ) {
+      return getState();
+    }
+    return notify(reason || 'convergence-display-refresh', null);
   }
 
   function selfCheck() {
@@ -1847,6 +2099,7 @@
     H2O.ChatTitle = api;
     patchHistory();
     installRouteEventListeners();
+    installConvergenceFlagListener();
     bindCrossSurfaceTitleSync();
     installObservers();
     scheduleStoreAttach('boot');

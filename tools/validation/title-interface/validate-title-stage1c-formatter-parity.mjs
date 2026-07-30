@@ -47,6 +47,8 @@ const ROUTE_CORRECTION_SCOPE_MODE = "route-correction";
 const STAGE1D_COORDINATION_SCOPE_MODE = "stage1d-bridge-coordination";
 const STAGE1E_CONVERGENCE_SCOPE_MODE = "stage1e-convergence";
 const STAGE1E_CONVERGENCE_SCOPE_OPTION = "--stage1e-convergence-scope";
+const STAGE1E_CORRECTIONS_SCOPE_MODE = "stage1e-corrections";
+const STAGE1E_CORRECTIONS_SCOPE_OPTION = "--stage1e-corrections-scope";
 const GENERATOR_REL = "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
 const STAGE1B_VALIDATOR_REL = "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs";
 const TAB_RUNTIME_REL = "src-runtime-base/9B1a.🟤🔖 Tab Title 🔖.js";
@@ -69,6 +71,14 @@ const STAGE1E_CONVERGENCE_TRACKED_SCOPE = new Set([
 const STAGE1E_CONVERGENCE_SCOPE = new Set([
   ...STAGE1E_CONVERGENCE_TRACKED_SCOPE,
   STAGE1E_VALIDATOR_REL,
+]);
+const STAGE1E_CORRECTIONS_SCOPE = new Set([
+  RUNTIME_REL,
+  TAB_RUNTIME_REL,
+  UNDER_INPUT_RUNTIME_REL,
+  VALIDATOR_REL,
+  STAGE1E_VALIDATOR_REL,
+  TITLE_ADR_REL,
 ]);
 const SOURCE_ONLY = process.argv.includes("--source-only");
 const CANARY_EXPECTATION = Object.freeze({
@@ -205,6 +215,7 @@ function splitNul(value) {
 function parseRequestedScopeMode(argv) {
   const options = argv.filter((argument) => argument.startsWith(SCOPE_MODE_PREFIX));
   const stage1EOptions = argv.filter((argument) => argument.startsWith("--stage1e-convergence"));
+  const correctionOptions = argv.filter((argument) => argument.startsWith("--stage1e-corrections"));
   assert(options.length <= 1, "duplicate --scope-mode options are forbidden");
   assert(
     stage1EOptions.every((argument) => argument === STAGE1E_CONVERGENCE_SCOPE_OPTION),
@@ -212,10 +223,16 @@ function parseRequestedScopeMode(argv) {
   );
   assert(stage1EOptions.length <= 1, "duplicate Stage 1E convergence scope options are forbidden");
   assert(
-    !(options.length && stage1EOptions.length),
-    "Stage 1E convergence scope conflicts with --scope-mode",
+    correctionOptions.every((argument) => argument === STAGE1E_CORRECTIONS_SCOPE_OPTION),
+    "unknown Stage 1E corrections scope option",
+  );
+  assert(correctionOptions.length <= 1, "duplicate Stage 1E corrections scope options are forbidden");
+  assert(
+    Number(options.length > 0) + Number(stage1EOptions.length > 0) + Number(correctionOptions.length > 0) <= 1,
+    "Stage 1E convergence scope conflicts with --scope-mode or another Stage 1E scope",
   );
   if (stage1EOptions.length === 1) return STAGE1E_CONVERGENCE_SCOPE_MODE;
+  if (correctionOptions.length === 1) return STAGE1E_CORRECTIONS_SCOPE_MODE;
   if (options.length === 0) return null;
   const value = options[0].slice(SCOPE_MODE_PREFIX.length);
   assert(
@@ -242,7 +259,8 @@ function classifyStage1CScope({
       || requestedMode === "validator-self-correction"
       || requestedMode === ROUTE_CORRECTION_SCOPE_MODE
       || requestedMode === STAGE1D_COORDINATION_SCOPE_MODE
-      || requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE,
+      || requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+      || requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE,
     `unknown requested Stage 1C scope mode: ${String(requestedMode)}`,
   );
   const modified = new Set(modifiedTracked);
@@ -256,10 +274,14 @@ function classifyStage1CScope({
 
   const allowedUntracked = requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
     ? new Set([STAGE1E_VALIDATOR_REL])
-    : EXPECTED_UNTRACKED;
+    : (requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE ? new Set() : EXPECTED_UNTRACKED);
   const unexpectedUntracked = [...untrackedPaths]
     .filter((relative) => (
-      (requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE || !relative.startsWith("chrome/"))
+      (
+        requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+        || requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+        || !relative.startsWith("chrome/")
+      )
       && !allowedUntracked.has(relative)
     ));
   assert.deepEqual(unexpectedUntracked, [], `unexpected untracked paths: ${unexpectedUntracked.join(", ")}`);
@@ -316,6 +338,20 @@ function classifyStage1CScope({
     );
     assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1e-convergence requires both tracked Stage 1C files");
     return STAGE1E_CONVERGENCE_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE) {
+    assert(
+      sameSet(modified, STAGE1E_CORRECTIONS_SCOPE),
+      `stage1e-corrections requires exactly ${JSON.stringify([...STAGE1E_CORRECTIONS_SCOPE].sort())}`,
+    );
+    assert.equal(untrackedPaths.size, 0, "stage1e-corrections forbids untracked paths");
+    assert(
+      sameSet(stage1ETrackedFiles, STAGE1E_CONVERGENCE_TRACKED_SCOPE),
+      "stage1e-corrections requires all previously tracked Stage 1E files",
+    );
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1e-corrections requires both tracked Stage 1C files");
+    return STAGE1E_CORRECTIONS_SCOPE_MODE;
   }
 
   const unexpectedModified = [...modified].filter((relative) => !EXPECTED_MODIFIED.has(relative));
@@ -573,6 +609,45 @@ scopeTest("unknown Stage 1E convergence scope options are rejected", () => {
   assert.throws(
     () => parseRequestedScopeMode(["--stage1e-convergence-scope=unknown"]),
     /unknown Stage 1E convergence scope option/u,
+  );
+});
+scopeTest("Stage 1E corrections scope accepts exactly the focused six-file set", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE],
+    untracked: [],
+  })), STAGE1E_CORRECTIONS_SCOPE_MODE);
+});
+scopeTest("Stage 1E corrections scope rejects a seventh tracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE, "src-runtime-base/foreign.js"],
+    untracked: [],
+  })), /requires exactly/u);
+});
+scopeTest("Stage 1E corrections scope rejects every untracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE],
+    untracked: ["foreign.tmp"],
+  })), /unexpected untracked paths/u);
+});
+scopeTest("Stage 1E corrections and convergence modes conflict", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+    STAGE1E_CONVERGENCE_SCOPE_OPTION,
+  ]), /conflicts with --scope-mode/u);
+});
+scopeTest("duplicate Stage 1E corrections scope options are rejected", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+  ]), /duplicate Stage 1E corrections/u);
+});
+scopeTest("unknown Stage 1E corrections scope options are rejected", () => {
+  assert.throws(
+    () => parseRequestedScopeMode(["--stage1e-corrections-scope=unknown"]),
+    /unknown Stage 1E corrections scope option/u,
   );
 });
 
@@ -2203,7 +2278,10 @@ function assertProtectedRuntimeIdentity() {
     "-c", "core.quotePath=false", "ls-tree", "-rz", "--name-only", "HEAD", "--", "src-runtime-base",
   ], { cwd: ROOT });
   const paths = raw.toString().split("\0").filter(Boolean);
-  const protectedPrefixes = scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+  const protectedPrefixes = (
+    scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE ||
+    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+  )
     ? ["0A1a", "9D1a"]
     : ["0A1a", "9B1a", "9C1a", "9D1a"];
   for (const prefix of protectedPrefixes) {
@@ -2216,7 +2294,10 @@ function assertProtectedRuntimeIdentity() {
       `${prefix} changed`,
     );
   }
-  if (scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE) {
+  if (
+    scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE ||
+    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+  ) {
     assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", TAB_RUNTIME_REL]).trim(), "");
     assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", UNDER_INPUT_RUNTIME_REL]).trim(), "");
   }
@@ -2343,7 +2424,7 @@ test("all 154 canonical aliases remain valid symlinks", () => {
   execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT });
 });
 
-assert.equal(scopeTests.length, 31, "scope test count drifted");
+assert.equal(scopeTests.length, 37, "scope test count drifted");
 assert.equal(tests.length, 56, "runtime scenario count drifted");
 
 console.log(JSON.stringify({

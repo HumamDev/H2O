@@ -263,17 +263,29 @@ authoritative runtime adoption.
   flag or bridge state fails closed to the unchanged legacy formatter.
 - Under the Stage 1E-a opt-in path, `9B0a` alone invokes
   `sanitizeNativeTitle` and `formatNativeDisplayTitle`. Native ChatGPT
-  persists only the sanitized clean base title. Emoji remains a separately
-  stored H2O field, and `displayTitle` remains derived inside `9B0a`.
+  persists only the sanitized clean base title. A supported submitted edge
+  emoji is separated before the Native request, retained as a distinct H2O
+  field, and installed canonically only after request success. `displayTitle`
+  remains derived inside `9B0a`.
 - Stage 1E-a corrects the optimistic rename defect. `9C1a` keeps pending editor
   text locally, awaits `9B0a.renameNative`, and never installs canonical title
   state before successful Native PATCH completion. `9B0a.renameNative` is the
   single confirmed-state installation point; failed, aborted, superseded, and
   route-stale operations cannot update canonical state.
+- A `9C1a` editor session immutably captures its opening chat ID, route token,
+  route kind, and editor-session ID. `9B0a.renameNative` validates that expected
+  identity, the live URL identity, operation freshness, and abort state before
+  authentication or PATCH. Teardown and route removal cancel the session and
+  abort its request where supported.
 - With the convergence flag enabled, confirmed `9C1a` display and native-chat
-  `9B1a` tab display consume the full canonical snapshot without independent
-  title sanitation or emoji composition. Flag rollback immediately restores
-  their legacy display paths without changing title records.
+  `9B1a` tab display consume canonical snapshot strings byte-exactly, without
+  independent normalization, title sanitation, or emoji composition. `9B0a`
+  alone adapts the existing flag registry setter and compatibility events into
+  one coordinator-owned change listener and performs a read-only display
+  reprojection. False-to-true and true-to-false changes therefore immediately
+  update subscribed consumers without changing title records, Store records, or
+  boot-cache records. The full legacy display paths remain executable for
+  rollback.
 - Native sidebar/list rendering is explicitly deferred to Stage 1E-b.
 - `9D1a` will be decomposed into suggestion and explicit emoji-intent responsibilities; it remains disabled.
 - Storage migration, NativeTitleAdapter, read-back receipts, Studio

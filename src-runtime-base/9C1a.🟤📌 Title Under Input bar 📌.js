@@ -37,9 +37,8 @@
   let attachTimer = 0;
   let refreshTimer = 0;
   let bodyObserver = null;
-  let renameSubmissionSeq = 0;
-  let activeRenameSubmission = null;
-  let pendingRenameText = '';
+  let editorSessionSeq = 0;
+  let activeEditorSession = null;
   let renameError = null;
   let destroyed = false;
   const cleanups = new Set();
@@ -401,11 +400,50 @@
     return fn;
   }
 
+  function canonicalString(value) {
+    return typeof value === 'string' ? value : '';
+  }
+
+  function editorSessionMatches(session, state) {
+    if (!session || session.cancelled || destroyed || activeEditorSession !== session) return false;
+    const snapshot = state || W.H2O?.ChatTitle?.getState?.() || {};
+    return (
+      getCurrentChatId() === session.chatId &&
+      snapshot.chatId === session.chatId &&
+      snapshot.routeKind === session.routeKind &&
+      Number.isSafeInteger(snapshot.routeToken) &&
+      snapshot.routeToken === session.routeToken
+    );
+  }
+
+  function detachEditorInputListeners(session) {
+    if (!session?.input) return;
+    try { session.input.removeEventListener('keydown', session.onKeydown); } catch {}
+    try { session.input.removeEventListener('blur', session.onBlur); } catch {}
+    session.onKeydown = null;
+    session.onBlur = null;
+  }
+
+  function cancelEditorSession(reason) {
+    const session = activeEditorSession;
+    if (!session) {
+      isEditing = false;
+      return false;
+    }
+    session.cancelled = true;
+    session.cancelReason = String(reason || 'cancelled');
+    session.finished = true;
+    detachEditorInputListeners(session);
+    try { session.controller?.abort?.(); } catch {}
+    session.controller = null;
+    activeEditorSession = null;
+    isEditing = false;
+    return true;
+  }
+
   function destroy() {
     destroyed = true;
-    renameSubmissionSeq += 1;
-    activeRenameSubmission = null;
-    pendingRenameText = '';
+    cancelEditorSession('runtime-destroyed');
     renameError = null;
     clearTimeout(attachTimer);
     clearTimeout(refreshTimer);
@@ -442,6 +480,7 @@
   }
 
   function hideTitleLabel() {
+    cancelEditorSession('route-or-label-removed');
     closeTitleMenu();
     shownTitle = '';
     shownProjectKey = '';
@@ -1007,8 +1046,8 @@
     labelEl.appendChild(main);
   }
 
-  function updateLabelText(text) {
-    const next = norm(text);
+  function updateLabelText(text, options = {}) {
+    const next = options.canonical === true ? canonicalString(text) : norm(text);
     if (!next) return;
     shownTitle = next;
     if (!ensureLabel() || !labelEl || isEditing) return;
@@ -1077,6 +1116,13 @@
       hideTitleLabel();
       return;
     }
+    if (state.chatId && state.chatId !== currentChatId) {
+      hideTitleLabel();
+      return;
+    }
+    if (activeEditorSession && !editorSessionMatches(activeEditorSession, state)) {
+      cancelEditorSession('route-state-changed');
+    }
     if (renameError && (
       renameError.chatId !== currentChatId ||
       (Number.isSafeInteger(state.routeToken) && renameError.routeToken !== state.routeToken)
@@ -1084,25 +1130,64 @@
       clearRenameError();
     }
     baseTitle = norm(state.baseTitle || '');
-    const display = state.convergence?.enabled === true
-      ? norm(state.displayTitle || '')
+    const canonical = state.convergence?.enabled === true;
+    const display = canonical
+      ? canonicalString(state.displayTitle)
       : norm(state.displayTitle || state.baseTitle || '');
-    if (display && !(isEmojiOnlyTitle(display) && !baseTitle)) {
-      updateLabelText(display);
+    if (display && (canonical || !(isEmojiOnlyTitle(display) && !baseTitle))) {
+      updateLabelText(display, { canonical });
     } else {
       updatePlaceholderLabel();
     }
     renderRenameError();
   }
 
+  function renderCurrentTitleState(api, fallback) {
+    if (destroyed) return;
+    let current = fallback || {};
+    try { current = api?.getState?.() || current; } catch {}
+    try { renderFromState(current); } catch {}
+  }
+
   function startInlineEdit(initialValue) {
-    if (!ensureLabel() || !labelEl || isEditing) return;
+    if (destroyed || !ensureLabel() || !labelEl || isEditing) return;
     const api = W.H2O && W.H2O.ChatTitle;
     const state = api?.getState?.() || {};
+    const chatId = getCurrentChatId();
+    if (
+      !chatId ||
+      state.chatId !== chatId ||
+      state.routeKind !== 'chat' ||
+      !Number.isSafeInteger(state.routeToken)
+    ) {
+      renderCurrentTitleState(api, state);
+      return;
+    }
     const currentBase = norm(state.baseTitle || baseTitle || shownTitle);
     if (!currentBase) return;
     const editValue = norm(initialValue || currentBase);
-
+    const identity = Object.freeze({
+      chatId,
+      routeToken: state.routeToken,
+      routeKind: state.routeKind,
+      editorSessionId: `under-input-editor-${++editorSessionSeq}`,
+    });
+    const session = {
+      identity,
+      chatId: identity.chatId,
+      routeToken: identity.routeToken,
+      routeKind: identity.routeKind,
+      editorSessionId: identity.editorSessionId,
+      cancelled: false,
+      cancelReason: '',
+      finished: false,
+      controller: null,
+      input: null,
+      label: labelEl,
+      onKeydown: null,
+      onBlur: null,
+    };
+    activeEditorSession = session;
     isEditing = true;
     clearRenameError();
     closeTitleMenu();
@@ -1135,86 +1220,121 @@
     input.type = 'text';
     input.className = 'ho-title-edit-input';
     input.value = editValue;
+    session.input = input;
     main.appendChild(input);
     labelEl.appendChild(main);
     input.focus();
     input.select();
 
-    let finished = false;
     async function finish(commit) {
-      if (finished) return;
-      finished = true;
+      if (session.finished || session.cancelled || activeEditorSession !== session || destroyed) return;
+      session.finished = true;
+      detachEditorInputListeners(session);
 
-      const nextBase = norm(commit ? input.value : editValue);
-
-      if (commit && nextBase && nextBase !== currentBase) {
-        pendingRenameText = nextBase;
-        input.disabled = true;
-        input.setAttribute('aria-busy', 'true');
-        const status = D.createElement('span');
-        status.className = 'ho-title-rename-status';
-        status.textContent = 'Saving…';
-        main.appendChild(status);
-        const result = await applyRename(nextBase);
-        if (result?.ignored) {
-          isEditing = false;
-          labelEl.innerHTML = '';
-          renderFromState(api?.getState?.() || {});
-          return;
-        }
-        isEditing = false;
-        labelEl.innerHTML = '';
-        if (result?.ok) {
-          pendingRenameText = '';
-          clearRenameError();
-        } else {
-          renameError = {
-            chatId: result?.chatId || getCurrentChatId(),
-            routeToken: Number.isSafeInteger(result?.routeToken) ? result.routeToken : state.routeToken,
-            pendingText: nextBase,
-            message: 'Title was not saved.',
-          };
-        }
-        renderFromState(api?.getState?.() || state);
-      } else {
-        isEditing = false;
-        pendingRenameText = '';
-        labelEl.innerHTML = '';
-        renderFromState(api?.getState?.() || { baseTitle: currentBase, displayTitle: shownTitle || currentBase });
+      if (!commit) {
+        cancelEditorSession('editor-cancelled');
+        renderCurrentTitleState(api, state);
+        return;
       }
+      if (!editorSessionMatches(session)) {
+        cancelEditorSession('route-stale-before-submit');
+        renderCurrentTitleState(api, state);
+        return;
+      }
+
+      const nextBase = norm(input.value);
+      if (!nextBase || nextBase === currentBase) {
+        cancelEditorSession('editor-unchanged');
+        renderCurrentTitleState(api, state);
+        return;
+      }
+
+      input.disabled = true;
+      input.setAttribute('aria-busy', 'true');
+      const status = D.createElement('span');
+      status.className = 'ho-title-rename-status';
+      status.textContent = 'Saving…';
+      main.appendChild(status);
+      session.controller = typeof W.AbortController === 'function' ? new W.AbortController() : null;
+
+      const result = await applyRename(nextBase, session);
+      if (
+        result?.ignored ||
+        session.cancelled ||
+        destroyed ||
+        activeEditorSession !== session
+      ) {
+        return;
+      }
+
+      const currentLabel = labelEl;
+      const canRender = !!currentLabel &&
+        currentLabel === session.label &&
+        currentLabel.isConnected !== false;
+      activeEditorSession = null;
+      session.controller = null;
+      isEditing = false;
+      if (!canRender) return;
+
+      currentLabel.innerHTML = '';
+      if (result?.ok) {
+        clearRenameError();
+      } else {
+        renameError = {
+          chatId: session.chatId,
+          routeToken: session.routeToken,
+          pendingText: nextBase,
+          message: 'Title was not saved.',
+        };
+      }
+      renderCurrentTitleState(api, state);
     }
 
-    input.addEventListener('keydown', (event) => {
+    const runFinish = (commit) => {
+      void finish(commit).catch(() => {
+        const wasCurrent = activeEditorSession === session && !destroyed;
+        cancelEditorSession('editor-finish-error');
+        if (!wasCurrent) return;
+        renameError = {
+          chatId: session.chatId,
+          routeToken: session.routeToken,
+          pendingText: norm(input.value || editValue),
+          message: 'Title was not saved.',
+        };
+        renderCurrentTitleState(api, state);
+      });
+    };
+    session.onKeydown = (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        finish(true);
+        runFinish(true);
       } else if (event.key === 'Escape') {
         event.preventDefault();
-        finish(false);
+        runFinish(false);
       }
-    });
-    input.addEventListener('blur', () => finish(true));
+    };
+    session.onBlur = () => runFinish(true);
+    input.addEventListener('keydown', session.onKeydown);
+    input.addEventListener('blur', session.onBlur);
   }
 
-  async function applyRename(nextBase) {
+  async function applyRename(nextBase, session) {
     const api = W.H2O && W.H2O.ChatTitle;
-    const snapshot = api?.getState?.() || {};
-    const chatId = getCurrentChatId();
-    const capturedRouteToken = Number.isSafeInteger(snapshot.routeToken) ? snapshot.routeToken : -1;
-    const submission = {
-      operationId: `under-input-rename-${++renameSubmissionSeq}`,
-      chatId,
-      routeToken: capturedRouteToken,
-    };
-    activeRenameSubmission = submission;
-
     if (!api || typeof api.renameNative !== 'function') {
-      activeRenameSubmission = null;
       return {
         ok: false,
         status: 'title-api-unavailable',
-        chatId,
-        routeToken: capturedRouteToken,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
+    }
+    if (!editorSessionMatches(session)) {
+      return {
+        ok: false,
+        status: 'route-stale-before-request',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
       };
     }
 
@@ -1223,7 +1343,11 @@
       result = await api.renameNative(nextBase, {
         userInitiated: true,
         source: 'under-input',
-        chatId,
+        chatId: session.chatId,
+        expectedRouteToken: session.routeToken,
+        expectedRouteKind: session.routeKind,
+        operationId: session.editorSessionId,
+        signal: session.controller?.signal,
       });
     } catch (err) {
       result = {
@@ -1233,24 +1357,36 @@
       };
     }
 
-    if (destroyed || activeRenameSubmission?.operationId !== submission.operationId) {
-      return { ok: false, status: 'superseded', ignored: true, chatId, routeToken: capturedRouteToken };
+    if (!editorSessionMatches(session)) {
+      return {
+        ok: false,
+        status: 'superseded',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
     }
     const current = api.getState?.() || {};
     if (
-      getCurrentChatId() !== chatId ||
-      current.chatId !== chatId ||
-      (Number.isSafeInteger(current.routeToken) && current.routeToken !== capturedRouteToken) ||
-      result?.status === 'route-stale'
+      current.chatId !== session.chatId ||
+      current.routeKind !== session.routeKind ||
+      current.routeToken !== session.routeToken ||
+      result?.status === 'route-stale' ||
+      result?.status === 'route-stale-before-request'
     ) {
-      activeRenameSubmission = null;
-      return { ok: false, status: 'route-stale', ignored: true, chatId, routeToken: capturedRouteToken };
+      cancelEditorSession('route-stale-after-request');
+      return {
+        ok: false,
+        status: 'route-stale',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
     }
-    activeRenameSubmission = null;
     return {
       ...(result || { ok: false, status: 'unknown' }),
-      chatId,
-      routeToken: capturedRouteToken,
+      chatId: session.chatId,
+      routeToken: session.routeToken,
     };
   }
 

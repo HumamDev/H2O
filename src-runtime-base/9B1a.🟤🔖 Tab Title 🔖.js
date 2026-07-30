@@ -112,8 +112,10 @@
   }
 
   function renderTitle(nextTitle, reason = 'render', options) {
-    const title = norm(nextTitle);
     const canonical = options?.canonical === true;
+    const title = canonical
+      ? (typeof nextTitle === 'string' ? nextTitle : '')
+      : norm(nextTitle);
     if (!title || (!canonical && /^chatgpt$/i.test(title))) return;
     if (title === lastRendered && document.title === title) return;
 
@@ -463,7 +465,7 @@
     if (lastCanonicalChatState?.convergence?.enabled === true) {
       const canonicalTitle = lastCanonicalChatState.documentTitle || lastCanonicalChatState.displayTitle || '';
       if (canonicalTitle) {
-        const currentTitle = norm(D.title || '');
+        const currentTitle = typeof D.title === 'string' ? D.title : '';
         if (currentTitle && currentTitle !== canonicalTitle) {
           lastNativeOverwrite = {
             at: Date.now(),
