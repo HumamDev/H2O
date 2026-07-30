@@ -2740,14 +2740,77 @@
     return current?.parentElement === root ? current : null;
   }
 
-  function renderedBoundarySectionsById(identity = '') {
+  function renderedBoundaryRoleFromCarrier(identityCarrier = null, nativeTestHost = null) {
+    if (!identityCarrier || !nativeTestHost || !nativeTestHost.contains?.(identityCarrier)) {
+      return { renderedRoleCarrier: null, renderedRole: '' };
+    }
+    let candidate = identityCarrier;
+    while (candidate) {
+      const turnRole = String(candidate.getAttribute?.('data-turn') || '').trim().toLowerCase();
+      const authorRole = String(
+        candidate.getAttribute?.('data-message-author-role') || ''
+      ).trim().toLowerCase();
+      const renderedRole = ['user', 'assistant'].includes(turnRole)
+        ? turnRole
+        : (['user', 'assistant'].includes(authorRole) ? authorRole : '');
+      if (renderedRole) {
+        return { renderedRoleCarrier: candidate, renderedRole };
+      }
+      if (candidate === nativeTestHost) break;
+      candidate = candidate.parentElement;
+    }
+    return { renderedRoleCarrier: null, renderedRole: '' };
+  }
+
+  function resolveRenderedTurnSurfaceByIdentity(identity = '', flowRoot = null) {
     const id = String(identity || '').trim();
-    if (!id) return [];
-    let sections = [];
-    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
-    return sections.filter((section) => (
-      String(section?.getAttribute?.('data-turn-id') || '').trim() === id
-    ));
+    if (!id) return { ok: false, reason: 'identity-unmounted' };
+    let identityCarriers = [];
+    try {
+      identityCarriers = Array.from(document.querySelectorAll('section[data-turn-id]')).filter(
+        (carrier) => (
+          carrier?.isConnected === true
+          && String(carrier.getAttribute?.('data-turn-id') || '').trim() === id
+        )
+      );
+    } catch {}
+    if (!identityCarriers.length) return { ok: false, reason: 'identity-unmounted' };
+    if (identityCarriers.length !== 1) return { ok: false, reason: 'identity-ambiguous' };
+    const identityCarrier = identityCarriers[0];
+    let nativeTestHostCount = 0;
+    let ancestor = identityCarrier;
+    while (ancestor) {
+      if (ancestor.matches?.(TURN_HOST_SEL)) nativeTestHostCount += 1;
+      ancestor = ancestor.parentElement;
+    }
+    const nativeTestHost = identityCarrier.matches?.(TURN_HOST_SEL)
+      ? identityCarrier
+      : identityCarrier.closest?.(TURN_HOST_SEL) || null;
+    if (
+      nativeTestHostCount !== 1
+      || !nativeTestHost
+      || nativeTestHost?.isConnected !== true
+      || !nativeTestHost.contains?.(identityCarrier)
+    ) return { ok: false, reason: 'native-test-host-unavailable' };
+    const identityWrapper = renderedBoundaryDirectChildUnder(flowRoot, identityCarrier);
+    const nativeHostWrapper = renderedBoundaryDirectChildUnder(flowRoot, nativeTestHost);
+    if (!identityWrapper || !nativeHostWrapper) {
+      return { ok: false, reason: 'flow-wrapper-unavailable' };
+    }
+    if (identityWrapper !== nativeHostWrapper) {
+      return { ok: false, reason: 'surface-wrapper-mismatch' };
+    }
+    const role = renderedBoundaryRoleFromCarrier(identityCarrier, nativeTestHost);
+    return {
+      ok: true,
+      reason: null,
+      identityCarrier,
+      renderedRoleCarrier: role.renderedRoleCarrier,
+      nativeTestHost,
+      directFlowWrapper: identityWrapper,
+      renderedRole: role.renderedRole,
+      testId: String(nativeTestHost.getAttribute?.('data-testid') || '') || null,
+    };
   }
 
   function renderedBoundaryThreadDivider(pageNum = 0) {
@@ -3075,8 +3138,8 @@
       });
     }
 
-    const boundarySections = renderedBoundarySectionsById(authority.qId);
-    if (boundarySections.length > 1) {
+    const boundarySurface = resolveRenderedTurnSurfaceByIdentity(authority.qId, flowRoot);
+    if (boundarySurface.reason === 'identity-ambiguous') {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('boundary-section-ambiguous', {
         flowRootConnected: true,
@@ -3084,7 +3147,7 @@
         startSentinelConnected: true,
       });
     }
-    if (!boundarySections.length) {
+    if (boundarySurface.reason === 'identity-unmounted') {
       if (!lease) {
         return fail('rendered-boundary-head-unproven', {
           flowRootConnected: true,
@@ -3163,8 +3226,16 @@
       });
     }
 
-    const boundarySection = boundarySections[0];
-    const boundaryDomRole = getTurnHostRole(boundarySection);
+    if (!boundarySurface.ok) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(lease ? 'captured-wrapper-replaced' : 'boundary-wrapper-unavailable', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        dividerConnected: true,
+        startSentinelConnected: true,
+      });
+    }
+    const boundaryDomRole = boundarySurface.renderedRole;
     if (boundaryDomRole !== 'user') {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('rendered-boundary-head-unproven', {
@@ -3175,17 +3246,7 @@
         startSentinelConnected: true,
       });
     }
-    const boundaryWrapper = renderedBoundaryDirectChildUnder(flowRoot, boundarySection);
-    if (!boundaryWrapper) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('boundary-wrapper-unavailable', {
-        flowRootConnected: true,
-        boundarySectionMounted: true,
-        boundaryDomRole,
-        dividerConnected: true,
-        startSentinelConnected: true,
-      });
-    }
+    const boundaryWrapper = boundarySurface.directFlowWrapper;
     if (lease && (
       lease.flowRoot !== flowRoot
       || lease.boundaryWrapper !== boundaryWrapper
@@ -3228,18 +3289,18 @@
       });
     }
 
-    let primaryAnswerSection = null;
+    let primaryAnswerSurface = null;
     let primaryAnswerDomRole = '';
     let primaryAnswerWrapper = null;
-    const answerSections = renderedBoundarySectionsById(authority.primaryAId);
-    if (answerSections.length > 1) {
+    const answerSurface = resolveRenderedTurnSurfaceByIdentity(authority.primaryAId, flowRoot);
+    if (answerSurface.reason === 'identity-ambiguous') {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('boundary-section-ambiguous');
     }
-    if (answerSections.length === 1) {
-      primaryAnswerSection = answerSections[0];
-      primaryAnswerDomRole = getTurnHostRole(primaryAnswerSection);
-      primaryAnswerWrapper = renderedBoundaryDirectChildUnder(flowRoot, primaryAnswerSection);
+    if (answerSurface.ok) {
+      primaryAnswerSurface = answerSurface;
+      primaryAnswerDomRole = answerSurface.renderedRole;
+      primaryAnswerWrapper = answerSurface.directFlowWrapper;
       const answerIndex = Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper);
       if (
         primaryAnswerDomRole !== 'assistant'
@@ -3249,6 +3310,9 @@
         S.renderedPageBoundaryLeases.delete(num);
         return fail('boundary-order-invalid');
       }
+    } else if (answerSurface.reason !== 'identity-unmounted') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-order-invalid');
     }
 
     let finalStatus = null;
@@ -3290,11 +3354,11 @@
       boundarySectionMounted: true,
       boundaryWrapperConnected: true,
       boundaryDomRole,
-      boundaryTestId: boundarySection.getAttribute?.('data-testid') || '',
+      boundaryTestId: boundarySurface.testId,
       boundaryDirectFlowIndex: layout.boundaryIndex,
-      primaryAnswerMounted: !!primaryAnswerSection,
+      primaryAnswerMounted: !!primaryAnswerSurface,
       primaryAnswerDomRole,
-      primaryAnswerTestId: primaryAnswerSection?.getAttribute?.('data-testid') || '',
+      primaryAnswerTestId: primaryAnswerSurface?.testId || '',
       primaryAnswerDirectFlowIndex: primaryAnswerWrapper
         ? Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper)
         : -1,

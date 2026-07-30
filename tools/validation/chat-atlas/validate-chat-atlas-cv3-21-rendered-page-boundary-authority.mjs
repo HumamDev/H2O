@@ -4,11 +4,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PAGE_PATH = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
+const PARENT_COMMIT = '2da14b9ca32187cdc7c834f3167ff4bc6775e100';
+const PARENT_PAGE_SOURCE = execFileSync('git', ['show', `${PARENT_COMMIT}:${PAGE_PATH}`], {
+  cwd: ROOT,
+  encoding: 'utf8',
+});
 const fixtures = [];
 let assertions = 0;
 
@@ -273,6 +279,30 @@ function wrapperWithSection(identity, role, testId, guard) {
   return wrapper;
 }
 
+function wrapperWithNestedIdentity(identity, role, testId, guard, options = {}) {
+  const wrapper = node('DIV', 'host-native-turn-slot', guard);
+  const nativeTestHost = node('SECTION', 'host-native-turn', guard);
+  if (options.missingNativeTestHost !== true) nativeTestHost.setAttribute('data-testid', testId);
+  const identityCarrier = node('SECTION', 'host-message-identity', guard);
+  identityCarrier.setAttribute('data-turn-id', identity);
+  let renderedRoleCarrier = identityCarrier;
+  if (options.rolePlacement === 'ancestor') {
+    renderedRoleCarrier = node('DIV', 'host-rendered-role', guard);
+    renderedRoleCarrier.setAttribute('data-message-author-role', role);
+    renderedRoleCarrier.appendChild(identityCarrier);
+    nativeTestHost.appendChild(renderedRoleCarrier);
+  } else {
+    if (options.rolePlacement !== 'outside') identityCarrier.setAttribute('data-turn', role);
+    nativeTestHost.appendChild(identityCarrier);
+    if (options.rolePlacement === 'outside') {
+      renderedRoleCarrier = wrapper;
+      wrapper.setAttribute('data-turn', role);
+    }
+  }
+  wrapper.appendChild(nativeTestHost);
+  return { wrapper, nativeTestHost, identityCarrier, renderedRoleCarrier };
+}
+
 function pageRecords(count = 39, { noAnswer = false, streaming = false } = {}) {
   return Array.from({ length: count }, (_unused, index) => {
     const order = index + 1;
@@ -296,6 +326,7 @@ function withUnlocked(shape, run) {
 }
 
 function createHarness(options = {}) {
+  const productionSource = options.productionSource || PAGE_SOURCE;
   const safety = {
     storageWrites: 0,
     cacheWrites: 0,
@@ -348,22 +379,54 @@ function createHarness(options = {}) {
   divider.setAttribute('data-page-num', String(pageNum));
   divider.setAttribute('data-cgxui-owner', 'mnmp');
   flow.appendChild(divider);
-  const boundaryWrapper = wrapperWithSection(
-    options.hiddenParent === true ? 'hidden-parent-node' : qId,
-    options.boundaryRole || 'user',
-    options.boundaryTestId || (startOrder === 26 ? 'conversation-turn-51' : `diagnostic-${startOrder}`),
+  const boundaryIdentity = options.hiddenParent === true ? 'hidden-parent-node' : qId;
+  const boundaryRole = options.boundaryRole || 'user';
+  const boundaryTestId = options.boundaryTestId
+    || (startOrder === 26 ? 'conversation-turn-51' : `diagnostic-${startOrder}`);
+  const boundarySurface = options.nestedBoundary === true
+    ? wrapperWithNestedIdentity(boundaryIdentity, boundaryRole, boundaryTestId, guard, {
+      missingNativeTestHost: options.missingBoundaryNativeTestHost === true,
+      rolePlacement: options.boundaryRolePlacement,
+    })
+    : null;
+  const boundaryWrapper = boundarySurface?.wrapper || wrapperWithSection(
+    boundaryIdentity,
+    boundaryRole,
+    boundaryTestId,
     guard,
   );
   if (options.boundaryMounted !== false) flow.appendChild(boundaryWrapper);
   let answerWrapper = null;
+  let answerSurface = null;
   if (primaryAId && options.answerMounted !== false) {
-    answerWrapper = wrapperWithSection(
+    const answerRole = options.answerRole || 'assistant';
+    const answerTestId = options.answerTestId
+      || (startOrder === 26 ? 'conversation-turn-52' : `answer-${startOrder}`);
+    answerSurface = options.nestedAnswer === true
+      ? wrapperWithNestedIdentity(primaryAId, answerRole, answerTestId, guard, {
+        missingNativeTestHost: options.missingAnswerNativeTestHost === true,
+        rolePlacement: options.answerRolePlacement,
+      })
+      : null;
+    answerWrapper = answerSurface?.wrapper || wrapperWithSection(
       primaryAId,
-      options.answerRole || 'assistant',
-      options.answerTestId || (startOrder === 26 ? 'conversation-turn-52' : `answer-${startOrder}`),
+      answerRole,
+      answerTestId,
       guard,
     );
     flow.appendChild(answerWrapper);
+    if (options.duplicateNestedAnswer === true) {
+      flow.appendChild(wrapperWithNestedIdentity(
+        primaryAId,
+        answerRole,
+        'conversation-turn-answer-duplicate',
+        guard,
+      ).wrapper);
+    }
+  }
+  if (options.mismatchedBoundarySurface === true && boundarySurface && answerSurface) {
+    boundarySurface.identityCarrier.closest = () => answerSurface.nativeTestHost;
+    answerSurface.nativeTestHost.contains = () => true;
   }
   const next = wrapperWithSection(
     startOrder === 26 ? Q27 : `q-${startOrder + 1}`,
@@ -531,20 +594,30 @@ function createHarness(options = {}) {
     const getTurnHostRole = (value) => String(
       (getTurnSectionForNode(value) || value)?.getAttribute?.('data-turn') || ''
     ).trim().toLowerCase();
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryStatusIdentity')}
-    ${extractFunction(PAGE_SOURCE, 'frozenRenderedPageBoundaryCapability')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryDirectChildUnder')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundarySectionsById')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryThreadDivider')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryStartSentinel')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryOrderingNodeAllowed')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryLayoutProof')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryTransitionActive')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryRecordStreaming')}
-    ${extractFunction(PAGE_SOURCE, 'readRenderedBoundaryAuthority')}
-    ${extractFunction(PAGE_SOURCE, 'renderedBoundaryLeaseScopeCurrent')}
-    ${extractFunction(PAGE_SOURCE, 'getRenderedPageBoundaryCapability')}
-    return Object.freeze({ get: getRenderedPageBoundaryCapability });
+    ${extractFunction(productionSource, 'renderedBoundaryStatusIdentity')}
+    ${extractFunction(productionSource, 'frozenRenderedPageBoundaryCapability')}
+    ${extractFunction(productionSource, 'renderedBoundaryDirectChildUnder')}
+    ${productionSource.includes('function renderedBoundaryRoleFromCarrier(')
+      ? extractFunction(productionSource, 'renderedBoundaryRoleFromCarrier')
+      : ''}
+    ${productionSource.includes('function resolveRenderedTurnSurfaceByIdentity(')
+      ? extractFunction(productionSource, 'resolveRenderedTurnSurfaceByIdentity')
+      : extractFunction(productionSource, 'renderedBoundarySectionsById')}
+    ${extractFunction(productionSource, 'renderedBoundaryThreadDivider')}
+    ${extractFunction(productionSource, 'renderedBoundaryStartSentinel')}
+    ${extractFunction(productionSource, 'renderedBoundaryOrderingNodeAllowed')}
+    ${extractFunction(productionSource, 'renderedBoundaryLayoutProof')}
+    ${extractFunction(productionSource, 'renderedBoundaryTransitionActive')}
+    ${extractFunction(productionSource, 'renderedBoundaryRecordStreaming')}
+    ${extractFunction(productionSource, 'readRenderedBoundaryAuthority')}
+    ${extractFunction(productionSource, 'renderedBoundaryLeaseScopeCurrent')}
+    ${extractFunction(productionSource, 'getRenderedPageBoundaryCapability')}
+    return Object.freeze({
+      get: getRenderedPageBoundaryCapability,
+      resolveSurface: typeof resolveRenderedTurnSurfaceByIdentity === 'function'
+        ? resolveRenderedTurnSurfaceByIdentity
+        : null,
+    });
   })()`, context);
   guard.locked = true;
   return {
@@ -556,7 +629,9 @@ function createHarness(options = {}) {
     sentinel,
     divider,
     boundaryWrapper,
+    boundarySurface,
     answerWrapper,
+    answerSurface,
     preceding,
     next,
     status,
@@ -605,8 +680,8 @@ function assertSafetyZero(safety) {
   }, 'safety counters');
 }
 
-await fixture('parent live-shaped Page 2 boundary is reproduced', () => {
-  const h = createHarness();
+await fixture('parent same-element Page 2 boundary remains supported', () => {
+  const h = createHarness({ productionSource: PARENT_PAGE_SOURCE });
   const result = h.api.get(2);
   equal(h.flow.children.length, 87, 'raw child count reproduced');
   equal(h.flow.children.indexOf(h.preceding), 55, 'order 25 answer index');
@@ -615,6 +690,162 @@ await fixture('parent live-shaped Page 2 boundary is reproduced', () => {
   equal(h.flow.children.indexOf(h.next), 60, 'next question index');
   equal(result.pageStartOrder, 26, 'page start');
   equal(result.interveningNonH2ONodeCount, 0, 'clean boundary');
+  equal(result.supported, true, 'parent same-element shape supported');
+});
+
+await fixture('parent nested live surface is rejected before correction', () => {
+  const h = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    productionSource: PARENT_PAGE_SOURCE,
+  });
+  ok(h.boundarySurface.identityCarrier !== h.boundarySurface.nativeTestHost, 'nested boundary surfaces differ');
+  ok(h.answerSurface.identityCarrier !== h.answerSurface.nativeTestHost, 'nested answer surfaces differ');
+  ok(
+    h.boundarySurface.identityCarrier.closest('[data-testid^="conversation-turn-"]')
+      === h.boundarySurface.nativeTestHost,
+    'identity resolves native host',
+  );
+  const result = h.api.get(2);
+  equal(result.supported, false, 'parent rejects live shape');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'parent failure reason');
+  equal(result.boundarySectionMounted, false, 'parent misses mounted nested identity');
+});
+
+await fixture('corrected nested qId and primary-answer surfaces are supported', () => {
+  const result = createHarness({ nestedBoundary: true, nestedAnswer: true }).api.get(2);
+  equal(result.supported, true, 'nested boundary supported');
+  equal(result.reason, null, 'no failure reason');
+  equal(result.source, 'exact-mounted-product-qid', 'exact mounted source');
+  equal(result.boundarySectionMounted, true, 'boundary identity mounted');
+  equal(result.boundaryWrapperConnected, true, 'boundary wrapper connected');
+  equal(result.boundaryDomRole, 'user', 'boundary DOM role');
+  equal(result.boundaryTestId, 'conversation-turn-51', 'boundary native test ID');
+  equal(result.primaryAnswerMounted, true, 'primary answer mounted');
+  equal(result.primaryAnswerDomRole, 'assistant', 'primary DOM role');
+  equal(result.primaryAnswerTestId, 'conversation-turn-52', 'primary native test ID');
+  equal(result.dividerBeforeBoundary, true, 'divider precedes boundary');
+  equal(result.startSentinelBeforeBoundary, true, 'sentinel precedes boundary');
+  equal(result.interveningNonH2ONodeCount, 0, 'no host node between');
+  equal(result.leaseCurrent, true, 'lease current');
+});
+
+await fixture('identity carrier and native test host share one direct-flow wrapper', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  const surface = h.api.resolveSurface(Q26, h.flow);
+  ok(surface.identityCarrier !== surface.nativeTestHost, 'surfaces differ');
+  ok(surface.directFlowWrapper === h.boundaryWrapper, 'boundary wrapper resolved');
+  ok(
+    surface.identityCarrier.closest('[data-testid^="conversation-turn-"]')
+      === surface.nativeTestHost,
+    'native host is closest test host',
+  );
+});
+
+await fixture('different-wrapper identity and native-host projection fails closed', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    mismatchedBoundarySurface: true,
+  }).api.get(2);
+  equal(result.supported, false, 'mismatch unsupported');
+  equal(result.reason, 'boundary-wrapper-unavailable', 'mismatch reason');
+});
+
+await fixture('missing native test host fails closed', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    missingBoundaryNativeTestHost: true,
+  }).api.get(2);
+  equal(result.supported, false, 'missing host unsupported');
+  equal(result.reason, 'boundary-wrapper-unavailable', 'missing host reason');
+});
+
+await fixture('duplicate nested primary-answer identities fail deterministically', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    duplicateNestedAnswer: true,
+  }).api.get(2);
+  equal(result.supported, false, 'duplicate answer unsupported');
+  equal(result.reason, 'boundary-section-ambiguous', 'deterministic ambiguity reason');
+});
+
+await fixture('nested identity carrier itself may own rendered role', () => {
+  const result = createHarness({ nestedBoundary: true, nestedAnswer: true }).api.get(2);
+  equal(result.boundaryDomRole, 'user', 'identity-carrier role');
+});
+
+await fixture('nearest role-bearing ancestor inside native host may own rendered role', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    boundaryRolePlacement: 'ancestor',
+    answerRolePlacement: 'ancestor',
+  }).api.get(2);
+  equal(result.supported, true, 'ancestor role supported');
+  equal(result.boundaryDomRole, 'user', 'boundary ancestor role');
+  equal(result.primaryAnswerDomRole, 'assistant', 'answer ancestor role');
+});
+
+await fixture('role carrier outside native test host is rejected', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    boundaryRolePlacement: 'outside',
+  }).api.get(2);
+  equal(result.supported, false, 'outside role unsupported');
+  equal(result.reason, 'rendered-boundary-head-unproven', 'outside role reason');
+});
+
+await fixture('identity lookup never interpolates input into a selector', () => {
+  const source = extractFunction(PAGE_SOURCE, 'resolveRenderedTurnSurfaceByIdentity');
+  ok(source.includes("querySelectorAll('section[data-turn-id]')"), 'fixed selector used');
+  ok(!/querySelectorAll\s*\(\s*`[^`]*\$\{/.test(source), 'no template selector input');
+  ok(!/querySelector(All)?\s*\([^)]*identity/.test(source), 'identity never enters selector');
+});
+
+await fixture('nested test IDs remain diagnostic only', () => {
+  const result = createHarness({
+    nestedBoundary: true,
+    nestedAnswer: true,
+    boundaryTestId: 'conversation-turn-nested-alpha',
+    answerTestId: 'conversation-turn-nested-beta',
+  }).api.get(2);
+  equal(result.supported, true, 'renamed nested test IDs supported');
+  equal(result.boundaryTestId, 'conversation-turn-nested-alpha', 'boundary diagnostic');
+  equal(result.primaryAnswerTestId, 'conversation-turn-nested-beta', 'answer diagnostic');
+});
+
+await fixture('nested identity unmount retains the exact wrapper lease', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  equal(h.api.get(2).supported, true, 'initial nested capture');
+  withUnlocked(h, () => {
+    h.boundarySurface.nativeTestHost.removeChild(h.boundarySurface.identityCarrier);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, true, 'lease remains supported');
+  equal(result.source, 'same-generation-captured-wrapper', 'captured-wrapper source');
+  equal(result.boundarySectionMounted, false, 'nested identity unmounted');
+  equal(result.boundaryWrapperConnected, true, 'exact wrapper retained');
+});
+
+await fixture('valid nested wrapper replacement invalidates the lease', () => {
+  const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
+  equal(h.api.get(2).supported, true, 'initial nested capture');
+  withUnlocked(h, () => {
+    const replacement = wrapperWithNestedIdentity(
+      Q26,
+      'user',
+      'conversation-turn-replacement',
+      h.guard,
+    ).wrapper;
+    h.flow.replaceChild(replacement, h.boundaryWrapper);
+  });
+  const result = h.api.get(2);
+  equal(result.supported, false, 'replacement invalid');
+  equal(result.reason, 'captured-wrapper-replaced', 'replacement reason');
 });
 
 await fixture('exact qId mount returns supported', () => {
