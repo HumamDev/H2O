@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -16,14 +17,26 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const B0_REL = "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js";
 const B1_REL = "src-runtime-base/9B1a.🟤🔖 Tab Title 🔖.js";
+const B2_REL = "src-runtime-base/9B2a.🟤🏷️ Sidebar Title Renderer 🏷️.js";
 const C1_REL = "src-runtime-base/9C1a.🟤📌 Title Under Input bar 📌.js";
 const SELF_REL = "tools/validation/title-interface/validate-title-stage1e-convergence-v1.mjs";
 const STAGE1C_REL = "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs";
 const ADR_REL = "docs/decisions/ADR-0011-title-management-contract.md";
+const DEV_ORDER_REL = "config/dev-order.tsv";
+const LOADER_DEPS_REL = "config/loader-deps.json";
+const STAGE1EB_SCOPE_OPTION = "--stage1eb-sidebar-scope";
+const F0D_REL = "src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js";
+const F1C_REL = "src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js";
+const F2A_REL = "src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js";
+const F3A_REL = "src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js";
+const F6A_REL = "src-runtime-base/0F6a.⬛️🏷️ Labels 🏷️.js";
+const D3A_REL = "src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js";
 const FLAG_KEY = "title.threeSurfaceConvergenceV1";
 const OVERRIDE_KEY = "__H2O_TITLE_THREE_SURFACE_CONVERGENCE_V1__";
 const AUTHORIZED = new Set([B0_REL, B1_REL, C1_REL, SELF_REL, STAGE1C_REL, ADR_REL]);
 const AUTHORIZED_TRACKED = new Set(AUTHORIZED);
+const STAGE1EB_TRACKED = new Set([DEV_ORDER_REL, LOADER_DEPS_REL, SELF_REL, ADR_REL]);
+const STAGE1EB_COMMITTED = new Set([...STAGE1EB_TRACKED, B2_REL]);
 const EXPECTED_IDENTITY = Object.freeze({
   schemaVersion: 2,
   bridgeVersion: "3",
@@ -39,6 +52,15 @@ const EXPECTED_IDENTITY = Object.freeze({
 const b0Source = fs.readFileSync(path.join(ROOT, B0_REL), "utf8");
 const b1Source = fs.readFileSync(path.join(ROOT, B1_REL), "utf8");
 const c1Source = fs.readFileSync(path.join(ROOT, C1_REL), "utf8");
+const b2Source = fs.readFileSync(path.join(ROOT, B2_REL), "utf8");
+const readerSources = Object.freeze({
+  [F0D_REL]: fs.readFileSync(path.join(ROOT, F0D_REL), "utf8"),
+  [F1C_REL]: fs.readFileSync(path.join(ROOT, F1C_REL), "utf8"),
+  [F2A_REL]: fs.readFileSync(path.join(ROOT, F2A_REL), "utf8"),
+  [F3A_REL]: fs.readFileSync(path.join(ROOT, F3A_REL), "utf8"),
+  [F6A_REL]: fs.readFileSync(path.join(ROOT, F6A_REL), "utf8"),
+  [D3A_REL]: fs.readFileSync(path.join(ROOT, D3A_REL), "utf8"),
+});
 
 const scopeTests = [];
 const scenarios = [];
@@ -60,6 +82,87 @@ function sameSet(actual, expected) {
   return actual.size === expected.size && [...actual].every((value) => expected.has(value));
 }
 
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function functionSlice(source, name, nextName) {
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf(`function ${nextName}(`, start + 1);
+  assert(start >= 0, `missing function ${name}`);
+  assert(end > start, `missing function boundary ${nextName}`);
+  return source.slice(start, end);
+}
+
+function sourceSlice(source, startText, endText) {
+  const start = source.indexOf(startText);
+  const end = source.indexOf(endText, start + startText.length);
+  assert(start >= 0, `missing source slice start: ${startText}`);
+  assert(end > start, `missing source slice end: ${endText}`);
+  return source.slice(start, end);
+}
+
+const readerSlices = Object.freeze({
+  f0dEnsureString: functionSlice(readerSources[F0D_REL], "ensureString", "trimString"),
+  f0dNormText: functionSlice(readerSources[F0D_REL], "normText", "slug"),
+  f0dChooseBetterTitle: functionSlice(readerSources[F0D_REL], "chooseBetterTitle", "higherConfidence"),
+  f1cNative: functionSlice(
+    readerSources[F1C_REL],
+    "extractNativeRecentTitle",
+    "collectNativeRecentDomRows",
+  ),
+  f2aNative: functionSlice(
+    readerSources[F2A_REL],
+    "DOM_collectNativeProjectRows",
+    "DOM_getNativeProjectRows",
+  ),
+  f3aNative: functionSlice(
+    readerSources[F3A_REL],
+    "DOM_extractSidebarChatTitle",
+    "DOM_getChatTitleFromSidebar",
+  ),
+  f3aRendered: functionSlice(
+    readerSources[F3A_REL],
+    "DOM_menuContextFromAnchor",
+    "DOM_anchorFromNearbyContainer",
+  ),
+  f6aRendered: functionSlice(
+    readerSources[F6A_REL],
+    "findChatTitleInSidebar",
+    "getArchiveBoot",
+  ),
+  f6aNormText: functionSlice(readerSources[F6A_REL], "normText", "normalizeLabel"),
+  f6aIds: functionSlice(readerSources[F6A_REL], "normalizeChatId", "toChatId"),
+  f6aSelectors: sourceSlice(readerSources[F6A_REL], "const SEL = {", "const state ="),
+  f6aSetRowText: functionSlice(readerSources[F6A_REL], "setRowText", "injectIcon"),
+  d3aRendered: functionSlice(
+    readerSources[D3A_REL],
+    "readSidebarConversationTitle",
+    "readConversationHistoryCacheTitle",
+  ),
+});
+
+const EXPECTED_READER_SLICE_SHA256 = Object.freeze({
+  f0dEnsureString: "e942d27c92fa4f14529d9724d3b3c528226b2551fe515a6719331a4474e04314",
+  f0dNormText: "388c828537e4bde56303605ed38be3cc3162b420aadd4ec410205413de899b9b",
+  f0dChooseBetterTitle: "6a29db4c4a853808f4b15e1e7b68cce394cc2ce74fe2d6a2a81a1b7609ad2b8b",
+  f1cNative: "4d4dcadf8c1eebdcd51303d6e8137f0a5efa8255f257767b9f2ca68da8f30076",
+  f2aNative: "2f3a124058020cdd85bffc2f999934ed37a5a76e8d01ee1b126ec8d83d21d30f",
+  f3aNative: "d07d61c2f336d095c7d186ff20037b23775f41435c197852565fcf15a7704faa",
+  f3aRendered: "99cd7c3b33fedc57469d94448cf14ce7397f84d5049f1176889aebd3409abffb",
+  f6aRendered: "ab35def2ca439cb85fc49a1d874edb36a589b61a5c72d9bf61057d5eb9445f71",
+  f6aNormText: "ec3bac14e827bd38d32c400e20dfaed42a8c346a679fd57f91bce821ededd3aa",
+  f6aIds: "045d6232b1d72a4d4c87d5e911dfd4fe708f3b1f2cfee494ff7540bf262efd4f",
+  f6aSelectors: "831ec3b4fae9ea0a2835826c6a5d7d86aef6cddad9b7fad8a38fa89505111cdf",
+  f6aSetRowText: "083139b85e3119f54fcc3d8292c52a938db39a40c5a8caec876ed63e7d826254",
+  d3aRendered: "dcacf7526af9a15f75e9dcd7caec1562262bbf5eb6652e3f1b1ab6aeb3f7837d",
+});
+
+const EXPECTED_READER_BLOBS = Object.freeze({
+  [F0D_REL]: "278a5ef740edccb33b827fe1b47b97d5a531d86c",
+  [F6A_REL]: "f557c45762ac58f581f2862c6c97b771c3ce8967",
+});
+
 function classifyScope({ modifiedTracked, staged, untracked, committedHeadPaths = [] }) {
   const modified = new Set(modifiedTracked);
   const stagedPaths = new Set(staged);
@@ -79,6 +182,38 @@ function classifyScope({ modifiedTracked, staged, untracked, committedHeadPaths 
   );
   assert.equal(untrackedPaths.size, 0, "Stage 1E correction scope forbids untracked paths");
   return "stage1e-corrections-dirty";
+}
+
+function classifyStage1EBScope({ modifiedTracked, staged, untracked, committedHeadPaths = [] }) {
+  const modified = new Set(modifiedTracked);
+  const stagedPaths = new Set(staged);
+  const untrackedPaths = new Set(untracked);
+  const headPaths = new Set(committedHeadPaths);
+  assert.equal(stagedPaths.size, 0, `staged paths forbidden: ${[...stagedPaths].sort().join(", ")}`);
+  if (modified.size === 0 && untrackedPaths.size === 0) {
+    assert(
+      sameSet(headPaths, STAGE1EB_COMMITTED),
+      `committed-clean Stage 1E-b scope mismatch: ${JSON.stringify([...headPaths].sort())}`,
+    );
+    return "stage1eb-sidebar-committed-clean";
+  }
+  assert(
+    sameSet(modified, STAGE1EB_TRACKED),
+    `tracked Stage 1E-b scope mismatch: ${JSON.stringify([...modified].sort())}`,
+  );
+  assert(
+    sameSet(untrackedPaths, new Set([B2_REL])),
+    `untracked Stage 1E-b scope mismatch: ${JSON.stringify([...untrackedPaths].sort())}`,
+  );
+  return "stage1eb-sidebar-dirty";
+}
+
+function requestedScopeMode(argv) {
+  assert(
+    argv.length === 0 || (argv.length === 1 && argv[0] === STAGE1EB_SCOPE_OPTION),
+    `unknown or conflicting Stage 1E validator option: ${argv.join(" ")}`,
+  );
+  return argv[0] === STAGE1EB_SCOPE_OPTION ? "stage1eb-sidebar" : "stage1ea";
 }
 
 function currentScope() {
@@ -108,8 +243,11 @@ function structuralTest(name, callback) {
   console.log(`ok structural ${structuralAssertions.length} - ${name}`);
 }
 
+const requestedMode = requestedScopeMode(process.argv.slice(2));
 const actualScope = currentScope();
-const scopeMode = classifyScope(actualScope);
+const scopeMode = requestedMode === "stage1eb-sidebar"
+  ? classifyStage1EBScope(actualScope)
+  : classifyScope(actualScope);
 
 scopeTest("exact authorized six-file scope is accepted", () => {
   assert.equal(classifyScope({
@@ -174,6 +312,55 @@ scopeTest("publication-safety change is rejected", () => {
     staged: [],
     untracked: [],
   }), /tracked Stage 1E correction scope mismatch/u);
+});
+scopeTest("exact Stage 1E-b dirty scope is accepted", () => {
+  assert.equal(classifyStage1EBScope({
+    modifiedTracked: [...STAGE1EB_TRACKED],
+    staged: [],
+    untracked: [B2_REL],
+  }), "stage1eb-sidebar-dirty");
+});
+scopeTest("exact Stage 1E-b committed-clean scope is accepted", () => {
+  assert.equal(classifyStage1EBScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1EB_COMMITTED],
+  }), "stage1eb-sidebar-committed-clean");
+});
+scopeTest("Stage 1E-b rejects staged and every class of sixth tracked path", () => {
+  for (const foreign of [
+    B0_REL,
+    "config/dev-order-foreign.tsv",
+    "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js",
+    "apps/dev-server/alias/9B2a._Sidebar_Title_Renderer_.js",
+    "tools/publish/canonical-write-guard.mjs",
+  ]) {
+    assert.throws(() => classifyStage1EBScope({
+      modifiedTracked: [...STAGE1EB_TRACKED, foreign],
+      staged: [],
+      untracked: [B2_REL],
+    }), /tracked Stage 1E-b scope mismatch/u);
+  }
+  assert.throws(() => classifyStage1EBScope({
+    modifiedTracked: [...STAGE1EB_TRACKED],
+    staged: [DEV_ORDER_REL],
+    untracked: [B2_REL],
+  }), /staged paths forbidden/u);
+});
+scopeTest("Stage 1E-b rejects a second untracked path", () => {
+  assert.throws(() => classifyStage1EBScope({
+    modifiedTracked: [...STAGE1EB_TRACKED],
+    staged: [],
+    untracked: [B2_REL, "foreign.js"],
+  }), /untracked Stage 1E-b scope mismatch/u);
+});
+scopeTest("Stage 1E-b CLI fails closed for unknown or conflicting options", () => {
+  assert.throws(() => requestedScopeMode(["--unknown"]), /unknown or conflicting/u);
+  assert.throws(
+    () => requestedScopeMode([STAGE1EB_SCOPE_OPTION, STAGE1EB_SCOPE_OPTION]),
+    /unknown or conflicting/u,
+  );
 });
 
 function makeEventHub() {
@@ -346,13 +533,19 @@ function installContractBridge(context, sandbox, kind) {
 
 function instrumentB0(source) {
   const anchor = "\n  boot();\n";
+  const setTitleAnchor = "  function setTitle(payload, options) {\n";
   assert.equal(source.split(anchor).length - 1, 1, "9B0a boot anchor drifted");
-  return source.replace(anchor, `
+  assert.equal(source.split(setTitleAnchor).length - 1, 1, "9B0a setTitle anchor drifted");
+  return source.replace(setTitleAnchor, `${setTitleAnchor}    W.__H2O_STAGE1E_SET_TITLE_CALLS__ = Number(W.__H2O_STAGE1E_SET_TITLE_CALLS__ || 0) + 1;\n`)
+    .replace(anchor, `
   W.__H2O_STAGE1E_B0_TEST__ = Object.freeze({
     displayFrom,
     legacyDisplayFrom,
     sanitizeNativeBaseTitle,
     splitNativeSubmission,
+    readSidebarTitle,
+    readLibraryTitle,
+    detectTitles,
     resolveConvergenceStatus,
     currentRecord: () => ({ ...activeRecord }),
     recordFor: (chatId) => {
@@ -361,6 +554,7 @@ function instrumentB0(source) {
     },
     currentRouteToken: () => routeToken,
     currentConvergence: () => ({ ...lastConvergenceStatus }),
+    setTitleCallCount: () => Number(W.__H2O_STAGE1E_SET_TITLE_CALLS__ || 0),
     activeRename: () => activeRenameOperation ? {
       operationId: activeRenameOperation.operationId,
       chatId: activeRenameOperation.chatId,
@@ -375,11 +569,14 @@ function instrumentB0(source) {
 
 function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Initial base - ChatGPT" } = {}) {
   const effects = makeEffects();
+  const sidebarDom = createMiniDom(effects);
   const storage = makeStorage(effects);
   const timers = makeTimers(effects);
   const windowEvents = makeEventHub();
   const documentEvents = makeEventHub();
   const titleNode = {};
+  let sidebarEntry = null;
+  const libraryRows = new Map();
   let fetchHandler = async (url) => (
     url === "/api/auth/session"
       ? response({ body: { accessToken: "stage1e-token" } })
@@ -426,18 +623,15 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     body: {},
     documentElement: {},
     querySelector(selector) {
-      return selector === "title" ? titleNode : null;
+      if (selector === "title") return titleNode;
+      if (/^(?:aside|nav) /u.test(String(selector || ""))) return sidebarEntry;
+      return null;
     },
     querySelectorAll() {
       return [];
     },
-    createTreeWalker() {
-      return {
-        currentNode: null,
-        nextNode() {
-          return false;
-        },
-      };
+    createTreeWalker(root, show, filter) {
+      return sidebarDom.document.createTreeWalker(root, show, filter);
     },
   };
   const history = {
@@ -497,6 +691,11 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     };
   `, context);
   sandbox.__stage1eFlagValue = flag;
+  sandbox.H2O.LibraryIndex = {
+    getChat(chatId) {
+      return libraryRows.get(String(chatId || "")) || null;
+    },
+  };
   installContractBridge(context, sandbox, bridge);
   const instrumentedB0Source = instrumentB0(b0Source);
   new vm.Script(instrumentedB0Source, { filename: `${B0_REL}:stage1e-harness` }).runInContext(context);
@@ -528,6 +727,48 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     },
     setDocumentTitle(value) {
       document.title = value;
+    },
+    setSidebarReaderFixture(nativeText, displayText) {
+      const anchor = sidebarDom.document.createElement("a");
+      anchor.setAttribute("href", "/c/stage1e-chat-a");
+      const layout = sidebarDom.document.createElement("div");
+      const native = sidebarDom.document.createElement("span");
+      native.className = "truncate";
+      native.textContent = String(nativeText || "");
+      const visual = sidebarDom.document.createElement("span");
+      visual.setAttribute("data-h2o-owner", "title-sidebar-renderer");
+      visual.setAttribute("data-h2o-title-role", "visual");
+      visual.textContent = String(displayText || "");
+      layout.append(native, visual);
+      anchor.appendChild(layout);
+      sidebarDom.document.body.appendChild(anchor);
+      sidebarEntry = anchor;
+      return {
+        anchor,
+        layout,
+        native,
+        visual,
+        removeVisualOwnership() {
+          visual.removeAttribute("data-h2o-owner");
+        },
+        restoreVisualOwnership() {
+          visual.setAttribute("data-h2o-owner", "title-sidebar-renderer");
+        },
+        replaceNative(nextText) {
+          native.remove();
+          const replacement = sidebarDom.document.createElement("span");
+          replacement.className = "truncate";
+          replacement.textContent = String(nextText || "");
+          layout.prepend(replacement);
+          return replacement;
+        },
+      };
+    },
+    setLibraryTitle(chatId, title) {
+      libraryRows.set(String(chatId || ""), { chatId: String(chatId || ""), title: String(title || "") });
+    },
+    clearLibraryTitle(chatId) {
+      libraryRows.delete(String(chatId || ""));
     },
     flagListenerCount() {
       return windowEvents.countFor("h2o:flags:changed");
@@ -783,6 +1024,7 @@ function createMiniDom(effects) {
 
   class ElementMock {
     constructor(tagName = "div") {
+      this.nodeType = 1;
       this.tagName = String(tagName).toUpperCase();
       this.children = [];
       this.parentElement = null;
@@ -833,6 +1075,14 @@ function createMiniDom(effects) {
     get parentNode() {
       return this.parentElement;
     }
+    get childNodes() {
+      return this.children;
+    }
+    get nextSibling() {
+      if (!this.parentElement) return null;
+      const index = this.parentElement.children.indexOf(this);
+      return this.parentElement.children[index + 1] || null;
+    }
     get classList() {
       const element = this;
       return {
@@ -863,6 +1113,20 @@ function createMiniDom(effects) {
       this._disconnectChildren();
       this.children = [];
       this._text = String(value ?? "");
+    }
+    get innerText() {
+      if (
+        this.hidden ||
+        this.getAttribute("aria-hidden") === "true" ||
+        this.getAttribute("data-h2o-title-native-hidden") === "1" ||
+        this.style.display === "none" ||
+        this.style.visibility === "hidden"
+      ) return "";
+      if (this.children.length) return this.children.map((child) => child.innerText).join("");
+      return this._text;
+    }
+    set innerText(value) {
+      this.textContent = value;
     }
     get innerHTML() {
       this._trackDetachedAccess("innerHTML:get");
@@ -913,6 +1177,11 @@ function createMiniDom(effects) {
       child._setConnected(this.isConnected);
       return child;
     }
+    insertAdjacentElement(position, child) {
+      if (position !== "afterend" || !this.parentElement) return null;
+      this.parentElement.insertBefore(child, this.nextSibling);
+      return child;
+    }
     remove() {
       if (this.parentElement) {
         const index = this.parentElement.children.indexOf(this);
@@ -941,7 +1210,18 @@ function createMiniDom(effects) {
       return this._attributes.has(key) ? this._attributes.get(key) : null;
     }
     removeAttribute(name) {
-      this._attributes.delete(String(name));
+      const key = String(name);
+      this._attributes.delete(key);
+      if (key.startsWith("data-")) {
+        const dataName = key.slice(5).replace(/-([a-z])/gu, (_, letter) => letter.toUpperCase());
+        delete this.dataset[dataName];
+      }
+    }
+    hasAttribute(name) {
+      const key = String(name);
+      if (key === "id") return !!this.id;
+      if (key === "class") return !!this.className;
+      return this._attributes.has(key);
     }
     addEventListener(name, handler) {
       this._trackDetachedAccess("addEventListener");
@@ -966,6 +1246,9 @@ function createMiniDom(effects) {
     contains(node) {
       if (node === this) return true;
       return this.children.some((child) => child.contains(node));
+    }
+    matches(selector) {
+      return String(selector || "").split(",").some((item) => selectorMatches(this, item.trim()));
     }
     querySelectorAll(selector) {
       this._trackDetachedAccess("querySelectorAll");
@@ -993,6 +1276,9 @@ function createMiniDom(effects) {
     }
     getBoundingClientRect() {
       return { left: 0, top: 0, right: 320, bottom: 40, width: 320, height: 40 };
+    }
+    getClientRects() {
+      return this.isConnected && this.innerText !== "" ? [this.getBoundingClientRect()] : [];
     }
   }
 
@@ -1047,6 +1333,35 @@ function createMiniDom(effects) {
     },
     querySelectorAll(selector) {
       return html.querySelectorAll(selector);
+    },
+    createTreeWalker(root, _whatToShow, filter) {
+      const nodes = [];
+      const collect = (element) => {
+        if (element.children.length === 0 && element._text) {
+          nodes.push({
+            nodeType: 3,
+            nodeValue: element._text,
+            parentElement: element,
+          });
+        }
+        for (const child of element.children) collect(child);
+      };
+      collect(root);
+      let index = -1;
+      return {
+        currentNode: null,
+        nextNode() {
+          while (++index < nodes.length) {
+            const node = nodes[index];
+            const verdict = filter?.acceptNode?.(node);
+            if (verdict === 2) continue;
+            this.currentNode = node;
+            return node;
+          }
+          this.currentNode = null;
+          return null;
+        },
+      };
     },
   };
   documentRef = document;
@@ -1241,6 +1556,281 @@ function createEditorHarness(initialState = {}) {
         sandbox[key]?.destroy?.();
       }
     },
+  };
+}
+
+function createSidebarHarness(initialState = {}) {
+  const effects = makeEffects();
+  const timers = makeTimers(effects);
+  const windowEvents = makeEventHub();
+  const dom = createMiniDom(effects);
+  const subscribers = new Set();
+  const mutations = { canonical: 0, patches: 0, storeWrites: 0 };
+  const routePath = typeof initialState.routePath === "string"
+    ? initialState.routePath
+    : `/c/${initialState.chatId || "stage1eb-chat-a"}`;
+  const { routePath: _ignoredRoutePath, ...snapshotState } = initialState;
+  let state = {
+    chatId: "stage1eb-chat-a",
+    routeKind: "chat",
+    routeToken: 1,
+    baseTitle: "Native clean",
+    emoji: "",
+    displayTitle: "Native clean",
+    documentTitle: "Native clean",
+    convergence: { enabled: true, mode: "canonical" },
+    ...snapshotState,
+  };
+  const location = {
+    pathname: routePath,
+    href: `https://chatgpt.com${routePath}`,
+    origin: "https://chatgpt.com",
+    search: "",
+  };
+  const sandbox = {
+    ...windowEvents,
+    window: null,
+    document: dom.document,
+    location,
+    history: { pushState() {}, replaceState() {} },
+    localStorage: makeStorage(effects),
+    sessionStorage: makeStorage(effects),
+    console: { log() {}, warn() {}, error() {} },
+    HTMLElement: dom.ElementMock,
+    MutationObserver: dom.MutationObserverMock,
+    URL,
+    decodeURIComponent,
+    Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, FILTER_REJECT: 2, FILTER_ACCEPT: 1 },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    requestAnimationFrame: timers.requestAnimationFrame,
+    cancelAnimationFrame: timers.cancelAnimationFrame,
+    getComputedStyle(element) {
+      return {
+        display: element?.style?.display || "block",
+        visibility: element?.style?.visibility || "visible",
+        opacity: element?.style?.opacity ?? "1",
+      };
+    },
+    fetch() {
+      mutations.patches += 1;
+      throw new Error("9B2a attempted network access");
+    },
+  };
+  sandbox.window = sandbox;
+  sandbox.H2O = {
+    ChatTitle: {
+      subscribe(callback) {
+        subscribers.add(callback);
+        callback({ ...state, convergence: { ...state.convergence } });
+        return () => subscribers.delete(callback);
+      },
+      setTitle() { mutations.canonical += 1; },
+      setEmoji() { mutations.canonical += 1; },
+      renameNative() { mutations.patches += 1; },
+    },
+    Library: {
+      Store: {
+        set() { mutations.storeWrites += 1; },
+      },
+    },
+  };
+  const context = vm.createContext(sandbox);
+  const script = new vm.Script(b2Source, { filename: `${B2_REL}:stage1eb-harness` });
+  let defaultContainer = null;
+
+  function ensureContainer(tagName = "nav", parent = dom.document.body) {
+    const container = dom.document.createElement(tagName);
+    parent.appendChild(container);
+    if (!defaultContainer && tagName === "nav") defaultContainer = container;
+    return container;
+  }
+
+  function createRow(options = {}) {
+    const container = options.container || defaultContainer || ensureContainer();
+    const anchor = dom.document.createElement("a");
+    anchor.className = "__menu-item";
+    anchor.setAttribute("href", options.href || location.pathname);
+    if (Object.prototype.hasOwnProperty.call(options, "ariaLabelledby")) {
+      anchor.setAttribute("aria-labelledby", options.ariaLabelledby);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "ariaLabel")) {
+      anchor.setAttribute("aria-label", options.ariaLabel);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "title")) {
+      anchor.setAttribute("title", options.title);
+    }
+    if (options.hidden) anchor.setAttribute("hidden", "");
+    const layout = dom.document.createElement("div");
+    anchor.appendChild(layout);
+    let source = null;
+    if (options.nativeTitle !== null) {
+      source = dom.document.createElement("span");
+      source.className = options.nativeClass || "truncate";
+      source.textContent = options.nativeTitle ?? "Native clean";
+      layout.appendChild(source);
+    }
+    container.appendChild(anchor);
+    return { container, anchor, layout, source };
+  }
+
+  function runTimers(kind) {
+    for (const [id, timer] of [...effects.timers]) {
+      if (kind && timer.kind !== kind) continue;
+      effects.timers.delete(id);
+      timer.callback();
+    }
+  }
+
+  return {
+    sandbox,
+    effects,
+    mutations,
+    dom,
+    evaluate() { script.runInContext(context); },
+    ensureContainer,
+    createRow,
+    emit(next) {
+      state = {
+        ...state,
+        ...next,
+        convergence: { ...state.convergence, ...(next?.convergence || {}) },
+      };
+      for (const callback of [...subscribers]) {
+        callback({ ...state, convergence: { ...state.convergence } });
+      }
+    },
+    setLocation(pathname) {
+      location.pathname = pathname;
+      location.href = `https://chatgpt.com${pathname}`;
+    },
+    runFrames() { runTimers("frame"); },
+    runRetries() { runTimers("timeout"); },
+    triggerMutation(records = []) {
+      for (const item of effects.observers) {
+        if (item.active) item.callback(records);
+      }
+    },
+    visual(row) {
+      return row.anchor.querySelector(
+        '[data-h2o-owner="title-sidebar-renderer"][data-h2o-title-role="visual"]',
+      );
+    },
+    nativeText(row) { return row.source?.textContent ?? ""; },
+    renderedText(row) { return row.anchor.innerText; },
+    subscriptionCount() { return subscribers.size; },
+    observerCount() {
+      return [...effects.observers].filter((item) => item.active).length;
+    },
+    runtime() { return sandbox.H2O.SidebarTitleRenderer; },
+    destroy() { sandbox.H2O.SidebarTitleRenderer?.destroy?.(); },
+  };
+}
+
+function executeReaderSlice(key, globals, expression) {
+  return executeReaderBundle([key], globals, expression);
+}
+
+function executeReaderBundle(keys, globals, expression) {
+  const sandbox = { ...globals };
+  const context = vm.createContext(sandbox);
+  new vm.Script(
+    `${keys.map((key) => readerSlices[key]).join("\n")}\nglobalThis.__stage1ebReaderResult = (${expression});`,
+    { filename: `${keys.join("+")}:committed-reader-slice` },
+  ).runInContext(context);
+  return sandbox.__stage1ebReaderResult;
+}
+
+function chooseBetterLibraryTitle(previous, next, fallback = "") {
+  return executeReaderBundle(
+    ["f0dEnsureString", "f0dNormText", "f0dChooseBetterTitle"],
+    { previous, next, fallback },
+    "chooseBetterTitle(previous, next, fallback)",
+  );
+}
+
+function runReaderSlices(harness, row) {
+  const { dom } = harness;
+  const normText = (raw) => String(raw || "").replace(/\s+/gu, " ").trim();
+  const parseChatId = (href) => {
+    try {
+      const match = new URL(String(href || ""), "https://chatgpt.com").pathname.match(/^\/c\/([^/]+)$/u);
+      return match ? decodeURIComponent(match[1]) : "";
+    } catch {
+      return "";
+    }
+  };
+  const chatId = parseChatId(row.anchor.getAttribute("href"));
+  const common = {
+    anchor: row.anchor,
+    HTMLElement: dom.ElementMock,
+    Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, FILTER_REJECT: 2, FILTER_ACCEPT: 1 },
+    D: dom.document,
+    SEL: {
+      sidebarTruncate: '.truncate,[class*="truncate"]',
+      sidebarItemAnchor: 'a[href*="/c/"]',
+    },
+  };
+  const f1cNative = executeReaderSlice("f1cNative", {
+    ...common,
+    chatId,
+    normText,
+  }, "extractNativeRecentTitle(anchor, chatId)");
+  const f2aNative = executeReaderSlice("f2aNative", {
+    ...common,
+    root: row.container,
+    DOM_collectNativeProjectAnchors: () => [row.anchor],
+    PROJECTS_idFromHref: () => "reader-project",
+    normText,
+  }, "DOM_collectNativeProjectRows(root)[0]?.title || ''");
+  const f3aNative = executeReaderSlice("f3aNative", {
+    ...common,
+    UTIL_normText: normText,
+    UI_cleanSurfaceChatTitle: normText,
+    UI_isNoisySurfaceChatTitle: () => false,
+  }, "DOM_extractSidebarChatTitle(anchor, '')");
+  const f3aRendered = executeReaderSlice("f3aRendered", {
+    ...common,
+    source: "stage1eb",
+    UTIL_normText: normText,
+    DOM_parseChatIdFromHref: parseChatId,
+    DOM_findChatTitleInSidebarByHref: () => "",
+    DOM_rectSnapshot: () => null,
+  }, "DOM_menuContextFromAnchor(anchor, source)?.title || ''");
+  const f6aRendered = executeReaderBundle(
+    ["f6aSelectors", "f6aNormText", "f6aIds", "f6aRendered"],
+    {
+    ...common,
+    chatId,
+  }, "findChatTitleInSidebar(chatId)");
+  const f6aTruncate = executeReaderBundle(["f6aSelectors", "f6aSetRowText"], {
+    ...common,
+    row: row.anchor,
+    visual: harness.visual(row),
+    nativeTitle: row.source?.textContent || "",
+  }, `(() => {
+    setRowText(row, nativeTitle);
+    const selected = row.querySelector(SEL.sidebarTruncate);
+    return { text: selected?.textContent || "", matchedVisual: selected === visual };
+  })()`);
+  const d3aRendered = executeReaderSlice("d3aRendered", {
+    ...common,
+    chatId,
+    toChatId: (value) => String(value || ""),
+    normalizeChatIdFromUrl: parseChatId,
+  }, "readSidebarConversationTitle(chatId)");
+  return {
+    f1cNative,
+    f2aNative,
+    f3aNative,
+    f6aTruncateTarget: f6aTruncate.text,
+    f6aTruncateMatchedVisual: f6aTruncate.matchedVisual,
+    f6aVisualAfterTruncateTarget: harness.visual(row)?.textContent || "",
+    f3aRendered,
+    f6aRendered,
+    d3aRendered,
   };
 }
 
@@ -2065,6 +2655,699 @@ await scenario("browser-tab destroy and reinstall retain one live observer subsc
   assert.equal(second.observers, 1);
 });
 
+function adoptedSidebar(options = {}) {
+  const routeChatId = options.chatId ||
+    String(options.routePath || "").match(/\/c\/([^/?#]+)/u)?.[1] ||
+    "stage1eb-chat-a";
+  const harness = createSidebarHarness({
+    chatId: routeChatId,
+    displayTitle: options.displayTitle ?? "Canonical display",
+    baseTitle: options.baseTitle ?? "Native clean",
+    emoji: options.emoji ?? "",
+    convergence: options.convergence || { enabled: true, mode: "canonical" },
+    ...(options.routePath ? { routePath: options.routePath } : {}),
+  });
+  const rowOptions = {
+    nativeTitle: options.nativeTitle ?? "Native clean",
+    href: options.href,
+  };
+  for (const key of ["ariaLabelledby", "ariaLabel", "title"]) {
+    if (Object.prototype.hasOwnProperty.call(options, key)) rowOptions[key] = options[key];
+  }
+  const row = harness.createRow(rowOptions);
+  harness.evaluate();
+  harness.runFrames();
+  return { harness, row };
+}
+
+async function seedConfirmedUserTitle(harness, submittedTitle, operationId) {
+  const state = harness.api.getState();
+  const result = await harness.api.renameNative(submittedTitle, {
+    userInitiated: true,
+    source: "under-input",
+    chatId: state.chatId,
+    expectedRouteToken: state.routeToken,
+    expectedRouteKind: "chat",
+    operationId,
+  });
+  assert.equal(result.ok, true);
+  harness.effects.resetTransient();
+  return currentRecord(harness);
+}
+
+function installStaleSidebarAdoption(harness, row, options = {}) {
+  const staleId = options.staleId || `stale-visual-${Math.random().toString(36).slice(2, 8)}`;
+  let visual = null;
+  if (options.includeVisual !== false) {
+    visual = harness.dom.document.createElement("span");
+    visual.id = staleId;
+    visual.setAttribute("data-h2o-owner", "title-sidebar-renderer");
+    visual.setAttribute("data-h2o-title-role", "visual");
+    visual.textContent = options.displayTitle || "Stale canonical";
+    row.layout.appendChild(visual);
+  }
+  row.source.setAttribute("data-h2o-title-native-owner", "title-sidebar-renderer");
+  row.source.setAttribute("data-h2o-title-native-hidden", "1");
+  row.anchor.setAttribute("data-h2o-title-sidebar-adopted", "1");
+  row.anchor.setAttribute(
+    "data-h2o-title-aria-labelledby-absent",
+    options.originalPresent ? "0" : "1",
+  );
+  if (options.originalPresent) {
+    row.anchor.setAttribute(
+      "data-h2o-title-aria-labelledby-original",
+      options.originalValue || "native-original",
+    );
+  }
+  row.anchor.setAttribute("data-h2o-title-aria-labelledby-visual-id", staleId);
+  if (options.currentValue === null) row.anchor.removeAttribute("aria-labelledby");
+  else row.anchor.setAttribute("aria-labelledby", options.currentValue || staleId);
+  return { staleId, visual };
+}
+
+await scenario("sidebar flag disabled leaves native DOM untouched", () => {
+  const { harness, row } = adoptedSidebar({
+    convergence: { enabled: false, mode: "legacy" },
+  });
+  assert.equal(harness.visual(row), null);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(row.anchor.hasAttribute("aria-labelledby"), false);
+});
+
+await scenario("sidebar canonical ordinary title is displayed byte-exactly", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "Canonical ordinary" });
+  assert.equal(harness.visual(row)?.textContent, "Canonical ordinary");
+  assert.equal(harness.renderedText(row), "Canonical ordinary");
+  assert.equal(harness.nativeText(row), "Native clean");
+});
+
+await scenario("sidebar canonical emoji is displayed once", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "✨ Canonical", emoji: "✨" });
+  assert.equal(harness.renderedText(row), "✨ Canonical");
+  assert.equal((harness.renderedText(row).match(/✨/gu) || []).length, 1);
+});
+
+await scenario("sidebar preserves multi-code-point emoji", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "👩🏽‍💻 Developer notes" });
+  assert.equal(harness.visual(row)?.textContent, "👩🏽‍💻 Developer notes");
+});
+
+await scenario("sidebar preserves internal dash text", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "Alpha - Beta - Notes" });
+  assert.equal(harness.renderedText(row), "Alpha - Beta - Notes");
+});
+
+await scenario("sidebar displays Arabic canonical text byte-exactly", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "مرحبا بالعالم ✨" });
+  assert.equal(harness.visual(row)?.textContent, "مرحبا بالعالم ✨");
+  assert.equal(harness.visual(row)?.getAttribute("dir"), "auto");
+});
+
+await scenario("sidebar displays Hebrew canonical text byte-exactly", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "שלום עולם ✨" });
+  assert.equal(harness.visual(row)?.textContent, "שלום עולם ✨");
+});
+
+await scenario("sidebar supports an emoji-only canonical display", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "👩🏽‍💻", baseTitle: "", emoji: "👩🏽‍💻" });
+  assert.equal(harness.renderedText(row), "👩🏽‍💻");
+});
+
+await scenario("sidebar leaves a wrong-chat row untouched", () => {
+  const { harness, row } = adoptedSidebar({ href: "/c/stage1eb-chat-b" });
+  assert.equal(harness.visual(row), null);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+});
+
+await scenario("sidebar exact-route matching rejects prefix paths", () => {
+  const { harness, row } = adoptedSidebar({ href: "/c/stage1eb-chat-a-extra" });
+  assert.equal(harness.visual(row), null);
+  const exact = adoptedSidebar({
+    href: "https://chatgpt.com/c/stage1eb-chat-a?model=gpt-5#latest",
+    displayTitle: "Query-safe canonical",
+  });
+  assert.equal(exact.harness.renderedText(exact.row), "Query-safe canonical");
+});
+
+await scenario("sidebar direct chat route identity adopts exactly", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/c/stage1eb-direct-chat",
+    displayTitle: "Direct canonical",
+  });
+  assert.equal(harness.renderedText(row), "Direct canonical");
+});
+
+await scenario("sidebar project-scoped chat route identity adopts exactly", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat",
+    displayTitle: "Project canonical",
+  });
+  assert.equal(harness.renderedText(row), "Project canonical");
+});
+
+await scenario("sidebar project route rejects a wrong project identity", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat",
+    href: "/g/g-p-project-b/c/stage1eb-other-chat",
+  });
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar same chat under another project is not interchangeable", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-shared-chat",
+    href: "/g/g-p-project-b/c/stage1eb-shared-chat",
+  });
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar project route rejects a prefixed chat ID", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat",
+    href: "/g/g-p-project-a/c/stage1eb-project-chat-extra",
+  });
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar project route rejects extra path segments", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat",
+    href: "/g/g-p-project-a/c/stage1eb-project-chat/details",
+  });
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar project route ignores query and fragment while matching pathname", () => {
+  const { harness, row } = adoptedSidebar({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat?model=gpt-5#latest",
+    href: "https://chatgpt.com/g/g-p-project-a/c/stage1eb-project-chat?view=compact#row",
+    displayTitle: "Project query-safe canonical",
+  });
+  assert.equal(harness.renderedText(row), "Project query-safe canonical");
+});
+
+await scenario("sidebar project route A to B releases before B re-adoption", () => {
+  const harness = createSidebarHarness({
+    routePath: "/g/g-p-project-a/c/stage1eb-project-chat-a",
+    chatId: "stage1eb-project-chat-a",
+    displayTitle: "Project A canonical",
+  });
+  const container = harness.ensureContainer();
+  const rowA = harness.createRow({
+    container,
+    href: "/g/g-p-project-a/c/stage1eb-project-chat-a",
+    nativeTitle: "Project A native",
+  });
+  const rowB = harness.createRow({
+    container,
+    href: "/g/g-p-project-b/c/stage1eb-project-chat-b",
+    nativeTitle: "Project B native",
+  });
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(harness.renderedText(rowA), "Project A canonical");
+  harness.setLocation("/g/g-p-project-b/c/stage1eb-project-chat-b");
+  harness.emit({
+    chatId: "stage1eb-project-chat-b",
+    routeToken: 2,
+    baseTitle: "Project B native",
+    displayTitle: "Project B canonical",
+  });
+  assert.equal(harness.visual(rowA), null);
+  assert.equal(harness.renderedText(rowB), "Project B native");
+  harness.runFrames();
+  assert.equal(harness.renderedText(rowB), "Project B canonical");
+});
+
+await scenario("sidebar adopts every visible duplicate active row", () => {
+  const harness = createSidebarHarness({ displayTitle: "Duplicate canonical" });
+  const nav = harness.ensureContainer("nav");
+  const aside = harness.ensureContainer("aside");
+  const left = harness.createRow({ container: nav });
+  const right = harness.createRow({ container: aside });
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(harness.renderedText(left), "Duplicate canonical");
+  assert.equal(harness.renderedText(right), "Duplicate canonical");
+  assert.equal(harness.runtime().diagnose().adoptedRows, 2);
+});
+
+await scenario("sidebar caps adoption at six and diagnoses extras", () => {
+  const harness = createSidebarHarness({ displayTitle: "Bounded canonical" });
+  const container = harness.ensureContainer();
+  const rows = Array.from({ length: 8 }, () => harness.createRow({ container }));
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(rows.filter((row) => harness.visual(row)).length, 6);
+  assert.equal(harness.visual(rows[6]), null);
+  assert.equal(harness.visual(rows[7]), null);
+  assert.equal(harness.runtime().diagnose().overflowCandidates, 2);
+});
+
+await scenario("sidebar refuses a row without a native title source", () => {
+  const harness = createSidebarHarness();
+  const row = harness.createRow({ nativeTitle: null });
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar adopts when the native title source appears later", () => {
+  const harness = createSidebarHarness({ displayTitle: "Late canonical" });
+  const row = harness.createRow({ nativeTitle: null });
+  harness.evaluate();
+  harness.runFrames();
+  const source = harness.dom.document.createElement("span");
+  source.className = "truncate";
+  source.textContent = "Late native";
+  row.layout.appendChild(source);
+  row.source = source;
+  harness.triggerMutation([{ target: row.layout, addedNodes: [source], removedNodes: [] }]);
+  harness.runFrames();
+  assert.equal(harness.renderedText(row), "Late canonical");
+  assert.equal(source.textContent, "Late native");
+});
+
+await scenario("sidebar re-adopts a replaced native title node", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "Replacement canonical" });
+  const oldSource = row.source;
+  const replacement = harness.dom.document.createElement("span");
+  replacement.className = "truncate";
+  replacement.textContent = "Replacement native";
+  oldSource.remove();
+  row.layout.prepend(replacement);
+  row.source = replacement;
+  harness.triggerMutation([{ target: row.layout, addedNodes: [replacement], removedNodes: [oldSource] }]);
+  assert.equal(harness.visual(row), null, "old adoption must release synchronously");
+  harness.runFrames();
+  assert.equal(harness.renderedText(row), "Replacement canonical");
+  assert.equal(replacement.textContent, "Replacement native");
+});
+
+await scenario("sidebar releases and adopts an entirely replaced row", () => {
+  const { harness, row: oldRow } = adoptedSidebar({ displayTitle: "Row replacement canonical" });
+  const container = oldRow.container;
+  oldRow.anchor.remove();
+  const newRow = harness.createRow({ container, nativeTitle: "New row native" });
+  harness.triggerMutation([{ target: container, addedNodes: [newRow.anchor], removedNodes: [oldRow.anchor] }]);
+  assert.equal(oldRow.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(oldRow.anchor.hasAttribute("aria-labelledby"), false);
+  harness.runFrames();
+  assert.equal(harness.renderedText(newRow), "Row replacement canonical");
+});
+
+await scenario("sidebar releases a row whose href is reused for another chat", () => {
+  const { harness, row } = adoptedSidebar();
+  row.anchor.setAttribute("href", "/c/stage1eb-chat-b");
+  harness.triggerMutation([{ target: row.anchor, attributeName: "href" }]);
+  assert.equal(harness.visual(row), null);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  harness.runFrames();
+  assert.equal(harness.visual(row), null);
+});
+
+await scenario("sidebar handles virtualized row disappearance and return", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "Virtual canonical" });
+  const container = row.container;
+  row.anchor.remove();
+  harness.triggerMutation([{ target: container, addedNodes: [], removedNodes: [row.anchor] }]);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  container.appendChild(row.anchor);
+  harness.triggerMutation([{ target: container, addedNodes: [row.anchor], removedNodes: [] }]);
+  harness.runFrames();
+  assert.equal(harness.renderedText(row), "Virtual canonical");
+});
+
+await scenario("sidebar container collapse and expand rolls back then re-adopts", () => {
+  const { harness, row } = adoptedSidebar({ displayTitle: "Collapse canonical" });
+  const parent = row.container.parentElement;
+  row.container.remove();
+  harness.triggerMutation([{ target: parent, addedNodes: [], removedNodes: [row.container] }]);
+  assert.equal(harness.visual(row), null);
+  parent.appendChild(row.container);
+  harness.triggerMutation([{ target: parent, addedNodes: [row.container], removedNodes: [] }]);
+  harness.runFrames();
+  assert.equal(harness.renderedText(row), "Collapse canonical");
+});
+
+await scenario("sidebar rollback restores originally absent aria-labelledby", () => {
+  const { harness, row } = adoptedSidebar();
+  assert.equal(row.anchor.hasAttribute("aria-labelledby"), true);
+  harness.emit({ convergence: { enabled: false, mode: "legacy" } });
+  assert.equal(row.anchor.hasAttribute("aria-labelledby"), false);
+});
+
+await scenario("sidebar rollback restores original aria-labelledby exactly", () => {
+  const { harness, row } = adoptedSidebar({ ariaLabelledby: "native-label native-detail" });
+  assert.notEqual(row.anchor.getAttribute("aria-labelledby"), "native-label native-detail");
+  harness.emit({ convergence: { enabled: false, mode: "legacy" } });
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "native-label native-detail");
+});
+
+await scenario("sidebar never writes the anchor aria-label", () => {
+  const { harness, row } = adoptedSidebar({ ariaLabel: "Native accessible label" });
+  assert.equal(row.anchor.getAttribute("aria-label"), "Native accessible label");
+  harness.emit({ displayTitle: "Changed canonical" });
+  harness.runFrames();
+  assert.equal(row.anchor.getAttribute("aria-label"), "Native accessible label");
+});
+
+await scenario("sidebar never writes the anchor title", () => {
+  const { harness, row } = adoptedSidebar({ title: "Native hover title" });
+  assert.equal(row.anchor.getAttribute("title"), "Native hover title");
+  harness.emit({ displayTitle: "Changed canonical" });
+  harness.runFrames();
+  assert.equal(row.anchor.getAttribute("title"), "Native hover title");
+});
+
+await scenario("sidebar writes no native raw-title attributes", () => {
+  const { row } = adoptedSidebar();
+  for (const element of [row.anchor, row.source, ...row.layout.children]) {
+    assert.equal(
+      [...element._attributes.keys()].some((name) => /^data-ho-raw-title(?:-|$)/u.test(name)),
+      false,
+    );
+  }
+});
+
+await scenario("reader INV-1 returns unchanged clean native base for every clean reader", () => {
+  const { harness, row } = adoptedSidebar({
+    nativeTitle: "Clean native base",
+    displayTitle: "✨ Canonical display",
+  });
+  const coordinator = createB0Harness({ flag: true });
+  const fixture = coordinator.setSidebarReaderFixture(
+    "Clean native base",
+    "✨ Canonical display contamination sentinel",
+  );
+  assert.equal(fixture.native.closest("[data-h2o-owner]"), null);
+  assert.equal(fixture.visual.closest("[data-h2o-owner]"), fixture.visual);
+  assert.equal(coordinator.hook.readSidebarTitle("stage1e-chat-a"), "Clean native base");
+  fixture.removeVisualOwnership();
+  assert.notEqual(
+    coordinator.hook.readSidebarTitle("stage1e-chat-a"),
+    "Clean native base",
+    "negative control must expose contamination when ownership is absent",
+  );
+  fixture.restoreVisualOwnership();
+  assert.equal(coordinator.hook.readSidebarTitle("stage1e-chat-a"), "Clean native base");
+  fixture.replaceNative("Replacement native base");
+  assert.equal(
+    coordinator.hook.readSidebarTitle("stage1e-chat-a"),
+    "Replacement native base",
+    "native replacement window must still exclude the old owned visual",
+  );
+  const readers = runReaderSlices(harness, row);
+  assert.equal(readers.f1cNative, "Clean native base");
+  assert.equal(readers.f2aNative, "Clean native base");
+  assert.equal(readers.f3aNative, "Clean native base");
+  assert.equal(readers.f6aTruncateTarget, "Clean native base");
+  assert.equal(readers.f6aTruncateMatchedVisual, false);
+  assert.equal(readers.f6aVisualAfterTruncateTarget, "✨ Canonical display");
+});
+
+await scenario("reader INV-2 intentional rendered readers see canonical display", () => {
+  const { harness, row } = adoptedSidebar({
+    nativeTitle: "Clean native base",
+    displayTitle: "✨ Canonical display",
+  });
+  const readers = runReaderSlices(harness, row);
+  assert.equal(readers.f3aRendered, "✨ Canonical display");
+  assert.equal(readers.f6aRendered, "✨ Canonical display");
+  assert.equal(readers.d3aRendered, "✨ Canonical display");
+});
+
+await scenario("reader INV-2 genuine Library re-entry cannot contaminate base or duplicate emoji", async () => {
+  const coordinator = createB0Harness({ flag: true });
+  const chatId = coordinator.api.getState().chatId;
+  await seedConfirmedUserTitle(coordinator, "✨ Clean native base", "library-reentry-ordinary-seed");
+  const sidebar = adoptedSidebar({
+    nativeTitle: "Clean native base",
+    displayTitle: "✨ Clean native base",
+  });
+  const rendered = runReaderSlices(sidebar.harness, sidebar.row).f6aRendered;
+  const before = currentRecord(coordinator);
+  const callsBefore = coordinator.hook.setTitleCallCount();
+  coordinator.setLibraryTitle(chatId, rendered);
+  assert.equal(coordinator.hook.readLibraryTitle(chatId), rendered);
+  coordinator.hook.detectTitles("stage1eb-library-rendered-reentry");
+  assert(coordinator.hook.setTitleCallCount() > callsBefore, "detectTitles must execute setTitle");
+  assert.deepEqual(currentRecord(coordinator), before);
+  assert.equal(coordinator.api.getState().displayTitle, "✨ Clean native base");
+  assert.equal(coordinator.effects.fetches.length, 0);
+});
+
+await scenario("reader INV-2 repeated four-cycle Library re-entry is idempotent", async () => {
+  const coordinator = createB0Harness({ flag: true });
+  const chatId = coordinator.api.getState().chatId;
+  await seedConfirmedUserTitle(coordinator, "✨ Cycle-safe title", "library-reentry-cycle-seed");
+  const before = currentRecord(coordinator);
+  for (let cycle = 0; cycle < 4; cycle += 1) {
+    coordinator.setLibraryTitle(chatId, coordinator.api.getState().displayTitle);
+    coordinator.hook.detectTitles(`stage1eb-library-cycle-${cycle}`);
+    assert.equal(coordinator.api.getState().displayTitle, "✨ Cycle-safe title");
+  }
+  assert.deepEqual(currentRecord(coordinator), before);
+  assert.equal(coordinator.effects.fetches.length, 0);
+});
+
+await scenario("reader INV-2 multi-code-point emoji Library re-entry remains single", async () => {
+  const coordinator = createB0Harness({ flag: true });
+  const chatId = coordinator.api.getState().chatId;
+  await seedConfirmedUserTitle(coordinator, "👩🏽‍💻 Developer notes", "library-reentry-multi-seed");
+  const before = currentRecord(coordinator);
+  coordinator.setLibraryTitle(chatId, coordinator.api.getState().displayTitle);
+  coordinator.hook.detectTitles("stage1eb-library-multi-reentry");
+  assert.deepEqual(currentRecord(coordinator), before);
+  assert.equal(coordinator.api.getState().emoji, "👩🏽‍💻");
+  assert.equal(coordinator.api.getState().displayTitle, "👩🏽‍💻 Developer notes");
+  assert.equal(coordinator.effects.fetches.length, 0);
+});
+
+await scenario("reader INV-2 real chooseBetterTitle cannot poison user-tier canonical state", async () => {
+  const coordinator = createB0Harness({ flag: true });
+  const chatId = coordinator.api.getState().chatId;
+  await seedConfirmedUserTitle(coordinator, "✨ User title", "library-reentry-priority-seed");
+  const before = currentRecord(coordinator);
+  const longerLibraryValue = chooseBetterLibraryTitle(
+    "Short cache",
+    "✨ User title with a much longer stale Library description",
+    chatId,
+  );
+  assert.equal(longerLibraryValue, "✨ User title with a much longer stale Library description");
+  coordinator.setLibraryTitle(chatId, longerLibraryValue);
+  coordinator.hook.detectTitles("stage1eb-library-longer-reentry");
+  assert.deepEqual(currentRecord(coordinator), before);
+  assert.equal(coordinator.api.getState().displayTitle, "✨ User title");
+  assert.equal(coordinator.effects.fetches.length, 0);
+});
+
+await scenario("reader INV-2 inactive Library row remains non-mutating", async () => {
+  const coordinator = createB0Harness({ flag: true });
+  const activeChatId = coordinator.api.getState().chatId;
+  const inactiveChatId = "stage1e-chat-inactive";
+  await seedConfirmedUserTitle(coordinator, "✨ Active title", "library-reentry-inactive-seed");
+  const activeBefore = currentRecord(coordinator);
+  const inactiveBefore = recordFor(coordinator, inactiveChatId);
+  coordinator.setLibraryTitle(inactiveChatId, "🚀 Inactive canonical display");
+  coordinator.hook.detectTitles("stage1eb-library-inactive-reentry");
+  assert.deepEqual(currentRecord(coordinator), activeBefore);
+  assert.deepEqual(recordFor(coordinator, inactiveChatId), inactiveBefore);
+  assert.equal(coordinator.api.getState().chatId, activeChatId);
+  assert.equal(coordinator.effects.fetches.length, 0);
+});
+
+await scenario("sidebar route A to B never leaks A display onto B", () => {
+  const harness = createSidebarHarness({ displayTitle: "Chat A canonical" });
+  const container = harness.ensureContainer();
+  const rowA = harness.createRow({ container, href: "/c/stage1eb-chat-a", nativeTitle: "Chat A native" });
+  const rowB = harness.createRow({ container, href: "/c/stage1eb-chat-b", nativeTitle: "Chat B native" });
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(harness.renderedText(rowA), "Chat A canonical");
+  harness.setLocation("/c/stage1eb-chat-b");
+  harness.emit({
+    chatId: "stage1eb-chat-b",
+    routeToken: 2,
+    baseTitle: "Chat B native",
+    displayTitle: "Chat B canonical",
+  });
+  assert.equal(harness.visual(rowA), null);
+  assert.equal(harness.renderedText(rowB), "Chat B native");
+  harness.runFrames();
+  assert.equal(harness.renderedText(rowB), "Chat B canonical");
+});
+
+await scenario("sidebar flag rollback restores exact native state", () => {
+  const { harness, row } = adoptedSidebar({
+    nativeTitle: "Exact native bytes",
+    ariaLabelledby: "native-id",
+  });
+  harness.emit({ convergence: { enabled: false, mode: "legacy" } });
+  assert.equal(row.source.textContent, "Exact native bytes");
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "native-id");
+  assert.equal(harness.visual(row), null);
+  assert.equal(harness.dom.document.getElementById("h2o-title-sidebar-renderer-style-v1"), null);
+});
+
+await scenario("sidebar boot crash recovery removes stale adoption and restores escrow", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const row = harness.createRow({ nativeTitle: "Crash native" });
+  const { visual: stale } = installStaleSidebarAdoption(harness, row, {
+    staleId: "stale-visual",
+    originalPresent: true,
+    originalValue: "native-before-crash",
+  });
+  harness.evaluate();
+  assert.equal(stale.isConnected, false);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "native-before-crash");
+});
+
+await scenario("sidebar crash recovery removes stale aria when original was absent", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const row = harness.createRow();
+  installStaleSidebarAdoption(harness, row, { originalPresent: false });
+  harness.evaluate();
+  assert.equal(row.anchor.hasAttribute("aria-labelledby"), false);
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+});
+
+await scenario("sidebar crash recovery preserves fresh React aria after originally absent state", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const row = harness.createRow();
+  installStaleSidebarAdoption(harness, row, {
+    originalPresent: false,
+    currentValue: "react-fresh-label",
+  });
+  harness.evaluate();
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "react-fresh-label");
+});
+
+await scenario("sidebar crash recovery preserves fresh React aria over escrowed original", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const row = harness.createRow();
+  installStaleSidebarAdoption(harness, row, {
+    originalPresent: true,
+    originalValue: "native-before-crash",
+    currentValue: "react-fresh-label",
+  });
+  harness.evaluate();
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "react-fresh-label");
+});
+
+await scenario("sidebar crash recovery is idempotent", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const row = harness.createRow();
+  installStaleSidebarAdoption(harness, row, {
+    originalPresent: true,
+    originalValue: "native-before-crash",
+    currentValue: "react-fresh-label",
+  });
+  harness.evaluate();
+  const afterFirst = row.anchor.getAttribute("aria-labelledby");
+  harness.evaluate();
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), afterFirst);
+  assert.equal(row.anchor.hasAttribute("data-h2o-title-sidebar-adopted"), false);
+});
+
+await scenario("sidebar crash recovery preserves fresh aria when stale visual is already missing", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const container = harness.ensureContainer();
+  const row = harness.createRow({ container });
+  const danglingRow = harness.createRow({ container });
+  installStaleSidebarAdoption(harness, row, {
+    includeVisual: false,
+    originalPresent: true,
+    originalValue: "native-before-crash",
+    currentValue: "react-fresh-label",
+  });
+  installStaleSidebarAdoption(harness, danglingRow, {
+    includeVisual: false,
+    staleId: "missing-stale-visual",
+    originalPresent: false,
+  });
+  harness.evaluate();
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), "react-fresh-label");
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(danglingRow.anchor.hasAttribute("aria-labelledby"), false);
+});
+
+await scenario("sidebar crash recovery restores duplicate rows independently", () => {
+  const harness = createSidebarHarness({ convergence: { enabled: false, mode: "legacy" } });
+  const container = harness.ensureContainer();
+  const absentRow = harness.createRow({ container });
+  const presentRow = harness.createRow({ container });
+  installStaleSidebarAdoption(harness, absentRow, {
+    staleId: "stale-duplicate-absent",
+    originalPresent: false,
+  });
+  installStaleSidebarAdoption(harness, presentRow, {
+    staleId: "stale-duplicate-present",
+    originalPresent: true,
+    originalValue: "native-duplicate-original",
+  });
+  harness.evaluate();
+  assert.equal(absentRow.anchor.hasAttribute("aria-labelledby"), false);
+  assert.equal(presentRow.anchor.getAttribute("aria-labelledby"), "native-duplicate-original");
+  assert.equal(absentRow.source.getAttribute("data-h2o-title-native-hidden"), null);
+  assert.equal(presentRow.source.getAttribute("data-h2o-title-native-hidden"), null);
+});
+
+await scenario("sidebar destroy and reinstall leaves one runtime subscription observer and visual", () => {
+  const harness = createSidebarHarness({ displayTitle: "Reinstall canonical" });
+  const row = harness.createRow();
+  harness.evaluate();
+  harness.runFrames();
+  harness.evaluate();
+  harness.runFrames();
+  assert.equal(harness.subscriptionCount(), 1);
+  assert.equal(harness.observerCount(), 1);
+  assert.equal(row.anchor.querySelectorAll(
+    '[data-h2o-owner="title-sidebar-renderer"][data-h2o-title-role="visual"]',
+  ).length, 1);
+});
+
+await scenario("sidebar native-source replacement releases synchronously", () => {
+  const { harness, row } = adoptedSidebar();
+  const oldSource = row.source;
+  const replacement = harness.dom.document.createElement("span");
+  replacement.className = "truncate";
+  replacement.textContent = "Replacement";
+  oldSource.remove();
+  row.layout.prepend(replacement);
+  row.source = replacement;
+  harness.triggerMutation([{ target: row.layout, addedNodes: [replacement], removedNodes: [oldSource] }]);
+  assert.equal(harness.visual(row), null);
+  assert.equal(oldSource.getAttribute("data-h2o-title-native-hidden"), null);
+});
+
+await scenario("sidebar ignores renderer-owned mutations without rescan loops", () => {
+  const { harness, row } = adoptedSidebar();
+  const scans = harness.runtime().diagnose().scans;
+  const visual = harness.visual(row);
+  harness.triggerMutation([{ target: visual, addedNodes: [visual], removedNodes: [] }]);
+  harness.runFrames();
+  assert.equal(harness.runtime().diagnose().scans, scans);
+});
+
+await scenario("sidebar INV-3 performs zero PATCH or network calls", () => {
+  const { harness } = adoptedSidebar({ displayTitle: "No network" });
+  assert.equal(harness.mutations.patches, 0);
+});
+
+await scenario("sidebar INV-3 performs zero Store boot-cache or localStorage writes", () => {
+  const { harness } = adoptedSidebar({ displayTitle: "No persistence" });
+  assert.equal(harness.mutations.storeWrites, 0);
+  assert.deepEqual(harness.effects.storageOps, []);
+});
+
+await scenario("sidebar INV-3 performs zero canonical mutations", () => {
+  const { harness } = adoptedSidebar({ displayTitle: "No mutation" });
+  assert.equal(harness.mutations.canonical, 0);
+});
+
 structuralTest("9B0a alone owns the convergence flag key", () => {
   assert.equal(
   (b0Source.match(new RegExp(FLAG_KEY.replaceAll(".", "\\."), "gu")) || []).length >= 1,
@@ -2078,9 +3361,117 @@ structuralTest("9C1a has no direct canonical setTitle submission", () => {
   assert.equal(/\.setTitle\s*\(/u.test(c1Source), false);
 });
 
-assert.equal(scopeTests.length, 9, "Stage 1E scope scenario count drifted");
-assert.equal(scenarios.length, 43, "Stage 1E runtime scenario count drifted");
-assert.equal(structuralAssertions.length, 2, "Stage 1E structural assertion count drifted");
+structuralTest("9B2a consumes canonical display without formatter authority", () => {
+  assert.match(b2Source, /snapshot\.displayTitle/u);
+  assert.equal(/\b(?:sanitize|formatNative|composeTitle|splitEmoji)\w*\s*\(/u.test(b2Source), false);
+  assert.equal(b2Source.includes(FLAG_KEY), false);
+  assert.equal(/ChatTitle\.(?:getState|setTitle|setEmoji|renameNative|refresh|refreshDisplay)\s*\(/u.test(b2Source), false);
+});
+
+structuralTest("9B2a contains no network persistence or forbidden native-text writes", () => {
+  assert.equal(/\b(?:fetch|XMLHttpRequest|localStorage|sessionStorage)\b/u.test(b2Source), false);
+  assert.equal(/\bStore\s*\./u.test(b2Source), false);
+  assert.equal(
+    /\.setAttribute\s*\(\s*['"](?:aria-label|title|data-ho-raw-title(?:-[^'"]*)?)['"]/u.test(b2Source),
+    false,
+  );
+  assert.equal(/className\s*=\s*['"][^'"]*truncate/u.test(b2Source), false);
+});
+
+structuralTest("9B2a ownership accessibility escrow and recovery markers are explicit", () => {
+  for (const marker of [
+    'data-h2o-owner',
+    'data-h2o-title-role',
+    'data-h2o-title-chat-id',
+    'data-h2o-title-route-token',
+    'aria-labelledby',
+    'WeakMap',
+    'recoverStaleDom',
+  ]) assert.equal(b2Source.includes(marker), true, `missing 9B2a marker: ${marker}`);
+  assert.equal(/setAttribute\s*\(\s*['"]dir['"]\s*,\s*['"]auto['"]/u.test(b2Source), true);
+});
+
+structuralTest("loader order registers 9B2a after confirmed consumers and before disabled 9D1a", () => {
+  const order = fs.readFileSync(path.join(ROOT, DEV_ORDER_REL), "utf8").split(/\r?\n/u);
+  const b0 = order.findIndex((line) => line.includes("9B0a."));
+  const b1 = order.findIndex((line) => line.includes("9B1a."));
+  const c1 = order.findIndex((line) => line.includes("9C1a."));
+  const b2 = order.findIndex((line) => line.includes("9B2a."));
+  const d1 = order.findIndex((line) => line.includes("9D1a."));
+  assert(b0 < b1 && b1 < c1 && c1 < b2 && b2 < d1);
+  assert.match(order[b2], /^🟢\t/u);
+  assert.match(order[d1], /^🔴\t/u);
+  const deps = JSON.parse(fs.readFileSync(path.join(ROOT, LOADER_DEPS_REL), "utf8"));
+  const spec = deps.scripts["9B2a._Sidebar_Title_Renderer_.js"];
+  assert.deepEqual(spec.dependsOn, ["9B0a._Chat_Title_State_.js"]);
+  assert.deepEqual(spec.after, ["9B1a._Tab_Title_.js", "9C1a._Title_Under_Input_bar_.js"]);
+  assert.deepEqual(
+    deps.scripts["9D1a._Auto_Emoji_Title_.js"].after,
+    ["9C1a._Title_Under_Input_bar_.js"],
+    "disabled 9D1a ordering must remain independent of 9B2a",
+  );
+});
+
+structuralTest("native reader extraction slices remain byte-pinned", () => {
+  for (const [key, expected] of Object.entries(EXPECTED_READER_SLICE_SHA256)) {
+    assert.equal(sha256(readerSlices[key]), expected, `${key} extraction slice changed`);
+  }
+  for (const [relative, expectedBlob] of Object.entries(EXPECTED_READER_BLOBS)) {
+    assert.equal(run("git", ["rev-parse", `HEAD:${relative}`]).trim(), expectedBlob);
+  }
+});
+
+structuralTest("native reader harness distinguishes textContent from rendered innerText", () => {
+  const effects = makeEffects();
+  const dom = createMiniDom(effects);
+  const row = dom.document.createElement("a");
+  const native = dom.document.createElement("span");
+  const visual = dom.document.createElement("span");
+  native.textContent = "Native clean";
+  native.setAttribute("data-h2o-title-native-hidden", "1");
+  visual.textContent = "✨ Canonical";
+  row.append(native, visual);
+  dom.document.body.appendChild(row);
+  assert.equal(row.textContent, "Native clean✨ Canonical");
+  assert.equal(row.innerText, "✨ Canonical");
+});
+
+structuralTest("Stage 1E-b dirty changes are exactly the authorized five paths", () => {
+  const changed = new Set([
+    ...splitNul(run("git", ["diff", "--name-only", "-z", "HEAD", "--"])),
+    ...splitNul(run("git", ["ls-files", "-z", "--others", "--exclude-standard", "--"])),
+  ]);
+  assert(sameSet(changed, STAGE1EB_COMMITTED), `unexpected Stage 1E-b path: ${[...changed].sort()}`);
+});
+
+structuralTest("protected title coordinator consumers readers and disabled module remain unchanged", () => {
+  const protectedPaths = [
+    B0_REL,
+    B1_REL,
+    C1_REL,
+    F1C_REL,
+    F0D_REL,
+    F2A_REL,
+    F3A_REL,
+    F6A_REL,
+    D3A_REL,
+    "src-runtime-base/9A1b.🟫🖥️ Chat List Decorator 🎨🖥️.js",
+    "src-runtime-base/9A1c.🟫🖥️ Chat Meta Enricher 🧾🖥️.js",
+    "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js",
+    "packages/title-contract/index.mjs",
+    "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs",
+    "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
+    STAGE1C_REL,
+  ];
+  for (const relative of protectedPaths) {
+    assert.equal(fs.existsSync(path.join(ROOT, relative)), true, `missing protected source: ${relative}`);
+  }
+  assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", ...protectedPaths]).trim(), "");
+});
+
+assert.equal(scopeTests.length, 14, "Stage 1E scope scenario count drifted");
+assert.equal(scenarios.length, 97, "Stage 1E runtime scenario count drifted");
+assert.equal(structuralAssertions.length, 10, "Stage 1E structural assertion count drifted");
 
 console.log(JSON.stringify({
   ok: true,
@@ -2089,5 +3480,5 @@ console.log(JSON.stringify({
   scopeScenarios: scopeTests.length,
   runtimeScenarios: scenarios.length,
   structuralAssertions: structuralAssertions.length,
-  authorizedPaths: [...AUTHORIZED].sort(),
+  authorizedPaths: [...(requestedMode === "stage1eb-sidebar" ? STAGE1EB_COMMITTED : AUTHORIZED)].sort(),
 }));

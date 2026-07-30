@@ -286,11 +286,60 @@ authoritative runtime adoption.
   update subscribed consumers without changing title records, Store records, or
   boot-cache records. The full legacy display paths remain executable for
   rollback.
-- Native sidebar/list rendering is explicitly deferred to Stage 1E-b.
+- Stage 1E-b adds only `9B2a Sidebar Title Renderer` plus its loader
+  registration, this decision update, and Stage 1E validation. `9B2a` owns no
+  title state: it consumes one `9B0a` subscription and operates only for an
+  enabled canonical convergence snapshot on the active Native chat route. It
+  renders `displayTitle` byte-exactly and has no formatter, flag listener,
+  route listener, persistence, PATCH, canonical mutation, or inactive-chat
+  synchronization authority.
+- For each visible exact-route active-chat anchor in approved `nav` or `aside`
+  containers, `9B2a` retains the non-empty Native truncate source and its clean
+  text. Renderer-owned CSS hides that exact source and a separate owned visual
+  node presents the canonical text. The visual node is outside the Native
+  source, never has a truncate class, and does not write `aria-label`, anchor
+  `title`, `data-ho-raw-title`, or any `data-ho-raw-title-*` attribute.
+- The visual node receives a unique ID and `dir="auto"`; the anchor's
+  `aria-labelledby` is temporarily set to that ID only. Original
+  `aria-labelledby` presence and value are escrowed in both a `WeakMap` and
+  renderer-specific recovery attributes. Recovery restores that escrow only
+  while the current value still references the recorded stale H2O visual ID.
+  If React has installed a fresh Native value, that value wins and the
+  obsolete escrow is cleared without overwriting it. Stale visual nodes and
+  source-hiding markers are removed in either case, and repeated recovery is
+  idempotent. Native role, direction, keyboard, pointer, click, and
+  context-menu behavior remain untouched.
+- Stage 1E-b reader invariants are explicit. INV-1 retains the Native truncate
+  node and clean base text for clean Native readers. INV-2 permits intentional
+  rendered-text readers to see the canonical visual text, but that observation
+  cannot outrank or alter canonical base or emoji state on re-entry. INV-3
+  permits zero PATCH, Store, boot-cache, localStorage-title, or canonical-state
+  writes. Source validation executes real ancestor-based `9B0a` exclusion with
+  a negative control and source-replacement window, byte-pinned committed
+  `0F6a` selector/helper logic, and the genuine
+  `readLibraryTitle → detectTitles → setTitle` re-entry path, including the
+  committed Library longer-title heuristic.
+- Every visible exact direct `/c/<active-chat-id>` or project-scoped
+  `/g/<project-id>/c/<active-chat-id>` duplicate may be adopted, up to six
+  rows; excess candidates remain Native and are diagnosed. Route identity
+  retains its direct/project family and project ID, so matching chat IDs under
+  different projects are not interchangeable. Prefix, suffix, extra-segment,
+  malformed, inactive, hidden, disconnected, dialog, `main`, and H2O-owned
+  candidates are rejected. Query and fragment components do not affect the
+  exact pathname comparison; project-scoped chat routes are not silently
+  excluded.
+- Flag-off rollback removes all visual effects immediately and restores the
+  exact Native source and accessibility state. `9D1a` remains disabled. Stage
+  1E-b adds no Studio, persistence, migration, receipt, NativeTitleAdapter, or
+  inactive-chat architecture and claims source acceptance only; browser
+  acceptance remains a later protected canary. Disabled `9D1a` retains its
+  original loader dependency/order metadata and does not depend on `9B2a`.
 - `9D1a` will be decomposed into suggestion and explicit emoji-intent responsibilities; it remains disabled.
 - Storage migration, NativeTitleAdapter, read-back receipts, Studio
   convergence, and generalized transaction architecture are not part of Stage
-  1E-a and remain deferred.
+  1E-a or Stage 1E-b and remain deferred.
 
-Stage 1E-a is source-only. It changes no configuration, generated extension
-artifact, browser state, existing stored title record, or storage schema.
+Stages 1E-a and 1E-b are source-only. Stage 1E-b changes only source loader
+registration and dependency metadata; neither stage changes a generated
+extension artifact, browser state, existing stored title record, or storage
+schema.

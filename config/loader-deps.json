@@ -121,6 +121,7 @@
         "9B0a._Chat_Title_State_.js",
         "9B1a._Tab_Title_.js",
         "9C1a._Title_Under_Input_bar_.js",
+        "9B2a._Sidebar_Title_Renderer_.js",
         "9D1a._Auto_Emoji_Title_.js"
       ]
     }
@@ -1898,6 +1899,22 @@
       "optionalDependsOn": [
         "9A1a._Interface_Kernel_.js"
       ]
+    },
+    "9B2a._Sidebar_Title_Renderer_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "9B0a._Chat_Title_State_.js"
+      ],
+      "after": [
+        "9B1a._Tab_Title_.js",
+        "9C1a._Title_Under_Input_bar_.js"
+      ],
+      "group": "INTERFACE",
+      "provides": [
+        "h2o.chatTitle.sidebarRenderer"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
     },
     "9D1a._Auto_Emoji_Title_.js": {
       "phase": "document-idle",
