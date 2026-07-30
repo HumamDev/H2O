@@ -19,19 +19,40 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
 const PROXY_WRITER_REL = "tools/loader/make-ext-proxy-pack.mjs";
 const ALIAS_WRITER_REL = "tools/loader/make-aliases.mjs";
+const EXTENSION_WRITER_REL =
+  "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
+const IDENTITY_RELEASE_GATE_REL =
+  "tools/validation/identity/run-identity-release-gate.mjs";
+const F17_RELEASE_VALIDATOR_REL =
+  "tools/validation/release/validate-f17-build-package.mjs";
 const VALIDATOR_REL =
   "tools/validation/publish/validate-e2b-writer-enforcement-v1.mjs";
 const PROXY_WRITER = path.join(ROOT, PROXY_WRITER_REL);
-const FINAL_PATHS = Object.freeze([PROXY_WRITER_REL, VALIDATOR_REL]);
-const UNCOMMITTED_MODIFIED = Object.freeze([PROXY_WRITER_REL]);
-const UNCOMMITTED_UNTRACKED = Object.freeze([VALIDATOR_REL]);
+const EXTENSION_WRITER = path.join(ROOT, EXTENSION_WRITER_REL);
+const IDENTITY_RELEASE_GATE = path.join(ROOT, IDENTITY_RELEASE_GATE_REL);
+const F17_RELEASE_VALIDATOR = path.join(ROOT, F17_RELEASE_VALIDATOR_REL);
+const FINAL_PATHS = Object.freeze([
+  PROXY_WRITER_REL,
+  EXTENSION_WRITER_REL,
+  VALIDATOR_REL,
+  IDENTITY_RELEASE_GATE_REL,
+  F17_RELEASE_VALIDATOR_REL,
+]);
+const UNCOMMITTED_MODIFIED = Object.freeze([
+  EXTENSION_WRITER_REL,
+  VALIDATOR_REL,
+  IDENTITY_RELEASE_GATE_REL,
+  F17_RELEASE_VALIDATOR_REL,
+]);
+const UNCOMMITTED_UNTRACKED = Object.freeze([]);
 const GUARDED_WRITER_SET = Object.freeze([
   ALIAS_WRITER_REL,
   PROXY_WRITER_REL,
+  EXTENSION_WRITER_REL,
 ]);
-const EXPECTED_RUNTIME_SCENARIOS = 32;
-const EXPECTED_SCOPE_SCENARIOS = 11;
-const CANONICAL_PRESERVATION_CHECKS = 8;
+const EXPECTED_RUNTIME_SCENARIOS = 69;
+const EXPECTED_SCOPE_SCENARIOS = 14;
+const CANONICAL_PRESERVATION_CHECKS = 16;
 const AUTHORITY_ENV_NAMES = Object.freeze([
   "H2O_CANONICAL_DELIVERY_ROOT",
   "H2O_CANONICAL_DELIVERY_TOKEN",
@@ -49,15 +70,35 @@ const MUTATION_APIS = Object.freeze([
   "fs.symlinkSync(",
   "fs.appendFileSync(",
 ]);
+const EXTENSION_MUTATION_INVOCATIONS = Object.freeze([
+  "ensureDir(OUT_DIR);",
+  "writeExtensionIcons(OUT_DIR,",
+  "writeFile(path.join(OUT_DIR, \"manifest.json\")",
+  "syncIdentitySurfaceToOut(SRC, OUT_DIR);",
+  "syncIdentityProviderPrivateConfigToOut(",
+  "buildIdentityProviderBundle(OUT_DIR);",
+  "writeFile(backgroundFile, backgroundSource);",
+  "copyPanelIconAsset(OUT_DIR);",
+  "syncArchiveWorkbenchToOut(SRC, OUT_DIR);",
+  "removeArchiveWorkbenchFromOut(OUT_DIR);",
+  "fs.rmSync(path.join(OUT_DIR, \"surfaces\", \"studio\")",
+  "writeFile(path.join(OUT_DIR, \"README.txt\")",
+]);
 
 const runtimeResults = [];
 const scopeResults = [];
 const temporaryRoots = new Set();
 const canonicalRejections = [];
+const extensionCanonicalRejections = [];
 let localOutsideResult = null;
 let localForeignResult = null;
 let noLeaseResult = null;
 let validSessionResult = null;
+let extensionLocalOutsideResult = null;
+let extensionLocalForeignResult = null;
+let extensionNoLeaseResult = null;
+let extensionValidSessionResult = null;
+let releaseValidatorResults = null;
 let tokenRedactionProven = true;
 
 function run(command, args, options = {}) {
@@ -102,7 +143,7 @@ function sha256File(filename) {
 
 function temporaryRoot(label) {
   const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), `h2o-stage1de2b-b1-${label}-`),
+    path.join(os.tmpdir(), `h2o-stage1de2b-b2-${label}-`),
   );
   temporaryRoots.add(root);
   return root;
@@ -142,12 +183,12 @@ export function classifyStage1DE2BBatch1Scope(state) {
     missingFinal: sorted(state.missingFinal ?? []),
   };
   if (normalized.staged.length) {
-    scopeFailure("Stage 1D-E2B Batch 1 forbids staged paths", normalized);
+    scopeFailure("Stage 1D-E2B Batch 2 forbids staged paths", normalized);
   }
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
     sameSet(normalized.untracked, UNCOMMITTED_UNTRACKED) &&
-    sameSet(normalized.trackedFinal, [PROXY_WRITER_REL]) &&
+    sameSet(normalized.trackedFinal, FINAL_PATHS) &&
     normalized.missingFinal.length === 0;
   if (uncommitted) return "uncommitted";
   const committed =
@@ -156,7 +197,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
     sameSet(normalized.trackedFinal, FINAL_PATHS) &&
     normalized.missingFinal.length === 0;
   if (committed) return "committed-clean";
-  scopeFailure("Stage 1D-E2B Batch 1 scope mismatch", normalized);
+  scopeFailure("Stage 1D-E2B Batch 2 scope mismatch", normalized);
 }
 
 function currentScopeState() {
@@ -178,7 +219,7 @@ function baseScope(overrides = {}) {
     modifiedTracked: [...UNCOMMITTED_MODIFIED],
     staged: [],
     untracked: [...UNCOMMITTED_UNTRACKED],
-    trackedFinal: [PROXY_WRITER_REL],
+    trackedFinal: [...FINAL_PATHS],
     missingFinal: [],
     ...overrides,
   };
@@ -191,10 +232,10 @@ function scopeTest(name, fn) {
 }
 
 function runScopeSelfTests() {
-  scopeTest("exact E2B Batch 1 uncommitted scope is accepted", () => {
+  scopeTest("exact cumulative E2B Batch 2 uncommitted scope is accepted", () => {
     assert.equal(classifyStage1DE2BBatch1Scope(baseScope()), "uncommitted");
   });
-  scopeTest("exact E2B Batch 1 committed-clean scope is accepted", () => {
+  scopeTest("exact cumulative E2B Batch 2 committed-clean scope is accepted", () => {
     assert.equal(
       classifyStage1DE2BBatch1Scope(
         baseScope({
@@ -215,16 +256,44 @@ function runScopeSelfTests() {
       /forbids staged/u,
     );
   });
-  scopeTest("missing writer modification is rejected", () => {
+  scopeTest("missing extension-writer modification is rejected", () => {
     assert.throws(
       () =>
-        classifyStage1DE2BBatch1Scope(baseScope({ modifiedTracked: [] })),
+        classifyStage1DE2BBatch1Scope(baseScope({
+          modifiedTracked: UNCOMMITTED_MODIFIED.filter(
+            (relative) => relative !== EXTENSION_WRITER_REL,
+          ),
+        })),
       /scope mismatch/u,
     );
   });
-  scopeTest("missing validator creation is rejected", () => {
+  scopeTest("missing cumulative validator modification is rejected", () => {
     assert.throws(
-      () => classifyStage1DE2BBatch1Scope(baseScope({ untracked: [] })),
+      () => classifyStage1DE2BBatch1Scope(baseScope({
+        modifiedTracked: UNCOMMITTED_MODIFIED.filter(
+          (relative) => relative !== VALIDATOR_REL,
+        ),
+      })),
+      /scope mismatch/u,
+    );
+  });
+  scopeTest("missing identity release-gate modification is rejected", () => {
+    assert.throws(
+      () => classifyStage1DE2BBatch1Scope(baseScope({
+        modifiedTracked: UNCOMMITTED_MODIFIED.filter(
+          (relative) => relative !== IDENTITY_RELEASE_GATE_REL,
+        ),
+      })),
+      /scope mismatch/u,
+    );
+  });
+  scopeTest("missing F17 release-validator modification is rejected", () => {
+    assert.throws(
+      () => classifyStage1DE2BBatch1Scope(baseScope({
+        modifiedTracked: UNCOMMITTED_MODIFIED.filter(
+          (relative) => relative !== F17_RELEASE_VALIDATOR_REL,
+        ),
+      })),
       /scope mismatch/u,
     );
   });
@@ -233,7 +302,7 @@ function runScopeSelfTests() {
       () =>
         classifyStage1DE2BBatch1Scope(
           baseScope({
-            modifiedTracked: [PROXY_WRITER_REL, "tools/dev/dev-all.mjs"],
+            modifiedTracked: [...UNCOMMITTED_MODIFIED, "tools/dev/dev-all.mjs"],
           }),
         ),
       /scope mismatch/u,
@@ -244,7 +313,7 @@ function runScopeSelfTests() {
       () =>
         classifyStage1DE2BBatch1Scope(
           baseScope({
-            untracked: [VALIDATOR_REL, "tools/validation/publish/extra.mjs"],
+            untracked: ["tools/validation/publish/extra.mjs"],
           }),
         ),
       /scope mismatch/u,
@@ -285,13 +354,26 @@ function runScopeSelfTests() {
       /scope mismatch/u,
     );
   });
-  scopeTest("swapped tracked and untracked roles are rejected", () => {
+  scopeTest("tracked Batch 2 file moved to untracked role is rejected", () => {
     assert.throws(
       () =>
         classifyStage1DE2BBatch1Scope(
           baseScope({
-            modifiedTracked: [VALIDATOR_REL],
-            untracked: [PROXY_WRITER_REL],
+            modifiedTracked: UNCOMMITTED_MODIFIED.filter(
+              (relative) => relative !== F17_RELEASE_VALIDATOR_REL,
+            ),
+            untracked: [F17_RELEASE_VALIDATOR_REL],
+          }),
+        ),
+      /scope mismatch/u,
+    );
+  });
+  scopeTest("dirty protected Batch 1 writer is rejected", () => {
+    assert.throws(
+      () =>
+        classifyStage1DE2BBatch1Scope(
+          baseScope({
+            modifiedTracked: [...UNCOMMITTED_MODIFIED, PROXY_WRITER_REL],
           }),
         ),
       /scope mismatch/u,
@@ -377,6 +459,15 @@ function createFixture(label, { linkedWorktree = false } = {}) {
   const canonicalDevOutput = path.join(canonicalServer, "dev_output");
   const canonicalProxy = path.join(canonicalDevOutput, "proxy");
   seedPreservedDestination(canonicalProxy);
+  const canonicalExtensionRoot = path.join(
+    repository,
+    "apps/extensions/chatgpt/chrome",
+  );
+  const canonicalExtensionOutput = path.join(
+    canonicalExtensionRoot,
+    "dev-controls",
+  );
+  seedPreservedDestination(canonicalExtensionOutput);
 
   let foreignWorktree = null;
   let foreignServer = null;
@@ -403,6 +494,8 @@ function createFixture(label, { linkedWorktree = false } = {}) {
     canonicalServer,
     canonicalDevOutput,
     canonicalProxy,
+    canonicalExtensionRoot,
+    canonicalExtensionOutput,
     foreignWorktree,
     foreignServer,
   };
@@ -498,6 +591,48 @@ async function runProxyWriter(fixture, options = {}) {
   });
 }
 
+function extensionEnvironment({
+  sourceRoot = ROOT,
+  outDir = null,
+  buildRoot = null,
+  overrides = {},
+} = {}) {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("H2O_")) delete environment[name];
+  }
+  Object.assign(environment, {
+    H2O_SRC_DIR: sourceRoot,
+    H2O_ORDER_FILE: path.join(sourceRoot, "config/dev-order.tsv"),
+    H2O_EXT_DEV_VARIANT: "controls",
+    H2O_EXT_PROXY_PACK_URL: "http://127.0.0.1:65535/dev_output/proxy/pack",
+  });
+  if (outDir !== null) environment.H2O_EXT_OUT_DIR = outDir;
+  if (buildRoot !== null) environment.H2O_EXT_BUILD_ROOT = buildRoot;
+  Object.assign(environment, overrides);
+  return environment;
+}
+
+async function runExtensionWriter(fixture, options = {}) {
+  const sourceRoot = options.sourceRoot ?? ROOT;
+  const outDir = Object.hasOwn(options, "outDir")
+    ? options.outDir
+    : fixture.canonicalExtensionOutput;
+  const buildRoot = options.buildRoot ?? null;
+  if (outDir !== null) assertSandboxPath(outDir);
+  if (buildRoot !== null) assertSandboxPath(buildRoot);
+  return managedChild(process.execPath, [EXTENSION_WRITER], {
+    cwd: options.cwd ?? sourceRoot,
+    env: extensionEnvironment({
+      sourceRoot,
+      outDir,
+      buildRoot,
+      overrides: options.overrides ?? {},
+    }),
+    timeoutMs: options.timeoutMs ?? 30_000,
+  });
+}
+
 function snapshotPath(target) {
   let stat;
   try {
@@ -586,6 +721,14 @@ function guardDiagnostic(result) {
   return JSON.parse(diagnosticLines[0].slice(prefix.length));
 }
 
+function extensionGuardDiagnostic(result) {
+  const diagnosticLines = lines(result.stderr);
+  assert.equal(diagnosticLines.length, 1, result.stderr);
+  const prefix = "[H2O] extension write guard rejected: ";
+  assert.equal(diagnosticLines[0].startsWith(prefix), true);
+  return JSON.parse(diagnosticLines[0].slice(prefix.length));
+}
+
 async function rejectedProxyCase(label, {
   prepare,
   sourceRoot,
@@ -658,6 +801,86 @@ async function rejectedProxyCase(label, {
   return { fixture, prepared, result, diagnostic, before, after };
 }
 
+async function rejectedExtensionCase(label, {
+  prepare,
+  sourceRoot,
+  outDir,
+  buildRoot,
+  overrides,
+  snapshotTarget,
+  expectedExit,
+  expectedCode,
+  expectedText,
+  linkedWorktree = false,
+} = {}) {
+  const fixture = createFixture(`extension-${label}`, { linkedWorktree });
+  const prepared = prepare ? await prepare(fixture) : {};
+  const effectiveSource =
+    typeof sourceRoot === "function"
+      ? sourceRoot(fixture, prepared)
+      : sourceRoot ?? ROOT;
+  const effectiveOut =
+    typeof outDir === "function"
+      ? outDir(fixture, prepared)
+      : outDir === undefined
+        ? fixture.canonicalExtensionOutput
+        : outDir;
+  const effectiveBuildRoot =
+    typeof buildRoot === "function"
+      ? buildRoot(fixture, prepared)
+      : buildRoot ?? null;
+  const effectiveOverrides =
+    typeof overrides === "function"
+      ? overrides(fixture, prepared)
+      : overrides ?? {};
+  const effectiveSnapshot =
+    typeof snapshotTarget === "function"
+      ? snapshotTarget(fixture, prepared)
+      : snapshotTarget ?? fixture.canonicalExtensionOutput;
+  assertSandboxPath(effectiveSnapshot);
+  const before = snapshotPath(effectiveSnapshot);
+  const result = await runExtensionWriter(fixture, {
+    sourceRoot: effectiveSource,
+    outDir: effectiveOut,
+    buildRoot: effectiveBuildRoot,
+    cwd: effectiveSource,
+    overrides: effectiveOverrides,
+  });
+  const after = snapshotPath(effectiveSnapshot);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.code, expectedExit, result.stderr);
+  assert.deepEqual(after, before, label);
+  assert.equal(result.stdout, "");
+  const diagnostic = extensionGuardDiagnostic(result);
+  assert.equal(diagnostic.exitCode, expectedExit);
+  if (expectedCode) assert.equal(diagnostic.error, expectedCode);
+  if (expectedText) {
+    assert.match(`${result.stdout}\n${result.stderr}`, expectedText);
+  }
+  const token = prepared.acquisition?.ownershipToken ??
+    effectiveOverrides.H2O_CANONICAL_DELIVERY_TOKEN;
+  const tokenDigest = token ? sha256Bytes(token) : null;
+  const exposed = JSON.stringify({ result, diagnostic });
+  if (token) {
+    assert.equal(exposed.includes(token), false);
+    assert.equal(exposed.includes(tokenDigest), false);
+    assert.equal(result.argv.includes(token), false);
+    tokenRedactionProven &&= !exposed.includes(token) &&
+      !exposed.includes(tokenDigest) &&
+      !result.argv.includes(token);
+  }
+  extensionCanonicalRejections.push({
+    label,
+    before,
+    after,
+    result,
+    diagnostic,
+    token,
+    tokenDigest,
+  });
+  return { fixture, prepared, result, diagnostic, before, after };
+}
+
 function initializeNestedRepository(repository, label) {
   initializeRepository(repository, label);
   fs.writeFileSync(path.join(repository, "nested-owner.txt"), "owner\n");
@@ -711,6 +934,158 @@ function moveGuardAfterCleanup(source) {
     "const removedProxyArtifacts = cleanProxyDirKeepPack();",
     `const removedProxyArtifacts = cleanProxyDirKeepPack();\n${match[0]}`,
   );
+}
+
+function structuralExtensionGuardOrdering(source) {
+  const importIndex = source.indexOf(
+    'import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";',
+  );
+  const destinationIndex = source.indexOf(
+    "} = createChromeLiveBuildContext();",
+  );
+  const mainIndex = source.indexOf("async function main() {");
+  const guardIndex = source.indexOf(
+    "assertDeliveryWritePermitted({",
+    mainIndex,
+  );
+  const ensureIndex = source.indexOf("ensureDir(OUT_DIR);", mainIndex);
+  const mainOpenBrace = source.indexOf("{", mainIndex);
+  const prefixBeforeGuard = source.slice(
+    mainOpenBrace + 1,
+    source.lastIndexOf("try {", guardIndex),
+  ).trim();
+  const mutationIndexes = EXTENSION_MUTATION_INVOCATIONS.map((token) => ({
+    token,
+    index: source.indexOf(token, mainIndex),
+  }));
+  return {
+    importIndex,
+    destinationIndex,
+    mainIndex,
+    guardIndex,
+    ensureIndex,
+    prefixBeforeGuard,
+    mutationIndexes,
+    valid:
+      importIndex >= 0 &&
+      destinationIndex > importIndex &&
+      mainIndex > destinationIndex &&
+      guardIndex > mainIndex &&
+      prefixBeforeGuard === "" &&
+      ensureIndex > guardIndex &&
+      mutationIndexes.every(({ index }) => index > guardIndex),
+  };
+}
+
+function moveExtensionGuardAfterEnsure(source) {
+  const blockPattern =
+    /  try \{\n    assertDeliveryWritePermitted\(\{[\s\S]*?\n    process\.exit\(exitCode\);\n  \}\n\n/u;
+  const match = source.match(blockPattern);
+  assert.ok(match, "extension guard block fixture not found");
+  const without = source.replace(blockPattern, "");
+  return without.replace(
+    "  ensureDir(OUT_DIR);",
+    `  ensureDir(OUT_DIR);\n${match[0]}`,
+  );
+}
+
+function removeExtensionGuard(source) {
+  const blockPattern =
+    /  try \{\n    assertDeliveryWritePermitted\(\{[\s\S]*?\n    process\.exit\(exitCode\);\n  \}\n\n/u;
+  assert.match(source, blockPattern);
+  return source.replace(blockPattern, "");
+}
+
+function releaseValidatorStructuralContract(source, kind) {
+  const browserControlAbsent =
+    !/\b(?:playwright|puppeteer|osascript|chrome-debug|remote-debugging)\b/iu
+      .test(source);
+  const common = {
+    mkdtemp: source.includes("fs.mkdtempSync("),
+    tempOverride: source.includes("H2O_EXT_OUT_DIR"),
+    realBuilder: source.includes(
+      "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs",
+    ),
+    cleanup: source.includes("fs.rmSync(SOURCE_SAFE_TEMP_ROOT"),
+    containment: /path\.relative\(\s*SOURCE_SAFE_TEMP_ROOT/u.test(source),
+    liveWritesProhibited: source.includes(
+      "releaseValidatorLiveWritesProhibited: true",
+    ),
+    publicationIncomplete: source.includes(
+      "publicationValidationComplete: false",
+    ),
+    browserControlAbsent,
+  };
+  if (kind === "identity") {
+    return {
+      ...common,
+      distinctOverrides:
+        (source.match(/H2O_EXT_OUT_DIR:\s*extBuildRel\(/gu) || []).length === 5,
+      validatesBytes: source.includes("requireBuiltFile(") &&
+        source.includes("validateSourceSafeExtensionOutputs()"),
+      valid:
+        Object.values(common).every(Boolean) &&
+        (source.match(/H2O_EXT_OUT_DIR:\s*extBuildRel\(/gu) || []).length === 5 &&
+        source.includes("requireBuiltFile(") &&
+        source.includes("validateSourceSafeExtensionOutputs()"),
+    };
+  }
+  return {
+    ...common,
+    exactEnvironment: source.includes("replaceEnv: true"),
+    validatesBytes: source.includes("sourceSafeValidatedFileCount") &&
+      source.includes("'manifest.json'") &&
+      source.includes("'provider/identity-provider-supabase.js'"),
+    valid:
+      Object.values(common).every(Boolean) &&
+      source.includes("replaceEnv: true") &&
+      source.includes("sourceSafeValidatedFileCount") &&
+      source.includes("'manifest.json'") &&
+      source.includes("'provider/identity-provider-supabase.js'"),
+  };
+}
+
+function sourceSafeChildEnvironment() {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("H2O_")) delete environment[name];
+  }
+  return environment;
+}
+
+async function runReleaseValidators() {
+  const identityResult = await managedChild(
+    process.execPath,
+    [IDENTITY_RELEASE_GATE, "--source-safe"],
+    {
+      cwd: ROOT,
+      env: sourceSafeChildEnvironment(),
+      timeoutMs: 240_000,
+    },
+  );
+  assert.equal(identityResult.timedOut, false);
+  assert.equal(identityResult.code, 0, identityResult.stderr);
+  const identityLines = lines(identityResult.stdout);
+  const identitySummary = JSON.parse(identityLines.at(-1));
+
+  const f17Result = await managedChild(
+    process.execPath,
+    [F17_RELEASE_VALIDATOR, "--json", "--source-safe"],
+    {
+      cwd: ROOT,
+      env: sourceSafeChildEnvironment(),
+      timeoutMs: 90_000,
+    },
+  );
+  assert.equal(f17Result.timedOut, false);
+  assert.equal(f17Result.code, 0, f17Result.stderr);
+  const f17Summary = JSON.parse(f17Result.stdout);
+  return {
+    identityResult,
+    identitySummary,
+    f17Result,
+    f17Summary,
+  };
 }
 
 function productionGuardImports() {
@@ -1086,11 +1461,10 @@ async function runRuntimeScenarios() {
   });
 
   await test("every canonical rejection preserves the complete destination identity", () => {
-    assert.ok(canonicalRejections.length >= 18);
+    assert.equal(canonicalRejections.length, 18);
     for (const rejection of canonicalRejections) {
       assert.deepEqual(rejection.after, rejection.before, rejection.label);
     }
-    assert.equal(CANONICAL_PRESERVATION_CHECKS, 8);
   });
 
   await test("plaintext token material is redacted from all observable child data", () => {
@@ -1107,17 +1481,27 @@ async function runRuntimeScenarios() {
     }
   });
 
-  await test("coverage scaffold recognizes exactly the two guarded writers", () => {
+  await test("coverage scaffold recognizes exactly the three guarded writers", () => {
     assert.deepEqual([...GUARDED_WRITER_SET], [
       ALIAS_WRITER_REL,
       PROXY_WRITER_REL,
+      EXTENSION_WRITER_REL,
     ]);
     assert.deepEqual(productionGuardImports(), [...GUARDED_WRITER_SET]);
-    assert.equal(
-      GUARDED_WRITER_SET.some((relative) =>
-        relative.includes("build-chrome-live-extension")),
-      false,
-    );
+    for (const unprotected of [
+      "pack-ops-panel.mjs",
+      "pack-desk.mjs",
+      "write-extension-icons.mjs",
+      "pack-identity.mjs",
+      "pack-studio.mjs",
+      "build-identity-provider-bundle.mjs",
+      "extension-stub",
+    ]) {
+      assert.equal(
+        GUARDED_WRITER_SET.some((relative) => relative.includes(unprotected)),
+        false,
+      );
+    }
   });
 
   await test("H2O_BUILD_TS remains the ordinary generated-build timestamp", () => {
@@ -1131,11 +1515,565 @@ async function runRuntimeScenarios() {
   });
 
   await test("writer propagates no explicit E2 session capability", () => {
-    const source = fs.readFileSync(PROXY_WRITER, "utf8");
-    assert.doesNotMatch(source, /H2O_CANONICAL_DELIVERY_TOKEN/u);
-    assert.doesNotMatch(source, /H2O_DELIVERY_SESSION_ID/u);
-    assert.doesNotMatch(source, /canonicalSession|verifiedLease/u);
-    assert.match(source, /environment:\s*process\.env/u);
+    for (const writer of [PROXY_WRITER, EXTENSION_WRITER]) {
+      const source = fs.readFileSync(writer, "utf8");
+      assert.doesNotMatch(source, /H2O_CANONICAL_DELIVERY_TOKEN/u);
+      assert.doesNotMatch(source, /H2O_DELIVERY_SESSION_ID/u);
+      assert.doesNotMatch(source, /canonicalSession|verifiedLease/u);
+      assert.match(source, /environment:\s*process\.env/u);
+    }
+  });
+
+  await test("outside-repository LOCAL extension output succeeds without a token", async () => {
+    const fixture = createFixture("extension-outside-local");
+    const output = path.join(fixture.top, "outside-extension", "dev-controls");
+    const result = await runExtensionWriter(fixture, {
+      outDir: output,
+      overrides: { H2O_EXT_DEV_VARIANT: "production" },
+    });
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    extensionLocalOutsideResult = { fixture, output, result };
+  });
+
+  await test("linked foreign-worktree-local extension output succeeds without a token", async () => {
+    const fixture = createFixture("extension-foreign-local", {
+      linkedWorktree: true,
+    });
+    const output = path.join(
+      fixture.foreignWorktree,
+      "apps/extensions/chatgpt/chrome/dev-controls",
+    );
+    const result = await runExtensionWriter(fixture, {
+      outDir: output,
+      cwd: ROOT,
+      overrides: { H2O_EXT_DEV_VARIANT: "production" },
+    });
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    extensionLocalForeignResult = { fixture, output, result };
+  });
+
+  await test("LOCAL extension output path set and key files exist only in sandboxes", () => {
+    for (const checked of [
+      extensionLocalOutsideResult,
+      extensionLocalForeignResult,
+    ]) {
+      assert.ok(checked);
+      assertSandboxPath(checked.output);
+      assert.equal(isWithin(ROOT, checked.output), false);
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(checked.output, "manifest.json"), "utf8"),
+      );
+      assert.equal(manifest.manifest_version, 3);
+      for (const relative of [
+        "manifest.json",
+        "bg.js",
+        "loader.js",
+        "README.txt",
+        "provider/identity-provider-supabase.js",
+      ]) {
+        const filename = path.join(checked.output, relative);
+        assert.equal(fs.statSync(filename).isFile(), true, filename);
+        assert.ok(fs.statSync(filename).size > 0, filename);
+      }
+    }
+  });
+
+  await test("LOCAL extension invocation creates no canonical anchor", () => {
+    for (const checked of [
+      extensionLocalOutsideResult,
+      extensionLocalForeignResult,
+    ]) {
+      const fixtureAnchor = deriveSharedAnchor({
+        cwd: checked.fixture.repository,
+        env: {},
+        allowOverride: false,
+      }).root;
+      assert.equal(fs.existsSync(fixtureAnchor), false);
+    }
+    assert.equal(fs.existsSync(writerAnchor), false);
+  });
+
+  await test("canonical extension destination without a lease rejects before mutation", async () => {
+    extensionNoLeaseResult = await rejectedExtensionCase("no-lease", {
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("wrong extension ownership token rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-token", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        purpose: "build-chrome-live-extension",
+      }),
+      overrides: {
+        H2O_CANONICAL_DELIVERY_TOKEN: "y".repeat(43),
+      },
+      expectedExit: EXIT_CODES.TOKEN_INVALID,
+      expectedText: /ownership token is missing or invalid/u,
+    });
+  });
+
+  await test("expired extension lease rejects before mutation", async () => {
+    await rejectedExtensionCase("expired", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        nowMs: Date.now() - 60_000,
+        ttlMs: 1_000,
+        purpose: "build-chrome-live-extension",
+      }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+      }),
+      expectedExit: EXIT_CODES.EXPIRED,
+      expectedText: /lease is expired/u,
+    });
+  });
+
+  await test("wrong extension repository identity rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-repository", {
+      prepare: (fixture) => {
+        const prepared = acquireCanonicalLease(fixture, {
+          purpose: "build-chrome-live-extension",
+        });
+        mutateLease(prepared, (metadata) => {
+          metadata.publisherRepositoryRoot = path.join(
+            fixture.top,
+            "wrong-repository",
+          );
+        });
+        return prepared;
+      },
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+      }),
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedText: /publisherRepositoryRoot/u,
+    });
+  });
+
+  await test("wrong extension worktree identity rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-worktree", {
+      linkedWorktree: true,
+      prepare: (fixture) => {
+        const prepared = acquireCanonicalLease(fixture, {
+          purpose: "build-chrome-live-extension",
+        });
+        mutateLease(prepared, (metadata) => {
+          metadata.publisherWorktreeRoot = fixture.foreignWorktree;
+        });
+        return prepared;
+      },
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+      }),
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedText: /publisherWorktreeRoot/u,
+    });
+  });
+
+  await test("wrong extension branch identity rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-branch", {
+      prepare: (fixture) => {
+        const prepared = acquireCanonicalLease(fixture, {
+          purpose: "build-chrome-live-extension",
+        });
+        mutateLease(prepared, (metadata) => {
+          metadata.branch = "wrong-branch";
+        });
+        return prepared;
+      },
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+      }),
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedText: /branch/u,
+    });
+  });
+
+  await test("wrong extension approved HEAD rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-approved-head", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        purpose: "build-chrome-live-extension",
+      }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+        H2O_DELIVERY_APPROVED_HEAD: "e".repeat(40),
+      }),
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedCode: "canonical-delivery-approved-head-assertion-mismatch",
+    });
+  });
+
+  await test("wrong extension session assertion rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-session", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        purpose: "build-chrome-live-extension",
+      }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+        H2O_DELIVERY_SESSION_ID: "00000000-0000-4000-8000-000000000000",
+      }),
+      expectedExit: EXIT_CODES.VERIFICATION_MISMATCH,
+      expectedCode: "canonical-delivery-session-assertion-mismatch",
+    });
+  });
+
+  await test("wrong extension build marker rejects before mutation", async () => {
+    await rejectedExtensionCase("wrong-build-marker", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        purpose: "build-chrome-live-extension",
+      }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+        H2O_BUILD_TS: String(Number(prepared.acquisition.lease.buildTs) + 1),
+      }),
+      expectedExit: EXIT_CODES.VERIFICATION_MISMATCH,
+      expectedCode: "canonical-delivery-build-marker-mismatch",
+    });
+  });
+
+  await test("wrong extension writer purpose rejects after lease verification", async () => {
+    await rejectedExtensionCase("wrong-purpose", {
+      prepare: (fixture) => acquireCanonicalLease(fixture, {
+        purpose: "different-extension-writer",
+      }),
+      overrides: (_fixture, prepared) => ({
+        H2O_CANONICAL_DELIVERY_TOKEN:
+          prepared.acquisition.ownershipToken,
+      }),
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedCode: "canonical-delivery-purpose-mismatch",
+    });
+  });
+
+  await test("fully valid extension session still exits 16 with the E3 terminal code", async () => {
+    extensionValidSessionResult = await rejectedExtensionCase(
+      "valid-still-disabled",
+      {
+        prepare: (fixture) => acquireCanonicalLease(fixture, {
+          purpose: "build-chrome-live-extension",
+        }),
+        overrides: (_fixture, prepared) => ({
+          H2O_CANONICAL_DELIVERY_TOKEN:
+            prepared.acquisition.ownershipToken,
+          H2O_DELIVERY_SESSION_ID: prepared.acquisition.lease.sessionId,
+          H2O_DELIVERY_APPROVED_HEAD:
+            prepared.acquisition.lease.approvedHead,
+          H2O_BUILD_TS: prepared.acquisition.lease.buildTs,
+        }),
+        expectedExit: EXIT_CODES.PATH_COUPLING_VIOLATION,
+        expectedCode: "canonical-live-write-disabled-until-stage-e3",
+      },
+    );
+    assert.equal(extensionValidSessionResult.result.code, 16);
+    assert.equal(
+      extensionValidSessionResult.diagnostic.error,
+      "canonical-live-write-disabled-until-stage-e3",
+    );
+  });
+
+  await test("unrelated H2O_SRC_DIR cannot downgrade canonical extension output", async () => {
+    await rejectedExtensionCase("unrelated-source", {
+      prepare: (fixture) => ({
+        unrelated: createUnrelatedRepository(fixture, "extension-caller"),
+      }),
+      sourceRoot: (_fixture, prepared) => prepared.unrelated,
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("H2O_EXT_BUILD_ROOT redirection cannot bypass canonical classification", async () => {
+    await rejectedExtensionCase("custom-build-root", {
+      outDir: null,
+      buildRoot: (fixture) => fixture.canonicalExtensionRoot,
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("symlink redirection into canonical extension output rejects", async () => {
+    await rejectedExtensionCase("symlink-redirect", {
+      prepare: (fixture) => {
+        const spelling = path.join(fixture.top, "canonical-extension-link");
+        fs.symlinkSync(fixture.canonicalExtensionOutput, spelling);
+        return { spelling };
+      },
+      outDir: (_fixture, prepared) => prepared.spelling,
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("missing canonical extension descendant rejects", async () => {
+    await rejectedExtensionCase("missing-descendant", {
+      outDir: (fixture) => path.join(
+        fixture.canonicalExtensionOutput,
+        "missing/descendant",
+      ),
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("nested repository cannot hide the outer extension owner", async () => {
+    await rejectedExtensionCase("nested-repository", {
+      prepare: (fixture) => {
+        initializeNestedRepository(
+          fixture.canonicalExtensionRoot,
+          "E2B Extension Nested",
+        );
+        return {};
+      },
+      expectedExit: EXIT_CODES.ABSENT_OR_CONTENDED,
+      expectedCode: "canonical-delivery-lease-absent",
+    });
+  });
+
+  await test("malformed extension .git boundary fails closed", async () => {
+    await rejectedExtensionCase("malformed-boundary", {
+      prepare: (fixture) => {
+        const boundary = path.join(fixture.top, "malformed-extension-boundary");
+        const output = path.join(
+          boundary,
+          "apps/extensions/chatgpt/chrome/dev-controls",
+        );
+        seedPreservedDestination(output);
+        fs.writeFileSync(path.join(boundary, ".git"), "not-a-gitdir\n");
+        return { boundary, output };
+      },
+      outDir: (_fixture, prepared) => prepared.output,
+      snapshotTarget: (_fixture, prepared) => prepared.output,
+      expectedExit: EXIT_CODES.ELIGIBILITY_MISMATCH,
+      expectedCode: "destination-repository-context-invalid",
+    });
+  });
+
+  await test("multiple extension canonical owners fail closed as ambiguous", async () => {
+    await rejectedExtensionCase("multiple-owners", {
+      prepare: (fixture) => {
+        initializeNestedRepository(
+          fixture.canonicalExtensionOutput,
+          "E2B Extension Inner Owner",
+        );
+        const output = path.join(
+          fixture.canonicalExtensionOutput,
+          "apps/extensions/chatgpt/chrome/dev-controls",
+        );
+        seedPreservedDestination(output);
+        return { output };
+      },
+      outDir: (_fixture, prepared) => prepared.output,
+      snapshotTarget: (_fixture, prepared) => prepared.output,
+      expectedExit: EXIT_CODES.PATH_COUPLING_VIOLATION,
+      expectedCode: "canonical-delivery-owner-ambiguity",
+    });
+  });
+
+  await test("direct extension writer invocation is independently guarded", () => {
+    assert.ok(extensionNoLeaseResult);
+    assert.equal(extensionNoLeaseResult.result.argv.length, 2);
+    assert.equal(extensionNoLeaseResult.result.argv[1], EXTENSION_WRITER);
+    assert.equal(extensionNoLeaseResult.result.stdout, "");
+    assert.match(
+      extensionNoLeaseResult.result.stderr,
+      /^\[H2O\] extension write guard rejected: \{.*\}\n$/u,
+    );
+  });
+
+  let extensionSource;
+  let extensionOrdering;
+  await test("extension guard structurally precedes ensureDir(OUT_DIR)", () => {
+    extensionSource = fs.readFileSync(EXTENSION_WRITER, "utf8");
+    extensionOrdering = structuralExtensionGuardOrdering(extensionSource);
+    assert.equal(extensionOrdering.valid, true);
+    assert.ok(extensionOrdering.ensureIndex > extensionOrdering.guardIndex);
+  });
+
+  await test("extension guard precedes every reachable mutation and sub-writer call", () => {
+    assert.ok(extensionOrdering);
+    for (const mutation of extensionOrdering.mutationIndexes) {
+      assert.ok(mutation.index > extensionOrdering.guardIndex, mutation.token);
+    }
+  });
+
+  await test("moving or deleting the extension guard fails structural validation", () => {
+    assert.equal(
+      structuralExtensionGuardOrdering(
+        moveExtensionGuardAfterEnsure(extensionSource),
+      ).valid,
+      false,
+    );
+    assert.equal(
+      structuralExtensionGuardOrdering(
+        removeExtensionGuard(extensionSource),
+      ).valid,
+      false,
+    );
+  });
+
+  await test("every extension canonical rejection preserves all eight identity dimensions", () => {
+    assert.equal(extensionCanonicalRejections.length, 18);
+    for (const rejection of extensionCanonicalRejections) {
+      assert.deepEqual(rejection.after, rejection.before, rejection.label);
+    }
+    assert.equal(CANONICAL_PRESERVATION_CHECKS, 16);
+  });
+
+  await test("extension token and digest are absent from every observable value", () => {
+    assert.equal(tokenRedactionProven, true);
+    for (const rejection of extensionCanonicalRejections) {
+      if (!rejection.token) continue;
+      const observable = JSON.stringify({
+        result: rejection.result,
+        diagnostic: rejection.diagnostic,
+      });
+      assert.equal(observable.includes(rejection.token), false);
+      assert.equal(observable.includes(rejection.tokenDigest), false);
+      assert.equal(rejection.result.argv.includes(rejection.token), false);
+    }
+  });
+
+  await test("both release validators execute real source-safe extension builds", async () => {
+    releaseValidatorResults = await runReleaseValidators();
+    assert.equal(releaseValidatorResults.identitySummary.ok, true);
+    assert.equal(releaseValidatorResults.f17Summary.ok, true);
+  });
+
+  await test("every release extension destination is beneath its recorded mkdtemp root", () => {
+    const { identitySummary, f17Summary } = releaseValidatorResults;
+    for (const destination of identitySummary.extensionBuildDestinations) {
+      assert.equal(isWithin(identitySummary.temporaryRoot, destination), true);
+    }
+    assert.equal(
+      isWithin(
+        f17Summary.sourceSafeValidation.temporaryRoot,
+        f17Summary.sourceSafeValidation.extensionBuildDestination,
+      ),
+      true,
+    );
+  });
+
+  await test("release validators prohibit writes to real canonical variants", () => {
+    const identityContract = releaseValidatorStructuralContract(
+      fs.readFileSync(IDENTITY_RELEASE_GATE, "utf8"),
+      "identity",
+    );
+    const f17Contract = releaseValidatorStructuralContract(
+      fs.readFileSync(F17_RELEASE_VALIDATOR, "utf8"),
+      "f17",
+    );
+    assert.equal(identityContract.valid, true);
+    assert.equal(f17Contract.valid, true);
+    assert.equal(
+      releaseValidatorResults.identitySummary.releaseValidatorLiveWritesProhibited,
+      true,
+    );
+    assert.equal(
+      releaseValidatorResults.f17Summary.sourceSafeValidation
+        .releaseValidatorLiveWritesProhibited,
+      true,
+    );
+  });
+
+  await test("release validator extension variants use distinct temporary destinations", () => {
+    const summary = releaseValidatorResults.identitySummary;
+    assert.equal(summary.extensionBuildDestinationCount, 5);
+    assert.equal(summary.distinctVariantDestinations, true);
+    assert.equal(new Set(summary.extensionBuildDestinations).size, 5);
+  });
+
+  await test("release validators report real primary builder execution", () => {
+    assert.equal(
+      releaseValidatorResults.identitySummary.realBuilderExecutions,
+      5,
+    );
+    assert.equal(
+      releaseValidatorResults.f17Summary.sourceSafeValidation
+        .realBuilderExecutions,
+      1,
+    );
+  });
+
+  await test("release validators validate produced bytes and required structure", () => {
+    assert.ok(
+      releaseValidatorResults.identitySummary.validatedFileCount >= 26,
+    );
+    const sourceSafe =
+      releaseValidatorResults.f17Summary.sourceSafeValidation;
+    assert.equal(sourceSafe.validatedFileCount, 5);
+    const buildCheck = releaseValidatorResults.f17Summary.checks.find(
+      (entry) => entry.name === "source-safe-chrome-extension-build",
+    );
+    assert.equal(buildCheck.ok, true);
+    assert.equal(buildCheck.detail.requiredFiles.length, 5);
+  });
+
+  await test("release cleanup is confined to and removes each temporary root", () => {
+    const { identitySummary, f17Summary } = releaseValidatorResults;
+    assert.equal(identitySummary.cleanupCompleted, true);
+    assert.equal(
+      f17Summary.sourceSafeValidation.cleanupCompleted,
+      true,
+    );
+    assert.equal(fs.existsSync(identitySummary.temporaryRoot), false);
+    assert.equal(
+      fs.existsSync(f17Summary.sourceSafeValidation.temporaryRoot),
+      false,
+    );
+  });
+
+  await test("release validation creates no anchor and contains no browser control", () => {
+    const { identitySummary, f17Summary } = releaseValidatorResults;
+    assert.equal(identitySummary.canonicalAnchorCreated, false);
+    assert.equal(
+      f17Summary.sourceSafeValidation.canonicalAnchorCreated,
+      false,
+    );
+    assert.equal(fs.existsSync(writerAnchor), false);
+    for (const [filename, kind] of [
+      [IDENTITY_RELEASE_GATE, "identity"],
+      [F17_RELEASE_VALIDATOR, "f17"],
+    ]) {
+      assert.equal(
+        releaseValidatorStructuralContract(
+          fs.readFileSync(filename, "utf8"),
+          kind,
+        ).browserControlAbsent,
+        true,
+      );
+    }
+  });
+
+  await test("removing temporary destination overrides fails release structural validation", () => {
+    const identitySource = fs.readFileSync(IDENTITY_RELEASE_GATE, "utf8");
+    const f17Source = fs.readFileSync(F17_RELEASE_VALIDATOR, "utf8");
+    const brokenIdentity = identitySource.replace(
+      /H2O_EXT_OUT_DIR:\s*extBuildRel\([^)]+\),?/gu,
+      "",
+    );
+    const brokenF17 = f17Source.replace(
+      "H2O_EXT_OUT_DIR: SOURCE_SAFE_EXTENSION_OUT,",
+      "",
+    );
+    assert.equal(
+      releaseValidatorStructuralContract(brokenIdentity, "identity").valid,
+      false,
+    );
+    assert.equal(
+      releaseValidatorStructuralContract(brokenF17, "f17").valid,
+      false,
+    );
   });
 
   await test("runtime scenario count is exact", () => {
@@ -1150,7 +2088,12 @@ function printScope() {
   process.stdout.write(
     `${JSON.stringify({
       validator: VALIDATOR_REL,
-      implementation: [PROXY_WRITER_REL],
+      implementation: [
+        PROXY_WRITER_REL,
+        EXTENSION_WRITER_REL,
+        IDENTITY_RELEASE_GATE_REL,
+        F17_RELEASE_VALIDATOR_REL,
+      ],
       finalPaths: FINAL_PATHS,
       uncommittedModified: UNCOMMITTED_MODIFIED,
       uncommittedUntracked: UNCOMMITTED_UNTRACKED,
@@ -1200,13 +2143,17 @@ async function main() {
       scopeMode,
       runtimeScenarios: runtimeResults.length,
       scopeScenarios: scopeResults.length,
-      canonicalRejectionCases: canonicalRejections.length,
+      canonicalRejectionCases:
+        canonicalRejections.length + extensionCanonicalRejections.length,
       canonicalPreservationChecks: CANONICAL_PRESERVATION_CHECKS,
       tokenRedactionProven,
       guardedWriterSet: GUARDED_WRITER_SET,
       liveEnforcementComplete: false,
       canonicalLiveWritesPermitted: false,
       stageE3Required: true,
+      exportedHelperEnforcementComplete: false,
+      releaseValidatorLiveWritesProhibited: true,
+      publicationValidationComplete: false,
     })}\n`,
   );
 }

@@ -59,6 +59,7 @@ import {
   TITLE_CONTRACT_BRIDGE_FILENAME,
   makeCanonicalTitleContractBridge,
 } from "./title-contract/make-title-contract-bridge.mjs";
+import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";
 // @version 1.3.0
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -427,6 +428,32 @@ function syncIdentityProviderPrivateConfigToOut(outDir, privateConfig) {
 }
 
 async function main() {
+  try {
+    assertDeliveryWritePermitted({
+      destination: OUT_DIR,
+      purpose: "build-chrome-live-extension",
+      environment: process.env,
+    });
+  } catch (error) {
+    const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+    const body = {
+      ok: false,
+      error:
+        typeof error?.code === "string"
+          ? error.code
+          : "extension-write-guard-failed",
+      message:
+        typeof error?.message === "string"
+          ? error.message
+          : "Extension write guard failed.",
+      exitCode,
+    };
+    process.stderr.write(
+      `[H2O] extension write guard rejected: ${JSON.stringify(body)}\n`,
+    );
+    process.exit(exitCode);
+  }
+
   const titleContractBridge = STUDIO_ONLY
     ? null
     : makeCanonicalTitleContractBridge({ repositoryRoot: SRC });

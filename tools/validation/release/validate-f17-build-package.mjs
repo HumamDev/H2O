@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { performance } from 'node:perf_hooks';
@@ -12,6 +13,35 @@ const WARNINGS = 'BUILD PACKAGE WARNINGS';
 const BLOCKED = 'BUILD PACKAGE BLOCKED';
 const ROOT = process.cwd();
 const NODE = process.execPath;
+const SOURCE_SAFE_VALIDATION_MODE = 'source-safe-local';
+const SOURCE_SAFE_TEMP_ROOT = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'h2o-f17-source-safe-')
+);
+const SOURCE_SAFE_EXTENSION_ROOT = path.join(
+  SOURCE_SAFE_TEMP_ROOT,
+  'extension-output'
+);
+const SOURCE_SAFE_EXTENSION_OUT = path.join(
+  SOURCE_SAFE_EXTENSION_ROOT,
+  'prod'
+);
+const EXPECTED_CANONICAL_ANCHOR = path.resolve(
+  ROOT,
+  '..',
+  '.h2o-canonical-delivery'
+);
+const CANONICAL_ANCHOR_INITIALLY_ABSENT =
+  !fs.existsSync(EXPECTED_CANONICAL_ANCHOR);
+const SOURCE_SAFE_CONTRACT = Object.freeze({
+  validationMode: SOURCE_SAFE_VALIDATION_MODE,
+  sourceSafeValidationImplemented: true,
+  releaseValidatorLiveWritesProhibited: true,
+  publicationValidationComplete: false,
+  stageE3Required: true
+});
+const EXPECTED_STUDIO_MIGRATION_MAX = 17;
+let sourceSafeRealBuilderExecutions = 0;
+let sourceSafeValidatedFileCount = 0;
 
 const FLAGS = new Set(process.argv.slice(2));
 const JSON_OUTPUT = FLAGS.has('--json');
@@ -30,7 +60,7 @@ const FILES = {
 };
 
 const ARTIFACT_DIRS = [
-  'apps/extensions/chatgpt/chrome/prod',
+  SOURCE_SAFE_EXTENSION_OUT,
   'apps/studio/desktop/dist',
   'apps/studio/desktop/src-tauri/target/release/bundle'
 ];
@@ -53,13 +83,18 @@ const BLOCKERS = {
   MISSING_TAURI_VERSION: 'build-package-missing-tauri-version',
   REQUIRED_SCRIPT_MISSING: 'build-package-required-build-script-missing',
   PREPARE_DIST_GUARD_MISSING: 'build-package-prepare-dist-stale-guard-missing',
+  SOURCE_SAFE_EXTENSION_FAILED: 'build-package-source-safe-extension-build-failed',
   CARGO_FAILED: 'build-package-cargo-check-failed',
   TAURI_FAILED: 'build-package-tauri-build-failed',
   ARTIFACT_VERSION_MISMATCH: 'build-package-artifact-version-mismatch'
 };
 
+function absolutePath(rel) {
+  return path.isAbsolute(rel) ? rel : path.join(ROOT, rel);
+}
+
 function read(rel) {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  return fs.readFileSync(absolutePath(rel), 'utf8');
 }
 
 function readJson(rel) {
@@ -67,7 +102,7 @@ function readJson(rel) {
 }
 
 function exists(rel) {
-  return fs.existsSync(path.join(ROOT, rel));
+  return fs.existsSync(absolutePath(rel));
 }
 
 function commandText(command, args, cwd = ROOT) {
@@ -79,7 +114,9 @@ function run(command, args, opts = {}) {
   const cwd = opts.cwd || ROOT;
   const result = spawnSync(command, args, {
     cwd,
-    env: { ...process.env, ...(opts.env || {}) },
+    env: opts.replaceEnv
+      ? opts.env
+      : { ...process.env, ...(opts.env || {}) },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -92,6 +129,20 @@ function run(command, args, opts = {}) {
     stderr: (result.stderr || '').trim().split('\n').filter(Boolean).slice(-12),
     error: result.error ? String(result.error.message || result.error) : null
   };
+}
+
+function sourceSafeBuilderEnvironment() {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith('H2O_')) delete environment[name];
+  }
+  Object.assign(environment, {
+    H2O_SRC_DIR: ROOT,
+    H2O_EXT_BUILD_ROOT: SOURCE_SAFE_EXTENSION_ROOT,
+    H2O_EXT_OUT_DIR: SOURCE_SAFE_EXTENSION_OUT,
+    H2O_EXT_DEV_VARIANT: 'production'
+  });
+  return environment;
 }
 
 function check(name, group, fn) {
@@ -140,7 +191,10 @@ function extractStudioMigrations(libText) {
 function checkMigrations() {
   const libText = read(FILES.lib);
   const migrations = extractStudioMigrations(libText);
-  const expected = Array.from({ length: 13 }, (_, index) => index + 1);
+  const expected = Array.from(
+    { length: EXPECTED_STUDIO_MIGRATION_MAX },
+    (_, index) => index + 1
+  );
   const sorted = [...migrations.versions].sort((a, b) => a - b);
   const duplicateVersions = sorted.filter((version, index) => sorted.indexOf(version) !== index);
   const missingVersions = expected.filter((version) => !sorted.includes(version));
@@ -232,6 +286,74 @@ function checkBuildScripts() {
     missingRootScripts,
     missingDesktopScripts,
     blockers
+  };
+}
+
+function runSourceSafeExtensionBuild() {
+  const relative = path.relative(
+    SOURCE_SAFE_TEMP_ROOT,
+    SOURCE_SAFE_EXTENSION_OUT
+  );
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return {
+      ok: false,
+      blockers: [BLOCKERS.SOURCE_SAFE_EXTENSION_FAILED],
+      reason: 'source-safe-extension-destination-escaped-temporary-root'
+    };
+  }
+  const result = run(NODE, [FILES.buildChrome], {
+    env: sourceSafeBuilderEnvironment(),
+    replaceEnv: true
+  });
+  sourceSafeRealBuilderExecutions += 1;
+  if (!result.ok) {
+    return {
+      ok: false,
+      blockers: [BLOCKERS.SOURCE_SAFE_EXTENSION_FAILED],
+      result
+    };
+  }
+
+  const requiredFiles = [
+    'manifest.json',
+    'bg.js',
+    'loader.js',
+    'README.txt',
+    'provider/identity-provider-supabase.js'
+  ];
+  const files = requiredFiles.map((relativePath) => {
+    const filename = path.join(SOURCE_SAFE_EXTENSION_OUT, relativePath);
+    const stat = fs.statSync(filename);
+    const bytes = fs.readFileSync(filename);
+    if (!stat.isFile() || bytes.length <= 0) {
+      throw new Error(`source-safe extension output is empty: ${filename}`);
+    }
+    sourceSafeValidatedFileCount += 1;
+    return {
+      relativePath,
+      bytes: bytes.length
+    };
+  });
+  const manifest = JSON.parse(
+    fs.readFileSync(
+      path.join(SOURCE_SAFE_EXTENSION_OUT, 'manifest.json'),
+      'utf8'
+    )
+  );
+  const ok = Boolean(
+    manifest &&
+    typeof manifest === 'object' &&
+    manifest.manifest_version
+  );
+  return {
+    ok,
+    blockers: ok ? [] : [BLOCKERS.SOURCE_SAFE_EXTENSION_FAILED],
+    result,
+    destination: SOURCE_SAFE_EXTENSION_OUT,
+    destinationUnderTemporaryRoot: true,
+    realBuilderExecution: true,
+    requiredFiles: files,
+    manifestVersion: manifest.manifest_version || null
   };
 }
 
@@ -392,6 +514,7 @@ function runValidation() {
     check('v13-folder-bindings-trigger-ddl', 'migrations', checkV13TriggerDdl),
     check('version-consistency', 'versions', checkVersions),
     check('build-script-config', 'build', checkBuildScripts),
+    check('source-safe-chrome-extension-build', 'build', runSourceSafeExtensionBuild),
     check('prepare-dist-stale-guard', 'build', checkPrepareDist),
     check('tauri-frontend-dist-config', 'build', checkTauriConfig),
     check('studio-pack-source-comparison-readiness', 'build', checkStudioPackReadiness),
@@ -421,6 +544,15 @@ function runValidation() {
       cargoRequested: RUN_CARGO,
       tauriBuildRequested: RUN_TAURI_BUILD,
       artifactsRequested: INSPECT_ARTIFACTS
+    },
+    sourceSafeValidation: {
+      ...SOURCE_SAFE_CONTRACT,
+      sourceSafeModeRequested: FLAGS.has('--source-safe'),
+      temporaryRootCreated: true,
+      temporaryRoot: SOURCE_SAFE_TEMP_ROOT,
+      extensionBuildDestination: SOURCE_SAFE_EXTENSION_OUT,
+      realBuilderExecutions: sourceSafeRealBuilderExecutions,
+      validatedFileCount: sourceSafeValidatedFileCount
     },
     evidence: {
       migration: checks.find((item) => item.name === 'migration-source')?.detail,
@@ -456,7 +588,47 @@ function printHuman(result) {
   }
 }
 
-const result = runValidation();
+let result;
+let cleanupCompleted = false;
+let cleanupError = null;
+try {
+  result = runValidation();
+} finally {
+  try {
+    const relative = path.relative(os.tmpdir(), SOURCE_SAFE_TEMP_ROOT);
+    if (
+      relative.startsWith('..') ||
+      path.isAbsolute(relative) ||
+      !path.basename(SOURCE_SAFE_TEMP_ROOT).startsWith('h2o-f17-source-safe-')
+    ) {
+      throw new Error(
+        `refusing unsafe source-safe cleanup: ${SOURCE_SAFE_TEMP_ROOT}`
+      );
+    }
+    fs.rmSync(SOURCE_SAFE_TEMP_ROOT, { recursive: true, force: true });
+    cleanupCompleted = !fs.existsSync(SOURCE_SAFE_TEMP_ROOT);
+  } catch (error) {
+    cleanupError = error;
+  }
+}
+const canonicalAnchorCreated =
+  CANONICAL_ANCHOR_INITIALLY_ABSENT &&
+  fs.existsSync(EXPECTED_CANONICAL_ANCHOR);
+result.sourceSafeValidation.cleanupCompleted = cleanupCompleted;
+result.sourceSafeValidation.canonicalAnchorCreated = canonicalAnchorCreated;
+if (!cleanupCompleted || canonicalAnchorCreated || cleanupError) {
+  result.ok = false;
+  result.verdict = BLOCKED;
+  result.blockers = [
+    ...new Set([
+      ...result.blockers,
+      BLOCKERS.SOURCE_SAFE_EXTENSION_FAILED
+    ])
+  ];
+  result.sourceSafeValidation.cleanupError = cleanupError
+    ? String(cleanupError.message || cleanupError)
+    : null;
+}
 if (JSON_OUTPUT) {
   console.log(JSON.stringify(result, null, 2));
 } else {
