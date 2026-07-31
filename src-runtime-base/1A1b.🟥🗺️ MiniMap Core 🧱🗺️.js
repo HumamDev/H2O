@@ -6254,6 +6254,7 @@ function UM_PUBLIC() {
         canonicalFingerprint: '',
         anchorQId: null,
         pathLength: 0,
+        generation: 0,
       });
     }
     return Object.freeze({
@@ -6263,6 +6264,7 @@ function UM_PUBLIC() {
       canonicalFingerprint: String(status.canonicalFingerprint || ''),
       anchorQId: String(status.anchorQId || '') || null,
       pathLength: Math.max(0, Number(status.pathLength || 0) || 0),
+      generation: Math.max(0, Number(status.generation || 0) || 0),
     });
   }
 
@@ -10556,7 +10558,12 @@ function unbindChatPageDividerBridge() {
       ? 'selected-path-overlay'
       : 'canonical';
     const fingerprint = String(status.canonicalFingerprint || '');
-    return [chatId, routeKey, source, String(S.turnList?.length || 0), fingerprint].join('|');
+    const generation = String(status.generation || 0);
+    const count = Number(S.turnList?.length || 0);
+    const pageCount = count > 0 ? Math.ceil(count / 25) : 0;
+    return [
+      chatId, routeKey, source, String(count), fingerprint, generation, String(pageCount),
+    ].join('|');
   }
 
   function chatPageRecordOrder(turn = null, fallbackOrder = 0) {
@@ -10730,6 +10737,10 @@ function unbindChatPageDividerBridge() {
       for (const sentinel of state.sentinels.values()) stale.push(sentinel);
       state.sentinels.clear();
       state.hydrationRequested.clear();
+      // The previous layout's settled result describes a page model that no
+      // longer exists. Drop it so a 39-turn "settled" cannot stand in as
+      // authority for the 18-turn selected path.
+      state.last = null;
     }
     state.identity = nextIdentity;
     const keep = new Set();
@@ -10800,7 +10811,12 @@ function unbindChatPageDividerBridge() {
   }
 
   function resolveRenderedBoundaryPageUnitAnchor(model = null, page = null) {
-    if (!model || !page || Number(page.pageNum || 0) <= 1) {
+    // Page 1 is not "already at the thread start". On a selected-path
+    // projection its exact order-1 wrapper can sit anywhere in the flow, so it
+    // owns a rendered boundary exactly like every later page. Skipping it here
+    // left the Page 1 units wherever the weaker mounted-artifact fallbacks put
+    // them, which on the 18-turn branch was after the wrapper they must precede.
+    if (!model || !page || Number(page.pageNum || 0) < 1) {
       return { applicable: false };
     }
     const api = getChatPagesControllerApi();
@@ -11303,9 +11319,33 @@ function unbindChatPageDividerBridge() {
         .sort((a, b) => compareChatPageNodes(a.divider, b.divider));
       const order = orderedDividers.map((entry) => entry.pageNum);
       const ascending = order.every((pageNum, index) => index === 0 || order[index - 1] < pageNum);
+      // Ascending divider order proves only that the pages appear in sequence.
+      // Settled additionally requires every page unit to satisfy its exact
+      // placement contract, which the rendered boundary is the authority on.
+      // Without this a single-page layout whose units sat after their own
+      // start wrapper still reported settled, because one divider is trivially
+      // ascending and nothing was deferred.
+      let placementRepairPending = 0;
+      const placementApi = typeof getChatPagesControllerApi === 'function'
+        ? getChatPagesControllerApi()
+        : null;
+      if (typeof placementApi?.getRenderedPageBoundaryCapability === 'function') {
+        for (const page of Array.isArray(model?.pages) ? model.pages : []) {
+          let capability = null;
+          try {
+            capability = placementApi.getRenderedPageBoundaryCapability(page.pageNum) || null;
+          } catch { capability = null; }
+          if (capability?.supported !== true) continue;
+          if (
+            capability.pageUnitOrderCurrent !== true
+            || capability.placementRepairRequired === true
+          ) placementRepairPending += 1;
+        }
+      }
+      stats.placementRepairPending = placementRepairPending;
       stats.status = stats.deferred > 0
         ? 'page-unit-anchor-unavailable'
-        : (ascending ? 'settled' : 'page-unit-order-invalid');
+        : ((ascending && placementRepairPending === 0) ? 'settled' : 'page-unit-order-invalid');
       stats.order = order;
       stats.ascending = ascending;
       state.last = Object.freeze({
