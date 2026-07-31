@@ -30,6 +30,11 @@ const STAGE1EB_BASELINE_COMMIT = "767c934a3723e6f6cde8209494bf417e91b26187";
 const STAGE1EB_IMPLEMENTATION_COMMIT = "6baabd48083333a7e5e06eb9da970c8157626261";
 const STAGE1F_SCOPE_OPTION = "--stage1f-rollback-scope";
 const STAGE1F_ACCEPTED_HEAD = "262f68410c09e94e42de275992aaefcea928b2d1";
+// Stage 1F default-on is a follow-up on the integrated rollback work, so it is
+// pinned to its own accepted base and its own exact three-path candidate. The
+// historical Stage 1F mode keeps its own parent pin untouched.
+const DEFAULT_ON_SCOPE_OPTION = "--title-default-on-scope";
+const DEFAULT_ON_ACCEPTED_HEAD = "5d1bc9dca549aca120f5f50ff8f197fcc1f50004";
 const F0D_REL = "src-runtime-base/0F0d.⬛️🧬 Library Index Core 🧬.js";
 const F1C_REL = "src-runtime-base/0F1c.⬛️🗂️ Library Index 🧮🗂️.js";
 const F2A_REL = "src-runtime-base/0F2a.⬛️🗂️ Projects 🗂️.js";
@@ -44,6 +49,7 @@ const STAGE1EB_TRACKED = new Set([DEV_ORDER_REL, LOADER_DEPS_REL, SELF_REL, ADR_
 const STAGE1EB_COMMITTED = new Set([...STAGE1EB_TRACKED, B2_REL]);
 // Stage 1F now also repairs the passive sidebar presentation adapter (9B2a).
 const STAGE1F_TRACKED = new Set([B0_REL, B1_REL, B2_REL, STAGE1C_REL, SELF_REL]);
+const DEFAULT_ON_TRACKED = new Set([B0_REL, SELF_REL, ADR_REL]);
 const EXPECTED_IDENTITY = Object.freeze({
   schemaVersion: 2,
   bridgeVersion: "3",
@@ -257,6 +263,43 @@ function classifyStage1FScope({ modifiedTracked, staged, untracked, committedHea
   return "stage1f-rollback-dirty";
 }
 
+function classifyDefaultOnScope({ modifiedTracked, staged, untracked, committedHeadPaths = [], head = "", parent = "" }) {
+  const modified = new Set(modifiedTracked);
+  const stagedPaths = new Set(staged);
+  const untrackedPaths = new Set(untracked);
+  const headPaths = new Set(committedHeadPaths);
+  assert.equal(stagedPaths.size, 0, `staged paths forbidden: ${[...stagedPaths].sort().join(", ")}`);
+  assert.equal(untrackedPaths.size, 0, `default-on scope forbids untracked paths: ${[...untrackedPaths].sort()}`);
+  if (modified.size === 0) {
+    assert.equal(parent, DEFAULT_ON_ACCEPTED_HEAD, "default-on commit parent must be the integrated Stage 1F HEAD");
+    assert(
+      sameSet(headPaths, DEFAULT_ON_TRACKED),
+      `committed-clean default-on scope mismatch: ${JSON.stringify([...headPaths].sort())}`,
+    );
+    return "title-default-on-committed-clean";
+  }
+  assert(
+    head === DEFAULT_ON_ACCEPTED_HEAD || parent === DEFAULT_ON_ACCEPTED_HEAD,
+    "dirty default-on work requires the integrated Stage 1F HEAD or its single-commit candidate",
+  );
+  if (head === DEFAULT_ON_ACCEPTED_HEAD) {
+    assert(
+      sameSet(modified, DEFAULT_ON_TRACKED),
+      `tracked default-on scope mismatch: ${JSON.stringify([...modified].sort())}`,
+    );
+    return "title-default-on-dirty";
+  }
+  assert(
+    [...modified].every((relative) => DEFAULT_ON_TRACKED.has(relative)),
+    `tracked default-on scope mismatch: ${JSON.stringify([...modified].sort())}`,
+  );
+  assert(
+    sameSet(new Set([...modified, ...headPaths]), DEFAULT_ON_TRACKED),
+    `combined default-on candidate scope mismatch: ${JSON.stringify([...new Set([...modified, ...headPaths])].sort())}`,
+  );
+  return "title-default-on-dirty";
+}
+
 function resolveStage1EBScope({
   modifiedTracked,
   staged,
@@ -353,6 +396,7 @@ function requestedScopeMode(argv) {
           argv[0] === STAGE1EB_SCOPE_OPTION
           || argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION
           || argv[0] === STAGE1F_SCOPE_OPTION
+          || argv[0] === DEFAULT_ON_SCOPE_OPTION
         )
       ),
     `unknown or conflicting Stage 1E validator option: ${argv.join(" ")}`,
@@ -360,6 +404,7 @@ function requestedScopeMode(argv) {
   if (argv[0] === STAGE1EB_SCOPE_OPTION) return "stage1eb-sidebar";
   if (argv[0] === STAGE1EB_VALIDATOR_FIX_SCOPE_OPTION) return "stage1eb-validator-fix";
   if (argv[0] === STAGE1F_SCOPE_OPTION) return "stage1f-rollback";
+  if (argv[0] === DEFAULT_ON_SCOPE_OPTION) return "title-default-on";
   return "stage1ea";
 }
 
@@ -416,7 +461,9 @@ const stage1EBScopeResolution = requestedMode === "stage1eb-sidebar"
   || requestedMode === "stage1eb-validator-fix"
   ? resolveStage1EBScope(actualScope, requestedMode)
   : null;
-const scopeMode = requestedMode === "stage1f-rollback"
+const scopeMode = requestedMode === "title-default-on"
+  ? classifyDefaultOnScope(actualScope)
+  : requestedMode === "stage1f-rollback"
   ? classifyStage1FScope(actualScope)
   : (stage1EBScopeResolution?.mode || classifyScope(actualScope));
 
@@ -512,6 +559,93 @@ scopeTest("Stage 1F rejects a wrong base commit", () => {
     committedHeadPaths: STAGE1F_CANDIDATE,
     parent: "2222222222222222222222222222222222222222",
   }), /parent must be the accepted Stage 1E HEAD/u);
+});
+// Default-on gate: exactly three paths, fail-closed on every other shape.
+const DEFAULT_ON_CANDIDATE = [...DEFAULT_ON_TRACKED];
+scopeTest("default-on exact dirty scope on the integrated head is accepted", () => {
+  assert.equal(classifyDefaultOnScope({
+    modifiedTracked: DEFAULT_ON_CANDIDATE,
+    staged: [],
+    untracked: [],
+    head: DEFAULT_ON_ACCEPTED_HEAD,
+  }), "title-default-on-dirty");
+});
+scopeTest("default-on committed-clean candidate is accepted", () => {
+  assert.equal(classifyDefaultOnScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: DEFAULT_ON_CANDIDATE,
+    parent: DEFAULT_ON_ACCEPTED_HEAD,
+  }), "title-default-on-committed-clean");
+});
+scopeTest("default-on rejects partial and mixed candidates", () => {
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: [B0_REL, SELF_REL],
+    staged: [],
+    untracked: [],
+    head: DEFAULT_ON_ACCEPTED_HEAD,
+  }), /tracked default-on scope mismatch/u);
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: [B0_REL],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: [SELF_REL],
+    parent: DEFAULT_ON_ACCEPTED_HEAD,
+  }), /combined default-on candidate scope mismatch/u);
+});
+scopeTest("default-on rejects foreign, protected, generated and publication paths", () => {
+  for (const foreign of [
+    B1_REL,
+    B2_REL,
+    C1_REL,
+    STAGE1C_REL,
+    "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js",
+    "apps/dev-server/alias/9B0a._Chat_Title_State_.js",
+    "tools/publish/lean-publisher.mjs",
+    "package.json",
+  ]) {
+    assert.throws(() => classifyDefaultOnScope({
+      modifiedTracked: [...DEFAULT_ON_CANDIDATE, foreign],
+      staged: [],
+      untracked: [],
+      head: DEFAULT_ON_ACCEPTED_HEAD,
+    }), /tracked default-on scope mismatch/u, `must reject ${foreign}`);
+  }
+});
+scopeTest("default-on rejects staged and untracked paths", () => {
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: DEFAULT_ON_CANDIDATE,
+    staged: [B0_REL],
+    untracked: [],
+    head: DEFAULT_ON_ACCEPTED_HEAD,
+  }), /staged paths forbidden/u);
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: DEFAULT_ON_CANDIDATE,
+    staged: [],
+    untracked: ["tools/publish/lean-publisher.mjs"],
+    head: DEFAULT_ON_ACCEPTED_HEAD,
+  }), /forbids untracked paths/u);
+});
+scopeTest("default-on rejects a wrong base commit", () => {
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: DEFAULT_ON_CANDIDATE,
+    staged: [],
+    untracked: [],
+    head: STAGE1F_ACCEPTED_HEAD,
+    parent: STAGE1F_ACCEPTED_HEAD,
+  }), /requires the integrated Stage 1F HEAD/u);
+  assert.throws(() => classifyDefaultOnScope({
+    modifiedTracked: [],
+    staged: [],
+    untracked: [],
+    committedHeadPaths: DEFAULT_ON_CANDIDATE,
+    parent: STAGE1F_ACCEPTED_HEAD,
+  }), /parent must be the integrated Stage 1F HEAD/u);
+});
+scopeTest("default-on option is rejected when combined with another scope option", () => {
+  assert.throws(() => requestedScopeMode([DEFAULT_ON_SCOPE_OPTION, STAGE1F_SCOPE_OPTION]), /unknown or conflicting/u);
+  assert.equal(requestedScopeMode([DEFAULT_ON_SCOPE_OPTION]), "title-default-on");
 });
 scopeTest("exact authorized six-file scope is accepted", () => {
   assert.equal(classifyScope({
@@ -971,7 +1105,7 @@ function instrumentB0(source) {
 `);
 }
 
-function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Initial base - ChatGPT", storageSeed = null, store = "durable" } = {}) {
+function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Initial base - ChatGPT", storageSeed = null, store = "durable", flagsRegistry = "ready" } = {}) {
   const effects = makeEffects();
   const sidebarDom = createMiniDom(effects);
   const storage = makeStorage(effects, storageSeed);
@@ -1086,7 +1220,10 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     globalThis.H2O = {
       flags: {
         get(name, fallback) {
-          return name === ${JSON.stringify(FLAG_KEY)} ? globalThis.__stage1eFlagValue : fallback;
+          if (name !== ${JSON.stringify(FLAG_KEY)}) return fallback;
+          return Object.prototype.hasOwnProperty.call(globalThis, "__stage1eFlagValue")
+            ? globalThis.__stage1eFlagValue
+            : fallback;
         },
         set(name, value) {
           if (name === ${JSON.stringify(FLAG_KEY)}) globalThis.__stage1eFlagValue = value;
@@ -1101,7 +1238,8 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
       },
     };
   `, context);
-  sandbox.__stage1eFlagValue = flag;
+  if (flag === "unset") delete sandbox.__stage1eFlagValue;
+  else sandbox.__stage1eFlagValue = flag;
   sandbox.H2O.LibraryIndex = {
     getChat(chatId) {
       return libraryRows.get(String(chatId || "")) || null;
@@ -1134,6 +1272,8 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     },
   };
   installContractBridge(context, sandbox, bridge);
+  const deferredFlagsRegistry = sandbox.H2O.flags;
+  if (flagsRegistry === "late") delete sandbox.H2O.flags;
   const instrumentedB0Source = instrumentB0(b0Source);
   new vm.Script(instrumentedB0Source, { filename: `${B0_REL}:stage1e-harness` }).runInContext(context);
   effects.resetTransient();
@@ -1146,7 +1286,22 @@ function createB0Harness({ flag = false, bridge = "valid", documentTitle = "Init
     hook: sandbox.__H2O_STAGE1E_B0_TEST__,
     api: sandbox.H2O.ChatTitle,
     setFlag(value) {
-      sandbox.__stage1eFlagValue = value;
+      if (value === "unset") delete sandbox.__stage1eFlagValue;
+      else sandbox.__stage1eFlagValue = value;
+    },
+    flagsRegistryPresent() {
+      return typeof sandbox.H2O.flags?.get === "function";
+    },
+    // 0F1k mutates the same H2O namespace object 9B0a already captured and
+    // dispatches no readiness event, exactly as the live loader does.
+    installFlagsRegistry() {
+      sandbox.H2O.flags = deferredFlagsRegistry;
+      return sandbox.H2O.flags;
+    },
+    storedFlag() {
+      return Object.prototype.hasOwnProperty.call(sandbox, "__stage1eFlagValue")
+        ? { present: true, value: sandbox.__stage1eFlagValue }
+        : { present: false, value: undefined };
     },
     setRuntimeFlag(value) {
       return sandbox.H2O.flags.set(FLAG_KEY, value);
@@ -4752,6 +4907,279 @@ await scenario("visible contract: canonical tab rendering is unchanged by the le
   assert.equal(harness.document.title, VIS_DISPLAY);
 });
 
+// Stage 1F default-on: the validated three-surface presentation ships enabled.
+// The flag survives purely as an emergency rollback control, so an explicitly
+// stored false must still win and must never be migrated to true.
+await scenario("default on: a profile with no stored override resolves to canonical", () => {
+  const harness = createB0Harness({ flag: "unset" });
+  const convergence = harness.api.getState().convergence;
+  assert.equal(convergence.requested, true);
+  assert.equal(convergence.enabled, true);
+  assert.equal(convergence.mode, "canonical");
+  assert.equal(convergence.gate, "ok");
+  // default-on must be a read-time default, never a boot-time write
+  assert.equal(harness.storedFlag().present, false, "the default must not be persisted at boot");
+});
+
+await scenario("default on: an explicit stored false still wins and is never migrated", () => {
+  const harness = createB0Harness({ flag: false });
+  const convergence = harness.api.getState().convergence;
+  assert.equal(convergence.requested, false);
+  assert.equal(convergence.enabled, false);
+  assert.equal(convergence.mode, "legacy");
+  assert.equal(convergence.gate, "not-requested");
+  const stored = harness.storedFlag();
+  assert.equal(stored.present, true);
+  assert.equal(stored.value, false, "an explicit false must not be rewritten to true");
+});
+
+await scenario("default on: emoji stays visible on every surface with an explicit false", () => {
+  const harness = createB0Harness({ flag: false });
+  const chatId = harness.api.getState().chatId;
+  harness.api.setTitle({
+    chatId,
+    baseTitle: VIS_BASE,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason: "default-on-legacy-seed" });
+  harness.api.setEmoji({ chatId, emoji: VIS_EMOJI, source: "user", priority: 100 }, { force: true });
+  const state = harness.api.getState();
+  assert.equal(state.convergence.mode, "legacy");
+  assert.equal(state.displayTitle, VIS_DISPLAY, "under-input consumes displayTitle");
+  assert.equal(state.documentTitle, VIS_DISPLAY, "tab consumes documentTitle");
+  const sidebar = visibleSidebar({ convergence: { enabled: false, mode: "legacy" } });
+  assert.equal(sidebar.harness.visual(sidebar.row).textContent, VIS_DISPLAY);
+  assert.equal(sidebar.harness.runtime().diagnose().presentationMode, "legacy");
+  assert.equal(sidebar.harness.runtime().diagnose().phase, "legacy-adopted");
+});
+
+await scenario("default on: an unset override is distinguishable from every malformed value", () => {
+  assert.equal(createB0Harness({ flag: "unset" }).api.getState().convergence.mode, "canonical");
+  assert.equal(createB0Harness({ flag: true }).api.getState().convergence.mode, "canonical");
+  assert.equal(createB0Harness({ flag: false }).api.getState().convergence.mode, "legacy");
+  for (const malformed of ["0", "false", 0, 1, null, {}]) {
+    const harness = createB0Harness({ flag: malformed });
+    const convergence = harness.api.getState().convergence;
+    assert.equal(convergence.mode, "legacy-fallback", `malformed ${JSON.stringify(malformed)} must fail closed`);
+    assert.equal(convergence.source, "invalid-feature-flag");
+    assert.equal(convergence.enabled, false);
+  }
+  // an explicitly stored undefined is an absent decision, so the default applies
+  const undefinedOverride = createB0Harness({ flag: false });
+  assert.equal(undefinedOverride.api.getState().convergence.mode, "legacy");
+  undefinedOverride.setRuntimeFlag(undefined);
+  assert.equal(undefinedOverride.storedFlag().present, true);
+  assert.equal(undefinedOverride.api.getState().convergence.mode, "canonical");
+});
+
+await scenario("default on: runtime false rolls back to legacy and runtime true restores canonical", () => {
+  const harness = createB0Harness({ flag: "unset" });
+  assert.equal(harness.api.getState().convergence.mode, "canonical");
+
+  // the CAS-wrapped flags.set must self-reproject without debug.refreshDisplay
+  harness.setRuntimeFlag(false);
+  const rolledBack = harness.api.getState().convergence;
+  assert.equal(rolledBack.requested, false);
+  assert.equal(rolledBack.enabled, false);
+  assert.equal(rolledBack.mode, "legacy");
+  assert.equal(harness.storedFlag().value, false);
+
+  harness.setRuntimeFlag(true);
+  const restored = harness.api.getState().convergence;
+  assert.equal(restored.requested, true);
+  assert.equal(restored.enabled, true);
+  assert.equal(restored.mode, "canonical");
+  assert.equal(restored.gate, "ok");
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+});
+
+await scenario("default on: a session override still outranks the new default", () => {
+  const harness = createB0Harness({ flag: "unset" });
+  const chatId = harness.api.getState().chatId;
+  // ordinary state changes recompose the snapshot; no debug reprojection needed
+  const touch = (reason, baseTitle) => harness.api.setTitle({
+    chatId,
+    baseTitle,
+    source: "user",
+    priority: 100,
+    confidence: 1,
+  }, { force: true, userInitiated: true, reason });
+
+  harness.setSessionOverride(false);
+  touch("default-on-session-override", "Session Override A");
+  const state = harness.api.getState();
+  assert.equal(state.convergence.mode, "legacy");
+  assert.equal(state.convergence.source, "session-override");
+
+  harness.setSessionOverride(undefined);
+  touch("default-on-session-cleared", "Session Override B");
+  assert.equal(harness.api.getState().convergence.mode, "canonical");
+  assert.equal(harness.api.getState().convergence.source, "feature-flags");
+});
+
+await scenario("default on: toggling from the default keeps exactly one sidebar visual", () => {
+  const { harness, row } = visibleSidebar({ convergence: { enabled: true, mode: "canonical" } });
+  const firstId = harness.visual(row).id;
+  assert.equal(harness.runtime().diagnose().presentationMode, "canonical");
+
+  harness.emit({ convergence: { enabled: false, mode: "legacy" } });
+  harness.runFrames();
+  assert.equal(ownedVisuals(harness, row), 1, "rollback must not duplicate the visual");
+  assert.equal(harness.visual(row).id, firstId, "no aria churn or ownership hand-off");
+  assert.equal(row.anchor.getAttribute("aria-labelledby"), firstId);
+  assert.equal(row.source.textContent, VIS_BASE, "native node stays clean");
+  assert.equal(row.source.getAttribute("data-h2o-title-native-hidden"), "1");
+
+  harness.emit({ convergence: { enabled: true, mode: "canonical" } });
+  harness.runFrames();
+  assert.equal(ownedVisuals(harness, row), 1);
+  assert.equal(harness.visual(row).id, firstId);
+  assert.equal(harness.runtime().diagnose().presentationMode, "canonical");
+  assert.equal(harness.mutations.patches, 0);
+  assert.equal(harness.mutations.storeWrites, 0);
+});
+
+// 9B0a runs at document-start, before 0F1k creates H2O.flags, and the registry
+// creation path dispatches no readiness event. Until the hook first attaches
+// there is no observable moment at which the registry became real, so a clean
+// profile stayed legacy forever despite the shipped default.
+function lateRegistryHarness(options = {}) {
+  // no durable Store: readiness is then the only thing that can recompose the
+  // snapshot, so these scenarios cannot pass on an unrelated notification.
+  const harness = createB0Harness({ flagsRegistry: "late", store: "none", ...options });
+  const published = [];
+  harness.api.subscribe((_state, payload) => {
+    published.push({
+      reason: String(payload?.reason || ""),
+      convergence: { ...(payload?.convergence || {}) },
+    });
+  });
+  published.length = 0;
+  return { harness, published };
+}
+
+await scenario("flags readiness: boot before the registry fails closed and settles once it appears", () => {
+  const { harness, published } = lateRegistryHarness({ flag: "unset" });
+  assert.equal(harness.flagsRegistryPresent(), false, "9B0a must boot before H2O.flags exists");
+  const booted = harness.api.getState().convergence;
+  assert.equal(booted.requested, false, "an unavailable registry must fail closed");
+  assert.equal(booted.enabled, false);
+  assert.equal(booted.mode, "legacy");
+  assert.equal(booted.source, "default");
+  assert.equal(booted.gate, "not-requested");
+
+  // 0F1k appears with no stored Title key and no readiness event
+  harness.installFlagsRegistry();
+  assert.equal(harness.storedFlag().present, false);
+  harness.runTimers("timeout");
+
+  const settled = harness.api.getState().convergence;
+  assert.equal(settled.requested, true, "the shipped default must apply once the registry is real");
+  assert.equal(settled.enabled, true);
+  assert.equal(settled.mode, "canonical");
+  assert.equal(settled.gate, "ok");
+  assert.equal(settled.source, "feature-flags");
+  const readiness = published.filter((entry) => entry.reason === "convergence-flags-ready");
+  assert.equal(readiness.length, 1, "readiness must reproject exactly once");
+  // consumers must receive the corrected convergence, not merely see it later
+  assert.equal(readiness[0].convergence.requested, true);
+  assert.equal(readiness[0].convergence.enabled, true);
+  assert.equal(readiness[0].convergence.mode, "canonical");
+  assert.equal(readiness[0].convergence.gate, "ok");
+  assert.equal(harness.storedFlag().present, false, "readiness must not write a flag value");
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+});
+
+await scenario("flags readiness: a late registry with an explicit stored false stays legacy", () => {
+  const { harness } = lateRegistryHarness({ flag: false });
+  harness.installFlagsRegistry();
+  harness.runTimers("timeout");
+  const settled = harness.api.getState().convergence;
+  assert.equal(settled.requested, false);
+  assert.equal(settled.enabled, false);
+  assert.equal(settled.mode, "legacy");
+  const stored = harness.storedFlag();
+  assert.equal(stored.present, true);
+  assert.equal(stored.value, false, "an explicit false must never be migrated by readiness");
+});
+
+await scenario("flags readiness: a late malformed value stays fail-closed", () => {
+  for (const malformed of ["0", null, 1]) {
+    const { harness } = lateRegistryHarness({ flag: malformed });
+    harness.installFlagsRegistry();
+    harness.runTimers("timeout");
+    const settled = harness.api.getState().convergence;
+    assert.equal(settled.mode, "legacy-fallback", `late ${JSON.stringify(malformed)} must fail closed`);
+    assert.equal(settled.source, "invalid-feature-flag");
+    assert.equal(settled.enabled, false);
+  }
+});
+
+await scenario("flags readiness: retries before the registry exists change nothing and never duplicate", () => {
+  const { harness, published } = lateRegistryHarness({ flag: "unset" });
+  // the attach retry keeps rescheduling while the registry is still missing
+  for (let i = 0; i < 3; i += 1) harness.runTimers("timeout");
+  assert.equal(harness.api.getState().convergence.mode, "legacy");
+  assert.equal(published.filter((entry) => entry.reason === "convergence-flags-ready").length, 0);
+
+  harness.installFlagsRegistry();
+  for (let i = 0; i < 3; i += 1) harness.runTimers("timeout");
+  assert.equal(harness.api.getState().convergence.mode, "canonical");
+  assert.equal(
+    published.filter((entry) => entry.reason === "convergence-flags-ready").length,
+    1,
+    "repeated readiness checks must not re-notify",
+  );
+
+  // a double-wrapped flags.set would dispatch the change event twice
+  published.length = 0;
+  harness.setRuntimeFlag(false);
+  assert.equal(harness.api.getState().convergence.mode, "legacy");
+  assert.equal(
+    published.filter((entry) => entry.reason === "convergence-flag-change").length,
+    1,
+    "flags.set must be wrapped exactly once",
+  );
+});
+
+await scenario("flags readiness: ordinary flag toggling still works after a late attachment", () => {
+  const { harness } = lateRegistryHarness({ flag: "unset" });
+  harness.installFlagsRegistry();
+  harness.runTimers("timeout");
+  assert.equal(harness.api.getState().convergence.mode, "canonical");
+
+  harness.setRuntimeFlag(false);
+  assert.equal(harness.api.getState().convergence.mode, "legacy");
+  harness.setRuntimeFlag(true);
+  const restored = harness.api.getState().convergence;
+  assert.equal(restored.mode, "canonical");
+  assert.equal(restored.gate, "ok");
+  assert.equal(harness.effects.fetches.filter((entry) => entry.options?.method === "PATCH").length, 0);
+});
+
+await scenario("flags readiness: teardown cancels the pending attach and blocks post-destroy reprojection", () => {
+  const { harness, published } = lateRegistryHarness({ flag: "unset" });
+  harness.hook.destroy();
+  harness.installFlagsRegistry();
+  harness.runTimers("timeout");
+  assert.equal(
+    published.filter((entry) => entry.reason === "convergence-flags-ready").length,
+    0,
+    "a destroyed coordinator must not reproject",
+  );
+  const pendingTimeouts = [...harness.effects.timers.values()].filter((timer) => timer.kind === "timeout");
+  assert.equal(pendingTimeouts.length, 0, "teardown must leave no pending attach timer");
+  // the readiness path itself must contribute nothing once destroyed; a boot
+  // notification already scheduled before destroy is pre-existing behaviour and
+  // is deliberately not asserted here.
+  assert.equal(
+    published.some((entry) => entry.reason === "convergence-flags-ready"),
+    false,
+    "readiness must never fire after teardown",
+  );
+});
+
 structuralTest("9B0a alone owns the convergence flag key", () => {
   assert.equal(
   (b0Source.match(new RegExp(FLAG_KEY.replaceAll(".", "\\."), "gu")) || []).length >= 1,
@@ -4841,6 +5269,15 @@ structuralTest("native reader harness distinguishes textContent from rendered in
 });
 
 structuralTest("resolved product scope is exactly the authorized paths for the requested stage", () => {
+  if (requestedMode === "title-default-on") {
+    const onAcceptedHead = actualScope.head === DEFAULT_ON_ACCEPTED_HEAD;
+    const changed = new Set([
+      ...actualScope.modifiedTracked,
+      ...(onAcceptedHead ? [] : actualScope.committedHeadPaths),
+    ]);
+    assert(sameSet(changed, DEFAULT_ON_TRACKED), `unexpected default-on path: ${[...changed].sort()}`);
+    return;
+  }
   if (requestedMode === "stage1f-rollback") {
     // The candidate is the union of what the single commit already carries and
     // anything still uncommitted during an amend round.
@@ -4858,7 +5295,9 @@ structuralTest("resolved product scope is exactly the authorized paths for the r
 });
 
 structuralTest("protected title coordinator consumers readers and disabled module remain unchanged", () => {
-  const stage1F = requestedMode === "stage1f-rollback";
+  const defaultOn = requestedMode === "title-default-on";
+  const stage1F = requestedMode === "stage1f-rollback" || defaultOn;
+  const authorizedForStage = defaultOn ? DEFAULT_ON_TRACKED : STAGE1F_TRACKED;
   assert(
     stage1F || stage1EBScopeResolution,
     "protected-path validation requires resolved scope evidence",
@@ -4883,7 +5322,7 @@ structuralTest("protected title coordinator consumers readers and disabled modul
     "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs",
     "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs",
     STAGE1C_REL,
-  ].filter((relative) => !(stage1F && STAGE1F_TRACKED.has(relative)));
+  ].filter((relative) => !(stage1F && authorizedForStage.has(relative)));
   const resolvedProductPaths = new Set(
     stage1F ? actualScope.modifiedTracked : stage1EBScopeResolution.productPaths,
   );
@@ -4894,8 +5333,8 @@ structuralTest("protected title coordinator consumers readers and disabled modul
   assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", ...protectedPaths]).trim(), "");
 });
 
-assert.equal(scopeTests.length, 29, "Stage 1E scope scenario count drifted");
-assert.equal(scenarios.length, 133, "Stage 1E runtime scenario count drifted");
+assert.equal(scopeTests.length, 36, "Stage 1E scope scenario count drifted");
+assert.equal(scenarios.length, 146, "Stage 1E runtime scenario count drifted");
 assert.equal(structuralAssertions.length, 10, "Stage 1E structural assertion count drifted");
 
 console.log(JSON.stringify({
@@ -4911,7 +5350,9 @@ console.log(JSON.stringify({
         ? STAGE1EB_COMMITTED
         : requestedMode === "stage1f-rollback"
           ? STAGE1F_TRACKED
-          : AUTHORIZED
+          : requestedMode === "title-default-on"
+            ? DEFAULT_ON_TRACKED
+            : AUTHORIZED
     ),
   ].sort(),
   scopeResolution: stage1EBScopeResolution,

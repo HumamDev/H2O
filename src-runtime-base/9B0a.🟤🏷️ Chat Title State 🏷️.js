@@ -45,6 +45,13 @@
   const REFRESH_PRIORITY_ROUTE = 100;
   const ROUTE_REFRESH_DELAY_MS = 60;
   const CONVERGENCE_FLAG_KEY = 'title.threeSurfaceConvergenceV1';
+  // Stage 1F default-on. The three-surface presentation passed browser canary
+  // acceptance, so a profile with no stored decision starts canonical. This is
+  // the caller-supplied default in H2O.flags' documented resolution order
+  // (operator-set value first, then registry defaults, then this), which means
+  // an explicitly stored false still wins, nothing is written back at boot, and
+  // H2O.flags.set(CONVERGENCE_FLAG_KEY, false) remains the emergency rollback.
+  const CONVERGENCE_DEFAULT_REQUESTED = true;
   const CONVERGENCE_SESSION_OVERRIDE_KEY = '__H2O_TITLE_THREE_SURFACE_CONVERGENCE_V1__';
   const FLAGS_STORAGE_KEY = 'h2o:flags:v1';
   const CONVERGENCE_FLAG_EVENT_NAMES = Object.freeze([
@@ -566,6 +573,9 @@
   }
 
   function resolveConvergenceStatus() {
+    // No flags registry at all is an unavailable flag state, which the contract
+    // requires to fail closed to legacy. The shipped default applies through the
+    // registry's resolution order, not in its absence.
     let requested = false;
     let source = 'default';
     try {
@@ -586,7 +596,7 @@
       } else {
         const flags = H2O.flags;
         if (flags && typeof flags.get === 'function') {
-          const value = flags.get(CONVERGENCE_FLAG_KEY, false);
+          const value = flags.get(CONVERGENCE_FLAG_KEY, CONVERGENCE_DEFAULT_REQUESTED);
           if (value !== true && value !== false && value !== undefined) {
             convergenceDiagnostic('warning', 'invalid feature flag value; legacy fallback active');
             return convergenceStatus({
@@ -597,7 +607,9 @@
               gate: 'not-requested',
             });
           }
-          requested = value === true;
+          // An absent decision is not a decision: only a stored boolean is an
+          // operator override, so undefined falls back to the shipped default.
+          requested = value === undefined ? CONVERGENCE_DEFAULT_REQUESTED : value === true;
           source = 'feature-flags';
         }
       }
@@ -1785,7 +1797,19 @@
     if (destroyed || convergenceFlagSetRestore || convergenceFlagAttachTimer) return;
     convergenceFlagAttachTimer = setTimeout(() => {
       convergenceFlagAttachTimer = 0;
-      if (!attachConvergenceFlagSetHook()) scheduleConvergenceFlagSetHook();
+      if (!attachConvergenceFlagSetHook()) {
+        scheduleConvergenceFlagSetHook();
+        return;
+      }
+      // 9B0a runs at document-start, so the first resolve can legitimately find
+      // no flag registry and fail closed. The registry's creation path emits no
+      // readiness event, which makes this successful late attach the only
+      // observable moment at which it became real. Re-resolve once here through
+      // the ordinary convergence path: it is change-gated, so an explicitly
+      // stored false stays legacy and nothing is ever written back. A registry
+      // that was already present at boot was seen by the first resolve and
+      // never reaches this retry, so it cannot be re-notified.
+      refreshDisplayIfConvergenceChanged('convergence-flags-ready');
     }, 120);
   }
 

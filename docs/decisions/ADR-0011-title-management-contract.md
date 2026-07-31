@@ -258,9 +258,13 @@ authoritative runtime adoption.
 - Stage 1D-A adds source-only DTO and formatting helpers. No runtime imports or
   consumers are added.
 - Stage 1E-a resolves `title.threeSurfaceConvergenceV1` centrally in `9B0a`.
-  The flag defaults to `false`; the accepted canonical formatter remains
-  opt-in until protected browser canary acceptance. Invalid or unavailable
-  flag or bridge state fails closed to the unchanged legacy formatter.
+  Following Stage 1F browser canary acceptance the flag defaults to `true`,
+  so a profile with no stored decision starts canonical. The flag is retained
+  as an emergency rollback: an explicitly stored `false` still wins over the
+  default, is never migrated, and drops canonical authority while the accepted
+  legacy emoji presentation stays visible on all three surfaces. Invalid or
+  unavailable flag or bridge state fails closed to the unchanged legacy
+  formatter.
 - Under the Stage 1E-a opt-in path, `9B0a` alone invokes
   `sanitizeNativeTitle` and `formatNativeDisplayTitle`. Native ChatGPT
   persists only the sanitized clean base title. A supported submitted edge
