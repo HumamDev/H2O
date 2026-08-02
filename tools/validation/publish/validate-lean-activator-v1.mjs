@@ -19,8 +19,11 @@ const PACKAGE_REL = "package.json";
 const AUTHORIZED_PATHS = Object.freeze([PACKAGE_REL, ACTIVATOR_REL, VALIDATOR_REL].sort());
 const BASE_HEAD = "86af342f1b1815e12c477673a4f2123b37bede40";
 const ACCEPTED_P1_HEAD = "fa0dac4552ce5a1189dee0b1d23975f95bffe751";
+const P2_BASE_HEAD = "d3ebe3c8b3c973ee11d15664b09398f388b0b373";
 const P1_SUBJECT = "feat(publish): add canonical activation preflight";
 const VALIDATOR_FIX_SUBJECT = "fix(publish): support integrated P0/P1 validation";
+const P2_SUBJECT = "feat(publish): add durable activation intent foundation";
+const P2_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -28,9 +31,9 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 17;
-const EXPECTED_RUNTIME = 88;
-const EXPECTED_STRUCTURAL = 14;
+const EXPECTED_SCOPE = 22;
+const EXPECTED_RUNTIME = 128;
+const EXPECTED_STRUCTURAL = 22;
 
 const temporaryRoots = [];
 const scopeResults = [];
@@ -126,6 +129,20 @@ function classifyScope(state) {
     JSON.stringify(value.committedPaths) === JSON.stringify(AUTHORIZED_PATHS) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
   if (clean) return "committed-clean";
+  const p2Base = value.head === P2_BASE_HEAD && value.parent === ACCEPTED_P1_HEAD &&
+    value.subject === VALIDATOR_FIX_SUBJECT && value.acceptedP1Ancestor === true &&
+    value.untracked.length === 0 && value.staged.length === 0 &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([VALIDATOR_REL]);
+  if (p2Base && JSON.stringify(value.modifiedTracked) === JSON.stringify([VALIDATOR_REL])) {
+    return "p2-test-first-uncommitted";
+  }
+  if (p2Base && JSON.stringify(value.modifiedTracked) === JSON.stringify(P2_AUTHORIZED_PATHS)) {
+    return "p2-uncommitted";
+  }
+  const p2Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === P2_BASE_HEAD && value.subject === P2_SUBJECT && value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P2_AUTHORIZED_PATHS);
+  if (p2Clean) return "p2-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -246,6 +263,41 @@ function runScopeTests() {
       acceptedP1Ancestor: false, modifiedTracked: [], untracked: [], committedPaths: [VALIDATOR_REL],
     })), /scope mismatch/u);
   });
+  scopeTest("P2 test-first validator-only state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: P2_BASE_HEAD, parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [VALIDATOR_REL], untracked: [],
+      committedPaths: [VALIDATOR_REL],
+    })), "p2-test-first-uncommitted");
+  });
+  scopeTest("exact dirty two-file P2 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: P2_BASE_HEAD, parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P2_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [VALIDATOR_REL],
+    })), "p2-uncommitted");
+  });
+  scopeTest("P2 dirty scope rejects a third path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: P2_BASE_HEAD, parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P2_AUTHORIZED_PATHS, "README.md"].sort(), untracked: [],
+      committedPaths: [VALIDATOR_REL],
+    })), /scope mismatch/u);
+  });
+  scopeTest("exact committed two-file P2 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p2", parent: P2_BASE_HEAD, subject: P2_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P2_AUTHORIZED_PATHS],
+    })), "p2-committed");
+  });
+  scopeTest("committed P2 state rejects a wrong parent or extra path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-p2", parent: ACCEPTED_P1_HEAD, subject: P2_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P2_AUTHORIZED_PATHS, "README.md"].sort(),
+    })), /scope mismatch/u);
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -266,7 +318,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     evidence.executionWorktree !== evidence.mainWorktree;
   if (isolatedCandidate) return "pre-integration-candidate";
   if (evidence.acceptedP1Ancestor !== true) authorityError("registered-main-p1-ancestry-missing", evidence);
-  if (!["committed-clean", "validator-fix-uncommitted", "validator-fix-committed"]
+  if (!["committed-clean", "validator-fix-uncommitted", "validator-fix-committed",
+    "p2-test-first-uncommitted", "p2-uncommitted", "p2-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -431,6 +484,7 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
     git(repository, ["init", "-q", "-b", "main"]);
     copyFile(path.join(ROOT, "tools/publish/canonical-delivery-lib.mjs"),
       path.join(repository, "tools/publish/canonical-delivery-lib.mjs"));
+    copyFile(path.join(ROOT, PUBLISHER_REL), path.join(repository, PUBLISHER_REL));
   }
   git(repository, ["config", "user.name", "Lean Activator Validator"]);
   git(repository, ["config", "user.email", "lean-activator@example.invalid"]);
@@ -440,7 +494,7 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
   fs.writeFileSync(path.join(repository, "fixture-source", "emoji 🧪.js"), "export const emoji = '🧪';\n");
   fs.mkdirSync(path.join(repository, "apps", "dev-server"), { recursive: true });
   fs.writeFileSync(path.join(repository, "apps", "dev-server", "generated.js"), "// generated fixture\n");
-  git(repository, ["add", "--sparse", ACTIVATOR_REL, "tools/publish/canonical-delivery-lib.mjs",
+  git(repository, ["add", "--sparse", ACTIVATOR_REL, PUBLISHER_REL, "tools/publish/canonical-delivery-lib.mjs",
     "fixture-source", "apps/dev-server/generated.js"]);
   git(repository, ["commit", "-q", "-m", "fixture: activator source"]);
   assert.equal(git(repository, ["status", "--porcelain=v1"]), "");
@@ -607,7 +661,7 @@ function cloneStage(repository, label, mutation) {
 }
 
 function validTransactionModel() {
-  const activationId = "activation-12345678";
+  const activationId = "20260802T120000000Z-a1b2c3d4e5f6";
   return {
     activationId,
     rollbackScope: "whole-release",
@@ -625,6 +679,33 @@ function validTransactionModel() {
       restoreOnFailure: "previous-tree",
     }])),
   };
+}
+
+const FIXED_ACTIVATION_DATE = new Date("2026-08-02T12:00:00.000Z");
+const FIXED_ACTIVATION_ID = "20260802T120000000Z-a1b2c3d4e5f6";
+const FIXED_RANDOM_BYTES = () => Buffer.from("a1b2c3d4e5f6", "hex");
+
+async function importFixtureActivator(fixture, label) {
+  return import(`${pathToFileURL(fixture.activator).href}?p2=${encodeURIComponent(label)}-${Date.now()}`);
+}
+
+function expectActivatorError(fn, code) {
+  assert.throws(fn, (error) => error?.code === code, `expected ActivatorError ${code}`);
+}
+
+function lockEvidence(root) {
+  return {
+    foundation: { publisherLock: path.join(root, ".h2o-publisher-lock") },
+    source: {
+      repository: path.join(root, "repository"),
+      approvedHead: "a".repeat(40),
+    },
+  };
+}
+
+function writeLock(lockDirectory, value) {
+  fs.mkdirSync(lockDirectory, { mode: 0o700 });
+  fs.writeFileSync(path.join(lockDirectory, "lock.json"), `${JSON.stringify(value)}\n`, { mode: 0o600 });
 }
 
 async function runAuthorityModelTests() {
@@ -712,6 +793,22 @@ async function runAuthorityModelTests() {
 }
 
 async function runRuntimeTests(api) {
+  await test("production activator exposes activation-intent preparation", () => {
+    assert.equal(typeof api.prepareActivationIntent, "function");
+  });
+  await test("generic Git execution is guarded by an explicit argv allow-list", () => {
+    assert.equal(typeof api.assertAllowedGitCommand, "function");
+  });
+  await test("durable activation-intent journal writer exists", () => {
+    assert.equal(typeof api.writeDurableActivationIntent, "function");
+  });
+  await test("activation-intent preparation integrates the Batch 1 publisher lock", () => {
+    assert.equal(typeof api.withPublisherLock, "function");
+  });
+  await test("recovery classifier distinguishes untouched and partially promoted states", () => {
+    assert.equal(typeof api.classifyRecoveryState, "function");
+  });
+
   const fixture = createRepositoryFixture("baseline");
   const stage = createStageFixture(fixture.repository, "path with spaces 🧪");
 
@@ -1158,7 +1255,7 @@ async function runRuntimeTests(api) {
   });
   await test("two new trees and one old generation cannot be accepted", () => {
     const model = validTransactionModel();
-    model.trees.extension.activationId = "activation-old-1234";
+    model.trees.extension.activationId = "20260802T120000000Z-ffffffffffff";
     assert.match(api.evaluateFutureTransaction(model).reasons.join(" "), /generation-mismatch/u);
   });
   await test("promoted tree without previous-state record cannot be accepted", () => {
@@ -1188,23 +1285,382 @@ async function runRuntimeTests(api) {
     assert.match(api.evaluateFutureTransaction(model).reasons.join(" "), /whole-release-rollback-required/u);
   });
   await test("future namespace uses exact activation-specific incoming and retired names", () => {
-    assert.deepEqual(api.futureSiblingNames("alias", "activation-12345678"), {
-      incoming: "alias.staging-act-activation-12345678",
-      previous: "alias.retired-act-activation-12345678",
+    assert.deepEqual(api.futureSiblingNames("alias", "20260802T120000000Z-a1b2c3d4e5f6"), {
+      incoming: "alias.staging-act-20260802T120000000Z-a1b2c3d4e5f6",
+      previous: "alias.retired-act-20260802T120000000Z-a1b2c3d4e5f6",
     });
   });
   await test("future ownership rejects generic or foreign activation siblings", () => {
-    assert.equal(api.ownsFutureSibling("alias.staging-act-activation-12345678", "alias", "activation-12345678"), true);
-    assert.equal(api.ownsFutureSibling("alias.staging-act-other-12345678", "alias", "activation-12345678"), false);
-    assert.equal(api.ownsFutureSibling("alias.staging-anything", "alias", "activation-12345678"), false);
+    const activationId = "20260802T120000000Z-a1b2c3d4e5f6";
+    assert.equal(api.ownsFutureSibling(`alias.staging-act-${activationId}`, "alias", activationId), true);
+    assert.equal(api.ownsFutureSibling("alias.staging-act-20260802T120000000Z-ffffffffffff", "alias", activationId), false);
+    assert.equal(api.ownsFutureSibling("alias.staging-anything", "alias", activationId), false);
+  });
+
+  await test("all exact read-only Git command shapes are accepted", () => {
+    for (const args of [
+      ["rev-parse", "--show-toplevel"], ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"],
+      ["branch", "--show-current"], ["diff", "--cached", "--quiet"], ["diff", "--quiet"],
+      ["ls-files", "--others", "--exclude-standard"], ["worktree", "list", "--porcelain"],
+      ["merge-base", "--is-ancestor", "a".repeat(40), "HEAD"],
+      ["merge-base", "--is-ancestor", "a".repeat(40), "b".repeat(40)],
+    ]) assert.equal(api.assertAllowedGitCommand(args), true);
+  });
+  await test("all named Git mutation and network commands reject before execution", () => {
+    for (const command of ["reset", "checkout", "switch", "clean", "add", "commit", "merge", "rebase",
+      "push", "fetch", "pull"]) {
+      expectActivatorError(() => api.assertAllowedGitCommand([command]), "git-command-not-allowed");
+    }
+    for (const args of [["worktree", "add", "/tmp/x"], ["worktree", "remove", "/tmp/x"]]) {
+      expectActivatorError(() => api.assertAllowedGitCommand(args), "git-command-not-allowed");
+    }
+  });
+  await test("Git option, alias, extra-argument and shell-shape smuggling rejects", () => {
+    for (const args of [
+      ["-c", "alias.x=reset", "x"], ["--config=alias.x=reset", "x"], ["alias.x"],
+      ["rev-parse", "HEAD", "--verify"], ["rev-parse", "HEAD;reset"],
+      ["merge-base", "--is-ancestor", "HEAD", "HEAD"], ["diff", "--quiet", "--", "."],
+    ]) expectActivatorError(() => api.assertAllowedGitCommand(args), "git-command-not-allowed");
+  });
+  await test("activation IDs use exact UTC compact timestamp and lowercase hex", () => {
+    assert.equal(api.generateActivationId({ now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES }),
+      FIXED_ACTIVATION_ID);
+    for (const invalid of ["../x", "x/y", "x\\y", "20260802T120000000Z-ABCDEF123456",
+      "20260802T120000000Z-short", `${FIXED_ACTIVATION_ID}.extra`]) {
+      expectActivatorError(() => api.validateActivationId(invalid), "activation-id-invalid");
+    }
+  });
+  await test("unsafe staged extension variant rejects before lock or coordination mutation", () => {
+    const value = createStageFixture(fixture.repository, "unsafe-extension-variant");
+    mutateReceipt(value, (receipt) => { receipt.stagedExtensionVariant = "../foreign"; });
+    expectFailure(fixture, ["--verify-stage-receipt", value.receiptPath], "receipt-extension-variant");
+    assert.equal(fs.existsSync(path.join(fixture.top, ".h2o-publisher-lock")), false);
+    assert.equal(fs.existsSync(path.join(fixture.top, ".h2o-canonical-delivery")), false);
+  });
+
+  const p2Fixture = createRepositoryFixture("p2-intent-spaces-emoji");
+  const p2Stage = createStageFixture(p2Fixture.repository, "p2 intent spaces 🧪");
+  const p2Api = await importFixtureActivator(p2Fixture, "prepared");
+  let preparedIntent;
+  await test("P2 prepares one durable intent while preserving receipt bytes and releasing the lock", () => {
+    const receiptBefore = fs.readFileSync(p2Stage.receiptPath);
+    preparedIntent = p2Api.prepareActivationIntent(p2Stage.receiptPath, {
+      environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+    });
+    assert.equal(preparedIntent.activationId, FIXED_ACTIVATION_ID);
+    assert.equal(fs.readFileSync(p2Stage.receiptPath).equals(receiptBefore), true);
+    assert.equal(sha256(fs.readFileSync(preparedIntent.intentPath)), preparedIntent.intentSha256);
+    assert.equal(fs.statSync(path.dirname(preparedIntent.intentPath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(preparedIntent.intentPath).mode & 0o777, 0o600);
+    assert.equal(fs.readdirSync(path.dirname(preparedIntent.intentPath)).some((name) => name.includes(".tmp-")), false);
+    assert.equal(fs.existsSync(path.join(p2Fixture.top, ".h2o-publisher-lock")), false);
+  });
+  await test("P2 journal records exact schema, verified stage evidence, and false boundary fields", () => {
+    const journal = JSON.parse(fs.readFileSync(preparedIntent.intentPath, "utf8"));
+    assert.equal(journal.schemaVersion, 1);
+    assert.equal(journal.mode, "activation-intent");
+    assert.equal(journal.purpose, "canonical-activation");
+    assert.equal(journal.rollbackScope, "whole-release");
+    assert.equal(journal.finalActivationReceiptDurable, false);
+    for (const field of ["activationPerformed", "reloadPerformed", "canaryPerformed", "pushPerformed"]) {
+      assert.equal(journal[field], false);
+    }
+    assert.equal(journal.stageReceiptSha256, sha256(fs.readFileSync(p2Stage.receiptPath)));
+    assert.deepEqual(journal.stageManifests, p2Stage.receipt.manifests);
+  });
+  await test("all three future tree records begin untouched with activation-specific siblings", () => {
+    const journal = preparedIntent.journal;
+    assert.deepEqual(journal.trees.map((tree) => tree.logicalName), ["alias", "dev_output", "extension"]);
+    for (const tree of journal.trees) {
+      assert.equal(tree.state, "untouched");
+      assert.equal(tree.previousState, "unknown");
+      assert.equal(tree.previousIdentity, null);
+      assert.equal(tree.restorationMode, "unknown");
+      assert.equal(tree.verified, false);
+      assert.equal(path.basename(tree.incomingPath).endsWith(`.staging-act-${FIXED_ACTIVATION_ID}`), true);
+      assert.equal(path.basename(tree.previousPath).endsWith(`.retired-act-${FIXED_ACTIVATION_ID}`), true);
+    }
+  });
+  await test("intent preparation creates no payload, activation, or rollback tree", () => {
+    const anchor = path.join(p2Fixture.top, ".h2o-canonical-delivery");
+    assert.deepEqual(fs.readdirSync(anchor).sort(), ["activation-intents"]);
+    for (const tree of preparedIntent.journal.trees) {
+      assert.equal(fs.existsSync(tree.incomingPath), false);
+      assert.equal(fs.existsSync(tree.previousPath), false);
+    }
+  });
+  await test("read-only intent inspection validates the durable journal", () => {
+    const before = fs.readFileSync(preparedIntent.intentPath);
+    const result = runActivator(p2Fixture, ["--inspect-activation-intent", preparedIntent.intentPath]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.recovery.classification, "prepared-no-payload-mutation");
+    assert.equal(payload.mutationPerformed, false);
+    assert.equal(fs.readFileSync(preparedIntent.intentPath).equals(before), true);
+  });
+  await test("intent filename and activation ID mismatch rejects", () => {
+    const mismatch = path.join(path.dirname(preparedIntent.intentPath),
+      "20260802T120000000Z-ffffffffffff.json");
+    fs.copyFileSync(preparedIntent.intentPath, mismatch);
+    expectFailure(p2Fixture, ["--inspect-activation-intent", mismatch], "activation-intent-id-mismatch");
+    fs.unlinkSync(mismatch);
+  });
+
+  await test("publisher lock admits one winner and rejects concurrent intent ownership", () => {
+    const root = tempRoot("p2-lock-contention");
+    const evidence = lockEvidence(root);
+    api.withPublisherLock(evidence.foundation, evidence.source, () => {
+      expectActivatorError(() => api.withPublisherLock(evidence.foundation, evidence.source, () => null),
+        "publisher-already-running");
+    });
+    assert.equal(fs.existsSync(evidence.foundation.publisherLock), false);
+  });
+  await test("stale publisher lock fails closed without deletion", () => {
+    const root = tempRoot("p2-lock-stale");
+    const evidence = lockEvidence(root);
+    writeLock(evidence.foundation.publisherLock, {
+      schemaVersion: 1, ownerId: "stale-owner", pid: 2147483647,
+      repository: evidence.source.repository, approvedHead: evidence.source.approvedHead,
+      startedAt: "2026-08-02T00:00:00.000Z",
+    });
+    expectActivatorError(() => api.withPublisherLock(evidence.foundation, evidence.source, () => null),
+      "publisher-lock-stale");
+    assert.equal(fs.existsSync(evidence.foundation.publisherLock), true);
+  });
+  await test("malformed and incomplete publisher locks fail closed", () => {
+    const root = tempRoot("p2-lock-malformed");
+    const evidence = lockEvidence(root);
+    fs.mkdirSync(evidence.foundation.publisherLock);
+    fs.writeFileSync(path.join(evidence.foundation.publisherLock, "lock.json"), "{bad");
+    expectActivatorError(() => api.withPublisherLock(evidence.foundation, evidence.source, () => null),
+      "publisher-lock-malformed");
+    fs.writeFileSync(path.join(evidence.foundation.publisherLock, "lock.json"), "{}\n");
+    expectActivatorError(() => api.withPublisherLock(evidence.foundation, evidence.source, () => null),
+      "publisher-lock-incomplete");
+    assert.equal(fs.existsSync(evidence.foundation.publisherLock), true);
+  });
+  await test("symlinked publisher lock fails closed", () => {
+    const root = tempRoot("p2-lock-symlink");
+    const evidence = lockEvidence(root);
+    const target = path.join(root, "target");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, evidence.foundation.publisherLock);
+    expectActivatorError(() => api.withPublisherLock(evidence.foundation, evidence.source, () => null),
+      "publisher-lock-symlink");
+    assert.equal(fs.lstatSync(evidence.foundation.publisherLock).isSymbolicLink(), true);
+  });
+  await test("publisher lock is released through success and thrown-callback finally paths", () => {
+    const root = tempRoot("p2-lock-finally");
+    const evidence = lockEvidence(root);
+    assert.equal(api.withPublisherLock(evidence.foundation, evidence.source, () => "ok"), "ok");
+    assert.equal(fs.existsSync(evidence.foundation.publisherLock), false);
+    assert.throws(() => api.withPublisherLock(evidence.foundation, evidence.source, () => { throw new Error("fixture"); }),
+      /fixture/u);
+    assert.equal(fs.existsSync(evidence.foundation.publisherLock), false);
+  });
+  await test("wrong owner identity cannot release the publisher lock", async () => {
+    const publisherApi = await import(`${pathToFileURL(path.join(ROOT, PUBLISHER_REL)).href}?lock=${Date.now()}`);
+    const root = tempRoot("p2-lock-owner");
+    const evidence = lockEvidence(root);
+    api.withPublisherLock(evidence.foundation, evidence.source, (lock) => {
+      assert.equal(publisherApi.releaseLock(evidence.foundation.publisherLock, process.pid, `${lock.ownerId}-wrong`),
+        "not-owned");
+      assert.equal(fs.existsSync(evidence.foundation.publisherLock), true);
+    });
+  });
+
+  await test("symlinked activation-intents directory rejects and lock is released", async () => {
+    const value = createRepositoryFixture("p2-intents-symlink");
+    const stageValue = createStageFixture(value.repository, "p2-intents-symlink");
+    const valueApi = await importFixtureActivator(value, "intents-symlink");
+    const anchor = path.join(value.top, ".h2o-canonical-delivery");
+    const target = path.join(value.top, "foreign-intents");
+    fs.mkdirSync(anchor, { mode: 0o700 });
+    fs.mkdirSync(target, { mode: 0o700 });
+    fs.symlinkSync(target, path.join(anchor, "activation-intents"));
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath), "activation-intents-symlink");
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
+  });
+  await test("symlinked canonical anchor rejects intent preparation without following it", async () => {
+    const value = createRepositoryFixture("p2-anchor-symlink");
+    const stageValue = createStageFixture(value.repository, "p2-anchor-symlink");
+    const valueApi = await importFixtureActivator(value, "anchor-symlink");
+    const target = path.join(value.top, "foreign-anchor"); fs.mkdirSync(target);
+    fs.symlinkSync(target, path.join(value.top, ".h2o-canonical-delivery"));
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath), "canonical-anchor-symlink");
+    assert.deepEqual(fs.readdirSync(target), []);
+  });
+  await test("unresolved foreign intent blocks preparation", async () => {
+    const value = createRepositoryFixture("p2-unresolved");
+    const stageValue = createStageFixture(value.repository, "p2-unresolved");
+    const valueApi = await importFixtureActivator(value, "unresolved");
+    const anchor = path.join(value.top, ".h2o-canonical-delivery");
+    const intents = path.join(anchor, "activation-intents");
+    fs.mkdirSync(anchor, { mode: 0o700 });
+    fs.mkdirSync(intents, { mode: 0o700 });
+    fs.writeFileSync(path.join(intents, "foreign.json"), "{}\n");
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath), "activation-intent-unresolved");
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
+  });
+  await test("existing final journal collision rejects without overwrite", () => {
+    const directory = tempRoot("p2-journal-collision");
+    const existing = path.join(directory, `${FIXED_ACTIVATION_ID}.json`);
+    fs.writeFileSync(existing, "original\n");
+    expectActivatorError(() => api.writeDurableActivationIntent(directory, FIXED_ACTIVATION_ID, {}, {
+      ownerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    }), "activation-intent-collision");
+    assert.equal(fs.readFileSync(existing, "utf8"), "original\n");
+  });
+  await test("temporary journal write failure cleans only its own temporary file", () => {
+    const directory = tempRoot("p2-journal-temp-failure");
+    const sentinel = path.join(directory, "foreign.tmp"); fs.writeFileSync(sentinel, "keep");
+    const originalRename = fs.renameSync;
+    fs.renameSync = (source, destination) => {
+      if (String(source).includes(`${FIXED_ACTIVATION_ID}.json.tmp-`)) {
+        const error = new Error("fixture rename failure"); error.code = "EIO"; throw error;
+      }
+      return originalRename(source, destination);
+    };
+    try {
+      assert.throws(() => api.writeDurableActivationIntent(directory, FIXED_ACTIVATION_ID, {}, {
+        ownerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      }), /fixture rename failure/u);
+    } finally { fs.renameSync = originalRename; }
+    assert.deepEqual(fs.readdirSync(directory), ["foreign.tmp"]);
+  });
+  await test("failed final journal byte verification is loud and leaves durable evidence", () => {
+    const directory = tempRoot("p2-journal-final-verify");
+    const finalPath = path.join(directory, `${FIXED_ACTIVATION_ID}.json`);
+    const originalRead = fs.readFileSync;
+    fs.readFileSync = (filename, ...args) => path.resolve(String(filename)) === finalPath
+      ? Buffer.from("corrupt") : originalRead(filename, ...args);
+    try {
+      expectActivatorError(() => api.writeDurableActivationIntent(directory, FIXED_ACTIVATION_ID, {}, {
+        ownerId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      }), "activation-intent-final-verification");
+    } finally { fs.readFileSync = originalRead; }
+    assert.equal(fs.existsSync(finalPath), true);
+  });
+
+  async function runPostLockMutation(label, mutation, expectedCode) {
+    const value = createRepositoryFixture(`p2-revalidate-${label}`);
+    const stageValue = createStageFixture(value.repository, `p2-revalidate-${label}`);
+    const valueApi = await importFixtureActivator(value, label);
+    const originalRename = fs.renameSync;
+    let injected = false;
+    fs.renameSync = (source, destination) => {
+      const result = originalRename(source, destination);
+      if (!injected && path.basename(String(destination)) === ".h2o-publisher-lock") {
+        injected = true;
+        mutation(value, stageValue);
+      }
+      return result;
+    };
+    try {
+      expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath), expectedCode);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    assert.equal(injected, true);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-canonical-delivery")), false);
+  }
+  await test("receipt byte change after P1 verification rejects before journal creation", async () => {
+    await runPostLockMutation("receipt", (_value, stageValue) => fs.appendFileSync(stageValue.receiptPath, " "),
+      "activation-intent-revalidation-changed");
+  });
+  await test("source HEAD and tree change after P1 verification rejects before journal creation", async () => {
+    await runPostLockMutation("head", (value) => {
+      fs.writeFileSync(path.join(value.repository, "fixture-source", "head-change.js"), "export const changed = true;\n");
+      git(value.repository, ["add", "fixture-source/head-change.js"]);
+      git(value.repository, ["commit", "-q", "-m", "fixture: head changes during lock"]);
+    }, "receipt-head-mismatch");
+  });
+  await test("dirty source after P1 verification rejects before journal creation", async () => {
+    await runPostLockMutation("dirty", (value) => fs.appendFileSync(value.activator, "\n// dirty fixture\n"),
+      "tracked-worktree-dirty");
+  });
+  await test("staged bytes changed after P1 verification reject before journal creation", async () => {
+    await runPostLockMutation("staged", (_value, stageValue) =>
+      fs.appendFileSync(path.join(stageValue.extension, "bg.js"), "// changed\n"),
+    "staged-manifest-entry-mismatch");
+  });
+
+  await test("changed receipt after intent creation rejects inspection", async () => {
+    const value = createRepositoryFixture("p2-inspect-receipt-change");
+    const stageValue = createStageFixture(value.repository, "p2-inspect-receipt-change");
+    const valueApi = await importFixtureActivator(value, "inspect-receipt-change");
+    const prepared = valueApi.prepareActivationIntent(stageValue.receiptPath, {
+      now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+    });
+    fs.appendFileSync(stageValue.receiptPath, " ");
+    expectFailure(value, ["--inspect-activation-intent", prepared.intentPath], "activation-intent-receipt-changed");
+  });
+  await test("changed staged bytes after intent creation reject inspection", async () => {
+    const value = createRepositoryFixture("p2-inspect-stage-change");
+    const stageValue = createStageFixture(value.repository, "p2-inspect-stage-change");
+    const valueApi = await importFixtureActivator(value, "inspect-stage-change");
+    const prepared = valueApi.prepareActivationIntent(stageValue.receiptPath, {
+      now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+    });
+    fs.appendFileSync(path.join(stageValue.extension, "bg.js"), "// changed\n");
+    expectFailure(value, ["--inspect-activation-intent", prepared.intentPath], "staged-manifest-entry-mismatch");
+  });
+  await test("valid partial promotion state fails closed with P3 recovery required", () => {
+    const journal = structuredClone(preparedIntent.journal);
+    Object.assign(journal.trees[0], {
+      state: "live-retired", previousState: "absent", previousIdentity: null,
+      restorationMode: "remove-promoted-to-absent", verified: false,
+    });
+    assert.equal(api.classifyRecoveryState(journal).classification,
+      "promotion-state-requires-p3-recovery");
+    assert.equal(api.classifyRecoveryState(journal).code, "p3-recovery-required");
+  });
+  await test("intent inspection rejects payload-mutated state with P3 recovery required", () => {
+    const original = fs.readFileSync(preparedIntent.intentPath);
+    const journal = JSON.parse(original);
+    Object.assign(journal.trees[0], {
+      state: "live-retired", previousState: "absent", previousIdentity: null,
+      restorationMode: "remove-promoted-to-absent", verified: false,
+    });
+    fs.writeFileSync(preparedIntent.intentPath, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+    try {
+      expectFailure(p2Fixture, ["--inspect-activation-intent", preparedIntent.intentPath], "p3-recovery-required");
+    } finally {
+      fs.writeFileSync(preparedIntent.intentPath, original, { mode: 0o600 });
+    }
+  });
+  await test("contradictory journal state is rejected", () => {
+    const journal = structuredClone(preparedIntent.journal);
+    journal.trees[0].state = "verified";
+    assert.equal(api.classifyRecoveryState(journal).classification, "contradictory-journal");
+  });
+  await test("recovery model distinguishes promotion-not-started", () => {
+    const journal = structuredClone(preparedIntent.journal);
+    journal.transactionState = "promotion-not-started";
+    assert.equal(api.classifyRecoveryState(journal).classification, "promotion-not-started");
+  });
+  await test("first-ever restoration to absent is representable without guessing recovery", () => {
+    const journal = structuredClone(preparedIntent.journal);
+    Object.assign(journal.trees[1], {
+      state: "incoming-promoted", previousState: "absent", previousIdentity: null,
+      restorationMode: "remove-promoted-to-absent", verified: false,
+    });
+    assert.equal(api.classifyRecoveryState(journal).code, "p3-recovery-required");
+  });
+  await test("foreign or unowned journal identity is classified separately", () => {
+    assert.equal(api.classifyRecoveryState(preparedIntent.journal, {
+      repositoryRealpath: "/foreign/repository",
+    }).classification, "foreign-or-unowned-journal");
   });
 }
 
 function runStructuralTests() {
   const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
   const validatorSource = fs.readFileSync(path.join(ROOT, VALIDATOR_REL), "utf8");
-  structural("production activator contains no filesystem write call", () => {
-    assert.doesNotMatch(source, /fs\.(?:writeFile|appendFile|mkdir|rm|unlink|rename|copyFile|symlink|link|chmod|chown)(?:Sync)?\s*\(/u);
+  structural("production writes are limited to coordination directories, one journal, and own-temp cleanup", () => {
+    assert.match(source, /function writeDurableActivationIntent/u);
+    assert.doesNotMatch(source, /fs\.(?:copyFile|rm|rmdir|symlink|link|appendFile)(?:Sync)?\s*\(/u);
   });
   structural("production activator contains no child-process spawn capability", () => {
     assert.doesNotMatch(source, /\bspawn(?:Sync)?\s*\(/u);
@@ -1251,8 +1707,8 @@ function runStructuralTests() {
       "node tools/publish/lean-activator.mjs --verify-stage-receipt");
     assert.equal(Object.keys(packageJson.scripts).some((name) => /activate|rollback|recover|prune/u.test(name)), false);
   });
-  structural("production activator is byte-identical to accepted P0/P1", () => {
-    assert.equal(sha256(fs.readFileSync(path.join(ROOT, ACTIVATOR_REL))), ACCEPTED_ACTIVATOR_SHA256);
+  structural("accepted P0/P1 activator blob remains immutably attested", () => {
+    assert.notEqual(sha256(fs.readFileSync(path.join(ROOT, ACTIVATOR_REL))), ACCEPTED_ACTIVATOR_SHA256);
     assert.equal(sha256(execFileSync("git", ["show", `${ACCEPTED_P1_HEAD}:${ACTIVATOR_REL}`], { cwd: ROOT })),
       ACCEPTED_ACTIVATOR_SHA256);
   });
@@ -1261,6 +1717,43 @@ function runStructuralTests() {
     assert.match(validatorSource, /merge-base["'`],\s*["'`]--is-ancestor/u);
     assert.match(validatorSource, /const executionState = currentScopeState\(\)/u);
     assert.match(validatorSource, /classifyScope\(executionState\)/u);
+  });
+  structural("every activator Git execution is routed through the explicit read-only allow-list", () => {
+    assert.match(source, /export function assertAllowedGitCommand/u);
+    assert.match(source, /export function runReadOnlyGit[\s\S]*assertAllowedGitCommand\(args\)/u);
+    assert.equal((source.match(/execFileSync\("git"/gu) || []).length, 1);
+  });
+  structural("P2 exposes only intent prepare and inspect coordination commands", () => {
+    assert.match(source, /--prepare-activation-intent/u);
+    assert.match(source, /--inspect-activation-intent/u);
+    assert.match(source, /activation-not-implemented/u);
+  });
+  structural("journal durability uses exclusive temp creation, fsync, atomic rename and byte verification", () => {
+    assert.match(source, /openSync\(tempPath, "wx", 0o600\)/u);
+    assert.match(source, /fs\.fsyncSync\(descriptor\)/u);
+    assert.match(source, /fs\.renameSync\(tempPath, finalPath\)/u);
+    assert.match(source, /observed\.equals\(bytes\)/u);
+  });
+  structural("recovery classifier is pure and requires P3 for payload-mutated states", () => {
+    assert.match(source, /export function classifyRecoveryState/u);
+    assert.match(source, /promotion-state-requires-p3-recovery/u);
+    assert.match(source, /p3-recovery-required/u);
+  });
+  structural("canonical payload copy, delete and symlink mutation APIs remain absent", () => {
+    assert.doesNotMatch(source, /fs\.(?:copyFile|rm|rmdir|symlink|link)(?:Sync)?\s*\(/u);
+  });
+  structural("P2 creates neither activation nor rollback receipt directories", () => {
+    assert.doesNotMatch(source, /ensureCoordinationDirectory\([^\n]*(?:activations|rollbacks)/u);
+    assert.doesNotMatch(source, /activation-receipt\.json|rollback-receipt\.json/u);
+  });
+  structural("P2 imports and reuses the accepted Batch 1 publisher lock primitives", () => {
+    assert.match(source, /import \{ acquireLock, releaseLock \} from "\.\/lean-publisher\.mjs"/u);
+    assert.match(source, /withPublisherLock/u);
+  });
+  structural("P2 validator scope remains exactly the two authorized source paths", () => {
+    assert.deepEqual(P2_AUTHORIZED_PATHS, [ACTIVATOR_REL, VALIDATOR_REL].sort());
+    assert.match(validatorSource, /P2_BASE_HEAD/u);
+    assert.match(validatorSource, /P2_SUBJECT/u);
   });
   assert.equal(structuralResults.length, EXPECTED_STRUCTURAL);
 }

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Lean canonical activator — Batch 2 P0/P1 (read-only preflight only).
+// Lean canonical activator — Batch 2 P0/P1 plus P2 coordination foundation.
 //
 // This module verifies a Batch 1 stage-only publication receipt and independently
-// recomputes every staged manifest. It contains no activation, backup, rename,
-// rollback, recovery, pruning, browser, network, or push capability.
+// recomputes every staged manifest. It contains no payload activation, backup,
+// promotion, rollback, recovery mutation, pruning, browser, network,
+// or push capability. P2 may create only the external coordination anchor,
+// activation-intents directory, one durable intent journal, and its own temp.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -13,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { deriveSharedAnchor } from "./canonical-delivery-lib.mjs";
+import { acquireLock, releaseLock } from "./lean-publisher.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPOSITORY_ROOT = path.resolve(HERE, "..", "..");
@@ -24,6 +27,8 @@ export const FOUNDATION_COMMITS = Object.freeze([
   "b4f5e730a5a39a7b45571138d48aafe4710cb90a",
   "6920f812263ed03d79888f06e5e849fe4dcca43e",
   "86af342f1b1815e12c477673a4f2123b37bede40",
+  "fa0dac4552ce5a1189dee0b1d23975f95bffe751",
+  "d3ebe3c8b3c973ee11d15664b09398f388b0b373",
 ]);
 export const OUTPUT_FAMILIES = Object.freeze(["alias", "devOutput", "extension"]);
 export const REQUIRED_EXTENSION_FILES = Object.freeze([
@@ -47,9 +52,14 @@ export const FUTURE_COORDINATION_SUBPATHS = Object.freeze([
   "rollbacks",
 ]);
 export const FUTURE_PROMOTION_DESCRIPTION = "transactionally recoverable three-tree promotion";
+export const ACTIVATION_INTENT_SCHEMA_VERSION = 1;
+export const ACTIVATION_INTENT_MODE = "activation-intent";
+export const ACTIVATION_INTENT_PURPOSE = "canonical-activation";
+export const ACTIVATION_ID_PATTERN = /^\d{8}T\d{9}Z-[a-f0-9]{12}$/u;
 // The future three-tree release is sequential and recoverable. It is not a
 // cross-tree atomic swap, and adjacent renames do not eliminate missing-path
-// intervals. No rename or other promotion primitive exists in this P0/P1 file.
+// intervals. P2 uses rename only to publish a journal; no payload-tree rename
+// or other promotion primitive exists in this file.
 
 const TEXT_OUTPUT_PATTERN = /\.(?:js|json|txt|html|css)$/iu;
 const DESTINATION_OVERRIDE_NAMES = Object.freeze([
@@ -114,7 +124,36 @@ export function realAware(target) {
   return path.resolve(base, ...suffix);
 }
 
-function git(repository, args, { allowFailure = false } = {}) {
+const EXACT_READ_ONLY_GIT_COMMANDS = new Set([
+  "rev-parse\u0000--show-toplevel",
+  "rev-parse\u0000HEAD",
+  "rev-parse\u0000HEAD^{tree}",
+  "branch\u0000--show-current",
+  "diff\u0000--cached\u0000--quiet",
+  "diff\u0000--quiet",
+  "ls-files\u0000--others\u0000--exclude-standard",
+  "worktree\u0000list\u0000--porcelain",
+]);
+const FULL_COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+
+export function assertAllowedGitCommand(args) {
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
+    fail("git-command-not-allowed", "Git command arguments must be plain strings.", { args });
+  }
+  const key = args.join("\0");
+  const mergeBaseAllowed = args.length === 4 && args[0] === "merge-base" &&
+    args[1] === "--is-ancestor" && FULL_COMMIT_PATTERN.test(args[2]) &&
+    (args[3] === "HEAD" || FULL_COMMIT_PATTERN.test(args[3]));
+  if (!EXACT_READ_ONLY_GIT_COMMANDS.has(key) && !mergeBaseAllowed) {
+    fail("git-command-not-allowed", "Activator Git execution is restricted to exact read-only command shapes.", {
+      args,
+    });
+  }
+  return true;
+}
+
+export function runReadOnlyGit(repository, args, { allowFailure = false } = {}) {
+  assertAllowedGitCommand(args);
   try {
     return execFileSync("git", ["-C", repository, ...args], {
       encoding: "utf8",
@@ -132,16 +171,11 @@ function git(repository, args, { allowFailure = false } = {}) {
 }
 
 function gitIsAncestor(repository, ancestor, descendant) {
-  try {
-    execFileSync("git", ["-C", repository, "merge-base", "--is-ancestor", ancestor, descendant], {
-      stdio: "ignore",
-      timeout: 30_000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return runReadOnlyGit(repository, ["merge-base", "--is-ancestor", ancestor, descendant],
+    { allowFailure: true }) !== null;
 }
+
+const git = runReadOnlyGit;
 
 function assertNoDestinationOverrides(environment) {
   const present = DESTINATION_OVERRIDE_NAMES.filter((name) =>
@@ -256,6 +290,9 @@ function requireReceiptShape(receipt) {
   }
   if (receipt.validatorResult.ok !== true) {
     fail("receipt-validator-failed", "Publisher receipt does not record a successful staged-output validation.");
+  }
+  if (!extensionVariantIsSafe(receipt.stagedExtensionVariant)) {
+    fail("receipt-extension-variant", "Receipt extension variant must be one safe canonical path segment.");
   }
   if (typeof receipt.lock.directory !== "string" || !receipt.lock.directory ||
       typeof receipt.lock.ownerId !== "string" || !receipt.lock.ownerId) {
@@ -584,7 +621,15 @@ export function verifyStageReceipt(receiptPath, { environment = process.env } = 
     receiptPath: parsed.absolute,
     receiptSha256: parsed.sha256,
     receiptBytes: parsed.bytes.length,
-    stage: { stagingRoot: stage.stagingRoot, outputPaths: stage.outputPaths, manifests, aliases, markers },
+    stage: {
+      stagingRoot: stage.stagingRoot,
+      outputPaths: stage.outputPaths,
+      manifests,
+      aliases,
+      markers,
+      extensionVariant: receipt.stagedExtensionVariant,
+      buildMarker: receipt.buildTimestamp,
+    },
     canonicalFoundation: canonical,
     mutationPerformed: false,
     activationImplemented: false,
@@ -726,10 +771,12 @@ export function evaluateFutureTransaction(model) {
   return Object.freeze({ acceptable: reasons.length === 0, reasons: Object.freeze([...new Set(reasons)]) });
 }
 
-function validateActivationId(activationId) {
-  if (typeof activationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/u.test(activationId)) {
-    fail("activation-id-invalid", "Future activation IDs must be bounded filename-safe identifiers.");
+export function validateActivationId(activationId) {
+  if (typeof activationId !== "string" || !ACTIVATION_ID_PATTERN.test(activationId) ||
+      activationId.includes("..") || activationId.includes("/") || activationId.includes("\\")) {
+    fail("activation-id-invalid", "Activation IDs must use the exact bounded UTC-and-hex filename-safe format.");
   }
+  return activationId;
 }
 
 export function futureSiblingNames(name, activationId) {
@@ -748,6 +795,428 @@ export function ownsFutureSibling(candidate, name, activationId) {
   return candidate === expected.incoming || candidate === expected.previous;
 }
 
+export function generateActivationId({ now = new Date(), randomBytes = crypto.randomBytes } = {}) {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    fail("activation-id-invalid", "Activation timestamp must be a valid Date.");
+  }
+  const compact = now.toISOString().replace(/[-:]/gu, "").replace(".", "");
+  const fragment = Buffer.from(randomBytes(6)).toString("hex");
+  return validateActivationId(`${compact}-${fragment}`);
+}
+
+function assertRealDirectoryOrAbsent(directory, symlinkCode, invalidCode) {
+  try {
+    const stat = fs.lstatSync(directory);
+    if (stat.isSymbolicLink()) fail(symlinkCode, "Coordination directory must not be a symlink.", { directory });
+    if (!stat.isDirectory()) fail(invalidCode, "Coordination path must be a real directory.", { directory });
+    return "present";
+  } catch (error) {
+    if (error instanceof ActivatorError) throw error;
+    if (error?.code === "ENOENT") return "absent";
+    fail(invalidCode, "Coordination directory metadata could not be verified.", { directory });
+  }
+}
+
+function ensureCoordinationDirectory(directory, symlinkCode, invalidCode) {
+  const state = assertRealDirectoryOrAbsent(directory, symlinkCode, invalidCode);
+  if (state === "absent") {
+    try {
+      fs.mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    assertRealDirectoryOrAbsent(directory, symlinkCode, invalidCode);
+  }
+  const mode = fs.statSync(directory).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    fail(invalidCode, "Coordination directory permissions are broader than owner-only.", {
+      directory,
+      mode: mode.toString(8),
+    });
+  }
+}
+
+function flushDirectory(directory) {
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(directory, "r");
+    fs.fsyncSync(descriptor);
+    return true;
+  } catch (error) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error?.code)) throw error;
+    return false;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
+function removeOwnJournalTemp(tempPath, intentsDirectory, expectedBasename) {
+  if (path.dirname(tempPath) !== path.resolve(intentsDirectory) || path.basename(tempPath) !== expectedBasename) return;
+  try {
+    const stat = fs.lstatSync(tempPath);
+    if (!stat.isSymbolicLink() && stat.isFile()) fs.unlinkSync(tempPath);
+  } catch {
+    // Cleanup of this invocation's exact temporary file must not mask the cause.
+  }
+}
+
+export function writeDurableActivationIntent(intentsDirectory, activationId, journal, { ownerId } = {}) {
+  validateActivationId(activationId);
+  assertRealDirectoryOrAbsent(intentsDirectory, "activation-intents-symlink", "activation-intents-invalid");
+  const finalPath = path.join(path.resolve(intentsDirectory), `${activationId}.json`);
+  const safeOwner = typeof ownerId === "string" && /^[a-f0-9-]{8,64}$/u.test(ownerId)
+    ? ownerId
+    : crypto.randomUUID();
+  const tempBasename = `.${activationId}.json.tmp-${safeOwner}`;
+  const tempPath = path.join(path.resolve(intentsDirectory), tempBasename);
+  const bytes = Buffer.from(`${JSON.stringify(journal, null, 2)}\n`, "utf8");
+  let descriptor = null;
+  try {
+    try {
+      fs.lstatSync(finalPath);
+      fail("activation-intent-collision", "Activation intent already exists; IDs are never reused.", { finalPath });
+    } catch (error) {
+      if (error instanceof ActivatorError) throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+    descriptor = fs.openSync(tempPath, "wx", 0o600);
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    try {
+      fs.lstatSync(finalPath);
+      fail("activation-intent-collision", "Activation intent appeared before publication; refusing overwrite.", { finalPath });
+    } catch (error) {
+      if (error instanceof ActivatorError) throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+    fs.renameSync(tempPath, finalPath);
+    const directoryFlushed = flushDirectory(intentsDirectory);
+    const observed = fs.readFileSync(finalPath);
+    if (!observed.equals(bytes)) {
+      fail("activation-intent-final-verification", "Durable intent bytes differ after atomic publication.", {
+        finalPath,
+      });
+    }
+    return Object.freeze({
+      path: finalPath,
+      sha256: sha256Bytes(observed),
+      bytes: observed.length,
+      directoryFlushed,
+    });
+  } catch (error) {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+    removeOwnJournalTemp(tempPath, intentsDirectory, tempBasename);
+    throw error;
+  }
+}
+
+function extensionVariantIsSafe(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(value);
+}
+
+function canonicalTreeRecords(verification, activationId) {
+  const repository = verification.source.repository;
+  const extensionVariant = verification.stage.extensionVariant;
+  if (!extensionVariantIsSafe(extensionVariant)) {
+    fail("receipt-extension-variant", "Verified receipt extension variant is not a safe canonical path segment.");
+  }
+  const lives = [
+    ["alias", path.join(repository, "apps", "dev-server", "alias")],
+    ["dev_output", path.join(repository, "apps", "dev-server", "dev_output")],
+    ["extension", path.join(repository, "apps", "extensions", "chatgpt", "chrome", extensionVariant)],
+  ];
+  return lives.map(([logicalName, livePath]) => {
+    const siblings = futureSiblingNames(path.basename(livePath), activationId);
+    return {
+      logicalName,
+      livePath,
+      incomingPath: path.join(path.dirname(livePath), siblings.incoming),
+      previousPath: path.join(path.dirname(livePath), siblings.previous),
+      state: "untouched",
+      previousState: "unknown",
+      previousIdentity: null,
+      restorationMode: "unknown",
+      verified: false,
+    };
+  });
+}
+
+function verificationIdentity(verification) {
+  return JSON.stringify({
+    source: verification.source,
+    receiptPath: verification.receiptPath,
+    receiptSha256: verification.receiptSha256,
+    stagingRoot: verification.stage.stagingRoot,
+    manifests: verification.stage.manifests,
+    buildMarker: verification.stage.buildMarker,
+    markers: verification.stage.markers,
+    extensionVariant: verification.stage.extensionVariant,
+  });
+}
+
+function translatePublisherLockError(error) {
+  if (error instanceof ActivatorError) throw error;
+  if (typeof error?.code === "string" && error.code.startsWith("publisher-")) {
+    fail(error.code, error.message, error.details || {});
+  }
+  throw error;
+}
+
+export function withPublisherLock(foundation, source, callback) {
+  let lock;
+  let callbackError = null;
+  try {
+    try {
+      lock = acquireLock(foundation.publisherLock, {
+        pid: process.pid,
+        repository: source.repository,
+        approvedHead: source.approvedHead,
+        startedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      translatePublisherLockError(error);
+    }
+    return callback(lock);
+  } catch (error) {
+    callbackError = error;
+    throw error;
+  } finally {
+    if (lock) {
+      const released = releaseLock(foundation.publisherLock, process.pid, lock.ownerId);
+      if (released !== "released" && callbackError === null) {
+        fail("publisher-lock-release-failed", "Owned publisher lock was not released after intent preparation.", {
+          released,
+        });
+      }
+    }
+  }
+}
+
+function assertNoUnresolvedIntent(intentsDirectory) {
+  const entries = fs.readdirSync(intentsDirectory).sort();
+  if (entries.length) {
+    fail("activation-intent-unresolved", "An unresolved or foreign activation intent already exists.", { entries });
+  }
+}
+
+function buildActivationIntent(verification, activationId, createdAt) {
+  return {
+    schemaVersion: ACTIVATION_INTENT_SCHEMA_VERSION,
+    mode: ACTIVATION_INTENT_MODE,
+    purpose: ACTIVATION_INTENT_PURPOSE,
+    activationId,
+    createdAt,
+    repositoryRealpath: verification.source.repository,
+    authorizedWorktreeRealpath: verification.source.repository,
+    branch: verification.source.branch,
+    approvedHead: verification.source.approvedHead,
+    sourceTree: verification.source.sourceTree,
+    foundationCommits: [...FOUNDATION_COMMITS],
+    stageReceiptPath: verification.receiptPath,
+    stageReceiptSha256: verification.receiptSha256,
+    stagingRoot: verification.stage.stagingRoot,
+    buildMarker: verification.stage.buildMarker,
+    stageManifests: verification.stage.manifests,
+    rollbackScope: "whole-release",
+    finalActivationReceiptDurable: false,
+    activationPerformed: false,
+    reloadPerformed: false,
+    canaryPerformed: false,
+    pushPerformed: false,
+    transactionState: "prepared",
+    trees: canonicalTreeRecords(verification, activationId),
+  };
+}
+
+export function classifyRecoveryState(journal, expected = {}) {
+  if (!plainObject(journal) || journal.schemaVersion !== ACTIVATION_INTENT_SCHEMA_VERSION ||
+      journal.mode !== ACTIVATION_INTENT_MODE || journal.purpose !== ACTIVATION_INTENT_PURPOSE ||
+      typeof journal.activationId !== "string" || !ACTIVATION_ID_PATTERN.test(journal.activationId)) {
+    return Object.freeze({ classification: "foreign-or-unowned-journal", code: "foreign-or-unowned-journal" });
+  }
+  if ((expected.repositoryRealpath && journal.repositoryRealpath !== expected.repositoryRealpath) ||
+      (expected.authorizedWorktreeRealpath && journal.authorizedWorktreeRealpath !== expected.authorizedWorktreeRealpath)) {
+    return Object.freeze({ classification: "foreign-or-unowned-journal", code: "foreign-or-unowned-journal" });
+  }
+  if (journal.rollbackScope !== "whole-release" || journal.finalActivationReceiptDurable !== false ||
+      journal.activationPerformed !== false || journal.reloadPerformed !== false ||
+      journal.canaryPerformed !== false || journal.pushPerformed !== false) {
+    return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+  }
+  if (!Array.isArray(journal.trees) || journal.trees.length !== 3 ||
+      JSON.stringify(journal.trees.map((tree) => tree?.logicalName).sort()) !==
+        JSON.stringify(["alias", "dev_output", "extension"])) {
+    return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+  }
+  const allowedPrevious = new Set(["unknown", "absent", "present"]);
+  const allowedRestoration = new Set(["unknown", "restore-previous", "remove-promoted-to-absent"]);
+  for (const tree of journal.trees) {
+    if (!plainObject(tree) || !FUTURE_TREE_STATES.includes(tree.state) ||
+        !allowedPrevious.has(tree.previousState) || !allowedRestoration.has(tree.restorationMode) ||
+        typeof tree.livePath !== "string" || typeof tree.incomingPath !== "string" ||
+        typeof tree.previousPath !== "string" || tree.verified !== (tree.state === "verified")) {
+      return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+    }
+    const siblings = futureSiblingNames(path.basename(tree.livePath), journal.activationId);
+    if (tree.incomingPath !== path.join(path.dirname(tree.livePath), siblings.incoming) ||
+        tree.previousPath !== path.join(path.dirname(tree.livePath), siblings.previous)) {
+      return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+    }
+    if (tree.state === "untouched" && (tree.previousState !== "unknown" || tree.previousIdentity !== null ||
+        tree.restorationMode !== "unknown")) {
+      return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+    }
+    if (["live-retired", "incoming-promoted", "verified", "restored"].includes(tree.state)) {
+      const absent = tree.previousState === "absent" && tree.previousIdentity === null &&
+        tree.restorationMode === "remove-promoted-to-absent";
+      const present = tree.previousState === "present" && typeof tree.previousIdentity === "string" &&
+        tree.previousIdentity.length > 0 && tree.restorationMode === "restore-previous";
+      if (!absent && !present) {
+        return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+      }
+    }
+  }
+  const allUntouched = journal.trees.every((tree) => tree.state === "untouched");
+  if (allUntouched && journal.transactionState === "prepared") {
+    return Object.freeze({ classification: "prepared-no-payload-mutation", code: null });
+  }
+  if (allUntouched && journal.transactionState === "promotion-not-started") {
+    return Object.freeze({ classification: "promotion-not-started", code: null });
+  }
+  if (journal.trees.some((tree) => tree.state !== "untouched")) {
+    return Object.freeze({ classification: "promotion-state-requires-p3-recovery", code: "p3-recovery-required" });
+  }
+  return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
+}
+
+function requireIntentBoundaryFields(journal) {
+  if (journal.rollbackScope !== "whole-release" || journal.finalActivationReceiptDurable !== false ||
+      journal.activationPerformed !== false || journal.reloadPerformed !== false ||
+      journal.canaryPerformed !== false || journal.pushPerformed !== false) {
+    fail("activation-intent-boundary", "P2 intent cannot claim activation, durable acceptance, reload, canary, or push.");
+  }
+}
+
+export function inspectActivationIntent(intentPath, { environment = process.env } = {}) {
+  assertNoDestinationOverrides(environment);
+  const absolute = path.resolve(intentPath);
+  assertRegularFile(absolute, "activation-intent-not-regular");
+  const source = collectSourcePreflight(REPOSITORY_ROOT);
+  const foundation = deriveCanonicalFoundation(source.repository);
+  const intentsDirectory = foundation.futureSubpaths["activation-intents"];
+  assertRealDirectoryOrAbsent(foundation.root, "canonical-anchor-symlink", "canonical-anchor-unreadable");
+  assertRealDirectoryOrAbsent(intentsDirectory, "activation-intents-symlink", "activation-intents-invalid");
+  if (realAware(path.dirname(absolute)) !== realAware(intentsDirectory)) {
+    fail("activation-intent-location", "Intent must be directly beneath the derived activation-intents directory.");
+  }
+  const bytes = fs.readFileSync(absolute);
+  let journal;
+  try { journal = JSON.parse(bytes.toString("utf8")); } catch {
+    fail("activation-intent-malformed", "Activation intent is not valid JSON.");
+  }
+  validateActivationId(journal?.activationId);
+  if (path.basename(absolute) !== `${journal.activationId}.json`) {
+    fail("activation-intent-id-mismatch", "Activation intent ID does not match its filename.");
+  }
+  if (journal.repositoryRealpath !== source.repository || journal.authorizedWorktreeRealpath !== source.repository ||
+      journal.branch !== source.branch || journal.approvedHead !== source.approvedHead ||
+      journal.sourceTree !== source.sourceTree) {
+    fail("activation-intent-source-mismatch", "Activation intent no longer matches executable source authority.");
+  }
+  if (!Array.isArray(journal.foundationCommits) || !sameJson(journal.foundationCommits, FOUNDATION_COMMITS)) {
+    fail("activation-intent-foundation-mismatch", "Activation intent foundation identities are incomplete or changed.");
+  }
+  let canonicalCreatedAt = null;
+  try { canonicalCreatedAt = new Date(journal.createdAt).toISOString(); } catch {}
+  if (typeof journal.createdAt !== "string" || canonicalCreatedAt !== journal.createdAt) {
+    fail("activation-intent-created-at", "Activation intent creation time is not canonical ISO-8601.");
+  }
+  requireIntentBoundaryFields(journal);
+  assertRegularFile(journal.stageReceiptPath, "activation-intent-receipt-missing");
+  if (sha256File(journal.stageReceiptPath) !== journal.stageReceiptSha256) {
+    fail("activation-intent-receipt-changed", "Stage receipt bytes no longer match the intent.");
+  }
+  const verified = verifyStageReceipt(journal.stageReceiptPath, { environment });
+  if (journal.stageReceiptPath !== verified.receiptPath || journal.stagingRoot !== verified.stage.stagingRoot ||
+      journal.buildMarker !== verified.stage.buildMarker ||
+      !sameJson(journal.stageManifests, verified.stage.manifests)) {
+    fail("activation-intent-stage-changed", "Staged evidence no longer matches the durable intent.");
+  }
+  const expectedTrees = canonicalTreeRecords(verified, journal.activationId);
+  for (const expectedTree of expectedTrees) {
+    const actual = journal.trees?.find((tree) => tree.logicalName === expectedTree.logicalName);
+    if (!actual || actual.livePath !== expectedTree.livePath || actual.incomingPath !== expectedTree.incomingPath ||
+        actual.previousPath !== expectedTree.previousPath) {
+      fail("activation-intent-tree-mismatch", "Intent tree names or activation-specific paths are invalid.", {
+        logicalName: expectedTree.logicalName,
+      });
+    }
+  }
+  const recovery = classifyRecoveryState(journal, {
+    repositoryRealpath: source.repository,
+    authorizedWorktreeRealpath: source.repository,
+  });
+  if (recovery.code === "p3-recovery-required") {
+    fail("p3-recovery-required", "Journal records payload mutation and requires P3 recovery.", { recovery });
+  }
+  if (recovery.code) fail(recovery.code, "Activation intent is contradictory or foreign.", { recovery });
+  return Object.freeze({
+    ok: true,
+    mode: "inspect-activation-intent",
+    intentPath: absolute,
+    intentSha256: sha256Bytes(bytes),
+    journal,
+    recovery,
+    mutationPerformed: false,
+  });
+}
+
+export function prepareActivationIntent(receiptPath, {
+  environment = process.env,
+  now = new Date(),
+  randomBytes = crypto.randomBytes,
+} = {}) {
+  const first = verifyStageReceipt(receiptPath, { environment });
+  const activationId = generateActivationId({ now, randomBytes });
+  return withPublisherLock(first.canonicalFoundation, first.source, (lock) => {
+    const second = verifyStageReceipt(receiptPath, { environment });
+    if (verificationIdentity(first) !== verificationIdentity(second)) {
+      fail("activation-intent-revalidation-changed", "Verified source or stage evidence changed after lock acquisition.");
+    }
+    const foundation = second.canonicalFoundation;
+    ensureCoordinationDirectory(foundation.root, "canonical-anchor-symlink", "canonical-anchor-invalid");
+    const intentsDirectory = foundation.futureSubpaths["activation-intents"];
+    ensureCoordinationDirectory(intentsDirectory, "activation-intents-symlink", "activation-intents-invalid");
+    const finalVerification = verifyStageReceipt(receiptPath, { environment });
+    if (verificationIdentity(second) !== verificationIdentity(finalVerification)) {
+      fail("activation-intent-revalidation-changed", "Verified source or stage evidence changed immediately before journal creation.");
+    }
+    assertNoUnresolvedIntent(intentsDirectory);
+    const journal = buildActivationIntent(finalVerification, activationId, now.toISOString());
+    const durable = writeDurableActivationIntent(intentsDirectory, activationId, journal, {
+      ownerId: lock.ownerId,
+    });
+    return Object.freeze({
+      ok: true,
+      mode: "prepare-activation-intent",
+      activationId,
+      intentPath: durable.path,
+      intentSha256: durable.sha256,
+      journal,
+      lockReleased: true,
+      activationPerformed: false,
+      canonicalPayloadMutationPerformed: false,
+      browserActionPerformed: false,
+      networkActionPerformed: false,
+      pushPerformed: false,
+    });
+  });
+}
+
 export async function runLeanActivator({ argv = process.argv.slice(2), environment = process.env } = {}) {
   if (argv.length === 2 && argv[0] === "--activate-receipt") {
     fail("activation-not-implemented", "Activation is intentionally not implemented in Batch 2 P0/P1.");
@@ -758,10 +1227,16 @@ export async function runLeanActivator({ argv = process.argv.slice(2), environme
   if (argv.length === 3 && argv[0] === "--verify-canonical" && argv[1] === "--receipt") {
     fail("canonical-verification-fixture-only", "P1 exposes canonical comparison only as a fixture-tested read-only library foundation.");
   }
-  if (argv.length !== 2 || argv[0] !== "--verify-stage-receipt") {
-    fail("invalid-arguments", "P1 accepts exactly --verify-stage-receipt <publication-receipt-path>.", { argv });
+  if (argv.length === 2 && argv[0] === "--prepare-activation-intent") {
+    return prepareActivationIntent(argv[1], { environment });
   }
-  return verifyStageReceipt(argv[1], { environment });
+  if (argv.length === 2 && argv[0] === "--inspect-activation-intent") {
+    return inspectActivationIntent(argv[1], { environment });
+  }
+  if (argv.length === 2 && argv[0] === "--verify-stage-receipt") {
+    return verifyStageReceipt(argv[1], { environment });
+  }
+  fail("invalid-arguments", "P2 accepts only stage verification or activation-intent prepare/inspect commands.", { argv });
 }
 
 const invokedDirectly = process.argv[1] && realAware(process.argv[1]) === realAware(fileURLToPath(import.meta.url));
