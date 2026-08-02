@@ -39,9 +39,9 @@ const PACKAGE_JSON_REL = "package.json";
 const PUBLISHER = path.join(ROOT, PUBLISHER_REL);
 
 const FINAL_PATHS = Object.freeze([PACKAGE_JSON_REL, PUBLISHER_REL, VALIDATOR_REL]);
-const UNCOMMITTED_MODIFIED = Object.freeze([PACKAGE_JSON_REL]);
-const UNCOMMITTED_UNTRACKED = Object.freeze([PUBLISHER_REL, VALIDATOR_REL]);
-const EXPECTED_RUNTIME_SCENARIOS = 44;
+const UNCOMMITTED_MODIFIED = Object.freeze([PUBLISHER_REL, VALIDATOR_REL]);
+const UNCOMMITTED_UNTRACKED = Object.freeze([]);
+const EXPECTED_RUNTIME_SCENARIOS = 47;
 const EXPECTED_SCOPE_SCENARIOS = 8;
 const LOCK_PENDING_PREFIX = ".h2o-publisher-lock.pending-";
 const FORBIDDEN_STALE_PREFIX = ".h2o-publisher-lock.stale-";
@@ -58,6 +58,7 @@ const DESTINATION_ENV_NAMES = Object.freeze([
   "H2O_PANEL_OUT_DIR",
   "H2O_DEV_DIR_NAME",
   "H2O_SRC_DIR",
+  "H2O_ALIAS_MODE",
 ]);
 
 const runtimeResults = [];
@@ -67,6 +68,7 @@ let preservedStagingRoots = [];
 let publisherPairProbe = null;
 let staleContentionProbe = null;
 let churnProbe = null;
+let stagedAliasEvidence = null;
 
 function temporaryBase() {
   try { return fs.realpathSync.native(os.tmpdir()); } catch { return os.tmpdir(); }
@@ -125,7 +127,7 @@ export function classifyLeanPublisherScope(state) {
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
     sameSet(normalized.untracked, UNCOMMITTED_UNTRACKED) &&
-    sameSet(normalized.trackedFinal, [PACKAGE_JSON_REL]) &&
+    sameSet(normalized.trackedFinal, FINAL_PATHS) &&
     normalized.missingFinal.length === 0;
   if (uncommitted) return "uncommitted";
   const committed =
@@ -151,7 +153,7 @@ function baseScope(overrides = {}) {
     modifiedTracked: [...UNCOMMITTED_MODIFIED],
     staged: [],
     untracked: [...UNCOMMITTED_UNTRACKED],
-    trackedFinal: [PACKAGE_JSON_REL],
+    trackedFinal: [...FINAL_PATHS],
     missingFinal: [],
     ...overrides,
   };
@@ -162,7 +164,7 @@ function scopeTest(name, fn) {
   process.stdout.write(`ok scope ${scopeResults.length} - ${name}\n`);
 }
 function runScopeSelfTests() {
-  scopeTest("exact uncommitted Batch 1 scope is accepted", () => {
+  scopeTest("exact uncommitted copy-mode correction scope is accepted", () => {
     assert.equal(classifyLeanPublisherScope(baseScope()), "uncommitted");
   });
   scopeTest("exact committed-clean Batch 1 scope is accepted", () => {
@@ -173,20 +175,20 @@ function runScopeSelfTests() {
   scopeTest("staging is rejected", () => {
     assert.throws(() => classifyLeanPublisherScope(baseScope({ staged: [PACKAGE_JSON_REL] })), /forbids staged/u);
   });
-  scopeTest("missing package.json modification is rejected", () => {
-    assert.throws(() => classifyLeanPublisherScope(baseScope({ modifiedTracked: [] })), /scope mismatch/u);
+  scopeTest("missing publisher modification is rejected", () => {
+    assert.throws(() => classifyLeanPublisherScope(baseScope({ modifiedTracked: [VALIDATOR_REL] })), /scope mismatch/u);
   });
-  scopeTest("missing new publisher file is rejected", () => {
-    assert.throws(() => classifyLeanPublisherScope(baseScope({ untracked: [VALIDATOR_REL] })), /scope mismatch/u);
+  scopeTest("missing validator modification is rejected", () => {
+    assert.throws(() => classifyLeanPublisherScope(baseScope({ modifiedTracked: [PUBLISHER_REL] })), /scope mismatch/u);
   });
-  scopeTest("a fourth source path is rejected", () => {
+  scopeTest("a third tracked source path is rejected", () => {
     assert.throws(() => classifyLeanPublisherScope(baseScope({
-      modifiedTracked: [PACKAGE_JSON_REL, "tools/dev/dev-all.mjs"],
+      modifiedTracked: [...UNCOMMITTED_MODIFIED, "tools/dev/dev-all.mjs"],
     })), /scope mismatch/u);
   });
-  scopeTest("a fourth untracked path is rejected", () => {
+  scopeTest("an untracked source path is rejected", () => {
     assert.throws(() => classifyLeanPublisherScope(baseScope({
-      untracked: [...UNCOMMITTED_UNTRACKED, "tools/publish/extra.mjs"],
+      untracked: ["tools/publish/extra.mjs"],
     })), /scope mismatch/u);
   });
   scopeTest("a missing final path is rejected", () => {
@@ -570,6 +572,7 @@ async function runRuntimeScenarios() {
     assert.match(publisherSource, /startsWith\("H2O_"\)\) delete environment\[name\]/u);
     assert.match(publisherSource, /anchor\.cockpitProRoot, LOCK_DIR_NAME/u);
     assert.doesNotMatch(publisherSource, /anchor\.root, LOCK_DIR_NAME/u);
+    assert.doesNotMatch(publisherSource, /H2O_ALIAS_MODE:\s*["']symlink["']/u);
   });
 
   // ── lock ───────────────────────────────────────────────────────────────────
@@ -640,6 +643,23 @@ async function runRuntimeScenarios() {
     assert.equal(fs.statSync(aliasDir).isDirectory(), true);
     assert.ok(fs.readdirSync(aliasDir).length > 0);
   });
+  await test("staged aliases use effective copy mode with safe compatibility links", () => {
+    const aliasDir = staged.receipt.outputPaths.alias;
+    const entries = fs.readdirSync(aliasDir).filter((name) => name !== ".DS_Store");
+    const regularFiles = entries.filter((name) => fs.lstatSync(path.join(aliasDir, name)).isFile());
+    const symlinks = entries.filter((name) => fs.lstatSync(path.join(aliasDir, name)).isSymbolicLink());
+    assert.ok(regularFiles.length > 0, "copy mode must produce regular-file aliases");
+    assert.equal(staged.receipt.validatorResult.alias.aliasCount, entries.length);
+    assert.equal(staged.receipt.validatorResult.alias.regularFileCount, regularFiles.length);
+    assert.equal(staged.receipt.validatorResult.alias.symlinkCount, symlinks.length);
+    stagedAliasEvidence = {
+      aliasCount: entries.length,
+      regularFileCount: regularFiles.length,
+      symlinkCount: symlinks.length,
+      candidateCopyManifestEqual: false,
+      manifestDigest: staged.receipt.treeDigests.alias,
+    };
+  });
   await test("no staged alias is a broken symlink", () => {
     const aliasDir = staged.receipt.outputPaths.alias;
     for (const name of fs.readdirSync(aliasDir)) {
@@ -648,13 +668,19 @@ async function runRuntimeScenarios() {
       assert.equal(fs.existsSync(alias), true, `broken alias: ${name}`);
     }
   });
-  await test("every staged alias target stays inside the approved source worktree", () => {
+  await test("every staged alias link stays inside the staged alias tree or approved source", () => {
     const aliasDir = staged.receipt.outputPaths.alias;
     const approved = fs.realpathSync(fixture.repository);
+    const stagedAliasRoot = fs.realpathSync(aliasDir);
     for (const name of fs.readdirSync(aliasDir)) {
       const alias = path.join(aliasDir, name);
       if (!fs.lstatSync(alias).isSymbolicLink()) continue;
-      assert.equal(isWithin(approved, fs.realpathSync(alias)), true, `escaped alias: ${name}`);
+      const resolved = fs.realpathSync(alias);
+      assert.equal(
+        isWithin(stagedAliasRoot, resolved) || isWithin(approved, resolved),
+        true,
+        `escaped alias: ${name}`,
+      );
     }
   });
   await test("staged dev output holds one non-empty proxy pack with the publisher build marker", () => {
@@ -707,6 +733,32 @@ async function runRuntimeScenarios() {
     assert.equal(first.treeDigest, second.treeDigest);
     assert.equal(first.treeDigest, staged.receipt.treeDigests.extension);
   });
+  await test("staged alias manifest survives a verbatim sibling candidate copy", () => {
+    const sourceRoot = staged.receipt.stagingRoot;
+    const sourceAlias = staged.receipt.outputPaths.alias;
+    const candidateRoot = temporaryRoot("alias-candidate");
+    const candidateAlias = path.join(candidateRoot, path.relative(sourceRoot, sourceAlias));
+    assert.equal(path.dirname(candidateRoot), path.dirname(sourceRoot));
+    assert.equal(fs.statSync(candidateRoot).dev, fs.statSync(sourceRoot).dev);
+    fs.mkdirSync(path.dirname(candidateAlias), { recursive: true });
+    fs.cpSync(sourceAlias, candidateAlias, { recursive: true, verbatimSymlinks: true });
+
+    const sourceManifest = buildManifest(sourceAlias, sourceRoot);
+    const candidateManifest = buildManifest(candidateAlias, candidateRoot);
+    assert.deepEqual(candidateManifest, sourceManifest);
+
+    const linkTargets = (root) => Object.fromEntries(fs.readdirSync(root)
+      .filter((name) => fs.lstatSync(path.join(root, name)).isSymbolicLink())
+      .sort()
+      .map((name) => [name, fs.readlinkSync(path.join(root, name))]));
+    const regularBytes = (root) => Object.fromEntries(fs.readdirSync(root)
+      .filter((name) => fs.lstatSync(path.join(root, name)).isFile())
+      .sort()
+      .map((name) => [name, fs.readFileSync(path.join(root, name)).toString("base64")]));
+    assert.deepEqual(linkTargets(candidateAlias), linkTargets(sourceAlias));
+    assert.deepEqual(regularBytes(candidateAlias), regularBytes(sourceAlias));
+    stagedAliasEvidence.candidateCopyManifestEqual = true;
+  });
   await test("a successful run preserves its staging root for the activation batch", () => {
     assert.equal(fs.existsSync(staged.receipt.stagingRoot), true);
     assert.equal(fs.existsSync(path.join(staged.receipt.stagingRoot, "publication-receipt.json")), true);
@@ -720,11 +772,16 @@ async function runRuntimeScenarios() {
     const decoy = path.join(temporaryRoot("decoy"), "live-decoy");
     fs.mkdirSync(decoy, { recursive: true });
     const redirected = runPublisher(fixture, {
-      env: Object.fromEntries(DESTINATION_ENV_NAMES.map((name) => [name, decoy])),
+      env: {
+        ...Object.fromEntries(DESTINATION_ENV_NAMES.map((name) => [name, decoy])),
+        H2O_ALIAS_MODE: "symlink",
+      },
     });
     assert.equal(redirected.result.status, 0, redirected.result.stderr);
     assert.equal(fs.readdirSync(decoy).length, 0, "inherited destination variable redirected output");
     assert.equal(isWithin(temporaryBase(), redirected.receipt.stagingRoot), true);
+    assert.ok(redirected.receipt.validatorResult.alias.regularFileCount > 0,
+      "hostile inherited symlink mode was not stripped");
     preservedStagingRoots.push(redirected.receipt.stagingRoot);
   });
   await test("repository paths with spaces and emoji source filenames stage safely", () => {
@@ -732,12 +789,9 @@ async function runRuntimeScenarios() {
     const attempt = runPublisher(spaced);
     assert.equal(attempt.result.status, 0, attempt.result.stderr);
     assert.ok(attempt.receipt, "receipt was not produced for the spaced repository path");
-    const resolvedTargets = fs.readdirSync(attempt.receipt.outputPaths.alias)
-      .map((name) => path.join(attempt.receipt.outputPaths.alias, name))
-      .filter((alias) => fs.lstatSync(alias).isSymbolicLink())
-      .map((alias) => fs.realpathSync(alias));
-    assert.equal(resolvedTargets.some((target) => target.includes("path with spaces 🧪")), true);
-    assert.equal(resolvedTargets.some((target) => /[^\x00-\x7F]/u.test(path.basename(target))), true);
+    assert.match(attempt.receipt.repository, /path with spaces 🧪/u);
+    assert.ok(attempt.receipt.validatorResult.alias.regularFileCount > 0);
+    assert.ok(attempt.receipt.fileCounts.alias > 0);
     preservedStagingRoots.push(attempt.stagingRoot);
   });
 
@@ -817,10 +871,23 @@ async function runRuntimeScenarios() {
     expectPublisherError("staged-alias-target-outside-source", () =>
       validateStagedAliases(stage, source, [source.repository, foreign]));
   });
+  await test("a staged alias pointing into generated output rejects", () => {
+    const stage = syntheticStage("generated-alias");
+    const source = seedSyntheticSource("generated-alias");
+    const generated = path.join(source.repository, "apps", "dev-server", "alias-source.js");
+    fs.mkdirSync(path.dirname(generated), { recursive: true });
+    fs.writeFileSync(generated, "generated\n");
+    fs.symlinkSync(generated, path.join(stage.aliasDir, "a.js"));
+    expectPublisherError("staged-alias-generated-target", () =>
+      validateStagedAliases(stage, source, [source.repository]));
+  });
   await test("an empty staged alias directory rejects", () => {
     const stage = syntheticStage("empty-alias");
     const source = seedSyntheticSource("empty-alias");
     expectPublisherError("staged-alias-empty", () => validateStagedAliases(stage, source, [source.repository]));
+    fs.mkdirSync(path.join(stage.aliasDir, "directory-entry"));
+    expectPublisherError("staged-alias-entry-type", () =>
+      validateStagedAliases(stage, source, [source.repository]));
   });
   await test("a missing staged proxy pack rejects", () => {
     const stage = syntheticStage("missing-pack");
@@ -1193,6 +1260,7 @@ async function main() {
       staleContention: staleContentionProbe,
       acquireReleaseChurn: churnProbe,
     },
+    stagedAliasEvidence,
   })}\n`);
 }
 

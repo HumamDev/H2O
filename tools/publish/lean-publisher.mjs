@@ -596,7 +596,6 @@ function runBuilder(label, relativeScript, extra) {
 function stageAliases(stage, buildTimestamp) {
   return runBuilder("aliases", "tools/loader/make-aliases.mjs", {
     H2O_SERVER_DIR: stage.serverRoot,
-    H2O_ALIAS_MODE: "symlink",
     H2O_ALIAS_SCOPE: "all",
     H2O_BUILD_TS: buildTimestamp,
   });
@@ -645,12 +644,22 @@ export function validateStagedAliases(stage, source, worktreeRoots) {
     fail("staged-alias-empty", "Staged alias directory contains no aliases.");
   }
   const approvedWorktree = realAware(source.repository);
+  const stagedAliasRoot = realAware(stage.aliasDir);
   const foreignWorktrees = worktreeRoots.filter((root) => root !== approvedWorktree);
+  let regularFileCount = 0;
   let symlinkCount = 0;
   for (const name of entries) {
     const aliasPath = path.join(stage.aliasDir, name);
     const stat = fs.lstatSync(aliasPath);
-    if (!stat.isSymbolicLink()) continue;
+    if (!stat.isSymbolicLink()) {
+      if (!stat.isFile()) {
+        fail("staged-alias-entry-type", "Staged alias entries must be regular files or symlinks.", {
+          alias: name,
+        });
+      }
+      regularFileCount += 1;
+      continue;
+    }
     symlinkCount += 1;
     let resolved;
     try {
@@ -658,8 +667,8 @@ export function validateStagedAliases(stage, source, worktreeRoots) {
     } catch {
       fail("staged-alias-broken-symlink", "Staged alias is a broken symlink.", { alias: name });
     }
-    if (!isWithin(approvedWorktree, resolved)) {
-      fail("staged-alias-target-outside-source", "Staged alias target escapes the approved source worktree.", {
+    if (!isWithin(stagedAliasRoot, resolved) && !isWithin(approvedWorktree, resolved)) {
+      fail("staged-alias-target-outside-source", "Staged alias target escapes the staged alias tree and approved source worktree.", {
         alias: name,
         resolved,
       });
@@ -680,7 +689,7 @@ export function validateStagedAliases(stage, source, worktreeRoots) {
       });
     }
   }
-  return { aliasCount: entries.length, symlinkCount };
+  return { aliasCount: entries.length, regularFileCount, symlinkCount };
 }
 
 export function validateStagedDevOutput(stage, buildTimestamp) {
