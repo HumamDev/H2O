@@ -18,12 +18,19 @@ const PUBLISHER_REL = "tools/publish/lean-publisher.mjs";
 const PACKAGE_REL = "package.json";
 const AUTHORIZED_PATHS = Object.freeze([PACKAGE_REL, ACTIVATOR_REL, VALIDATOR_REL].sort());
 const BASE_HEAD = "86af342f1b1815e12c477673a4f2123b37bede40";
+const ACCEPTED_P1_HEAD = "fa0dac4552ce5a1189dee0b1d23975f95bffe751";
 const P1_SUBJECT = "feat(publish): add canonical activation preflight";
+const VALIDATOR_FIX_SUBJECT = "fix(publish): support integrated P0/P1 validation";
+const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
+const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
+const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
 const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 13;
+const EXPECTED_SCOPE = 17;
+const EXPECTED_RUNTIME = 88;
+const EXPECTED_STRUCTURAL = 14;
 
 const temporaryRoots = [];
 const scopeResults = [];
@@ -75,7 +82,10 @@ function currentScopeState() {
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
+    branch: git(ROOT, ["branch", "--show-current"]),
     subject: git(ROOT, ["log", "-1", "--format=%s"]),
+    acceptedP1Ancestor: git(ROOT, ["merge-base", "--is-ancestor", ACCEPTED_P1_HEAD, "HEAD"],
+      { allowFailure: true }) !== null,
     modifiedTracked,
     staged,
     untracked,
@@ -98,17 +108,22 @@ function classifyScope(state) {
     JSON.stringify(value.untracked) === JSON.stringify([ACTIVATOR_REL, VALIDATOR_REL].sort()) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
   if (dirty) return "uncommitted";
-  const reconciliation = value.head !== BASE_HEAD && value.parent === BASE_HEAD && value.subject === P1_SUBJECT &&
-    value.untracked.length === 0 &&
-    [
-      [VALIDATOR_REL],
-      [ACTIVATOR_REL, VALIDATOR_REL].sort(),
-    ].some((paths) => JSON.stringify(value.modifiedTracked) === JSON.stringify(paths)) &&
+  const validatorFixDirty = value.head === ACCEPTED_P1_HEAD && value.parent === BASE_HEAD &&
+    value.subject === P1_SUBJECT && value.acceptedP1Ancestor === true && value.untracked.length === 0 &&
+    JSON.stringify(value.modifiedTracked) === JSON.stringify([VALIDATOR_REL]) &&
     JSON.stringify(value.committedPaths) === JSON.stringify(AUTHORIZED_PATHS) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
-  if (reconciliation) return "copy-mode-reconciliation";
+  if (validatorFixDirty) return "validator-fix-uncommitted";
+  const validatorFixClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === ACCEPTED_P1_HEAD && value.subject === VALIDATOR_FIX_SUBJECT &&
+    value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([VALIDATOR_REL]) &&
+    JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
+  if (validatorFixClean) return "validator-fix-committed";
   const clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
-    value.parent === BASE_HEAD && JSON.stringify(value.committedPaths) === JSON.stringify(AUTHORIZED_PATHS) &&
+    value.head === ACCEPTED_P1_HEAD && value.parent === BASE_HEAD && value.subject === P1_SUBJECT &&
+    value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(AUTHORIZED_PATHS) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
   if (clean) return "committed-clean";
   scopeError("P0/P1 source scope mismatch", value);
@@ -118,7 +133,9 @@ function baseDirtyScope(overrides = {}) {
   return {
     head: BASE_HEAD,
     parent: "6920f812263ed03d79888f06e5e849fe4dcca43e",
+    branch: "main",
     subject: "fix(publish): make staged aliases promotion-safe",
+    acceptedP1Ancestor: false,
     modifiedTracked: [PACKAGE_REL],
     staged: [],
     untracked: [ACTIVATOR_REL, VALIDATOR_REL].sort(),
@@ -140,7 +157,9 @@ function runScopeTests() {
   });
   scopeTest("exact three-path committed-clean P0/P1 scope is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
-      head: "future-p1-commit", parent: BASE_HEAD, modifiedTracked: [], untracked: [], committedPaths: [...AUTHORIZED_PATHS],
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, branch: "publish-batch2-activator-p1",
+      subject: P1_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [], untracked: [], committedPaths: [...AUTHORIZED_PATHS],
     })), "committed-clean");
   });
   scopeTest("staged source is rejected", () => {
@@ -157,48 +176,117 @@ function runScopeTests() {
   });
   scopeTest("wrong committed parent is rejected", () => {
     assert.throws(() => classifyScope(baseDirtyScope({
-      head: "future", parent: "wrong", modifiedTracked: [], untracked: [], committedPaths: [...AUTHORIZED_PATHS],
+      head: ACCEPTED_P1_HEAD, parent: "wrong", subject: P1_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [], untracked: [], committedPaths: [...AUTHORIZED_PATHS],
     })), /scope mismatch/u);
   });
   scopeTest("committed fourth path is rejected", () => {
     assert.throws(() => classifyScope(baseDirtyScope({
-      head: "future", parent: BASE_HEAD, modifiedTracked: [], untracked: [],
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: P1_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [], untracked: [],
       committedPaths: [...AUTHORIZED_PATHS, "extra.txt"].sort(),
     })), /scope mismatch/u);
   });
-  scopeTest("validator-only copy-mode reconciliation is accepted", () => {
+  scopeTest("exact validator-only uncommitted repair is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
-      head: "rebased-p1", parent: BASE_HEAD, subject: P1_SUBJECT,
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: P1_SUBJECT, acceptedP1Ancestor: true,
       modifiedTracked: [VALIDATOR_REL], untracked: [],
       committedPaths: [...AUTHORIZED_PATHS],
-    })), "copy-mode-reconciliation");
+    })), "validator-fix-uncommitted");
   });
-  scopeTest("activator and validator copy-mode reconciliation is accepted", () => {
-    assert.equal(classifyScope(baseDirtyScope({
-      head: "rebased-p1", parent: BASE_HEAD, subject: P1_SUBJECT,
-      modifiedTracked: [ACTIVATOR_REL, VALIDATOR_REL].sort(), untracked: [], committedPaths: [...AUTHORIZED_PATHS],
-    })), "copy-mode-reconciliation");
-  });
-  scopeTest("copy-mode reconciliation rejects package changes", () => {
+  scopeTest("validator repair rejects an activator modification", () => {
     assert.throws(() => classifyScope(baseDirtyScope({
-      head: "rebased-p1", parent: BASE_HEAD, subject: P1_SUBJECT,
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: P1_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [ACTIVATOR_REL, VALIDATOR_REL].sort(), untracked: [], committedPaths: [...AUTHORIZED_PATHS],
+    })), /scope mismatch/u);
+  });
+  scopeTest("validator repair rejects package changes", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: P1_SUBJECT, acceptedP1Ancestor: true,
       modifiedTracked: [PACKAGE_REL, VALIDATOR_REL].sort(),
       untracked: [], committedPaths: [...AUTHORIZED_PATHS],
     })), /scope mismatch/u);
   });
-  scopeTest("copy-mode reconciliation rejects untracked paths", () => {
+  scopeTest("validator repair rejects untracked paths", () => {
     assert.throws(() => classifyScope(baseDirtyScope({
-      head: "rebased-p1", parent: BASE_HEAD, subject: P1_SUBJECT, modifiedTracked: [VALIDATOR_REL],
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: P1_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [VALIDATOR_REL],
       untracked: ["stray.mjs"], committedPaths: [...AUTHORIZED_PATHS],
     })), /scope mismatch/u);
   });
-  scopeTest("copy-mode reconciliation rejects the wrong commit subject", () => {
+  scopeTest("validator repair rejects the wrong commit subject", () => {
     assert.throws(() => classifyScope(baseDirtyScope({
-      head: "rebased-p1", parent: BASE_HEAD, subject: "wrong", modifiedTracked: [VALIDATOR_REL], untracked: [],
+      head: ACCEPTED_P1_HEAD, parent: BASE_HEAD, subject: "wrong", acceptedP1Ancestor: true,
+      modifiedTracked: [VALIDATOR_REL], untracked: [],
       committedPaths: [...AUTHORIZED_PATHS],
     })), /scope mismatch/u);
   });
+  scopeTest("exact committed validator follow-up is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-validator-fix", parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [], committedPaths: [VALIDATOR_REL],
+    })), "validator-fix-committed");
+  });
+  scopeTest("committed validator follow-up rejects the wrong parent", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-validator-fix", parent: BASE_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [], committedPaths: [VALIDATOR_REL],
+    })), /scope mismatch/u);
+  });
+  scopeTest("committed validator follow-up rejects a second path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-validator-fix", parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [VALIDATOR_REL, "README.md"].sort(),
+    })), /scope mismatch/u);
+  });
+  scopeTest("committed validator follow-up requires accepted P0/P1 ancestry", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-validator-fix", parent: ACCEPTED_P1_HEAD, subject: VALIDATOR_FIX_SUBJECT,
+      acceptedP1Ancestor: false, modifiedTracked: [], untracked: [], committedPaths: [VALIDATOR_REL],
+    })), /scope mismatch/u);
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
+}
+
+function authorityError(code, evidence) {
+  const error = new Error(code);
+  error.code = code;
+  error.evidence = evidence;
+  throw error;
+}
+
+function evaluateRegisteredMainAuthority(evidence) {
+  if (evidence.mainBranch !== "main") authorityError("registered-main-wrong-branch", evidence);
+  if (evidence.mainTrackedClean !== true) authorityError("registered-main-dirty", evidence);
+  if (evidence.mainIndexEmpty !== true) authorityError("registered-main-index-not-empty", evidence);
+  if (evidence.mainUntrackedClean !== true) authorityError("registered-main-untracked-source", evidence);
+  const isolatedCandidate = evidence.mainHead === BASE_HEAD &&
+    evidence.executionHead === ACCEPTED_P1_HEAD && evidence.executionScope === "committed-clean" &&
+    evidence.executionWorktree !== evidence.mainWorktree;
+  if (isolatedCandidate) return "pre-integration-candidate";
+  if (evidence.acceptedP1Ancestor !== true) authorityError("registered-main-p1-ancestry-missing", evidence);
+  if (!["committed-clean", "validator-fix-uncommitted", "validator-fix-committed"]
+    .includes(evidence.executionScope)) {
+    authorityError("execution-scope-not-integrated-authority", evidence);
+  }
+  return "integrated";
+}
+
+function authorityEvidence(overrides = {}) {
+  return {
+    mainHead: ACCEPTED_P1_HEAD,
+    mainBranch: "main",
+    mainTrackedClean: true,
+    mainIndexEmpty: true,
+    mainUntrackedClean: true,
+    acceptedP1Ancestor: true,
+    mainWorktree: "/fixture/main",
+    executionHead: ACCEPTED_P1_HEAD,
+    executionScope: "committed-clean",
+    executionWorktree: "/fixture/main",
+    ...overrides,
+  };
 }
 
 async function test(name, fn) {
@@ -220,16 +308,35 @@ function copyFile(source, destination) {
 
 function authoritativeMainWorktree() {
   const blocks = git(ROOT, ["worktree", "list", "--porcelain"]).split(/\n\n/u);
+  const declaredMainWorktrees = [];
   for (const block of blocks) {
     const lines = block.split("\n");
     if (!lines.includes("branch refs/heads/main")) continue;
     const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    if (!worktree) continue;
-    assert.equal(git(worktree, ["rev-parse", "HEAD"]), BASE_HEAD,
-      "registered main worktree must remain at the Batch 1.1 foundation");
-    return fs.realpathSync(worktree);
+    if (worktree) declaredMainWorktrees.push(fs.realpathSync(worktree));
   }
-  throw new Error("registered authoritative main worktree was not found");
+  if (declaredMainWorktrees.length !== 1) {
+    authorityError("registered-main-worktree-count", { declaredMainWorktrees });
+  }
+  const mainWorktree = declaredMainWorktrees[0];
+  const executionState = currentScopeState();
+  const executionScope = classifyScope(executionState);
+  const mainHead = git(mainWorktree, ["rev-parse", "HEAD"]);
+  evaluateRegisteredMainAuthority({
+    mainHead,
+    mainBranch: git(mainWorktree, ["branch", "--show-current"]),
+    mainTrackedClean: git(mainWorktree, ["diff", "--quiet"], { allowFailure: true }) !== null,
+    mainIndexEmpty: git(mainWorktree, ["diff", "--cached", "--quiet"], { allowFailure: true }) !== null,
+    mainUntrackedClean: git(mainWorktree,
+      ["ls-files", "--others", "--exclude-standard", "--", ".", ":(exclude)chrome"]) === "",
+    acceptedP1Ancestor: git(mainWorktree,
+      ["merge-base", "--is-ancestor", ACCEPTED_P1_HEAD, mainHead], { allowFailure: true }) !== null,
+    mainWorktree,
+    executionHead: executionState.head,
+    executionScope,
+    executionWorktree: fs.realpathSync(ROOT),
+  });
+  return mainWorktree;
 }
 
 function installIgnoredPublisherInputs(repository) {
@@ -270,8 +377,15 @@ function createRealPublisherBoundaryFixture(label) {
   git(repository, ["checkout", "--quiet", "-B", "main", "HEAD"]);
   git(repository, ["config", "user.name", "Lean Activator Validator"]);
   git(repository, ["config", "user.email", "lean-activator@example.invalid"]);
+  const pinnedPublisher = execFileSync("git", ["show", `${BASE_HEAD}:${PUBLISHER_REL}`], { cwd: ROOT });
+  const pinnedPublisherValidator = execFileSync("git", ["show",
+    `${BASE_HEAD}:tools/validation/publish/validate-lean-publisher-v1.mjs`], { cwd: ROOT });
+  assert.equal(sha256(pinnedPublisher), BATCH11_PUBLISHER_SHA256,
+    "Batch 1.1 publisher authority must remain pinned to BASE_HEAD");
+  assert.equal(sha256(pinnedPublisherValidator), BATCH11_VALIDATOR_SHA256,
+    "Batch 1.1 publisher validator authority must remain pinned to BASE_HEAD");
   assert.equal(sha256(fs.readFileSync(path.join(repository, PUBLISHER_REL))),
-    sha256(execFileSync("git", ["show", `${BASE_HEAD}:${PUBLISHER_REL}`], { cwd: ROOT })),
+    BATCH11_PUBLISHER_SHA256,
     "fixture must execute the exact committed Batch 1.1 publisher");
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
   installIgnoredPublisherInputs(repository);
@@ -511,6 +625,90 @@ function validTransactionModel() {
       restoreOnFailure: "previous-tree",
     }])),
   };
+}
+
+async function runAuthorityModelTests() {
+  await test("isolated accepted candidate may provision from main fixed at Batch 1.1", () => {
+    assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: BASE_HEAD,
+      acceptedP1Ancestor: false,
+      executionWorktree: "/fixture/candidate",
+    })), "pre-integration-candidate");
+  });
+  await test("integrated main exactly at accepted P0/P1 is authorized", () => {
+    assert.equal(evaluateRegisteredMainAuthority(authorityEvidence()), "integrated");
+  });
+  await test("clean exact validator-only descendant is authorized", () => {
+    assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "validator-fix-descendant",
+      executionHead: "validator-fix-descendant",
+      executionScope: "validator-fix-committed",
+    })), "integrated");
+  });
+  await test("fixed-head replacement would become stale at the validator follow-up", () => {
+    const descendant = "validator-fix-descendant";
+    assert.notEqual(descendant, ACCEPTED_P1_HEAD);
+    assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: descendant,
+      executionHead: descendant,
+      executionScope: "validator-fix-committed",
+    })), "integrated");
+  });
+  await test("future integrated descendant requires an explicitly accepted validator scope", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "future-descendant",
+      executionHead: "future-descendant",
+      executionScope: "unaccepted-future-scope",
+    })), (error) => error.code === "execution-scope-not-integrated-authority");
+    assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "future-descendant",
+      executionHead: "future-descendant",
+      executionScope: "validator-fix-committed",
+    })), "integrated");
+  });
+  await test("arbitrary Batch 1.1 descendant without accepted P0/P1 rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "arbitrary-base-descendant",
+      acceptedP1Ancestor: false,
+      executionScope: "validator-fix-committed",
+    })), (error) => error.code === "registered-main-p1-ancestry-missing");
+  });
+  await test("unrelated registered main history rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "unrelated-history",
+      acceptedP1Ancestor: false,
+    })), (error) => error.code === "registered-main-p1-ancestry-missing");
+  });
+  await test("registered main on the wrong branch rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({ mainBranch: "feature" })),
+      (error) => error.code === "registered-main-wrong-branch");
+  });
+  await test("dirty registered main rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({ mainTrackedClean: false })),
+      (error) => error.code === "registered-main-dirty");
+  });
+  await test("registered main with a non-empty index rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({ mainIndexEmpty: false })),
+      (error) => error.code === "registered-main-index-not-empty");
+  });
+  await test("registered main with untracked source rejects", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({ mainUntrackedClean: false })),
+      (error) => error.code === "registered-main-untracked-source");
+  });
+  await test("Batch 1.1 publisher bytes remain pinned to immutable BASE_HEAD", () => {
+    assert.equal(sha256(execFileSync("git", ["show", `${BASE_HEAD}:${PUBLISHER_REL}`], { cwd: ROOT })),
+      BATCH11_PUBLISHER_SHA256);
+    assert.equal(sha256(execFileSync("git", ["show",
+      `${BASE_HEAD}:tools/validation/publish/validate-lean-publisher-v1.mjs`], { cwd: ROOT })),
+    BATCH11_VALIDATOR_SHA256);
+  });
+  await test("caller-claimed integration cannot bypass an unaccepted execution scope", () => {
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+      mainHead: "claimed-integrated",
+      acceptedP1Ancestor: true,
+      executionScope: "caller-claimed-integrated",
+    })), (error) => error.code === "execution-scope-not-integrated-authority");
+  });
 }
 
 async function runRuntimeTests(api) {
@@ -1004,6 +1202,7 @@ async function runRuntimeTests(api) {
 
 function runStructuralTests() {
   const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
+  const validatorSource = fs.readFileSync(path.join(ROOT, VALIDATOR_REL), "utf8");
   structural("production activator contains no filesystem write call", () => {
     assert.doesNotMatch(source, /fs\.(?:writeFile|appendFile|mkdir|rm|unlink|rename|copyFile|symlink|link|chmod|chown)(?:Sync)?\s*\(/u);
   });
@@ -1052,6 +1251,18 @@ function runStructuralTests() {
       "node tools/publish/lean-activator.mjs --verify-stage-receipt");
     assert.equal(Object.keys(packageJson.scripts).some((name) => /activate|rollback|recover|prune/u.test(name)), false);
   });
+  structural("production activator is byte-identical to accepted P0/P1", () => {
+    assert.equal(sha256(fs.readFileSync(path.join(ROOT, ACTIVATOR_REL))), ACCEPTED_ACTIVATOR_SHA256);
+    assert.equal(sha256(execFileSync("git", ["show", `${ACCEPTED_P1_HEAD}:${ACTIVATOR_REL}`], { cwd: ROOT })),
+      ACCEPTED_ACTIVATOR_SHA256);
+  });
+  structural("registered-main authority is internally derived from Git ancestry and exact scope", () => {
+    assert.equal(authoritativeMainWorktree.length, 0);
+    assert.match(validatorSource, /merge-base["'`],\s*["'`]--is-ancestor/u);
+    assert.match(validatorSource, /const executionState = currentScopeState\(\)/u);
+    assert.match(validatorSource, /classifyScope\(executionState\)/u);
+  });
+  assert.equal(structuralResults.length, EXPECTED_STRUCTURAL);
 }
 
 async function main() {
@@ -1060,8 +1271,10 @@ async function main() {
   runScopeTests();
   const scopeMode = classifyScope(currentScopeState());
   const api = await import(`${pathToFileURL(path.join(ROOT, ACTIVATOR_REL)).href}?validator=${Date.now()}`);
+  await runAuthorityModelTests();
   await runRuntimeTests(api);
   runStructuralTests();
+  assert.equal(runtimeResults.length, EXPECTED_RUNTIME);
   process.stdout.write(`${JSON.stringify({
     ok: true,
     validator: VALIDATOR_REL,
