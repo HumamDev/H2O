@@ -6,6 +6,7 @@
     "dev:rebuild": "node tools/dev/dev-rebuild.mjs",
     "dev:check": "node tools/dev/dev-check.mjs",
     "publish:h2o:stage": "node tools/publish/lean-publisher.mjs --stage-only",
+    "publish:h2o:verify-stage": "node tools/publish/lean-activator.mjs --verify-stage-receipt",
     "commit:auto": "H2O_META_DIR=\"$PWD/../meta\" node tools/git/commit-auto.mjs",
     "commit:auto:dry": "H2O_META_DIR=\"$PWD/../meta\" node tools/git/commit-auto.mjs --dry-run",
     "commit:auto:msg": "H2O_META_DIR=\"$PWD/../meta\" node tools/git/commit-auto.mjs --message-file \"$PWD/../meta/notes/COMMIT_MESSAGE.txt\"",
