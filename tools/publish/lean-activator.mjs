@@ -4,8 +4,10 @@
 // This module verifies a Batch 1 stage-only publication receipt and independently
 // recomputes every staged manifest. It contains no payload activation, backup,
 // promotion, rollback, recovery mutation, pruning, browser, network,
-// or push capability. P2 may create only the external coordination anchor,
-// activation-intents directory, one durable intent journal, and its own temp.
+// or push capability. P2/P2.1 may create the inherited Batch 1 publisher-lock
+// support directory and lock lifecycle, the independently pinned external
+// coordination anchor, activation-intents directory, one no-replace intent
+// journal, and only the temporary journal file owned by that invocation.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -55,11 +57,15 @@ export const FUTURE_PROMOTION_DESCRIPTION = "transactionally recoverable three-t
 export const ACTIVATION_INTENT_SCHEMA_VERSION = 1;
 export const ACTIVATION_INTENT_MODE = "activation-intent";
 export const ACTIVATION_INTENT_PURPOSE = "canonical-activation";
+// Pinned from the accepted Batch 1/1.1 publisher contract, not from receipt input.
+export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
+export const CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY =
+  "canonical-delivery-lib has its own Git runner; activator calls it with a temporarily sanitized process Git environment and independently pins every returned authority path";
 export const ACTIVATION_ID_PATTERN = /^\d{8}T\d{9}Z-[a-f0-9]{12}$/u;
 // The future three-tree release is sequential and recoverable. It is not a
 // cross-tree atomic swap, and adjacent renames do not eliminate missing-path
-// intervals. P2 uses rename only to publish a journal; no payload-tree rename
-// or other promotion primitive exists in this file.
+// intervals. P2.1 publishes only a journal through a same-directory no-replace
+// hard link; no payload-tree rename or other promotion primitive exists here.
 
 const TEXT_OUTPUT_PATTERN = /\.(?:js|json|txt|html|css)$/iu;
 const DESTINATION_OVERRIDE_NAMES = Object.freeze([
@@ -124,7 +130,7 @@ export function realAware(target) {
   return path.resolve(base, ...suffix);
 }
 
-const EXACT_READ_ONLY_GIT_COMMANDS = new Set([
+const EXACT_READ_ONLY_GIT_COMMANDS = Object.freeze([
   "rev-parse\u0000--show-toplevel",
   "rev-parse\u0000HEAD",
   "rev-parse\u0000HEAD^{tree}",
@@ -144,12 +150,51 @@ export function assertAllowedGitCommand(args) {
   const mergeBaseAllowed = args.length === 4 && args[0] === "merge-base" &&
     args[1] === "--is-ancestor" && FULL_COMMIT_PATTERN.test(args[2]) &&
     (args[3] === "HEAD" || FULL_COMMIT_PATTERN.test(args[3]));
-  if (!EXACT_READ_ONLY_GIT_COMMANDS.has(key) && !mergeBaseAllowed) {
+  if (!EXACT_READ_ONLY_GIT_COMMANDS.includes(key) && !mergeBaseAllowed) {
     fail("git-command-not-allowed", "Activator Git execution is restricted to exact read-only command shapes.", {
       args,
     });
   }
   return true;
+}
+
+const SAFE_GIT_ENVIRONMENT_NAMES = Object.freeze([
+  "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
+]);
+
+export function sanitizedGitEnvironment(environment = process.env) {
+  const safe = Object.create(null);
+  for (const name of SAFE_GIT_ENVIRONMENT_NAMES) {
+    if (typeof environment[name] === "string" && environment[name]) safe[name] = environment[name];
+  }
+  safe.GIT_CONFIG_NOSYSTEM = "1";
+  safe.GIT_CONFIG_GLOBAL = "/dev/null";
+  safe.GIT_CONFIG_SYSTEM = "/dev/null";
+  safe.GIT_CONFIG_COUNT = "0";
+  safe.GIT_TERMINAL_PROMPT = "0";
+  return Object.freeze(safe);
+}
+
+function withSanitizedProcessGitEnvironment(callback) {
+  const original = new Map();
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith("GIT_")) {
+      original.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  }
+  const safe = sanitizedGitEnvironment(process.env);
+  for (const [name, value] of Object.entries(safe)) {
+    if (name.startsWith("GIT_")) process.env[name] = value;
+  }
+  try {
+    return callback();
+  } finally {
+    for (const name of Object.keys(process.env)) {
+      if (name.startsWith("GIT_")) delete process.env[name];
+    }
+    for (const [name, value] of original) process.env[name] = value;
+  }
 }
 
 export function runReadOnlyGit(repository, args, { allowFailure = false } = {}) {
@@ -159,6 +204,7 @@ export function runReadOnlyGit(repository, args, { allowFailure = false } = {}) 
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 30_000,
+      env: sanitizedGitEnvironment(),
     }).trim();
   } catch (error) {
     if (allowFailure) return null;
@@ -291,8 +337,12 @@ function requireReceiptShape(receipt) {
   if (receipt.validatorResult.ok !== true) {
     fail("receipt-validator-failed", "Publisher receipt does not record a successful staged-output validation.");
   }
-  if (!extensionVariantIsSafe(receipt.stagedExtensionVariant)) {
-    fail("receipt-extension-variant", "Receipt extension variant must be one safe canonical path segment.");
+  if (!extensionVariantIsSafe(receipt.stagedExtensionVariant) ||
+      receipt.stagedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    fail("receipt-extension-variant", "Receipt extension variant must equal the independently pinned Batch 1 variant.", {
+      expected: ACCEPTED_EXTENSION_VARIANT,
+      observed: receipt.stagedExtensionVariant,
+    });
   }
   if (typeof receipt.lock.directory !== "string" || !receipt.lock.directory ||
       typeof receipt.lock.ownerId !== "string" || !receipt.lock.ownerId) {
@@ -536,9 +586,40 @@ function verifyRequiredOutputs(stage, receipt) {
   return { proxyMarker, loaderMarker: receipt.buildTimestamp, manifestVersion: manifest.manifest_version };
 }
 
+function assertUnsymlinkedAuthorityPath(target) {
+  const absolute = path.resolve(target);
+  const parsed = path.parse(absolute);
+  let cursor = parsed.root;
+  for (const segment of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    let stat;
+    try { stat = fs.lstatSync(cursor); } catch (error) {
+      if (error?.code === "ENOENT") break;
+      fail("authority-component-unreadable", "Repository authority component could not be inspected.", { cursor });
+    }
+    if (stat.isSymbolicLink()) {
+      fail("authority-component-symlink", "Repository and coordination authority components must not be symlinks.", {
+        cursor,
+      });
+    }
+  }
+}
+
 export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
-  const anchor = deriveSharedAnchor({ cwd: repository, env: {}, allowOverride: false });
-  const expected = path.join(path.dirname(anchor.authoritativeRepositoryRoot), ".h2o-canonical-delivery");
+  assertUnsymlinkedAuthorityPath(REPOSITORY_ROOT);
+  const expectedRepository = fs.realpathSync.native(REPOSITORY_ROOT);
+  const executableTop = realAware(runReadOnlyGit(repository, ["rev-parse", "--show-toplevel"]));
+  if (realAware(repository) !== expectedRepository || executableTop !== expectedRepository) {
+    fail("module-repository-mismatch", "Executable Git authority must match the activator module repository.", {
+      expectedRepository,
+      executableTop,
+    });
+  }
+  const expectedCockpitProRoot = fs.realpathSync.native(path.dirname(REPOSITORY_ROOT));
+  assertUnsymlinkedAuthorityPath(expectedCockpitProRoot);
+  const expected = path.join(expectedCockpitProRoot, ".h2o-canonical-delivery");
+  const anchor = withSanitizedProcessGitEnvironment(() =>
+    deriveSharedAnchor({ cwd: repository, env: {}, allowOverride: false }));
   try {
     if (fs.lstatSync(expected).isSymbolicLink()) {
       fail("canonical-anchor-symlink", "Canonical coordination anchor must not be a symlink.", { expected });
@@ -549,7 +630,9 @@ export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
       fail("canonical-anchor-unreadable", "Canonical coordination anchor metadata is unreadable.", { expected });
     }
   }
-  if (anchor.root !== realAware(expected) || anchor.overrideUsed) {
+  if (realAware(anchor.authoritativeRepositoryRoot) !== expectedRepository ||
+      realAware(anchor.cockpitProRoot) !== expectedCockpitProRoot ||
+      anchor.root !== realAware(expected) || anchor.overrideUsed) {
     fail("canonical-anchor-mismatch", "Canonical coordination anchor is not the derived external default.", {
       expected: realAware(expected),
       observed: anchor.root,
@@ -841,23 +924,28 @@ function flushDirectory(directory) {
   try {
     descriptor = fs.openSync(directory, "r");
     fs.fsyncSync(descriptor);
-    return true;
+    return Object.freeze({ attempted: true, succeeded: true, unsupported: false });
   } catch (error) {
     if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error?.code)) throw error;
-    return false;
+    return Object.freeze({ attempted: true, succeeded: false, unsupported: true, code: error.code });
   } finally {
     if (descriptor !== null) fs.closeSync(descriptor);
   }
 }
 
-function removeOwnJournalTemp(tempPath, intentsDirectory, expectedBasename) {
+function removeOwnJournalTemp(tempPath, intentsDirectory, expectedBasename, owned) {
+  if (!owned) return false;
   if (path.dirname(tempPath) !== path.resolve(intentsDirectory) || path.basename(tempPath) !== expectedBasename) return;
   try {
     const stat = fs.lstatSync(tempPath);
-    if (!stat.isSymbolicLink() && stat.isFile()) fs.unlinkSync(tempPath);
+    if (!stat.isSymbolicLink() && stat.isFile()) {
+      fs.unlinkSync(tempPath);
+      return true;
+    }
   } catch {
     // Cleanup of this invocation's exact temporary file must not mask the cause.
   }
+  return false;
 }
 
 export function writeDurableActivationIntent(intentsDirectory, activationId, journal, { ownerId } = {}) {
@@ -871,6 +959,7 @@ export function writeDurableActivationIntent(intentsDirectory, activationId, jou
   const tempPath = path.join(path.resolve(intentsDirectory), tempBasename);
   const bytes = Buffer.from(`${JSON.stringify(journal, null, 2)}\n`, "utf8");
   let descriptor = null;
+  let tempOwned = false;
   try {
     try {
       fs.lstatSync(finalPath);
@@ -880,19 +969,27 @@ export function writeDurableActivationIntent(intentsDirectory, activationId, jou
       if (error?.code !== "ENOENT") throw error;
     }
     descriptor = fs.openSync(tempPath, "wx", 0o600);
+    tempOwned = true;
     fs.writeFileSync(descriptor, bytes);
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = null;
     try {
-      fs.lstatSync(finalPath);
-      fail("activation-intent-collision", "Activation intent appeared before publication; refusing overwrite.", { finalPath });
+      fs.linkSync(tempPath, finalPath);
     } catch (error) {
-      if (error instanceof ActivatorError) throw error;
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code === "EEXIST") {
+        fail("activation-intent-collision", "Activation intent appeared before publication; refusing overwrite.", {
+          finalPath,
+        });
+      }
+      fail("activation-intent-link-failed", "Filesystem could not publish the intent through no-replace hard linking.", {
+        finalPath,
+        code: error?.code || null,
+      });
     }
-    fs.renameSync(tempPath, finalPath);
-    const directoryFlushed = flushDirectory(intentsDirectory);
+    fs.unlinkSync(tempPath);
+    tempOwned = false;
+    const directoryFsync = flushDirectory(intentsDirectory);
     const observed = fs.readFileSync(finalPath);
     if (!observed.equals(bytes)) {
       fail("activation-intent-final-verification", "Durable intent bytes differ after atomic publication.", {
@@ -903,13 +1000,18 @@ export function writeDurableActivationIntent(intentsDirectory, activationId, jou
       path: finalPath,
       sha256: sha256Bytes(observed),
       bytes: observed.length,
-      directoryFlushed,
+      durability: Object.freeze({
+        fileFsync: Object.freeze({ attempted: true, succeeded: true }),
+        directoryFsync,
+        processCrashAtomicity: true,
+        powerLossDurabilityGuaranteed: false,
+      }),
     });
   } catch (error) {
     if (descriptor !== null) {
       try { fs.closeSync(descriptor); } catch {}
     }
-    removeOwnJournalTemp(tempPath, intentsDirectory, tempBasename);
+    removeOwnJournalTemp(tempPath, intentsDirectory, tempBasename, tempOwned);
     throw error;
   }
 }
@@ -923,6 +1025,12 @@ function canonicalTreeRecords(verification, activationId) {
   const extensionVariant = verification.stage.extensionVariant;
   if (!extensionVariantIsSafe(extensionVariant)) {
     fail("receipt-extension-variant", "Verified receipt extension variant is not a safe canonical path segment.");
+  }
+  if (extensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    fail("receipt-extension-variant", "Verified receipt extension variant differs from the independent authority.", {
+      expected: ACCEPTED_EXTENSION_VARIANT,
+      observed: extensionVariant,
+    });
   }
   const lives = [
     ["alias", path.join(repository, "apps", "dev-server", "alias")],
@@ -1028,6 +1136,20 @@ function buildActivationIntent(verification, activationId, createdAt) {
     canaryPerformed: false,
     pushPerformed: false,
     transactionState: "prepared",
+    durability: {
+      fileFsync: { attempted: true, succeeded: true },
+      // The post-link directory fsync happens after these immutable bytes are
+      // published, so its actual outcome is returned by preparation rather than
+      // retroactively rewriting this no-replace journal.
+      directoryFsync: {
+        attempted: true,
+        succeeded: null,
+        unsupported: null,
+        actualOutcomeReturnedByPreparation: true,
+      },
+      processCrashAtomicity: true,
+      powerLossDurabilityGuaranteed: false,
+    },
     trees: canonicalTreeRecords(verification, activationId),
   };
 }
@@ -1098,6 +1220,16 @@ function requireIntentBoundaryFields(journal) {
       journal.activationPerformed !== false || journal.reloadPerformed !== false ||
       journal.canaryPerformed !== false || journal.pushPerformed !== false) {
     fail("activation-intent-boundary", "P2 intent cannot claim activation, durable acceptance, reload, canary, or push.");
+  }
+  if (journal.durability?.fileFsync?.attempted !== true ||
+      journal.durability?.fileFsync?.succeeded !== true ||
+      journal.durability?.directoryFsync?.attempted !== true ||
+      journal.durability?.directoryFsync?.succeeded !== null ||
+      journal.durability?.directoryFsync?.unsupported !== null ||
+      journal.durability?.directoryFsync?.actualOutcomeReturnedByPreparation !== true ||
+      journal.durability?.processCrashAtomicity !== true ||
+      journal.durability?.powerLossDurabilityGuaranteed !== false) {
+    fail("activation-intent-durability-evidence", "Intent durability evidence is incomplete or overstated.");
   }
 }
 
@@ -1206,6 +1338,7 @@ export function prepareActivationIntent(receiptPath, {
       activationId,
       intentPath: durable.path,
       intentSha256: durable.sha256,
+      durability: durable.durability,
       journal,
       lockReleased: true,
       activationPerformed: false,
