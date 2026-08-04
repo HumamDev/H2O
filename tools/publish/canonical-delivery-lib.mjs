@@ -11,6 +11,25 @@ export const MIN_TOKEN_BYTES = 32;
 export const ACTIVE_LEASE_DIRECTORY = "active-lease";
 export const LEASE_METADATA_FILE = "lease.json";
 const AUTHORITATIVE_MAIN_REF = "refs/heads/main";
+const TRUSTED_GIT_CANDIDATES = Object.freeze([
+  "/usr/bin/git",
+  "/opt/homebrew/bin/git",
+  "/usr/local/bin/git",
+]);
+const EXACT_READ_ONLY_GIT_COMMANDS = Object.freeze([
+  "rev-parse\u0000--show-toplevel",
+  "rev-parse\u0000--path-format=absolute\u0000--git-common-dir",
+  "rev-parse\u0000HEAD",
+  "rev-parse\u0000HEAD^{tree}",
+  "rev-parse\u0000refs/heads/main",
+  "branch\u0000--show-current",
+  "diff\u0000--cached\u0000--quiet",
+  "diff\u0000--quiet",
+  "ls-files\u0000--others\u0000--exclude-standard",
+  "worktree\u0000list\u0000--porcelain",
+  "config\u0000--path\u0000--get\u0000core.worktree",
+]);
+const FULL_COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
 
 export const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -189,16 +208,141 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function runGit(cwd, args) {
+export function sanitizedGitEnvironment(environment = process.env) {
+  const safe = Object.create(null);
+  for (const name of ["TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE"]) {
+    if (typeof environment[name] === "string" && environment[name]) safe[name] = environment[name];
+  }
+  safe.GIT_CONFIG_NOSYSTEM = "1";
+  safe.GIT_CONFIG_GLOBAL = "/dev/null";
+  safe.GIT_CONFIG_SYSTEM = "/dev/null";
+  safe.GIT_CONFIG_COUNT = "0";
+  safe.GIT_TERMINAL_PROMPT = "0";
+  return Object.freeze(safe);
+}
+
+export function attestGitExecutableCandidate(candidate) {
+  if (typeof candidate !== "string" || !path.isAbsolute(candidate) ||
+      !TRUSTED_GIT_CANDIDATES.includes(candidate)) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Git executable is not in the production allow-list", { candidate });
+  }
+  let stat;
+  try { stat = fs.lstatSync(candidate); } catch {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Approved Git executable is unavailable", { candidate });
+  }
+  if (stat.isSymbolicLink()) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH,
+      "Symlinked Git candidates are rejected; production requires an approved regular executable", { candidate });
+  }
+  if (!stat.isFile() || (stat.mode & 0o111) === 0) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Approved Git path is not a regular executable", { candidate });
+  }
+  const realpath = fs.realpathSync.native(candidate);
+  if (realpath !== candidate) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Approved Git executable realpath changed", { candidate, realpath });
+  }
+  let version;
   try {
-    return execFileSync("git", args, {
+    version = execFileSync(realpath, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+      killSignal: "SIGTERM",
+      env: sanitizedGitEnvironment(),
+    }).trim();
+  } catch (error) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Approved Git executable failed its version attestation", {
+      candidate,
+      status: error?.status ?? null,
+    });
+  }
+  if (!/^git version \d+(?:\.\d+)+(?:\s.*)?$/u.test(version)) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Approved Git executable returned an unexpected version", {
+      candidate,
+      version,
+    });
+  }
+  return deepFreeze({
+    path: candidate,
+    realpath,
+    version,
+    sha256: sha256(fs.readFileSync(realpath)),
+    device: String(stat.dev),
+    inode: String(stat.ino),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  });
+}
+
+function resolveTrustedGitExecutable() {
+  const failures = [];
+  for (const candidate of TRUSTED_GIT_CANDIDATES) {
+    try { return attestGitExecutableCandidate(candidate); } catch (error) {
+      failures.push({ candidate, message: error.message });
+    }
+  }
+  fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "No approved regular Git executable is available", { failures });
+}
+
+export const TRUSTED_GIT_EXECUTABLE_IDENTITY = resolveTrustedGitExecutable();
+
+function observedGitExecutableIdentity() {
+  const stat = fs.lstatSync(TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath);
+  return {
+    realpath: fs.realpathSync.native(TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath),
+    sha256: sha256(fs.readFileSync(TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath)),
+    device: String(stat.dev),
+    inode: String(stat.ino),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  };
+}
+
+export function assertTrustedGitExecutableIdentity(observed = observedGitExecutableIdentity()) {
+  for (const key of ["realpath", "sha256", "device", "inode", "size", "mtimeMs"]) {
+    if (observed?.[key] !== TRUSTED_GIT_EXECUTABLE_IDENTITY[key]) {
+      fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Pinned Git executable identity drifted during the process", {
+        key,
+        expected: TRUSTED_GIT_EXECUTABLE_IDENTITY[key],
+        observed: observed?.[key] ?? null,
+      });
+    }
+  }
+  return true;
+}
+
+export function assertAllowedReadOnlyGitCommand(args) {
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Git command arguments must be plain strings", { args });
+  }
+  const key = args.join("\0");
+  const mergeBaseAllowed = args.length === 4 && args[0] === "merge-base" &&
+    args[1] === "--is-ancestor" && FULL_COMMIT_PATTERN.test(args[2]) &&
+    (args[3] === "HEAD" || FULL_COMMIT_PATTERN.test(args[3]));
+  if (!EXACT_READ_ONLY_GIT_COMMANDS.includes(key) && !mergeBaseAllowed) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH,
+      "Git execution is restricted to exact shared read-only command shapes", { args });
+  }
+  return true;
+}
+
+export function runPinnedReadOnlyGit(cwd, args, {
+  allowFailure = false,
+  allowedFailureStatuses = allowFailure ? [1] : [],
+} = {}) {
+  assertAllowedReadOnlyGitCommand(args);
+  assertTrustedGitExecutableIdentity();
+  try {
+    return execFileSync(TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath, args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 10_000,
       killSignal: "SIGTERM",
+      env: sanitizedGitEnvironment(),
     }).trim();
   } catch (error) {
+    if (allowedFailureStatuses.includes(error?.status)) return null;
     fail(EXIT_CODES.ELIGIBILITY_MISMATCH, `git ${args.join(" ")} failed`, {
       cwd,
       status: error?.status ?? null,
@@ -207,24 +351,11 @@ function runGit(cwd, args) {
 }
 
 function gitIsAncestor(cwd, ancestor, descendant) {
-  try {
-    execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
-      cwd,
-      stdio: "ignore",
-      timeout: 10_000,
-      killSignal: "SIGTERM",
-    });
-    return true;
-  } catch (error) {
-    if (error?.status === 1) return false;
-    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "Git ancestry query failed", {
-      cwd,
-      ancestor,
-      descendant,
-      status: error?.status ?? null,
-    });
-  }
+  return runPinnedReadOnlyGit(cwd, ["merge-base", "--is-ancestor", ancestor, descendant],
+    { allowFailure: true }) !== null;
 }
+
+const runGit = runPinnedReadOnlyGit;
 
 export function normalizeRealAware(inputPath, { cwd = process.cwd() } = {}) {
   requireBoundedString(inputPath, "path", { max: 4096 });
@@ -376,25 +507,13 @@ function discoverAuthoritativeRepositoryRoot({
   if (path.basename(gitCommonDirectory) === ".git") {
     return normalizeRealAware(path.dirname(gitCommonDirectory));
   }
-  let configuredWorktree = null;
-  try {
-    configuredWorktree = execFileSync(
-      "git",
-      ["config", "--path", "--get", "core.worktree"],
-      {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 10_000,
-        killSignal: "SIGTERM",
-      },
-    ).trim();
-  } catch {}
+  const configuredWorktree = runGit(cwd, ["config", "--path", "--get", "core.worktree"],
+    { allowFailure: true });
   if (configuredWorktree) {
-    const resolved = path.isAbsolute(configuredWorktree)
-      ? configuredWorktree
-      : path.resolve(gitCommonDirectory, configuredWorktree);
-    return normalizeRealAware(resolved);
+    return validateConfiguredWorktree(configuredWorktree, {
+      gitCommonDirectory,
+      registeredWorktreeRoots,
+    });
   }
   const currentWorktree = normalizeRealAware(runGit(cwd, ["rev-parse", "--show-toplevel"]));
   if (registeredWorktreeRoots.length === 1 ||
@@ -402,6 +521,29 @@ function discoverAuthoritativeRepositoryRoot({
     return currentWorktree;
   }
   return registeredWorktreeRoots[0];
+}
+
+export function validateConfiguredWorktree(configuredWorktree, {
+  gitCommonDirectory,
+  registeredWorktreeRoots,
+}) {
+  if (typeof configuredWorktree !== "string" || configuredWorktree.includes("\0") ||
+      /[\r\n]/u.test(configuredWorktree) || configuredWorktree.length === 0 ||
+      configuredWorktree.length > 4096) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH, "core.worktree returned an unexpected path value");
+  }
+  const resolved = path.isAbsolute(configuredWorktree)
+    ? configuredWorktree
+    : path.resolve(gitCommonDirectory, configuredWorktree);
+  const normalized = normalizeRealAware(resolved);
+  if (!registeredWorktreeRoots.includes(normalized)) {
+    fail(EXIT_CODES.ELIGIBILITY_MISMATCH,
+      "core.worktree must resolve to an independently discovered registered worktree", {
+        configuredWorktree,
+        normalized,
+      });
+  }
+  return normalized;
 }
 
 export function deriveSharedAnchor({
@@ -445,6 +587,7 @@ export function deriveSharedAnchor({
     cockpitProRoot,
     registeredWorktreeRoots,
     overrideUsed: Boolean(configured),
+    gitExecutable: TRUSTED_GIT_EXECUTABLE_IDENTITY,
   });
 }
 

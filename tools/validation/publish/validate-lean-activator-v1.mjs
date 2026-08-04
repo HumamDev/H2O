@@ -21,11 +21,15 @@ const BASE_HEAD = "86af342f1b1815e12c477673a4f2123b37bede40";
 const ACCEPTED_P1_HEAD = "fa0dac4552ce5a1189dee0b1d23975f95bffe751";
 const P2_BASE_HEAD = "d3ebe3c8b3c973ee11d15664b09398f388b0b373";
 const ACCEPTED_P2_HEAD = "bb8109ca5a5b943a55c0b60046e06f8fa3829f49";
+const ACCEPTED_P21_HEAD = "61ff500a048f0b12299ea29adf681a02bec2fa85";
 const P1_SUBJECT = "feat(publish): add canonical activation preflight";
 const VALIDATOR_FIX_SUBJECT = "fix(publish): support integrated P0/P1 validation";
 const P2_SUBJECT = "feat(publish): add durable activation intent foundation";
 const P21_SUBJECT = "fix(publish): harden activation intent preparation";
+const P22_SUBJECT = "fix(publish): close pre-promotion trust boundaries";
 const P2_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
+const CANONICAL_LIB_REL = "tools/publish/canonical-delivery-lib.mjs";
+const P22_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -33,9 +37,9 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 27;
-const EXPECTED_RUNTIME = 144;
-const EXPECTED_STRUCTURAL = 27;
+const EXPECTED_SCOPE = 32;
+const EXPECTED_RUNTIME = 155;
+const EXPECTED_STRUCTURAL = 31;
 
 const temporaryRoots = [];
 const scopeResults = [];
@@ -160,6 +164,21 @@ function classifyScope(state) {
     value.acceptedP1Ancestor === true &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P2_AUTHORIZED_PATHS);
   if (p21Clean) return "p21-committed";
+  const p22Base = value.head === ACCEPTED_P21_HEAD && value.parent === ACCEPTED_P2_HEAD &&
+    value.subject === P21_SUBJECT && value.acceptedP1Ancestor === true &&
+    value.untracked.length === 0 && value.staged.length === 0 &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P2_AUTHORIZED_PATHS);
+  if (p22Base && JSON.stringify(value.modifiedTracked) === JSON.stringify([VALIDATOR_REL])) {
+    return "p22-test-first-uncommitted";
+  }
+  if (p22Base && JSON.stringify(value.modifiedTracked) === JSON.stringify(P22_AUTHORIZED_PATHS)) {
+    return "p22-uncommitted";
+  }
+  const p22Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === ACCEPTED_P21_HEAD && value.subject === P22_SUBJECT &&
+    value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P22_AUTHORIZED_PATHS);
+  if (p22Clean) return "p22-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -350,6 +369,41 @@ function runScopeTests() {
       committedPaths: [...P2_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("P2.2 test-first validator-only state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P21_HEAD, parent: ACCEPTED_P2_HEAD, subject: P21_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [VALIDATOR_REL], untracked: [],
+      committedPaths: [...P2_AUTHORIZED_PATHS],
+    })), "p22-test-first-uncommitted");
+  });
+  scopeTest("exact dirty three-file P2.2 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P21_HEAD, parent: ACCEPTED_P2_HEAD, subject: P21_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P22_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P2_AUTHORIZED_PATHS],
+    })), "p22-uncommitted");
+  });
+  scopeTest("P2.2 dirty scope rejects a fourth path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: ACCEPTED_P21_HEAD, parent: ACCEPTED_P2_HEAD, subject: P21_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P22_AUTHORIZED_PATHS, "README.md"].sort(), untracked: [],
+      committedPaths: [...P2_AUTHORIZED_PATHS],
+    })), /scope mismatch/u);
+  });
+  scopeTest("exact committed three-file P2.2 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p22", parent: ACCEPTED_P21_HEAD, subject: P22_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P22_AUTHORIZED_PATHS],
+    })), "p22-committed");
+  });
+  scopeTest("committed P2.2 rejects a wrong parent or extra path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-p22", parent: ACCEPTED_P2_HEAD, subject: P22_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P22_AUTHORIZED_PATHS, "README.md"].sort(),
+    })), /scope mismatch/u);
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -372,7 +426,8 @@ function evaluateRegisteredMainAuthority(evidence) {
   if (evidence.acceptedP1Ancestor !== true) authorityError("registered-main-p1-ancestry-missing", evidence);
   if (!["committed-clean", "validator-fix-uncommitted", "validator-fix-committed",
     "p2-test-first-uncommitted", "p2-uncommitted", "p2-committed",
-    "p21-test-first-uncommitted", "p21-uncommitted", "p21-committed"]
+    "p21-test-first-uncommitted", "p21-uncommitted", "p21-committed",
+    "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -504,8 +559,9 @@ function createRealPublisherBoundaryFixture(label) {
     BATCH11_PUBLISHER_SHA256,
     "fixture must execute the exact committed Batch 1.1 publisher");
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
+  copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
   installIgnoredPublisherInputs(repository);
-  git(repository, ["add", ACTIVATOR_REL]);
+  git(repository, ["add", ACTIVATOR_REL, CANONICAL_LIB_REL]);
   if (git(repository, ["diff", "--cached", "--name-only"])) {
     git(repository, ["commit", "-q", "-m", "fixture: current read-only activator"]);
   }
@@ -552,6 +608,7 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
   git(repository, ["config", "user.name", "Lean Activator Validator"]);
   git(repository, ["config", "user.email", "lean-activator@example.invalid"]);
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
+  copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
   fs.mkdirSync(path.join(repository, "fixture-source"), { recursive: true });
   fs.writeFileSync(path.join(repository, "fixture-source", "ordinary.js"), "export const ordinary = true;\n");
   fs.writeFileSync(path.join(repository, "fixture-source", "emoji 🧪.js"), "export const emoji = '🧪';\n");
@@ -562,6 +619,28 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
   git(repository, ["commit", "-q", "-m", "fixture: activator source"]);
   assert.equal(git(repository, ["status", "--porcelain=v1"]), "");
   return { top, repository, activator: path.join(repository, ACTIVATOR_REL) };
+}
+
+function installAnchorMismatchBoundary(fixture) {
+  const library = path.join(fixture.repository, CANONICAL_LIB_REL);
+  const realRelative = "tools/publish/canonical-delivery-p22-real.mjs";
+  const realLibrary = path.join(fixture.repository, realRelative);
+  copyFile(library, realLibrary);
+  fs.writeFileSync(library, [
+    'import path from "node:path";',
+    'import { deriveSharedAnchor as deriveRealSharedAnchor } from "./canonical-delivery-p22-real.mjs";',
+    'export * from "./canonical-delivery-p22-real.mjs";',
+    'export function deriveSharedAnchor(options) {',
+    '  const actual = deriveRealSharedAnchor(options);',
+    '  const wrongCockpitProRoot = path.join(actual.cockpitProRoot, "clean-but-wrong-root");',
+    '  return Object.freeze({ ...actual, cockpitProRoot: wrongCockpitProRoot,',
+    '    root: path.join(wrongCockpitProRoot, ".h2o-canonical-delivery") });',
+    '}',
+    '',
+  ].join("\n"));
+  git(fixture.repository, ["add", CANONICAL_LIB_REL, realRelative]);
+  git(fixture.repository, ["commit", "-q", "-m", "fixture: clean incorrect anchor derivation"]);
+  assert.equal(git(fixture.repository, ["status", "--porcelain=v1"]), "");
 }
 
 function listFiles(root) {
@@ -856,6 +935,63 @@ async function runAuthorityModelTests() {
 }
 
 async function runRuntimeTests(api) {
+  const canonicalApi = await import(
+    `${pathToFileURL(path.join(ROOT, CANONICAL_LIB_REL)).href}?p22-validator=${Date.now()}`);
+  await test("P2.2 resolves one pinned absolute Git executable identity", () => {
+    assert.equal(path.isAbsolute(api.TRUSTED_GIT_EXECUTABLE_IDENTITY?.realpath || ""), true);
+    assert.equal(fs.lstatSync(api.TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath).isSymbolicLink(), false);
+    assert.equal(fs.statSync(api.TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath).isFile(), true);
+  });
+  await test("pinned Git ignores hostile PATH and never executes a fake git binary", () => {
+    const hostile = tempRoot("p22-hostile-path");
+    const marker = path.join(hostile, "fake-git-executed");
+    const fake = path.join(hostile, "git");
+    fs.writeFileSync(fake, `#!/bin/sh\nprintf executed > ${JSON.stringify(marker)}\nexit 99\n`, { mode: 0o700 });
+    const expectedHead = git(ROOT, ["rev-parse", "HEAD"]);
+    const previous = process.env.PATH;
+    process.env.PATH = hostile;
+    try {
+      assert.equal(canonicalApi.runPinnedReadOnlyGit(ROOT, ["rev-parse", "HEAD"]), expectedHead);
+    } finally {
+      if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
+    }
+    assert.equal(fs.existsSync(marker), false);
+  });
+  await test("unapproved and symlinked Git executable candidates fail closed", () => {
+    const hostile = tempRoot("p22-unapproved-git");
+    const fake = path.join(hostile, "git");
+    fs.writeFileSync(fake, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    assert.throws(() => canonicalApi.attestGitExecutableCandidate(fake),
+      (error) => error.name === "CanonicalDeliveryError");
+    if (fs.existsSync("/opt/homebrew/bin/git") && fs.lstatSync("/opt/homebrew/bin/git").isSymbolicLink()) {
+      assert.throws(() => canonicalApi.attestGitExecutableCandidate("/opt/homebrew/bin/git"),
+        (error) => error.name === "CanonicalDeliveryError" && /Symlinked Git/u.test(error.message));
+    }
+  });
+  await test("pinned Git executable identity drift is rejected within one process", () => {
+    const observed = { ...canonicalApi.TRUSTED_GIT_EXECUTABLE_IDENTITY,
+      size: canonicalApi.TRUSTED_GIT_EXECUTABLE_IDENTITY.size + 1 };
+    assert.throws(() => canonicalApi.assertTrustedGitExecutableIdentity(observed),
+      (error) => error.name === "CanonicalDeliveryError" && /identity drifted/u.test(error.message));
+  });
+  await test("canonical library rejects unexpected core.worktree output", () => {
+    const root = tempRoot("p22-core-worktree");
+    const registered = path.join(root, "registered worktree");
+    fs.mkdirSync(registered);
+    assert.equal(canonicalApi.validateConfiguredWorktree(registered, {
+      gitCommonDirectory: path.join(root, "git metadata"),
+      registeredWorktreeRoots: [fs.realpathSync(registered)],
+    }), fs.realpathSync(registered));
+    assert.throws(() => canonicalApi.validateConfiguredWorktree(path.join(root, "unexpected"), {
+      gitCommonDirectory: path.join(root, "git metadata"),
+      registeredWorktreeRoots: [fs.realpathSync(registered)],
+    }), (error) => error.name === "CanonicalDeliveryError" && /independently discovered/u.test(error.message));
+  });
+  await test("optional read-only Git queries suppress only the documented status-one absence", () => {
+    assert.throws(() => canonicalApi.runPinnedReadOnlyGit("/definitely/missing/repository", [
+      "config", "--path", "--get", "core.worktree",
+    ], { allowFailure: true }), (error) => error.name === "CanonicalDeliveryError");
+  });
   await test("P2.1 independently pins the accepted extension variant", () => {
     assert.equal(api.ACCEPTED_EXTENSION_VARIANT, "dev-controls-oauth-google");
   });
@@ -1365,12 +1501,17 @@ async function runRuntimeTests(api) {
 
   await test("all exact read-only Git command shapes are accepted", () => {
     for (const args of [
-      ["rev-parse", "--show-toplevel"], ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"],
+      ["rev-parse", "--show-toplevel"], ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      ["rev-parse", "HEAD"], ["rev-parse", "HEAD^{tree}"], ["rev-parse", "refs/heads/main"],
       ["branch", "--show-current"], ["diff", "--cached", "--quiet"], ["diff", "--quiet"],
       ["ls-files", "--others", "--exclude-standard"], ["worktree", "list", "--porcelain"],
+      ["config", "--path", "--get", "core.worktree"],
       ["merge-base", "--is-ancestor", "a".repeat(40), "HEAD"],
       ["merge-base", "--is-ancestor", "a".repeat(40), "b".repeat(40)],
-    ]) assert.equal(api.assertAllowedGitCommand(args), true);
+    ]) {
+      assert.equal(api.assertAllowedGitCommand(args), true);
+      assert.equal(canonicalApi.assertAllowedReadOnlyGitCommand(args), true);
+    }
   });
   await test("all named Git mutation and network commands reject before execution", () => {
     for (const command of ["reset", "checkout", "switch", "clean", "add", "commit", "merge", "rebase",
@@ -1388,7 +1529,13 @@ async function runRuntimeTests(api) {
       ["-c", "alias.x=reset", "x"], ["--config=alias.x=reset", "x"], ["alias.x"],
       ["rev-parse", "HEAD", "--verify"], ["rev-parse", "HEAD;reset"],
       ["merge-base", "--is-ancestor", "HEAD", "HEAD"], ["diff", "--quiet", "--", "."],
-    ]) expectActivatorError(() => api.assertAllowedGitCommand(args), "git-command-not-allowed");
+      ["config", "--global", "alias.x", "reset"], ["config", "--get", "http.proxy"],
+      ["rev-parse", "--git-dir"], ["ls-remote", "origin"],
+    ]) {
+      expectActivatorError(() => api.assertAllowedGitCommand(args), "git-command-not-allowed");
+      assert.throws(() => canonicalApi.assertAllowedReadOnlyGitCommand(args),
+        (error) => error.name === "CanonicalDeliveryError");
+    }
   });
   await test("activation IDs use exact UTC compact timestamp and lowercase hex", () => {
     assert.equal(api.generateActivationId({ now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES }),
@@ -1434,6 +1581,7 @@ async function runRuntimeTests(api) {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_COMMON_DIR"]) {
         assert.equal(Object.hasOwn(sanitized, name), false);
       }
+      assert.equal(Object.hasOwn(sanitized, "PATH"), false);
       assert.equal(sanitized.GIT_CONFIG_GLOBAL, "/dev/null");
       assert.equal(sanitized.GIT_CONFIG_SYSTEM, "/dev/null");
     } finally {
@@ -1444,6 +1592,17 @@ async function runRuntimeTests(api) {
   });
   await test("module-location repository mismatch rejects independent anchor derivation", () => {
     expectActivatorError(() => api.deriveCanonicalFoundation(fixture.repository), "module-repository-mismatch");
+  });
+  await test("clean incorrect derived anchor reaches canonical-anchor-mismatch before lock or coordination mutation", () => {
+    const value = createRepositoryFixture("p22-true-anchor-mismatch");
+    installAnchorMismatchBoundary(value);
+    const stageValue = createStageFixture(value.repository, "p22-true-anchor-mismatch");
+    const result = runActivator(value, ["--prepare-activation-intent", stageValue.receiptPath]);
+    assert.notEqual(result.status, 0);
+    assert.equal(codeOf(result), "canonical-anchor-mismatch", result.stderr);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-canonical-delivery")), false);
+    assert.equal(fs.existsSync(path.join(value.top, "clean-but-wrong-root")), false);
   });
 
   const p2Fixture = createRepositoryFixture("p2-intent-spaces-emoji");
@@ -1462,6 +1621,10 @@ async function runRuntimeTests(api) {
     assert.equal(fs.statSync(preparedIntent.intentPath).mode & 0o777, 0o600);
     assert.equal(fs.readdirSync(path.dirname(preparedIntent.intentPath)).some((name) => name.includes(".tmp-")), false);
     assert.equal(fs.existsSync(path.join(p2Fixture.top, ".h2o-publisher-lock")), false);
+    assert.deepEqual(preparedIntent.coordinationDirectories.anchor.parentDirectoryFsync,
+      { attempted: true, succeeded: true, unsupported: false });
+    assert.deepEqual(preparedIntent.coordinationDirectories.activationIntents.parentDirectoryFsync,
+      { attempted: true, succeeded: true, unsupported: false });
   });
   await test("P2 journal records exact schema, verified stage evidence, and false boundary fields", () => {
     const journal = JSON.parse(fs.readFileSync(preparedIntent.intentPath, "utf8"));
@@ -1475,6 +1638,7 @@ async function runRuntimeTests(api) {
     }
     assert.equal(journal.stageReceiptSha256, sha256(fs.readFileSync(p2Stage.receiptPath)));
     assert.deepEqual(journal.stageManifests, p2Stage.receipt.manifests);
+    assert.deepEqual(journal.gitExecutable, p2Api.TRUSTED_GIT_EXECUTABLE_IDENTITY);
     assert.deepEqual(journal.durability.fileFsync, { attempted: true, succeeded: true });
     assert.deepEqual(journal.durability.directoryFsync, {
       attempted: true,
@@ -1663,7 +1827,7 @@ async function runRuntimeTests(api) {
     assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
     assert.equal(fs.existsSync(payload.intentPath), true);
   });
-  await test("spawned prepare CLI failure after lock acquisition releases the lock", () => {
+  await test("spawned prepare CLI rejects a symlinked anchor before lock acquisition", () => {
     const value = createRepositoryFixture("p21-spawned-cli-failure");
     const stageValue = createStageFixture(value.repository, "p21-spawned-cli-failure");
     const foreign = path.join(value.top, "foreign-anchor"); fs.mkdirSync(foreign);
@@ -1673,6 +1837,40 @@ async function runRuntimeTests(api) {
     assert.equal(codeOf(result), "canonical-anchor-symlink");
     assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
     assert.deepEqual(fs.readdirSync(foreign), []);
+  });
+  await test("genuine post-lock preparation failure releases lock without journal or payload access", async () => {
+    const value = createRepositoryFixture("p22-post-lock-failure");
+    const stageValue = createStageFixture(value.repository, "p22-post-lock-failure");
+    const valueApi = await importFixtureActivator(value, "p22-post-lock-failure");
+    const lockPath = path.join(value.top, ".h2o-publisher-lock");
+    const anchor = path.join(value.top, ".h2o-canonical-delivery");
+    const payloadPaths = new Set([
+      path.join(value.repository, "apps", "dev-server", "alias"),
+      path.join(value.repository, "apps", "dev-server", "dev_output"),
+      path.join(value.repository, "apps", "extensions", "chatgpt", "chrome", "dev-controls-oauth-google"),
+    ].map((entry) => path.resolve(entry)));
+    const originalLstat = fs.lstatSync;
+    let lockAcquired = false;
+    let payloadInspections = 0;
+    fs.lstatSync = (filename, ...args) => {
+      if (payloadPaths.has(path.resolve(String(filename)))) payloadInspections += 1;
+      return originalLstat(filename, ...args);
+    };
+    try {
+      const verified = valueApi.verifyStageReceipt(stageValue.receiptPath);
+      assert.throws(() => valueApi.withPublisherLock(
+        verified.canonicalFoundation, verified.source, () => {
+          assert.equal(fs.existsSync(lockPath), true);
+          lockAcquired = true;
+          throw new Error("fixture failure after publisher-lock acquisition");
+        }), /fixture failure after publisher-lock acquisition/u);
+    } finally {
+      fs.lstatSync = originalLstat;
+    }
+    assert.equal(lockAcquired, true);
+    assert.equal(fs.existsSync(lockPath), false);
+    assert.equal(fs.existsSync(anchor), false);
+    assert.equal(payloadInspections, 0);
   });
   await test("coordination and journal permissions remain owner-only", async () => {
     const value = createRepositoryFixture("p21-permissions-space 🧪");
@@ -1687,6 +1885,66 @@ async function runRuntimeTests(api) {
     assert.equal(fs.statSync(intents).mode & 0o777, 0o700);
     assert.equal(fs.statSync(prepared.intentPath).mode & 0o777, 0o600);
     assert.equal(fs.readdirSync(intents).some((name) => name.includes(".tmp-")), false);
+  });
+  await test("unsupported coordination-parent fsync is reported explicitly", async () => {
+    const parent = tempRoot("p22-parent-fsync-unsupported");
+    const originalOpen = fs.openSync; const originalFsync = fs.fsyncSync;
+    let parentDescriptor = null;
+    fs.openSync = (filename, ...args) => {
+      const descriptor = originalOpen(filename, ...args);
+      if (path.resolve(String(filename)) === path.resolve(parent)) parentDescriptor = descriptor;
+      return descriptor;
+    };
+    fs.fsyncSync = (descriptor) => {
+      if (descriptor === parentDescriptor) {
+        const error = new Error("fixture unsupported parent fsync"); error.code = "EINVAL"; throw error;
+      }
+      return originalFsync(descriptor);
+    };
+    let evidence;
+    try {
+      evidence = api.flushDirectory(parent);
+    } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
+    assert.deepEqual(evidence,
+      { attempted: true, succeeded: false, unsupported: true, code: "EINVAL" });
+  });
+  await test("hard coordination-parent fsync failure remains loud", async () => {
+    const parent = tempRoot("p22-parent-fsync-hard");
+    const originalOpen = fs.openSync; const originalFsync = fs.fsyncSync;
+    let parentDescriptor = null;
+    fs.openSync = (filename, ...args) => {
+      const descriptor = originalOpen(filename, ...args);
+      if (path.resolve(String(filename)) === path.resolve(parent)) parentDescriptor = descriptor;
+      return descriptor;
+    };
+    fs.fsyncSync = (descriptor) => {
+      if (descriptor === parentDescriptor) {
+        const error = new Error("fixture hard parent fsync failure"); error.code = "EIO"; throw error;
+      }
+      return originalFsync(descriptor);
+    };
+    try {
+      assert.throws(() => api.flushDirectory(parent), /fixture hard parent fsync failure/u);
+    } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
+  });
+  await test("EPERM directory fsync is a hard error rather than unsupported evidence", async () => {
+    const parent = tempRoot("p22-parent-fsync-eperm");
+    const originalOpen = fs.openSync; const originalFsync = fs.fsyncSync;
+    let parentDescriptor = null;
+    fs.openSync = (filename, ...args) => {
+      const descriptor = originalOpen(filename, ...args);
+      if (path.resolve(String(filename)) === path.resolve(parent)) parentDescriptor = descriptor;
+      return descriptor;
+    };
+    fs.fsyncSync = (descriptor) => {
+      if (descriptor === parentDescriptor) {
+        const error = new Error("fixture parent fsync permission failure"); error.code = "EPERM"; throw error;
+      }
+      return originalFsync(descriptor);
+    };
+    try {
+      assert.throws(() => api.flushDirectory(parent), (error) => error?.code === "EPERM");
+    } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
   });
 
   await test("symlinked activation-intents directory rejects and lock is released", async () => {
@@ -1859,7 +2117,7 @@ async function runRuntimeTests(api) {
     const tempPath = path.join(directory, `.${FIXED_ACTIVATION_ID}.json.tmp-${ownerId}`);
     fs.writeFileSync(tempPath, "foreign-owned-temp\n", { mode: 0o600 });
     assert.throws(() => api.writeDurableActivationIntent(directory, FIXED_ACTIVATION_ID, {}, { ownerId }),
-      (error) => error.code === "EEXIST");
+      (error) => error.code === "activation-intent-temp-collision");
     assert.equal(fs.readFileSync(tempPath, "utf8"), "foreign-owned-temp\n");
     assert.equal(fs.existsSync(path.join(directory, `${FIXED_ACTIVATION_ID}.json`)), false);
   });
@@ -1998,6 +2256,7 @@ async function runRuntimeTests(api) {
 
 function runStructuralTests() {
   const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
+  const canonicalSource = fs.readFileSync(path.join(ROOT, CANONICAL_LIB_REL), "utf8");
   const validatorSource = fs.readFileSync(path.join(ROOT, VALIDATOR_REL), "utf8");
   structural("production writes are limited to lock support, coordination directories, one journal, and own-temp cleanup", () => {
     assert.match(source, /function writeDurableActivationIntent/u);
@@ -2062,14 +2321,15 @@ function runStructuralTests() {
   structural("every activator Git execution is routed through the explicit read-only allow-list", () => {
     assert.match(source, /export function assertAllowedGitCommand/u);
     assert.match(source, /export function runReadOnlyGit[\s\S]*assertAllowedGitCommand\(args\)/u);
-    assert.equal((source.match(/execFileSync\("git"/gu) || []).length, 1);
+    assert.match(source, /runPinnedReadOnlyGit\(repository, args/u);
+    assert.equal((source.match(/execFileSync\(["'`]git["'`]/gu) || []).length, 0);
   });
   structural("P2.1 freezes Git argv authority and sanitizes repository/config redirection", () => {
-    assert.match(source, /Object\.freeze\(\[\s*"rev-parse\\u0000--show-toplevel"/u);
-    assert.match(source, /export function sanitizedGitEnvironment/u);
+    assert.match(canonicalSource, /Object\.freeze\(\[\s*"rev-parse\\u0000--show-toplevel"/u);
+    assert.match(canonicalSource, /export function sanitizedGitEnvironment/u);
     for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-      "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) assert.doesNotMatch(source, new RegExp(`safe\\.${name}\\s*=`));
-    assert.match(source, /GIT_CONFIG_GLOBAL = "\/dev\/null"/u);
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) assert.doesNotMatch(canonicalSource, new RegExp(`safe\\.${name}\\s*=`));
+    assert.match(canonicalSource, /GIT_CONFIG_GLOBAL = "\/dev\/null"/u);
   });
   structural("repository, cockpit root, anchor, and extension variant are independently pinned", () => {
     assert.match(source, /fs\.realpathSync\.native\(REPOSITORY_ROOT\)/u);
@@ -2101,7 +2361,7 @@ function runStructuralTests() {
   structural("module documents lock mutations and the canonical-library Git trust boundary", () => {
     assert.match(source, /publisher-lock\s*\n\/\/ support directory and lock lifecycle/u);
     assert.match(source, /CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY/u);
-    assert.match(source, /withSanitizedProcessGitEnvironment/u);
+    assert.match(source, /share one pinned executable, sanitized environment, and exact read-only argv boundary/u);
   });
   structural("recovery classifier is pure and requires P3 for payload-mutated states", () => {
     assert.match(source, /export function classifyRecoveryState/u);
@@ -2124,6 +2384,30 @@ function runStructuralTests() {
     assert.deepEqual(P2_AUTHORIZED_PATHS, [ACTIVATOR_REL, VALIDATOR_REL].sort());
     assert.match(validatorSource, /P2_BASE_HEAD/u);
     assert.match(validatorSource, /P2_SUBJECT/u);
+  });
+  structural("P2.2 pins a regular absolute Git executable and never falls back to PATH lookup", () => {
+    assert.match(canonicalSource, /const TRUSTED_GIT_CANDIDATES = Object\.freeze/u);
+    assert.match(canonicalSource, /"\/usr\/bin\/git"/u);
+    assert.match(canonicalSource, /stat\.isSymbolicLink\(\)/u);
+    assert.match(canonicalSource, /execFileSync\(TRUSTED_GIT_EXECUTABLE_IDENTITY\.realpath/u);
+    assert.doesNotMatch(canonicalSource, /execFileSync\(["'`]git["'`]/u);
+  });
+  structural("canonical-delivery library shares the exact Git gate and validates core.worktree independently", () => {
+    assert.match(canonicalSource, /export function assertAllowedReadOnlyGitCommand/u);
+    assert.match(canonicalSource, /export function runPinnedReadOnlyGit/u);
+    assert.match(canonicalSource, /export function validateConfiguredWorktree/u);
+    assert.match(canonicalSource, /registeredWorktreeRoots\.includes\(normalized\)/u);
+    assert.equal((canonicalSource.match(/execFileSync\(/gu) || []).length, 3);
+  });
+  structural("coordination directory creation flushes its parent and treats EPERM as a hard error", () => {
+    assert.match(source, /parentDirectoryFsync:\s*created[\s\S]*flushDirectory\(path\.dirname\(directory\)\)/u);
+    assert.doesNotMatch(source, /\["EINVAL", "ENOTSUP", "EISDIR", "EPERM"\]/u);
+    assert.match(source, /activation-intent-temp-collision/u);
+  });
+  structural("P2.2 scope remains exactly activator, canonical library, and activator validator", () => {
+    assert.deepEqual(P22_AUTHORIZED_PATHS, [ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL].sort());
+    assert.match(validatorSource, /ACCEPTED_P21_HEAD/u);
+    assert.match(validatorSource, /P22_SUBJECT/u);
   });
   assert.equal(structuralResults.length, EXPECTED_STRUCTURAL);
 }

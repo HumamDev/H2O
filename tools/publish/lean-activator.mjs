@@ -13,10 +13,15 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { deriveSharedAnchor } from "./canonical-delivery-lib.mjs";
+import {
+  assertAllowedReadOnlyGitCommand,
+  deriveSharedAnchor,
+  runPinnedReadOnlyGit,
+  sanitizedGitEnvironment,
+  TRUSTED_GIT_EXECUTABLE_IDENTITY,
+} from "./canonical-delivery-lib.mjs";
 import { acquireLock, releaseLock } from "./lean-publisher.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +65,8 @@ export const ACTIVATION_INTENT_PURPOSE = "canonical-activation";
 // Pinned from the accepted Batch 1/1.1 publisher contract, not from receipt input.
 export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
 export const CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY =
-  "canonical-delivery-lib has its own Git runner; activator calls it with a temporarily sanitized process Git environment and independently pins every returned authority path";
+  "canonical-delivery-lib and activator share one pinned executable, sanitized environment, and exact read-only argv boundary; activator independently pins every returned authority path";
+export { sanitizedGitEnvironment, TRUSTED_GIT_EXECUTABLE_IDENTITY };
 export const ACTIVATION_ID_PATTERN = /^\d{8}T\d{9}Z-[a-f0-9]{12}$/u;
 // The future three-tree release is sequential and recoverable. It is not a
 // cross-tree atomic swap, and adjacent renames do not eliminate missing-path
@@ -130,95 +136,32 @@ export function realAware(target) {
   return path.resolve(base, ...suffix);
 }
 
-const EXACT_READ_ONLY_GIT_COMMANDS = Object.freeze([
-  "rev-parse\u0000--show-toplevel",
-  "rev-parse\u0000HEAD",
-  "rev-parse\u0000HEAD^{tree}",
-  "branch\u0000--show-current",
-  "diff\u0000--cached\u0000--quiet",
-  "diff\u0000--quiet",
-  "ls-files\u0000--others\u0000--exclude-standard",
-  "worktree\u0000list\u0000--porcelain",
-]);
-const FULL_COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
-
 export function assertAllowedGitCommand(args) {
-  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
-    fail("git-command-not-allowed", "Git command arguments must be plain strings.", { args });
-  }
-  const key = args.join("\0");
-  const mergeBaseAllowed = args.length === 4 && args[0] === "merge-base" &&
-    args[1] === "--is-ancestor" && FULL_COMMIT_PATTERN.test(args[2]) &&
-    (args[3] === "HEAD" || FULL_COMMIT_PATTERN.test(args[3]));
-  if (!EXACT_READ_ONLY_GIT_COMMANDS.includes(key) && !mergeBaseAllowed) {
-    fail("git-command-not-allowed", "Activator Git execution is restricted to exact read-only command shapes.", {
-      args,
-    });
-  }
-  return true;
-}
-
-const SAFE_GIT_ENVIRONMENT_NAMES = Object.freeze([
-  "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
-]);
-
-export function sanitizedGitEnvironment(environment = process.env) {
-  const safe = Object.create(null);
-  for (const name of SAFE_GIT_ENVIRONMENT_NAMES) {
-    if (typeof environment[name] === "string" && environment[name]) safe[name] = environment[name];
-  }
-  safe.GIT_CONFIG_NOSYSTEM = "1";
-  safe.GIT_CONFIG_GLOBAL = "/dev/null";
-  safe.GIT_CONFIG_SYSTEM = "/dev/null";
-  safe.GIT_CONFIG_COUNT = "0";
-  safe.GIT_TERMINAL_PROMPT = "0";
-  return Object.freeze(safe);
-}
-
-function withSanitizedProcessGitEnvironment(callback) {
-  const original = new Map();
-  for (const name of Object.keys(process.env)) {
-    if (name.startsWith("GIT_")) {
-      original.set(name, process.env[name]);
-      delete process.env[name];
-    }
-  }
-  const safe = sanitizedGitEnvironment(process.env);
-  for (const [name, value] of Object.entries(safe)) {
-    if (name.startsWith("GIT_")) process.env[name] = value;
-  }
   try {
-    return callback();
-  } finally {
-    for (const name of Object.keys(process.env)) {
-      if (name.startsWith("GIT_")) delete process.env[name];
-    }
-    for (const [name, value] of original) process.env[name] = value;
+    return assertAllowedReadOnlyGitCommand(args);
+  } catch (error) {
+    fail("git-command-not-allowed", error.message, { args });
   }
 }
 
-export function runReadOnlyGit(repository, args, { allowFailure = false } = {}) {
+export function runReadOnlyGit(repository, args, {
+  allowFailure = false,
+  allowedFailureStatuses = allowFailure ? [1] : [],
+} = {}) {
   assertAllowedGitCommand(args);
   try {
-    return execFileSync("git", ["-C", repository, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30_000,
-      env: sanitizedGitEnvironment(),
-    }).trim();
+    return runPinnedReadOnlyGit(repository, args, { allowFailure, allowedFailureStatuses });
   } catch (error) {
-    if (allowFailure) return null;
     fail("git-command-failed", "Required read-only Git evidence could not be obtained.", {
       args,
-      status: error?.status ?? null,
-      stderr: String(error?.stderr || "").trim().slice(0, 500),
+      cause: error.message,
     });
   }
 }
 
 function gitIsAncestor(repository, ancestor, descendant) {
   return runReadOnlyGit(repository, ["merge-base", "--is-ancestor", ancestor, descendant],
-    { allowFailure: true }) !== null;
+    { allowedFailureStatuses: [1, 128] }) !== null;
 }
 
 const git = runReadOnlyGit;
@@ -294,7 +237,13 @@ export function collectSourcePreflight(repository = REPOSITORY_ROOT) {
       missingFoundations,
     });
   }
-  return Object.freeze({ repository: top, branch, approvedHead, sourceTree });
+  return Object.freeze({
+    repository: top,
+    branch,
+    approvedHead,
+    sourceTree,
+    gitExecutable: TRUSTED_GIT_EXECUTABLE_IDENTITY,
+  });
 }
 
 function parseReceipt(receiptPath) {
@@ -618,8 +567,7 @@ export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
   const expectedCockpitProRoot = fs.realpathSync.native(path.dirname(REPOSITORY_ROOT));
   assertUnsymlinkedAuthorityPath(expectedCockpitProRoot);
   const expected = path.join(expectedCockpitProRoot, ".h2o-canonical-delivery");
-  const anchor = withSanitizedProcessGitEnvironment(() =>
-    deriveSharedAnchor({ cwd: repository, env: {}, allowOverride: false }));
+  const anchor = deriveSharedAnchor({ cwd: repository, env: {}, allowOverride: false });
   try {
     if (fs.lstatSync(expected).isSymbolicLink()) {
       fail("canonical-anchor-symlink", "Canonical coordination anchor must not be a symlink.", { expected });
@@ -641,6 +589,7 @@ export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
   return Object.freeze({
     root: anchor.root,
     source: anchor.source,
+    gitExecutable: TRUSTED_GIT_EXECUTABLE_IDENTITY,
     publisherLock: path.join(anchor.cockpitProRoot, ".h2o-publisher-lock"),
     futureSubpaths: Object.fromEntries(FUTURE_COORDINATION_SUBPATHS.map((name) => [name, path.join(anchor.root, name)])),
     created: false,
@@ -902,9 +851,11 @@ function assertRealDirectoryOrAbsent(directory, symlinkCode, invalidCode) {
 
 function ensureCoordinationDirectory(directory, symlinkCode, invalidCode) {
   const state = assertRealDirectoryOrAbsent(directory, symlinkCode, invalidCode);
+  let created = false;
   if (state === "absent") {
     try {
       fs.mkdirSync(directory, { mode: 0o700 });
+      created = true;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
     }
@@ -917,16 +868,22 @@ function ensureCoordinationDirectory(directory, symlinkCode, invalidCode) {
       mode: mode.toString(8),
     });
   }
+  return Object.freeze({
+    created,
+    parentDirectoryFsync: created
+      ? flushDirectory(path.dirname(directory))
+      : Object.freeze({ attempted: false, succeeded: false, unsupported: false, reason: "already-present" }),
+  });
 }
 
-function flushDirectory(directory) {
+export function flushDirectory(directory) {
   let descriptor = null;
   try {
     descriptor = fs.openSync(directory, "r");
     fs.fsyncSync(descriptor);
     return Object.freeze({ attempted: true, succeeded: true, unsupported: false });
   } catch (error) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error?.code)) throw error;
+    if (!["EINVAL", "ENOTSUP", "EISDIR"].includes(error?.code)) throw error;
     return Object.freeze({ attempted: true, succeeded: false, unsupported: true, code: error.code });
   } finally {
     if (descriptor !== null) fs.closeSync(descriptor);
@@ -935,7 +892,9 @@ function flushDirectory(directory) {
 
 function removeOwnJournalTemp(tempPath, intentsDirectory, expectedBasename, owned) {
   if (!owned) return false;
-  if (path.dirname(tempPath) !== path.resolve(intentsDirectory) || path.basename(tempPath) !== expectedBasename) return;
+  if (path.dirname(tempPath) !== path.resolve(intentsDirectory) || path.basename(tempPath) !== expectedBasename) {
+    return false;
+  }
   try {
     const stat = fs.lstatSync(tempPath);
     if (!stat.isSymbolicLink() && stat.isFile()) {
@@ -968,7 +927,15 @@ export function writeDurableActivationIntent(intentsDirectory, activationId, jou
       if (error instanceof ActivatorError) throw error;
       if (error?.code !== "ENOENT") throw error;
     }
-    descriptor = fs.openSync(tempPath, "wx", 0o600);
+    try {
+      descriptor = fs.openSync(tempPath, "wx", 0o600);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        fail("activation-intent-temp-collision",
+          "Invocation-owned activation-intent temporary path already exists; refusing reuse.", { tempPath });
+      }
+      throw error;
+    }
     tempOwned = true;
     fs.writeFileSync(descriptor, bytes);
     fs.fsyncSync(descriptor);
@@ -1123,6 +1090,7 @@ function buildActivationIntent(verification, activationId, createdAt) {
     branch: verification.source.branch,
     approvedHead: verification.source.approvedHead,
     sourceTree: verification.source.sourceTree,
+    gitExecutable: verification.source.gitExecutable,
     foundationCommits: [...FOUNDATION_COMMITS],
     stageReceiptPath: verification.receiptPath,
     stageReceiptSha256: verification.receiptSha256,
@@ -1256,7 +1224,7 @@ export function inspectActivationIntent(intentPath, { environment = process.env 
   }
   if (journal.repositoryRealpath !== source.repository || journal.authorizedWorktreeRealpath !== source.repository ||
       journal.branch !== source.branch || journal.approvedHead !== source.approvedHead ||
-      journal.sourceTree !== source.sourceTree) {
+      journal.sourceTree !== source.sourceTree || !sameJson(journal.gitExecutable, source.gitExecutable)) {
     fail("activation-intent-source-mismatch", "Activation intent no longer matches executable source authority.");
   }
   if (!Array.isArray(journal.foundationCommits) || !sameJson(journal.foundationCommits, FOUNDATION_COMMITS)) {
@@ -1320,9 +1288,11 @@ export function prepareActivationIntent(receiptPath, {
       fail("activation-intent-revalidation-changed", "Verified source or stage evidence changed after lock acquisition.");
     }
     const foundation = second.canonicalFoundation;
-    ensureCoordinationDirectory(foundation.root, "canonical-anchor-symlink", "canonical-anchor-invalid");
+    const anchorDirectory = ensureCoordinationDirectory(
+      foundation.root, "canonical-anchor-symlink", "canonical-anchor-invalid");
     const intentsDirectory = foundation.futureSubpaths["activation-intents"];
-    ensureCoordinationDirectory(intentsDirectory, "activation-intents-symlink", "activation-intents-invalid");
+    const intentsDirectoryEvidence = ensureCoordinationDirectory(
+      intentsDirectory, "activation-intents-symlink", "activation-intents-invalid");
     const finalVerification = verifyStageReceipt(receiptPath, { environment });
     if (verificationIdentity(second) !== verificationIdentity(finalVerification)) {
       fail("activation-intent-revalidation-changed", "Verified source or stage evidence changed immediately before journal creation.");
@@ -1339,6 +1309,11 @@ export function prepareActivationIntent(receiptPath, {
       intentPath: durable.path,
       intentSha256: durable.sha256,
       durability: durable.durability,
+      coordinationDirectories: Object.freeze({
+        anchor: anchorDirectory,
+        activationIntents: intentsDirectoryEvidence,
+      }),
+      gitExecutable: finalVerification.source.gitExecutable,
       journal,
       lockReleased: true,
       activationPerformed: false,
