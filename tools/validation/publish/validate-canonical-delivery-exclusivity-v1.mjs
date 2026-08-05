@@ -41,6 +41,11 @@ const CLI_REL = "tools/publish/canonical-delivery.mjs";
 const VALIDATOR_REL = "tools/validation/publish/validate-canonical-delivery-exclusivity-v1.mjs";
 const ADR_REL = "docs/decisions/ADR-0013-canonical-generated-delivery-ownership.md";
 const GITIGNORE_REL = ".gitignore";
+const ACTIVATOR_REL = "tools/publish/lean-activator.mjs";
+const ACTIVATOR_VALIDATOR_REL = "tools/validation/publish/validate-lean-activator-v1.mjs";
+const P23_BASE_HEAD = "51e21657f216da50e2183bb1e2d3512e946c1ea9";
+const P23_SUBJECT = "fix(publish): add final pre-promotion guardrails";
+const P23_PATHS = Object.freeze([ACTIVATOR_REL, LIB_REL, ACTIVATOR_VALIDATOR_REL, VALIDATOR_REL].sort());
 const NEW_PATHS = Object.freeze([LIB_REL, CLI_REL, VALIDATOR_REL, ADR_REL]);
 const FINAL_PATHS = Object.freeze([GITIGNORE_REL, ...NEW_PATHS]);
 const UNCOMMITTED_MODIFIED = Object.freeze([GITIGNORE_REL]);
@@ -51,7 +56,7 @@ const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
 const HEAD_C = "c".repeat(40);
 const NOW = 1_785_280_000_000;
-const EXPECTED_RUNTIME_SCENARIOS = 81;
+const EXPECTED_RUNTIME_SCENARIOS = 88;
 const scenarioResults = [];
 const scopeResults = [];
 const temporaryRoots = new Set();
@@ -68,6 +73,34 @@ function run(command, args, options = {}) {
     timeout: 8000,
     killSignal: "SIGTERM",
     ...options,
+  });
+}
+
+function expectedCanonicalAuthority({ cwd = ROOT, worktreeOutput = null } = {}) {
+  const output = worktreeOutput ?? run("git", ["worktree", "list", "--porcelain"], { cwd });
+  const blocks = String(output).trim().split(/\n\n+/u).filter(Boolean);
+  const records = blocks.map((block) => {
+    const lines = block.split("\n").filter(Boolean);
+    const worktreeLines = lines.filter((line) => line.startsWith("worktree "));
+    const branchLines = lines.filter((line) => line.startsWith("branch "));
+    if (worktreeLines.length !== 1 || branchLines.length > 1) {
+      throw new Error("malformed-worktree-evidence");
+    }
+    return { path: worktreeLines[0].slice(9), branch: branchLines[0]?.slice(7) ?? null };
+  });
+  const mains = records.filter((record) => record.branch === "refs/heads/main");
+  if (mains.length !== 1) throw new Error("main-worktree-cardinality");
+  const declared = path.resolve(mains[0].path);
+  const stat = fs.lstatSync(declared);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("main-worktree-path-invalid");
+  const authoritativeRepositoryRoot = fs.realpathSync.native(declared);
+  const branch = run("git", ["branch", "--show-current"], { cwd: authoritativeRepositoryRoot }).trim();
+  if (branch !== "main") throw new Error("main-worktree-branch-mismatch");
+  const cockpitProRoot = fs.realpathSync.native(path.dirname(authoritativeRepositoryRoot));
+  return Object.freeze({
+    authoritativeRepositoryRoot,
+    cockpitProRoot,
+    anchorRoot: path.join(cockpitProRoot, ".h2o-canonical-delivery"),
   });
 }
 
@@ -104,6 +137,20 @@ export function classifyStage1DE1Scope(state) {
     missingFinal: sorted(state.missingFinal ?? []),
   };
   if (normalized.staged.length) scopeFailure("Stage 1D-E1 scope forbids staged paths", normalized);
+  const p23TestFirst = state.head === P23_BASE_HEAD &&
+    sameSet(normalized.modifiedTracked, [ACTIVATOR_VALIDATOR_REL, VALIDATOR_REL]) &&
+    normalized.untracked.length === 0 && normalized.missingFinal.length === 0;
+  if (p23TestFirst) return "p23-test-first-uncommitted";
+  const p23Dirty = state.head === P23_BASE_HEAD && sameSet(normalized.modifiedTracked, P23_PATHS) &&
+    normalized.untracked.length === 0 && normalized.missingFinal.length === 0;
+  if (p23Dirty) return "p23-uncommitted";
+  const p23Committed = normalized.modifiedTracked.length === 0 && normalized.untracked.length === 0 &&
+    normalized.missingFinal.length === 0 && state.parent === P23_BASE_HEAD && state.subject === P23_SUBJECT &&
+    sameSet(state.committedPaths ?? [], P23_PATHS);
+  if (p23Committed) return "p23-committed";
+  if (state.parent === P23_BASE_HEAD || state.subject === P23_SUBJECT) {
+    scopeFailure("Stage 1D-E1 P2.3 committed scope mismatch", normalized);
+  }
   const uncommitted = sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
     sameSet(normalized.untracked, UNCOMMITTED_UNTRACKED) &&
     normalized.missingFinal.length === 0;
@@ -122,7 +169,13 @@ function currentScopeState() {
   const untracked = lines(run("git", ["ls-files", "--others", "--exclude-standard", "--"]));
   const trackedFinal = lines(run("git", ["ls-files", "--", ...FINAL_PATHS]));
   const missingFinal = FINAL_PATHS.filter((relative) => !fs.existsSync(path.join(ROOT, relative)));
-  return { modifiedTracked, staged, untracked, trackedFinal, missingFinal };
+  return {
+    head: run("git", ["rev-parse", "HEAD"]).trim(),
+    parent: run("git", ["rev-parse", "HEAD^"]).trim(),
+    subject: run("git", ["show", "-s", "--format=%s", "HEAD"]).trim(),
+    committedPaths: lines(run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])),
+    modifiedTracked, staged, untracked, trackedFinal, missingFinal,
+  };
 }
 
 function assertCurrentScope() {
@@ -203,7 +256,30 @@ function runScopeSelfTests() {
       untracked: [...UNCOMMITTED_UNTRACKED, "chrome/nested/protected"],
     })), "uncommitted");
   });
-  assert.equal(scopeResults.length, 12, "scope scenario count drifted");
+  scopeTest("P2.3 test-first validator pair is accepted", () => {
+    assert.equal(classifyStage1DE1Scope(baseScope({
+      head: P23_BASE_HEAD, modifiedTracked: [ACTIVATOR_VALIDATOR_REL, VALIDATOR_REL],
+      untracked: [], trackedFinal: [...FINAL_PATHS],
+    })), "p23-test-first-uncommitted");
+  });
+  scopeTest("exact dirty P2.3 scope is accepted", () => {
+    assert.equal(classifyStage1DE1Scope(baseScope({
+      head: P23_BASE_HEAD, modifiedTracked: [...P23_PATHS], untracked: [], trackedFinal: [...FINAL_PATHS],
+    })), "p23-uncommitted");
+  });
+  scopeTest("exact committed P2.3 scope is accepted", () => {
+    assert.equal(classifyStage1DE1Scope(baseScope({
+      head: "future", parent: P23_BASE_HEAD, subject: P23_SUBJECT, modifiedTracked: [], untracked: [],
+      trackedFinal: [...FINAL_PATHS], committedPaths: [...P23_PATHS],
+    })), "p23-committed");
+  });
+  scopeTest("committed P2.3 scope rejects a fifth path", () => {
+    assert.throws(() => classifyStage1DE1Scope(baseScope({
+      head: "future", parent: P23_BASE_HEAD, subject: P23_SUBJECT, modifiedTracked: [], untracked: [],
+      trackedFinal: [...FINAL_PATHS], committedPaths: [...P23_PATHS, "README.md"],
+    })), /scope mismatch/u);
+  });
+  assert.equal(scopeResults.length, 16, "scope scenario count drifted");
 }
 
 async function test(name, fn) {
@@ -690,13 +766,60 @@ async function concurrentWritableLiveReproduction() {
 
 async function runProductionScenarios() {
   await test("shared anchor derives from the absolute Git common directory", () => {
+    const expected = expectedCanonicalAuthority();
     const anchor = deriveSharedAnchor({ cwd: ROOT, env: {} });
     const common = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
     assert.equal(anchor.gitCommonDirectory, fs.realpathSync(common));
-    assert.equal(anchor.root, path.join(path.dirname(ROOT), ".h2o-canonical-delivery"));
+    assert.equal(anchor.authoritativeRepositoryRoot, expected.authoritativeRepositoryRoot);
+    assert.equal(anchor.cockpitProRoot, expected.cockpitProRoot);
+    assert.equal(anchor.root, expected.anchorRoot);
     assert(!anchor.root.startsWith(`${ROOT}${path.sep}`));
-    assert.equal(anchor.authoritativeRepositoryRoot, ROOT);
+    assert.equal(anchor.authoritativeRepositoryRoot, expected.authoritativeRepositoryRoot);
     assert(discoverRegisteredWorktreeRoots({ cwd: ROOT }).includes(ROOT));
+  });
+
+  await test("linked implementation and authoritative main resolve one shared anchor", () => {
+    const expected = expectedCanonicalAuthority();
+    const anchor = deriveSharedAnchor({ cwd: ROOT, env: {} });
+    assert.equal(anchor.root, expected.anchorRoot);
+    assert.equal(classifyDeliveryDestination({
+      destination: path.join(ROOT, "build", "local-only"),
+      authoritativeRepositoryRoot: expected.authoritativeRepositoryRoot,
+    }).classification, DESTINATION_CLASS.LOCAL);
+  });
+  await test("authority helper rejects missing main worktree evidence", () => {
+    assert.throws(() => expectedCanonicalAuthority({ worktreeOutput: "worktree /fixture/linked\nbranch refs/heads/topic\n" }),
+      /main-worktree-cardinality/u);
+  });
+  await test("authority helper rejects multiple main worktrees", () => {
+    assert.throws(() => expectedCanonicalAuthority({ worktreeOutput:
+      "worktree /fixture/a\nbranch refs/heads/main\n\nworktree /fixture/b\nbranch refs/heads/main\n" }),
+    /main-worktree-cardinality/u);
+  });
+  await test("authority helper rejects malformed worktree records", () => {
+    assert.throws(() => expectedCanonicalAuthority({ worktreeOutput:
+      "worktree /fixture/a\nworktree /fixture/b\nbranch refs/heads/main\n" }), /malformed-worktree-evidence/u);
+  });
+  await test("authority helper rejects a symlinked main worktree path", () => {
+    const root = temporaryRoot("p23-main-symlink");
+    const target = path.join(root, "target"); const link = path.join(root, "link");
+    fs.mkdirSync(target); fs.symlinkSync(target, link);
+    assert.throws(() => expectedCanonicalAuthority({ worktreeOutput:
+      `worktree ${link}\nbranch refs/heads/main\n` }), /main-worktree-path-invalid/u);
+    cleanup(root);
+  });
+  await test("authority helper rejects caller-forged linked-local main authority", () => {
+    const root = temporaryRoot("p23-forged-authority");
+    const fixture = gitFixture(root);
+    const forged = `worktree ${fixture.canaryWorktree}\nbranch refs/heads/main\n`;
+    assert.throws(() => expectedCanonicalAuthority({ cwd: fixture.canaryWorktree, worktreeOutput: forged }),
+      /main-worktree-branch-mismatch/u);
+    cleanup(root);
+  });
+  await test("registered-main authority is derived from executable worktree evidence", () => {
+    const expected = expectedCanonicalAuthority();
+    assert(discoverRegisteredWorktreeRoots({ cwd: ROOT }).includes(expected.authoritativeRepositoryRoot));
+    assert.equal(path.dirname(expected.anchorRoot), expected.cockpitProRoot);
   });
 
   await test("root override is rejected without explicit acknowledgement", () => {

@@ -22,14 +22,20 @@ const ACCEPTED_P1_HEAD = "fa0dac4552ce5a1189dee0b1d23975f95bffe751";
 const P2_BASE_HEAD = "d3ebe3c8b3c973ee11d15664b09398f388b0b373";
 const ACCEPTED_P2_HEAD = "bb8109ca5a5b943a55c0b60046e06f8fa3829f49";
 const ACCEPTED_P21_HEAD = "61ff500a048f0b12299ea29adf681a02bec2fa85";
+const ACCEPTED_P22_HEAD = "51e21657f216da50e2183bb1e2d3512e946c1ea9";
 const P1_SUBJECT = "feat(publish): add canonical activation preflight";
 const VALIDATOR_FIX_SUBJECT = "fix(publish): support integrated P0/P1 validation";
 const P2_SUBJECT = "feat(publish): add durable activation intent foundation";
 const P21_SUBJECT = "fix(publish): harden activation intent preparation";
 const P22_SUBJECT = "fix(publish): close pre-promotion trust boundaries";
+const P23_SUBJECT = "fix(publish): add final pre-promotion guardrails";
 const P2_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
 const CANONICAL_LIB_REL = "tools/publish/canonical-delivery-lib.mjs";
 const P22_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL].sort());
+const OWNER_VALIDATOR_REL = "tools/validation/publish/validate-canonical-delivery-exclusivity-v1.mjs";
+const P23_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL, OWNER_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -37,9 +43,16 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 32;
-const EXPECTED_RUNTIME = 155;
-const EXPECTED_STRUCTURAL = 31;
+const EXPECTED_SCOPE = 37;
+const EXPECTED_RUNTIME = 171;
+const EXPECTED_STRUCTURAL = 37;
+const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
+  "assertAllowedReadOnlyGitCommand",
+  "deriveSharedAnchor",
+  "runPinnedReadOnlyGit",
+  "sanitizedGitEnvironment",
+  "TRUSTED_GIT_EXECUTABLE_IDENTITY",
+].sort());
 
 const temporaryRoots = [];
 const scopeResults = [];
@@ -76,6 +89,43 @@ function git(repository, args, { allowFailure = false } = {}) {
 
 function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function canonicalLibraryImports(source) {
+  if (/import\s*\(/u.test(source)) throw new Error("dynamic canonical-library import is forbidden");
+  const declarations = [...source.matchAll(/import\s+(\{[^}]*\})\s+from\s+["']\.\/canonical-delivery-lib\.mjs["'];/gu)];
+  assert.equal(declarations.length, 1, "exactly one static canonical-library import is required");
+  const clause = declarations[0][1].trim();
+  assert.match(clause, /^\{[\s\S]*\}$/u, "canonical-library import must be named-only");
+  const names = clause.slice(1, -1).split(",").map((name) => name.trim()).filter(Boolean);
+  assert.equal(names.some((name) => /\s+as\s+/u.test(name)), false, "import aliases are forbidden");
+  assert.deepEqual(names.sort(), ACCEPTED_CANONICAL_LIBRARY_IMPORTS);
+  return names;
+}
+
+function normalizedGuardPath(target) {
+  let cursor = path.resolve(String(target));
+  const suffix = [];
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    suffix.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+  const base = fs.existsSync(cursor) ? fs.realpathSync.native(cursor) : cursor;
+  return path.resolve(base, ...suffix);
+}
+
+function sameOrWithin(root, candidate) {
+  const relative = path.relative(normalizedGuardPath(root), normalizedGuardPath(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function guardCanonicalPayloadAccess(roots, candidate, operation) {
+  if (roots.some((root) => sameOrWithin(root, candidate))) {
+    throw new Error(`canonical-payload-${operation}:${normalizedGuardPath(candidate)}`);
+  }
+  return true;
 }
 
 function currentScopeState() {
@@ -179,6 +229,18 @@ function classifyScope(state) {
     value.acceptedP1Ancestor === true &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P22_AUTHORIZED_PATHS);
   if (p22Clean) return "p22-committed";
+  const p23Base = value.head === ACCEPTED_P22_HEAD && value.parent === ACCEPTED_P21_HEAD &&
+    value.subject === P22_SUBJECT && value.acceptedP1Ancestor === true && value.untracked.length === 0 &&
+    value.staged.length === 0 && JSON.stringify(value.committedPaths) === JSON.stringify(P22_AUTHORIZED_PATHS);
+  if (p23Base && JSON.stringify(value.modifiedTracked) ===
+      JSON.stringify([OWNER_VALIDATOR_REL, VALIDATOR_REL].sort())) return "p23-test-first-uncommitted";
+  if (p23Base && JSON.stringify(value.modifiedTracked) === JSON.stringify(P23_AUTHORIZED_PATHS)) {
+    return "p23-uncommitted";
+  }
+  const p23Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === ACCEPTED_P22_HEAD && value.subject === P23_SUBJECT && value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P23_AUTHORIZED_PATHS);
+  if (p23Clean) return "p23-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -404,6 +466,40 @@ function runScopeTests() {
       committedPaths: [...P22_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("P2.3 test-first two-validator state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P22_HEAD, parent: ACCEPTED_P21_HEAD, subject: P22_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [OWNER_VALIDATOR_REL, VALIDATOR_REL].sort(), untracked: [],
+      committedPaths: [...P22_AUTHORIZED_PATHS],
+    })), "p23-test-first-uncommitted");
+  });
+  scopeTest("exact dirty four-file P2.3 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P22_HEAD, parent: ACCEPTED_P21_HEAD, subject: P22_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P23_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P22_AUTHORIZED_PATHS],
+    })), "p23-uncommitted");
+  });
+  scopeTest("P2.3 dirty scope rejects a fifth path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: ACCEPTED_P22_HEAD, parent: ACCEPTED_P21_HEAD, subject: P22_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P23_AUTHORIZED_PATHS, "README.md"].sort(), untracked: [],
+      committedPaths: [...P22_AUTHORIZED_PATHS],
+    })), /scope mismatch/u);
+  });
+  scopeTest("exact committed four-file P2.3 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p23", parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [], committedPaths: [...P23_AUTHORIZED_PATHS],
+    })), "p23-committed");
+  });
+  scopeTest("committed P2.3 rejects wrong parent or extra path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: "future-p23", parent: ACCEPTED_P21_HEAD, subject: P23_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
+    })), /scope mismatch/u);
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -427,7 +523,8 @@ function evaluateRegisteredMainAuthority(evidence) {
   if (!["committed-clean", "validator-fix-uncommitted", "validator-fix-committed",
     "p2-test-first-uncommitted", "p2-uncommitted", "p2-committed",
     "p21-test-first-uncommitted", "p21-uncommitted", "p21-committed",
-    "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed"]
+    "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed",
+    "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -937,6 +1034,87 @@ async function runAuthorityModelTests() {
 async function runRuntimeTests(api) {
   const canonicalApi = await import(
     `${pathToFileURL(path.join(ROOT, CANONICAL_LIB_REL)).href}?p22-validator=${Date.now()}`);
+  await test("activator imports the exact accepted canonical-library capability set", () => {
+    const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
+    assert.deepEqual(canonicalLibraryImports(source), ACCEPTED_CANONICAL_LIBRARY_IMPORTS);
+  });
+  await test("canonical-library capability pin rejects added, removed, aliased, namespace, default, and dynamic imports", () => {
+    const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
+    const mutations = [
+      source.replace("  deriveSharedAnchor,", "  atomicWriteJson,\n  deriveSharedAnchor,"),
+      source.replace("  deriveSharedAnchor,\n", ""),
+      source.replace("  deriveSharedAnchor,", "  deriveSharedAnchor as deriveAnchor,"),
+      source.replace(/import \{[\s\S]*?\} from "\.\/canonical-delivery-lib\.mjs";/u,
+        'import * as canonicalDelivery from "./canonical-delivery-lib.mjs";'),
+      source.replace(/import \{[\s\S]*?\} from "\.\/canonical-delivery-lib\.mjs";/u,
+        'import canonicalDelivery from "./canonical-delivery-lib.mjs";'),
+      `${source}\nconst unexpectedDynamic = import("./canonical-delivery-lib.mjs");\n`,
+    ];
+    for (const mutated of mutations) assert.throws(() => canonicalLibraryImports(mutated));
+  });
+  await test("durable Git identity excludes process-local filesystem metadata", () => {
+    const stable = api.stableGitExecutableIdentity(api.TRUSTED_GIT_EXECUTABLE_IDENTITY);
+    assert.deepEqual(Object.keys(stable).sort(), ["path", "realpath", "sha256", "version"]);
+    for (const key of ["device", "inode", "size", "mtimeMs"]) assert.equal(Object.hasOwn(stable, key), false);
+    const reinstalled = { ...api.TRUSTED_GIT_EXECUTABLE_IDENTITY,
+      device: "different-device", inode: "different-inode",
+      size: api.TRUSTED_GIT_EXECUTABLE_IDENTITY.size + 1,
+      mtimeMs: api.TRUSTED_GIT_EXECUTABLE_IDENTITY.mtimeMs + 1 };
+    assert.deepEqual(api.stableGitExecutableIdentity(reinstalled), stable);
+  });
+  await test("shared read-only Git timeout is fixed at thirty seconds", () => {
+    assert.equal(canonicalApi.READ_ONLY_GIT_TIMEOUT_MS, 30_000);
+    const source = fs.readFileSync(path.join(ROOT, CANONICAL_LIB_REL), "utf8");
+    assert.equal((source.match(/timeout:\s*READ_ONLY_GIT_TIMEOUT_MS/gu) || []).length, 2);
+  });
+  await test("a hanging fixture process is terminated and typed as a read-only Git timeout", () => {
+    let observed = null;
+    try {
+      execFileSync(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        timeout: 40, killSignal: "SIGTERM", stdio: "ignore",
+      });
+    } catch (error) {
+      observed = error;
+    }
+    assert(observed);
+    assert.equal(canonicalApi.classifyReadOnlyGitExecutionError(observed), "git-read-timeout");
+  });
+  await test("canonical payload read guard detects equivalent macOS var path spelling", () => {
+    if (fs.existsSync("/var") && fs.existsSync("/private/var")) {
+      assert.throws(() => guardCanonicalPayloadAccess(
+        ["/private/var/tmp/h2o-p23-canonical"], "/var/tmp/h2o-p23-canonical/alias", "read"),
+      /canonical-payload-read/u);
+    }
+  });
+  await test("canonical payload write guard detects equivalent normalized spelling", () => {
+    const root = tempRoot("p23-guard-write");
+    const canonical = path.join(root, "canonical");
+    fs.mkdirSync(canonical);
+    assert.throws(() => guardCanonicalPayloadAccess([canonical], path.join(canonical, "future"), "write"),
+      /canonical-payload-write/u);
+  });
+  await test("payload guard normalizes a symlink spelling through the same existing parent", () => {
+    const root = tempRoot("p23-guard-symlink");
+    const real = path.join(root, "real"); const link = path.join(root, "link");
+    fs.mkdirSync(real); fs.symlinkSync(real, link);
+    assert.equal(normalizedGuardPath(path.join(link, "future", "alias")),
+      normalizedGuardPath(path.join(real, "future", "alias")));
+  });
+  await test("payload guard preserves outside-root rejection", () => {
+    const root = tempRoot("p23-guard-outside");
+    const canonical = path.join(root, "canonical"); const outside = path.join(root, "outside");
+    fs.mkdirSync(canonical); fs.mkdirSync(outside);
+    assert.equal(sameOrWithin(canonical, path.join(canonical, "future")), true);
+    assert.equal(sameOrWithin(canonical, outside), false);
+  });
+  await test("coordination paths remain distinct from normalized canonical payload roots", () => {
+    const root = tempRoot("p23-guard-coordination");
+    const canonical = path.join(root, "repository", "apps", "dev-server", "alias");
+    const coordination = path.join(root, ".h2o-canonical-delivery", "activation-intents");
+    fs.mkdirSync(path.dirname(canonical), { recursive: true });
+    fs.mkdirSync(coordination, { recursive: true });
+    assert.equal(sameOrWithin(canonical, coordination), false);
+  });
   await test("P2.2 resolves one pinned absolute Git executable identity", () => {
     assert.equal(path.isAbsolute(api.TRUSTED_GIT_EXECUTABLE_IDENTITY?.realpath || ""), true);
     assert.equal(fs.lstatSync(api.TRUSTED_GIT_EXECUTABLE_IDENTITY.realpath).isSymbolicLink(), false);
@@ -1638,7 +1816,9 @@ async function runRuntimeTests(api) {
     }
     assert.equal(journal.stageReceiptSha256, sha256(fs.readFileSync(p2Stage.receiptPath)));
     assert.deepEqual(journal.stageManifests, p2Stage.receipt.manifests);
-    assert.deepEqual(journal.gitExecutable, p2Api.TRUSTED_GIT_EXECUTABLE_IDENTITY);
+    assert.deepEqual(journal.gitExecutable,
+      p2Api.stableGitExecutableIdentity(p2Api.TRUSTED_GIT_EXECUTABLE_IDENTITY));
+    for (const key of ["device", "inode", "size", "mtimeMs"]) assert.equal(Object.hasOwn(journal.gitExecutable, key), false);
     assert.deepEqual(journal.durability.fileFsync, { attempted: true, succeeded: true });
     assert.deepEqual(journal.durability.directoryFsync, {
       attempted: true,
@@ -1683,9 +1863,10 @@ async function runRuntimeTests(api) {
       path.join(value.repository, "apps", "extensions", "chatgpt", "chrome", "dev-controls-oauth-google"),
     ];
     fs.lstatSync = (filename, ...args) => {
-      const candidate = path.resolve(String(filename));
-      if (canonicalRoots.some((root) => candidate === root || candidate.startsWith(`${root}.staging-act-`) ||
-          candidate.startsWith(`${root}.retired-act-`))) {
+      const candidate = normalizedGuardPath(String(filename));
+      if (canonicalRoots.some((root) => candidate === normalizedGuardPath(root) ||
+          candidate.startsWith(`${normalizedGuardPath(root)}.staging-act-`) ||
+          candidate.startsWith(`${normalizedGuardPath(root)}.retired-act-`))) {
         throw new Error(`canonical payload inspected: ${candidate}`);
       }
       return originalLstat(filename, ...args);
@@ -1715,6 +1896,39 @@ async function runRuntimeTests(api) {
     expectFailure(p2Fixture, ["--inspect-activation-intent", mismatch], "activation-intent-id-mismatch");
     fs.unlinkSync(mismatch);
   });
+  for (const [field, value] of [
+    ["sha256", "f".repeat(64)],
+    ["version", "git version 0.0.0-fixture"],
+    ["realpath", "/fixture/unapproved/git"],
+  ]) {
+    await test(`intent inspection rejects stable Git ${field} drift`, () => {
+      const original = fs.readFileSync(preparedIntent.intentPath);
+      const journal = JSON.parse(original);
+      journal.gitExecutable[field] = value;
+      fs.writeFileSync(preparedIntent.intentPath, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+      try {
+        expectFailure(p2Fixture, ["--inspect-activation-intent", preparedIntent.intentPath],
+          "activation-intent-source-mismatch");
+      } finally {
+        fs.writeFileSync(preparedIntent.intentPath, original, { mode: 0o600 });
+      }
+    });
+  }
+  for (const logicalName of ["alias", "dev_output", "extension"]) {
+    await test(`intent inspection rejects ${logicalName} activation-intent tree mismatch`, () => {
+      const original = fs.readFileSync(preparedIntent.intentPath);
+      const journal = JSON.parse(original);
+      const tree = journal.trees.find((entry) => entry.logicalName === logicalName);
+      tree.incomingPath = `${tree.incomingPath}-mismatch`;
+      fs.writeFileSync(preparedIntent.intentPath, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+      try {
+        expectFailure(p2Fixture, ["--inspect-activation-intent", preparedIntent.intentPath],
+          "activation-intent-tree-mismatch");
+      } finally {
+        fs.writeFileSync(preparedIntent.intentPath, original, { mode: 0o600 });
+      }
+    });
+  }
 
   await test("publisher lock admits one winner and rejects concurrent intent ownership", () => {
     const root = tempRoot("p2-lock-contention");
@@ -1848,12 +2062,12 @@ async function runRuntimeTests(api) {
       path.join(value.repository, "apps", "dev-server", "alias"),
       path.join(value.repository, "apps", "dev-server", "dev_output"),
       path.join(value.repository, "apps", "extensions", "chatgpt", "chrome", "dev-controls-oauth-google"),
-    ].map((entry) => path.resolve(entry)));
+    ].map((entry) => normalizedGuardPath(entry)));
     const originalLstat = fs.lstatSync;
     let lockAcquired = false;
     let payloadInspections = 0;
     fs.lstatSync = (filename, ...args) => {
-      if (payloadPaths.has(path.resolve(String(filename)))) payloadInspections += 1;
+      if (payloadPaths.has(normalizedGuardPath(String(filename)))) payloadInspections += 1;
       return originalLstat(filename, ...args);
     };
     try {
@@ -1924,7 +2138,8 @@ async function runRuntimeTests(api) {
       return originalFsync(descriptor);
     };
     try {
-      assert.throws(() => api.flushDirectory(parent), /fixture hard parent fsync failure/u);
+      assert.throws(() => api.flushDirectory(parent),
+        (error) => error?.code === "directory-fsync-failed" && error?.details?.code === "EIO");
     } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
   });
   await test("EPERM directory fsync is a hard error rather than unsupported evidence", async () => {
@@ -1943,7 +2158,8 @@ async function runRuntimeTests(api) {
       return originalFsync(descriptor);
     };
     try {
-      assert.throws(() => api.flushDirectory(parent), (error) => error?.code === "EPERM");
+      assert.throws(() => api.flushDirectory(parent),
+        (error) => error?.code === "directory-fsync-failed" && error?.details?.code === "EPERM");
     } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
   });
 
@@ -2107,7 +2323,7 @@ async function runRuntimeTests(api) {
     try {
       assert.throws(() => api.writeDurableActivationIntent(directory, FIXED_ACTIVATION_ID, {}, {
         ownerId: "11111111-2222-3333-4444-555555555555",
-      }), /fixture directory fsync failure/u);
+      }), (error) => error?.code === "directory-fsync-failed" && error?.details?.code === "EIO");
     } finally { fs.openSync = originalOpen; fs.fsyncSync = originalFsync; }
     assert.equal(fs.existsSync(finalPath), true);
   });
@@ -2408,6 +2624,43 @@ function runStructuralTests() {
     assert.deepEqual(P22_AUTHORIZED_PATHS, [ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL].sort());
     assert.match(validatorSource, /ACCEPTED_P21_HEAD/u);
     assert.match(validatorSource, /P22_SUBJECT/u);
+  });
+  structural("P2.3 pins the activator canonical-library import capability exactly", () => {
+    assert.deepEqual(canonicalLibraryImports(source), ACCEPTED_CANONICAL_LIBRARY_IMPORTS);
+    for (const forbidden of ["atomicWriteJson", "rmSync", "renameSync", "copyFileSync"]) {
+      assert.equal(ACCEPTED_CANONICAL_LIBRARY_IMPORTS.includes(forbidden), false);
+    }
+  });
+  structural("P2.3 separates stable durable Git identity from process-local attestation", () => {
+    assert.match(source, /STABLE_GIT_IDENTITY_KEYS/u);
+    assert.match(source, /gitExecutableProcessAttestation/u);
+    assert.match(source, /gitExecutableStable/u);
+  });
+  structural("all shared production Git calls use the frozen thirty-second timeout", () => {
+    assert.match(canonicalSource, /export const READ_ONLY_GIT_TIMEOUT_MS = 30_000/u);
+    assert.equal((canonicalSource.match(/timeout:\s*READ_ONLY_GIT_TIMEOUT_MS/gu) || []).length, 2);
+    assert.doesNotMatch(canonicalSource, /timeout:\s*10_000/u);
+  });
+  structural("payload safety guards normalize existing ancestors before lexical suffixes", () => {
+    assert.match(validatorSource, /function normalizedGuardPath/u);
+    assert.match(validatorSource, /fs\.realpathSync\.native\(cursor\)/u);
+    assert.match(validatorSource, /function sameOrWithin/u);
+  });
+  structural("P2.3 scope remains exactly the four approved guardrail paths", () => {
+    assert.deepEqual(P23_AUTHORIZED_PATHS,
+      [ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL, OWNER_VALIDATOR_REL].sort());
+    assert.match(validatorSource, /ACCEPTED_P22_HEAD/u);
+    assert.match(validatorSource, /P23_SUBJECT/u);
+  });
+  structural("P3 must revalidate every authority and treat the intent only as a proposal", () => {
+    for (const requirement of [
+      "verify-stage-receipt-immediately-before-payload-preparation",
+      "revalidate-accepted-extension-variant",
+      "reattest-stable-git-executable-identity",
+      "rederive-repository-cockpit-root-and-canonical-anchor",
+      "reject-head-tree-receipt-or-staged-byte-change",
+      "treat-intent-as-proposal-not-promotion-authority",
+    ]) assert(source.includes(JSON.stringify(requirement)));
   });
   assert.equal(structuralResults.length, EXPECTED_STRUCTURAL);
 }

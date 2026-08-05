@@ -67,6 +67,15 @@ export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
 export const CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY =
   "canonical-delivery-lib and activator share one pinned executable, sanitized environment, and exact read-only argv boundary; activator independently pins every returned authority path";
 export { sanitizedGitEnvironment, TRUSTED_GIT_EXECUTABLE_IDENTITY };
+export const STABLE_GIT_IDENTITY_KEYS = Object.freeze(["path", "realpath", "version", "sha256"]);
+export const P3_REVALIDATION_REQUIREMENTS = Object.freeze([
+  "verify-stage-receipt-immediately-before-payload-preparation",
+  "revalidate-accepted-extension-variant",
+  "reattest-stable-git-executable-identity",
+  "rederive-repository-cockpit-root-and-canonical-anchor",
+  "reject-head-tree-receipt-or-staged-byte-change",
+  "treat-intent-as-proposal-not-promotion-authority",
+]);
 export const ACTIVATION_ID_PATTERN = /^\d{8}T\d{9}Z-[a-f0-9]{12}$/u;
 // The future three-tree release is sequential and recoverable. It is not a
 // cross-tree atomic swap, and adjacent renames do not eliminate missing-path
@@ -108,6 +117,16 @@ export function sha256Bytes(bytes) {
 
 export function sha256File(filename) {
   return sha256Bytes(fs.readFileSync(filename));
+}
+
+export function stableGitExecutableIdentity(identity = TRUSTED_GIT_EXECUTABLE_IDENTITY) {
+  const stable = Object.fromEntries(STABLE_GIT_IDENTITY_KEYS.map((key) => [key, identity?.[key]]));
+  for (const [key, value] of Object.entries(stable)) {
+    if (typeof value !== "string" || !value) {
+      fail("git-stable-identity-invalid", "Stable Git executable identity is incomplete.", { key });
+    }
+  }
+  return Object.freeze(stable);
 }
 
 export function isWithin(parent, candidate) {
@@ -152,6 +171,12 @@ export function runReadOnlyGit(repository, args, {
   try {
     return runPinnedReadOnlyGit(repository, args, { allowFailure, allowedFailureStatuses });
   } catch (error) {
+    if (error?.code === "git-read-timeout" || error?.details?.code === "git-read-timeout") {
+      fail("git-read-timeout", "Required read-only Git evidence timed out.", {
+        args,
+        timeoutMs: error?.details?.timeoutMs ?? 30_000,
+      });
+    }
     fail("git-command-failed", "Required read-only Git evidence could not be obtained.", {
       args,
       cause: error.message,
@@ -242,7 +267,8 @@ export function collectSourcePreflight(repository = REPOSITORY_ROOT) {
     branch,
     approvedHead,
     sourceTree,
-    gitExecutable: TRUSTED_GIT_EXECUTABLE_IDENTITY,
+    gitExecutable: stableGitExecutableIdentity(),
+    gitExecutableProcessAttestation: TRUSTED_GIT_EXECUTABLE_IDENTITY,
   });
 }
 
@@ -589,7 +615,8 @@ export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
   return Object.freeze({
     root: anchor.root,
     source: anchor.source,
-    gitExecutable: TRUSTED_GIT_EXECUTABLE_IDENTITY,
+    gitExecutable: stableGitExecutableIdentity(),
+    gitExecutableProcessAttestation: TRUSTED_GIT_EXECUTABLE_IDENTITY,
     publisherLock: path.join(anchor.cockpitProRoot, ".h2o-publisher-lock"),
     futureSubpaths: Object.fromEntries(FUTURE_COORDINATION_SUBPATHS.map((name) => [name, path.join(anchor.root, name)])),
     created: false,
@@ -883,7 +910,12 @@ export function flushDirectory(directory) {
     fs.fsyncSync(descriptor);
     return Object.freeze({ attempted: true, succeeded: true, unsupported: false });
   } catch (error) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR"].includes(error?.code)) throw error;
+    if (!["EINVAL", "ENOTSUP", "EISDIR"].includes(error?.code)) {
+      fail("directory-fsync-failed", "Coordination-directory fsync failed.", {
+        directory,
+        code: error?.code || null,
+      });
+    }
     return Object.freeze({ attempted: true, succeeded: false, unsupported: true, code: error.code });
   } finally {
     if (descriptor !== null) fs.closeSync(descriptor);
@@ -1313,7 +1345,8 @@ export function prepareActivationIntent(receiptPath, {
         anchor: anchorDirectory,
         activationIntents: intentsDirectoryEvidence,
       }),
-      gitExecutable: finalVerification.source.gitExecutable,
+      gitExecutableStable: finalVerification.source.gitExecutable,
+      gitExecutableProcessAttestation: finalVerification.source.gitExecutableProcessAttestation,
       journal,
       lockReleased: true,
       activationPerformed: false,

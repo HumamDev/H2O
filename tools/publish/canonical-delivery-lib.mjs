@@ -30,6 +30,7 @@ const EXACT_READ_ONLY_GIT_COMMANDS = Object.freeze([
   "config\u0000--path\u0000--get\u0000core.worktree",
 ]);
 const FULL_COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+export const READ_ONLY_GIT_TIMEOUT_MS = 30_000;
 
 export const EXIT_CODES = Object.freeze({
   SUCCESS: 0,
@@ -107,6 +108,7 @@ export class CanonicalDeliveryError extends Error {
     super(message);
     this.name = "CanonicalDeliveryError";
     this.exitCode = exitCode;
+    if (typeof details?.code === "string") this.code = details.code;
     if (details !== undefined) this.details = details;
   }
 }
@@ -246,7 +248,7 @@ export function attestGitExecutableCandidate(candidate) {
     version = execFileSync(realpath, ["--version"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
+      timeout: READ_ONLY_GIT_TIMEOUT_MS,
       killSignal: "SIGTERM",
       env: sanitizedGitEnvironment(),
     }).trim();
@@ -326,6 +328,12 @@ export function assertAllowedReadOnlyGitCommand(args) {
   return true;
 }
 
+export function classifyReadOnlyGitExecutionError(error) {
+  return error?.code === "ETIMEDOUT" || error?.signal === "SIGTERM"
+    ? "git-read-timeout"
+    : "git-read-failed";
+}
+
 export function runPinnedReadOnlyGit(cwd, args, {
   allowFailure = false,
   allowedFailureStatuses = allowFailure ? [1] : [],
@@ -337,12 +345,19 @@ export function runPinnedReadOnlyGit(cwd, args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
+      timeout: READ_ONLY_GIT_TIMEOUT_MS,
       killSignal: "SIGTERM",
       env: sanitizedGitEnvironment(),
     }).trim();
   } catch (error) {
     if (allowedFailureStatuses.includes(error?.status)) return null;
+    if (classifyReadOnlyGitExecutionError(error) === "git-read-timeout") {
+      fail(EXIT_CODES.ELIGIBILITY_MISMATCH, `git ${args.join(" ")} timed out`, {
+        code: "git-read-timeout",
+        cwd,
+        timeoutMs: READ_ONLY_GIT_TIMEOUT_MS,
+      });
+    }
     fail(EXIT_CODES.ELIGIBILITY_MISMATCH, `git ${args.join(" ")} failed`, {
       cwd,
       status: error?.status ?? null,
