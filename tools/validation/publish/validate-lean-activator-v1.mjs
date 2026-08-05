@@ -57,6 +57,13 @@ const P3C_A1_SUBJECT = "feat(publish): add end-to-end activation and durable acc
 const P3C_A1_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// P3C-A2 additionally repairs the canonical-writer validator fixture ancestry.
+const ACCEPTED_P3C_A1_HEAD = "0cbfdf335c5569fbbd5b1ec423a8a2f3ecff452e";
+const P3C_A2_SUBJECT = "feat(publish): add canonical verification and lease contention closure";
+const WRITER_VALIDATOR_REL = "tools/validation/publish/validate-canonical-writer-enforcement-v1.mjs";
+const P3C_A2_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -64,9 +71,9 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 48;
-const EXPECTED_RUNTIME = 188;
-const EXPECTED_STRUCTURAL = 49;
+const EXPECTED_SCOPE = 51;
+const EXPECTED_RUNTIME = 199;
+const EXPECTED_STRUCTURAL = 51;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
@@ -80,6 +87,12 @@ const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
   "verifyLease",
 ].sort());
 const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
+  // P3C-A2 adds the read-only canonical-verification symbols.
+  "ACTIVATION_RECEIPT_MODE",
+  "activationReceiptPath",
+  "TRANSACTION_MODE",
+  "transactionDirectory",
+  "verifyCanonicalAgainstReceipt",
   "appendAcceptedRecord",
   "buildActivationReceipt",
   "canonicalUnitPaths",
@@ -335,6 +348,19 @@ function classifyScope(state) {
     value.parent === INTEGRATED_P3B_HEAD && value.subject === P3C_A1_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A1_AUTHORIZED_PATHS);
   if (p3cA1Clean) return "p3c-a1-committed";
+  // P3C-A2: one feature slice on the accepted P3C-A1 checkpoint. Nothing staged,
+  // nothing untracked, every touched path inside the authorized five.
+  const p3cA2Base = value.head === ACCEPTED_P3C_A1_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA2Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A2_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a2-uncommitted";
+  }
+  const p3cA2Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === ACCEPTED_P3C_A1_HEAD && value.subject === P3C_A2_SUBJECT &&
+    value.committedPaths.length > 0 &&
+    value.committedPaths.every((entry) => P3C_A2_AUTHORIZED_PATHS.includes(entry));
+  if (p3cA2Clean) return "p3c-a2-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -594,6 +620,48 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("exact dirty five-path P3C-A2 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P3C_A1_HEAD, parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3C_A2_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A1_AUTHORIZED_PATHS],
+    })), "p3c-a2-uncommitted");
+  });
+  scopeTest("P3C-A2 dirty scope rejects an unauthorized path, staging or untracked source", () => {
+    for (const override of [
+      { modifiedTracked: [...P3C_A2_AUTHORIZED_PATHS, PUBLISHER_REL].sort() },
+      { modifiedTracked: [...P3C_A2_AUTHORIZED_PATHS, CANONICAL_LIB_REL].sort() },
+      { modifiedTracked: [...P3C_A2_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { untracked: ["tools/publish/scratch.mjs"] },
+      { staged: [ACTIVATOR_REL] },
+      { head: INTEGRATED_P3B_HEAD },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: ACCEPTED_P3C_A1_HEAD, parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [...P3C_A2_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3C_A1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+  });
+  scopeTest("committed P3C-A2 pins its parent, subject and authorized path set", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p3c-a2", parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P3C_A2_AUTHORIZED_PATHS],
+    })), "p3c-a2-committed");
+    for (const override of [
+      { parent: INTEGRATED_P3B_HEAD },
+      { subject: P3C_A1_SUBJECT },
+      { committedPaths: [...P3C_A2_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { committedPaths: [] },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-p3c-a2", parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3C_A2_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
   scopeTest("exact dirty four-path P3C-A1 state is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: INTEGRATED_P3B_HEAD, parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
@@ -741,7 +809,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed",
     "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed",
     "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed",
-    "p3c-a1-uncommitted", "p3c-a1-committed"]
+    "p3c-a1-uncommitted", "p3c-a1-committed",
+    "p3c-a2-uncommitted", "p3c-a2-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1783,12 +1852,16 @@ async function runRuntimeTests(api) {
     assert.equal(fs.existsSync(anchor), false);
     assert.equal(fs.existsSync(lock), false);
   });
-  await test("canonical verification command is fixture-only and fails before inspection", () => {
+  await test("canonical verification accepts only the explicit activation-receipt form", () => {
+    // Every other shape stays fail-closed and never inspects anything.
     for (const args of [["--verify-canonical", "--receipt", stage.receiptPath],
-      ["--verify-canonical", "--activation-receipt", stage.receiptPath],
-      ["--verify-canonical"]]) {
+      ["--verify-canonical"], ["--verify-canonical", "--activation-receipt"]]) {
       expectFailure(fixture, args, "canonical-verification-fixture-only");
     }
+    // The operational form is gated on the approved production root, so a
+    // fixture repository can never be verified through the production CLI.
+    expectFailure(fixture, ["--verify-canonical", "--activation-receipt", stage.receiptPath],
+      "canonical-root-not-approved");
   });
   await test("rollback, recovery and pruning commands are absent", () => {
     for (const command of ["--rollback", "--recover", "--prune"]) {
@@ -2762,13 +2835,17 @@ async function runRuntimeTests(api) {
  * real three-tree promotion, and real no-replace receipt publication.
  * ------------------------------------------------------------------------- */
 
-async function createActivationFixture(label) {
+async function createActivationFixture(label, { mutateStage = null } = {}) {
   const fixture = createRepositoryFixture(`p3ca1-${label}`);
   // The extension family's canonical parent must exist before an owned incoming
   // root may be created; the dev-server parent already exists in the fixture.
   fs.mkdirSync(path.join(fixture.repository, "apps", "extensions", "chatgpt", "chrome"),
     { recursive: true });
   const stage = createStageFixture(fixture.repository, `p3ca1-${label}`);
+  if (mutateStage) {
+    mutateStage(fixture, stage);
+    refreshReceiptManifests(stage);
+  }
   const api = await importFixtureActivator(fixture, `p3ca1-${label}`);
   // The unit table comes from the same payload module the activator imports, so
   // fixture expectations cannot drift from the pinned canonical unit layout.
@@ -3060,6 +3137,575 @@ async function runP3cA1Tests() {
     assert.equal(receipt.promotionPrimitive, "fail-closed-two-rename");
     disposeTemporaryRoot(context.fixture.top);
   });
+
+  await runP3cA2Tests();
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3C-A2 — operational canonical verification and lease contention
+ * ------------------------------------------------------------------------- */
+
+/** One completed activation, ready for read-only canonical verification. */
+async function createVerifiedActivation(label) {
+  const context = await createActivationFixture(`verify-${label}`);
+  const activation = context.activate();
+  return { ...context, activation, receiptPath: activation.activationReceiptPath };
+}
+
+/**
+ * Recompute one live tree's digest with the same algorithm the payload module
+ * uses, so a test can prove a rejection was NOT caused by digest drift.
+ */
+function recomputeAliasDigest(root) {
+  const entries = [];
+  const walk = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const filename = path.join(directory, name);
+      const stat = fs.lstatSync(filename);
+      const relative = path.relative(root, filename).split(path.sep).join("/");
+      if (stat.isSymbolicLink()) {
+        entries.push({ path: relative, type: "symlink", target: fs.readlinkSync(filename) });
+        continue;
+      }
+      if (stat.isDirectory()) { walk(filename); continue; }
+      entries.push({ path: relative, type: "file", bytes: stat.size, sha256: sha256(fs.readFileSync(filename)) });
+    }
+  };
+  walk(root);
+  entries.sort((a, b) => a.path.localeCompare(b.path, "en"));
+  return sha256(entries.map((entry) => JSON.stringify(entry)).join("\n"));
+}
+
+/** Full recursive witness of a tree: path set, types, sizes, digests, link text. */
+function witnessTree(root) {
+  const entries = [];
+  const walk = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const filename = path.join(directory, name);
+      const stat = fs.lstatSync(filename);
+      const relative = path.relative(root, filename).split(path.sep).join("/");
+      if (stat.isSymbolicLink()) {
+        entries.push(`L ${relative} -> ${fs.readlinkSync(filename)}`);
+        continue;
+      }
+      if (stat.isDirectory()) {
+        entries.push(`D ${relative} ${(stat.mode & 0o777).toString(8)}`);
+        walk(filename);
+        continue;
+      }
+      entries.push(`F ${relative} ${stat.size} ${(stat.mode & 0o777).toString(8)} ${
+        sha256(fs.readFileSync(filename))} ino=${stat.ino}`);
+    }
+  };
+  walk(root);
+  return entries.join("\n");
+}
+
+async function runP3cA2Tests() {
+  await test("operational canonical verification confirms an exact accepted activation", async () => {
+    const context = await createVerifiedActivation("success");
+    const verified = context.api.verifyCanonicalFromReceipt(context.receiptPath,
+      { environment: cleanEnvironment() });
+    assert.equal(verified.ok, true);
+    assert.equal(verified.verified, true);
+    assert.equal(verified.mutationPerformed, false);
+    assert.equal(verified.activationId, context.intent.activationId);
+    assert.equal(verified.activationReceiptSha256, context.activation.activationReceiptSha256);
+    assert.equal(verified.buildMarker, context.stage.receipt.buildTimestamp);
+    assert.equal(verified.sameStageVerified, true);
+    assert.equal(verified.mixedGenerationDetected, false);
+    assert.equal(verified.acceptedExtensionVariant, "dev-controls-oauth-google");
+    // Per-tree manifests and digests for all three units.
+    assert.deepEqual(Object.keys(verified.manifests).sort(), ["alias", "dev_output", "extension"]);
+    for (const unit of context.units) {
+      const manifest = verified.manifests[unit.logicalName];
+      assert.equal(manifest.verified, true);
+      assert.equal(manifest.treeDigest, verified.treeDigests[unit.logicalName]);
+      assert.equal(typeof manifest.fileCount, "number");
+    }
+    // The alias family carries the fixture symlink, resolved and policy-checked.
+    assert.equal(verified.manifests.alias.symlinkCount, 1);
+    assert.equal(verified.manifests.alias.symlinks[0].insideFamily, true);
+    // Nothing that acquires exclusion or writes evidence ran.
+    for (const flag of ["lockAcquired", "leaseAcquired", "transactionAppended", "receiptPublished",
+      "activationPerformed", "reloadPerformed", "canaryPerformed", "pushPerformed",
+      "networkActionPerformed", "browserActionPerformed"]) {
+      assert.equal(verified[flag], false, flag);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("canonical verification rejects every live-payload drift", async () => {
+    // Each case mutates exactly one thing in the live canonical payload and must
+    // be rejected. `unit` indexes alias(0) / dev_output(1) / extension(2).
+    const cases = [
+      ["missing regular file", 2, (live) => fs.rmSync(path.join(live, "bg.js"))],
+      ["extra regular file", 2, (live) => fs.writeFileSync(path.join(live, "extra.js"), "// extra\n")],
+      ["changed regular-file bytes", 2, (live) =>
+        fs.writeFileSync(path.join(live, "bg.js"), "// background CHANGED, longer\n")],
+      ["same-size changed bytes", 2, (live) => {
+        const target = path.join(live, "bg.js");
+        const before = fs.readFileSync(target);
+        const mutated = Buffer.from(before);
+        mutated[mutated.length - 2] = mutated[mutated.length - 2] === 0x64 ? 0x65 : 0x64;
+        fs.writeFileSync(target, mutated);
+        assert.equal(fs.statSync(target).size, before.length, "same-size mutation must not change size");
+      }],
+      ["file-count drift", 0, (live) => fs.rmSync(path.join(live, "ordinary.js"))],
+      ["symlink text drift", 0, (live) => {
+        const link = path.join(live, "compat ordinary.js");
+        fs.rmSync(link);
+        fs.symlinkSync("emoji 🧪.js", link);
+      }],
+    ];
+    for (const [label, unitIndex, mutate] of cases) {
+      const context = await createVerifiedActivation(`drift-${cases.findIndex((c) => c[0] === label)}`);
+      mutate(context.units[unitIndex].livePath);
+      assert.throws(() => context.api.verifyCanonicalFromReceipt(context.receiptPath,
+        { environment: cleanEnvironment() }),
+      (error) => ["canonical-verification-file-count", "canonical-verification-digest",
+        "canonical-verification-mixed-generation"].includes(error?.code),
+      `${label} was not rejected`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("canonical verification rejects symlink resolved-target and policy drift", async () => {
+    // A symlink whose target lives OUTSIDE its own family is the only case where
+    // the resolved target can drift while the tree digest stays identical: the
+    // target is not part of the tree's manifest. `assets/` is repository-local
+    // and gitignored, so mutating the target leaves the worktree clean and the
+    // manifest untouched — only resolved-target authority can catch it.
+    const OUTSIDE_REL = path.join("assets", "outside-alias-target.txt");
+    const stageWithOutsideLink = (fixture, stage) => {
+      const outside = path.join(fixture.repository, OUTSIDE_REL);
+      fs.mkdirSync(path.dirname(outside), { recursive: true });
+      fs.writeFileSync(outside, "// authoritative source outside the alias family\n");
+      fs.symlinkSync(outside, path.join(stage.alias, "outside link.js"));
+    };
+    const cases = [
+      ["broken resolved target", "canonical-verification-symlink-broken",
+        (repository, outside) => fs.rmSync(outside)],
+      ["generated-output resolved target", "canonical-verification-symlink-generated-target",
+        (repository, outside) => {
+          fs.rmSync(outside);
+          fs.symlinkSync(path.join(repository, "apps", "dev-server", "generated.js"), outside);
+        }],
+      ["foreign-worktree resolved target", "canonical-verification-symlink-foreign",
+        (repository, outside, top) => {
+          const foreign = path.join(top, "foreign-worktree-target.js");
+          fs.writeFileSync(foreign, "// outside the approved roots\n");
+          fs.rmSync(outside);
+          fs.symlinkSync(foreign, outside);
+        }],
+    ];
+    for (const [label, expectedCode, corrupt] of cases) {
+      const context = await createActivationFixture(`a2-symlink-${expectedCode}`,
+        { mutateStage: stageWithOutsideLink });
+      const activation = context.activate();
+      const receiptPath = activation.activationReceiptPath;
+      // Baseline: the outside-family link is accepted by policy before drift.
+      const baseline = context.api.verifyCanonicalFromReceipt(receiptPath,
+        { environment: cleanEnvironment() });
+      assert.equal(baseline.manifests.alias.symlinkCount, 2, label);
+      assert.equal(baseline.manifests.alias.symlinks
+        .filter((entry) => entry.insideFamily === false).length, 1, label);
+      const digestsBefore = baseline.treeDigests;
+      const outside = path.join(context.fixture.repository, OUTSIDE_REL);
+      corrupt(context.fixture.repository, outside, context.fixture.top);
+      assert.throws(() => context.api.verifyCanonicalFromReceipt(receiptPath,
+        { environment: cleanEnvironment() }),
+      (error) => error?.code === expectedCode,
+      `${label} expected ${expectedCode}`);
+      // Proof the case is non-vacuous: the tree digest is unchanged, so only
+      // resolved-target authority could have rejected it.
+      const observed = recomputeAliasDigest(context.units[0].livePath);
+      assert.equal(observed, digestsBefore.alias,
+        `${label} changed the tree digest, so the policy check was not what rejected it`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("canonical verification rejects mixed generations and different-stage dev_output", async () => {
+    // Only dev_output and extension embed the stage build timestamp, so they are
+    // the units whose content genuinely identifies a generation.
+    for (const [label, unitIndex] of [["different-stage dev_output", 1],
+      ["different-stage extension", 2]]) {
+      const context = await createVerifiedActivation(`generation-${unitIndex}`);
+      const live = context.units[unitIndex].livePath;
+      const before = recomputeAliasDigest(live);
+      // Re-stage the same repository to a genuinely different build, then swap
+      // exactly one live tree to that other generation.
+      let other = createStageFixture(context.fixture.repository, `other-${unitIndex}`);
+      let source = [other.alias, other.devOutput, other.extension][unitIndex];
+      if (recomputeAliasDigest(source) === before) {
+        // Same-millisecond build markers would make the swap a no-op; force a
+        // genuinely different generation rather than passing vacuously.
+        fs.writeFileSync(path.join(source, "loader.js"), "// buildTs=different-generation\n");
+      }
+      assert.notEqual(recomputeAliasDigest(source), before, `${label} fixture was not a new generation`);
+      fs.rmSync(live, { recursive: true });
+      fs.cpSync(source, live, { recursive: true, verbatimSymlinks: true });
+      assert.throws(() => context.api.verifyCanonicalFromReceipt(context.receiptPath,
+        { environment: cleanEnvironment() }),
+      (error) => error?.code === "canonical-verification-mixed-generation",
+      `${label} was not reported as a mixed generation`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+    // When every unit drifts together it is not a mixed generation: the first
+    // unit's digest mismatch is reported directly.
+    const allDrift = await createVerifiedActivation("generation-all");
+    for (const unit of allDrift.units) {
+      fs.writeFileSync(path.join(unit.livePath, "drift.js"), "// drift\n");
+    }
+    assert.throws(() => allDrift.api.verifyCanonicalFromReceipt(allDrift.receiptPath,
+      { environment: cleanEnvironment() }),
+    (error) => error?.code === "canonical-verification-file-count");
+    disposeTemporaryRoot(allDrift.fixture.top);
+  });
+
+  await test("canonical verification rejects receipt, identity and transaction drift", async () => {
+    const cases = [
+      ["wrong receipt mode", (receipt) => { receipt.mode = "stage-receipt"; },
+        "activation-receipt-mode-invalid"],
+      ["wrong schema version", (receipt) => { receipt.schemaVersion = 2; },
+        "activation-receipt-mode-invalid"],
+      ["wrong activation id", (receipt) => { receipt.activationId = "20260101T000000000Z-ffffffffffff"; },
+        "activation-receipt-location"],
+      ["wrong repository", (receipt) => { receipt.repositoryRealpath = "/tmp/not-this-repository"; },
+        "activation-receipt-repository-mismatch"],
+      ["wrong authorized worktree", (receipt) => { receipt.authorizedWorktreeRealpath = "/tmp/other"; },
+        "activation-receipt-repository-mismatch"],
+      ["wrong branch", (receipt) => { receipt.branch = "release"; },
+        "activation-receipt-source-mismatch"],
+      ["wrong approved HEAD", (receipt) => { receipt.approvedHead = "0".repeat(40); },
+        "activation-receipt-source-mismatch"],
+      ["wrong source tree", (receipt) => { receipt.sourceTree = "0".repeat(40); },
+        "activation-receipt-source-mismatch"],
+      ["wrong stable Git identity", (receipt) => {
+        receipt.stableGitIdentity = { ...receipt.stableGitIdentity, sha256: "0".repeat(64) };
+      }, "activation-receipt-git-identity"],
+      ["wrong extension variant", (receipt) => { receipt.acceptedExtensionVariant = "dev-lean"; },
+        "activation-receipt-extension-variant"],
+      ["wrong intent digest", (receipt) => { receipt.intentSha256 = "0".repeat(64); },
+        "activation-receipt-intent-invalid"],
+      ["wrong stage-receipt digest", (receipt) => { receipt.stageReceiptSha256 = "0".repeat(64); },
+        "activation-receipt-stage-invalid"],
+      ["absent intent evidence", (receipt) => { receipt.intentPath = "/tmp/absent-intent.json"; },
+        "activation-receipt-intent-invalid"],
+    ];
+    for (const [label, mutate, expectedCode] of cases) {
+      const context = await createVerifiedActivation(`receipt-${expectedCode}-${label.length}`);
+      // Receipts are no-replace, so drift is presented through a rewritten copy
+      // at the same canonical location; the verifier must still reject it.
+      const receipt = JSON.parse(fs.readFileSync(context.receiptPath, "utf8"));
+      mutate(receipt);
+      fs.rmSync(context.receiptPath);
+      fs.writeFileSync(context.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+      assert.throws(() => context.api.verifyCanonicalFromReceipt(context.receiptPath,
+        { environment: cleanEnvironment() }),
+      (error) => error?.code === expectedCode,
+      `${label} expected ${expectedCode}`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("canonical verification requires durable, well-formed, owned transaction evidence", async () => {
+    const cases = [
+      ["absent transaction", (context, directory) => fs.rmSync(directory, { recursive: true }),
+        "activation-receipt-transaction-missing"],
+      ["non-accepted terminal state", (context, directory) => {
+        const names = fs.readdirSync(directory).filter((n) => n.startsWith("seq-")).sort();
+        const last = path.join(directory, names[names.length - 1]);
+        const record = JSON.parse(fs.readFileSync(last, "utf8"));
+        record.transactionState = "verified";
+        fs.rmSync(last);
+        fs.writeFileSync(last, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      }, "activation-not-durably-accepted"],
+      ["foreign transaction repository", (context, directory) => {
+        const names = fs.readdirSync(directory).filter((n) => n.startsWith("seq-")).sort();
+        const last = path.join(directory, names[names.length - 1]);
+        const record = JSON.parse(fs.readFileSync(last, "utf8"));
+        record.repositoryRealpath = "/tmp/some-other-repository";
+        fs.rmSync(last);
+        fs.writeFileSync(last, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      }, "activation-receipt-transaction-foreign"],
+      ["terminal record binds other receipt bytes", (context, directory) => {
+        const names = fs.readdirSync(directory).filter((n) => n.startsWith("seq-")).sort();
+        const last = path.join(directory, names[names.length - 1]);
+        const record = JSON.parse(fs.readFileSync(last, "utf8"));
+        record.activationReceiptSha256 = "0".repeat(64);
+        fs.rmSync(last);
+        fs.writeFileSync(last, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      }, "activation-receipt-transaction-mismatch"],
+    ];
+    for (const [label, mutate, expectedCode] of cases) {
+      const context = await createVerifiedActivation(`chain-${expectedCode}`);
+      const directory = path.join(context.anchor, "transactions", context.intent.activationId);
+      mutate(context, directory);
+      assert.throws(() => context.api.verifyCanonicalFromReceipt(context.receiptPath,
+        { environment: cleanEnvironment() }),
+      (error) => error?.code === expectedCode, `${label} expected ${expectedCode}`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("canonical verification rejects a non-regular or mislocated receipt", async () => {
+    const context = await createVerifiedActivation("receipt-shape");
+    // A symlink pointing at the genuine receipt is not itself a receipt.
+    const link = path.join(context.fixture.top, "receipt-link.json");
+    fs.symlinkSync(context.receiptPath, link);
+    assert.throws(() => context.api.verifyCanonicalFromReceipt(link, { environment: cleanEnvironment() }),
+      (error) => error?.code === "activation-receipt-not-regular");
+    // A byte-identical copy outside the canonical no-replace location is refused.
+    const copy = path.join(context.fixture.top, "receipt-copy.json");
+    fs.writeFileSync(copy, fs.readFileSync(context.receiptPath), { mode: 0o600 });
+    assert.throws(() => context.api.verifyCanonicalFromReceipt(copy, { environment: cleanEnvironment() }),
+      (error) => error?.code === "activation-receipt-location");
+    // Malformed JSON at the canonical location is refused too.
+    fs.rmSync(context.receiptPath);
+    fs.writeFileSync(context.receiptPath, "{ not json\n", { mode: 0o600 });
+    assert.throws(() => context.api.verifyCanonicalFromReceipt(context.receiptPath,
+      { environment: cleanEnvironment() }),
+    (error) => error?.code === "activation-receipt-malformed");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("canonical verification is byte-for-byte read-only across payload and coordination", async () => {
+    const context = await createVerifiedActivation("read-only-witness");
+    const before = witnessTree(context.fixture.top);
+    // Deny every mutating filesystem call for the duration of verification.
+    const denied = [];
+    const guarded = ["mkdirSync", "writeFileSync", "appendFileSync", "openSync", "chmodSync",
+      "linkSync", "symlinkSync", "unlinkSync", "renameSync", "rmSync", "rmdirSync",
+      "copyFileSync", "truncateSync", "utimesSync"];
+    const originals = {};
+    for (const name of guarded) {
+      originals[name] = fs[name];
+      fs[name] = (...args) => {
+        // `openSync` is legitimate for reading; only write intent is a mutation.
+        if (name === "openSync" && !/[wa+]/u.test(String(args[1] ?? "r"))) {
+          return originals[name](...args);
+        }
+        denied.push(name);
+        throw new Error(`mutation attempted during verification: ${name}`);
+      };
+    }
+    let verified;
+    try {
+      verified = context.api.verifyCanonicalFromReceipt(context.receiptPath,
+        { environment: cleanEnvironment() });
+    } finally {
+      for (const name of guarded) fs[name] = originals[name];
+    }
+    assert.equal(verified.verified, true);
+    assert.deepEqual(denied, [], `verification attempted mutations: ${denied.join(", ")}`);
+    assert.equal(witnessTree(context.fixture.top), before, "verification changed the fixture tree");
+    // No lock, no lease, no new transaction record, no new receipt.
+    assert.equal(fs.existsSync(context.lock), false);
+    assert.equal(fs.existsSync(path.join(context.anchor, "active-lease")), false);
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activations")),
+      [`${context.intent.activationId}.json`]);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("two independent OS processes contend for one lease and exactly one wins", async () => {
+    const context = await createActivationFixture("a2-lease-contention");
+    const anchor = context.anchor;
+    const repository = fs.realpathSync.native(context.fixture.repository);
+    const head = git(context.fixture.repository, ["rev-parse", "HEAD"]);
+    const extensionOutput = context.units[2].livePath;
+    const barrier = path.join(context.fixture.top, "contend-barrier");
+    const child = path.join(context.fixture.top, "lease-contender.mjs");
+    fs.writeFileSync(child, [
+      'import fs from "node:fs";',
+      'import { pathToFileURL } from "node:url";',
+      'const [lib, anchorRoot, repository, branch, head, extensionOutput, barrier, buildTs] =',
+      "  process.argv.slice(2);",
+      'const { acquireLease } = await import(pathToFileURL(lib).href);',
+      "// Genuine contention: both processes are already loaded and spinning, and",
+      "// only start the acquisition once the parent drops the barrier.",
+      "const deadline = Date.now() + 20_000;",
+      "while (!fs.existsSync(barrier) && Date.now() < deadline) { /* spin */ }",
+      "let result;",
+      "try {",
+      "  const held = acquireLease({",
+      "    anchorRoot, canonicalRoot: repository.split('/').slice(0, -1).join('/'),",
+      "    authoritativeRepositoryRoot: repository, publisherRepositoryRoot: repository,",
+      "    publisherWorktreeRoot: repository, branch, head,",
+      '    purpose: "canonical-activation", lane: "activation",',
+      "    buildTs, expectedExtensionOutput: extensionOutput,",
+      "  });",
+      "  result = { won: true, pid: process.pid, sessionId: held.lease.sessionId,",
+      "    ownershipToken: held.ownershipToken, lease: held.lease };",
+      "} catch (error) {",
+      "  result = { won: false, pid: process.pid, exitCode: error?.exitCode ?? null,",
+      "    message: String(error?.message || error).slice(0, 200) };",
+      "}",
+      "process.stdout.write(JSON.stringify(result));",
+      "",
+    ].join("\n"));
+    const library = path.join(context.fixture.repository, CANONICAL_LIB_REL);
+    const buildTs = context.stage.receipt.buildTimestamp;
+    const runContender = () => new Promise((resolve) => {
+      const proc = spawn(process.execPath, [child, library, anchor, repository, "main", head,
+        extensionOutput, barrier, buildTs], { cwd: context.fixture.repository, env: cleanEnvironment() });
+      let out = "";
+      proc.stdout.on("data", (chunk) => { out += chunk; });
+      proc.on("close", () => resolve(JSON.parse(out || "{}")));
+    });
+    const first = runContender();
+    const second = runContender();
+    // Let both processes reach the spin loop, then release them together.
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    fs.writeFileSync(barrier, "go\n");
+    const outcomes = await Promise.all([first, second]);
+    // Two genuinely distinct OS processes.
+    assert.equal(new Set(outcomes.map((entry) => entry.pid)).size, 2, "processes were not distinct");
+    assert.notEqual(outcomes[0].pid, process.pid);
+    // 25: exactly one winner, and the loser gets the typed contention failure.
+    const winners = outcomes.filter((entry) => entry.won === true);
+    const losers = outcomes.filter((entry) => entry.won === false);
+    assert.equal(winners.length, 1, `expected one winner, got ${JSON.stringify(outcomes)}`);
+    assert.equal(losers.length, 1);
+    assert.equal(losers[0].exitCode, 10, "loser must receive the typed contention exit code");
+    assert.match(losers[0].message, /already held/u);
+    // 26: the winner's lease binds repository, branch, HEAD and extension output.
+    const winner = winners[0];
+    const onDisk = JSON.parse(fs.readFileSync(path.join(anchor, "active-lease", "lease.json"), "utf8"));
+    assert.equal(onDisk.sessionId, winner.sessionId);
+    assert.equal(onDisk.publisherRepositoryRoot, repository);
+    assert.equal(onDisk.branch, "main");
+    assert.equal(onDisk.approvedHead, head);
+    assert.equal(onDisk.expectedExtensionOutput, fs.realpathSync.native(path.dirname(extensionOutput)) +
+      path.sep + path.basename(extensionOutput));
+    assert.equal(onDisk.lifecycleState, "held");
+    assert.equal(onDisk.purpose, "canonical-activation");
+    assert.equal(onDisk.lane, "activation");
+    // The activation this lease serves is bound by the same build identity.
+    assert.equal(onDisk.buildTs, buildTs);
+
+    const lib = await import(`${pathToFileURL(library).href}?a2=${Date.now()}`);
+    // 27/28: foreign ownership can neither verify nor release.
+    const foreignToken = Buffer.alloc(32, 7).toString("base64url");
+    assert.throws(() => lib.verifyLease({ anchorRoot: anchor, ownershipToken: foreignToken }),
+      (error) => error?.exitCode === 11);
+    assert.throws(() => lib.releaseLease({ anchorRoot: anchor, ownershipToken: foreignToken }),
+      (error) => error?.exitCode === 11);
+    assert.equal(fs.existsSync(path.join(anchor, "active-lease")), true, "foreign release removed the lease");
+    // Owner identity drift is rejected before any further work.
+    assert.throws(() => lib.verifyLease({ anchorRoot: anchor, ownershipToken: winner.ownershipToken,
+      expected: { pid: process.pid } }), (error) => error?.exitCode === 12);
+    // A held lease verifies for its true owner.
+    assert.equal(lib.verifyLease({ anchorRoot: anchor,
+      ownershipToken: winner.ownershipToken }).sessionId, winner.sessionId);
+    // 31: the winner releases, and the anchor is reacquirable afterwards.
+    assert.equal(lib.releaseLease({ anchorRoot: anchor,
+      ownershipToken: winner.ownershipToken }).released, true);
+    assert.equal(fs.existsSync(path.join(anchor, "active-lease")), false);
+    const reacquired = lib.acquireLease({
+      anchorRoot: anchor, canonicalRoot: path.dirname(repository),
+      authoritativeRepositoryRoot: repository, publisherRepositoryRoot: repository,
+      publisherWorktreeRoot: repository, branch: "main", head,
+      purpose: "canonical-activation", lane: "activation",
+      buildTs, expectedExtensionOutput: extensionOutput,
+    });
+    assert.notEqual(reacquired.lease.sessionId, winner.sessionId);
+    assert.equal(lib.releaseLease({ anchorRoot: anchor,
+      ownershipToken: reacquired.ownershipToken }).released, true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("stale and malformed lease state fail closed", async () => {
+    const context = await createActivationFixture("a2-lease-state");
+    const anchor = context.anchor;
+    const repository = fs.realpathSync.native(context.fixture.repository);
+    const head = git(context.fixture.repository, ["rev-parse", "HEAD"]);
+    const library = path.join(context.fixture.repository, CANONICAL_LIB_REL);
+    const lib = await import(`${pathToFileURL(library).href}?a2state=${Date.now()}`);
+    const acquire = () => lib.acquireLease({
+      anchorRoot: anchor, canonicalRoot: path.dirname(repository),
+      authoritativeRepositoryRoot: repository, publisherRepositoryRoot: repository,
+      publisherWorktreeRoot: repository, branch: "main", head,
+      purpose: "canonical-activation", lane: "activation",
+      buildTs: context.stage.receipt.buildTimestamp,
+      expectedExtensionOutput: context.units[2].livePath,
+    });
+    const metadata = path.join(anchor, "active-lease", "lease.json");
+    // 29: an expired lease is refused rather than silently honoured.
+    const held = acquire();
+    const expiresAt = Date.parse(held.lease.expiresAt);
+    assert.throws(() => lib.verifyLease({ anchorRoot: anchor,
+      ownershipToken: held.ownershipToken, nowMs: expiresAt + 1 }), (error) => error?.exitCode === 14);
+    assert.equal(lib.releaseLease({ anchorRoot: anchor, ownershipToken: held.ownershipToken }).released, true);
+    // 30: malformed lease metadata fails closed on verification.
+    const second = acquire();
+    fs.rmSync(metadata);
+    fs.writeFileSync(metadata, "{ not valid json\n", { mode: 0o600 });
+    assert.throws(() => lib.verifyLease({ anchorRoot: anchor, ownershipToken: second.ownershipToken }));
+    // 32: session identity drift. The library's verifyLease proves *token*
+    // ownership, so it deliberately does not reject a rewritten sessionId; the
+    // repository/HEAD/session binding is the activator's responsibility. Assert
+    // at the layer that owns it, and prove the drift is observable underneath.
+    fs.rmSync(metadata);
+    fs.writeFileSync(metadata, `${JSON.stringify({ ...second.lease,
+      sessionId: "00000000-0000-4000-8000-000000000000" }, null, 2)}\n`, { mode: 0o600 });
+    assert.equal(lib.verifyLease({ anchorRoot: anchor, ownershipToken: second.ownershipToken }).sessionId,
+      "00000000-0000-4000-8000-000000000000");
+    assert.equal(lib.releaseLease({ anchorRoot: anchor, ownershipToken: second.ownershipToken }).released, true);
+    const drifting = { sessionId: null };
+    assert.throws(() => context.api.withCanonicalLease({
+      foundation: { root: anchor }, source: { repository, branch: "main", approvedHead: head },
+      activationId: context.intent.activationId,
+      buildTs: context.stage.receipt.buildTimestamp,
+      leaseApi: {
+        acquireLease: (input) => {
+          const held = lib.acquireLease(input);
+          drifting.sessionId = held.lease.sessionId;
+          return held;
+        },
+        // The next ownership proof observes a different session: exactly the
+        // state a takeover or a replaced lease directory would produce.
+        verifyLease: ({ anchorRoot, ownershipToken }) => ({
+          ...lib.verifyLease({ anchorRoot, ownershipToken }),
+          sessionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        }),
+        releaseLease: (input) => lib.releaseLease(input),
+      },
+    }, (lease) => {
+      // `lease.verify()` is precisely the callback promotion installs as
+      // `guards.verifyLease` and invokes before every rename, so proving it
+      // rejects here proves a drifted lease aborts before the next rename.
+      lease.verify();
+      throw new Error("identity drift must abort before any further work");
+    }),
+    (error) => error?.code === "canonical-lease-identity-drift");
+    // The drifted lease was still released, so the anchor is not left held.
+    assert.equal(fs.existsSync(path.join(anchor, "active-lease")), false);
+    // Nothing here promotes any canonical payload.
+    for (const unit of context.units) {
+      assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false, unit.logicalName);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("verification is stable across path spellings, spaces and emoji", async () => {
+    const context = await createVerifiedActivation("spelling");
+    // The fixture repository name already contains spaces and an emoji.
+    assert.match(context.fixture.repository, /repository with spaces 🧪/u);
+    const first = context.api.verifyCanonicalFromReceipt(context.receiptPath,
+      { environment: cleanEnvironment() });
+    // /var and /private/var are equivalent spellings of the same receipt.
+    const alternate = context.receiptPath.startsWith("/private/var/")
+      ? context.receiptPath.replace("/private/var/", "/var/")
+      : context.receiptPath.replace(/^\/var\//u, "/private/var/");
+    assert.notEqual(alternate, context.receiptPath);
+    const second = context.api.verifyCanonicalFromReceipt(alternate, { environment: cleanEnvironment() });
+    assert.equal(second.verified, true);
+    assert.equal(second.activationReceiptSha256, first.activationReceiptSha256);
+    assert.deepEqual(second.treeDigests, first.treeDigests);
+    disposeTemporaryRoot(context.fixture.top);
+  });
 }
 
 function runStructuralTests() {
@@ -3155,8 +3801,12 @@ function runStructuralTests() {
     // Recovery, rollback and pruning stay unreachable; canonical verification
     // stays a fixture-only library foundation.
     assert.match(source, /mutation-command-not-implemented/u);
+    // Canonical verification is operational only through the explicit
+    // --activation-receipt form; every other shape stays fail-closed.
     assert.match(source, /canonical-verification-fixture-only/u);
-    assert.doesNotMatch(source, /verifyCanonicalFromReceipt/u);
+    assert.match(source, /export function verifyCanonicalFromReceipt/u);
+    assert.match(source,
+      /argv\.length === 3 && argv\[0\] === "--verify-canonical" && argv\[1\] === "--activation-receipt"/u);
   });
   structural("journal durability uses exclusive temp creation, fsync, no-replace hard link and byte verification", () => {
     assert.match(source, /openSync\(tempPath, "wx", 0o600\)/u);
@@ -3298,8 +3948,8 @@ function runStructuralTests() {
     ]) assert.doesNotMatch(source, pattern);
     // Neither production canonical verification nor any receipt-path helper is
     // imported: those belong to the deferred P3C-A2 slice.
-    for (const deferred of ["verifyCanonicalAgainstReceipt", "activationReceiptPath",
-      "planP3cRecovery", "publishRollbackReceipt", "appendRollbackCompleteRecord"]) {
+    for (const deferred of ["planP3cRecovery", "publishRollbackReceipt",
+      "appendRollbackCompleteRecord", "restoreUnit", "renameCanonicalEntry"]) {
       assert.equal(imported.includes(deferred), false, deferred);
     }
   });
@@ -3419,6 +4069,45 @@ function runStructuralTests() {
     assert.match(payloadSource, /pushPerformed: false/u);
     assert.match(payloadSource, /powerLossDurabilityGuaranteed: false/u);
   });
+  structural("operational canonical verification is structurally read-only", () => {
+    const start = source.indexOf("export function verifyCanonicalFromReceipt");
+    const end = source.indexOf("export async function runLeanActivator");
+    assert.ok(start > 0 && end > start, "the verification entry point must be locatable");
+    const region = source.slice(start, end);
+    for (const mutator of ["mkdirSync", "writeFileSync", "appendFileSync", "chmodSync", "linkSync",
+      "symlinkSync", "unlinkSync", "renameSync", "rmSync", "rmdirSync", "copyFileSync", "openSync"]) {
+      assert.doesNotMatch(region, new RegExp(`fs\\.${mutator}\\s*\\(`, "u"), mutator);
+    }
+    for (const capability of ["withPublisherLock", "withCanonicalLease", "acquireLock", "acquireLease",
+      "ensureTransactionDirectory", "publishActivationReceipt", "appendAcceptedRecord",
+      "promoteReleaseWithJournal", "reverseRelease", "createOwnedIncomingRoot", "prepareIncomingTree"]) {
+      assert.doesNotMatch(region, new RegExp(`\\b${capability}\\s*\\(`, "u"), capability);
+    }
+    // Every authority is re-derived rather than trusted from the receipt.
+    assert.match(region, /collectSourcePreflight\(REPOSITORY_ROOT\)/u);
+    assert.match(region, /assertApprovedProductionRoot\(/u);
+    assert.match(region, /transactionDirectory\(foundation\.root/u);
+    assert.match(region, /activation-not-durably-accepted/u);
+    assert.match(region, /mutationPerformed: false/u);
+  });
+  structural("the canonical-writer E1 fixture is built with a real parent commit", () => {
+    const writerSource = fs.readFileSync(path.join(ROOT, WRITER_VALIDATOR_REL), "utf8");
+    // The fixture applies its intended E1 commit on top of a baseline parent.
+    assert.match(writerSource, /baseline before accepted E1 delivery/u);
+    assert.match(writerSource, /accepted E1 snapshot/u);
+    assert.match(writerSource, /const E1_BASELINE_PATH = "\.gitignore";/u);
+    // Exactly two commits, in order, and no root-commit tolerance was added to
+    // the nested validator to hide the defect.
+    const fixtureStart = writerSource.indexOf("function materializeCleanE1Snapshot");
+    const fixture = writerSource.slice(fixtureStart, writerSource.indexOf("\n}", fixtureStart));
+    assert.equal((fixture.match(/"commit"/gu) || []).length, 2);
+    assert.ok(fixture.indexOf("baseline before accepted E1 delivery") <
+      fixture.indexOf("accepted E1 snapshot"));
+    const nested = fs.readFileSync(path.join(ROOT,
+      "tools/validation/publish/validate-canonical-delivery-exclusivity-v1.mjs"), "utf8");
+    assert.match(nested, /run\("git", \["rev-parse", "HEAD\^"\]\)/u);
+    assert.doesNotMatch(nested, /allowFailure|catch\s*\{\s*return null\s*\}/u);
+  });
   structural("P3A adds no package command and keeps the four-path scope", () => {
     const packageSource = fs.readFileSync(path.join(ROOT, PACKAGE_REL), "utf8");
     assert.doesNotMatch(packageSource, /lean-payload-transaction|--activate-receipt|--rollback|--recover|--prune|--verify-canonical|publish:h2o:activate/u);
@@ -3448,8 +4137,9 @@ async function main() {
     runtimeScenarios: runtimeResults.length,
     structuralAssertions: structuralResults.length,
     activationImplemented: true,
-    activationSlice: "P3C-A1",
-    canonicalProductionVerificationImplemented: false,
+    activationSlice: "P3C-A2",
+    canonicalProductionVerificationImplemented: true,
+    twoProcessLeaseContentionProven: true,
     recoveryImplemented: false,
     rollbackImplemented: false,
     canonicalProductionInspected: false,

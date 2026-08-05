@@ -32,13 +32,22 @@ const FINAL_PATHS = Object.freeze([
 ]);
 const UNCOMMITTED_MODIFIED = Object.freeze([ALIAS_WRITER_REL, ADR_REL]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([GUARD_REL, VALIDATOR_REL]);
-const EXPECTED_RUNTIME_SCENARIOS = 50;
+const EXPECTED_RUNTIME_SCENARIOS = 52;
 const EXPECTED_SCOPE_SCENARIOS = 12;
 const ALIAS_WRITER = path.join(ROOT, ALIAS_WRITER_REL);
 const E1_VALIDATOR_REL =
   "tools/validation/publish/validate-canonical-delivery-exclusivity-v1.mjs";
+// The pre-existing path that forms the fixture's baseline parent commit; the
+// remaining snapshot paths are what the accepted E1 commit introduces.
+const E1_BASELINE_PATH = ".gitignore";
+// The floor is the count accepted when this pin was written; the exact values
+// are what the E1 foundation reports today. The foundation may grow, never shrink.
+const E1_RUNTIME_FLOOR = 81;
+const E1_SCOPE_FLOOR = 12;
+const E1_RUNTIME_SCENARIOS = 88;
+const E1_SCOPE_SCENARIOS = 16;
 const E1_SNAPSHOT_PATHS = Object.freeze([
-  ".gitignore",
+  E1_BASELINE_PATH,
   "docs/decisions/ADR-0013-canonical-generated-delivery-ownership.md",
   "tools/publish/canonical-delivery-lib.mjs",
   "tools/publish/canonical-delivery.mjs",
@@ -665,11 +674,23 @@ function worktreeSnapshot() {
   return records;
 }
 
+/**
+ * Materialize the accepted E1 snapshot as a disposable two-commit repository.
+ *
+ * The nested Stage 1D-E1 validator reads `HEAD^` while collecting scope state,
+ * so a root commit made that collection throw before its enforcement scenarios
+ * could run. The fixture therefore reproduces the real E1 shape: a baseline
+ * commit carrying only the pre-existing `.gitignore`, then the E1 commit that
+ * introduces the four new delivery paths. That is exactly the authority model
+ * the nested validator encodes (`UNCOMMITTED_MODIFIED` = the gitignore,
+ * `UNCOMMITTED_UNTRACKED` = the new paths), and it still classifies as
+ * `committed-clean`. No tolerance for root commits is added anywhere.
+ */
 function materializeCleanE1Snapshot() {
   const top = temporaryRoot("e1-clean");
   const repository = path.join(top, "cockpit-pro", "h2o-cp-source");
   fs.mkdirSync(repository, { recursive: true });
-  for (const relative of E1_SNAPSHOT_PATHS) {
+  const writeSnapshotPath = (relative) => {
     const target = path.join(repository, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const bytes = execFileSync("git", ["show", `HEAD:${relative}`], {
@@ -678,10 +699,19 @@ function materializeCleanE1Snapshot() {
       timeout: 8_000,
     });
     fs.writeFileSync(target, bytes);
-  }
+  };
   git(repository, ["init", "-b", "main"]);
   git(repository, ["config", "user.name", "E2A Validator"]);
   git(repository, ["config", "user.email", "e2a-validator@example.invalid"]);
+  // Baseline parent: the pre-existing ignore policy, before E1 delivery.
+  writeSnapshotPath(E1_BASELINE_PATH);
+  git(repository, ["add", "--", E1_BASELINE_PATH]);
+  git(repository, ["commit", "-m", "baseline before accepted E1 delivery"]);
+  // The intended E1 test commit, applied on top of a real parent.
+  for (const relative of E1_SNAPSHOT_PATHS) {
+    if (relative === E1_BASELINE_PATH) continue;
+    writeSnapshotPath(relative);
+  }
   git(repository, ["add", "--", "."]);
   git(repository, ["commit", "-m", "accepted E1 snapshot"]);
   return repository;
@@ -1206,7 +1236,64 @@ async function runRuntimeScenarios() {
     );
     assert.equal(structuralGuardOrdering(moved).valid, false);
   });
-  await test("E1 foundation remains 81 runtime and 12 scope scenarios", async () => {
+  await test("the E1 disposable fixture is built with a real parent commit", () => {
+    const snapshot = materializeCleanE1Snapshot();
+    // 33: valid ancestry. The intended E1 commit is not a root commit.
+    const head = git(snapshot, ["rev-parse", "HEAD"]);
+    const parent = git(snapshot, ["rev-parse", "HEAD^"]);
+    assert.match(head, /^[0-9a-f]{40}$/u);
+    assert.match(parent, /^[0-9a-f]{40}$/u);
+    assert.notEqual(head, parent);
+    assert.equal(git(snapshot, ["rev-list", "--count", "HEAD"]), "2");
+    assert.equal(git(snapshot, ["log", "-1", "--format=%s"]), "accepted E1 snapshot");
+    assert.equal(git(snapshot, ["log", "-1", "--format=%s", "HEAD^"]),
+      "baseline before accepted E1 delivery");
+    // The baseline carries only the pre-existing ignore policy; the E1 commit
+    // introduces the delivery paths. That matches the nested validator's model.
+    assert.deepEqual(lines(git(snapshot, ["ls-tree", "-r", "--name-only", "HEAD^"])),
+      [E1_BASELINE_PATH]);
+    const introduced = lines(git(snapshot, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]));
+    for (const relative of E1_SNAPSHOT_PATHS) {
+      if (relative === E1_BASELINE_PATH) continue;
+      assert.equal(introduced.includes(relative), true, relative);
+    }
+    // The fixture is clean, so the nested validator sees a committed state.
+    assert.equal(git(snapshot, ["status", "--porcelain=v1", "--untracked-files=no"]), "");
+  });
+  await test("the nested E1 validator reaches its scope classification past HEAD^", async () => {
+    const snapshot = materializeCleanE1Snapshot();
+    // 34: `git rev-parse HEAD^` is exactly what previously aborted the nested
+    // run before any enforcement scenario executed. Prove it now resolves and
+    // that the nested validator classifies the fixture rather than dying.
+    assert.doesNotThrow(() => git(snapshot, ["rev-parse", "HEAD^"]));
+    const result = await managedChild(
+      process.execPath,
+      [path.join(snapshot, E1_VALIDATOR_REL)],
+      { cwd: snapshot, env: process.env, timeoutMs: 45_000 },
+    );
+    assert.doesNotMatch(String(result.stderr), /ambiguous argument 'HEAD\^'/u);
+    const summary = JSON.parse(lines(result.stdout).at(-1));
+    assert.equal(summary.ok, true, result.stderr);
+    assert.equal(summary.scopeMode, "committed-clean");
+    // 34 (non-vacuous): the nested run actually executed enforcement scenarios.
+    assert.equal(summary.runtimeScenarios > 0, true);
+    assert.equal(summary.scopeScenarios > 0, true);
+    // A root-commit fixture would still fail, so no broad tolerance was added.
+    const rootOnly = temporaryRoot("e1-root-only");
+    fs.writeFileSync(path.join(rootOnly, ".gitignore"), "node_modules/\n");
+    git(rootOnly, ["init", "-b", "main"]);
+    git(rootOnly, ["config", "user.name", "E2A Validator"]);
+    git(rootOnly, ["config", "user.email", "e2a-validator@example.invalid"]);
+    git(rootOnly, ["add", "--", "."]);
+    git(rootOnly, ["commit", "-m", "root only"]);
+    assert.throws(() => git(rootOnly, ["rev-parse", "HEAD^"]));
+  });
+  await test("E1 foundation remains at or above its accepted scenario floor", async () => {
+    // This pin was previously unreachable: the fixture's root commit aborted the
+    // nested run before it produced a summary, so the literals below silently
+    // went stale as the E1 foundation grew. With the ancestry repaired the pin
+    // is live again, so it now records both the historical floor it must never
+    // fall below and the exact current counts it must match.
     const snapshot = materializeCleanE1Snapshot();
     const result = await managedChild(
       process.execPath,
@@ -1215,8 +1302,12 @@ async function runRuntimeScenarios() {
     );
     assert.equal(result.code, 0, result.stderr);
     const summary = JSON.parse(lines(result.stdout).at(-1));
-    assert.equal(summary.runtimeScenarios, 81);
-    assert.equal(summary.scopeScenarios, 12);
+    assert.equal(summary.runtimeScenarios >= E1_RUNTIME_FLOOR, true,
+      `E1 runtime scenarios fell below the accepted floor: ${summary.runtimeScenarios}`);
+    assert.equal(summary.scopeScenarios >= E1_SCOPE_FLOOR, true,
+      `E1 scope scenarios fell below the accepted floor: ${summary.scopeScenarios}`);
+    assert.equal(summary.runtimeScenarios, E1_RUNTIME_SCENARIOS);
+    assert.equal(summary.scopeScenarios, E1_SCOPE_SCENARIOS);
     e1Regression = {
       runtimeScenarios: summary.runtimeScenarios,
       scopeScenarios: summary.scopeScenarios,

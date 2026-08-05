@@ -30,6 +30,8 @@ import { acquireLock, releaseLock } from "./lean-publisher.mjs";
 // module. Exact named symbols only — no namespace, default, aliased or dynamic
 // import. The payload module stays Node-builtins-only and never sees the lease.
 import {
+  ACTIVATION_RECEIPT_MODE,
+  activationReceiptPath,
   appendAcceptedRecord,
   buildActivationReceipt,
   canonicalUnitPaths,
@@ -42,6 +44,9 @@ import {
   recomputeIncomingManifest,
   releaseIncomingOwnership,
   reverseRelease,
+  TRANSACTION_MODE,
+  transactionDirectory,
+  verifyCanonicalAgainstReceipt,
 } from "./lean-payload-transaction.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1772,9 +1777,143 @@ function buildActivationBaseRecord({ journal, verification, fresh, units, lockOw
   };
 }
 
-/* Production canonical verification against a published activation receipt is
- * deferred to P3C-A2. The comparison foundation stays a fixture-tested read-only
- * library in the payload module, and no CLI route reaches it. */
+/**
+ * P3C-A2 — operational production canonical verification.
+ *
+ * Strictly read-only: no lock, no lease, no journal append, no receipt
+ * publication, and no filesystem mutation of any kind. Every authority is
+ * re-established from the filesystem and executable Git; nothing recorded by an
+ * earlier phase is trusted.
+ */
+export function verifyCanonicalFromReceipt(receiptPath, {
+  environment = process.env,
+} = {}) {
+  assertNoDestinationOverrides(environment);
+  // 2-9: module, executable-Git and worktree agreement, branch main, approved
+  // HEAD and source tree, empty index, clean tracked source, no untracked
+  // source, stable Git executable identity.
+  const source = collectSourcePreflight(REPOSITORY_ROOT);
+  const foundation = deriveCanonicalFoundation(source.repository);
+  // 1: approved canonical repository and cockpit-pro roots.
+  assertApprovedProductionRoot({
+    repository: source.repository, cockpitProRoot: path.dirname(source.repository),
+    anchorRoot: foundation.root,
+  });
+
+  // 10: the receipt is a regular, non-symlink file.
+  assertRegularFile(receiptPath, "activation-receipt-not-regular");
+  const absolute = path.resolve(receiptPath);
+  const bytes = fs.readFileSync(absolute);
+  // 12: bytes and digest are recomputed here, never taken from the receipt.
+  const receiptSha256 = sha256Bytes(bytes);
+  let receipt;
+  try { receipt = JSON.parse(bytes.toString("utf8")); } catch {
+    fail("activation-receipt-malformed", "Activation receipt is not valid JSON.");
+  }
+  // 11: schema and mode are exact.
+  if (receipt?.schemaVersion !== RECEIPT_SCHEMA_VERSION || receipt?.mode !== ACTIVATION_RECEIPT_MODE) {
+    fail("activation-receipt-mode-invalid", "Activation receipt schema or mode is not exact.", {
+      schemaVersion: receipt?.schemaVersion ?? null, mode: receipt?.mode ?? null,
+    });
+  }
+  validateActivationId(receipt.activationId);
+  // 10 (continued): the receipt occupies its canonical no-replace location.
+  if (realAware(absolute) !== realAware(activationReceiptPath(foundation.root, receipt.activationId))) {
+    fail("activation-receipt-location", "Activation receipt is not in its canonical no-replace location.");
+  }
+
+  // 18/19 source binding: repository, worktree, branch, HEAD, tree, Git identity.
+  if (realAware(receipt.repositoryRealpath ?? "") !== source.repository ||
+      realAware(receipt.authorizedWorktreeRealpath ?? "") !== source.repository) {
+    fail("activation-receipt-repository-mismatch", "Receipt repository differs from the executing authority.");
+  }
+  if (receipt.branch !== source.branch || receipt.approvedHead !== source.approvedHead ||
+      receipt.sourceTree !== source.sourceTree) {
+    fail("activation-receipt-source-mismatch", "Receipt source authority differs from the fresh verification.", {
+      branch: receipt.branch ?? null, approvedHead: receipt.approvedHead ?? null,
+    });
+  }
+  if (!sameJson(receipt.stableGitIdentity, source.gitExecutable)) {
+    fail("activation-receipt-git-identity", "Receipt stable Git identity differs from the current attestation.");
+  }
+  // 9: accepted extension variant.
+  if (receipt.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    fail("activation-receipt-extension-variant", "Receipt variant is not the independently pinned variant.", {
+      expected: ACCEPTED_EXTENSION_VARIANT, observed: receipt.acceptedExtensionVariant ?? null,
+    });
+  }
+
+  // 14: intent and stage-receipt identities remain valid.
+  for (const [pathKey, digestKey, code] of [
+    ["intentPath", "intentSha256", "activation-receipt-intent-invalid"],
+    ["stageReceiptPath", "stageReceiptSha256", "activation-receipt-stage-invalid"],
+  ]) {
+    assertRegularFile(receipt[pathKey], code);
+    if (sha256File(receipt[pathKey]) !== receipt[digestKey]) {
+      fail(code, "Bound evidence bytes no longer match the receipt.", { pathKey });
+    }
+  }
+
+  // 13/15/20: the transaction chain is present, well formed, owned by this
+  // repository, terminal in `accepted`, and binds these exact receipt bytes.
+  const chain = readTransactionChain(transactionDirectory(foundation.root, receipt.activationId));
+  if (chain.present !== true || chain.records.length === 0) {
+    fail("activation-receipt-transaction-missing", "No transaction evidence exists for this activation.");
+  }
+  const terminal = chain.records[chain.records.length - 1]?.record;
+  if (!terminal || terminal.activationId !== receipt.activationId ||
+      terminal.mode !== TRANSACTION_MODE) {
+    fail("activation-receipt-transaction-foreign", "Transaction evidence is foreign to this activation.");
+  }
+  if (realAware(terminal.repositoryRealpath ?? "") !== source.repository) {
+    fail("activation-receipt-transaction-foreign", "Transaction evidence belongs to another repository.");
+  }
+  if (terminal.transactionState !== "accepted") {
+    fail("activation-not-durably-accepted", "The receipt does not represent a durably accepted release.", {
+      transactionState: terminal.transactionState ?? null,
+    });
+  }
+  const boundReceiptSha256 = terminal.activationReceiptSha256 ?? terminal.receiptSha256 ?? null;
+  if (boundReceiptSha256 !== receiptSha256) {
+    fail("activation-receipt-transaction-mismatch", "Terminal record does not bind these receipt bytes.");
+  }
+
+  // 16-19: units are internally derived, never taken from the receipt, and every
+  // live tree is independently manifested and compared against this stage.
+  const units = canonicalUnitPaths(source.repository, receipt.activationId);
+  const result = verifyCanonicalAgainstReceipt(units, receipt, {
+    expectedBuildMarker: receipt.buildMarker,
+    repository: source.repository,
+    requiredFiles: REQUIRED_EXTENSION_FILES,
+    extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+  });
+  return Object.freeze({
+    ok: true,
+    mode: "verify-canonical",
+    verified: true,
+    mutationPerformed: false,
+    activationId: receipt.activationId,
+    activationReceiptPath: absolute,
+    activationReceiptSha256: receiptSha256,
+    manifests: result.results,
+    treeDigests: Object.freeze(Object.fromEntries(Object.entries(result.results)
+      .map(([name, value]) => [name, value.treeDigest]))),
+    buildMarker: receipt.buildMarker,
+    sameStageVerified: result.sameStageVerified === true,
+    mixedGenerationDetected: false,
+    acceptedExtensionVariant: receipt.acceptedExtensionVariant,
+    lockAcquired: false,
+    leaseAcquired: false,
+    transactionAppended: false,
+    receiptPublished: false,
+    activationPerformed: false,
+    reloadPerformed: false,
+    canaryPerformed: false,
+    pushPerformed: false,
+    networkActionPerformed: false,
+    browserActionPerformed: false,
+  });
+}
 
 export async function runLeanActivator({ argv = process.argv.slice(2), environment = process.env } = {}) {
   if (argv.length === 4 && argv[0] === "--activate-receipt" && argv[2] === "--activation-intent") {
@@ -1787,8 +1926,11 @@ export async function runLeanActivator({ argv = process.argv.slice(2), environme
   if (argv.length >= 1 && ["--rollback", "--recover", "--prune"].includes(argv[0])) {
     fail("mutation-command-not-implemented", "Mutation commands are intentionally absent in Batch 2 P0/P1.");
   }
+  if (argv.length === 3 && argv[0] === "--verify-canonical" && argv[1] === "--activation-receipt") {
+    return verifyCanonicalFromReceipt(argv[2], { environment });
+  }
   if (argv.length >= 1 && argv[0] === "--verify-canonical") {
-    fail("canonical-verification-fixture-only", "Canonical comparison is exposed only as a fixture-tested read-only library foundation.");
+    fail("canonical-verification-fixture-only", "Canonical comparison requires the explicit --activation-receipt form.");
   }
   if (argv.length === 2 && argv[0] === "--prepare-activation-intent") {
     return prepareActivationIntent(argv[1], { environment });

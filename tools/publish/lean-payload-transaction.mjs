@@ -2522,7 +2522,77 @@ export function appendRollbackCompleteRecord({
  * Comparison is always same-stage, because the promoted identities come from the
  * receipt that bound this exact stage.
  */
-export function verifyCanonicalAgainstReceipt(units, receipt, { expectedBuildMarker = null } = {}) {
+/**
+ * Read-only symlink policy for a promoted live tree.
+ *
+ * The tree digest already pins link *text*; this proves the resolved *target*
+ * still satisfies the same policy the incoming preparation enforced. Uses only
+ * lstat, readlink and realpath — never a mutation.
+ */
+function verifyLiveSymlinkPolicy(unit, repository) {
+  const findings = [];
+  const familyRoot = normalizedPath(unit.livePath);
+  const normalizedRepository = repository === null ? null : normalizedPath(repository);
+  const walk = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const filename = path.join(directory, name);
+      const stat = fs.lstatSync(filename);
+      const relative = path.relative(unit.livePath, filename).split(path.sep).join("/");
+      if (stat.isDirectory()) {
+        walk(filename);
+        continue;
+      }
+      if (!stat.isSymbolicLink()) continue;
+      const linkText = fs.readlinkSync(filename);
+      let resolved;
+      try {
+        resolved = fs.realpathSync.native(filename);
+      } catch {
+        fail("canonical-verification-symlink-broken", "A live canonical symlink does not resolve.", {
+          logicalName: unit.logicalName, path: relative, linkText,
+        });
+      }
+      const insideFamily = isWithin(familyRoot, resolved);
+      const insideRepository = normalizedRepository !== null && isWithin(normalizedRepository, resolved);
+      if (!insideFamily && !insideRepository) {
+        fail("canonical-verification-symlink-foreign", "A live canonical symlink resolves outside the approved roots.", {
+          logicalName: unit.logicalName, path: relative, linkText, resolved,
+        });
+      }
+      if (insideRepository && !insideFamily) {
+        for (const segments of GENERATED_OUTPUT_SEGMENTS) {
+          if (isWithin(path.join(normalizedRepository, ...segments), resolved)) {
+            fail("canonical-verification-symlink-generated-target",
+              "A live canonical symlink resolves into a generated-output tree.", {
+                logicalName: unit.logicalName, path: relative, resolved,
+              });
+          }
+        }
+      }
+      findings.push(Object.freeze({ path: relative, linkText, resolved, insideFamily }));
+    }
+  };
+  walk(unit.livePath);
+  return Object.freeze(findings);
+}
+
+/**
+ * Independently verify all three live canonical trees against one activation
+ * receipt. Strictly read-only.
+ *
+ * Comparison is exhaustive by construction: the recomputed manifest pins the
+ * path set, file count, regular-file byte size and SHA-256, and symlink link
+ * text, and the tree digest binds them together. On top of that this adds the
+ * resolved-target policy, required extension files, the accepted extension
+ * variant, the exact build marker, and mixed-generation detection.
+ *
+ * Units are compared without failing fast so a partially drifted release is
+ * reported as a mixed generation rather than as a single unit's digest error.
+ */
+export function verifyCanonicalAgainstReceipt(units, receipt, {
+  expectedBuildMarker = null, repository = null, requiredFiles = [],
+  extensionVariant = null,
+} = {}) {
   if (!plainObject(receipt) || receipt.mode !== ACTIVATION_RECEIPT_MODE) {
     fail("canonical-verification-receipt-invalid", "Canonical verification requires an activation receipt.");
   }
@@ -2531,8 +2601,15 @@ export function verifyCanonicalAgainstReceipt(units, receipt, { expectedBuildMar
       expected: expectedBuildMarker, observed: receipt.buildMarker,
     });
   }
-  const results = {};
-  const generations = new Set();
+  if (nonEmptyString(extensionVariant) && receipt.acceptedExtensionVariant !== extensionVariant) {
+    fail("canonical-verification-extension-variant", "Receipt extension variant is not the accepted variant.", {
+      expected: extensionVariant, observed: receipt.acceptedExtensionVariant ?? null,
+    });
+  }
+  if (units.length !== 3) {
+    fail("canonical-verification-incomplete", "Canonical verification requires all three units.");
+  }
+  const comparisons = [];
   for (const unit of units) {
     const expected = receipt.promotedCanonicalIdentities?.[unit.logicalName];
     if (!plainObject(expected) || !nonEmptyString(expected.treeDigest)) {
@@ -2554,20 +2631,55 @@ export function verifyCanonicalAgainstReceipt(units, receipt, { expectedBuildMar
       });
     }
     const observed = recomputeIncomingManifest(unit.livePath, "");
-    if (observed.fileCount !== expected.fileCount) {
+    comparisons.push({
+      unit,
+      expected,
+      observed,
+      countMatches: observed.fileCount === expected.fileCount,
+      digestMatches: observed.treeDigest === expected.treeDigest,
+    });
+  }
+  // A release is one generation: either every unit matches this receipt or none
+  // does. A partial match means the three live trees are not from one stage.
+  const matched = comparisons.filter((entry) => entry.digestMatches);
+  if (matched.length > 0 && matched.length < comparisons.length) {
+    fail("canonical-verification-mixed-generation",
+      "Live canonical trees are not all from the generation this receipt accepted.", {
+        matching: matched.map((entry) => entry.unit.logicalName),
+        drifted: comparisons.filter((entry) => !entry.digestMatches)
+          .map((entry) => entry.unit.logicalName),
+      });
+  }
+  const results = {};
+  for (const entry of comparisons) {
+    if (!entry.countMatches) {
       fail("canonical-verification-file-count", "Live canonical file count differs from the receipt.", {
-        logicalName: unit.logicalName, expected: expected.fileCount, observed: observed.fileCount,
+        logicalName: entry.unit.logicalName,
+        expected: entry.expected.fileCount, observed: entry.observed.fileCount,
       });
     }
-    if (observed.treeDigest !== expected.treeDigest) {
+    if (!entry.digestMatches) {
       fail("canonical-verification-digest", "Live canonical tree digest differs from the receipt.", {
-        logicalName: unit.logicalName, expected: expected.treeDigest, observed: observed.treeDigest,
+        logicalName: entry.unit.logicalName,
+        expected: entry.expected.treeDigest, observed: entry.observed.treeDigest,
       });
     }
-    generations.add(expected.treeDigest);
-    results[unit.logicalName] = Object.freeze({
-      logicalName: unit.logicalName, verified: true,
-      fileCount: observed.fileCount, treeDigest: observed.treeDigest,
+    const symlinks = verifyLiveSymlinkPolicy(entry.unit, repository);
+    if (entry.unit.logicalName === "extension" && requiredFiles.length > 0) {
+      const present = new Set(entry.observed.entries.map((item) => item.path));
+      for (const required of requiredFiles) {
+        if (!present.has(required)) {
+          fail("canonical-verification-required-file", "A required canonical extension file is absent.", {
+            logicalName: entry.unit.logicalName, required,
+          });
+        }
+      }
+    }
+    results[entry.unit.logicalName] = Object.freeze({
+      logicalName: entry.unit.logicalName, verified: true,
+      fileCount: entry.observed.fileCount, treeDigest: entry.observed.treeDigest,
+      symlinkCount: symlinks.length,
+      symlinks,
     });
   }
   if (Object.keys(results).length !== 3) {
@@ -2577,6 +2689,8 @@ export function verifyCanonicalAgainstReceipt(units, receipt, { expectedBuildMar
     ok: true, mode: "verify-canonical", activationId: receipt.activationId,
     results: Object.freeze(results), mutationPerformed: false,
     mixedGenerationDetected: false,
+    buildMarker: receipt.buildMarker,
+    sameStageVerified: true,
   });
 }
 
