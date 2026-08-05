@@ -50,6 +50,13 @@ const P3A_AUTHORIZED_PATHS = Object.freeze([
 ].sort());
 const P3B_SOURCE_PATHS = Object.freeze([ACTIVATOR_REL, PAYLOAD_MODULE_REL].sort());
 const P3B_VALIDATION_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+// P3C-A1 builds directly on the integrated P3B stack and touches exactly the
+// same four authorized paths as P3A.
+const INTEGRATED_P3B_HEAD = "ba24012b342ff5343e53d588a77e3e05deff44ae";
+const P3C_A1_SUBJECT = "feat(publish): add end-to-end activation and durable acceptance";
+const P3C_A1_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -57,15 +64,34 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 43;
-const EXPECTED_RUNTIME = 174;
-const EXPECTED_STRUCTURAL = 44;
+const EXPECTED_SCOPE = 48;
+const EXPECTED_RUNTIME = 188;
+const EXPECTED_STRUCTURAL = 49;
+// P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
+// the only module that may hold a lease; the payload module never sees one.
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
+  "acquireLease",
   "assertAllowedReadOnlyGitCommand",
   "deriveSharedAnchor",
+  "releaseLease",
   "runPinnedReadOnlyGit",
   "sanitizedGitEnvironment",
   "TRUSTED_GIT_EXECUTABLE_IDENTITY",
+  "verifyLease",
+].sort());
+const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
+  "appendAcceptedRecord",
+  "buildActivationReceipt",
+  "canonicalUnitPaths",
+  "createOwnedIncomingRoot",
+  "ensureTransactionDirectory",
+  "prepareIncomingTree",
+  "promoteReleaseWithJournal",
+  "publishActivationReceipt",
+  "readTransactionChain",
+  "recomputeIncomingManifest",
+  "releaseIncomingOwnership",
+  "reverseRelease",
 ].sort());
 
 const temporaryRoots = [];
@@ -297,6 +323,18 @@ function classifyScope(state) {
     value.parent === P3B_SOURCE_HEAD && value.subject === P3B_VALIDATION_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3B_VALIDATION_PATHS);
   if (p3bValidationClean) return "p3b-validation-committed";
+  // P3C-A1: one feature slice on top of the integrated P3B stack. Nothing may be
+  // staged, nothing untracked, and every touched path must be one of the four.
+  const p3cA1Base = value.head === INTEGRATED_P3B_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA1Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a1-uncommitted";
+  }
+  const p3cA1Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === INTEGRATED_P3B_HEAD && value.subject === P3C_A1_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A1_AUTHORIZED_PATHS);
+  if (p3cA1Clean) return "p3c-a1-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -556,6 +594,76 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("exact dirty four-path P3C-A1 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: INTEGRATED_P3B_HEAD, parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3B_VALIDATION_PATHS],
+    })), "p3c-a1-uncommitted");
+  });
+  scopeTest("P3C-A1 dirty scope rejects an unauthorized path, staging or untracked source", () => {
+    for (const override of [
+      { modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS, PUBLISHER_REL].sort() },
+      { modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS, CANONICAL_LIB_REL].sort() },
+      { untracked: ["tools/publish/scratch.mjs"] },
+      { staged: [ACTIVATOR_REL] },
+      { head: P3B_SOURCE_HEAD },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: INTEGRATED_P3B_HEAD, parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3B_VALIDATION_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+  });
+  scopeTest("exact committed four-path P3C-A1 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p3c-a1", parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P3C_A1_AUTHORIZED_PATHS],
+    })), "p3c-a1-committed");
+  });
+  scopeTest("committed P3C-A1 rejects a wrong parent, subject or extra path", () => {
+    for (const override of [
+      { parent: P3B_SOURCE_HEAD },
+      { subject: P3B_VALIDATION_SUBJECT },
+      { committedPaths: [...P3C_A1_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { committedPaths: [...P3B_VALIDATION_PATHS] },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-p3c-a1", parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3C_A1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
+  scopeTest("every historical P0-P3B scope mode is still classifiable", () => {
+    const modes = [
+      classifyScope(baseDirtyScope()),
+      classifyScope(baseDirtyScope({
+        head: ACCEPTED_P23_HEAD, parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [PAYLOAD_VALIDATOR_REL],
+        committedPaths: [...P23_AUTHORIZED_PATHS],
+      })),
+      classifyScope(baseDirtyScope({
+        head: "future-p3a", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3A_AUTHORIZED_PATHS],
+      })),
+      classifyScope(baseDirtyScope({
+        head: P3B_SOURCE_HEAD, parent: INTEGRATED_P3A_HEAD, subject: P3B_SOURCE_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [...P3B_VALIDATION_PATHS], untracked: [],
+        committedPaths: [...P3B_SOURCE_PATHS],
+      })),
+      classifyScope(baseDirtyScope({
+        head: "future-p3b", parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3B_VALIDATION_PATHS],
+      })),
+    ];
+    assert.deepEqual(modes, ["uncommitted", "p3a-test-first-uncommitted", "p3a-committed",
+      "p3b-validation-uncommitted", "p3b-validation-committed"]);
+  });
   scopeTest("P3A test-first state carries only the new payload validator", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: ACCEPTED_P23_HEAD, parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
@@ -632,7 +740,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed",
     "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed",
     "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed",
-    "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed"]
+    "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed",
+    "p3c-a1-uncommitted", "p3c-a1-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -765,8 +874,9 @@ function createRealPublisherBoundaryFixture(label) {
     "fixture must execute the exact committed Batch 1.1 publisher");
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
   copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
+  copyFile(path.join(ROOT, PAYLOAD_MODULE_REL), path.join(repository, PAYLOAD_MODULE_REL));
   installIgnoredPublisherInputs(repository);
-  git(repository, ["add", ACTIVATOR_REL, CANONICAL_LIB_REL]);
+  git(repository, ["add", ACTIVATOR_REL, CANONICAL_LIB_REL, PAYLOAD_MODULE_REL]);
   if (git(repository, ["diff", "--cached", "--name-only"])) {
     git(repository, ["commit", "-q", "-m", "fixture: current read-only activator"]);
   }
@@ -814,13 +924,16 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
   git(repository, ["config", "user.email", "lean-activator@example.invalid"]);
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
   copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
+  // The activator's one production import edge must resolve to the working-tree
+  // payload module, not to whatever the clone inherited from HEAD.
+  copyFile(path.join(ROOT, PAYLOAD_MODULE_REL), path.join(repository, PAYLOAD_MODULE_REL));
   fs.mkdirSync(path.join(repository, "fixture-source"), { recursive: true });
   fs.writeFileSync(path.join(repository, "fixture-source", "ordinary.js"), "export const ordinary = true;\n");
   fs.writeFileSync(path.join(repository, "fixture-source", "emoji 🧪.js"), "export const emoji = '🧪';\n");
   fs.mkdirSync(path.join(repository, "apps", "dev-server"), { recursive: true });
   fs.writeFileSync(path.join(repository, "apps", "dev-server", "generated.js"), "// generated fixture\n");
   git(repository, ["add", "--sparse", ACTIVATOR_REL, PUBLISHER_REL, "tools/publish/canonical-delivery-lib.mjs",
-    "fixture-source", "apps/dev-server/generated.js"]);
+    PAYLOAD_MODULE_REL, "fixture-source", "apps/dev-server/generated.js"]);
   git(repository, ["commit", "-q", "-m", "fixture: activator source"]);
   assert.equal(git(repository, ["status", "--porcelain=v1"]), "");
   return { top, repository, activator: path.join(repository, ACTIVATOR_REL) };
@@ -1661,17 +1774,21 @@ async function runRuntimeTests(api) {
     }
     assert.equal(fs.readFileSync(stage.receiptPath).equals(before), true);
   });
-  await test("activate command fails before receipt, lock, anchor or stage mutation", () => {
+  await test("activate command requires an explicit intent and never auto-creates one", () => {
     const before = fs.readFileSync(stage.receiptPath);
     const anchor = path.join(fixture.top, ".h2o-canonical-delivery");
     const lock = path.join(fixture.top, ".h2o-publisher-lock");
-    expectFailure(fixture, ["--activate-receipt", stage.receiptPath], "activation-not-implemented");
+    expectFailure(fixture, ["--activate-receipt", stage.receiptPath], "activation-intent-required");
     assert.equal(fs.readFileSync(stage.receiptPath).equals(before), true);
     assert.equal(fs.existsSync(anchor), false);
     assert.equal(fs.existsSync(lock), false);
   });
   await test("canonical verification command is fixture-only and fails before inspection", () => {
-    expectFailure(fixture, ["--verify-canonical", "--receipt", stage.receiptPath], "canonical-verification-fixture-only");
+    for (const args of [["--verify-canonical", "--receipt", stage.receiptPath],
+      ["--verify-canonical", "--activation-receipt", stage.receiptPath],
+      ["--verify-canonical"]]) {
+      expectFailure(fixture, args, "canonical-verification-fixture-only");
+    }
   });
   await test("rollback, recovery and pruning commands are absent", () => {
     for (const command of ["--rollback", "--recover", "--prune"]) {
@@ -2633,6 +2750,316 @@ async function runRuntimeTests(api) {
       approvedCockpitProRoots: [path.dirname(relocated.repository)],
     }).approved, true);
   });
+
+  await runP3cA1Tests();
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3C-A1 — end-to-end activation and durable acceptance
+ *
+ * These scenarios run the real production activation path against disposable
+ * fixtures: the real Batch 1 publisher lock, the real canonical-delivery lease,
+ * real three-tree promotion, and real no-replace receipt publication.
+ * ------------------------------------------------------------------------- */
+
+async function createActivationFixture(label) {
+  const fixture = createRepositoryFixture(`p3ca1-${label}`);
+  // The extension family's canonical parent must exist before an owned incoming
+  // root may be created; the dev-server parent already exists in the fixture.
+  fs.mkdirSync(path.join(fixture.repository, "apps", "extensions", "chatgpt", "chrome"),
+    { recursive: true });
+  const stage = createStageFixture(fixture.repository, `p3ca1-${label}`);
+  const api = await importFixtureActivator(fixture, `p3ca1-${label}`);
+  // The unit table comes from the same payload module the activator imports, so
+  // fixture expectations cannot drift from the pinned canonical unit layout.
+  const payload = await import(`${pathToFileURL(path.join(fixture.repository, PAYLOAD_MODULE_REL)).href
+  }?p3ca1=${encodeURIComponent(label)}-${Date.now()}`);
+  const intent = api.prepareActivationIntent(stage.receiptPath, {
+    environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+  });
+  return {
+    fixture, stage, api, payload, intent,
+    // Real-path spelling: the activator derives every coordination path through
+    // realpath, so fixture expectations must use the same spelling.
+    anchor: path.join(fs.realpathSync.native(fixture.top), ".h2o-canonical-delivery"),
+    lock: path.join(fs.realpathSync.native(fixture.top), ".h2o-publisher-lock"),
+    units: payload.canonicalUnitPaths(fs.realpathSync(fixture.repository), intent.activationId),
+    activate: (options = {}) => api.activateReceipt(stage.receiptPath, intent.intentPath,
+      { environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, ...options }),
+  };
+}
+
+function leaseDirectory(anchor) {
+  return path.join(anchor, "active-lease");
+}
+
+function readChain(anchor, activationId) {
+  const directory = path.join(anchor, "transactions", activationId);
+  return fs.readdirSync(directory).filter((name) => name.startsWith("seq-")).sort()
+    .map((name) => JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")));
+}
+
+async function runP3cA1Tests() {
+  await test("P3C-A1 activates all three canonical trees end to end", async () => {
+    const context = await createActivationFixture("success");
+    const result = context.activate();
+    assert.equal(result.ok, true);
+    assert.equal(result.activationPerformed, true);
+    for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed",
+      "networkActionPerformed", "browserActionPerformed"]) {
+      assert.equal(result[flag], false, flag);
+    }
+    // Every live tree now carries the staged payload.
+    for (const unit of context.units) {
+      assert.equal(fs.existsSync(unit.livePath), true, unit.logicalName);
+      assert.equal(fs.existsSync(unit.incomingPath), false, `${unit.logicalName} incoming remains`);
+    }
+    assert.equal(fs.existsSync(path.join(context.units[0].livePath, "compat ordinary.js")), true);
+    assert.equal(fs.existsSync(path.join(context.units[2].livePath, "manifest.json")), true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("activation is refused without an explicit prepared intent", async () => {
+    const context = await createActivationFixture("intent-required");
+    // A stage receipt alone can never activate, and a resolved intent cannot be
+    // silently re-created by the activation path.
+    expectActivatorError(() => context.api.activateReceipt(context.stage.receiptPath,
+      path.join(context.fixture.top, "absent-intent.json"), { environment: cleanEnvironment() }),
+    "ENOENT");
+    const result = runActivator(context.fixture, ["--activate-receipt", context.stage.receiptPath]);
+    assert.equal(codeOf(result), "activation-intent-required");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("the real publisher lock and canonical lease are both released on success", async () => {
+    const context = await createActivationFixture("exclusion-release");
+    assert.equal(fs.existsSync(leaseDirectory(context.anchor)), false);
+    const result = context.activate();
+    assert.equal(result.ok, true);
+    assert.equal(fs.existsSync(leaseDirectory(context.anchor)), false, "lease still held");
+    assert.equal(fs.existsSync(context.lock), false, "publisher lock still held");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("both exclusions are released when activation fails", async () => {
+    const context = await createActivationFixture("exclusion-release-failure");
+    assert.throws(() => context.activate({
+      hooks: { afterPrepare: () => { throw new Error("injected preparation failure"); } },
+    }));
+    assert.equal(fs.existsSync(leaseDirectory(context.anchor)), false, "lease leaked on failure");
+    assert.equal(fs.existsSync(context.lock), false, "publisher lock leaked on failure");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("publisher-lock ownership is re-proved before every rename", async () => {
+    const context = await createActivationFixture("lock-drift");
+    // Replace the lock metadata with a foreign owner after the lock is held but
+    // before the first payload rename.
+    assert.throws(() => context.activate({
+      hooks: {
+        afterPrepare: () => {
+          fs.writeFileSync(path.join(context.lock, "lock.json"),
+            `${JSON.stringify({ ownerId: "foreign-owner", pid: process.pid })}\n`, { mode: 0o600 });
+        },
+      },
+    }), (error) => error?.code === "publisher-lock-ownership-lost" ||
+      error?.details?.code === "publisher-lock-ownership-lost");
+    // No canonical tree was replaced.
+    for (const unit of context.units) {
+      assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false, unit.logicalName);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("a tautological lock check cannot satisfy the ownership guard", () => {
+    const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
+    assert.match(source, /export function assertPublisherLockStillOwned/u);
+    assert.match(source, /verifyLock: \(\) => assertPublisherLockStillOwned\(/u);
+    assert.doesNotMatch(source, /verifyLock: \(\) => lock\.ownerId === lock\.ownerId/u);
+    // The guard must read the lock back from disk rather than trusting memory.
+    const guard = source.slice(source.indexOf("export function assertPublisherLockStillOwned"));
+    assert.match(guard.slice(0, 900), /fs\.readFileSync\(path\.join\(lockDirectory, "lock\.json"\)/u);
+    assert.match(guard.slice(0, 900), /metadata\?\.pid !== process\.pid/u);
+  });
+  await test("the real canonical lease is acquired, verified and bound to this activation", async () => {
+    const context = await createActivationFixture("lease-binding");
+    let observed = null;
+    const result = context.activate({
+      hooks: {
+        afterPrepare: () => {
+          observed = JSON.parse(fs.readFileSync(
+            path.join(leaseDirectory(context.anchor), "lease.json"), "utf8"));
+        },
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(observed.lifecycleState, "held");
+    assert.equal(observed.purpose, "canonical-activation");
+    assert.equal(observed.lane, "activation");
+    assert.equal(observed.branch, "main");
+    assert.equal(observed.approvedHead, git(context.fixture.repository, ["rev-parse", "HEAD"]));
+    assert.equal(observed.publisherRepositoryRoot, fs.realpathSync(context.fixture.repository));
+    assert.equal(observed.expectedExtensionOutput,
+      fs.realpathSync.native(path.dirname(context.units[2].livePath)) +
+        path.sep + path.basename(context.units[2].livePath));
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("lease loss or owner drift aborts before the next rename", async () => {
+    for (const [label, corrupt] of [
+      ["removed", (anchor) => fs.rmSync(leaseDirectory(anchor), { recursive: true, force: true })],
+      ["session-drift", (anchor) => {
+        const metadata = path.join(leaseDirectory(anchor), "lease.json");
+        const lease = JSON.parse(fs.readFileSync(metadata, "utf8"));
+        lease.sessionId = "00000000-0000-4000-8000-000000000000";
+        fs.rmSync(metadata);
+        fs.writeFileSync(metadata, `${JSON.stringify(lease, null, 2)}\n`, { mode: 0o600 });
+      }],
+    ]) {
+      const context = await createActivationFixture(`lease-${label}`);
+      assert.throws(() => context.activate({
+        hooks: { afterPrepare: () => corrupt(context.anchor) },
+      }), (error) => typeof error?.code === "string", label);
+      for (const unit of context.units) {
+        assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false,
+          `${label}:${unit.logicalName}`);
+      }
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+  await test("the activation receipt is durable, 0600, and byte-verified", async () => {
+    const context = await createActivationFixture("receipt-durability");
+    const result = context.activate();
+    const receiptPath = result.activationReceiptPath;
+    assert.equal(receiptPath,
+      path.join(context.anchor, "activations", `${context.intent.activationId}.json`));
+    const stat = fs.lstatSync(receiptPath);
+    assert.equal(stat.isFile(), true);
+    assert.equal(stat.isSymbolicLink(), false);
+    assert.equal(stat.mode & 0o777, 0o600);
+    const bytes = fs.readFileSync(receiptPath);
+    assert.equal(sha256(bytes), result.activationReceiptSha256);
+    const receipt = JSON.parse(bytes.toString("utf8"));
+    assert.equal(receipt.activationPerformed, true);
+    for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed"]) {
+      assert.equal(receipt[flag], false, flag);
+    }
+    assert.equal(receipt.intentSha256, context.intent.intentSha256);
+    assert.equal(receipt.stageReceiptSha256, sha256(fs.readFileSync(context.stage.receiptPath)));
+    assert.equal(receipt.approvedHead, git(context.fixture.repository, ["rev-parse", "HEAD"]));
+    assert.equal(receipt.acceptedExtensionVariant, "dev-controls-oauth-google");
+    assert.equal(receipt.buildMarker, context.stage.receipt.buildTimestamp);
+    assert.equal(Object.keys(receipt.promotedCanonicalIdentities).sort().join(","),
+      "alias,dev_output,extension");
+    assert.equal(Object.keys(receipt.canonicalVerification).length, 3);
+    for (const value of Object.values(receipt.canonicalVerification)) {
+      assert.equal(value.verified, true);
+      assert.equal(value.comparedAgainst, "prepared-incoming-identity");
+    }
+    // No temporary receipt file survives, and durability is not overclaimed.
+    assert.deepEqual(fs.readdirSync(path.dirname(receiptPath)),
+      [`${context.intent.activationId}.json`]);
+    assert.equal(receipt.durability?.powerLossDurabilityGuaranteed ??
+      result.activationReceiptDurability?.powerLossDurabilityGuaranteed ?? false, false);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("an existing activation receipt is never overwritten", async () => {
+    const context = await createActivationFixture("receipt-collision");
+    const receiptPath = path.join(context.anchor, "activations",
+      `${context.intent.activationId}.json`);
+    fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+    const squatted = `${JSON.stringify({ squatter: true })}\n`;
+    fs.writeFileSync(receiptPath, squatted, { mode: 0o600 });
+    assert.throws(() => context.activate(), (error) =>
+      error?.code === "activation-receipt-publication-failed");
+    assert.equal(fs.readFileSync(receiptPath, "utf8"), squatted, "existing receipt bytes changed");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("every receipt-finalization failure prevents acceptance and reverses the release", async () => {
+    // `linked` records whether the injection point is after the no-replace hard
+    // link: only then may a receipt file legitimately survive, as evidence.
+    const failures = [
+      ["temporary-open", "before-temp-open", false],
+      ["write", "after-temp-open", false],
+      ["file-fsync", "after-write", false],
+      ["no-replace-link", "after-fsync", false],
+      ["directory-fsync", "after-link", true],
+      ["read-back-digest", "after-directory-fsync", true],
+    ];
+    for (const [label, stage, linked] of failures) {
+      const context = await createActivationFixture(`receipt-fail-${label}`);
+      assert.throws(() => context.activate({
+        hooks: { receiptFailureInjection: (point) => {
+          if (point === stage) throw new Error(`injected ${label} failure`);
+        } },
+      }), (error) => error?.code === "activation-receipt-publication-failed", label);
+      // Before the link there is no receipt at all; after it the receipt is
+      // preserved as evidence. Either way no temporary file is left behind.
+      const activations = path.join(context.anchor, "activations");
+      const published = fs.existsSync(activations) ? fs.readdirSync(activations).sort() : [];
+      assert.deepEqual(published, linked ? [`${context.intent.activationId}.json`] : [], label);
+      const chain = readChain(context.anchor, context.intent.activationId);
+      assert.equal(chain.some((record) => record.transactionState === "accepted"), false,
+        `${label} accepted an unreceipted release`);
+      // The whole release was reversed: every unit is restored to absence.
+      assert.equal(chain.filter((record) => record.transactionState === "restored").length >= 3, true,
+        `${label} did not reverse all three units`);
+      for (const unit of context.units) {
+        assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false,
+          `${label}:${unit.logicalName} left promoted`);
+      }
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+  await test("acceptance is appended only after the receipt is durable and re-verified", async () => {
+    const context = await createActivationFixture("accepted-ordering");
+    const result = context.activate();
+    const chain = readChain(context.anchor, context.intent.activationId);
+    const accepted = chain.filter((record) => record.transactionState === "accepted");
+    assert.equal(accepted.length, 1, "accepted must have exactly one record");
+    assert.equal(chain[chain.length - 1].transactionState, "accepted", "accepted must be terminal");
+    // The accepted record binds the receipt that already exists on disk.
+    assert.equal(accepted[0].activationReceiptSha256 ?? accepted[0].receiptSha256,
+      result.activationReceiptSha256);
+    // Sequences are gap-free and strictly increasing: proves the terminal
+    // sequence is derived from a fresh chain read.
+    const sequences = chain.map((record) => record.sequence);
+    assert.deepEqual(sequences, sequences.map((_unused, index) => index + 1));
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("transaction owner evidence is the publisher-lock owner, not the activation id", async () => {
+    const context = await createActivationFixture("owner-evidence");
+    let lockOwnerId = null;
+    const result = context.activate({
+      hooks: {
+        afterPrepare: () => {
+          lockOwnerId = JSON.parse(fs.readFileSync(
+            path.join(context.lock, "lock.json"), "utf8")).ownerId;
+        },
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(typeof lockOwnerId, "string");
+    assert.notEqual(lockOwnerId, context.intent.activationId);
+    const chain = readChain(context.anchor, context.intent.activationId);
+    assert.equal(chain.length > 0, true);
+    for (const record of chain) {
+      assert.equal(record.owner.ownerId, lockOwnerId, "owner evidence drifted from the lock owner");
+      assert.notEqual(record.owner.ownerId, record.activationId);
+      assert.equal(record.owner.pid, process.pid);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+  await test("activation performs no browser, network, canary, push or pruning action", async () => {
+    const context = await createActivationFixture("boundary");
+    const result = context.activate();
+    assert.equal(result.ok, true);
+    // Nothing outside the fixture repository and its anchor was created.
+    const anchorEntries = fs.readdirSync(context.anchor).sort();
+    assert.deepEqual(anchorEntries.filter((entry) => !entry.startsWith(".")),
+      ["activation-intents", "activations", "transactions"]);
+    // Retired siblings are preserved as rollback evidence and never pruned.
+    const retained = context.units.filter((unit) => fs.existsSync(unit.retiredPath));
+    assert.equal(retained.length, 0, "a first activation retires nothing");
+    const receipt = JSON.parse(fs.readFileSync(result.activationReceiptPath, "utf8"));
+    assert.equal(receipt.rollbackAvailable, true);
+    assert.equal(receipt.promotionPrimitive, "fail-closed-two-rename");
+    disposeTemporaryRoot(context.fixture.top);
+  });
 }
 
 function runStructuralTests() {
@@ -2655,10 +3082,14 @@ function runStructuralTests() {
   structural("production activator contains no browser launch or reload API", () => {
     assert.doesNotMatch(source, /osascript|playwright|puppeteer|chrome\.runtime\.reload|open\s+-/iu);
   });
-  structural("activation CLI returns activation-not-implemented before receipt verification", () => {
+  structural("the activation CLI is dispatched before any read-only command", () => {
     const activation = source.indexOf('argv[0] === "--activate-receipt"');
     const verification = source.indexOf("return verifyStageReceipt");
     assert.ok(activation >= 0 && verification > activation);
+    // Activation is reachable only with BOTH an explicit receipt and intent.
+    assert.match(source, /argv\.length === 4 && argv\[0\] === "--activate-receipt" &&\s*argv\[2\] === "--activation-intent"/u);
+    assert.match(source, /activation-intent-required/u);
+    assert.doesNotMatch(source, /prepareActivationIntent\([^)]*\)[^;]*;\s*\n\s*return activateReceipt/u);
   });
   structural("canonical comparison is exported but production canonical verification remains fixture-only", () => {
     assert.match(source, /export function compareTrees/u);
@@ -2718,10 +3149,14 @@ function runStructuralTests() {
     assert.match(source, /module-repository-mismatch/u);
     assert.match(source, /ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google"/u);
   });
-  structural("P2 exposes only intent prepare and inspect coordination commands", () => {
+  structural("P2 intent coordination commands survive alongside P3C-A1 activation", () => {
     assert.match(source, /--prepare-activation-intent/u);
     assert.match(source, /--inspect-activation-intent/u);
-    assert.match(source, /activation-not-implemented/u);
+    // Recovery, rollback and pruning stay unreachable; canonical verification
+    // stays a fixture-only library foundation.
+    assert.match(source, /mutation-command-not-implemented/u);
+    assert.match(source, /canonical-verification-fixture-only/u);
+    assert.doesNotMatch(source, /verifyCanonicalFromReceipt/u);
   });
   structural("journal durability uses exclusive temp creation, fsync, no-replace hard link and byte verification", () => {
     assert.match(source, /openSync\(tempPath, "wx", 0o600\)/u);
@@ -2842,14 +3277,31 @@ function runStructuralTests() {
       "treat-intent-as-proposal-not-promotion-authority",
     ]) assert(source.includes(JSON.stringify(requirement)));
   });
-  structural("P3A grants the activator no payload-transaction capability at all", () => {
-    // The strongest available boundary: there is no import edge. Any P3B
-    // expansion must add one here and therefore change this assertion.
-    assert.doesNotMatch(source, /lean-payload-transaction/u);
+  structural("P3C-A1 grants the activator exactly one pinned payload-transaction import edge", () => {
+    // P3A/P3B had no import edge at all. P3C-A1 adds exactly one, and it is
+    // pinned symbol-by-symbol so any widening changes this assertion.
     assert.doesNotMatch(source, /import\s*\(/u);
     const declarations = [...source.matchAll(/import\s+[^;]*?from\s+["']([^"']+)["'];/gu)].map((match) => match[1]);
     assert.deepEqual(declarations.filter((entry) => entry.startsWith("./")).sort(),
-      ["./canonical-delivery-lib.mjs", "./lean-publisher.mjs"]);
+      ["./canonical-delivery-lib.mjs", "./lean-payload-transaction.mjs", "./lean-publisher.mjs"]);
+    assert.equal(declarations.filter((entry) => entry.endsWith("lean-payload-transaction.mjs")).length, 1);
+    const edge = source.match(/import \{([^}]*?)\} from "\.\/lean-payload-transaction\.mjs";/u);
+    assert.ok(edge, "the payload import edge must be a single named-import declaration");
+    const imported = edge[1].split(",").map((entry) => entry.trim()).filter(Boolean);
+    assert.deepEqual(imported.slice().sort(), [...ACCEPTED_PAYLOAD_MODULE_IMPORTS]);
+    // No namespace, default, aliased or re-export form of the same edge.
+    for (const pattern of [
+      /import\s+\*\s+as\s+\w+\s+from\s+["'][^"']*lean-payload-transaction/u,
+      /import\s+\w+\s*,?\s*(?:\{[^}]*\})?\s*from\s+["'][^"']*lean-payload-transaction/u,
+      /\bas\s+\w+\s*[,}][^;]*from\s+["'][^"']*lean-payload-transaction/u,
+      /export\s+\*\s+from\s+["'][^"']*lean-payload-transaction/u,
+    ]) assert.doesNotMatch(source, pattern);
+    // Neither production canonical verification nor any receipt-path helper is
+    // imported: those belong to the deferred P3C-A2 slice.
+    for (const deferred of ["verifyCanonicalAgainstReceipt", "activationReceiptPath",
+      "planP3cRecovery", "publishRollbackReceipt", "appendRollbackCompleteRecord"]) {
+      assert.equal(imported.includes(deferred), false, deferred);
+    }
   });
   structural("the P3A payload module depends only on Node builtins", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
@@ -2899,6 +3351,74 @@ function runStructuralTests() {
     assert.doesNotMatch(payloadSource, /mkdirSync\([^)]*retiredPath/u);
     assert.doesNotMatch(payloadSource, /linkSync\([^)]*retiredPath|renameSync\([^)]*retiredPath/u);
   });
+  structural("P3C-A1 confines payload renames and durable links to counted sites", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    // Exactly one rename site in the whole delivery, still inside the payload
+    // module's approved helper; the activator renames nothing itself.
+    assert.equal((payloadSource.match(/fs\.renameSync\s*\(/gu) ?? []).length, 1);
+    assert.doesNotMatch(source, /fs\.renameSync\s*\(/u);
+    // Exactly two no-replace publication sites in the payload module: the
+    // transaction journal record and the durable receipt. The activator keeps
+    // its one pre-existing site, the P2 activation-intent journal.
+    assert.equal((payloadSource.match(/fs\.linkSync\s*\(/gu) ?? []).length, 2);
+    assert.equal((source.match(/fs\.linkSync\s*\(/gu) ?? []).length, 1);
+    assert.match(source, /function writeDurableActivationIntent/u);
+  });
+  structural("activation receipts have one publication helper and can never be overwritten", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    assert.equal((payloadSource.match(/function publishDurableReceipt\s*\(/gu) ?? []).length, 1);
+    assert.equal((payloadSource.match(/export function publishActivationReceipt\s*\(/gu) ?? []).length, 1);
+    // The activator publishes receipts only through that one helper.
+    assert.equal((source.match(/publishActivationReceipt\s*\(/gu) ?? []).length, 1);
+    // No-replace is structural: existence is checked, the link is unconditional,
+    // and no rename or force-overwrite path exists for a receipt.
+    assert.match(payloadSource, /Receipt already exists; receipts are never overwritten\./u);
+    assert.match(payloadSource, /activation-receipt-collision/u);
+    assert.doesNotMatch(payloadSource, /fs\.renameSync\([^)]*receipt/iu);
+    assert.doesNotMatch(payloadSource, /writeFileSync\([^)]*finalPath/u);
+  });
+  structural("the terminal accepted state has exactly one approved writer", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    assert.equal((payloadSource.match(/export function appendAcceptedRecord\s*\(/gu) ?? []).length, 1);
+    assert.equal((source.match(/appendAcceptedRecord\s*\(/gu) ?? []).length, 1);
+    // P3B's state writer still cannot reach a terminal state.
+    assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
+    // Acceptance is impossible without a durable, re-verified receipt.
+    assert.match(payloadSource, /acceptance-requires-durable-receipt/u);
+    assert.match(payloadSource, /acceptance-receipt-unverified/u);
+    // The activator never hand-writes an accepted record.
+    assert.doesNotMatch(source, /transactionState:\s*["'`]accepted["'`]/u);
+  });
+  structural("P3C-A1 leaves recovery, rollback and pruning unreachable and fail-closed", () => {
+    const cli = source.slice(source.indexOf("export async function runLeanActivator"));
+    for (const command of ["--recover", "--rollback", "--prune"]) {
+      assert.ok(cli.includes(command), command);
+    }
+    assert.match(cli, /mutation-command-not-implemented/u);
+    assert.match(cli, /canonical-verification-fixture-only/u);
+    // No CLI route reaches rollback publication or recovery planning.
+    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
+      "planP3cRecovery", "reverseReleaseFromRecovery"]) {
+      assert.doesNotMatch(cli, new RegExp(deferred, "u"));
+    }
+    // Whole-release reversal is reachable only as an internal failure path.
+    assert.doesNotMatch(cli, /reverseRelease\s*\(/u);
+  });
+  structural("P3C-A1 adds no browser, network, push, Git mutation or failed-act family", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    for (const text of [source, payloadSource]) {
+      assert.doesNotMatch(text, /failed-act-/u);
+      assert.doesNotMatch(text, /node:(?:http|https|net|tls|dns)|\bfetch\s*\(/u);
+      assert.doesNotMatch(text, /osascript|playwright|puppeteer|chrome\.runtime\.reload/iu);
+      // No Git mutation verbs anywhere in the delivery.
+      assert.doesNotMatch(text, /["'`](?:commit|push|fetch|pull|checkout|reset|clean|merge|rebase)["'`]/u);
+    }
+    // Every boundary flag the receipt asserts stays false.
+    assert.match(payloadSource, /reloadPerformed: false/u);
+    assert.match(payloadSource, /canaryPerformed: false/u);
+    assert.match(payloadSource, /pushPerformed: false/u);
+    assert.match(payloadSource, /powerLossDurabilityGuaranteed: false/u);
+  });
   structural("P3A adds no package command and keeps the four-path scope", () => {
     const packageSource = fs.readFileSync(path.join(ROOT, PACKAGE_REL), "utf8");
     assert.doesNotMatch(packageSource, /lean-payload-transaction|--activate-receipt|--rollback|--recover|--prune|--verify-canonical|publish:h2o:activate/u);
@@ -2927,7 +3447,11 @@ async function main() {
     scopeScenarios: scopeResults.length,
     runtimeScenarios: runtimeResults.length,
     structuralAssertions: structuralResults.length,
-    activationImplemented: false,
+    activationImplemented: true,
+    activationSlice: "P3C-A1",
+    canonicalProductionVerificationImplemented: false,
+    recoveryImplemented: false,
+    rollbackImplemented: false,
     canonicalProductionInspected: false,
     transactionDescription: "transactionally recoverable three-tree promotion",
   })}\n`);

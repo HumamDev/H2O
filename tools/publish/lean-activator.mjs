@@ -16,13 +16,33 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  acquireLease,
   assertAllowedReadOnlyGitCommand,
   deriveSharedAnchor,
+  releaseLease,
   runPinnedReadOnlyGit,
   sanitizedGitEnvironment,
   TRUSTED_GIT_EXECUTABLE_IDENTITY,
+  verifyLease,
 } from "./canonical-delivery-lib.mjs";
 import { acquireLock, releaseLock } from "./lean-publisher.mjs";
+// P3C-1a: the one explicit production import edge to the payload-transaction
+// module. Exact named symbols only — no namespace, default, aliased or dynamic
+// import. The payload module stays Node-builtins-only and never sees the lease.
+import {
+  appendAcceptedRecord,
+  buildActivationReceipt,
+  canonicalUnitPaths,
+  createOwnedIncomingRoot,
+  ensureTransactionDirectory,
+  prepareIncomingTree,
+  promoteReleaseWithJournal,
+  publishActivationReceipt,
+  readTransactionChain,
+  recomputeIncomingManifest,
+  releaseIncomingOwnership,
+  reverseRelease,
+} from "./lean-payload-transaction.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPOSITORY_ROOT = path.resolve(HERE, "..", "..");
@@ -1446,15 +1466,329 @@ export function prepareActivationIntent(receiptPath, {
   });
 }
 
+/* ------------------------------------------------------------------------- *
+ * P3C — production activation, canonical verification, recovery, rollback
+ *
+ * The activator owns every exclusion lifecycle: the shared publisher lock and the
+ * real canonical-delivery lease. The payload module receives only narrow injected
+ * ownership-verification callbacks, so no broad lease or lock capability leaks
+ * into it.
+ * ------------------------------------------------------------------------- */
+
+export const ACTIVATION_LEASE_PURPOSE = "canonical-activation";
+export const ACTIVATION_LEASE_LANE = "activation";
+
+/**
+ * Acquire the real canonical-delivery lease for one activation and return narrow
+ * verification callbacks plus a release function. The ownership token never
+ * leaves this closure.
+ */
+export function withCanonicalLease({
+  foundation, source, activationId, leaseApi = null, buildTs = null,
+}, callback) {
+  validateActivationId(activationId);
+  const api = leaseApi ?? { acquireLease, verifyLease, releaseLease };
+  // The lease binds the exact canonical extension variant this activation may
+  // publish, derived from the same pinned unit table the promotion uses.
+  const extensionUnit = canonicalUnitPaths(source.repository, activationId)
+    .find((unit) => unit.logicalName === "extension");
+  let held = null;
+  try {
+    held = api.acquireLease({
+      anchorRoot: foundation.root,
+      canonicalRoot: path.dirname(source.repository),
+      authoritativeRepositoryRoot: source.repository,
+      publisherRepositoryRoot: source.repository,
+      publisherWorktreeRoot: source.repository,
+      branch: source.branch,
+      head: source.approvedHead,
+      purpose: ACTIVATION_LEASE_PURPOSE,
+      lane: ACTIVATION_LEASE_LANE,
+      buildTs: buildTs ?? new Date(0).toISOString(),
+      expectedExtensionOutput: extensionUnit.livePath,
+    });
+  } catch (error) {
+    fail("canonical-lease-unavailable", "Canonical delivery lease could not be acquired.", {
+      code: error?.code ?? null, message: String(error?.message || "").slice(0, 200),
+    });
+  }
+  const token = held.ownershipToken;
+  const sessionId = held.lease?.sessionId ?? held.sessionId;
+  const verify = () => {
+    const observed = api.verifyLease({ anchorRoot: foundation.root, ownershipToken: token });
+    // Bind the lease to this repository, approved HEAD and activation.
+    if (observed.publisherRepositoryRoot && realAware(observed.publisherRepositoryRoot) !== source.repository) {
+      fail("canonical-lease-identity-drift", "Lease repository binding drifted.", {});
+    }
+    if (observed.approvedHead && observed.approvedHead !== source.approvedHead) {
+      fail("canonical-lease-identity-drift", "Lease approved HEAD binding drifted.", {});
+    }
+    if (observed.sessionId !== sessionId) {
+      fail("canonical-lease-identity-drift", "Lease session identity drifted.", {});
+    }
+    return { sessionId: observed.sessionId, activationId };
+  };
+  let released = false;
+  const release = () => {
+    if (released) return true;
+    released = true;
+    try {
+      api.releaseLease({ anchorRoot: foundation.root, ownershipToken: token });
+      return true;
+    } catch { return false; }
+  };
+  try {
+    return callback({ sessionId, verify, release });
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The complete fresh revalidation P3C must perform immediately before the first
+ * production payload mutation. Nothing recorded by P2 or P3 is trusted: every
+ * item is re-established from the filesystem and executable Git.
+ */
+export function freshActivationRevalidation(receiptPath, intentPath, {
+  environment = process.env, approvedRoots = null,
+} = {}) {
+  const verification = verifyStageReceipt(receiptPath, { environment });
+  assertApprovedProductionRoot({
+    repository: verification.source.repository,
+    cockpitProRoot: path.dirname(verification.source.repository),
+    anchorRoot: verification.canonicalFoundation.root,
+  });
+  const intentBytes = fs.readFileSync(intentPath);
+  const intentSha256 = sha256Bytes(intentBytes);
+  const inspected = inspectActivationIntent(intentPath, { environment });
+  if (inspected.recovery?.classification !== "prepared-no-payload-mutation") {
+    fail("activation-intent-not-a-proposal", "Only a prepared, unmutated intent may authorize activation.", {
+      classification: inspected.recovery?.classification ?? null,
+    });
+  }
+  const journal = JSON.parse(intentBytes.toString("utf8"));
+  if (journal.stageReceiptSha256 !== verification.receiptSha256) {
+    fail("activation-intent-stage-mismatch", "Intent does not bind this exact stage receipt.");
+  }
+  if (journal.buildMarker !== verification.stage.buildMarker) {
+    fail("activation-intent-build-marker", "Intent build marker differs from the verified stage.");
+  }
+  if (!sameJson(journal.gitExecutable, verification.source.gitExecutable)) {
+    fail("activation-intent-git-identity", "Intent stable Git identity differs from the current attestation.");
+  }
+  if (journal.repositoryRealpath !== verification.source.repository ||
+      journal.branch !== verification.source.branch ||
+      journal.approvedHead !== verification.source.approvedHead ||
+      journal.sourceTree !== verification.source.sourceTree) {
+    fail("activation-intent-source-mismatch", "Intent source authority differs from the fresh verification.");
+  }
+  return Object.freeze({
+    verification, journal, intentPath: realAware(intentPath), intentSha256,
+    activationId: journal.activationId,
+  });
+}
+
+/**
+ * Production activation. Explicit receipt AND intent are required; an intent is
+ * never created here. No browser reload, canary, push or network access occurs.
+ */
+/**
+ * Re-prove publisher-lock ownership immediately before a payload mutation. The
+ * lock directory must still exist and still record this process and this owner
+ * id; anything else means the lock was lost, replaced or taken over.
+ */
+export function assertPublisherLockStillOwned(lockDirectory, lock) {
+  let metadata;
+  try {
+    metadata = JSON.parse(fs.readFileSync(path.join(lockDirectory, "lock.json"), "utf8"));
+  } catch {
+    fail("publisher-lock-ownership-lost", "Publisher lock metadata is unreadable or absent.", { lockDirectory });
+  }
+  if (metadata?.ownerId !== lock.ownerId || metadata?.pid !== process.pid) {
+    fail("publisher-lock-ownership-lost", "Publisher lock is no longer owned by this invocation.", {
+      expectedOwnerId: lock.ownerId, observedOwnerId: metadata?.ownerId ?? null,
+    });
+  }
+  return true;
+}
+
+export function activateReceipt(receiptPath, intentPath, {
+  environment = process.env, leaseApi = null, now = new Date(), hooks = {},
+} = {}) {
+  const fresh = freshActivationRevalidation(receiptPath, intentPath, { environment });
+  const { verification, journal, activationId } = fresh;
+  const foundation = verification.canonicalFoundation;
+  const source = verification.source;
+
+  return withPublisherLock(foundation, source, (lock) => withCanonicalLease(
+    { foundation, source, activationId, leaseApi, buildTs: verification.stage.buildMarker },
+    (lease) => {
+      // Re-establish everything under both exclusions before any mutation.
+      const revalidated = freshActivationRevalidation(receiptPath, intentPath, { environment });
+      if (revalidated.intentSha256 !== fresh.intentSha256 ||
+          revalidated.verification.receiptSha256 !== verification.receiptSha256) {
+        fail("activation-revalidation-changed", "Receipt or intent changed after exclusion was acquired.");
+      }
+      lease.verify();
+
+      const units = canonicalUnitPaths(source.repository, activationId);
+      const { directory } = ensureTransactionDirectory(foundation.root, activationId);
+      const guards = {
+        verifyLock: () => assertPublisherLockStillOwned(foundation.publisherLock, lock),
+        verifyLease: () => lease.verify(),
+        leaseSessionId: lease.sessionId,
+      };
+      const baseRecord = buildActivationBaseRecord({
+        journal, verification, fresh, units, lockOwnerId: lock.ownerId,
+      });
+
+      // P3A route: prepare incoming payload for all three units.
+      const prepared = {};
+      for (const unit of units) {
+        const ownership = createOwnedIncomingRoot(unit, activationId);
+        prepared[unit.logicalName] = prepareIncomingTree(verification, unit,
+          { repository: source.repository, ownership });
+        releaseIncomingOwnership(ownership);
+      }
+      if (hooks.afterPrepare) hooks.afterPrepare(prepared);
+
+      // P3B route: promote the three-tree release.
+      const expectedDigests = Object.fromEntries(
+        Object.entries(prepared).map(([name, value]) => [name, value.promotionIdentity]));
+      const release = promoteReleaseWithJournal({
+        units, activationId, directory, baseRecord, ownerId: lock.ownerId, guards, expectedDigests,
+      });
+      if (!release.released) {
+        fail("activation-release-failed", "Three-tree promotion did not complete; the release was reversed.", {
+          failedAt: release.failedAt, code: release.code, gapTakeover: release.gapTakeover === true,
+        });
+      }
+      if (hooks.afterPromote) hooks.afterPromote(release);
+
+      // Finalize: durable receipt first, terminal record only afterwards.
+      const chain = readTransactionChain(directory);
+      // Verify all three live trees against the identities this exact stage
+      // prepared, before any receipt exists and before acceptance is possible.
+      const promotedIdentities = {};
+      const canonicalVerification = {};
+      for (const unit of units) {
+        const observed = recomputeIncomingManifest(unit.livePath, "");
+        const expected = expectedDigests[unit.logicalName];
+        if (observed.treeDigest !== expected) {
+          fail("activation-canonical-verification-failed",
+            "A promoted canonical tree does not match the prepared incoming identity.", {
+              logicalName: unit.logicalName,
+            });
+        }
+        promotedIdentities[unit.logicalName] = observed;
+        canonicalVerification[unit.logicalName] = Object.freeze({
+          verified: true, treeDigest: observed.treeDigest, fileCount: observed.fileCount,
+          comparedAgainst: "prepared-incoming-identity",
+        });
+      }
+      const receipt = buildActivationReceipt({
+        activationId,
+        transactionRecordPath: chain.records[chain.records.length - 1].path,
+        transactionRecordSha256: chain.headSha256,
+        intentPath: fresh.intentPath, intentSha256: fresh.intentSha256,
+        stageReceiptPath: verification.receiptPath, stageReceiptSha256: verification.receiptSha256,
+        repositoryRealpath: source.repository, authorizedWorktreeRealpath: source.repository,
+        branch: source.branch, approvedHead: source.approvedHead, sourceTree: source.sourceTree,
+        stableGitIdentity: source.gitExecutable,
+        acceptedExtensionVariant: verification.stage.extensionVariant,
+        buildMarker: verification.stage.buildMarker,
+        stagedIdentities: verification.stage.manifests,
+        incomingIdentities: Object.fromEntries(Object.entries(prepared)
+          .map(([name, value]) => [name, { treeDigest: value.treeDigest, fileCount: value.fileCount }])),
+        previousCanonicalIdentities: Object.fromEntries(release.changed
+          .map((entry) => [entry.logicalName, { previousState: entry.previousState }])),
+        promotedCanonicalIdentities: promotedIdentities,
+        canonicalVerification,
+        promotionPrimitive: "fail-closed-two-rename",
+        preparedAt: now.toISOString(), promotedAt: now.toISOString(),
+        verifiedAt: now.toISOString(), acceptedAt: now.toISOString(),
+        rollbackAvailable: true,
+        rollbackCandidates: Object.fromEntries(units.map((unit) => [unit.logicalName, unit.retiredPath])),
+      });
+      if (hooks.beforeReceipt) hooks.beforeReceipt();
+
+      let published;
+      try {
+        published = publishActivationReceipt(foundation.root, activationId, receipt,
+          { ownerId: lock.ownerId, failureInjection: hooks.receiptFailureInjection ?? null });
+      } catch (error) {
+        // A verified but unreceipted generation must never be accepted.
+        const reversal = reverseRelease({
+          changed: release.changed.map((entry) => ({
+            unit: units.find((unit) => unit.logicalName === entry.logicalName),
+            previous: { state: entry.previousState, treeDigest: entry.previousTreeDigest ?? null,
+              restorationMode: entry.previousState === "absent"
+                ? "remove-promoted-to-absent" : "restore-previous" },
+            promotedTreeDigest: entry.promotedTreeDigest,
+          })),
+          activationId, directory, baseRecord, ownerId: lock.ownerId, guards,
+        });
+        fail("activation-receipt-publication-failed",
+          "Final activation receipt could not be published; the release was reversed and is not accepted.", {
+            code: error?.code ?? null, reversed: reversal.reversed === true,
+          });
+      }
+
+      const accepted = appendAcceptedRecord({
+        directory, baseRecord, sequence: readTransactionChain(directory).records.length + 1,
+        previousRecordSha256: readTransactionChain(directory).headSha256,
+        ownerId: lock.ownerId, receipt: published,
+        trees: baseRecord.trees.map((tree) => ({ ...tree, state: "accepted" })),
+      });
+      return Object.freeze({
+        ok: true, mode: "activate-receipt", activationId,
+        activationReceiptPath: published.path, activationReceiptSha256: published.sha256,
+        terminalRecordPath: accepted.path,
+        activationPerformed: true, reloadPerformed: false, canaryPerformed: false, pushPerformed: false,
+        networkActionPerformed: false, browserActionPerformed: false,
+      });
+    }));
+}
+
+function buildActivationBaseRecord({ journal, verification, fresh, units, lockOwnerId }) {
+  return {
+    activationId: journal.activationId, sequence: 1, previousRecordSha256: null,
+    createdAt: journal.createdAt,
+    intentPath: fresh.intentPath, intentSha256: fresh.intentSha256,
+    stageReceiptPath: verification.receiptPath, stageReceiptSha256: verification.receiptSha256,
+    repositoryRealpath: verification.source.repository,
+    authorizedWorktreeRealpath: verification.source.repository,
+    branch: verification.source.branch, approvedHead: verification.source.approvedHead,
+    sourceTree: verification.source.sourceTree,
+    stableGitIdentity: verification.source.gitExecutable,
+    acceptedExtensionVariant: verification.stage.extensionVariant,
+    buildMarker: verification.stage.buildMarker,
+    owner: { ownerId: lockOwnerId, pid: process.pid },
+    transactionState: "untouched",
+    trees: units.map((unit) => ({
+      logicalName: unit.logicalName, state: "untouched",
+      livePath: unit.livePath, incomingPath: unit.incomingPath, retiredPath: unit.retiredPath,
+    })),
+  };
+}
+
+/* Production canonical verification against a published activation receipt is
+ * deferred to P3C-A2. The comparison foundation stays a fixture-tested read-only
+ * library in the payload module, and no CLI route reaches it. */
+
 export async function runLeanActivator({ argv = process.argv.slice(2), environment = process.env } = {}) {
+  if (argv.length === 4 && argv[0] === "--activate-receipt" && argv[2] === "--activation-intent") {
+    return activateReceipt(argv[1], argv[3], { environment });
+  }
   if (argv.length === 2 && argv[0] === "--activate-receipt") {
-    fail("activation-not-implemented", "Activation is intentionally not implemented in Batch 2 P0/P1.");
+    fail("activation-intent-required",
+      "Activation requires explicit stage-receipt and activation-intent evidence.");
   }
   if (argv.length >= 1 && ["--rollback", "--recover", "--prune"].includes(argv[0])) {
     fail("mutation-command-not-implemented", "Mutation commands are intentionally absent in Batch 2 P0/P1.");
   }
-  if (argv.length === 3 && argv[0] === "--verify-canonical" && argv[1] === "--receipt") {
-    fail("canonical-verification-fixture-only", "P1 exposes canonical comparison only as a fixture-tested read-only library foundation.");
+  if (argv.length >= 1 && argv[0] === "--verify-canonical") {
+    fail("canonical-verification-fixture-only", "Canonical comparison is exposed only as a fixture-tested read-only library foundation.");
   }
   if (argv.length === 2 && argv[0] === "--prepare-activation-intent") {
     return prepareActivationIntent(argv[1], { environment });

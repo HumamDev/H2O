@@ -511,7 +511,9 @@ export function buildTransactionRecord(input) {
   } = input;
   validateActivationId(activationId);
   sequenceBasename(sequence);
-  if (input.allowP3bStates === true) assertP3bWritableState(transactionState);
+  if (input.allowP3cStates === true) {
+    if (!P3C_TRANSACTION_STATES.includes(transactionState)) assertP3bWritableState(transactionState);
+  } else if (input.allowP3bStates === true) assertP3bWritableState(transactionState);
   else assertP3aWritableState(transactionState);
   if (sequence === 1) {
     if (previousRecordSha256 !== null) {
@@ -551,7 +553,9 @@ export function buildTransactionRecord(input) {
         !nonEmptyString(tree.retiredPath)) {
       fail("transaction-tree-records-invalid", "Each tree record needs a known state and derived paths.");
     }
-    if (input.allowP3bStates === true) {
+    if (input.allowP3cStates === true) {
+      // Terminal P3C tree states are permitted only through finalization helpers.
+    } else if (input.allowP3bStates === true) {
       if (P3C_RESERVED_STATES.includes(tree.state)) {
         fail("transaction-state-reserved-for-p3c", "Acceptance belongs to P3C.", { state: tree.state });
       }
@@ -1643,7 +1647,9 @@ export const P3B_TRANSACTION_STATES = Object.freeze([
   "restored",
 ]);
 // Acceptance and the durable final receipt belong to P3C.
-export const P3C_RESERVED_STATES = Object.freeze(["accepted"]);
+// Both terminal states belong to P3C. Reserving `rollback-complete` alongside
+// `accepted` keeps the precise reserved-state code reachable for either one.
+export const P3C_RESERVED_STATES = Object.freeze(["accepted", "rollback-complete"]);
 
 export const P3B_RECOVERY_OUTCOMES = Object.freeze([
   "restore-backward",
@@ -2149,6 +2155,488 @@ export function promoteReleaseWithJournal({
     canaryPerformed: false,
     pushPerformed: false,
   });
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3C — activation finalization, canonical verification, recovery, rollback
+ *
+ * Terminal states are writable ONLY through the finalization helpers below, and
+ * only after their receipt has been durably published and re-read. Nothing here
+ * acquires a lease or a lock: the activator owns those lifecycles and injects
+ * narrow ownership-verification callbacks, so no broad exclusion capability
+ * reaches this module.
+ * ------------------------------------------------------------------------- */
+
+export const P3C_TRANSACTION_STATES = Object.freeze(["accepted", "rollback-complete"]);
+export const ACTIVATION_RECEIPT_MODE = "activation-receipt";
+export const ROLLBACK_RECEIPT_MODE = "rollback-receipt";
+export const RECEIPT_SCHEMA_VERSION = 1;
+export const ACTIVATIONS_SUBPATH = "activations";
+export const ROLLBACKS_SUBPATH = "rollbacks";
+
+export const P3C_RECOVERY_OUTCOMES = Object.freeze([
+  "complete-terminal-accepted-record",
+  "restore-backward",
+  "complete-reversal",
+  "first-activation-restore-to-absent",
+  "preserve-foreign-live-and-require-operator",
+  "recovery-required",
+  "contradictory-transaction",
+  "foreign-or-unowned-transaction",
+]);
+
+export function assertP3cWritableState(state) {
+  if (!P3C_TRANSACTION_STATES.includes(state)) {
+    fail("transaction-state-not-p3c", "Only terminal P3C states may be written by finalization helpers.", { state });
+  }
+  return state;
+}
+
+/* ---------------- durable receipt publication ---------------- */
+
+/**
+ * Durable no-replace receipt publication. Identical in shape to the accepted
+ * journal writer: exclusive temp at 0600, write, file fsync, no-replace hard
+ * link, owned-temp unlink, directory fsync, byte read-back, digest verification.
+ * A collision fails closed and never overwrites an existing receipt.
+ */
+/**
+ * Fixture-only failure injection for the receipt durability sequence. Production
+ * callers never pass one; the parameter exists so every step of the no-replace
+ * publication can be proven to fail closed without acceptance.
+ */
+function invokeReceiptFailureInjection(failureInjection, point) {
+  if (typeof failureInjection === "function") failureInjection(point);
+}
+
+function publishDurableReceipt(directory, basename, receipt,
+  { ownerId, collisionCode, failureInjection = null }) {
+  assertRealDirectoryOrAbsent(directory, "receipt-directory-symlink", "receipt-directory-invalid");
+  const finalPath = path.join(path.resolve(directory), basename);
+  const safeOwner = nonEmptyString(ownerId) && OWNER_ID_PATTERN.test(ownerId) ? ownerId : crypto.randomUUID();
+  const tempPath = path.join(path.resolve(directory), `.${basename}.tmp-${safeOwner}`);
+  const bytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  let descriptor = null;
+  let tempOwned = false;
+  try {
+    try {
+      fs.lstatSync(finalPath);
+      fail(collisionCode, "Receipt already exists; receipts are never overwritten.", { finalPath });
+    } catch (error) {
+      if (error instanceof PayloadTransactionError) throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+    invokeReceiptFailureInjection(failureInjection, "before-temp-open");
+    try {
+      descriptor = fs.openSync(tempPath, "wx", 0o600);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        fail("receipt-temp-collision", "An invocation-owned receipt temporary already exists.", { tempPath });
+      }
+      throw error;
+    }
+    tempOwned = true;
+    invokeReceiptFailureInjection(failureInjection, "after-temp-open");
+    fs.writeFileSync(descriptor, bytes);
+    invokeReceiptFailureInjection(failureInjection, "after-write");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    invokeReceiptFailureInjection(failureInjection, "after-fsync");
+    try {
+      fs.linkSync(tempPath, finalPath);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        fail(collisionCode, "Receipt appeared before publication; refusing overwrite.", { finalPath });
+      }
+      fail("receipt-link-failed", "Filesystem could not publish the receipt through no-replace hard linking.", {
+        finalPath, code: error?.code ?? null,
+      });
+    }
+    fs.unlinkSync(tempPath);
+    tempOwned = false;
+    invokeReceiptFailureInjection(failureInjection, "after-link");
+    const directoryFsync = flushDirectory(directory);
+    invokeReceiptFailureInjection(failureInjection, "after-directory-fsync");
+    const observed = fs.readFileSync(finalPath);
+    if (!observed.equals(bytes)) {
+      fail("receipt-final-verification", "Durable receipt bytes differ after publication.", { finalPath });
+    }
+    return Object.freeze({
+      path: finalPath,
+      sha256: sha256Bytes(observed),
+      bytes: observed.length,
+      durability: Object.freeze({
+        fileFsync: Object.freeze({ attempted: true, succeeded: true }),
+        directoryFsync,
+        processCrashAtomicity: true,
+        powerLossDurabilityGuaranteed: false,
+      }),
+    });
+  } catch (error) {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch { /* preserve the original cause */ }
+    }
+    if (tempOwned) {
+      try {
+        const stat = fs.lstatSync(tempPath);
+        if (!stat.isSymbolicLink() && stat.isFile()) fs.unlinkSync(tempPath);
+      } catch { /* cleanup must not mask the cause */ }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Create an owner-only coordination subdirectory under the anchor. Mirrors the
+ * accepted transaction-directory logic: symlinks rejected, 0700 enforced, and
+ * the parent flushed when a directory is newly created.
+ */
+function ensureAnchorSubdirectory(anchorRoot, name, symlinkCode, invalidCode) {
+  const created = [];
+  for (const candidate of [path.resolve(anchorRoot), path.join(path.resolve(anchorRoot), name)]) {
+    const state = assertRealDirectoryOrAbsent(candidate);
+    if (state === "absent") {
+      try {
+        fs.mkdirSync(candidate, { mode: 0o700 });
+        created.push(candidate);
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+      assertRealDirectoryOrAbsent(candidate);
+    }
+    const mode = fs.statSync(candidate).mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      fail(invalidCode, "Coordination directories must remain owner-only.", {
+        directory: candidate, mode: mode.toString(8),
+      });
+    }
+  }
+  const directory = path.join(path.resolve(anchorRoot), name);
+  if (created.length) flushDirectory(path.dirname(directory));
+  return directory;
+}
+
+export function activationReceiptPath(anchorRoot, activationId) {
+  validateActivationId(activationId);
+  return path.join(path.resolve(anchorRoot), ACTIVATIONS_SUBPATH, `${activationId}.json`);
+}
+
+export function rollbackReceiptPath(anchorRoot, rollbackId) {
+  validateActivationId(rollbackId);
+  return path.join(path.resolve(anchorRoot), ROLLBACKS_SUBPATH, `${rollbackId}.json`);
+}
+
+export function buildActivationReceipt(input) {
+  if (!plainObject(input)) fail("receipt-invalid", "Activation receipt input must be an object.");
+  const required = ["activationId", "transactionRecordPath", "transactionRecordSha256", "intentPath",
+    "intentSha256", "stageReceiptPath", "stageReceiptSha256", "repositoryRealpath",
+    "authorizedWorktreeRealpath", "branch", "approvedHead", "sourceTree", "buildMarker",
+    "acceptedExtensionVariant", "promotionPrimitive", "preparedAt", "promotedAt", "verifiedAt", "acceptedAt"];
+  for (const key of required) {
+    if (!nonEmptyString(input[key])) fail("receipt-invalid", `Activation receipt field ${key} is required.`, { key });
+  }
+  validateActivationId(input.activationId);
+  if (input.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    fail("extension-variant-not-accepted", "Activation receipts pin the accepted extension variant.");
+  }
+  if (!plainObject(input.stableGitIdentity) ||
+      !["path", "realpath", "version", "sha256"].every((key) => nonEmptyString(input.stableGitIdentity[key])) ||
+      ["device", "inode", "size", "mtimeMs"].some((key) => Object.hasOwn(input.stableGitIdentity, key))) {
+    fail("receipt-git-identity-invalid", "Receipts carry only the stable Git identity.");
+  }
+  for (const key of ["stagedIdentities", "incomingIdentities", "previousCanonicalIdentities",
+    "promotedCanonicalIdentities", "canonicalVerification"]) {
+    if (!plainObject(input[key])) fail("receipt-invalid", `Activation receipt field ${key} must be an object.`, { key });
+  }
+  return {
+    schemaVersion: RECEIPT_SCHEMA_VERSION,
+    mode: ACTIVATION_RECEIPT_MODE,
+    activationId: input.activationId,
+    transactionRecordPath: input.transactionRecordPath,
+    transactionRecordSha256: input.transactionRecordSha256,
+    intentPath: input.intentPath,
+    intentSha256: input.intentSha256,
+    stageReceiptPath: input.stageReceiptPath,
+    stageReceiptSha256: input.stageReceiptSha256,
+    repositoryRealpath: input.repositoryRealpath,
+    authorizedWorktreeRealpath: input.authorizedWorktreeRealpath,
+    branch: input.branch,
+    approvedHead: input.approvedHead,
+    sourceTree: input.sourceTree,
+    stableGitIdentity: input.stableGitIdentity,
+    acceptedExtensionVariant: input.acceptedExtensionVariant,
+    buildMarker: input.buildMarker,
+    stagedIdentities: input.stagedIdentities,
+    incomingIdentities: input.incomingIdentities,
+    previousCanonicalIdentities: input.previousCanonicalIdentities,
+    promotedCanonicalIdentities: input.promotedCanonicalIdentities,
+    canonicalVerification: input.canonicalVerification,
+    promotionPrimitive: input.promotionPrimitive,
+    preparedAt: input.preparedAt,
+    promotedAt: input.promotedAt,
+    verifiedAt: input.verifiedAt,
+    acceptedAt: input.acceptedAt,
+    rollbackAvailable: input.rollbackAvailable === true,
+    rollbackCandidates: input.rollbackCandidates ?? null,
+    durability: {
+      fileFsync: { attempted: true, succeeded: true },
+      directoryFsync: { attempted: true, succeeded: null, unsupported: null,
+        actualOutcomeReturnedByPublication: true },
+      processCrashAtomicity: true,
+      powerLossDurabilityGuaranteed: false,
+    },
+    activationPerformed: true,
+    reloadPerformed: false,
+    canaryPerformed: false,
+    pushPerformed: false,
+  };
+}
+
+export function publishActivationReceipt(anchorRoot, activationId, receipt,
+  { ownerId, failureInjection = null } = {}) {
+  validateActivationId(activationId);
+  if (receipt?.mode !== ACTIVATION_RECEIPT_MODE || receipt?.activationId !== activationId) {
+    fail("receipt-invalid", "Activation receipt does not describe this activation.", { activationId });
+  }
+  const directory = ensureAnchorSubdirectory(anchorRoot, ACTIVATIONS_SUBPATH,
+    "activations-symlink", "activations-invalid");
+  return publishDurableReceipt(directory, `${activationId}.json`, receipt, {
+    ownerId, collisionCode: "activation-receipt-collision", failureInjection,
+  });
+}
+
+export function buildRollbackReceipt(input) {
+  if (!plainObject(input)) fail("receipt-invalid", "Rollback receipt input must be an object.");
+  for (const key of ["rollbackId", "sourceActivationReceiptPath", "sourceActivationReceiptSha256",
+    "rollbackTransactionPath", "rollbackTransactionSha256", "repositoryRealpath", "rolledBackFrom",
+    "restoredTo", "startedAt", "completedAt"]) {
+    if (!nonEmptyString(input[key])) fail("receipt-invalid", `Rollback receipt field ${key} is required.`, { key });
+  }
+  validateActivationId(input.rollbackId);
+  for (const key of ["previousCanonicalIdentities", "resultingCanonicalIdentities", "manifests"]) {
+    if (!plainObject(input[key])) fail("receipt-invalid", `Rollback receipt field ${key} must be an object.`, { key });
+  }
+  return {
+    schemaVersion: RECEIPT_SCHEMA_VERSION,
+    mode: ROLLBACK_RECEIPT_MODE,
+    rollbackId: input.rollbackId,
+    sourceActivationReceiptPath: input.sourceActivationReceiptPath,
+    sourceActivationReceiptSha256: input.sourceActivationReceiptSha256,
+    rollbackTransactionPath: input.rollbackTransactionPath,
+    rollbackTransactionSha256: input.rollbackTransactionSha256,
+    repositoryRealpath: input.repositoryRealpath,
+    rolledBackFrom: input.rolledBackFrom,
+    restoredTo: input.restoredTo,
+    manifests: input.manifests,
+    previousCanonicalIdentities: input.previousCanonicalIdentities,
+    resultingCanonicalIdentities: input.resultingCanonicalIdentities,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    durability: {
+      fileFsync: { attempted: true, succeeded: true },
+      directoryFsync: { attempted: true, succeeded: null, unsupported: null,
+        actualOutcomeReturnedByPublication: true },
+      processCrashAtomicity: true,
+      powerLossDurabilityGuaranteed: false,
+    },
+    rollbackPerformed: true,
+    reloadPerformed: false,
+    canaryPerformed: false,
+    pushPerformed: false,
+  };
+}
+
+export function publishRollbackReceipt(anchorRoot, rollbackId, receipt, { ownerId } = {}) {
+  validateActivationId(rollbackId);
+  if (receipt?.mode !== ROLLBACK_RECEIPT_MODE || receipt?.rollbackId !== rollbackId) {
+    fail("receipt-invalid", "Rollback receipt does not describe this rollback.", { rollbackId });
+  }
+  const directory = ensureAnchorSubdirectory(anchorRoot, ROLLBACKS_SUBPATH,
+    "rollbacks-symlink", "rollbacks-invalid");
+  return publishDurableReceipt(directory, `${rollbackId}.json`, receipt, {
+    ownerId, collisionCode: "rollback-receipt-collision",
+  });
+}
+
+/* ---------------- terminal state writers ---------------- */
+
+/**
+ * The ONLY writer of the terminal `accepted` state. Acceptance is legal solely
+ * after the activation receipt has been durably published AND its bytes re-read
+ * and digest-verified. A verified-but-unreceipted generation can never be
+ * accepted.
+ */
+export function appendAcceptedRecord({
+  directory, baseRecord, sequence, previousRecordSha256, ownerId, receipt, trees,
+}) {
+  assertP3cWritableState("accepted");
+  if (!plainObject(receipt) || !nonEmptyString(receipt.path) || !nonEmptyString(receipt.sha256)) {
+    fail("acceptance-requires-durable-receipt", "Acceptance requires a durably published activation receipt.");
+  }
+  const observed = fs.readFileSync(receipt.path);
+  if (sha256Bytes(observed) !== receipt.sha256) {
+    fail("acceptance-receipt-unverified", "Activation receipt bytes do not match the published digest.", {
+      receiptPath: receipt.path,
+    });
+  }
+  const record = buildTransactionRecord({
+    ...baseRecord, sequence, previousRecordSha256,
+    transactionState: "accepted", trees, allowP3bStates: true, allowP3cStates: true,
+  });
+  record.finalActivationReceiptDurable = true;
+  record.activationPerformed = true;
+  record.activationReceiptPath = receipt.path;
+  record.activationReceiptSha256 = receipt.sha256;
+  return publishTransactionRecord(directory, record, { ownerId });
+}
+
+/** The ONLY writer of the terminal `rollback-complete` state. */
+export function appendRollbackCompleteRecord({
+  directory, baseRecord, sequence, previousRecordSha256, ownerId, receipt, trees,
+}) {
+  assertP3cWritableState("rollback-complete");
+  if (!plainObject(receipt) || !nonEmptyString(receipt.path) || !nonEmptyString(receipt.sha256)) {
+    fail("rollback-requires-durable-receipt", "Rollback completion requires a durably published receipt.");
+  }
+  const observed = fs.readFileSync(receipt.path);
+  if (sha256Bytes(observed) !== receipt.sha256) {
+    fail("rollback-receipt-unverified", "Rollback receipt bytes do not match the published digest.", {
+      receiptPath: receipt.path,
+    });
+  }
+  const record = buildTransactionRecord({
+    ...baseRecord, sequence, previousRecordSha256,
+    transactionState: "rollback-complete", trees, allowP3bStates: true, allowP3cStates: true,
+  });
+  record.rollbackReceiptPath = receipt.path;
+  record.rollbackReceiptSha256 = receipt.sha256;
+  return publishTransactionRecord(directory, record, { ownerId });
+}
+
+/* ---------------- production canonical verification ---------------- */
+
+/**
+ * Recompute all three live canonical trees and compare them to the promoted
+ * identities recorded by one activation receipt. Read-only: performs no mutation.
+ * Comparison is always same-stage, because the promoted identities come from the
+ * receipt that bound this exact stage.
+ */
+export function verifyCanonicalAgainstReceipt(units, receipt, { expectedBuildMarker = null } = {}) {
+  if (!plainObject(receipt) || receipt.mode !== ACTIVATION_RECEIPT_MODE) {
+    fail("canonical-verification-receipt-invalid", "Canonical verification requires an activation receipt.");
+  }
+  if (nonEmptyString(expectedBuildMarker) && receipt.buildMarker !== expectedBuildMarker) {
+    fail("canonical-verification-build-marker", "Receipt build marker differs from the verified stage.", {
+      expected: expectedBuildMarker, observed: receipt.buildMarker,
+    });
+  }
+  const results = {};
+  const generations = new Set();
+  for (const unit of units) {
+    const expected = receipt.promotedCanonicalIdentities?.[unit.logicalName];
+    if (!plainObject(expected) || !nonEmptyString(expected.treeDigest)) {
+      fail("canonical-verification-identity-missing", "Receipt does not record a promoted identity for a unit.", {
+        logicalName: unit.logicalName,
+      });
+    }
+    let stat;
+    try {
+      stat = fs.lstatSync(unit.livePath);
+    } catch {
+      fail("canonical-verification-live-missing", "A live canonical tree is absent.", {
+        logicalName: unit.logicalName,
+      });
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      fail("canonical-verification-live-invalid", "A live canonical entry is not a real directory.", {
+        logicalName: unit.logicalName,
+      });
+    }
+    const observed = recomputeIncomingManifest(unit.livePath, "");
+    if (observed.fileCount !== expected.fileCount) {
+      fail("canonical-verification-file-count", "Live canonical file count differs from the receipt.", {
+        logicalName: unit.logicalName, expected: expected.fileCount, observed: observed.fileCount,
+      });
+    }
+    if (observed.treeDigest !== expected.treeDigest) {
+      fail("canonical-verification-digest", "Live canonical tree digest differs from the receipt.", {
+        logicalName: unit.logicalName, expected: expected.treeDigest, observed: observed.treeDigest,
+      });
+    }
+    generations.add(expected.treeDigest);
+    results[unit.logicalName] = Object.freeze({
+      logicalName: unit.logicalName, verified: true,
+      fileCount: observed.fileCount, treeDigest: observed.treeDigest,
+    });
+  }
+  if (Object.keys(results).length !== 3) {
+    fail("canonical-verification-incomplete", "Canonical verification requires all three units.");
+  }
+  return Object.freeze({
+    ok: true, mode: "verify-canonical", activationId: receipt.activationId,
+    results: Object.freeze(results), mutationPerformed: false,
+    mixedGenerationDetected: false,
+  });
+}
+
+/* ---------------- pure P3C recovery policy ---------------- */
+
+/**
+ * Deterministic recovery policy. Pure: no fs, Git, child process or mutation.
+ * Never guesses forward, and never manufactures acceptance for a release that
+ * was not already fully verified and durably receipted.
+ */
+export function planP3cRecovery({ chain, observations, receipt = null, expected = {} } = {}) {
+  if (!plainObject(chain) || chain.present !== true || !Array.isArray(chain.records) || chain.records.length === 0) {
+    return outcome("no-transaction");
+  }
+  const head = chain.records[chain.records.length - 1]?.record;
+  if (!plainObject(head) || head.schemaVersion !== TRANSACTION_SCHEMA_VERSION || head.mode !== TRANSACTION_MODE) {
+    return outcome("contradictory-transaction", "contradictory-transaction");
+  }
+  for (const key of ["repositoryRealpath", "authorizedWorktreeRealpath"]) {
+    if (expected[key] && head[key] !== expected[key]) {
+      return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+    }
+  }
+  if (!plainObject(observations)) return outcome("contradictory-transaction", "contradictory-transaction");
+
+  const receiptDurable = plainObject(receipt) && receipt.durable === true;
+  const canonicalVerified = observations.canonicalVerified === true;
+  const alreadyAccepted = head.transactionState === "accepted";
+  const anyForeign = ["alias", "dev_output", "extension"]
+    .some((name) => observations[name]?.foreignLivePresent === true);
+
+  if (anyForeign) {
+    return outcome("preserve-foreign-live-and-require-operator", "recovery-required", { cleanupPermitted: false });
+  }
+  if (alreadyAccepted) {
+    // Terminal already recorded; nothing to complete.
+    return outcome("complete-terminal-accepted-record", null, { alreadyTerminal: true, acceptedRelease: true });
+  }
+  if (receiptDurable && canonicalVerified) {
+    // The generation was fully verified and durably receipted: the only missing
+    // step is the terminal record. This is the single forward-completion case.
+    return outcome("complete-terminal-accepted-record", null, { acceptedRelease: false, forwardCompletionOnly: true });
+  }
+  if (receiptDurable && !canonicalVerified) {
+    // A receipt exists but canonical payload does not verify. Never guess.
+    return outcome("recovery-required", "recovery-required", { cleanupPermitted: false });
+  }
+  // No durable receipt: prefer backward restoration.
+  const states = head.trees?.map((tree) => tree?.state) ?? [];
+  if (states.some((state) => state === "restoring")) {
+    return outcome("complete-reversal", null, { acceptedRelease: false });
+  }
+  if (states.length === 3 && states.every((state) => state === "restored")) {
+    return outcome("complete-reversal", null, { acceptedRelease: false });
+  }
+  const previousAbsent = head.trees?.every((tree) => tree?.previousState === "absent") === true;
+  if (previousAbsent && states.some((state) => ["incoming-promoted", "verified"].includes(state))) {
+    return outcome("first-activation-restore-to-absent", null, { acceptedRelease: false });
+  }
+  return outcome("restore-backward", null, { acceptedRelease: false, forwardGuessingPerformed: false });
 }
 
 // P3A exposes no CLI. Importing this module performs no work and the file is not

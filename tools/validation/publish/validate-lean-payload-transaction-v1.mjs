@@ -39,9 +39,15 @@ const P3B_LEGACY_PATHS = Object.freeze([
 ].sort());
 const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
 
-const EXPECTED_SCOPE = 10;
-const EXPECTED_RUNTIME = 117;
-const EXPECTED_STRUCTURAL = 19;
+// P3C-A1 builds directly on the integrated P3B stack.
+const INTEGRATED_P3B_HEAD = "ba24012b342ff5343e53d588a77e3e05deff44ae";
+const P3C_A1_SUBJECT = "feat(publish): add end-to-end activation and durable acceptance";
+const P3C_A1_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
+const EXPECTED_SCOPE = 13;
+const EXPECTED_RUNTIME = 124;
+const EXPECTED_STRUCTURAL = 23;
 
 const scopeResults = [];
 const runtimeResults = [];
@@ -162,6 +168,19 @@ function classifyPayloadScope(state) {
       JSON.stringify(value.committedPaths) === JSON.stringify(P3B_AUTHORIZED_PATHS)) {
     return "p3b-committed";
   }
+  // P3C-A1: one feature slice on top of the integrated P3B stack, touching
+  // exactly the four authorized paths and staging nothing.
+  const p3cA1Base = value.head === INTEGRATED_P3B_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA1Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a1-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.parent === INTEGRATED_P3B_HEAD && value.subject === P3C_A1_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A1_AUTHORIZED_PATHS)) {
+    return "p3c-a1-committed";
+  }
   throw new Error("P3A source scope mismatch");
 }
 
@@ -205,6 +224,43 @@ function runScopeTests() {
       head: "future", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
       committedPaths: [...P3A_AUTHORIZED_PATHS],
     })), "p3a-committed");
+  });
+  scopeTest("exact dirty four-path P3C-A1 state is accepted", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: INTEGRATED_P3B_HEAD, parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
+      modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3B_VALIDATION_PATHS],
+    })), "p3c-a1-uncommitted");
+  });
+  scopeTest("P3C-A1 dirty scope rejects unauthorized, staged or untracked paths", () => {
+    for (const override of [
+      { modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { untracked: ["stray.mjs"] },
+      { staged: [PAYLOAD_MODULE_REL] },
+      { head: P3B_SOURCE_HEAD },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: INTEGRATED_P3B_HEAD, parent: P3B_SOURCE_HEAD, subject: P3B_VALIDATION_SUBJECT,
+        modifiedTracked: [...P3C_A1_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3B_VALIDATION_PATHS], ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+  });
+  scopeTest("exact committed four-path P3C-A1 state is accepted and pins parent and subject", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: "future-p3c-a1", parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+      modifiedTracked: [], untracked: [], committedPaths: [...P3C_A1_AUTHORIZED_PATHS],
+    })), "p3c-a1-committed");
+    for (const override of [
+      { parent: P3B_SOURCE_HEAD },
+      { subject: P3B_VALIDATION_SUBJECT },
+      { committedPaths: [...P3B_VALIDATION_PATHS] },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: "future-p3c-a1", parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+        modifiedTracked: [], untracked: [], committedPaths: [...P3C_A1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
   });
   scopeTest("staged paths are rejected outright", () => {
     assert.throws(() => classifyPayloadScope(baseScope({ staged: [PACKAGE_REL] })), /rejects staged/u);
@@ -1853,6 +1909,112 @@ async function runRuntimeTests(api) {
     }
     assert.equal(temporaryRoots.every((root) => normalized(root).startsWith(normalized(os.tmpdir()))), true);
   });
+
+  /* ------------------------------------------------------------------- *
+   * P3C-A1 — durable activation receipt and terminal acceptance
+   * ------------------------------------------------------------------- */
+
+  const receiptFixture = (label) => path.join(tempRoot(`p3ca1-${label}`), ".h2o-canonical-delivery");
+  const P3CA1_ACTIVATION_ID = "20260805T000000000Z-abcdef123456";
+  const P3CA1_OWNER_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const sampleReceipt = (over = {}) => api.buildActivationReceipt({
+    activationId: P3CA1_ACTIVATION_ID,
+    transactionRecordPath: "/tx/seq-000005.json", transactionRecordSha256: "a".repeat(64),
+    intentPath: "/intents/x.json", intentSha256: "b".repeat(64),
+    stageReceiptPath: "/stage/publication-receipt.json", stageReceiptSha256: "e".repeat(64),
+    repositoryRealpath: "/repo", authorizedWorktreeRealpath: "/repo", branch: "main",
+    approvedHead: "d".repeat(40), sourceTree: "f".repeat(40),
+    stableGitIdentity: { path: "/usr/bin/git", realpath: "/usr/bin/git",
+      version: "git version 2.50.1", sha256: "c".repeat(64) },
+    acceptedExtensionVariant: ACCEPTED_EXTENSION_VARIANT, buildMarker: "1785900000000",
+    stagedIdentities: {}, incomingIdentities: {}, previousCanonicalIdentities: {},
+    promotedCanonicalIdentities: {}, canonicalVerification: {},
+    promotionPrimitive: "fail-closed-two-rename", preparedAt: "t1", promotedAt: "t2",
+    verifiedAt: "t3", acceptedAt: "t4", rollbackAvailable: true, ...over,
+  });
+
+  await test("the activation receipt is published no-replace at 0600 and byte-verified", () => {
+    const anchor = receiptFixture("publish");
+    const published = api.publishActivationReceipt(anchor, P3CA1_ACTIVATION_ID, sampleReceipt(),
+      { ownerId: P3CA1_OWNER_ID });
+    assert.equal(path.basename(published.path), `${P3CA1_ACTIVATION_ID}.json`);
+    assert.equal(fs.statSync(published.path).mode & 0o777, 0o600);
+    assert.equal(sha256Bytes(fs.readFileSync(published.path)), published.sha256);
+    assert.equal(published.durability.powerLossDurabilityGuaranteed, false);
+    assert.equal(published.durability.processCrashAtomicity, true);
+    assert.equal(published.durability.fileFsync.attempted, true);
+    // No temporary file survives publication.
+    assert.deepEqual(fs.readdirSync(path.dirname(published.path)), [`${P3CA1_ACTIVATION_ID}.json`]);
+  });
+  await test("each receipt durability step fails closed and leaves no partial publication", () => {
+    // Every step before the no-replace link must leave nothing behind; steps
+    // after it must not remove the already-linked receipt.
+    for (const [point, linked] of [
+      ["before-temp-open", false], ["after-temp-open", false], ["after-write", false],
+      ["after-fsync", false], ["after-link", true], ["after-directory-fsync", true],
+    ]) {
+      const anchor = receiptFixture(`fail-${point}`);
+      assert.throws(() => api.publishActivationReceipt(anchor, P3CA1_ACTIVATION_ID, sampleReceipt(), {
+        ownerId: P3CA1_OWNER_ID,
+        failureInjection: (observed) => {
+          if (observed === point) throw new Error(`injected ${point} failure`);
+        },
+      }), point);
+      const directory = path.join(anchor, "activations");
+      const entries = fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
+      assert.deepEqual(entries, linked ? [`${P3CA1_ACTIVATION_ID}.json`] : [], point);
+    }
+  });
+  await test("an existing activation receipt is never overwritten", () => {
+    const anchor = receiptFixture("collision");
+    const first = api.publishActivationReceipt(anchor, P3CA1_ACTIVATION_ID, sampleReceipt(),
+      { ownerId: P3CA1_OWNER_ID });
+    const before = fs.readFileSync(first.path);
+    assert.throws(() => api.publishActivationReceipt(anchor, P3CA1_ACTIVATION_ID,
+      sampleReceipt({ verifiedAt: "different" }), { ownerId: P3CA1_OWNER_ID }),
+    (error) => error?.code === "activation-receipt-collision");
+    assert.equal(fs.readFileSync(first.path).equals(before), true, "receipt bytes changed");
+  });
+  await test("the receipt binds its boundary flags and never claims power-loss durability", () => {
+    const receipt = sampleReceipt();
+    assert.equal(receipt.activationPerformed, true);
+    for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed"]) {
+      assert.equal(receipt[flag], false, flag);
+    }
+    assert.equal(receipt.durability.powerLossDurabilityGuaranteed, false);
+    assert.equal(receipt.acceptedExtensionVariant, ACCEPTED_EXTENSION_VARIANT);
+    assert.equal(receipt.promotionPrimitive, "fail-closed-two-rename");
+  });
+  await test("acceptance is impossible without a durable, re-verified receipt", () => {
+    assert.throws(() => api.appendAcceptedRecord({
+      directory: tempRoot("p3ca1-accept-no-receipt"), baseRecord: {}, sequence: 1,
+      previousRecordSha256: null, ownerId: P3CA1_OWNER_ID, receipt: null, trees: [],
+    }), (error) => error?.code === "acceptance-requires-durable-receipt");
+    // A receipt whose bytes drifted after publication is refused too.
+    const anchor = receiptFixture("accept-tampered");
+    const published = api.publishActivationReceipt(anchor, P3CA1_ACTIVATION_ID, sampleReceipt(),
+      { ownerId: P3CA1_OWNER_ID });
+    fs.writeFileSync(published.path, "tampered\n");
+    assert.throws(() => api.appendAcceptedRecord({
+      directory: path.dirname(published.path), baseRecord: {}, sequence: 1,
+      previousRecordSha256: null, ownerId: P3CA1_OWNER_ID, receipt: published, trees: [],
+    }), (error) => error?.code === "acceptance-receipt-unverified");
+  });
+  await test("terminal states are reserved for P3C and unreachable from the P3B writer", () => {
+    assert.throws(() => api.assertP3bWritableState("accepted"),
+      (error) => error?.code === "transaction-state-reserved-for-p3c");
+    assert.throws(() => api.assertP3bWritableState("rollback-complete"),
+      (error) => error?.code === "transaction-state-reserved-for-p3c");
+    assert.equal(api.assertP3cWritableState("accepted"), "accepted");
+    assert.throws(() => api.assertP3cWritableState("verified"),
+      (error) => error?.code === "transaction-state-not-p3c");
+  });
+  await test("receipt publication touches no real canonical or anchor path", () => {
+    const realAnchor = "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery";
+    assert.equal(fs.existsSync(realAnchor), false, "the real canonical anchor must not exist");
+    assert.equal(temporaryRoots.every((root) =>
+      normalized(root).startsWith(normalized(os.tmpdir()))), true);
+  });
 }
 
 /* --------------------------------------------------------------------- *
@@ -1875,11 +2037,22 @@ function runStructuralTests() {
     assert.doesNotMatch(payloadSource, /import\s+\*\s+as/u);
     assert.doesNotMatch(payloadSource, /\s+as\s+\w+\s*[,}]/u);
   });
-  structural("the activator holds no payload-transaction import edge in P3A", () => {
-    assert.doesNotMatch(activatorSource, /lean-payload-transaction/u);
+  structural("the activator holds exactly one pinned payload-transaction import edge", () => {
     const declarations = [...activatorSource.matchAll(/import\s+[^;]*?from\s+["']([^"']+)["'];/gu)]
       .map((match) => match[1]).filter((entry) => entry.startsWith("./")).sort();
-    assert.deepEqual(declarations, ["./canonical-delivery-lib.mjs", "./lean-publisher.mjs"]);
+    assert.deepEqual(declarations,
+      ["./canonical-delivery-lib.mjs", "./lean-payload-transaction.mjs", "./lean-publisher.mjs"]);
+    assert.equal(declarations.filter((entry) => entry.endsWith("lean-payload-transaction.mjs")).length, 1);
+    // Named symbols only: no namespace, default, aliased, dynamic or re-export.
+    const edge = activatorSource.match(/import \{([^}]*?)\} from "\.\/lean-payload-transaction\.mjs";/u);
+    assert.ok(edge, "the payload import edge must be one named-import declaration");
+    assert.doesNotMatch(activatorSource, /import\s*\(/u);
+    assert.doesNotMatch(activatorSource,
+      /import\s+\*\s+as\s+\w+\s+from\s+["'][^"']*lean-payload-transaction/u);
+    assert.doesNotMatch(activatorSource,
+      /export\s+\*\s+from\s+["'][^"']*lean-payload-transaction/u);
+    // The payload module never imports back: the edge is one-directional.
+    assert.doesNotMatch(payloadSource, /from\s+["'][^"']*lean-activator/u);
   });
   structural("the rename capability exists once, only inside the approved helper", () => {
     // The activator never gains rename capability.
@@ -1902,11 +2075,21 @@ function runStructuralTests() {
     assert.equal(occurrences - declarations, 3,
       "retire, promote and restore are the only rename call sites");
   });
-  structural("P3B may not write acceptance and reserves it for P3C", () => {
-    assert.match(payloadSource, /P3C_RESERVED_STATES = Object\.freeze\(\["accepted"\]\)/u);
+  structural("P3B may not write either terminal state; both are reserved for P3C", () => {
+    assert.match(payloadSource,
+      /P3C_RESERVED_STATES = Object\.freeze\(\["accepted", "rollback-complete"\]\)/u);
     assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
+    // The promotion orchestration itself never claims activation or durability;
+    // only the P3C-A1 receipt builder may assert activationPerformed.
+    const orchestration = payloadSource.slice(
+      payloadSource.indexOf("export function promoteUnitWithJournal"),
+      payloadSource.indexOf("export function buildActivationReceipt"));
     for (const claim of ["activationPerformed: true", "finalActivationReceiptDurable: true",
       "reloadPerformed: true", "canaryPerformed: true", "pushPerformed: true"]) {
+      assert.equal(orchestration.includes(claim), false, claim);
+    }
+    // Nothing anywhere in the module may claim a reload, canary or push.
+    for (const claim of ["reloadPerformed: true", "canaryPerformed: true", "pushPerformed: true"]) {
       assert.equal(payloadSource.includes(claim), false, claim);
     }
   });
@@ -1988,9 +2171,50 @@ function runStructuralTests() {
   });
   structural("the durable publication path is no-replace hard linking", () => {
     assert.match(payloadSource, /fs\.linkSync\(tempPath, finalPath\)/u);
-    assert.equal((payloadSource.match(/fs\.linkSync\(/gu) || []).length, 1);
-    assert.match(payloadSource, /openSync\(tempPath, "wx", 0o600\)/u);
+    // P3A pinned one site (the transaction journal); P3C-A1 adds exactly one
+    // more (the durable receipt). Both are no-replace.
+    assert.equal((payloadSource.match(/fs\.linkSync\(/gu) || []).length, 2);
+    assert.equal((payloadSource.match(/openSync\(tempPath, "wx", 0o600\)/gu) || []).length, 2);
     assert.match(payloadSource, /powerLossDurabilityGuaranteed: false/u);
+    assert.doesNotMatch(payloadSource, /fs\.renameSync\(tempPath, finalPath\)/u);
+  });
+  structural("exactly one rename site serves the whole promotion primitive", () => {
+    assert.equal((payloadSource.match(/fs\.renameSync\s*\(/gu) || []).length, 1);
+    assert.doesNotMatch(activatorSource, /fs\.renameSync\s*\(/u);
+    // The activator keeps its single pre-existing no-replace site, the P2
+    // activation-intent journal, and gains none from P3C-A1.
+    assert.equal((activatorSource.match(/fs\.linkSync\s*\(/gu) || []).length, 1);
+  });
+  structural("the activation receipt has exactly one publication helper and no overwrite path", () => {
+    assert.equal((payloadSource.match(/function publishDurableReceipt\s*\(/gu) || []).length, 1);
+    assert.equal((payloadSource.match(/export function publishActivationReceipt\s*\(/gu) || []).length, 1);
+    assert.match(payloadSource, /Receipt already exists; receipts are never overwritten\./u);
+    assert.match(payloadSource, /activation-receipt-collision/u);
+    // Receipts are never written through a truncating or replacing call.
+    assert.doesNotMatch(payloadSource, /writeFileSync\([^)]*finalPath/u);
+    assert.doesNotMatch(payloadSource, /unlinkSync\(finalPath\)/u);
+    // Failure injection is a fixture affordance only: production never sets it.
+    assert.match(payloadSource, /failureInjection = null/u);
+    assert.doesNotMatch(activatorSource, /failureInjection: \(/u);
+  });
+  structural("the terminal accepted state has exactly one writer requiring a durable receipt", () => {
+    assert.equal((payloadSource.match(/export function appendAcceptedRecord\s*\(/gu) || []).length, 1);
+    assert.match(payloadSource, /acceptance-requires-durable-receipt/u);
+    assert.match(payloadSource, /acceptance-receipt-unverified/u);
+    assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
+    // The activator never constructs a terminal record by hand.
+    assert.doesNotMatch(activatorSource, /transactionState:\s*["'`]accepted["'`]/u);
+    assert.equal((activatorSource.match(/appendAcceptedRecord\s*\(/gu) || []).length, 1);
+  });
+  structural("P3C-A1 keeps rollback, recovery and pruning out of any production route", () => {
+    // The helpers may exist as tested foundations, but the activator must not
+    // import or call them, and no CLI route may reach them.
+    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
+      "planP3cRecovery", "verifyCanonicalAgainstReceipt"]) {
+      assert.match(payloadSource, new RegExp(`export function ${deferred}`, "u"));
+      assert.doesNotMatch(activatorSource, new RegExp(`\\b${deferred}\\b`, "u"));
+    }
+    assert.doesNotMatch(payloadSource, /failed-act-/u);
   });
   structural("no canonical destination override is reachable", () => {
     assert.doesNotMatch(payloadSource, /H2O_CANONICAL_DELIVERY_ROOT|process\.env/u);
