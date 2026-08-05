@@ -57,6 +57,9 @@ export const FUTURE_COORDINATION_SUBPATHS = Object.freeze([
   "activation-intents",
   "activations",
   "rollbacks",
+  // P3A publishes append-only activation transaction records here. Declaring it
+  // keeps the coordination surface and the constant from diverging.
+  "transactions",
 ]);
 export const FUTURE_PROMOTION_DESCRIPTION = "transactionally recoverable three-tree promotion";
 export const ACTIVATION_INTENT_SCHEMA_VERSION = 1;
@@ -68,12 +71,31 @@ export const CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY =
   "canonical-delivery-lib and activator share one pinned executable, sanitized environment, and exact read-only argv boundary; activator independently pins every returned authority path";
 export { sanitizedGitEnvironment, TRUSTED_GIT_EXECUTABLE_IDENTITY };
 export const STABLE_GIT_IDENTITY_KEYS = Object.freeze(["path", "realpath", "version", "sha256"]);
+// The fresh revalidation P3 must complete immediately before the first payload
+// mutation. The P2 intent is a proposal and never promotion authority, so every
+// item is re-established from the filesystem and executable Git at promotion
+// time rather than trusted from the recorded journal.
 export const P3_REVALIDATION_REQUIREMENTS = Object.freeze([
   "verify-stage-receipt-immediately-before-payload-preparation",
-  "revalidate-accepted-extension-variant",
+  "reverify-stage-receipt-sha256",
+  "recompute-all-three-staged-manifests-and-tree-digests",
+  "revalidate-source-branch",
+  "revalidate-source-head",
+  "revalidate-source-tree",
+  "revalidate-tracked-worktree-cleanliness",
+  "revalidate-empty-index",
+  "revalidate-absence-of-non-ignored-untracked-source",
   "reattest-stable-git-executable-identity",
   "rederive-repository-cockpit-root-and-canonical-anchor",
+  "pin-approved-production-canonical-root",
+  "revalidate-accepted-extension-variant",
+  "revalidate-build-marker-coherence",
+  "revalidate-staging-root-existence",
   "reject-head-tree-receipt-or-staged-byte-change",
+  "prove-publisher-lock-ownership",
+  "revalidate-intent-identity-and-state",
+  "reject-unresolved-or-foreign-transaction-journal",
+  "reject-incoming-or-retired-sibling-owned-by-another-activation",
   "treat-intent-as-proposal-not-promotion-authority",
 ]);
 export const ACTIVATION_ID_PATTERN = /^\d{8}T\d{9}Z-[a-f0-9]{12}$/u;

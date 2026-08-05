@@ -36,6 +36,14 @@ const OWNER_VALIDATOR_REL = "tools/validation/publish/validate-canonical-deliver
 const P23_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, CANONICAL_LIB_REL, VALIDATOR_REL, OWNER_VALIDATOR_REL,
 ].sort());
+const ACCEPTED_P23_HEAD = "140076112bbdd48763fa5c11145f923ff93f13d1";
+const P3A_SUBJECT = "feat(publish): add transaction journal and incoming payload preparation";
+const P3A_CANDIDATE_HEAD = "a141abf0049ea7ae18f0eb680139782de625ad67";
+const PAYLOAD_MODULE_REL = "tools/publish/lean-payload-transaction.mjs";
+const PAYLOAD_VALIDATOR_REL = "tools/validation/publish/validate-lean-payload-transaction-v1.mjs";
+const P3A_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -43,9 +51,9 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 37;
-const EXPECTED_RUNTIME = 171;
-const EXPECTED_STRUCTURAL = 37;
+const EXPECTED_SCOPE = 43;
+const EXPECTED_RUNTIME = 173;
+const EXPECTED_STRUCTURAL = 43;
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
   "assertAllowedReadOnlyGitCommand",
   "deriveSharedAnchor",
@@ -241,6 +249,32 @@ function classifyScope(state) {
     value.parent === ACCEPTED_P22_HEAD && value.subject === P23_SUBJECT && value.acceptedP1Ancestor === true &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P23_AUTHORIZED_PATHS);
   if (p23Clean) return "p23-committed";
+  // P3A adds the payload-transaction module and its validator. The base is the
+  // accepted P2.3 commit; the test-first mode carries only the new payload
+  // validator so an implementation-absent run is still classifiable.
+  const p3aBase = value.head === ACCEPTED_P23_HEAD && value.parent === ACCEPTED_P22_HEAD &&
+    value.subject === P23_SUBJECT && value.acceptedP1Ancestor === true && value.staged.length === 0 &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P23_AUTHORIZED_PATHS);
+  if (p3aBase && value.modifiedTracked.length === 0 &&
+      JSON.stringify(value.untracked) === JSON.stringify([PAYLOAD_VALIDATOR_REL])) {
+    return "p3a-test-first-uncommitted";
+  }
+  if (p3aBase &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify([ACTIVATOR_REL, VALIDATOR_REL].sort()) &&
+      JSON.stringify(value.untracked) === JSON.stringify([PAYLOAD_MODULE_REL, PAYLOAD_VALIDATOR_REL].sort())) {
+    return "p3a-uncommitted";
+  }
+  const p3aRepairBase = value.head === P3A_CANDIDATE_HEAD && value.parent === ACCEPTED_P23_HEAD &&
+    value.subject === P3A_SUBJECT && value.untracked.length === 0 && value.staged.length === 0 &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3A_AUTHORIZED_PATHS);
+  if (p3aRepairBase && JSON.stringify(value.modifiedTracked) === JSON.stringify(P3A_AUTHORIZED_PATHS)) {
+    return "p3a-repair-uncommitted";
+  }
+  const p3aClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === ACCEPTED_P23_HEAD && value.subject === P3A_SUBJECT &&
+    value.acceptedP1Ancestor === true &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3A_AUTHORIZED_PATHS);
+  if (p3aClean) return "p3a-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -500,6 +534,56 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("P3A test-first state carries only the new payload validator", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P23_HEAD, parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [PAYLOAD_VALIDATOR_REL],
+      committedPaths: [...P23_AUTHORIZED_PATHS],
+    })), "p3a-test-first-uncommitted");
+  });
+  scopeTest("exact dirty four-path P3A state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P23_HEAD, parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [ACTIVATOR_REL, VALIDATOR_REL].sort(),
+      untracked: [PAYLOAD_MODULE_REL, PAYLOAD_VALIDATOR_REL].sort(),
+      committedPaths: [...P23_AUTHORIZED_PATHS],
+    })), "p3a-uncommitted");
+  });
+  scopeTest("P3A dirty scope rejects an unauthorized path", () => {
+    assert.throws(() => classifyScope(baseDirtyScope({
+      head: ACCEPTED_P23_HEAD, parent: ACCEPTED_P22_HEAD, subject: P23_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [ACTIVATOR_REL, VALIDATOR_REL, PUBLISHER_REL].sort(),
+      untracked: [PAYLOAD_MODULE_REL, PAYLOAD_VALIDATOR_REL].sort(),
+      committedPaths: [...P23_AUTHORIZED_PATHS],
+    })), /scope mismatch/u);
+  });
+  scopeTest("exact committed four-path P3A state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p3a", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P3A_AUTHORIZED_PATHS],
+    })), "p3a-committed");
+  });
+  scopeTest("the P3A repair state modifies exactly the four committed paths", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: P3A_CANDIDATE_HEAD, parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3A_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3A_AUTHORIZED_PATHS],
+    })), "p3a-repair-uncommitted");
+  });
+  scopeTest("committed P3A rejects a wrong parent, subject or extra path", () => {
+    for (const override of [
+      { parent: ACCEPTED_P22_HEAD },
+      { subject: P23_SUBJECT },
+      { committedPaths: [...P3A_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-p3a", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3A_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -524,7 +608,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p2-test-first-uncommitted", "p2-uncommitted", "p2-committed",
     "p21-test-first-uncommitted", "p21-uncommitted", "p21-committed",
     "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed",
-    "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed"]
+    "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed",
+    "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1509,7 +1594,7 @@ async function runRuntimeTests(api) {
     assert.equal(fs.existsSync(expected), false);
     const payload = JSON.parse(result.stdout);
     assert.deepEqual(Object.keys(payload.canonicalFoundation.futureSubpaths).sort(),
-      ["activation-intents", "activations", "rollbacks"]);
+      ["activation-intents", "activations", "rollbacks", "transactions"]);
     assert.equal(path.basename(payload.canonicalFoundation.publisherLock), ".h2o-publisher-lock");
   });
   await test("symlinked canonical anchor is rejected without following or changing it", () => {
@@ -2468,6 +2553,42 @@ async function runRuntimeTests(api) {
       repositoryRealpath: "/foreign/repository",
     }).classification, "foreign-or-unowned-journal");
   });
+  // Test-first evidence for the P3A canonical-root pin. Every fixture in this
+  // suite is a relocated standalone copy, and each one derives a self-consistent
+  // module / executable-Git / anchor authority. That is exactly the gap: P2.3
+  // proves the three agree with one another, never that they are a production
+  // location, so a copy anywhere on disk is accepted.
+  await test("integrated P2.3 authority accepts a self-consistent relocated copy", async () => {
+    const relocated = createRepositoryFixture("p3a-relocated-copy");
+    const relocatedApi = await importFixtureActivator(relocated, "p3a-relocated-copy");
+    const foundation = relocatedApi.deriveCanonicalFoundation(relocated.repository);
+    assert.equal(normalizedGuardPath(foundation.root),
+      normalizedGuardPath(path.join(relocated.top, ".h2o-canonical-delivery")));
+    assert.notEqual(normalizedGuardPath(relocated.repository),
+      normalizedGuardPath("/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source"));
+  });
+  await test("the P3A canonical-root pin rejects that same relocated copy", async () => {
+    const relocated = createRepositoryFixture("p3a-relocated-pin");
+    const relocatedApi = await importFixtureActivator(relocated, "p3a-relocated-pin");
+    const payload = await import(
+      `${pathToFileURL(path.join(ROOT, PAYLOAD_MODULE_REL)).href}?validator=${Date.now()}`);
+    const foundation = relocatedApi.deriveCanonicalFoundation(relocated.repository);
+    assert.throws(() => payload.assertApprovedCanonicalRoot({
+      repository: relocated.repository,
+      cockpitProRoot: path.dirname(relocated.repository),
+      anchorRoot: foundation.root,
+      executableRepository: relocated.repository,
+    }), (error) => error.code === "canonical-root-not-approved");
+    // Fixture roots are reachable only through explicit injection.
+    assert.equal(payload.assertApprovedCanonicalRoot({
+      repository: relocated.repository,
+      cockpitProRoot: path.dirname(relocated.repository),
+      anchorRoot: foundation.root,
+      executableRepository: relocated.repository,
+      approvedRepositories: [relocated.repository],
+      approvedCockpitProRoots: [path.dirname(relocated.repository)],
+    }).approved, true);
+  });
 }
 
 function runStructuralTests() {
@@ -2655,12 +2776,74 @@ function runStructuralTests() {
   structural("P3 must revalidate every authority and treat the intent only as a proposal", () => {
     for (const requirement of [
       "verify-stage-receipt-immediately-before-payload-preparation",
-      "revalidate-accepted-extension-variant",
+      "reverify-stage-receipt-sha256",
+      "recompute-all-three-staged-manifests-and-tree-digests",
+      "revalidate-source-branch",
+      "revalidate-source-head",
+      "revalidate-source-tree",
+      "revalidate-tracked-worktree-cleanliness",
+      "revalidate-empty-index",
+      "revalidate-absence-of-non-ignored-untracked-source",
       "reattest-stable-git-executable-identity",
       "rederive-repository-cockpit-root-and-canonical-anchor",
+      "pin-approved-production-canonical-root",
+      "revalidate-accepted-extension-variant",
+      "revalidate-build-marker-coherence",
+      "revalidate-staging-root-existence",
       "reject-head-tree-receipt-or-staged-byte-change",
+      "prove-publisher-lock-ownership",
+      "revalidate-intent-identity-and-state",
+      "reject-unresolved-or-foreign-transaction-journal",
+      "reject-incoming-or-retired-sibling-owned-by-another-activation",
       "treat-intent-as-proposal-not-promotion-authority",
     ]) assert(source.includes(JSON.stringify(requirement)));
+  });
+  structural("P3A grants the activator no payload-transaction capability at all", () => {
+    // The strongest available boundary: there is no import edge. Any P3B
+    // expansion must add one here and therefore change this assertion.
+    assert.doesNotMatch(source, /lean-payload-transaction/u);
+    assert.doesNotMatch(source, /import\s*\(/u);
+    const declarations = [...source.matchAll(/import\s+[^;]*?from\s+["']([^"']+)["'];/gu)].map((match) => match[1]);
+    assert.deepEqual(declarations.filter((entry) => entry.startsWith("./")).sort(),
+      ["./canonical-delivery-lib.mjs", "./lean-publisher.mjs"]);
+  });
+  structural("the P3A payload module depends only on Node builtins", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    const declarations = [...payloadSource.matchAll(/import\s+[^;]*?from\s+["']([^"']+)["'];/gu)]
+      .map((match) => match[1]).sort();
+    assert.deepEqual(declarations, ["node:crypto", "node:fs", "node:path"]);
+    assert.doesNotMatch(payloadSource, /import\s*\(/u);
+    assert.doesNotMatch(payloadSource,
+      /from\s+["'][^"']*(?:canonical-delivery-lib|lean-publisher|lean-activator)/u);
+  });
+  structural("the P3A payload module exposes no CLI, shell, network or browser capability", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    assert.doesNotMatch(payloadSource, /child_process|\bspawn(?:Sync)?\s*\(|execFileSync|execSync/u);
+    assert.doesNotMatch(payloadSource, /node:(?:net|http|https|dns|tls)|fetch\s*\(|XMLHttpRequest/u);
+    assert.doesNotMatch(payloadSource, /process\.argv/u);
+    assert.doesNotMatch(payloadSource, /runLeanActivator|--activate-receipt|--prepare-activation-intent/u);
+  });
+  structural("no production module gains a rename primitive in P3A", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    for (const text of [source, payloadSource]) {
+      assert.doesNotMatch(text, /fs\.rename(?:Sync)?\s*\(/u);
+      assert.doesNotMatch(text, /fs\.promises\.rename\s*\(/u);
+    }
+  });
+  structural("P3A creates no retired sibling and no failed-act family", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    for (const text of [source, payloadSource]) assert.doesNotMatch(text, /failed-act-/u);
+    // The retired name is derived for later phases but never created in P3A.
+    assert.doesNotMatch(payloadSource, /mkdirSync\([^)]*retiredPath/u);
+    assert.doesNotMatch(payloadSource, /linkSync\([^)]*retiredPath|renameSync\([^)]*retiredPath/u);
+  });
+  structural("P3A adds no package command and keeps the four-path scope", () => {
+    const packageSource = fs.readFileSync(path.join(ROOT, PACKAGE_REL), "utf8");
+    assert.doesNotMatch(packageSource, /lean-payload-transaction|--activate-receipt|--rollback|--recover|--prune|--verify-canonical|publish:h2o:activate/u);
+    assert.deepEqual(P3A_AUTHORIZED_PATHS,
+      [ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+    assert.match(validatorSource, /ACCEPTED_P23_HEAD/u);
+    assert.match(validatorSource, /P3A_SUBJECT/u);
   });
   assert.equal(structuralResults.length, EXPECTED_STRUCTURAL);
 }
