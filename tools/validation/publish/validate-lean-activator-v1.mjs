@@ -39,11 +39,17 @@ const P23_AUTHORIZED_PATHS = Object.freeze([
 const ACCEPTED_P23_HEAD = "140076112bbdd48763fa5c11145f923ff93f13d1";
 const P3A_SUBJECT = "feat(publish): add transaction journal and incoming payload preparation";
 const P3A_CANDIDATE_HEAD = "a141abf0049ea7ae18f0eb680139782de625ad67";
+const INTEGRATED_P3A_HEAD = "57bc3b3ff23adc1f9e1bdaf975e1c61e5c6b50a2";
+const P3B_SOURCE_HEAD = "53a91d3ed1593ffa6ada203023c661114a603201";
+const P3B_SOURCE_SUBJECT = "feat(publish): add recoverable canonical promotion core";
+const P3B_VALIDATION_SUBJECT = "test(publish): close recoverable promotion and reversal validation";
 const PAYLOAD_MODULE_REL = "tools/publish/lean-payload-transaction.mjs";
 const PAYLOAD_VALIDATOR_REL = "tools/validation/publish/validate-lean-payload-transaction-v1.mjs";
 const P3A_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+const P3B_SOURCE_PATHS = Object.freeze([ACTIVATOR_REL, PAYLOAD_MODULE_REL].sort());
+const P3B_VALIDATION_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -52,8 +58,8 @@ const REQUIRED_FILES = Object.freeze([
   "provider/identity-provider-supabase.js",
 ]);
 const EXPECTED_SCOPE = 43;
-const EXPECTED_RUNTIME = 173;
-const EXPECTED_STRUCTURAL = 43;
+const EXPECTED_RUNTIME = 174;
+const EXPECTED_STRUCTURAL = 44;
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
   "assertAllowedReadOnlyGitCommand",
   "deriveSharedAnchor",
@@ -275,6 +281,22 @@ function classifyScope(state) {
     value.acceptedP1Ancestor === true &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3A_AUTHORIZED_PATHS);
   if (p3aClean) return "p3a-committed";
+  // P3B two-commit stack.
+  const p3bSourceClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === INTEGRATED_P3A_HEAD && value.subject === P3B_SOURCE_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3B_SOURCE_PATHS);
+  if (p3bSourceClean) return "p3b-source-committed";
+  const p3bValidationBase = value.head === P3B_SOURCE_HEAD && value.parent === INTEGRATED_P3A_HEAD &&
+    value.subject === P3B_SOURCE_SUBJECT && value.untracked.length === 0 && value.staged.length === 0 &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3B_SOURCE_PATHS);
+  if (p3bValidationBase && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3B_VALIDATION_PATHS.includes(entry))) {
+    return "p3b-validation-uncommitted";
+  }
+  const p3bValidationClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.parent === P3B_SOURCE_HEAD && value.subject === P3B_VALIDATION_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3B_VALIDATION_PATHS);
+  if (p3bValidationClean) return "p3b-validation-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -609,7 +631,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p21-test-first-uncommitted", "p21-uncommitted", "p21-committed",
     "p22-test-first-uncommitted", "p22-uncommitted", "p22-committed",
     "p23-test-first-uncommitted", "p23-uncommitted", "p23-committed",
-    "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed"]
+    "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed",
+    "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1010,7 +1033,15 @@ const FIXED_ACTIVATION_ID = "20260802T120000000Z-a1b2c3d4e5f6";
 const FIXED_RANDOM_BYTES = () => Buffer.from("a1b2c3d4e5f6", "hex");
 
 async function importFixtureActivator(fixture, label) {
-  return import(`${pathToFileURL(fixture.activator).href}?p2=${encodeURIComponent(label)}-${Date.now()}`);
+  const api = await import(
+    `${pathToFileURL(fixture.activator).href}?p2=${encodeURIComponent(label)}-${Date.now()}`);
+  // P3B: intent preparation is gated on the approved production root. Fixtures
+  // reach their own roots only through this explicit injection, which no
+  // production CLI path calls.
+  if (typeof api.configureFixtureApprovedRoots === "function") {
+    api.configureFixtureApprovedRoots([fixture.repository, path.dirname(fixture.repository)]);
+  }
+  return api;
 }
 
 function expectActivatorError(fn, code) {
@@ -2115,16 +2146,29 @@ async function runRuntimeTests(api) {
     assert.equal(fs.existsSync(`${marker}-second`), false);
     assert.equal(fs.existsSync(lockPath), false);
   });
-  await test("spawned prepare CLI succeeds only inside a disposable fixture and releases its lock", () => {
-    const value = createRepositoryFixture("p21 spawned cli success 🧪");
-    const stageValue = createStageFixture(value.repository, "p21 spawned cli success 🧪");
+  await test("spawned prepare CLI is refused by the approved-root gate and holds no lock", () => {
+    // P3B makes the approved production root mandatory for intent preparation.
+    // A spawned child cannot be injected with fixture roots — that is the point —
+    // so a fixture repository can no longer prepare an intent through the CLI.
+    const value = createRepositoryFixture("p3b spawned cli gate 🧪");
+    const stageValue = createStageFixture(value.repository, "p3b spawned cli gate 🧪");
     const result = runActivator(value, ["--prepare-activation-intent", stageValue.receiptPath]);
-    assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.ok, true);
-    assert.equal(payload.canonicalPayloadMutationPerformed, false);
+    assert.notEqual(result.status, 0);
+    assert.equal(codeOf(result), "canonical-root-not-approved");
     assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
-    assert.equal(fs.existsSync(payload.intentPath), true);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-canonical-delivery")), false);
+  });
+  await test("in-process prepare succeeds under explicit fixture root injection and releases its lock", async () => {
+    const value = createRepositoryFixture("p3b inprocess prepare 🧪");
+    const stageValue = createStageFixture(value.repository, "p3b inprocess prepare 🧪");
+    const valueApi = await importFixtureActivator(value, "p3b-inprocess-prepare");
+    const prepared = valueApi.prepareActivationIntent(stageValue.receiptPath, {
+      now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+    });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.canonicalPayloadMutationPerformed, false);
+    assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
+    assert.equal(fs.existsSync(prepared.intentPath), true);
   });
   await test("spawned prepare CLI rejects a symlinked anchor before lock acquisition", () => {
     const value = createRepositoryFixture("p21-spawned-cli-failure");
@@ -2823,12 +2867,30 @@ function runStructuralTests() {
     assert.doesNotMatch(payloadSource, /process\.argv/u);
     assert.doesNotMatch(payloadSource, /runLeanActivator|--activate-receipt|--prepare-activation-intent/u);
   });
-  structural("no production module gains a rename primitive in P3A", () => {
+  structural("P3B confines rename capability to the payload module's approved helper", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
-    for (const text of [source, payloadSource]) {
-      assert.doesNotMatch(text, /fs\.rename(?:Sync)?\s*\(/u);
-      assert.doesNotMatch(text, /fs\.promises\.rename\s*\(/u);
+    // The activator never gains rename capability.
+    assert.doesNotMatch(source, /fs\.rename(?:Sync)?\s*\(/u);
+    assert.doesNotMatch(source, /fs\.promises\.rename\s*\(/u);
+    // Exactly one rename site, inside renameCanonicalEntry, with three callers.
+    assert.equal((payloadSource.match(/fs\.renameSync\(/gu) || []).length, 1);
+    assert.doesNotMatch(payloadSource, /fs\.promises\.rename\s*\(/u);
+    assert.equal((payloadSource.match(/function renameCanonicalEntry\(\{/gu) || []).length, 1);
+    assert.equal((payloadSource.match(/renameCanonicalEntry\(\{/gu) || []).length - 1, 3);
+  });
+  structural("the activator gate and payload module pin identical approved roots", () => {
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    for (const literal of [
+      "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+      "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+    ]) {
+      assert.equal(source.includes(literal), true, literal);
+      assert.equal(payloadSource.includes(literal), true, literal);
     }
+    assert.match(source, /assertApprovedProductionRoot/u);
+    // Intent preparation is gated, and the CLI has no injection route.
+    const cliStart = source.indexOf("export async function runLeanActivator");
+    assert.doesNotMatch(source.slice(cliStart), /configureFixtureApprovedRoots/u);
   });
   structural("P3A creates no retired sibling and no failed-act family", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");

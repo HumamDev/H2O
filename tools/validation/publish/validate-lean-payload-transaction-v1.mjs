@@ -28,11 +28,20 @@ const ACCEPTED_P23_HEAD = "140076112bbdd48763fa5c11145f923ff93f13d1";
 const P23_SUBJECT = "fix(publish): add final pre-promotion guardrails";
 const P3A_SUBJECT = "feat(publish): add transaction journal and incoming payload preparation";
 const P3A_CANDIDATE_HEAD = "a141abf0049ea7ae18f0eb680139782de625ad67";
+const INTEGRATED_P3A_HEAD = "57bc3b3ff23adc1f9e1bdaf975e1c61e5c6b50a2";
+const P3B_SOURCE_HEAD = "53a91d3ed1593ffa6ada203023c661114a603201";
+const P3B_SOURCE_SUBJECT = "feat(publish): add recoverable canonical promotion core";
+const P3B_VALIDATION_SUBJECT = "test(publish): close recoverable promotion and reversal validation";
+const P3B_SOURCE_PATHS = Object.freeze([ACTIVATOR_REL, PAYLOAD_MODULE_REL].sort());
+const P3B_VALIDATION_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+const P3B_LEGACY_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
 
 const EXPECTED_SCOPE = 10;
-const EXPECTED_RUNTIME = 99;
-const EXPECTED_STRUCTURAL = 15;
+const EXPECTED_RUNTIME = 117;
+const EXPECTED_STRUCTURAL = 19;
 
 const scopeResults = [];
 const runtimeResults = [];
@@ -119,6 +128,39 @@ function classifyPayloadScope(state) {
       value.parent === ACCEPTED_P23_HEAD && value.subject === P3A_SUBJECT &&
       JSON.stringify(value.committedPaths) === JSON.stringify(P3A_AUTHORIZED_PATHS)) {
     return "p3a-committed";
+  }
+  // P3B two-commit stack.
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.parent === INTEGRATED_P3A_HEAD && value.subject === P3B_SOURCE_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3B_SOURCE_PATHS)) {
+    return "p3b-source-committed";
+  }
+  const p3bValidationBase = value.head === P3B_SOURCE_HEAD &&
+    value.subject === P3B_SOURCE_SUBJECT && value.untracked.length === 0;
+  if (p3bValidationBase && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3B_VALIDATION_PATHS.includes(entry))) {
+    return "p3b-validation-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.parent === P3B_SOURCE_HEAD && value.subject === P3B_VALIDATION_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3B_VALIDATION_PATHS)) {
+    return "p3b-validation-committed";
+  }
+  // P3B modes: base is the integrated P3A commit.
+  const p3bBase = value.head === INTEGRATED_P3A_HEAD && value.untracked.length === 0;
+  if (p3bBase && JSON.stringify(value.modifiedTracked) === JSON.stringify([PAYLOAD_MODULE_REL])) {
+    return "p3b-test-first-uncommitted";
+  }
+  // Progressive P3B work: every modified path must be inside the authorized four,
+  // and nothing outside it may appear.
+  if (p3bBase && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3B_LEGACY_PATHS.includes(entry))) {
+    return "p3b-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.parent === INTEGRATED_P3A_HEAD && value.subject === P3B_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3B_AUTHORIZED_PATHS)) {
+    return "p3b-committed";
   }
   throw new Error("P3A source scope mismatch");
 }
@@ -366,6 +408,13 @@ function createRealPublisherFixture() {
 }
 
 const ACTIVATION_ID = "20260805T000000000Z-abcdef123456";
+// P3B: the ownership handle is mandatory, so every fixture preparation mints one
+// through the same exclusive-creation path production uses.
+function prepareOwned(api, verification, unit, repository, activationId = ACTIVATION_ID) {
+  return api.prepareIncomingTree(verification, unit, {
+    repository, ownership: api.createOwnedIncomingRoot(unit, activationId),
+  });
+}
 const OWNER_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 function recordInput(fixture, api, overrides = {}) {
@@ -737,8 +786,7 @@ async function runRuntimeTests(api) {
     const fixture = createCanonicalFixture("prepare-success");
     const units = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     for (const unit of units) {
-      const prepared = api.prepareIncomingTree(fixture.verification, unit,
-        { repository: fixture.repository });
+      const prepared = prepareOwned(api, fixture.verification, unit, fixture.repository);
       assert.equal(prepared.treeDigest, fixture.manifests[unit.family].treeDigest);
       assert.equal(prepared.fileCount, fixture.manifests[unit.family].fileCount);
       assert.equal(fs.existsSync(unit.incomingPath), true);
@@ -747,7 +795,7 @@ async function runRuntimeTests(api) {
   await test("prepared regular files carry deterministic mode 0644 and exact bytes", () => {
     const fixture = createCanonicalFixture("prepare-modes");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    api.prepareIncomingTree(fixture.verification, alias, { repository: fixture.repository });
+    prepareOwned(api, fixture.verification, alias, fixture.repository);
     const file = path.join(alias.incomingPath, "alias-one.js");
     assert.equal(fs.statSync(file).mode & 0o777, 0o644);
     assert.equal(fs.readFileSync(file, "utf8"), "export const one = 1;\n");
@@ -756,14 +804,14 @@ async function runRuntimeTests(api) {
     const fixture = createCanonicalFixture("prepare-dir-modes");
     const units = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     const devOutput = units[1];
-    api.prepareIncomingTree(fixture.verification, devOutput, { repository: fixture.repository });
+    prepareOwned(api, fixture.verification, devOutput, fixture.repository);
     assert.equal(fs.statSync(devOutput.incomingPath).mode & 0o777, 0o755);
     assert.equal(fs.statSync(path.join(devOutput.incomingPath, "nested")).mode & 0o777, 0o755);
   });
   await test("receipt-attested symlinks reproduce exact link text", () => {
     const fixture = createCanonicalFixture("prepare-symlink");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    api.prepareIncomingTree(fixture.verification, alias, { repository: fixture.repository });
+    prepareOwned(api, fixture.verification, alias, fixture.repository);
     const link = path.join(alias.incomingPath, "alias-link.js");
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
     assert.equal(fs.readlinkSync(link), "alias-one.js");
@@ -773,8 +821,7 @@ async function runRuntimeTests(api) {
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     fs.mkdirSync(alias.incomingPath, { recursive: true });
     fs.writeFileSync(path.join(alias.incomingPath, "foreign.js"), "// foreign\n");
-    assert.throws(() => api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-sibling-collision");
+    assert.throws(() => prepareOwned(api, fixture.verification, alias, fixture.repository), (error) => error.code === "incoming-sibling-collision");
     assert.equal(fs.readFileSync(path.join(alias.incomingPath, "foreign.js"), "utf8"), "// foreign\n");
   });
   await test("a staged byte change after verification rejects on digest", () => {
@@ -782,28 +829,24 @@ async function runRuntimeTests(api) {
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     // Same byte length, different content: the digest check must be what fires.
     fs.writeFileSync(path.join(fixture.outputPaths.alias, "alias-one.js"), "export const one = 2;\n");
-    assert.throws(() => api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-digest-mismatch");
+    assert.throws(() => prepareOwned(api, fixture.verification, alias, fixture.repository), (error) => error.code === "incoming-digest-mismatch");
   });
   await test("a staged size change after verification rejects on size", () => {
     const fixture = createCanonicalFixture("prepare-size-change");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     fs.writeFileSync(path.join(fixture.outputPaths.alias, "alias-one.js"), "export const one = 1;\n\n");
-    assert.throws(() => api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-byte-size-mismatch");
+    assert.throws(() => prepareOwned(api, fixture.verification, alias, fixture.repository), (error) => error.code === "incoming-byte-size-mismatch");
   });
   await test("a manifest path missing from the staging root rejects", () => {
     const fixture = createCanonicalFixture("prepare-missing");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     fs.rmSync(path.join(fixture.outputPaths.alias, "alias-two.js"));
-    assert.throws(() => api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "staged-manifest-path-missing");
+    assert.throws(() => prepareOwned(api, fixture.verification, alias, fixture.repository), (error) => error.code === "staged-manifest-path-missing");
   });
   await test("an extra staged path is detected by manifest equality", () => {
     const fixture = createCanonicalFixture("prepare-extra");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    const prepared = api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository });
+    const prepared = prepareOwned(api, fixture.verification, alias, fixture.repository);
     fs.writeFileSync(path.join(prepared.incomingPath, "extra.js"), "// extra\n");
     const recomputed = api.recomputeIncomingManifest(prepared.incomingPath, "alias");
     assert.notEqual(recomputed.treeDigest, fixture.manifests.alias.treeDigest);
@@ -814,16 +857,14 @@ async function runRuntimeTests(api) {
     const verification = structuredClone(fixture.verification);
     verification.stage.manifests.alias.entries.push(
       { ...verification.stage.manifests.alias.entries[0] });
-    assert.throws(() => api.prepareIncomingTree(verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "staged-manifest-duplicate-path");
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository), (error) => error.code === "staged-manifest-duplicate-path");
   });
   await test("an unsupported manifest entry type rejects", () => {
     const fixture = createCanonicalFixture("prepare-entry-type");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
     const verification = structuredClone(fixture.verification);
     verification.stage.manifests.alias.entries[0].type = "fifo";
-    assert.throws(() => api.prepareIncomingTree(verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-entry-type-unsupported");
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository), (error) => error.code === "incoming-entry-type-unsupported");
   });
   await test("symlink link-text drift between manifest and staging rejects", () => {
     const fixture = createCanonicalFixture("prepare-link-drift");
@@ -831,8 +872,7 @@ async function runRuntimeTests(api) {
     const link = path.join(fixture.outputPaths.alias, "alias-link.js");
     fs.unlinkSync(link);
     fs.symlinkSync("alias-two.js", link);
-    assert.throws(() => api.prepareIncomingTree(fixture.verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-symlink-text-mismatch");
+    assert.throws(() => prepareOwned(api, fixture.verification, alias, fixture.repository), (error) => error.code === "incoming-symlink-text-mismatch");
   });
   await test("a symlink leaking into the staging root rejects", () => {
     const fixture = createCanonicalFixture("prepare-leak");
@@ -842,8 +882,7 @@ async function runRuntimeTests(api) {
     fs.symlinkSync(path.join(fixture.stagingRoot, "dev_output", "bundle.js"), link);
     const verification = structuredClone(fixture.verification);
     verification.stage.manifests.alias = buildManifest(fixture.outputPaths.alias, fixture.stagingRoot);
-    assert.throws(() => api.prepareIncomingTree(verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-symlink-staging-leak");
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository), (error) => error.code === "incoming-symlink-staging-leak");
   });
   await test("a symlink leaving the authoritative repository rejects", () => {
     const fixture = createCanonicalFixture("prepare-foreign");
@@ -856,14 +895,12 @@ async function runRuntimeTests(api) {
     fs.symlinkSync(path.join(foreign, "target.js"), link);
     const verification = structuredClone(fixture.verification);
     verification.stage.manifests.alias = buildManifest(fixture.outputPaths.alias, fixture.stagingRoot);
-    assert.throws(() => api.prepareIncomingTree(verification, alias,
-      { repository: fixture.repository }), (error) => error.code === "incoming-symlink-foreign-worktree");
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository), (error) => error.code === "incoming-symlink-foreign-worktree");
   });
   await test("preparation succeeds through spaces and emoji canonical paths", () => {
     const fixture = createCanonicalFixture("prepare-emoji", { emoji: true });
     for (const unit of api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID)) {
-      const prepared = api.prepareIncomingTree(fixture.verification, unit,
-        { repository: fixture.repository });
+      const prepared = prepareOwned(api, fixture.verification, unit, fixture.repository);
       assert.equal(prepared.treeDigest, fixture.manifests[unit.family].treeDigest);
     }
   });
@@ -885,7 +922,7 @@ async function runRuntimeTests(api) {
     fs.readdirSync = (target, ...rest) => { witness(target); return originalRead(target, ...rest); };
     try {
       for (const unit of units) {
-        api.prepareIncomingTree(fixture.verification, unit, { repository: fixture.repository });
+        prepareOwned(api, fixture.verification, unit, fixture.repository);
       }
     } finally {
       fs.lstatSync = originalLstat; fs.statSync = originalStat; fs.readdirSync = originalRead;
@@ -897,7 +934,7 @@ async function runRuntimeTests(api) {
   await test("preparation creates no retired sibling", () => {
     const fixture = createCanonicalFixture("prepare-no-retired");
     for (const unit of api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID)) {
-      api.prepareIncomingTree(fixture.verification, unit, { repository: fixture.repository });
+      prepareOwned(api, fixture.verification, unit, fixture.repository);
       assert.equal(fs.existsSync(unit.retiredPath), false);
       assert.equal(fs.readdirSync(unit.parent).some((name) => name.includes(".retired-act-")), false);
     }
@@ -906,8 +943,7 @@ async function runRuntimeTests(api) {
     const fixture = createCanonicalFixture("prepare-first-ever", { withLive: false });
     for (const unit of api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID)) {
       assert.equal(fs.existsSync(unit.livePath), false);
-      const prepared = api.prepareIncomingTree(fixture.verification, unit,
-        { repository: fixture.repository });
+      const prepared = prepareOwned(api, fixture.verification, unit, fixture.repository);
       assert.equal(prepared.treeDigest, fixture.manifests[unit.family].treeDigest);
       assert.equal(fs.existsSync(unit.livePath), false);
     }
@@ -927,7 +963,7 @@ async function runRuntimeTests(api) {
   await test("an intra-family link is remapped into the incoming tree and verified", () => {
     const fixture = createCanonicalFixture("reloc-intra");
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    const prepared = api.prepareIncomingTree(fixture.verification, alias, { repository: fixture.repository });
+    const prepared = prepareOwned(api, fixture.verification, alias, fixture.repository);
     const translation = prepared.symlinkTranslations.find((item) => item.manifestPath.endsWith("alias-link.js"));
     assert.equal(translation.incomingResolvedTarget,
       normalized(path.join(alias.incomingPath, "alias-one.js")));
@@ -940,7 +976,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync(path.relative(path.dirname(link), path.join(fx.repository, "src", "shared.js")), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    const prepared = api.prepareIncomingTree(verification, alias, { repository: fixture.repository });
+    const prepared = prepareOwned(api, verification, alias, fixture.repository);
     const translation = prepared.symlinkTranslations.find((item) => item.manifestPath.endsWith("alias-link.js"));
     // Raw text MUST differ, resolved meaning MUST be preserved.
     assert.notEqual(translation.incomingLinkText, translation.stagedLinkText);
@@ -966,7 +1002,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync("absent-target.js", link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    assert.throws(() => api.prepareIncomingTree(verification, alias, { repository: fixture.repository }),
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository),
       (error) => error.code === "staged-symlink-broken");
   });
   await test("a link resolving into apps/dev-server rejects", () => {
@@ -977,7 +1013,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync(path.relative(path.dirname(link), target), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    assert.throws(() => api.prepareIncomingTree(verification, alias, { repository: fixture.repository }),
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository),
       (error) => error.code === "incoming-symlink-generated-target");
   });
   await test("a link resolving into apps/extensions rejects", () => {
@@ -988,7 +1024,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync(path.relative(path.dirname(link), target), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    assert.throws(() => api.prepareIncomingTree(verification, alias, { repository: fixture.repository }),
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository),
       (error) => error.code === "incoming-symlink-generated-target");
   });
   await test("a foreign-worktree link rejects", () => {
@@ -999,7 +1035,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync(path.join(foreign, "target.js"), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    assert.throws(() => api.prepareIncomingTree(verification, alias, { repository: fixture.repository }),
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository),
       (error) => error.code === "incoming-symlink-foreign-worktree");
   });
   await test("a link leaking into the staging root outside its family rejects", () => {
@@ -1008,7 +1044,7 @@ async function runRuntimeTests(api) {
         path.join(fx.outputPaths.devOutput, "bundle.js")), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    assert.throws(() => api.prepareIncomingTree(verification, alias, { repository: fixture.repository }),
+    assert.throws(() => prepareOwned(api, verification, alias, fixture.repository),
       (error) => error.code === "incoming-symlink-staging-leak");
   });
   await test("identical raw link text with a different resolved target is not accepted as authority", () => {
@@ -1018,7 +1054,7 @@ async function runRuntimeTests(api) {
       fs.symlinkSync(path.relative(path.dirname(link), path.join(fx.repository, "src", "shared.js")), link);
     });
     const [alias] = api.canonicalUnitPaths(fixture.repository, ACTIVATION_ID);
-    const prepared = api.prepareIncomingTree(verification, alias, { repository: fixture.repository });
+    const prepared = prepareOwned(api, verification, alias, fixture.repository);
     const expectedEntry = prepared.expectedManifest.entries
       .find((entry) => entry.type === "symlink" && entry.path.endsWith("alias-link.js"));
     const stagedEntry = verification.stage.manifests.alias.entries
@@ -1194,7 +1230,7 @@ async function runRuntimeTests(api) {
     const units = api.canonicalUnitPaths(real.repository, ACTIVATION_ID);
     let symlinkTotal = 0;
     for (const unit of units) {
-      const prepared = api.prepareIncomingTree(real.verification, unit, { repository: real.repository });
+      const prepared = prepareOwned(api, real.verification, unit, real.repository);
       assert.equal(prepared.fileCount, real.verification.stage.manifests[unit.family].fileCount);
       for (const translation of prepared.symlinkTranslations) {
         symlinkTotal += 1;
@@ -1356,6 +1392,446 @@ async function runRuntimeTests(api) {
     assert.equal(api.RECOVERY_OUTCOMES.includes(plan.classification), true);
   });
 
+  /* ---------- P3B: recoverable canonical promotion and reversal ---------- */
+
+  /**
+   * A disposable canonical fixture with the three live trees, a staged release,
+   * a transaction directory and satisfied lock/lease guards. Mirrors production
+   * topology: staged families live outside the repository's generated-output
+   * trees, and all three canonical parents share one filesystem.
+   */
+  const createP3bFixture = (label, { live = true } = {}) => {
+    const top = tempRoot(label);
+    const repository = path.join(top, "repo with space 🧪");
+    const devServer = path.join(repository, "apps", "dev-server");
+    const chrome = path.join(repository, "apps", "extensions", "chatgpt", "chrome");
+    fs.mkdirSync(devServer, { recursive: true });
+    fs.mkdirSync(chrome, { recursive: true });
+    if (live) {
+      for (const target of [path.join(devServer, "alias"), path.join(devServer, "dev_output"),
+        path.join(chrome, ACCEPTED_EXTENSION_VARIANT)]) {
+        fs.mkdirSync(target, { recursive: true });
+        fs.writeFileSync(path.join(target, "previous.js"), `// previous ${path.basename(target)}\n`);
+      }
+    }
+    const stagingRoot = path.join(top, "h2o-publish-stage-p3b");
+    const outputPaths = {
+      alias: path.join(stagingRoot, "server", "alias"),
+      devOutput: path.join(stagingRoot, "server", "dev_output"),
+      extension: path.join(stagingRoot, "extension"),
+    };
+    for (const target of Object.values(outputPaths)) fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(outputPaths.alias, "a.js"), "// new alias\n");
+    fs.symlinkSync("a.js", path.join(outputPaths.alias, "link.js"));
+    fs.writeFileSync(path.join(outputPaths.devOutput, "b.js"), "// new dev_output\n");
+    fs.writeFileSync(path.join(outputPaths.extension, "manifest.json"), "{}\n");
+    const receiptPath = path.join(stagingRoot, "publication-receipt.json");
+    fs.writeFileSync(receiptPath, JSON.stringify({ schemaVersion: 1, mode: "stage-only" }));
+    const gitIdentity = { path: "/usr/bin/git", realpath: "/usr/bin/git",
+      version: "git version 2.50.1", sha256: "c".repeat(64) };
+    const verification = {
+      source: { repository, branch: "main", approvedHead: "a".repeat(40), sourceTree: "b".repeat(40),
+        gitExecutable: gitIdentity },
+      receiptPath, receiptSha256: sha256Bytes(fs.readFileSync(receiptPath)),
+      stage: { stagingRoot, outputPaths,
+        manifests: {
+          alias: buildManifest(outputPaths.alias, stagingRoot),
+          devOutput: buildManifest(outputPaths.devOutput, stagingRoot),
+          extension: buildManifest(outputPaths.extension, stagingRoot),
+        },
+        extensionVariant: ACCEPTED_EXTENSION_VARIANT, buildMarker: "2026-08-05T00:00:00.000Z" },
+    };
+    const anchorRoot = path.join(top, ".h2o-canonical-delivery");
+    const units = api.canonicalUnitPaths(repository, ACTIVATION_ID);
+    const { directory } = api.ensureTransactionDirectory(anchorRoot, ACTIVATION_ID);
+    const base = {
+      activationId: ACTIVATION_ID, sequence: 1, previousRecordSha256: null,
+      createdAt: "2026-08-05T00:00:00.000Z",
+      intentPath: path.join(anchorRoot, "activation-intents", `${ACTIVATION_ID}.json`),
+      intentSha256: "d".repeat(64),
+      stageReceiptPath: receiptPath, stageReceiptSha256: verification.receiptSha256,
+      repositoryRealpath: repository, authorizedWorktreeRealpath: repository,
+      branch: "main", approvedHead: "a".repeat(40), sourceTree: "b".repeat(40),
+      stableGitIdentity: gitIdentity, acceptedExtensionVariant: ACCEPTED_EXTENSION_VARIANT,
+      buildMarker: "2026-08-05T00:00:00.000Z", owner: { ownerId: OWNER_ID, pid: process.pid },
+      transactionState: "untouched",
+      trees: units.map((unit) => ({ logicalName: unit.logicalName, state: "untouched",
+        livePath: unit.livePath, incomingPath: unit.incomingPath, retiredPath: unit.retiredPath })),
+    };
+    const guards = { verifyLock: () => true, verifyLease: () => ({ sessionId: "session-1" }),
+      leaseSessionId: "session-1" };
+    return { top, repository, units, verification, anchorRoot, directory, base, guards };
+  };
+  const p3bPrepare = (fixture, unit) => prepareOwned(api, fixture.verification, unit, fixture.repository);
+  const p3bPromote = (fixture, unit, overrides = {}) => {
+    const chain = api.readTransactionChain(fixture.directory);
+    return api.promoteUnitWithJournal({
+      unit, activationId: ACTIVATION_ID, directory: fixture.directory, baseRecord: fixture.base,
+      ownerId: OWNER_ID, guards: fixture.guards,
+      sequence: chain.records.length + 1, previousRecordSha256: chain.headSha256 ?? null,
+      ...overrides,
+    });
+  };
+
+  await test("capturePreviousCanonicalState records present and absent generations", () => {
+    const present = createP3bFixture("p3b-prev-present");
+    const captured = api.capturePreviousCanonicalState(present.units[0], ACTIVATION_ID);
+    assert.equal(captured.state, "present");
+    assert.equal(captured.restorationMode, "restore-previous");
+    assert.equal(typeof captured.treeDigest, "string");
+    assert.equal(typeof captured.filesystemIdentity.ino, "string");
+    const absent = createP3bFixture("p3b-prev-absent", { live: false });
+    const first = api.capturePreviousCanonicalState(absent.units[0], ACTIVATION_ID);
+    assert.equal(first.state, "absent");
+    assert.equal(first.restorationMode, "remove-promoted-to-absent");
+    assert.equal(first.treeDigest, null);
+  });
+  await test("capturePreviousCanonicalState rejects unusable live and retired states", () => {
+    const cases = [
+      ["symlinked live", "previous-state-symlinked-live", (fixture) => {
+        fs.symlinkSync(fixture.top, fixture.units[0].livePath);
+      }],
+      ["unsupported live entry", "previous-state-entry-unsupported", (fixture) => {
+        fs.writeFileSync(fixture.units[0].livePath, "not a directory\n");
+      }],
+      ["pre-existing retired sibling", "retired-sibling-collision", (fixture) => {
+        fs.mkdirSync(fixture.units[0].retiredPath, { recursive: true });
+      }],
+    ];
+    for (const [label, code, mutate] of cases) {
+      const fixture = createP3bFixture(`p3b-prev-${label.replace(/\s+/gu, "-")}`, { live: false });
+      mutate(fixture);
+      assert.throws(() => api.capturePreviousCanonicalState(fixture.units[0], ACTIVATION_ID),
+        (error) => error.code === code, label);
+    }
+  });
+  await test("promoteUnitWithJournal writes the exact five-record sequence and retires the previous tree", () => {
+    const fixture = createP3bFixture("p3b-promote-one");
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const result = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    assert.deepEqual(
+      api.readTransactionChain(fixture.directory).records.map((entry) => entry.record.transactionState),
+      ["live-retiring", "live-retired", "incoming-promoting", "incoming-promoted", "verified"]);
+    assert.equal(fs.existsSync(unit.retiredPath), true);
+    assert.equal(fs.existsSync(unit.incomingPath), false);
+    assert.equal(result.promotedTreeDigest, prepared.promotionIdentity);
+    assert.equal(result.retired, true);
+    assert.equal(result.acceptedRelease, false);
+    assert.equal(fs.readFileSync(path.join(unit.retiredPath, "previous.js"), "utf8"),
+      `// previous ${path.basename(unit.livePath)}\n`);
+  });
+  await test("promoteUnitWithJournal skips retirement for a first-ever activation", () => {
+    const fixture = createP3bFixture("p3b-promote-first", { live: false });
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const result = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    assert.equal(result.retired, false);
+    assert.equal(result.previous.state, "absent");
+    assert.equal(fs.existsSync(unit.retiredPath), false);
+    assert.equal(fs.existsSync(unit.livePath), true);
+  });
+  await test("promoteReleaseWithJournal promotes all three units in pinned order without accepting", () => {
+    const fixture = createP3bFixture("p3b-release-three");
+    const expectedDigests = {};
+    for (const unit of fixture.units) expectedDigests[unit.logicalName] = p3bPrepare(fixture, unit).promotionIdentity;
+    const result = api.promoteReleaseWithJournal({
+      units: fixture.units, activationId: ACTIVATION_ID, directory: fixture.directory,
+      baseRecord: fixture.base, ownerId: OWNER_ID, guards: fixture.guards, expectedDigests,
+    });
+    assert.equal(result.released, true);
+    assert.equal(result.fixtureVerified, true);
+    assert.deepEqual([...result.order], ["alias", "dev_output", "extension"]);
+    assert.deepEqual(result.changed.map((entry) => entry.logicalName), ["alias", "dev_output", "extension"]);
+    for (const key of ["acceptedRelease", "activationPerformed", "finalActivationReceiptDurable",
+      "reloadPerformed", "canaryPerformed", "pushPerformed"]) assert.equal(result[key], false, key);
+    const verified = api.readTransactionChain(fixture.directory).records
+      .filter((entry) => entry.record.transactionState === "verified");
+    assert.equal(verified.length, 3);
+    for (const unit of fixture.units) assert.equal(fs.existsSync(unit.retiredPath), true);
+  });
+  await test("promotion rejects a different-stage or mismatched promoted identity", () => {
+    for (const digest of ["f".repeat(64), "0".repeat(64)]) {
+      const fixture = createP3bFixture(`p3b-verify-${digest.slice(0, 4)}`);
+      p3bPrepare(fixture, fixture.units[0]);
+      assert.throws(() => p3bPromote(fixture, fixture.units[0], { expectedTreeDigest: digest }),
+        (error) => error.code === "promoted-verification-mismatch");
+    }
+  });
+  await test("promotion requires unforged incoming ownership", () => {
+    const fixture = createP3bFixture("p3b-ownership");
+    const unit = fixture.units[0];
+    assert.throws(() => api.prepareIncomingTree(fixture.verification, unit,
+      { repository: fixture.repository }), (error) => error.code === "incoming-ownership-invalid");
+    fs.mkdirSync(unit.incomingPath, { recursive: true });
+    const forged = Object.freeze({
+      activationId: ACTIVATION_ID, logicalName: "alias", liveBasename: path.basename(unit.livePath),
+      incomingPath: unit.incomingPath, parent: unit.parent, device: "1", inode: "1",
+    });
+    assert.throws(() => api.prepareIncomingTree(fixture.verification, unit,
+      { repository: fixture.repository, ownership: forged }),
+    (error) => error.code === "incoming-ownership-invalid");
+  });
+  await test("promotion aborts before mutation on publisher-lock or lease failure", () => {
+    const cases = [
+      ["lock loss", "publisher-lock-ownership-lost",
+        { verifyLock: () => false, verifyLease: () => ({ sessionId: "session-1" }), leaseSessionId: "session-1" }],
+      ["lease drift", "canonical-lease-identity-drift",
+        { verifyLock: () => true, verifyLease: () => ({ sessionId: "other" }), leaseSessionId: "session-1" }],
+      ["lease malformed", "canonical-lease-ownership-lost",
+        { verifyLock: () => true, verifyLease: () => ({}), leaseSessionId: "session-1" }],
+      ["ownership missing", "promotion-ownership-missing", {}],
+    ];
+    for (const [label, code, guards] of cases) {
+      const fixture = createP3bFixture(`p3b-guard-${label.replace(/\s+/gu, "-")}`);
+      const unit = fixture.units[0];
+      const prepared = p3bPrepare(fixture, unit);
+      assert.throws(() => p3bPromote(fixture, unit,
+        { guards, expectedTreeDigest: prepared.promotionIdentity }),
+      (error) => error.code === code, label);
+      // No live mutation occurred.
+      assert.equal(fs.existsSync(unit.retiredPath), false, label);
+      assert.equal(fs.readFileSync(path.join(unit.livePath, "previous.js"), "utf8"),
+        `// previous ${path.basename(unit.livePath)}\n`, label);
+    }
+  });
+  await test("a genuine gap takeover fails closed and never touches foreign content", () => {
+    const fixture = createP3bFixture("p3b-gap-takeover");
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const foreignBody = "// FOREIGN BUILD\n";
+    let takeoverPerformed = false;
+    const guards = {
+      verifyLock: () => true, leaseSessionId: "session-1",
+      verifyLease: () => {
+        // Runs immediately before each rename. After live -> retired the live
+        // name is free: occupy it exactly inside the missing-path interval.
+        if (!fs.existsSync(unit.livePath) && fs.existsSync(unit.retiredPath) && !takeoverPerformed) {
+          fs.mkdirSync(unit.livePath, { recursive: true });
+          fs.writeFileSync(path.join(unit.livePath, "foreign.js"), foreignBody);
+          takeoverPerformed = true;
+        }
+        return { sessionId: "session-1" };
+      },
+    };
+    assert.throws(() => p3bPromote(fixture, unit, { guards, expectedTreeDigest: prepared.promotionIdentity }),
+      (error) => error.code === "promotion-gap-takeover");
+    assert.equal(takeoverPerformed, true, "fixture must take over inside the missing-path interval");
+    assert.equal(fs.readFileSync(path.join(unit.livePath, "foreign.js"), "utf8"), foreignBody);
+    assert.equal(fs.existsSync(unit.incomingPath), true, "incoming evidence preserved");
+    assert.equal(fs.existsSync(unit.retiredPath), true, "retired evidence preserved");
+  });
+  await test("a release blocked by gap takeover reverses earlier units and requires an operator", () => {
+    const fixture = createP3bFixture("p3b-gap-release");
+    const [alias, devOutput] = fixture.units;
+    const expectedDigests = {};
+    for (const unit of fixture.units) expectedDigests[unit.logicalName] = p3bPrepare(fixture, unit).promotionIdentity;
+    let takeoverPerformed = false;
+    const guards = {
+      verifyLock: () => true, leaseSessionId: "session-1",
+      verifyLease: () => {
+        if (!fs.existsSync(devOutput.livePath) && fs.existsSync(devOutput.retiredPath) && !takeoverPerformed) {
+          fs.mkdirSync(devOutput.livePath, { recursive: true });
+          fs.writeFileSync(path.join(devOutput.livePath, "foreign.js"), "// FOREIGN\n");
+          takeoverPerformed = true;
+        }
+        return { sessionId: "session-1" };
+      },
+    };
+    const result = api.promoteReleaseWithJournal({
+      units: fixture.units, activationId: ACTIVATION_ID, directory: fixture.directory,
+      baseRecord: fixture.base, ownerId: OWNER_ID, guards, expectedDigests,
+    });
+    assert.equal(result.released, false);
+    assert.equal(result.gapTakeover, true);
+    assert.equal(result.failedAt, "dev_output");
+    assert.equal(takeoverPerformed, true);
+    assert.equal(fs.readFileSync(path.join(devOutput.livePath, "foreign.js"), "utf8"), "// FOREIGN\n");
+    // The already-promoted alias unit was reversed to its previous generation.
+    assert.equal(result.reversal.restored.map((entry) => entry.logicalName).includes("alias"), true);
+    assert.equal(fs.readFileSync(path.join(alias.livePath, "previous.js"), "utf8"),
+      `// previous ${path.basename(alias.livePath)}\n`);
+    assert.equal(result.acceptedRelease, false);
+  });
+  await test("reverseRelease restores one, two and three units in exact reverse order", () => {
+    for (const count of [1, 2, 3]) {
+      const fixture = createP3bFixture(`p3b-reverse-${count}`);
+      const changed = [];
+      for (const unit of fixture.units.slice(0, count)) {
+        const prepared = p3bPrepare(fixture, unit);
+        const promoted = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+        changed.push({ unit, previous: promoted.previous, promotedTreeDigest: promoted.promotedTreeDigest });
+      }
+      const reversal = api.reverseRelease({
+        changed, activationId: ACTIVATION_ID, directory: fixture.directory,
+        baseRecord: fixture.base, ownerId: OWNER_ID, guards: fixture.guards,
+      });
+      assert.equal(reversal.reversed, true, `count ${count}`);
+      assert.equal(reversal.classification, "complete-reversal");
+      assert.deepEqual(reversal.restored.map((entry) => entry.logicalName),
+        ["extension", "dev_output", "alias"].filter((name) =>
+          fixture.units.slice(0, count).some((unit) => unit.logicalName === name)));
+      for (const unit of fixture.units.slice(0, count)) {
+        assert.equal(fs.readFileSync(path.join(unit.livePath, "previous.js"), "utf8"),
+          `// previous ${path.basename(unit.livePath)}\n`);
+        assert.equal(fs.existsSync(unit.retiredPath), false);
+      }
+    }
+  });
+  await test("reverseRelease returns a first-ever activation to absence", () => {
+    const fixture = createP3bFixture("p3b-reverse-absent", { live: false });
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const promoted = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    assert.equal(fs.existsSync(unit.livePath), true);
+    const reversal = api.reverseRelease({
+      changed: [{ unit, previous: promoted.previous, promotedTreeDigest: promoted.promotedTreeDigest }],
+      activationId: ACTIVATION_ID, directory: fixture.directory, baseRecord: fixture.base,
+      ownerId: OWNER_ID, guards: fixture.guards,
+    });
+    assert.equal(reversal.reversed, true);
+    assert.equal(reversal.restored[0].mode, "removed-promoted-to-absent");
+    assert.equal(fs.existsSync(unit.livePath), false);
+  });
+  await test("reverseRelease refuses to restore from a drifted retired payload", () => {
+    const fixture = createP3bFixture("p3b-reverse-drift");
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const promoted = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    fs.writeFileSync(path.join(unit.retiredPath, "tampered.js"), "// tampered\n");
+    const reversal = api.reverseRelease({
+      changed: [{ unit, previous: promoted.previous, promotedTreeDigest: promoted.promotedTreeDigest }],
+      activationId: ACTIVATION_ID, directory: fixture.directory, baseRecord: fixture.base,
+      ownerId: OWNER_ID, guards: fixture.guards,
+    });
+    assert.equal(reversal.reversed, false);
+    assert.equal(reversal.code, "reversal-retired-digest-mismatch");
+    assert.equal(reversal.evidencePreserved, true);
+    // Neither the only verified previous copy nor the promoted tree is deleted.
+    assert.equal(fs.existsSync(unit.retiredPath), true);
+    assert.equal(fs.existsSync(unit.livePath), true);
+  });
+  await test("reverseRelease refuses to clobber foreign content occupying the live path", () => {
+    const fixture = createP3bFixture("p3b-reverse-foreign");
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const promoted = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    fs.rmSync(unit.livePath, { recursive: true });
+    fs.mkdirSync(unit.livePath, { recursive: true });
+    fs.writeFileSync(path.join(unit.livePath, "foreign.js"), "// FOREIGN\n");
+    const reversal = api.reverseRelease({
+      changed: [{ unit, previous: promoted.previous, promotedTreeDigest: promoted.promotedTreeDigest }],
+      activationId: ACTIVATION_ID, directory: fixture.directory, baseRecord: fixture.base,
+      ownerId: OWNER_ID, guards: fixture.guards,
+    });
+    assert.equal(reversal.reversed, false);
+    assert.equal(reversal.classification, "preserve-foreign-live-and-require-operator");
+    assert.equal(fs.readFileSync(path.join(unit.livePath, "foreign.js"), "utf8"), "// FOREIGN\n");
+    assert.equal(fs.existsSync(unit.retiredPath), true);
+  });
+  await test("reverseRelease self-positions after a partial unit failure without sequence collision", () => {
+    const fixture = createP3bFixture("p3b-stale-sequence");
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    const promoted = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    const before = api.readTransactionChain(fixture.directory).records.length;
+    // A caller tracking a stale sequence must not collide: reversal reads the chain.
+    const reversal = api.reverseRelease({
+      changed: [{ unit, previous: promoted.previous, promotedTreeDigest: promoted.promotedTreeDigest }],
+      activationId: ACTIVATION_ID, directory: fixture.directory, baseRecord: fixture.base,
+      ownerId: OWNER_ID, guards: fixture.guards, sequence: null, previousRecordSha256: null,
+    });
+    assert.equal(reversal.reversed, true);
+    const chain = api.readTransactionChain(fixture.directory);
+    assert.equal(chain.records.length, before + 2);
+    assert.deepEqual(chain.records.slice(-2).map((entry) => entry.record.transactionState),
+      ["restoring", "restored"]);
+  });
+  await test("planP3bRecovery classifies every promotion boundary purely and never accepts", () => {
+    const intent = { activationId: ACTIVATION_ID, repositoryRealpath: "/r", authorizedWorktreeRealpath: "/r" };
+    const chainOf = (states, treeExtra = {}, recordExtra = {}) => ({
+      present: true,
+      records: [{ sequence: 1, sha256: "a".repeat(64), record: {
+        schemaVersion: 1, mode: "activation-transaction", activationId: ACTIVATION_ID,
+        transactionState: states[0], activationPerformed: false, finalActivationReceiptDurable: false,
+        reloadPerformed: false, canaryPerformed: false, pushPerformed: false,
+        trees: ["alias", "dev_output", "extension"].map((logicalName, index) => ({
+          logicalName, state: states[index] ?? states[0], previousState: "present", ...treeExtra })),
+        ...recordExtra } }],
+    });
+    const observe = (value) => Object.fromEntries(
+      ["alias", "dev_output", "extension"].map((name) => [name, value]));
+    const cases = [
+      ["before retirement", ["untouched", "untouched", "untouched"], {}, {}, {}, "restore-backward"],
+      ["after live-retiring", ["live-retiring", "untouched", "untouched"], {}, {}, {}, "restore-backward"],
+      ["after live retired", ["live-retired", "untouched", "untouched"], {}, {}, {}, "restore-backward"],
+      ["after incoming-promoting", ["incoming-promoting", "untouched", "untouched"], {}, {}, {}, "restore-backward"],
+      ["after incoming promoted", ["incoming-promoted", "untouched", "untouched"], {}, {}, {}, "restore-backward"],
+      ["all verified", ["verified", "verified", "verified"], {}, {}, {}, "p3c-finalization-required"],
+      ["during reversal", ["restoring", "restoring", "restoring"], {}, {}, {}, "complete-reversal"],
+      ["after restoration", ["restored", "restored", "restored"], {}, {}, {}, "complete-reversal"],
+      ["first activation", ["incoming-promoted", "incoming-promoted", "incoming-promoted"],
+        { previousState: "absent" }, {}, {}, "first-activation-restore-to-absent"],
+      ["foreign live", ["verified", "verified", "verified"], {}, {}, { foreignLivePresent: true },
+        "preserve-foreign-live-and-require-operator"],
+      ["claimed acceptance", ["verified", "verified", "verified"], {}, { activationPerformed: true }, {},
+        "contradictory-transaction"],
+    ];
+    for (const [label, states, treeExtra, recordExtra, observed, expected] of cases) {
+      const plan = api.planP3bRecovery({
+        intent, chain: chainOf(states, treeExtra, recordExtra), observations: observe(observed) });
+      assert.equal(plan.classification, expected, label);
+      // The planner must never claim acceptance. Rejection outcomes carry no
+      // release state at all; planning outcomes carry an explicit false.
+      assert.notEqual(plan.acceptedRelease, true, label);
+      if (!["contradictory-transaction", "foreign-or-unowned-transaction"].includes(expected)) {
+        assert.equal(plan.acceptedRelease, false, label);
+      }
+    }
+    // Foreign identity is classified separately from any boundary.
+    assert.equal(api.planP3bRecovery({ intent, chain: chainOf(["verified"]), observations: observe({}),
+      expected: { repositoryRealpath: "/other" } }).classification, "foreign-or-unowned-transaction");
+    // The planner performs no filesystem or Git access.
+    const originalLstat = fs.lstatSync; const originalRead = fs.readdirSync;
+    let touched = 0;
+    fs.lstatSync = (...args) => { touched += 1; return originalLstat(...args); };
+    fs.readdirSync = (...args) => { touched += 1; return originalRead(...args); };
+    try {
+      api.planP3bRecovery({ intent, chain: chainOf(["verified", "verified", "verified"]),
+        observations: observe({}) });
+    } finally { fs.lstatSync = originalLstat; fs.readdirSync = originalRead; }
+    assert.equal(touched, 0, "planner must perform no filesystem access");
+  });
+  await test("P3B never records acceptance and reserves it for P3C", () => {
+    const fixture = createP3bFixture("p3b-no-acceptance");
+    assert.throws(() => api.assertP3bWritableState("accepted"),
+      (error) => error.code === "transaction-state-reserved-for-p3c");
+    for (const state of ["live-retiring", "live-retired", "incoming-promoting",
+      "incoming-promoted", "verified", "restoring", "restored"]) {
+      assert.equal(api.assertP3bWritableState(state), state);
+    }
+    const unit = fixture.units[0];
+    const prepared = p3bPrepare(fixture, unit);
+    p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    for (const entry of api.readTransactionChain(fixture.directory).records) {
+      for (const key of ["activationPerformed", "finalActivationReceiptDurable",
+        "reloadPerformed", "canaryPerformed", "pushPerformed"]) {
+        assert.equal(entry.record[key], false, key);
+      }
+      assert.notEqual(entry.record.transactionState, "accepted");
+    }
+  });
+  await test("promotion survives spaces, emoji and /var versus /private/var spellings", () => {
+    const fixture = createP3bFixture("p3b-boundary paths 🧪");
+    const unit = fixture.units[0];
+    const alternate = fixture.repository.startsWith("/private/")
+      ? fixture.repository.replace("/private", "") : fixture.repository;
+    const prepared = prepareOwned(api, fixture.verification, unit, alternate);
+    const result = p3bPromote(fixture, unit, { expectedTreeDigest: prepared.promotionIdentity });
+    assert.equal(result.promotedTreeDigest, prepared.promotionIdentity);
+    assert.equal(normalized(unit.livePath).startsWith(normalized(fixture.repository)), true);
+  });
+
   /* ---------- capability boundary ---------- */
   await test("the payload module exports no promotion, rollback or receipt capability", () => {
     for (const name of ["promote", "rollback", "recover", "prune", "retireLive", "restoreLive",
@@ -1405,15 +1881,60 @@ function runStructuralTests() {
       .map((match) => match[1]).filter((entry) => entry.startsWith("./")).sort();
     assert.deepEqual(declarations, ["./canonical-delivery-lib.mjs", "./lean-publisher.mjs"]);
   });
-  structural("no production module gains a rename primitive", () => {
-    for (const text of [payloadSource, activatorSource]) {
-      assert.doesNotMatch(text, /fs\.rename(?:Sync)?\s*\(/u);
-      assert.doesNotMatch(text, /fs\.promises\.rename\s*\(/u);
+  structural("the rename capability exists once, only inside the approved helper", () => {
+    // The activator never gains rename capability.
+    assert.doesNotMatch(activatorSource, /fs\.rename(?:Sync)?\s*\(/u);
+    assert.doesNotMatch(activatorSource, /fs\.promises\.rename\s*\(/u);
+    // Exactly one rename site in the payload module, and no other rename API.
+    assert.equal((payloadSource.match(/fs\.renameSync\(/gu) || []).length, 1);
+    assert.doesNotMatch(payloadSource, /fs\.promises\.rename\s*\(/u);
+    assert.doesNotMatch(payloadSource, /fs\.rename\s*\(/u);
+    // The single site lives inside renameCanonicalEntry.
+    const helperStart = payloadSource.indexOf("function renameCanonicalEntry(");
+    assert(helperStart > 0, "approved rename helper must exist");
+    const helperEnd = payloadSource.indexOf("\n}", helperStart);
+    const helper = payloadSource.slice(helperStart, helperEnd);
+    assert.match(helper, /fs\.renameSync\(from, to\)/u);
+    // Every call site of the helper is enumerated.
+    const occurrences = [...payloadSource.matchAll(/renameCanonicalEntry\(\{/gu)].length;
+    const declarations = [...payloadSource.matchAll(/function renameCanonicalEntry\(\{/gu)].length;
+    assert.equal(declarations, 1, "exactly one rename helper declaration");
+    assert.equal(occurrences - declarations, 3,
+      "retire, promote and restore are the only rename call sites");
+  });
+  structural("P3B may not write acceptance and reserves it for P3C", () => {
+    assert.match(payloadSource, /P3C_RESERVED_STATES = Object\.freeze\(\["accepted"\]\)/u);
+    assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
+    for (const claim of ["activationPerformed: true", "finalActivationReceiptDurable: true",
+      "reloadPerformed: true", "canaryPerformed: true", "pushPerformed: true"]) {
+      assert.equal(payloadSource.includes(claim), false, claim);
     }
   });
+  structural("promotion order is pinned and reversal is its exact reverse", () => {
+    assert.match(payloadSource, /RELEASE_ORDER = Object\.freeze\(\["alias", "dev_output", "extension"\]\)/u);
+    assert.match(payloadSource, /REVERSAL_ORDER = Object\.freeze\(\[\.\.\.RELEASE_ORDER\]\.reverse\(\)\)/u);
+  });
+  structural("gap takeover is typed and never deletes foreign content", () => {
+    assert.match(payloadSource, /promotion-gap-takeover/u);
+    assert.match(payloadSource, /reversal-foreign-live/u);
+    // No deletion helper targets a retired payload.
+    assert.doesNotMatch(payloadSource, /rmSync\([^)]*retiredPath/u);
+  });
+  structural("promotion re-proves lock and lease ownership before every rename", () => {
+    assert.match(payloadSource, /assertPromotionOwnership/u);
+    const helperStart = payloadSource.indexOf("function renameCanonicalEntry(");
+    const helper = payloadSource.slice(helperStart, payloadSource.indexOf("\n}", helperStart));
+    assert.match(helper, /if \(typeof guard === "function"\) guard\(\);/u);
+    const guardBeforeRename = helper.indexOf("guard()") < helper.indexOf("fs.renameSync(");
+    assert.equal(guardBeforeRename, true);
+  });
   structural("the payload module exposes exactly one recursive removal, gated by an ownership handle", () => {
+    // P3A: owned incoming cleanup. P3B adds exactly two restoration removals,
+    // both of which remove only payload this transaction promoted.
     const matches = payloadSource.match(/fs\.rmSync\(/gu) || [];
-    assert.equal(matches.length, 1);
+    assert.equal(matches.length, 3);
+    assert.match(payloadSource, /fs\.rmSync\(unit\.livePath, \{ recursive: true, force: false \}\)/u);
+    assert.doesNotMatch(payloadSource, /rmSync\([^)]*retiredPath/u);
     assert.match(payloadSource, /removeOwnedIncomingRoot\(ownership\)/u);
     assert.match(payloadSource, /assertIncomingOwnership\(ownership\)/u);
     assert.match(payloadSource, /const OWNED_INCOMING_ROOTS = new WeakSet\(\);/u);
