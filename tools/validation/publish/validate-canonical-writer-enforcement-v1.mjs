@@ -20,6 +20,76 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
 const GUARD_REL = "tools/publish/canonical-write-guard.mjs";
 const ALIAS_WRITER_REL = "tools/loader/make-aliases.mjs";
+/**
+ * The exact production writers that may reach a canonical delivery destination.
+ *
+ * Each entry is a committed writer that imports `canonical-write-guard.mjs` and
+ * calls `assertDeliveryWritePermitted` under its own distinct purpose before
+ * writing. The set is EXACT, not a minimum: an unguarded writer, a removed
+ * writer, a duplicate, or an alternate spelling all fail closed.
+ *
+ * Sorted deterministically. Grew from the alias writer alone (3ce2264a) to the
+ * full surface across 0e2eb8ed, b51b2108, b4f5e730 and c7321797, all of which
+ * descend from the commit that first wrote this pin.
+ */
+const GUARDED_DELIVERY_WRITERS = Object.freeze([
+  ALIAS_WRITER_REL,
+  "tools/loader/make-ext-proxy-pack.mjs",
+  "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs",
+  "tools/product/extensions/chatgpt/chrome/pack-desk.mjs",
+  "tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs",
+  "tools/product/identity/build-identity-provider-bundle.mjs",
+].sort());
+const GUARDED_WRITER_PURPOSES = Object.freeze({
+  "tools/loader/make-aliases.mjs": "make-aliases",
+  "tools/loader/make-ext-proxy-pack.mjs": "make-ext-proxy-pack",
+  "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs": "build-chrome-live-extension",
+  "tools/product/extensions/chatgpt/chrome/pack-desk.mjs": "pack-desk",
+  "tools/product/extensions/chatgpt/chrome/pack-ops-panel.mjs": "pack-ops-panel",
+  "tools/product/identity/build-identity-provider-bundle.mjs": "identity-provider-bundle",
+});
+
+/**
+ * Pure classifier for an observed guarded-writer surface. Fails closed on a
+ * missing writer, an unknown writer, a duplicate, and any non-canonical path
+ * spelling. Never tolerant, never minimum-based.
+ */
+function classifyGuardedWriterSet(observed) {
+  if (!Array.isArray(observed)) return "writer-set-invalid";
+  if (observed.some((entry) => typeof entry !== "string" || entry.length === 0)) {
+    return "writer-set-invalid";
+  }
+  for (const entry of observed) {
+    if (entry !== path.normalize(entry) || path.isAbsolute(entry) || entry.includes("./")) {
+      return "writer-path-spelling-rejected";
+    }
+  }
+  if (new Set(observed).size !== observed.length) return "writer-duplicate-rejected";
+  const accepted = new Set(GUARDED_DELIVERY_WRITERS);
+  const unknown = observed.filter((entry) => !accepted.has(entry));
+  if (unknown.length) return "writer-not-accepted";
+  const missing = GUARDED_DELIVERY_WRITERS.filter((entry) => !observed.includes(entry));
+  if (missing.length) return "writer-missing";
+  return "writer-set-exact";
+}
+
+/**
+ * Pure classifier for observed Title identities. Fails closed on a changed
+ * digest, a missing identity and an extra identity, so no Title file can be
+ * silently added to or dropped from the governed set.
+ */
+function classifyTitleIdentities(observed) {
+  if (!observed || typeof observed !== "object") return "title-identities-invalid";
+  const accepted = Object.keys(ACCEPTED_TITLE_IDENTITIES).sort();
+  const seen = Object.keys(observed).sort();
+  if (seen.length !== accepted.length || seen.some((entry, index) => entry !== accepted[index])) {
+    return "title-identity-set-mismatch";
+  }
+  for (const relative of accepted) {
+    if (observed[relative] !== ACCEPTED_TITLE_IDENTITIES[relative]) return "title-identity-changed";
+  }
+  return "title-identities-exact";
+}
 const VALIDATOR_REL =
   "tools/validation/publish/validate-canonical-writer-enforcement-v1.mjs";
 const ADR_REL =
@@ -32,7 +102,7 @@ const FINAL_PATHS = Object.freeze([
 ]);
 const UNCOMMITTED_MODIFIED = Object.freeze([ALIAS_WRITER_REL, ADR_REL]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([GUARD_REL, VALIDATOR_REL]);
-const EXPECTED_RUNTIME_SCENARIOS = 52;
+const EXPECTED_RUNTIME_SCENARIOS = 56;
 const EXPECTED_SCOPE_SCENARIOS = 12;
 const ALIAS_WRITER = path.join(ROOT, ALIAS_WRITER_REL);
 const E1_VALIDATOR_REL =
@@ -56,14 +126,18 @@ const E1_SNAPSHOT_PATHS = Object.freeze([
 const ACCEPTED_TITLE_IDENTITIES = Object.freeze({
   "packages/title-contract/index.mjs":
     "57f3fe783b5253d07dafcd7ec4c89b75602337b86d83033ed52fbcc104097b0d",
+  // Refreshed for accepted Title Stage 1F (102c77c2, "enable three-surface
+  // titles by default"); the previous value was correct at Stage 1D (61a7b51a).
   "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js":
-    "7fec34f297ee1bbd0ee1a9f533d0186f0810e97ada5186d9ee494780feecb0fa",
+    "8f650b52458b81ff0f7a267b58ab319d571e7516dc6e66f0e7e756b91328bfe7",
   "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs":
     "240b95a7682ad7c26ac1463aba7f74e039ad9e68c9ffd5d3fbd3ff66cb37623f",
   "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs":
     "f81e1f6c209939e6bd036ecc4fb854658c7c5fd0944f36774d8b7126f6fa3469",
+  // Refreshed for accepted Title work 5d1bc9dc ("preserve title convergence on
+  // rollback"); the previous value was correct at Stage 1D (61a7b51a).
   "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs":
-    "6ecf1213898a75065123341372421806d9cf7fdc75a0f6194c362b629fd500c2",
+    "4c65f6de9aeab6af1fe21b766b6318df358917ec3d3fa8d4b267cbc07beede1f",
 });
 const GENERATED_PATHS = Object.freeze([
   "apps/extensions/chatgpt/chrome/dev-controls-oauth-google/title-contract-bridge.js",
@@ -1320,6 +1394,47 @@ async function runRuntimeScenarios() {
       assert.equal(sha256File(path.join(ROOT, relative)), expected, relative);
     }
   });
+  await test("every accepted Title identity matches its committed bytes at HEAD", () => {
+    const observed = {};
+    for (const relative of Object.keys(ACCEPTED_TITLE_IDENTITIES)) {
+      // Committed bytes, not the worktree: a governed identity may never be
+      // satisfied by a dirty, generated or worktree-local file.
+      const committed = execFileSync("git", ["show", `HEAD:${relative}`],
+        { cwd: ROOT, encoding: null, timeout: 8_000 });
+      observed[relative] = sha256Bytes(committed);
+      assert.equal(run("git", ["-c", "core.quotePath=false", "ls-files", "--error-unmatch",
+        "--", relative]).trim(), relative);
+      assert.equal(run("git", ["status", "--porcelain=v1", "--", relative]).trim(), "");
+      assert.equal(sha256File(path.join(ROOT, relative)), observed[relative], relative);
+    }
+    assert.equal(classifyTitleIdentities(observed), "title-identities-exact");
+  });
+  await test("changing any accepted Title identity is rejected", () => {
+    const baseline = Object.fromEntries(Object.entries(ACCEPTED_TITLE_IDENTITIES));
+    for (const relative of Object.keys(ACCEPTED_TITLE_IDENTITIES)) {
+      assert.equal(classifyTitleIdentities({ ...baseline, [relative]: "0".repeat(64) }),
+        "title-identity-changed", relative);
+      // Specifically the two refreshed by this closure: their previous values
+      // must no longer be accepted.
+      const stale = {
+        "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js":
+          "7fec34f297ee1bbd0ee1a9f533d0186f0810e97ada5186d9ee494780feecb0fa",
+        "tools/validation/title-interface/validate-title-stage1c-formatter-parity.mjs":
+          "6ecf1213898a75065123341372421806d9cf7fdc75a0f6194c362b629fd500c2",
+      }[relative];
+      if (stale) {
+        assert.equal(classifyTitleIdentities({ ...baseline, [relative]: stale }),
+          "title-identity-changed", relative);
+      }
+    }
+    // No Title identity may be silently added to or dropped from the set.
+    const extra = { ...baseline, "packages/title-contract/extra.mjs": "a".repeat(64) };
+    assert.equal(classifyTitleIdentities(extra), "title-identity-set-mismatch");
+    const dropped = { ...baseline };
+    delete dropped["packages/title-contract/index.mjs"];
+    assert.equal(classifyTitleIdentities(dropped), "title-identity-set-mismatch");
+    assert.equal(classifyTitleIdentities(null), "title-identities-invalid");
+  });
   await test("live canonical alias directory remains unchanged", () => {
     assert.deepEqual(statusSnapshot(), initialRepository);
     assert.deepEqual(snapshotPath(liveAliasPath), initialLiveAliases);
@@ -1334,7 +1449,7 @@ async function runRuntimeScenarios() {
   await test("registered foreign worktrees remain unchanged", () => {
     assert.deepEqual(worktreeSnapshot(), initialWorktrees);
   });
-  await test("only make-aliases imports the guard among production writers", () => {
+  await test("exactly the accepted production writers import the delivery guard", () => {
     const output = run("rg", [
       "-l",
       "canonical-write-guard\\.mjs",
@@ -1343,8 +1458,56 @@ async function runRuntimeScenarios() {
     const matches = lines(output);
     const productionMatches = matches.filter(
       (item) => !item.startsWith("tools/validation/"),
-    );
-    assert.deepEqual(productionMatches, [ALIAS_WRITER_REL]);
+    ).sort();
+    // Exact, not minimum: a new unguarded writer or a removed guard both fail.
+    assert.deepEqual(productionMatches, [...GUARDED_DELIVERY_WRITERS]);
+    assert.equal(classifyGuardedWriterSet(productionMatches), "writer-set-exact");
+  });
+  await test("every accepted writer is a committed writer guarded under its own purpose", () => {
+    for (const relative of GUARDED_DELIVERY_WRITERS) {
+      const absolute = path.join(ROOT, relative);
+      // A real committed file, not a fixture or a read-only helper.
+      assert.equal(run("git", ["-c", "core.quotePath=false", "ls-files", "--error-unmatch",
+        "--", relative]).trim(), relative);
+      const source = fs.readFileSync(absolute, "utf8");
+      assert.equal((source.match(/canonical-write-guard\.mjs/gu) || []).length, 1, relative);
+      assert.equal((source.match(/assertDeliveryWritePermitted\s*\(/gu) || []).length, 1, relative);
+      // It genuinely writes: sync or promise-based mutation is present.
+      assert.match(source,
+        /fs\.(?:promises\.)?(?:writeFile|mkdir|cp|copyFile|rm|symlink|rename)(?:Sync)?\s*\(/u, relative);
+      // Distinct, declared purpose so one writer cannot borrow another's grant.
+      assert.ok(source.includes(`purpose: "${GUARDED_WRITER_PURPOSES[relative]}"`), relative);
+    }
+    // Purposes are unique across the surface.
+    const purposes = Object.values(GUARDED_WRITER_PURPOSES);
+    assert.equal(new Set(purposes).size, purposes.length);
+    assert.deepEqual(Object.keys(GUARDED_WRITER_PURPOSES).sort(), [...GUARDED_DELIVERY_WRITERS]);
+  });
+  await test("the guarded writer set is exact rather than minimum-based", () => {
+    assert.equal(classifyGuardedWriterSet([...GUARDED_DELIVERY_WRITERS]), "writer-set-exact");
+    // Omitting any one of the writers is rejected, including each of the five
+    // that the previously vacuous fixture allowed to go unrecorded.
+    for (const omitted of GUARDED_DELIVERY_WRITERS) {
+      const reduced = GUARDED_DELIVERY_WRITERS.filter((entry) => entry !== omitted);
+      assert.equal(classifyGuardedWriterSet(reduced), "writer-missing", omitted);
+    }
+    // An unrelated writer cannot be tolerated.
+    for (const intruder of ["tools/loader/make-something-else.mjs", "tools/publish/lean-publisher.mjs",
+      "tools/product/extensions/chatgpt/chrome/pack-studio-launcher.mjs"]) {
+      assert.equal(classifyGuardedWriterSet([...GUARDED_DELIVERY_WRITERS, intruder]),
+        "writer-not-accepted", intruder);
+    }
+    // Duplicates and alternate spellings of an accepted path are refused.
+    assert.equal(classifyGuardedWriterSet([...GUARDED_DELIVERY_WRITERS, ALIAS_WRITER_REL]),
+      "writer-duplicate-rejected");
+    for (const spelling of ["./tools/loader/make-aliases.mjs", "tools/loader/../loader/make-aliases.mjs",
+      path.join(ROOT, ALIAS_WRITER_REL)]) {
+      const swapped = GUARDED_DELIVERY_WRITERS
+        .filter((entry) => entry !== ALIAS_WRITER_REL).concat(spelling);
+      const verdict = classifyGuardedWriterSet(swapped);
+      assert.notEqual(verdict, "writer-set-exact", spelling);
+    }
+    assert.equal(classifyGuardedWriterSet("not-an-array"), "writer-set-invalid");
   });
   await test("no staging floor promotion or writer bypass is implemented", () => {
     const guardSource = fs.readFileSync(path.join(ROOT, GUARD_REL), "utf8");

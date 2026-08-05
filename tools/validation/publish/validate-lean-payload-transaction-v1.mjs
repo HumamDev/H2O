@@ -51,7 +51,13 @@ const WRITER_VALIDATOR_REL = "tools/validation/publish/validate-canonical-writer
 const P3C_A2_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
 ].sort());
-const EXPECTED_SCOPE = 13;
+// P3C-A2.1: a validator-only governance follow-up on the accepted P3C-A2 commit.
+const ACCEPTED_P3C_A2_HEAD = "55d4dee2de10672901a624b45b3a4abfea16c3a7";
+const P3C_A2_1_SUBJECT = "test(publish): refresh canonical writer governance pins";
+const P3C_A2_1_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
+].sort());
+const EXPECTED_SCOPE = 15;
 const EXPECTED_RUNTIME = 130;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -199,6 +205,21 @@ function classifyPayloadScope(state) {
       value.committedPaths.every((entry) => P3C_A2_AUTHORIZED_PATHS.includes(entry))) {
     return "p3c-a2-committed";
   }
+  // P3C-A2.1: exactly the three validators on exactly the accepted P3C-A2
+  // commit. No descendant allowance, no minimum-path tolerance, no production
+  // source, nothing staged, nothing untracked.
+  const p3cA21Base = value.head === ACCEPTED_P3C_A2_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA21Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A2_1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a2-1-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.staged.length === 0 &&
+      value.parent === ACCEPTED_P3C_A2_HEAD && value.subject === P3C_A2_1_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A2_1_AUTHORIZED_PATHS)) {
+    return "p3c-a2-1-committed";
+  }
   throw new Error("P3A source scope mismatch");
 }
 
@@ -242,6 +263,57 @@ function runScopeTests() {
       head: "future", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
       committedPaths: [...P3A_AUTHORIZED_PATHS],
     })), "p3a-committed");
+  });
+  scopeTest("exact dirty three-validator P3C-A2.1 state is accepted", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: ACCEPTED_P3C_A2_HEAD, parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+      modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A2_AUTHORIZED_PATHS],
+    })), "p3c-a2-1-uncommitted");
+    for (const override of [
+      { modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS, PAYLOAD_MODULE_REL].sort() },
+      { modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS, ACTIVATOR_REL].sort() },
+      { untracked: ["stray.mjs"] },
+      { staged: [WRITER_VALIDATOR_REL] },
+      { head: "0000000000000000000000000000000000000000" },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: ACCEPTED_P3C_A2_HEAD, parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+        modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3C_A2_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+    // Boundary: those same three validators dirty on the P3C-A2 base commit are
+    // still P3C-A2 work; the A2.1 mode is keyed on its base commit, not overlap.
+    assert.equal(classifyPayloadScope(baseScope({
+      head: ACCEPTED_P3C_A1_HEAD, parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+      modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A1_AUTHORIZED_PATHS],
+    })), "p3c-a2-uncommitted");
+  });
+  scopeTest("committed P3C-A2.1 pins parent, subject and the exact three-path set", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: "future-p3c-a2-1", parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+      modifiedTracked: [], untracked: [], committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS],
+    })), "p3c-a2-1-committed");
+    for (const override of [
+      { parent: ACCEPTED_P3C_A1_HEAD },
+      { subject: P3C_A2_SUBJECT },
+      { committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS, PAYLOAD_MODULE_REL].sort() },
+      // Exact, not minimum: a strict subset is refused.
+      { committedPaths: [VALIDATOR_REL, WRITER_VALIDATOR_REL].sort() },
+      { committedPaths: [WRITER_VALIDATOR_REL] },
+      { committedPaths: [] },
+      { modifiedTracked: [WRITER_VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { staged: [VALIDATOR_REL] },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: "future-p3c-a2-1", parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+        modifiedTracked: [], untracked: [], committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS],
+        ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
   });
   scopeTest("exact dirty four-path P3C-A1 state is accepted", () => {
     assert.equal(classifyPayloadScope(baseScope({

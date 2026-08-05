@@ -64,6 +64,14 @@ const WRITER_VALIDATOR_REL = "tools/validation/publish/validate-canonical-writer
 const P3C_A2_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
 ].sort());
+// P3C-A2.1 is a validator-only governance follow-up: it refreshes the canonical
+// writer pins and teaches this validator and the payload validator to classify
+// that exact commit. No production source may appear in its scope.
+const ACCEPTED_P3C_A2_HEAD = "55d4dee2de10672901a624b45b3a4abfea16c3a7";
+const P3C_A2_1_SUBJECT = "test(publish): refresh canonical writer governance pins";
+const P3C_A2_1_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -71,7 +79,7 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 51;
+const EXPECTED_SCOPE = 53;
 const EXPECTED_RUNTIME = 199;
 const EXPECTED_STRUCTURAL = 51;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
@@ -361,6 +369,20 @@ function classifyScope(state) {
     value.committedPaths.length > 0 &&
     value.committedPaths.every((entry) => P3C_A2_AUTHORIZED_PATHS.includes(entry));
   if (p3cA2Clean) return "p3c-a2-committed";
+  // P3C-A2.1: exactly the three validators, on exactly the accepted P3C-A2
+  // commit. No descendant allowance and no minimum-path tolerance: the
+  // committed path set must equal the authorized three exactly.
+  const p3cA21Base = value.head === ACCEPTED_P3C_A2_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA21Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A2_1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a2-1-uncommitted";
+  }
+  const p3cA21Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === ACCEPTED_P3C_A2_HEAD && value.subject === P3C_A2_1_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A2_1_AUTHORIZED_PATHS);
+  if (p3cA21Clean) return "p3c-a2-1-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -620,6 +642,63 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("exact dirty three-validator P3C-A2.1 state is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P3C_A2_HEAD, parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A2_AUTHORIZED_PATHS],
+    })), "p3c-a2-1-uncommitted");
+    // Production source may never appear in a governance follow-up scope.
+    for (const override of [
+      { modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS, ACTIVATOR_REL].sort() },
+      { modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS, PAYLOAD_MODULE_REL].sort() },
+      { modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { untracked: ["tools/validation/publish/scratch.mjs"] },
+      { staged: [WRITER_VALIDATOR_REL] },
+      { head: "0000000000000000000000000000000000000000" },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: ACCEPTED_P3C_A2_HEAD, parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3C_A2_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+    // Boundary: the same three validators dirty on the P3C-A2 *base* commit are
+    // still P3C-A2 work, because they are a subset of that phase's five paths.
+    // The A2.1 mode is distinguished by its base commit, not by path overlap.
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P3C_A1_HEAD, parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3C_A2_1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A1_AUTHORIZED_PATHS],
+    })), "p3c-a2-uncommitted");
+  });
+  scopeTest("committed P3C-A2.1 pins parent, subject and the exact three-path set", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p3c-a2-1", parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS],
+    })), "p3c-a2-1-committed");
+    for (const override of [
+      // Wrong parent, wrong subject, and any deviation from the exact three.
+      { parent: ACCEPTED_P3C_A1_HEAD },
+      { subject: P3C_A2_SUBJECT },
+      { committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS, ACTIVATOR_REL].sort() },
+      { committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      // A strict subset must not be tolerated: the set is exact, not minimum.
+      { committedPaths: [VALIDATOR_REL, WRITER_VALIDATOR_REL].sort() },
+      { committedPaths: [WRITER_VALIDATOR_REL] },
+      { committedPaths: [] },
+      { modifiedTracked: [WRITER_VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { staged: [VALIDATOR_REL] },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-p3c-a2-1", parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+  });
   scopeTest("exact dirty five-path P3C-A2 state is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: ACCEPTED_P3C_A1_HEAD, parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
@@ -810,7 +889,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3a-test-first-uncommitted", "p3a-uncommitted", "p3a-repair-uncommitted", "p3a-committed",
     "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed",
     "p3c-a1-uncommitted", "p3c-a1-committed",
-    "p3c-a2-uncommitted", "p3c-a2-committed"]
+    "p3c-a2-uncommitted", "p3c-a2-committed",
+    "p3c-a2-1-uncommitted", "p3c-a2-1-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
