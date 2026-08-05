@@ -24,6 +24,47 @@ const Q39_NODE = 'b56ec93b-a9da-4e97-9a1e-dc32a6c94ba7';
 const Q39_MESSAGE = 'b2f9f77a-d2ae-448a-aa66-9b04918d120c';
 const A36_MESSAGE = '84c7e73c-5fb7-44f6-a930-72e92d369c5a';
 const A39_MESSAGE = '19e8c88d-6db7-42f1-90c3-32807d0921b1';
+const EXPANSION_FIELDS = Object.freeze([
+  'branchExpansionPending',
+  'branchExpansionFailClosed',
+  'branchExpansionState',
+  'branchExpansionReason',
+  'branchExpansionPriorCount',
+  'branchExpansionTargetCount',
+  'branchExpansionExpectedFingerprint',
+  'branchExpansionRequiredPageNums',
+  // Stage 2C-2i branch-transition diagnostics: last stale-clear reason and
+  // the count of foreign mounted turns suppressed mid-transition.
+  'branchStaleLastClearReason',
+  'branchTransitionSuppressedLiveAppendCount',
+  // Stage 2C-2k branch-transaction ownership diagnostics.
+  'branchTransactionPending',
+  'branchTransactionStateCode',
+  'branchTransactionReason',
+  'branchTransactionTrace',
+  // Stage 2C-2p native downstream-edit convergence diagnostics.
+  'nativeConvergencePhase',
+  'nativeConvergenceReason',
+  'nativeConvergenceExpectedQId',
+  'nativeConvergenceAttempts',
+  // Stage 2C-2q nested branch-selection plan and authority-contract counters.
+  'graphNodeCount',
+  'effectivePathTurnCount',
+  'ledgerTurnCount',
+  'miniMapTurnCount',
+  'nativeMountedTurnCount',
+  'nativeMountedPrefixCount',
+  'nativeTerminalMounted',
+  'nativeFirstMismatchKind',
+  'nativeFirstMismatchOrder',
+  'nativeFirstMismatchMountedAId',
+  'nativeFirstMismatchExpectedAId',
+  'nativeBranchPlanReason',
+  'nativeBranchPlanPointCount',
+  'nativeBranchPlanEditPointCount',
+  'nativeBranchPlanRegenerationPointCount',
+  'nativeBranchPlanRemainingMismatches',
+]);
 
 const fixtures = [];
 let assertions = 0;
@@ -320,6 +361,172 @@ function makeHarness(overrides = {}) {
   };
 }
 
+function makeProjectionState(overrides = {}) {
+  const requiredPageNums = overrides.branchExpansionRequiredPageNums || [];
+  return {
+    enabled: true,
+    activationSource: 'memory-only',
+    status: 'complete-validated',
+    chatId: CHAT_ID,
+    routeKey: ROUTE_KEY,
+    generation: 7,
+    index: Object.freeze({
+      turns: Object.freeze([{ order: 1 }, { order: 2 }]),
+      sourceFingerprint: 'djb2:projection-current',
+      payloadUpdateTime: 1785000000,
+      proof: 'host-payload-full-graph',
+    }),
+    indexSource: 'host-payload',
+    pendingDrafts: new Map([['pending-q', Object.freeze({ qId: 'pending-q' })]]),
+    fetchCount: 2,
+    cacheReadCount: 3,
+    cacheWriteCount: 0,
+    cacheWriteSkippedUnchangedCount: 1,
+    cacheWriteFailureCount: 0,
+    setterCallCount: 0,
+    automaticSetterCallCount: 0,
+    preferenceSetterCallCount: 0,
+    preferenceReadCount: 0,
+    preferenceWriteCount: 0,
+    preferenceClearCount: 0,
+    preferenceWriteFailureCount: 0,
+    bootApplyCount: 1,
+    bootActivationCount: 1,
+    staleDiscardCount: 0,
+    trustedSelectionCaptureCount: 4,
+    trustedSelectedPathIntent: Object.freeze({ qId: 'q-17' }),
+    branchSelectionStale: true,
+    branchSelectionStaleRevision: 9,
+    branchSelectionStaleQId: 'q-17',
+    branchExpansionState: overrides.branchExpansionState || 'idle',
+    branchExpansionReason: overrides.branchExpansionReason ?? null,
+    branchExpansionPriorCount: overrides.branchExpansionPriorCount || 0,
+    branchExpansionTargetCount: overrides.branchExpansionTargetCount || 0,
+    branchExpansionExpectedFingerprint: overrides.branchExpansionExpectedFingerprint || '',
+    branchExpansionRequiredPageNums: requiredPageNums,
+    branchExpansionLease: overrides.branchExpansionLease || null,
+    branchExpansionTimeoutTask: overrides.branchExpansionTimeoutTask || null,
+    branchExpansionRetryTask: overrides.branchExpansionRetryTask || null,
+    autoBranchReconciliationEnabled: false,
+    autoBranchReconciliationSetterCallCount: 0,
+    refreshListenerRegistrationCount: 1,
+    startedAt: '2026-07-31T00:00:00.000Z',
+    completedAt: '2026-07-31T00:00:01.000Z',
+    errorCode: null,
+    authorityUnpersisted: false,
+    cacheWriteErrorCode: null,
+    diagnosticStatus: null,
+    preferenceResolved: true,
+    preferenceStoredValue: null,
+    preferenceResolution: 'default',
+    preferenceReadErrorCode: null,
+    preferenceWriteErrorCode: null,
+  };
+}
+
+const BASE_PROJECTION_SOURCE = extractFunction(BASE_SOURCE, 'getCompleteTurnIndexProjectionStatus');
+const CURRENT_PROJECTION_SOURCE = extractFunction(CORE_SOURCE, 'getCompleteTurnIndexProjectionStatus');
+
+function runProjection(source, overrides = {}) {
+  const state = makeProjectionState(overrides);
+  const lifecycle = {
+    trustedSelectionLastCaptureTokenHash: 'djb2:trusted',
+    trustedSelectionLastCaptureDirection: 'next',
+    trustedSelectionBindAttemptCount: 4,
+    trustedSelectionBindSuccessCount: 4,
+    trustedSelectionLastBoundQId: 'q-17',
+    trustedSelectionClearCount: 1,
+    trustedSelectionLastClearReason: 'confirmed',
+    trustedSelectionLastClearQId: 'q-17',
+    selectedPathTrustedScheduleAttemptCount: 2,
+    selectedPathTrustedScheduleAcceptedCount: 2,
+    selectedPathLastScheduleTrusted: true,
+    selectedPathLastScheduleQId: 'q-17',
+    selectedPathLastScheduleCause: 'fixture',
+    selectedPathConfirmationEligibilityCheckCount: 2,
+    selectedPathConfirmationSkipCount: 0,
+    selectedPathConfirmationLastSkipReason: null,
+    traceDroppedCount: 0,
+    trace: Object.freeze([]),
+  };
+  const refresh = Object.freeze({
+    fetchCount: 1,
+    debounceCount: 2,
+    coalescedCount: 3,
+    staleDiscardCount: 0,
+    trailingRequired: false,
+    trailingRefreshCount: 0,
+    selectedPathSignalCount: 2,
+    selectedPathAcceptanceCount: 1,
+    selectedPathRejectedCount: 0,
+    selectedPathCancellationCount: 0,
+    selectedPathDeduplicatedCount: 1,
+    selectedPathUnconfirmedCount: 0,
+    selectedPathLastSignature: 'last-signature',
+    selectedPathActiveSignature: 'active-signature',
+    selectedPathActiveTrusted: true,
+    selectedPathResultCode: 'accepted',
+    selectedPathConfirmationPending: false,
+    selectedPathConfirmationLeaseActive: false,
+    selectedPathRequestLeaseActive: false,
+    selectedPathConfirmationScheduledCount: 1,
+    selectedPathConfirmationFetchCount: 1,
+    selectedPathConfirmationCancelledCount: 0,
+    causeSample: Object.freeze(['fixture']),
+    timerPending: false,
+    requestActive: false,
+  });
+  const sandbox = vm.createContext({
+    __state: state,
+    __lifecycle: lifecycle,
+    __refresh: refresh,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Map,
+  });
+  vm.runInContext(`
+    const COMPLETE_TURN_INDEX_CANARY = 'cv3.20-canary';
+    const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = true;
+    const COMPLETE_TURN_INDEX_CACHE_SCHEMA = 1;
+    const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'cv3.20-preference';
+    const completeTurnIndexAuthorityState = __state;
+    const completeTurnIndexLifecycleDiagnostics = __lifecycle;
+    const completeIndexRefreshCoordinator = Object.freeze({ getStatus: () => __refresh });
+    const chatAtlasCompleteIndexAuthorityActive = () => true;
+    const chatAtlasCompleteIndexCacheKey = (chatId) => 'cache:' + String(chatId || '');
+    const getSelectedPathAcquisitionStatus = () => Object.freeze({ status: 'proven' });
+    const getEffectivePresentationStatus = () => Object.freeze({ source: 'canonical', count: 2 });
+    const chatAtlasBranchTransactionCurrent = () => (__state.branchTransactionState || null);
+    if (!Array.isArray(__state.branchTransactionTrace)) __state.branchTransactionTrace = [];
+    ${extractFunction(CORE_SOURCE, 'chatAtlasFreeze')}
+    ${extractFunction(CORE_SOURCE, 'chatAtlasNativeBranchPlanDiagnostics')}
+    ${source}
+    globalThis.__projection = getCompleteTurnIndexProjectionStatus();
+  `, sandbox, { filename: '0A1a-projection-compatibility.vm.js' });
+  return { result: sandbox.__projection, state };
+}
+
+function assertProjectionCompatibility(current, base) {
+  for (const [key, value] of Object.entries(base)) {
+    equal(Object.hasOwn(current, key), true, `pre-existing projection field ${key} remains present`);
+    equal(current[key], value, `pre-existing projection field ${key} retains its value`);
+  }
+  for (const key of EXPANSION_FIELDS) equal(Object.hasOwn(current, key), true, `additive field ${key} is present`);
+  equal(Object.keys(current).length, Object.keys(base).length + EXPANSION_FIELDS.length, 'only the approved additive fields are present');
+}
+
+function mutationKilled(run, label) {
+  let survived = false;
+  try {
+    run();
+    survived = true;
+  } catch {}
+  ok(!survived, `${label} is killed`);
+}
+
 function record(result, requestedId) {
   return result.records.find((item) => item.requestedId === requestedId);
 }
@@ -552,28 +759,136 @@ await fixture('navigation and scrolling remain zero', () => {
   equal(/navigate|scroll|requestMount|campaign|fetch\s*\(/.test(source), false, 'no movement or network source');
 });
 
-await fixture('existing runtime getters remain behaviorally byte-identical', () => {
+await fixture('unchanged runtime getters remain byte-identical while projection is behaviorally compatible', () => {
   const existing = [
     'getSelectedPathAcquisitionStatus',
     'getEffectivePresentationIndex',
     'getEffectivePresentationStatus',
     'getEffectiveTurnRecordByQId',
     'getEffectiveTurnRecordByAId',
-    'getCompleteTurnIndexProjectionStatus',
     'getConversationTurnIndexDiagnostics',
   ];
   for (const name of existing) {
     equal(extractFunction(CORE_SOURCE, name), extractFunction(BASE_SOURCE, name), `${name} unchanged`);
   }
+  const base = runProjection(BASE_PROJECTION_SOURCE).result;
+  const current = runProjection(CURRENT_PROJECTION_SOURCE).result;
+  assertProjectionCompatibility(current, base);
+  const legacyConsumerView = Object.fromEntries(Object.keys(base).map((key) => [key, current[key]]));
+  equal(legacyConsumerView, base, 'consumers that ignore additive fields retain their exact view');
+  ok(CURRENT_PROJECTION_SOURCE !== BASE_PROJECTION_SOURCE, 'obsolete whole-function byte pin is intentionally not restored');
   ok(CORE_SOURCE.includes('getGraphIdentityDiagnostics,'), 'one additive runtime export');
-  equal(
-    execFileSync('git', ['-c', 'core.quotepath=false', 'diff', '--name-only', BASE_COMMIT, '--', 'src-runtime-base'], {
-      cwd: ROOT,
-      encoding: 'utf8',
-    }).trim(),
-    CORE_REL,
-    '0A1a only production scope',
-  );
+  const changedProductionPaths = execFileSync(
+    'git',
+    ['-c', 'core.quotepath=false', 'diff', '--name-only', BASE_COMMIT, '--', 'src-runtime-base'],
+    { cwd: ROOT, encoding: 'utf8' },
+  ).trim().split('\n').filter(Boolean);
+  equal(changedProductionPaths.includes(CORE_REL), true, 'accepted graph owner remains in the production chain');
+});
+
+await fixture('projection expansion diagnostics are immutable additive state', () => {
+  const requiredPageNums = [2, 3];
+  const lease = { secret: 'mutable-lease-must-not-escape' };
+  const { result, state } = runProjection(CURRENT_PROJECTION_SOURCE, {
+    branchExpansionState: 'pending',
+    branchExpansionReason: 'native-page-head-absent',
+    branchExpansionPriorCount: 18,
+    branchExpansionTargetCount: 64,
+    branchExpansionExpectedFingerprint: 'djb2:target-64',
+    branchExpansionRequiredPageNums: requiredPageNums,
+    branchExpansionLease: lease,
+    branchExpansionTimeoutTask: { id: 1 },
+    branchExpansionRetryTask: { id: 2 },
+  });
+  equal(result.branchExpansionPending, true, 'pending state is explicit');
+  equal(result.branchExpansionFailClosed, false, 'pending is distinct from fail closed');
+  equal(result.branchExpansionState, 'pending', 'state is copied');
+  equal(result.branchExpansionReason, 'native-page-head-absent', 'reason is copied');
+  equal(result.branchExpansionPriorCount, 18, 'prior count is scalar');
+  equal(result.branchExpansionTargetCount, 64, 'target count is scalar');
+  equal(result.branchExpansionExpectedFingerprint, 'djb2:target-64', 'target fingerprint is scalar');
+  equal(result.branchExpansionRequiredPageNums, [2, 3], 'required pages are copied');
+  ok(Object.isFrozen(result), 'projection result is deeply frozen');
+  ok(Object.isFrozen(result.branchExpansionRequiredPageNums), 'required-page copy is frozen');
+  ok(result.branchExpansionRequiredPageNums !== requiredPageNums, 'required-page array does not alias state');
+  ok(result.branchExpansionRequiredPageNums !== state.branchExpansionRequiredPageNums, 'required-page array does not alias retained state');
+  for (const forbidden of ['branchExpansionLease', 'branchExpansionTimeoutTask', 'branchExpansionRetryTask', 'controller', 'callback', 'domNode']) {
+    equal(Object.hasOwn(result, forbidden), false, `${forbidden} is not exposed`);
+  }
+  equal(JSON.stringify(result).includes('mutable-lease-must-not-escape'), false, 'mutable lease content is absent');
+});
+
+await fixture('projection neutral and fail-closed states remain stable and distinguishable', () => {
+  const neutral = runProjection(CURRENT_PROJECTION_SOURCE).result;
+  equal(neutral.branchExpansionPending, false, 'neutral pending is false');
+  equal(neutral.branchExpansionFailClosed, false, 'neutral fail closed is false');
+  equal(neutral.branchExpansionState, 'idle', 'neutral state is idle');
+  equal(neutral.branchExpansionReason, null, 'neutral reason is null');
+  equal(neutral.branchExpansionPriorCount, 0, 'neutral prior count is zero');
+  equal(neutral.branchExpansionTargetCount, 0, 'neutral target count is zero');
+  equal(neutral.branchExpansionExpectedFingerprint, null, 'neutral fingerprint is null');
+  equal(neutral.branchExpansionRequiredPageNums, [], 'neutral required pages are empty');
+  const failed = runProjection(CURRENT_PROJECTION_SOURCE, {
+    branchExpansionState: 'fail-closed',
+    branchExpansionReason: 'native-page-head-conflict',
+    branchExpansionPriorCount: 18,
+    branchExpansionTargetCount: 39,
+    branchExpansionExpectedFingerprint: 'djb2:target-39',
+    branchExpansionRequiredPageNums: [2],
+  }).result;
+  equal(failed.branchExpansionPending, false, 'fail closed is not pending');
+  equal(failed.branchExpansionFailClosed, true, 'fail closed is explicit');
+  equal(failed.branchExpansionState, 'fail-closed', 'terminal state is preserved');
+  equal(failed.branchExpansionReason, 'native-page-head-conflict', 'terminal reason is preserved');
+});
+
+await fixture('projection compatibility mutations are killed', () => {
+  const base = runProjection(BASE_PROJECTION_SOURCE).result;
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace('      memoryOnly: true,\n', '');
+    assertProjectionCompatibility(runProjection(mutant).result, base);
+  }, 'remove old projection field');
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace('      memoryOnly: true,', '      memoryOnly: false,');
+    assertProjectionCompatibility(runProjection(mutant).result, base);
+  }, 'change old projection field value');
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace(
+      '      branchExpansionPending:',
+      '      branchExpansionLease: completeTurnIndexAuthorityState.branchExpansionLease,\n      branchExpansionPending:',
+    );
+    const result = runProjection(mutant, { branchExpansionLease: { mutable: true } }).result;
+    equal(Object.hasOwn(result, 'branchExpansionLease'), false, 'mutable lease remains private');
+  }, 'expose mutable lease');
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace(
+      `      branchExpansionRequiredPageNums: Object.freeze(\n        Array.from(completeTurnIndexAuthorityState.branchExpansionRequiredPageNums || []),\n      ),`,
+      '      branchExpansionRequiredPageNums: completeTurnIndexAuthorityState.branchExpansionRequiredPageNums,',
+    );
+    const execution = runProjection(mutant, { branchExpansionRequiredPageNums: [2] });
+    ok(
+      execution.result.branchExpansionRequiredPageNums !== execution.state.branchExpansionRequiredPageNums,
+      'required pages remain an immutable copy rather than retained state',
+    );
+  }, 'expose mutable required-page array');
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace(
+      "completeTurnIndexAuthorityState.branchExpansionState === 'fail-closed'",
+      "completeTurnIndexAuthorityState.branchExpansionState === 'pending'",
+    );
+    const result = runProjection(mutant, { branchExpansionState: 'fail-closed' }).result;
+    equal(result.branchExpansionFailClosed, true, 'fail-closed remains distinct');
+  }, 'collapse pending and fail-closed state');
+  mutationKilled(() => {
+    const mutant = CURRENT_PROJECTION_SOURCE.replace(
+      '      branchExpansionReason: completeTurnIndexAuthorityState.branchExpansionReason,\n',
+      '',
+    );
+    for (const key of EXPANSION_FIELDS) equal(Object.hasOwn(runProjection(mutant).result, key), true, `${key} remains additive`);
+  }, 'remove additive projection field');
+  mutationKilled(() => {
+    equal(CURRENT_PROJECTION_SOURCE, BASE_PROJECTION_SOURCE, 'obsolete byte-identical projection pin');
+  }, 'restore obsolete byte-identical pin');
 });
 
 const failures = fixtures.filter((item) => !item.ok);

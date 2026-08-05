@@ -554,6 +554,276 @@ ok(sourceChecks.noReadinessScroll, 'readiness has no scroll');
 ok(sourceChecks.noPositionalOwnership, 'readiness has no positional inference');
 ok(sourceChecks.coreOnlyConsumesReadiness, 'Core consumes readiness data');
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// Stage 2C-2eB — collapse-control hit target (real-element correction).
+//
+// The painted circle is small, inside a ~108px label, so clicks a few pixels
+// off it landed on the label and opened the Tags cloud. A ::before region was
+// tried first and REJECTED: the live pointer test still opened Tags even
+// though elementsFromPoint reported the dot. The correction is a real
+// transparent child node inside the dot.
+//
+// Real CSS geometry is not measurable in this Node harness, so the sizing
+// assertions below are source contracts; the pixel proof belongs to the live
+// canary. The ownership assertions, by contrast, are executed against the
+// real production markup helpers.
+// ══════════════════════════════════════════════════════════════════════════
+
+const HIT_SELECTOR = '.cgxui-chat-page-divider-dot-hit, .cgxui-pgnw-page-divider-dot-hit';
+const DOT_SELECTOR = '.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot';
+
+function cssRule(source, selector) {
+  const start = source.indexOf(selector);
+  if (start < 0) throw new Error(`css-rule-missing:${selector}`);
+  const open = source.indexOf('{', start + selector.length - 1);
+  if (open < 0) throw new Error(`css-rule-body-invalid:${selector}`);
+  for (let index = open + 1; index < source.length; index += 1) {
+    // The skin emits CSS from a JS template literal, so a rule body can
+    // contain `${...}` whose closing brace is not the end of the rule.
+    if (source[index] === '$' && source[index + 1] === '{') {
+      const close = source.indexOf('}', index + 2);
+      if (close < 0) throw new Error(`css-interpolation-unclosed:${selector}`);
+      index = close;
+      continue;
+    }
+    if (source[index] === '}') return source.slice(open + 1, index);
+  }
+  throw new Error(`css-rule-body-invalid:${selector}`);
+}
+
+// The divider click owners are assigned arrows, not declarations, so
+// extractFunction's `function name(` anchor does not reach them.
+function extractAssignedArrow(source, name) {
+  const anchor = `${name} = (`;
+  const start = source.indexOf(anchor);
+  if (start < 0 || source.indexOf(anchor, start + anchor.length) >= 0) {
+    throw new Error(`arrow-anchor-invalid:${name}`);
+  }
+  const bodyStart = source.indexOf('{', source.indexOf('=>', start));
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    else if (source[index] === '}' && --depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`arrow-boundary-invalid:${name}`);
+}
+
+// Run the REAL markup helpers from MiniMap Core against the fake DOM, so the
+// ownership proofs below are executed rather than merely pattern-matched.
+function makeMarkupApi() {
+  const sandbox = vm.createContext({
+    document: { createElement: (tag) => new FakeElement(tag) },
+    console,
+  });
+  const names = ['getChatPageDividerDotHitEl', 'ensureChatPageDividerDotHitEl'];
+  const source = names.map((name) => extractFunction(CORE_SOURCE, name)).join('\n')
+    + `\nglobalThis.__markup = { ${names.join(', ')} };`;
+  new vm.Script(source, { filename: CORE_PATH }).runInContext(sandbox);
+  return sandbox.__markup;
+}
+
+function makeDividerWithDot() {
+  const divider = new FakeElement('div');
+  divider.className = 'cgxui-chat-page-divider';
+  const label = new FakeElement('span');
+  label.className = 'cgxui-chat-page-divider-label';
+  const dot = new FakeElement('span');
+  dot.className = 'cgxui-chat-page-divider-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  const text = new FakeElement('span');
+  text.className = 'cgxui-chat-page-divider-text';
+  text.textContent = 'Page 1';
+  label.appendChild(dot);
+  label.appendChild(text);
+  divider.appendChild(label);
+  return { divider, label, dot, text };
+}
+
+await fixture('hit target: the rejected ::before hit region is absent', () => {
+  ok(!SKIN_SOURCE.includes('.cgxui-chat-page-divider-dot::before'), 'no chat ::before hit rule');
+  ok(!SKIN_SOURCE.includes('.cgxui-pgnw-page-divider-dot::before'), 'no pgnw ::before hit rule');
+  // Exactly one hit-target mechanism may exist.
+  equal(SKIN_SOURCE.split('cgxui-chat-page-divider-dot-hit').length - 1, 1, 'one chat hit-child rule selector');
+  // The blocked "!" badge is the only pseudo-element the dot may still own.
+  const dotPseudos = [...SKIN_SOURCE.matchAll(/divider-dot::(before|after)/g)].map((m) => m[1]);
+  ok(dotPseudos.length > 0 && dotPseudos.every((kind) => kind === 'after'), 'the dot owns no ::before region');
+});
+
+await fixture('hit target: every divider dot gets exactly one real hit child', () => {
+  const markup = makeMarkupApi();
+  const { dot } = makeDividerWithDot();
+  equal(dot.children.length, 0, 'dot starts empty');
+  markup.ensureChatPageDividerDotHitEl(dot, false);
+  equal(dot.querySelectorAll(HIT_SELECTOR).length, 1, 'one hit child created');
+  // Idempotent: the decorate path runs on every divider pass.
+  markup.ensureChatPageDividerDotHitEl(dot, false);
+  markup.ensureChatPageDividerDotHitEl(dot, false);
+  equal(dot.querySelectorAll(HIT_SELECTOR).length, 1, 'still exactly one hit child');
+  // The creation template ships the child too, so it exists before any repair.
+  ok(CORE_SOURCE.includes('<span class="cgxui-chat-page-divider-dot" aria-hidden="true"><span class="cgxui-chat-page-divider-dot-hit" aria-hidden="true"></span></span>'), 'divider template nests the hit child inside the dot');
+  ok(extractFunction(CORE_SOURCE, 'ensureChatPageDividerMarkup').includes('ensureChatPageDividerDotHitEl(dot,'), 'markup repair ensures the hit child');
+});
+
+await fixture('hit target: the child is a real descendant of the dot', () => {
+  const markup = makeMarkupApi();
+  const { dot, label } = makeDividerWithDot();
+  const hit = markup.ensureChatPageDividerDotHitEl(dot, false);
+  equal(hit.parentElement, dot, 'child is nested directly in the dot');
+  ok(dot.contains(hit), 'dot contains the child');
+  ok(label.querySelector(HIT_SELECTOR) === hit, 'child is reachable from the label only through the dot');
+  equal(hit.nodeType, 1, 'child is a real element node');
+});
+
+await fixture('hit target: the child is inert for accessibility', () => {
+  const markup = makeMarkupApi();
+  const { dot } = makeDividerWithDot();
+  const hit = markup.ensureChatPageDividerDotHitEl(dot, false);
+  equal(hit.getAttribute('aria-hidden'), 'true', 'child is aria-hidden');
+  equal(hit.getAttribute('role'), null, 'child has no role');
+  equal(hit.getAttribute('tabindex'), null, 'child has no tabindex');
+  equal(hit.getAttribute('aria-label'), null, 'child has no accessible name');
+  equal(hit.getAttribute('title'), null, 'child has no title');
+  // No listener is attached to the child anywhere in the runtime.
+  ok(!CORE_SOURCE.includes('dot-hit\').addEventListener'), 'core attaches no listener to the child');
+  ok(!PAGE_SOURCE.includes('cgxui-chat-page-divider-dot-hit'), 'the controller never targets the child directly');
+});
+
+await fixture('hit target: the dot remains the sole accessible control', () => {
+  const control = extractFunction(PAGE_SOURCE, 'applyCollapsedBoundaryControlState');
+  ok(control.includes("divider.querySelector?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot')"), 'control state resolves the dot, not the child');
+  for (const attr of ["'role', 'button'", "'tabindex', '0'", 'aria-label', 'title', 'ATTR_COLLAPSE_CONTROL_STATE']) {
+    ok(control.includes(attr), `${attr} still written to the dot`);
+  }
+  const keyboard = extractFunction(PAGE_SOURCE, 'forwardCollapseControlKeyboardActivation');
+  ok(keyboard.includes(`closest?.('${DOT_SELECTOR}')`), 'keyboard activation owned by the dot');
+  ok(/key !== 'Enter' && key !== ' ' && key !== 'Spacebar'/.test(keyboard), 'Enter and Space retained');
+});
+
+await fixture('hit target: authoritative visual circle is exactly 14x14', () => {
+  // The live circle is decided by the controller tokens, which become inline
+  // !important declarations - not by the authored base CSS alone.
+  const tokens = PAGE_SOURCE.slice(PAGE_SOURCE.indexOf('const DIVIDER_VISUAL_KEYS'));
+  equal(Number((tokens.match(/dotSizeExpandedPx:\s*(\d+)/) || [])[1]), 14, 'expanded circle token is 14');
+  equal(Number((tokens.match(/dotSizeCollapsedPx:\s*(\d+)/) || [])[1]), 14, 'collapsed circle token is 14');
+  for (const prop of ['width', 'height', 'min-width', 'min-height']) {
+    ok(PAGE_SOURCE.includes(`dot.style.setProperty('${prop}', \`\${effectiveTokens.dotSizePx}px\`, 'important')`), `${prop} written from the same token`);
+  }
+  // The authored base agrees, so the circle is 14 with or without the tokens.
+  const base = cssRule(SKIN_SOURCE, '.cgxui-chat-page-divider-dot,\n.cgxui-pgnw-page-divider-dot{');
+  for (const prop of ['width', 'height', 'min-width', 'min-height']) {
+    ok(new RegExp(`(?<![-\\w])${prop}:\\s*14px`).test(base), `base ${prop} is 14px`);
+  }
+  ok(/position:\s*relative/.test(base), 'dot remains the positioning context');
+});
+
+await fixture('hit target: the real child is exactly 28x28, centred and out of layout', () => {
+  const size = Number((SKIN_SOURCE.match(/DOT_HIT_SIZE_PX:\s*(\d+)/) || [])[1] || 0);
+  ok(size >= 28, `declared hit size ${size} is at least 28`);
+  const hit = cssRule(SKIN_SOURCE, '.cgxui-chat-page-divider-dot-hit,\n.cgxui-pgnw-page-divider-dot-hit{');
+  ok(/width:\s*\$\{CHAT_PAGE_DIVIDER_LAYOUT\.DOT_HIT_SIZE_PX\}px/.test(hit), 'width uses the declared hit size');
+  ok(/height:\s*\$\{CHAT_PAGE_DIVIDER_LAYOUT\.DOT_HIT_SIZE_PX\}px/.test(hit), 'height uses the declared hit size');
+  ok(/position:\s*absolute/.test(hit), 'absolutely positioned, so out of flow');
+  ok(/left:\s*50%/.test(hit) && /top:\s*50%/.test(hit), 'anchored to the dot centre');
+  ok(/transform:\s*translate\(-50%,\s*-50%\)/.test(hit), 'centred, not offset');
+  ok(/pointer-events:\s*auto/.test(hit), 'child receives pointer events');
+  ok(/z-index:\s*[1-9]/.test(hit), 'raised above the sibling label text');
+  // Transparent: no fill, border or shadow.
+  ok(/background:\s*transparent/.test(hit), 'no fill');
+  ok(/border:\s*0/.test(hit), 'no border');
+  ok(/box-shadow:\s*none/.test(hit), 'no shadow');
+  ok(!/margin/.test(hit), 'no margin that could shift siblings');
+  ok(!/display:\s*(block|inline-block|flex)/.test(hit), 'no in-flow display');
+  // Nothing clips the region.
+  ok(!/overflow/.test(cssRule(SKIN_SOURCE, '.cgxui-chat-page-divider{')), 'divider does not clip overflow');
+  ok(!/overflow/.test(cssRule(SKIN_SOURCE, '.cgxui-chat-page-divider-label,\n.cgxui-pgnw-page-divider-pill{')), 'label does not clip overflow');
+});
+
+await fixture('hit target: a child-targeted event resolves to the parent dot', () => {
+  const markup = makeMarkupApi();
+  const { dot, text } = makeDividerWithDot();
+  const hit = markup.ensureChatPageDividerDotHitEl(dot, false);
+  // This is the exact expression both click owners evaluate.
+  equal(hit.closest(DOT_SELECTOR), dot, 'child resolves to the dot');
+  equal(dot.closest(DOT_SELECTOR), dot, 'the dot still resolves to itself');
+  equal(text.closest(DOT_SELECTOR), null, 'label text is outside dot ownership');
+});
+
+await fixture('hit target: onDividerDotClick activates collapse from a child target', () => {
+  const clickOwner = extractAssignedArrow(PAGE_SOURCE, 'S.onDividerDotClick');
+  ok(clickOwner.includes(`ev?.target?.closest?.('${DOT_SELECTOR}')`), 'collapse owner resolves the target through the dot selector');
+  ok(clickOwner.includes('if (!dot) return;'), 'non-dot targets are ignored');
+  ok(clickOwner.includes('executeAtomicPageCollapseTransaction('), 'reaches the existing single transaction owner');
+  // Executed proof: the child target satisfies the owner's guard.
+  const markup = makeMarkupApi();
+  const { dot } = makeDividerWithDot();
+  const hit = markup.ensureChatPageDividerDotHitEl(dot, false);
+  ok(hit.closest(DOT_SELECTOR) !== null, 'guard passes for a child target');
+});
+
+await fixture('hit target: onDividerClick returns before the Tags timer for a child target', () => {
+  const tagsOwner = extractAssignedArrow(PAGE_SOURCE, 'S.onDividerClick');
+  const dotIndex = tagsOwner.indexOf(`ev?.target?.closest?.('${DOT_SELECTOR}')`);
+  const returnIndex = tagsOwner.indexOf('if (dot) return;');
+  const timerIndex = tagsOwner.indexOf('S.dividerClickTimer = W.setTimeout(');
+  ok(dotIndex >= 0, 'Tags handler tests the same dot predicate');
+  ok(returnIndex > dotIndex, 'dot-owned targets return early');
+  ok(timerIndex > returnIndex, 'the Tags timer is scheduled only after that early return');
+  ok(tagsOwner.includes('openTagsCloudFromDivider'), 'Tags behaviour still exists for non-dot clicks');
+});
+
+await fixture('hit target: label clicks outside the region still reach the Tags path', () => {
+  const markup = makeMarkupApi();
+  const { divider, dot, text } = makeDividerWithDot();
+  markup.ensureChatPageDividerDotHitEl(dot, false);
+  // A click on the label text is not dot-owned, so the Tags handler proceeds.
+  equal(text.closest(DOT_SELECTOR), null, 'label text is not dot-owned');
+  equal(text.closest('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider'), divider, 'label text still resolves to the divider');
+  const tagsOwner = extractAssignedArrow(PAGE_SOURCE, 'S.onDividerClick');
+  ok(tagsOwner.includes("closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider')"), 'divider clicks still classified');
+  // The region is bounded: it cannot be the whole label or the divider.
+  const size = Number((SKIN_SOURCE.match(/DOT_HIT_SIZE_PX:\s*(\d+)/) || [])[1] || 0);
+  const labelMin = Number((cssRule(SKIN_SOURCE, '.cgxui-chat-page-divider-label,\n.cgxui-pgnw-page-divider-pill{').match(/min-width:\s*(\d+)px/) || [])[1] || 0);
+  ok(labelMin > 0 && size < labelMin, `hit region ${size}px stays narrower than the ${labelMin}px label`);
+});
+
+await fixture('hit target: double-click suppression still excludes the region', () => {
+  const dbl = extractAssignedArrow(PAGE_SOURCE, 'S.onDividerDblClick');
+  const dotIndex = dbl.indexOf(`closest?.('${DOT_SELECTOR}')`);
+  const returnIndex = dbl.indexOf('if (dot) return;');
+  const toggleIndex = dbl.indexOf('routeChatPageDividerDblClick');
+  ok(dotIndex >= 0, 'double-click handler tests the same dot predicate');
+  ok(returnIndex > dotIndex && toggleIndex > returnIndex, 'dot-owned targets return before the double-click toggle');
+  for (const name of ['S.onDividerClick', 'S.onDividerDotClick']) {
+    ok(extractAssignedArrow(PAGE_SOURCE, name).includes('if (Number(ev?.detail || 1) > 1) return;'), `${name} retains multi-click suppression`);
+  }
+});
+
+await fixture('hit target: state attributes stay on the parent dot', () => {
+  ok(SKIN_SOURCE.includes('cursor: not-allowed !important'), 'blocked cursor retained');
+  ok(SKIN_SOURCE.includes('content: "!"'), 'blocked indicator retained');
+  ok(SKIN_SOURCE.includes('.cgxui-chat-page-divider-dot::after'), 'blocked badge still belongs to the dot');
+  for (const state of ['expanded', 'mixed', 'collapsed']) {
+    ok(SKIN_SOURCE.includes(`[data-cgxui-chat-page-title-state="${state}"] .cgxui-chat-page-divider-dot`), `${state} state rule targets the dot`);
+  }
+  // No state rule was retargeted onto the child.
+  ok(!/data-h2o-collapse-control-state[^\n]*dot-hit/.test(SKIN_SOURCE), 'no control-state rule targets the child');
+});
+
+await fixture('hit target: no second listener or collapse owner exists', () => {
+  equal((PAGE_SOURCE.match(/addEventListener\('click',\s*S\.onDivider/g) || []).length, 2, 'still exactly the two pre-existing click listeners');
+  equal((PAGE_SOURCE.match(/function executeAtomicPageCollapseTransaction\(/g) || []).length, 1, 'one collapse transaction owner is defined');
+  equal((extractAssignedArrow(PAGE_SOURCE, 'S.onDividerDotClick').match(/executeAtomicPageCollapseTransaction\(/g) || []).length, 1, 'pointer activation calls that owner exactly once');
+  ok(!CORE_SOURCE.includes("addEventListener('click'") || !CORE_SOURCE.includes('divider-dot-hit'), 'core adds no click listener for the child');
+});
+
+await fixture('hit target: Chat to MiniMap propagation is unchanged', () => {
+  ok(PAGE_SOURCE.includes('propagateChatPageCollapseToMiniMap'), 'one-way propagation retained');
+  // The correction touched markup and styling only, not synchronization.
+  ok(!extractFunction(CORE_SOURCE, 'ensureChatPageDividerDotHitEl').includes('propagate'), 'the hit child does not synchronize state');
+  ok(!extractFunction(CORE_SOURCE, 'ensureChatPageDividerDotHitEl').includes('setPageCollapsed'), 'the hit child owns no collapse state');
+});
+
 const failed = fixtures.filter((entry) => !entry.ok);
 console.log(`Fixtures: ${fixtures.length - failed.length}/${fixtures.length}`);
 console.log(`Assertions: ${assertionCount}`);

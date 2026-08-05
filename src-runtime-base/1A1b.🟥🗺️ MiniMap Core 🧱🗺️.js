@@ -6252,16 +6252,29 @@ function UM_PUBLIC() {
         overlayActive: false,
         count: 0,
         canonicalFingerprint: '',
+        effectiveFingerprint: '',
+        effectiveCount: 0,
         anchorQId: null,
         pathLength: 0,
         generation: 0,
       });
     }
+    // The canonical fingerprint identifies the whole conversation graph and is
+    // unchanged by walking a different selected path through it. The effective
+    // fingerprint - the same one the Pages Controller reads as
+    // effectiveFingerprint - is what actually changes on a branch switch, so
+    // page-unit identity and coherence need it. Read through the existing
+    // INDEX verb: no third fingerprint model is introduced.
+    let index = null;
+    try { index = callEffectiveTurnRuntime('INDEX'); } catch { index = null; }
+    const effectiveTurns = Array.isArray(index?.turns) ? index.turns : [];
     return Object.freeze({
       source: String(status.source || 'canonical'),
       overlayActive: status.overlayActive === true,
       count: Math.max(0, Number(status.count || 0) || 0),
       canonicalFingerprint: String(status.canonicalFingerprint || ''),
+      effectiveFingerprint: String(index?.sourceFingerprint || ''),
+      effectiveCount: effectiveTurns.length,
       anchorQId: String(status.anchorQId || '') || null,
       pathLength: Math.max(0, Number(status.pathLength || 0) || 0),
       generation: Math.max(0, Number(status.generation || 0) || 0),
@@ -6294,6 +6307,36 @@ function UM_PUBLIC() {
           fingerprint: String(status.fingerprint || '') || null,
           completenessProof: String(status.completenessProof || '') || null,
           routeGeneration: Math.max(0, Number(status.routeGeneration || 0) || 0),
+          // Branch-transition fields. These were previously dropped here, so
+          // page-unit reconciliation could not tell that a trusted branch
+          // switch had begun. trustedSelectionIntentActive and
+          // branchSelectionStale are both set synchronously by the Core's
+          // trusted native branch capture - before ChatGPT replaces the
+          // mounted branch content - and clear only when the new presentation
+          // is rebuilt or the selection is abandoned. The three lease flags
+          // arrive later (coordinator acceptance, confirmation scheduling) and
+          // are carried through unchanged for continuity with 1C1b.
+          trustedSelectionIntentActive: status.trustedSelectionIntentActive === true,
+          branchTransactionPending: status.branchTransactionPending === true,
+          branchSelectionStale: status.branchSelectionStale === true,
+          branchExpansionPending: status.branchExpansionPending === true,
+          branchExpansionFailClosed: status.branchExpansionFailClosed === true,
+          branchExpansionState: String(status.branchExpansionState || 'idle'),
+          branchExpansionReason: String(status.branchExpansionReason || '') || null,
+          branchExpansionPriorCount: Math.max(0, Number(status.branchExpansionPriorCount || 0) || 0),
+          branchExpansionTargetCount: Math.max(0, Number(status.branchExpansionTargetCount || 0) || 0),
+          branchExpansionExpectedFingerprint:
+            String(status.branchExpansionExpectedFingerprint || '') || null,
+          branchExpansionRequiredPageNums: Object.freeze(
+            (Array.isArray(status.branchExpansionRequiredPageNums)
+              ? status.branchExpansionRequiredPageNums
+              : [])
+              .map((pageNum) => Math.max(0, Number(pageNum || 0) || 0))
+              .filter((pageNum, index, values) => pageNum > 1 && values.indexOf(pageNum) === index),
+          ),
+          selectedPathConfirmationPending: status.selectedPathConfirmationPending === true,
+          selectedPathConfirmationLeaseActive: status.selectedPathConfirmationLeaseActive === true,
+          selectedPathRequestLeaseActive: status.selectedPathRequestLeaseActive === true,
         };
       }
     } catch {}
@@ -6301,6 +6344,7 @@ function UM_PUBLIC() {
       enabled: false,
       authoritative: false,
       status: 'disabled',
+      branchTransactionPending: false,
       diagnosticStatus: null,
       chatId: null,
       count: 0,
@@ -6311,6 +6355,19 @@ function UM_PUBLIC() {
       fingerprint: null,
       completenessProof: null,
       routeGeneration: 0,
+      trustedSelectionIntentActive: false,
+      branchSelectionStale: false,
+      branchExpansionPending: false,
+      branchExpansionFailClosed: false,
+      branchExpansionState: 'idle',
+      branchExpansionReason: null,
+      branchExpansionPriorCount: 0,
+      branchExpansionTargetCount: 0,
+      branchExpansionExpectedFingerprint: null,
+      branchExpansionRequiredPageNums: Object.freeze([]),
+      selectedPathConfirmationPending: false,
+      selectedPathConfirmationLeaseActive: false,
+      selectedPathRequestLeaseActive: false,
     };
   }
 
@@ -8433,6 +8490,30 @@ function UM_PUBLIC() {
     return divider.querySelector('.cgxui-chat-page-divider-text, .cgxui-pgnw-page-divider-text');
   }
 
+  function getChatPageDividerDotHitEl(dot = null) {
+    if (!dot?.querySelector) return null;
+    return dot.querySelector('.cgxui-chat-page-divider-dot-hit, .cgxui-pgnw-page-divider-dot-hit');
+  }
+
+  // The painted circle is far smaller than a comfortable pointer target, so the
+  // dot carries one real transparent child that widens what the pointer can
+  // reach. It has to be a real node: a generated ::before region did not win
+  // the live hit test, and clicks a few pixels off the circle still landed on
+  // the label and opened the Tags cloud. The child owns no role, tabindex or
+  // accessible name - the dot stays the single control, and closest() from the
+  // child walks the real ancestor chain back to it.
+  function ensureChatPageDividerDotHitEl(dot = null, pgnw = false) {
+    if (!dot?.querySelector) return null;
+    let hit = getChatPageDividerDotHitEl(dot);
+    if (!hit) {
+      hit = document.createElement('span');
+      hit.className = pgnw ? 'cgxui-pgnw-page-divider-dot-hit' : 'cgxui-chat-page-divider-dot-hit';
+      hit.setAttribute('aria-hidden', 'true');
+      dot.appendChild(hit);
+    }
+    return hit;
+  }
+
   function ensureChatPageDividerMarkup(divider = null, pageNum = 1) {
     if (!divider?.querySelector) return divider;
     const label = getChatPageDividerLabelEl(divider);
@@ -8447,6 +8528,7 @@ function UM_PUBLIC() {
       dot.setAttribute('aria-hidden', 'true');
       label.insertBefore(dot, label.firstChild || null);
     }
+    ensureChatPageDividerDotHitEl(dot, divider.classList?.contains('cgxui-pgnw-page-divider') === true);
     if (!textEl) {
       textEl = document.createElement('span');
       textEl.className = divider.classList?.contains('cgxui-pgnw-page-divider')
@@ -8927,9 +9009,22 @@ function UM_PUBLIC() {
     ].map((v) => String(v || '').trim()).filter(Boolean);
     for (const id of candidates) {
       const rec = getSharedTurnRecordByAnyId(id);
-      const turnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || rec?.index || 0) || 0);
+      // Effective/complete-index records carry the global branch position as
+      // `order`; only legacy shared records use turnNo/idx/index. Omitting
+      // `order` made an authoritative record look unresolved and dropped
+      // through to the positional fallback below.
+      const turnNo = Math.max(0, Number(rec?.order || rec?.turnNo || rec?.idx || rec?.index || 0) || 0);
       if (turnNo > 0) return turnNo;
     }
+    // Positional fallback: the index among currently MOUNTED user sections.
+    // Under complete-index authority that is never the global branch order —
+    // with only a window of a long branch mounted it renumbered a global
+    // order 19 NO ANSWER row to 3. Refuse rather than publish a wrong
+    // ordinal; the row shows a bare TITLE until authority can answer, and
+    // 1C1a's own refresh reconciles it from the same effective index.
+    try {
+      if (getCompleteIndexProjectionStatus().enabled === true) return 0;
+    } catch {}
     // A conversation-turn section is a MESSAGE shell, not a Q+A index. Using
     // all shells made every assistant before an orphan shift its fallback
     // number/page and let a delayed NO ANSWER sweep miss the active stack.
@@ -9895,7 +9990,7 @@ function unbindChatPageDividerBridge() {
     div.setAttribute(ATTR_CHAT_PAGE_DIVIDER, '1');
     div.setAttribute('data-page-num', String(pageNum || 1));
     div.setAttribute('data-page-band', String(band || 'normal'));
-    div.innerHTML = `<span class="cgxui-chat-page-divider-line"></span><span class="cgxui-chat-page-divider-label"><span class="cgxui-chat-page-divider-dot" aria-hidden="true"></span><span class="cgxui-chat-page-divider-text">Page ${String(pageNum || 1)}</span></span><span class="cgxui-chat-page-divider-line"></span>`;
+    div.innerHTML = `<span class="cgxui-chat-page-divider-line"></span><span class="cgxui-chat-page-divider-label"><span class="cgxui-chat-page-divider-dot" aria-hidden="true"><span class="cgxui-chat-page-divider-dot-hit" aria-hidden="true"></span></span><span class="cgxui-chat-page-divider-text">Page ${String(pageNum || 1)}</span></span><span class="cgxui-chat-page-divider-line"></span>`;
     return div;
   }
 
@@ -10558,11 +10653,16 @@ function unbindChatPageDividerBridge() {
       ? 'selected-path-overlay'
       : 'canonical';
     const fingerprint = String(status.canonicalFingerprint || '');
+    // Selecting a different path through one canonical graph leaves chatId,
+    // routeKey, canonical fingerprint and generation all unchanged, so without
+    // the effective fingerprint the identity stayed constant across a branch
+    // switch and the old page units were never invalidated.
+    const effectiveFingerprint = String(status.effectiveFingerprint || '');
     const generation = String(status.generation || 0);
     const count = Number(S.turnList?.length || 0);
     const pageCount = count > 0 ? Math.ceil(count / 25) : 0;
     return [
-      chatId, routeKey, source, String(count), fingerprint, generation, String(pageCount),
+      chatId, routeKey, source, String(count), fingerprint, effectiveFingerprint, generation, String(pageCount),
     ].join('|');
   }
 
@@ -10967,17 +11067,28 @@ function unbindChatPageDividerBridge() {
     }
     const terminal = resolveChatPageTerminalArtifact(page);
     const terminalTail = terminal?.wrapper?.parentNode ? terminal.wrapper : null;
-    const tail = titleList?.parentNode
-      ? titleList
-      : (terminalTail || (page.latest?.wrapper?.parentNode ? page.latest.wrapper : null));
+    // A final page proves its collapse range as [page start wrapper, page end
+    // sentinel), so its end sentinel must stay after the exact terminal
+    // wrapper. Collapsing that page inserts its own synthetic title list near
+    // the page start; letting the list win here moved the sentinel ahead of the
+    // terminal wrapper, which made the final-tail proof fail and caused the
+    // committed transaction to be released by its own output. Earlier pages
+    // keep the established title-list-first tail.
+    const pageCount = Math.max(0, Number(model?.pageCount || 0) || 0);
+    const isFinalPage = pageCount > 0 && Number(page.pageNum || 0) >= pageCount;
+    const tail = (isFinalPage && terminalTail)
+      ? terminalTail
+      : (titleList?.parentNode
+        ? titleList
+        : (terminalTail || (page.latest?.wrapper?.parentNode ? page.latest.wrapper : null)));
     if (tail?.parentNode) {
       return {
         ok: true,
         parent: tail.parentNode,
         before: tail.nextSibling || null,
-        mode: titleList
-          ? 'title-list-end'
-          : (tail === terminalTail ? 'exact-terminal-page-artifact' : 'latest-exact-page-artifact'),
+        mode: tail === terminalTail
+          ? 'exact-terminal-page-artifact'
+          : (tail === titleList ? 'title-list-end' : 'latest-exact-page-artifact'),
         evidence: tail,
       };
     }
@@ -11094,11 +11205,39 @@ function unbindChatPageDividerBridge() {
     ) || 0);
   }
 
+  // Exact form written by createChatPageBoundarySentinel: page-<n>-start /
+  // page-<n>-end with a positive page number. Matching the exact production
+  // form keeps foreign or host nodes that merely carry a similar attribute out
+  // of scope.
+  const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = /^page-[1-9][0-9]*-(?:start|end)$/;
+
+  function isOwnedChatPageBoundarySentinel(node = null) {
+    if (!node) return false;
+    try {
+      const value = String(node.getAttribute?.(CHAT_PAGE_BOUNDARY_ATTR) || '');
+      if (!CHAT_PAGE_BOUNDARY_SENTINEL_VALUE.test(value)) return false;
+      // The sentinel must also carry H2O's own owner stamp and its matching
+      // page/kind attributes, so only nodes this module actually produced are
+      // removable.
+      if (String(node.getAttribute?.('data-cgxui-owner') || '') !== String(UI_TOK.OWNER)) return false;
+      const page = String(node.getAttribute?.(CHAT_PAGE_BOUNDARY_PAGE_ATTR) || '');
+      const kind = String(node.getAttribute?.(CHAT_PAGE_BOUNDARY_KIND_ATTR) || '');
+      return value === `page-${page}-${kind}`;
+    } catch {
+      return false;
+    }
+  }
+
   function removeH2OChatPageUnitNode(node = null) {
     if (!node?.parentNode) return false;
     let owned = false;
     try {
+      // '1' is the legacy divider-era boundary marker and is retained. The
+      // sentinel branch is what page-unit cleanup was missing: sentinels store
+      // page-N-start / page-N-end, never '1', so stale sentinels could never
+      // be collected and went on serving as fallback anchor proof.
       owned = node.getAttribute?.(CHAT_PAGE_BOUNDARY_ATTR) === '1'
+        || isOwnedChatPageBoundarySentinel(node)
         || node.classList?.contains('cgxui-chat-page-divider')
         || node.classList?.contains('cgxui-pgnw-page-divider');
     } catch {}
@@ -11275,6 +11414,140 @@ function unbindChatPageDividerBridge() {
     return stats;
   }
 
+  // ── Stage 2C-2f: branch-transition withdrawal ──────────────────────────
+  // A trusted native branch selection replaces the mounted conversation while
+  // this module's turn list, and therefore its page model, still describes the
+  // old branch. Placing units in that window moved the old Page 2 divider onto
+  // a stale sentinel and showed PAGE 2 above an unrelated turn. The Core
+  // already publishes the transition synchronously at trusted capture; page
+  // units simply have to stop touching the DOM until authority agrees again.
+
+  function chatPageUnitBranchTransitionActive() {
+    const projection = getCompleteIndexProjectionStatus();
+    // A current selected-path overlay IS the completed branch presentation:
+    // stale scope and a retained click intent are its normal steady state,
+    // not an open transition. Page units settle from the same effective
+    // overlay index the MiniMap consumes; only genuinely pending owners
+    // (request/confirmation leases, expansion containment) keep withdrawal.
+    // The Core's branch transaction is the dominant owner: while it is
+    // pending, page units stay withdrawn no matter what the other flags say.
+    if (projection.branchTransactionPending === true) return true;
+    const effective = getEffectivePresentationRuntimeStatus();
+    const overlaySettled = effective.overlayActive === true
+      && effective.source === 'selected-path-overlay'
+      && effective.count > 0;
+    if (overlaySettled) {
+      return projection.branchExpansionPending === true
+        || projection.branchExpansionFailClosed === true
+        || projection.selectedPathRequestLeaseActive === true
+        || projection.selectedPathConfirmationLeaseActive === true
+        || projection.selectedPathConfirmationPending === true;
+    }
+    // trustedSelectionIntentActive and branchSelectionStale both begin in the
+    // Core's synchronous trusted-capture path, before ChatGPT swaps content.
+    // The lease flags arrive later and only extend the same window.
+    return projection.trustedSelectionIntentActive === true
+      || projection.branchSelectionStale === true
+      || projection.branchExpansionPending === true
+      || projection.branchExpansionFailClosed === true
+      || projection.selectedPathRequestLeaseActive === true
+      || projection.selectedPathConfirmationLeaseActive === true
+      || projection.selectedPathConfirmationPending === true;
+  }
+
+  // Ordinary coherence remains count/fingerprint based. Only a keyed reverse
+  // expansion checks the exact newly introduced native page heads through the
+  // Pages Controller's accepted read-only primitive; unrelated virtualized
+  // descendants remain outside this gate.
+  function chatPageUnitPresentationCoherence(model = null) {
+    const status = getEffectivePresentationRuntimeStatus();
+    const projection = getCompleteIndexProjectionStatus();
+    const modelCount = Math.max(0, Number(model?.count || 0) || 0);
+    const authorityCount = Math.max(0, Number(status.effectiveCount || 0) || 0);
+    const effectiveFingerprint = String(status.effectiveFingerprint || '');
+    // Authority that cannot be read proves nothing. Incoherence has to be
+    // positively demonstrated, otherwise a runtime without the effective index
+    // would withdraw page units permanently.
+    if (!effectiveFingerprint || authorityCount <= 0) {
+      return { coherent: true, reason: 'authority-unavailable', modelCount, authorityCount };
+    }
+    if (modelCount !== authorityCount) {
+      return { coherent: false, reason: 'effective-count-mismatch', modelCount, authorityCount };
+    }
+    const expansionActive = projection.branchExpansionPending === true
+      || projection.branchExpansionFailClosed === true;
+    const expectedFingerprint = String(projection.branchExpansionExpectedFingerprint || '');
+    if (expansionActive && expectedFingerprint && effectiveFingerprint !== expectedFingerprint) {
+      return { coherent: false, reason: 'effective-fingerprint-mismatch', modelCount, authorityCount };
+    }
+    const requiredPageNums = expansionActive
+      ? (Array.isArray(projection.branchExpansionRequiredPageNums)
+        ? projection.branchExpansionRequiredPageNums
+        : [])
+      : [];
+    if (requiredPageNums.length) {
+      const pagesApi = typeof getChatPagesControllerApi === 'function'
+        ? getChatPagesControllerApi()
+        : null;
+      const resolve = pagesApi?.resolveNativePageHeadCoherence;
+      if (typeof resolve !== 'function') {
+        return { coherent: false, reason: 'native-page-head-unavailable', modelCount, authorityCount };
+      }
+      for (const pageNum of requiredPageNums) {
+        let head = null;
+        try { head = resolve.call(pagesApi, pageNum) || null; } catch { head = null; }
+        const headState = String(head?.state || 'unavailable');
+        if (headState === 'conflict') {
+          return { coherent: false, reason: 'native-page-head-conflict', modelCount, authorityCount };
+        }
+        if (headState === 'absent') {
+          return { coherent: false, reason: 'native-page-head-absent', modelCount, authorityCount };
+        }
+        if (headState !== 'match') {
+          return { coherent: false, reason: 'native-page-head-unavailable', modelCount, authorityCount };
+        }
+      }
+      if (projection.branchExpansionFailClosed === true) {
+        return { coherent: false, reason: 'branch-expansion-fail-closed', modelCount, authorityCount };
+      }
+    } else if (projection.branchExpansionFailClosed === true) {
+      return { coherent: false, reason: 'branch-expansion-fail-closed', modelCount, authorityCount };
+    }
+    return { coherent: true, reason: 'coherent', modelCount, authorityCount };
+  }
+
+  // Idempotent: every pass removes whatever H2O page-unit DOM is still
+  // connected and drops the stale bookkeeping, so a second call finds nothing
+  // and reports zero removals. Host conversation nodes are never touched -
+  // removeH2OChatPageUnitNode only accepts H2O-owned dividers and sentinels.
+  function withdrawChatPageUnits(reason = 'branch-transition') {
+    const state = getChatPageUnitState();
+    let removed = 0;
+    for (const divider of getActualThreadPageDividers()) {
+      if (removeH2OChatPageUnitNode(divider)) removed += 1;
+    }
+    for (const divider of Array.from(state.pendingDividers.values())) {
+      if (removeH2OChatPageUnitNode(divider)) removed += 1;
+    }
+    try {
+      for (const sentinel of Array.from(document.querySelectorAll(`[${CHAT_PAGE_BOUNDARY_ATTR}]`))) {
+        if (removeH2OChatPageUnitNode(sentinel)) removed += 1;
+      }
+    } catch {}
+    for (const sentinel of Array.from(state.sentinels.values())) {
+      if (removeH2OChatPageUnitNode(sentinel)) removed += 1;
+    }
+    // Drop every reference tied to the withdrawn identity, so the next
+    // coherent pass cannot reuse a stale divider or treat a stale sentinel as
+    // proven placement.
+    state.pendingDividers.clear();
+    state.sentinels.clear();
+    state.hydrationRequested.clear();
+    state.identity = '';
+    state.last = null;
+    return { reason: String(reason || 'branch-transition'), removed };
+  }
+
   function reconcileChatPageUnits(reason = 'reconcile') {
     const state = getChatPageUnitState();
     if (state.reconcileInFlight) {
@@ -11289,6 +11562,66 @@ function unbindChatPageDividerBridge() {
     state.reconcileInFlight = true;
     try {
       const model = buildChatPageUnitModel();
+      // Fail closed before anything is created, reused, moved or anchored.
+      // Withdrawal runs inside the reconcileInFlight guard and schedules no
+      // further work, so it cannot re-enter this function or drive observers.
+      const transitionActive = chatPageUnitBranchTransitionActive();
+      const coherence = chatPageUnitPresentationCoherence(model);
+      if (transitionActive || coherence.coherent !== true) {
+        const projection = getCompleteIndexProjectionStatus();
+        const transitionReason = projection.branchExpansionFailClosed === true
+          ? 'branch-expansion-fail-closed'
+          : (projection.branchExpansionPending === true
+            ? 'branch-expansion-pending'
+            : 'branch-transition');
+        const withdrawal = withdrawChatPageUnits(
+          coherence.coherent !== true ? coherence.reason : transitionReason,
+        );
+        const preciseExpansionStatus = /^(?:native-page-head|branch-expansion)-/.test(withdrawal.reason);
+        const stats = {
+          reason: String(reason || 'reconcile'),
+          identity: '',
+          source: String(model?.source || 'canonical'),
+          count: Number(model?.count || 0),
+          pageCount: 0,
+          created: 0,
+          moved: 0,
+          removed: withdrawal.removed,
+          deferred: 0,
+          hydrationRequests: 0,
+          pages: [],
+          order: [],
+          ascending: true,
+          placementRepairPending: 0,
+          status: preciseExpansionStatus
+            ? `${withdrawal.reason}-withdrawn`
+            : 'branch-transition-withdrawn',
+          withdrawn: true,
+          withdrawalReason: withdrawal.reason,
+          branchTransition: transitionActive,
+          presentationCoherent: coherence.coherent === true,
+        };
+        // state.last stays null: a withdrawal is not a settled layout and must
+        // never stand in as authority for the incoming presentation.
+        if (typeof setChatPageUnitAttributeIfChanged === 'function') {
+          setChatPageUnitAttributeIfChanged(
+            document.documentElement,
+            'data-h2o-page-unit-ordering-status',
+            stats.status,
+          );
+          setChatPageUnitAttributeIfChanged(
+            document.documentElement,
+            'data-h2o-page-unit-ordering-count',
+            '0',
+          );
+        } else {
+          try {
+            document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', stats.status);
+            document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', '0');
+          } catch {}
+        }
+        return stats;
+      }
       const candidatesByPage = new Map();
       for (const divider of getActualThreadPageDividers()) {
         const pageNum = pageNumberOfThreadDivider(divider);
@@ -11702,14 +12035,45 @@ function unbindChatPageDividerBridge() {
     return String(first?.turnId || first?.answerId || '').trim();
   }
 
+  function clearMissingRebuildActiveIdentity(anyId = '') {
+    const key = String(anyId || '').trim();
+    if (!key) return false;
+    const turn = findTurnByAnyId(key);
+    const targetTurnId = String(turn?.turnId || key).trim();
+    if (!targetTurnId || getBtnById(targetTurnId)) return false;
+    let cleared = false;
+    const matchesMissingTarget = (value) => {
+      const current = String(value || '').trim();
+      return current === key || current === targetTurnId;
+    };
+    if (matchesMissingTarget(S.lastActiveTurnIdFast)) {
+      S.lastActiveTurnIdFast = '';
+      cleared = true;
+    }
+    if (matchesMissingTarget(S.lastActiveBtnId)) {
+      S.lastActiveBtnId = '';
+      cleared = true;
+    }
+    return cleared;
+  }
+
+  function applyRebuildActiveId(anyId = '', reason = 'core:rebuild') {
+    const activeId = String(anyId || '').trim();
+    let activated = false;
+    if (activeId) {
+      try {
+        activated = setActive(activeId, `rebuild:${String(reason || 'core:rebuild')}`) === true;
+      } catch {}
+      if (activated) return true;
+      clearMissingRebuildActiveIdentity(activeId);
+    }
+    try { updateCounter(''); } catch {}
+    return false;
+  }
+
   function finalizeRebuildUi(reason = 'core:rebuild') {
     const activeId = resolveRebuildActiveId();
-    if (activeId) {
-      setActive(activeId, `rebuild:${String(reason || 'core:rebuild')}`);
-      return true;
-    }
-    updateCounter('');
-    return false;
+    return applyRebuildActiveId(activeId, reason);
   }
 
   function syncActiveFromViewport(opts = {}) {
@@ -12180,12 +12544,7 @@ function unbindChatPageDividerBridge() {
         try { repaintAllMiniBtns(); } catch {}
       }
       const activeId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
-      if (activeId) {
-        try { setActive(activeId, `rebuild:${why}`); } catch {}
-      } else {
-        try { updateCounter(''); } catch {}
-      }
-      try { finalizeRebuildUi(why); } catch {}
+      try { applyRebuildActiveId(activeId, why); } catch {}
       try {
         const chatId = resolveChatId();
         if (chatId && !overlayActive) {

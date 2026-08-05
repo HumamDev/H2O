@@ -505,6 +505,20 @@ function createFixedHarness({
     ${extractFunction(CORE_SOURCE, 'removeH2OChatPageUnitNode')}
     ${extractFunction(CORE_SOURCE, 'detachDeferredChatPageDivider')}
     ${extractFunction(CORE_SOURCE, 'enforceChatPageUnitOrder')}
+    function getCompleteIndexProjectionStatus() {
+      return {
+        trustedSelectionIntentActive: false,
+        branchSelectionStale: false,
+        selectedPathRequestLeaseActive: false,
+        selectedPathConfirmationLeaseActive: false,
+        selectedPathConfirmationPending: false,
+      };
+    }
+    ${CORE_SOURCE.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/) ? CORE_SOURCE.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/)[0] : ''}
+    ${CORE_SOURCE.includes('function isOwnedChatPageBoundarySentinel(') ? extractFunction(CORE_SOURCE, 'isOwnedChatPageBoundarySentinel') : ''}
+    ${CORE_SOURCE.includes('function chatPageUnitBranchTransitionActive(') ? extractFunction(CORE_SOURCE, 'chatPageUnitBranchTransitionActive') : ''}
+    ${CORE_SOURCE.includes('function chatPageUnitPresentationCoherence(') ? extractFunction(CORE_SOURCE, 'chatPageUnitPresentationCoherence') : ''}
+    ${CORE_SOURCE.includes('function withdrawChatPageUnits(') ? extractFunction(CORE_SOURCE, 'withdrawChatPageUnits') : ''}
     ${extractFunction(CORE_SOURCE, 'reconcileChatPageUnits')}
     ${extractFunction(CORE_SOURCE, 'renderChatPageDividers')}
     const meaningfulOrder = () => injectedFlow.children.map((node) => {

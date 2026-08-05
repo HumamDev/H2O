@@ -376,6 +376,7 @@ function createTransactionHarness(options = {}) {
     'rollbackAtomicPageCollapse',
     'validateCommittedAtomicPageCollapse',
     'collapsePageWithRenderedBoundaries',
+    'applyExpandedCollapseControlState',
     'expandPageWithRenderedBoundaries',
     'reconcileAtomicPageCollapseTransactions',
     'expandAllAtomicPageCollapses',
@@ -388,6 +389,7 @@ function createTransactionHarness(options = {}) {
     const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
     const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
     const ATTR_TITLE_LIST_NUM = 'data-cgxui-chat-page-title-list-num';
+    const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
     const resolveChatId = () => 'chat-stage-2c2';
     const collapsedNativeRangeKey = (chatId, pageNum) => String(chatId) + '::' + String(pageNum);
     const titleListStackRegistryKey = (pageNum, chatId) => String(chatId) + '::' + String(pageNum);

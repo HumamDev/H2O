@@ -717,6 +717,11 @@
         messageId: conversationTurnIndexMessageId(nodeId, node) || null,
         productUser: conversationTurnIndexProductUser(node),
         productAnswer: conversationTurnIndexProductAnswer(node),
+        // Content-safe proof that a structural system/assistant node is the
+        // host's selected answer-branch identity. Consumers may preserve the
+        // alias as primary without exposing metadata or treating the node as
+        // a conversation turn.
+        branchShellAlias: conversationTurnIndexBranchShellAlias(nodeId, node),
         stopped: conversationTurnIndexStopped(node?.message),
       });
     });

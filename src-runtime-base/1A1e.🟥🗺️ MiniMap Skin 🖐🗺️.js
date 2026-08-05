@@ -76,6 +76,9 @@
     ROW_GAP_PX: 12,
     MARGIN_TOP_PX: 22,
     MARGIN_BOTTOM_PX: 18,
+    // Pointer target for the collapse dot. The painted dot stays small; this
+    // is the transparent, out-of-flow region that actually receives clicks.
+    DOT_HIT_SIZE_PX: 28,                                        // 👈 ↑ = easier to hit; ↓ = harder to hit
   });
 
   const CSS_ = Object.freeze({
@@ -1469,16 +1472,42 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
 .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider-dot{
   position: relative;
-  width: 8px;
-  height: 8px;
-  min-width: 8px;
-  min-height: 8px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
   border-radius: 999px;
   background: color-mix(in srgb, currentColor 82%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
   opacity: 0.92;
   cursor: pointer;
   transition: opacity 0.18s ease, filter 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+/* Interactive hit target for the collapse control: a REAL transparent child
+   node created by MiniMap Core, not a generated region. A ::before was tried
+   first and rejected - the live pointer test still landed on the label and
+   opened the Tags cloud, so only an actual element in the hit-test tree is
+   trusted here. The child is absolutely positioned, so it never participates
+   in layout and cannot shift the divider text or widen the label, and it is
+   raised above the sibling label text so it wins the topmost hit test. Its
+   event target resolves through closest('.cgxui-chat-page-divider-dot') to the
+   dot, which stays the sole role, tabindex, keyboard and collapse-state owner:
+   no second listener, predicate or state owner exists. */
+.cgxui-chat-page-divider-dot-hit,
+.cgxui-pgnw-page-divider-dot-hit{
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: ${CHAT_PAGE_DIVIDER_LAYOUT.DOT_HIT_SIZE_PX}px;
+  height: ${CHAT_PAGE_DIVIDER_LAYOUT.DOT_HIT_SIZE_PX}px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  pointer-events: auto;
+  cursor: inherit;
+  z-index: 3;
 }
 .cgxui-chat-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-pgnw-page-divider-dot{

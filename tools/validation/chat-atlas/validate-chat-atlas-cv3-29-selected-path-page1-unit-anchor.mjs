@@ -30,6 +30,7 @@ const PARENT_SHA = 'c9110c1af1edc1f3cb1c063af2a2b820af848049';
 const CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const CORE_PARENT = execFileSync('git', ['show', `${PARENT_SHA}:${CORE_PATH}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+const PAGE_PARENT = execFileSync('git', ['show', `${PARENT_SHA}:${PAGE_PATH}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
 const CHAT_ID = 'chat-selected-path';
 const ROUTE_KEY = '/c/chat-selected-path';
@@ -132,6 +133,7 @@ function wrapperFor(id, role, testId, mounted) {
 // options: { count, pageSize, mountBoundary, misplaceStartUnits, coreSource }
 function createHarness(options = {}) {
   const coreSource = options.coreSource || CORE_SOURCE;
+  const pageSource = options.pageSource || PAGE_SOURCE;
   const count = Number(options.count || 18);
   const pageSize = Number(options.pageSize || 25);
   const pageCount = Math.max(1, Math.ceil(count / pageSize));
@@ -183,6 +185,8 @@ function createHarness(options = {}) {
     n.setAttribute('data-page-num', String(page));
     n.setAttribute('data-cgxui-owner', 'mnmp');
     n.setAttribute('data-cgxui-chat-page-divider', '1');
+    const dot = new El('SPAN', 'cgxui-chat-page-divider-dot');
+    n.appendChild(dot);
     return n;
   };
   const wrapperOfOrder = (o) => hostWrappers[(o - 1) * 2];
@@ -205,6 +209,9 @@ function createHarness(options = {}) {
     const pageEndOrder = Math.min(p * pageSize, count);
     const terminal = hostWrappers[((pageEndOrder - 1) * 2) + 1];
     flow.insertBefore(e, terminal.nextSibling || null);
+    if (p === pageCount && options.tailInterveningKind === 'ambiguous') {
+      flow.insertBefore(new El('DIV', 'mystery-node'), e);
+    }
   }
   const startSentinel = units.sentinels.get('1:start');
   const divider = units.dividers.get(1);
@@ -263,11 +270,16 @@ function createHarness(options = {}) {
     'resolveFinalPageTerminalWrapper', 'resolveFinalPageTailAuthority', 'buildPageCollapseRangePlan',
     'classifyPageCollapseRange', 'getPageCollapseRangeDiagnostics', 'frozenPageCollapseCapability',
     'pageCollapseCapabilityProductReason', 'evaluatePageCollapseCapability', 'getPageCollapseCapability',
+    'frozenCollapsedBoundaryResult',
+    'isTitleListActive', 'collapsedBoundaryDividers', 'setCollapseFeedbackAttribute',
+    'collapseUnavailableStatusNode', 'clearCollapseUnavailableFeedback',
+    'applyCollapsedBoundaryControlState', 'applyExpandedCollapseControlState',
     'resolveSyntheticRowTitle', 'projectSyntheticRowTitle', 'applyStackedTitleBarWash', 'applyCollapsedNativeRange',
     'captureCollapsedPageViewportAnchor', 'restoreCollapsedPageViewportAnchor', 'propagateChatPageCollapseToMiniMap',
     'setAtomicTitleListMemory', 'setAtomicCollapsedPageMemory', 'prepareDetachedPageTitleList',
     'revalidateAtomicPageCollapsePlan', 'releaseAtomicPageCollapseState', 'rollbackAtomicPageCollapse',
     'validateCommittedAtomicPageCollapse', 'collapsePageWithRenderedBoundaries', 'expandPageWithRenderedBoundaries',
+    'reconcileAtomicPageCollapseTransactions', 'expandAllAtomicPageCollapses',
     'frozenAtomicPageCollapseDiagnostic', 'recordAtomicPageCollapseAttempt', 'getAtomicPageCollapseTransactionDiagnostic',
     'atomicPageCollapseFailureStage', 'executeAtomicPageCollapseTransaction',
   ];
@@ -283,6 +295,11 @@ function createHarness(options = {}) {
     const RENDERED_BOUNDARY_SENTINEL_KIND_ATTR = 'data-h2o-chat-page-boundary-kind';
     const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
     const ATTR_TITLE_LIST_NUM = 'data-cgxui-chat-page-title-list-num';
+    const ATTR_COLLAPSE_READINESS = 'data-h2o-collapse-readiness';
+    const ATTR_COLLAPSE_REASON = 'data-h2o-collapse-reason';
+    const ATTR_COLLAPSE_CONTROL_STATE = 'data-h2o-collapse-control-state';
+    const ATTR_COLLAPSE_FEEDBACK = 'data-h2o-collapse-feedback';
+    const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
     const COLLAPSE_UNAVAILABLE_MESSAGE = 'u';
     const COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE = 'l';
     const COLLAPSE_TRANSIENT_FAILURE_MESSAGE = 't';
@@ -316,9 +333,6 @@ function createHarness(options = {}) {
     const getTitleListStackStats = () => ({ activeStackId: '' });
     const syncTitleOnlyModeRootAttribute = () => {};
     const clearCollapsedBoundaryDiagnostic = () => {};
-    const clearCollapseUnavailableFeedback = () => {};
-    const applyCollapsedBoundaryControlState = () => ({ ok: true });
-    const collapsedBoundaryDividers = () => [];
     const recordCollapsedBoundaryDiagnostic = () => ({ reason: '' });
     const explicitCollapseFeedbackSource = () => false;
     const releaseCollapsedNativeRange = () => 0;
@@ -328,13 +342,19 @@ function createHarness(options = {}) {
     const handleCollapseUnavailableActivation = () => ({ ok: false });
     function failClosedCollapsedTitleList() { return { ok: false }; }
     const syncSyntheticTitleList = () => ({ ok: true });
-    ${PAGE_NAMES.filter(n => PAGE_SOURCE.includes(`  function ${n}(`)).map(n => extractFunction(PAGE_SOURCE, n)).join('\n')}
+    ${PAGE_NAMES.filter(n => pageSource.includes(`  function ${n}(`)).map(n => extractFunction(pageSource, n)).join('\n')}
     return Object.freeze({
       getRenderedPageBoundaryCapability,
       getPageCollapseRangeDiagnostics,
       getPageCollapseCapability,
       collapse: (p) => executeAtomicPageCollapseTransaction(p, 'chat-page-divider:circle', {}),
       diagnostic: getAtomicPageCollapseTransactionDiagnostic,
+      reconcile: (reason) => reconcileAtomicPageCollapseTransactions(reason || 'presentation-updated'),
+      expand: (p, source) => expandPageWithRenderedBoundaries(p, { source: source || 'lifecycle' }),
+      validateCommitted: (p) => validateCommittedAtomicPageCollapse(
+        S.atomicPageCollapseTransactions.get(collapsedNativeRangeKey(resolveChatId(), p)) || null
+      ),
+      transactionCount: () => S.atomicPageCollapseTransactions.size,
     });
   })()`, { injectedDocument: document, injectedState: pageState, injectedRuntime: runtime, injectedSafety: safety, injectedMinimap: minimapCollapsed });
 
@@ -348,7 +368,11 @@ function createHarness(options = {}) {
       for (let o = startOrder; o <= endOrder; o += 1) recs.push({ order: o, turn: { qId: qId(o), questionId: qId(o), primaryAId: aId(o), answerId: aId(o) } });
       pages.push({
         pageNum: p, startOrder, endOrder, records: recs, artifacts: [],
-        exactStart: null, earliest: null, latest: null, titleListRoot: null,
+        exactStart: null, earliest: null, latest: null,
+        titleListRoot: (() => {
+          const n = document.querySelector(`[data-cgxui="chat-page-title-list-synth"][data-page-num="${p}"]`);
+          return n && n.isConnected ? n : null;
+        })(),
         nativeStartSlot: null, nativeEndSlot: null, nextNativeStartSlot: null,
       });
     }
@@ -380,7 +404,15 @@ function createHarness(options = {}) {
     const getChatPagesControllerApi = () => injectedController;
     const getTurnPageBand = () => 'normal';
     const buildChatPageUnitModel = () => injectedModel();
-    const resolveChatPageExactArtifact = () => null;
+    const resolveChatPageExactArtifact = (turn) => {
+      const id = String((turn && (turn.answerId || turn.primaryAId)) || '').trim();
+      if (!id) return null;
+      const flow = injectedDocument.querySelector('.active-flow');
+      const w = flow && Array.from(flow.children).find((n) => (
+        n.getAttribute && n.getAttribute('data-turn-id-container') === id
+      ));
+      return w && w.isConnected ? { section: w, wrapper: w } : null;
+    };
     const UM_PUBLIC = () => ({ requestMountPairByUid() { injectedSafety.hydrationRequests += 1; return true; }, requestMountByUid() { injectedSafety.hydrationRequests += 1; return true; } });
     const setTimeout = () => { injectedSafety.timerCalls += 1; throw new Error('forbidden-timer'); };
     const setInterval = setTimeout;
@@ -406,6 +438,23 @@ function createHarness(options = {}) {
     ${extractFunction(coreSource, 'detachDeferredChatPageDivider')}
     ${coreSource.includes('function setChatPageUnitAttributeIfChanged(') ? extractFunction(coreSource, 'setChatPageUnitAttributeIfChanged') : ''}
     ${extractFunction(coreSource, 'enforceChatPageUnitOrder')}
+    function getCompleteIndexProjectionStatus() {
+      return {
+        trustedSelectionIntentActive: false,
+        branchSelectionStale: false,
+        selectedPathRequestLeaseActive: false,
+        selectedPathConfirmationLeaseActive: false,
+        selectedPathConfirmationPending: false,
+      };
+    }
+    function getEffectivePresentationRuntimeStatus() {
+      return { source: 'canonical', overlayActive: false, count: 0, canonicalFingerprint: '', effectiveFingerprint: '', effectiveCount: 0, anchorQId: null, pathLength: 0, generation: 0 };
+    }
+    ${coreSource.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/) ? coreSource.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/)[0] : ''}
+    ${coreSource.includes('function isOwnedChatPageBoundarySentinel(') ? extractFunction(coreSource, 'isOwnedChatPageBoundarySentinel') : ''}
+    ${coreSource.includes('function chatPageUnitBranchTransitionActive(') ? extractFunction(coreSource, 'chatPageUnitBranchTransitionActive') : ''}
+    ${coreSource.includes('function chatPageUnitPresentationCoherence(') ? extractFunction(coreSource, 'chatPageUnitPresentationCoherence') : ''}
+    ${coreSource.includes('function withdrawChatPageUnits(') ? extractFunction(coreSource, 'withdrawChatPageUnits') : ''}
     ${extractFunction(coreSource, 'reconcileChatPageUnits')}
     return Object.freeze({
       reconcile: reconcileChatPageUnits,
@@ -732,6 +781,179 @@ await fixture('50 product feedback no longer reports layout-incomplete after gen
   h.core.reconcile('corrected');
   equal(h.controller.getPageCollapseCapability(1).productReason, 'ready', 'corrected reports ready');
   equal(h.controller.getPageCollapseCapability(1).activationBlockReason, null, 'no block reason');
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// Stage 2C-2d — final-page end-anchor self-invalidation and obsolete
+// blocked-control write.
+//
+// Collapsing a final page inserts its own synthetic title list near the page
+// start. The parent end-anchor gave that list priority, so enforceChatPageUnitOrder
+// moved the final-page end sentinel ahead of the exact terminal wrapper, the
+// final-tail proof then failed, and the committed transaction was released by
+// its own output — with a hard-coded collapsed-exact-boundary-unavailable
+// control write attached to every non-divider expansion.
+// ══════════════════════════════════════════════════════════════════════════
+
+const controlAttrs = (h) => ({
+  state: h.divider.querySelector('.cgxui-chat-page-divider-dot')?.getAttribute('data-h2o-collapse-control-state') ?? null,
+  readiness: h.divider.getAttribute('data-h2o-collapse-readiness'),
+  reason: h.divider.getAttribute('data-h2o-collapse-reason'),
+});
+
+await fixture('2d-1 parent moves the final-page end sentinel to its own title list', () => {
+  const h = createHarness({ coreSource: CORE_PARENT, misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  ok(h.idx(h.endSentinel) > h.idx(h.terminalWrapper), 'sentinel starts after the terminal wrapper');
+  h.controller.collapse(1);
+  equal(h.controller.diagnostic().result, 'committed', 'collapse committed');
+  h.core.reconcile('post-collapse');
+  const list = h.lists()[0];
+  ok(!!list, 'the synthetic title list exists');
+  ok(h.idx(h.endSentinel) < h.idx(h.terminalWrapper), 'parent moved the sentinel ahead of the terminal wrapper');
+  equal(h.controller.getPageCollapseRangeDiagnostics(1).supported, false, 'parent final tail becomes unprovable');
+  equal(h.controller.getPageCollapseRangeDiagnostics(1).reason, 'final-page-tail-unproven', 'exact parent reason');
+});
+
+await fixture('2d-2 corrected final page keeps its end sentinel at the exact terminal tail', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  equal(h.controller.diagnostic().result, 'committed', 'collapse committed');
+  h.core.reconcile('post-collapse');
+  ok(!!h.lists()[0], 'the synthetic title list exists');
+  ok(h.idx(h.endSentinel) > h.idx(h.terminalWrapper), 'sentinel stays after the terminal wrapper');
+  equal(h.endSentinel.parentElement, h.flow, 'sentinel remains a direct flow child');
+});
+
+await fixture('2d-3 inserting the title list cannot make final-tail authority unprovable', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  h.core.reconcile('post-collapse');
+  const r = h.controller.getPageCollapseRangeDiagnostics(1);
+  equal(r.supported, true, 'range still supported');
+  equal(r.isFinalPage, true, 'still the final page');
+  equal(r.finalTailSupported, true, 'final tail still supported');
+  equal(r.terminalWrapperCurrent, true, 'terminal wrapper current');
+  equal(r.pageEndSentinelCurrent, true, 'end sentinel current');
+});
+
+await fixture('2d-4 a committed final-page collapse survives a lifecycle reconciliation', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  const stampsBefore = h.stamps().length;
+  h.core.reconcile('post-collapse');
+  equal(h.controller.validateCommitted(1).ok, true, 'committed plan remains current');
+  const results = h.controller.reconcile('presentation-updated');
+  equal(results.length, 1, 'one transaction reconciled');
+  equal(results[0].status, 'current', 'reported current, not expanded');
+  equal(h.stamps().length, stampsBefore, 'stamps retained');
+  equal(h.lists().length, 1, 'title list retained');
+  equal(h.controller.transactionCount(), 1, 'transaction retained');
+});
+
+await fixture('2d-5 lifecycle reconciliation does not invoke the expansion owner when current', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  const before = h.controller.diagnostic().attemptId;
+  h.controller.reconcile('presentation-updated');
+  h.controller.reconcile('observer-hub-remount');
+  equal(h.controller.diagnostic().attemptId, before, 'no new transaction attempt recorded');
+  equal(h.controller.transactionCount(), 1, 'still collapsed');
+  equal(h.minimapCollapsed.has(1), true, 'MiniMap page stays collapsed');
+});
+
+await fixture('2d-6 parent lifecycle expansion writes the obsolete blocked control', () => {
+  const h = createHarness({ pageSource: PAGE_PARENT, misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  h.controller.expand(1, 'presentation-updated:atomic-plan-scope-stale');
+  const a = controlAttrs(h);
+  equal(a.state, 'blocked', 'parent marks the expanded control blocked');
+  equal(a.readiness, 'collapsed-exact-boundary-unavailable', 'parent emits the obsolete reason');
+});
+
+await fixture('2d-7 corrected lifecycle expansion renders a ready page ready', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  h.controller.expand(1, 'presentation-updated:atomic-plan-scope-stale');
+  equal(h.controller.getPageCollapseCapability(1).activationReady, true, 'capability is ready after release');
+  const a = controlAttrs(h);
+  equal(a.state, 'ready', 'control is ready, not blocked');
+  equal(a.readiness, null, 'no readiness attribute');
+  ok(a.reason !== 'collapsed-exact-boundary-unavailable', 'obsolete reason not emitted');
+});
+
+await fixture('2d-8 a genuinely unavailable page still fails closed after a lifecycle expansion', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  // Remove the exact start wrapper so the capability genuinely cannot prove.
+  h.startWrapper.remove();
+  h.controller.expand(1, 'presentation-updated:atomic-plan-scope-stale');
+  equal(h.controller.getPageCollapseCapability(1).activationReady, false, 'capability genuinely unavailable');
+  const a = controlAttrs(h);
+  equal(a.state, 'blocked', 'control fails closed');
+  ok(typeof a.reason === 'string' && a.reason.length > 0, 'a concrete reason is surfaced');
+});
+
+await fixture('2d-9 explicit user expansion still renders ready', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  h.controller.expand(1, 'chat-page-divider:circle');
+  equal(h.stamps().length, 0, 'expanded');
+  equal(h.lists().length, 0, 'list removed');
+  equal(controlAttrs(h).state, 'ready', 'explicit expansion stays ready');
+});
+
+await fixture('2d-10 Chat drives MiniMap one way and direct MiniMap cannot change Chat', () => {
+  const h = createHarness({ misplaceStartUnits: false });
+  prime(h);
+  h.core.reconcile('initial');
+  h.controller.collapse(1);
+  equal(h.minimapCollapsed.has(1), true, 'Chat collapse propagated to MiniMap');
+  equal(h.safety.minimapPropagations, 1, 'exactly one propagation');
+  h.controller.collapse(1);
+  equal(h.minimapCollapsed.has(1), false, 'Chat expansion propagated to MiniMap');
+  // A direct MiniMap write touches MiniMap state only.
+  h.minimapCollapsed.add(1);
+  equal(h.stamps().length, 0, 'Chat unchanged by a direct MiniMap action');
+  equal(h.lists().length, 0, 'no Chat title list');
+  equal(h.controller.transactionCount(), 0, 'no Chat transaction');
+});
+
+await fixture('2d-11 ambiguity inside the final tail still fails closed, and repair is normalisation', () => {
+  const amb = createHarness({ misplaceStartUnits: false, tailInterveningKind: 'ambiguous' });
+  prime(amb);
+  // Before reconciliation the injected node sits between the terminal wrapper
+  // and the end sentinel: the tail proof must refuse it.
+  const before = amb.controller.getPageCollapseRangeDiagnostics(1);
+  equal(before.supported, false, 'ambiguous tail interval refused');
+  equal(before.reason, 'final-page-tail-unproven', 'fails closed with the tail reason');
+  amb.controller.collapse(1);
+  equal(amb.stamps().length, 0, 'no stamps while the tail is unproven');
+  equal(amb.lists().length, 0, 'no title list while the tail is unproven');
+  // Reconciliation re-anchors the sentinel to the exact terminal tail, which
+  // closes the interval rather than tolerating the unclassifiable node.
+  amb.core.reconcile('repair');
+  ok(amb.idx(amb.endSentinel) > amb.idx(amb.terminalWrapper), 'sentinel normalised to the terminal tail');
+  equal(amb.endSentinel.parentElement.children[amb.idx(amb.endSentinel) - 1], amb.terminalWrapper, 'no node left between them');
+  equal(amb.controller.getPageCollapseRangeDiagnostics(1).supported, true, 'tail provable after normalisation');
 });
 
 const failed = fixtures.filter(f => !f.ok);

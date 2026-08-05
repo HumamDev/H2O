@@ -213,6 +213,7 @@ const NAMES = [
   'prepareDetachedPageTitleList', 'revalidateAtomicPageCollapsePlan',
   'releaseAtomicPageCollapseState', 'rollbackAtomicPageCollapse',
   'validateCommittedAtomicPageCollapse', 'collapsePageWithRenderedBoundaries',
+  'applyExpandedCollapseControlState',
   'expandPageWithRenderedBoundaries', 'reconcileAtomicPageCollapseTransactions',
   'expandAllAtomicPageCollapses', 'frozenAtomicPageCollapseDiagnostic',
   'recordAtomicPageCollapseAttempt', 'getAtomicPageCollapseTransactionDiagnostic',
@@ -385,6 +386,7 @@ function createHarness(options = {}) {
     const RENDERED_BOUNDARY_SENTINEL_KIND_ATTR = 'data-h2o-chat-page-boundary-kind';
     const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
     const ATTR_TITLE_LIST_NUM = 'data-cgxui-chat-page-title-list-num';
+    const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
     const COLLAPSE_UNAVAILABLE_MESSAGE = 'Collapse unavailable until the next page boundary is loaded.';
     const COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE = 'Collapse temporarily unavailable because the conversation layout is incomplete.';
     const COLLAPSE_TRANSIENT_FAILURE_MESSAGE = 'Collapse is temporarily unavailable. Please try again.';

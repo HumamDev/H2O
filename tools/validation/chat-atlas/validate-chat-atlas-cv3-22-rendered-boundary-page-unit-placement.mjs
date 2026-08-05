@@ -498,6 +498,23 @@ function createCoreHarness(coreSource, document, coreState, modelState, controll
       ? extractFunction(coreSource, 'setChatPageUnitAttributeIfChanged')
       : ''}
     ${extractFunction(coreSource, 'enforceChatPageUnitOrder')}
+    function getCompleteIndexProjectionStatus() {
+      return {
+        trustedSelectionIntentActive: false,
+        branchSelectionStale: false,
+        selectedPathRequestLeaseActive: false,
+        selectedPathConfirmationLeaseActive: false,
+        selectedPathConfirmationPending: false,
+      };
+    }
+    function getEffectivePresentationRuntimeStatus() {
+      return { source: 'canonical', overlayActive: false, count: 0, canonicalFingerprint: '', effectiveFingerprint: '', effectiveCount: 0, anchorQId: null, pathLength: 0, generation: 0 };
+    }
+    ${coreSource.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/) ? coreSource.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = .+;/)[0] : ''}
+    ${coreSource.includes('function isOwnedChatPageBoundarySentinel(') ? extractFunction(coreSource, 'isOwnedChatPageBoundarySentinel') : ''}
+    ${coreSource.includes('function chatPageUnitBranchTransitionActive(') ? extractFunction(coreSource, 'chatPageUnitBranchTransitionActive') : ''}
+    ${coreSource.includes('function chatPageUnitPresentationCoherence(') ? extractFunction(coreSource, 'chatPageUnitPresentationCoherence') : ''}
+    ${coreSource.includes('function withdrawChatPageUnits(') ? extractFunction(coreSource, 'withdrawChatPageUnits') : ''}
     ${extractFunction(coreSource, 'reconcileChatPageUnits')}
     return Object.freeze({
       reconcile: reconcileChatPageUnits,

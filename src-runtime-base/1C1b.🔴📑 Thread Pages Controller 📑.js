@@ -63,8 +63,12 @@
     lineLeftScale: 1.30,
     lineRightScale: 1.30,
 
-    dotSizeExpandedPx: 12,
-    dotSizeCollapsedPx: 12,
+    // Authoritative live circle size: these tokens become inline !important
+    // width/height/min-width/min-height on the dot, so they - not the authored
+    // base CSS - decide what the user actually sees. The transparent hit child
+    // stays 28x28 and centred around this circle.
+    dotSizeExpandedPx: 14,                                      // 👈 ↑ = bigger circle; ↓ = smaller circle
+    dotSizeCollapsedPx: 14,                                     // 👈 keep equal to the expanded size
 
     expandedDotColor: '#facc15',
     expandedDotGlowColor: 'rgba(250, 204, 21, 0.48)',
@@ -4807,19 +4811,162 @@
     const member = membersByOrder.get(order) || null;
     if (!member) return null;
     const role = nativeOrdinal % 2 ? 'user' : 'assistant';
-    if (getTurnHostRole(section) !== role) return null;
     const expectedId = role === 'user'
       ? String(member.questionId || '').trim()
       : String(member.answerId || '').trim();
     if (!expectedId) return null;
     const actualId = String(section.getAttribute?.('data-turn-id') || '').trim();
-    if (actualId !== expectedId) return null;
+    const match = getTurnHostRole(section) === role && actualId === expectedId;
     return Object.freeze({
+      state: match ? 'match' : 'conflict',
+      match,
       ordinal: nativeOrdinal,
       order,
       role,
+      expectedId,
+      actualId,
       id: actualId,
       testId: `conversation-turn-${String(nativeOrdinal)}`,
+    });
+  }
+
+  function frozenNativePageHeadCoherence(raw = {}) {
+    const allowedStates = new Set(['match', 'absent', 'conflict', 'unavailable']);
+    const state = allowedStates.has(raw.state) ? raw.state : 'unavailable';
+    const freezeRole = (value = {}, ordinal = 0) => Object.freeze({
+      state: allowedStates.has(value?.state) ? value.state : 'unavailable',
+      expectedId: String(value?.expectedId || '') || null,
+      actualId: String(value?.actualId || '') || null,
+      ordinal: Math.max(0, Number(value?.ordinal || ordinal || 0) || 0),
+    });
+    const userOrdinal = Math.max(0, Number(raw.userOrdinal || 0) || 0);
+    const assistantOrdinal = Math.max(0, Number(raw.assistantOrdinal || 0) || 0);
+    return Object.freeze({
+      state,
+      coherent: state === 'match',
+      convergenceEligible: state === 'absent',
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      startOrder: Math.max(1, Number(raw.startOrder || 0) || 0),
+      userOrdinal,
+      assistantOrdinal,
+      user: freezeRole(raw.user, userOrdinal),
+      assistant: freezeRole(raw.assistant, assistantOrdinal),
+    });
+  }
+
+  // Inert native page-head diagnostic. It reads only the exact USER/ASSISTANT
+  // pair for the requested canonical page and never schedules convergence.
+  function resolveNativePageHeadCoherence(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const startOrder = ((num - 1) * TITLE_LIST_PAGE_SIZE) + 1;
+    const userOrdinal = ((startOrder - 1) * 2) + 1;
+    const assistantOrdinal = userOrdinal + 1;
+    const unavailable = (extra = {}) => frozenNativePageHeadCoherence({
+      state: 'unavailable',
+      pageNum: num,
+      startOrder,
+      userOrdinal,
+      assistantOrdinal,
+      user: { state: 'unavailable', ordinal: userOrdinal },
+      assistant: { state: 'unavailable', ordinal: assistantOrdinal },
+      ...extra,
+    });
+    const rt = TURN_RUNTIME();
+    if (!rt) return unavailable();
+    let before = null;
+    let after = null;
+    let model = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      model = buildTitleListPresentationPageModel();
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return unavailable();
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    if (
+      !model?.coherent
+      || count < startOrder
+      || model.count !== count
+      || model.source !== String(before?.source || '')
+      || !Math.max(0, Number(before?.generation || 0) || 0)
+      || !String(before?.canonicalFingerprint || '')
+      || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+    ) return unavailable();
+    const page = model.pages.find((entry) => Number(entry?.pageNo || 0) === num) || null;
+    const member = page?.turnRecords?.find(
+      (entry) => Number(entry?.turnNo || 0) === startOrder
+    ) || null;
+    const expectedUserId = String(member?.questionId || '').trim();
+    const expectedAssistantId = String(member?.answerId || '').trim();
+    if (!member || !expectedUserId || !expectedAssistantId) {
+      return unavailable({
+        user: { state: 'unavailable', expectedId: expectedUserId, ordinal: userOrdinal },
+        assistant: {
+          state: 'unavailable',
+          expectedId: expectedAssistantId,
+          ordinal: assistantOrdinal,
+        },
+      });
+    }
+    const membersByOrder = new Map([[startOrder, member]]);
+    const expectedSlotCount = count * 2;
+    let sections = null;
+    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
+    if (!sections) return unavailable();
+    const classify = (ordinal, expectedId) => {
+      const exactSections = sections.filter((section) => {
+        try {
+          return turnNumberOfSection(section) === ordinal
+            && !section.closest?.(`${TITLE_LIST_SYNTH_SEL}, [data-h2o-title-inline-slot="1"]`);
+        } catch { return false; }
+      });
+      if (!exactSections.length) {
+        return { state: 'absent', expectedId, actualId: '', ordinal };
+      }
+      if (exactSections.length !== 1) {
+        return { state: 'unavailable', expectedId, actualId: '', ordinal };
+      }
+      const identity = nativeTurnSlotMountedIdentity(
+        exactSections[0],
+        membersByOrder,
+        expectedSlotCount,
+      );
+      if (!identity) return { state: 'unavailable', expectedId, actualId: '', ordinal };
+      return {
+        state: identity.match === true ? 'match' : 'conflict',
+        expectedId: identity.expectedId,
+        actualId: identity.actualId,
+        ordinal,
+      };
+    };
+    const user = classify(userOrdinal, expectedUserId);
+    const assistant = classify(assistantOrdinal, expectedAssistantId);
+    let current = null;
+    try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+    if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+      return unavailable({
+        user: { state: 'unavailable', expectedId: expectedUserId, ordinal: userOrdinal },
+        assistant: {
+          state: 'unavailable',
+          expectedId: expectedAssistantId,
+          ordinal: assistantOrdinal,
+        },
+      });
+    }
+    const state = (user.state === 'conflict' || assistant.state === 'conflict')
+      ? 'conflict'
+      : ((user.state === 'absent' || assistant.state === 'absent')
+        ? 'absent'
+        : ((user.state === 'match' && assistant.state === 'match') ? 'match' : 'unavailable'));
+    return frozenNativePageHeadCoherence({
+      state,
+      pageNum: num,
+      startOrder,
+      userOrdinal,
+      assistantOrdinal,
+      user,
+      assistant,
     });
   }
 
@@ -4907,8 +5054,15 @@
       try {
         if (section.closest?.(`${TITLE_LIST_SYNTH_SEL}, [data-h2o-title-inline-slot="1"]`)) continue;
       } catch {}
-      const identity = nativeTurnSlotMountedIdentity(section, membersByOrder, expectedSlotCount);
-      if (!identity) continue;
+      const mountedIdentity = nativeTurnSlotMountedIdentity(section, membersByOrder, expectedSlotCount);
+      if (mountedIdentity?.match !== true) continue;
+      const identity = Object.freeze({
+        ordinal: mountedIdentity.ordinal,
+        order: mountedIdentity.order,
+        role: mountedIdentity.role,
+        id: mountedIdentity.id,
+        testId: mountedIdentity.testId,
+      });
       if (seenNativeOrdinals.has(identity.ordinal)) {
         return fail('native-slot-mounted-identity-ambiguous');
       }
@@ -6228,6 +6382,28 @@
     }
   }
 
+  // Expanded-control readiness comes from the rendered-boundary capability, not
+  // from whatever triggered the expansion. The capability is a pure read, so
+  // this cannot re-enter the transaction owner or start a reconcile loop.
+  function applyExpandedCollapseControlState(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    let capability = null;
+    try { capability = getPageCollapseCapability(num); } catch { capability = null; }
+    const ready = capability?.activationReady === true;
+    return applyCollapsedBoundaryControlState(num, id, {
+      ready,
+      reason: ready
+        ? null
+        : String(
+          capability?.activationBlockReason
+          || capability?.reason
+          || COLLAPSE_UNAVAILABLE_STATUS
+        ),
+      productReason: ready ? 'ready' : String(capability?.productReason || 'page-loading'),
+    });
+  }
+
   function expandPageWithRenderedBoundaries(pageNum = 0, options = {}) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(options?.chatId || resolveChatId()).trim();
@@ -6244,13 +6420,17 @@
       const released = releaseAtomicPageCollapseState(transaction, {
         controlReadiness: explicitExpansion
           ? { ready: true, reason: null, productReason: 'ready' }
-          : {
-            ready: false,
-            reason: 'collapsed-exact-boundary-unavailable',
-            productReason: 'page-loading',
-          },
+          : null,
       });
       if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
+      // A lifecycle expansion is not itself evidence that the exact boundaries
+      // are gone. Derive the expanded control state from the authoritative
+      // capability once the release has settled: a page that is still provable
+      // renders ready, and a page whose authority genuinely failed keeps its
+      // own reason instead of a blanket boundary-unavailable claim.
+      if (!explicitExpansion) {
+        applyExpandedCollapseControlState(num, id);
+      }
       const residualStamps = transaction.hostWrappers.filter((node) => (
         node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)
       )).length;
@@ -11502,6 +11682,7 @@
       isPageCollapsed,
       isTitleListActive,
       resolveNativeTurnSlotSequence,
+      resolveNativePageHeadCoherence,
       getCollapsedNativeBoundaryReadiness,
       getRenderedPageBoundaryCapability,
       getPageCollapseRangeDiagnostics,
