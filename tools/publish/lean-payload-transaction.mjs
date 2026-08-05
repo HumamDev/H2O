@@ -5,13 +5,13 @@
 // transaction journal, manifest-driven preparation of activation-specific incoming
 // payload trees, the previous-state capture model, and a pure recovery planner.
 //
-// It performs NO live canonical payload mutation. It never renames, removes, or
-// writes any live canonical path, never creates a retired sibling, never promotes,
-// never restores, and never publishes an activation or rollback receipt. Its only
-// filesystem mutations are the transaction directory, append-only transaction
-// records, and activation-specific incoming trees that are siblings of the live
-// paths. In P3A it is deliberately unreachable from every production CLI: no
-// production entry point imports it.
+// P3B adds recoverable canonical promotion and whole-release reversal. Live
+// mutation is confined to one rename helper operating on internally derived
+// operands under re-proved publisher-lock and canonical-lease ownership. The
+// promotion interval between the two renames is real and is handled by
+// fail-closed detection plus reversal, not removed. This module never publishes
+// an activation or rollback receipt, never claims acceptance, and remains
+// unreachable from every production CLI: no production entry point imports it.
 //
 // It imports only Node builtins. It never imports the activator, the publisher, or
 // canonical-delivery-lib, so no lease, recursive-deletion, or promotion primitive
@@ -511,7 +511,8 @@ export function buildTransactionRecord(input) {
   } = input;
   validateActivationId(activationId);
   sequenceBasename(sequence);
-  assertP3aWritableState(transactionState);
+  if (input.allowP3bStates === true) assertP3bWritableState(transactionState);
+  else assertP3aWritableState(transactionState);
   if (sequence === 1) {
     if (previousRecordSha256 !== null) {
       fail("transaction-chain-invalid", "The first transaction record must carry a null previous digest.");
@@ -550,7 +551,11 @@ export function buildTransactionRecord(input) {
         !nonEmptyString(tree.retiredPath)) {
       fail("transaction-tree-records-invalid", "Each tree record needs a known state and derived paths.");
     }
-    if (DEFERRED_TRANSACTION_STATES.includes(tree.state)) {
+    if (input.allowP3bStates === true) {
+      if (P3C_RESERVED_STATES.includes(tree.state)) {
+        fail("transaction-state-reserved-for-p3c", "Acceptance belongs to P3C.", { state: tree.state });
+      }
+    } else if (DEFERRED_TRANSACTION_STATES.includes(tree.state)) {
       fail("transaction-state-not-p3a", "P3A may not record a live-mutation or promotion tree state.", {
         state: tree.state,
       });
@@ -969,6 +974,55 @@ function verifyRelocatedSymlink(plan, destination) {
 }
 
 /**
+ * The staged family root must live outside the canonical generated-output trees.
+ * The accepted alias policy classifies a resolved target as generated output when
+ * it falls inside apps/dev-server or apps/extensions; that classification is only
+ * meaningful while the staging root itself is elsewhere. P3A relied on this
+ * implicitly, so P3B asserts it.
+ */
+export function assertStagedFamilyTopology(familyRoot, repository) {
+  const normalizedFamilyRoot = normalizedPath(familyRoot);
+  const normalizedRepository = normalizedPath(repository);
+  for (const segments of GENERATED_OUTPUT_SEGMENTS) {
+    const generated = path.join(normalizedRepository, ...segments);
+    if (isWithin(generated, normalizedFamilyRoot)) {
+      fail("staged-family-topology-invalid",
+        "Staged family root must not live inside a canonical generated-output tree.", {
+          familyRoot: normalizedFamilyRoot,
+          generated,
+        });
+    }
+  }
+  return true;
+}
+
+/**
+ * Neither the staged manifest nor the recomputed incoming manifest can represent
+ * an empty directory, so an empty staged directory would be silently dropped.
+ * The accepted stage emits none; if one ever appears it must fail closed rather
+ * than disappear.
+ */
+export function assertNoEmptyStagedDirectories(familyRoot, unit) {
+  const walk = (directory) => {
+    const names = fs.readdirSync(directory);
+    if (names.length === 0) {
+      fail("staged-empty-directory-unrepresentable",
+        "Staged tree contains an empty directory that the manifest cannot represent.", {
+          logicalName: unit?.logicalName ?? null,
+          directory,
+        });
+    }
+    for (const name of names) {
+      const filename = path.join(directory, name);
+      const stat = fs.lstatSync(filename);
+      if (!stat.isSymbolicLink() && stat.isDirectory()) walk(filename);
+    }
+  };
+  walk(familyRoot);
+  return true;
+}
+
+/**
  * Prepare exactly one activation-specific incoming tree from the verified staged
  * manifest. The live path is never read, stat-ed, renamed or modified: only the
  * incoming sibling is written.
@@ -988,18 +1042,11 @@ export function prepareIncomingTree(verification, unit, { repository, ownership 
     });
   }
   const familyRootRelative = path.relative(stagingRoot, familyRoot).split(path.sep).join("/");
-  const marker = ".staging-act-";
-  const incomingBase = path.basename(unit.incomingPath);
-  const markerIndex = incomingBase.lastIndexOf(marker);
-  if (markerIndex < 0) {
-    fail("incoming-path-not-derived", "Incoming root is not the internally derived activation sibling.", {
-      incomingPath: unit.incomingPath,
-    });
-  }
-  const derivedActivationId = incomingBase.slice(markerIndex + marker.length);
-  const owned = ownership
-    ? assertIncomingOwnership(ownership, { unit })
-    : createOwnedIncomingRoot(unit, derivedActivationId);
+  // P3B: the ownership handle is mandatory. There is no path-derived fallback, so
+  // the orchestrated route is the only route that can create incoming payload.
+  const owned = assertIncomingOwnership(ownership, { unit });
+  assertStagedFamilyTopology(familyRoot, repository);
+  assertNoEmptyStagedDirectories(familyRoot, unit);
 
   const seen = new Set();
   const entries = manifest.entries;
@@ -1146,6 +1193,13 @@ export function prepareIncomingTree(verification, unit, { repository, ownership 
     expectedManifest: expected,
     symlinkTranslations: Object.freeze(translations),
     ownership: owned,
+    // Binds this incoming identity to the exact stage that produced it. Canonical
+    // verification must never compare a tree against a different stage run.
+    stageReceiptPath: verification.receiptPath,
+    stageReceiptSha256: verification.receiptSha256,
+    // The promoted tree sits at the live name with no family prefix, so promotion
+    // compares against this prefix-free identity of the same incoming bytes.
+    promotionIdentity: recomputeIncomingManifest(unit.incomingPath, "").treeDigest,
   });
 }
 
@@ -1426,6 +1480,675 @@ export function prepareIncomingUnitWithJournal({
     }
     throw error;
   }
+}
+
+/**
+ * Pure P3B interrupted-state planner.
+ *
+ * `planRecovery` remains the P3A-competence planner and correctly defers any
+ * promotion state with `p3b-recovery-required`. This is the P3B-competence
+ * planner: it classifies every promotion boundary from a verified chain plus
+ * caller-supplied synthetic observations. It performs no fs, Git, child-process
+ * or network access, never guesses forward, and can never accept a release —
+ * acceptance and the durable final receipt belong to P3C.
+ */
+export function planP3bRecovery({ intent, chain, observations, expected = {} } = {}) {
+  if (!plainObject(intent) || !nonEmptyString(intent.activationId)) {
+    return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+  }
+  if (!plainObject(chain) || chain.present !== true || !Array.isArray(chain.records) || chain.records.length === 0) {
+    return outcome("no-transaction");
+  }
+  const head = chain.records[chain.records.length - 1]?.record;
+  if (!plainObject(head) || head.schemaVersion !== TRANSACTION_SCHEMA_VERSION ||
+      head.mode !== TRANSACTION_MODE || !Array.isArray(head.trees) || head.trees.length !== 3) {
+    return outcome("contradictory-transaction", "contradictory-transaction");
+  }
+  if (head.activationId !== intent.activationId) {
+    return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+  }
+  for (const key of ["repositoryRealpath", "authorizedWorktreeRealpath"]) {
+    if (expected[key] && intent[key] !== expected[key]) {
+      return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+    }
+  }
+  if (expected.intentSha256 && head.intentSha256 !== expected.intentSha256) {
+    return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+  }
+  if (expected.stableGitIdentity && !sameJson(head.stableGitIdentity, expected.stableGitIdentity)) {
+    return outcome("foreign-or-unowned-transaction", "foreign-or-unowned-transaction");
+  }
+  // P3B may never claim acceptance or any downstream effect.
+  for (const boundary of ["activationPerformed", "finalActivationReceiptDurable",
+    "reloadPerformed", "canaryPerformed", "pushPerformed"]) {
+    if (head[boundary] !== false) return outcome("contradictory-transaction", "contradictory-transaction");
+  }
+  for (const entry of chain.records) {
+    const states = [entry.record?.transactionState, ...(entry.record?.trees ?? []).map((tree) => tree?.state)];
+    if (states.some((state) => P3C_RESERVED_STATES.includes(state))) {
+      return outcome("contradictory-transaction", "contradictory-transaction");
+    }
+  }
+  if (!plainObject(observations)) return outcome("contradictory-transaction", "contradictory-transaction");
+
+  const plans = [];
+  let anyForeign = false;
+  let anyRestoring = false;
+  let allVerified = true;
+  let allRestored = true;
+
+  for (const tree of head.trees) {
+    const observed = observations[tree.logicalName];
+    if (!plainObject(observed)) return outcome("contradictory-transaction", "contradictory-transaction");
+    const previousAbsent = tree.previousState === "absent";
+
+    if (observed.foreignLivePresent === true) {
+      anyForeign = true;
+      plans.push({ logicalName: tree.logicalName, action: "preserve-foreign-live-and-require-operator" });
+      allVerified = false; allRestored = false;
+      continue;
+    }
+    if (tree.state === "restored") {
+      plans.push({ logicalName: tree.logicalName, action: "already-restored" });
+      allVerified = false;
+      continue;
+    }
+    if (tree.state === "restoring") {
+      anyRestoring = true; allVerified = false; allRestored = false;
+      plans.push({ logicalName: tree.logicalName, action: "complete-reversal" });
+      continue;
+    }
+    if (["untouched", "incoming-preparing", "incoming-prepared"].includes(tree.state)) {
+      allVerified = false; allRestored = false;
+      plans.push({ logicalName: tree.logicalName, action: "restore-backward", detail: "no-live-mutation-yet" });
+      continue;
+    }
+    if (["live-retiring", "live-retired", "incoming-promoting", "incoming-promoted", "verified"]
+      .includes(tree.state)) {
+      if (tree.state !== "verified") allVerified = false;
+      allRestored = false;
+      // A promoted-but-unaccepted generation is reversed backward. A previously
+      // absent generation is restored by removing only the promoted payload.
+      const action = previousAbsent && ["incoming-promoted", "verified"].includes(tree.state)
+        ? "first-activation-restore-to-absent"
+        : "restore-backward";
+      plans.push({ logicalName: tree.logicalName, action, detail: tree.state });
+      continue;
+    }
+    return outcome("contradictory-transaction", "contradictory-transaction");
+  }
+
+  if (anyForeign) {
+    return Object.freeze({
+      classification: "preserve-foreign-live-and-require-operator",
+      code: "recovery-required",
+      plans: Object.freeze(plans.map((plan) => Object.freeze(plan))),
+      acceptedRelease: false,
+      cleanupPermitted: false,
+    });
+  }
+  if (allVerified) {
+    // Every unit verified but P3B cannot accept: only a durable P3C receipt can.
+    return Object.freeze({
+      classification: "p3c-finalization-required",
+      code: "p3c-finalization-required",
+      plans: Object.freeze(plans.map((plan) => Object.freeze(plan))),
+      acceptedRelease: false,
+    });
+  }
+  if (allRestored) {
+    return Object.freeze({
+      classification: "complete-reversal", code: null,
+      plans: Object.freeze(plans.map((plan) => Object.freeze(plan))), acceptedRelease: false,
+    });
+  }
+  const classification = anyRestoring
+    ? "complete-reversal"
+    : plans.some((plan) => plan.action === "first-activation-restore-to-absent")
+      ? "first-activation-restore-to-absent"
+      : "restore-backward";
+  return Object.freeze({
+    classification, code: null,
+    plans: Object.freeze(plans.map((plan) => Object.freeze(plan))),
+    acceptedRelease: false,
+    forwardGuessingPerformed: false,
+  });
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3B — recoverable canonical promotion and whole-release reversal
+ *
+ * Promotion is the approved fail-closed two-rename primitive:
+ *     live  -> <live>.retired-act-<activationId>
+ *     <live>.staging-act-<activationId> -> live
+ *
+ * The interval between those two renames is a real missing-path interval. It is
+ * NOT removed by adjacency, and this module never claims otherwise. It is handled
+ * by three layers: the canonical-delivery lease excludes cooperating writers, the
+ * second rename fails closed when a foreign actor occupies the live name, and the
+ * transaction reverses every already-promoted unit. The release is transactionally
+ * recoverable; it is NOT cross-tree atomic.
+ * ------------------------------------------------------------------------- */
+
+export const RELEASE_ORDER = Object.freeze(["alias", "dev_output", "extension"]);
+export const REVERSAL_ORDER = Object.freeze([...RELEASE_ORDER].reverse());
+
+export const P3B_TRANSACTION_STATES = Object.freeze([
+  "live-retiring",
+  "live-retired",
+  "incoming-promoting",
+  "incoming-promoted",
+  "verified",
+  "restoring",
+  "restored",
+]);
+// Acceptance and the durable final receipt belong to P3C.
+export const P3C_RESERVED_STATES = Object.freeze(["accepted"]);
+
+export const P3B_RECOVERY_OUTCOMES = Object.freeze([
+  "restore-backward",
+  "complete-reversal",
+  "preserve-foreign-live-and-require-operator",
+  "first-activation-restore-to-absent",
+  "p3c-finalization-required",
+]);
+
+export function assertP3bWritableState(state) {
+  // The reserved check comes first so acceptance gets its precise code; the
+  // generic check would otherwise shadow it and leave that code unreachable.
+  if (P3C_RESERVED_STATES.includes(state)) {
+    fail("transaction-state-reserved-for-p3c", "Acceptance belongs to P3C.", { state });
+  }
+  if (![...P3A_TRANSACTION_STATES, ...P3B_TRANSACTION_STATES].includes(state)) {
+    fail("transaction-state-not-p3b", "P3B may not write this transaction state.", { state });
+  }
+  return state;
+}
+
+/* ---------------- previous canonical-state capture ---------------- */
+
+/**
+ * Capture the live tree's identity before it is touched. Reads only the unit's
+ * own internally derived live path; never a caller-supplied path.
+ */
+export function capturePreviousCanonicalState(unit, activationId, {
+  buildMarker = null,
+  requiredFiles = [],
+} = {}) {
+  validateActivationId(activationId);
+  assertRetiredPathOwned(unit.retiredPath, unit.livePath, activationId);
+  let retiredStat = null;
+  try { retiredStat = fs.lstatSync(unit.retiredPath); } catch { retiredStat = null; }
+  if (retiredStat) {
+    fail("retired-sibling-collision", "A retired sibling for this activation already exists.", {
+      retiredPath: unit.retiredPath,
+    });
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(unit.livePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      fail("previous-state-unreadable", "Live canonical entry could not be inspected.", {
+        livePath: unit.livePath,
+      });
+    }
+    return buildPreviousStateRecord({
+      logicalName: unit.logicalName, state: "absent",
+      livePath: unit.livePath, retiredPath: unit.retiredPath,
+    });
+  }
+  if (stat.isSymbolicLink()) {
+    fail("previous-state-symlinked-live", "A symlinked live canonical entry is not accepted.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  if (!stat.isDirectory()) {
+    fail("previous-state-entry-unsupported", "Live canonical entries must be real directories.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  const manifest = recomputeIncomingManifest(unit.livePath, "");
+  for (const required of requiredFiles) {
+    if (!manifest.entries.some((entry) => entry.path === required)) {
+      fail("previous-state-required-file-missing", "Live canonical tree is missing a required file.", {
+        logicalName: unit.logicalName, required,
+      });
+    }
+  }
+  return buildPreviousStateRecord({
+    logicalName: unit.logicalName, state: "present", entryType: "directory",
+    manifest, treeDigest: manifest.treeDigest, fileCount: manifest.fileCount,
+    buildMarker, filesystemIdentity: { dev: String(stat.dev), ino: String(stat.ino) },
+    livePath: unit.livePath, retiredPath: unit.retiredPath,
+  });
+}
+
+/* ---------------- the single rename capability ---------------- */
+
+function assertRegularDirectory(target, code, context) {
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail(code, "Canonical promotion operands must be real directories.", { target, ...context });
+  }
+  return stat;
+}
+
+/**
+ * The ONLY rename capability in the production surface. Every operand is derived
+ * internally, both operands share one canonical parent on one device, and lock
+ * plus lease ownership are re-proved immediately before the syscall.
+ */
+function renameCanonicalEntry({ from, to, unit, guard, expectFromDevice = null }) {
+  if (path.dirname(from) !== unit.parent || path.dirname(to) !== unit.parent) {
+    fail("promotion-path-not-derived", "Promotion operands must share the derived canonical parent.", {
+      from, to, parent: unit.parent,
+    });
+  }
+  if (from === to) fail("promotion-path-not-derived", "Promotion operands must differ.", { from });
+  const parentStat = fs.lstatSync(unit.parent);
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    fail("canonical-parent-invalid", "Canonical parent must be a real directory.", { parent: unit.parent });
+  }
+  const fromStat = assertRegularDirectory(from, "promotion-source-invalid", { logicalName: unit.logicalName });
+  if (expectFromDevice !== null && String(fromStat.dev) !== String(expectFromDevice)) {
+    fail("promotion-identity-drift", "Promotion source identity changed before the rename.", { from });
+  }
+  if (String(fromStat.dev) !== String(parentStat.dev)) {
+    fail("promotion-cross-device", "Promotion operands must share one filesystem.", { from });
+  }
+  try {
+    fs.lstatSync(to);
+    fail("promotion-destination-occupied", "Promotion destination already exists; refusing to replace it.", {
+      to, logicalName: unit.logicalName,
+    });
+  } catch (error) {
+    if (error instanceof PayloadTransactionError) throw error;
+    if (error?.code !== "ENOENT") {
+      fail("promotion-destination-unreadable", "Promotion destination could not be inspected.", { to });
+    }
+  }
+  if (typeof guard === "function") guard();
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    // A destination-exists errno here means the name was occupied between the
+    // pre-check and the syscall: the missing-path interval was taken over.
+    const occupied = ["ENOTEMPTY", "EEXIST", "EISDIR", "ENOTDIR"].includes(error?.code);
+    fail(occupied ? "promotion-destination-occupied" : "promotion-rename-failed",
+      occupied ? "Promotion destination was occupied during the rename." : "Canonical rename failed.", {
+        from, to, code: error?.code ?? null, logicalName: unit.logicalName,
+      });
+  }
+  return true;
+}
+
+/* ---------------- lease binding ---------------- */
+
+/**
+ * P3B reuses the accepted canonical-delivery lease. No second publisher lock is
+ * introduced. The lease excludes cooperating writers during the promotion window;
+ * it does not block non-cooperating readers and it does not remove the
+ * missing-path interval.
+ */
+export function assertPromotionOwnership(guards) {
+  if (!plainObject(guards)) fail("promotion-ownership-missing", "Promotion requires lock and lease ownership.");
+  const { verifyLock, verifyLease: verifyLeaseFn, leaseSessionId } = guards;
+  if (typeof verifyLock !== "function" || typeof verifyLeaseFn !== "function") {
+    fail("promotion-ownership-missing", "Promotion requires callable lock and lease verifiers.");
+  }
+  const lock = verifyLock();
+  if (lock !== true) fail("publisher-lock-ownership-lost", "Publisher lock ownership could not be re-proved.");
+  const lease = verifyLeaseFn();
+  if (!plainObject(lease) || !nonEmptyString(lease.sessionId)) {
+    fail("canonical-lease-ownership-lost", "Canonical delivery lease ownership could not be re-proved.");
+  }
+  if (nonEmptyString(leaseSessionId) && lease.sessionId !== leaseSessionId) {
+    fail("canonical-lease-identity-drift", "Canonical lease identity changed during promotion.", {
+      expected: leaseSessionId, observed: lease.sessionId,
+    });
+  }
+  return Object.freeze({ leaseSessionId: lease.sessionId });
+}
+
+/* ---------------- promotion of one unit ---------------- */
+
+export function retireLiveTree({ unit, previous, activationId, guards }) {
+  validateActivationId(activationId);
+  assertRetiredPathOwned(unit.retiredPath, unit.livePath, activationId);
+  if (previous.state === "absent") return Object.freeze({ retired: false, reason: "previous-absent" });
+  renameCanonicalEntry({
+    from: unit.livePath, to: unit.retiredPath, unit,
+    guard: () => assertPromotionOwnership(guards),
+    expectFromDevice: previous.filesystemIdentity?.dev ?? null,
+  });
+  return Object.freeze({ retired: true, retiredPath: unit.retiredPath });
+}
+
+export function promoteIncomingTree({ unit, activationId, guards, expectedTreeDigest }) {
+  validateActivationId(activationId);
+  if (!ownsIncomingSibling(unit.incomingPath, path.basename(unit.livePath), activationId)) {
+    fail("promotion-path-not-derived", "Incoming sibling is not owned by this activation.", {
+      incomingPath: unit.incomingPath,
+    });
+  }
+  try {
+    renameCanonicalEntry({
+      from: unit.incomingPath, to: unit.livePath, unit,
+      guard: () => assertPromotionOwnership(guards),
+    });
+  } catch (error) {
+    if (error?.code === "promotion-destination-occupied") {
+      // Gap takeover: a foreign actor occupied the live name during the interval
+      // between the two renames. The foreign tree is never deleted or replaced.
+      fail("promotion-gap-takeover", "Foreign content occupied the live path during the promotion interval.", {
+        logicalName: unit.logicalName, livePath: unit.livePath,
+      });
+    }
+    throw error;
+  }
+  const promoted = recomputeIncomingManifest(unit.livePath, "");
+  if (nonEmptyString(expectedTreeDigest) && promoted.treeDigest !== expectedTreeDigest) {
+    fail("promoted-verification-mismatch", "Promoted live tree does not match its same-stage incoming identity.", {
+      logicalName: unit.logicalName, expected: expectedTreeDigest, observed: promoted.treeDigest,
+    });
+  }
+  return Object.freeze({ promoted: true, treeDigest: promoted.treeDigest, fileCount: promoted.fileCount });
+}
+
+/* ---------------- reversal of one unit ---------------- */
+
+export function restoreUnit({ unit, previous, activationId, guards, promotedTreeDigest = null }) {
+  validateActivationId(activationId);
+  assertRetiredPathOwned(unit.retiredPath, unit.livePath, activationId);
+  let liveStat = null;
+  try { liveStat = fs.lstatSync(unit.livePath); } catch { liveStat = null; }
+
+  if (previous.state === "absent") {
+    // First-ever activation: restoration returns the live path to absent by
+    // removing only the payload this transaction promoted.
+    if (!liveStat) return Object.freeze({ restored: true, mode: "already-absent" });
+    if (liveStat.isSymbolicLink() || !liveStat.isDirectory()) {
+      fail("reversal-foreign-live", "Live path is not the payload this transaction promoted.", {
+        livePath: unit.livePath,
+      });
+    }
+    fs.rmSync(unit.livePath, { recursive: true, force: false });
+    return Object.freeze({ restored: true, mode: "removed-promoted-to-absent" });
+  }
+
+  // Previous present: the retired sibling is the only verified copy of the prior
+  // generation and must be verified before it is moved back.
+  const retired = recomputeIncomingManifest(unit.retiredPath, "");
+  if (retired.treeDigest !== previous.treeDigest) {
+    fail("reversal-retired-digest-mismatch", "Retired payload does not match its captured identity.", {
+      logicalName: unit.logicalName, expected: previous.treeDigest, observed: retired.treeDigest,
+    });
+  }
+  if (liveStat) {
+    if (liveStat.isSymbolicLink() || !liveStat.isDirectory()) {
+      fail("reversal-foreign-live", "Live path holds an entry this transaction cannot safely replace.", {
+        livePath: unit.livePath,
+      });
+    }
+    const occupying = recomputeIncomingManifest(unit.livePath, "");
+    const ownsOccupant = nonEmptyString(promotedTreeDigest)
+      ? occupying.treeDigest === promotedTreeDigest
+      : false;
+    if (!ownsOccupant) {
+      // Foreign content: never clobbered, never deleted. Ambiguous by design.
+      fail("reversal-foreign-live", "Foreign content occupies the live path; refusing to clobber it.", {
+        logicalName: unit.logicalName, livePath: unit.livePath,
+      });
+    }
+    fs.rmSync(unit.livePath, { recursive: true, force: false });
+  }
+  renameCanonicalEntry({
+    from: unit.retiredPath, to: unit.livePath, unit,
+    guard: () => assertPromotionOwnership(guards),
+  });
+  const restored = recomputeIncomingManifest(unit.livePath, "");
+  if (restored.treeDigest !== previous.treeDigest) {
+    fail("reversal-verification-mismatch", "Restored live tree does not match the captured previous identity.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  return Object.freeze({ restored: true, mode: "restore-previous", treeDigest: restored.treeDigest });
+}
+
+/* ---------------- journalled promotion orchestration ---------------- */
+
+function appendState({ directory, baseRecord, sequence, previousRecordSha256, ownerId, state, trees }) {
+  assertP3bWritableState(state);
+  const record = buildTransactionRecord({
+    ...baseRecord, sequence, previousRecordSha256, transactionState: state, trees,
+    allowP3bStates: true,
+  });
+  return publishTransactionRecord(directory, record, { ownerId });
+}
+
+/**
+ * Promote exactly one unit through the write-ahead sequence.
+ *
+ * Ordering is the contract, and every mutation is preceded by a durable record
+ * plus a re-proof of publisher-lock and canonical-lease ownership:
+ *
+ *   previous-state capture -> live-retiring -> [live -> retired] -> live-retired
+ *   -> incoming-promoting -> [incoming -> live] -> incoming-promoted
+ *   -> same-stage verification -> verified
+ *
+ * A previous-absent unit skips retirement and stays restorable to absence.
+ */
+export function promoteUnitWithJournal({
+  unit, activationId, directory, baseRecord, ownerId, guards,
+  sequence, previousRecordSha256, expectedTreeDigest, previous,
+  requiredFiles = [], buildMarker = null, hooks = {},
+}) {
+  validateActivationId(activationId);
+  const captured = previous ?? capturePreviousCanonicalState(unit, activationId, { buildMarker, requiredFiles });
+  const treesWith = (state, extra = {}) => baseRecord.trees.map((tree) => (
+    tree.logicalName === unit.logicalName
+      ? { ...tree, state, previousState: captured.state, previousIdentity: captured.treeDigest ?? null,
+        restorationMode: captured.restorationMode, ...extra }
+      : { ...tree }));
+
+  let seq = sequence;
+  let prev = previousRecordSha256;
+  const records = [];
+  const publish = (state, extra = {}) => {
+    const published = appendState({
+      directory, baseRecord, sequence: seq, previousRecordSha256: prev, ownerId, state,
+      trees: treesWith(state, extra),
+    });
+    records.push(published);
+    seq += 1;
+    prev = published.sha256;
+    return published;
+  };
+
+  publish("live-retiring");
+  if (hooks.afterLiveRetiringRecord) hooks.afterLiveRetiringRecord();
+  const retirement = retireLiveTree({ unit, previous: captured, activationId, guards });
+  if (hooks.afterRetire) hooks.afterRetire(retirement);
+  publish("live-retired", { retired: retirement.retired });
+
+  publish("incoming-promoting");
+  if (hooks.afterPromotingRecord) hooks.afterPromotingRecord();
+  const promotion = promoteIncomingTree({ unit, activationId, guards, expectedTreeDigest });
+  if (hooks.afterPromote) hooks.afterPromote(promotion);
+  publish("incoming-promoted", { promotedIdentity: promotion.treeDigest });
+
+  // Same-stage canonical verification: the promoted tree is compared only against
+  // the incoming identity produced by this exact stage receipt.
+  const observed = recomputeIncomingManifest(unit.livePath, "");
+  if (observed.treeDigest !== promotion.treeDigest ||
+      (nonEmptyString(expectedTreeDigest) && observed.treeDigest !== expectedTreeDigest)) {
+    fail("promoted-verification-mismatch", "Promoted live tree failed same-stage verification.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  if (hooks.beforeVerifiedRecord) hooks.beforeVerifiedRecord();
+  publish("verified", { promotedIdentity: promotion.treeDigest, verified: true });
+
+  return Object.freeze({
+    logicalName: unit.logicalName,
+    previous: captured,
+    retired: retirement.retired,
+    promotedTreeDigest: promotion.treeDigest,
+    records: Object.freeze(records),
+    sequence: seq,
+    previousRecordSha256: prev,
+    livePayloadMutationPerformed: true,
+    acceptedRelease: false,
+  });
+}
+
+/* ---------------- whole-release reversal ---------------- */
+
+/**
+ * Reverse every already-changed unit in strict reverse mutation order.
+ *
+ * Never deletes foreign content, never deletes the only verified copy, never
+ * passes a retired payload to incoming cleanup, and never introduces a third
+ * sibling family. Ambiguity stops the sweep and returns recovery-required with
+ * all evidence intact.
+ */
+export function reverseRelease({
+  changed, activationId, directory, baseRecord, ownerId, guards,
+  sequence = null, previousRecordSha256 = null, hooks = {},
+}) {
+  validateActivationId(activationId);
+  // Self-position from the durable journal. A unit that failed mid-sequence has
+  // already published records, so any sequence the caller was tracking is stale.
+  if (sequence === null || previousRecordSha256 === null) {
+    const live = readTransactionChain(directory);
+    sequence = live.records.length + 1;
+    previousRecordSha256 = live.headSha256 ?? null;
+  }
+  // Entries are { unit, previous, promotedTreeDigest }: the logical name lives on
+  // the unit. Reading it from the entry yielded undefined, so indexOf returned -1
+  // for every entry and the sort silently preserved promotion order.
+  const ordered = [...changed].sort((left, right) =>
+    REVERSAL_ORDER.indexOf(left.unit.logicalName) - REVERSAL_ORDER.indexOf(right.unit.logicalName));
+  let seq = sequence;
+  let prev = previousRecordSha256;
+  const restored = [];
+  const records = [];
+  const publish = (state, unit, extra = {}) => {
+    const published = appendState({
+      directory, baseRecord, sequence: seq, previousRecordSha256: prev, ownerId, state,
+      trees: baseRecord.trees.map((tree) => (tree.logicalName === unit.logicalName
+        ? { ...tree, state, ...extra } : { ...tree })),
+    });
+    records.push(published);
+    seq += 1;
+    prev = published.sha256;
+    return published;
+  };
+
+  for (const entry of ordered) {
+    const { unit, previous, promotedTreeDigest } = entry;
+    try {
+      publish("restoring", unit);
+      if (hooks.afterRestoringRecord) hooks.afterRestoringRecord(unit);
+      const outcome = restoreUnit({ unit, previous, activationId, guards, promotedTreeDigest });
+      publish("restored", unit, { restorationOutcome: outcome.mode });
+      restored.push({ logicalName: unit.logicalName, mode: outcome.mode });
+    } catch (error) {
+      // Loud, evidence-preserving, and no cleanup after ambiguity.
+      return Object.freeze({
+        reversed: false,
+        classification: error?.code === "reversal-foreign-live"
+          ? "preserve-foreign-live-and-require-operator"
+          : "recovery-required",
+        code: error?.code ?? "reversal-failed",
+        blockedAt: unit.logicalName,
+        restored: Object.freeze(restored),
+        records: Object.freeze(records),
+        sequence: seq,
+        previousRecordSha256: prev,
+        evidencePreserved: true,
+      });
+    }
+  }
+  return Object.freeze({
+    reversed: true,
+    classification: "complete-reversal",
+    code: null,
+    restored: Object.freeze(restored),
+    records: Object.freeze(records),
+    sequence: seq,
+    previousRecordSha256: prev,
+    acceptedRelease: false,
+  });
+}
+
+/**
+ * Promote all three units in the pinned release order, reversing everything
+ * already changed when any unit fails. The release is transactionally
+ * recoverable, never cross-tree atomic, and P3B never accepts it: acceptance and
+ * the durable final receipt belong to P3C.
+ */
+export function promoteReleaseWithJournal({
+  units, activationId, directory, baseRecord, ownerId, guards,
+  sequence = 1, previousRecordSha256 = null, expectedDigests = {}, hooks = {},
+}) {
+  const ordered = [...units].sort((left, right) =>
+    RELEASE_ORDER.indexOf(left.logicalName) - RELEASE_ORDER.indexOf(right.logicalName));
+  if (ordered.length !== 3 ||
+      !sameJson(ordered.map((unit) => unit.logicalName), [...RELEASE_ORDER])) {
+    fail("release-order-invalid", "A release promotes exactly the three canonical units in pinned order.", {
+      observed: ordered.map((unit) => unit.logicalName),
+    });
+  }
+  let seq = sequence;
+  let prev = previousRecordSha256;
+  const changed = [];
+  for (const unit of ordered) {
+    try {
+      const result = promoteUnitWithJournal({
+        unit, activationId, directory, baseRecord, ownerId, guards,
+        sequence: seq, previousRecordSha256: prev,
+        expectedTreeDigest: expectedDigests[unit.logicalName] ?? null,
+        hooks,
+      });
+      seq = result.sequence;
+      prev = result.previousRecordSha256;
+      changed.push({ unit, previous: result.previous, promotedTreeDigest: result.promotedTreeDigest });
+    } catch (error) {
+      const reversal = reverseRelease({
+        changed, activationId, directory, baseRecord, ownerId, guards, hooks,
+      });
+      return Object.freeze({
+        released: false,
+        failedAt: unit.logicalName,
+        code: error?.code ?? "promotion-failed",
+        gapTakeover: error?.code === "promotion-gap-takeover",
+        reversal,
+        acceptedRelease: false,
+        finalActivationReceiptDurable: false,
+      });
+    }
+  }
+  return Object.freeze({
+    released: true,
+    fixtureVerified: true,
+    order: [...RELEASE_ORDER],
+    changed: Object.freeze(changed.map((entry) => Object.freeze({
+      logicalName: entry.unit.logicalName,
+      promotedTreeDigest: entry.promotedTreeDigest,
+      previousState: entry.previous.state,
+    }))),
+    sequence: seq,
+    previousRecordSha256: prev,
+    // P3B never accepts a release; P3C owns acceptance and the durable receipt.
+    acceptedRelease: false,
+    activationPerformed: false,
+    finalActivationReceiptDurable: false,
+    reloadPerformed: false,
+    canaryPerformed: false,
+    pushPerformed: false,
+  });
 }
 
 // P3A exposes no CLI. Importing this module performs no work and the file is not

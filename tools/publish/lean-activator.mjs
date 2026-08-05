@@ -852,6 +852,66 @@ export function evaluateFutureTransaction(model) {
   return Object.freeze({ acceptable: reasons.length === 0, reasons: Object.freeze([...new Set(reasons)]) });
 }
 
+// Approved production authority. Duplicated deliberately rather than imported:
+// the activator holds no import edge to the P3 payload module, so the capability
+// boundary stays provable by import inspection. A structural test asserts both
+// allow-lists are identical.
+export const APPROVED_COCKPIT_PRO_ROOTS = Object.freeze([
+  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+]);
+export const APPROVED_AUTHORITATIVE_REPOSITORIES = Object.freeze([
+  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+]);
+
+// Fixture roots are supplied only through this explicit injection. No CLI path,
+// environment value or receipt field reaches it, and runLeanActivator never calls
+// it; a structural assertion pins that.
+let fixtureApprovedRoots = null;
+export function configureFixtureApprovedRoots(roots = null) {
+  if (roots === null) { fixtureApprovedRoots = null; return null; }
+  if (!Array.isArray(roots) || roots.length !== 2 ||
+      !roots.every((entry) => typeof entry === "string" && path.isAbsolute(entry))) {
+    fail("fixture-approved-roots-invalid",
+      "Fixture approved roots must be [repository, cockpitProRoot] absolute paths.");
+  }
+  fixtureApprovedRoots = Object.freeze({
+    repositories: Object.freeze([roots[0]]),
+    cockpitProRoots: Object.freeze([roots[1]]),
+  });
+  return fixtureApprovedRoots;
+}
+
+/**
+ * Mandatory approved-root gate. P2.3 proves module location, executable Git and
+ * the shared anchor agree with one another, which a relocated standalone copy
+ * also satisfies. This adds the missing absolute identity: the agreed authority
+ * must be an approved production location.
+ */
+export function assertApprovedProductionRoot({ repository, cockpitProRoot, anchorRoot }) {
+  const approvedRepositories = fixtureApprovedRoots
+    ? fixtureApprovedRoots.repositories : APPROVED_AUTHORITATIVE_REPOSITORIES;
+  const approvedCockpitProRoots = fixtureApprovedRoots
+    ? fixtureApprovedRoots.cockpitProRoots : APPROVED_COCKPIT_PRO_ROOTS;
+  const normalizedRepository = realAware(repository);
+  const normalizedCockpitProRoot = realAware(cockpitProRoot);
+  if (!approvedRepositories.map((entry) => realAware(entry)).includes(normalizedRepository)) {
+    fail("canonical-root-not-approved", "Authoritative repository is not an approved production location.", {
+      observed: normalizedRepository,
+    });
+  }
+  if (!approvedCockpitProRoots.map((entry) => realAware(entry)).includes(normalizedCockpitProRoot)) {
+    fail("canonical-root-not-approved", "Cockpit Pro root is not an approved production location.", {
+      observed: normalizedCockpitProRoot,
+    });
+  }
+  if (realAware(anchorRoot) !== path.join(normalizedCockpitProRoot, ".h2o-canonical-delivery")) {
+    fail("canonical-anchor-mismatch", "Canonical anchor is not the approved external default.", {
+      observed: realAware(anchorRoot),
+    });
+  }
+  return Object.freeze({ repository: normalizedRepository, cockpitProRoot: normalizedCockpitProRoot });
+}
+
 export function validateActivationId(activationId) {
   if (typeof activationId !== "string" || !ACTIVATION_ID_PATTERN.test(activationId) ||
       activationId.includes("..") || activationId.includes("/") || activationId.includes("\\")) {
@@ -1335,6 +1395,12 @@ export function prepareActivationIntent(receiptPath, {
   randomBytes = crypto.randomBytes,
 } = {}) {
   const first = verifyStageReceipt(receiptPath, { environment });
+  // Mandatory approved-root gate before any coordination or payload mutation.
+  assertApprovedProductionRoot({
+    repository: first.source.repository,
+    cockpitProRoot: path.dirname(first.source.repository),
+    anchorRoot: first.canonicalFoundation.root,
+  });
   const activationId = generateActivationId({ now, randomBytes });
   return withPublisherLock(first.canonicalFoundation, first.source, (lock) => {
     const second = verifyStageReceipt(receiptPath, { environment });
