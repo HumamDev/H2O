@@ -2170,7 +2170,13 @@ export function promoteReleaseWithJournal({
 export const P3C_TRANSACTION_STATES = Object.freeze(["accepted", "rollback-complete"]);
 export const ACTIVATION_RECEIPT_MODE = "activation-receipt";
 export const ROLLBACK_RECEIPT_MODE = "rollback-receipt";
-export const RECEIPT_SCHEMA_VERSION = 1;
+// v2: activation receipts now carry complete previous-generation rollback
+// evidence. No real receipt exists yet, so this is a deliberate strict
+// transition — v1 receipts are not tolerated rather than silently accepted.
+export const RECEIPT_SCHEMA_VERSION = 2;
+// Distinctly named so the activator cannot confuse it with the Batch 1 STAGE
+// publication receipt schema, which is a different document with its own version.
+export const ACTIVATION_RECEIPT_SCHEMA_VERSION = 2;
 export const ACTIVATIONS_SUBPATH = "activations";
 export const ROLLBACKS_SUBPATH = "rollbacks";
 

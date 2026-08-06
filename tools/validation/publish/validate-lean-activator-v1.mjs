@@ -83,6 +83,13 @@ const P3C_B1_AUTHORIZED_PATHS = Object.freeze([
 const P3C_B1_COMMITTED_PATHS = Object.freeze([
   ACTIVATOR_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// Activation-completeness prerequisite: intent resolution + complete
+// previous-generation rollback evidence, on top of the accepted B1 commit.
+const ACCEPTED_P3C_B1_HEAD = "15500f7b3ef271c78632a4da0fa13dc227948672";
+const P3C_A3_SUBJECT = "fix(publish): complete activation intent and rollback evidence";
+const P3C_A3_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -91,7 +98,7 @@ const REQUIRED_FILES = Object.freeze([
   "provider/identity-provider-supabase.js",
 ]);
 const EXPECTED_SCOPE = 55;
-const EXPECTED_RUNTIME = 209;
+const EXPECTED_RUNTIME = 215;
 const EXPECTED_STRUCTURAL = 53;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
@@ -108,6 +115,7 @@ const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
 const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
   // P3C-A2 adds the read-only canonical-verification symbols.
   "ACTIVATION_RECEIPT_MODE",
+  "ACTIVATION_RECEIPT_SCHEMA_VERSION",
   "activationReceiptPath",
   "planP3cRecovery",
   "TRANSACTION_MODE",
@@ -407,6 +415,19 @@ function classifyScope(state) {
     value.parent === ACCEPTED_P3C_A2_1_HEAD && value.subject === P3C_B1_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_B1_COMMITTED_PATHS);
   if (p3cB1Clean) return "p3c-b1-committed";
+  // Activation-completeness prerequisite on the accepted B1 tip.
+  const p3cA3Base = value.head === ACCEPTED_P3C_B1_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA3Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a3-uncommitted";
+  }
+  const p3cA3Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === ACCEPTED_P3C_B1_HEAD && value.subject === P3C_A3_SUBJECT &&
+    value.committedPaths.length > 0 &&
+    value.committedPaths.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry));
+  if (p3cA3Clean) return "p3c-a3-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -956,7 +977,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-a1-uncommitted", "p3c-a1-committed",
     "p3c-a2-uncommitted", "p3c-a2-committed",
     "p3c-a2-1-uncommitted", "p3c-a2-1-committed",
-    "p3c-b1-uncommitted", "p3c-b1-committed"]
+    "p3c-b1-uncommitted", "p3c-b1-committed",
+    "p3c-a3-uncommitted", "p3c-a3-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -2663,8 +2685,21 @@ async function runRuntimeTests(api) {
     const intents = path.join(anchor, "activation-intents");
     fs.mkdirSync(anchor, { mode: 0o700 });
     fs.mkdirSync(intents, { mode: 0o700 });
+    // An entry whose name is not an activation identity is an unknown file, not
+    // an unresolved intent; A3 reports that distinction precisely.
     fs.writeFileSync(path.join(intents, "foreign.json"), "{}\n");
-    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath), "activation-intent-unresolved");
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath),
+      "activation-intent-entry-unknown");
+    fs.rmSync(path.join(intents, "foreign.json"));
+    // A correctly named but unresolvable intent still blocks, as before.
+    fs.writeFileSync(path.join(intents, "20260101T000000000Z-ffffffffffff.json"), "{}\n");
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath),
+      "activation-intent-unresolved");
+    // A symlinked entry is refused outright.
+    fs.rmSync(path.join(intents, "20260101T000000000Z-ffffffffffff.json"));
+    fs.symlinkSync(stageValue.receiptPath, path.join(intents, "20260101T000000000Z-ffffffffffff.json"));
+    expectActivatorError(() => valueApi.prepareActivationIntent(stageValue.receiptPath),
+      "activation-intent-entry-invalid");
     assert.equal(fs.existsSync(path.join(value.top, ".h2o-publisher-lock")), false);
   });
   await test("existing final journal collision rejects without overwrite", () => {
@@ -3520,7 +3555,11 @@ async function runP3cA2Tests() {
     const cases = [
       ["wrong receipt mode", (receipt) => { receipt.mode = "stage-receipt"; },
         "activation-receipt-mode-invalid"],
-      ["wrong schema version", (receipt) => { receipt.schemaVersion = 2; },
+      // v2 is the accepted activation-receipt schema after A3, so drift is now
+      // expressed as the superseded v1 and as a future v3.
+      ["superseded schema version", (receipt) => { receipt.schemaVersion = 1; },
+        "activation-receipt-mode-invalid"],
+      ["future schema version", (receipt) => { receipt.schemaVersion = 3; },
         "activation-receipt-mode-invalid"],
       ["wrong activation id", (receipt) => { receipt.activationId = "20260101T000000000Z-ffffffffffff"; },
         "activation-receipt-location"],
@@ -3842,6 +3881,7 @@ async function runP3cA2Tests() {
   });
 
   await runP3cB1Tests();
+  await runP3cA3Tests();
 
   await test("verification is stable across path spellings, spaces and emoji", async () => {
     const context = await createVerifiedActivation("spelling");
@@ -4162,6 +4202,223 @@ async function runP3cB1Tests() {
     // Fixture paths carry spaces and emoji, and resolve identically through
     // /var and /private/var spellings.
     assert.match(context.fixture.repository, /repository with spaces 🧪/u);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3C-A3 — activation completeness: intent resolution and rollback evidence
+ * ------------------------------------------------------------------------- */
+
+const SECOND_ACTIVATION_DATE = new Date("2026-08-03T09:30:00.000Z");
+const SECOND_RANDOM_BYTES = () => Buffer.from("b2c3d4e5f6a1", "hex");
+
+/** Prepare and run a second, independent activation in the SAME anchor. */
+function secondActivation(context, label) {
+  const stage = createStageFixture(context.fixture.repository, `a3-second-${label}`);
+  const intent = context.api.prepareActivationIntent(stage.receiptPath, {
+    environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE, randomBytes: SECOND_RANDOM_BYTES,
+  });
+  const units = context.payload.canonicalUnitPaths(
+    fs.realpathSync.native(context.fixture.repository), intent.activationId);
+  return {
+    stage, intent, units,
+    activate: (options = {}) => context.api.activateReceipt(stage.receiptPath, intent.intentPath,
+      { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE, ...options }),
+  };
+}
+
+const readReceiptAt = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
+
+async function runP3cA3Tests() {
+  await test("two consecutive activations succeed in one anchor with immutable intents", async () => {
+    const context = await createActivationFixture("a3-consecutive");
+    const firstIntentBytes = fs.readFileSync(context.intent.intentPath);
+    const first = context.activate();
+    assert.equal(first.ok, true);
+    // 1: the accepted intent is untouched, byte-for-byte, at its original path.
+    assert.equal(fs.existsSync(context.intent.intentPath), true, "intent must not be consumed");
+    assert.equal(fs.readFileSync(context.intent.intentPath).equals(firstIntentBytes), true);
+    // 2: it classifies resolved only through its exact receipt AND accepted record.
+    const foundation = { root: context.anchor };
+    const source = {
+      repository: fs.realpathSync.native(context.fixture.repository),
+      branch: "main",
+      approvedHead: git(context.fixture.repository, ["rev-parse", "HEAD"]),
+      sourceTree: git(context.fixture.repository, ["rev-parse", "HEAD^{tree}"]),
+      gitExecutable: JSON.parse(fs.readFileSync(context.intent.intentPath, "utf8")).gitExecutable,
+    };
+    const resolved = context.api.classifyExistingIntent(context.intent.intentPath, foundation, source,
+      { environment: cleanEnvironment() });
+    assert.equal(resolved.resolved, true, resolved.code);
+    assert.equal(resolved.receiptSha256, first.activationReceiptSha256);
+    // 3 + 4: a second intent may now be prepared, and a second activation succeeds.
+    const second = secondActivation(context, "ok");
+    assert.notEqual(second.intent.activationId, context.intent.activationId);
+    assert.equal(second.intent.resolvedIntentsObserved, 1);
+    assert.equal(second.intent.priorIntentsMutated, false);
+    const secondResult = second.activate();
+    assert.equal(secondResult.ok, true, secondResult.code);
+    assert.equal(secondResult.activationPerformed, true);
+    // 5: both intents remain present and byte-identical.
+    assert.equal(fs.readFileSync(context.intent.intentPath).equals(firstIntentBytes), true);
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activation-intents")).sort(),
+      [`${context.intent.activationId}.json`, `${second.intent.activationId}.json`].sort());
+    // Two independent activation receipts, neither overwritten.
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activations")).sort(),
+      [`${context.intent.activationId}.json`, `${second.intent.activationId}.json`].sort());
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("an unresolved intent still blocks preparing another", async () => {
+    // 6: an intent with no receipt at all.
+    const pending = await createActivationFixture("a3-pending");
+    expectActivatorError(() => pending.api.prepareActivationIntent(
+      createStageFixture(pending.fixture.repository, "a3-blocked").receiptPath,
+      { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE, randomBytes: SECOND_RANDOM_BYTES }),
+    "activation-intent-unresolved");
+    disposeTemporaryRoot(pending.fixture.top);
+    // 7: a durable receipt without a terminal accepted record does not resolve.
+    const partial = await createActivationFixture("a3-no-terminal");
+    partial.activate();
+    const directory = path.join(partial.anchor, "transactions", partial.intent.activationId);
+    const names = fs.readdirSync(directory).filter((n) => n.startsWith("seq-")).sort();
+    fs.rmSync(path.join(directory, names[names.length - 1]));
+    const foundation = { root: partial.anchor };
+    const source = {
+      repository: fs.realpathSync.native(partial.fixture.repository), branch: "main",
+      approvedHead: git(partial.fixture.repository, ["rev-parse", "HEAD"]),
+      sourceTree: git(partial.fixture.repository, ["rev-parse", "HEAD^{tree}"]),
+      gitExecutable: JSON.parse(fs.readFileSync(partial.intent.intentPath, "utf8")).gitExecutable,
+    };
+    const classification = partial.api.classifyExistingIntent(partial.intent.intentPath, foundation,
+      source, { environment: cleanEnvironment() });
+    assert.equal(classification.resolved, false);
+    assert.equal(classification.code, "transaction-not-accepted");
+    expectActivatorError(() => partial.api.prepareActivationIntent(
+      createStageFixture(partial.fixture.repository, "a3-blocked2").receiptPath,
+      { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE, randomBytes: SECOND_RANDOM_BYTES }),
+    "activation-intent-unresolved");
+    disposeTemporaryRoot(partial.fixture.top);
+  });
+
+  await test("a first activation receipt claims no rollback candidate", async () => {
+    const context = await createActivationFixture("a3-first-receipt");
+    const result = context.activate();
+    const receipt = readReceiptAt(result.activationReceiptPath);
+    assert.equal(receipt.schemaVersion, 2, "receipt schema must be v2");
+    assert.deepEqual(Object.keys(receipt.previousCanonicalIdentities).sort(),
+      ["alias", "dev_output", "extension"]);
+    for (const [name, evidence] of Object.entries(receipt.previousCanonicalIdentities)) {
+      // 8: nothing existed before, so nothing may be claimed available.
+      assert.equal(evidence.previousState, "absent", name);
+      assert.equal(evidence.previousEntryType, "absent", name);
+      assert.equal(evidence.previousTreeDigest, null, name);
+      assert.equal(evidence.previousManifest, null, name);
+      assert.equal(evidence.retiredCandidatePath, null, name);
+      assert.equal(evidence.rollbackCandidateAvailable, false, name);
+      // Promoted-side evidence is still complete.
+      assert.equal(typeof evidence.promotedTreeDigest, "string", name);
+      assert.equal(evidence.promotedBuildMarker, context.stage.receipt.buildTimestamp, name);
+      assert.equal(evidence.sameStageIdentity, evidence.promotedTreeDigest, name);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("a second activation receipt records the complete previous generation", async () => {
+    const context = await createActivationFixture("a3-second-receipt");
+    const first = context.activate();
+    const firstReceipt = readReceiptAt(first.activationReceiptPath);
+    const second = secondActivation(context, "evidence");
+    const secondResult = second.activate();
+    const receipt = readReceiptAt(secondResult.activationReceiptPath);
+    assert.equal(receipt.schemaVersion, 2);
+    for (const unit of second.units) {
+      const evidence = receipt.previousCanonicalIdentities[unit.logicalName];
+      // 9: complete first-generation evidence, and a verified retired candidate.
+      assert.equal(evidence.previousState, "present", unit.logicalName);
+      assert.equal(evidence.previousEntryType, "directory", unit.logicalName);
+      assert.equal(evidence.previousTreeDigest,
+        firstReceipt.promotedCanonicalIdentities[unit.logicalName].treeDigest, unit.logicalName);
+      assert.equal(evidence.previousFileCount,
+        firstReceipt.promotedCanonicalIdentities[unit.logicalName].fileCount, unit.logicalName);
+      assert.ok(Array.isArray(evidence.previousManifest), unit.logicalName);
+      assert.equal(evidence.retiredCandidatePath, unit.retiredPath, unit.logicalName);
+      assert.equal(fs.existsSync(unit.retiredPath), true, unit.logicalName);
+      assert.equal(evidence.rollbackCandidateAvailable, true, unit.logicalName);
+      // The load-bearing contract: the recorded previous identity must equal an
+      // INDEPENDENTLY recomputed digest of the retired candidate now on disk.
+      const recomputed = context.payload.recomputeIncomingManifest(unit.retiredPath, "");
+      assert.equal(evidence.previousTreeDigest, recomputed.treeDigest, unit.logicalName);
+      assert.equal(evidence.previousFileCount, recomputed.fileCount, unit.logicalName);
+      assert.equal(evidence.promotedBuildMarker, second.stage.receipt.buildTimestamp, unit.logicalName);
+    }
+    // Generation difference is asserted only where the family actually carries
+    // stage identity. dev_output and extension embed the build timestamp;
+    // the alias family is built from fixed sources and is legitimately
+    // byte-identical across stages, so requiring it to differ would be wrong.
+    for (const logicalName of ["dev_output", "extension"]) {
+      const evidence = receipt.previousCanonicalIdentities[logicalName];
+      assert.notEqual(evidence.promotedTreeDigest, evidence.previousTreeDigest, logicalName);
+    }
+    assert.equal(receipt.previousCanonicalIdentities.alias.previousTreeDigest,
+      firstReceipt.promotedCanonicalIdentities.alias.treeDigest,
+      "alias previous identity must still be the exact first generation");
+    // Required-file evidence is carried for the extension family.
+    assert.ok(Array.isArray(receipt.previousCanonicalIdentities.extension.previousRequiredFiles));
+    assert.equal(receipt.previousCanonicalIdentities.extension.previousRequiredFiles.length > 0, true);
+    // 10: the evidence equals what foldChainTreeStates reports for that chain.
+    const directory = path.join(context.anchor, "transactions", second.intent.activationId);
+    const chain = context.payload.readTransactionChain(directory);
+    const folded = context.api.foldChainTreeStates(chain);
+    for (const unit of second.units) {
+      assert.equal(receipt.previousCanonicalIdentities[unit.logicalName].previousTreeDigest,
+        folded[unit.logicalName].previousIdentity, unit.logicalName);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("a missing or drifted retired candidate is never marked rollback-available", async () => {
+    // 11: evidence is computed from disk, so a vanished candidate cannot be claimed.
+    const missing = await createActivationFixture("a3-missing-candidate");
+    missing.activate();
+    const second = secondActivation(missing, "missing");
+    // Remove one retired candidate before the second activation builds its receipt.
+    const result = second.activate({
+      hooks: {
+        afterPromote: () => {
+          const target = second.units[0].retiredPath;
+          if (fs.existsSync(target)) fs.rmSync(target, { recursive: true });
+        },
+      },
+    });
+    const receipt = readReceiptAt(result.activationReceiptPath);
+    assert.equal(receipt.previousCanonicalIdentities.alias.rollbackCandidateAvailable, false,
+      "a removed retired candidate must not be advertised as rollback-available");
+    assert.equal(receipt.previousCanonicalIdentities.dev_output.rollbackCandidateAvailable, true);
+    disposeTemporaryRoot(missing.fixture.top);
+  });
+
+  await test("activation recovery still recognizes accepted evidence and creates no receipt", async () => {
+    // 13: the enriched receipt and resolution model do not disturb B1 recovery.
+    const context = await createActivationFixture("a3-recovery");
+    const activation = context.activate();
+    const before = fs.readFileSync(activation.activationReceiptPath);
+    const activations = fs.readdirSync(path.join(context.anchor, "activations")).sort();
+    const recovered = context.api.recoverActivation(context.intent.activationId,
+      { environment: cleanEnvironment() });
+    assert.equal(recovered.ok, true, recovered.code);
+    assert.equal(recovered.alreadyTerminal, true);
+    assert.equal(recovered.mutationPerformed, false);
+    assert.equal(recovered.activationReceiptCreated, false);
+    assert.equal(fs.readFileSync(activation.activationReceiptPath).equals(before), true);
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activations")).sort(), activations);
+    // 14: no browser, network, push or pruning, and the intent is still immutable.
+    for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed",
+      "networkActionPerformed", "browserActionPerformed", "pruningPerformed"]) {
+      assert.equal(recovered[flag], false, flag);
+    }
+    assert.equal(fs.existsSync(context.intent.intentPath), true);
     disposeTemporaryRoot(context.fixture.top);
   });
 }

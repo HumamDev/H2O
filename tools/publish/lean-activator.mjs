@@ -31,6 +31,7 @@ import { acquireLock, releaseLock } from "./lean-publisher.mjs";
 // import. The payload module stays Node-builtins-only and never sees the lease.
 import {
   ACTIVATION_RECEIPT_MODE,
+  ACTIVATION_RECEIPT_SCHEMA_VERSION,
   activationReceiptPath,
   appendAcceptedRecord,
   buildActivationReceipt,
@@ -52,6 +53,7 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPOSITORY_ROOT = path.resolve(HERE, "..", "..");
+// The Batch 1 STAGE publication receipt schema. Not the activation receipt.
 export const RECEIPT_SCHEMA_VERSION = 1;
 export const RECEIPT_BASENAME = "publication-receipt.json";
 export const STAGING_PREFIX = "h2o-publish-stage-";
@@ -1211,11 +1213,140 @@ export function withPublisherLock(foundation, source, callback) {
   }
 }
 
-function assertNoUnresolvedIntent(intentsDirectory) {
-  const entries = fs.readdirSync(intentsDirectory).sort();
-  if (entries.length) {
-    fail("activation-intent-unresolved", "An unresolved or foreign activation intent already exists.", { entries });
+/**
+ * Classify one existing activation intent as resolved or not.
+ *
+ * An intent is RESOLVED only when its own evidence, a durable activation
+ * receipt, and an accepted terminal transaction record all independently agree.
+ * Nothing is inferred from the intent alone, and the intent file itself is
+ * never moved, rewritten or consumed — it stays immutable at its canonical path.
+ */
+export function classifyExistingIntent(intentPath, foundation, source, { environment = process.env } = {}) {
+  const unresolved = (code, detail = {}) =>
+    Object.freeze({ resolved: false, code, intentPath, ...detail });
+  let bytes;
+  try { bytes = fs.readFileSync(intentPath); } catch {
+    return unresolved("intent-unreadable");
   }
+  let journal;
+  try { journal = JSON.parse(bytes.toString("utf8")); } catch {
+    return unresolved("intent-malformed");
+  }
+  const activationId = journal?.activationId;
+  try { validateActivationId(activationId); } catch {
+    return unresolved("intent-activation-id-invalid");
+  }
+  if (path.basename(intentPath) !== `${activationId}.json`) {
+    return unresolved("intent-id-filename-mismatch");
+  }
+  // 1: the intent's own source authority must still be exactly this repository.
+  if (realAware(journal.repositoryRealpath ?? "") !== source.repository ||
+      realAware(journal.authorizedWorktreeRealpath ?? "") !== source.repository ||
+      journal.branch !== source.branch || journal.approvedHead !== source.approvedHead ||
+      journal.sourceTree !== source.sourceTree ||
+      !sameJson(journal.gitExecutable, source.gitExecutable)) {
+    return unresolved("intent-foreign-source");
+  }
+  if (journal.acceptedExtensionVariant !== undefined &&
+      journal.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    return unresolved("intent-variant-mismatch");
+  }
+  // 2-3: a durable activation receipt must exist at the derived path and verify.
+  const receiptPath = activationReceiptPath(foundation.root, activationId);
+  let receiptBytes;
+  try {
+    const stat = fs.lstatSync(receiptPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) return unresolved("receipt-not-regular");
+    receiptBytes = fs.readFileSync(receiptPath);
+  } catch {
+    return unresolved("receipt-absent");
+  }
+  let receipt;
+  try { receipt = JSON.parse(receiptBytes.toString("utf8")); } catch {
+    return unresolved("receipt-malformed");
+  }
+  const receiptSha256 = sha256Bytes(receiptBytes);
+  if (receipt?.mode !== ACTIVATION_RECEIPT_MODE || receipt?.activationId !== activationId) {
+    return unresolved("receipt-identity-mismatch");
+  }
+  // 4: the receipt must bind this exact intent path and digest.
+  if (realAware(receipt.intentPath ?? "") !== realAware(intentPath) ||
+      receipt.intentSha256 !== sha256Bytes(bytes)) {
+    return unresolved("receipt-intent-binding-mismatch");
+  }
+  // 5: and the same source, stage and variant identity.
+  if (realAware(receipt.repositoryRealpath ?? "") !== source.repository ||
+      realAware(receipt.authorizedWorktreeRealpath ?? "") !== source.repository ||
+      receipt.branch !== source.branch || receipt.approvedHead !== source.approvedHead ||
+      receipt.sourceTree !== source.sourceTree ||
+      receipt.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT ||
+      receipt.stageReceiptSha256 !== journal.stageReceiptSha256 ||
+      receipt.buildMarker !== journal.buildMarker) {
+    return unresolved("receipt-source-mismatch");
+  }
+  // 6-8: a contiguous chain whose terminal record is accepted and binds this receipt.
+  let chain;
+  try {
+    chain = readTransactionChain(transactionDirectory(foundation.root, activationId));
+  } catch {
+    return unresolved("transaction-chain-unreadable");
+  }
+  if (chain.present !== true || chain.records.length === 0) return unresolved("transaction-absent");
+  const terminal = chain.records[chain.records.length - 1]?.record;
+  if (!terminal || terminal.mode !== TRANSACTION_MODE || terminal.activationId !== activationId) {
+    return unresolved("transaction-foreign");
+  }
+  if (realAware(terminal.repositoryRealpath ?? "") !== source.repository) {
+    return unresolved("transaction-foreign");
+  }
+  if (terminal.transactionState !== "accepted") return unresolved("transaction-not-accepted");
+  if (realAware(terminal.activationReceiptPath ?? "") !== realAware(receiptPath) ||
+      terminal.activationReceiptSha256 !== receiptSha256) {
+    return unresolved("accepted-receipt-binding-mismatch");
+  }
+  return Object.freeze({
+    resolved: true, code: null, intentPath, activationId,
+    intentSha256: sha256Bytes(bytes), receiptPath, receiptSha256,
+  });
+}
+
+/**
+ * Preparation may proceed only when EVERY existing intent is independently
+ * proven resolved. Directory non-emptiness is never authority on its own, and
+ * no intent is ever deleted, renamed or rewritten to make room for a new one.
+ */
+function assertEveryIntentResolved(intentsDirectory, foundation, source, { environment = process.env } = {}) {
+  const entries = fs.readdirSync(intentsDirectory, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name, "en"));
+  const seen = new Set();
+  const classifications = [];
+  for (const entry of entries) {
+    const absolute = path.join(intentsDirectory, entry.name);
+    const stat = fs.lstatSync(absolute);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      fail("activation-intent-entry-invalid", "Only regular intent files may occupy activation-intents.", {
+        entry: entry.name,
+      });
+    }
+    if (!/^[0-9]{8}T[0-9]{9}Z-[0-9a-f]{12}\.json$/u.test(entry.name)) {
+      fail("activation-intent-entry-unknown", "An unrecognized file occupies activation-intents.", {
+        entry: entry.name,
+      });
+    }
+    const activationId = entry.name.slice(0, -".json".length);
+    if (seen.has(activationId)) {
+      fail("activation-intent-duplicate", "Duplicate activation identity in activation-intents.", { activationId });
+    }
+    seen.add(activationId);
+    const classification = classifyExistingIntent(absolute, foundation, source, { environment });
+    classifications.push(classification);
+    if (classification.resolved !== true) {
+      fail("activation-intent-unresolved", "An unresolved or foreign activation intent already exists.", {
+        intentPath: absolute, reason: classification.code,
+      });
+    }
+  }
+  return Object.freeze({ resolved: classifications.length, classifications: Object.freeze(classifications) });
 }
 
 function buildActivationIntent(verification, activationId, createdAt) {
@@ -1443,7 +1574,8 @@ export function prepareActivationIntent(receiptPath, {
     if (verificationIdentity(second) !== verificationIdentity(finalVerification)) {
       fail("activation-intent-revalidation-changed", "Verified source or stage evidence changed immediately before journal creation.");
     }
-    assertNoUnresolvedIntent(intentsDirectory);
+    const resolvedIntents = assertEveryIntentResolved(intentsDirectory, foundation, second.source,
+      { environment });
     const journal = buildActivationIntent(finalVerification, activationId, now.toISOString());
     const durable = writeDurableActivationIntent(intentsDirectory, activationId, journal, {
       ownerId: lock.ownerId,
@@ -1459,6 +1591,10 @@ export function prepareActivationIntent(receiptPath, {
         anchor: anchorDirectory,
         activationIntents: intentsDirectoryEvidence,
       }),
+      // Every pre-existing intent was independently proven resolved; none was
+      // moved, rewritten or deleted to make room for this one.
+      resolvedIntentsObserved: resolvedIntents.resolved,
+      priorIntentsMutated: false,
       gitExecutableStable: finalVerification.source.gitExecutable,
       gitExecutableProcessAttestation: finalVerification.source.gitExecutableProcessAttestation,
       journal,
@@ -1708,8 +1844,10 @@ export function activateReceipt(receiptPath, intentPath, {
         stagedIdentities: verification.stage.manifests,
         incomingIdentities: Object.fromEntries(Object.entries(prepared)
           .map(([name, value]) => [name, { treeDigest: value.treeDigest, fileCount: value.fileCount }])),
-        previousCanonicalIdentities: Object.fromEntries(release.changed
-          .map((entry) => [entry.logicalName, { previousState: entry.previousState }])),
+        previousCanonicalIdentities: buildPreviousGenerationEvidence({
+          units, chain, promotedIdentities, expectedDigests,
+          buildMarker: verification.stage.buildMarker,
+        }),
         promotedCanonicalIdentities: promotedIdentities,
         canonicalVerification,
         promotionPrimitive: "fail-closed-two-rename",
@@ -1756,6 +1894,65 @@ export function activateReceipt(receiptPath, intentPath, {
         networkActionPerformed: false, browserActionPerformed: false,
       });
     }));
+}
+
+/**
+ * Complete previous-generation evidence for every canonical unit, derived from
+ * the folded transaction chain — never from a caller-supplied identity.
+ *
+ * `rollbackCandidateAvailable` is computed, not asserted: it is true only when
+ * a previous generation actually existed AND its internally derived retired
+ * sibling is present on disk AND its recomputed digest matches what this
+ * transaction captured. A first activation therefore never claims rollback
+ * bytes exist, and a missing or drifted candidate can never be marked
+ * available.
+ */
+export function buildPreviousGenerationEvidence({
+  units, chain, promotedIdentities, expectedDigests, buildMarker,
+}) {
+  const folded = foldChainTreeStates(chain);
+  return Object.fromEntries(units.map((unit) => {
+    const tree = folded[unit.logicalName] ?? {};
+    const previousState = tree.previousState === "present" || tree.previousState === "absent"
+      ? tree.previousState
+      : (tree.previousIdentity ? "present" : "absent");
+    const present = previousState !== "absent";
+    let previousManifest = null;
+    let candidateVerified = false;
+    if (present) {
+      try {
+        const observed = recomputeIncomingManifest(unit.retiredPath, "");
+        previousManifest = observed;
+        candidateVerified = typeof tree.previousIdentity === "string" &&
+          observed.treeDigest === tree.previousIdentity;
+      } catch {
+        candidateVerified = false;
+      }
+    }
+    const requiredPresent = previousManifest === null ? null : REQUIRED_EXTENSION_FILES
+      .filter((required) => previousManifest.entries.some((entry) => entry.path === required));
+    return [unit.logicalName, Object.freeze({
+      logicalName: unit.logicalName,
+      livePath: unit.livePath,
+      previousState,
+      previousEntryType: present ? "directory" : "absent",
+      previousTreeDigest: present ? (tree.previousIdentity ?? null) : null,
+      previousFileCount: previousManifest?.fileCount ?? null,
+      previousManifest: previousManifest?.entries ?? null,
+      // The previous generation's own build marker belongs to its own
+      // activation and is not part of this transaction's evidence; it is
+      // recorded as unknown rather than fabricated. Rollback verifies the
+      // candidate by recomputed tree digest, which is stronger.
+      previousBuildMarker: null,
+      previousRequiredFiles: unit.logicalName === "extension" ? requiredPresent : null,
+      retiredCandidatePath: present ? unit.retiredPath : null,
+      promotedTreeDigest: promotedIdentities[unit.logicalName]?.treeDigest ?? null,
+      promotedFileCount: promotedIdentities[unit.logicalName]?.fileCount ?? null,
+      promotedBuildMarker: buildMarker,
+      sameStageIdentity: expectedDigests[unit.logicalName] ?? null,
+      rollbackCandidateAvailable: present && candidateVerified,
+    })];
+  }));
 }
 
 function buildActivationBaseRecord({ journal, verification, fresh, units, lockOwnerId }) {
@@ -1814,7 +2011,8 @@ export function verifyCanonicalFromReceipt(receiptPath, {
     fail("activation-receipt-malformed", "Activation receipt is not valid JSON.");
   }
   // 11: schema and mode are exact.
-  if (receipt?.schemaVersion !== RECEIPT_SCHEMA_VERSION || receipt?.mode !== ACTIVATION_RECEIPT_MODE) {
+  if (receipt?.schemaVersion !== ACTIVATION_RECEIPT_SCHEMA_VERSION ||
+      receipt?.mode !== ACTIVATION_RECEIPT_MODE) {
     fail("activation-receipt-mode-invalid", "Activation receipt schema or mode is not exact.", {
       schemaVersion: receipt?.schemaVersion ?? null, mode: receipt?.mode ?? null,
     });

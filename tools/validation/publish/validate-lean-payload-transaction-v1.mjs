@@ -67,6 +67,13 @@ const P3C_B1_AUTHORIZED_PATHS = Object.freeze([
 const P3C_B1_COMMITTED_PATHS = Object.freeze([
   ACTIVATOR_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// Activation-completeness prerequisite: intent resolution + complete
+// previous-generation rollback evidence, on top of the accepted B1 commit.
+const ACCEPTED_P3C_B1_HEAD = "15500f7b3ef271c78632a4da0fa13dc227948672";
+const P3C_A3_SUBJECT = "fix(publish): complete activation intent and rollback evidence";
+const P3C_A3_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const EXPECTED_SCOPE = 16;
 const EXPECTED_RUNTIME = 130;
 const EXPECTED_STRUCTURAL = 25;
@@ -241,6 +248,19 @@ function classifyPayloadScope(state) {
       value.parent === ACCEPTED_P3C_A2_1_HEAD && value.subject === P3C_B1_SUBJECT &&
       JSON.stringify(value.committedPaths) === JSON.stringify(P3C_B1_COMMITTED_PATHS)) {
     return "p3c-b1-committed";
+  }
+  const p3cA3Base = value.head === ACCEPTED_P3C_B1_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA3Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a3-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.staged.length === 0 &&
+      value.parent === ACCEPTED_P3C_B1_HEAD && value.subject === P3C_A3_SUBJECT &&
+      value.committedPaths.length > 0 &&
+      value.committedPaths.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a3-committed";
   }
   throw new Error("P3A source scope mismatch");
 }
