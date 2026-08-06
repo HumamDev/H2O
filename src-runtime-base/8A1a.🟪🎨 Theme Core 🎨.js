@@ -203,6 +203,18 @@
   // not yet a valid mode here.)
   function isValidMode(m) { return m === 'system' || m === 'light' || m === 'dark' || m === 'oled'; }
 
+  // Canonical modes that no controller UI can represent. Downstream surfaces only
+  // ever observe their effective light/dark projection, so a surface reporting
+  // that projection back is echoing our own state, never expressing intent.
+  // See adoptCompatibilityMode().
+  const CANONICAL_ONLY_MODES = Object.freeze(['oled']);
+
+  function isCanonicalOnlyMode(m) { return CANONICAL_ONLY_MODES.indexOf(m) !== -1; }
+
+  // Modes ChatGPT's own Appearance picker can express. Used to project a
+  // canonical mode onto something the native dialog can actually select.
+  const NATIVE_SUPPORTED_MODES = Object.freeze(['system', 'light', 'dark']);
+
   function normalizeState(candidate) {
     const mode    = (candidate && isValidMode(candidate.mode))
       ? candidate.mode : DEFAULT_STATE.mode;
@@ -341,6 +353,48 @@
   const STYLE_SURFACE_ID = 'h2o-theme-surface';
   const STYLE_PREPAINT_ID = 'h2o-theme-prepaint';
 
+  /* ─────────────── 🏷️ GLOBAL MODE ATTRIBUTES — Theme Core owns all three ───────────────
+   *   data-h2o-mode            canonical intent   'system' | 'light' | 'dark' | 'oled'
+   *   data-h2o-effective-mode  derived binary     'light' | 'dark'
+   *   data-ho-mode             Panel compat       'light' | 'dark'
+   *
+   * data-ho-mode is read by the Themes Panel stylesheet
+   * (8A1b `html[data-ho-mode="light"]` / `="dark"`). It carries the EFFECTIVE
+   * value, never the canonical one: the Panel has no `="oled"` branch, so 'oled'
+   * there would fall through to the :root defaults and paint dark navy instead of
+   * OLED black. 'system' is resolved here rather than left to the Panel's @media
+   * rules, so all three attributes always describe one resolved state.
+   *
+   * Previously the Panel (8A1b) and the Control Hub Appearance mirror (0Z1k) both
+   * wrote data-ho-mode directly. Theme Core is now its sole runtime writer.
+   * ──────────────────────────────────────────────────────────────────────────── */
+  const ATTR_MODE_CANONICAL    = 'data-h2o-mode';
+  const ATTR_MODE_EFFECTIVE    = 'data-h2o-effective-mode';
+  const ATTR_MODE_PANEL_COMPAT = 'data-ho-mode';
+
+  /* ─────────────── 🔌 WEBSITE-THEME ENABLED STATE ───────────────
+   * The Panel's `html[data-ho-mode]{background:… !important}` rule is what paints
+   * the page canvas, so the ABSENCE of data-ho-mode is how "website theme off" is
+   * expressed. Theme Core therefore needs to know that state.
+   *
+   * It is read STRAIGHT FROM THE CANONICAL STORE rather than declared by a
+   * controller, deliberately:
+   *   - no controller can win a race by calling last;
+   *   - the theme keeps working when the Panel is closed, unmounted or absent;
+   *   - Control Hub Appearance-tab VISIBILITY cannot reach it. Tab visibility is
+   *     not theme activation. 0Z1k used to overlay `{enabled:false}` derived from
+   *     CHUB_VIS_isAppearanceVisible() at apply time; it never persisted that, so
+   *     reading storage is immune to it by construction.
+   * Default true — matches the Panel's own DEFAULT_SETTINGS.enabled.
+   * ──────────────────────────────────────────────────────────────────────────── */
+  function readPageThemeEnabled() {
+    const raw = safeJSON(safeGet(KEY_LEGACY_TPANEL_V2)) || safeJSON(safeGet(KEY_LEGACY_TPANEL_OLD));
+    if (!raw || typeof raw !== 'object') return true;
+    return raw.enabled !== false;
+  }
+
+  let pageThemeEnabled = readPageThemeEnabled();
+
   // Token + body-rule CSS. NO layout properties. NO !important. Specificity
   // wins over Themes Panel's `body[data-ho-theme-enabled="true"]` (1 attribute)
   // by prefixing rules with `html[data-h2o-effective-mode=...]` (1 attribute
@@ -418,16 +472,37 @@ html[data-h2o-mode="oled"] body {
       if (!D || !D.documentElement) return false;
       const html = D.documentElement;
       const eff  = resolveEffectiveMode(mode);
-      if (html.getAttribute('data-h2o-mode') !== mode) {
-        html.setAttribute('data-h2o-mode', mode);
+      if (html.getAttribute(ATTR_MODE_CANONICAL) !== mode) {
+        html.setAttribute(ATTR_MODE_CANONICAL, mode);
       }
-      if (html.getAttribute('data-h2o-effective-mode') !== eff) {
-        html.setAttribute('data-h2o-effective-mode', eff);
+      if (html.getAttribute(ATTR_MODE_EFFECTIVE) !== eff) {
+        html.setAttribute(ATTR_MODE_EFFECTIVE, eff);
+      }
+      // Panel compatibility attribute — effective value only, present only while
+      // the website theme is enabled. Read-before-write on both branches, so a
+      // re-apply with unchanged state mutates nothing.
+      if (pageThemeEnabled) {
+        if (html.getAttribute(ATTR_MODE_PANEL_COMPAT) !== eff) {
+          html.setAttribute(ATTR_MODE_PANEL_COMPAT, eff);
+        }
+      } else if (html.hasAttribute(ATTR_MODE_PANEL_COMPAT)) {
+        html.removeAttribute(ATTR_MODE_PANEL_COMPAT);
       }
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  // Re-read the canonical enabled flag and re-apply if it changed. Called from
+  // the Panel settings broadcast and from cross-tab storage events — never from a
+  // controller's visibility state.
+  function refreshPageThemeEnabled() {
+    const next = readPageThemeEnabled();
+    if (next === pageThemeEnabled) return false;
+    pageThemeEnabled = next;
+    applyMode(currentState.mode);
+    return true;
   }
 
   function applyThemeState(state) {
@@ -478,13 +553,21 @@ html[data-h2o-mode="oled"] body {
   function onLegacyThemesSettingsChanged(e) {
     // Themes Panel emits the full settings object on every save (canonical name
     // 'evt:h2o:themes:settings_changed', detail = {...STATE.settings}).
-    // We extract mode and (when the user picked a named preset) accent.
+    // We extract the accent (when the user picked a named preset) and refresh the
+    // website-theme enabled flag.
+    //
+    // Mode is deliberately NOT read from this broadcast. The Panel's settings blob
+    // can only hold 'system' | 'light' | 'dark', and the broadcast cannot say
+    // whether that value is a user's intent or merely the Panel's projection of
+    // canonical state. Adopting it rewrote canonical 'oled' on every save — even
+    // saves that changed nothing but a font slider, and the save the ChatGPT
+    // Settings dialog triggers through the Panel's native sync. Mode now travels
+    // one way only: intent → requestMode / adoptCompatibilityMode → here.
+    refreshPageThemeEnabled();
+
     const d = (e && e.detail) || {};
     const next = { ...currentState };
     let touched = false;
-
-    const m = normalizeMode(d.mode);
-    if (m && m !== currentState.mode) { next.mode = m; touched = true; }
 
     const a = tpanelAccentToId(d.accentLight, d.accentDark);
     if (a && a !== currentState.accent) { next.accent = a; touched = true; }
@@ -495,7 +578,14 @@ html[data-h2o-mode="oled"] body {
   }
 
   function onCanonicalStorage(e) {
-    if (!e || e.key !== KEY_THEME_STATE_V1) return;
+    if (!e) return;
+    // Cross-tab: the website-theme enabled flag lives in the Panel's blob, so a
+    // toggle in another tab arrives as a change to that key, not to ours.
+    if (e.key === KEY_LEGACY_TPANEL_V2 || e.key === KEY_LEGACY_TPANEL_OLD) {
+      refreshPageThemeEnabled();
+      return;
+    }
+    if (e.key !== KEY_THEME_STATE_V1) return;
     const parsed = safeJSON(e.newValue);
     if (!parsed) return;
     applyNewState(parsed, 'storage');
@@ -506,6 +596,27 @@ html[data-h2o-mode="oled"] body {
   // live state changes in Phase 1.
   dualListen(EV_TPANEL_SETTINGS_CANON, onLegacyThemesSettingsChanged);
   try { W.addEventListener('storage', onCanonicalStorage, false); } catch (_) {}
+
+  /* Canonical 'system' resolves against the OS preference at apply time, so a live
+   * OS light/dark switch must re-resolve all three attributes. This listener is
+   * required BY this phase: the Panel used to track the OS itself through @media
+   * rules on html[data-ho-mode="system"], and now that Theme Core resolves the
+   * compatibility value up front that CSS path never matches. Without this,
+   * 'system' would freeze at whatever the OS was when the page loaded.
+   *
+   * Attributes only — no persist (canonical intent is unchanged), no broadcast
+   * (no state change to announce), and applyMode is read-before-write so a
+   * spurious event mutates nothing. Registered once: the module's boot guard
+   * (__H2O_GUARD__) returns before this line on a duplicate injection.
+   */
+  function onSystemSchemeChange() {
+    if (currentState.mode === 'system') applyMode(currentState.mode);
+  }
+  try {
+    const mq = W.matchMedia?.('(prefers-color-scheme: light)');
+    if (mq?.addEventListener) mq.addEventListener('change', onSystemSchemeChange);
+    else if (mq?.addListener) mq.addListener(onSystemSchemeChange); // legacy Safari
+  } catch (_) {}
 
   /* ───────────────────────────── 🌐 PUBLIC API — H2O.theme ───────────────────────────── */
   W.H2O = W.H2O || {};
@@ -581,6 +692,62 @@ html[data-h2o-mode="oled"] body {
     return applyNewState({ ...currentState, mode }, 'api:setMode');
   }
 
+  /* ══════════════ INTENT vs ECHO ══════════════
+   * Two deliberately separate operations. Which one a caller uses encodes what
+   * the caller KNOWS about the event, and that cannot be inferred from the mode
+   * value or from timing — so it must not be one function with a flag.
+   *
+   *   requestMode(mode)                  the user picked this. Always adopted.
+   *   adoptCompatibilityMode(mode, src)  a surface reported its own projection
+   *                                      back to us. Adopted only if it would
+   *                                      actually change what the user sees.
+   *
+   * Why the echo guard compares EFFECTIVE modes rather than special-casing
+   * 'oled': every canonical value that is invisible downstream has this problem,
+   * not just OLED. With canonical 'system' resolving dark, a Panel repaint or a
+   * ChatGPT dialog read both report "dark" — adopting that would silently convert
+   * a follow-the-OS preference into a hard dark preference. Comparing effective
+   * modes covers 'system' and 'oled' with one rule.
+   *
+   *   canonical oled   + echo 'dark'   → no-op   (dark IS oled's projection)
+   *   canonical oled   + intent 'dark' → dark    (user chose it)
+   *   canonical system + echo 'dark'   → no-op   (dark IS system's projection today)
+   *   canonical system + intent 'dark' → dark    (user pinned it)
+   *   canonical oled   + echo 'light'  → light   (a real divergence, adopt it)
+   * ═══════════════════════════════════════════ */
+
+  function requestMode(mode) {
+    if (!isValidMode(mode)) {
+      try { console.warn(`[h2o-theme] H2O.theme.requestMode rejected invalid mode '${mode}'.`); } catch (_) {}
+      return false;
+    }
+    return setModeActive(mode);
+  }
+
+  function adoptCompatibilityMode(mode, source) {
+    if (!isValidMode(mode)) {
+      try { console.warn(`[h2o-theme] H2O.theme.adoptCompatibilityMode rejected invalid mode '${mode}' from '${source || 'unknown'}'.`); } catch (_) {}
+      return false;
+    }
+    if (resolveEffectiveMode(mode) === resolveEffectiveMode(currentState.mode)) {
+      return true; // echo of our own projection — canonical intent preserved
+    }
+    return setModeActive(mode);
+  }
+
+  // Effective value a controller should DISPLAY as selected. Canonical-only modes
+  // surface as their projection so 'oled' never leaks into a UI vocabulary.
+  function compatMode() { return resolveEffectiveMode(currentState.mode); }
+
+  // Value safe to hand to ChatGPT's own Appearance picker. That picker offers
+  // System / Light / Dark only; queueing 'oled' would match no option, so the
+  // pending entry would never clear and would be retried on every DOM mutation.
+  function nativeMode(mode) {
+    const raw = String(mode == null ? currentState.mode : mode).trim().toLowerCase();
+    if (NATIVE_SUPPORTED_MODES.indexOf(raw) !== -1) return raw;
+    return isValidMode(raw) ? resolveEffectiveMode(raw) : resolveEffectiveMode(currentState.mode);
+  }
+
   // ACTIVE for {mode}, passive otherwise. If `partial` contains any key other
   // than 'mode' (palette / accent / density / reduceMotion / highContrast),
   // the call is REJECTED as a whole — no silent partial application.
@@ -617,9 +784,17 @@ html[data-h2o-mode="oled"] body {
     onReady,
     onChange,
 
+    // Reads — mode projections for controller UIs.
+    compatMode,                 // effective value a controller should show as selected
+    nativeMode,                 // value safe for ChatGPT's own Appearance picker
+    isCanonicalOnlyMode,        // 'oled' — canonical, but not representable in any UI
+    isPageThemeEnabled() { return pageThemeEnabled; },
+
     // Writes — Phase 2A: only mode is active.
     set:             setActive,
     setMode:         setModeActive,
+    requestMode,                // genuine user intent — always adopted
+    adoptCompatibilityMode,     // surface echo — adopted only if visually different
     setPalette:      () => passiveWriter('setPalette'),
     setAccent:       () => passiveWriter('setAccent'),
     setDensity:      () => passiveWriter('setDensity'),

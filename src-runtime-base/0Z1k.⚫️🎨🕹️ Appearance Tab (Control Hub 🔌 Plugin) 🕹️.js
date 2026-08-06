@@ -35,7 +35,8 @@
   const FEATURE_KEY_THEMES_PANEL = 'themesPanel';
   const FEATURE_KEY_ACCENTS = 'accents';
 
-  const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
+  // (Control Hub tab-visibility state is owned by 0Z1a and is deliberately NOT
+  //  read here any more — tab visibility is not website-theme activation.)
   const KEY_CHUB_APPEARANCE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:themes:subtab:v1';
   const KEY_CHUB_ACCENT_V1 = 'h2o:prm:cgx:cntrlhb:state:accent:v1';
   const KEY_CHUB_BUTTON_ACCENT_V1 = 'h2o:prm:cgx:cntrlhb:state:accent:buttons:v1';
@@ -415,7 +416,10 @@
 
     if (!S.enabled) {
       D.body.removeAttribute('data-ho-theme-enabled');
-      D.documentElement.removeAttribute('data-ho-mode');
+      // data-ho-mode is owned by Theme Core (8A1a), which drops it itself from the
+      // canonical enabled flag. Writing it here re-asserted a stale mode on this
+      // module's 0 / 250 / 1000 / 2400 ms schedule, after Theme Core had already
+      // applied canonical state.
       rootStyle.removeProperty('--ho-accent-light-hsl');
       rootStyle.removeProperty('--ho-accent-dark-hsl');
       rootStyle.removeProperty('--ho-font-family');
@@ -433,7 +437,9 @@
     }
 
     D.body.setAttribute('data-ho-theme-enabled', 'true');
-    D.documentElement.setAttribute('data-ho-mode', String(S.mode || 'system'));
+    // See the disabled branch — Theme Core owns data-ho-mode and resolves it from
+    // canonical state ('oled' → 'dark'). This mirror's stored mode field is never
+    // applied to the document.
     rootStyle.setProperty('--ho-accent-light-hsl', String(S.accentLight || CHUB_THEME_DEFAULTS.accentLight));
     rootStyle.setProperty('--ho-accent-dark-hsl', String(S.accentDark || CHUB_THEME_DEFAULTS.accentDark));
 
@@ -608,14 +614,21 @@
     return next;
   }
 
-  function CHUB_VIS_isAppearanceVisible() {
-    const state = storage.getJSON(KEY_CHUB_TAB_VIS_V1, {}) || {};
-    return state[FEATURE_KEY_APPEARANCE] !== false;
-  }
-
+  /* ─────────── ⚠️ TAB VISIBILITY IS NOT THEME ACTIVATION ───────────
+   * This used to be:
+   *     CHUB_THEME_applySettings(isAppearanceVisible() ? saved : {...saved, enabled:false})
+   * which meant hiding the Appearance TAB in Control Hub disabled the whole
+   * ChatGPT website theme — stripping data-ho-theme-enabled and data-ho-mode and
+   * un-styling the page — even though the user never turned the theme off. The
+   * availability of a controller UI must not control the feature it configures.
+   *
+   * Website-theme activation now comes only from the canonical `enabled` field in
+   * the settings blob, which this function passes through untouched. Tab
+   * visibility still hides the Themes Panel UI through
+   * APPEARANCE_VISIBILITY.selectors — that part is legitimate and is preserved.
+   * ──────────────────────────────────────────────────────────────── */
   function CHUB_THEME_applyVisibilityState() {
-    const saved = CHUB_THEME_loadSettings();
-    CHUB_THEME_applySettings(CHUB_VIS_isAppearanceVisible() ? saved : { ...saved, enabled: false });
+    CHUB_THEME_applySettings(CHUB_THEME_loadSettings());
   }
 
   function scheduleThemeVisibilityApply() {
@@ -636,9 +649,12 @@
     selectors: Object.freeze([
       '[data-cgxui-owner="thpn"]',
     ]),
-    applyHidden(hidden) {
-      const saved = CHUB_THEME_loadSettings();
-      CHUB_THEME_applySettings(hidden ? { ...saved, enabled: false } : saved);
+    // `selectors` above hide the Themes Panel UI when the tab is hidden — that is
+    // this hook's legitimate job. Theme APPLICATION is deliberately unaffected:
+    // see CHUB_THEME_applyVisibilityState for why hiding a controller must not
+    // disable the website theme.
+    applyHidden(/* hidden */) {
+      CHUB_THEME_applySettings(CHUB_THEME_loadSettings());
     },
   });
 
@@ -666,13 +682,29 @@
   function BASE_THEME_get() {
     const t = THEME_CORE();
     const mode = t?.get?.()?.mode;
-    return (mode === 'system' || mode === 'light' || mode === 'dark') ? mode : 'system';
+    if (mode === 'system' || mode === 'light' || mode === 'dark') return mode;
+    // Canonical modes this tab cannot express (currently 'oled') are DISPLAYED as
+    // their effective light/dark projection, so the row shows what the user
+    // actually sees rather than mislabelling OLED as "System". Rendering is a read
+    // only — it never writes canonical state.
+    if (mode) {
+      let projected = '';
+      try { projected = String(t?.compatMode?.() || ''); } catch {}
+      if (projected === 'light' || projected === 'dark') return projected;
+    }
+    return 'system';
   }
 
+  // Called only from an explicit row selection, so this IS user intent: picking
+  // Dark while canonical is 'oled' may legitimately convert it. Passive paths —
+  // rendering, refresh, tab open, the visibility schedule — call BASE_THEME_get
+  // and never reach here.
   function BASE_THEME_set(value) {
     const next = (value === 'light' || value === 'dark' || value === 'system') ? value : 'system';
     const t = THEME_CORE();
-    if (t && typeof t.setMode === 'function') {
+    if (t && typeof t.requestMode === 'function') {
+      try { t.requestMode(next); } catch {}
+    } else if (t && typeof t.setMode === 'function') {
       try { t.setMode(next); } catch {}
     }
     return next;

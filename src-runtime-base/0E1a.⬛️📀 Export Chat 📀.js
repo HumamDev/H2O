@@ -75,6 +75,9 @@ const EXPORT_BTN_LABEL = 'Export';
 const EXPORT_BTN_TITLE = 'Export this chat';
 const EXPORT_MODE_FULL = 'full';
 const EXPORT_MODE_MINIMAL = 'minimal';
+// Cap on how many unresolved ids are logged, so a large failed selection cannot
+// flood the console while still naming enough ids to diagnose.
+const COVERAGE_MISSING_LOG_LIMIT = 12;
 const EXPORT_STYLE_THROTTLE_MS = 220;
 const EXPORT_COPY_PROPS = Object.freeze([
   'height',
@@ -120,7 +123,13 @@ const VIEW_ = Object.freeze({
     PROMPT_EXPORT_BTN: `${SkID}-prompt-export-btn`,
     DL_ICON: `${SkID}-dl-icon`,
     DL_TEXT: `${SkID}-dl-text`,
+    TEXT_PROBE: `${SkID}-text-probe`,
   });
+
+  // Off-screen but still RENDERED. No display:none / visibility:hidden — either
+  // would make innerText fall back to textContent, which is the bug this fixes.
+  const TEXT_PROBE_STYLE =
+    'position:fixed;left:-99999px;top:0;width:1024px;max-width:1024px;pointer-events:none;contain:content;';
 
   const CSS_ = Object.freeze({
     STYLE_ID: `cgxui-${SkID}-style`,
@@ -617,13 +626,40 @@ const VIEW_ = Object.freeze({
     return clone;
   }
 
+  /**
+   * @helper Read rendered text from an already-scrubbed clone.
+   * `innerText` only reports rendered line boundaries while the node is being
+   * rendered; a detached clone falls back to textContent and loses every block
+   * break. Attach the clone to an off-screen (but still rendered) probe first,
+   * then drop the probe. The probe must not use display:none/visibility:hidden —
+   * either would take the node out of rendering and reinstate the bug.
+   */
+  function UTIL_readRenderedText(clone) {
+    if (!clone) return '';
+    const host = D.body || D.documentElement;
+    if (!host) return String(clone.textContent || '');
+
+    const probe = D.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.setAttribute(ATTR_.CGXUI_OWNER, SkID);
+    probe.setAttribute(ATTR_.CGXUI, UI_.TEXT_PROBE);
+    probe.style.cssText = TEXT_PROBE_STYLE;
+    probe.appendChild(clone);
+    host.appendChild(probe);
+    try {
+      return String(probe.innerText || probe.textContent || '');
+    } finally {
+      try { probe.remove(); } catch {}
+    }
+  }
+
   /** @helper */
   function UTIL_plainText(msgEl) {
     if (!msgEl) return '';
     const block = UTIL_getAnswerContent(msgEl);
     const clone = block.cloneNode(true);
     UTIL_stripUnderUI(clone);
-    return (clone.innerText || '').trim();
+    return UTIL_readRenderedText(clone).trim();
   }
 
   /* ───────────────────────────── 5b) Shared utilities (delegate to 5A1b when available) ───────────────────────────── */
@@ -799,6 +835,166 @@ const VIEW_ = Object.freeze({
     return out;
   }
 
+  /* ───────────────────────────── 6b) Export coverage contract (fail-closed) ───────────────────────────── */
+
+  /**
+   * @critical Resolve every requested id up front. Pure: `resolve` supplies all
+   * DOM access, so this is exercisable without a document.
+   * Requested order is preserved in both `requestedIds` and `resolved`.
+   */
+  function EXPORT_resolveSelectionCoverage(ids, resolve) {
+    const requestedIds = Array.isArray(ids) ? ids.slice() : [];
+    const resolved = [];
+    const missing = [];
+
+    for (const id of requestedIds) {
+      let el = null;
+      try { el = (typeof resolve === 'function') ? resolve(id) : null; } catch { el = null; }
+      if (el) resolved.push({ id, el });
+      else missing.push(id);
+    }
+
+    return {
+      requested: requestedIds.length,
+      resolvedCount: resolved.length,
+      missingCount: missing.length,
+      complete: missing.length === 0,
+      requestedIds,
+      resolved,
+      missing,
+    };
+  }
+
+  /** @helper Explicit refusal via the existing minimal feedback path. */
+  function EXPORT_reportCoverageFailure(coverage) {
+    const missing = Array.isArray(coverage?.missing) ? coverage.missing : [];
+    const preview = missing.slice(0, COVERAGE_MISSING_LOG_LIMIT);
+    const truncated = Math.max(0, missing.length - preview.length);
+
+    try {
+      console.warn(`[H2O.${MODTAG}] export aborted — incomplete selection coverage`, {
+        requested: coverage?.requested ?? 0,
+        resolved: coverage?.resolvedCount ?? 0,
+        missing: coverage?.missingCount ?? 0,
+        missingIds: preview,
+        missingIdsTruncated: truncated,
+      });
+    } catch {}
+
+    alert(
+      `Export cancelled — nothing was downloaded.\n\n` +
+      `Requested: ${coverage?.requested ?? 0}\n` +
+      `Ready: ${coverage?.resolvedCount ?? 0}\n` +
+      `Missing: ${coverage?.missingCount ?? 0}\n\n` +
+      `Some selected answers are not currently loaded in the page, so the export ` +
+      `would have been incomplete. Your selection has been kept.\n\n` +
+      `Scroll through the whole chat so every selected answer is loaded, then export again.`
+    );
+  }
+
+  /**
+   * @critical Read every value the serializers need, straight off the elements
+   * the coverage pass accepted. Nothing here looks an id up again, so a turn
+   * detached after coverage cannot silently drop out of the export.
+   * Returns ordered, frozen records in the requested order.
+   */
+  function EXPORT_materializeRecords(resolvedRecords) {
+    const rows = Array.isArray(resolvedRecords) ? resolvedRecords : [];
+
+    // One DOM-order snapshot, taken once, keyed by element identity so no id
+    // lookup is involved.
+    const indexByEl = new Map();
+    DATA_answers().forEach((el, i) => indexByEl.set(el, i));
+
+    const items = [];
+    for (const row of rows) {
+      const id = row?.id ?? null;
+      try {
+        const aEl = row?.el || null;
+        if (!aEl) return { ok: false, failedId: id, reason: 'missing-element' };
+
+        const qEl = DATA_userForAnswer(aEl);
+        const qTextRaw = UTIL_plainText(qEl);
+        const aTextRaw = UTIL_plainText(aEl);
+
+        let stamp = '';
+        const d = UTIL_getCreationDate(aEl);
+        if (d && !isNaN(d.getTime())) {
+          const pad = n => String(n).padStart(2, '0');
+          stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+
+        const domIndex0 = indexByEl.has(aEl) ? indexByEl.get(aEl) : -1;
+
+        items.push(Object.freeze({
+          id,
+          domIndex0,
+          // idx  — html/doc/pdf numbering (0 when the element is not in the list)
+          // idxMd — markdown numbering (clamped to 1), matching prior output
+          idx: domIndex0 >= 0 ? domIndex0 + 1 : 0,
+          idxMd: Math.max(1, domIndex0 + 1),
+          qTextRaw,
+          aTextRaw,
+          qText: qTextRaw || '(no user message found)',
+          aText: aTextRaw || '(empty answer)',
+          stamp,
+          hlName: (W.highlightMap || {})[id] || '',
+        }));
+      } catch (error) {
+        return { ok: false, failedId: id, reason: 'materialize-threw', error };
+      }
+    }
+
+    return { ok: true, items };
+  }
+
+  /** @helper Explicit refusal when a selected item could not be materialized. */
+  function EXPORT_reportMaterializeFailure(batch, coverage) {
+    try {
+      console.warn(`[H2O.${MODTAG}] export aborted — could not materialize a selected answer`, {
+        requested: coverage?.requested ?? 0,
+        failedId: batch?.failedId ?? null,
+        reason: batch?.reason || 'unknown',
+        error: batch?.error ? String(batch.error && (batch.error.message || batch.error)) : null,
+      });
+    } catch {}
+
+    alert(
+      `Export cancelled — nothing was downloaded.\n\n` +
+      `Requested: ${coverage?.requested ?? 0}\n` +
+      `Failed on: ${batch?.failedId ?? '(unknown item)'}\n` +
+      `Reason: ${batch?.reason || 'unknown'}\n\n` +
+      `One selected answer could not be read, so the export would have been ` +
+      `incomplete. Your selection has been kept.`
+    );
+  }
+
+  /**
+   * @critical Single chokepoint for every export action.
+   * Resolve the whole selection, then materialize the whole batch, and only
+   * then hand the finished records to `proceed`. Both stages complete before
+   * any external side effect (download anchor, print window, save picker), so
+   * a partial run can never begin and no id is ever resolved twice.
+   */
+  function EXPORT_runGuarded(ids, proceed) {
+    const coverage = EXPORT_resolveSelectionCoverage(ids, DATA_answerById);
+
+    if (!coverage.requested) return { ok: false, reason: 'empty', coverage };
+    if (!coverage.complete) {
+      EXPORT_reportCoverageFailure(coverage);
+      return { ok: false, reason: 'incomplete', coverage };
+    }
+
+    const batch = EXPORT_materializeRecords(coverage.resolved);
+    if (!batch.ok) {
+      EXPORT_reportMaterializeFailure(batch, coverage);
+      return { ok: false, reason: 'materialize-failed', coverage, batch };
+    }
+
+    proceed(batch.items, coverage);
+    return { ok: true, reason: 'complete', coverage, batch };
+  }
+
   /** @helper */
   function DATA_userForAnswer(answerEl) {
     if (!answerEl) return null;
@@ -840,16 +1036,10 @@ const VIEW_ = Object.freeze({
   }
 
   /* ───────────────────────────── 7) Export: Markdown ───────────────────────────── */
-  /** @critical */
-  function EXPORT_one_md(id) {
-    const aEl = DATA_answerById(id);
-    if (!aEl) return;
-    const qEl = DATA_userForAnswer(aEl);
-    const qText = UTIL_plainText(qEl);
-    const aText = UTIL_plainText(aEl);
-
-    const answers = DATA_answers();
-    const idx = Math.max(1, answers.findIndex(el => UTIL_getMessageId(el) === id) + 1);
+  /** @critical Consumes one materialized record — never re-resolves by id. */
+  function EXPORT_one_md(rec) {
+    if (!rec) return;
+    const idx = rec.idxMd;
     const idxStr = String(idx).padStart(3, '0');
 
     const d = new Date();
@@ -858,28 +1048,19 @@ const VIEW_ = Object.freeze({
     const dd = String(d.getDate()).padStart(2, '0');
     const filename = `${yyyy}-${mm}-${dd}_QA_${idxStr}.md`;
 
-    UTIL_downloadTextFile(filename, DATA_buildSingleQABody(idx, qText, aText));
+    UTIL_downloadTextFile(filename, DATA_buildSingleQABody(idx, rec.qTextRaw, rec.aTextRaw));
   }
 
-  /** @critical */
-  function EXPORT_bundle_md(ids) {
-    const answers = DATA_answers();
-    const idToIndex = new Map();
-    answers.forEach((el, idx) => {
-      const mid = UTIL_getMessageId(el);
-      if (mid) idToIndex.set(mid, idx);
-    });
+  /** @critical Consumes materialized records — never re-resolves by id. */
+  function EXPORT_bundle_md(items) {
+    // Same document-order presentation as before, but ordered by the DOM index
+    // captured at materialization instead of a fresh DOM read.
+    const rank = (rec) => (rec && rec.domIndex0 >= 0 ? rec.domIndex0 : 99999);
+    const sorted = (items || []).slice().sort((a, b) => rank(a) - rank(b));
 
-    const sorted = (ids || []).slice().sort((a, b) => (idToIndex.get(a) ?? 99999) - (idToIndex.get(b) ?? 99999));
     const parts = [];
-    for (const id of sorted) {
-      const aEl = DATA_answerById(id);
-      if (!aEl) continue;
-      const qEl = DATA_userForAnswer(aEl);
-      const qText = UTIL_plainText(qEl);
-      const aText = UTIL_plainText(aEl);
-      const idx = (idToIndex.get(id) ?? 0) + 1;
-      parts.push(DATA_buildSingleQABody(idx, qText, aText), '---', '');
+    for (const rec of sorted) {
+      parts.push(DATA_buildSingleQABody(rec.idxMd, rec.qTextRaw, rec.aTextRaw), '---', '');
     }
     if (!parts.length) return;
 
@@ -937,8 +1118,8 @@ h1{font-size:20px;margin:0 0 12px}
   }
 
   /** @critical */
-  function EXPORT_one_html(id) {
-    const items = EXPORT_buildQAData([id]);
+  function EXPORT_one_html(rec) {
+    const items = rec ? [rec] : [];
     if (!items.length) return;
     const d = new Date();
     const yyyy = d.getFullYear();
@@ -950,9 +1131,8 @@ h1{font-size:20px;margin:0 0 12px}
   }
 
   /** @critical */
-  function EXPORT_bundle_html(ids) {
-    const items = EXPORT_buildQAData(ids);
-    if (!items.length) return;
+  function EXPORT_bundle_html(items) {
+    if (!items || !items.length) return;
     const d = new Date();
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -962,8 +1142,8 @@ h1{font-size:20px;margin:0 0 12px}
   }
 
   /** @critical Word export (HTML wrapped as .doc). */
-  function EXPORT_one_doc(id) {
-    const items = EXPORT_buildQAData([id]);
+  function EXPORT_one_doc(rec) {
+    const items = rec ? [rec] : [];
     if (!items.length) return;
     const d = new Date();
     const yyyy = d.getFullYear();
@@ -976,9 +1156,8 @@ h1{font-size:20px;margin:0 0 12px}
   }
 
   /** @critical Word export (HTML wrapped as .doc). */
-  function EXPORT_bundle_docx(ids) {
-    const items = EXPORT_buildQAData(ids);
-    if (!items.length) return;
+  function EXPORT_bundle_docx(items) {
+    if (!items || !items.length) return;
 
     const d = new Date();
     const yyyy = d.getFullYear();
@@ -1015,9 +1194,8 @@ h1{font-size:20px;margin:0 0 12px}
     UTIL_downloadBlobFile(filename, blob);
   }
 
-  function EXPORT_bundle_doc(ids) {
-    const items = EXPORT_buildQAData(ids);
-    if (!items.length) return;
+  function EXPORT_bundle_doc(items) {
+    if (!items || !items.length) return;
     const d = new Date();
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -1028,40 +1206,9 @@ h1{font-size:20px;margin:0 0 12px}
   }
 
   /* ───────────────────────────── 8) Export: PDF (print window) ───────────────────────────── */
-  /** @helper */
-  function EXPORT_buildQAData(ids) {
-    const answers = DATA_answers();
-    const idToIndex = new Map();
-    answers.forEach((el, idx) => {
-      const mid = UTIL_getMessageId(el);
-      if (mid) idToIndex.set(mid, idx + 1);
-    });
-
-    return (ids || []).map(id => {
-      const aEl = DATA_answerById(id);
-      if (!aEl) return null;
-
-      const qEl = DATA_userForAnswer(aEl);
-      const qText = UTIL_plainText(qEl) || '(no user message found)';
-      const aText = UTIL_plainText(aEl) || '(empty answer)';
-
-      let stamp = '';
-      const d = UTIL_getCreationDate(aEl);
-      if (d && !isNaN(d.getTime())) {
-        const pad = n => String(n).padStart(2, '0');
-        stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      }
-
-      const idx = idToIndex.get(id) || 0;
-      const hlName = (W.highlightMap || {})[id] || '';
-      return { id, idx, qText, aText, stamp, hlName };
-    }).filter(Boolean);
-  }
-
   /** @critical */
-  function EXPORT_printPdf(ids) {
-    const items = EXPORT_buildQAData(ids);
-    if (!items.length) { alert('No answers selected to export.'); return; }
+  function EXPORT_printPdf(items) {
+    if (!items || !items.length) { alert('No answers selected to export.'); return; }
 
     const win = window.open('', '_blank');
     if (!win) { alert('Popup blocked. Allow popups for chatgpt.com to export as PDF.'); return; }
@@ -1172,19 +1319,19 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
 
   /* ───────────────────────────── 9) Router ───────────────────────────── */
   /** @critical */
-  function EXPORT_one(id) {
-    if (R.currentFormat === 'md') return EXPORT_one_md(id);
-    if (R.currentFormat === 'html') return EXPORT_one_html(id);
-    if (R.currentFormat === 'pdf') return EXPORT_printPdf([id]);
-    if (R.currentFormat === 'doc') return EXPORT_one_doc(id);
+  function EXPORT_one(rec) {
+    if (R.currentFormat === 'md') return EXPORT_one_md(rec);
+    if (R.currentFormat === 'html') return EXPORT_one_html(rec);
+    if (R.currentFormat === 'pdf') return EXPORT_printPdf([rec]);
+    if (R.currentFormat === 'doc') return EXPORT_one_doc(rec);
   }
   /** @critical */
-  function EXPORT_bundle(ids) {
-    if (R.currentFormat === 'md') return EXPORT_bundle_md(ids);
-    if (R.currentFormat === 'html') return EXPORT_bundle_html(ids);
-    if (R.currentFormat === 'pdf') return EXPORT_printPdf(ids);
-    if (R.currentFormat === 'docx') return EXPORT_bundle_docx(ids);
-    if (R.currentFormat === 'doc') return EXPORT_bundle_doc(ids);
+  function EXPORT_bundle(items) {
+    if (R.currentFormat === 'md') return EXPORT_bundle_md(items);
+    if (R.currentFormat === 'html') return EXPORT_bundle_html(items);
+    if (R.currentFormat === 'pdf') return EXPORT_printPdf(items);
+    if (R.currentFormat === 'docx') return EXPORT_bundle_docx(items);
+    if (R.currentFormat === 'doc') return EXPORT_bundle_doc(items);
   }
 
   /* ───────────────────────────── 10) Overlay selection circles (outside MiniMap) ───────────────────────────── */
@@ -1792,12 +1939,21 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
           return;
         }
 
+        // Fail-closed: EXPORT_runGuarded preflights the whole selection and only
+        // then runs the export body. On refusal keep the selection AND the menu
+        // open so the user can reload the chat and retry.
         if (mode === 'one') {
-          EXPORT_bundle(ids);
-          ACT_clearSelectionsAndExit();
+          const run = EXPORT_runGuarded(ids, (records) => {
+            EXPORT_bundle(records);
+            ACT_clearSelectionsAndExit();
+          });
+          if (!run.ok) return;
         } else if (mode === 'multi') {
-          ids.forEach(id => EXPORT_one(id));
-          ACT_clearSelectionsAndExit();
+          const run = EXPORT_runGuarded(ids, (records) => {
+            records.forEach(rec => EXPORT_one(rec));
+            ACT_clearSelectionsAndExit();
+          });
+          if (!run.ok) return;
         } else if (mode === 'clear') {
           ACT_clearSelectionsAndExit();
         }
